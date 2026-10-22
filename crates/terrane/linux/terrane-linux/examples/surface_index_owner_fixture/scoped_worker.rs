@@ -52,6 +52,7 @@ pub(super) struct Launched {
     channel: Option<OwnedFd>,
     identity: Option<WorkerIdentity>,
     control: File,
+    network: bool,
 }
 
 impl Drop for Launched {
@@ -97,6 +98,14 @@ pub(super) fn launch_crash() -> Result<Launched> {
     launch_mode("worker-crash-child")
 }
 
+/// Starts the original child with a real FUSE handle and network confinement.
+///
+/// # Errors
+/// Preserves launcher errors and refuses an unavailable FUSE device.
+pub(super) fn launch_network() -> Result<Launched> {
+    launch_mode("worker-network-child")
+}
+
 fn launch_mode(mode: &str) -> Result<Launched> {
     if rustix::process::geteuid().as_raw() != 0 || fs::read_dir("/proc/self/task")?.count() != 1 {
         return Err("scoped proof launcher requires one administrative thread".into());
@@ -105,6 +114,17 @@ fn launch_mode(mode: &str) -> Result<Launched> {
         std::env::var_os("TERRANE_WORKER_SETPRIV").ok_or("missing AOS-built fixture launcher")?;
     let (serve, worker) = worker_channel::channel_pair()?;
     let (control, child_control) = worker_channel::channel_pair()?;
+    let network = mode == "worker-network-child";
+    let output = if network {
+        Stdio::from(
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open("/dev/fuse")?,
+        )
+    } else {
+        Stdio::piped()
+    };
     let mut child = Command::new(setpriv)
         .args([
             "--reuid=848",
@@ -119,7 +139,7 @@ fn launch_mode(mode: &str) -> Result<Launched> {
         .arg(mode)
         .stdin(Stdio::from(worker))
         .stderr(Stdio::from(child_control))
-        .stdout(Stdio::piped())
+        .stdout(output)
         .spawn()?;
     let identity = WorkerIdentity::from_child(&mut child, 848)?;
     let launched = Launched {
@@ -127,6 +147,7 @@ fn launch_mode(mode: &str) -> Result<Launched> {
         channel: Some(serve),
         identity: Some(identity),
         control: File::from(control),
+        network,
     };
 
     drop_to_serve()?;
@@ -368,13 +389,20 @@ async fn verify(
     let policy_path = inputs.root.join("state/cache/records.toml");
     let before_bytes = fs::read(&policy_path)?;
     let mut output = String::new();
-    launched
-        .child
-        .stdout
-        .take()
-        .ok_or("missing original child output")?
-        .take(256)
-        .read_to_string(&mut output)?;
+    if launched.network {
+        readable(&launched.control)?;
+        (&mut launched.control)
+            .take(256)
+            .read_to_string(&mut output)?;
+    } else {
+        launched
+            .child
+            .stdout
+            .take()
+            .ok_or("missing original child output")?
+            .take(256)
+            .read_to_string(&mut output)?;
+    }
     if !launched.child.wait()?.success() {
         return Err("actual scoped worker failed retained-reference checks".into());
     }
@@ -409,6 +437,11 @@ async fn verify(
     println!(
         "PASS actual scoped owner Send grants original signed-root index and sealed file to the original worker; draining denies new grants while retained descriptors and mapping remain readable"
     );
+    if launched.network {
+        println!(
+            "PASS original worker retains checked FUSE descriptor and kernel-enforced Unix-only network boundary through actual scoped grants and draining"
+        );
+    }
     Ok(())
 }
 
@@ -466,6 +499,21 @@ pub(super) fn child_context() -> Result<(WorkerClient, [u8; 32], ContentRef)> {
 /// # Errors
 /// Refuses invalid native context, replies, retained mappings or file contents.
 pub(super) fn child() -> Result<()> {
+    child_body(false)
+}
+
+/// Installs confinement before receiving any scoped backing descriptors.
+///
+/// # Errors
+/// Refuses invalid bootstrap descriptors, confinement or scoped read failures.
+pub(super) fn child_network() -> Result<()> {
+    let installed = terrane_linux::quota_confinement::install_worker_network(io::stdout().as_fd())?;
+    child_body(true)?;
+    installed.check_current()?;
+    Ok(())
+}
+
+fn child_body(network: bool) -> Result<()> {
     let (mut client, root, content) = child_context()?;
     let index = reply(&mut client.request(RequestedBacking::Index)?)?.into_file();
     let index_stat = index.metadata()?;
@@ -497,12 +545,17 @@ pub(super) fn child() -> Result<()> {
     {
         return Err("draining invalidated original scoped backing".into());
     }
-    println!(
-        "ORIGINAL {} {} {} {}",
+    let report = format!(
+        "ORIGINAL {} {} {} {}\n",
         index_stat.dev(),
         index_stat.ino(),
         file_stat.dev(),
         file_stat.ino()
     );
+    if network {
+        File::from(io::stderr().as_fd().try_clone_to_owned()?).write_all(report.as_bytes())?;
+    } else {
+        print!("{report}");
+    }
     Ok(())
 }

@@ -7,6 +7,8 @@
 //! irreversible; any failure requires process termination, not fallback.
 //! [`install_publisher`] additionally fixes Unix-only socket creation and audits
 //! inherited descriptors before configured publisher resources are opened.
+//! [`install_worker_network`] applies that network restriction while retaining
+//! one checked FUSE device; filesystem and complete worker isolation are separate.
 //!
 //! This boundary does not isolate Unix identities. The trusted host must reserve
 //! each role identity, exclude unconfined peers and inherited writable cache
@@ -17,8 +19,10 @@
 
 mod policy;
 mod publisher;
+mod worker;
 
 pub use publisher::{PublisherInstalled, install_publisher};
+pub use worker::{WorkerNetworkInstalled, install_worker_network};
 
 use std::{fs, io, os::fd::AsRawFd};
 

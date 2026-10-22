@@ -549,6 +549,15 @@ in {
         surfaceIndex = true;
       }).image;
   };
+  integration.worker-network-boundary = import ./scoped-worker.nix {
+    inherit pkgs lib;
+    workerNetwork = true;
+    image =
+      (import ./host-cache-proof.nix {
+        inherit pkgs lib sourceGateWithInputs;
+        surfaceIndex = true;
+      }).image;
+  };
   integration.gc-maintenance-channel = import ./scoped-worker.nix {
     inherit pkgs lib;
     maintenance = true;

@@ -12,7 +12,7 @@ use rustix::{
 };
 use std::{
     io::{self, IsTerminal},
-    os::fd::{AsFd, AsRawFd},
+    os::fd::{AsFd, AsRawFd, BorrowedFd},
     sync::Arc,
 };
 
@@ -60,18 +60,21 @@ impl PublisherInstalled {
 /// leave irreversible partial hardening; the process must exit without fallback.
 pub fn install_publisher() -> io::Result<PublisherInstalled> {
     let quota = Arc::new(super::install()?);
-    audit_descriptors()?;
+    audit_descriptors(None, "publisher")?;
     policy::install_publisher()?;
-    verify_socket_policy()?;
+    verify_socket_policy("publisher")?;
     let installed = PublisherInstalled { quota };
     installed.check_current()?;
     Ok(installed)
 }
 
-fn audit_descriptors() -> io::Result<()> {
-    audit_standard(&io::stdin())?;
-    audit_standard(&io::stdout())?;
-    audit_standard(&io::stderr())?;
+// The worker caller first validates its one declared original FUSE descriptor.
+// A borrowed descriptor cannot disappear during this single-threaded bootstrap.
+pub(super) fn audit_descriptors(fuse: Option<BorrowedFd<'_>>, role: &str) -> io::Result<()> {
+    let fuse_number = fuse.map(|descriptor| descriptor.as_raw_fd());
+    audit_standard(&io::stdin(), fuse_number, role)?;
+    audit_standard(&io::stdout(), fuse_number, role)?;
+    audit_standard(&io::stderr(), fuse_number, role)?;
 
     let descriptor = native::open(
         "/proc/self/fd",
@@ -90,14 +93,24 @@ fn audit_descriptors() -> io::Result<()> {
             .map_err(io::Error::other)?
             .parse::<i32>()
             .map_err(io::Error::other)?;
-        if number > 2 && number != scanner_number {
-            return Err(denied("publisher inherited an undeclared descriptor"));
+        if number > 2 && number != scanner_number && Some(number) != fuse_number {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{role} inherited an undeclared descriptor"),
+            ));
         }
     }
     Ok(())
 }
 
-fn audit_standard(handle: &(impl AsFd + IsTerminal)) -> io::Result<()> {
+fn audit_standard(
+    handle: &(impl AsFd + IsTerminal),
+    fuse: Option<i32>,
+    role: &str,
+) -> io::Result<()> {
+    if Some(handle.as_fd().as_raw_fd()) == fuse {
+        return Ok(());
+    }
     let metadata = native::fstat(handle)?;
     match FileType::from_raw_mode(metadata.st_mode) {
         FileType::RegularFile | FileType::Fifo => Ok(()),
@@ -107,11 +120,14 @@ fn audit_standard(handle: &(impl AsFd + IsTerminal)) -> io::Result<()> {
             Ok(())
         }
         FileType::Socket if net::sockopt::socket_domain(handle)? == AddressFamily::UNIX => Ok(()),
-        _ => Err(denied("publisher inherited unsupported standard I/O")),
+        _ => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!("{role} inherited unsupported standard I/O"),
+        )),
     }
 }
 
-fn verify_socket_policy() -> io::Result<()> {
+pub(super) fn verify_socket_policy(role: &str) -> io::Result<()> {
     // These calls allocate no network endpoint after a successful restriction;
     // they exchange no traffic and require no configured interface or service.
     for family in [AddressFamily::INET, AddressFamily::INET6] {
@@ -120,8 +136,9 @@ fn verify_socket_policy() -> io::Result<()> {
             Err(error) => return Err(error.into()),
             Ok(socket) => {
                 drop(socket);
-                return Err(denied(
-                    "publisher network socket creation remained available",
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    format!("{role} network socket creation remained available"),
                 ));
             }
         }
@@ -136,7 +153,10 @@ fn verify_socket_policy() -> io::Result<()> {
         Err(error) => return Err(error.into()),
         Ok(sockets) => {
             drop(sockets);
-            return Err(denied("publisher non-Unix socket pair remained available"));
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                format!("{role} non-Unix socket pair remained available"),
+            ));
         }
     }
     // The registered publisher and quota transports still need local sockets.
@@ -147,8 +167,4 @@ fn verify_socket_policy() -> io::Result<()> {
         None,
     )?);
     Ok(())
-}
-
-fn denied(message: &'static str) -> io::Error {
-    io::Error::new(io::ErrorKind::PermissionDenied, message)
 }

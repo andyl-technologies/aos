@@ -14741,3 +14741,31 @@ its complete artifact review matches all 8,057 immutable source files, 5,348
 base and 5,332 surface inputs and all five actual Cargo ELFs. Explicit-resource
 checkpoint `6f07f3c860` full native host-cache qualification also passes in
 1,367.98 seconds. These component results do not accept a trunk task.
+
+
+The worker network component now installs the existing source-audited base and
+Unix-only socket policy while retaining one checked read/write FUSE character
+device. Its private receipt checks the originating process and irreversible
+kernel state. Invalid device handles are rejected before policy installation;
+all other inherited descriptors retain the publisher's audited restrictions.
+The shared publisher helper preserves its original error messages and policy.
+This component supplies no filesystem isolation, mounted connection, backing
+registration, broker or complete worker sandbox.
+
+A dedicated native guest control launches the original distinct-UID worker with
+a real FUSE descriptor, installs the boundary before creating runtime/backing
+descriptors, then exercises the existing genuine scoped index/file grants and
+serialized draining refusal. The guest's original bounds remain unchanged.
+Both strict Linux feature profiles and all integration-target compilation pass.
+The new invalid-handle integration test and its strict lint pass, including an
+actual child exec proving invalid handles caused no confinement. Formatting,
+Python syntax, Nix evaluation and the complete 128-test native source inventory
+pass. Native worker execution, shared publisher regression and mandatory full
+application compilation remain pending frozen qualification. No task is accepted.
+
+The exact-source repeat of `7ecbc490ca` surface qualification also fails the
+unchanged 30-second actor bound. Its output reaches the warm-eviction witness,
+so the last cancelled-admission stderr marker does not locate the subsequent
+stall; scoped signed-root steps need further diagnosis. The SDK qualification
+at that checkpoint fails the always-offline actor's existing output bound after
+earlier cases succeed. Both failures remain retained.

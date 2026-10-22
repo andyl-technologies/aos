@@ -6,6 +6,7 @@ from pathlib import Path
 import select
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -164,15 +165,16 @@ def load(name, path):
 def main():
     """Runs real administrative helpers and a capability-free scoped owner."""
     if len(sys.argv) not in [3, 4] or (len(sys.argv) == 4
-            and sys.argv[3] not in ["--crash", "--pressure", "--admission", "--maintenance", "--maintenance-listener"]):
-        raise RuntimeError("expected image, source and optional --crash, --pressure, --admission, --maintenance or --maintenance-listener")
+            and sys.argv[3] not in ["--crash", "--pressure", "--admission", "--maintenance", "--maintenance-listener", "--worker-network"]):
+        raise RuntimeError("expected image, source and optional --crash, --pressure, --admission, --maintenance, --maintenance-listener or --worker-network")
     image, source = map(Path, sys.argv[1:3])
+    network = len(sys.argv) == 4 and sys.argv[3] == "--worker-network"
     crash = len(sys.argv) == 4 and sys.argv[3] == "--crash"
     pressure = len(sys.argv) == 4 and sys.argv[3] == "--pressure"
     admission = len(sys.argv) == 4 and sys.argv[3] == "--admission"
     listener = len(sys.argv) == 4 and sys.argv[3] == "--maintenance-listener"
     maintenance = listener or (len(sys.argv) == 4 and sys.argv[3] == "--maintenance")
-    case = ("gc-maintenance-listener" if listener else "gc-maintenance" if maintenance else "host-admission" if admission
+    case = ("worker-network" if network else "gc-maintenance-listener" if listener else "gc-maintenance" if maintenance else "host-admission" if admission
         else "pressure" if pressure else "worker-crash" if crash else "scoped-worker")
     if os.geteuid() != 0:
         raise RuntimeError("scoped supervisor requires explicit administration")
@@ -188,6 +190,14 @@ def main():
     support.BUDGET = support.HARD * len(support.CASES)
     support.administrative_preflight("before")
     support.scaffold()
+    if network:
+        fuse = Path("/dev/fuse")
+        if not fuse.exists():
+            os.mknod(fuse, 0o20600, os.makedev(10, 229))
+        device = fuse.stat()
+        support.require(stat.S_ISCHR(device.st_mode)
+            and device.st_rdev == os.makedev(10, 229),
+            "original FUSE character device unavailable")
     maintenance_socket = support.RUNTIME / "maintenance" / "owner.sock"
     if listener:
         maintenance_socket.parent.mkdir()
@@ -293,7 +303,7 @@ def main():
         try:
             # Only fixture launch runs administratively. The same process drops
             # every UID/GID/capability before native inspection and confinement.
-            result = subprocess.run([executable, "worker-send"], env=environment,
+            result = subprocess.run([executable, "worker-network" if network else "worker-send"], env=environment,
                 text=True, capture_output=True, timeout=30)
         except subprocess.TimeoutExpired as error:
             for stream in [error.stdout, error.stderr]:
@@ -303,14 +313,18 @@ def main():
             raise
         print(result.stdout, end="", flush=True)
         print(result.stderr, end="", flush=True)
-        support.require(result.returncode == 0 and result.stdout.splitlines() == [
+        expected = [
             "PASS surface admission requires actual recovery and acknowledged Resume",
             "PASS original owner queue refuses Send ordered after Drain despite completed scoped Read",
-            "PASS actual scoped owner Send grants original signed-root index and sealed file to the original worker; draining denies new grants while retained descriptors and mapping remain readable"],
+            "PASS actual scoped owner Send grants original signed-root index and sealed file to the original worker; draining denies new grants while retained descriptors and mapping remain readable"]
+        if network:
+            expected.append("PASS original worker retains checked FUSE descriptor and kernel-enforced Unix-only network boundary through actual scoped grants and draining")
+        support.require(result.returncode == 0 and result.stdout.splitlines() == expected,
             "actual scoped owner Send failed")
         support.verify_image()
         surface.verify_surface(image, source)
-        print("PASS native scoped worker grant component; production broker, worker sandbox and FUSE remain unqualified", flush=True)
+        print("PASS native worker network boundary component; full worker sandbox, broker and mounted FUSE remain unqualified" if network else
+            "PASS native scoped worker grant component; production broker, worker sandbox and FUSE remain unqualified", flush=True)
     finally:
         for child in reversed(children):
             if child.poll() is None:
