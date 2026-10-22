@@ -115,13 +115,15 @@ fn operands(case: &str) -> [Value; 3] {
     let mut recipe = inert_bootstrap_fixtures::recipe();
     recipe["decoder_limits"][9] = json!("268435456");
     // Prepare owns the independently derived initial retained population. The
-    // later inert rows share the remaining eight MiB of the same eighty-eight-MiB sum.
+    // later inert rows share the remaining eight MiB of the initial template.
+    // Their unused transient allowances stay below the fixed 256 MiB policy
+    // when the complete producer/reactive initial row replaces Prepare below.
     recipe["phases"] = json!([
         ["83886080", "167772160", "4194304"],
-        ["2097152", "167772160", "4194304"],
-        ["2097152", "167772160", "4194304"],
-        ["2097152", "167772160", "4194304"],
-        ["2097152", "167772160", "4194304"]
+        ["2097152", "163577856", "4194304"],
+        ["2097152", "163577856", "4194304"],
+        ["2097152", "163577856", "4194304"],
+        ["2097152", "163577856", "4194304"]
     ]);
     recipe["escrow"] = json!(["92274688", "167772160", "4194304"]);
     if case == "initial_small_escrow" {
@@ -252,12 +254,6 @@ fn operands(case: &str) -> [Value; 3] {
             .reconstructed_identity_data(typed::bounds().requested_peak)
             .unwrap();
     recipe["identity"] = json!(commitment);
-    if case == "initial_bad_recipe_identity" {
-        recipe["identity"] = json!(([7u8; 32]));
-    }
-    if case == "initial_changed_recipe_operand" {
-        recipe["geometry_identity"] = json!(([1u8; 32]));
-    }
     selected["prebirth_recipe_identity"] = recipe["identity"].clone();
     boot["source_birth"]["prebirth_recipe"] = recipe.clone();
     boot["host_executable"] = selected["launch"]["controller_executable"].clone();
@@ -294,10 +290,28 @@ fn required(values: &[Value; 3]) -> [usize; 3] {
 fn flight(case: &str) {
     let mut values = operands(case);
     let mut row = required(&values);
-    if case.starts_with("initial_launch_validation_") || case.starts_with("initial_policy_") {
+    if !matches!(
+        case,
+        "initial_small_escrow"
+            | "initial_short_prepare_retained"
+            | "initial_short_prepare_transient"
+            | "initial_short_prepare_scratch"
+    ) {
+        // Derive before announcing funding. Deliberate short-credit cases keep
+        // their original undersized partitions and must still fail closed.
         launch_validation::fund_initial_partition(&mut values, row);
         assert_eq!(required(&values), row);
     }
+    if case == "initial_bad_recipe_identity" {
+        values[0]["identity"] = json!(([7u8; 32]));
+    }
+    if case == "initial_changed_recipe_operand" {
+        values[0]["geometry_identity"] = json!(([1u8; 32]));
+    }
+    // Apply commitment faults after funding, so the fixture cannot repair the
+    // very mismatch it is meant to exercise. All three copies still agree.
+    values[1]["prebirth_recipe_identity"] = values[0]["identity"].clone();
+    values[2]["source_birth"]["prebirth_recipe"] = values[0].clone();
     let row_value = json!({
         "retained_requested_bytes": row[0].to_string(),
         "maximum_simultaneous_transient_bytes": row[1].to_string(),
@@ -630,23 +644,19 @@ fn strict_hello_population_is_funded_inside_the_original_independent_peak() {
         "initial_reactive",
         "initial_hello_value_complete",
     ] {
-        let row = required(&operands(case));
-        let limits = [83_886_080, 167_772_160, 4_194_304];
-        assert!(
-            row.iter()
-                .zip(limits)
-                .all(|(actual, limit)| *actual <= limit),
-            "all actual constructor axes must fit the original Prepare partition for {case}: {row:?}"
-        );
+        let mut values = operands(case);
+        let row = required(&values);
+        launch_validation::fund_initial_partition(&mut values, row);
+
+        // Announcing the result cannot change its independent derivation.
+        assert_eq!(required(&values), row);
+        let prepare: [String; 3] = serde_json::from_value(values[0]["phases"][0].clone()).unwrap();
+        assert_eq!(prepare.map(|axis| axis.parse::<usize>().unwrap()), row);
+        let escrow: [String; 3] = serde_json::from_value(values[0]["escrow"].clone()).unwrap();
+        let escrow = escrow.map(|axis| axis.parse::<usize>().unwrap());
+        assert_eq!(escrow[0], row[0] + 4 * 2 * 1024 * 1024);
+        assert_eq!(escrow[1], row[1].max(156 * 1024 * 1024));
+        assert_eq!(escrow[2], row[2].max(4 * 1024 * 1024));
+        assert!(escrow.into_iter().sum::<usize>() <= typed::bounds().requested_peak);
     }
-    let row = required(&operands("initial_hello_value_complete"));
-    assert!(
-        row[0] > 44_040_192,
-        "the actual strict tree exceeds the prior inert Prepare row: {row:?}"
-    );
-    assert!(
-        row[0] <= 83_886_080,
-        "the enlarged inert Prepare row must fund the actual tree: {row:?}"
-    );
-    assert!(row.iter().sum::<usize>() <= 268_435_456);
 }

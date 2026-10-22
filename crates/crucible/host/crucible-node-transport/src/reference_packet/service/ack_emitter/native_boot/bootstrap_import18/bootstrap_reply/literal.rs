@@ -17,7 +17,7 @@ use serde_json::Value;
 use std::io::{self, Write};
 use std::mem::{size_of, size_of_val};
 
-/// Retains constructor prefixes and an untransferred original response slot.
+/// Retains constructor prefixes and original response transfer progress.
 pub(super) struct Literal {
     reserve_started: bool,
     reserved: bool,
@@ -473,4 +473,24 @@ mod tests {
         );
         assert_eq!(literal.retained_backing_data().unwrap(), before);
     }
+}
+
+#[path = "literal/publication.rs"]
+mod publication;
+
+/// Names physical write progress and terminal checks beside the retained bank.
+pub(super) fn publication_counter_scratch_data() -> usize {
+    size_of::<&mut Literal>() * 3
+        + size_of::<&Literal>() * 2
+        + size_of::<&mut crate::client::OriginalNativePublicBirthChannel>()
+        + size_of::<&mut Option<ProviderError>>()
+        + size_of::<&mut OriginalFrameReservation>()
+        + size_of::<crate::transport::original_frames::OriginalFrame<'static>>() * 4
+        + size_of::<Option<crate::transport::original_frames::OriginalFrame<'static>>>() * 4
+        + size_of::<&[u8]>() * 3
+        + size_of::<usize>() * 5
+        + size_of::<io::Error>()
+        + size_of::<io::ErrorKind>() * 2
+        + size_of::<io::Result<usize>>() * 2
+        + size_of::<Result<(), ProviderError>>() * 6
 }

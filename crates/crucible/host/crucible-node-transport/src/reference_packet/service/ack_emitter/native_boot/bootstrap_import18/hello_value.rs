@@ -114,6 +114,7 @@ impl OriginalImport18RawBootstrap {
             ..
         } = self;
         hello_exchange
+            .destination_data()
             .as_ref()
             .ok_or_else(refused)?
             .with_exchange_data(|exchange| {

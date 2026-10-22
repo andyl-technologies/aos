@@ -321,7 +321,7 @@ pub(in super::super::super) fn assert_child(
                 parsed: &parsed,
                 codec: &codec,
             },
-            correlation: &correlation,
+            correlation: correlation.view_data(),
         },
         proof: &proof,
     };
@@ -601,18 +601,114 @@ fn reply_closed_population_covers_maximal_actual_outputs_and_serializer_trees() 
     attempt.literal.assert_prepared_data(reply);
     assert!(storage::retained_data(&attempt).unwrap() <= row[0]);
 
+    let original_schema = guard.incoming_requests().next().unwrap().body["schema"]
+        .as_str()
+        .unwrap()
+        .as_ptr();
+    assert!(
+        guard
+            .original_bootstrap_writing_data(&original, reply)
+            .is_err()
+    );
     guard.register_outgoing(reply.clone()).unwrap();
+    guard
+        .original_bootstrap_writing_data(&original, reply)
+        .unwrap();
+    let actual =
+        super::super::bootstrap_correlation::publication::retained_borrowed_data(&guard).unwrap();
+    let baseline =
+        super::super::bootstrap_correlation::construction_data(selected.launch_data(), usize::MAX)
+            .unwrap()[0];
+    let publication = super::publication::backing_construction_data().unwrap();
+    assert!(actual <= baseline + publication[0]);
     assert!(
         guard
             .original_bootstrap_response_sequence_data(&original)
             .is_err()
     );
     assert_eq!(guard.incoming_requests().count(), 1);
-    guard.confirm_response_sent(reply).unwrap();
+    super::publication::tests::assert_original_sdk_move(
+        &mut attempt.publication,
+        &mut guard,
+        &original,
+        reply,
+        original_schema,
+    );
+    assert!(storage::retained_data(&attempt).unwrap() <= row[0]);
     assert!(
         guard
             .original_bootstrap_response_sequence_data(&original)
             .is_err()
     );
     assert_eq!(guard.incoming_requests().count(), 0);
+}
+
+/// Completes actual correlation predecessors for the pending publication aggregate.
+pub(in super::super::super) fn complete_for_publication(
+    original: &mut OriginalImport18RawBootstrap,
+) -> (
+    super::super::bootstrap_normalizations::Attempt,
+    super::super::bootstrap_literal::Attempt,
+    super::super::bootstrap_value::Attempt,
+    super::super::bootstrap_codec::Attempt,
+    super::super::bootstrap_correlation::Attempt,
+    Proof,
+    Attempt,
+) {
+    let (normalizations, literal, parsed, codec, correlation, proof) =
+        super::super::bootstrap_proof::tests::complete_for_reply(original);
+    (
+        normalizations,
+        literal,
+        parsed,
+        codec,
+        correlation,
+        proof,
+        Attempt::empty_data(),
+    )
+}
+
+/// Runs existing preparation controls inside the full publication aggregate.
+pub(in super::super::super) fn verify_prepare_publish_reply(
+    original: &mut OriginalImport18RawBootstrap,
+    normalizations: &super::super::bootstrap_normalizations::Attempt,
+    literal: &super::super::bootstrap_literal::Attempt,
+    parsed: &super::super::bootstrap_value::Attempt,
+    codec: &super::super::bootstrap_codec::Attempt,
+    correlation: &mut super::super::bootstrap_correlation::Attempt,
+    proof: &mut Proof,
+    reply: &mut Attempt,
+    publication: &dyn super::publication::Admission,
+) -> Result<(), ProviderError> {
+    let model = Model {
+        suffix: "complete",
+        calls: Cell::new(0),
+        retained: [
+            original.retained_requested_bytes().unwrap(),
+            normalizations
+                .retained_requested_bytes_data(original)
+                .unwrap(),
+            literal.retained_requested_bytes_data(original).unwrap(),
+            parsed.retained_requested_bytes_data(original).unwrap(),
+            codec.retained_requested_bytes_data(original).unwrap(),
+            correlation.retained_requested_bytes_data(original).unwrap(),
+            super::super::bootstrap_proof::construction_data(
+                original.parsed.bodies_data().unwrap().launch.launch_data(),
+                usize::MAX,
+            )
+            .unwrap()[0],
+        ],
+    };
+    super::super::bootstrap_proof::tests::verify_prepare_publish_reply(
+        original,
+        normalizations,
+        literal,
+        parsed,
+        codec,
+        correlation,
+        proof,
+        reply,
+        &model,
+        publication,
+    )
 }

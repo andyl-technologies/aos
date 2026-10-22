@@ -53,7 +53,7 @@ fn sum(values: &[usize]) -> Result<usize, ProviderError> {
         .try_fold(0usize, |total, value| add(total, *value))
 }
 
-fn envelope_backing_text_data() -> Result<usize, ProviderError> {
+pub(super) fn envelope_backing_text_data() -> Result<usize, ProviderError> {
     let mut text = sum(&[
         "CNP/1".len(),
         7 * MAX_ID_BYTES,
@@ -103,6 +103,7 @@ pub(super) fn construction_data(
 ) -> Result<[usize; 3], ProviderError> {
     let extent = extent_data()?;
     let literal = super::literal::backing_construction_data(extent)?;
+    let publication = super::publication::backing_construction_data()?;
     let incoming = super::super::bootstrap_proof::construction_data(launch, maximum)?;
     let projection = native_import18_bootstrap_ack_projection_data(maximum)?;
     let context = projection.serialization_requested_bytes_data()[0];
@@ -119,12 +120,20 @@ pub(super) fn construction_data(
         PACKET_COMPLETE_RESTORE_ALGORITHM.len(),
         3 * 32,
     ])?;
-    let retained = sum(&[size_of::<Attempt>(), envelope, result, receipt, literal[0]])?;
+    let retained = sum(&[
+        size_of::<Attempt>(),
+        envelope,
+        result,
+        receipt,
+        literal[0],
+        publication[0],
+    ])?;
     // Assignment holds the reply DOM while bounded canonicalization builds its
     // second DOM and JCS bank. The incoming request's independent typed decode
     // and both DTO serialization/constructor partials remain separate windows.
     let transient = sum(&[
         literal[1],
+        publication[1],
         envelope,
         result,
         receipt,
@@ -155,6 +164,7 @@ pub(super) fn construction_data(
     ])?;
     let scratch = sum(&[
         literal[2],
+        publication[2],
         incoming[2],
         extent.declared_counter_scratch_bytes,
         native_import18_bootstrap_ack_counter_scratch_data(),
@@ -206,7 +216,10 @@ pub(super) fn retained_data(attempt: &Attempt) -> Result<usize, ProviderError> {
         size_of::<Attempt>(),
         add(
             crate::retained_metadata::requested_metadata_backing_storage_data(&observer.finish())?,
-            attempt.literal.retained_backing_data()?,
+            add(
+                attempt.literal.retained_backing_data()?,
+                super::publication::retained_backing_data(&attempt.publication)?,
+            )?,
         )?,
     )
 }

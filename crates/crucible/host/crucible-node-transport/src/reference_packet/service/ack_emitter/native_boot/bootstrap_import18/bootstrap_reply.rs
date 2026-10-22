@@ -38,6 +38,8 @@ use std::rc::{Rc, Weak};
 
 #[path = "bootstrap_reply/literal.rs"]
 mod literal;
+#[path = "bootstrap_reply/publication.rs"]
+pub(super) mod publication;
 #[path = "bootstrap_reply/response.rs"]
 mod response;
 #[path = "bootstrap_reply/storage.rs"]
@@ -114,7 +116,7 @@ pub(in super::super) trait Admission {
     ) -> Result<(), ProviderError>;
 }
 
-/// Retains the complete reply without SDK reservation or publication authority.
+/// Retains complete preparation and its separately admitted SDK publication.
 pub(in super::super) struct Attempt {
     started: bool,
     complete: bool,
@@ -128,6 +130,7 @@ pub(in super::super) struct Attempt {
     assigned: Option<[u8; 32]>,
     receipt: Option<Receipt>,
     literal: literal::Literal,
+    publication: publication::Publication,
 }
 
 impl Attempt {
@@ -146,6 +149,7 @@ impl Attempt {
             assigned: None,
             receipt: None,
             literal: literal::Literal::empty_data(),
+            publication: publication::Publication::empty_data(),
         }
     }
 
@@ -225,7 +229,7 @@ impl OriginalImport18RawBootstrap {
                     parsed,
                     codec,
                 },
-                correlation,
+                correlation: correlation.view_data(),
             },
             proof,
         };
@@ -282,7 +286,7 @@ impl OriginalImport18RawBootstrap {
                 parsed,
                 codec,
             },
-            correlation,
+            correlation: correlation.view_data(),
         };
         let outcome = proof::verify_current_with_data(
             prior,

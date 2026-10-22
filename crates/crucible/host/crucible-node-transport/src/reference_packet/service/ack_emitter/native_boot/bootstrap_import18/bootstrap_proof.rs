@@ -35,7 +35,7 @@ pub(in super::super) struct Inputs<'a> {
     /// Borrows all five original raw, normalized and typed owners.
     pub(in super::super) prior: correlation::Inputs<'a>,
     /// Borrows the actual current correlation owner without cloning a record.
-    pub(in super::super) correlation: &'a Correlation,
+    pub(in super::super) correlation: correlation::View<'a>,
 }
 
 /// Names separately admitted proof operations and their surviving outputs.
@@ -322,7 +322,7 @@ impl OriginalImport18RawBootstrap {
                 parsed,
                 codec,
             },
-            correlation,
+            correlation: correlation.view_data(),
         };
         let outcome = verify_current(inputs, attempt, admission);
         let terminal = self.authenticate_channel();
@@ -365,71 +365,99 @@ pub(super) fn verify_current_with_data<R: Copy>(
         &BootstrapAckOperands<'_>,
     ) -> Result<R, ProviderError>,
 ) -> Result<R, ProviderError> {
-    let original = inputs.prior.original;
-    attempt.cut = Some(original.cut);
-    attempt.launch = Some(Rc::downgrade(original.parsed.shared_launch_data()?));
     inputs.correlation.with_received_context_data(
         inputs.prior,
         |guard, envelope, request, proof, operands, digests| {
-            attempt.authenticate(inputs, operands)?;
-            original.admit_source_row(
-                original
-                    .initial_construction
-                    .as_ref()
-                    .ok_or_else(refused)?
-                    .row,
-            )?;
-            // The complete immutable decoded owners remain inside this actual
-            // correlation loan until its terminal guards. Borrow them once for
-            // all four steps instead of re-opening the raw-body loan per field.
-            let bodies = original.typed_bodies_data()?;
-            let maximum_frame =
-                usize::try_from(bodies.launch.launch_data().limits.frame_bytes.get())
-                    .map_err(|_| exhausted())?;
-            let row =
-                construction_data(bodies.launch.launch_data(), original.bounds.requested_peak)?;
-            attempt.row = Some(row);
-            let retained = inputs
-                .prior
-                .retained_data(row[0])?
-                .checked_add(inputs.correlation.retained_requested_bytes_data(original)?)
-                .ok_or_else(exhausted)?;
-            original.admit_source_row([retained, row[1], row[2]])?;
-            admission.construct_data(inputs, attempt, row)?;
-            attempt.authenticate(inputs, operands)?;
-
-            for step in [
-                Step::Assigned,
-                Step::Context,
-                Step::ContextDigest,
-                Step::Verify,
-            ] {
-                admission.step_data(inputs, attempt, step)?;
-                attempt.authenticate(inputs, operands)?;
-                attempt.step = Some(step);
-                let outcome = construct_step(
-                    inputs,
-                    attempt,
-                    operands,
-                    envelope,
-                    request,
-                    proof,
-                    digests,
-                    bodies.boot,
-                    maximum_frame,
-                    step,
-                );
-                observe_step(inputs, attempt, admission, operands, step, outcome)?;
-            }
-            inspect(
-                attempt,
-                attempt.context.as_ref().ok_or_else(refused)?,
-                envelope,
-                request,
-                guard,
-                operands,
+            verify_under_received_data(
+                inputs, attempt, admission, guard, envelope, request, proof, operands, digests,
+                inspect,
             )
         },
+    )
+}
+
+/// Verifies inside an already held complete original received-request scope.
+///
+/// # Errors
+/// Preserves all proof, admission, actual-owner census and terminal refusals.
+pub(super) fn verify_under_received_data<R: Copy>(
+    inputs: Inputs<'_>,
+    attempt: &mut Attempt,
+    admission: &dyn Admission,
+    guard: &crate::session::CorrelationGuard,
+    envelope: &Envelope,
+    request: &Request,
+    proof: &Proof,
+    operands: &BootstrapAckOperands<'_>,
+    digests: Digests,
+    inspect: impl FnOnce(
+        &Attempt,
+        &Context,
+        &Envelope,
+        &Request,
+        &crate::session::CorrelationGuard,
+        &BootstrapAckOperands<'_>,
+    ) -> Result<R, ProviderError>,
+) -> Result<R, ProviderError> {
+    let original = inputs.prior.original;
+    attempt.cut = Some(original.cut);
+    attempt.launch = Some(Rc::downgrade(original.parsed.shared_launch_data()?));
+    guard.original_bootstrap_response_sequence_data(envelope)?;
+    attempt.authenticate(inputs, operands)?;
+    original.admit_source_row(
+        original
+            .initial_construction
+            .as_ref()
+            .ok_or_else(refused)?
+            .row,
+    )?;
+    // The complete immutable decoded owners remain inside this actual
+    // correlation loan until its terminal guards. Borrow them once for
+    // all four steps instead of re-opening the raw-body loan per field.
+    let bodies = original.typed_bodies_data()?;
+    let maximum_frame = usize::try_from(bodies.launch.launch_data().limits.frame_bytes.get())
+        .map_err(|_| exhausted())?;
+    let row = construction_data(bodies.launch.launch_data(), original.bounds.requested_peak)?;
+    attempt.row = Some(row);
+    let retained = inputs
+        .prior
+        .retained_data(row[0])?
+        .checked_add(inputs.correlation.retained_requested_bytes_data(original)?)
+        .ok_or_else(exhausted)?;
+    original.admit_source_row([retained, row[1], row[2]])?;
+    admission.construct_data(inputs, attempt, row)?;
+    attempt.authenticate(inputs, operands)?;
+
+    for step in [
+        Step::Assigned,
+        Step::Context,
+        Step::ContextDigest,
+        Step::Verify,
+    ] {
+        admission.step_data(inputs, attempt, step)?;
+        attempt.authenticate(inputs, operands)?;
+        attempt.step = Some(step);
+        let outcome = construct_step(
+            inputs,
+            attempt,
+            operands,
+            envelope,
+            request,
+            proof,
+            digests,
+            bodies.boot,
+            maximum_frame,
+            step,
+        );
+        observe_step(inputs, attempt, admission, operands, step, outcome)?;
+    }
+    inspect(
+        attempt,
+        attempt.context.as_ref().ok_or_else(refused)?,
+        envelope,
+        request,
+        guard,
+        operands,
     )
 }
 
@@ -553,6 +581,7 @@ pub(in crate::reference_packet::service) fn construction_data(
 pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usize, ProviderError> {
     let fields = [
         storage::counter_scratch_data(),
+        received_core_counter_scratch_data::<()>()?,
         size_of::<Inputs<'static>>() * 6,
         size_of::<&Attempt>() * 2,
         size_of::<&mut Attempt>(),
@@ -575,13 +604,37 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usi
         size_of::<Result<BodyLoans<'static>, ProviderError>>(),
         size_of::<&BootData>(),
         size_of::<Result<usize, std::num::TryFromIntError>>(),
-        size_of::<[usize; 25]>(),
-        size_of::<std::array::IntoIter<usize, 25>>(),
+        size_of::<[usize; 26]>(),
+        size_of::<std::array::IntoIter<usize, 26>>(),
     ];
     fields.into_iter().try_fold(
         Attempt::verified_loan_counter_scratch_data::<()>()?,
         |sum, field| sum.checked_add(field).ok_or_else(exhausted),
     )
+}
+
+// The thin core remains inside the original received-request scope. Its fixed
+// borrowed arguments and concrete Copy result coexist with that outer loan.
+fn received_core_counter_scratch_data<R: Copy>() -> Result<usize, ProviderError> {
+    let terms = [
+        crate::session::CorrelationGuard::original_bootstrap_response_sequence_counter_scratch_data(
+        ),
+        size_of::<Inputs<'static>>(),
+        size_of::<&mut Attempt>(),
+        size_of::<&dyn Admission>(),
+        size_of::<&crate::session::CorrelationGuard>(),
+        size_of::<&Envelope>(),
+        size_of::<&Request>(),
+        size_of::<&Proof>(),
+        size_of::<&BootstrapAckOperands<'static>>(),
+        size_of::<Digests>(),
+        size_of::<R>() * 2,
+        size_of::<Result<R, ProviderError>>() * 2,
+    ];
+    let controls = std::mem::size_of_val(&terms) + std::mem::size_of_val(&terms.into_iter());
+    terms.into_iter().try_fold(controls, |sum, term| {
+        sum.checked_add(term).ok_or_else(exhausted)
+    })
 }
 
 fn refused() -> ProviderError {
@@ -594,3 +647,6 @@ fn exhausted() -> ProviderError {
 #[cfg(test)]
 #[path = "bootstrap_proof/tests.rs"]
 pub(super) mod tests;
+
+#[path = "bootstrap_proof/publication.rs"]
+mod publication;

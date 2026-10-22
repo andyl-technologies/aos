@@ -35,6 +35,66 @@ fn frame_digest(frame: &[u8]) -> Bytes {
     Bytes::new(hash.finalize().as_bytes().to_vec())
 }
 
+/// Retains an independent parent oracle for the one actual bootstrap response.
+pub(in super::super::super::super) struct PublicationOracle {
+    context: Context,
+    key: [u8; 32],
+    request: Envelope,
+}
+
+impl PublicationOracle {
+    /// Verifies correspondence, assigned response and distinct receipt MAC.
+    pub(in super::super::super::super) fn verify_data(&self, response: &Envelope) {
+        use crate::reference_packet::service::complete_restore::import18::bootstrap_ack::{
+            NATIVE_IMPORT18_BOOTSTRAP_ACK_RECEIPT, PacketNativeImport18BootstrapAckReceipt,
+            native_import18_bootstrap_ack_assigned_response_digest,
+            verify_native_import18_bootstrap_ack_receipt_data,
+        };
+        self.request.matches_response(response).unwrap();
+        let assigned = native_import18_bootstrap_ack_assigned_response_digest(
+            &self.request,
+            response,
+            crate::transport::MAX_FRAME_BYTES,
+        )
+        .unwrap();
+        let receipt: PacketNativeImport18BootstrapAckReceipt = serde_json::from_value(
+            response.extensions[NATIVE_IMPORT18_BOOTSTRAP_ACK_RECEIPT].clone(),
+        )
+        .unwrap();
+        verify_native_import18_bootstrap_ack_receipt_data(
+            &self.key,
+            &self.context,
+            &assigned,
+            &receipt,
+        )
+        .unwrap();
+        assert_eq!(
+            response.body["result"]["recipe_identity"],
+            serde_json::to_value(&self.context.recipe_identity).unwrap()
+        );
+        assert_eq!(
+            response.body["result"]["initial_funding"],
+            serde_json::to_value(self.context.initial_funding).unwrap()
+        );
+    }
+}
+
+/// Sends a proof while keeping its independent response oracle in the parent.
+pub(in super::super::super::super) fn write_parent_publication_frame(
+    peer: &mut UnixStream,
+    wire: &[u8],
+    native_pid: u32,
+    hello_body: &[u8],
+) -> std::io::Result<(Vec<u8>, PublicationOracle)> {
+    write_parent_frame_and_oracle(
+        "initial_policy_kernel_normalizations_host_proof_complete",
+        peer,
+        wire,
+        native_pid,
+        hello_body,
+    )
+}
+
 /// Reads the actual response before computing and sending the bootstrap proof.
 pub(in super::super::super::super) fn write_parent_frame(
     case: &str,
@@ -43,6 +103,16 @@ pub(in super::super::super::super) fn write_parent_frame(
     native_pid: u32,
     hello_body: &[u8],
 ) -> std::io::Result<Vec<u8>> {
+    write_parent_frame_and_oracle(case, peer, wire, native_pid, hello_body).map(|(frame, _)| frame)
+}
+
+fn write_parent_frame_and_oracle(
+    case: &str,
+    peer: &mut UnixStream,
+    wire: &[u8],
+    native_pid: u32,
+    hello_body: &[u8],
+) -> std::io::Result<(Vec<u8>, PublicationOracle)> {
     peer.set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
     let mut header = [0u8; 4];
@@ -195,5 +265,12 @@ pub(in super::super::super::super) fn write_parent_frame(
         .unwrap();
     peer.write_all(&body).unwrap();
     peer.write_all(b"unconsumed suffix").unwrap();
-    Ok(response_frame)
+    Ok((
+        response_frame,
+        PublicationOracle {
+            context,
+            key: signing_key,
+            request: envelope,
+        },
+    ))
 }

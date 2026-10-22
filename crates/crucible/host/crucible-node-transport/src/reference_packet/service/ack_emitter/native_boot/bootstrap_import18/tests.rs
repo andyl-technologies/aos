@@ -128,6 +128,7 @@ fn child(case: &str, wire: &[u8]) {
             peer.write_all(&body).unwrap();
             if case.contains("_normalizations_host_proof_")
                 || case.contains("_normalizations_host_reply_")
+                || case.contains("_normalizations_host_publication_")
             {
                 proof_hello = Some(body);
             } else if case.contains("_normalizations_host_correlation_") {
@@ -186,21 +187,44 @@ fn child(case: &str, wire: &[u8]) {
     if case != "open_writer" {
         parent.shutdown(Shutdown::Write).unwrap();
     }
+    let mut publication_oracle = None;
     let proof_publication = if let Some(hello) = proof_hello {
-        super::bootstrap_proof::tests::write_parent_frame(
-            if case.contains("_normalizations_host_reply_") {
-                "initial_policy_kernel_normalizations_host_proof_complete"
-            } else {
-                case
-            },
-            public_peer.as_mut().unwrap(),
-            wire,
-            process.id(),
-            &hello,
-        )
+        if case.contains("_normalizations_host_publication_") {
+            super::bootstrap_proof::tests::write_parent_publication_frame(
+                public_peer.as_mut().unwrap(),
+                wire,
+                process.id(),
+                &hello,
+            )
+            .map(|(frame, oracle)| {
+                publication_oracle = Some(oracle);
+                frame
+            })
+        } else {
+            super::bootstrap_proof::tests::write_parent_frame(
+                if case.contains("_normalizations_host_reply_")
+                    || case.contains("_normalizations_host_publication_")
+                {
+                    "initial_policy_kernel_normalizations_host_proof_complete"
+                } else {
+                    case
+                },
+                public_peer.as_mut().unwrap(),
+                wire,
+                process.id(),
+                &hello,
+            )
+        }
     } else {
         Ok(Vec::new())
     };
+    if case.ends_with("_host_publication_broken_pipe") {
+        public_peer
+            .as_ref()
+            .unwrap()
+            .shutdown(Shutdown::Read)
+            .unwrap();
+    }
     let output = process.wait_with_output().unwrap();
     let mut diagnostics = match proof_publication {
         Ok(frame) => frame,
@@ -222,7 +246,18 @@ fn child(case: &str, wire: &[u8]) {
         String::from_utf8_lossy(&diagnostics)
     );
     if case.starts_with("initial_hello_publication_") || case.starts_with("initial_policy_") {
-        initial_reconstruction::assert_hello_publication_bytes(case, &diagnostics);
+        if case.contains("_normalizations_host_publication_") {
+            super::bootstrap_reply::publication::tests::assert_parent_bytes(case, &diagnostics);
+            let hello_len = u32::from_be_bytes(diagnostics[..4].try_into().unwrap()) as usize + 4;
+            if diagnostics.len() > hello_len {
+                let response: crate::envelope::Envelope =
+                    serde_json::from_slice(&diagnostics[hello_len + 4..]).unwrap();
+                publication_oracle.as_ref().unwrap().verify_data(&response);
+            }
+            initial_reconstruction::assert_hello_publication_bytes(case, &diagnostics[..hello_len]);
+        } else {
+            initial_reconstruction::assert_hello_publication_bytes(case, &diagnostics);
+        }
     } else if public_peer.is_some() {
         assert!(
             diagnostics.is_empty(),

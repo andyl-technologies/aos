@@ -4,6 +4,10 @@ use super::*;
 use crate::client::OriginalNativePublicBirthChannel;
 use crate::native_hello::{OriginalNativeHelloExchange, RetainedOriginalNativeHelloExchange};
 
+#[path = "hello_exchange/holder.rs"]
+mod holder;
+pub(super) use holder::Holder;
+
 type Exchange = RetainedOriginalNativeHelloExchange<OriginalNativePublicBirthChannel>;
 
 /// Admits the original framing constructor without protocol effects.
@@ -85,9 +89,10 @@ impl OriginalImport18RawBootstrap {
         Exchange::bind_into_data(
             self.hello_frames.as_mut().ok_or_else(refused)?,
             &mut self.public_channel,
-            &mut self.hello_exchange,
+            self.hello_exchange.destination_data(),
         )?;
         self.hello_exchange
+            .borrow_data()?
             .as_ref()
             .ok_or_else(refused)?
             .with_exchange_data(|exchange| exchange.original_stream_data().completed_data(self.cut))
@@ -112,6 +117,7 @@ impl OriginalImport18RawBootstrap {
         self.typed_bodies_data()?;
         let outcome = self
             .hello_exchange
+            .borrow_data()?
             .as_ref()
             .ok_or_else(refused)?
             .with_exchange_data(|exchange| {
@@ -133,17 +139,20 @@ impl OriginalImport18RawBootstrap {
     /// # Errors
     /// Refuses missing reservation, stale creator, borrowed banks or overflow.
     pub(super) fn hello_exchange_backing_data(&self) -> Result<usize, ProviderError> {
-        self.hello_exchange.as_ref().map_or(Ok(0), |exchange| {
-            exchange.retained_backing_beside_reservation_data(
-                self.hello_frames.as_ref().ok_or_else(refused)?,
-                self.hello_literal
-                    .as_ref()
-                    .map(|literal| literal.original_bank_data())
-                    .transpose()?
-                    .flatten(),
-                OriginalNativePublicBirthChannel::retained_backing_data,
-            )
-        })
+        self.hello_exchange
+            .borrow_data()?
+            .as_ref()
+            .map_or(Ok(0), |exchange| {
+                exchange.retained_backing_beside_reservation_data(
+                    self.hello_frames.as_ref().ok_or_else(refused)?,
+                    self.hello_literal
+                        .as_ref()
+                        .map(|literal| literal.original_bank_data())
+                        .transpose()?
+                        .flatten(),
+                    OriginalNativePublicBirthChannel::retained_backing_data,
+                )
+            })
     }
 
     /// Names a separate future exchange loan and its actual Copy output controls.
@@ -158,6 +167,7 @@ impl OriginalImport18RawBootstrap {
 /// Quotes fresh framing work while existing original stream/bank backing remains charged.
 pub(in crate::reference_packet::service) fn construction_data() -> [usize; 3] {
     let mut row = Exchange::construction_data();
+    row[1] += Holder::constructor_transient_data();
     row[2] += counter_scratch_data();
     row
 }
@@ -165,6 +175,7 @@ pub(in crate::reference_packet::service) fn construction_data() -> [usize; 3] {
 /// Names actual constructor, original-cut correspondence and census controls.
 pub(in crate::reference_packet::service) fn counter_scratch_data() -> usize {
     Exchange::counter_scratch_data()
+        + Holder::counter_scratch_data()
         + size_of::<&OriginalImport18RawBootstrap>()
         + size_of::<&mut OriginalImport18RawBootstrap>()
         + size_of::<&dyn OriginalImport18HelloExchangeAdmission>()

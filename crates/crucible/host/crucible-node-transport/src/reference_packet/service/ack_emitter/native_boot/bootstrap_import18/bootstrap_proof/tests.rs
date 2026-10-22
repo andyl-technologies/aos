@@ -7,7 +7,7 @@ const PREFIX: &str = "initial_policy_kernel_normalizations_host_proof_";
 
 #[path = "fixture.rs"]
 mod fixture;
-pub(in super::super::super) use fixture::write_parent_frame;
+pub(in super::super::super) use fixture::{write_parent_frame, write_parent_publication_frame};
 
 struct Model<'a> {
     suffix: &'a str,
@@ -181,7 +181,7 @@ pub(in super::super::super) fn assert_child(
     };
     model.census(Inputs {
         prior,
-        correlation: &correlation,
+        correlation: correlation.view_data(),
     });
     let pointers = original.bodies.each_ref().map(Vec::as_ptr);
     let launch = Rc::as_ptr(original.parsed.shared_launch_data().unwrap());
@@ -220,7 +220,7 @@ pub(in super::super::super) fn assert_child(
             parsed: &parsed,
             codec: &codec,
         },
-        correlation: &correlation,
+        correlation: correlation.view_data(),
     };
     model.census(inputs);
     assert_eq!(original.bodies.each_ref().map(Vec::as_ptr), pointers);
@@ -415,4 +415,45 @@ pub(in super::super::super) fn assert_reply_receipt(
         .bootstrap_ack_receipt_data(proof.context.as_ref().unwrap(), assigned)
         .unwrap();
     assert_eq!(receipt, &expected);
+}
+
+/// Runs all bootstrap effects under one original guard with observed proof work.
+pub(in super::super::super) fn verify_prepare_publish_reply(
+    original: &mut OriginalImport18RawBootstrap,
+    normalizations: &super::super::bootstrap_normalizations::Attempt,
+    literal: &super::super::bootstrap_literal::Attempt,
+    parsed: &super::super::bootstrap_value::Attempt,
+    codec: &super::super::bootstrap_codec::Attempt,
+    correlation: &mut super::super::bootstrap_correlation::Attempt,
+    verified: &mut Attempt,
+    reply: &mut super::super::bootstrap_reply::Attempt,
+    preparation: &dyn super::super::bootstrap_reply::Admission,
+    publication: &dyn super::super::bootstrap_reply::publication::Admission,
+) -> Result<(), ProviderError> {
+    let model = Model {
+        suffix: "complete",
+        calls: Cell::new(0),
+        retained: [
+            original.retained_requested_bytes().unwrap(),
+            normalizations
+                .retained_requested_bytes_data(original)
+                .unwrap(),
+            literal.retained_requested_bytes_data(original).unwrap(),
+            parsed.retained_requested_bytes_data(original).unwrap(),
+            codec.retained_requested_bytes_data(original).unwrap(),
+            correlation.retained_requested_bytes_data(original).unwrap(),
+        ],
+    };
+    original.verify_prepare_and_publish_bootstrap_reply_data(
+        normalizations,
+        literal,
+        parsed,
+        codec,
+        correlation,
+        verified,
+        &model,
+        reply,
+        preparation,
+        publication,
+    )
 }

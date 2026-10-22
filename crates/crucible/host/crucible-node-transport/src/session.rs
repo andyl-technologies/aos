@@ -938,3 +938,6 @@ impl CorrelationGuard {
             + size_of::<Result<(), ProviderError>>() * 2
     }
 }
+
+#[path = "session/bootstrap_publication.rs"]
+mod bootstrap_publication;

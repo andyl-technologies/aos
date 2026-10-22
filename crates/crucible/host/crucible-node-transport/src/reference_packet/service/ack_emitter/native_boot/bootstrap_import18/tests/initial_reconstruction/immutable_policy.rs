@@ -32,6 +32,7 @@ pub(super) fn prepare_selected(case: &str, selected: &mut Value) {
             | "initial_policy_kernel_normalizations_host_value_reactive"
             | "initial_policy_kernel_normalizations_host_codec_reactive"
             | "initial_policy_kernel_normalizations_host_correlation_reactive"
+            | "initial_policy_kernel_normalizations_host_publication_reactive"
     ));
     let peer = &mut coordinator.participants[member];
     peer.provider.implementation.formats.extend([
@@ -954,6 +955,33 @@ fn original_bootstrap_reply_retains_each_output_and_uses_the_actual_sdk_sequence
         "literal_measured",
         "literal_encoding",
         "literal_encoded",
+    ] {
+        for action in ["reject", "expire", "revoke"] {
+            flight(&format!("{prefix}{action}_{boundary}"));
+        }
+    }
+}
+
+#[test]
+fn original_bootstrap_publication_confirms_only_the_actual_complete_original_write() {
+    let prefix = "initial_policy_kernel_normalizations_host_publication_";
+    for suffix in [
+        "complete",
+        "reactive",
+        "changed_cut",
+        "missing_preparation",
+        "broken_pipe",
+    ] {
+        flight(&format!("{prefix}{suffix}"));
+    }
+    for boundary in [
+        "construction",
+        "reserve",
+        "reserved",
+        "write",
+        "written",
+        "confirm",
+        "confirmed",
     ] {
         for action in ["reject", "expire", "revoke"] {
             flight(&format!("{prefix}{action}_{boundary}"));

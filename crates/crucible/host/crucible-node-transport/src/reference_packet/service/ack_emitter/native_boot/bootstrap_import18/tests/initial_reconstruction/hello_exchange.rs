@@ -164,6 +164,8 @@ pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap)
         assert!(owner.public_channel.is_none());
         owner
             .hello_exchange
+            .borrow_data()
+            .unwrap()
             .as_ref()
             .unwrap()
             .with_exchange_data(|exchange| {
@@ -174,6 +176,17 @@ pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap)
                 Ok(())
             })
             .unwrap();
+        let retained = owner.retained_requested_bytes().unwrap();
+        {
+            let _exclusive = owner.hello_exchange.borrow_mut_data().unwrap();
+            assert!(owner.retained_requested_bytes().is_err());
+            assert!(
+                owner
+                    .with_hello_exchange_data::<()>(|_| panic!("busy exchange entered"))
+                    .is_err()
+            );
+        }
+        assert_eq!(owner.retained_requested_bytes().unwrap(), retained);
         assert!(owner.with_hello_frames_data(|_| Ok(())).is_err());
         assert_eq!(
             owner.hello_exchange_backing_data().unwrap(),

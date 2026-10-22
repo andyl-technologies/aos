@@ -78,6 +78,7 @@ impl OriginalImport18RawBootstrap {
         // Recheck every physical/typed guard after admission and before I/O.
         self.with_hello_exchange_data(|_| Ok(()))?;
         self.hello_exchange
+            .destination_data()
             .as_mut()
             .ok_or_else(refused)?
             .receive_literal_into_data(&mut self.hello_literal)

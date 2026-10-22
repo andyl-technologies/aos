@@ -301,7 +301,10 @@ impl OriginalImport18RawBootstrap {
         normalizations.with_host_bound_digests_data(self, |_| attempt.guard(self))?;
 
         let outcome = self.hello_publication.with_completed_stream_data(
-            self.hello_exchange.as_mut().ok_or_else(refused)?,
+            self.hello_exchange
+                .destination_data()
+                .as_mut()
+                .ok_or_else(refused)?,
             self.cut,
             |stream| attempt.read(stream, maximum),
         );

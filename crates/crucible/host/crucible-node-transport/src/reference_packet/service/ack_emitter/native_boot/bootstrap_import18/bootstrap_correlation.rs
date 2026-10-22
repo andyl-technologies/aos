@@ -220,7 +220,8 @@ impl Attempt {
     /// Refuses checked counter-layout accumulation overflow.
     pub(in super::super) fn received_loan_counter_scratch_data<R: Copy>()
     -> Result<usize, ProviderError> {
-        let fields: [usize; 16] = [
+        let fields: [usize; 17] = [
+            view::counter_scratch_data(),
             size_of::<Inputs<'static>>() * 3,
             size_of::<&Self>(),
             size_of::<&CorrelationGuard>(),
@@ -235,8 +236,8 @@ impl Attempt {
             size_of::<Result<(), ProviderError>>() * 2,
             size_of::<R>() * 3,
             size_of::<Result<R, ProviderError>>() * 3,
-            size_of::<[usize; 16]>(),
-            size_of::<std::array::IntoIter<usize, 16>>(),
+            size_of::<[usize; 17]>(),
+            size_of::<std::array::IntoIter<usize, 17>>(),
         ];
         fields.into_iter().try_fold(
             Codec::request_loan_counter_scratch_data::<R>()?,
@@ -503,3 +504,10 @@ fn exhausted() -> ProviderError {
 #[cfg(test)]
 #[path = "bootstrap_correlation/tests.rs"]
 pub(super) mod tests;
+
+#[path = "bootstrap_correlation/publication.rs"]
+pub(super) mod publication;
+
+#[path = "bootstrap_correlation/view.rs"]
+mod view;
+pub(super) use view::View;

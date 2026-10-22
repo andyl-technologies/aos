@@ -22,6 +22,9 @@ fn installation(owner: &OriginalImport18RawBootstrap) -> TrustedInstallation {
 
 fn verifier<'a>(
     owner: &'a OriginalImport18RawBootstrap,
+    exchange: &'a crate::native_hello::RetainedOriginalNativeHelloExchange<
+        crate::client::OriginalNativePublicBirthChannel,
+    >,
     custody: BorrowedCustody<'a>,
     cut: OperationalDeadline,
 ) -> Verifier<'a> {
@@ -34,7 +37,7 @@ fn verifier<'a>(
         owner.hello_selection.as_ref().unwrap(),
         owner.hello_sdk_request.data(owner.cut).unwrap(),
         owner.hello_result.data(owner.cut).unwrap(),
-        owner.hello_exchange.as_ref().unwrap(),
+        exchange,
         cut,
     )
 }
@@ -45,6 +48,8 @@ fn custody(owner: &OriginalImport18RawBootstrap) -> BorrowedCustody<'_> {
 
 pub(super) fn assert_child(owner: &mut OriginalImport18RawBootstrap) {
     super::hello_response::construct_for_verifier(owner);
+    let holder = owner.hello_exchange.borrow_data().unwrap();
+    let exchange = holder.as_ref().unwrap();
     let before = owner.retained_requested_bytes().unwrap();
     let connection = Id::new(NATIVE_IMPORT18_CONNECTION_ID).unwrap();
     let request: &HelloRequest = owner.hello_sdk_request.data(owner.cut).unwrap();
@@ -60,7 +65,7 @@ pub(super) fn assert_child(owner: &mut OriginalImport18RawBootstrap) {
         .compatibility
         .guarantees_ref;
     let installed = installation(owner);
-    let mut actual = verifier(owner, custody(owner), owner.cut);
+    let mut actual = verifier(owner, exchange, custody(owner), owner.cut);
 
     actual
         .authenticate_exchange(&connection, &installed, request, result)
@@ -113,7 +118,7 @@ pub(super) fn assert_child(owner: &mut OriginalImport18RawBootstrap) {
             6 | 7 | 8 => {}
             _ => unreachable!(),
         }
-        let mut actual = verifier(owner, custody(owner), owner.cut);
+        let mut actual = verifier(owner, exchange, custody(owner), owner.cut);
         let foreign_connection = Id::new("foreign/connection").unwrap();
         let supplied_connection = if fault == 8 {
             &foreign_connection
@@ -149,7 +154,7 @@ pub(super) fn assert_child(owner: &mut OriginalImport18RawBootstrap) {
         extensions: Default::default(),
     };
     for fault in 0..5 {
-        let mut actual = verifier(owner, custody(owner), owner.cut);
+        let mut actual = verifier(owner, exchange, custody(owner), owner.cut);
         if fault != 0 {
             actual
                 .authenticate_exchange(&connection, &installed, request, result)
@@ -194,7 +199,7 @@ pub(super) fn assert_child(owner: &mut OriginalImport18RawBootstrap) {
     let foreign_process = owner.process.wrapping_add(1);
     let foreign_custody =
         BorrowedCustody::new_data(&foreign_process, &owner.thread, &owner.cut, &owner.stream);
-    let mut actual = verifier(owner, foreign_custody, owner.cut);
+    let mut actual = verifier(owner, exchange, foreign_custody, owner.cut);
     assert!(
         actual
             .authenticate_exchange(&connection, &installed, request, result)
@@ -205,7 +210,7 @@ pub(super) fn assert_child(owner: &mut OriginalImport18RawBootstrap) {
         std::thread::scope(|scope| scope.spawn(|| std::thread::current().id()).join().unwrap());
     let foreign_custody =
         BorrowedCustody::new_data(&owner.process, &foreign_thread, &owner.cut, &owner.stream);
-    let mut actual = verifier(owner, foreign_custody, owner.cut);
+    let mut actual = verifier(owner, exchange, foreign_custody, owner.cut);
     assert!(
         actual
             .authenticate_exchange(&connection, &installed, request, result)
@@ -215,7 +220,7 @@ pub(super) fn assert_child(owner: &mut OriginalImport18RawBootstrap) {
     let (substitute, _peer) = UnixStream::pair().unwrap();
     let foreign_custody =
         BorrowedCustody::new_data(&owner.process, &owner.thread, &owner.cut, &substitute);
-    let mut actual = verifier(owner, foreign_custody, owner.cut);
+    let mut actual = verifier(owner, exchange, foreign_custody, owner.cut);
     assert!(
         actual
             .authenticate_exchange(&connection, &installed, request, result)
@@ -234,7 +239,7 @@ pub(super) fn assert_child(owner: &mut OriginalImport18RawBootstrap) {
         owner.hello_selection.as_ref().unwrap(),
         request,
         result,
-        owner.hello_exchange.as_ref().unwrap(),
+        exchange,
         owner.cut,
     );
     assert!(
@@ -244,7 +249,7 @@ pub(super) fn assert_child(owner: &mut OriginalImport18RawBootstrap) {
     );
 
     let changed_cut = OperationalDeadline::after(Duration::from_secs(5)).unwrap();
-    let mut actual = verifier(owner, custody(owner), changed_cut);
+    let mut actual = verifier(owner, exchange, custody(owner), changed_cut);
     assert!(
         actual
             .authenticate_exchange(&connection, &installed, request, result)
@@ -252,6 +257,7 @@ pub(super) fn assert_child(owner: &mut OriginalImport18RawBootstrap) {
     );
     let mut actual = verifier(
         owner,
+        exchange,
         custody(owner),
         OperationalDeadline::expired_fixture(),
     );

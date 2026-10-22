@@ -141,7 +141,10 @@ impl OriginalImport18RawBootstrap {
             hello_selection.as_ref().ok_or_else(refused)?,
             request,
             result,
-            hello_exchange.as_ref().ok_or_else(refused)?,
+            hello_exchange
+                .destination_data()
+                .as_ref()
+                .ok_or_else(refused)?,
             cut,
         );
         hello_registrar.admit_initial_data(

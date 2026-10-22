@@ -132,7 +132,10 @@ impl OriginalImport18RawBootstrap {
             ..
         } = self;
         hello_publication.publish_data(
-            hello_exchange.as_mut().ok_or_else(refused)?,
+            hello_exchange
+                .destination_data()
+                .as_mut()
+                .ok_or_else(refused)?,
             hello_literal.as_ref().ok_or_else(refused)?,
             cut,
         )
@@ -144,7 +147,7 @@ impl OriginalImport18RawBootstrap {
     /// Refuses foreign custody, missing original journal association, unavailable
     /// exchange inspection, unknown custom I/O layout or checked overflow.
     pub(super) fn hello_publication_backing_data(&self) -> Result<usize, ProviderError> {
-        match &self.hello_exchange {
+        match &*self.hello_exchange.borrow_data()? {
             Some(exchange) => exchange.with_exchange_data(|exchange| {
                 self.hello_publication.retained_backing_data(Some(exchange))
             }),

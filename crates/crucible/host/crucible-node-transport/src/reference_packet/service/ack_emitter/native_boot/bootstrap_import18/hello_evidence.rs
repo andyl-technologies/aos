@@ -29,6 +29,7 @@ impl OriginalImport18RawBootstrap {
         self.authenticate_channel()?;
         let result = self
             .hello_exchange
+            .borrow_data()?
             .as_ref()
             .ok_or_else(refused)?
             .with_exchange_data(|exchange| {
@@ -57,7 +58,8 @@ impl OriginalImport18RawBootstrap {
         inspect: impl FnOnce(OriginalHelloFrameDigests) -> Result<R, ProviderError>,
     ) -> Result<R, ProviderError> {
         self.with_published_hello_body_data(|_| {
-            let exchange = self.hello_exchange.as_ref().ok_or_else(refused)?;
+            let holder = self.hello_exchange.borrow_data()?;
+            let exchange = holder.as_ref().ok_or_else(refused)?;
             let before = exchange.with_exchange_data(|exchange| {
                 self.hello_publication
                     .frame_digests_data(exchange, self.cut)
