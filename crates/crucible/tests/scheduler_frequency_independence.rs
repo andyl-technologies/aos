@@ -992,6 +992,19 @@ fn drive_scenario(
 
     resolved.sort_by(|left, right| left.key.cmp(&right.key));
     let backend = adapter.backend();
+    // RESOLVE and EMIT publish in canonical key order across clocks, so the
+    // single event log stays nondecreasing in time however far nodes skew.
+    let retained = adapter.loop_impl().event_log().retained_entries().to_vec();
+    for pair in retained.windows(2) {
+        assert!(
+            pair[0].at() <= pair[1].at(),
+            "event log entry {} at {} follows {} at {}",
+            pair[1].sequence(),
+            pair[1].at().ticks,
+            pair[0].sequence(),
+            pair[0].at().ticks,
+        );
+    }
     let trajectory = Trajectory {
         traces: backend
             .nodes
@@ -1005,7 +1018,7 @@ fn drive_scenario(
             .collect(),
         resolved,
         decisions,
-        event_log: adapter.loop_impl().event_log().retained_entries().to_vec(),
+        event_log: retained,
     };
     let stats = DriveStats {
         runs: backend.runs,

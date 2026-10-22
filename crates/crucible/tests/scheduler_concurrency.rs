@@ -49,7 +49,7 @@ fn concurrent_run_set_is_fixed_by_scheduler_horizons() {
 }
 
 #[test]
-fn concurrent_run_set_admits_skewed_peers_to_their_own_horizons() {
+fn concurrent_run_set_excludes_skewed_peers_from_same_round() {
     let producer = scheduler_node("producer");
     let alpha = scheduler_node("alpha");
     let beta = scheduler_node("beta");
@@ -68,13 +68,9 @@ fn concurrent_run_set_admits_skewed_peers_to_their_own_horizons() {
         .concurrent_run_set()
         .expect("run set should be available");
 
-    // Nodes on different clocks run together, each to its own bound.
     assert_eq!(
         run_set.candidates,
-        vec![
-            concurrent_candidate(&alpha, 0, 5, 5),
-            concurrent_candidate(&beta, 4, 9, 9),
-        ]
+        vec![concurrent_candidate(&alpha, 0, 5, 5)]
     );
 }
 

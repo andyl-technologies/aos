@@ -141,6 +141,9 @@ where
             }
         }
         let dispatch_contract = self.selected_dispatch_contract()?;
+        // This publisher holds every completed RUN and publishes in canonical
+        // key order, so the scheduler may plan nodes on independent clocks.
+        self.loop_impl.borrow_mut().held_run_publication = true;
         let mut prepared = self
             .loop_impl
             .borrow()

@@ -932,10 +932,15 @@ impl SingleScheduler {
         topology_activation_cap: Option<SimInstant>,
     ) -> Result<AdvanceWindow, SchedulerError> {
         let exact_local_event = self.effective_exact_local_event(node)?;
-        // A live topology bounds the node by its inbound edge guarantees,
-        // computed from each upstream node's own clock (SCHED-9). Without live
-        // edges the per-node lookahead is a pre-supplied fixed parking point.
-        let network_bound = if self.effective_topology.edges().is_empty() {
+        // Under held publication a live topology bounds the node by its
+        // inbound edge guarantees, computed from each upstream node's own
+        // clock (SCHED-9). A directly committing scheduler keeps nodes in
+        // lockstep, where the classic own clock plus lookahead is the same
+        // bound. Without live edges the per-node lookahead is a pre-supplied
+        // fixed parking point.
+        let network_bound = if self.effective_topology.edges().is_empty()
+            || !self.held_run_publication
+        {
             match node.network_lookahead {
                 NetworkLookahead::Finite(duration) => Some(current_time + duration),
                 NetworkLookahead::Infinite => None,

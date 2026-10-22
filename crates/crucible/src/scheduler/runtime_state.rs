@@ -555,4 +555,14 @@ pub struct SingleScheduler {
     /// Only a publishing host-concurrent RUN set fills this, and it is empty
     /// again before the scheduler is published. It is never checkpointed.
     pub(super) held_emission_floors: BTreeMap<NodeId, SimInstant>,
+    /// Whether completed RUNs are held and published in canonical key order.
+    ///
+    /// The backend loop's host-concurrent publisher sets this before it plans:
+    /// it holds each completed RUN and publishes RESOLVE and EMIT in time order
+    /// across clocks, so nodes may run to their own graph horizons. A scheduler
+    /// driven directly commits each RUN as it completes, so it keeps the
+    /// lockstep admission (global-minimum target at the shared frontier, own
+    /// clock plus lookahead) that commits in time order by construction. It is
+    /// never checkpointed.
+    pub(super) held_run_publication: bool,
 }

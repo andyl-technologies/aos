@@ -744,8 +744,7 @@ fn assert_peer_delivery_order(workers: usize, chain: bool, fail_stage: Option<us
                 usize::MAX,
             )
             .expect("actual no-input PICK fixes original Run horizon");
-        // Both nodes run in one set, each to its own horizon.
-        assert_eq!(prepared.runs.len(), 2);
+        assert_eq!(prepared.runs.len(), 1);
         prepared.next.pending_events.extend([
             event(30, &input, &producer, 0, b"first"),
             event(50, &input, &producer, 1, b"last"),
@@ -857,7 +856,8 @@ fn assert_peer_delivery_order(workers: usize, chain: bool, fail_stage: Option<us
         }
     }
 
-    // The final input wave completes inside the same concurrent drive.
+    // The backend loop holds and publishes in canonical order, so the final
+    // input wave completes inside the same drive with or without the chain.
     let expected = vec![
         "input:z-input:30",
         "output:a-output:40",

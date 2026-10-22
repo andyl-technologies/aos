@@ -766,7 +766,8 @@ impl SingleScheduler {
         Ok(Some(candidate))
     }
 
-    /// Admits every node whose own horizon lies beyond its clock.
+    /// Admits every node whose own horizon lies beyond its clock when RUNs are
+    /// held for canonical publication.
     ///
     /// Each candidate's target is its own graph horizon (SCHED-9), computed
     /// from the actual clocks of the nodes that can reach it, so nodes on
@@ -774,10 +775,17 @@ impl SingleScheduler {
     /// frontier or common target: no node's RUN can be influenced by another
     /// RUN of the set before its own target. RESOLVE and EMIT for the set are
     /// published afterwards in canonical order by the held-run publisher.
+    ///
+    /// A directly committing scheduler has no publisher to reorder completed
+    /// RUNs, so it admits only the lockstep set (see
+    /// [`Self::lockstep_run_set_from_candidates`]).
     pub(super) fn concurrent_run_set_from_candidates(
         &self,
         candidates: &[AdvanceCandidate],
     ) -> Result<SchedulerConcurrentRunSet, SchedulerError> {
+        if !self.held_run_publication {
+            return self.lockstep_run_set_from_candidates(candidates);
+        }
         let mut selected = Vec::new();
         for candidate in candidates {
             if !self.candidate_has_representable_advance(candidate)? {
@@ -791,6 +799,48 @@ impl SingleScheduler {
                 target_time: candidate.target_time,
                 max_advance_icount: draft.target_counter,
             });
+        }
+
+        Ok(SchedulerConcurrentRunSet {
+            candidates: selected,
+        })
+    }
+
+    /// Admits the canonical global-minimum candidates at the shared frontier.
+    ///
+    /// Every admitted RUN starts at the frontier and ends at the same target,
+    /// so committing them as they complete keeps the event log in time order.
+    /// A parked peer can hold the frontier behind the first candidate; then
+    /// only that candidate advances, matching the serial PICK order.
+    fn lockstep_run_set_from_candidates(
+        &self,
+        candidates: &[AdvanceCandidate],
+    ) -> Result<SchedulerConcurrentRunSet, SchedulerError> {
+        let frontier = SimInstant {
+            ticks: self.frontier.ticks,
+        };
+        let target_time = candidates.first().map(|candidate| candidate.target_time);
+
+        let mut selected = Vec::new();
+        for (position, candidate) in candidates.iter().enumerate() {
+            if Some(candidate.target_time) != target_time {
+                break;
+            }
+            let draft = self.advance_plan_draft(candidate)?;
+            let current_time = self.node_scheduler_time(&self.nodes[draft.index])?;
+            let off_frontier = current_time != frontier;
+            if off_frontier && position > 0 {
+                continue;
+            }
+            selected.push(SchedulerConcurrentRunCandidate {
+                node: draft.node,
+                current_time,
+                target_time: candidate.target_time,
+                max_advance_icount: draft.target_counter,
+            });
+            if off_frontier {
+                break;
+            }
         }
 
         Ok(SchedulerConcurrentRunSet {
