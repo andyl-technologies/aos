@@ -1154,6 +1154,7 @@ impl LiveVcpuTimeCallbackState {
         output: &mut [u8],
     ) -> Result<i64, LiveVcpuTimeCallbackError> {
         if self.idle_advance_is_pending() {
+            self.note_block_poll(epoch, request_id, false);
             return Ok(QEMU_PLUGIN_BLOCK_POLL_PENDING);
         }
         let current_icount = self.callback_current_icount()?;
@@ -1161,6 +1162,7 @@ impl LiveVcpuTimeCallbackState {
             .lock_devices()?
             .poll_block(self.slot.get(), current_icount, epoch, request_id, output)
             .map_err(LiveVcpuTimeCallbackError::live_device)?;
+        self.note_block_poll(epoch, request_id, result != QEMU_PLUGIN_BLOCK_POLL_PENDING);
         self.publish_device_completion_pause_if_quiesced("block-poll")?;
         Ok(result)
     }

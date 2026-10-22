@@ -4,6 +4,7 @@ use super::*;
 
 impl LiveVcpuTimeCallbackState {
     pub(super) fn on_block_wait(&self, request_id: u32) -> Result<(), LiveVcpuTimeCallbackError> {
+        let resumed = self.note_block_wait(request_id);
         let mut observation = self.device_wait_witness.request(
             request_id,
             self.control_stage_identity,
@@ -27,7 +28,7 @@ impl LiveVcpuTimeCallbackState {
                 );
                 return Ok(());
             }
-            let dispatch = self.device_wait_dispatch()?;
+            let dispatch = self.device_wait_dispatch(resumed)?;
             if dispatch == DeviceWaitDispatch::Dispatchable {
                 self.device_wait_witness.emit(
                     observation,
@@ -162,14 +163,35 @@ impl LiveVcpuTimeCallbackState {
             .store(current_thread_identity(), Ordering::Release);
     }
 
+    /// Records a block wait and returns whether its request had parked before.
+    fn note_block_wait(&self, request_id: u32) -> bool {
+        self.parked_block_waits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .note_wait(request_id)
+    }
+
+    /// Records a block poll result for the parked-wait bookkeeping.
+    pub(super) fn note_block_poll(&self, epoch: u64, request_id: u32, completed: bool) {
+        self.parked_block_waits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .note_poll(epoch, request_id, completed);
+    }
+
     /// Classifies whether QEMU can dispatch guest code while this wait runs.
     ///
-    /// An unrecorded RR identity never matches, so it falls back to the
-    /// parked check. A borrowed halt tracker counts as dispatchable: the
-    /// waiter retries and no time moves.
-    fn device_wait_dispatch(&self) -> Result<DeviceWaitDispatch, LiveVcpuTimeCallbackError> {
+    /// Only a resumed request on the RR thread proves that thread is blocked;
+    /// see [`ParkedBlockWaits`]. Every other wait, including a first pass on
+    /// the RR thread, uses the parked check. An unrecorded RR identity never
+    /// matches. A borrowed halt tracker counts as dispatchable: the waiter
+    /// retries and no time moves.
+    fn device_wait_dispatch(
+        &self,
+        resumed: bool,
+    ) -> Result<DeviceWaitDispatch, LiveVcpuTimeCallbackError> {
         let rr_vcpu_thread = self.rr_vcpu_thread.load(Ordering::Acquire);
-        if rr_vcpu_thread != 0 && rr_vcpu_thread == current_thread_identity() {
+        if resumed && rr_vcpu_thread != 0 && rr_vcpu_thread == current_thread_identity() {
             return Ok(DeviceWaitDispatch::IoBlockedOnRrThread);
         }
         let parked = match self.try_halted_vcpus() {
@@ -188,11 +210,12 @@ impl LiveVcpuTimeCallbackState {
 /// Whether guest dispatch is frozen while a block wait runs, and why.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DeviceWaitDispatch {
-    /// The wait runs on the RR vCPU thread itself.
+    /// A parked request resumed on the RR vCPU thread itself.
     ///
-    /// A vCPU's synchronous block I/O parks the coroutine there
-    /// mid-instruction. That vCPU is not halted, but the single RR thread
-    /// that runs every vCPU is blocked, so no guest code can run.
+    /// A nested poll in a vCPU's synchronous device emulation resumed the
+    /// coroutine there, mid-instruction, and blocks until the request
+    /// completes. That vCPU is not halted, but the single RR thread that runs
+    /// every vCPU is blocked, so no guest code can run.
     IoBlockedOnRrThread,
     /// The wait runs on QEMU's main loop and every vCPU is halted and parked.
     ///
@@ -230,6 +253,56 @@ impl DeviceWaitDispatch {
                 ExactDeadlineReport::NoArmedTimer
             }
             _ => exact_deadline,
+        }
+    }
+}
+
+/// Bound on recorded parked requests; beyond it a wait counts as a first pass.
+///
+/// A virtqueue holds far fewer requests. Failing closed only withholds the
+/// RR-thread jump, so the wait retries without moving time.
+const MAX_PARKED_BLOCK_WAITS: usize = 4096;
+
+/// Block requests whose wait callback has already run at least once.
+///
+/// A crucible-shmem request coroutine fires the wait callback on every
+/// pending poll and then yields. Its first pass runs where the request was
+/// submitted. With `ioeventfd=off` that is the RR vCPU thread, inside the
+/// guest's queue kick, and the yield returns to that vCPU, which keeps
+/// retiring instructions. An idle jump armed there pins a raw coordinate the
+/// running vCPU passes. A later pass runs where the parked coroutine is
+/// resumed: on the main loop, or in a nested poll on the RR thread that holds
+/// the vCPU until the request completes. Only that resumption proves the RR
+/// thread cannot dispatch guest code.
+///
+/// Request identifiers are unique within a transport epoch. A completed
+/// request is forgotten, and a poll from another epoch forgets them all.
+#[derive(Debug, Default)]
+pub(super) struct ParkedBlockWaits {
+    epoch: Option<u64>,
+    requests: std::collections::BTreeSet<u32>,
+}
+
+impl ParkedBlockWaits {
+    /// Records a wait and returns whether its request had parked before.
+    fn note_wait(&mut self, request_id: u32) -> bool {
+        if self.requests.contains(&request_id) {
+            return true;
+        }
+        if self.requests.len() < MAX_PARKED_BLOCK_WAITS {
+            self.requests.insert(request_id);
+        }
+        false
+    }
+
+    /// Forgets a completed request, or every request of an earlier epoch.
+    fn note_poll(&mut self, epoch: u64, request_id: u32, completed: bool) {
+        if self.epoch != Some(epoch) {
+            self.requests.clear();
+            self.epoch = Some(epoch);
+        }
+        if completed {
+            self.requests.remove(&request_id);
         }
     }
 }

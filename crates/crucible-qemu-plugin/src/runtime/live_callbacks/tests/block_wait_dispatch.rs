@@ -1,11 +1,12 @@
 //! Device waits may arm an idle jump only while QEMU cannot dispatch a vCPU.
 //!
 //! A block coroutine runs either on QEMU's main loop, while the RR thread
-//! executes guest code with the BQL released, or on the RR thread itself when
-//! a vCPU's synchronous I/O blocks mid-instruction. These cases replay the
-//! interleavings in which a vCPU could still retire instructions after the
-//! wait armed a jump, and the blocked-RR cases in which only the wait can
-//! move time.
+//! executes guest code with the BQL released, or on the RR thread itself. On
+//! the RR thread its first pass runs inside the guest's queue kick, which
+//! returns to the running vCPU, while a resumed pass runs in a nested poll
+//! that blocks the vCPU mid-instruction. These cases replay the interleavings
+//! in which a vCPU could still retire instructions after the wait armed a
+//! jump, and the blocked-RR cases in which only the wait can move time.
 
 use super::block_wait::park_every_vcpu;
 use super::*;
@@ -41,6 +42,17 @@ fn reset_queue_witnesses() {
 fn assert_wait_did_not_arm(state: &LiveVcpuTimeCallbackState) {
     assert_eq!(LAST_QUEUED_ADVANCE_TICK.get(), -1);
     assert!(!state.idle_advance_is_pending());
+}
+
+/// Runs a request's first wait on the RR thread, as its queue kick does.
+///
+/// The vCPU returns to guest code after that pass, so it must not arm.
+fn submit_from_the_rr_thread(state: &LiveVcpuTimeCallbackState, request_id: u32) {
+    state.note_block_poll(0, request_id, false);
+    state
+        .on_block_wait(request_id)
+        .unwrap_or_else(|error| panic!("the first wait should retry: {error}"));
+    assert_wait_did_not_arm(state);
 }
 
 fn assert_dispatchable_with_retained_halt_bit(state: &LiveVcpuTimeCallbackState) {
@@ -180,12 +192,14 @@ fn block_wait_on_the_io_blocked_rr_thread_arms_without_halted_vcpus() {
     let slot = device_wait_slot();
     let state = test_live_state(48, 1, 0, &slot)
         .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
-    // The vCPU initializes and then issues synchronous block I/O on this same
-    // RR thread: it is mid-instruction, not halted.
+    // The vCPU initializes and submits a request from its queue kick on this
+    // same RR thread; a nested poll there then resumes the parked request,
+    // so the vCPU is held mid-instruction, not halted.
     state
         .on_vcpu_init(0)
         .unwrap_or_else(|error| panic!("test vCPU should initialize: {error}"));
     reset_queue_witnesses();
+    submit_from_the_rr_thread(&state, 1);
 
     state
         .on_block_wait(1)
@@ -208,6 +222,7 @@ fn block_wait_on_the_io_blocked_rr_thread_advances_past_an_overdue_timer() {
     // advance can run it while the RR thread is blocked in the I/O.
     TEST_ICOUNT_RAW.set(4);
     TEST_CLOCK_DEADLINE_PS.set(100);
+    submit_from_the_rr_thread(&state, 1);
 
     let result = state.on_block_wait(1);
     TEST_ICOUNT_RAW.set(0);
@@ -235,4 +250,45 @@ fn block_wait_on_the_main_loop_leaves_an_overdue_timer_to_the_idle_path() {
     // The parked RR thread dispatches the due timer itself, at 200 ps.
     result.unwrap_or_else(|error| panic!("main-loop wait should retry: {error}"));
     assert_wait_did_not_arm(&state);
+}
+
+#[test]
+fn block_wait_from_a_queue_kick_on_the_rr_thread_leaves_time_to_the_vcpu() {
+    let slot = device_wait_slot();
+    let state = test_live_state(48, 1, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    // The running vCPU kicks its queue on the RR thread. The request's first
+    // pass parks and returns to the vCPU, which keeps retiring instructions;
+    // a jump armed here would pin a raw coordinate it passes.
+    state
+        .on_vcpu_init(0)
+        .unwrap_or_else(|error| panic!("test vCPU should initialize: {error}"));
+    reset_queue_witnesses();
+    TEST_ICOUNT_RAW.set(4);
+    state.note_block_poll(0, 1, false);
+
+    let result = state.on_block_wait(1);
+    TEST_ICOUNT_RAW.set(0);
+
+    result.unwrap_or_else(|error| panic!("the first wait should retry: {error}"));
+    assert_wait_did_not_arm(&state);
+}
+
+#[test]
+fn a_completed_request_identifier_starts_again_as_a_first_pass() {
+    let slot = device_wait_slot();
+    let state = test_live_state(48, 1, 0, &slot)
+        .unwrap_or_else(|error| panic!("live callback state should build: {error}"));
+    state
+        .on_vcpu_init(0)
+        .unwrap_or_else(|error| panic!("test vCPU should initialize: {error}"));
+    reset_queue_witnesses();
+    submit_from_the_rr_thread(&state, 1);
+
+    // The request completes, so a later request with the same identifier,
+    // or any request after a transport epoch change, is a new submission.
+    state.note_block_poll(0, 1, true);
+    submit_from_the_rr_thread(&state, 1);
+    state.note_block_poll(1, 2, false);
+    submit_from_the_rr_thread(&state, 1);
 }
