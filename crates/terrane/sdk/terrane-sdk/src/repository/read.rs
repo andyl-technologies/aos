@@ -17,6 +17,14 @@ use crate::{
 
 use super::{Error, Repository, schema};
 
+/// Retains one exact scoped file and its private authenticated metadata.
+pub(super) struct FileReadMetadata {
+    pub(super) snapshot: AuthorizedSnapshot,
+    pub(super) absolute: Vec<u8>,
+    pub(super) content: tree_format::ContentRef,
+    pub(super) size: u64,
+}
+
 /// Owned canonical metadata and plaintext, with no identity lookup capability.
 pub(crate) struct ReadEntry {
     /// Canonical entry key relative to the selected view subtree.
@@ -216,6 +224,29 @@ where
         token: &[u8],
         surface: &str,
     ) -> Result<(Digest, Vec<u8>), Error> {
+        let FileReadMetadata {
+            snapshot,
+            absolute,
+            content,
+            size,
+        } = self.file_read_metadata(view, path, token, surface).await?;
+        let guard = self.coordinator.guard();
+        let bytes = guard
+            .read_content(&snapshot, &absolute, content, size)
+            .await?;
+        let bytes = self.present_object(content, bytes).await?;
+        guard.authorize_snapshot_path(&snapshot, &absolute).await?;
+        Ok((snapshot.commit.identity(), bytes))
+    }
+
+    /// Resolves the exact ordinary signed file without requesting object content.
+    pub(super) async fn file_read_metadata(
+        &self,
+        view: &View,
+        path: &[u8],
+        token: &[u8],
+        surface: &str,
+    ) -> Result<FileReadMetadata, Error> {
         tree_format::validate_key(path)?;
         if view.policy.is_some() {
             return Err(Error::UnavailableOperation("unregistered view policy"));
@@ -270,12 +301,12 @@ where
                 _ => return Err(Error::Unrealizable),
             }
         };
-        let bytes = guard
-            .read_content(&snapshot, &absolute, content, size)
-            .await?;
-        let bytes = self.present_object(content, bytes).await?;
-        guard.authorize_snapshot_path(&snapshot, &absolute).await?;
-        Ok((snapshot.commit.identity(), bytes))
+        Ok(FileReadMetadata {
+            snapshot,
+            absolute,
+            content,
+            size,
+        })
     }
 
     #[cfg(all(test, feature = "surface-sdk", unix))]

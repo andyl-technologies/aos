@@ -16,6 +16,7 @@ mod disclosure_rotation;
 #[cfg(unix)]
 mod domain_deletion;
 mod error;
+mod file_read;
 mod head;
 mod history;
 #[cfg(feature = "std")]
@@ -41,6 +42,7 @@ pub use crate::guard::ListedRef;
 pub use audit::RegisteredDomainAudit;
 pub use diff::Difference;
 pub use error::Error;
+pub use file_read::PreparedFileRead;
 pub use history::RefHistory;
 #[cfg(all(feature = "std", unix))]
 pub use import::import_directory;

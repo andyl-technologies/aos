@@ -123,9 +123,9 @@ pub(crate) use original::{AssociationView, BootstrapView, RegistrationView};
 pub use original::{OriginalAuthority, OriginalCommitContext, RetainedBootstrap};
 pub use read::AuthorizedSnapshot;
 #[cfg(feature = "std")]
-pub(crate) use read::SnapshotPathBatch;
-#[cfg(feature = "std")]
 pub use read::indexes;
+#[cfg(feature = "std")]
+pub(crate) use read::{SnapshotPathBatch, SnapshotPathHead};
 #[cfg(feature = "std")]
 pub(crate) use recorded_properties::SelectedReadInterpretation;
 pub use recorded_properties::profiles::{

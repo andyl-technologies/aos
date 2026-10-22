@@ -12,6 +12,14 @@ use terrane_format::{auth::Verb, refs::RefRecord};
 pub(crate) struct SnapshotPathBatch<'a, S, C> {
     guard: &'a Guard<S, C>,
     snapshot: &'a AuthorizedSnapshot,
+    head: SnapshotPathHead,
+}
+
+/// Binds fresh path checks to one complete live policy record.
+///
+/// The caller retains the original private snapshot separately. This allows a
+/// scoped file operation to own its snapshot without a self-referential borrow.
+pub(crate) struct SnapshotPathHead {
     record: RefRecord,
 }
 
@@ -21,10 +29,37 @@ impl<'a, S: Store, C: Clock> SnapshotPathBatch<'a, S, C> {
         guard: &'a Guard<S, C>,
         snapshot: &'a AuthorizedSnapshot,
     ) -> Result<Self, StoreFailure> {
+        Ok(Self {
+            guard,
+            snapshot,
+            head: SnapshotPathHead::begin(guard, snapshot, b"/").await?,
+        })
+    }
+
+    /// Checks ordinary path trust and Read against this invocation's policy head.
+    pub(crate) async fn authorize_path(&self, path: &[u8]) -> Result<(), StoreFailure> {
+        self.head
+            .authorize_path(self.guard, self.snapshot, path)
+            .await
+    }
+
+    /// Closes the read after result allocation and all descendant checks finish.
+    pub(crate) async fn finish(self) -> Result<(), StoreFailure> {
+        self.authorize_path(b"/").await
+    }
+}
+
+impl SnapshotPathHead {
+    /// Captures a complete policy head after a fresh check of exactly this scope.
+    pub(crate) async fn begin<S: Store, C: Clock>(
+        guard: &Guard<S, C>,
+        snapshot: &AuthorizedSnapshot,
+        path: &[u8],
+    ) -> Result<Self, StoreFailure> {
         let requests = guard
             .snapshot_authorizations_observed(
                 snapshot,
-                b"/",
+                path,
                 HistoryObservation::default().requested_target(),
             )
             .await?;
@@ -33,41 +68,40 @@ impl<'a, S: Store, C: Clock> SnapshotPathBatch<'a, S, C> {
             .and_then(|request| request.record())
             .cloned()
             .ok_or_else(|| denied(&snapshot.authority_reference, Verb::Read))?;
-        let batch = Self {
-            guard,
-            snapshot,
-            record,
-        };
-        batch.check_requests(&requests)?;
-        Ok(batch)
+        let head = Self { record };
+        head.check_requests(snapshot, &requests)?;
+        Ok(head)
     }
 
-    /// Checks ordinary path trust and Read against this invocation's policy head.
-    pub(crate) async fn authorize_path(&self, path: &[u8]) -> Result<(), StoreFailure> {
-        let requests = self
-            .guard
+    /// Repeats ordinary scoped Read and refuses any complete policy-head change.
+    pub(crate) async fn authorize_path<S: Store, C: Clock>(
+        &self,
+        guard: &Guard<S, C>,
+        snapshot: &AuthorizedSnapshot,
+        path: &[u8],
+    ) -> Result<(), StoreFailure> {
+        let requests = guard
             .snapshot_authorizations_observed(
-                self.snapshot,
+                snapshot,
                 path,
                 HistoryObservation::default().requested_target(),
             )
             .await?;
-        self.check_requests(&requests)
+        self.check_requests(snapshot, &requests)
     }
 
-    /// Closes the read after result allocation and all descendant checks finish.
-    pub(crate) async fn finish(self) -> Result<(), StoreFailure> {
-        self.authorize_path(b"/").await
-    }
-
-    fn check_requests(&self, requests: &[super::super::AuthorizedRef]) -> Result<(), StoreFailure> {
+    fn check_requests(
+        &self,
+        snapshot: &AuthorizedSnapshot,
+        requests: &[super::super::AuthorizedRef],
+    ) -> Result<(), StoreFailure> {
         if requests.is_empty()
             || requests.iter().any(|request| {
-                request.reference() != self.snapshot.authority_reference
+                request.reference() != snapshot.authority_reference
                     || request.record() != Some(&self.record)
             })
         {
-            return Err(denied(&self.snapshot.authority_reference, Verb::Read));
+            return Err(denied(&snapshot.authority_reference, Verb::Read));
         }
         Ok(())
     }

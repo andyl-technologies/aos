@@ -12849,3 +12849,43 @@ validation, before native case execution: the installed new observer was absent
 from the supervisor's expected helper list. The list now names the same twelve
 helpers as the image installer, with all previous hash and source checks intact.
 This is a fixture startup correction, not a successful cold runtime result.
+
+
+#### Scoped file preparation before native backing
+
+The SDK now exposes an opaque prepared file read using the same signed file
+selection, view-subtree handling, provenance trust and domain checks as ordinary
+`read_file`. It exposes only the selected commit, canonical root, absolute path,
+typed content reference, domain and size. It fetches neither manifest nor chunk
+bodies. A trusted native realizer must keep its prepared backing private until
+the operation finishes with fresh scoped Read and an unchanged complete live
+policy reference. Historical selection remains separate from current authority;
+dropping the selection grants no exposure or physical-work completion.
+
+Five actual native integration cases pass: exact inline metadata without body
+reads; refusal after a real policy advance followed by successful fresh historical
+selection; a permitted original file alongside an unrelated graft that prevents
+complete-root disclosure; a manifest-backed file with no manifest or chunk body
+read; and non-file, invalid-path, wrong-surface and view-subtree controls. The
+unchanged seven complete-root cases and three real policy-head transition cases
+also pass. The native test backend needs the ordinary execution environment:
+the restricted tool sandbox refuses its native authority before case execution.
+An initially incorrect file-path root caveat was corrected in the test fixture
+to use a genuine governing-root caveat and a genuinely unrelated graft; production
+authorization was not relaxed. Strict SDK/Linux/CLI all-target Clippy, formatting,
+portable std and actual wasm32 checks pass. The owning metadata check now binds
+all fifteen cases to three actual compiler artifacts; committed-source execution
+and required application-target compilation remain pending.
+
+Frozen warm-consumer qualification at `e4b89c96c1` passes the complete native
+component VM in 1,407.96 seconds, including all 128 native library cases, both
+whole-file descriptor witnesses and the previous controls. Independent review
+matches 7,978 immutable source files, 5,280 bound crate inputs and all four
+retained compiler ELF artifacts. Required application-target compilation passes
+in 1,639.23 seconds, independently matching the same immutable source and 184
+compiler records across 59 packages. The corrected frozen cold-consumer run at
+`e7a8e757e2` has passed its genuine recovered whole-file case, independent
+three-inode observer and all 128 native library cases; its remaining full controls
+are still running. These results do not accept a FUSE task: real scoped backing
+integration, structural-index ownership, exposure leases, worker transport,
+actual kernel reference drain and the mounted surface remain open.

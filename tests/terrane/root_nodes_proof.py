@@ -1,4 +1,4 @@
-"""Binds complete root metadata disclosure to the actual native SDK artifact."""
+"""Binds root and scoped file metadata to their actual native SDK artifacts."""
 
 import hashlib
 import json
@@ -27,16 +27,38 @@ POLICY_CASES = [
 ]
 
 
+FILE_CASES = [
+    "file_preparation_selects_exact_signed_metadata_without_content_reads",
+    "closing_refuses_a_real_policy_advance_and_a_fresh_historical_read_succeeds",
+    "a_root_scoped_token_prepares_a_file_without_disclosing_an_unrelated_graft",
+    "manifest_file_preparation_requires_no_manifest_or_chunk_body_read",
+    "non_files_invalid_paths_and_wrong_surfaces_never_prepare_a_handle",
+]
+
+
 def main():
     """Binds full-root disclosure and actual policy transitions to their artifacts."""
+    output = Path(os.environ["out"])
+    run_sdk_contract(
+        "file_read", FILE_CASES,
+        "Actual signed scoped file metadata without body reads; fresh same-whole-head "
+        "closing authorization, with no kernel backing or exposure lease claim",
+    )
+    file_report = json.loads((output / "source-review.json").read_text())
+    (output / "inventory.log").rename(output / "file-preparation-inventory.log")
     run_sdk_contract(
         "root_nodes", CASES,
         "Actual signed full-root metadata, per-path Read and provenance checks; "
         "no file bodies, live exposure lease, index custody or mount claim",
     )
-    output = Path(os.environ["out"])
     workspace = Path.cwd()
     report = json.loads((output / "source-review.json").read_text())
+    require(file_report["source"] == report["source"]
+            and file_report["input_sha256"] == report["input_sha256"],
+            "file and root metadata artifacts have different immutable inputs")
+    report["file_preparation"] = {
+        key: file_report[key] for key in ["artifact", "executable_sha256", "executed_cases", "scope"]
+    }
     rows = [json.loads(line) for line in (output / "unit-build.jsonl").read_text().splitlines()]
     artifacts = [row for row in rows if row.get("reason") == "compiler-artifact"
                  and row.get("target", {}).get("name") == "terrane_sdk"
