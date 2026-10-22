@@ -12383,3 +12383,44 @@ records for 184 test executables across 59 packages. This remains compilation
 evidence only, with no retained application executable or runtime claim. The
 watch change at `d679a0f17e` is pushed; its frozen owning-gate and required
 application-target checks are running.
+
+
+#### Private bounded bundle reception
+
+The Distribution client now has a private `BundleReceiver` for metadata frames.
+Explicit positive limits bound object count, individual bodies, the optional
+requested trailing profile and their combined retained bytes. Only Node,
+Manifest and Commit kinds are accepted; data chunks, unknown or truncated kind
+codes, missing or incorrect hashes, noncanonical CBOR, duplicate identities,
+missing variants and frames following a profile terminate reception and release
+all retained data. No objects are exposed before explicit completion after real
+transport EOF. Completion applies the configured `ContentValidator` to every
+object before returning any result: canonical CBOR and a matching content hash
+alone are insufficient to establish a metadata schema. A transport failure must
+cancel reception rather than call completion. The transport separately bounds
+frame decoding and stream deadlines.
+
+All nine representation integration cases pass locally under the existing
+thirty-second selector bound, including actual registered Node, Manifest and
+Commit schemas, opaque requested profile bytes, an all-held empty stream,
+optional profile omission, terminal refusals and resource limits. A canonical
+but schema-invalid object is refused for each metadata kind at completion.
+Strict SDK/Linux/CLI all-target Clippy, native portable and actual WebAssembly
+checking, Rust/Nix formatting and check evaluation pass. The WebAssembly check
+retains the six existing dead-code warnings. Frozen `integration.bundle-receive`
+and required application-target qualification remain pending.
+
+This component does not establish signatures, graph reachability, dependency
+closure, current authorization, native custody or backend admission. Optional
+profile bytes require their registered decoder. GetBundle server traversal,
+authorized graft selection and complete deployed protocol conformance remain
+open; no task acceptance changes.
+
+Frozen guarded point reads at `a4fbca79e1` pass all six cases in 224.18 seconds;
+independent review matches 7,939 immutable source files and 5,240 bound inputs.
+The owning watch gate at `d679a0f17e` passes all six cases in 1,323.98 seconds;
+independent review matches 7,935 immutable source files, 5,238 bound inputs and
+the actual retained SDK executable. This includes current-first delivery,
+changed-horizon and revoked/expired authority refusal before cursor advance,
+and missing or mismatched committed log records. Neither focused pass accepts
+a T2–T6 task or establishes complete multi-reference watch/resume behavior.

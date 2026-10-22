@@ -512,6 +512,7 @@ in {
   integration.gcp-instance-issuer = instanceIssuerProof;
   integration.store-expression-opened = import ./store-expression-opened.nix {inherit sourceGate;};
   integration.ref-history = import ./ref-history.nix {inherit sourceGate;};
+  integration.bundle-receive = import ./bundle-receive.nix {inherit sourceGate;};
   integration.ref-head = import ./ref-head.nix {inherit sourceGate;};
   integration.ref-listing = import ./ref-listing.nix {inherit sourceGate;};
   integration.configured-workload-issuer = configuredIssuerProof;

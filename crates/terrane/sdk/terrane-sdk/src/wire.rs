@@ -12,6 +12,9 @@ pub mod refs;
 /// Receives ordered pack frames without admitting or acknowledging their bytes.
 pub mod upload;
 
+/// Receives bounded, identity-checked metadata without admitting repository content.
+pub mod bundle;
+
 /// Maps classified service outcomes to structured protocol errors.
 pub mod status;
 
