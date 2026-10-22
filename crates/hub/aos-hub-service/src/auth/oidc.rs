@@ -32,16 +32,16 @@
 //! # The flow
 //!
 //! ```text
-//! begin_login(org).await                         complete_login(code, state).await
-//! ─────────────────                        ───────────────────────────
-//! 1. load org IdP config                   1. take_oidc_flow(state).await  ← single-use
-//! 2. verifier = random 43..128 chars          (validates + consumes; expiry)
+//! begin_login(org).await                   complete_login(code, state, binding).await
+//! ─────────────────                        ─────────────────────────────────────
+//! 1. load org IdP config                   1. take_oidc_flow(state, binding_hash)
+//! 2. verifier = random 43..128 chars           (matches browser, consumes, checks expiry)
 //!    challenge = b64url(sha256(verifier))   2. POST token_endpoint:
-//!    state, nonce = random                       grant_type=authorization_code
+//!    state, nonce, binding = random              grant_type=authorization_code
 //! 3. create_oidc_flow(state, nonce,             code, redirect_uri, client_id,
-//!                     verifier).await                  client_secret (unsealed),
-//! 4. redirect to authorization_endpoint?         code_verifier   ← PKCE proof
-//!      response_type=code                    3. fetch JWKS, find kid
+//!                     verifier,                  client_secret (unsealed),
+//!                     sha256(binding)).await      code_verifier   ← PKCE proof
+//! 4. redirect to authorization_endpoint?     3. fetch JWKS, find kid
 //!      client_id, redirect_uri, scope        4. verify id_token (RS256):
 //!      state, nonce                              iss == config.issuer
 //!      code_challenge=b64url(sha256(v))          aud == client_id, exp
@@ -177,6 +177,10 @@ fn parse_role_map(json: &str) -> BTreeMap<String, Role> {
 pub struct AuthRedirect {
     /// The fully-formed authorization URL to redirect the browser to.
     pub url: String,
+    /// The flow state used to derive this flow's browser-cookie name.
+    pub state: String,
+    /// The random browser proof stored only in the HttpOnly flow cookie.
+    pub browser_binding: String,
 }
 
 /// The result of a completed login: the resolved hub user and email.
@@ -220,6 +224,42 @@ fn new_opaque() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// Returns the host-only cookie name for one canonical OIDC flow state.
+///
+/// # Errors
+///
+/// Returns an error unless `state` is a canonical base64url-encoded 256-bit
+/// value.
+pub fn browser_binding_cookie_name(state: &str) -> Result<String> {
+    validate_opaque_256(state, "OIDC state")?;
+    Ok(format!("__Host-aos_oidc_{state}"))
+}
+
+/// Returns the SHA-256 identity stored for a canonical browser-binding secret.
+///
+/// # Errors
+///
+/// Returns an error unless `binding` is a canonical base64url-encoded 256-bit
+/// value.
+pub fn browser_binding_digest(binding: &str) -> Result<String> {
+    let bytes = validate_opaque_256(binding, "OIDC browser binding")?;
+
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+fn validate_opaque_256(value: &str, label: &str) -> Result<Vec<u8>> {
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value)
+        .with_context(|| format!("{label} is not canonical base64url"))?;
+    anyhow::ensure!(
+        bytes.len() == 32
+            && base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&bytes) == value,
+        "{label} is not a canonical 256-bit value"
+    );
+
+    Ok(bytes)
+}
+
 /// The redirect URI the IdP returns to, derived from the hub's external URL.
 #[must_use]
 pub fn redirect_uri(external_url: &str) -> String {
@@ -229,10 +269,11 @@ pub fn redirect_uri(external_url: &str) -> String {
 /// Begin an OIDC login: stage the flow and build the authorization redirect.
 ///
 /// Loads the org's IdP config, generates the PKCE verifier/challenge and the
-/// `state`/`nonce`, records the flow via
+/// `state`/`nonce` and a browser-binding proof, records the flow via
 /// [`Database::create_oidc_flow`], and returns the authorization-endpoint URL
-/// to redirect the browser to. `redirect_after` is where the browser lands
-/// after a successful callback (defaulting to the instance home).
+/// and proof. The web layer places the proof in an HttpOnly cookie.
+/// `redirect_after` is where the browser lands after a successful callback
+/// (defaulting to the instance home).
 ///
 /// # Errors
 ///
@@ -255,12 +296,15 @@ pub async fn begin_login(
     let challenge = code_challenge_s256(&verifier);
     let state = new_opaque();
     let nonce = new_opaque();
+    let browser_binding = new_opaque();
+    let browser_binding_hash = browser_binding_digest(&browser_binding)?;
 
     db.create_oidc_flow(
         &state,
         org_id,
         &nonce,
         &verifier,
+        &browser_binding_hash,
         redirect_after,
         FLOW_TTL_SECS,
     )
@@ -280,6 +324,8 @@ pub async fn begin_login(
 
     Ok(AuthRedirect {
         url: url.to_string(),
+        state,
+        browser_binding,
     })
 }
 
@@ -299,14 +345,7 @@ fn validate_callback_params(params: &CallbackParams) -> Result<()> {
             && !params.code.chars().any(char::is_control),
         "OIDC authorization code is empty, oversized, or contains controls"
     );
-    let state = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&params.state)
-        .context("OIDC state is not canonical base64url")?;
-    anyhow::ensure!(
-        state.len() == 32
-            && base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&state) == params.state,
-        "OIDC state is not a canonical 256-bit value"
-    );
+    validate_opaque_256(&params.state, "OIDC state")?;
     Ok(())
 }
 
@@ -358,8 +397,8 @@ struct IdTokenClaims {
 ///
 /// Steps, fail-closed at every network and parse boundary:
 ///
-/// 1. [`Database::take_oidc_flow`] consumes the `state` (single-use; expiry
-///    enforced) — a forged or replayed `state` is rejected here.
+/// 1. [`Database::take_oidc_flow`] matches the `state` and browser-binding
+///    digest, then consumes the flow (single-use; expiry enforced).
 /// 2. POST the token endpoint with the code, PKCE `code_verifier`, and the
 ///    **unsealed** client secret; read the `id_token`. The HTTP call goes
 ///    through the [`HttpClient`] port, which applies the deployment's body cap
@@ -375,23 +414,26 @@ struct IdTokenClaims {
 ///
 /// # Errors
 ///
-/// Returns an error when the flow is unknown/expired, the token exchange or
-/// JWKS fetch fails, the id_token fails verification (signature, `iss`, `aud`,
-/// `exp`, or `nonce`), or — when `allow_jit` is false and the `(iss, sub)`
-/// identity is unknown — the login is not permitted.
+/// Returns an error when the flow is unknown or expired, the browser binding
+/// does not match, the token exchange or JWKS fetch fails, the id_token fails
+/// verification (signature, `iss`, `aud`, `exp`, or `nonce`), or — when
+/// `allow_jit` is false and the `(iss, sub)` identity is unknown — the login is
+/// not permitted.
 pub async fn complete_login(
     db: &Database,
     sealer: &dyn SecretSealer,
     http: &dyn HttpClient,
     external_url: &str,
     params: &CallbackParams,
+    browser_binding: &str,
 ) -> Result<OidcLogin> {
     validate_callback_params(params)?;
+    let browser_binding_hash = browser_binding_digest(browser_binding)?;
     // 1. Consume the flow (single-use, expiry-checked).
     let flow = db
-        .take_oidc_flow(&params.state)
+        .take_oidc_flow(&params.state, &browser_binding_hash)
         .await?
-        .ok_or_else(|| anyhow!("unknown, expired, or replayed login state"))?;
+        .ok_or_else(|| anyhow!("unknown, expired, replayed, or unbound login state"))?;
 
     let record = db
         .idp_config(flow.org_id)

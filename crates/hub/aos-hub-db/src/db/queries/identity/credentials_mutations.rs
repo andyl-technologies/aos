@@ -272,9 +272,9 @@ impl Database {
     /// Record an in-flight OIDC authorization-code request.
     ///
     /// Stores the opaque `state`, the `nonce` the id_token will be checked
-    /// against, and the PKCE `code_verifier`, with an `expires_at` `ttl_secs`
-    /// from now. The row is consumed exactly once at the callback by
-    /// [`Database::take_oidc_flow`].
+    /// against, the PKCE `code_verifier`, and the browser-binding digest, with
+    /// an `expires_at` `ttl_secs` from now. The row is consumed exactly once at
+    /// the callback by [`Database::take_oidc_flow`].
     ///
     /// # Errors
     ///
@@ -285,6 +285,7 @@ impl Database {
         org_id: i64,
         nonce: &str,
         code_verifier: &str,
+        browser_binding_hash: &str,
         redirect_after: Option<&str>,
         ttl_secs: i64,
     ) -> Result<()> {
@@ -292,13 +293,15 @@ impl Database {
         self.backend
             .execute(
                 "INSERT INTO oidc_flows
-             (state, org_id, nonce, code_verifier, redirect_after, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+             (state, org_id, nonce, code_verifier, browser_binding_hash,
+              redirect_after, created_at, expires_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 &vals![
                     state,
                     org_id,
                     nonce,
                     code_verifier,
+                    browser_binding_hash,
                     redirect_after,
                     now,
                     now + ttl_secs
@@ -308,17 +311,22 @@ impl Database {
         Ok(())
     }
 
-    /// Consume an OIDC flow by its `state`, returning it exactly once.
+    /// Consumes an OIDC flow by its `state` and browser-binding digest.
     ///
     /// Deletes the row and returns it in one statement (`DELETE … RETURNING`),
     /// so a replayed or forged `state` finds nothing — the single-use,
-    /// CSRF-defeating gate. Returns `Ok(None)` for an unknown, already-consumed,
-    /// or expired flow.
+    /// CSRF-defeating gate. Returns `Ok(None)` for an unknown, mismatched,
+    /// already-consumed, or expired flow. A mismatched digest leaves the row
+    /// available for its initiating browser.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn take_oidc_flow(&self, state: &str) -> Result<Option<OidcFlowRecord>> {
+    pub async fn take_oidc_flow(
+        &self,
+        state: &str,
+        browser_binding_hash: &str,
+    ) -> Result<Option<OidcFlowRecord>> {
         let now = unix_now();
         // sqlite/postgres do the delete-and-read in one `DELETE … RETURNING`;
         // MySQL lacks it, so select-then-delete inside a transaction keeps the
@@ -332,14 +340,19 @@ impl Database {
                 .backend
                 .query_opt(
                     "SELECT state, org_id, nonce, code_verifier, redirect_after, expires_at
-                     FROM oidc_flows WHERE state = ?1",
-                    &vals![state],
+                     FROM oidc_flows
+                     WHERE state = ?1 AND browser_binding_hash = ?2",
+                    &vals![state, browser_binding_hash],
                 )
                 .await?;
             if let Some(r) = selected {
                 let claimed = self
                     .backend
-                    .execute("DELETE FROM oidc_flows WHERE state = ?1", &vals![state])
+                    .execute(
+                        "DELETE FROM oidc_flows
+                         WHERE state = ?1 AND browser_binding_hash = ?2",
+                        &vals![state, browser_binding_hash],
+                    )
                     .await?;
                 if claimed > 0 {
                     Some(row_to_oidc_flow(&r)?)
@@ -352,9 +365,10 @@ impl Database {
         } else {
             self.backend
                 .query_opt(
-                    "DELETE FROM oidc_flows WHERE state = ?1
+                    "DELETE FROM oidc_flows
+                     WHERE state = ?1 AND browser_binding_hash = ?2
                      RETURNING state, org_id, nonce, code_verifier, redirect_after, expires_at",
-                    &vals![state],
+                    &vals![state, browser_binding_hash],
                 )
                 .await
                 .context("consuming oidc flow by state")?

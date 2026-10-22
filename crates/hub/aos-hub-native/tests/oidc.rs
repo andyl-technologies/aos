@@ -25,6 +25,8 @@ use axum::routing::{get, post};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::Serialize;
 
+const TEST_BROWSER_BINDING: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
 /// A baked 2048-bit RSA private key (PKCS#8 PEM) for signing test id_tokens.
 const TEST_RSA_PEM: &str = "-----BEGIN PRIVATE KEY-----
 MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDkpZkwExMNISz1
@@ -266,6 +268,20 @@ async fn run_flow(
     org_id: i64,
 ) -> anyhow::Result<aos_hub_native::auth::oidc::OidcLogin> {
     let redirect = begin_login(db, external_url, org_id, Some("/account")).await?;
+    let params = authorize_redirect(&redirect).await?;
+
+    complete_login(
+        db,
+        dev_sealer().as_ref(),
+        http,
+        external_url,
+        &params,
+        &redirect.browser_binding,
+    )
+    .await
+}
+
+async fn authorize_redirect(redirect: &oidc::AuthRedirect) -> anyhow::Result<CallbackParams> {
     // Hit the IdP authorize endpoint *without following redirects*: it 302s
     // back to the hub callback (which is not a real server here), so we read
     // the Location to recover the code + state the hub would have received.
@@ -290,14 +306,8 @@ async fn run_flow(
             _ => {}
         }
     }
-    complete_login(
-        db,
-        dev_sealer().as_ref(),
-        http,
-        external_url,
-        &CallbackParams { code, state },
-    )
-    .await
+
+    Ok(CallbackParams { code, state })
 }
 
 #[tokio::test]
@@ -412,6 +422,7 @@ async fn forged_or_replayed_state_is_rejected() {
             code: "test-code".into(),
             state: "forged-state".into(),
         },
+        TEST_BROWSER_BINDING,
     )
     .await;
     assert!(err.is_err());
@@ -438,9 +449,82 @@ async fn forged_or_replayed_state_is_rejected() {
             code: "test-code".into(),
             state,
         },
+        &redirect.browser_binding,
     )
     .await;
     assert!(replay.is_err());
+}
+
+#[tokio::test]
+async fn callback_requires_the_browser_that_started_the_flow() {
+    let (idp_base, _idp) = spawn_idp().await;
+    let db = Database::open_in_memory().await.unwrap();
+    seed_org(&db, &idp_base, false, true, "{}").await;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
+    let http = test_http();
+
+    let redirect = begin_login(&db, "http://hub.example.com", org_id, None)
+        .await
+        .unwrap();
+    let params = authorize_redirect(&redirect).await.unwrap();
+    assert_ne!(redirect.browser_binding, TEST_BROWSER_BINDING);
+
+    let transferred = complete_login(
+        &db,
+        dev_sealer().as_ref(),
+        &http,
+        "http://hub.example.com",
+        &params,
+        TEST_BROWSER_BINDING,
+    )
+    .await;
+    assert!(transferred.is_err());
+
+    let login = complete_login(
+        &db,
+        dev_sealer().as_ref(),
+        &http,
+        "http://hub.example.com",
+        &params,
+        &redirect.browser_binding,
+    )
+    .await
+    .unwrap();
+    assert_eq!(login.email.as_deref(), Some("alice@acme.com"));
+}
+
+#[tokio::test]
+async fn concurrent_login_tabs_keep_independent_flows() {
+    let (idp_base, _idp) = spawn_idp().await;
+    let db = Database::open_in_memory().await.unwrap();
+    seed_org(&db, &idp_base, false, true, "{}").await;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
+
+    let first = begin_login(&db, "http://hub.example.com", org_id, None)
+        .await
+        .unwrap();
+    let second = begin_login(&db, "http://hub.example.com", org_id, None)
+        .await
+        .unwrap();
+    assert_ne!(first.state, second.state);
+    assert_ne!(first.browser_binding, second.browser_binding);
+    assert_ne!(
+        oidc::browser_binding_cookie_name(&first.state).unwrap(),
+        oidc::browser_binding_cookie_name(&second.state).unwrap()
+    );
+
+    let second_hash = oidc::browser_binding_digest(&second.browser_binding).unwrap();
+    let first_hash = oidc::browser_binding_digest(&first.browser_binding).unwrap();
+    assert!(db
+        .take_oidc_flow(&second.state, &second_hash)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(db
+        .take_oidc_flow(&first.state, &first_hash)
+        .await
+        .unwrap()
+        .is_some());
 }
 
 #[tokio::test]
@@ -448,10 +532,15 @@ async fn expired_flow_is_rejected() {
     let db = Database::open_in_memory().await.unwrap();
     let org_id = db.create_org("acme", "Acme").await.unwrap();
     // Stage a flow that is already expired (negative TTL).
-    db.create_oidc_flow("st", org_id, "nn", "verifier", None, -1)
+    let binding_hash = "0".repeat(64);
+    db.create_oidc_flow("st", org_id, "nn", "verifier", &binding_hash, None, -1)
         .await
         .unwrap();
-    assert!(db.take_oidc_flow("st").await.unwrap().is_none());
+    assert!(db
+        .take_oidc_flow("st", &binding_hash)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -485,6 +574,7 @@ async fn bad_nonce_is_rejected() {
             code: "test-code".into(),
             state,
         },
+        &redirect.browser_binding,
     )
     .await;
     assert!(err.is_err(), "a mismatched nonce must be rejected");
@@ -595,7 +685,12 @@ async fn begin_login_sets_pkce_s256_and_records_flow() {
     );
     let state = q.get("state").unwrap();
     // The recorded flow's verifier hashes to the sent challenge.
-    let flow = db.take_oidc_flow(state).await.unwrap().unwrap();
+    let binding_hash = oidc::browser_binding_digest(&redirect.browser_binding).unwrap();
+    let flow = db
+        .take_oidc_flow(state, &binding_hash)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         &code_challenge_s256(&flow.code_verifier),
         q.get("code_challenge").unwrap()

@@ -13,10 +13,10 @@ fn generated_relational_ids_are_positive_and_worker_exact() {
 #[test]
 fn fresh_schema_is_final_and_foreign_key_clean() {
     assert_eq!(
-            MIGRATIONS.len(),
-            8,
-            "released migrations through OCI namespace routes followed by native reference and report projections"
-        );
+        MIGRATIONS.len(),
+        9,
+        "released migrations through browser-bound OIDC login flows"
+    );
     let connection = Connection::open_in_memory().unwrap();
     connection
         .execute_batch("PRAGMA foreign_keys = ON;")

@@ -189,7 +189,8 @@
 //!                   verified_at 1730000000        -- NULL until verified
 //!
 //! oidc_flows        state "<opaque>"  org_id 1  nonce "<opaque>"
-//!                   code_verifier "<43..128 chars>"  redirect_after "/"
+//!                   code_verifier "<43..128 chars>"
+//!                   browser_binding_hash "<sha256>"  redirect_after "/"
 //!                   created_at 1730000000  expires_at 1730000600
 //! ```
 //!
@@ -534,6 +535,7 @@ pub fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// | 6 | `migration-0006-release-ability-graphs.sql` | Native release ability references. |
 /// | 7 | `migration-0007-native-documentation.sql` | Native documentation and search projections. |
 /// | 8 | `migration-0008-native-deployment-report.sql` | Native deployment reports and replay fences. |
+/// | 9 | `migration-0009-oidc-browser-binding.sql` | Browser-bound OIDC login flows. |
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("release_channel_advances.sql"),
@@ -543,6 +545,7 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("migration-0006-release-ability-graphs.sql"),
     include_str!("migration-0007-native-documentation.sql"),
     include_str!("migration-0008-native-deployment-report.sql"),
+    include_str!("migration-0009-oidc-browser-binding.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.
