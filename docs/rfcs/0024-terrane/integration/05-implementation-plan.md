@@ -13384,3 +13384,42 @@ structural cases, strict all-feature/all-target Clippy (including the new actual
 owner fixture), Rust formatting and Nix formatting. The dedicated native check
 has not yet executed on the committed source; these local results do not prove
 its filesystem sequence or kernel-cap controls.
+
+The first native surface-admission qualification at `bc4ca6ebbd` stops in the
+image's supplementary source-declaration inventory check after compilation,
+before any guest execution. That check excluded the feature-gated structural
+codec but counted the separately gated inode-policy tests as native-only cases.
+The complete compiler inventory remains authoritative and unchanged. The source
+comparison now verifies explicit `surface-fuse` module gates before excluding
+their declarations. The failed build directory and terminal receipt are
+retained; no native runtime pass is inferred from this failure.
+
+Cold derived indexes now retire under the original funded recovery/Drain turn.
+Every reserved filename and actual inode is checked before the first unlink;
+foreign custody, extra hard links and malformed names refuse recovery. A fresh
+exhaustive namespace observation and authenticated project accounting precede
+removal of disposable surface-copy holds. All unrelated pins, leases,
+reservations and residences remain unchanged. Cold names and verity measurements
+never authorize adoption; later admission recompiles canonical nodes.
+
+Index admission conservatively counts full project charge as an upper bound
+for its separate cap, including unlinked indexes retained by old mappings
+across repeated restarts. This can refuse admission early when ordinary cached
+content occupies the project. Precise attribution of pending index allocations
+remains required before removing that availability restriction. The guest
+fixture now checks actual cold retirement, cap-failure cleanup, continued mapped
+reads and charges, distinct replacement inodes, exact final-unmap quota release,
+and malformed-name refusal without deleting original candidates. Committed
+qualification for these additions remains pending; no cache eviction, exposure
+lease, production worker or completed FUSE surface is claimed.
+
+Required application-target compilation at `039f7455cf` passes in 1,513.32
+seconds with all 9,320 tracked files unchanged. Independent review matches all
+7,994 immutable source files and 184 actual compiler records across 59 packages.
+This is compilation-only evidence for the producer-binding checkpoint.
+
+Local cold-index verification passes both exact namespace/policy cases, strict
+all-feature/all-target Clippy, Rust formatting, Python syntax and the corrected
+complete native source-declaration comparison. These checks do not execute the
+new kernel mapping, quota or restart controls; their frozen native run remains
+pending.

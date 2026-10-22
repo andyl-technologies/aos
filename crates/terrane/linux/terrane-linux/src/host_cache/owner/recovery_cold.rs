@@ -1,8 +1,9 @@
 //! Preserves cold policy candidates until verified native backing reconciles them.
 //!
 //! This snapshot contains policy data, not adoption or serving authority. Every
-//! old pin, lease and hold survives unchanged; old residence rows must agree
-//! with independently reconstructed ranges before recovery can complete.
+//! old pin and lease survives unchanged; old residence rows must agree with
+//! independently reconstructed ranges before recovery can complete. Only actual
+//! native retirement can release disposable derived-index copy allowances.
 
 use super::{NativeCacheOwnerConfig, recovery_manifest_state::require_same};
 use std::{collections::BTreeSet, io, sync::Arc};
@@ -15,6 +16,46 @@ pub(super) struct ColdPolicy {
 }
 
 impl ColdPolicy {
+    /// Removes only disposable surface-copy holds after native namespace retirement.
+    ///
+    /// The caller must first retire every recognized derived index and inspect a
+    /// fresh exhaustive namespace under its actual funded Drain turn. Physical
+    /// kernel references remain charged by fresh project quota observations.
+    ///
+    /// # Errors
+    /// Refuses malformed reserved tokens or holds with dependent pins or leases.
+    /// The original cold policy remains unchanged on success and failure.
+    #[cfg(feature = "surface-fuse")]
+    pub(super) fn without_surface_reservations(&self) -> io::Result<Option<Self>> {
+        let mut next = self.state.as_ref().clone();
+        let mut remove = BTreeSet::new();
+        for hold in &self.state.reservations {
+            let Some(token) = hold.id.strip_prefix("surface-index:") else {
+                continue;
+            };
+            if token.len() != 32
+                || !token
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                || self.state.leases.iter().any(|lease| lease.owner == hold.id)
+                || self.state.pins.iter().any(|pin| pin.owner == hold.id)
+            {
+                return Err(invalid(
+                    "cold surface hold has unrecognized or dependent policy",
+                ));
+            }
+            remove.insert(hold.id.as_str());
+        }
+        if remove.is_empty() {
+            return Ok(None);
+        }
+        next.reservations
+            .retain(|hold| !remove.contains(hold.id.as_str()));
+        Ok(Some(Self {
+            state: Arc::new(next),
+        }))
+    }
+
     /// Copies validated candidates without interpreting them as native proof.
     ///
     /// # Errors
@@ -184,6 +225,9 @@ mod tests {
             state: Arc::new(state),
         }
     }
+
+    #[cfg(feature = "surface-fuse")]
+    mod surface_tests;
 
     #[test]
     fn cold_pins_require_complete_verified_backing_without_erasing_candidates() {

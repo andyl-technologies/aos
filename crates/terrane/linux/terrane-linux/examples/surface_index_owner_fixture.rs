@@ -22,9 +22,9 @@ use terrane_format::{
 };
 use terrane_linux::{
     host_cache::{NativeCachePreparation, NativeMetadataOwner, SurfaceIndexPolicy},
-    host_quota::NativeProject,
+    host_quota::{HostQuotaClient, NativeProject},
     quota_confinement,
-    structural_index::CompiledIndex,
+    structural_index::{CompiledIndex, MappedIndex},
 };
 use terrane_sdk::{host::cache::CacheState, store::TokioLocalFs};
 
@@ -36,7 +36,7 @@ fn main() -> Result<()> {
     let confinement = std::sync::Arc::new(quota_confinement::install()?);
     let inputs = config::Inputs::load()?;
     let mut settings = inputs.owner_config()?;
-    let policy = SurfaceIndexPolicy {
+    let mut policy = SurfaceIndexPolicy {
         max_entries: 16,
         max_node_bytes: 65536,
         max_index_bytes: if mode == "cap" { 4096 } else { 65536 },
@@ -44,18 +44,32 @@ fn main() -> Result<()> {
         future_hold_bytes: config::HOLD + 65536,
     };
     settings.surface_index = Some(policy);
-    let preparation = NativeCachePreparation::inspect(settings, confinement)?;
+    let mut preparation = NativeCachePreparation::inspect(settings, confinement.clone())?;
+    if mode == "cap" {
+        let mut quota = HostQuotaClient::connect(&inputs.quota, 0, config::EPOCH)?;
+        let baseline = quota_sample(&mut quota, &inputs)?.0;
+        // The real empty snapshot consumes one ext4 block. Leave room for that
+        // snapshot and the small compiled payload, but not another data block.
+        policy.capacity_bytes = baseline.checked_add(6144).ok_or("fixture cap overflows")?;
+        drop(preparation);
+        let mut settings = inputs.owner_config()?;
+        settings.surface_index = Some(policy);
+        preparation = NativeCachePreparation::inspect(settings, confinement.clone())?;
+    }
     if mode == "prepare" {
         println!("PASS actual surface owner native preparation");
         return Ok(());
     }
-    if !matches!(mode.as_str(), "run" | "cap") {
+    if !matches!(mode.as_str(), "run" | "cap" | "refuse-cold") {
         return Err("unknown surface-owner selector".into());
     }
     let owner = NativeMetadataOwner::start(preparation)?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
+    if mode == "refuse-cold" {
+        return refuse_malformed_cold(&owner, &runtime, &inputs);
+    }
     let (root, nodes) = tree()?;
     let before = snapshot(&inputs)?;
     if runtime
@@ -87,7 +101,8 @@ fn main() -> Result<()> {
         let canonical = canonical_path(&inputs, root);
         let file = File::open(&canonical)?;
         terrane_linux::verity::measure(&file)?;
-        if file.metadata()?.blocks() * 512 <= policy.capacity_bytes
+        let mut quota = HostQuotaClient::connect(&inputs.quota, 0, config::EPOCH)?;
+        if quota_sample(&mut quota, &inputs)?.0 <= policy.capacity_bytes
             || runtime
                 .block_on(owner.cache_surface_index(root, BTreeMap::new()))
                 .is_ok()
@@ -106,6 +121,18 @@ fn main() -> Result<()> {
         }
         println!(
             "PASS actual separate surface cap retains sealed inode, durable hold and faulted owner"
+        );
+        drop(file);
+        drop(owner);
+        let restarted = restart(&inputs, policy, confinement)?;
+        let completed = runtime.block_on(restarted.recover())?;
+        runtime.block_on(restarted.resume_recovered(completed))?;
+        no_surface_hold(&runtime, &inputs)?;
+        if canonical.exists() {
+            return Err("cold cap-failure inode survived retirement".into());
+        }
+        println!(
+            "PASS cold recovery retires actual cap-failure index before releasing its copy hold"
         );
         return Ok(());
     }
@@ -196,7 +223,148 @@ fn main() -> Result<()> {
     println!(
         "PASS surface indexes are kernel immutable; warm reuse and invalid nodes cause no durable mutation or content fetch"
     );
+    let binding = terrane_linux::verity::measure(&file)?;
+    let mapping = MappedIndex::open(File::open(&canonical)?.into(), root, &binding, 65536)?;
+    let old_allocated = admitted.synchronized_inode_bytes();
+    drop(file);
+    drop(admitted);
+    drop(reused);
+    drop(owner);
+
+    let restarted = restart(&inputs, policy, confinement)?;
+    let completed = runtime.block_on(restarted.recover())?;
+    if canonical.exists()
+        || completed.charged_reserved_bytes() < old_allocated
+        || mapping.index().lookup(b"file").is_none()
+    {
+        return Err("cold surface retirement lost retained mapping or physical charge".into());
+    }
+    runtime.block_on(restarted.resume_recovered(completed))?;
+    no_surface_hold(&runtime, &inputs)?;
+    println!(
+        "PASS cold recovery retires index names and copy holds while retaining actual mapped bytes and project charge"
+    );
+
+    let (_, nodes) = tree()?;
+    let replacement = runtime.block_on(restarted.cache_surface_index(root, nodes))?;
+    replacement.check_native_backing()?;
+    if File::open(&canonical)?.metadata()?.ino() == metadata.ino() {
+        return Err("cold recompilation reused a still-mapped retired inode".into());
+    }
+    let mut quota = HostQuotaClient::connect(&inputs.quota, 0, config::EPOCH)?;
+    let before = quota_sample(&mut quota, &inputs)?;
+    drop(mapping);
+    let deadline = observation_now() + std::time::Duration::from_secs(5);
+    loop {
+        let after = quota_sample(&mut quota, &inputs)?;
+        if before.0.checked_sub(after.0) == Some(old_allocated)
+            && before.1.checked_sub(after.1) == Some(1)
+        {
+            break;
+        }
+        if observation_now() >= deadline {
+            return Err(
+                "final index unmap did not release exactly its actual charged blocks and inode"
+                    .into(),
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    println!(
+        "PASS cold recompilation creates a distinct inode and final old-index unmap releases exactly its project charge"
+    );
     require_empty_capabilities()?;
+    Ok(())
+}
+
+fn restart(
+    inputs: &config::Inputs,
+    policy: SurfaceIndexPolicy,
+    confinement: std::sync::Arc<quota_confinement::Installed>,
+) -> Result<NativeMetadataOwner> {
+    let mut settings = inputs.owner_config()?;
+    settings.surface_index = Some(policy);
+    Ok(NativeMetadataOwner::start(
+        NativeCachePreparation::inspect(settings, confinement)?,
+    )?)
+}
+
+fn no_surface_hold(runtime: &tokio::runtime::Runtime, inputs: &config::Inputs) -> Result<()> {
+    let state = runtime
+        .block_on(CacheState::load(
+            &TokioLocalFs,
+            &inputs.root.join("state/cache"),
+            config::STATE,
+        ))?
+        .ok_or("cold surface snapshot missing")?;
+    if state
+        .reservations
+        .iter()
+        .any(|hold| hold.id.starts_with("surface-index:"))
+    {
+        return Err("cold surface copy hold survived successful retirement".into());
+    }
+    Ok(())
+}
+
+fn quota_sample(client: &mut HostQuotaClient, inputs: &config::Inputs) -> Result<(u64, u64)> {
+    rustix::fs::syncfs(&File::open(&inputs.root)?)?;
+    let verified = client.query(&inputs.owner, &inputs.domain)?;
+    let actual = verified.observation();
+    Ok((actual.charged_reserved_bytes, actual.charged_inodes))
+}
+
+// This native guest observes real kernel deallocation, outside Crucible state.
+#[allow(clippy::disallowed_methods)]
+fn observation_now() -> std::time::Instant {
+    std::time::Instant::now()
+}
+
+fn refuse_malformed_cold(
+    owner: &NativeMetadataOwner,
+    runtime: &tokio::runtime::Runtime,
+    inputs: &config::Inputs,
+) -> Result<()> {
+    let before = runtime
+        .block_on(CacheState::load(
+            &TokioLocalFs,
+            &inputs.root.join("state/cache"),
+            config::STATE,
+        ))?
+        .ok_or("original cold surface snapshot missing")?;
+    let error = runtime
+        .block_on(owner.recover())
+        .err()
+        .ok_or("malformed cold surface namespace was accepted")?;
+    if error.kind() != io::ErrorKind::InvalidData {
+        return Err(error.into());
+    }
+    let after = runtime
+        .block_on(CacheState::load(
+            &TokioLocalFs,
+            &inputs.root.join("state/cache"),
+            config::STATE,
+        ))?
+        .ok_or("failed cold surface snapshot missing")?;
+    let mut found = false;
+    for original in before
+        .reservations
+        .iter()
+        .filter(|hold| hold.id.starts_with("surface-index:"))
+    {
+        found = true;
+        if !after.reservations.iter().any(|hold| {
+            hold.id == original.id && hold.owner == original.owner && hold.bytes == original.bytes
+        }) {
+            return Err("malformed cold namespace discarded original surface funding".into());
+        }
+    }
+    if !found {
+        return Err("cold refusal fixture has no original surface hold".into());
+    }
+    println!(
+        "PASS malformed cold surface namespace preserves original copy holds and refuses recovery"
+    );
     Ok(())
 }
 

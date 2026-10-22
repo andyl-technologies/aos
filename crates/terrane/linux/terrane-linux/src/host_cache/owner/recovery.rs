@@ -403,6 +403,13 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         (bootstrap.id, owner.generation, write)
     };
     super::snapshot::persist(executor, bootstrap_write).await?;
+    #[cfg(feature = "surface-fuse")]
+    if let Some(retired) =
+        super::surface_index::recovery::retire(executor, &mut shared, &id, &context).await?
+    {
+        generation = retired;
+        shared.inspect_quarantine(&inspector)?;
+    }
     let work = recovery_indexes::run(executor, &inspector, &id, &context).await?;
     if let Some(repaired) = work.generation {
         let owner = custody

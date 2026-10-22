@@ -11,6 +11,8 @@
 //! reservation id = surface-index:<random-operation-hex>
 //! ```
 
+pub(super) mod recovery;
+
 use super::{
     consumer::state,
     index_io::close_checked,
@@ -197,7 +199,8 @@ pub(super) async fn admit(
             }
             return reused;
         }
-        let allocated = total_allocated(&owner)?;
+        owner.preparation.recheck()?;
+        let allocated = allocation_bound(&owner)?;
         if owner.surface_indexes.len() >= owner.preparation.config.state.records
             || allocated
                 .checked_add(compiled.bytes().len() as u64)
@@ -271,7 +274,8 @@ pub(super) async fn admit(
             .config
             .surface_index
             .ok_or_else(|| invalid("surface policy absent"))?;
-        if total_allocated(&owner)? > policy.capacity_bytes {
+        owner.preparation.recheck()?;
+        if allocation_bound(&owner)? > policy.capacity_bytes {
             return Err(io::Error::new(
                 io::ErrorKind::StorageFull,
                 "actual surface allocation exceeds separate cap",
@@ -296,7 +300,21 @@ pub(super) async fn admit(
     let result = NativeSurfaceIndex {
         backing: Arc::clone(backing),
     };
-    state::finish(&mut owner, generation)?;
+    let observation = state::finish(&mut owner, generation)?;
+    if observation.charged
+        > owner
+            .preparation
+            .config
+            .surface_index
+            .ok_or_else(|| invalid("surface policy absent"))?
+            .capacity_bytes
+    {
+        owner.faulted = true;
+        return Err(io::Error::new(
+            io::ErrorKind::StorageFull,
+            "actual surface allocation bound exceeds separate cap after state synchronization",
+        ));
+    }
     Ok(result)
 }
 
@@ -337,11 +355,21 @@ fn reuse(owner: &Custody, job: &Job, compiled: &CompiledIndex) -> io::Result<Nat
     })
 }
 
-fn total_allocated(owner: &Custody) -> io::Result<u64> {
-    owner.surface_indexes.values().try_fold(0u64, |sum, job| {
+fn allocation_bound(owner: &Custody) -> io::Result<u64> {
+    let known = owner.surface_indexes.values().try_fold(0u64, |sum, job| {
         sum.checked_add(job.backing.as_ref().map_or(0, |backing| backing.allocated))
             .ok_or_else(|| invalid("surface cache allocation overflows"))
-    })
+    })?;
+    // A cold unlink cannot reveal whether another process or kernel mapping
+    // still retains the inode. Counting the complete actual project prevents
+    // that unknown allocation from being credited to the separate cap early.
+    Ok(known.max(
+        owner
+            .preparation
+            .quota()
+            .observation()
+            .charged_reserved_bytes,
+    ))
 }
 
 fn write_index(

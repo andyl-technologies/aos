@@ -20,6 +20,10 @@ pub struct SurfaceIndexPolicy {
     /// Maximum compiled bytes in a single derived index.
     pub max_index_bytes: usize,
     /// Separate cap on synchronized index-inode allocation, including verity data.
+    ///
+    /// Admission currently uses full project charge as a conservative upper
+    /// bound so unlinked indexes retained by old mappings cannot escape this cap.
+    /// Other host-cache content can therefore cause an earlier refusal.
     pub capacity_bytes: u64,
     /// Distinct future hold retained until native retirement reconciles the job.
     pub future_hold_bytes: u64,

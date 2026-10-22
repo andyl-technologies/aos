@@ -193,14 +193,26 @@ def unit_inventory(output):
 def source_unit_inventory(workspace):
     """Checks the retained selection against all test declarations in its scope."""
     root = workspace / "terrane/linux/terrane-linux/src"
-    # This image enables native-test-fixtures and tokio, not surface-fuse.
-    # The compiler inventory remains authoritative; exclude this separately
-    # gated module from the supplementary source-declaration comparison.
-    shared.require('#[cfg(feature = "surface-fuse")]\npub mod structural_index;'
-                   in (root / "lib.rs").read_text(), "structural codec lost its feature gate")
+    # The actual compiled inventory remains authoritative. Supplement it with
+    # source declarations only after checking every excluded feature boundary.
+    gated = [
+        ("structural_index", "lib.rs", "pub mod structural_index;"),
+        ("inode_policy", "lib.rs", "pub mod inode_policy;"),
+        ("host_cache/owner/surface_index", "host_cache/owner/mod.rs", "mod surface_index;"),
+        ("host_cache/owner/recovery_namespace/surface", "host_cache/owner/recovery_namespace.rs", "mod surface;"),
+        ("host_cache/owner/recovery_cold/tests/surface_tests", "host_cache/owner/recovery_cold.rs", "    mod surface_tests;"),
+    ]
+    for prefix, owner, declaration in gated:
+        shared.require('#[cfg(feature = "surface-fuse")]\n' + declaration
+                       in (root / owner).read_text(),
+                       "native inventory lost its explicit feature gate: " + prefix)
+        shared.require((root / (prefix + ".rs")).is_file(),
+                       "native inventory feature module missing: " + prefix)
     declared = []
     for path in sorted(root.rglob("*.rs")):
-        if path.relative_to(root).parts[0] in ("structural_index.rs", "structural_index"):
+        relative = path.relative_to(root).as_posix()
+        if any(relative == prefix + ".rs" or relative.startswith(prefix + "/")
+               for prefix, _, _ in gated):
             continue
         declared.extend(re.findall(r"#\[(?:tokio::)?test\]\s*(?:async\s+)?fn\s+(\w+)\s*\(", path.read_text()))
     expected = (*UNIT_TESTS, *ROOT_UNIT_TESTS)

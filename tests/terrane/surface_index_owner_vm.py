@@ -122,10 +122,13 @@ def main():
                 "PASS surface admission requires actual recovery and acknowledged Resume",
                 "PASS cancelled surface waiter retains canonical sealed inode and warm requests share original inode",
                 "PASS surface indexes are kernel immutable; warm reuse and invalid nodes cause no durable mutation or content fetch",
+                "PASS cold recovery retires index names and copy holds while retaining actual mapped bytes and project charge",
+                "PASS cold recompilation creates a distinct inode and final old-index unmap releases exactly its project charge",
             ],
             "cap": [
                 "PASS surface admission requires actual recovery and acknowledged Resume",
                 "PASS actual separate surface cap retains sealed inode, durable hold and faulted owner",
+                "PASS cold recovery retires actual cap-failure index before releasing its copy hold",
             ],
         }
         for case, mode in [("empty", "run"), ("pin", "cap")]:
@@ -138,8 +141,30 @@ def main():
             require(not list((support.root(case) / "sealed").iterdir())
                     and not list((support.root(case) / "chunks").iterdir()),
                     "metadata-only surface admission fetched object content")
+        objects = support.root("empty") / "objects"
+        originals = list(objects.glob(".terrane-surface:2:*"))
+        require(len(originals) == 1, "cold refusal has no unique real admitted index")
+        original = originals[0]
+        before = original.stat()
+        original_bytes = original.read_bytes()
+        malformed = objects / ".terrane-surface-tmp:bad"
+        malformed.write_bytes(b"untrusted malformed cold index name")
+        support.metadata(malformed, 840, 845, 0o600)
+        result = subprocess.run(support.role_command(840, [executable, "refuse-cold"]),
+            env=environment("empty"), text=True, capture_output=True, timeout=30)
+        print(result.stdout, end="", flush=True)
+        print(result.stderr, end="", flush=True)
+        require(result.returncode == 0 and result.stdout.splitlines() == [
+            "PASS malformed cold surface namespace preserves original copy holds and refuses recovery"],
+            "malformed cold surface namespace did not refuse recovery")
+        after = original.stat()
+        require((before.st_dev, before.st_ino, before.st_nlink) ==
+                (after.st_dev, after.st_ino, after.st_nlink)
+                and original.read_bytes() == original_bytes
+                and malformed.read_bytes() == b"untrusted malformed cold index name",
+                "cold refusal deleted or changed original candidate inodes")
         verify_surface(image, source)
-        print("PASS actual native surface-index admission and separate cap; exposure pins and worker remain unqualified", flush=True)
+        print("PASS actual native surface-index admission, cold retirement and separate cap; exposure pins and worker remain unqualified", flush=True)
     finally:
         for child in reversed(children):
             if child.poll() is None:

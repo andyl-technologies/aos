@@ -16,6 +16,8 @@
 //! Canonical names and unrelated files are never classified as scratch.
 
 mod quarantine;
+#[cfg(feature = "surface-fuse")]
+mod surface;
 
 use super::NativeCachePreparation;
 use crate::{
