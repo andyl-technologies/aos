@@ -542,59 +542,6 @@ in {
         f"{managed_handle} {managed_assignment_digest} {gate_digest}"
     )
     lifecycle.wait_until_succeeds(f"test -s {GATE_INSTALL_READY}", timeout=20)
-    lifecycle.succeed(f"{IP} link set {managed_host} up")
-    lifecycle.succeed(
-        f"{IP} -n aos-observe-managed link set {managed_sandbox} up"
-    )
-    addresses_are_settled = "all(.[].addr_info[]; ((.tentative // false) == false))"
-    lifecycle.wait_until_succeeds(
-        f"{IP} -j address show dev {managed_host} | "
-        f"{JQ} -e {shlex.quote(addresses_are_settled)} >/dev/null",
-        timeout=10,
-    )
-    lifecycle.wait_until_succeeds(
-        f"{IP} -n aos-observe-managed -j address show dev {managed_sandbox} | "
-        f"{JQ} -e {shlex.quote(addresses_are_settled)} >/dev/null",
-        timeout=10,
-    )
-    assert lifecycle.succeed(
-        f"{FIXTURE} observer-run managed {managed_root} {managed_pin} {IP} "
-        f"{GATE_OBJECT}"
-    ).strip() == "OBSERVER_OK managed"
-
-    def assert_managed_observer_rejects(expected_fragment):
-        status, stdout, stderr = lifecycle.execute(
-            f"{FIXTURE} observer-run managed {managed_root} {managed_pin} "
-            f"{IP} {GATE_OBJECT}"
-        )
-        output = stdout + stderr
-        assert status != 0, output
-        assert expected_fragment in output, output
-
-    # DAD suppression is checked while decoding the native address inventory.
-    lifecycle.succeed(
-        f"{IP} -n aos-observe-managed -6 address change "
-        f"{managed_sandbox_address_2}/{managed_prefix_2} "
-        f"dev {managed_sandbox}"
-    )
-    lifecycle.wait_until_succeeds(
-        f"{IP} -n aos-observe-managed -j address show dev {managed_sandbox} | "
-        f"{JQ} -e {shlex.quote(addresses_are_settled)} >/dev/null",
-        timeout=10,
-    )
-    assert_managed_observer_rejects(
-        b"address DAD suppression differs from its family and link role"
-    )
-    lifecycle.succeed(
-        f"{IP} -n aos-observe-managed -6 address change "
-        f"{managed_sandbox_address_2}/{managed_prefix_2} nodad "
-        f"dev {managed_sandbox}"
-    )
-    assert lifecycle.succeed(
-        f"{FIXTURE} observer-run managed {managed_root} {managed_pin} {IP} "
-        f"{GATE_OBJECT}"
-    ).strip() == "OBSERVER_OK managed"
-
     # Install the exact plan-selected default-drop table in the same retained
     # namespace, inspect actual AOS nft JSON, and decode two complete snapshots
     # through retained immutable nft and loader descriptors.
@@ -674,12 +621,7 @@ in {
         f"{managed_sandbox_ifindex} {managed_sandbox_address_1} "
         f"{managed_sandbox_address_2}"
     ).strip() == "NFT_OBSERVER_OK"
-    # The retained admission is Prepared: policy is installed while both
-    # veths remain fenced until a separately authorized lease arms them.
-    lifecycle.succeed(f"{IP} link set {managed_host} down")
-    lifecycle.succeed(
-        f"{IP} -n aos-observe-managed link set {managed_sandbox} down"
-    )
+    # Observe the initial Prepared pair before any link has been raised.
     # Neighbor equality is a plan postcondition of the complete kernel
     # validator. The inventory-only observer above proves stable peer custody.
     managed_kernel_observation = (
@@ -753,6 +695,61 @@ in {
     )
     assert_managed_kernel_restored()
 
+    # Raising and subsequently lowering a pair flushes IPv6 configuration.
+    # Run the inventory-only UP/DAD checks after the initial Prepared proof.
+    lifecycle.succeed(f"{IP} link set {managed_host} up")
+    lifecycle.succeed(
+        f"{IP} -n aos-observe-managed link set {managed_sandbox} up"
+    )
+    addresses_are_settled = "all(.[].addr_info[]; ((.tentative // false) == false))"
+    lifecycle.wait_until_succeeds(
+        f"{IP} -j address show dev {managed_host} | "
+        f"{JQ} -e {shlex.quote(addresses_are_settled)} >/dev/null",
+        timeout=10,
+    )
+    lifecycle.wait_until_succeeds(
+        f"{IP} -n aos-observe-managed -j address show dev {managed_sandbox} | "
+        f"{JQ} -e {shlex.quote(addresses_are_settled)} >/dev/null",
+        timeout=10,
+    )
+    assert lifecycle.succeed(
+        f"{FIXTURE} observer-run managed {managed_root} {managed_pin} {IP} "
+        f"{GATE_OBJECT}"
+    ).strip() == "OBSERVER_OK managed"
+
+    def assert_managed_observer_rejects(expected_fragment):
+        status, stdout, stderr = lifecycle.execute(
+            f"{FIXTURE} observer-run managed {managed_root} {managed_pin} "
+            f"{IP} {GATE_OBJECT}"
+        )
+        output = stdout + stderr
+        assert status != 0, output
+        assert expected_fragment in output, output
+
+    # DAD suppression is checked while decoding the native address inventory.
+    lifecycle.succeed(
+        f"{IP} -n aos-observe-managed -6 address change "
+        f"{managed_sandbox_address_2}/{managed_prefix_2} "
+        f"dev {managed_sandbox}"
+    )
+    lifecycle.wait_until_succeeds(
+        f"{IP} -n aos-observe-managed -j address show dev {managed_sandbox} | "
+        f"{JQ} -e {shlex.quote(addresses_are_settled)} >/dev/null",
+        timeout=10,
+    )
+    assert_managed_observer_rejects(
+        b"address DAD suppression differs from its family and link role"
+    )
+    lifecycle.succeed(
+        f"{IP} -n aos-observe-managed -6 address change "
+        f"{managed_sandbox_address_2}/{managed_prefix_2} nodad "
+        f"dev {managed_sandbox}"
+    )
+    assert lifecycle.succeed(
+        f"{FIXTURE} observer-run managed {managed_root} {managed_pin} {IP} "
+        f"{GATE_OBJECT}"
+    ).strip() == "OBSERVER_OK managed"
+
     # Observer-scoped cleanup must not touch the fixed-root pins used by the
     # independent lease-gate proof fixture.
     default_gate_root = "/sys/fs/bpf/aos/network-lease-gate-proof"
@@ -767,13 +764,6 @@ in {
     )
     lifecycle.succeed(f"test -d {default_scope_sentinel}")
     lifecycle.succeed(f"rmdir {default_scope_sentinel} {default_gate_root}")
-
-    # The following inventory-only peer substitution checks preserve the
-    # administratively up link attributes captured before the attack.
-    lifecycle.succeed(f"{IP} link set {managed_host} up")
-    lifecycle.succeed(
-        f"{IP} -n aos-observe-managed link set {managed_sandbox} up"
-    )
 
     managed_host_link = json.loads(lifecycle.succeed(
         f"{IP} -j -details link show dev {managed_host}"
