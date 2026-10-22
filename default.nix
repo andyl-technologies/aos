@@ -1923,6 +1923,10 @@ in rec {
         if hostPlatform.isLinux && hostPlatform.is64bit
         then import ./tests/build/sandbox-nix-method46-profile.nix {inherit pkgs lib systems;}
         else null;
+      sandbox-nix-offline-hardware-profile =
+        if hostPlatform.isLinux && hostPlatform.is64bit
+        then import ./tests/build/sandbox-nix-offline-hardware-profile.nix {inherit pkgs lib systems;}
+        else null;
       sandbox-resource-unit-names = import ./tests/build/sandbox-resource-unit-names.nix {inherit pkgs;};
       sandbox-policy-cache-recovery-service = import ./tests/build/sandbox-policy-cache-recovery-service.nix {
         inherit pkgs lib;
@@ -2079,7 +2083,7 @@ in rec {
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) imageBudgetSystems;
     in
       {
-        inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache python-bytecode artifact-consumption native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell esp-population hardening-probe host-native-inputs initrd-native-inputs initrd-module-hardlinks initrd-udev-rules initrd-stage-contract native-stage-replay native-profile-replay kernel-config rootfs-kernel-modules linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets native-acquire-v3-protocol erofs-deduplication linux-cross-llvm linux-cross-runtime sandbox-guest-root-template sandbox-controller-service sandbox-nix-method46-profile sandbox-resource-unit-names sandbox-policy-cache-recovery-service sandbox-cache-signer-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-scrub vm-rootfs-adapter;
+        inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache python-bytecode artifact-consumption native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell esp-population hardening-probe host-native-inputs initrd-native-inputs initrd-module-hardlinks initrd-udev-rules initrd-stage-contract native-stage-replay native-profile-replay kernel-config rootfs-kernel-modules linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets native-acquire-v3-protocol erofs-deduplication linux-cross-llvm linux-cross-runtime sandbox-guest-root-template sandbox-controller-service sandbox-nix-method46-profile sandbox-nix-offline-hardware-profile sandbox-resource-unit-names sandbox-policy-cache-recovery-service sandbox-cache-signer-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-scrub vm-rootfs-adapter;
         # These checks inspect realized closures, so keep them out of the pure evaluation layer.
         inherit config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness;
         config-manifest = config-manifest;
@@ -2100,6 +2104,7 @@ in rec {
             )
             ++ lib.optional (artifact-consumption != null) artifact-consumption
             ++ lib.optional (sandbox-nix-method46-profile != null) sandbox-nix-method46-profile
+            ++ lib.optional (sandbox-nix-offline-hardware-profile != null) sandbox-nix-offline-hardware-profile
             ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache python-bytecode native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell esp-population initrd-module-hardlinks initrd-udev-rules initrd-stage-contract native-stage-replay native-profile-replay kernel-config rootfs-kernel-modules linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness config-manifest configProvenanceChecks.all renderedEvalSuites.rendered-system]
             ++ [native-acquire-v3-protocol sandbox-guest-root-template sandbox-controller-service sandbox-resource-unit-names sandbox-policy-cache-recovery-service sandbox-cache-signer-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-scrub vm-rootfs-adapter]
             ++ builtins.attrValues (builtins.removeAttrs renderedEvalSuites ["rendered-system"])

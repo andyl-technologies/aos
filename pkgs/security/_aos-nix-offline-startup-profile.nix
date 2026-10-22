@@ -17,6 +17,36 @@
     then "${aos-selinux-production-policy}/${aos-selinux-production-policy.passthru.effectivePolicyCheckerRelative}"
     else "${support}/effective_policy.py";
   effectivePolicyCheckerArguments = aos-selinux-production-policy.passthru.effectivePolicyCheckerArguments or "";
+  # Initialize and recover admit different invocation hashes, but their V5
+  # consumer requires every policy pin to remain literal. Keep these artifacts
+  # independent of the invocation-specific profile output path.
+  policyArtifacts = mkDerivation {
+    # These retain the consumer's closed V3 path family and its profile label.
+    # The derivation hash distinguishes this shared policy part from the
+    # invocation-specific part containing profile.json.
+    pname = "aos-nix-offline-startup-profile";
+    version = "3";
+    src = null;
+    buildDeps = [buildPackages.python3 buildPackages.setools];
+    runtimeDeps = [];
+    propagatedDeps = [];
+    dontNukeRefs = true;
+    phases = [
+      {
+        name = "inspect-policy";
+        script = ''
+          set -eu
+          export PYTHONPATH=${buildPackages.setools}/lib/python3/site-packages
+          ${buildPackages.python3}/bin/python3 -B ${effectivePolicyChecker} \
+            ${effectivePolicyCheckerArguments} ${sourcePolicy} > effective-policy.tsv
+          test -s effective-policy.tsv
+          mkdir -p "$out"
+          install -m 0444 effective-policy.tsv "$out/effective-policy.tsv"
+          install -m 0444 ${sourcePolicy} "$out/source-policy.33"
+        '';
+      }
+    ];
+  };
 in
   mkDerivation {
     pname = "aos-nix-offline-startup-profile";
@@ -43,7 +73,7 @@ in
         else []
       );
     nukeRefsKeep =
-      [aos-sandboxd systemd aos-selinux-production-policy aos-selinux-kernel-policy-readback]
+      [aos-sandboxd systemd aos-selinux-production-policy aos-selinux-kernel-policy-readback policyArtifacts]
       ++ (
         if hardware
         then [aos-nix-offline-tpm-helper]
@@ -55,13 +85,9 @@ in
         name = "build";
         script = ''
           set -eu
-          export PYTHONPATH=${buildPackages.setools}/lib/python3/site-packages
-          ${buildPackages.python3}/bin/python3 -B ${effectivePolicyChecker} \
-            ${effectivePolicyCheckerArguments} ${sourcePolicy} > effective-policy.tsv
-          test -s effective-policy.tsv
           mkdir -p "$out"
-          install -m 0444 effective-policy.tsv "$out/effective-policy.tsv"
-          install -m 0444 ${sourcePolicy} "$out/source-policy.33"
+          install -m 0444 ${policyArtifacts}/effective-policy.tsv "$out/effective-policy.tsv"
+          install -m 0444 ${policyArtifacts}/source-policy.33 "$out/source-policy.33"
 
           # Import the sole existing image/ELF/closure primitives. This closed
           # producer changes only the purpose schema and selected unit contract.
@@ -70,7 +96,7 @@ in
             ${aos-sandboxd}/bin/aos-sandbox-nix-floor-provision \
             ${systemd}/lib/systemd/systemd \
             ${aos-selinux-kernel-policy-readback}/policy.33 \
-            "$out/source-policy.33" "$out/effective-policy.tsv" \
+            ${policyArtifacts}/source-policy.33 ${policyArtifacts}/effective-policy.tsv \
             ${buildPackages.patchelf}/bin/patchelf \
             ${buildPackages.binutils}/bin/readelf "$out/profile.json" <<'PY'
           import hashlib

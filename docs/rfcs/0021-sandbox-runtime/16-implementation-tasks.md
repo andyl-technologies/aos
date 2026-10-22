@@ -9649,6 +9649,18 @@ rejected when the hardware-profile check forced that option. The canonical
 reference removes that evaluation error; core evaluation passes. Candidate
 creation and stopped-owner readback still require the installed VM receipt.
 
+The hardware-profile check also found that initialize and recover pinned
+identical source-policy and effective-matrix bytes under their distinct profile
+output paths. The installed V5 consumer correctly rejects that difference:
+only the independently measured invocation hash may change. The producer now
+places those two pins in a shared immutable policy artifact independent of the
+selected command, retaining the existing V3 path family and profile MAC label.
+The consumer comparison remains unchanged. The new
+`build.sandbox-nix-offline-hardware-profile` check forces both actual metadata
+inventories, independently measures both rendered units and the helper contract,
+and compares their complete profiles under that rule. Its repaired build is
+pending; it does not approve a hardware job or perform a TPM operation.
+
 The following signed Host and offline boots can query the vendor target but
 fail native host activation: creating configuration temporaries triggers an
 `unlabeled_t:filesystem associate` denial on the writable tmpfs upper. The
@@ -9676,6 +9688,12 @@ Core evaluation and formatting pass. The superseded Host,
 offline, Root, lifecycle and handoff clients were interrupted
 after the installed failure was identified; they provide no qualification
 receipt for the repaired writer.
+
+The subsequent signed Host boot containing the repaired writer still fails
+native activation while creating the SSH configuration temporary. A diagnostic
+boot confirms that a generated configuration EROFS lower is already mounted
+when this occurs; the earlier component receipts therefore do not establish
+installed copy-up or Host readiness. Direct inode-label diagnosis remains open.
 
 The full Root and lifecycle-funded images separately reached closure assembly
 and rejected duplicate `50-udev-default.rules` providers. Immutable root
