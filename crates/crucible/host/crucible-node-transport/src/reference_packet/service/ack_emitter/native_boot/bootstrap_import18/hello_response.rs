@@ -138,21 +138,24 @@ impl OriginalImport18RawBootstrap {
         &self,
         inspect: impl FnOnce(&Envelope) -> Result<R, ProviderError>,
     ) -> Result<R, ProviderError> {
-        self.guard_hello_response_inputs()?;
-        let outcome = inspect(self.hello_response.data(self.cut)?);
-        let terminal = self
-            .guard_hello_response_inputs()
-            .and_then(|()| self.hello_response.data(self.cut).map(|_| ()));
-        let output = outcome?;
-        terminal?;
-        Ok(output)
+        // Keep one complete predecessor loan around inspection. Reopening it
+        // on each side recursively repeats every earlier Hello custody walk.
+        self.with_hello_envelope_data(|_| {
+            let outcome = inspect(self.hello_response.data(self.cut)?);
+            let terminal = self.hello_response.data(self.cut).map(|_| ());
+            let output = outcome?;
+            terminal?;
+            Ok(output)
+        })
     }
 
     /// Names completed response custody and its original request/result loans.
     pub(in super::super) fn hello_response_loan_counter_scratch_data<R: Copy>() -> usize {
-        Self::hello_envelope_loan_counter_scratch_data::<()>()
+        // The predecessor now returns the actual Copy output while holding
+        // this borrowed closure; its result controls coexist with ours.
+        Self::hello_envelope_loan_counter_scratch_data::<R>()
             + Attempt::counter_scratch_data()
-            + size_of::<&Self>()
+            + size_of::<&Self>() * 2
             + size_of::<&Envelope>()
             + size_of::<&serde_json::Value>()
             + size_of::<R>() * 2

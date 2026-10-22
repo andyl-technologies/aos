@@ -214,8 +214,11 @@ pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap)
             ) {
                 return Err(ProviderError::Conflict("Hello response DATA loan"));
             }
-            Ok(())
+            Ok([0x53; 4096])
         });
+        if let Ok(value) = &result {
+            assert_eq!(*value, [0x53; 4096]);
+        }
         assert_eq!(
             called.get(),
             case != "initial_hello_response_substituted_cut"
@@ -303,6 +306,18 @@ pub(super) fn assert_child(case: &str, owner: &mut OriginalImport18RawBootstrap)
     )
     .unwrap();
     assert_eq!(&queued[..count], b"literal suffix");
+}
+
+#[test]
+fn response_loan_funds_large_copy_results_in_both_retained_loan_frames() {
+    let unit = OriginalImport18RawBootstrap::hello_response_loan_counter_scratch_data::<()>();
+    let large =
+        OriginalImport18RawBootstrap::hello_response_loan_counter_scratch_data::<[u8; 4096]>();
+    let predecessor =
+        OriginalImport18RawBootstrap::hello_envelope_loan_counter_scratch_data::<[u8; 4096]>()
+            - OriginalImport18RawBootstrap::hello_envelope_loan_counter_scratch_data::<()>();
+
+    assert!(large - unit >= predecessor + 4096 * 2);
 }
 
 #[test]
