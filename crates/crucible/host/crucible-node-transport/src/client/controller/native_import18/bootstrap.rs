@@ -38,6 +38,8 @@ mod history;
 mod materialization;
 #[path = "bootstrap/publication.rs"]
 mod publication;
+#[path = "bootstrap/receipt_loan.rs"]
+mod receipt_loan;
 #[path = "bootstrap/receive.rs"]
 mod receive;
 #[path = "bootstrap/reservation.rs"]

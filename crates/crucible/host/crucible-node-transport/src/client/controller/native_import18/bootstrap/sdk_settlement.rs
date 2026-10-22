@@ -191,7 +191,11 @@ fn check_retained(
     Ok(())
 }
 
-fn authenticate_terminal(
+/// Checks the original identity, cut, physical literal and settled SDK outputs.
+///
+/// # Errors
+/// Refuses changed custody, response correspondence, endpoint or original time.
+pub(super) fn authenticate_terminal(
     controller: &CnpController,
     hello: &OriginalHelloJournal,
     owner: &OriginalNativeImport18Bootstrap,

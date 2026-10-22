@@ -10,6 +10,7 @@ use crate::reference_packet::service::complete_restore::import18::bootstrap_ack:
     PacketNativeImport18BootstrapRawResponseRowData, PacketNativeImport18BootstrapRequest,
     PacketNativeImport18BootstrapResponseDecodeData,
     PacketNativeImport18BootstrapResponseDecodeRowData,
+    native_import18_bootstrap_response_decode_counter_scratch_data,
 };
 use crate::transport::RetainedFrame;
 
@@ -345,6 +346,59 @@ impl ClientSession {
             .authenticate_original_bootstrap_sdk_settlement_data(original, raw, moved, decoded);
         deadline?;
         settled
+    }
+
+    /// Lends actual settled operands while checking the original cut both ways.
+    ///
+    /// The caller separately funds the endpoint factories and callback, retaining
+    /// every callback output before return. This readonly loan repeats no read,
+    /// typed decode, SDK move or request clone and verifies no Source MAC.
+    ///
+    /// # Errors
+    /// Refuses changed original/raw/typed/SDK custody, expired/replaced time or
+    /// callback refusal. A callback failure remains the first returned failure.
+    ///
+    /// # Panics
+    /// Propagates a panic raised by `inspect`.
+    pub(in crate::client) fn with_original_bootstrap_settled_data<R: Copy>(
+        &self,
+        original: &Envelope,
+        cut: OperationalDeadline,
+        raw: &PacketNativeImport18BootstrapRawResponseData,
+        moved: &Envelope,
+        decoded: &PacketNativeImport18BootstrapResponseDecodeData,
+        inspect: impl FnOnce(
+            &Envelope,
+            &PacketNativeImport18BootstrapResponseDecodeData,
+        ) -> Result<R, ProviderError>,
+    ) -> Result<R, ProviderError> {
+        self.authenticate_original_bootstrap_sdk_settlement_data(
+            original, cut, raw, moved, decoded,
+        )?;
+        let result = inspect(moved, decoded);
+        let terminal = self.authenticate_original_bootstrap_sdk_settlement_data(
+            original, cut, raw, moved, decoded,
+        );
+        let output = result?;
+        terminal?;
+        Ok(output)
+    }
+
+    /// Names actual post-move guards, borrowed operands and callback results.
+    pub(in crate::client) fn original_bootstrap_settled_loan_counter_scratch_data<R: Copy>() -> usize
+    {
+        Self::original_bootstrap_effect_cut_counter_scratch_data()
+            + Connection::<DeadlineStream>::original_bootstrap_raw_response_counter_scratch_data()
+            + crate::session::CorrelationGuard::original_bootstrap_receive_counter_scratch_data()
+            + native_import18_bootstrap_response_decode_counter_scratch_data()
+            + size_of::<&Self>()
+            + size_of::<&Envelope>() * 2
+            + size_of::<&PacketNativeImport18BootstrapRawResponseData>()
+            + size_of::<&PacketNativeImport18BootstrapResponseDecodeData>()
+            + size_of::<OperationalDeadline>()
+            + size_of::<R>() * 2
+            + size_of::<Result<R, ProviderError>>() * 2
+            + size_of::<Result<(), ProviderError>>()
     }
 
     /// Retains closed decoding and moves the actual SDK original before return.
