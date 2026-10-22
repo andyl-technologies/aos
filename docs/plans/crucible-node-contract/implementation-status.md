@@ -3644,6 +3644,36 @@ leaves approximately 0.85 to 0.92 seconds on the original five-second cut.
 This focused pass does not resolve the previous unfiltered raw-JSON failure.
 No new full-library, configured runtime, VM or full RFC qualification follows.
 
+## Nested original Hello response custody
+
+Commit `9d02d82c2e` keeps one complete original request-envelope loan around
+response inspection. Previously the response loan opened and completed that
+whole predecessor loan separately before and after inspection, recursively
+repeating its earlier custody walks. The same predecessor now checks both
+sides of the actual callback within one loan. Response completion/cut checks
+remain on both sides, and terminal checks still execute when inspection fails.
+No deadline, retained owner, allocation, transport action or permission changes.
+
+The counter now prices the actual Copy result through the predecessor's result
+frames and the extra borrowed closure reference. Existing inherited response
+controls return a 4 KiB Copy value and retain their callback-refusal, expiry,
+substituted-cut, retry and ownership assertions. A separate counter control
+requires funding for the large result in both retained loan frames.
+
+Standard and raw-JSON Transport test executables compile. Transport/Engine/Daemon
+all-feature/all-target checking, owned-file formatting and all six architecture
+gates pass. The required application gate compiles 180 test executables across
+58 packages, including 71 integration targets. All 442 owned Rust/Cargo inputs
+match the committed revision and its actual captured source.
+
+The complete raw-JSON Transport run passes all 2,083 tests, with zero failures,
+16 existing ignores and no filtering, in 428.03 seconds. The previously failing
+reply control passes. The complete standard run is still executing against the
+same stable source and test executables; it is not yet qualified at this entry.
+These results establish no refreshed configured runtime, VM, full signed
+Source/native restoration or complete RFC qualification. Strict Clippy remains
+unqualified; its last measured library checkpoint has 74 errors.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
