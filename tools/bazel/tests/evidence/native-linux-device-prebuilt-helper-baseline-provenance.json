@@ -1,0 +1,25 @@
+{
+  "check": "/nix/store/5pq07r1gjinck77q7wbhkcrb849y2k32-aos-bazel-device-performance",
+  "configuration_sha256": {
+    "pkgs/build-support/_bazel/modules.nix": "b1016c852724ee8f1a7c1d23cff1f4188a0f86d803f4e1f8c73474f68efeca90",
+    "pkgs/build-support/_bazel/rust-helper.nix": "4eafc40dc50c9391d14228a48602ed01e1c11feb913bef140468ec0f28a13ee4",
+    "tools/bazel/bench/device.nix": "0bf090de00b175ba44d5eeff36d4cd3e71ee8dd499dbef6bf79ccd678ff32841",
+    "tools/bazel/bench/measure_family.py": "c98467e9ffd4d3506d9165fe0d4cb0baae858aae48c99de1dcda9278f057be5a",
+    "tools/bazel/bench/measure_pilot.py": "f9ad2a70aae6cf8a93614fd35af7e7ea8b7cb69c7d8e5d6c0e17d0a4669c501d",
+    "tools/bazel/metadata/export_packages.py": "04d5ad773a6478fd4b5b2d9a963e9447e8964c6104f63112082d2757f5bd0d8a",
+    "tools/bazel/tests/verify_cache.py": "8b587c179db90c975044e7a4ecc56c3c2f875b0f528068f9792bcd7fd9987ed4"
+  },
+  "immutable_bazel_configuration_sha256": "732f074f0db2cfabf74b95b19c5211b875c1ad0e7f2ec84f6be9be308fd1422b",
+  "limitations": [
+    "Nix evaluation, dependency/source preparation, the upfront source build of the manifest helper, installation and untimed validation are excluded. This is not an end-to-end speedup.",
+    "Debug/optimization levels match (0/0); Cargo incremental compilation remains enabled, and other driver defaults can differ.",
+    "Other checks ran on the shared host; load averages and resource metrics are retained. Timing differences are descriptive, not accepted budgets.",
+    "The nonempty-mode Nix argument guard was added after measurement began; its pre-guard expression fingerprint is retained here.",
+    "The immutable configuration predates the target/CPU/sysroot/PGO qualification additions. No production cutover."
+  ],
+  "report_sha256": "8facd45e967029dff7e708c26acf86243fff4fa77b89ec5c5b4cf6010f6c7ea5",
+  "schema_version": 1,
+  "scope": "Repeated compile-loop comparison after supplying the upstream manifest extractor as a Nix-built executable",
+  "validated_cases_per_sample": 642,
+  "validated_samples": 36
+}

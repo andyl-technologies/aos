@@ -629,6 +629,24 @@ declarations; `tests/evidence/native-linux-device-workspace-gates.json` records
 their output identities and source fingerprints. These correctness checks
 do not resolve the performance regressions.
 
+With the upstream manifest extractor supplied by Nix, another 36-sample run
+retains all 642-case validations in
+`tests/evidence/native-linux-device-prebuilt-helper-baseline.json`, with
+adjacent provenance. Median seconds:
+
+| Configuration | Cold | Warm | Implementation edit | API edit | Second worktree | Fresh build directory |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Cargo incremental, debug 0 | 27.778 | 0.497 | 4.173 | 4.088 | 0.333 | 25.464 |
+| Bazel private JVM + disk cache | 41.255 | 0.432 | 10.136 | 10.264 | 8.595 | 7.959 |
+
+The cold Bazel run executes 92 Rust compile actions and 11 build scripts,
+versus 159 and 18 before this change; all 49 environment extraction actions
+remain. Both fresh-directory scenarios restore all those actions. Preparing
+the source-built helper happens before this timed interval and has an upfront
+Nix cost. These shared-host compile-loop measurements establish neither a
+total build speedup nor an accepted edit-loop tradeoff. The edit regression
+and end-to-end qualification remain open.
+
 ## Initial boot compile measurements
 
 Run the temporary Cargo/Bazel comparison with a fresh trial identity:
