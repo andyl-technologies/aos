@@ -7,7 +7,7 @@ use crucible_qemu_protocol::app_random_transport::{
     BackendRngEvidenceTransportRecord, WHITEBOX_SHMEM_KIND_APP_RANDOM_DECISION,
     app_random_stream_name,
 };
-use crucible_qemu_protocol::{WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST, WhiteboxDoorbellFrame};
+use crucible_qemu_protocol::{WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST, WhiteboxDoorbellFrameView};
 use crucible_qemu_shmem::MAX_FRAME_DATA;
 
 use super::*;
@@ -18,7 +18,7 @@ use crate::{
 };
 
 pub(super) fn is_request(payload: &[u8]) -> bool {
-    WhiteboxDoorbellFrame::decode_bounded(payload, MAX_FRAME_DATA)
+    WhiteboxDoorbellFrameView::decode_bounded(payload, MAX_FRAME_DATA)
         .is_ok_and(|frame| frame.kind() == WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST)
 }
 

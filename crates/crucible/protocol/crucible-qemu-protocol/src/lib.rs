@@ -117,7 +117,7 @@ pub use doorbell_frame::{
     GOLDEN_WHITEBOX_DOORBELL_FRAME_VECTORS, WHITEBOX_DOORBELL_FRAME_HEADER_LEN,
     WHITEBOX_DOORBELL_FRAME_MAGIC, WHITEBOX_DOORBELL_FRAME_REGENERATION_RULE,
     WHITEBOX_DOORBELL_PROTOCOL_VERSION, WhiteboxDoorbellFrame, WhiteboxDoorbellFrameDecodeError,
-    WhiteboxDoorbellFrameEncodeError, WhiteboxDoorbellFrameGoldenVector,
+    WhiteboxDoorbellFrameEncodeError, WhiteboxDoorbellFrameGoldenVector, WhiteboxDoorbellFrameView,
     encode_whitebox_doorbell_frame,
 };
 pub use doorbell_marker::{

@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the broad gate retains thirteen daemon paths. | The fresh canonical license-boundary check stops at strict controller Clippy (909 host-library and 963 host-test errors after checkpoint lock handling); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 442 committed bindings: 423 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 444 bindings: 425 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Retained RR parent and wrapper-retirement composition
 
@@ -573,14 +573,34 @@ Independent evidence review matched 8,939 regular files, 156 literal links and
 The sealed manifest SHA-256 is
 `000010e89aea5cf5cab501a1b9c0b424cd19eb1cbc107a20c5904f50ce19bb21`.
 The registered 396-file license ledger passes at
-`vm79d022xs6lnrhsw8cjnsnkcpsrkfmp`. Registered raw reconstruction, Source,
-Native custody and boundary checks against the imported artifact are being
-collected.
+`vm79d022xs6lnrhsw8cjnsnkcpsrkfmp`. Exact reconstruction passes at `g2hys8casfrhqnfj47ch9bmy221jmzs7`. All 187
+packaged Source tests pass at `6x4h7x6r2ay2v08a4w5lr3c8vy2qhs2k`.
+Native custody and ABI conformance against the imported artifact are being
+collected. Canonical license checking stops at 909 host-library and 963 host-test
+Clippy errors; its boundary assertions do not run.
 
 These are metadata registrations. They create no SourceUse, Module owner,
 execution actor, cleanup guard or CPU admission. ENOTSUP and the one-process
 borrow-attempt restriction remain. Genuine Module issuance, ordinary RR actor
 execution, terminal return and sequential rearm remain open.
+
+#### Borrowed ordinary doorbell frame inspection
+
+The public ordinary doorbell frame view now borrows the original payload after
+validating the complete header and caller bound. Explicit owned decoding uses
+that same validation path and copies only after success. The live app-random
+probe uses the view to inspect the kind without constructing a payload vector.
+Wire bytes, protocol edition and validation priority remain unchanged.
+
+Two exact component controls pass: the first compares independent literal bytes,
+original payload addresses, owned round-trip values and an empty frame; the
+second checks every truncation and overlapping magic, version, bound and length
+refusals against explicit expected typed errors through both APIs. Engineering
+hygiene, all 129 white-box tests and compilation of every protocol/plugin test
+target pass. Mandatory application compilation, the exact 327-case supervision
+gate and ABI conformance are being collected. The 444 bindings comprise 425 component cases and nineteen native
+cases; 148 of 243 requirements remain uncovered and none fully qualified.
+This borrowed view issues no Native authority or complete operation payer.
 
 #### Fixed app-random reply storage
 
@@ -595,7 +615,13 @@ and reply delivery, including the full-width maximum value.
 All 129 white-box tests, compilation of every plugin test target and engineering
 hygiene pass. Mandatory application compilation and the unchanged exact
 325-case supervision run are being collected. Request decoding, decision
-storage, callback errors and complete operation funding remain open.
+storage, callback errors and complete operation funding remain open. Mandatory
+application compilation subsequently passes at `1yiz4pkj33pixl3hzkdg29r0kv6ci9jn`.
+All 5,310
+committed Rust/TOML files at `64619b4aab40787ff51c4c6d8ce2ba90617dba34` match
+immutable application source `n5mq2477wdifk5sfzpcfs1j5sgriw6aq`; the comparison
+record has SHA-256
+`40f3b85f522c66d50c5cf46febd10fcf5e1a6b526eb05ab344c1e3fac430ac21`.
 
 #### Borrowed static guest-write diagnostics
 
