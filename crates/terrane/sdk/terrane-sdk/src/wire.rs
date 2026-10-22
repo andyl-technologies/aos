@@ -15,6 +15,10 @@ pub mod upload;
 /// Maps classified service outcomes to structured protocol errors.
 pub mod status;
 
+/// Authenticates native capability headers without granting repository access.
+#[cfg(feature = "tokio")]
+pub mod authentication;
+
 /// Binds complete native services to bounded loopback or TLS 1.3 listeners.
 #[cfg(feature = "tokio")]
 pub mod transport;

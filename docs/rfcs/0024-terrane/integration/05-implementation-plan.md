@@ -12226,3 +12226,43 @@ fixture selects its unrelated shard from the actual catalog rather than assuming
 a materialized shard exists. Final strict all-target Clippy, formatting, native
 `std,wasm` and actual WebAssembly host-target checks pass. Both 4,096-record
 diagnostics and frozen source-bound qualification remain pending.
+
+
+#### Native Distribution capability-header boundary
+
+The native binding now accepts an explicit store-specific capability
+authenticator. It verifies a single bounded bearer header against configured
+issuer public keys and a live clock before protobuf/JSON decoding or service
+dispatch, for both unary and streaming calls. The wire reference fixes the
+bearer representation as unpadded base64url of the original canonical CBOR
+chain. Request extensions retain those exact bytes, including attenuation;
+handlers must still pass them through the repository guard for fresh current
+ACL, context, reachability and write checks. Anonymous `Capabilities` is an
+explicit option, and an invalid supplied credential is never anonymous.
+
+Five real-socket controls extend the existing six transport cases. They cover
+missing, malformed, duplicate, oversized and tampered credentials before malformed
+JSON decoding; exact token preservation; live not-before, expiry and issuer
+retirement boundaries; attenuated expiry and unknown issuers; both denied and
+accepted server/client streaming dispatch; and the exact anonymous exception.
+All eleven local cases pass under the existing per-selector bound. Strict
+SDK/Linux/CLI all-target Clippy, Rust/Nix formatting and check evaluation pass.
+The source-bound integration check now also retains the exact executed ELF,
+with artifact fixups disabled so its recorded digest remains reviewable.
+
+This is an authentication component. The current native framework performs its
+bounded body read and decompression before the interceptor. It is not an early
+HTTP middleware check, a complete repository service implementation, or closure
+of `auth-enforcement` or T-PROTO-1. Frozen qualification and required application
+target compilation remain pending.
+
+The grouped-read change at `a9b9cdb9f5` passes independent frozen WebAssembly
+compilation review: 7,926 immutable source files, 5,231 crate inputs and 32 actual
+WebAssembly objects in two archives. This is compilation evidence only; the
+standard-library filesystem WebAssembly profile remains unqualified. Earlier
+`a6b498888d` application-target compilation also passes independent review:
+7,924 immutable files and 184 actual test executables across 59 packages, with
+no application runtime claim. The original `c86390959e` 4,096-entry diagnostic
+terminates with actual timeout exit 124 at its unchanged 1,800-second bound;
+its final unchanged-body verification was still running after writer-budget
+assertions passed. The new grouped-read population qualification is pending.

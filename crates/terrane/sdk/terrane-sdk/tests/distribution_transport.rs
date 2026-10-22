@@ -7,6 +7,9 @@
 #[path = "distribution_transport/fixture.rs"]
 mod fixture;
 
+#[path = "distribution_transport/authentication.rs"]
+mod authentication;
+
 use buffa::Message;
 use fixture::{Services, limits};
 use std::{

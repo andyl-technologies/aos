@@ -503,7 +503,7 @@ in {
   integration.wire-contract = import ./wire-contract.nix {inherit sourceGate;};
   integration.streaming-http = import ./streaming-http.nix {inherit sourceGate;};
 
-  integration.distribution-transport = import ./distribution-transport.nix {inherit sourceGate;};
+  integration.distribution-transport = import ./distribution-transport.nix {inherit sourceGateWithInputs;};
 
   integration.pack-receive = import ./pack-receive.nix {inherit sourceGate;};
 

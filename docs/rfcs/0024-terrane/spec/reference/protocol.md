@@ -809,6 +809,12 @@ message Versions     { repeated uint32 pack_formats = 1; repeated string tree_en
 | `terrane-stale` | response | staleness in milliseconds for ref reads |
 | `traceparent`, `tracestate` | both | W3C trace context |
 
+The capability-token bearer value is the unpadded base64url encoding of the
+canonical CBOR token bytes. Exactly one `Authorization` field is accepted;
+malformed, ambiguous, unknown-issuer, retired-key, or expired credentials produce
+the same `UNAUTHENTICATED` status. Anonymous `Capabilities`, when enabled, accepts
+an absent credential; a supplied invalid credential is still rejected.
+
 ## Presigned read contract
 
 A presigned read is an HTTP `GET` against the URL in a `Span`.

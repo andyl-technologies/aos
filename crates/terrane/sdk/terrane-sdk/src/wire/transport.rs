@@ -122,6 +122,23 @@ pub struct DistributionTransport {
 }
 
 impl DistributionTransport {
+    /// Requires freshly verified capability headers before native service dispatch.
+    ///
+    /// Handlers obtain the original token through
+    /// [`super::authentication::RequestToken`] and must independently authorize
+    /// each operation through the guard. Authentication follows the bounded
+    /// transport body read and precedes protobuf/JSON decoding.
+    pub fn with_authentication<C>(
+        mut self,
+        authentication: super::authentication::CapabilityAuthentication<C>,
+    ) -> Self
+    where
+        C: crate::store::Clock + Send + Sync + 'static,
+    {
+        self.service = self.service.with_interceptor(authentication);
+        self
+    }
+
     /// Binds complete services to an already-opened TCP listener.
     ///
     /// The listener's actual local address determines plaintext eligibility.

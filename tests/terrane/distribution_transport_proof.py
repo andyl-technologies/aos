@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -17,6 +18,11 @@ CASES = [
     "tls13_serves_both_http_versions_and_refuses_tls12",
     "rejects_remote_plaintext_invalid_resources_and_malformed_identity",
     "whole_stream_deadline_releases_a_pending_response_source",
+    "authentication::refuses_missing_malformed_duplicate_and_tampered_credentials_before_decode",
+    "authentication::preserves_exact_verified_token_and_rechecks_live_expiry_and_key_retirement",
+    "authentication::authenticates_server_and_client_streams_without_dispatching_invalid_calls",
+    "authentication::anonymous_capabilities_is_explicit_and_never_hides_invalid_credentials",
+    "authentication::preserves_attenuation_and_refuses_a_token_from_an_unconfigured_issuer",
 ]
 
 
@@ -80,9 +86,15 @@ def main():
     require(hashlib.sha256(executable.read_bytes()).hexdigest() == digest,
             "Distribution transport integration artifact changed during execution")
     require(source_hashes(workspace, source) == inputs, "Distribution transport source changed during execution")
+    retained = output / "distribution-transport-test"
+    shutil.copyfile(executable, retained)
+    retained.chmod(0o755)
+    require(hashlib.sha256(retained.read_bytes()).hexdigest() == digest,
+            "retained Distribution transport integration artifact changed")
     (output / "source-review.json").write_text(json.dumps({
         "source": str(source), "input_sha256": inputs, "artifact": artifact, "executable_sha256": digest,
-        "executed_cases": CASES, "scope": "Native HTTP and TLS binding over real sockets; no service authorization or durability claim",
+        "retained_executable": str(retained),
+        "executed_cases": CASES, "scope": "Native HTTP/TLS binding and optional capability-header authentication over real sockets; no repository authorization or durability claim",
     }, indent=2) + "\n")
 
 

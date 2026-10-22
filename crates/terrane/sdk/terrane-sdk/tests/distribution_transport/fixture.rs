@@ -19,6 +19,7 @@ use terrane_sdk::wire::{
 pub(super) struct Services {
     pub(super) calls: AtomicUsize,
     pub(super) dropped_stream: Arc<AtomicBool>,
+    pub(super) tokens: std::sync::Mutex<Vec<Vec<u8>>>,
 }
 
 fn unsupported() -> connectrpc::ConnectError {
@@ -64,10 +65,19 @@ impl ContentService for Services {
 
     async fn has(
         &self,
-        _context: RequestContext,
+        context: RequestContext,
         request: ServiceRequest<'_, v1::HasRequest>,
     ) -> ServiceResult<v1::HasResponse> {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(token) = context
+            .extensions()
+            .get::<terrane_sdk::wire::authentication::RequestToken>()
+        {
+            self.tokens
+                .lock()
+                .map_err(|_| unsupported())?
+                .push(token.bytes().to_vec());
+        }
         let hashes = request.to_owned_message().hashes;
         let mut present_bitmap = vec![0; hashes.len().div_ceil(8)];
         for (position, hash) in hashes.iter().enumerate() {
@@ -86,6 +96,7 @@ impl ContentService for Services {
         _context: RequestContext,
         _requests: connectrpc::InboundStream<v1::PutPackFrame>,
     ) -> ServiceResult<v1::PutPackResponse> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         Err::<Response<v1::PutPackResponse>, _>(unsupported())
     }
 
@@ -94,6 +105,7 @@ impl ContentService for Services {
         _context: RequestContext,
         _request: ServiceRequest<'_, v1::GetRangeRequest>,
     ) -> ServiceResult<ServiceStream<v1::GetRangeFrame>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         let stream: ServiceStream<v1::GetRangeFrame> = Box::pin(PendingBody {
             emitted: false,
             dropped: self.dropped_stream.clone(),
