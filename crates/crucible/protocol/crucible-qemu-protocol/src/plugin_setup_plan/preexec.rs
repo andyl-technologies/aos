@@ -56,6 +56,8 @@ pub(super) enum Edition {
     DeferredCleanup,
     /// Requires plan thirteen and the appended immutable runtime-pair record.
     RuntimeArtifact,
+    /// Requires plan fourteen and the separate containing-process transfer.
+    NativeTransfer,
 }
 
 /// Parses the exact requested carrier and its corresponding purpose edition.
@@ -73,17 +75,24 @@ pub(super) fn decode_edition(
         Edition::Quantum => (b"CRUCSU10", 10, true),
         Edition::DeferredCleanup => (b"CRUCSU12", 12, true),
         Edition::RuntimeArtifact => (b"CRUCSU13", 13, true),
+        Edition::NativeTransfer => (b"CRUCSU14", 14, true),
     };
     let invalid = |section| PluginSetupPlanError::InvalidPreexecSection { section };
-    let runtime = matches!(edition, Edition::RuntimeArtifact);
-    let header = if runtime {
+    let native = matches!(edition, Edition::NativeTransfer);
+    let runtime = matches!(edition, Edition::RuntimeArtifact | Edition::NativeTransfer);
+    let header = if native {
+        64
+    } else if runtime {
         56
     } else if publisher {
         48
     } else {
         HEADER
     };
-    let tail = if matches!(edition, Edition::DeferredCleanup | Edition::RuntimeArtifact) {
+    let tail = if matches!(
+        edition,
+        Edition::DeferredCleanup | Edition::RuntimeArtifact | Edition::NativeTransfer
+    ) {
         crate::deferred_cleanup::DEFERRED_CLEANUP_PURPOSE_BYTES
     } else if publisher {
         crate::publisher_subscription::PUBLISHER_PURPOSE_BYTES
@@ -92,6 +101,11 @@ pub(super) fn decode_edition(
     };
     let runtime_len = if runtime {
         crate::runtime_artifact::RUNTIME_ARTIFACT_PAIR_BYTES
+    } else {
+        0
+    };
+    let native_len = if native {
+        crate::native_transfer::NATIVE_TRANSFER_BYTES
     } else {
         0
     };
@@ -113,6 +127,9 @@ pub(super) fn decode_edition(
     }
     if runtime && (read_u32(bytes, 48)? as usize != runtime_len || read_u32(bytes, 52)? != 0) {
         return Err(invalid("runtime-artifact header"));
+    }
+    if native && (read_u32(bytes, 56)? as usize != native_len || read_u32(bytes, 60)? != 0) {
+        return Err(invalid("native-transfer header"));
     }
     let declared = read_u32(bytes, 16)? as usize;
     let app_len = read_u32(bytes, 20)? as usize;
@@ -141,6 +158,7 @@ pub(super) fn decode_edition(
     if purpose_end
         .checked_add(tail)
         .and_then(|end| end.checked_add(runtime_len))
+        .and_then(|end| end.checked_add(native_len))
         != Some(bytes.len())
     {
         return Err(invalid("lengths"));
@@ -155,7 +173,7 @@ pub(super) fn decode_edition(
 
     if publisher {
         let subscription = match edition {
-            Edition::DeferredCleanup | Edition::RuntimeArtifact => {
+            Edition::DeferredCleanup | Edition::RuntimeArtifact | Edition::NativeTransfer => {
                 let purpose = crate::deferred_cleanup::DeferredCleanupPurpose::decode(
                     &bytes[purpose_end..purpose_end + tail],
                 )
@@ -178,10 +196,21 @@ pub(super) fn decode_edition(
         };
         super::publisher::validate_binding(&subscription, &bytes[startup_end..purpose_end])?;
         if runtime {
-            let pair =
-                crate::runtime_artifact::RuntimeArtifactPair::decode(&bytes[purpose_end + tail..])
-                    .map_err(|_| invalid("runtime-artifact pair"))?;
+            let runtime_start = purpose_end + tail;
+            let runtime_end = runtime_start + runtime_len;
+            let pair = crate::runtime_artifact::RuntimeArtifactPair::decode(
+                &bytes[runtime_start..runtime_end],
+            )
+            .map_err(|_| invalid("runtime-artifact pair"))?;
             super::runtime_artifact::validate_binding(&pair, &subscription)?;
+            if native {
+                let transfer =
+                    crate::native_transfer::NativeTransfer::decode(&bytes[runtime_end..])
+                        .map_err(|_| invalid("native transfer"))?;
+                transfer
+                    .corroborate_runtime(&pair)
+                    .map_err(|_| invalid("native-transfer binding"))?;
+            }
         }
     }
 

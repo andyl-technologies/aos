@@ -4,7 +4,7 @@
 use super::*;
 use crate::runtime_artifact::{RuntimeArtifactIdentity, RuntimeArtifactPair};
 
-fn runtime() -> RuntimeArtifactPair {
+pub(super) fn runtime() -> RuntimeArtifactPair {
     RuntimeArtifactPair {
         process_generation: 3,
         account_generation: 9,

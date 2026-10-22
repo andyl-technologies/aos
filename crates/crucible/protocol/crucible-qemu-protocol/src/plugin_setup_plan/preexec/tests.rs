@@ -7,6 +7,7 @@ mod family;
 mod publisher;
 mod quantum;
 mod runtime_artifact;
+mod native_transfer;
 
 use crate::selectable_catalog_plan::{SelectablePlanContinuation, SelectablePlanLimits};
 

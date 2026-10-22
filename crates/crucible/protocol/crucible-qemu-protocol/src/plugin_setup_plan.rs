@@ -32,6 +32,9 @@ mod publisher;
 mod quantum;
 mod quantum_stack;
 pub use quantum_stack::QuantumStackPlanParts;
+mod native_transfer;
+pub use native_transfer::NativeTransferPlanParts;
+
 mod runtime_artifact;
 pub use runtime_artifact::RuntimeArtifactPlanParts;
 mod startup_operation;

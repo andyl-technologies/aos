@@ -559,8 +559,16 @@ these cases separately from the nine transfer cases.
 Independent C transfer/manifest vectors, the probe reader, negotiated resource
 phase, real prebirth issuer and launcher, retained borrower adoption and matching
 kernel reap remain incomplete. Setup ten and plan thirteen cannot consume this
-material. Parsing it grants no resources or execution/cleanup permission, and
-no profile is activated by these components.
+material. A distinct plan-fourteen codec now adds an eight-byte header extension
+and exact 1,472-byte transfer after RuntimePair192, under the unchanged aggregate
+cap. It checks the same Source/process/account coordinates and full runtime digest;
+mutually consistent foreign records cannot bypass the original Source purpose.
+Four adversarial/component cases cover every truncation, changed header, foreign
+parent and optional workspace; the independent extent case checks the aggregate
+limit and overflow. Earlier selected decoders refuse the new framing. Counted
+ABI registration separates these cases from the original transfer reader.
+Parsing grants no resources or execution/cleanup permission; no negotiated
+resource phase, extra descriptor role or profile is activated by these codecs.
 
 #### Selected allocator fail-stop component
 

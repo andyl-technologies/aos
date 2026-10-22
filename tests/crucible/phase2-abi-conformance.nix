@@ -664,7 +664,7 @@ in
                 -p crucible-qemu-protocol \
                 --lib plugin_setup_plan::deferred_cleanup::tests:: \
                 -- --test-threads=1
-              require_test_set 9 protocol-native-transfer \
+              ABI_TEST_SKIP=plugin_setup_plan:: require_test_set 9 protocol-native-transfer \
                 native_transfer::tests::transfer_retains_compulsory_reserves_and_outside_creator_history \
                 -p crucible-qemu-protocol --lib native_transfer::tests::
               cargo test \
@@ -674,7 +674,7 @@ in
                 --manifest-path crates/Cargo.toml \
                 -p crucible-qemu-protocol \
                 --lib native_transfer::tests:: \
-                -- --test-threads=1
+                -- --skip plugin_setup_plan:: --test-threads=1
               require_test_set 8 protocol-native-profile-manifest \
                 native_transfer::manifest::tests::manifest_borrows_all_rows_exact_launch_bytes_and_matching_transfer \
                 -p crucible-qemu-protocol --lib native_transfer::manifest::tests::
@@ -685,6 +685,28 @@ in
                 --manifest-path crates/Cargo.toml \
                 -p crucible-qemu-protocol \
                 --lib native_transfer::manifest::tests:: \
+                -- --test-threads=1
+              require_test_set 4 protocol-native-transfer-plan \
+                plugin_setup_plan::preexec::tests::native_transfer::native_plan_preserves_prior_sections_and_refuses_all_earlier_editions \
+                -p crucible-qemu-protocol --lib plugin_setup_plan::preexec::tests::native_transfer::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib plugin_setup_plan::preexec::tests::native_transfer:: \
+                -- --test-threads=1
+              require_test_set 1 protocol-native-transfer-plan-cap \
+                plugin_setup_plan::native_transfer::tests::native_extent_preserves_the_unchanged_aggregate_cap \
+                -p crucible-qemu-protocol --lib plugin_setup_plan::native_transfer::tests::
+              cargo test \
+                --frozen \
+                --offline \
+                --target-dir "$TMPDIR/crucible-abi-conformance-target" \
+                --manifest-path crates/Cargo.toml \
+                -p crucible-qemu-protocol \
+                --lib plugin_setup_plan::native_transfer::tests:: \
                 -- --test-threads=1
               require_test_set 4 protocol-runtime-pair \
                 runtime_artifact::tests::runtime_pair_matches_all_public_vectors_and_exact_accepted_round_trips \
