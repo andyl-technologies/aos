@@ -251,10 +251,16 @@ the success marker, and also refuse observation slices, registration and a
 repeated acquisition while every fixture-owned alias remains open. These
 explicit status-table fixtures issue no native Source or operation authority.
 All 1,187 plugin unit cases and four integration cases pass with every feature;
-focused Rust and Nix formatting pass. The ABI gate registers both regressions.
+focused Rust and Nix formatting and engineering hygiene pass. The ABI gate
+registers both regressions.
 Strict plugin Clippy fails with 110 library errors outside the changed files;
-no strict pass is claimed. Mandatory application compilation, ABI conformance
-and strict license-boundary qualification are pending for this follow-up.
+no strict pass is claimed. Mandatory application compilation passes at
+`mfi9rlfsg270kmb5xm6l3006l6mcxyhf`; all 5,332 committed Rust/TOML inputs from
+`992f6f85da` match its frozen source (proof SHA-256
+`0da080ebc6f1f71e1e2db89902ba6a526206b3ff4dc0a6a9c7c71302dc98467d`).
+Strict license-boundary qualification stops at controller Clippy (909 library
+and 963 test errors), before the canonical boundary assertions. ABI conformance
+passes at `fc08xp9ziwy7nhimrbxg5gxkrm93sq98`, including both new rejection cases.
 
 #### Explicit Main/RR stack carrier codecs
 
