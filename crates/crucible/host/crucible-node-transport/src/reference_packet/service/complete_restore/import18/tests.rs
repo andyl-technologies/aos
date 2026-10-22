@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn fixture() -> PacketNativeImport18Binding {
+pub(super) fn fixture() -> PacketNativeImport18Binding {
     let reference = canonical::content_ref(b"{}", "application/json").unwrap();
     let source_family = PacketNativeImport18SourceFamily::Captured17;
     let semantic_spend_family = PacketNativeImport18SemanticSpendFamily::Complete18;

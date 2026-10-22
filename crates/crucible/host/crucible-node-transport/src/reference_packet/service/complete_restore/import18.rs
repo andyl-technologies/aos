@@ -33,6 +33,8 @@ mod prebirth_recipe;
 pub(in crate::reference_packet) use prebirth_recipe::normalization_counter_scratch_data as native_import18_normalization_counter_scratch_data;
 mod private_prefix;
 mod receipt;
+mod record_contract;
+mod restored_record;
 mod selection;
 mod stage_contract;
 mod startup_wire;
@@ -164,6 +166,18 @@ pub use launch_identity::{
     native_import18_launch_identity_construction_data,
     native_import18_launch_identity_counter_scratch_data, native_import18_launch_identity_data,
     native_import18_launch_identity_projection_data,
+};
+pub use record_contract::{
+    authenticate_native_import18_restored_record_schema_data,
+    native_import18_restored_record_contract_counter_scratch_data,
+    native_import18_restored_record_contract_data,
+    native_import18_restored_record_contract_storage_data,
+    native_import18_restored_record_schema_data,
+};
+pub use restored_record::{
+    PacketNativeImport18CommitHeldRecordData, PacketNativeImport18FirstObservedRecordData,
+    PacketNativeImport18RecordPairData, PacketNativeImport18RecordScopeData,
+    PacketNativeImport18RestoredRecordData,
 };
 pub use selection::{
     PacketNativeImport18Selection, authenticate_native_import18_immutable_declaration_data,

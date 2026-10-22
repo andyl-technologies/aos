@@ -46,12 +46,13 @@ impl PacketNativeImport18Selection {
         {
             return Err(invalid());
         }
-        for which in [Definition::Import, Definition::Stage] {
+        for which in [Definition::Import, Definition::Stage, Definition::Record] {
             // Sequential factory lifetimes are intentional: no first schema
-            // owner survives into the second factory's DOM/JCS window.
+            // owner survives into the next factory's DOM/JCS window.
             let expected = match which {
                 Definition::Import => native_import18_schema_data()?,
                 Definition::Stage => native_import18_stage_schema_data()?,
+                Definition::Record => native_import18_restored_record_schema_data()?,
             };
             full_definition(&launch.selection.provider.implementation.formats, &expected)?;
             for binding in &launch.selection.realization.bindings {
@@ -84,9 +85,10 @@ impl PacketNativeImport18Selection {
 enum Definition {
     Import,
     Stage,
+    Record,
 }
 
-/// Authenticates both immutable rosters and all three import18 feature names.
+/// Authenticates both immutable rosters and all four import18 feature names.
 ///
 /// This checks declared contract DATA only. A launch must independently pass
 /// its full typed comparison and explicit mechanism selection; no Source,
@@ -99,10 +101,11 @@ pub fn authenticate_native_import18_immutable_declaration_data(
     binding: &[SchemaRef],
     features: &[Id],
 ) -> Result<(), ProviderError> {
-    for which in [Definition::Import, Definition::Stage] {
+    for which in [Definition::Import, Definition::Stage, Definition::Record] {
         let schema = match which {
             Definition::Import => native_import18_schema_data()?,
             Definition::Stage => native_import18_stage_schema_data()?,
+            Definition::Record => native_import18_restored_record_schema_data()?,
         };
         full_definition(provider, &schema)?;
         full_definition(binding, &schema)?;
@@ -121,10 +124,11 @@ pub fn authenticate_native_import18_immutable_declaration_data(
 }
 
 /// Returns the complete immutable import18 feature roster without selection.
-pub const fn native_import18_declared_features_data() -> [&'static str; 3] {
+pub const fn native_import18_declared_features_data() -> [&'static str; 4] {
     [
         NATIVE_IMPORT18_EXTENSION,
         NATIVE_IMPORT18_STAGE_SELECTION,
+        NATIVE_IMPORT18_RESTORED_RECORD_SCHEMA,
         bootstrap_ack::NATIVE_IMPORT18_BOOTSTRAP_FEATURE,
     ]
 }
@@ -142,7 +146,7 @@ fn full_definition(formats: &[SchemaRef], expected: &SchemaRef) -> Result<(), Pr
     Ok(())
 }
 
-/// Prices the sequential exact compiled import18 and stage18 factory windows.
+/// Prices the sequential exact compiled import18, stage18 and record18 factory windows.
 ///
 /// This allocation-free quote performs no launch serialization or validation.
 /// Actual existing launch/Source/member owners stay independently charged.
@@ -155,9 +159,10 @@ pub fn native_import18_selection_construction_storage_data(
 ) -> Result<(usize, usize), ProviderError> {
     let import = native_import18_contract_storage_data(maximum)?;
     let stage = native_import18_stage_contract_storage_data(maximum)?;
-    let temporary = import.0.max(stage.0);
+    let record = native_import18_restored_record_contract_storage_data(maximum)?;
+    let temporary = import.0.max(stage.0).max(record.0);
     let scratch = native_import18_selection_counter_scratch_data()
-        .checked_add(import.1.max(stage.1))
+        .checked_add(import.1.max(stage.1).max(record.1))
         .ok_or_else(invalid)?;
     if temporary
         .checked_add(scratch)
@@ -176,7 +181,7 @@ pub fn native_import18_selection_prewalk_data() -> usize {
     use crate::retained_metadata::serialization_storage::original_json_value_storage_extent_counter_scratch_data;
 
     original_json_value_storage_extent_counter_scratch_data()
-        + size_of::<(usize, usize)>() * 3
+        + size_of::<(usize, usize)>() * 4
         + size_of::<Result<(usize, usize), ProviderError>>()
         + size_of::<usize>() * 3
 }
@@ -185,11 +190,13 @@ pub fn native_import18_selection_prewalk_data() -> usize {
 pub fn native_import18_selection_counter_scratch_data() -> usize {
     size_of::<&PacketNative5SourceLaunch>()
         + size_of::<PacketNativeImport18Selection>()
-        + size_of::<[Definition; 2]>()
-        + size_of::<std::array::IntoIter<Definition, 2>>()
+        + size_of::<[Definition; 3]>()
+        + size_of::<std::array::IntoIter<Definition, 3>>()
         + size_of::<std::slice::Iter<'static, SchemaRef>>()
         + size_of::<Option<&SchemaRef>>()
         + size_of::<std::slice::Iter<'static, Id>>()
+        + size_of::<[&str; 4]>()
+        + size_of::<std::array::IntoIter<&str, 4>>()
         + size_of::<std::slice::Iter<'static, crucible_node_format::schema::NodeBinding>>()
         + size_of::<usize>()
         + size_of::<Result<(), ProviderError>>()
@@ -200,10 +207,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn immutable_import18_rosters_require_both_full_definitions_and_all_features() {
+    fn immutable_import18_rosters_require_three_full_definitions_and_all_features() {
         let formats = vec![
             native_import18_schema_data().unwrap(),
             native_import18_stage_schema_data().unwrap(),
+            native_import18_restored_record_schema_data().unwrap(),
         ];
         let features: Vec<_> = native_import18_declared_features_data()
             .into_iter()
@@ -218,6 +226,11 @@ mod tests {
         formats[1]
             .definition
             .verify(&native_import18_stage_contract_data().unwrap())
+            .unwrap();
+
+        formats[2]
+            .definition
+            .verify(&native_import18_restored_record_contract_data().unwrap())
             .unwrap();
 
         for side in 0..2 {

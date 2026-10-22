@@ -3,8 +3,8 @@
 use super::super::super::selection::OriginalImport18SelectionAdmission;
 use super::*;
 use crate::reference_packet::service::complete_restore::import18::{
-    native_import18_declared_features_data, native_import18_schema_data,
-    native_import18_stage_schema_data,
+    native_import18_declared_features_data, native_import18_restored_record_schema_data,
+    native_import18_schema_data, native_import18_stage_schema_data,
 };
 use std::cell::Cell;
 
@@ -12,6 +12,7 @@ pub(super) fn prepare_selected(case: &str, selected: &mut Value) {
     let schemas = json!([
         native_import18_schema_data().unwrap(),
         native_import18_stage_schema_data().unwrap(),
+        native_import18_restored_record_schema_data().unwrap(),
     ]);
     selected["launch"]["selection"]["provider"]["implementation"]["formats"] = schemas.clone();
     selected["launch"]["selection"]["provider"]["extensions_supported"] =
@@ -31,9 +32,11 @@ pub(super) fn prepare_selected(case: &str, selected: &mut Value) {
         &mut launch["provider"]["implementation"]["formats"]
     };
     if case.ends_with("_missing") && case != "initial_selection_feature_missing" {
-        formats.as_array_mut().unwrap().remove(0);
+        let index = if case.contains("_record_") { 2 } else { 0 };
+        formats.as_array_mut().unwrap().remove(index);
     } else if case.ends_with("_duplicate") {
-        let duplicate = formats[1].clone();
+        let index = if case.contains("_record_") { 2 } else { 1 };
+        let duplicate = formats[index].clone();
         formats.as_array_mut().unwrap().push(duplicate);
     } else if case.ends_with("_media") {
         formats[0]["definition"]["media_type"] = json!("application/cbor");
@@ -161,8 +164,12 @@ fn native_definitions_use_full_original_rosters_before_any_model_or_hello() {
         "initial_selection_reactive",
         "initial_selection_provider_missing",
         "initial_selection_binding_missing",
+        "initial_selection_provider_record_missing",
+        "initial_selection_binding_record_missing",
         "initial_selection_provider_duplicate",
         "initial_selection_binding_duplicate",
+        "initial_selection_provider_record_duplicate",
+        "initial_selection_binding_record_duplicate",
         "initial_selection_provider_media",
         "initial_selection_binding_media",
         "initial_selection_provider_digest",

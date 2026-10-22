@@ -157,6 +157,7 @@ pub(in super::super) fn with_import18_declaration(
 ) -> PacketNative5CompleteRestoreDeclaration {
     use crucible_node_transport::reference_packet::service::complete_restore::import18::{
         native_import18_contract_data, native_import18_declared_features_data,
+        native_import18_restored_record_contract_data, native_import18_restored_record_schema_data,
         native_import18_schema_data, native_import18_stage_contract_data,
         native_import18_stage_schema_data,
     };
@@ -170,6 +171,10 @@ pub(in super::super) fn with_import18_declaration(
         (
             native_import18_stage_schema_data().unwrap(),
             native_import18_stage_contract_data().unwrap(),
+        ),
+        (
+            native_import18_restored_record_schema_data().unwrap(),
+            native_import18_restored_record_contract_data().unwrap(),
         ),
     ] {
         schema.definition.verify(&bytes).unwrap();

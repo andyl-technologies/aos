@@ -50,7 +50,8 @@ fn restoration_context(request: &PacketCompleteRestoreRequest) -> PacketComplete
     }
 }
 
-fn prepare() -> PacketCompleteRestorePrepareRequest {
+pub(in crate::reference_packet::service::complete_restore) fn prepare()
+-> PacketCompleteRestorePrepareRequest {
     let reference = canonical::content_ref(b"{}", "application/json").unwrap();
     PacketCompleteRestorePrepareRequest {
         schema: PACKET_COMPLETE_RESTORE_PREPARE_EXTENSION.to_owned(),

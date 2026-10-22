@@ -596,6 +596,9 @@ fn same_digest(actual: &Bytes, expected: &Bytes) -> Result<(), ProviderError> {
 #[allow(clippy::unwrap_used)]
 mod tests;
 
+#[cfg(test)]
+pub(super) use tests::prepare as prepare_fixture_data;
+
 pub(crate) use contract::complete_restore_transfer_contract_storage_data;
 
 pub(crate) use owner_state::{
