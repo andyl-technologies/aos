@@ -3532,6 +3532,20 @@ committed `abf3e09ad9` and its actual captured source. This gate runs no tests.
 No new complete-library, configured runtime, VM or full RFC qualification
 follows from this construction cleanup.
 
+## Bootstrap fixture failure diagnostics
+
+Commit `b8c8f03abb` includes the exact private fixture case in child-failure
+reports and reports original-cut expiry when shared correlation preparation
+refuses. The diagnostics preserve all assertions, production checks and
+deadlines; they supply no new completion or native authority.
+
+The raw-JSON Transport unit-test executable compiles, formatting and all six
+architecture gates pass, and the required application gate compiles 180 test
+executables across 58 packages, including 71 integration targets. All 437 owned
+Rust/Cargo inputs match the committed revision and its actual captured source.
+These compilation results execute no new runtime test and do not resolve the
+earlier raw-JSON failures.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
