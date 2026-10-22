@@ -9662,6 +9662,24 @@ and compares their complete profiles under that rule. The repaired check passes
 at `/nix/store/812csv22g8vzc1mk2872mb4n8g6cffw2-sandbox-nix-offline-hardware-profile-check`.
 It does not approve a hardware job or perform a TPM operation.
 
+The host-only `aos-sandbox-nix-offline-approval-vm-fixture` constructs independent
+static-job and effect approvals from public candidates, the exact fixed-domain
+and startup-profile bytes, and the measured original helper contract. Recovery
+also requires the actual nonempty prior journal. The operator key stays outside
+the guest; this fixture never receives its private candidate or creates runtime
+credentials. Its interoperability test passes against the existing canonical
+private-candidate verifier, including rejection of a changed public candidate.
+The complete Rust-target rerun remains pending for this fixture addition.
+
+Installed hardware qualification still needs the protected administrative
+export and approval-import path. The selected effective policy explicitly
+denies generic root from opening the private state or installing approval files
+in that directory. A root file-copy fixture would bypass the intended ownership
+model and is not qualification. Recovery must also retain its original boot and
+five-minute deadline; switching commands through a reboot cannot establish it.
+No hardware initialization, runtime floor publication or admission release is
+claimed by the independent signer test.
+
 The following signed Host and offline boots can query the vendor target but
 fail native host activation: creating configuration temporaries triggers an
 `unlabeled_t:filesystem associate` denial on the writable tmpfs upper. The

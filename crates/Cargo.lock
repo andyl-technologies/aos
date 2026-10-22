@@ -2059,6 +2059,7 @@ name = "aos-sandbox-service-journal-probe"
 version = "0.0.0"
 dependencies = [
  "aos-sandbox-broker",
+ "aos-sandbox-broker-session-protocol",
  "aos-sandbox-broker-session-security",
  "aos-sandbox-cache",
  "aos-sandbox-controller-domain",

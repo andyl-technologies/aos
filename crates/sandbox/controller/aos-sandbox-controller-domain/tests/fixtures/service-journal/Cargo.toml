@@ -17,6 +17,7 @@ required-features = ["native-recovery-vm-fixture"]
 aos-sandbox-controller-domain = { workspace = true, features = ["cache-physical-join-vm-fixture", "project-negative-recovery-vm-fixture"] }
 aos-sandbox-model.workspace = true
 aos-sandbox-broker.workspace = true
+aos-sandbox-broker-session-protocol.workspace = true
 aos-sandbox-broker-session-security.workspace = true
 aos-sandbox-linux.workspace = true
 aos-sandbox-protocol.workspace = true
