@@ -78,7 +78,7 @@ assert !nativeControlSummary
 assert idlePlanDiagnosticMinimumPs
 == null
 || (
-  tierMaintenance
+  (tierMaintenance || envoyNetwork)
   && builtins.isInt idlePlanDiagnosticMinimumPs
   && idlePlanDiagnosticMinimumPs >= 0
   && idlePlanDiagnosticMinimumPs <= 9223372036854775807
@@ -371,7 +371,7 @@ assert !interruptedTransfer
       else if envoyKnownFinding
       then "crucible-campaign-envoy-known-finding"
       else if envoyNetwork
-      then "crucible-campaign-envoy-network"
+      then "crucible-campaign-envoy-network${lib.optionalString (idlePlanDiagnosticMinimumPs != null) "-idle-diagnostics"}"
       else if campaignLifecycle
       then "crucible-packaged-campaign-lifecycle"
       else if guestChoice
@@ -512,6 +512,12 @@ assert !interruptedTransfer
           # This window admits copied plans only; it grants no guest-time authority.
           export CRUCIBLE_OUT_RESUME_RUNTIME_TRACE=1
           export CRUCIBLE_IDLE_PLAN_DIAGNOSTIC_MIN_PS=${toString idlePlanDiagnosticMinimumPs}
+        ''
+        + lib.optionalString envoyNetwork ''
+          # The device-wait witness rides the aggregate allowance; both report
+          # plugin boundary decisions from the same window and change none.
+          export CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS=64
+          export CRUCIBLE_DEVICE_WAIT_DIAGNOSTIC_MIN_PS=${toString idlePlanDiagnosticMinimumPs}
         '')}
       # A missing closure member must name its configured asset, rather than
       # failing later with a bare ENOENT from guest campaign compilation.

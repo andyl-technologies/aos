@@ -922,6 +922,13 @@ in rec {
     schedulerBoundFrequencyQemuVm = phase7.productionRustPluginFlight.rawGate.partitionDiagnostic;
     packagedCampaignLifecycleVm = import ./phase4-packaged-campaign-lifecycle-vm.nix {inherit pkgs lib;};
     packagedCampaignEnvoyNetworkVm = import ./phase4-packaged-campaign-envoy-network-vm.nix {inherit pkgs lib;};
+    packagedCampaignEnvoyNetworkIdleDiagnosticsVm = import ./phase4-packaged-campaign-vm.nix {
+      inherit pkgs lib;
+      envoyNetwork = true;
+      # Opens plugin idle-plan and device-wait witnesses just before the
+      # post-convergence phase marker hand-off; diagnostic only.
+      idlePlanDiagnosticMinimumPs = 1800000000000;
+    };
     packagedCampaignMaterializationVm = import ./phase4-packaged-campaign-materialization-vm.nix {inherit pkgs lib;};
     eventGraphControlFlow = import ./phase4-event-graph-control-flow.nix {
       inherit pkgs lib;
