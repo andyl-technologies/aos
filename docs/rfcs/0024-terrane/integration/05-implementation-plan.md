@@ -15509,3 +15509,26 @@ matches every one of its 8,050 immutable source files and its actual build-log
 summary. The old aggregate proceeds to its remaining gates. Neither the old
 aggregate nor current-source qualification is thereby complete. The fresh
 `8dc8dd6311` eleven-component and three trunk-exit/matrix requests remain active.
+
+#### Local operator guide and corrected native image review
+
+The user documentation now links a local Terrane repository guide covering
+initialization, private credential custody, directory commits, pinned and fixed
+checkouts, branch fork/merge and authorized committed history. Its examples retain
+the registered policy authority while changing writer branches, use fresh checkout
+destinations, and distinguish syntax validation from native service readiness.
+All new relative links and Bash blocks validate. The six documented subcommands
+and their shared configuration flags match the actual `8dc8dd6311` CLI executable.
+These checks do not execute the guide's repository workflow. Warehouse deployment,
+runner configuration, backup/restore, GC and the complete status surface remain
+required for T-PKG-5; its checkbox remains open.
+
+The fresh `8dc8dd6311` host-cache image also completes compilation and discovery.
+Independent review matches all 8,074 immutable source files, all 5,365 bound
+inputs, the four original Cargo executables and installed ELF hashes, every
+supervisor/helper script, all 92 fixture selectors and the complete 129-case unit
+inventory. Its partition is exactly 124 ordinary-user cases and five creator
+cases. The actual ext4 VM subsequently executes both unit groups successfully,
+including their UID/GID and empty-capability witnesses. The VM continues its
+native publication/recovery scenarios; no full VM, owning-gate or feature-matrix
+pass is inferred from those intermediate results. No trunk task is accepted.
