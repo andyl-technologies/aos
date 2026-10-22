@@ -977,25 +977,28 @@ fn expected_routes(
         return routes;
     };
     for pair in &expected.address_pairs {
-        let (scope, metric) = match pair.sandbox {
-            ObservedIpAddressV1::Ipv4(_) => (ObservedRouteScopeV1::Link, 0),
-            ObservedIpAddressV1::Ipv6(_) => (ObservedRouteScopeV1::Universe, 256),
-        };
-        routes.push(ObservedRouteV1 {
-            namespace: ObservedNetworkNamespaceV1::Sandbox,
-            ifindex: sandbox.ifindex,
-            destination: point_to_point_prefix(pair.sandbox, pair.prefix_length),
-            gateway: None,
-            preferred_source: match pair.sandbox {
-                ObservedIpAddressV1::Ipv4(_) => Some(pair.sandbox),
-                ObservedIpAddressV1::Ipv6(_) => None,
-            },
-            table: 254,
-            route_type: ObservedRouteTypeV1::Unicast,
-            scope,
-            protocol: ObservedRouteProtocolV1::Kernel,
-            metric,
-        });
+        // Connected routes appear only after the fenced interface is raised.
+        if sandbox.up {
+            let (scope, metric) = match pair.sandbox {
+                ObservedIpAddressV1::Ipv4(_) => (ObservedRouteScopeV1::Link, 0),
+                ObservedIpAddressV1::Ipv6(_) => (ObservedRouteScopeV1::Universe, 256),
+            };
+            routes.push(ObservedRouteV1 {
+                namespace: ObservedNetworkNamespaceV1::Sandbox,
+                ifindex: sandbox.ifindex,
+                destination: point_to_point_prefix(pair.sandbox, pair.prefix_length),
+                gateway: None,
+                preferred_source: match pair.sandbox {
+                    ObservedIpAddressV1::Ipv4(_) => Some(pair.sandbox),
+                    ObservedIpAddressV1::Ipv6(_) => None,
+                },
+                table: 254,
+                route_type: ObservedRouteTypeV1::Unicast,
+                scope,
+                protocol: ObservedRouteProtocolV1::Kernel,
+                metric,
+            });
+        }
         routes.push(ObservedRouteV1 {
             namespace: ObservedNetworkNamespaceV1::Sandbox,
             ifindex: sandbox.ifindex,
@@ -1012,21 +1015,23 @@ fn expected_routes(
             metric: 0,
         });
     }
-    routes.push(ObservedRouteV1 {
-        namespace: ObservedNetworkNamespaceV1::Sandbox,
-        ifindex: sandbox.ifindex,
-        destination: ObservedIpPrefixV1 {
-            address: ObservedIpAddressV1::Ipv6([0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
-            prefix_length: 8,
-        },
-        gateway: None,
-        preferred_source: None,
-        table: 255,
-        route_type: ObservedRouteTypeV1::Multicast,
-        scope: ObservedRouteScopeV1::Universe,
-        protocol: ObservedRouteProtocolV1::Kernel,
-        metric: 256,
-    });
+    if sandbox.up {
+        routes.push(ObservedRouteV1 {
+            namespace: ObservedNetworkNamespaceV1::Sandbox,
+            ifindex: sandbox.ifindex,
+            destination: ObservedIpPrefixV1 {
+                address: ObservedIpAddressV1::Ipv6([0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
+                prefix_length: 8,
+            },
+            gateway: None,
+            preferred_source: None,
+            table: 255,
+            route_type: ObservedRouteTypeV1::Multicast,
+            scope: ObservedRouteScopeV1::Universe,
+            protocol: ObservedRouteProtocolV1::Kernel,
+            metric: 256,
+        });
+    }
     routes.extend(expected.routes.iter().map(|route| {
         let metric = match route.destination.address {
             ObservedIpAddressV1::Ipv4(_) => 0,
@@ -1934,21 +1939,6 @@ mod tests {
             ObservedRouteV1 {
                 namespace: ObservedNetworkNamespaceV1::Sandbox,
                 ifindex: SANDBOX_IFINDEX,
-                destination: ObservedIpPrefixV1 {
-                    address: ObservedIpAddressV1::Ipv4([192, 0, 0, 0]),
-                    prefix_length: 31,
-                },
-                gateway: None,
-                preferred_source: Some(ObservedIpAddressV1::Ipv4([192, 0, 0, 1])),
-                table: 254,
-                route_type: ObservedRouteTypeV1::Unicast,
-                scope: ObservedRouteScopeV1::Link,
-                protocol: ObservedRouteProtocolV1::Kernel,
-                metric: 0,
-            },
-            ObservedRouteV1 {
-                namespace: ObservedNetworkNamespaceV1::Sandbox,
-                ifindex: SANDBOX_IFINDEX,
                 destination: host_prefix(ObservedIpAddressV1::Ipv4([192, 0, 0, 1])),
                 gateway: None,
                 preferred_source: Some(ObservedIpAddressV1::Ipv4([192, 0, 0, 1])),
@@ -1957,23 +1947,6 @@ mod tests {
                 scope: ObservedRouteScopeV1::Host,
                 protocol: ObservedRouteProtocolV1::Kernel,
                 metric: 0,
-            },
-            ObservedRouteV1 {
-                namespace: ObservedNetworkNamespaceV1::Sandbox,
-                ifindex: SANDBOX_IFINDEX,
-                destination: ObservedIpPrefixV1 {
-                    address: ObservedIpAddressV1::Ipv6([
-                        0xff, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                    ]),
-                    prefix_length: 8,
-                },
-                gateway: None,
-                preferred_source: None,
-                table: 255,
-                route_type: ObservedRouteTypeV1::Multicast,
-                scope: ObservedRouteScopeV1::Universe,
-                protocol: ObservedRouteProtocolV1::Kernel,
-                metric: 256,
             },
             ObservedRouteV1 {
                 namespace: ObservedNetworkNamespaceV1::Sandbox,
@@ -2179,6 +2152,47 @@ mod tests {
     }
 
     #[test]
+    fn fenced_routes_reject_generated_prefixes_and_require_planned_routes() {
+        let expected = expectation();
+        let mut missing_planned = observation();
+        let planned = missing_planned
+            .routes
+            .iter()
+            .find(|route| route.protocol == ObservedRouteProtocolV1::Static)
+            .unwrap()
+            .clone();
+        let original_count = missing_planned.routes.len();
+        missing_planned.routes.retain(|route| route != &planned);
+        assert_eq!(missing_planned.routes.len() + 1, original_count);
+
+        let mut extra_connected = observation();
+        let mut connected = planned;
+        connected.destination = ObservedIpPrefixV1 {
+            address: ObservedIpAddressV1::Ipv4([192, 0, 0, 0]),
+            prefix_length: 31,
+        };
+        connected.gateway = None;
+        connected.scope = ObservedRouteScopeV1::Link;
+        connected.protocol = ObservedRouteProtocolV1::Kernel;
+        extra_connected.routes.push(connected);
+        extra_connected.routes.sort_unstable();
+
+        for observed in [&missing_planned, &extra_connected] {
+            assert_eq!(
+                expected.validate_stable(
+                    BOOT_ID,
+                    NAMESPACE,
+                    NetworkNamespaceObservedStateKindV1::DefaultDrop,
+                    &lifecycle(),
+                    observed,
+                    observed,
+                ),
+                Err(NetworkKernelObservationError::RouteMismatch)
+            );
+        }
+    }
+
+    #[test]
     fn only_armed_lifecycle_accepts_raised_veths() {
         let expected = expectation();
         let armed = retained_lease_lifecycle(true, 7, object(0x91), 10_000);
@@ -2187,6 +2201,21 @@ mod tests {
         observed.sandbox_veth.as_mut().unwrap().up = true;
         observed.lifecycle = armed.clone();
         observed.lease_gate.as_mut().unwrap().lease_state = armed.clone();
+
+        // Raising a pair must also produce its connected and multicast routes.
+        // The previously valid fenced inventory cannot establish armed state.
+        assert_eq!(
+            expected.validate_stable(
+                BOOT_ID,
+                NAMESPACE,
+                NetworkNamespaceObservedStateKindV1::Armed,
+                &armed,
+                &observed,
+                &observed,
+            ),
+            Err(NetworkKernelObservationError::RouteMismatch),
+        );
+        observed.routes = expected_routes(&expected, &observed);
 
         expected
             .validate_stable(
@@ -2366,11 +2395,12 @@ mod tests {
     fn observation_encoding_v1_has_a_fixed_digest_vector() {
         // This implementation-derived vector freezes the sole V1 encoding shape;
         // it is not an independent normative RFC conformance vector.
+        // The specimen retains the canonical fenced-state native route data.
         assert_eq!(
             observation().digest().as_bytes(),
             &[
-                252, 124, 47, 237, 223, 42, 144, 246, 129, 48, 238, 253, 229, 163, 9, 197, 177, 87,
-                86, 232, 24, 60, 143, 66, 96, 207, 178, 152, 243, 238, 35, 216,
+                134, 7, 16, 1, 252, 42, 89, 80, 227, 53, 74, 106, 241, 140, 57, 55, 63, 12, 38,
+                191, 100, 203, 9, 177, 100, 186, 178, 3, 56, 195, 129, 56,
             ]
         );
     }
@@ -2524,16 +2554,17 @@ mod tests {
             Err(NetworkKernelObservationError::LinkMismatch)
         );
 
-        // The checked Linux fixture predates the prepared-down invariant. All
-        // other captured facts remain exact after lowering only the veth pair.
-        observed.host_veth.as_mut().unwrap().up = false;
-        observed.sandbox_veth.as_mut().unwrap().up = false;
+        // The captured links and routes describe an armed pair. Lowering it
+        // would change its native addresses, neighbors and generated routes.
+        let armed = retained_lease_lifecycle(true, 7, object(0x91), 10_000);
+        observed.lifecycle = armed.clone();
+        observed.lease_gate.as_mut().unwrap().lease_state = armed.clone();
         expected
             .validate_stable(
                 BOOT_ID,
                 NAMESPACE,
-                NetworkNamespaceObservedStateKindV1::DefaultDrop,
-                &lifecycle(),
+                NetworkNamespaceObservedStateKindV1::Armed,
+                &armed,
                 &observed,
                 &observed,
             )
