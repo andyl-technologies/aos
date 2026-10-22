@@ -10743,3 +10743,16 @@ The test requires a changed agent PID and namespace equality with PID 1 before
 continuing its unchanged marker, byte, custody and rejection assertions. The
 actual path/service units evaluate and the expanded test script compiles; the
 installed five-guest rerun remains required.
+
+
+### Offline preparer executable mapping (installed execution pending)
+
+The offline hardware VM reaches the actual preparation unit but fails before
+TPM provisioning: its fixed preparer executable receives SIGSEGV during exec.
+An audit-daemon diagnostic against that exact image confirms denial of execute
+on aos_nix_offline_prepare_exec_t after entering aos_nix_offline_prepare_t.
+The role now permits mapping its own fixed executable, matching the existing
+helper mapping rule. It still cannot execute_no_trans, transition to itself,
+or execute arbitrary binaries. Mutation checks require every mapping permission
+and reject both forms of reexec. Compiled-policy and installed hardware retries
+remain required; this correction supplies no TPM or public lifecycle receipt.

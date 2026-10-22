@@ -445,7 +445,6 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         Access("init_t", OFFLINE_PREPARE, "process", "transition"),
         Access("init_t", OFFLINE_PREPARE, "process2", "nnp_transition"),
         Access("init_t", OFFLINE_PREPARE, "process2", "nosuid_transition"),
-        Access(OFFLINE_PREPARE, OFFLINE_PREPARE_EXECUTABLE, "file", "entrypoint"),
         Access(OFFLINE_PREPARE, OFFLINE_PREPARE, "capability", "chown"),
         Access(OFFLINE_PREPARE, OFFLINE_PREPARE, "capability", "dac_override"),
         Access(OFFLINE_PREPARE, "init_t", "fd", "use"),
@@ -453,6 +452,10 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         Access(OFFLINE_PREPARE, "init_t", "system", "status"),
         Access(OFFLINE_PREPARE, "systemd_unit_t", "service", "status"),
         Access(OFFLINE_PREPARE_CREDENTIAL, "tmpfs_t", "filesystem", "associate"),
+    ))
+    positive.extend(accesses(
+        OFFLINE_PREPARE, OFFLINE_PREPARE_EXECUTABLE, "file",
+        ("entrypoint", "execute", "getattr", "map", "open", "read"),
     ))
     for reader in (OFFLINE_PREPARE, "init_t"):
         positive.extend(accesses(reader, OFFLINE_PREPARE_PROFILE, "file", file_read))
@@ -490,6 +493,7 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     for permission in ("start", "stop", "reload", "reboot", "halt"):
         negative.append(Access(OFFLINE_PREPARE, "*", "system", permission))
     negative.append(Access(OFFLINE_PREPARE, "*", "file", "execute_no_trans"))
+    negative.append(Access(OFFLINE_PREPARE, OFFLINE_PREPARE, "process", "transition"))
     negative.extend(accesses(
         OFFLINE_PREPARE, "init_t", "unix_stream_socket", ("connectto", "read"),
     ))

@@ -704,6 +704,28 @@ class EffectivePolicyTest(unittest.TestCase):
             with self.subTest(access=access):
                 self.assert_forbidden_allow_rejected(access)
 
+    def test_offline_preparer_requires_mapping_without_reexec(self) -> None:
+        owner = effective_policy.owner_policy
+        for permission in ("entrypoint", "execute", "getattr", "map", "open", "read"):
+            with self.subTest(permission=permission):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access(
+                        owner.OFFLINE_PREPARE, owner.OFFLINE_PREPARE_EXECUTABLE,
+                        "file", permission,
+                    )
+                )
+
+        for access in (
+            effective_policy.Access(
+                owner.OFFLINE_PREPARE, owner.OFFLINE_PREPARE_EXECUTABLE,
+                "file", "execute_no_trans",
+            ),
+            effective_policy.Access(owner.OFFLINE_PREPARE, "bin_t", "file", "execute_no_trans"),
+            effective_policy.Access(owner.OFFLINE_PREPARE, owner.OFFLINE_PREPARE, "process", "transition"),
+        ):
+            with self.subTest(access=access):
+                self.assert_forbidden_allow_rejected(access)
+
     def test_offline_helper_mapping_preserves_the_reexec_cut(self) -> None:
         owner = effective_policy.owner_policy
         for permission in ("entrypoint", "execute", "getattr", "map", "open", "read"):

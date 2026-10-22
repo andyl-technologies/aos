@@ -59,7 +59,9 @@ allow init_t aos_nix_offline_prepare_t:process transition;
 # The immutable /nix overlay remains nosuid. Linux checks both restrictions
 # for this explicit, fixed-label service transition; set-ID bits stay disabled.
 allow init_t aos_nix_offline_prepare_t:process2 { nnp_transition nosuid_transition };
-allow aos_nix_offline_prepare_t aos_nix_offline_prepare_exec_t:file { entrypoint getattr map open read };
+# ELF text is mapped after the fixed transition installs preparer credentials.
+# execute_no_trans remains denied, so this does not permit same-role reexec.
+allow aos_nix_offline_prepare_t aos_nix_offline_prepare_exec_t:file { entrypoint execute getattr map open read };
 allow aos_nix_offline_prepare_t self:capability { chown dac_override };
 allow aos_nix_offline_prepare_t self:process { fork getattr getsched sigchld signal };
 allow aos_nix_offline_prepare_t init_t:fd use;
