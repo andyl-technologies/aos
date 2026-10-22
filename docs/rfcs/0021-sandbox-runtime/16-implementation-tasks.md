@@ -9798,6 +9798,13 @@ its image projection. The replay checks enforce that boundary; the expanded
 profile check passes at
 `/nix/store/xzw32f90bpifrpdxfj3zkb3g5nidny92-aos-native-profile-replay`.
 
+The standalone boot-consumer graph fixture now declares its disabled SELinux
+setting and supplies the overlay labeler's tool artifact explicitly. Its tiny
+package records do not include the production security module; leaving those
+inputs absent prevented the graph from rendering. All fourteen direct fixture
+assertions pass. This fixes evaluation coverage without changing production
+boot inputs, policy or authenticated service comparison.
+
 The full Root and lifecycle-funded images separately reached closure assembly
 and rejected duplicate `50-udev-default.rules` providers. Immutable root
 assembly now uses the existing selected-daemon udev collector, with the
