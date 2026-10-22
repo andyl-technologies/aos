@@ -2556,6 +2556,36 @@ No new VM or configured Engine/Daemon runtime result is claimed. Genuine
 Source/Birth funding, live ACK publication, full phase construction and full
 RFC acceptance remain unfinished.
 
+## Original typed bootstrap birth association
+
+Commit `1edce95c74` borrows the actual birth identifier, private launch, Host
+executable, complete typed Source binding and original Host registration from
+the decoded private body. Its six-field serialization matches the existing
+birth-association grammar and excludes the private key. The enclosing composite
+loan keeps the actual immutable policy, Source/launch, cut, literal Hello and
+live SDK guards around either callback outcome.
+
+The complete projection prices both original Bytes formatters separately from
+DOM/JCS, parser and output banks. It creates no intermediate Source DOM, copied
+birth bank or retained owner. Its fixed controls have a checked independent
+quote; the initial row and existing public wire API remain unchanged.
+
+All fourteen physical-channel cases pass. An independent raw-body/wire oracle
+matches the normalized view, and the actual serializer matches projected storage
+and populations. Exact-peak and larger restrictions pass; one byte less and a
+malformed birth identifier refuse. Callback refusal, expiry, changed cut and
+SDK containment retain original ownership. Both complete Transport configurations
+pass 1,956 tests each with no failures, no filtering and sixteen existing ignores.
+Affected all-feature/all-target checking, formatting and all six architecture
+gates pass.
+
+The required application gate compiles 180 test executables across 58 package
+identities, including 71 integration targets. All 302 owned Rust/Cargo inputs
+match the commit and its exact captured source. This gate executes no tests.
+No new VM or configured Engine/Daemon runtime result is claimed. Live ACK
+publication, genuine Source/Birth funding, complete phase construction and
+full RFC acceptance remain unfinished.
+
 ## Original launch custody and shared startup geometry
 
 Commit `47b53d8b09` extends the portable startup calculations in `d96b7ff900`.
