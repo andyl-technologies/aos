@@ -198,7 +198,7 @@ in
       ${protectedStoreProbe}/bin/aos-sandbox-network-protected-store-fixture \
         --list > inspector-store-cases.json
       ${pkgs.jq}/bin/jq -e '
-        length == 12 and . == [
+        . == [
           "genuine-five-fd-topology",
           "mismatched-expected-view-rejected",
           "aliased-physical-role-rejected",

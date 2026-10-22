@@ -34,6 +34,11 @@
   identityRecord = "/var/lib/aos-sandbox-network-worker/bpffs-identity";
   pin = "/sys/fs/bpf/aos/sandbox-network/vm-proof";
   socket = "/run/aos/sandbox-network-worker/control.sock";
+  # The selected profile admits only fixed absolute-path arguments. Keep the
+  # probe's mode selector inside its dedicated test executable.
+  workerProbe = pkgs.writeShellScriptBin "aos-network-worker-bpffs-qualification" ''
+    exec ${probe}/bin/network-worker-bpffs-probe worker ${identityRecord} ${pin}
+  '';
   system = mkSystem [
     ../../systems/server-test.nix
     ({lib, ...}: {
@@ -50,9 +55,8 @@
       # Exercise the production template's namespace and filesystem hardening
       # while replacing only the protocol implementation with a focused pin
       # identity probe.
-      systemd.services."aos-sandbox-network-worker@".serviceConfig.ExecStart = lib.mkForce ''
-        ${probe}/bin/network-worker-bpffs-probe worker ${identityRecord} ${pin}
-      '';
+      systemd.services."aos-sandbox-network-worker@".serviceConfig.ExecStart =
+        lib.mkForce "${workerProbe}/bin/aos-network-worker-bpffs-qualification";
     })
   ];
 in {
