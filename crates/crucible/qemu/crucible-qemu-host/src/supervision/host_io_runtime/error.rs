@@ -51,6 +51,118 @@ mod tests {
     use std::os::unix::fs::FileExt;
 
     #[test]
+    fn actual_network_stop_refusals_keep_observations_and_original_post_without_allocation()
+    -> Result<(), Box<dyn std::error::Error>> {
+        for (corrupt_indices, source_slot) in [(true, 0), (false, 1), (false, 0)] {
+            let allocation = crucible_qemu_shmem::RegionAllocation::new_model(
+                crucible_qemu_shmem::RegionConfig::new(1, 4),
+            )?;
+            let layout = allocation.layout();
+            let mut file = std::fs::File::from(crate::spawn::memfd_region(layout.region_size)?);
+            file.write_all(&allocation.setup_region_bytes()?)?;
+            let wake = tempfile::tempfile()?;
+            let mut runtime =
+                super::super::QemuLiveHostIoRuntime::from_shmem_fd_with_poll_interval(
+                    file.as_fd(),
+                    wake.as_fd(),
+                    layout.region_size,
+                    0,
+                    std::time::Duration::from_millis(1),
+                )?;
+            let mut producer =
+                crucible_qemu_shmem::mmap_setup_region(file.as_fd(), layout.region_size)?;
+            let base = producer.header() as *const _ as usize;
+            let frame = crucible_qemu_shmem::FrameEntry::new(1_500, source_slot, 23, b"refused")?;
+            let (header_offset, capacity) = {
+                let rings = producer.node_directed_ring_pair_mut(
+                    0,
+                    0,
+                    crucible_qemu_shmem::SLOT_NET_ROUTER as u32,
+                    crucible_qemu_shmem::SLOT_NET_ROUTER as u32,
+                    0,
+                )?;
+                rings.first.header.enqueue(rings.first.entries, &frame)?;
+                (
+                    (rings.first.header as *const _ as usize)
+                        .checked_sub(base)
+                        .ok_or("mapped ring precedes its header")?,
+                    u64::try_from(rings.first.entries.len())?,
+                )
+            };
+            if corrupt_indices {
+                let offset = header_offset + crucible_qemu_shmem::RING_HEADER_WRITE_IDX_OFFSET;
+                file.write_all_at(&(capacity + 1).to_ne_bytes(), u64::try_from(offset)?)?;
+            }
+            // These deliberately inconsistent wire observations grant no
+            // physical stop or Native frame; only the real refusal path runs.
+            let mut snapshot = producer.node_slot(0)?.snapshot();
+            snapshot.status = crucible_qemu_shmem::STATUS_IDLE;
+            snapshot.current_icount = 1_000;
+            snapshot.idle_wake_icount = 1_000;
+            let mut before = vec![0; usize::try_from(layout.region_size)?];
+            file.read_exact_at(&mut before, 0)?;
+            let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+            let original = supervisor.begin(HostOperationClass::Quantum)?;
+
+            let (error, counts) = TestAllocationObserver::count(|| {
+                let error = runtime
+                    .network_output_stop_write_index(&snapshot)
+                    .expect_err("actual mapped network stop rejects inconsistent observations");
+                supervisor.cancel().unwrap();
+                error.with_operational_supervision_post(
+                    original
+                        .wait_slice()
+                        .expect_err("same Original is canceled"),
+                )
+            });
+
+            assert_eq!(counts.allocations, 0);
+            assert_eq!(counts.reallocations, 0);
+            assert!(!counts.overflow);
+            assert!(error.message.is_empty());
+            assert_eq!(error.operation, "observe network output stop");
+            let expected_message = if corrupt_indices {
+                let expected = crucible_qemu_shmem::SpscRingError::CorruptIndices {
+                    read_idx: 0,
+                    write_idx: capacity + 1,
+                    capacity,
+                };
+                assert_eq!(error.network_ring_source(), Some(&expected));
+                assert_eq!(
+                    std::error::Error::source(&error).and_then(|source| source.downcast_ref()),
+                    Some(&expected),
+                );
+                assert!(error.network_output_stop_coordinates().is_none());
+                expected.to_string()
+            } else {
+                assert!(error.network_ring_source().is_none());
+                assert_eq!(
+                    error.network_output_stop_coordinates(),
+                    Some((23, source_slot, 1_500, 0, 1_000))
+                );
+                format!(
+                    "frame 23 from slot {source_slot} at 1500 does not match stopped slot 0 at 1000"
+                )
+            };
+            let post = original
+                .wait_slice()
+                .expect_err("same Original remains canceled");
+            assert_eq!(error.operational_supervision_post(), Some(post));
+            assert_eq!(
+                error.to_string(),
+                format!(
+                    "observe network output stop failed: {expected_message}; independent host operation postcheck failed: {post}"
+                ),
+            );
+            let mut after = vec![0; before.len()];
+            file.read_exact_at(&mut after, 0)?;
+            assert_eq!(after, before);
+            assert_eq!(wake.metadata()?.len(), 0);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn actual_fault_event_corruption_retains_typed_cause_and_original_post_without_allocation()
     -> Result<(), Box<dyn std::error::Error>> {
         use crucible_qemu_shmem::{FaultEventError, FaultTransportError};

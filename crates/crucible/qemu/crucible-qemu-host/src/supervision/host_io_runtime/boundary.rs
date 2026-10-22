@@ -60,7 +60,7 @@ impl QemuLiveHostIoRuntime {
             .header
             .peek(rings.first.entries)
             .map_err(|source| {
-                QemuAsyncDriverRuntimeError::new("observe network output stop", source.to_string())
+                QemuAsyncDriverRuntimeError::network_ring("observe network output stop", source)
             })?
         else {
             return Ok(None);
@@ -79,16 +79,10 @@ impl QemuLiveHostIoRuntime {
             return Ok(None);
         }
         if frame.src_node != self.vm_slot || frame.delivery_icount != snapshot.current_icount {
-            return Err(QemuAsyncDriverRuntimeError::new(
-                "observe network output stop",
-                format!(
-                    "frame {} from slot {} at {} does not match stopped slot {} at {}",
-                    frame.seq,
-                    frame.src_node,
-                    frame.delivery_icount,
-                    self.vm_slot,
-                    snapshot.current_icount,
-                ),
+            return Err(QemuAsyncDriverRuntimeError::network_output_stop(
+                &frame,
+                self.vm_slot,
+                snapshot.current_icount,
             ));
         }
         Ok(Some(write_index))

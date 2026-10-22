@@ -44,6 +44,20 @@ impl std::fmt::Display for QemuAsyncDriverRuntimeError {
             QemuAsyncDriverRuntimeErrorDetail::FaultEvent(source) if self.message.is_empty() => {
                 write!(formatter, "{} failed: {source}", self.operation)
             }
+            QemuAsyncDriverRuntimeErrorDetail::NetworkRing(source) if self.message.is_empty() => {
+                write!(formatter, "{} failed: {source}", self.operation)
+            }
+            QemuAsyncDriverRuntimeErrorDetail::NetworkOutputStop {
+                sequence,
+                source_slot,
+                delivery_icount,
+                stopped_slot,
+                stopped_icount,
+            } if self.message.is_empty() => write!(
+                formatter,
+                "{} failed: frame {sequence} from slot {source_slot} at {delivery_icount} does not match stopped slot {stopped_slot} at {stopped_icount}",
+                self.operation,
+            ),
             QemuAsyncDriverRuntimeErrorDetail::NodeSlot(source) if self.message.is_empty() => {
                 write!(formatter, "{} failed: {source}", self.operation)
             }
@@ -72,6 +86,7 @@ impl std::error::Error for QemuAsyncDriverRuntimeError {
             QemuAsyncDriverRuntimeErrorDetail::BoundaryAction(source) => Some(source),
             QemuAsyncDriverRuntimeErrorDetail::FaultTransport(source) => Some(source),
             QemuAsyncDriverRuntimeErrorDetail::FaultEvent(source) => Some(source),
+            QemuAsyncDriverRuntimeErrorDetail::NetworkRing(source) => Some(source),
             QemuAsyncDriverRuntimeErrorDetail::NodeSlot(source) => Some(source),
             QemuAsyncDriverRuntimeErrorDetail::FingerprintSample(source) => Some(source),
             _ => self.supervision_post.as_ref().map(|source| source as _),
@@ -86,6 +101,14 @@ enum QemuAsyncDriverRuntimeErrorDetail {
     BoundaryAction(crucible_qemu_protocol::boundary_action::ActionDecodeError),
     FaultTransport(crucible_qemu_shmem::FaultTransportError),
     FaultEvent(crucible_qemu_shmem::FaultEventError),
+    NetworkRing(crucible_qemu_shmem::SpscRingError),
+    NetworkOutputStop {
+        sequence: u32,
+        source_slot: u32,
+        delivery_icount: u64,
+        stopped_slot: u32,
+        stopped_icount: u64,
+    },
     NodeSlot(crucible_qemu_shmem::NodeSlotError),
     FingerprintSample(crucible_qemu_shmem::FingerprintSampleError),
     #[default]
@@ -171,6 +194,72 @@ impl QemuAsyncDriverRuntimeError {
     pub const fn fault_event_source(&self) -> Option<&crucible_qemu_shmem::FaultEventError> {
         match &self.detail {
             QemuAsyncDriverRuntimeErrorDetail::FaultEvent(source) => Some(source),
+            _ => None,
+        }
+    }
+
+    /// Retains a network ring refusal without allocating diagnostic text.
+    #[must_use]
+    pub fn network_ring(
+        operation: &'static str,
+        source: crucible_qemu_shmem::SpscRingError,
+    ) -> Self {
+        Self {
+            operation,
+            message: Cow::Borrowed(""),
+            detail: QemuAsyncDriverRuntimeErrorDetail::NetworkRing(source),
+            supervision_post: None,
+        }
+    }
+
+    /// Borrows the ring cause independently of a later Original post.
+    #[must_use]
+    pub const fn network_ring_source(&self) -> Option<&crucible_qemu_shmem::SpscRingError> {
+        match &self.detail {
+            QemuAsyncDriverRuntimeErrorDetail::NetworkRing(source) => Some(source),
+            _ => None,
+        }
+    }
+
+    /// Retains the observed head and physical stop without consuming either.
+    pub(crate) fn network_output_stop(
+        frame: &crucible_qemu_shmem::FrameEntry,
+        stopped_slot: u32,
+        stopped_icount: u64,
+    ) -> Self {
+        Self {
+            operation: "observe network output stop",
+            message: Cow::Borrowed(""),
+            detail: QemuAsyncDriverRuntimeErrorDetail::NetworkOutputStop {
+                sequence: frame.seq,
+                source_slot: frame.src_node,
+                delivery_icount: frame.delivery_icount,
+                stopped_slot,
+                stopped_icount,
+            },
+            supervision_post: None,
+        }
+    }
+
+    /// Returns the frame sequence, source slot and icount, then stopped slot and icount.
+    ///
+    /// These retained observations grant no frame ownership or completion authority.
+    #[must_use]
+    pub const fn network_output_stop_coordinates(&self) -> Option<(u32, u32, u64, u32, u64)> {
+        match &self.detail {
+            QemuAsyncDriverRuntimeErrorDetail::NetworkOutputStop {
+                sequence,
+                source_slot,
+                delivery_icount,
+                stopped_slot,
+                stopped_icount,
+            } => Some((
+                *sequence,
+                *source_slot,
+                *delivery_icount,
+                *stopped_slot,
+                *stopped_icount,
+            )),
             _ => None,
         }
     }
