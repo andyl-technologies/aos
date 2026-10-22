@@ -12,6 +12,7 @@
   program = "${pkgs.aos-sandboxd}/bin/aos-sandbox-nix-floor-provision";
   command = "${program} ${cfg.command}";
   hardware = builtins.elem cfg.command ["initialize" "recover"];
+  approvalDelivery = builtins.elem cfg.command ["import-initialize-v6" "import-recovery-v6"];
   systemdLib = import ../../pkgs/system/_systemd-abilities/platform/render.nix {inherit lib pkgs;};
   delivery =
     [
@@ -23,6 +24,11 @@
       then [
         "nix-fixed-domain-pins-v2:/etc/credstore/nix-fixed-domain-pins-v2"
         "nix-floor-owner-hierarchy-auth-v4:/etc/credstore/nix-floor-owner-hierarchy-auth-v4"
+      ]
+      else if approvalDelivery
+      then [
+        "nix-floor-provision-approved-job-v6:/etc/credstore/nix-floor-provision-approved-job-v6"
+        "nix-floor-provision-approved-effect-v6:/etc/credstore/nix-floor-provision-approved-effect-v6"
       ]
       else []
     );
@@ -53,7 +59,7 @@
     (builtins.map (job: job.path) rendered.jobScripts)
     rendered.text;
   profile = pkgs.aosNixOfflineStartupProfileWith {
-    inherit hardware;
+    inherit hardware approvalDelivery;
     systemd = config.aos.manager.selected.package;
     aos-selinux-production-policy = selinux._productionPolicy;
     aos-selinux-kernel-policy-readback = selinux._canonicalReadback;
@@ -65,9 +71,9 @@ in {
     "the disabled-by-default manual prepare-keys unit, without TPM or runtime installation";
 
   options.aos.sandbox.nixOfflinePrepare.command = lib.mkOption {
-    type = lib.types.enum ["prepare-keys" "inspect-approved-job" "initialize" "recover"];
+    type = lib.types.enum ["prepare-keys" "inspect-approved-job" "initialize" "recover" "import-initialize-v6" "import-recovery-v6"];
     default = "prepare-keys";
-    description = "Select the manual offline command; hardware commands require independent original effect approval.";
+    description = "Select the manual offline purpose; V6 imports signed approval data, and hardware commands independently compare actual installation pins.";
   };
 
   config = lib.mkIf cfg.enable {
@@ -142,6 +148,8 @@ in {
       description =
         if hardware
         then "Manual independently approved offline Nix hardware provisioning"
+        else if approvalDelivery
+        then "Manual signed offline Nix approval delivery"
         else "Manual unsigned offline Nix key candidate preparation";
       wantedBy = [];
       requiredBy = [];

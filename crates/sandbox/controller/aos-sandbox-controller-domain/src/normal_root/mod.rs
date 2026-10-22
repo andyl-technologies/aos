@@ -129,9 +129,12 @@ pub(crate) use git_evidence_credential::{
     RootGitEvidenceCredentialCustodyV1, RootGitEvidenceCredentialErrorV1,
 };
 pub use nix_offline_provision::{
-    NixOfflineApprovedDataErrorV4, NixOfflineEffectApprovalKindV4, NixOfflineJobIdentityDataV5,
+    OfflineNixApprovalDeliveryOriginV6, OfflineNixApprovalDeliveryStartupV6,
+    NixOfflineApprovedDataErrorV4, NixOfflineEffectApprovalDataV4, NixOfflineEffectApprovalKindV4,
+    NixOfflineJobIdentityDataV5,
     OfflineNixHardwareOriginV5, OfflineNixPrepareOriginV3, OfflineNixPrepareStartupErrorV3,
-    OfflineNixPrepareStartupV3, derive_nix_offline_public_candidates_v3,
+    OfflineNixPrepareStartupV3, decode_nix_offline_effect_approval_data_v4,
+    derive_nix_offline_public_candidates_v3,
     fill_nix_offline_static_preimage_v3, inspect_nix_offline_job_identity_v5,
     nix_offline_job_has_original_label_v5, require_nix_offline_effect_approval_v4,
     require_nix_offline_static_approval_v3, require_nix_offline_static_header_v3,

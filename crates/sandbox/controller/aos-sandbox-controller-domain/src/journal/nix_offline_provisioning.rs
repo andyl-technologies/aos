@@ -132,7 +132,7 @@ const CLOSURE_DATA_DOMAIN: &[u8] = b"aos.sandbox.nix-floor.closure-preview-data.
 const HISTORY_DOMAIN: &[u8] = b"aos.sandbox.nix-floor.offline-native-history.v4\0";
 const MAXIMUM_NAMED_FILES: usize = 273;
 const MAXIMUM_INPUT_BYTES: usize = 1332;
-const LIMITS: JournalLimits = JournalLimits {
+pub(super) const LIMITS: JournalLimits = JournalLimits {
     maximum_journal_bytes: 4_194_304,
     maximum_record_bytes: 16_384,
     maximum_key_bytes: 26,

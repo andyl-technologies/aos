@@ -9,6 +9,7 @@
   aos-nix-offline-tpm-helper,
   unitContract,
   hardware ? false,
+  approvalDelivery ? false,
 }: let
   support = ./_aos-selinux-production-policy;
   sourcePolicy = "${aos-selinux-production-policy}/etc/selinux/aos/policy/policy.33";
@@ -50,14 +51,17 @@
 in
   mkDerivation {
     pname = "aos-nix-offline-startup-profile";
-    version = "3";
+    version =
+      if approvalDelivery
+      then "6"
+      else "3";
     src = ./aos-normal-root-profile.py;
     buildDeps = [buildPackages.python3 buildPackages.patchelf buildPackages.binutils buildPackages.setools];
     runtimeDeps = [];
     propagatedDeps = [];
     outputChecks = {};
     inherit unitContract;
-    hardwareMode =
+    hardwareMode = assert !(hardware && approvalDelivery);
       if hardware
       then "1"
       else "0";
@@ -179,7 +183,11 @@ in
               hardware_profile["unit_mode_neutral_sha256"] = list(
                   hashlib.sha256(neutral).digest())
           profile = {
-              "format": "AOS_NIX_OFFLINE_PREPARE_STARTUP_3",
+              "format": "${
+            if approvalDelivery
+            then "AOS_NIX_OFFLINE_APPROVAL_DELIVERY_6"
+            else "AOS_NIX_OFFLINE_PREPARE_STARTUP_3"
+          }",
               "unit": "aos-sandbox-nix-floor-provision.service",
               "context": "system_u:system_r:aos_nix_offline_prepare_t",
               "executable": original.pin(executable),

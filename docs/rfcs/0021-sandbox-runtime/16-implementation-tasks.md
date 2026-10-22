@@ -9716,11 +9716,46 @@ total extent and contiguous offsets, followed by an explicit SHA-256 terminal
 record. This uses the same inherited write-only stream permission and opens
 no protected file for generic root. Three selected service tests pass, including
 round trips across chunk boundaries and refusal of empty or oversized history
-before writing. Complete Rust target compilation is running for this follow-up.
+before writing. Complete Rust target compilation passes at
+`/nix/store/ckkbd6614j6b59893q2s5fdb9qnlccag-aos-test-targets-0.1.0`.
 It has no installed hardware receipt yet, and supplies neither approval import
 nor runtime credential/floor publication. Interrupted jobs still require a
 separately admitted read-only history-delivery purpose; this successful-job
 export does not reopen a failed owner or authorize a retry.
+
+The separate V6 approval-delivery implementation now selects only
+`import-initialize-v6` or `import-recovery-v6`, with its own immutable profile
+format and path family. PID1 must deliver exactly the two public base
+credentials and the two signed proposal records. Its genuine startup checks
+retain the stopped runtime owners, actual unit, confinement, images and
+credential originals. It supplies no hardware loan, fixed-domain or hierarchy
+authorization, TPM device, automatic activation or runtime publication. V3
+preparation/inspection and V5 hardware admission keep their distinct contracts.
+
+Core's fixed native delivery owner takes the original installation lock and
+validates the actual private/public candidate pair against the independently
+signed static job before creating any approval file. The shared canonical
+effect decoder verifies signature and proposal DATA; the later hardware owner
+still compares every actual installation pin. Initialization creates only the
+absent static job and effect names. Recovery checks the existing original job
+and initial effect, compares the proposal with the complete stable physical
+journal bytes, and creates only the absent recovery approval. V5 still owns
+canonical replay, the original boot/deadline and recovery ordinal. Publication
+uses exclusive creation, retained descriptors, file/directory sync, exact
+readback and final name/metadata/launch checks. Failed or interrupted attempts
+retain their first cause and partial custody; no overwrite, rollback or retry
+repairs their files.
+
+Twenty-six selected Core tests and all three selected service tests pass,
+including cross-purpose credential rejection, exact record widths, tampered
+signatures, required actual installation comparisons, separate profile
+formats, interrupted startup refusal, single-link ownership and bounded
+history reads. Core and native-resource evaluation pass. Full Rust target and
+immutable V6 profile checks are running. The added enforcing VM test uses
+host-only independent signing, actual public candidate export, the production
+V6 importer and the existing static inspector; it remains unqualified until
+its installed run passes. No hardware, held-Q04 or public lifecycle completion
+is inferred from these component checks.
 
 The following signed Host and offline boots can query the vendor target but
 fail native host activation: creating configuration temporaries triggers an

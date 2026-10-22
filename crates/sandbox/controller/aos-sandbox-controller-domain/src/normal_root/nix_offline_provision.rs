@@ -41,11 +41,14 @@ use crate::systemd_property_data;
 use super::{NormalRootStartupErrorV1, images, profile::ImagePinV1, service, startup};
 
 mod approved_data;
+mod approval_delivery;
+pub use approval_delivery::{OfflineNixApprovalDeliveryOriginV6, OfflineNixApprovalDeliveryStartupV6};
 pub(crate) use approved_data::nix_offline_location_has_original_label_v5;
 pub(crate) use approved_data::nix_offline_opening_has_original_label_v5;
 pub use approved_data::{
-    NixOfflineApprovedDataErrorV4, NixOfflineEffectApprovalKindV4,
-    derive_nix_offline_public_candidates_v3, fill_nix_offline_static_preimage_v3,
+    NixOfflineApprovedDataErrorV4, NixOfflineEffectApprovalDataV4, NixOfflineEffectApprovalKindV4,
+    decode_nix_offline_effect_approval_data_v4, derive_nix_offline_public_candidates_v3,
+    fill_nix_offline_static_preimage_v3,
     require_nix_offline_effect_approval_v4, require_nix_offline_static_approval_v3,
     require_nix_offline_static_header_v3,
     NixOfflineJobIdentityDataV5, inspect_nix_offline_job_identity_v5,
@@ -148,6 +151,8 @@ enum OfflinePrepareModeV3 {
     InspectApprovedJob,
     Initialize,
     Recover,
+    ImportInitializeApprovalV6,
+    ImportRecoveryApprovalV6,
 }
 
 impl OfflinePrepareModeV3 {
@@ -157,11 +162,17 @@ impl OfflinePrepareModeV3 {
             Self::InspectApprovedJob => "inspect-approved-job",
             Self::Initialize => "initialize",
             Self::Recover => "recover",
+            Self::ImportInitializeApprovalV6 => "import-initialize-v6",
+            Self::ImportRecoveryApprovalV6 => "import-recovery-v6",
         }
     }
 
     const fn hardware(self) -> bool {
         matches!(self, Self::Initialize | Self::Recover)
+    }
+
+    const fn approval_delivery_v6(self) -> bool {
+        matches!(self, Self::ImportInitializeApprovalV6 | Self::ImportRecoveryApprovalV6)
     }
 
     fn stopped_runtime_refusal(self) -> Error {
@@ -174,7 +185,8 @@ impl OfflinePrepareModeV3 {
 
     const fn observations(self) -> usize {
         match self {
-            Self::PrepareKeys | Self::InspectApprovedJob => MAXIMUM_OBSERVATIONS,
+            Self::PrepareKeys | Self::InspectApprovedJob
+            | Self::ImportInitializeApprovalV6 | Self::ImportRecoveryApprovalV6 => MAXIMUM_OBSERVATIONS,
             Self::Initialize => HARDWARE_INITIALIZE_OBSERVATIONS,
             Self::Recover => HARDWARE_RECOVERY_OBSERVATIONS,
         }
@@ -214,8 +226,13 @@ struct HardwareProfileV5 {
 }
 
 impl Profile {
-    fn require(&self) -> Result<(), Error> {
-        if self.format != "AOS_NIX_OFFLINE_PREPARE_STARTUP_3"
+    fn require(&self, mode: OfflinePrepareModeV3) -> Result<(), Error> {
+        let format = if mode.approval_delivery_v6() {
+            "AOS_NIX_OFFLINE_APPROVAL_DELIVERY_6"
+        } else {
+            "AOS_NIX_OFFLINE_PREPARE_STARTUP_3"
+        };
+        if self.format != format
             || self.unit != UNIT
             || self.context != CONTEXT
             || self.unit_sha256 == [0; 32]
@@ -259,7 +276,7 @@ impl Profile {
     }
 
     fn require_mode(&self, mode: OfflinePrepareModeV3) -> Result<(), Error> {
-        self.require()?;
+        self.require(mode)?;
         match (&self.hardware, mode.hardware()) {
             (None, false) => Ok(()),
             (Some(hardware), true) => {
@@ -590,7 +607,12 @@ impl OfflineNixPrepareStartupV3 {
         let profile_original = self.raw.get(1).ok_or(Error::Rejected)?;
         let profile_path = std::fs::read_link(format!("/proc/self/fd/{}", profile_original.as_raw_fd()))?;
         super::profile::require_store_path(profile_path.to_str().ok_or(Error::Rejected)?)?;
-        if !profile_path.to_string_lossy().ends_with("-aos-nix-offline-startup-profile-3/profile.json") {
+        let suffix = if mode.approval_delivery_v6() {
+            "-aos-nix-offline-startup-profile-6/profile.json"
+        } else {
+            "-aos-nix-offline-startup-profile-3/profile.json"
+        };
+        if !profile_path.to_string_lossy().ends_with(suffix) {
             return Err(Error::Rejected);
         }
         self.profile_file = Some(
@@ -758,6 +780,8 @@ impl OfflineNixPrepareStartupV3 {
         self.require_stopped()?;
         if mode.hardware() {
             self.credentials.admit_hardware()?;
+        } else if mode.approval_delivery_v6() {
+            self.credentials.admit_approval_delivery_v6()?;
         } else {
             self.credentials.admit()?;
         }
@@ -1526,7 +1550,19 @@ fn require_service(
         ("nix-fixed-domain-pins-v2", "/etc/credstore/nix-fixed-domain-pins-v2"),
         ("nix-floor-owner-hierarchy-auth-v4", "/etc/credstore/nix-floor-owner-hierarchy-auth-v4"),
     ];
-    let expected = if mode.hardware() { hardware.as_slice() } else { ordinary.as_slice() };
+    let approval_delivery = [
+        ordinary[0],
+        ordinary[1],
+        ("nix-floor-provision-approved-job-v6", "/etc/credstore/nix-floor-provision-approved-job-v6"),
+        ("nix-floor-provision-approved-effect-v6", "/etc/credstore/nix-floor-provision-approved-effect-v6"),
+    ];
+    let expected = if mode.hardware() {
+        hardware.as_slice()
+    } else if mode.approval_delivery_v6() {
+        approval_delivery.as_slice()
+    } else {
+        ordinary.as_slice()
+    };
     if credentials.len() != expected.len() {
         return Err(Error::Rejected);
     }
@@ -1600,6 +1636,64 @@ fn hardware_mode_neutral_unit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn approval_delivery_profile_cannot_admit_a_legacy_or_hardware_purpose() {
+        let pin = |suffix: &str| ImagePinV1 {
+            path: format!("/nix/store/00000000000000000000000000000000-{suffix}"),
+            sha256: [1; 32],
+        };
+        let executable = pin("aos-sandboxd-0.1.0/bin/aos-sandbox-nix-floor-provision");
+        let loader = pin("glibc/lib/ld.so");
+        let mut runtime_files = vec![executable.clone(), loader.clone()];
+        runtime_files.sort_by(|left, right| left.path.cmp(&right.path));
+        let mut profile = Profile {
+            format: "AOS_NIX_OFFLINE_APPROVAL_DELIVERY_6".into(),
+            unit: UNIT.into(),
+            context: CONTEXT.into(),
+            executable,
+            pid1: pin("systemd/lib/systemd/systemd"),
+            loader,
+            runtime_files,
+            canonical_policy: pin("aos-selinux-kernel-policy-readback-1/policy.33"),
+            source_policy: pin("aos-nix-offline-startup-profile-3/source-policy.33"),
+            effective_matrix: pin("aos-nix-offline-startup-profile-3/effective-policy.tsv"),
+            unit_sha256: [2; 32],
+            hardware: None,
+        };
+        let delivery = [
+            OfflinePrepareModeV3::ImportInitializeApprovalV6,
+            OfflinePrepareModeV3::ImportRecoveryApprovalV6,
+        ];
+        let legacy = [
+            OfflinePrepareModeV3::PrepareKeys,
+            OfflinePrepareModeV3::InspectApprovedJob,
+            OfflinePrepareModeV3::Initialize,
+            OfflinePrepareModeV3::Recover,
+        ];
+
+        for mode in delivery {
+            assert!(profile.require_mode(mode).is_ok());
+            assert!(!mode.hardware());
+        }
+        for mode in legacy {
+            assert!(profile.require_mode(mode).is_err());
+        }
+        profile.format = "AOS_NIX_OFFLINE_PREPARE_STARTUP_3".into();
+        for mode in delivery {
+            assert!(profile.require_mode(mode).is_err());
+        }
+        assert!(
+            profile
+                .require_mode(OfflinePrepareModeV3::PrepareKeys)
+                .is_ok()
+        );
+        assert!(
+            profile
+                .require_mode(OfflinePrepareModeV3::InspectApprovedJob)
+                .is_ok()
+        );
+    }
 
     #[test]
     fn offline_modes_have_only_the_two_literal_commands() {

@@ -9,7 +9,8 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 
 use sha2::{Digest as _, Sha256};
 
-use aos_sandbox_controller_domain::normal_root::OfflineNixPrepareStartupV3;
+use aos_sandbox_controller_domain::normal_root::{OfflineNixPrepareStartupV3, OfflineNixApprovalDeliveryStartupV6};
+use aos_sandbox_controller_domain::journal::NixOfflineApprovalDeliveryNativeV6;
 use aos_sandbox_broker_session_security::nix_floor_provisioning::{
     NixApprovedJobInspectionAttemptV3, NixPrepareKeysAttemptV3,
     NixOfflineHardwareAttemptV5, NixOfflineHardwareResourcesV5,
@@ -21,6 +22,8 @@ enum Command {
     InspectApprovedJob,
     Initialize,
     Recover,
+    ImportInitializeV6,
+    ImportRecoveryV6,
 }
 
 fn command(value: Option<&std::ffi::OsStr>) -> Option<Command> {
@@ -29,6 +32,8 @@ fn command(value: Option<&std::ffi::OsStr>) -> Option<Command> {
         Some(value) if value == "inspect-approved-job" => Some(Command::InspectApprovedJob),
         Some(value) if value == "initialize" => Some(Command::Initialize),
         Some(value) if value == "recover" => Some(Command::Recover),
+        Some(value) if value == "import-initialize-v6" => Some(Command::ImportInitializeV6),
+        Some(value) if value == "import-recovery-v6" => Some(Command::ImportRecoveryV6),
         _ => None,
     }
 }
@@ -44,6 +49,10 @@ fn main() {
         std::process::exit(2);
     }
 
+    if matches!(selected, Command::ImportInitializeV6 | Command::ImportRecoveryV6) {
+        approval_delivery_main(selected);
+    }
+
     if matches!(selected, Command::Initialize | Command::Recover) {
         hardware_main(selected);
     }
@@ -54,7 +63,7 @@ fn main() {
         match selected {
             Command::PrepareKeys => startup.capture_and_admit(),
             Command::InspectApprovedJob => startup.capture_and_admit_inspection(),
-            Command::Initialize | Command::Recover => std::process::exit(2),
+            Command::Initialize | Command::Recover | Command::ImportInitializeV6 | Command::ImportRecoveryV6 => std::process::exit(2),
         }
         .is_ok()
     }));
@@ -70,7 +79,7 @@ fn main() {
         match selected {
             Command::PrepareKeys => original.borrow_original(),
             Command::InspectApprovedJob => original.borrow_inspection(),
-            Command::Initialize | Command::Recover => std::process::exit(2),
+            Command::Initialize | Command::Recover | Command::ImportInitializeV6 | Command::ImportRecoveryV6 => std::process::exit(2),
         }
     }));
     let origin = match borrowed {
@@ -115,8 +124,43 @@ fn main() {
             attempt.wipe_secrets();
             std::process::exit(if success { 0 } else { 1 });
         }
-        Command::Initialize | Command::Recover => std::process::exit(2),
+        Command::Initialize | Command::Recover | Command::ImportInitializeV6 | Command::ImportRecoveryV6 => std::process::exit(2),
     }
+}
+
+fn approval_delivery_main(selected: Command) -> ! {
+    let mut startup = OfflineNixApprovalDeliveryStartupV6::new();
+    let admission = catch_unwind(AssertUnwindSafe(|| {
+        match selected {
+            Command::ImportInitializeV6 => startup.capture_initialize_approval(),
+            Command::ImportRecoveryV6 => startup.capture_recovery_approval(),
+            _ => std::process::exit(2),
+        }
+        .is_ok()
+    }));
+    if !matches!(admission, Ok(true)) {
+        let _original_unwind = admission.err();
+        std::process::exit(1);
+    }
+    let original = &mut startup;
+    let borrowed = catch_unwind(AssertUnwindSafe(move || {
+        let original = original;
+        original.borrow_original()
+    }));
+    let origin = match borrowed {
+        Ok(Ok(origin)) => origin,
+        Ok(Err(_)) => std::process::exit(1),
+        Err(payload) => {
+            let _original_unwind = payload;
+            std::process::exit(1);
+        }
+    };
+    let mut attempt = NixOfflineApprovalDeliveryNativeV6::new(origin);
+    let delivery = catch_unwind(AssertUnwindSafe(|| attempt.deliver_once().is_ok()));
+    let success = matches!(delivery, Ok(true));
+    let _original_unwind = delivery.err();
+    attempt.wipe_secrets();
+    std::process::exit(if success { 0 } else { 1 });
 }
 
 fn write_public_candidate(public: &[u8; 268]) -> io::Result<()> {
@@ -285,7 +329,7 @@ mod tests {
     }
 
     #[test]
-    fn command_parser_accepts_only_the_four_literal_manual_commands() {
+    fn command_parser_accepts_only_the_six_literal_manual_commands() {
         assert_eq!(
             command(Some(std::ffi::OsStr::new("prepare-keys"))),
             Some(Command::PrepareKeys),
@@ -294,12 +338,29 @@ mod tests {
             command(Some(std::ffi::OsStr::new("inspect-approved-job"))),
             Some(Command::InspectApprovedJob),
         );
-        assert_eq!(command(Some(std::ffi::OsStr::new("initialize"))), Some(Command::Initialize));
-        assert_eq!(command(Some(std::ffi::OsStr::new("recover"))), Some(Command::Recover));
+        assert_eq!(
+            command(Some(std::ffi::OsStr::new("initialize"))),
+            Some(Command::Initialize)
+        );
+        assert_eq!(
+            command(Some(std::ffi::OsStr::new("recover"))),
+            Some(Command::Recover)
+        );
+        assert_eq!(
+            command(Some(std::ffi::OsStr::new("import-initialize-v6"))),
+            Some(Command::ImportInitializeV6)
+        );
+        assert_eq!(
+            command(Some(std::ffi::OsStr::new("import-recovery-v6"))),
+            Some(Command::ImportRecoveryV6)
+        );
         for value in [
             "",
             "initialize extra",
             "--recover",
+            "import-initialize",
+            "import-recovery-v5",
+            "import-recovery-v6 extra",
             "--inspect-approved-job",
             "prepare-keys extra",
         ] {
@@ -307,4 +368,6 @@ mod tests {
         }
         assert_eq!(command(None), None);
     }
+
+
 }

@@ -314,6 +314,86 @@ pub enum NixOfflineEffectApprovalKindV4 {
     Recover,
 }
 
+/// Describes independently signed proposal DATA without admitting an effect.
+///
+/// These coordinates remain untrusted installation claims until a genuine
+/// native owner compares them with its own retained originals and current
+/// history. Construction or successful signature verification conveys no
+/// startup, TPM, journal, session or runtime-floor authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NixOfflineEffectApprovalDataV4 {
+    /// Selects the signed initialization or recovery intent.
+    pub kind: NixOfflineEffectApprovalKindV4,
+    /// Names the proposed candidate installation.
+    pub job: [u8; 16],
+    /// Names the proposed target node.
+    pub node: [u8; 16],
+    /// Orders static-job, startup-profile, fixed-domain, helper and prior-history pins.
+    pub digests: [[u8; 32]; 5],
+}
+
+/// Decodes the sole canonical effect format and verifies its independent signature.
+///
+/// This static DATA operation neither compares live installation pins nor
+/// admits a protected effect. A delivery owner may inspect the proposal; the
+/// hardware owner must still compare every coordinate with its originals.
+///
+/// # Errors
+/// Rejects widths, version, reserved fields, zero coordinates or required pins,
+/// a mismatching initialization/recovery history shape, or an invalid signature.
+pub fn decode_nix_offline_effect_approval_data_v4(
+    bytes: &[u8],
+    approval: &[u8; 48],
+    preimage: &mut [u8],
+) -> Result<NixOfflineEffectApprovalDataV4, Error> {
+    if bytes.len() != 304
+        || preimage.len() != EFFECT_DOMAIN.len() + 240
+        || bytes[..8] != *b"AOSNAE04"
+        || bytes[8..10] != 4_u16.to_be_bytes()
+        || bytes[11] != 1
+        || bytes[12..16] != [0; 4]
+        || bytes[16..32] != approval[..16]
+        || approval[..16] == [0; 16]
+        || bytes[64..72] != 1_u64.to_be_bytes()
+        || bytes[72..80] != [0; 8]
+    {
+        return Err(Error::Rejected);
+    }
+
+    let kind = match bytes[10] {
+        1 => NixOfflineEffectApprovalKindV4::Initialize,
+        2 => NixOfflineEffectApprovalKindV4::Recover,
+        _ => return Err(Error::Rejected),
+    };
+    let job = bytes[32..48].try_into().map_err(|_| Error::Rejected)?;
+    let node = bytes[48..64].try_into().map_err(|_| Error::Rejected)?;
+    let mut digests = [[0; 32]; 5];
+    for (index, digest) in digests.iter_mut().enumerate() {
+        digest.copy_from_slice(&bytes[80 + index * 32..112 + index * 32]);
+    }
+    if job == [0; 16]
+        || node == [0; 16]
+        || digests[..4].contains(&[0; 32])
+        || (kind == NixOfflineEffectApprovalKindV4::Initialize && digests[4] != [0; 32])
+        || (kind == NixOfflineEffectApprovalKindV4::Recover && digests[4] == [0; 32])
+    {
+        return Err(Error::Rejected);
+    }
+
+    preimage[..EFFECT_DOMAIN.len()].copy_from_slice(EFFECT_DOMAIN);
+    preimage[EFFECT_DOMAIN.len()..].copy_from_slice(&bytes[..240]);
+    let key = <[u8; 32]>::try_from(&approval[16..]).map_err(|_| Error::Rejected)?;
+    let signature = <[u8; 64]>::try_from(&bytes[240..]).map_err(|_| Error::Rejected)?;
+    VerifyingKey::from_bytes(&key)?.verify_strict(preimage, &Signature::from_bytes(&signature))?;
+
+    Ok(NixOfflineEffectApprovalDataV4 {
+        kind,
+        job,
+        node,
+        digests,
+    })
+}
+
 /// Verifies the independently signed 304-byte effect or recovery DATA record.
 ///
 /// Expected coordinates must come from the protected owner's originals. This
@@ -325,33 +405,102 @@ pub fn require_nix_offline_effect_approval_v4(
     bytes: &[u8], approval: &[u8; 48], job: &[u8; 16], node: &[u8; 16],
     digests: &[[u8; 32]; 5], kind: NixOfflineEffectApprovalKindV4, preimage: &mut [u8],
 ) -> Result<(), Error> {
-    let action = match kind {
-        NixOfflineEffectApprovalKindV4::Initialize => 1_u8,
-        NixOfflineEffectApprovalKindV4::Recover => 2_u8,
-    };
-    if bytes.len() != 304 || preimage.len() != EFFECT_DOMAIN.len() + 240
-        || bytes[..8] != *b"AOSNAE04"
-        || bytes[8..10] != 4_u16.to_be_bytes()
-        || bytes[10] != action || bytes[11] != 1
-        || bytes[12..16] != [0; 4]
-        || bytes[16..32] != approval[..16]
-        || bytes[32..48] != *job || bytes[48..64] != *node
-        || bytes[64..72] != 1_u64.to_be_bytes() || bytes[72..80] != [0; 8]
-        || (kind == NixOfflineEffectApprovalKindV4::Initialize && digests[4] != [0; 32])
-        || (kind == NixOfflineEffectApprovalKindV4::Recover && digests[4] == [0; 32])
+    let proposed = decode_nix_offline_effect_approval_data_v4(bytes, approval, preimage)?;
+    if proposed.kind != kind || proposed.job != *job || proposed.node != *node
+        || proposed.digests != *digests
     {
         return Err(Error::Rejected);
     }
-    for (index, digest) in digests.iter().enumerate() {
-        if bytes[80 + index * 32..112 + index * 32] != *digest {
-            return Err(Error::Rejected);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ed25519_dalek::Signer as _;
+
+    fn sign_record(bytes: &mut [u8; 304], key: &SigningKey) {
+        let mut message = b"aos.sandbox.nix-floor.approved-effect.v4\0".to_vec();
+        message.extend_from_slice(&bytes[..240]);
+        bytes[240..].copy_from_slice(&key.sign(&message).to_bytes());
+    }
+
+    fn proposal(recovery: bool) -> ([u8; 304], [u8; 48], SigningKey) {
+        let key = SigningKey::from_bytes(&[9; 32]);
+        let mut approval = [0; 48];
+        approval[..16].fill(10);
+        approval[16..].copy_from_slice(&key.verifying_key().to_bytes());
+
+        let mut bytes = [0; 304];
+        bytes[..8].copy_from_slice(b"AOSNAE04");
+        bytes[8..10].copy_from_slice(&4_u16.to_be_bytes());
+        bytes[10] = if recovery { 2 } else { 1 };
+        bytes[11] = 1;
+        bytes[16..32].copy_from_slice(&approval[..16]);
+        bytes[32..48].fill(11);
+        bytes[48..64].fill(12);
+        bytes[64..72].copy_from_slice(&1_u64.to_be_bytes());
+        for index in 0..4 {
+            bytes[80 + index * 32..112 + index * 32].fill(20 + index as u8);
+        }
+        if recovery {
+            bytes[208..240].fill(24);
+        }
+        sign_record(&mut bytes, &key);
+        (bytes, approval, key)
+    }
+
+    #[test]
+    fn signed_proposal_still_requires_every_original_installation_coordinate() {
+        for recovery in [false, true] {
+            let (bytes, approval, _) = proposal(recovery);
+            let mut preimage = [0; EFFECT_DOMAIN.len() + 240];
+            let data = decode_nix_offline_effect_approval_data_v4(
+                &bytes, &approval, &mut preimage,
+            ).unwrap();
+
+            require_nix_offline_effect_approval_v4(
+                &bytes, &approval, &data.job, &data.node, &data.digests,
+                data.kind, &mut preimage,
+            ).unwrap();
+
+            let mut wrong_pins = data.digests;
+            wrong_pins[1][0] ^= 1;
+            assert!(require_nix_offline_effect_approval_v4(
+                &bytes, &approval, &data.job, &data.node, &wrong_pins,
+                data.kind, &mut preimage,
+            ).is_err());
+            assert!(require_nix_offline_effect_approval_v4(
+                &bytes, &approval, &data.job, &[13; 16], &data.digests,
+                data.kind, &mut preimage,
+            ).is_err());
         }
     }
 
-    preimage[..EFFECT_DOMAIN.len()].copy_from_slice(EFFECT_DOMAIN);
-    preimage[EFFECT_DOMAIN.len()..].copy_from_slice(&bytes[..240]);
-    let key = <[u8; 32]>::try_from(&approval[16..]).map_err(|_| Error::Rejected)?;
-    let signature = <[u8; 64]>::try_from(&bytes[240..]).map_err(|_| Error::Rejected)?;
-    VerifyingKey::from_bytes(&key)?.verify_strict(preimage, &Signature::from_bytes(&signature))?;
-    Ok(())
+    #[test]
+    fn proposal_decoder_rejects_tampering_and_signed_invalid_shapes() {
+        let (original, approval, key) = proposal(false);
+        let mut preimage = [0; EFFECT_DOMAIN.len() + 240];
+        let mut tampered = original;
+        tampered[100] ^= 1;
+        assert!(decode_nix_offline_effect_approval_data_v4(
+            &tampered, &approval, &mut preimage,
+        ).is_err());
+
+        for range in [32..48, 48..64, 80..112] {
+            let mut bytes = original;
+            bytes[range].fill(0);
+            sign_record(&mut bytes, &key);
+            assert!(decode_nix_offline_effect_approval_data_v4(
+                &bytes, &approval, &mut preimage,
+            ).is_err());
+        }
+
+        let mut wrong_history_shape = original;
+        wrong_history_shape[10] = 2;
+        sign_record(&mut wrong_history_shape, &key);
+        assert!(decode_nix_offline_effect_approval_data_v4(
+            &wrong_history_shape, &approval, &mut preimage,
+        ).is_err());
+    }
 }

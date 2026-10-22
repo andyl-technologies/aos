@@ -753,6 +753,13 @@ pub(crate) use root_readonly_model::{
 };
 
 #[cfg(target_os = "linux")]
+mod nix_offline_approval_delivery;
+#[cfg(target_os = "linux")]
+pub use nix_offline_approval_delivery::{
+    NixOfflineApprovalDeliveryErrorV6, NixOfflineApprovalDeliveryNativeV6,
+};
+
+#[cfg(target_os = "linux")]
 mod nix_offline_provisioning;
 #[cfg(target_os = "linux")]
 pub use nix_offline_provisioning::{
