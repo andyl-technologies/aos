@@ -19,6 +19,10 @@ use super::{Guard, HistoryObservation, TreeEvidence, denied, domain_label, inval
 use crate::store::{Clock, Store, StoreErrorKind, StoreFailure};
 
 mod dictionaries;
+#[cfg(feature = "std")]
+mod path_batch;
+#[cfg(feature = "std")]
+pub(crate) use path_batch::SnapshotPathBatch;
 #[cfg(all(test, feature = "tokio", feature = "surface-sdk", unix))]
 mod dictionary_tests;
 

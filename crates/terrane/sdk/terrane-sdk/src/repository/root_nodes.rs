@@ -9,7 +9,7 @@ use terrane_format::{
 };
 
 use crate::{
-    guard::AuthorizedSnapshot,
+    guard::{AuthorizedSnapshot, SnapshotPathBatch},
     store::{Clock, LocalFs, Store},
 };
 
@@ -78,6 +78,8 @@ where
     /// current Read and provenance checks; permission to one subtree cannot
     /// disclose its siblings. Original canonical symlink targets, attributes,
     /// hard-link identities and graft properties remain in the Node bytes.
+    /// All path checks and the closing check must observe the same complete
+    /// live policy reference, independently of the selected immutable commit.
     ///
     /// Limits bound the returned inventory and the temporary expanded path
     /// inventory. The ordinary authenticated history loader retains its own
@@ -86,7 +88,8 @@ where
     /// # Errors
     /// Refuses zero or exceeded bounds, unavailable or unauthenticated history,
     /// missing canonical metadata, invalid graft expansion and any descendant
-    /// lacking current Read, domain permission or verified provenance trust.
+    /// lacking current Read, domain permission or verified provenance trust,
+    /// and a policy reference that changes during the complete read.
     /// No partial metadata inventory is returned.
     pub async fn read_root_nodes(
         &self,
@@ -113,8 +116,9 @@ where
         };
         let minimum = self.chunk_profile().minimum() as u64;
         let paths = expanded_paths(&snapshot, minimum, limits)?;
+        let authorization = SnapshotPathBatch::begin(guard, &snapshot).await?;
         for path in &paths {
-            guard.authorize_snapshot_path(&snapshot, path).await?;
+            authorization.authorize_path(path).await?;
         }
 
         let result = RootNodes {
@@ -125,7 +129,7 @@ where
         };
         // Allocation and the empty-root case still precede a fresh authority
         // check. Retained immutable bytes do not keep a former Read alive.
-        guard.authorize_snapshot_path(&snapshot, b"/").await?;
+        authorization.finish().await?;
         Ok(result)
     }
 }

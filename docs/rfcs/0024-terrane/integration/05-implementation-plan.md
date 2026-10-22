@@ -12735,3 +12735,34 @@ matching 7,970 source files, 5,259 crate inputs and its actual retained native
 ELF. Required application compilation at `192fa2a700` passes in 1,620.72 seconds,
 matching 7,967 source files and 184 compiler artifact records across 59 packages.
 No FUSE mount, host index lease or task acceptance follows from these results.
+
+#### Complete-root policy consistency
+
+Complete root metadata disclosure now requires agreement on the entire live
+policy reference across the initial root check, every expanded path check and
+its closing check after output allocation. The immutable selected commit remains
+independent: a historical root can be read under a stable current policy head.
+A transition during the bulk operation refuses the complete result rather than
+combining permissions obtained under different heads. This check retains no
+permission beyond the operation and creates no exposure lease.
+
+Three genuine native regressions pass: a stable current head permits a complete
+historical read; advancing the actual head between path checks refuses the
+batch even though independent path reads still succeed; advancing and rolling
+back to the same commit also refuses the closing check because the full ref
+sequence changed. All seven rebuilt end-to-end root metadata cases also pass.
+Every case remains within the existing 30-second bound. Strict SDK/Linux/CLI
+all-target Clippy, native portable compilation, actual WebAssembly compilation,
+formatting and Nix evaluation pass. The owning root-nodes check now includes
+both native artifacts and all ten exact selectors; frozen qualification and
+required application compilation for this increment remain pending.
+
+Frozen root metadata at `2e13a7ef36` passes its seven-case owning check in 221.84
+seconds, independently matching 7,974 source files and 5,261 crate inputs.
+Required application compilation at that commit passes in 1,586.50 seconds,
+matching those source files and 184 compiler artifact records across 59
+packages. Required application compilation at `4bb71edaca` and `e04c59e1e2`
+also passes and independently matches 7,970 source files and 184 compiler
+artifact records across 59 packages. Those compilation outputs retain no ELF
+bytes and establish no application runtime, FUSE mount, index cache pin or task
+acceptance.
