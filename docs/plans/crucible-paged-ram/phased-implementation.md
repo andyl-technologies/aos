@@ -355,7 +355,9 @@ memory control checks the exact locked predicate before the kernel write; the
 descriptor control invokes the actual mutation path and verifies that the old
 snapshot cannot change NOFILE. Both controls fail at their intended assertions
 with the old comparison and pass after the fix. All 17 process-envelope tests
-pass; every all-feature Host test target compiles. The required application
+pass; every all-feature Host test target compiles. All 14 Host integration
+targets execute separately with 131 passing cases and no failures or ignored
+cases. The required application
 build passes at
 `/nix/store/kzmxy8dmn223wp7lyxwk38qswbqq0hwq-aos-test-targets-0.1.0`,
 and engineering hygiene passes at
