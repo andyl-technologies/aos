@@ -23,6 +23,7 @@ aos_dev_default_cache_dir() {
 }
 
 aos_dev_cache_dir=${AOS_DEV_CACHE_DIR:-$(aos_dev_default_cache_dir)}
+aos_dev_image_cache_path=${AOS_DEV_IMAGE_CACHE_DIR:-/aos-build-cache/images}
 aos_dev_go_cache_path=${AOS_DEV_GO_CACHE_DIR:-/aos-build-cache/go}
 aos_dev_bazel_cache_path=${AOS_DEV_BAZEL_CACHE_DIR:-/aos-build-cache/bazel}
 aos_dev_rust_cache_path=${AOS_DEV_RUST_TARGET_DIR:-/aos-build-cache/rust}
@@ -37,6 +38,13 @@ aos_dev_cache_validate_sandbox_paths() {
   if [[ ${aos_dev_accache:-false} == true ]]; then
     cache_paths+=("$aos_dev_accache_path" "$aos_dev_accache_state_path")
   fi
+  [[ ${aos_dev_image_cache:-false} != true ]] || cache_paths+=("$aos_dev_image_cache_path")
+  local index other_index
+  for ((index = 0; index < ${#cache_paths[@]}; index++)); do
+    for ((other_index = index + 1; other_index < ${#cache_paths[@]}; other_index++)); do
+      [[ ${cache_paths[index]} != "${cache_paths[other_index]}" ]] || aos_dev_error 'sandbox cache paths must be distinct'
+    done
+  done
   for path in "${cache_paths[@]}"; do
     for other in "${cache_paths[@]}"; do
       [[ $path == "$other" || $path != "$other/"* ]] || aos_dev_error 'sandbox cache paths must not be nested'
@@ -64,8 +72,9 @@ aos_dev_cache_check_nix() {
   local configuration trusted paths username group mapping backend sandbox_path
   local -a mappings=()
   aos_dev_cache_validate_sandbox_paths
-  for backend in go bazel rust accache accache-state; do
+  for backend in go bazel rust accache accache-state images; do
     case $backend in
+      images) sandbox_path=$aos_dev_image_cache_path; [[ ${aos_dev_image_cache:-false} == true ]] || continue ;;
       accache) sandbox_path=$aos_dev_accache_path; [[ ${aos_dev_accache:-false} == true ]] || continue ;;
       accache-state) sandbox_path=$aos_dev_accache_state_path; [[ ${aos_dev_accache:-false} == true ]] || continue ;;
       go) sandbox_path=$aos_dev_go_cache_path; [[ ${1:-} == all || $aos_dev_go_cache == true ]] || continue ;;
@@ -102,6 +111,7 @@ aos_dev_cache_check_nix() {
   if [[ $aos_dev_go_cache_path == /aos-build-cache/go && \
      $aos_dev_bazel_cache_path == /aos-build-cache/bazel && \
      $aos_dev_rust_cache_path == /aos-build-cache/rust && \
+     ( ${aos_dev_image_cache:-false} == false || $aos_dev_image_cache_path == /aos-build-cache/images ) && \
      ( ${aos_dev_accache:-false} == false || ( $aos_dev_accache_path == /aos-build-cache/accache && \
      $aos_dev_accache_state_path == /aos-build-cache/accache-state ) ) && \
      " $paths " == *" /aos-build-cache=$aos_dev_cache_dir "* ]]; then
@@ -127,7 +137,7 @@ aos_dev_cache_prepare() {
 
   local path
   for path in "$aos_dev_cache_dir" "$aos_dev_cache_dir/go" "$aos_dev_cache_dir/bazel" \
-      "$aos_dev_cache_dir/rust" "$aos_dev_cache_dir/accache" "$aos_dev_cache_dir/accache-state"; do
+      "$aos_dev_cache_dir/images" "$aos_dev_cache_dir/rust" "$aos_dev_cache_dir/accache" "$aos_dev_cache_dir/accache-state"; do
     [[ ! -L $path ]] || aos_dev_error "cache setup refuses symlink: $path"
     # /var/tmp is shared. Refuse a path pre-created by another user instead
     # of changing its mode.
@@ -136,15 +146,15 @@ aos_dev_cache_prepare() {
 
   aos_dev_require_command setfacl
   aos_dev_require_command getfacl
-  mkdir -p "$aos_dev_cache_dir"/{go,bazel,rust,accache,accache-state}
+  mkdir -p "$aos_dev_cache_dir"/{go,bazel,rust,accache,accache-state,images}
   # Nix builds run under different nixbld UIDs. All artifact trees must
   # support writers from all of those users.
   # Default ACLs make new cache entries writable across UIDs without changing
   # the build's umask. A permissive build umask also changes test fixtures and
   # can invalidate tests that check private credential directories.
   chmod 0755 "$aos_dev_cache_dir"
-  chmod 0777 "$aos_dev_cache_dir/"{go,bazel,rust,accache,accache-state}
-  for path in "$aos_dev_cache_dir/"{go,bazel,rust,accache,accache-state}; do
+  chmod 0777 "$aos_dev_cache_dir/"{go,bazel,rust,accache,accache-state,images}
+  for path in "$aos_dev_cache_dir/"{go,bazel,rust,accache,accache-state,images}; do
     if ! aos_dev_cache_has_default_acl "$path" && \
         [[ -n $(find "$path" -mindepth 1 ! -name '.aos-cache.lock' -print -quit) ]]; then
       aos_dev_error "existing cache entries under '$path' lack inherited permissions; run cache clear ${path##*/}, then cache init"
@@ -234,6 +244,7 @@ aos_dev_cache_command() {
       if [[ ${aos_dev_accache:-false} == true ]]; then
         doctor_paths+=("$aos_dev_cache_dir/"{accache,accache-state})
       fi
+      [[ ${aos_dev_image_cache:-false} != true ]] || doctor_paths+=("$aos_dev_cache_dir/images")
       for path in "${doctor_paths[@]}"; do
         aos_dev_cache_has_default_acl "$path" || \
           aos_dev_error "shared cache permissions are incomplete at '$path'; run cache init"
@@ -253,6 +264,17 @@ aos_dev_cache_command() {
     usage) aos_dev_cache_usage ;;
     prune) shift; aos_dev_cache_prune "$@" ;;
     clear) shift; aos_dev_cache_clear "$@" ;;
+    images)
+      shift
+      case ${1:-status} in
+        status|prune)
+          local image_driver
+          image_driver=$(aos_dev_nix_build_ordinary -A pkgs.aos-test-driver --no-out-link)
+          "$image_driver/bin/aos-test-image-cache" "${1:-status}" "$aos_dev_cache_dir/images" "${@:2}"
+          ;;
+        *) aos_dev_error 'cache images accepts status or prune [--days N] [--max-gib N]' ;;
+      esac
+      ;;
     go|bazel|rust|accache) aos_dev_cache_backend_command "$action" "${@:2}" ;;
     *) aos_dev_error "unknown cache command '$action'" ;;
   esac

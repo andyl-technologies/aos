@@ -80,6 +80,49 @@ fallback; an empty cache still permits source builds. See
 [the development instructions](AGENTS.md#the-aos-dev-development-entry-point)
 for cache setup and incremental Rust builds.
 
+Development VM and kernel-boot fleet tests materialize large images into the
+local `images` cache, retaining only small, closure-pinning recipes in the Nix
+store. Each launch verifies the base and creates a private reflink or sparse
+copy. Assembly scratch and the cache both require disk-backed storage; only
+completed images enter shared publication staging. Changing assertions reuses
+the base; changing closures, tools, assembly,
+layout, or baked configuration selects another base. Missing or corrupt bases
+rebuild automatically. Image boot/integrity fixtures and interactive fleet
+launchers keep ordinary immutable images.
+
+```sh
+aos-dev cache images status
+aos-dev cache images prune --days 7 --max-gib 50
+aos-dev --no-image-cache build check fleet.vm-artifact-reuse --no-out-link
+```
+
+Images use `$AOS_DEV_CACHE_DIR/images` on disk-backed storage, mounted at
+`/aos-build-cache/images` by default (`AOS_DEV_IMAGE_CACHE_DIR` selects the
+sandbox path). Automatic maintenance retains at most 100 GiB of allocated
+idle bases for 14 days, oldest use first; active leases can temporarily exceed
+the bound. Pruning skips active assembly/copy operations, reclaims abandoned
+staging, and keeps lock files. It never removes source closures or private run
+disks. Builders must trust cache writers: the local integrity manifest detects
+incomplete or corrupt entries, but cannot authenticate a writer able to replace
+both images and manifests. For qualification, `--release` and `--no-cache` select ordinary derivations and
+bypass it even alongside enabling cache flags. Existing realized test results
+still follow Nix reuse; changing assertions or explicitly rerunning a check is
+necessary to execute its VMs again.
+
+Shared ext4 root builders, headless assertion volumes, and fleet GPT assembly
+normalize staged timestamps and ownership and derive filesystem UUIDs, directory
+hash seeds, and partition GUIDs from content and partition roles. Independent cold
+ordinary builds and runtime recipe reconstructions are compared byte for byte by
+`aos-dev --release build check build.image-reproducibility --no-out-link`, including
+ext4 shrink/grow and the shared EROFS root builder. Normalization preserves modes,
+symlinks, extended attributes, and deliberate staging hardlinks without modifying
+store inputs. Nix input copies discard hardlinks introduced by store optimization,
+which NAR does not encode.
+Different payloads receive different filesystem UUIDs; identical image clones
+retain their UUID and should not be mounted together by UUID. This guarantee does
+not cover the separate production ESP/GPT assembly or guest runtime provisioning,
+which continues to allocate fresh machine identities.
+
 Rust code uses one Cargo workspace under `crates/`, grouped into shared libraries,
 AOS subsystems, Hub, and Crucible. See the
 [workspace organization](docs/architecture/crate-workspace.md) and

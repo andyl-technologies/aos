@@ -447,10 +447,13 @@ run_guest_crash(
     const char *qemu,
     const char *vmlinuz,
     const char *rootfs,
+    const char *test_input,
     const char *serial_log,
     struct counters *counters)
 {
   char drive_arg[512];
+  char input_arg[512];
+  snprintf(input_arg, sizeof(input_arg), "id=test-input,file=%s,format=raw,if=none,readonly=on", test_input);
   snprintf(drive_arg, sizeof(drive_arg), "id=rootfs,file=%s,format=raw,if=none,cache=unsafe", rootfs);
 
   char serial_arg[1024];
@@ -482,6 +485,10 @@ run_guest_crash(
       drive_arg,
       "-device",
       "virtio-blk-pci,drive=rootfs",
+      "-drive",
+      input_arg,
+      "-device",
+      "virtio-blk-pci,drive=test-input",
       "-serial",
       serial_arg,
       "-no-reboot",
@@ -573,16 +580,17 @@ run_parent_death(const char *qemu, struct counters *counters)
 int
 main(int argc, char **argv)
 {
-  if (argc != 6) {
-    fprintf(stderr, "usage: %s QEMU VMLINUZ ROOTFS HANG_PLUGIN TMPDIR\n", argv[0]);
+  if (argc != 7) {
+    fprintf(stderr, "usage: %s QEMU VMLINUZ ROOTFS TEST_INPUT HANG_PLUGIN TMPDIR\n", argv[0]);
     return 2;
   }
 
   const char *qemu = argv[1];
   const char *vmlinuz = argv[2];
   const char *rootfs = argv[3];
-  const char *plugin = argv[4];
-  const char *tmpdir = argv[5];
+  const char *test_input = argv[4];
+  const char *plugin = argv[5];
+  const char *tmpdir = argv[6];
 
   if (prctl(PR_SET_CHILD_SUBREAPER, 1) == -1) {
     fprintf(stderr, "PR_SET_CHILD_SUBREAPER failed: %s\n", strerror(errno));
@@ -596,7 +604,7 @@ main(int argc, char **argv)
   bool ok = true;
   ok = run_clean_stop(qemu, tmpdir, &counters) && ok;
   ok = run_signal_stop(qemu, SIGTERM, &counters.control_stop, &counters) && ok;
-  ok = run_guest_crash(qemu, vmlinuz, rootfs, serial_log, &counters) && ok;
+  ok = run_guest_crash(qemu, vmlinuz, rootfs, test_input, serial_log, &counters) && ok;
   ok = run_plugin_hang(qemu, plugin, &counters) && ok;
   ok = run_setup_failure(qemu, &counters) && ok;
   ok = run_signal_stop(qemu, SIGKILL, &counters.host_sigkill, &counters) && ok;

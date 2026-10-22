@@ -340,11 +340,9 @@
         };
         mkDevShell = name: packages: let
           livePackageRuntime = name == "aos-cargo-dev";
-          requestedCheckout = builtins.getEnv "AOS_DEV_ROOT";
-          checkoutRoot =
-            if requestedCheckout != ""
-            then requestedCheckout
-            else ./.;
+          # A string fallback supports `nix develop --file /checkout/cargo-shell.nix`
+          # from another directory without importing that unfiltered checkout.
+          checkoutRoot = builtins.toString ./.;
           binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") ([devLauncher aos.pkgs.bash aos.pkgs.nix aos.pkgs.alejandra aos.pkgs.acl] ++ packages));
         in
           builtins.derivation {
@@ -369,9 +367,9 @@
                 else ""
               )
               + ''
-                # Prefer the live checkout so edits to the script are immediately
-                # visible. Explicit flake paths outside a checkout use the snapshot;
-                # AOS_DEV_ROOT can select a live checkout in that case.
+                # Resolve the live tree at shell entry. Interpolating a Nix path
+                # here would copy generated build outputs into the store.
+                # Explicit paths outside a checkout select AOS_DEV_ROOT at runtime.
                 if [ -z "''${AOS_DEV_ROOT:-}" ]; then
                   aos_dev_checkout=$(${aos.pkgs.git}/bin/git rev-parse --show-toplevel 2>/dev/null || true)
                   if [ -f "$aos_dev_checkout/tools/dev/aos-dev" ]; then

@@ -18,6 +18,8 @@ Commands:
   all <packages|checks|builds|format|ci> [Nix flags]
   fmt [nix|rust|all] [--check]
   release <arguments>       Run aos maintain release without shared caches
+  cache images status       Show development image allocation
+  cache images prune [--days N] [--max-gib N]
   cache usage               Show disk use by backend
   cache prune [--before TIME|--days N] [--max-gib N] [--dry-run] [--compact]
   cache clear [go|bazel|rust|accache|all]
@@ -44,6 +46,7 @@ to source builds. --release and --no-cache disable shared compiler caches,
 while retaining binary substitution and source fallback.
 
 Development builds enable these options by default:
+  --[no-]image-cache        Reuse locally materialized development test images
   --[no-]go-cache           Share Go compilation artifacts
   --[no-]bazel-cache        Share Bazel disk action artifacts
   --[no-]rust-target-cache  Persist Cargo's target directory
@@ -129,7 +132,7 @@ aos_dev_nix_build() {
     # Only directory caches need a sandbox mount. The Rust incremental flag
     # also works with Cargo's ordinary per-build target directory.
     if [[ $aos_dev_go_cache == true || $aos_dev_bazel_cache == true || \
-          $aos_dev_rust_target_cache == true || ${aos_dev_accache:-false} == true ]]; then
+          $aos_dev_rust_target_cache == true || ${aos_dev_accache:-false} == true || ${aos_dev_image_cache:-false} == true ]]; then
       if [[ ${aos_dev_cache_ready:-0} != 1 ]]; then
         aos_dev_cache_check_nix
         aos_dev_cache_prepare
@@ -137,6 +140,7 @@ aos_dev_nix_build() {
       fi
       command+=("${aos_dev_cache_nix_options[@]}")
     fi
+    [[ ${aos_dev_image_cache:-false} != true ]] || command+=(--argstr sharedImageCacheDir "$aos_dev_image_cache_path")
     if [[ ${aos_dev_accache:-false} == true ]]; then
       command+=(--argstr sharedAccacheDir "$aos_dev_accache_path")
       command+=(--argstr sharedAccacheStateDir "$aos_dev_accache_state_path")
