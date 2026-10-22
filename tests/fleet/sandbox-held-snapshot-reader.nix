@@ -45,6 +45,12 @@
       zfs = pkgs.zfsForKernel config.system.build.kernel;
       runFixture = selectedTest: "${fixture}/bin/aos-sandbox-held-snapshot-reader-tests --ignored --exact ${selectedTest} --test-threads=1 --nocapture";
     in {
+      aos.activation.stages.host.configuration = [
+        (builtins.path {
+          path = ./_sandbox-controller-identity.nix;
+          name = "aos-sandbox-controller-identity.nix";
+        })
+      ];
       aos.sandbox.storageWorker.enable = true;
       aos.image.budgets = {
         maxRootMiB = 1024;
