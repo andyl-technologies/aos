@@ -13713,3 +13713,16 @@ the control's expected refusal and inode/funding comparisons are preserved.
 No actor timeout, capacity or malformed-name assertion is relaxed. The failed
 VM receipt and build directory remain retained. Qualification of the correction
 is pending, and no exposure runtime pass is claimed.
+
+
+Inspection of the inventory correction identifies the role boundary explicitly:
+derived indexes are mode 0400 under the cache UID, so the publisher must not
+open them for reading. It now uses an original `O_PATH|O_NOFOLLOW` descriptor
+for type, UID/GID, device, link-count and writable-mode comparisons. `O_PATH`
+cannot issue the project ioctl; project assignment joins grammar and seal
+validation in the cache owner's exhaustive original-inode reconciliation.
+No publisher privilege or file mode is broadened, and these opaque entries
+still cannot become canonical body keys or recovery-completion proof. The
+cache owner can read and project-check its own original inodes before Resume.
+This correction is based on descriptor/DAC inspection before another guest
+run; no failing VM or passing runtime is fabricated for this intermediate fix.

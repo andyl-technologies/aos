@@ -598,14 +598,28 @@ impl NativeInventory {
                 {
                     // Derived indexes belong to the physical cache owner,
                     // outside this canonical body registry. Retain the native
-                    // custody checks but defer grammar, seal and retirement to
+                    // custody checks but defer grammar, project, seal and retirement to
                     // its exhaustive recovery before Resume. Even malformed
                     // reserved names must reach that fail-closed reconciliation;
                     // recognizing a namespace never adopts an index as content.
-                    let candidate = open(&objects, name, false)?;
-                    self.check(&candidate, Custody::Content, InodeKind::File)?;
-                    if candidate.metadata()?.nlink() != 1 {
-                        return Err(invalid("derived inventory candidate has aliased custody"));
+                    // Index data intentionally is not readable by the publisher.
+                    // O_PATH permits identity inspection without broadening DAC
+                    // or asking the sealer to read another role's metadata.
+                    let candidate = File::from(fs::openat(
+                        &objects,
+                        name,
+                        OFlags::PATH | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+                        Mode::empty(),
+                    )?);
+                    let metadata = candidate.metadata()?;
+                    if !metadata.is_file()
+                        || metadata.uid() != self.content_uid
+                        || metadata.gid() != self.content_gid
+                        || metadata.dev() != objects.metadata()?.dev()
+                        || metadata.nlink() != 1
+                        || metadata.mode() & 0o002 != 0
+                    {
+                        return Err(invalid("derived inventory candidate custody changed"));
                     }
                 }
                 _ => return Err(invalid("unreconciled inventory objects namespace entry")),
