@@ -1277,3 +1277,17 @@ combining their development dependencies would create a cycle. In this family,
 client tests use the server, whose library uses the client. Dependent crates
 retain the ordinary library identity while separate workspace roots analyze
 the unit tests and their development dependencies.
+
+## QEMU host baseline
+
+`tests/evidence/qemu-host-cargo-baseline.json` records the pre-conversion
+`crucible-qemu-host` Cargo run: 841 executed cases, four existing ignored cases,
+15 artifacts, and 107 external crate identities. Compared with the engine
+family, it adds tempfile and its two dependencies and expands rustix's Linux
+process, network, parameter, and time features.
+
+The baseline includes the checked-in patch text, schema registry, and five Nix
+files used by source audits. These audit inputs and all compiled Rust sources
+have retained hashes. This is the Apache host-side crate; its ordinary Cargo
+tests do not replace the separate patched-QEMU runtime, process-boundary, or VM
+gates. Its Bazel conversion remains pending.
