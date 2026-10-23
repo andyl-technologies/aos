@@ -674,6 +674,10 @@ pub(crate) fn native_deployment_files(stage: &str) -> Vec<(AssemblyFileKind, &'s
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Fixture decoding and construction failures must fail these tests"
+)]
 mod tests {
     use super::{ImageBudgetsV1, require_store_executable_path};
 
@@ -699,7 +703,7 @@ mod tests {
     fn rejects_unanchored_and_malformed_assembly_tool_paths() {
         for executable in [
             format!("/tmp/{STORE_HASH}-dosfstools/sbin/mkfs.vfat"),
-            format!("/nix/store/short-dosfstools/sbin/mkfs.vfat"),
+            "/nix/store/short-dosfstools/sbin/mkfs.vfat".to_owned(),
             format!("/nix/store/{STORE_HASH}-dosfstools"),
             format!("/nix/store/{STORE_HASH}-dosfstools/sbin"),
             format!("/nix/store/{STORE_HASH}-dosfstools/share/bin/mkfs.vfat"),

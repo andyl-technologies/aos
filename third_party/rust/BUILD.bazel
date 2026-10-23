@@ -1,6 +1,7 @@
 load("@rules_rust//crate_universe:defs.bzl", "crate")
 load("//tools/bazel/rules:crates.bzl", "aos_crate_specifications")
 load("//tools/bazel/rules:package.bzl", "aos_package")
+load(":release-preparation/aliases.bzl", RELEASE_PREPARATION_CRATES = "CRATES")
 load(":hub-client/aliases.bzl", HUB_CLIENT_CRATES = "CRATES")
 load(":hub-model/aliases.bzl", HUB_MODEL_CRATES = "CRATES")
 load(":hub-model-tests/aliases.bzl", HUB_MODEL_TESTS_CRATES = "CRATES")
@@ -40,6 +41,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:release_preparation_dependencies": RELEASE_PREPARATION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_client_dependencies": HUB_CLIENT_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_model_tests_dependencies": HUB_MODEL_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_model_dependencies": HUB_MODEL_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -73,7 +75,8 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         visibility = ["//visibility:public"],
     )
     for name in sorted(dict(
-        HUB_CLIENT_CRATES.items()
+        RELEASE_PREPARATION_CRATES.items()
+        + HUB_CLIENT_CRATES.items()
         + HUB_MODEL_TESTS_CRATES.items()
         + HUB_MODEL_CRATES.items()
         + HUB_PORTABLE_CRATES.items()
@@ -371,6 +374,33 @@ HUB_CLIENT_PACKAGES = {
     "serde_json": crate.spec(version = "=1.0.150"),
     "tokio": crate.spec(version = "=1.52.3", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"]),
     "tokio-util": crate.spec(version = "=0.7.18", features = ["io"]),
+    "url": crate.spec(version = "=2.5.8"),
+}
+
+# Release preparation preserves its own assembly and signing feature selection.
+RELEASE_PREPARATION_PACKAGES = {
+    "anyhow": crate.spec(version = "=1.0.102"),
+    "async-trait": crate.spec(version = "=0.1.89"),
+    "base64": crate.spec(version = "=0.22.1"),
+    "clap": crate.spec(version = "=4.6.1", features = ["derive", "env"]),
+    "crc32fast": crate.spec(version = "=1.5.0"),
+    "ed25519-dalek": crate.spec(version = "=2.2.0", features = ["pkcs8"]),
+    "flate2": crate.spec(version = "=1.1.9", default_features = False, features = ["rust_backend"]),
+    "hex": crate.spec(version = "=0.4.3"),
+    "humantime": crate.spec(version = "=2.3.0"),
+    "regex": crate.spec(version = "=1.12.4"),
+    "rsa": crate.spec(version = "=0.9.10", features = ["sha2"]),
+    "rustix": crate.spec(version = "=1.1.4", features = ["event", "fs"]),
+    "schemars": crate.spec(version = "=1.2.2"),
+    "semver": crate.spec(version = "=1.0.28"),
+    "serde": crate.spec(version = "=1.0.228", features = ["derive", "rc"]),
+    "serde_json": crate.spec(version = "=1.0.150"),
+    "sha2": crate.spec(version = "=0.10.9", features = ["compress"]),
+    "ssh-key": crate.spec(version = "=0.6.7", default_features = False, features = ["ed25519", "std"]),
+    "tempfile": crate.spec(version = "=3.27.0"),
+    "thiserror": crate.spec(version = "=2.0.18"),
+    "tokio": crate.spec(version = "=1.52.3", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"]),
+    "toml": crate.spec(version = "=0.8.23"),
     "url": crate.spec(version = "=2.5.8"),
 }
 
@@ -860,6 +890,14 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    # The release baseline does not compile IndexMap's resolver-only Serde feature.
+    "release-preparation": {
+        "indexmap": json.encode({
+            "version": "2.14.0",
+            "resolved_features": ["default", "serde", "std"],
+            "features": ["default", "std"],
+        }),
+    },
     # Preserve the client baseline target and generator feature units.
     "hub-client": {
         "bitflags": json.encode({
@@ -1627,6 +1665,7 @@ APPROVED_LICENSES = [
         host_only_licenses = ["Apache-2.0"],
     )
     for family, packages, annotations, license_domain in [
+        ("release-preparation", RELEASE_PREPARATION_PACKAGES, {}, "apache-host"),
         ("hub-client", HUB_CLIENT_PACKAGES, {}, "apache-host"),
         ("hub-model", HUB_MODEL_PACKAGES, {}, "apache-host"),
         ("hub-model-tests", HUB_MODEL_TESTS_PACKAGES, {}, "apache-host"),
@@ -1669,6 +1708,7 @@ APPROVED_LICENSES = [
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
     for family in [
+        "release-preparation",
         "hub-client",
         "hub-model-tests",
         "hub-model",

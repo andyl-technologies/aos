@@ -40,14 +40,13 @@ pub fn capture(
                 .filter(|key| key.starts_with("CONFIG_"))
                 .map(|key| (key, "n"))
         };
-        if let Some((key, value)) = entry {
-            if value.is_empty()
+        if let Some((key, value)) = entry
+            && (value.is_empty()
                 || kernel_options
                     .insert(key.to_owned(), value.to_owned())
-                    .is_some()
-            {
-                bail!("resolved kernel configuration contains empty or duplicate values");
-            }
+                    .is_some())
+        {
+            bail!("resolved kernel configuration contains empty or duplicate values");
         }
     }
     if kernel_options.is_empty() {
@@ -257,6 +256,10 @@ fn resolve(tree: &Path, relative: &Path) -> Result<PathBuf> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Fixture decoding and construction failures must fail these tests"
+)]
 mod tests {
     use std::os::unix::fs::symlink;
 

@@ -451,7 +451,7 @@ impl ObservedTable {
             table.label == "gpt"
                 && table.unit == "sectors"
                 && table.sectorsize == 512
-                && bytes % 512 == 0,
+                && bytes.is_multiple_of(512),
             "image requires observed 512-byte GPT geometry"
         );
         let mut ordered = table.partitions.iter().collect::<Vec<_>>();
@@ -519,6 +519,10 @@ impl ObservedTable {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Fixture decoding and construction failures must fail these tests"
+)]
 mod tests {
     use std::io::{Seek as _, Write as _};
 

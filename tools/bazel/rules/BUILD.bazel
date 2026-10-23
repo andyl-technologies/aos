@@ -262,3 +262,9 @@ config_setting(
     flag_values = {":dependency_profile": "hub-client"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "release_preparation_dependencies",
+    flag_values = {":dependency_profile": "release-preparation"},
+    visibility = ["//visibility:public"],
+)

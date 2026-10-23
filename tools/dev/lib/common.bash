@@ -16,9 +16,9 @@ Commands:
   run <aos|apm|apr> [arguments]  Build or fetch an ordinary packaged CLI, then run it
   cargo <arguments>         Run Cargo in the current AOS-built dev shell
   bazel <arguments>         Run offline Bazel with AOS tools and a local disk cache
-  bazel update-deps <core|device|store|guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|native-foundation|native-foundation-tests|native-foundation-minimal|activation-core|activation-core-tests|activation-storage|activation-systemd|activation-crucible|activation-crucible-tests|cli-support|build-services|deployment|hub-portable|hub-model|hub-model-tests|hub-client>  Resolve and pin third-party Rust sources
+  bazel update-deps <core|device|store|guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|native-foundation|native-foundation-tests|native-foundation-minimal|activation-core|activation-core-tests|activation-storage|activation-systemd|activation-crucible|activation-crucible-tests|cli-support|build-services|deployment|hub-portable|hub-model|hub-model-tests|hub-client|release-preparation>  Resolve and pin third-party Rust sources
   bazel rust-project <labels>  Generate editor metadata from configured Rust targets
-  bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client> <arguments>  Select the family's target configuration
+  bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client|release-preparation> <arguments>  Select the family's target configuration
   all <packages|checks|builds|format|ci> [Nix flags]
   fmt [nix|rust|all] [--check]
   release <arguments>       Run aos maintain release without shared caches

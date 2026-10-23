@@ -254,7 +254,7 @@ pub async fn finalize_image_set(
             None,
         ),
     ] {
-        let relative = BundlePath::parse(&format!("artifacts/{name}"))?;
+        let relative = BundlePath::parse(format!("artifacts/{name}"))?;
         let destination = final_root.join(relative.as_str());
         fs::rename(source, &destination)
             .with_context(|| format!("installing finalized artifact {}", destination.display()))?;

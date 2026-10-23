@@ -395,7 +395,8 @@ fn decode_hex_32(value: &str) -> Result<[u8; 32]> {
         bail!("PCR policy digest must be 64 lowercase hexadecimal digits");
     }
     let mut decoded = [0_u8; 32];
-    for (index, pair) in value.as_bytes().chunks_exact(2).enumerate() {
+    let (pairs, _) = value.as_bytes().as_chunks::<2>();
+    for (index, pair) in pairs.iter().enumerate() {
         decoded[index] = u8::from_str_radix(std::str::from_utf8(pair)?, 16)?;
     }
     Ok(decoded)

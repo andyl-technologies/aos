@@ -2189,3 +2189,52 @@ Live Hub services,
 foreign/Wasm execution, complete compiler invocation equivalence, numeric
 performance acceptance, production migration, and Cargo removal remain
 separate qualification work.
+
+
+## Release preparation family
+
+`aos-dev bazel --family release-preparation` selects `aos-package-maintenance`,
+`aos-image-finalizer`, and `aos-release-signer`. It compiles both libraries,
+the image-metadata command, the signing command, and all four Cargo test
+artifacts. The pinned profile contains 185 source crates; production and tests
+match the unchanged Cargo baselines' 145 compiled external packages and twelve
+first-party packages, with identical feature-unit sets. One guarded policy
+removes IndexMap's resolver-only Serde feature.
+
+`tests/evidence/native-linux-release-preparation.json` retains passing strict
+source selection, test and production feature parity, Clippy, formatting,
+documentation, license closure, and selected editor checks. All 109 existing
+cases execute with no ignored cases. The image-metadata binary has an empty
+libtest inventory, and both library doctest inventories are empty. The six test
+roots execute uncached in the Linux sandbox. Their actions invoke no Cargo
+executable, and the strict compilation workspace contains no first-party Cargo
+manifests.
+
+Seven test-module lint exceptions preserve fixture construction and deliberate
+negative assertions. Mechanical fixes retain validation short-circuiting, sector
+alignment, bounded hex decoding, and path values. Moving the native deployment
+helper before its tests is a separate behavior-preserving commit. Existing
+maintenance policy, image contract, and fixture-key signing assertions remain
+unchanged. These cases do not qualify complete assembled images, external
+signing providers, or installed release workflows.
+
+The strict inventory contains 26 requested roots, 229 configured reports, and
+182 declared files, including 179 Rust files. A release-format integration target
+belongs only to this inventory to retain its nonempty source glob; its cases
+are not claimed executed here. Editor parity retains three matching unknown
+type diagnostics, no unattributed diagnostics, and eight unselected Cargo
+diagnostics. Both inference reports remain incomplete; aggregate statistics
+and diagnostic multiplicities are not claimed equivalent.
+
+`tests/evidence/release-preparation-configured-graph.json` records all 29
+configured family inventories, 30 dependency specifications, 177 policy tests,
+and CLI checks for 24 launchers. The previous 29 dependency locks and 4,600
+generated crate BUILD files remain unchanged. Metadata parity covers 425 Rust
+targets across 31 analysis-only selections, with no external actions, and core
+evaluation passes. Frozen outputs are retained in
+`tests/evidence/release-preparation-metadata-evaluation.json`.
+
+Required workspace Rust compilation runs separately. Complete image and signing
+provider gates, foreign/Wasm execution, complete compiler invocation equivalence,
+numeric performance acceptance, production migration, and Cargo removal remain
+separate qualification work.

@@ -95,6 +95,11 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    release-preparation = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "release-preparation";
+    };
     hub-client = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -294,6 +299,33 @@
     dependencyProfile = "control";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
+  };
+  aosBazelReleasePreparationWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = [
+      "tools/bazel"
+      "third_party/rust"
+      "crates/shared/aos-artifact-evidence"
+      "crates/aos/boot/aos-boot-identity"
+      "crates/shared/aos-core"
+      "crates/aos/packages/aos-deployment-format"
+      "crates/aos/release/aos-image-finalizer"
+      "crates/aos/modules/aos-module-docs"
+      "crates/aos/modules/aos-module-format"
+      "crates/shared/aos-oci-types"
+      "crates/aos/release/aos-package-maintenance"
+      "crates/aos/registry/aos-registry-format"
+      "crates/aos/release/aos-release-format"
+      "crates/aos/release/aos-release-signer"
+    ];
+    repositories = aosBazelRepositories // aosBazelRustRepositories.release-preparation;
+    dependencyProfile = "release-preparation";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = [
+      "//crates/aos/release/aos-package-maintenance:unit"
+      "//crates/aos/release/aos-image-finalizer:unit"
+      "//crates/aos/release/aos-release-signer:bin_aos-release-signer"
+    ];
   };
   aosBazelHubClientWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -564,6 +596,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelReleasePreparationLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelReleasePreparationWorkspace;
     }).launcher;
   aosBazelHubClientLauncher =
     (import ./development.nix {

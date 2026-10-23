@@ -34,6 +34,9 @@
         "crates/aos/release/aos-release-format/Cargo.toml"
         "crates/aos/modules/aos-module-docs/Cargo.toml"
         "crates/aos/packages/aos-deployment-format/Cargo.toml"
+        "crates/aos/release/aos-image-finalizer/Cargo.toml"
+        "crates/aos/release/aos-package-maintenance/Cargo.toml"
+        "crates/aos/release/aos-release-signer/Cargo.toml"
         "crates/hub/aos-hub-client/Cargo.toml"
         "crates/hub/aos-hub-model/Cargo.toml"
         "crates/hub/aos-hub-api/Cargo.toml"
@@ -128,6 +131,7 @@ in
     native-foundation = import ./_bazel-native-foundation.nix {inherit pkgs;};
     activation-core = import ./_bazel-activation-core.nix {inherit pkgs;};
     activation-storage = import ./_bazel-activation-storage.nix {inherit pkgs;};
+    release-preparation = import ./_bazel-release-preparation.nix {inherit pkgs;};
     hub-client = import ./_bazel-hub-client.nix {inherit pkgs;};
     hub-model = import ./_bazel-hub-model.nix {inherit pkgs;};
     hub-portable = import ./_bazel-hub-portable.nix {inherit pkgs;};
@@ -337,6 +341,7 @@ in
         native-foundation.tests
         activation-core.tests
         activation-storage.tests
+        release-preparation.tests
         hub-client.tests
         hub-model.tests
         hub-portable.tests
@@ -444,6 +449,7 @@ in
             activation-crucible.all
             cli-support.all
             build-services.all
+            release-preparation.all
             hub-client.all
             hub-model.all
             hub-portable.all

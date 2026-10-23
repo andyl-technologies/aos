@@ -21,7 +21,10 @@ rust_library(
     crate_name = "aos_boot_identity",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs"]),
-    visibility = ["//crates/aos/boot:__subpackages__"],
+    visibility = [
+        "//crates/aos/boot:__subpackages__",
+        "//crates/aos/release:__subpackages__",
+    ],
 )
 
 rust_binary(

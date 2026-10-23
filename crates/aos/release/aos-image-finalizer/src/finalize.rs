@@ -426,6 +426,10 @@ fn path_text(path: &Path) -> Result<&str> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "Adversarial fixtures must fail when invalid custody evidence is accepted"
+)]
 mod tests {
     use std::fs;
     use std::os::unix::fs::symlink;
