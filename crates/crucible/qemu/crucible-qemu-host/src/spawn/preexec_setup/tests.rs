@@ -231,11 +231,16 @@ fn preexec_abandonment_preserves_actual_queue_closes_and_independent_failure() {
     supervisor.cancel().unwrap();
     let original_after = supervisor.wait_for_active_work_change().unwrap_err();
     let original_description = format!("{original_after:?}");
-    let error = PreexecSetupError {
-        cause: PreexecSetupCause::Kernel(cause),
-        original_after: Some(original_after),
-        _owner: owner,
-    };
+    let (error, creation) = TestAllocationObserver::count(|| {
+        PreexecSetupError::retain(
+            owner,
+            PreexecSetupCause::Kernel(cause),
+            Some(original_after),
+        )
+    });
+    assert_eq!(creation.allocations, 0);
+    assert_eq!(creation.reallocations, 0);
+    assert!(!creation.overflow);
     let mut child = crate::QemuNodeChild::new(
         std::process::Command::new("sleep")
             .arg("60")
@@ -267,9 +272,9 @@ fn preexec_abandonment_preserves_actual_queue_closes_and_independent_failure() {
     }
     assert!(history._aliases[8].is_none());
     let failure = history._failure.as_ref().unwrap();
-    assert!(matches!(failure._cause, PreexecSetupCause::Kernel(errno) if errno == cause));
+    assert!(matches!(failure.record().cause, PreexecSetupCause::Kernel(errno) if errno == cause));
     assert_eq!(
-        format!("{:?}", failure._original_after.as_ref().unwrap()),
+        format!("{:?}", failure.record().original_after.as_ref().unwrap()),
         original_description
     );
     assert!(fixture.cleanup.claim_preexec().is_none());
@@ -277,6 +282,72 @@ fn preexec_abandonment_preserves_actual_queue_closes_and_independent_failure() {
 
     for account in fixture.accounts {
         assert!(account.reserve_resources(0, 0, 1).is_err());
+    }
+}
+
+#[test]
+fn refused_unqueued_preexec_closes_aliases_and_preserves_the_actual_error() {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let fixture = crate::launch_cleanup::tests::allocation::fixture();
+    let (role, mut peer) = UnixStream::pair().unwrap();
+    peer.set_nonblocking(true).unwrap();
+    let owner = component_owner(&fixture.cleanup, role.as_fd());
+    let cause = rustix::io::fcntl_dupfd_cloexec(role.as_fd(), i32::MAX).unwrap_err();
+    drop(role);
+
+    let (error, creation) = TestAllocationObserver::count(|| {
+        PreexecSetupError::retain(owner, PreexecSetupCause::Kernel(cause), None)
+    });
+    let source = std::error::Error::source(&error)
+        .unwrap()
+        .downcast_ref::<PreexecSetupCause>()
+        .unwrap();
+    let actual = fixture.cleanup.preexec_failure().unwrap();
+
+    assert!(std::ptr::eq(source, &actual.cause));
+    assert!(matches!(source, PreexecSetupCause::Kernel(errno) if *errno == cause));
+    assert!(
+        std::error::Error::source(source)
+            .unwrap()
+            .downcast_ref::<rustix::io::Errno>()
+            .is_some_and(|errno| *errno == cause)
+    );
+    assert_eq!(creation.allocations, 0);
+    assert_eq!(creation.reallocations, 0);
+    assert!(!creation.overflow);
+    assert_eq!(
+        peer.read(&mut [0]).unwrap_err().kind(),
+        std::io::ErrorKind::WouldBlock
+    );
+
+    let ((), destruction) = TestAllocationObserver::count(|| drop(error));
+
+    // A concurrently forked fixture can briefly inherit CLOEXEC aliases until
+    // its real exec. Bound the actual EOF wait without assuming scheduler order.
+    peer.set_nonblocking(false).unwrap();
+    peer.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    assert_eq!(
+        peer.read(&mut [0]).unwrap_or_else(|error| {
+            panic!("refused local owner must physically close its aliases: {error}")
+        }),
+        0
+    );
+    assert_eq!(destruction.allocations, 0);
+    assert_eq!(destruction.reallocations, 0);
+    assert!(!destruction.overflow);
+    assert!(fixture.cleanup.abandoned_preexec().is_none());
+    let actual = fixture.cleanup.preexec_failure().unwrap();
+    assert!(matches!(actual.cause, PreexecSetupCause::Kernel(errno) if errno == cause));
+    for account in &fixture.accounts {
+        assert!(account.reserve_resources(0, 0, 1).is_err());
+    }
+    drop((fixture.cleanup, peer));
+
+    for account in fixture.accounts {
+        let complete = account.reserve_resources(0, 0, fixture.bytes).unwrap();
+        drop(complete);
     }
 }
 

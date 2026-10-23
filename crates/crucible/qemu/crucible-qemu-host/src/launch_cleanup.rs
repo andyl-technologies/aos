@@ -141,6 +141,8 @@ struct CleanupRecord {
     #[cfg(target_os = "linux")]
     abandoned_preexec: OnceLock<crate::spawn::preexec_setup::PreexecAbandonment>,
     #[cfg(target_os = "linux")]
+    preexec_failure: OnceLock<crate::spawn::preexec_setup::PreexecFailureRecord>,
+    #[cfg(target_os = "linux")]
     child_return_claimed: AtomicBool,
     #[cfg(target_os = "linux")]
     abandoned_child: OnceLock<Mutex<crate::node::AbandonedChild>>,
@@ -198,6 +200,8 @@ impl LaunchCleanup {
                 #[cfg(target_os = "linux")]
                 abandoned_preexec: OnceLock::new(),
                 #[cfg(target_os = "linux")]
+                preexec_failure: OnceLock::new(),
+                #[cfg(target_os = "linux")]
                 child_return_claimed: AtomicBool::new(false),
                 #[cfg(target_os = "linux")]
                 abandoned_child: OnceLock::new(),
@@ -253,6 +257,8 @@ impl LaunchCleanup {
                 #[cfg(target_os = "linux")]
                 abandoned_preexec: OnceLock::new(),
                 #[cfg(target_os = "linux")]
+                preexec_failure: OnceLock::new(),
+                #[cfg(target_os = "linux")]
                 child_return_claimed: AtomicBool::new(false),
                 #[cfg(target_os = "linux")]
                 abandoned_child: OnceLock::new(),
@@ -279,6 +285,23 @@ impl LaunchCleanup {
         Some(PreexecRetention {
             cleanup: self.clone(),
         })
+    }
+
+    /// Publishes the sole pre-exec refusal into already funded storage.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retain_preexec_failure(
+        &self,
+        failure: crate::spawn::preexec_setup::PreexecFailureRecord,
+    ) {
+        self.inner.preexec_failure.get_or_init(|| failure);
+    }
+
+    /// Borrows the original cause without copying or locking its owner.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn preexec_failure(
+        &self,
+    ) -> Option<&crate::spawn::preexec_setup::PreexecFailureRecord> {
+        self.inner.preexec_failure.get()
     }
 
     /// Borrows retained handover history for component regression checks.
@@ -702,6 +725,13 @@ fn retain_unproven_target_workspace(
 
 impl Drop for CleanupRecord {
     fn drop(&mut self) {
+        // Normal refusal has already closed its local owner. Destroy the real
+        // cause and its control before registrar retirement can refund the
+        // containing allocation. Uncertain history retains this same allocation
+        // instead, so final destruction cannot race a live receiver.
+        #[cfg(target_os = "linux")]
+        drop(self.preexec_failure.take());
+
         let Ok(authority) = self.authority.get_mut() else {
             #[cfg(target_os = "linux")]
             retain_unproven_target_workspace(&mut self.target_workspace);

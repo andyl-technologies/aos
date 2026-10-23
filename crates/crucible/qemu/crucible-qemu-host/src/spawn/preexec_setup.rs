@@ -26,6 +26,12 @@ use super::{OriginalPluginStartup, QemuChildProcessContract};
 use crate::linux_attempt_host::{IssuedProcessConsumer, OriginalNativeNodeBinding};
 use crate::ram_control::RamControlRegistration;
 
+mod refusal;
+
+use refusal::PreexecFailureHistory;
+pub(crate) use refusal::PreexecFailureRecord;
+pub use refusal::PreexecSetupError;
+
 const FRAME_BYTES: usize = 125;
 const PURPOSE_BYTES: usize = PROCESS_PURPOSE_BYTES;
 const READBACK_BYTES: usize = 4096;
@@ -69,13 +75,6 @@ pub(crate) struct PreparedPreexecSetup {
     control: Option<SourceHostControlLease>,
 }
 
-/// Retains the actual first cause before its original control can be released.
-#[derive(Debug)]
-struct PreexecFailureHistory {
-    _cause: PreexecSetupCause,
-    _original_after: Option<HostSupervisionError>,
-}
-
 /// Records one actual close attempt without treating its descriptor as authority.
 #[derive(Debug)]
 struct PreexecAliasClose {
@@ -95,25 +94,6 @@ pub(crate) struct PreexecAbandonment {
     _aliases: [Option<PreexecAliasClose>; 9],
     _failure: Option<PreexecFailureHistory>,
     _control: Option<SourceHostControlLease>,
-}
-
-/// Retains prepared physical owners with the first cause and independent postcut.
-#[derive(Debug, thiserror::Error)]
-#[error("pre-exec handover refused: {cause}; original: {original_after:?}")]
-pub struct PreexecSetupError {
-    #[source]
-    cause: PreexecSetupCause,
-    original_after: Option<HostSupervisionError>,
-    _owner: PreparedPreexecSetup,
-}
-
-impl Drop for PreexecSetupError {
-    fn drop(&mut self) {
-        self._owner.failure = Some(PreexecFailureHistory {
-            _cause: std::mem::replace(&mut self.cause, PreexecSetupCause::Geometry),
-            _original_after: self.original_after.take(),
-        });
-    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -187,31 +167,28 @@ impl PreparedPreexecSetup {
     /// owner cannot discharge a queued or ambiguous child by dropping this value.
     ///
     /// # Errors
-    /// Refuses the same original's live cut, unrepresentable fixed extent, or
-    /// reservation admission while preserving the independently observed postcut.
+    /// Refuses a consumed containing recipient, the same original's live cut,
+    /// unrepresentable fixed extent, or reservation admission while preserving
+    /// the independently observed postcut for an admitted recipient.
     pub(super) fn reserve(
         startup: &OriginalPluginStartup,
         cleanup: crate::launch_cleanup::LaunchCleanup,
     ) -> Result<Self, PreexecSetupError> {
+        let retention = cleanup
+            .claim_preexec()
+            .ok_or_else(PreexecSetupError::recipient_unavailable)?;
         let mut owner = Self {
             aliases: std::array::from_fn(|_| None),
             frame: [0; FRAME_BYTES],
             queued: false,
             receipt: None,
             failure: None,
-            retention: None,
+            retention: Some(retention),
             cleanup: Some(cleanup),
             control: None,
         };
         let reserved = (|| {
             startup.check().map_err(PreexecSetupCause::Original)?;
-            owner.retention = Some(
-                owner
-                    .cleanup
-                    .as_ref()
-                    .and_then(crate::launch_cleanup::LaunchCleanup::claim_preexec)
-                    .ok_or(PreexecSetupCause::Geometry)?,
-            );
             let extent = Self::host_allocation_extent().ok_or(PreexecSetupCause::Geometry)?;
             owner.control = Some(
                 startup
@@ -484,16 +461,14 @@ impl PreparedPreexecSetup {
         let after = startup.check().err();
         match (result, after) {
             (Ok(()), None) => Ok(self),
-            (Err(cause), original_after) => Err(PreexecSetupError {
-                cause,
-                original_after,
-                _owner: self,
-            }),
-            (Ok(()), Some(source)) => Err(PreexecSetupError {
-                cause: PreexecSetupCause::Original(source),
-                original_after: None,
-                _owner: self,
-            }),
+            (Err(cause), original_after) => {
+                Err(PreexecSetupError::retain(self, cause, original_after))
+            }
+            (Ok(()), Some(source)) => Err(PreexecSetupError::retain(
+                self,
+                PreexecSetupCause::Original(source),
+                None,
+            )),
         }
     }
 }

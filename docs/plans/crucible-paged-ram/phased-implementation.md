@@ -1089,7 +1089,9 @@ All four child-exit and two stopped-child controls also pass. The source-shape
 integration check and Nix engineering hygiene pass. The matching strict Host
 lint result remains 690 library errors and fourteen warnings, with 757 test
 errors and five warnings; no exemption is added. Mandatory application-target
-compilation remains required for this change.
+compilation passes at `2hjzicxx5ml1951rp38xhzk7kv9zn9vc` against commit
+`c17fc21248`; all 5,364 Rust/TOML inputs and six fixture/license files match its
+immutable build source.
 
 The containing cleanup record now also reserves a sole child-return recipient
 before actual process birth. Both successful enrollment and refused enrollment
@@ -1114,6 +1116,30 @@ integration check and Nix engineering hygiene pass. Strict Host lint findings
 remain 690 library errors
 and fourteen warnings, with 757 test errors and five warnings; no exemption is
 added. Mandatory application-target compilation remains required for this change.
+
+Pre-exec refusals now use a small owning error handle into a separate recipient
+inside that same prepaid cleanup allocation. The first cause and independent
+postcut stay immutable; public source inspection borrows the actual stored cause.
+The unique prepared owner publishes at most one refusal. Error destruction takes
+its local owner under a private mutex and closes aliases outside that lock,
+without allocating a late box. Uncertain handover history keeps the same record
+and original pre-exec control loan. Normal final cleanup destroys diagnostics
+and that loan before registrar retirement refunds the containing allocation.
+Both physical record storage and overlapping construction remain prepaid.
+
+All ten pre-exec controls pass, including real kernel refusal, exact source-chain
+identity, zero error-creation/destruction allocations and reallocations, actual
+socket EOF after local alias closure, and complete paired refund after diagnostics
+close. The EOF check uses a bounded socket timeout so a concurrently forked
+fixture can finish its real exec and close inherited CLOEXEC aliases. Omitting
+local-owner destruction makes that control fail; restoring the exact source
+passes all ten controls, thirteen cleanup, three child-retention, four child-exit,
+thirty Source, two stopped-child and eight startup controls. Source shape and
+Nix engineering hygiene pass. Strict lint findings fall to 678 library errors
+and fourteen warnings, with 744 test errors and five warnings; no exemption is
+added. Other large retained errors remain, and the strict gate still fails.
+These component controls issue no Main, Source or native-profile authority.
+Mandatory application-target compilation remains required for this change.
 
 #### Cumulative construction and request ownership source
 
