@@ -143,6 +143,7 @@ pub fn verify_reviews(
 ) -> Result<()> {
     use std::collections::{BTreeMap, BTreeSet};
 
+    crate::signing::validate_trusted_ed25519_keys(keys)?;
     let role = plan
         .signers
         .iter()

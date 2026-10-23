@@ -33,7 +33,9 @@ use crate::qualification::{
     EffectiveProfile, QualificationContract, QualificationProfile, RolloutRing,
 };
 use crate::registry::{channel_kind, registry_policy};
-use crate::signing::{SignerRequirement, SignerRole, TrustedEd25519Key};
+use crate::signing::{
+    SignerRequirement, SignerRole, TrustedEd25519Key, validate_trusted_ed25519_keys,
+};
 
 /// Exact profile-override schema identifier and digest domain.
 pub const PROFILE_OVERRIDE: &str = "aos.release.profile-override/v1";
@@ -227,6 +229,7 @@ pub fn verify_overrides(
     envelopes: &[Vec<u8>],
     keys: &[TrustedEd25519Key],
 ) -> Result<AcceptedOverride> {
+    validate_trusted_ed25519_keys(keys)?;
     let role = signers
         .iter()
         .find(|role| role.role == SignerRole::ReleaseEvidence)

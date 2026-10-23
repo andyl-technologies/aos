@@ -29,7 +29,7 @@ use crate::plan::{ReleasePlan, SurfaceKind};
 use crate::qualification::{FitnessBinding, FitnessKind, QualificationProfile};
 use crate::qualification_evidence::CheckObservation;
 use crate::registry::registry_policy;
-use crate::signing::{SignerRole, TrustedEd25519Key};
+use crate::signing::{SignerRole, TrustedEd25519Key, validate_trusted_ed25519_keys};
 
 /// Exact fitness attestation schema identifier.
 pub const FITNESS_ATTESTATION: &str = "aos.release.fitness-attestation/v1";
@@ -341,6 +341,7 @@ impl FitnessAttestation {
         evidence_key_ids: &[String],
         keys: &[TrustedEd25519Key],
     ) -> Result<Self> {
+        validate_trusted_ed25519_keys(keys)?;
         let trusted: BTreeMap<_, _> = keys
             .iter()
             .map(|key| (key.key_id.clone(), key.public_key))

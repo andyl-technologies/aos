@@ -35,7 +35,7 @@ use crate::plan::ReleaseClass;
 use crate::registry::registry_policy;
 use crate::signing::{
     SignatureResponse, SignerRole, SigningContext, SigningOperation, SigningRequest,
-    TrustedEd25519Key, verify_ed25519_response,
+    TrustedEd25519Key, validate_trusted_ed25519_keys, verify_ed25519_response,
 };
 
 pub mod staging;
@@ -1136,6 +1136,7 @@ fn verify_with_keys<T: SignedMetadata + Serialize>(
     threshold: u16,
     now: std::time::SystemTime,
 ) -> Result<()> {
+    validate_trusted_ed25519_keys(trusted_keys)?;
     validate_common(&envelope.signed, envelope.signed.expected_schema())?;
     require_not_expired(envelope.signed.expires(), now)?;
     let payload_digest = Sha256Digest::of_canonical(
@@ -1146,9 +1147,6 @@ fn verify_with_keys<T: SignedMetadata + Serialize>(
         .iter()
         .map(|key| (key.key_id.as_str(), key))
         .collect::<BTreeMap<_, _>>();
-    if trusted.len() != trusted_keys.len() {
-        bail!("TUF verifier trust input repeats a key id");
-    }
     let mut accepted = BTreeSet::new();
     for signature in &envelope.signatures {
         let request = &signature.request;
@@ -1217,7 +1215,8 @@ fn root_keys(root: &RootMetadataV1) -> Result<BTreeMap<&str, TrustedEd25519Key>>
     {
         bail!("TUF root keys must be unique and sorted");
     }
-    root.keys
+    let keys = root
+        .keys
         .iter()
         .map(|key| {
             let bytes = base64::engine::general_purpose::STANDARD
@@ -1226,7 +1225,10 @@ fn root_keys(root: &RootMetadataV1) -> Result<BTreeMap<&str, TrustedEd25519Key>>
             let trusted = TrustedEd25519Key::from_encoded(key.key_id.clone(), &bytes)?;
             Ok((key.key_id.as_str(), trusted))
         })
-        .collect()
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let trusted = keys.values().cloned().collect::<Vec<_>>();
+    validate_trusted_ed25519_keys(&trusted)?;
+    Ok(keys)
 }
 
 fn root_policies(root: &RootMetadataV1) -> Result<BTreeMap<TufRole, &TufRolePolicyV1>> {
@@ -1275,13 +1277,19 @@ fn require_not_expired(value: &str, now: std::time::SystemTime) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use ed25519_dalek::SigningKey;
+
     use super::*;
     use crate::registry::{EXPERIMENTAL_REGISTRY, MAIN_REGISTRY};
 
     fn key(id: &str, byte: u8) -> TufKeyV1 {
         TufKeyV1 {
             key_id: id.to_owned(),
-            public_key_base64: base64::engine::general_purpose::STANDARD.encode([byte; 32]),
+            public_key_base64: base64::engine::general_purpose::STANDARD.encode(
+                SigningKey::from_bytes(&[byte; 32])
+                    .verifying_key()
+                    .to_bytes(),
+            ),
             verification_identity: format!("device-{id}"),
         }
     }
@@ -1361,9 +1369,50 @@ mod tests {
         collapsed.roles[1].key_ids[0] = "key-01".to_owned();
         assert!(validate_root(&collapsed).is_err());
 
+        let mut aliased_within_role = root.clone();
+        aliased_within_role.keys[1].public_key_base64 =
+            aliased_within_role.keys[0].public_key_base64.clone();
+        assert!(validate_root(&aliased_within_role).is_err());
+
+        let mut aliased_across_roles = root.clone();
+        aliased_across_roles.keys[3].public_key_base64 =
+            aliased_across_roles.keys[0].public_key_base64.clone();
+        assert!(validate_root(&aliased_across_roles).is_err());
+
         let mut weak = root;
         weak.roles[0].threshold = 1;
         assert!(validate_root(&weak).is_err());
+    }
+
+    #[test]
+    fn bootstrap_trust_rejects_key_aliases() {
+        let root = production_root();
+        let envelope = TufEnvelopeV1 {
+            signed: root,
+            signatures: Vec::new(),
+        };
+        let keys = [
+            TrustedEd25519Key::from_encoded(
+                "bootstrap-1",
+                &SigningKey::from_bytes(&[1; 32]).verifying_key().to_bytes(),
+            )
+            .unwrap(),
+            TrustedEd25519Key::from_encoded(
+                "bootstrap-2",
+                &SigningKey::from_bytes(&[1; 32]).verifying_key().to_bytes(),
+            )
+            .unwrap(),
+        ];
+
+        let error = verify_with_keys(
+            &envelope,
+            &keys,
+            2,
+            humantime::parse_rfc3339("2029-01-01T00:00:00Z").unwrap(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("duplicate public key material"));
     }
 
     #[test]
