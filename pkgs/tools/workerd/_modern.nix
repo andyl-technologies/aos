@@ -376,6 +376,15 @@ in
             "$TMPDIR/repo-overrides/aspect_rules_js+/js/private/node_wrapper.sh"
           sed -i 's|^DEFAULT_STUB_SHEBANG = "#!/usr/bin/env python3"$|DEFAULT_STUB_SHEBANG = "#!${python3}/bin/python3"|' \
             "$TMPDIR/repo-overrides/rules_python+/python/private/py_runtime_info.bzl"
+          # These generator helpers execute directly, outside Bazel's configured
+          # rule shell. Pin their templates before executable actions are created.
+          for shell_template in \
+            "$TMPDIR/repo-overrides/rules_python+/python/private/build_data_writer.sh" \
+            "$TMPDIR/repo-overrides/rules_rust+/util/process_wrapper/private/process_wrapper.sh"
+          do
+            sed -i '1s|^#!/bin/sh$|#!${bash}/bin/bash|' "$shell_template"
+            head -n 1 "$shell_template" | grep -Fx '#!${bash}/bin/bash'
+          done
 
           # The generator is an AOS-built store input. Bazel rejects even a
           # file:// download when downloads are disabled for the offline build.
