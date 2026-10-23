@@ -800,6 +800,7 @@ fn validate_image_filename(filename: &str) -> anyhow::Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod image_delivery_tests {
     use super::*;
 
@@ -1664,6 +1665,7 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod root_config_tests {
     use super::*;
 

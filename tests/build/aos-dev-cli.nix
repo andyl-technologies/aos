@@ -11,6 +11,7 @@
     "aosBazelQemuHostLauncher"
     "aosBazelStoreS3Launcher"
     "aosBazelDaemonLauncher"
+    "aosBazelFormatsLauncher"
     "aosBazelCrucibleCliLauncher"
   ];
   src = builtins.path {

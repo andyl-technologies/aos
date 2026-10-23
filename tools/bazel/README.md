@@ -1484,15 +1484,41 @@ parity for 291 compiled first-party targets and the core Nix evaluation checks.
 It retains the complete metadata report for the frozen CLI checkpoint before
 the format library conversion.
 
-## AOS format library baselines
+## AOS format library qualification
 
 `tests/evidence/formats-cargo-feature-baselines.json` retains the connected
 `aos-nar`, `aos-module-format`, and `aos-registry-format` Cargo baselines. Default
 features execute 158 cases; NAR compression executes 175. Both have zero ignored
 cases and one passing doctest. The graphs contain 71 and 79 external crate
 identities respectively, with six first-party libraries. Compression uses the
-AOS multithreaded Zstandard package. Bazel conversion, Wasm qualification, and
-production migration remain pending.
+AOS multithreaded Zstandard package.
+
+The Bazel family declares default and compression library, unit, doctest,
+license, formatting, Clippy, documentation, and editor targets. Compression
+uses declared AOS Zstandard and pkg-config inputs; the default libraries remain
+pure Rust. The dependency profile preserves Cargo's target and build features
+with exact-version guards for libc and indexmap.
+
+```sh
+aos-dev bazel update-deps formats
+aos-dev bazel --family formats test //crates/shared/aos-nar:unit_compression
+nix-build tools/bazel/tests/formats.nix -A all --no-out-link --max-jobs 4 --cores 4
+```
+
+`tests/evidence/native-linux-formats.json` retains passing native Bazel tests
+and fresh Cargo parity: 158 default cases and 175 compression cases, zero
+ignored cases, and one doctest each. All 71 default and 79 compression external
+crate identities and six first-party feature identities match. Developer and
+license checks pass. Default editor comparison preserves eight diagnostic
+locations and inferred types; complete inference is not claimed.
+
+`tests/evidence/formats-configured-graph.json` retains 162 distinct configured
+reports, 73 declared source files, all 16 refreshed family inventories, 13
+dependency specifications, and passing policy and CLI checks. All 12 existing
+dependency locks and their source and feature pins remain unchanged. Updated
+workspace Rust compilation and metadata/evaluation checks run separately.
+Wasm qualification, performance acceptance, and production migration remain
+pending.
 
 ## Release format baseline
 

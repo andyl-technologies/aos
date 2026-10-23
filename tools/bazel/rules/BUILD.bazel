@@ -1,5 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_lint_config")
-load(":profiles.bzl", "crucible_cli_profile_required")
+load(":profiles.bzl", "crucible_cli_profile_required", "formats_profile_required")
 load(":profiles.bzl", "dependency_profile", "device_profile_required", "engine_profile_required", "guest_profile_required", "quota_profile_required", "session_profile_required", "control_profile_required", "qemu_host_profile_required", "store_s3_profile_required", "daemon_profile_required", "store_profile_required")
 
 crucible_cli_profile_required(
@@ -145,4 +145,16 @@ rust_lint_config(
         "float_arithmetic": "deny",
         "unwrap_used": "deny",
     },
+)
+
+
+formats_profile_required(
+    name = "formats_profile_required",
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "formats_dependencies",
+    flag_values = {":dependency_profile": "formats"},
+    visibility = ["//visibility:public"],
 )

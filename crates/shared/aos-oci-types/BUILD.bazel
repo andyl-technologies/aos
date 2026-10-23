@@ -47,15 +47,16 @@ aos_rust_test(
         lint_config = "//tools/bazel/rules:workspace_lints",
         crate_root = source,
         srcs = [source],
-        compile_data = glob(["tests/*.json"]),
+        compile_data = glob(["tests/*.json"], allow_empty = True),
         deps = [":lib"] + DEPENDENCIES,
     )
-    for source in glob(["tests/*.rs"])
+    # Dependency-only source slices omit this package's integration roots.
+    for source in glob(["tests/*.rs"], allow_empty = True)
 ]
 
 TEST_ARTIFACTS = [":unit_binary"] + [
     ":" + source.removeprefix("tests/").removesuffix(".rs") + "_binary"
-    for source in glob(["tests/*.rs"])
+    for source in glob(["tests/*.rs"], allow_empty = True)
 ]
 
 rust_doc_test(

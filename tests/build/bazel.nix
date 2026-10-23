@@ -16,6 +16,9 @@
       relative = pkgs.lib.removePrefix "${toString ../..}/" (toString path);
       manifests = [
         "crates/Cargo.toml"
+        "crates/shared/aos-nar/Cargo.toml"
+        "crates/aos/modules/aos-module-format/Cargo.toml"
+        "crates/aos/registry/aos-registry-format/Cargo.toml"
         "crates/aos/boot/aos-boot-identity/Cargo.toml"
         "crates/aos/boot/aos-recovery/Cargo.toml"
         "crates/shared/aos-core/Cargo.toml"
@@ -81,6 +84,7 @@ in
     store-s3 = import ./_bazel-store-s3.nix {inherit pkgs;};
     daemon = import ./_bazel-daemon.nix {inherit pkgs;};
     crucible-cli = import ./_bazel-crucible-cli.nix {inherit pkgs;};
+    formats = import ./_bazel-formats.nix {inherit pkgs;};
     wasm = import ./_bazel-wasm.nix {inherit pkgs;};
     recovery = import ./_bazel-recovery.nix {inherit pkgs;};
     license-boundary = import ./_bazel-license.nix {inherit pkgs workspace;};
@@ -275,6 +279,7 @@ in
         --inventory ${store-s3.tests}/inventory.json \
         --inventory ${daemon.tests}/inventory.json \
         --inventory ${crucible-cli.tests}/inventory.json \
+        --inventory ${formats.tests}/inventory.json \
         --output "$out/parity.json"
     '';
     runner = pkgs.runCommand "aos-bazel-runner-evidence" {buildDeps = [pkgs.python3];} ''
@@ -318,7 +323,7 @@ in
     all =
       pkgs.runCommand "aos-bazel-checks" {
         buildDeps =
-          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection source-catalog.all sysroot-metadata manifest-extractor native-libraries static-runtime.all precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all store.all guest.all engine.all quota.all session.all control.all qemu-host.all store-s3.all daemon.all crucible-cli.all wasm.all recovery]
+          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection source-catalog.all sysroot-metadata manifest-extractor native-libraries static-runtime.all precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all store.all guest.all engine.all quota.all session.all control.all qemu-host.all store-s3.all daemon.all crucible-cli.all formats.all wasm.all recovery]
           ++ pkgs.lib.optionals (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) [
             (import ./_bazel-cross-linux.nix {inherit pkgs;}).all
             (import ./_bazel-device-cross.nix {inherit pkgs;})

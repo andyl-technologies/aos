@@ -166,7 +166,7 @@ fn explicit_retirement_rejects_duplicate_empty_and_configured_identities() {
     let retired = "retained-instance".to_string();
 
     assert_eq!(
-        check_retirement(&graph, &[retired.clone()]).unwrap(),
+        check_retirement(&graph, std::slice::from_ref(&retired)).unwrap(),
         BTreeSet::from([retired.clone()])
     );
     assert!(check_retirement(&graph, &[retired.clone(), retired]).is_err());

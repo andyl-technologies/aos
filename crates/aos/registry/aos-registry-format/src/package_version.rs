@@ -31,6 +31,7 @@ pub fn validate_package_version(version: &str) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::validate_package_version;
 

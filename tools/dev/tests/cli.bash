@@ -56,6 +56,7 @@ case " $* " in
   *' -A pkgs.aosBazelSessionLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelControlLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelDaemonLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.aosBazelFormatsLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelCrucibleCliLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelStoreS3Launcher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelQemuHostLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
@@ -221,6 +222,11 @@ test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:crucible-c
 grep -Fq -- '-A pkgs.aosBazelCrucibleCliLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family crucible-cli rust-project //example:crucible-cli
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/control/crucible-cli><--><build><//example:crucible-cli>"
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family formats build //example:formats
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:formats>"
+grep -Fq -- '-A pkgs.aosBazelFormatsLauncher ' "$AOS_DEV_TEST_LOG"
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family formats rust-project //example:formats
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/shared/aos-nar><--rust-project-package><crates/aos/modules/aos-module-format><--rust-project-package><crates/aos/registry/aos-registry-format><--><build><//example:formats>"
 if bash "$root/tools/dev/aos-dev" bazel --family unknown build //example:guest 2>/dev/null; then
   echo 'Bazel accepted an unknown target configuration' >&2
   exit 1

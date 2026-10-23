@@ -439,4 +439,5 @@ fn reference_fits(actual: &OptionType, expected: &OptionType) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests;

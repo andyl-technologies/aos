@@ -1,0 +1,1637 @@
+{
+  "command": "nix-build tools/bazel/tests/formats.nix -A all -A inventory --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "default_editor_parity": {
+    "aggregate_statistics_comparable": false,
+    "analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 0,
+        "total": 42929,
+        "unknown": 8
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 7460,
+        "unknown": 0
+      }
+    },
+    "bazel_diagnostics": [
+      [
+        "crates/aos/registry/aos-registry-format/src/object.rs",
+        "45:22",
+        "45:24",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "188:22",
+        "188:37",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "656:22",
+        "656:24",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "669:32",
+        "669:34",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "722:27",
+        "722:29",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "746:32",
+        "746:34",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "806:30",
+        "806:31",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/shared/aos-nar/src/cache.rs",
+        "145:28",
+        "145:30",
+        "type",
+        "{unknown}"
+      ]
+    ],
+    "cargo_analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 0,
+        "total": 59909,
+        "unknown": 8
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 10339,
+        "unknown": 0
+      }
+    },
+    "cargo_selected_diagnostics": [
+      [
+        "crates/aos/registry/aos-registry-format/src/object.rs",
+        "45:22",
+        "45:24",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "188:22",
+        "188:37",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "656:22",
+        "656:24",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "669:32",
+        "669:34",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "722:27",
+        "722:29",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "746:32",
+        "746:34",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "806:30",
+        "806:31",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/shared/aos-nar/src/cache.rs",
+        "145:28",
+        "145:30",
+        "type",
+        "{unknown}"
+      ]
+    ],
+    "comparison_scope": [
+      "crates/aos/modules/aos-module-format",
+      "crates/aos/registry/aos-registry-format",
+      "crates/shared/aos-nar"
+    ],
+    "diagnostic_multiplicity_comparable": false,
+    "diagnostics": [
+      [
+        "crates/aos/registry/aos-registry-format/src/object.rs",
+        "45:22",
+        "45:24",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "188:22",
+        "188:37",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "656:22",
+        "656:24",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "669:32",
+        "669:34",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "722:27",
+        "722:29",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "746:32",
+        "746:34",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "806:30",
+        "806:31",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/shared/aos-nar/src/cache.rs",
+        "145:28",
+        "145:30",
+        "type",
+        "{unknown}"
+      ]
+    ],
+    "roots": {
+      "crates/aos/modules/aos-module-format/src/lib.rs": [],
+      "crates/aos/registry/aos-registry-format/src/lib.rs": [],
+      "crates/shared/aos-nar/src/lib.rs": [
+        "default"
+      ]
+    },
+    "unattributed_cargo_diagnostics": [],
+    "unselected_cargo_diagnostics": []
+  },
+  "limits": [
+    "All original unit assertions and the doctest remain enabled; neither configuration has ignored cases.",
+    "Compression uses declared source-built AOS Zstandard and pkg-config inputs. Ordinary Bazel execution is offline inside the Nix and Bazel sandboxes.",
+    "Editor comparison covers default features only and preserves all eight selected diagnostic locations and inferred types. Complete inference is not claimed.",
+    "Full compiler argument and codegen-unit equivalence, performance acceptance, Wasm qualification and production consumer migration remain pending."
+  ],
+  "report_sha256": {
+    "compression/evidence/execution.json": "6d2bb5807aef94d7e4c929ea5908591770b2fe70b6a3cbead97cd3b376d2ea00",
+    "compression/evidence/tests/index.json": "f308fa7fe85dec89c737fe0f1d409561b9dc1df1e258ee54962bd419afd14477",
+    "compression/inventory.json": "fd00c51f4f266b9272404be7853b17e13646b21f168d79e567e8df6b37cac707",
+    "default/editor-parity.json": "b387e2a4f7ae10e97a50912b7e8d359cb2b645f596a66a96a1d02e4740c3d478",
+    "default/evidence/execution.json": "8e314adb6ad466253624706efa1412a6e53393d4552a61737a807073ad33dcb2",
+    "default/evidence/tests/index.json": "17455e9ee06463ca6c7ecb6c942f8d7214d8bcfc6a28053d975943895b024fde",
+    "default/inventory.json": "2c28bb34a920374ed699e271941d47a9853906e946c6b874833f7112236661a2"
+  },
+  "schema_version": 1,
+  "scope": {
+    "all": "/nix/store/h3yri3gclyy729zgnqqjdp9hvwhdl70p-aos-bazel-formats-qualified-checks",
+    "cargo": "/nix/store/yhq095k107dy097wskhg22mcxjb6p6z3-aos-bazel-formats-cargo-oracle-1",
+    "compressionCargo": "/nix/store/jsksrnd8mibv6hlpqzbmgb5g3fr1a59l-aos-bazel-formats-compression-cargo-oracle-1",
+    "compressionTests": "/nix/store/69njkifmwrbarvpyv9fpz37pq76gpwp8-aos-bazel-formats-compression-tests-1",
+    "configuration": "/nix/store/3n6k9fpgiwiv6jzm34fx6vs29gqxjgqd-aos-bazel-configuration.json",
+    "derivation": "/nix/store/gqvc1wxc6dkfy73g3lcsils9hp1sx1fi-aos-bazel-formats-qualified-checks.drv",
+    "inventory": "/nix/store/vsdkhpjcrz3434wr2xzpg1i6lgfk10sr-aos-bazel-formats-inventory-1",
+    "source": "/nix/store/4sz8z34fvcb2mnww07mzyy1ihk49z9ij-aos-bazel-workspace",
+    "tests": "/nix/store/ywjckvk7va4cpnkr9b03qgb36ky1saiz-aos-bazel-formats-tests-1"
+  },
+  "semantic_rustc_flags": [
+    "-Copt-level=s",
+    "-Cdebuginfo=0",
+    "-Cdebug-assertions=yes",
+    "-Coverflow-checks=yes"
+  ],
+  "status": "Default and compression native execution, fresh Cargo parity, developer checks and license closures passed; default editor parity passed",
+  "variants": {
+    "compression": {
+      "executed_cases": 175,
+      "executed_doctests": 1,
+      "external_crate_identities": 79,
+      "ignored_cases": 0,
+      "libtest_artifacts": 3,
+      "report": {
+        "doctests": {
+          "//crates/aos/modules/aos-module-format:doc_compression": {},
+          "//crates/aos/registry/aos-registry-format:doc_compression": {
+            "src/platform.rs - platform::native_platform (line 12)": "ok"
+          },
+          "//crates/shared/aos-nar:doc_compression": {}
+        },
+        "examples": [],
+        "features": {
+          "adler2@2.0.1": [
+            []
+          ],
+          "aho-corasick@1.1.4": [
+            [
+              "perf-literal",
+              "std"
+            ]
+          ],
+          "anyhow@1.0.102": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "base64@0.22.1": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "bitflags@2.13.0": [
+            [
+              "std"
+            ]
+          ],
+          "block-buffer@0.10.4": [
+            []
+          ],
+          "cc@1.2.65": [
+            [
+              "parallel"
+            ]
+          ],
+          "cfg-if@1.0.4": [
+            []
+          ],
+          "const-oid@0.9.6": [
+            []
+          ],
+          "cpufeatures@0.2.17": [
+            []
+          ],
+          "crc32fast@1.5.0": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "crypto-common@0.1.7": [
+            [
+              "std"
+            ]
+          ],
+          "curve25519-dalek-derive@0.1.1": [
+            []
+          ],
+          "curve25519-dalek@4.1.3": [
+            [
+              "alloc",
+              "digest",
+              "precomputed-tables",
+              "zeroize"
+            ]
+          ],
+          "der@0.7.10": [
+            [
+              "alloc",
+              "oid",
+              "std",
+              "zeroize"
+            ]
+          ],
+          "digest@0.10.7": [
+            [
+              "alloc",
+              "block-buffer",
+              "core-api",
+              "default",
+              "std"
+            ]
+          ],
+          "dyn-clone@1.0.20": [
+            []
+          ],
+          "ed25519-dalek@2.2.0": [
+            [
+              "alloc",
+              "default",
+              "fast",
+              "pkcs8",
+              "std",
+              "zeroize"
+            ]
+          ],
+          "ed25519@2.2.3": [
+            [
+              "alloc",
+              "pkcs8",
+              "std"
+            ]
+          ],
+          "equivalent@1.0.2": [
+            []
+          ],
+          "fastrand@2.4.1": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "find-msvc-tools@0.1.9": [
+            []
+          ],
+          "flate2@1.1.9": [
+            [
+              "any_impl",
+              "miniz_oxide",
+              "rust_backend"
+            ]
+          ],
+          "generic-array@0.14.7": [
+            [
+              "more_lengths"
+            ]
+          ],
+          "getrandom@0.4.2": [
+            []
+          ],
+          "hashbrown@0.17.1": [
+            []
+          ],
+          "hex@0.4.3": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "indexmap@2.14.0": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "itoa@1.0.18": [
+            []
+          ],
+          "jobserver@0.1.34": [
+            []
+          ],
+          "libc@0.2.186": [
+            [],
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "linux-raw-sys@0.12.1": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "ioctl",
+              "no_std"
+            ]
+          ],
+          "memchr@2.8.2": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "miniz_oxide@0.8.9": [
+            [
+              "simd",
+              "simd-adler32",
+              "with-alloc"
+            ]
+          ],
+          "once_cell@1.21.4": [
+            [
+              "alloc",
+              "race",
+              "std"
+            ]
+          ],
+          "pkcs8@0.10.2": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "pkg-config@0.3.33": [
+            []
+          ],
+          "proc-macro2@1.0.106": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "quote@1.0.46": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "ref-cast-impl@1.0.27": [
+            []
+          ],
+          "ref-cast@1.0.27": [
+            []
+          ],
+          "regex-automata@0.4.14": [
+            [
+              "alloc",
+              "dfa-onepass",
+              "hybrid",
+              "meta",
+              "nfa-backtrack",
+              "nfa-pikevm",
+              "nfa-thompson",
+              "perf-inline",
+              "perf-literal",
+              "perf-literal-multisubstring",
+              "perf-literal-substring",
+              "std",
+              "syntax",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment",
+              "unicode-word-boundary"
+            ]
+          ],
+          "regex-syntax@0.8.11": [
+            [
+              "default",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "regex@1.12.4": [
+            [
+              "default",
+              "perf",
+              "perf-backtrack",
+              "perf-cache",
+              "perf-dfa",
+              "perf-inline",
+              "perf-literal",
+              "perf-onepass",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "rustc_version@0.4.1": [
+            []
+          ],
+          "rustix@1.1.4": [
+            [
+              "alloc",
+              "default",
+              "fs",
+              "std"
+            ]
+          ],
+          "schemars@1.2.2": [
+            [
+              "default",
+              "derive",
+              "schemars_derive",
+              "std"
+            ]
+          ],
+          "schemars_derive@1.2.2": [
+            []
+          ],
+          "semver@1.0.28": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "serde@1.0.228": [
+            [
+              "alloc",
+              "default",
+              "derive",
+              "rc",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "serde_core@1.0.228": [
+            [
+              "alloc",
+              "rc",
+              "result",
+              "std"
+            ]
+          ],
+          "serde_derive@1.0.228": [
+            [
+              "default"
+            ]
+          ],
+          "serde_derive_internals@0.30.0": [
+            []
+          ],
+          "serde_json@1.0.150": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "serde_spanned@0.6.9": [
+            [
+              "serde"
+            ]
+          ],
+          "sha2@0.10.9": [
+            [
+              "compress",
+              "default",
+              "std"
+            ]
+          ],
+          "shlex@2.0.1": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "signature@2.2.0": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "simd-adler32@0.3.9": [
+            []
+          ],
+          "spki@0.7.3": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "subtle@2.6.1": [
+            []
+          ],
+          "syn@2.0.118": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "full",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "syn@3.0.5": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "tempfile@3.27.0": [
+            [
+              "default",
+              "getrandom"
+            ]
+          ],
+          "thiserror-impl@2.0.18": [
+            []
+          ],
+          "thiserror@2.0.18": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "toml@0.8.23": [
+            [
+              "default",
+              "display",
+              "parse"
+            ]
+          ],
+          "toml_datetime@0.6.11": [
+            [
+              "serde"
+            ]
+          ],
+          "toml_edit@0.22.27": [
+            [
+              "display",
+              "parse",
+              "serde"
+            ]
+          ],
+          "toml_write@0.1.2": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "typenum@1.20.1": [
+            []
+          ],
+          "unicode-ident@1.0.24": [
+            []
+          ],
+          "version_check@0.9.5": [
+            []
+          ],
+          "winnow@0.7.15": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "zeroize@1.9.0": [
+            [
+              "alloc"
+            ]
+          ],
+          "zmij@1.0.21": [
+            []
+          ],
+          "zstd-safe@7.2.4": [
+            [
+              "arrays",
+              "legacy",
+              "std",
+              "zdict_builder",
+              "zstdmt"
+            ]
+          ],
+          "zstd-sys@2.0.16+zstd.1.5.7": [
+            [
+              "legacy",
+              "std",
+              "zdict_builder",
+              "zstdmt"
+            ]
+          ],
+          "zstd@0.13.3": [
+            [
+              "arrays",
+              "default",
+              "legacy",
+              "zdict_builder",
+              "zstdmt"
+            ]
+          ]
+        },
+        "first_party_features": {
+          "aos-artifact-evidence": [
+            []
+          ],
+          "aos-core": [
+            []
+          ],
+          "aos-module-format": [
+            []
+          ],
+          "aos-nar": [
+            [
+              "compression",
+              "default"
+            ]
+          ],
+          "aos-oci-types": [
+            []
+          ],
+          "aos-registry-format": [
+            []
+          ]
+        },
+        "schema_version": 1,
+        "targets": {
+          "//crates/aos/modules/aos-module-format:unit_compression": {
+            "executed": [
+              "graph::tests::composed_children_must_outlive_their_parent",
+              "graph::tests::contract_errors_locate_nested_values_without_disclosing_them",
+              "graph::tests::cycles_and_unbound_outputs_are_rejected",
+              "graph::tests::descriptions_do_not_change_semantic_revisions",
+              "graph::tests::explicit_retirement_rejects_duplicate_empty_and_configured_identities",
+              "graph::tests::handler_must_be_inside_its_immutable_artifact",
+              "graph::tests::order_and_edges_must_match_actual_references",
+              "graph::tests::references_cannot_change_the_declared_producer_type",
+              "graph::tests::rejects_forged_identity_revision_and_unknown_fields",
+              "graph::tests::resolves_canonical_sets_by_returned_values_without_reordering_lists",
+              "graph::validation::tests::concrete_records_require_fields_and_check_present_optional_values",
+              "graph::validation::tests::json_preserves_nested_deferred_dependencies_and_rechecks_values",
+              "graph::validation::tests::merged_record_refinements_reject_overlapping_values",
+              "graph::validation::tests::nullable_references_preserve_the_producer_type",
+              "identity::tests::relative_paths_stay_below_the_authenticated_artifact_root",
+              "schema::tests::boolean_literal_refinement_preserves_the_exact_value",
+              "schema::tests::constrained_lists_round_trip_without_a_parallel_schema_version",
+              "schema::tests::disjoint_union_round_trips_raw_variants",
+              "schema::tests::excluded_character_classes_are_data_driven",
+              "schema::tests::portable_patterns_reject_engine_specific_constructs",
+              "schema::tests::primitive_string_constraints_preserve_nix_semantics",
+              "schema::tests::refined_schema_round_trips_portable_constraints",
+              "schema::tests::singleton_string_field_rejects_an_open_or_ambiguous_discriminator",
+              "schema::tests::singleton_string_field_uses_the_canonical_record_schema",
+              "schema::tests::singleton_string_path_walks_only_required_closed_fields",
+              "schema::tests::structural_preflight_bounds_wide_schemas_before_stack_growth",
+              "schema::tests::unconstrained_lists_keep_the_existing_wire_shape",
+              "value::tests::value_limits_precompute_encoded_size",
+              "value::tests::value_limits_reject_collection_growth_before_traversal"
+            ],
+            "ignored": []
+          },
+          "//crates/aos/registry/aos-registry-format:unit_compression": {
+            "executed": [
+              "channel::tests::ascending_fill_skips_already_advanced_partitions",
+              "channel::tests::bucket_hex_two_digits",
+              "channel::tests::bucket_is_deterministic",
+              "channel::tests::channel_advance_rejects_selected_partition_decrement",
+              "channel::tests::channel_advance_selector_requires_one_mode",
+              "channel::tests::floor_allows_equal_or_newer",
+              "channel::tests::floor_allows_missing_floor",
+              "channel::tests::floor_rejects_older",
+              "channel::tests::frontier_is_max_semver_over_partitions",
+              "channel::tests::full_partition_set_accepts_complete_map",
+              "channel::tests::full_partition_set_rejects_missing_targets",
+              "channel::tests::generation_and_partition_range_validation_fail_before_mutation",
+              "channel::tests::partition_list_accepts_decimal_and_hex",
+              "channel::tests::partition_path_uses_two_digit_bucket",
+              "channel::tests::partition_renderer_rejects_header_and_signature_confusion",
+              "channel::tests::partition_signing_adapters_preserve_payload_and_signature_bytes",
+              "channel::tests::partition_target_validation_rejects_replayed_channel_or_release",
+              "channel::tests::persisted_bucket_survives_bucket_source_migration",
+              "channel::tests::persisted_bucket_wins",
+              "channel::tests::probe_order_wraps_and_covers_all_buckets",
+              "channel::tests::registry_bucket_uses_registry_local_salt",
+              "keymap::tests::dumb_git_advertisement_uses_the_exact_fallback_media_type",
+              "keymap::tests::mutable_and_immutable_paths_share_one_contract",
+              "keymap::tests::tuf_metadata_is_machine_surface_with_one_mutable_pointer",
+              "manifest::image_delivery_tests::catalog_digest_binds_registry_and_is_order_independent",
+              "manifest::image_delivery_tests::delivery_contract_rejects_parent_identity_drift",
+              "manifest::image_delivery_tests::delivery_contract_rejects_path_traversal_and_tampering",
+              "manifest::image_delivery_tests::delivery_contract_round_trips_without_losing_integrity_fields",
+              "manifest::image_delivery_tests::every_supported_format_has_one_canonical_target_mapping",
+              "manifest::image_delivery_tests::filename_policy_rejects_header_and_url_ambiguity",
+              "manifest::image_delivery_tests::shared_parser_accepts_store_only_entries_but_rejects_duplicate_formats",
+              "manifest::image_delivery_tests::shared_parser_requires_one_logical_identity_across_encodings",
+              "manifest::image_delivery_tests::shared_parser_validates_named_output_identity",
+              "manifest::image_delivery_tests::store_backed_delivery_authenticates_artifact_contract_identity",
+              "manifest::image_delivery_tests::store_backed_delivery_requires_metadata_nar_identity_and_no_direct_keys",
+              "manifest::root_config_tests::absent_caches_yields_empty",
+              "manifest::root_config_tests::array_shaped_caches_are_rejected_at_the_schema_boundary",
+              "manifest::root_config_tests::single_endpoint_stack_parses_and_flattens",
+              "manifest::root_config_tests::support_policy_parses_and_fails_closed",
+              "manifest::root_config_tests::try_stack_flattens_to_descending_priority",
+              "native_dependencies::tests::exact_dependencies_preserve_source_identity",
+              "native_dependencies::tests::generated_requirements_bind_one_operator_to_the_exact_package_release",
+              "native_dependencies::tests::metadata_rejects_invalid_ranges_and_duplicate_packages",
+              "native_dependencies::tests::package_ranges_are_required_and_round_trip",
+              "native_dependencies::tests::package_ranges_keep_semver_prerelease_matching",
+              "object::tests::commit_parse_extracts_signature_and_payload",
+              "object::tests::commit_without_signature_has_identity_payload",
+              "object::tests::decode_enforces_inflation_cap",
+              "object::tests::decode_rejects_wrong_oid",
+              "object::tests::loose_roundtrip_preserves_content_and_hash",
+              "object::tests::tree_roundtrip",
+              "object_bundle::tests::aggregate_round_trip_accepts_globally_ordered_cross_shard_objects",
+              "object_bundle::tests::malformed_and_cross_shard_entries_fail_closed",
+              "object_bundle::tests::round_trip_preserves_ordered_loose_objects",
+              "pack_index::tests::accepts_an_index_derived_from_the_exact_pack",
+              "pack_index::tests::rejects_a_self_consistent_index_that_lies_about_pack_contents",
+              "pack_index::tests::rejects_corrupt_index_or_pack_bytes",
+              "pack_index::tests::resolves_forward_reference_delta_chain_once_per_entry",
+              "pack_index::tests::resolves_offset_delta_entries",
+              "package_version::tests::accepts_exact_upstream_version_schemes",
+              "package_version::tests::rejects_unsafe_or_unbounded_coordinates",
+              "platform::tests::maps_supported_darwin_platforms_to_nix_names",
+              "platform::tests::preserves_supported_linux_platforms",
+              "platform::tests::preserves_unknown_components",
+              "refs::tests::head_parses_symbolic_ref",
+              "refs::tests::parses_branches_and_tags",
+              "sshsig::tests::namespaced_signatures_are_domain_separated",
+              "sshsig::tests::sign_verify_roundtrip",
+              "sshsig::tests::trusted_key_ed25519_unwraps_name_and_raw_key",
+              "sshsig::tests::trusted_key_line_matches_openssh_prefix",
+              "sshsig::tests::verify_rejects_tampered_payload",
+              "sshsig::tests::verify_rejects_untrusted_signer",
+              "sshsig::tests::verify_requires_trusted_keys",
+              "stack::tests::bare_endpoint_stack_round_trips",
+              "stack::tests::empty_endpoint_is_rejected",
+              "stack::tests::empty_group_is_rejected",
+              "stack::tests::endpoints_are_distinct_in_order",
+              "stack::tests::flatten_is_depth_first",
+              "stack::tests::json_round_trips",
+              "stack::tests::malformed_node_is_rejected",
+              "stack::tests::mirror_groups_returns_the_replica_set",
+              "stack::tests::nested_mirror_groups_each_reported",
+              "stack::tests::parses_nested_try_mirror",
+              "stack::tests::to_priority_caches_dedups_keeping_highest",
+              "stack::tests::to_priority_caches_descends",
+              "staging::wire::tests::full_catalog_with_random_hashes_and_binary_pack_index_fits_unary_body",
+              "staging::wire::tests::rejects_inflation_bombs_before_parsing_json",
+              "staging::wire::tests::rejects_oversized_wire_and_object_inventory",
+              "staging::wire::tests::streamed_inventory_digest_preserves_canonical_json_identity",
+              "staging::wire::tests::supports_exact_plain_and_compressed_documents",
+              "store::tests::canonical_hex_accepts_every_supported_digest_spelling",
+              "store::tests::realization_record_rejects_malformed_or_orphaned_edges",
+              "store::tests::realization_record_round_trips_canonical_text",
+              "store::tests::store_path_hash_accepts_custom_roots_but_rejects_ambiguous_paths",
+              "support::tests::classification_follows_dates_then_the_rolling_default",
+              "support::tests::dates_round_trip_and_reject_impossible_days",
+              "support::tests::toml_and_json_forms_agree",
+              "support::tests::trains_parse_without_leading_zeros",
+              "support::tests::validation_enforces_keys_dates_and_lts_end_dates",
+              "tag::tests::parse_requires_signature_block",
+              "tag::tests::verify_accepts_valid_partition_payload",
+              "tag::tests::verify_rejects_name_replay",
+              "tag::tests::verify_rejects_payload_tamper",
+              "tagobject::tests::name_binding_accepts_expected_name",
+              "tagobject::tests::name_binding_rejects_mismatch",
+              "tagobject::tests::parse_tag_object_reads_headers",
+              "tagobject::tests::semver_release_name_is_required_for_verified_release",
+              "tagobject::tests::tag_target_parses_tag_hop"
+            ],
+            "ignored": []
+          },
+          "//crates/shared/aos-nar:unit_compression": {
+            "executed": [
+              "cache::tests::decode_nix_base32_never_panics_on_any_length",
+              "cache::tests::decode_nix_base32_roundtrips_all_byte_lengths",
+              "cache::tests::decode_nix_base32_roundtrips_sha256_digests",
+              "cache::tests::nar_url_canonicalizes_sri_hash",
+              "cache::tests::nar_url_changes_when_compressed_bytes_change",
+              "cache::tests::nar_url_rejects_malformed_hashes",
+              "cache::tests::nar_url_uses_store_hash_and_file_hash",
+              "cache::tests::nix_base32_matches_stock_nix_hash_convert",
+              "cache::tests::nix_cache_info_body",
+              "cache::tests::normalize_sha256_nix32_normalizes_sha256_hash_formats",
+              "cache::tests::render_static_narinfo_round_trips_and_signs",
+              "cache::tests::static_narinfo_signature_uses_stock_nix_fingerprint",
+              "export::tests::export_has_magic",
+              "export::tests::nix_string_aligned",
+              "export::tests::nix_string_padding",
+              "info::tests::basename_full_path",
+              "info::tests::round_trip",
+              "info::tests::store_hash_from_basename",
+              "info::tests::store_hash_from_path",
+              "pack::tests::empty_pack",
+              "pack::tests::pack_round_trip_header",
+              "verify::tests::extract_regular_file_nar_rejects_executable_roots",
+              "verify::tests::extract_regular_file_nar_rejects_signed_size_disagreement",
+              "verify::tests::extract_regular_file_nar_rejects_trailing_archive_data",
+              "verify::tests::extract_regular_file_nar_streams_exact_contents",
+              "verify::tests::sha256_file_empty",
+              "verify::tests::sha256_file_known_content",
+              "verify::tests::sha256_file_nonexistent",
+              "verify::tests::sha256_stream_consistency",
+              "verify::tests::sha256_stream_empty",
+              "verify::tests::sha256_stream_hello",
+              "verify::tests::sha256_stream_large_data",
+              "verify::tests::signed_nar_identity_rejects_expansion_beyond_declared_size",
+              "verify::tests::verify_download_hash_match",
+              "verify::tests::verify_download_hash_mismatch",
+              "verify::tests::verify_nar_hash_mismatch",
+              "verify::tests::verify_nar_hash_zstd",
+              "verify::tests::verify_nar_hash_zstd_accepts_sri_hash"
+            ],
+            "ignored": []
+          }
+        }
+      },
+      "report_sha256": "aef073f54e0cb4682493ca8c4ab7bbe0fe771e9ce4bc1ca086e171c381ab82b9"
+    },
+    "default": {
+      "executed_cases": 158,
+      "executed_doctests": 1,
+      "external_crate_identities": 71,
+      "ignored_cases": 0,
+      "libtest_artifacts": 3,
+      "report": {
+        "doctests": {
+          "//crates/aos/modules/aos-module-format:doc": {},
+          "//crates/aos/registry/aos-registry-format:doc": {
+            "src/platform.rs - platform::native_platform (line 12)": "ok"
+          },
+          "//crates/shared/aos-nar:doc": {}
+        },
+        "examples": [],
+        "features": {
+          "adler2@2.0.1": [
+            []
+          ],
+          "aho-corasick@1.1.4": [
+            [
+              "perf-literal",
+              "std"
+            ]
+          ],
+          "anyhow@1.0.102": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "base64@0.22.1": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "bitflags@2.13.0": [
+            [
+              "std"
+            ]
+          ],
+          "block-buffer@0.10.4": [
+            []
+          ],
+          "cfg-if@1.0.4": [
+            []
+          ],
+          "const-oid@0.9.6": [
+            []
+          ],
+          "cpufeatures@0.2.17": [
+            []
+          ],
+          "crc32fast@1.5.0": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "crypto-common@0.1.7": [
+            [
+              "std"
+            ]
+          ],
+          "curve25519-dalek-derive@0.1.1": [
+            []
+          ],
+          "curve25519-dalek@4.1.3": [
+            [
+              "alloc",
+              "digest",
+              "precomputed-tables",
+              "zeroize"
+            ]
+          ],
+          "der@0.7.10": [
+            [
+              "alloc",
+              "oid",
+              "std",
+              "zeroize"
+            ]
+          ],
+          "digest@0.10.7": [
+            [
+              "alloc",
+              "block-buffer",
+              "core-api",
+              "default",
+              "std"
+            ]
+          ],
+          "dyn-clone@1.0.20": [
+            []
+          ],
+          "ed25519-dalek@2.2.0": [
+            [
+              "alloc",
+              "default",
+              "fast",
+              "pkcs8",
+              "std",
+              "zeroize"
+            ]
+          ],
+          "ed25519@2.2.3": [
+            [
+              "alloc",
+              "pkcs8",
+              "std"
+            ]
+          ],
+          "equivalent@1.0.2": [
+            []
+          ],
+          "fastrand@2.4.1": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "flate2@1.1.9": [
+            [
+              "any_impl",
+              "miniz_oxide",
+              "rust_backend"
+            ]
+          ],
+          "generic-array@0.14.7": [
+            [
+              "more_lengths"
+            ]
+          ],
+          "getrandom@0.4.2": [
+            []
+          ],
+          "hashbrown@0.17.1": [
+            []
+          ],
+          "hex@0.4.3": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "indexmap@2.14.0": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "itoa@1.0.18": [
+            []
+          ],
+          "libc@0.2.186": [
+            []
+          ],
+          "linux-raw-sys@0.12.1": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "ioctl",
+              "no_std"
+            ]
+          ],
+          "memchr@2.8.2": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "miniz_oxide@0.8.9": [
+            [
+              "simd",
+              "simd-adler32",
+              "with-alloc"
+            ]
+          ],
+          "once_cell@1.21.4": [
+            [
+              "alloc",
+              "race",
+              "std"
+            ]
+          ],
+          "pkcs8@0.10.2": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "proc-macro2@1.0.106": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "quote@1.0.46": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "ref-cast-impl@1.0.27": [
+            []
+          ],
+          "ref-cast@1.0.27": [
+            []
+          ],
+          "regex-automata@0.4.14": [
+            [
+              "alloc",
+              "dfa-onepass",
+              "hybrid",
+              "meta",
+              "nfa-backtrack",
+              "nfa-pikevm",
+              "nfa-thompson",
+              "perf-inline",
+              "perf-literal",
+              "perf-literal-multisubstring",
+              "perf-literal-substring",
+              "std",
+              "syntax",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment",
+              "unicode-word-boundary"
+            ]
+          ],
+          "regex-syntax@0.8.11": [
+            [
+              "default",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "regex@1.12.4": [
+            [
+              "default",
+              "perf",
+              "perf-backtrack",
+              "perf-cache",
+              "perf-dfa",
+              "perf-inline",
+              "perf-literal",
+              "perf-onepass",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "rustc_version@0.4.1": [
+            []
+          ],
+          "rustix@1.1.4": [
+            [
+              "alloc",
+              "default",
+              "fs",
+              "std"
+            ]
+          ],
+          "schemars@1.2.2": [
+            [
+              "default",
+              "derive",
+              "schemars_derive",
+              "std"
+            ]
+          ],
+          "schemars_derive@1.2.2": [
+            []
+          ],
+          "semver@1.0.28": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "serde@1.0.228": [
+            [
+              "alloc",
+              "default",
+              "derive",
+              "rc",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "serde_core@1.0.228": [
+            [
+              "alloc",
+              "rc",
+              "result",
+              "std"
+            ]
+          ],
+          "serde_derive@1.0.228": [
+            [
+              "default"
+            ]
+          ],
+          "serde_derive_internals@0.30.0": [
+            []
+          ],
+          "serde_json@1.0.150": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "serde_spanned@0.6.9": [
+            [
+              "serde"
+            ]
+          ],
+          "sha2@0.10.9": [
+            [
+              "compress",
+              "default",
+              "std"
+            ]
+          ],
+          "signature@2.2.0": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "simd-adler32@0.3.9": [
+            []
+          ],
+          "spki@0.7.3": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "subtle@2.6.1": [
+            []
+          ],
+          "syn@2.0.118": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "full",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "syn@3.0.5": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "tempfile@3.27.0": [
+            [
+              "default",
+              "getrandom"
+            ]
+          ],
+          "thiserror-impl@2.0.18": [
+            []
+          ],
+          "thiserror@2.0.18": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "toml@0.8.23": [
+            [
+              "default",
+              "display",
+              "parse"
+            ]
+          ],
+          "toml_datetime@0.6.11": [
+            [
+              "serde"
+            ]
+          ],
+          "toml_edit@0.22.27": [
+            [
+              "display",
+              "parse",
+              "serde"
+            ]
+          ],
+          "toml_write@0.1.2": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "typenum@1.20.1": [
+            []
+          ],
+          "unicode-ident@1.0.24": [
+            []
+          ],
+          "version_check@0.9.5": [
+            []
+          ],
+          "winnow@0.7.15": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "zeroize@1.9.0": [
+            [
+              "alloc"
+            ]
+          ],
+          "zmij@1.0.21": [
+            []
+          ]
+        },
+        "first_party_features": {
+          "aos-artifact-evidence": [
+            []
+          ],
+          "aos-core": [
+            []
+          ],
+          "aos-module-format": [
+            []
+          ],
+          "aos-nar": [
+            [
+              "default"
+            ]
+          ],
+          "aos-oci-types": [
+            []
+          ],
+          "aos-registry-format": [
+            []
+          ]
+        },
+        "schema_version": 1,
+        "targets": {
+          "//crates/aos/modules/aos-module-format:unit": {
+            "executed": [
+              "graph::tests::composed_children_must_outlive_their_parent",
+              "graph::tests::contract_errors_locate_nested_values_without_disclosing_them",
+              "graph::tests::cycles_and_unbound_outputs_are_rejected",
+              "graph::tests::descriptions_do_not_change_semantic_revisions",
+              "graph::tests::explicit_retirement_rejects_duplicate_empty_and_configured_identities",
+              "graph::tests::handler_must_be_inside_its_immutable_artifact",
+              "graph::tests::order_and_edges_must_match_actual_references",
+              "graph::tests::references_cannot_change_the_declared_producer_type",
+              "graph::tests::rejects_forged_identity_revision_and_unknown_fields",
+              "graph::tests::resolves_canonical_sets_by_returned_values_without_reordering_lists",
+              "graph::validation::tests::concrete_records_require_fields_and_check_present_optional_values",
+              "graph::validation::tests::json_preserves_nested_deferred_dependencies_and_rechecks_values",
+              "graph::validation::tests::merged_record_refinements_reject_overlapping_values",
+              "graph::validation::tests::nullable_references_preserve_the_producer_type",
+              "identity::tests::relative_paths_stay_below_the_authenticated_artifact_root",
+              "schema::tests::boolean_literal_refinement_preserves_the_exact_value",
+              "schema::tests::constrained_lists_round_trip_without_a_parallel_schema_version",
+              "schema::tests::disjoint_union_round_trips_raw_variants",
+              "schema::tests::excluded_character_classes_are_data_driven",
+              "schema::tests::portable_patterns_reject_engine_specific_constructs",
+              "schema::tests::primitive_string_constraints_preserve_nix_semantics",
+              "schema::tests::refined_schema_round_trips_portable_constraints",
+              "schema::tests::singleton_string_field_rejects_an_open_or_ambiguous_discriminator",
+              "schema::tests::singleton_string_field_uses_the_canonical_record_schema",
+              "schema::tests::singleton_string_path_walks_only_required_closed_fields",
+              "schema::tests::structural_preflight_bounds_wide_schemas_before_stack_growth",
+              "schema::tests::unconstrained_lists_keep_the_existing_wire_shape",
+              "value::tests::value_limits_precompute_encoded_size",
+              "value::tests::value_limits_reject_collection_growth_before_traversal"
+            ],
+            "ignored": []
+          },
+          "//crates/aos/registry/aos-registry-format:unit": {
+            "executed": [
+              "channel::tests::ascending_fill_skips_already_advanced_partitions",
+              "channel::tests::bucket_hex_two_digits",
+              "channel::tests::bucket_is_deterministic",
+              "channel::tests::channel_advance_rejects_selected_partition_decrement",
+              "channel::tests::channel_advance_selector_requires_one_mode",
+              "channel::tests::floor_allows_equal_or_newer",
+              "channel::tests::floor_allows_missing_floor",
+              "channel::tests::floor_rejects_older",
+              "channel::tests::frontier_is_max_semver_over_partitions",
+              "channel::tests::full_partition_set_accepts_complete_map",
+              "channel::tests::full_partition_set_rejects_missing_targets",
+              "channel::tests::generation_and_partition_range_validation_fail_before_mutation",
+              "channel::tests::partition_list_accepts_decimal_and_hex",
+              "channel::tests::partition_path_uses_two_digit_bucket",
+              "channel::tests::partition_renderer_rejects_header_and_signature_confusion",
+              "channel::tests::partition_signing_adapters_preserve_payload_and_signature_bytes",
+              "channel::tests::partition_target_validation_rejects_replayed_channel_or_release",
+              "channel::tests::persisted_bucket_survives_bucket_source_migration",
+              "channel::tests::persisted_bucket_wins",
+              "channel::tests::probe_order_wraps_and_covers_all_buckets",
+              "channel::tests::registry_bucket_uses_registry_local_salt",
+              "keymap::tests::dumb_git_advertisement_uses_the_exact_fallback_media_type",
+              "keymap::tests::mutable_and_immutable_paths_share_one_contract",
+              "keymap::tests::tuf_metadata_is_machine_surface_with_one_mutable_pointer",
+              "manifest::image_delivery_tests::catalog_digest_binds_registry_and_is_order_independent",
+              "manifest::image_delivery_tests::delivery_contract_rejects_parent_identity_drift",
+              "manifest::image_delivery_tests::delivery_contract_rejects_path_traversal_and_tampering",
+              "manifest::image_delivery_tests::delivery_contract_round_trips_without_losing_integrity_fields",
+              "manifest::image_delivery_tests::every_supported_format_has_one_canonical_target_mapping",
+              "manifest::image_delivery_tests::filename_policy_rejects_header_and_url_ambiguity",
+              "manifest::image_delivery_tests::shared_parser_accepts_store_only_entries_but_rejects_duplicate_formats",
+              "manifest::image_delivery_tests::shared_parser_requires_one_logical_identity_across_encodings",
+              "manifest::image_delivery_tests::shared_parser_validates_named_output_identity",
+              "manifest::image_delivery_tests::store_backed_delivery_authenticates_artifact_contract_identity",
+              "manifest::image_delivery_tests::store_backed_delivery_requires_metadata_nar_identity_and_no_direct_keys",
+              "manifest::root_config_tests::absent_caches_yields_empty",
+              "manifest::root_config_tests::array_shaped_caches_are_rejected_at_the_schema_boundary",
+              "manifest::root_config_tests::single_endpoint_stack_parses_and_flattens",
+              "manifest::root_config_tests::support_policy_parses_and_fails_closed",
+              "manifest::root_config_tests::try_stack_flattens_to_descending_priority",
+              "native_dependencies::tests::exact_dependencies_preserve_source_identity",
+              "native_dependencies::tests::generated_requirements_bind_one_operator_to_the_exact_package_release",
+              "native_dependencies::tests::metadata_rejects_invalid_ranges_and_duplicate_packages",
+              "native_dependencies::tests::package_ranges_are_required_and_round_trip",
+              "native_dependencies::tests::package_ranges_keep_semver_prerelease_matching",
+              "object::tests::commit_parse_extracts_signature_and_payload",
+              "object::tests::commit_without_signature_has_identity_payload",
+              "object::tests::decode_enforces_inflation_cap",
+              "object::tests::decode_rejects_wrong_oid",
+              "object::tests::loose_roundtrip_preserves_content_and_hash",
+              "object::tests::tree_roundtrip",
+              "object_bundle::tests::aggregate_round_trip_accepts_globally_ordered_cross_shard_objects",
+              "object_bundle::tests::malformed_and_cross_shard_entries_fail_closed",
+              "object_bundle::tests::round_trip_preserves_ordered_loose_objects",
+              "pack_index::tests::accepts_an_index_derived_from_the_exact_pack",
+              "pack_index::tests::rejects_a_self_consistent_index_that_lies_about_pack_contents",
+              "pack_index::tests::rejects_corrupt_index_or_pack_bytes",
+              "pack_index::tests::resolves_forward_reference_delta_chain_once_per_entry",
+              "pack_index::tests::resolves_offset_delta_entries",
+              "package_version::tests::accepts_exact_upstream_version_schemes",
+              "package_version::tests::rejects_unsafe_or_unbounded_coordinates",
+              "platform::tests::maps_supported_darwin_platforms_to_nix_names",
+              "platform::tests::preserves_supported_linux_platforms",
+              "platform::tests::preserves_unknown_components",
+              "refs::tests::head_parses_symbolic_ref",
+              "refs::tests::parses_branches_and_tags",
+              "sshsig::tests::namespaced_signatures_are_domain_separated",
+              "sshsig::tests::sign_verify_roundtrip",
+              "sshsig::tests::trusted_key_ed25519_unwraps_name_and_raw_key",
+              "sshsig::tests::trusted_key_line_matches_openssh_prefix",
+              "sshsig::tests::verify_rejects_tampered_payload",
+              "sshsig::tests::verify_rejects_untrusted_signer",
+              "sshsig::tests::verify_requires_trusted_keys",
+              "stack::tests::bare_endpoint_stack_round_trips",
+              "stack::tests::empty_endpoint_is_rejected",
+              "stack::tests::empty_group_is_rejected",
+              "stack::tests::endpoints_are_distinct_in_order",
+              "stack::tests::flatten_is_depth_first",
+              "stack::tests::json_round_trips",
+              "stack::tests::malformed_node_is_rejected",
+              "stack::tests::mirror_groups_returns_the_replica_set",
+              "stack::tests::nested_mirror_groups_each_reported",
+              "stack::tests::parses_nested_try_mirror",
+              "stack::tests::to_priority_caches_dedups_keeping_highest",
+              "stack::tests::to_priority_caches_descends",
+              "staging::wire::tests::full_catalog_with_random_hashes_and_binary_pack_index_fits_unary_body",
+              "staging::wire::tests::rejects_inflation_bombs_before_parsing_json",
+              "staging::wire::tests::rejects_oversized_wire_and_object_inventory",
+              "staging::wire::tests::streamed_inventory_digest_preserves_canonical_json_identity",
+              "staging::wire::tests::supports_exact_plain_and_compressed_documents",
+              "store::tests::canonical_hex_accepts_every_supported_digest_spelling",
+              "store::tests::realization_record_rejects_malformed_or_orphaned_edges",
+              "store::tests::realization_record_round_trips_canonical_text",
+              "store::tests::store_path_hash_accepts_custom_roots_but_rejects_ambiguous_paths",
+              "support::tests::classification_follows_dates_then_the_rolling_default",
+              "support::tests::dates_round_trip_and_reject_impossible_days",
+              "support::tests::toml_and_json_forms_agree",
+              "support::tests::trains_parse_without_leading_zeros",
+              "support::tests::validation_enforces_keys_dates_and_lts_end_dates",
+              "tag::tests::parse_requires_signature_block",
+              "tag::tests::verify_accepts_valid_partition_payload",
+              "tag::tests::verify_rejects_name_replay",
+              "tag::tests::verify_rejects_payload_tamper",
+              "tagobject::tests::name_binding_accepts_expected_name",
+              "tagobject::tests::name_binding_rejects_mismatch",
+              "tagobject::tests::parse_tag_object_reads_headers",
+              "tagobject::tests::semver_release_name_is_required_for_verified_release",
+              "tagobject::tests::tag_target_parses_tag_hop"
+            ],
+            "ignored": []
+          },
+          "//crates/shared/aos-nar:unit": {
+            "executed": [
+              "cache::tests::decode_nix_base32_never_panics_on_any_length",
+              "cache::tests::decode_nix_base32_roundtrips_all_byte_lengths",
+              "cache::tests::decode_nix_base32_roundtrips_sha256_digests",
+              "cache::tests::nar_url_canonicalizes_sri_hash",
+              "cache::tests::nar_url_changes_when_compressed_bytes_change",
+              "cache::tests::nar_url_rejects_malformed_hashes",
+              "cache::tests::nar_url_uses_store_hash_and_file_hash",
+              "cache::tests::nix_base32_matches_stock_nix_hash_convert",
+              "cache::tests::nix_cache_info_body",
+              "cache::tests::normalize_sha256_nix32_normalizes_sha256_hash_formats",
+              "cache::tests::render_static_narinfo_round_trips_and_signs",
+              "cache::tests::static_narinfo_signature_uses_stock_nix_fingerprint",
+              "export::tests::export_has_magic",
+              "export::tests::nix_string_aligned",
+              "export::tests::nix_string_padding",
+              "info::tests::basename_full_path",
+              "info::tests::round_trip",
+              "info::tests::store_hash_from_basename",
+              "info::tests::store_hash_from_path",
+              "pack::tests::empty_pack",
+              "pack::tests::pack_round_trip_header"
+            ],
+            "ignored": []
+          }
+        }
+      },
+      "report_sha256": "01fd8b5f21ecc6e39b87178059e7e1545b5ea72d0ca4b16844937e117d949902"
+    }
+  }
+}

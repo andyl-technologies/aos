@@ -92,10 +92,10 @@ fn encode_inner(
     let mut previous = None;
     for (oid, loose) in entries {
         let oid_hex = oid.to_hex();
-        if let Some(shard) = shard {
-            if &oid_hex[..2] != shard {
-                bail!("object {oid} does not belong to bundle shard '{shard}'");
-            }
+        if let Some(shard) = shard
+            && &oid_hex[..2] != shard
+        {
+            bail!("object {oid} does not belong to bundle shard '{shard}'");
         }
         if previous.is_some_and(|previous| previous >= *oid) {
             bail!("object bundle entries must be strictly ordered by OID");
@@ -180,10 +180,10 @@ fn decode_inner(
             bail!("object bundle ends inside object {oid}");
         }
         let oid_hex = oid.to_hex();
-        if let Some(shard) = shard {
-            if &oid_hex[..2] != shard {
-                bail!("object {oid} does not belong to bundle shard '{shard}'");
-            }
+        if let Some(shard) = shard
+            && &oid_hex[..2] != shard
+        {
+            bail!("object {oid} does not belong to bundle shard '{shard}'");
         }
         if !observed.insert(oid) {
             bail!("object bundle repeats object {oid}");
@@ -213,6 +213,7 @@ fn validate_shard(shard: &str) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::object::{ObjectKind, encode_loose, hash_object};

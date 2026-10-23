@@ -19,6 +19,7 @@
   extraSourceDirectories ? [],
   dependencyProfile ? null,
   repositories ? pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.core // pkgs.aosBazelRustRepositories.device,
+  targetSuffix ? "",
   excludedTests ? [],
   emptyTests ? [],
   extraTests ? [],
@@ -69,7 +70,7 @@ in rec {
     inherit workspace;
     targets =
       pkgs.lib.concatMap (name:
-        ["${label name}:license_closure" "${label name}:${packageTargets.${name}.unit}"]
+        ["${label name}:${packageTargets.${name}.license or "license_closure"}" "${label name}:${packageTargets.${name}.unit}"]
         ++ pkgs.lib.optional (packageTargets.${name}.doctest != null) "${label name}:${packageTargets.${name}.doctest}"
         ++ directoryTargets name "tests" ++ directoryTargets name "examples")
       names
@@ -249,6 +250,7 @@ in rec {
     };
     packageOptions =
       pkgs.lib.concatMap (name: ["--package-path" "${name}=${packages.${name}}"]) names
+      ++ pkgs.lib.optionals (targetSuffix != "") ["--target-suffix" targetSuffix]
       ++ pkgs.lib.concatMap (name: ["--dependency-package-path" "${name}=${dependencyPackages.${name}}"])
       (builtins.attrNames dependencyPackages)
       ++ pkgs.lib.concatMap (label: ["--allow-empty-test" label]) emptyTests;

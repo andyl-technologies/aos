@@ -94,6 +94,7 @@ pub fn render_tag_payload(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::super::tagobject::TagTarget;
     use super::*;

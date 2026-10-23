@@ -34,6 +34,7 @@ fn platform_name(architecture: &str, operating_system: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::platform_name;
 
