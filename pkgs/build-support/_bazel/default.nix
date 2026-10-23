@@ -50,6 +50,14 @@
     inherit pkgs lib;
     generator = aosBazelDependencyGenerator;
   };
+  aosBazelCrucibleCliRuntime = pkgs.runCommand "aos-bazel-crucible-cli-runtime" {} ''
+    mkdir -p "$out"
+    ln -s ${pkgs.ca-certificates}/etc/ssl/certs/ca-certificates.crt "$out/ca-certificates.crt"
+    cat > "$out/BUILD.bazel" <<'BUILD'
+    exports_files(["ca-certificates.crt"], visibility = ["//visibility:public"])
+    BUILD
+    touch "$out/REPO.bazel"
+  '';
   aosBazelRustRepositories = {
     core = import ./rust-sources.nix {
       inherit pkgs lib;
@@ -70,6 +78,11 @@
       inherit pkgs lib;
       root = ../../..;
       family = "guest";
+    };
+    crucible-cli = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "crucible-cli";
     };
     daemon = import ./rust-sources.nix {
       inherit pkgs lib;
@@ -161,6 +174,20 @@
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
   };
+  aosBazelCrucibleCliWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = ["BUILD.bazel" "crates" "native" "tools/bazel" "third_party/rust" "docs/rfcs/0020-crucible-campaigns" "tests/crucible"];
+    repositories =
+      aosBazelRepositories
+      // aosBazelRustRepositories.crucible-cli
+      // {
+        aos_native = aosBazelStoreLibraries;
+        aos_cli_runtime = aosBazelCrucibleCliRuntime;
+      };
+    dependencyProfile = "crucible-cli";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = ["//crates/crucible/control/crucible-cli:bin_crucible"];
+  };
   aosBazelDaemonWorkspace = mkAosBazelWorkspace {
     root = ../../..;
     sourceDirectories = ["BUILD.bazel" "crates" "native" "tools/bazel" "third_party/rust" "docs/rfcs/0020-crucible-campaigns" "tests/crucible"];
@@ -227,6 +254,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelCrucibleCliLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelCrucibleCliWorkspace;
     }).launcher;
   aosBazelDaemonLauncher =
     (import ./development.nix {

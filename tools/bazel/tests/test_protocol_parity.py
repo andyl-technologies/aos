@@ -67,6 +67,26 @@ class ProtocolParityTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "nonempty Cargo cases"):
                 self.compare(allow_empty_tests=[self.label])
 
+    def test_binary_only_package_has_libtests_without_a_doctest_target(self):
+        self.events[0]["target"] = {"kind": ["bin"], "name": "probe"}
+        label = self.label.replace(":unit", ":bin_probe")
+        self.results[0]["identity"]["label"] = label
+        self.reports[1].update(label=label + "_binary", kind="rust_binary", sources=["src/main.rs"])
+        self.compare()
+        log = self.root / "cargo-tests.log"
+        log.write_text("running 1 test\ntest probe ... ok\n")
+        packages = {"crucible-qemu-protocol": "crates/crucible/protocol/crucible-qemu-protocol"}
+
+        result = verify_protocol.compare(
+            self.root, self.inventory, self.messages, packages, cargo_log=log,
+        )
+
+        self.assertEqual(result["doctests"], {})
+        self.results.append({"identity": {"label": self.label.replace(":unit", ":doc")}})
+        (self.root / "index.json").write_text(json.dumps({"results": self.results}))
+        with self.assertRaisesRegex(ValueError, "doctest target inventories differ"):
+            verify_protocol.compare(self.root, self.inventory, self.messages, packages, cargo_log=log)
+
     def test_empty_test_exception_cannot_name_an_absent_artifact(self):
         with self.assertRaisesRegex(ValueError, "no Cargo artifact"):
             self.compare(allow_empty_tests=[self.label + "_absent"])

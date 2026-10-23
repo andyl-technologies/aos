@@ -1,7 +1,7 @@
 """Selects a coherent third-party feature graph for a Rust compilation family."""
 
 def _dependency_profile_impl(ctx):
-    if ctx.build_setting_value not in ["core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon"]:
+    if ctx.build_setting_value not in ["core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli"]:
         fail("unknown Rust dependency profile: " + ctx.build_setting_value)
     return []
 
@@ -59,3 +59,8 @@ def _daemon_profile_required_impl(_ctx):
     fail("daemon dependencies require --//tools/bazel/rules:dependency_profile=daemon")
 
 daemon_profile_required = rule(implementation = _daemon_profile_required_impl)
+
+def _crucible_cli_profile_required_impl(_ctx):
+    fail("Crucible CLI dependencies require --//tools/bazel/rules:dependency_profile=crucible-cli")
+
+crucible_cli_profile_required = rule(implementation = _crucible_cli_profile_required_impl)

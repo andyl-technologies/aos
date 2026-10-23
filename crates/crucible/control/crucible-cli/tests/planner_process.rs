@@ -57,9 +57,11 @@ fn packaged_worker_is_killable_supervised_and_parent_authenticated() {
 fn sticky_cancellation_rejects_evaluation_before_launch() {
     let request = canonical_request(0x62);
     let authority = PlannerAuthorityKey::from_bytes([0x72; 32]).expect("planner authority");
-    let config =
-        CanonicalPlannerProcessConfig::new(env!("CARGO_BIN_EXE_crucible"), Duration::from_secs(5))
-            .expect("process config");
+    let config = CanonicalPlannerProcessConfig::new(
+        crucible_test_support::runfiles::binary_path(env!("CARGO_BIN_EXE_crucible")),
+        Duration::from_secs(5),
+    )
+    .expect("process config");
     let (supervisor, cancellation) = CanonicalPlannerProcessSupervisor::new(config);
     cancellation.cancel();
     let mut service =
@@ -97,7 +99,11 @@ fn protected_packaged_executable() -> (tempfile::TempDir, PathBuf) {
     // still authenticate a protected executable before each worker launch.
     let directory = tempfile::tempdir().expect("private executable directory");
     let executable = directory.path().join("crucible");
-    fs::copy(env!("CARGO_BIN_EXE_crucible"), &executable).expect("copy packaged executable");
+    fs::copy(
+        crucible_test_support::runfiles::binary_path(env!("CARGO_BIN_EXE_crucible")),
+        &executable,
+    )
+    .expect("copy packaged executable");
     fs::set_permissions(&executable, fs::Permissions::from_mode(0o500))
         .expect("protect packaged executable");
     (directory, executable)

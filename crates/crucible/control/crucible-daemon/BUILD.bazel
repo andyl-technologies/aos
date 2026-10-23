@@ -1,6 +1,6 @@
 load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
 load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
-load("//tools/bazel/rules:daemon_graph.bzl", "DAEMON_VARIANTS", "daemon_dependencies")
+load("//tools/bazel/rules:daemon_graph.bzl", "DAEMON_VARIANTS", "daemon_dependencies", "daemon_session_test_double_libraries")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
@@ -166,6 +166,13 @@ rust_doc(name = "documentation", crate = ":lib")
     )
     for suffix in DAEMON_VARIANTS
 ]
+
+daemon_session_test_double_libraries(
+    package = RUST_PACKAGE,
+    sources = SOURCES,
+    common_deps = COMMON_DEPENDENCIES,
+    library_names = LIBRARIES,
+)
 
 aos_source_package(
     name = "source_package",

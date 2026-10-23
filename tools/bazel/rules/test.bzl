@@ -32,13 +32,23 @@ def _libtest_impl(ctx):
         command.append("--allow-empty")
     if ctx.attr.allow_ignored_only:
         command.append("--allow-ignored-only")
+    runtime_files = []
+    exports = []
+    if len(ctx.attr.runfile_env_names) != len(ctx.attr.runfile_env_files):
+        fail("runfile environment names and inputs differ")
+    for name, target in zip(ctx.attr.runfile_env_names, ctx.attr.runfile_env_files):
+        files = target[DefaultInfo].files.to_list()
+        if len(files) != 1:
+            fail("runfile environment input must name exactly one file: " + name)
+        runtime_files.extend(files)
+        exports.append("export " + name + "=" + _runfile(ctx, files[0]) + "\n")
     ctx.actions.write(script,
-        "#!" + AOS_TOOLS.bash + "\nset -euo pipefail\nexec " + " ".join(command) + ' "$@"\n',
+        "#!" + AOS_TOOLS.bash + "\nset -euo pipefail\n" + "".join(exports) + "exec " + " ".join(command) + ' "$@"\n',
         is_executable = True)
     runfiles = ctx.runfiles(files = [
         binary, ctx.file._runner, ctx.file._policy,
         ctx.file._python, ctx.file._bash, ctx.file._tool_identity,
-    ])
+    ] + runtime_files)
     runfiles = runfiles.merge(ctx.attr.binary[DefaultInfo].default_runfiles)
     environment = ctx.attr.binary[RunEnvironmentInfo].environment if RunEnvironmentInfo in ctx.attr.binary else {}
     return [
@@ -55,6 +65,8 @@ _libtest_test = rule(
         "jobs": attr.int(default = 4),
         "allow_empty": attr.bool(default = False),
         "allow_ignored_only": attr.bool(default = False),
+        "runfile_env_names": attr.string_list(),
+        "runfile_env_files": attr.label_list(allow_files = True),
         "_runner": attr.label(default = "//tools/bazel/testing:runner.py", allow_single_file = True),
         "_policy": attr.label(default = "//tools/bazel/testing:policy.json", allow_single_file = True),
         "_python": attr.label(default = "@aos_tools//:python", allow_single_file = True),
@@ -63,10 +75,17 @@ _libtest_test = rule(
     },
 )
 
-def aos_rust_test(name, package_name = None, package = None, jobs = 4, allow_empty = False, allow_ignored_only = False, license_domain = None, tags = [], timeout = "long", size = "medium", args = [], **kwargs):
+def aos_rust_test(name, package_name = None, package = None, jobs = 4, allow_empty = False, allow_ignored_only = False, runfile_env = {}, license_domain = None, tags = [], timeout = "long", size = "medium", args = [], **kwargs):
     """Preserves Rust compilation/runfiles while replacing only test scheduling."""
     if kwargs.get("env_inherit", []):
         fail("declare test environment through env; ambient inheritance is not supported")
+    runfile_env_names = sorted(runfile_env)
+    for variable in runfile_env_names:
+        allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_0123456789"
+        if not variable or variable[0] in "0123456789" or any([character not in allowed for character in variable.elems()]):
+            fail("invalid runfile environment variable: " + variable)
+        if variable in kwargs.get("env", {}):
+            fail("test environment variable has multiple declarations: " + variable)
     if package != None:
         if package_name != None and package_name != package.name:
             fail("Rust test conflicts with package name: " + package.name)
@@ -97,5 +116,7 @@ def aos_rust_test(name, package_name = None, package = None, jobs = 4, allow_emp
         timeout = timeout,
         size = size,
         args = args,
+        runfile_env_names = runfile_env_names,
+        runfile_env_files = [runfile_env[variable] for variable in runfile_env_names],
         **test_attributes
     )

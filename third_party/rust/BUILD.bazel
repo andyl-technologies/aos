@@ -12,6 +12,7 @@ load(":control/aliases.bzl", CONTROL_CRATES = "CRATES")
 load(":qemu-host/aliases.bzl", QEMU_HOST_CRATES = "CRATES")
 load(":store-s3/aliases.bzl", STORE_S3_CRATES = "CRATES")
 load(":daemon/aliases.bzl", DAEMON_CRATES = "CRATES")
+load(":crucible-cli/aliases.bzl", CRUCIBLE_CLI_CRATES = "CRATES")
 
 # Every first-party dependency in one configuration selects the same resolved
 # family. This preserves Rust type identity without globally unioning features.
@@ -19,6 +20,7 @@ load(":daemon/aliases.bzl", DAEMON_CRATES = "CRATES")
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:crucible_cli_dependencies": CRUCIBLE_CLI_CRATES.get(name, "//tools/bazel/rules:crucible_cli_profile_required"),
             "//tools/bazel/rules:daemon_dependencies": DAEMON_CRATES.get(name, "//tools/bazel/rules:daemon_profile_required"),
             "//tools/bazel/rules:store_s3_dependencies": STORE_S3_CRATES.get(name, "//tools/bazel/rules:store_s3_profile_required"),
             "//tools/bazel/rules:qemu_host_dependencies": QEMU_HOST_CRATES.get(name, "//tools/bazel/rules:qemu_host_profile_required"),
@@ -33,7 +35,7 @@ load(":daemon/aliases.bzl", DAEMON_CRATES = "CRATES")
         }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items()))
+    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items() + CRUCIBLE_CLI_CRATES.items()))
 ]
 
 CORE_PACKAGES = {
@@ -158,6 +160,20 @@ DAEMON_PACKAGES = dict(CONTROL_PACKAGES.items() + {
     "rustix": crate.spec(version = "=1.1.4", features = ["event", "fs", "net", "param", "process", "time"]),
 }.items())
 
+# The CLI adds its command surface and certificate generation to the daemon
+# graph. Its default tests retain the same SDK and native library selections.
+CRUCIBLE_CLI_PACKAGES = dict(DAEMON_PACKAGES.items() + {
+    "aws-credential-types": crate.spec(version = "=1.2.14"),
+    "clap": crate.spec(version = "=4.6.1", features = ["derive", "env"]),
+    "clap_complete": crate.spec(version = "=4.6.5"),
+    "hex": crate.spec(version = "=0.4.3"),
+    "rcgen": crate.spec(version = "=0.14.8"),
+    "rustix": crate.spec(version = "=1.1.4", features = ["event", "fs", "net", "param", "process", "termios", "time"]),
+    "tokio-rustls": crate.spec(version = "=0.26.4"),
+    "url": crate.spec(version = "=2.5.8"),
+    "zeroize": crate.spec(version = "=1.9.0"),
+}.items())
+
 # Preserve the protocol library and its compiled build dependencies' domain
 # inside the larger host family. Exact versions and original licenses are checked
 # during updates; native bindings and other host dependencies keep host scope.
@@ -243,6 +259,13 @@ STORE_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    "crucible-cli": {
+        "indexmap": json.encode({
+            "version": "2.14.0",
+            "resolved_features": ["default", "serde", "std"],
+            "features": ["default", "std"],
+        }),
+    },
     # Cargo retains indexmap's target-side default/std unit in the daemon.
     "daemon": {
         "indexmap": json.encode({
@@ -323,7 +346,7 @@ APPROVED_LICENSES = [
         packages = packages,
         annotations = annotations,
         feature_variants = FAMILY_FEATURE_VARIANTS.get(family, {}),
-        permissive_crates = DAEMON_PERMISSIVE_CRATES if family == "daemon" else ENGINE_PERMISSIVE_CRATES if family in ["engine", "session", "control", "qemu-host"] else GUEST_PERMISSIVE_CRATES if family == "guest" else [],
+        permissive_crates = DAEMON_PERMISSIVE_CRATES if family in ["daemon", "crucible-cli"] else ENGINE_PERMISSIVE_CRATES if family in ["engine", "session", "control", "qemu-host"] else GUEST_PERMISSIVE_CRATES if family == "guest" else [],
         platforms = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
         license_domain = license_domain,
         approved_licenses = APPROVED_LICENSES,
@@ -343,6 +366,7 @@ APPROVED_LICENSES = [
         ("qemu-host", QEMU_HOST_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("store-s3", STORE_S3_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("daemon", DAEMON_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
+        ("crucible-cli", CRUCIBLE_CLI_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
     ]
 ]
 
@@ -355,5 +379,5 @@ APPROVED_LICENSES = [
         license_domain = "apache-host",
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
-    for family in ["core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon"]
+    for family in ["core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli"]
 ]

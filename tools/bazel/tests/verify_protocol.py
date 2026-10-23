@@ -50,6 +50,11 @@ def compare_doctests(tests, cargo_log, package_paths, target_suffix=""):
     sections = re.split(r"^\s*Doc-tests ([a-zA-Z0-9_]+)\s*$", log, flags=re.MULTILINE)
     cargo = dict(zip(sections[1::2], sections[2::2]))
     results = json.loads((tests / "index.json").read_text())["results"]
+    expected_labels = {"//" + path + ":doc" + target_suffix for path in package_paths.values()}
+    actual_labels = {result["identity"]["label"] for result in results
+                     if result["identity"]["label"].endswith(":doc" + target_suffix)}
+    if actual_labels != expected_labels:
+        raise ValueError(f"Bazel/Cargo doctest target inventories differ: {actual_labels ^ expected_labels}")
     compared = {}
     for name, path in package_paths.items():
         label = "//" + path + ":doc" + target_suffix
@@ -81,6 +86,7 @@ def compare(
     cargo_features = {}
     cargo_first_party_features = {}
     cargo_examples = set()
+    cargo_libraries = set()
     for line in messages.read_text().splitlines():
         event = json.loads(line)
         if event.get("reason") != "compiler-artifact":
@@ -94,6 +100,8 @@ def compare(
             cargo_first_party_features.setdefault(name, set()).add(tuple(sorted(event["features"])))
         if name in package_paths and "example" in event["target"]["kind"]:
             cargo_examples.add(f"//{package_paths[name]}:" + event["target"]["name"] + target_suffix)
+        if name in package_paths and "lib" in event["target"]["kind"]:
+            cargo_libraries.add(name)
         if (name in package_paths and event["profile"]["test"] and event.get("executable")
                 and set(event["target"]["kind"]) & {"lib", "test", "bin"}):
             target = event["target"]
@@ -152,7 +160,7 @@ def compare(
 
     bazel_features = {}
     for report in reports:
-        match = re.search(r"aos_(?:core|device|store|guest|engine|quota|session|control|qemu_host|store_s3|daemon)_crates__([^/]+)//", report["label"])
+        match = re.search(r"aos_(?:core|device|store|guest|engine|quota|session|control|qemu_host|store_s3|daemon|crucible_cli)_crates__([^/]+)//", report["label"])
         if match and report["kind"] in {"rust_library", "rust_proc_macro"}:
             # Repository names normalize SemVer build metadata. Compare the
             # declared package identity instead of trying to reverse that loss.
@@ -176,7 +184,11 @@ def compare(
         for (name, version), features in sorted(cargo_features.items())
     }
     if cargo_log is not None:
-        result["doctests"] = compare_doctests(tests, cargo_log, package_paths, target_suffix)
+        if set(package_paths) - cargo_first_party_features.keys():
+            raise ValueError("Cargo omitted selected packages from its compiler messages")
+        # Binary-only packages have libtests but no Cargo library doctest target.
+        libraries = {name: path for name, path in package_paths.items() if name in cargo_libraries}
+        result["doctests"] = compare_doctests(tests, cargo_log, libraries, target_suffix)
     return result
 
 

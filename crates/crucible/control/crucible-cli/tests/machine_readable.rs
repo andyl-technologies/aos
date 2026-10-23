@@ -47,11 +47,13 @@ fn cli_exit_machine_readable_process_stdout_is_pure_json() -> Result<(), Box<dyn
 fn cli_selftest_honors_machine_output_trace_and_quiet() -> Result<(), Box<dyn Error>> {
     let temp = TempDir::new()?;
     let trace = temp.path().join("selftest.jsonl");
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args(["--backend", "double", "--format", "jsonl", "--trace"])
-        .arg(&trace)
-        .arg("selftest")
-        .output()?;
+    let output = Command::new(crucible_test_support::runfiles::binary_path(env!(
+        "CARGO_BIN_EXE_crucible"
+    )))
+    .args(["--backend", "double", "--format", "jsonl", "--trace"])
+    .arg(&trace)
+    .arg("selftest")
+    .output()?;
     assert!(
         output.status.success(),
         "selftest should pass; stderr={}",
@@ -65,18 +67,20 @@ fn cli_selftest_honors_machine_output_trace_and_quiet() -> Result<(), Box<dyn Er
     assert_eq!(stdout.as_bytes(), fs::read(&trace)?);
 
     let quiet_trace = temp.path().join("selftest-quiet.jsonl");
-    let quiet = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args([
-            "--backend",
-            "double",
-            "--format",
-            "jsonl",
-            "--quiet",
-            "--trace",
-        ])
-        .arg(&quiet_trace)
-        .arg("selftest")
-        .output()?;
+    let quiet = Command::new(crucible_test_support::runfiles::binary_path(env!(
+        "CARGO_BIN_EXE_crucible"
+    )))
+    .args([
+        "--backend",
+        "double",
+        "--format",
+        "jsonl",
+        "--quiet",
+        "--trace",
+    ])
+    .arg(&quiet_trace)
+    .arg("selftest")
+    .output()?;
     assert!(quiet.status.success());
     assert!(quiet.stdout.is_empty());
     let quiet_trace = fs::read_to_string(quiet_trace)?;
@@ -96,23 +100,25 @@ fn cli_save_machine_readable_jsonl_rejects_session_owned_export() -> Result<(), 
     let save_store = temp.path().join("save-store");
     fs::write(&scenario, fixture.scenario.to_canonical_toml()?)?;
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args([
-            "--format",
-            "jsonl",
-            "--backend",
-            "double",
-            "--seed",
-            "2",
-            "--artifact-dir",
-        ])
-        .arg(&artifact_dir)
-        .arg("--store")
-        .arg(&save_store)
-        .arg("save")
-        .arg(&scenario)
-        .args(["--at", "quiescence", "--label", "jsonl"])
-        .output()?;
+    let output = Command::new(crucible_test_support::runfiles::binary_path(env!(
+        "CARGO_BIN_EXE_crucible"
+    )))
+    .args([
+        "--format",
+        "jsonl",
+        "--backend",
+        "double",
+        "--seed",
+        "2",
+        "--artifact-dir",
+    ])
+    .arg(&artifact_dir)
+    .arg("--store")
+    .arg(&save_store)
+    .arg("save")
+    .arg(&scenario)
+    .args(["--at", "quiescence", "--label", "jsonl"])
+    .output()?;
     assert_eq!(output.status.code(), Some(4));
     assert!(output.stdout.is_empty());
     let stderr = String::from_utf8(output.stderr)?;
@@ -136,21 +142,23 @@ fn cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome() -> Result
     fs::write(&scenario, fixture.scenario.to_canonical_toml()?)?;
     fs::write(&family, valid_fuzz_family_toml())?;
 
-    let search_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args([
-            "--format",
-            "jsonl",
-            "--backend",
-            "double",
-            "--seed",
-            "3",
-            "--artifact-dir",
-        ])
-        .arg(&search_artifact_dir)
-        .arg("search")
-        .arg(&scenario)
-        .args(["--max-states", "1"])
-        .output()?;
+    let search_output = Command::new(crucible_test_support::runfiles::binary_path(env!(
+        "CARGO_BIN_EXE_crucible"
+    )))
+    .args([
+        "--format",
+        "jsonl",
+        "--backend",
+        "double",
+        "--seed",
+        "3",
+        "--artifact-dir",
+    ])
+    .arg(&search_artifact_dir)
+    .arg("search")
+    .arg(&scenario)
+    .args(["--max-states", "1"])
+    .output()?;
     assert!(
         search_output.status.success(),
         "crucible search --format jsonl should exit 0; stdout=`{}` stderr=`{}`",
@@ -160,21 +168,23 @@ fn cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome() -> Result
     let search_stdout = String::from_utf8(search_output.stdout)?;
     assert_machine_readable_jsonl(&search_stdout, &["search_strategy_run"])?;
 
-    let fuzz_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args([
-            "--format",
-            "jsonl",
-            "--backend",
-            "double",
-            "--seed",
-            "4",
-            "--artifact-dir",
-        ])
-        .arg(&fuzz_artifact_dir)
-        .arg("fuzz")
-        .arg(&family)
-        .args(["--runs", "1"])
-        .output()?;
+    let fuzz_output = Command::new(crucible_test_support::runfiles::binary_path(env!(
+        "CARGO_BIN_EXE_crucible"
+    )))
+    .args([
+        "--format",
+        "jsonl",
+        "--backend",
+        "double",
+        "--seed",
+        "4",
+        "--artifact-dir",
+    ])
+    .arg(&fuzz_artifact_dir)
+    .arg("fuzz")
+    .arg(&family)
+    .args(["--runs", "1"])
+    .output()?;
     assert!(
         fuzz_output.status.success(),
         "crucible fuzz --format jsonl should exit 0; stdout=`{}` stderr=`{}`",
@@ -200,22 +210,24 @@ fn cli_exit_machine_readable_search_retained_evidence_failure_jsonl_reports_fina
     )?;
     fs::write(&retained_evidence, valid_search_retained_evidence_toml())?;
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args([
-            "--format",
-            "jsonl",
-            "--backend",
-            "double",
-            "--seed",
-            "5",
-            "--artifact-dir",
-        ])
-        .arg(&artifact_dir)
-        .arg("search")
-        .arg(&scenario)
-        .args(["--max-states", "1", "--retained-evidence"])
-        .arg(&retained_evidence)
-        .output()?;
+    let output = Command::new(crucible_test_support::runfiles::binary_path(env!(
+        "CARGO_BIN_EXE_crucible"
+    )))
+    .args([
+        "--format",
+        "jsonl",
+        "--backend",
+        "double",
+        "--seed",
+        "5",
+        "--artifact-dir",
+    ])
+    .arg(&artifact_dir)
+    .arg("search")
+    .arg(&scenario)
+    .args(["--max-states", "1", "--retained-evidence"])
+    .arg(&retained_evidence)
+    .output()?;
     assert_eq!(
         output.status.code(),
         Some(1),
@@ -242,21 +254,23 @@ fn cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome() -> Resul
     let mismatch_check_path = temp.path().join("mismatch.jsonl");
     fs::write(&scenario, fixture.scenario.to_canonical_toml()?)?;
 
-    let failure_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args([
-            "--format",
-            "jsonl",
-            "--backend",
-            "double",
-            "--seed",
-            "6",
-            "--artifact-dir",
-        ])
-        .arg(&artifact_dir)
-        .arg("run")
-        .arg(&scenario)
-        .arg("--emit-mock-failure-artifact")
-        .output()?;
+    let failure_output = Command::new(crucible_test_support::runfiles::binary_path(env!(
+        "CARGO_BIN_EXE_crucible"
+    )))
+    .args([
+        "--format",
+        "jsonl",
+        "--backend",
+        "double",
+        "--seed",
+        "6",
+        "--artifact-dir",
+    ])
+    .arg(&artifact_dir)
+    .arg("run")
+    .arg(&scenario)
+    .arg("--emit-mock-failure-artifact")
+    .output()?;
     assert_eq!(
         failure_output.status.code(),
         Some(1),
@@ -273,14 +287,16 @@ fn cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome() -> Resul
         canonical_jsonl_from_reproduction_artifact(&artifact_path)?,
     )?;
 
-    let replay_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args(["--format", "jsonl", "--backend", "double", "--artifact-dir"])
-        .arg(&artifact_dir)
-        .arg("replay")
-        .arg(&artifact_path)
-        .arg("--check")
-        .arg(&check_path)
-        .output()?;
+    let replay_output = Command::new(crucible_test_support::runfiles::binary_path(env!(
+        "CARGO_BIN_EXE_crucible"
+    )))
+    .args(["--format", "jsonl", "--backend", "double", "--artifact-dir"])
+    .arg(&artifact_dir)
+    .arg("replay")
+    .arg(&artifact_path)
+    .arg("--check")
+    .arg(&check_path)
+    .output()?;
     assert!(
         replay_output.status.success(),
         "crucible replay --check --format jsonl should exit 0; stdout=`{}` stderr=`{}`",
@@ -301,14 +317,16 @@ fn cli_exit_machine_readable_replay_check_jsonl_reports_final_outcome() -> Resul
     *first_byte = first_byte.wrapping_add(1);
     fs::write(&mismatch_check_path, mismatch_check)?;
 
-    let mismatch_output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args(["--format", "jsonl", "--backend", "double", "--artifact-dir"])
-        .arg(&artifact_dir)
-        .arg("replay")
-        .arg(&artifact_path)
-        .arg("--check")
-        .arg(&mismatch_check_path)
-        .output()?;
+    let mismatch_output = Command::new(crucible_test_support::runfiles::binary_path(env!(
+        "CARGO_BIN_EXE_crucible"
+    )))
+    .args(["--format", "jsonl", "--backend", "double", "--artifact-dir"])
+    .arg(&artifact_dir)
+    .arg("replay")
+    .arg(&artifact_path)
+    .arg("--check")
+    .arg(&mismatch_check_path)
+    .output()?;
     assert_eq!(
         mismatch_output.status.code(),
         Some(1),
@@ -338,10 +356,12 @@ fn cli_exit_machine_readable_replay_error_reports_one_failed_outcome() -> Result
     let artifact = temp.path().join("malformed.crucible");
     fs::write(&artifact, "not a reproduction artifact")?;
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args(["--format", "jsonl", "--backend", "double", "replay"])
-        .arg(&artifact)
-        .output()?;
+    let output = Command::new(crucible_test_support::runfiles::binary_path(env!(
+        "CARGO_BIN_EXE_crucible"
+    )))
+    .args(["--format", "jsonl", "--backend", "double", "replay"])
+    .arg(&artifact)
+    .output()?;
 
     assert_eq!(output.status.code(), Some(5));
     let stdout = String::from_utf8(output.stdout)?;
@@ -358,14 +378,16 @@ fn cli_exit_machine_readable_replay_to_savepoint_jsonl_reports_final_outcome()
     let artifact_dir = temp.path().join("replay-to-artifacts");
     let fixture = replay_to_savepoint_process_fixture(temp.path())?;
 
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args(["--format", "jsonl", "--backend", "double", "--artifact-dir"])
-        .arg(&artifact_dir)
-        .arg("replay")
-        .arg(&fixture.artifact)
-        .arg("--to")
-        .arg(&fixture.savepoint)
-        .output()?;
+    let output = Command::new(crucible_test_support::runfiles::binary_path(env!(
+        "CARGO_BIN_EXE_crucible"
+    )))
+    .args(["--format", "jsonl", "--backend", "double", "--artifact-dir"])
+    .arg(&artifact_dir)
+    .arg("replay")
+    .arg(&fixture.artifact)
+    .arg("--to")
+    .arg(&fixture.savepoint)
+    .output()?;
     assert!(
         output.status.success(),
         "crucible replay --to --format jsonl should exit 0; stdout=`{}` stderr=`{}`",
@@ -391,20 +413,22 @@ fn run_machine_readable(
     scenario: &Path,
     artifact_dir: &Path,
 ) -> Result<String, Box<dyn Error>> {
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args([
-            "--format",
-            format,
-            "--backend",
-            "double",
-            "--seed",
-            "1",
-            "--artifact-dir",
-        ])
-        .arg(artifact_dir)
-        .arg("run")
-        .arg(scenario)
-        .output()?;
+    let output = Command::new(crucible_test_support::runfiles::binary_path(env!(
+        "CARGO_BIN_EXE_crucible"
+    )))
+    .args([
+        "--format",
+        format,
+        "--backend",
+        "double",
+        "--seed",
+        "1",
+        "--artifact-dir",
+    ])
+    .arg(artifact_dir)
+    .arg("run")
+    .arg(scenario)
+    .output()?;
     assert!(
         output.status.success(),
         "crucible run --format {format} should exit 0; stdout=`{}` stderr=`{}`",

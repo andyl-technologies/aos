@@ -3,6 +3,13 @@
   pkgs,
   pname,
   packages,
+  packageTargets ?
+    builtins.mapAttrs (_: _: {
+      root = "lib";
+      unit = "unit";
+      doctest = "doc";
+    })
+    packages,
   dependencyPackages ? {},
   editorComparisonScope ? "whole-model",
   editorRustcFlags ? [],
@@ -53,7 +60,7 @@
         "third_party/rust"
       ]
       ++ builtins.attrValues packages ++ extraSourceDirectories);
-    analysisTargets = map (name: "${label name}:unit") names;
+    analysisTargets = assert builtins.attrNames packageTargets == names; map (name: "${label name}:${packageTargets.${name}.unit}") names;
   };
 in rec {
   inherit workspace;
@@ -62,7 +69,8 @@ in rec {
     inherit workspace;
     targets =
       pkgs.lib.concatMap (name:
-        ["${label name}:license_closure" "${label name}:unit" "${label name}:doc"]
+        ["${label name}:license_closure" "${label name}:${packageTargets.${name}.unit}"]
+        ++ pkgs.lib.optional (packageTargets.${name}.doctest != null) "${label name}:${packageTargets.${name}.doctest}"
         ++ directoryTargets name "tests" ++ directoryTargets name "examples")
       names
       ++ extraTests;
@@ -80,7 +88,7 @@ in rec {
   editor = let
     targets =
       pkgs.lib.concatMap (name:
-        ["${label name}:${editorLibraryTargets.${name} or "lib"}" "${label name}:unit_binary"]
+        ["${label name}:${editorLibraryTargets.${name} or packageTargets.${name}.root}" "${label name}:${packageTargets.${name}.unit}_binary"]
         ++ map (target: target + "_binary") (directoryTargets name "tests")
         ++ directoryTargets name "examples")
       names

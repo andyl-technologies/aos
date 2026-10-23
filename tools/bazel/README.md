@@ -1422,15 +1422,14 @@ production license checks pass. Editor parity preserves Cargo's selected
 diagnostics; it does not claim complete inference. The frozen source precedes
 the CLI graph. Foreign daemon execution and production migration remain pending.
 
-## Crucible CLI baseline
+## Crucible CLI qualification
 
 `tests/evidence/crucible-cli-cargo-baseline.json` retains the default Cargo
 baseline: 436 executed cases, 23 existing ignored cases, eight test artifacts,
 281 external identities, and 18 first-party feature identities. The S3 client
 construction test needs trust roots even without making a network request;
 the sandbox declares `SSL_CERT_FILE` from the AOS certificate package. Its
-bundle digest and the successful Cargo reports are retained. CLI Bazel
-qualification and production migration remain pending.
+bundle digest and the successful Cargo reports are retained.
 
 `tests/evidence/crucible-cli-cargo-feature-baselines.json` retains eight Cargo
 configurations with unchanged CLI source and fixture inputs. Default and
@@ -1440,6 +1439,29 @@ and 18 first-party feature identities. The four packaged-flight combinations
 compile only: their listed inventories are retained separately from execution.
 Their existing VM gates must supply the kernel, patched QEMU, plugin, root image,
 and deployment resources before packaged runtime qualification can pass.
+
+
+The Bazel graph declares all eight feature combinations, coherent production
+and test dependency closures, license checks, and developer targets. Native
+qualification executes the four combinations without packaged flights. The
+four packaged combinations compile every selected artifact and retain their
+Cargo inventories; execution still belongs to the dedicated VM gates.
+
+```sh
+aos-dev bazel update-deps crucible-cli
+aos-dev bazel --family crucible-cli test //crates/crucible/control/crucible-cli:bin_crucible
+nix-build tools/bazel/tests/crucible-cli.nix -A all --no-out-link --max-jobs 4 --cores 4
+```
+
+`tests/evidence/native-linux-crucible-cli-default.json` records passing native
+Bazel execution of all 436 default cases, with the 23 ignored cases preserved,
+and full inventory and dependency-feature parity against a fresh Cargo run.
+Integration subprocesses resolve compiler-declared paths through Bazel runfiles;
+trust roots are declared AOS certificate inputs. A test that deliberately
+replaces an executable makes only its private copy writable before mutation.
+Its existing assertions remain unchanged. The full feature, editor, developer,
+and workspace Rust qualification builds are still running at this checkpoint.
+Production migration remains pending.
 
 ## AOS format library baselines
 

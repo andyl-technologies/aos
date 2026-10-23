@@ -8,6 +8,8 @@ load("//tools/bazel/rules:test.bzl", "aos_rust_test")
 
 package(default_visibility = ["//crates/crucible:__subpackages__"])
 
+exports_files(["src/model.rs"], visibility = ["//crates/crucible/control/crucible-cli:__pkg__"])
+
 RUST_PACKAGE = aos_rust_package(
     name = "crucible-engine",
     version = "0.1.0",

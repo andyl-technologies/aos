@@ -30,3 +30,9 @@ filegroup(
     srcs = ["fixtures/e2e-determinism.scenario.toml"],
     visibility = ["//crates/crucible/control/crucible-daemon:__pkg__"],
 )
+
+filegroup(
+    name = "cli_fixture_inputs",
+    srcs = ["fixtures/live-qemu-fuzz.family.toml"],
+    visibility = ["//crates/crucible/control/crucible-cli:__pkg__"],
+)
