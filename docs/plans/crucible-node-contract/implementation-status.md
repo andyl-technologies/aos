@@ -52,6 +52,37 @@ execution remains unqualified: the initial process-reservation refusal and the
 subsequent installed-mechanism refusal are recorded below. These component
 results do not qualify common Ready or full RFC-0025 completion.
 
+## Initial Source census under original deployment custody
+
+Commit `c1a7de3131` adds a typed initial-lifecycle Source read joined to the
+same original deployment reservation. It reuses the complete component visitor,
+including mandatory Capture banks and both unresolved native-read refusals.
+Deployment and Source terminal checks run after either component outcome;
+the first component error retains priority. Numeric storage DATA grants no
+funding, Bootstrap completion, Initial, Recipe or native permission.
+
+The test-support private-birth observer independently funds that visitor, reads
+all three actual Sources and requires exact-bound success after a refused
+one-byte-short walk. The VM requires its census marker in both fresh positive
+consumers, alongside the existing spent-retry and terminal cleanup controls.
+
+All-feature/all-target Engine/Daemon checking, changed-file formatting and all
+six architecture gates pass. The two initial Source tests and three existing
+prebirth controls pass. The required application gate compiles 180 test
+executables across 58 packages, including 71 integration targets. All 443 frozen
+Rust/Cargo inputs match the committed revision and the captured application,
+VM support, default-feature CLI and ordinary-peer component sources. The
+generated guest init contains the new assertion for both birth consumers.
+
+The registered VM fails qualification. Both small-policy consumers pass; the
+positive consumer reaches all three private Births and original launch
+commitments, then reports retained derivation failure without the new census
+marker. Code review finds that the isolated route never installs the Capture
+banks required by the initial-lifecycle visitor. Those checks remain mandatory.
+Separately admitted bank reservation and production-holder integration are the
+next implementation step. No positive initial-Source VM or full RFC result is
+claimed for this revision.
+
 ## Process-child census and transport lint repairs
 
 The actual VM refusal exposed an absent runtime prerequisite. The pinned Linux
