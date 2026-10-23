@@ -5,6 +5,7 @@
   compilation,
   source,
   pname ? "aos-bazel-device-aarch64",
+  loopbackNetworking ? false,
 }: let
   kernel = targetPackages.linux;
   runner = pkgs.runCommand "aos-bazel-family-guest-runner" {} ''
@@ -32,16 +33,18 @@
   '';
   closure = (pkgs.lib.build.closureInfo {inherit pkgs;}) {
     pname = "${pname}-runtime-closure";
-    rootPaths = [
-      targetPackages.bash
-      targetPackages.coreutils
-      targetPackages.util-linux
-      targetPackages.python3
-      compilation
-      runner
-      reboot
-      source
-    ];
+    rootPaths =
+      [
+        targetPackages.bash
+        targetPackages.coreutils
+        targetPackages.util-linux
+        targetPackages.python3
+        compilation
+        runner
+        reboot
+        source
+      ]
+      ++ pkgs.lib.optionals loopbackNetworking [targetPackages.iproute2];
   };
   rootfs =
     pkgs.runCommand "${pname}-test-rootfs" {
@@ -72,7 +75,11 @@
         while :; do sleep 1; done
       }
       trap finish EXIT
-      ${targetPackages.python3}/bin/python3 ${runner}/run_family_vm.py \
+      ${pkgs.lib.optionalString loopbackNetworking ''
+        # Transport tests communicate only through the guest's loopback device.
+        # QEMU still has no network interface or external network access.
+        ${targetPackages.iproute2}/sbin/ip link set lo up
+      ''}${targetPackages.python3}/bin/python3 ${runner}/run_family_vm.py \
         --compilation ${compilation} --workspace /build/workspace --output /tmp/results
       INIT
       chmod +x rootfs/init

@@ -1253,5 +1253,15 @@ there is no dependency cycle between libraries. The default and server
 
 `tests/evidence/control-transport-cargo-baseline.json` retains the executed
 107-case, nine-artifact Cargo baseline with no ignored cases and 194 external
-crate identities. Bazel native execution and platform qualification are in
-progress; production consumers remain on Cargo.
+crate identities. The foreign qualification compiles those same default-family
+artifacts for AArch64 and executes them under an AOS kernel in QEMU. Its guest
+enables only loopback networking with target-built iproute2; QEMU has no network
+interface. Existing families leave loopback disabled and retain their derivation
+identities.
+
+```sh
+nix-build tools/bazel/tests/control.nix -A cross-linux --no-out-link --max-jobs 4 --cores 4
+```
+
+Bazel native and foreign qualification are in progress; production consumers
+remain on Cargo.
