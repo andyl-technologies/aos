@@ -113,6 +113,24 @@ also pass. This qualifies the preboot initial Source census, not post-Hello
 Source/Controller funding, opaque five-phase Recipe/Initial production, native
 Ready, Capture, performance or full RFC-0025 completion.
 
+## Capture encoding quote headers before live inspection
+
+Commit `f7e7c6a38b` places the actual before-cut bounds in the borrowed encoding
+plan and shares its defining fixed-header counter with startup admission.
+The completed quote preserves the separately counted candidate and actual
+serialization windows. Both real call sites retain the same SDK, metadata,
+bank and terminal authentication; no provisional after bound funds the before cut.
+
+All 79 focused report, Capture, continuation, endpoint and encoding test
+executions pass in each standard and raw-JSON mode. Changed-file formatting,
+all-feature/all-target Transport/Engine/Daemon checking and all six architecture
+gates pass. The required application gate compiles 180 test executables across
+58 packages, including 71 integration targets. All 456 frozen Rust/Cargo inputs
+match the pushed revision and captured source. Production Transport Clippy still
+fails with 49 errors and 1,733 warnings under the unchanged workspace policy.
+These results exclude subsequent initial-projection changes and establish no
+new VM, complete native preservation or full RFC qualification.
+
 ## Capture candidate inputs and defining scratch admission
 
 Commit `dc1c4e379b` groups the seven actual borrowed Capture owners into a
