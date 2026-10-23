@@ -42,6 +42,10 @@
         (case "snapshot_rejects_independent_tree_accounting_domains" "adversarial" ["RAM-12"] "Snapshots reject trees owned by independent metadata accounting domains.")
         (case "dense_metadata_bound_covers_distinct_versions_and_checks_overflow" "positive" ["RAM-12"] "Distinct dense persistent versions remain within the model bound; bound arithmetic rejects overflow.")
       ])
+      (group "protocol/crucible-ram" "lib" [] [
+        (case "snapshot::tests::shared_control_closes_before_original_refund" "adversarial" ["RAM-12" "STORE-4"] "Actual logical snapshot control deallocation precedes refund of its original finite metadata charge, through ordinary aliases and eight concurrent final borrowers. The genuine budget counter is sampled after System free; cached original tree credit remains distinct, with no native stack or execution admission.")
+        (case "tree::tests::shared_control_closes_before_original_refund" "adversarial" ["RAM-12" "STORE-4"] "Actual persistent tree-node control deallocation precedes refund of its original finite metadata charge, through ordinary aliases and eight concurrent final borrowers. Shared-owner, nullable-root and fixed cache extents remain unchanged; native admission and performance remain unqualified.")
+      ])
     ];
     dirty = component "gate:ram-dirty-epochs" "model" [
       (group "protocol/crucible-ram" "conformance" [] [
@@ -51,6 +55,7 @@
         (case "dirty_chunks_bound_dense_metadata_and_private_forks" "positive" ["TRACK-8" "TRACK-14"] "Dense chunk accounting, acknowledgement order and private model forks.")
       ])
       (group "protocol/crucible-ram" "lib" [] [
+        (case "dirty::tests::shared_control_closes_before_original_refund" "adversarial" ["RAM-12" "TRACK-8"] "Actual dirty-capture control deallocation precedes refund of its original finite metadata charge, through ordinary aliases and eight concurrent final borrowers. The authentic tracker ledger stays live as an independent counter baseline; no guest barrier or native worker funding is qualified.")
         (case "dirty::tests::monotonic_counter_exhaustion_preserves_ledger" "adversarial" ["TRACK-11"] "Monotonic counter exhaustion leaves the prior ledger intact.")
       ])
     ];

@@ -8,6 +8,7 @@
 //! Fork and restore use distinct tracking incarnations and private mutable state.
 
 use crate::budget::Reservation;
+use crate::ownership::TerminalOwner;
 use crate::{MetadataBudget, RamError, RegionClass, Topology};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -134,7 +135,7 @@ struct CaptureInner {
 /// public process protocols must encode their own checked portable records.
 #[derive(Clone, Debug)]
 pub struct DirtyCapture {
-    inner: Arc<CaptureInner>,
+    inner: TerminalOwner<CaptureInner>,
 }
 
 impl DirtyCapture {
@@ -427,7 +428,7 @@ impl DirtyTracker {
             return Err(RamError::InvalidEncoding);
         }
         let capture = DirtyCapture {
-            inner: Arc::new(CaptureInner {
+            inner: TerminalOwner::new(CaptureInner {
                 identity: self.identity.clone(),
                 incarnation: self.incarnation,
                 consumer,
@@ -537,6 +538,37 @@ impl DirtyTracker {
 mod tests {
     use super::*;
     use crate::{Limits, RegionDescriptor};
+
+    #[test]
+    // crucible-lint: allow panic-shortcut -- physical capture accounting must retain its original charge.
+    #[allow(clippy::unwrap_used)]
+    fn shared_control_closes_before_original_refund() {
+        let topology = Topology::new(
+            vec![RegionDescriptor::new("ram", RegionClass::MutableMain, 4096).unwrap()],
+            Limits::default(),
+        )
+        .unwrap();
+        let budget = MetadataBudget::new(64 << 10);
+        let mut tracker = DirtyTracker::new(
+            topology,
+            TrackingIncarnation::new([1; 16]),
+            TrackingLimits::default(),
+            &budget,
+        )
+        .unwrap();
+        tracker
+            .mark_page(PageCoordinate {
+                region_index: 0,
+                page_index: 0,
+            })
+            .unwrap();
+
+        crate::terminal_custody_tests::assert_terminal_credit(
+            &budget,
+            crate::terminal_custody_tests::shared_layout::<CaptureInner>(),
+            || tracker.capture(Consumer::Fingerprint).unwrap(),
+        );
+    }
 
     #[test]
     // crucible-lint: allow panic-shortcut -- this exhaustion test panics if construction violates its fixed fixture.

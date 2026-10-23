@@ -9,11 +9,11 @@
 //! hydration preserves every previously changed descendant.
 
 use crate::budget::Reservation;
+use crate::ownership::{TerminalOwner, TerminalOwnerSlot};
 use crate::{
     Geometry, MetadataBudget, NodeDigest, PageDigest, PageProof, RamError, RamRootDigest,
     RegionTreeDigest, RootRecord, empty_leaf_digest, inner_digest, leaf_digest, region_tree_digest,
 };
-use std::sync::Arc;
 
 const ARC_OVERHEAD: usize = 2 * std::mem::size_of::<usize>();
 
@@ -29,14 +29,17 @@ struct Node {
 enum NodeKind {
     Page(PageDigest),
     Empty,
-    Inner(Arc<Node>, Arc<Node>),
+    Inner(TerminalOwner<Node>, TerminalOwner<Node>),
     Opaque,
 }
 
 impl Node {
-    fn opaque(digest: NodeDigest, budget: &MetadataBudget) -> Result<Arc<Self>, RamError> {
+    fn opaque(
+        digest: NodeDigest,
+        budget: &MetadataBudget,
+    ) -> Result<TerminalOwner<Self>, RamError> {
         let charge = budget.reserve((std::mem::size_of::<Self>() + ARC_OVERHEAD) as u64)?;
-        Ok(Arc::new(Self {
+        Ok(TerminalOwner::new(Self {
             digest,
             kind: NodeKind::Opaque,
             _charge: charge,
@@ -44,9 +47,9 @@ impl Node {
         }))
     }
 
-    fn page(page: PageDigest, budget: &MetadataBudget) -> Result<Arc<Self>, RamError> {
+    fn page(page: PageDigest, budget: &MetadataBudget) -> Result<TerminalOwner<Self>, RamError> {
         let charge = budget.reserve((std::mem::size_of::<Self>() + ARC_OVERHEAD) as u64)?;
-        Ok(Arc::new(Self {
+        Ok(TerminalOwner::new(Self {
             digest: leaf_digest(page),
             kind: NodeKind::Page(page),
             _charge: charge,
@@ -54,9 +57,9 @@ impl Node {
         }))
     }
 
-    fn empty(budget: &MetadataBudget) -> Result<Arc<Self>, RamError> {
+    fn empty(budget: &MetadataBudget) -> Result<TerminalOwner<Self>, RamError> {
         let charge = budget.reserve((std::mem::size_of::<Self>() + ARC_OVERHEAD) as u64)?;
-        Ok(Arc::new(Self {
+        Ok(TerminalOwner::new(Self {
             digest: empty_leaf_digest(),
             kind: NodeKind::Empty,
             _charge: charge,
@@ -66,17 +69,17 @@ impl Node {
 
     fn inner(
         height: u32,
-        left: Arc<Self>,
-        mut right: Arc<Self>,
+        left: TerminalOwner<Self>,
+        mut right: TerminalOwner<Self>,
         budget: &MetadataBudget,
-    ) -> Result<Arc<Self>, RamError> {
+    ) -> Result<TerminalOwner<Self>, RamError> {
         let digest = inner_digest(height, left.digest, right.digest)?;
         // Identical content at the same height can reuse a complete subtree.
         if left.digest == right.digest && !left.has_opaque && !right.has_opaque {
             right = left.clone();
         }
         let charge = budget.reserve((std::mem::size_of::<Self>() + ARC_OVERHEAD) as u64)?;
-        Ok(Arc::new(Self {
+        Ok(TerminalOwner::new(Self {
             digest,
             has_opaque: left.has_opaque || right.has_opaque,
             kind: NodeKind::Inner(left, right),
@@ -89,7 +92,7 @@ impl Node {
 #[derive(Clone, Debug)]
 pub struct RegionTree {
     geometry: Geometry,
-    root: Option<Arc<Node>>,
+    root: TerminalOwnerSlot<Node>,
     origin_digest: RegionTreeDigest,
     budget: MetadataBudget,
 }
@@ -110,7 +113,7 @@ impl RegionTree {
         Ok(Self {
             geometry,
             origin_digest: region_tree_digest(geometry, root.digest),
-            root: Some(root),
+            root: root.into(),
             budget: budget.clone(),
         })
     }
@@ -138,7 +141,7 @@ impl RegionTree {
         Ok(Self {
             geometry,
             origin_digest: region_tree_digest(geometry, root.digest),
-            root: Some(root),
+            root: root.into(),
             budget: budget.clone(),
         })
     }
@@ -159,7 +162,7 @@ impl RegionTree {
     ) -> Result<Self, RamError> {
         Ok(Self {
             geometry: Geometry::new(logical_length)?,
-            root: None,
+            root: TerminalOwnerSlot::default(),
             origin_digest: digest,
             budget: budget.clone(),
         })
@@ -210,7 +213,7 @@ impl RegionTree {
         )?;
         Ok(Self {
             geometry: self.geometry,
-            root: Some(root),
+            root: root.into(),
             origin_digest: self.origin_digest,
             budget: self.budget.clone(),
         })
@@ -240,8 +243,8 @@ impl RegionTree {
 
     /// Reports whether both views share root structure or an opaque source identity.
     pub fn shares_root_with(&self, other: &Self) -> bool {
-        match (&self.root, &other.root) {
-            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+        match (self.root.as_ref(), other.root.as_ref()) {
+            (Some(left), Some(right)) => TerminalOwner::ptr_eq(left, right),
             (None, None) => {
                 self.geometry == other.geometry && self.origin_digest == other.origin_digest
             }
@@ -323,7 +326,7 @@ impl RegionTree {
         let root = rebuild(existing, 0, self.geometry.height(), &sorted, &self.budget)?;
         Ok(Self {
             geometry: self.geometry,
-            root: Some(root),
+            root: root.into(),
             origin_digest: self.origin_digest,
             budget: self.budget.clone(),
         })
@@ -372,26 +375,26 @@ impl RegionTree {
 
 struct UniformNodes<'a> {
     budget: &'a MetadataBudget,
-    empty: [Option<Arc<Node>>; 53],
-    zero: [Option<Arc<Node>>; 53],
+    empty: [TerminalOwnerSlot<Node>; 53],
+    zero: [TerminalOwnerSlot<Node>; 53],
 }
 
 impl<'a> UniformNodes<'a> {
     fn new(budget: &'a MetadataBudget) -> Self {
         Self {
             budget,
-            empty: std::array::from_fn(|_| None),
-            zero: std::array::from_fn(|_| None),
+            empty: std::array::from_fn(|_| TerminalOwnerSlot::default()),
+            zero: std::array::from_fn(|_| TerminalOwnerSlot::default()),
         }
     }
 
-    fn subtree(&mut self, height: u32, zero: bool) -> Result<Arc<Node>, RamError> {
+    fn subtree(&mut self, height: u32, zero: bool) -> Result<TerminalOwner<Node>, RamError> {
         let existing = if zero {
             &self.zero[height as usize]
         } else {
             &self.empty[height as usize]
         };
-        if let Some(node) = existing {
+        if let Some(node) = existing.as_ref() {
             return Ok(node.clone());
         }
         let node = if height == 0 {
@@ -405,9 +408,9 @@ impl<'a> UniformNodes<'a> {
             Node::inner(height, child.clone(), child, self.budget)?
         };
         if zero {
-            self.zero[height as usize] = Some(node.clone());
+            self.zero[height as usize] = node.clone().into();
         } else {
-            self.empty[height as usize] = Some(node.clone());
+            self.empty[height as usize] = node.clone().into();
         }
         Ok(node)
     }
@@ -418,7 +421,7 @@ fn build_zero(
     height: u32,
     geometry: Geometry,
     uniform: &mut UniformNodes<'_>,
-) -> Result<Arc<Node>, RamError> {
+) -> Result<TerminalOwner<Node>, RamError> {
     if start >= geometry.page_count() {
         return uniform.subtree(height, false);
     }
@@ -442,7 +445,7 @@ fn build_digests(
     height: u32,
     pages: &[PageDigest],
     uniform: &mut UniformNodes<'_>,
-) -> Result<Arc<Node>, RamError> {
+) -> Result<TerminalOwner<Node>, RamError> {
     if start >= pages.len() as u64 {
         return uniform.subtree(height, false);
     }
@@ -456,12 +459,12 @@ fn build_digests(
 }
 
 fn rebuild(
-    node: &Arc<Node>,
+    node: &TerminalOwner<Node>,
     start: u64,
     height: u32,
     updates: &[(u64, PageDigest)],
     budget: &MetadataBudget,
-) -> Result<Arc<Node>, RamError> {
+) -> Result<TerminalOwner<Node>, RamError> {
     if updates.is_empty() {
         return Ok(node.clone());
     }
@@ -479,7 +482,7 @@ fn rebuild(
         NodeKind::Inner(left, right) => {
             let new_left = rebuild(left, start, height - 1, &updates[..split], budget)?;
             let new_right = rebuild(right, midpoint, height - 1, &updates[split..], budget)?;
-            if Arc::ptr_eq(left, &new_left) && Arc::ptr_eq(right, &new_right) {
+            if TerminalOwner::ptr_eq(left, &new_left) && TerminalOwner::ptr_eq(right, &new_right) {
                 return Ok(node.clone());
             }
             Node::inner(height, new_left, new_right, budget)
@@ -490,12 +493,12 @@ fn rebuild(
 }
 
 fn hydrate_path(
-    existing: Option<&Arc<Node>>,
+    existing: Option<&TerminalOwner<Node>>,
     height: u32,
     proof: &PageProof,
     path: &[NodeDigest; 53],
     budget: &MetadataBudget,
-) -> Result<Arc<Node>, RamError> {
+) -> Result<TerminalOwner<Node>, RamError> {
     if let Some(node) = existing {
         match &node.kind {
             NodeKind::Opaque if node.digest != path[height as usize] => {
@@ -516,7 +519,9 @@ fn hydrate_path(
                         hydrate_path(Some(right), level, proof, path, budget)?,
                     )
                 };
-                if Arc::ptr_eq(left, &new_left) && Arc::ptr_eq(right, &new_right) {
+                if TerminalOwner::ptr_eq(left, &new_left)
+                    && TerminalOwner::ptr_eq(right, &new_right)
+                {
                     return Ok(node.clone());
                 }
                 return Node::inner(height, new_left, new_right, budget);
@@ -547,4 +552,34 @@ pub(crate) fn maximum_node_metadata(geometry: Geometry) -> Result<u64, RamError>
     nodes
         .checked_mul((std::mem::size_of::<Node>() + ARC_OVERHEAD) as u64)
         .ok_or(RamError::Overflow)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    // crucible-lint: allow panic-shortcut -- physical node accounting must retain its original charge.
+    #[allow(clippy::unwrap_used)]
+    fn shared_control_closes_before_original_refund() {
+        assert_eq!(
+            std::mem::size_of::<TerminalOwner<Node>>(),
+            std::mem::size_of::<std::sync::Arc<Node>>()
+        );
+        assert_eq!(
+            std::mem::size_of::<TerminalOwnerSlot<Node>>(),
+            std::mem::size_of::<Option<std::sync::Arc<Node>>>()
+        );
+        assert_eq!(
+            std::mem::size_of::<UniformNodes<'static>>(),
+            107 * std::mem::size_of::<usize>()
+        );
+        let budget = MetadataBudget::new(64 << 10);
+
+        crate::terminal_custody_tests::assert_terminal_credit(
+            &budget,
+            crate::terminal_custody_tests::shared_layout::<Node>(),
+            || RegionTree::zeroed(4096, &budget).unwrap(),
+        );
+    }
 }

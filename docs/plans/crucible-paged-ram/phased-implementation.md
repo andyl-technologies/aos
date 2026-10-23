@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 580 bindings: 561 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 583 bindings: 564 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2289,9 +2289,9 @@ remain required. Final hermetic storage output
 independently checked successful summaries, including nested results.
 
 Signed shared-control commit `bd53528b8a` is pushed. Mandatory application-target
-compilation is running from `jwcj6gvfamn4h4wwdrqwhhw5j5yajqrc`; all 5,403
-committed Rust/TOML files and six required fixtures match before subsequent
-descriptor-hashing edits.
+compilation passes at `blnjgrka5bxf3zwbzn1v9v5x2qq2wg4x` from immutable
+source `jwcj6gvfamn4h4wwdrqwhhw5j5yajqrc`; all 5,403 committed Rust/TOML
+files and six required fixtures match before subsequent descriptor-hashing edits.
 
 Topology and scoped-root hashing now stream canonical descriptor fields through
 the same field emitter used by serialization. The previous per-region temporary
@@ -2372,8 +2372,45 @@ tests with four ignored cases and the same eight missing-helper-custody
 failures; complete failure details match the preceding baseline after thread-ID
 normalization only. ABI conformance passes at
 `mqgp1s9m5qdn48yqxf6h6r87nhm3zbm9`. All 686 engine tests, 95 policy
-controls and storage/portable-RAM Clippy pass. The current full license-boundary
-attempt is pending; its preceding 639 controller errors remain unresolved.
+controls and storage/portable-RAM Clippy pass. The full license-boundary
+attempt fails again on 639 controller library errors; its boundary assertions
+did not run.
+
+Signed detached-inventory commit `5cf62ecced` is pushed. Required
+application-target compilation is running from
+`yf7b3gi54fls5risj3xmzglmvwq5pcw0`; all 5,405 committed Rust/TOML files and
+six required fixtures match before subsequent logical-control custody edits.
+
+Logical snapshots, persistent tree nodes and dirty-capture receipts now close
+their actual shared allocation before destroying the original metadata charge.
+All aliases use safe terminal extraction; no raw or weak aliases escape. The
+same original finite budget, allocation count and control extent remain in use.
+Pointer-sized nullable roots and both fixed uniform-node caches keep their prior
+extents rather than adding an optional-state discriminant. This component
+change issues no native task, stack, execution or source authority.
+
+All three controls fail on the ordinary-Arc predecessor after actual System
+free: node credit is already zero instead of 112 bytes, snapshot accounting is
+112 instead of 395 bytes, and capture accounting is 2,896 instead of 3,064 bytes.
+With terminal ownership all three pass synchronous and eight-worker concurrent
+final-alias close. Each uses the real original MetadataBudget counter, with
+snapshot tree and tracker ledger baselines held independently; no shadow
+counter or copied financial identity supplies the observation. Public sizes,
+logical byte identities and configured ceilings are unchanged. Hermetic Merkle
+output `g6kj61j0hw6vm1y81nja8ncq7ci2akyl` passes all thirteen selected
+cases, and dirty-epoch output `w3rjpcbzvk1c8kda5dpi50p0bfwskz8s` passes
+all six. Independent review checks every exact test name and all nineteen
+successful summaries. Inventory `cmrdx7f8j3wwlvyi9sr00k62gcq5gg5y` validates
+583 bindings across 243 requirements, with 148 uncovered and zero qualified.
+Hermetic storage output `lhyq0ld607rd75mp6ga5hwm0xil54g3q` passes all
+72 selected cases and 93 successful nested summaries. Broad validation passes
+732 storage tests, 29 portable RAM tests and 1,179 plugin tests. Host validation
+passes 1,385 tests with four ignored cases and the same eight missing-helper-
+custody failures; complete failure details match the preceding baseline after
+thread-ID normalization only. All 686 engine tests and 95 policy controls pass.
+ABI conformance passes at `v7g90arrx4hps436llv75s2d0bqm20sh`. Storage and
+portable-RAM Clippy pass. The preceding full license-boundary attempt retains
+its 639 controller errors and supplies no passing boundary qualification.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`

@@ -2,11 +2,11 @@
 //! Freezes complete logical RAM identity using immutable persistent region trees.
 
 use crate::budget::Reservation;
+use crate::ownership::TerminalOwner;
 use crate::{
     MetadataBudget, PageDigest, PageProof, RamError, RamRootDigest, RegionTree, RootRecord, Scope,
     Topology,
 };
-use std::sync::Arc;
 
 #[derive(Debug)]
 struct SnapshotInner {
@@ -23,7 +23,7 @@ struct SnapshotInner {
 /// the matching immutable bytes or authenticated storage leases separately.
 #[derive(Clone, Debug)]
 pub struct RamSnapshot {
-    inner: Arc<SnapshotInner>,
+    inner: TerminalOwner<SnapshotInner>,
 }
 
 impl RamSnapshot {
@@ -115,7 +115,7 @@ impl RamSnapshot {
             .ok_or(RamError::Overflow)?;
         let charge = budget.reserve(retained_bytes)?;
         Ok(Self {
-            inner: Arc::new(SnapshotInner {
+            inner: TerminalOwner::new(SnapshotInner {
                 topology,
                 trees,
                 budget: budget.clone(),
@@ -279,5 +279,32 @@ impl RamSnapshot {
         trees.extend(self.inner.trees.iter().cloned());
         trees[index] = tree;
         Self::new(self.inner.topology.clone(), trees, &self.inner.budget)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Limits, RegionClass, RegionDescriptor};
+
+    #[test]
+    // crucible-lint: allow panic-shortcut -- physical snapshot accounting must retain its original charge.
+    #[allow(clippy::unwrap_used)]
+    fn shared_control_closes_before_original_refund() {
+        let topology = Topology::new(
+            vec![RegionDescriptor::new("ram", RegionClass::MutableMain, 4096).unwrap()],
+            Limits::default(),
+        )
+        .unwrap();
+        let budget = MetadataBudget::new(64 << 10);
+        let original_tree = RegionTree::zeroed(4096, &budget).unwrap();
+
+        // The original tree keeps node credit stable while only the snapshot's
+        // own shared control and catalog disappear.
+        crate::terminal_custody_tests::assert_terminal_credit(
+            &budget,
+            crate::terminal_custody_tests::shared_layout::<SnapshotInner>(),
+            || RamSnapshot::new(topology.clone(), vec![original_tree.clone()], &budget).unwrap(),
+        );
     }
 }

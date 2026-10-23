@@ -56,11 +56,20 @@ mod digest;
 mod dirty;
 mod error;
 pub mod oracle;
+mod ownership;
 mod page_response;
 mod resource_loan;
 mod snapshot;
 mod topology;
 mod tree;
+
+#[cfg(test)]
+mod terminal_custody_tests;
+
+#[cfg(test)]
+#[global_allocator]
+static TEST_ALLOCATOR: crucible_host_resources::test_support::TestAllocationObserver =
+    crucible_host_resources::test_support::TestAllocationObserver;
 
 pub use budget::{MetadataBudget, MetadataReservation};
 pub use codec::{PageProof, RootRecord};

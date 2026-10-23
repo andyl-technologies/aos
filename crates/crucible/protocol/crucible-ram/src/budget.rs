@@ -25,6 +25,11 @@ struct BudgetInner {
 }
 
 impl MetadataBudget {
+    #[cfg(test)]
+    pub(crate) fn counter_for_test(&self) -> &AtomicU64 {
+        &self.inner.used
+    }
+
     /// Establishes an admitted metadata byte ceiling, including zero if desired.
     pub fn new(max_bytes: u64) -> Self {
         Self {
