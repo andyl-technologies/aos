@@ -974,6 +974,10 @@ async fn soft_deleted_org_stops_serving_and_purges_after_grace() {
 }
 
 /// Current Unix time in seconds.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native protocol tests compare against real service timestamps."
+)]
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

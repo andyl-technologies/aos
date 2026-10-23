@@ -49,6 +49,7 @@
         "crates/hub/aos-hub-model/Cargo.toml"
         "crates/hub/aos-hub-console/Cargo.toml"
         "crates/hub/aos-hub-db/Cargo.toml"
+        "crates/hub/aos-hub-native/Cargo.toml"
         "crates/hub/aos-hub-service/Cargo.toml"
         "crates/hub/aos-hub-api/Cargo.toml"
         "crates/hub/aos-hub-ui/Cargo.toml"
@@ -145,6 +146,7 @@ in
     hub-console = import ./_bazel-hub-console.nix {inherit pkgs;};
     hub-console-wasm = import ./_bazel-hub-console-wasm.nix {inherit pkgs;};
     hub-db = import ./_bazel-hub-db.nix {inherit pkgs;};
+    hub-native = import ./_bazel-hub-native.nix {inherit pkgs;};
     hub-service = import ./_bazel-hub-service.nix {inherit pkgs;};
     package-manager = import ./_bazel-package-manager.nix {inherit pkgs;};
     boot-preparation = import ./_bazel-boot-preparation.nix {inherit pkgs;};
@@ -364,6 +366,8 @@ in
         hub-console-wasm.build
         hub-db.default.tests
         hub-db.all-features.tests
+        hub-native.tests
+        hub-native.production
         hub-service.default.tests
         hub-service.all-features.tests
         package-manager.tests
@@ -485,6 +489,7 @@ in
             hub-console.all
             hub-console-wasm.all
             hub-db.all
+            hub-native.all
             hub-service.all
             package-manager.all
             boot-preparation.all

@@ -20,6 +20,9 @@ load(":hub-service/aliases.bzl", HUB_SERVICE_CRATES = "CRATES")
 load(":hub-service-tests/aliases.bzl", HUB_SERVICE_TESTS_CRATES = "CRATES")
 load(":hub-service-all-features/aliases.bzl", HUB_SERVICE_ALL_FEATURES_CRATES = "CRATES")
 load(":hub-service-all-features-tests/aliases.bzl", HUB_SERVICE_ALL_FEATURES_TESTS_CRATES = "CRATES")
+load(":hub-native.bzl", "HUB_NATIVE_POSTGRES_PACKAGES", "HUB_NATIVE_POSTGRES_FEATURE_VARIANTS", "HUB_NATIVE_TESTS_PACKAGES", "HUB_NATIVE_TESTS_FEATURE_VARIANTS")
+load(":hub-native-postgres/aliases.bzl", HUB_NATIVE_POSTGRES_CRATES = "CRATES")
+load(":hub-native-tests/aliases.bzl", HUB_NATIVE_TESTS_CRATES = "CRATES")
 load(":release-coordination.bzl", "RELEASE_COORDINATION_FEATURE_VARIANTS", "RELEASE_COORDINATION_PACKAGES")
 load(":release-coordination/aliases.bzl", RELEASE_COORDINATION_CRATES = "CRATES")
 load(":registry-native.bzl", "REGISTRY_NATIVE_FEATURE_VARIANTS", "REGISTRY_NATIVE_PACKAGES")
@@ -65,6 +68,8 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:hub_native_postgres_dependencies": HUB_NATIVE_POSTGRES_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:hub_native_tests_dependencies": HUB_NATIVE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_service_dependencies": HUB_SERVICE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_service_tests_dependencies": HUB_SERVICE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_service_all_features_dependencies": HUB_SERVICE_ALL_FEATURES_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -120,6 +125,8 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         + HUB_SERVICE_TESTS_CRATES.items()
         + HUB_SERVICE_ALL_FEATURES_CRATES.items()
         + HUB_SERVICE_ALL_FEATURES_TESTS_CRATES.items()
+        + HUB_NATIVE_POSTGRES_CRATES.items()
+        + HUB_NATIVE_TESTS_CRATES.items()
         + HUB_CONSOLE_CRATES.items()
         + HUB_CONSOLE_WASM_CRATES.items()
         + HUB_DB_CRATES.items()
@@ -956,6 +963,8 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    "hub-native-postgres": HUB_NATIVE_POSTGRES_FEATURE_VARIANTS,
+    "hub-native-tests": HUB_NATIVE_TESTS_FEATURE_VARIANTS,
     "hub-service": HUB_SERVICE_FEATURE_VARIANTS,
     "hub-service-tests": HUB_SERVICE_TESTS_FEATURE_VARIANTS,
     "hub-service-all-features": HUB_SERVICE_ALL_FEATURES_FEATURE_VARIANTS,
@@ -1729,6 +1738,8 @@ APPROVED_LICENSES = [
         family = family,
         definition = "BUILD.bazel",
         extra_definitions = {
+            "hub-native-postgres": ["hub-native.bzl"],
+            "hub-native-tests": ["hub-native.bzl"],
             "hub-service": ["hub-service.bzl"],
             "hub-service-tests": ["hub-service.bzl"],
             "hub-service-all-features": ["hub-service.bzl"],
@@ -1781,6 +1792,8 @@ APPROVED_LICENSES = [
         ("hub-service-tests", HUB_SERVICE_TESTS_PACKAGES, HUB_SERVICE_TEST_ANNOTATIONS, "apache-host"),
         ("hub-service-all-features", HUB_SERVICE_ALL_FEATURES_PACKAGES, HUB_DB_ANNOTATIONS, "apache-host"),
         ("hub-service-all-features-tests", HUB_SERVICE_ALL_FEATURES_TESTS_PACKAGES, HUB_SERVICE_TEST_ANNOTATIONS, "apache-host"),
+        ("hub-native-postgres", HUB_NATIVE_POSTGRES_PACKAGES, HUB_SERVICE_TEST_ANNOTATIONS, "apache-host"),
+        ("hub-native-tests", HUB_NATIVE_TESTS_PACKAGES, HUB_SERVICE_TEST_ANNOTATIONS, "apache-host"),
         ("release-coordination", RELEASE_COORDINATION_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
         ("registry-native", REGISTRY_NATIVE_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
         ("registry-native-tests", REGISTRY_NATIVE_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
@@ -1827,6 +1840,8 @@ APPROVED_LICENSES = [
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
     for family in [
+        "hub-native-postgres",
+        "hub-native-tests",
         "hub-service",
         "hub-service-tests",
         "hub-service-all-features",

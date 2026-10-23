@@ -182,8 +182,8 @@ pub async fn read_text_capped(response: reqwest::Response, cap: u64, what: &str)
 ///   would let a (validated) upstream bounce the hub into the cloud metadata
 ///   service or an internal host with a `302 Location:` it never validated.
 ///   The caller receives the 3xx response and stops.
-/// - **A validating DNS resolver** ([`ValidatingResolver`]) that re-runs the
-///   global-address check ([`is_global_ip`]) at actual connect time on every
+/// - **A validating DNS resolver** (`ValidatingResolver`) that re-runs the
+///   global-address check ([`url_guard::is_global_ip`]) at actual connect time on every
 ///   resolved address and refuses to hand back any local/internal one. This
 ///   closes the DNS-rebinding TOCTOU window in [`is_safe_remote_url`]: the
 ///   address the socket dials is the address that was validated, because the
@@ -195,12 +195,12 @@ pub async fn read_text_capped(response: reqwest::Response, cap: u64, what: &str)
 /// reqwest invokes a custom [`reqwest::dns::Resolve`] **only for DNS names** —
 /// a URL whose host is already an IP literal (`http://169.254.169.254/…`,
 /// `http://[fd00::1]/…`) is handed straight to the connector and never reaches
-/// [`ValidatingResolver`]. The resolver therefore cannot, on its own, stop a
+/// `ValidatingResolver`. The resolver therefore cannot, on its own, stop a
 /// hub-originated request to an internal/metadata literal IP. That gap is
 /// closed by gating **every** hub-originated request URL through
 /// [`is_safe_remote_url`] at its call site before it is issued:
 /// [`is_safe_remote_url`] parses the host and, when it is an IP literal, checks
-/// it directly with [`is_global_ip`] (the *same* predicate the resolver uses),
+/// it directly with [`url_guard::is_global_ip`] (the *same* predicate the resolver uses),
 /// rejecting loopback/link-local/private/metadata literals. The two mechanisms
 /// are complementary — the resolver covers names (and DNS rebinding), the
 /// call-site check covers literals — and together they reject every
@@ -233,7 +233,7 @@ pub async fn hardened_client() -> reqwest::Client {
 /// moment of connection rather than only at the earlier, separate
 /// [`is_safe_remote_url`] resolve. Standard resolution is performed (the
 /// blocking `getaddrinfo` is run on a blocking thread), then every returned
-/// [`SocketAddr`] is checked with [`is_global_ip`]; if *any* address is
+/// [`SocketAddr`] is checked with [`url_guard::is_global_ip`]; if *any* address is
 /// local/internal the whole resolution fails, so a name that flips from a
 /// public answer at validation time to an internal answer at connect time
 /// (DNS rebinding) cannot be reached.
@@ -893,7 +893,7 @@ pub async fn fetch_mirror_upstream(upstream_url: &str) -> Result<Box<dyn Surface
 /// **DNS rebinding:** this check resolves the host once, but the addresses it
 /// validates are *not* the addresses reqwest would independently re-resolve at
 /// connect time. That residual TOCTOU is closed by [`hardened_client`], whose
-/// [`ValidatingResolver`] re-runs [`is_global_ip`] at the actual moment of
+/// `ValidatingResolver` re-runs [`url_guard::is_global_ip`] at the actual moment of
 /// connection — so even a name that flips from a public answer here to an
 /// internal answer later cannot be reached. This function remains a cheap,
 /// fail-fast pre-check at configuration and call time.

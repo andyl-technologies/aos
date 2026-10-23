@@ -2,6 +2,8 @@
 
 def _dependency_profile_impl(ctx):
     if ctx.build_setting_value not in [
+        "hub-native-postgres",
+        "hub-native-tests",
         "hub-service",
         "hub-service-tests",
         "hub-service-all-features",

@@ -87,6 +87,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Exercises native UI elapsed and relative time outside Crucible state."
+    )]
     fn page_contains_title_crumbs_and_statline() {
         let html = page(
             "demo",
@@ -111,6 +115,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Exercises native UI elapsed and relative time outside Crucible state."
+    )]
     fn ago_picks_units() {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

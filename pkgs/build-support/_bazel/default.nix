@@ -83,6 +83,16 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    hub-native-postgres = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-native-postgres";
+    };
+    hub-native-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-native-tests";
+    };
     hub-service = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -373,6 +383,11 @@
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
   };
+  aosBazelHubNativeWorkspace =
+    (import ../../../tests/build/_bazel-hub-native.nix {
+      inherit pkgs;
+      sourceInventory = null;
+    }).workspace;
   aosBazelHubServiceWorkspace =
     (import ../../../tests/build/_bazel-hub-service-configuration.nix {
       inherit pkgs;
@@ -909,6 +924,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelHubNativeLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelHubNativeWorkspace;
     }).launcher;
   aosBazelHubServiceLauncher =
     (import ./development.nix {

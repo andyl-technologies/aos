@@ -914,6 +914,10 @@ fn json_i64(value: &serde_json::Value) -> i64 {
 }
 
 /// Current Unix time in seconds.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native protocol tests compare against real service timestamps."
+)]
 fn now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

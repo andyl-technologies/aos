@@ -32,6 +32,8 @@ aos_dev_bazel() (
       $1 == build-services ||
       $1 == deployment ||
       $1 == hub-portable ||
+      $1 == hub-native-postgres ||
+      $1 == hub-native-tests ||
       $1 == hub-service ||
       $1 == hub-service-tests ||
       $1 == hub-service-all-features ||
@@ -53,7 +55,7 @@ aos_dev_bazel() (
       $1 == hub-client ||
       $1 == hub-model ||
       $1 == hub-model-tests
-    ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device|store|guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|native-foundation|native-foundation-tests|native-foundation-minimal|activation-core|activation-core-tests|activation-storage|activation-systemd|activation-crucible|activation-crucible-tests|cli-support|build-services|deployment|hub-portable|hub-model|hub-model-tests|hub-client|release-preparation|registry-native|registry-native-tests|release-coordination|boot-preparation|boot-preparation-minimal|package-manager|package-manager-tests|hub-db|hub-db-tests|hub-db-all-features|hub-db-all-features-tests|hub-console|hub-console-wasm|hub-service|hub-service-tests|hub-service-all-features|hub-service-all-features-tests>'
+    ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device|store|guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|native-foundation|native-foundation-tests|native-foundation-minimal|activation-core|activation-core-tests|activation-storage|activation-systemd|activation-crucible|activation-crucible-tests|cli-support|build-services|deployment|hub-portable|hub-model|hub-model-tests|hub-client|release-preparation|registry-native|registry-native-tests|release-coordination|boot-preparation|boot-preparation-minimal|package-manager|package-manager-tests|hub-db|hub-db-tests|hub-db-all-features|hub-db-all-features-tests|hub-console|hub-console-wasm|hub-service|hub-service-tests|hub-service-all-features|hub-service-all-features-tests|hub-native-postgres|hub-native-tests>'
     local updater specifications family=$1
     updater=$(aos_dev_nix_build_ordinary -A pkgs.aosBazelDependencyUpdater --no-out-link)
     specifications=$(aos_dev_nix_build_ordinary -A "checks.build.bazel.dependencies.specification-packages.$family" --no-out-link)
@@ -66,7 +68,7 @@ aos_dev_bazel() (
 
   local launcher_attribute=pkgs.aosBazelLauncher
   if [[ $1 == --family ]]; then
-    [[ $# -ge 3 ]] || aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client|release-preparation|registry-native|release-coordination|boot-preparation|package-manager|hub-db|hub-db-all-features|hub-console|hub-console-wasm|hub-service|hub-service-all-features> <command> [labels]'
+    [[ $# -ge 3 ]] || aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client|release-preparation|registry-native|release-coordination|boot-preparation|package-manager|hub-db|hub-db-all-features|hub-console|hub-console-wasm|hub-service|hub-service-all-features|hub-native> <command> [labels]'
     case $2 in
       guest) launcher_attribute=pkgs.aosBazelGuestLauncher ;;
       engine) launcher_attribute=pkgs.aosBazelEngineLauncher ;;
@@ -80,6 +82,7 @@ aos_dev_bazel() (
       native-foundation) launcher_attribute=pkgs.aosBazelNativeFoundationLauncher ;;
       activation-core) launcher_attribute=pkgs.aosBazelActivationCoreLauncher ;;
       activation-storage) launcher_attribute=pkgs.aosBazelActivationStorageLauncher ;;
+      hub-native) launcher_attribute=pkgs.aosBazelHubNativeLauncher ;;
       hub-service) launcher_attribute=pkgs.aosBazelHubServiceLauncher ;;
       hub-service-all-features) launcher_attribute=pkgs.aosBazelHubServiceAllFeaturesLauncher ;;
       hub-db) launcher_attribute=pkgs.aosBazelHubDbLauncher ;;
@@ -101,7 +104,7 @@ aos_dev_bazel() (
       activation-systemd) launcher_attribute=pkgs.aosBazelActivationSystemdLauncher ;;
       formats) launcher_attribute=pkgs.aosBazelFormatsLauncher ;;
       crucible-cli) launcher_attribute=pkgs.aosBazelCrucibleCliLauncher ;;
-      *) aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client|release-preparation|registry-native|release-coordination|boot-preparation|package-manager|hub-db|hub-db-all-features|hub-console|hub-console-wasm|hub-service|hub-service-all-features> <command> [labels]' ;;
+      *) aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client|release-preparation|registry-native|release-coordination|boot-preparation|package-manager|hub-db|hub-db-all-features|hub-console|hub-console-wasm|hub-service|hub-service-all-features|hub-native> <command> [labels]' ;;
     esac
     shift 2
   fi
@@ -116,6 +119,8 @@ aos_dev_bazel() (
       project_options+=(--rust-project-package crates/crucible/guest/crucible-guest)
     elif [[ $launcher_attribute == pkgs.aosBazelQuotaLauncher ]]; then
       project_options+=(--rust-project-package crates/shared/aos-linux-project-quota)
+    elif [[ $launcher_attribute == pkgs.aosBazelHubNativeLauncher ]]; then
+      project_options+=(--rust-project-package crates/hub/aos-hub-native)
     elif [[ $launcher_attribute == pkgs.aosBazelHubServiceLauncher || $launcher_attribute == pkgs.aosBazelHubServiceAllFeaturesLauncher ]]; then
       project_options+=(--rust-project-package crates/hub/aos-hub-service)
     elif [[ $launcher_attribute == pkgs.aosBazelHubDbLauncher || $launcher_attribute == pkgs.aosBazelHubDbAllFeaturesLauncher ]]; then

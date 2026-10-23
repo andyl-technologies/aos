@@ -475,6 +475,10 @@ pub async fn purge_expired_orgs(db: &Database, now: i64) -> Result<Vec<String>> 
 }
 
 /// Current Unix time in seconds.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native service timestamps use the host clock outside Crucible state."
+)]
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

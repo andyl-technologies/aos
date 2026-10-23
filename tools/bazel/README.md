@@ -2702,9 +2702,39 @@ database crate, while the service retains its default feature selection.
 Model fixture features and Transfer's default feature stay disabled in both
 graphs, matching the observed Cargo selections.
 
-These frozen Cargo baselines precede Native's Bazel qualification. Live
+## Native Hub conversion
+
+`aos-dev bazel hub-native build` selects the default native test graph;
+`aos-dev bazel hub-native rust-project` exports its editor graph. Dependency
+updates expose separate `hub-native-tests` and `hub-native-postgres` profiles.
+The latter compiles the library and both installed binaries with PostgreSQL,
+preserving the observed Cargo feature selections described above.
+
+The BUILD declaration retains 26 libtest artifacts, the compile doctest,
+documentation, formatting and 29 Clippy targets. Git/SSH cases use declared
+source-built tools and an explicit identity fixture. The command coverage test
+reads its declared VM test source directly, so discovering that source does
+not depend on Cargo manifests being present in the Bazel workspace. Reading
+the VM test source does not qualify VM execution.
+
+`tests/evidence/hub-native-source-graph.json` retains validation of all 49 SDK
+exports and 38 configured family inventories. The previous 47 SDKs retain
+their generated files and locks; Native adds separate production and test
+SDKs with the recorded target/generator feature roles.
+`tests/evidence/hub-native-development-checks.json` records 526 configured
+metadata targets across 45 analysis-only selections, core evaluation, the
+developer CLI routing harness and 198 policy tests.
+
+Native lint repairs preserve host entropy, clocks and randomized hashing with
+narrow exceptions where those operations are intentional. All 310 test
+declarations remain, with no ignored declarations. Documentation links were
+repaired, including a stale description of the placement-specific writer;
+that documentation correction does not change the writer implementation.
+Final uncached runtime, developer, generated-asset and selected editor results
+are retained in a separate qualification report when complete. Live
 PostgreSQL/MariaDB, the native operator VM, Worker execution, full compiler
-argument equivalence and production migration remain separate gates.
+argument equivalence, performance acceptance and production migration remain
+separate gates.
 
 ## Worker Cargo baselines
 

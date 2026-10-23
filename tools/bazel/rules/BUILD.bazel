@@ -370,3 +370,15 @@ config_setting(
     flag_values = {":dependency_profile": "hub-service-all-features-tests"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "hub_native_postgres_dependencies",
+    flag_values = {":dependency_profile": "hub-native-postgres"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_native_tests_dependencies",
+    flag_values = {":dependency_profile": "hub-native-tests"},
+    visibility = ["//visibility:public"],
+)

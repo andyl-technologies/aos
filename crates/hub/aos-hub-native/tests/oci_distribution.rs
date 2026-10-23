@@ -1157,6 +1157,10 @@ async fn repository_inventory_uses_only_the_ready_oci_delivery_authority() {
     );
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native protocol tests compare against real service timestamps."
+)]
 fn forged_action_token(registry: &RunningRegistry, repository: &str, action: &str) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -3092,6 +3096,10 @@ async fn soft_deleted_registry_owner_stops_every_distribution_endpoint_immediate
 }
 
 #[tokio::test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native protocol tests compare against real service timestamps."
+)]
 async fn upload_resumes_after_materialization_before_evidence_and_rejects_wrong_terminal_digest() {
     let registry = spawn_registry("private", true, "hub_auth").await;
     let token = exchange_oci_token(&registry, &["repository:aos:pull,push"]).await;

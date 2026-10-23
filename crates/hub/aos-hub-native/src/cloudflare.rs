@@ -677,6 +677,10 @@ fn json_array(v: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
 /// supply them. A 32-byte value yields the 64 hex chars the seal key parses as a
 /// raw AES-256 key.
 #[must_use]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Provisioned production secrets require operating-system entropy."
+)]
 pub fn generate_hex_secret(bytes: usize) -> String {
     use rand::RngCore;
     let mut buf = vec![0u8; bytes];
@@ -852,11 +856,11 @@ fn validate_recovery_response(value: &serde_json::Value, expected_schema: &str) 
         bail!("HubDb recovery response has an unexpected schema");
     }
     for field in ["database_instance", "deployment_id"] {
-        require_recovery_string(&value, field)?;
+        require_recovery_string(value, field)?;
     }
     match expected_schema {
         "aos.hub.worker-recovery-bookmark/v1" => {
-            require_recovery_string(&value, "bookmark")?;
+            require_recovery_string(value, "bookmark")?;
             match value.get("requested_timestamp_ms") {
                 Some(serde_json::Value::Null) => {}
                 Some(serde_json::Value::Number(timestamp))
@@ -872,8 +876,8 @@ fn validate_recovery_response(value: &serde_json::Value, expected_schema: &str) 
             }
         }
         "aos.hub.worker-recovery-restore/v1" => {
-            require_recovery_string(&value, "restore_bookmark")?;
-            require_recovery_string(&value, "undo_bookmark")?;
+            require_recovery_string(value, "restore_bookmark")?;
+            require_recovery_string(value, "undo_bookmark")?;
             if value
                 .get("restart_required")
                 .and_then(serde_json::Value::as_bool)
@@ -1160,6 +1164,10 @@ pub enum DeployMode {
 ///
 /// Returns an error if the id-discovery `list` calls fail or the named
 /// resources cannot be found afterwards.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserves the explicit deployment provisioning interface."
+)]
 pub async fn provision(
     assets: &Assets,
     name: &str,
@@ -1562,6 +1570,10 @@ pub async fn deploy(
 /// response use distinct HMAC domains, a fresh nonce, and bounded timestamps.
 /// It runs before `wrangler deploy` and before any Worker secret write, so a
 /// missing or stale gateway key cannot create or rotate a Worker deployment.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Gateway authentication challenges require unpredictable nonces."
+)]
 async fn authenticate_gateway_contract(gateway_url: &str, shared_key: &str) -> Result<()> {
     use base64::Engine as _;
     use rand::RngCore as _;

@@ -33,7 +33,7 @@
 //! - [`config`] — the SQL-backed configuration change-set engine: drafts,
 //!   semantic diffs, atomic apply, and snapshot-targeted forward revert
 //!   over the append-only audit/changeset/revision tables.
-//! - [`console`] — shared browser-session, login, account-security, invitation,
+//! - [`aos_hub_service::web::console`] — shared browser-session, login, account-security, invitation,
 //!   and device-approval ceremonies. Resource management is the hermetic
 //!   Leptos client over the canonical Connect API.
 //! - [`domain`] — tenancy/IAM domain model: orgs, projects, principals,
@@ -61,7 +61,7 @@
 //! - [`gitwrite`] — git-backed configuration change requests: writes a
 //!   draft-signed commit editing a committed file to
 //!   `refs/hub/changes/<change_id>` for a maintainer to review and promote.
-//! - [`rpc`] — the `aos.hub.v1` ConnectRPC read-path services plus the
+//! - [`aos_hub_service::connect`] — the `aos.hub.v1` ConnectRPC read-path services plus the
 //!   tenancy and webhook write-path services.
 //! - [`seed`] — dev seed: populates a fresh hub with a browsable, signed demo
 //!   registry, a demo org/user/password, and a sample publish token.

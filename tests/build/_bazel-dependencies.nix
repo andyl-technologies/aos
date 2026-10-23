@@ -1,5 +1,64 @@
 ##! Dependency resolution is an explicit update; ordinary targets export specs.
 {pkgs}: let
+  profiles = [
+    "hub-native-postgres"
+    "hub-native-tests"
+    "hub-service"
+    "hub-service-tests"
+    "hub-service-all-features"
+    "hub-service-all-features-tests"
+    "hub-console"
+    "hub-console-wasm"
+    "hub-db"
+    "hub-db-tests"
+    "hub-db-all-features"
+    "hub-db-all-features-tests"
+    "package-manager"
+    "package-manager-tests"
+    "boot-preparation"
+    "boot-preparation-minimal"
+    "release-coordination"
+    "registry-native"
+    "registry-native-tests"
+    "release-preparation"
+    "hub-client"
+    "hub-model"
+    "hub-model-tests"
+    "hub-portable"
+    "deployment"
+    "build-services"
+    "cli-support"
+    "activation-crucible"
+    "activation-crucible-tests"
+    "activation-systemd"
+    "activation-storage"
+    "activation-core"
+    "activation-core-tests"
+    "core"
+    "device"
+    "store"
+    "guest"
+    "engine"
+    "quota"
+    "session"
+    "control"
+    "qemu-host"
+    "store-s3"
+    "daemon"
+    "crucible-cli"
+    "native-foundation"
+    "native-foundation-tests"
+    "native-foundation-minimal"
+    "formats"
+  ];
+
+  publishedProfiles = builtins.attrNames (pkgs.lib.filterAttrs
+    (name: type:
+      type
+      == "directory"
+      && builtins.pathExists (../../third_party/rust + "/${name}/sources.json"))
+    (builtins.readDir ../../third_party/rust));
+
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
     sourceDirectories = ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "third_party/rust"];
@@ -12,19 +71,23 @@ in rec {
     targets = ["//third_party/rust:core_specification_package"];
   };
   specifications = specification-packages.core;
-  specification-packages = builtins.listToAttrs (map (family: {
-    name = family;
-    value = pkgs.mkAosBazelPackage {
-      pname = "aos-rust-${family}-specifications";
-      version = "1";
-      build = pkgs.mkAosBazelBuild {
-        pname = "aos-bazel-${family}-rust-specifications";
-        inherit workspace;
-        targets = ["//third_party/rust:${family}_specification_package"];
-      };
-      packageLabel = "//third_party/rust:${family}_specification_package";
-    };
-  }) ["hub-service" "hub-service-tests" "hub-service-all-features" "hub-service-all-features-tests" "hub-console" "hub-console-wasm" "hub-db" "hub-db-tests" "hub-db-all-features" "hub-db-all-features-tests" "package-manager" "package-manager-tests" "boot-preparation" "boot-preparation-minimal" "release-coordination" "registry-native" "registry-native-tests" "release-preparation" "hub-client" "hub-model" "hub-model-tests" "hub-portable" "deployment" "build-services" "cli-support" "activation-crucible" "activation-crucible-tests" "activation-systemd" "activation-storage" "activation-core" "activation-core-tests" "core" "device" "store" "guest" "engine" "quota" "session" "control" "qemu-host" "store-s3" "daemon" "crucible-cli" "native-foundation" "native-foundation-tests" "native-foundation-minimal" "formats"]);
+  # Missing or duplicate exports must fail instead of silently dropping an SDK.
+  specification-packages = assert builtins.length profiles == builtins.length (pkgs.lib.unique profiles);
+  assert builtins.sort builtins.lessThan profiles == publishedProfiles;
+    builtins.listToAttrs (map (family: {
+        name = family;
+        value = pkgs.mkAosBazelPackage {
+          pname = "aos-rust-${family}-specifications";
+          version = "1";
+          build = pkgs.mkAosBazelBuild {
+            pname = "aos-bazel-${family}-rust-specifications";
+            inherit workspace;
+            targets = ["//third_party/rust:${family}_specification_package"];
+          };
+          packageLabel = "//third_party/rust:${family}_specification_package";
+        };
+      })
+      profiles);
   core = pkgs.mkAosBazelCheck {
     pname = "aos-bazel-external-rust-pilot";
     workspace = pkgs.mkAosBazelWorkspace {
