@@ -1,13 +1,13 @@
-From e82bb4c78da7af3351ef6473935a2be2feb01a2d Mon Sep 17 00:00:00 2001
+From b01e82be2e8f9c98f7e3ba6380860b5b2a12a1db Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] plugins: retain bounded construction, request and history
- ownership
+Subject: [PATCH] plugins: preserve source ownership and constructor
+ coordinates
 
-Carry the complete observation implementation and canonical owner lineage
-with actual constructor, installed Original, request and retained history
-bodies. Preserve ordinary execution, independent observations and explicit
-refusal where complete containing ownership or profiles are unavailable.
+Retain the complete canonical observation implementation and its owner
+lineage. Order the actual invocation caller declaration before owning uses
+and validate constructor callbacks against genuine lender publication.
+Ordinary behavior and explicit missing-profile refusals remain unchanged.
 
 This cumulative source delivery does not assert binary, runtime, paid
 issuer or complete profile qualification.
@@ -223715,10 +223715,10 @@ index 0000000000000000000000000000000000000000..14c8675dce376654aaf5573bf147756b
 +}
 diff --git a/plugins/crucible-matched-quantum-construction-original.inc.h b/plugins/crucible-matched-quantum-construction-original.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..1335cc31463c829bb672104f8f67aea90c316f5d
+index 0000000000000000000000000000000000000000..bb9074c3a706b746c7db28f43a2874d045d546dd
 --- /dev/null
 +++ b/plugins/crucible-matched-quantum-construction-original.inc.h
-@@ -0,0 +1,582 @@
+@@ -0,0 +1,598 @@
 +/*
 + * Original Work projection for the actual installed MATCHED_CONSTRUCT Original.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -223806,13 +223806,29 @@ index 0000000000000000000000000000000000000000..1335cc31463c829bb672104f8f67aea9
 +        constructor->member != &startup_source.command_member ||
 +        constructor->receiver != receiver || !constructor->lender ||
 +        constructor->receiver_serial != receiver->serial ||
-+        constructor->recipient_serial != receiver->recipient_serial ||
 +        constructor->publication_sequence != receiver->publication.sequence ||
 +        constructor->loan_generation != receiver->publication.loan_generation ||
 +        constructor->ticket_serial != receiver->publication.ticket_serial ||
 +        constructor->lender != &startup_source.pending_command_lender ||
 +        constructor->lender->canonical_owner != constructor->lender ||
-+        !constructor->lender->held || constructor->lender->uncertain ||
++        !constructor->lender->attempted || !constructor->lender->held ||
++        constructor->lender->consumed || constructor->lender->return_attempted ||
++        constructor->lender->observing || constructor->lender->producer_returned ||
++        constructor->lender->process != caller->process ||
++        constructor->lender->thread.thread != caller->thread.thread ||
++        constructor->lender->receiver != receiver ||
++        constructor->lender->receiver_serial != receiver->serial ||
++        !constructor->recipient_serial || constructor->recipient_serial == UINT64_MAX ||
++        constructor->recipient_serial != constructor->lender->recipient_serial ||
++        !pending_runtime_field(startup_source.command_member.runtime_base,
++            startup_source.command_member.runtime_extent, constructor->lender->holder,
++            sizeof(*constructor->lender->holder), _Alignof(*constructor->lender->holder)) ||
++        !pending_runtime_field(startup_source.command_member.runtime_base,
++            startup_source.command_member.runtime_extent, constructor->lender->serial_holder,
++            sizeof(*constructor->lender->serial_holder),
++            _Alignof(*constructor->lender->serial_holder)) ||
++        *constructor->lender->holder != constructor->lender ||
++        *constructor->lender->serial_holder != constructor->lender_serial ||
 +        constructor->lender->serial != constructor->lender_serial ||
 +        constructor->lender->constructor != constructor ||
 +        constructor->lender->constructor_serial != constructor->serial ||
@@ -224303,10 +224319,10 @@ index 0000000000000000000000000000000000000000..1335cc31463c829bb672104f8f67aea9
 +}
 diff --git a/plugins/crucible-matched-quantum-construction-wrapper.inc.h b/plugins/crucible-matched-quantum-construction-wrapper.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..825ba1abda555a344c5c70a5ad1dcfc038092d12
+index 0000000000000000000000000000000000000000..6e05b9064e14b64fd6ca82bf056a9866a6365405
 --- /dev/null
 +++ b/plugins/crucible-matched-quantum-construction-wrapper.inc.h
-@@ -0,0 +1,420 @@
+@@ -0,0 +1,436 @@
 +/*
 + * Original Work projection for the actual fixed MATCHED_CONSTRUCT wrapper.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -224369,13 +224385,29 @@ index 0000000000000000000000000000000000000000..825ba1abda555a344c5c70a5ad1dcfc0
 +        constructor->member != &startup_source.command_member ||
 +        constructor->receiver != receiver || !constructor->lender ||
 +        constructor->receiver_serial != receiver->serial ||
-+        constructor->recipient_serial != receiver->recipient_serial ||
 +        constructor->publication_sequence != receiver->publication.sequence ||
 +        constructor->loan_generation != receiver->publication.loan_generation ||
 +        constructor->ticket_serial != receiver->publication.ticket_serial ||
 +        constructor->lender != &startup_source.pending_command_lender ||
 +        constructor->lender->canonical_owner != constructor->lender ||
-+        !constructor->lender->held || constructor->lender->uncertain ||
++        !constructor->lender->attempted || !constructor->lender->held ||
++        constructor->lender->consumed || constructor->lender->return_attempted ||
++        constructor->lender->observing || constructor->lender->producer_returned ||
++        constructor->lender->process != caller->process ||
++        constructor->lender->thread.thread != caller->thread.thread ||
++        constructor->lender->receiver != receiver ||
++        constructor->lender->receiver_serial != receiver->serial ||
++        !constructor->recipient_serial || constructor->recipient_serial == UINT64_MAX ||
++        constructor->recipient_serial != constructor->lender->recipient_serial ||
++        !pending_runtime_field(startup_source.command_member.runtime_base,
++            startup_source.command_member.runtime_extent, constructor->lender->holder,
++            sizeof(*constructor->lender->holder), _Alignof(*constructor->lender->holder)) ||
++        !pending_runtime_field(startup_source.command_member.runtime_base,
++            startup_source.command_member.runtime_extent, constructor->lender->serial_holder,
++            sizeof(*constructor->lender->serial_holder),
++            _Alignof(*constructor->lender->serial_holder)) ||
++        *constructor->lender->holder != constructor->lender ||
++        *constructor->lender->serial_holder != constructor->lender_serial ||
 +        constructor->lender->serial != constructor->lender_serial ||
 +        constructor->lender->constructor != constructor ||
 +        constructor->lender->constructor_serial != constructor->serial ||
@@ -275164,6 +275196,35 @@ index 0000000000000000000000000000000000000000..f33911c6d93010f8c345aa392c9b7974
 +    object_unref(OBJECT(retained_chardev));
 +    return transferred;
 +}
+diff --git a/plugins/crucible-source-invocation.inc.h b/plugins/crucible-source-invocation.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..bc9f828a09ca9a9f3409222e8c543d61bb5bf406
+--- /dev/null
++++ b/plugins/crucible-source-invocation.inc.h
+@@ -0,0 +1,23 @@
++/*
++ * Actual caller observations shared by Source owning invocations.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++#ifndef CRUCIBLE_SOURCE_INVOCATION_H
++#define CRUCIBLE_SOURCE_INVOCATION_H
++
++/* Observe the invoking process/thread before any metadata gate. Locked
++ * identities compare this concrete observation with their retained owner. */
++typedef struct QemuCrucibleSourceInvocationCaller {
++    pid_t process;
++    QemuThread thread;
++} QemuCrucibleSourceInvocationCaller;
++
++static QemuCrucibleSourceInvocationCaller source_invocation_caller(void)
++{
++    QemuCrucibleSourceInvocationCaller caller = { .process = getpid() };
++
++    qemu_thread_get_self(&caller.thread);
++    return caller;
++}
++
++#endif
 diff --git a/plugins/crucible-source-preconstruct-stop.inc.h b/plugins/crucible-source-preconstruct-stop.inc.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..073a51bf635c782a86cf098513a6b3fd3d537d0a
@@ -276449,10 +276510,10 @@ index 0000000000000000000000000000000000000000..56af4f0f563adbe761bdbdf83e1c7e62
 +}
 diff --git a/plugins/crucible-startup-source.c b/plugins/crucible-startup-source.c
 new file mode 100644
-index 0000000000000000000000000000000000000000..8af9a39b27f5a96ef8cb60679e804cad21130453
+index 0000000000000000000000000000000000000000..b82f9a44a97e2385674b25308af853db7c23e75c
 --- /dev/null
 +++ b/plugins/crucible-startup-source.c
-@@ -0,0 +1,8991 @@
+@@ -0,0 +1,8992 @@
 +/*
 + * Original installer startup source custody
 + *
@@ -285345,6 +285406,7 @@ index 0000000000000000000000000000000000000000..8af9a39b27f5a96ef8cb60679e804cad
 +    QemuCrucibleSourceConstructorRetirementResult result);
 +static bool matched_constructor_retirement_closed(void);
 +
++#include "crucible-source-invocation.inc.h"
 +#include "crucible-quantum-roles.inc.h"
 +#include "crucible-pending-command.inc.h"
 +#include "crucible-quantum-bank.inc.h"
@@ -290843,10 +290905,10 @@ index 0000000000000000000000000000000000000000..63404456fef04af4b38f94f4f8d280bd
 +#endif
 diff --git a/plugins/crucible-work-termination.inc.h b/plugins/crucible-work-termination.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..22d953bfaa86ec1fc3405d04e515d79cc5004086
+index 0000000000000000000000000000000000000000..ddbc549f1285a1b1784b01abc972b4022c11a1a3
 --- /dev/null
 +++ b/plugins/crucible-work-termination.inc.h
-@@ -0,0 +1,844 @@
+@@ -0,0 +1,829 @@
 +/*
 + * Irreversible semantic stopping under actual Source owning invocations.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -290857,21 +290919,6 @@ index 0000000000000000000000000000000000000000..22d953bfaa86ec1fc3405d04e515d79c
 +static bool source_role_stop_closed(void);
 +static QemuCrucibleSourceQuantumWorkEndResult source_role_stop_construction_refusal(
 +    QemuCrucibleOutcomeConstructionReturnedFactoryView factory, bool preconstruct);
-+
-+/* Observe the invoking process/thread before any metadata gate. Locked
-+ * identities compare this concrete observation with their retained owner. */
-+typedef struct QemuCrucibleSourceInvocationCaller {
-+    pid_t process;
-+    QemuThread thread;
-+} QemuCrucibleSourceInvocationCaller;
-+
-+static QemuCrucibleSourceInvocationCaller source_invocation_caller(void)
-+{
-+    QemuCrucibleSourceInvocationCaller caller = { .process = getpid() };
-+
-+    qemu_thread_get_self(&caller.thread);
-+    return caller;
-+}
 +
 +static int matched_quantum_deferred_parent_at_process_locked(
 +    QemuCrucibleSourceMatchedQuantumDeferred *parent, uint64_t epoch, pid_t process);
@@ -303082,7 +303129,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..59953ef19fd19a919392be3ed3a71dfa9442f1f4
+index 0000000000000000000000000000000000000000..43db24eb4818ae69593fc24db78894ac3633cd76
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,182 @@
@@ -303152,7 +303199,7 @@ index 0000000000000000000000000000000000000000..59953ef19fd19a919392be3ed3a71dfa
 +    'include/plugins/qemu-plugin.h':
 +        '98dffedb987540b27b5725b202fb65deaec3c9b1bedf0f80c7fcf6fcda499fe4',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f2108ca1cff5b6a33a2a4c64cb7e2a5af46247dddb26b99f698a4a819c0f7d67',
++        '3d4e95dad1e9147b7460254dea867c574a88c23f8aba385b4732a3c00486a422',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '6a7d82751791bdf81a1ccf64d81ed12c28680068b507b220199b245c760748e5',
 +}
@@ -366342,7 +366389,7 @@ index 0000000000000000000000000000000000000000..267e313f943977d178885522eee43768
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..74f4f2b2963c5d5d929ada755262e94053715256
+index 0000000000000000000000000000000000000000..7c1fc3892aa7c63324963f9379159d7ca934688b
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -366360,7 +366407,7 @@ index 0000000000000000000000000000000000000000..74f4f2b2963c5d5d929ada755262e940
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f2108ca1cff5b6a33a2a4c64cb7e2a5af46247dddb26b99f698a4a819c0f7d67',
++        '3d4e95dad1e9147b7460254dea867c574a88c23f8aba385b4732a3c00486a422',
 +}
 +
 +FUNCTIONS = (
@@ -366448,7 +366495,7 @@ index 0000000000000000000000000000000000000000..74f4f2b2963c5d5d929ada755262e940
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..31d0bfbdae8e555e838751dbdfd286e646cd179e
+index 0000000000000000000000000000000000000000..e505a960c0c9fd8791046f28e43e73aaa42ce22c
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -366469,7 +366516,7 @@ index 0000000000000000000000000000000000000000..31d0bfbdae8e555e838751dbdfd286e6
 +    'plugins/crucible-checkpoint-finalizer.inc.h':
 +        '6616d8f61ceaa17d668033d824d0fd6dc37ff4fafe76fc7665582a80447c7303',
 +    'plugins/crucible-startup-source.c':
-+        '2a75d49454d00fa4f918e48f83931a8ecfb8ec06a80d0ce8ae3db4afda972ca7',
++        '98438c7b002a671344a184cc0f33a340a6f9f91271e0799a7ef4d364a9b44f13',
 +    'plugins/crucible-startup-source.h':
 +        '1a850788eb0cafb3ed85d413ae91d4df16d16ed46d28cb32b6056c76e8b2471b',
 +    'include/plugins/qemu-plugin.h':
@@ -366479,7 +366526,7 @@ index 0000000000000000000000000000000000000000..31d0bfbdae8e555e838751dbdfd286e6
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f2108ca1cff5b6a33a2a4c64cb7e2a5af46247dddb26b99f698a4a819c0f7d67',
++        '3d4e95dad1e9147b7460254dea867c574a88c23f8aba385b4732a3c00486a422',
 +}
 +
 +FUNCTIONS = (
@@ -366695,7 +366742,7 @@ index 0000000000000000000000000000000000000000..31d0bfbdae8e555e838751dbdfd286e6
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..489139af91c8730c1eb6f98dc15c2104cb41ec88
+index 0000000000000000000000000000000000000000..6e0b81f4e4e2fa608e21f57ed7b6577d81f5f9fc
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -366719,7 +366766,7 @@ index 0000000000000000000000000000000000000000..489139af91c8730c1eb6f98dc15c2104
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f2108ca1cff5b6a33a2a4c64cb7e2a5af46247dddb26b99f698a4a819c0f7d67',
++        '3d4e95dad1e9147b7460254dea867c574a88c23f8aba385b4732a3c00486a422',
 +}
 +
 +FUNCTIONS = (
@@ -366813,7 +366860,7 @@ index 0000000000000000000000000000000000000000..489139af91c8730c1eb6f98dc15c2104
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..fd964f03a926dcb9f19e2270a85d775de358a970
+index 0000000000000000000000000000000000000000..94e23c8bccad04597e3c4ef9ef0e3ccd99575740
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,793 @@
@@ -366897,15 +366944,15 @@ index 0000000000000000000000000000000000000000..fd964f03a926dcb9f19e2270a85d775d
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f2108ca1cff5b6a33a2a4c64cb7e2a5af46247dddb26b99f698a4a819c0f7d67',
++        '3d4e95dad1e9147b7460254dea867c574a88c23f8aba385b4732a3c00486a422',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '0f49b3b6dae1aa4a28ab28457b532d184045a4a6e2001bfb2c70f0229d4eb8bd',
++        '2184e15625b3abc3d5876fd7de891f4a51e4061c8ee3fe63666f72c638a6331b',
 +    'meson.build':
 +        '4a31bafa30048a216a0d8a4c697936abf83f7666ad28fcb2af48ec306f905add',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        '153138370240e25a5a429685f6557dfa76e0309ff6fe3700530215ae61158269',
 +    'tests/unit/meson.build':
-+        '7565dbbb53eca44bab2a961a268592258c53b24d9e306c8ac10e2f755c6c91ae',
++        'b5bccd1ff63e3e73d98bb1a7cdd082e63d5e063163461bb86e97ba814f9de3ae',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '6a7d82751791bdf81a1ccf64d81ed12c28680068b507b220199b245c760748e5',
 +    'system/crucible-preexec-publisher-offer.inc.h':
@@ -367612,10 +367659,10 @@ index 0000000000000000000000000000000000000000..fd964f03a926dcb9f19e2270a85d775d
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..8a53e6ebd868da79724b87d17f42f27d7269d4aa
+index 0000000000000000000000000000000000000000..4bb0d15ea4f71752742b27cae6e8462e7fb7e3e0
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,1992 @@
+@@ -0,0 +1,1993 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -367625,6 +367672,7 @@ index 0000000000000000000000000000000000000000..8a53e6ebd868da79724b87d17f42f27d
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
++    'plugins/crucible-source-invocation.inc.h': '22465b4c98c8dc2c2242c8b067069ebcec782a7f7660cada642f76fcb0e597e7',
 +    'plugins/crucible-outcome-recipient-history.inc.h': '5afef786276ff00a99b5b5fa3dd0f28273d5a414caeb60347807c0aa4a5652cf',
 +    'system/crucible-preexec-publisher-outcome-history.inc.h': '332c36e4efeeb62285590796b1a09bec450743783bceabc4a8f8a9da5127716e',
 +    'include/system/crucible-outcome-request.h': 'a68f7ed3492a4606c05f0b95bc36cc136ec65701200c42d69db2d20565a8c2ef',
@@ -367665,7 +367713,7 @@ index 0000000000000000000000000000000000000000..8a53e6ebd868da79724b87d17f42f27d
 +    'plugins/crucible-matched-original-move.h': 'b96324c650c4be319a1df78ec3f459255dfb8c1740693d795e5c4200739fd881',
 +    'plugins/crucible-matched-original-move.inc.h': '2688b45e937fe900c764489c8df5d60bd44bd4b16e8b6a8df6e52dd7b858ca68',
 +
-+    'plugins/crucible-matched-quantum-construction-original.inc.h': '9b1e4e60d0930105bc80c0a7416ef03edc6085854069cd56660c61aa4878cb13',
++    'plugins/crucible-matched-quantum-construction-original.inc.h': 'dc5c8f7aa38341a6677eac5f9495cef9d667b57b572727efcbd25d8c09f5fd5b',
 +    'plugins/crucible-advance-outcome-original.h': 'b956581462bba86626c5e3913f82405ee3477e283e2f2fc3ddb04efebd723311',
 +    'plugins/crucible-deferred-cleanup-preconstruct-driver.inc.h':
 +        '24d11c4198a7cc6047340236bafe46040f383b382bbf1e6d7c970bbb903faf67',
@@ -367678,7 +367726,7 @@ index 0000000000000000000000000000000000000000..8a53e6ebd868da79724b87d17f42f27d
 +    'plugins/crucible-deferred-cleanup-construction-return.inc.h':
 +        '0a86241f0603ae4b837cf0aeb3e8c85541db45f94033f9ac5e540b9c2b93c7d4',
 +    'plugins/crucible-matched-quantum-construction-wrapper.inc.h':
-+        'c5687e45c4d313429df7b07cc88acb13f813779ed030b70cc54ebf57f6cd539d',
++        '5f3de63fa3376869897d44e7cf75448935fd5ca1213d19c4f6d971d29166abaf',
 +    'plugins/crucible-advance-outcome-construction.h':
 +        '23f70e002aec1fc6f8beac5712e351bbbe89f005c718edbd0f8c6108f80f2817',
 +    'include/system/crucible-construction-disposal.h':
@@ -367779,7 +367827,7 @@ index 0000000000000000000000000000000000000000..8a53e6ebd868da79724b87d17f42f27d
 +    'system/crucible-preexec-publisher-work-end.inc.h':
 +        '06aa387b24cf7a6f28f8720684c0dffb742601d16d3d84736446c4e2ec2be4e1',
 +    'plugins/crucible-work-termination.inc.h':
-+        '10178c5b18419de2f48b89b18c356c5f9e7d35976d2ffa0703b454db6d8c79b0',
++        '783eba7c8dd5adf9436dfa1318105b615f6c73349411ab3d982f52a20e0d4f88',
 +    'plugins/crucible-work-termination-owner.h':
 +        '0faa56c577c0d394149064f60b41dbee1abedff01a6eebea69f135632a296003',
 +    'plugins/crucible-matched-quantum-outcome-origin.inc.h':
@@ -368139,7 +368187,7 @@ index 0000000000000000000000000000000000000000..8a53e6ebd868da79724b87d17f42f27d
 +    'tests/unit/crucible-fault-node-restore-fixture.inc.h':
 +        '3daaa09d9d1fa487a29e49d63c568798fc3c3a3420387b40aa36758e4b49632e',
 +    'tests/unit/meson.build':
-+        '7565dbbb53eca44bab2a961a268592258c53b24d9e306c8ac10e2f755c6c91ae',
++        'b5bccd1ff63e3e73d98bb1a7cdd082e63d5e063163461bb86e97ba814f9de3ae',
 +    'tests/unit/test-crucible-action-edge-post.py':
 +        '5f2722de0b58309235281639b41072c1b6f94139170afe8c0de1d2b7fa713b42',
 +    'tests/unit/test-crucible-apic-getter-custody.py':
@@ -368347,7 +368395,7 @@ index 0000000000000000000000000000000000000000..8a53e6ebd868da79724b87d17f42f27d
 +    'system/crucible-hot-fork-coordinator.c':
 +        'a8db45cdd7a6aebebe44990565c08eed6a833a05ea7f77958ffa12bd2017b65b',
 +    'plugins/crucible-startup-source.c':
-+        '2a75d49454d00fa4f918e48f83931a8ecfb8ec06a80d0ce8ae3db4afda972ca7',
++        '98438c7b002a671344a184cc0f33a340a6f9f91271e0799a7ef4d364a9b44f13',
 +    'plugins/crucible-startup-source.h':
 +        '1a850788eb0cafb3ed85d413ae91d4df16d16ed46d28cb32b6056c76e8b2471b',
 +    'plugins/crucible-device-workspace.c':
@@ -369707,7 +369755,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8f6c57c04a9783049dcb8c6983fd807620057c3c 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..2310adede50d79700abea0abdab617d9892fc6ec 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -369782,7 +369830,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8f6c57c04a9783049dcb8c6983fd8076
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1737 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1738 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -370733,6 +370781,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8f6c57c04a9783049dcb8c6983fd8076
 +                        '../../plugins/crucible-deferred-cleanup-request.inc.h',
 +                        '../../plugins/crucible-matched-quantum-outcome-origin.inc.h',
 +                        '../../plugins/crucible-work-termination-owner.h',
++                        '../../plugins/crucible-source-invocation.inc.h',
 +                        '../../plugins/crucible-work-termination.inc.h',
 +                        '../../system/crucible-preexec-publisher-work-end.inc.h',
 +                        '../../plugins/crucible-native-matched-advance.inc.h',

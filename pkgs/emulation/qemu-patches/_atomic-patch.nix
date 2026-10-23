@@ -6,20 +6,20 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "a2bbcd226886dbde01a02f99f0780b2f8a68dd28b6c2c870519ae27a2f41032e";
-  subject = "plugins: retain bounded construction, request and history ownership";
-  body = "Carry the complete observation implementation and canonical owner lineage\nwith actual constructor, installed Original, request and retained history\nbodies. Preserve ordinary execution, independent observations and explicit\nrefusal where complete containing ownership or profiles are unavailable.\n\nThis cumulative source delivery does not assert binary, runtime, paid\nissuer or complete profile qualification.";
-  commit = "e82bb4c78da7af3351ef6473935a2be2feb01a2d";
-  tree = "3b3b318164d5092261bd2374744d72e4e8298910";
+  sha256 = "b702c7d648a3c7a30db436b832f4f33db9ce273d2cf725fecba3696f24479f04";
+  subject = "plugins: preserve source ownership and constructor coordinates";
+  body = "Retain the complete canonical observation implementation and its owner\nlineage. Order the actual invocation caller declaration before owning uses\nand validate constructor callbacks against genuine lender publication.\nOrdinary behavior and explicit missing-profile refusals remain unchanged.\n\nThis cumulative source delivery does not assert binary, runtime, paid\nissuer or complete profile qualification.";
+  commit = "b01e82be2e8f9c98f7e3ba6380860b5b2a12a1db";
+  tree = "d2ca3f4f7b335e7abf5bd75560ab335f67a5ff77";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/quantum-request-history-atomic";
+  branchRef = "dplecki/quantum-source-compile-correction-atomic";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "11bdf714b64731cb47cb04e109241c996903dc161e39e9031a00d0b1d156c3aa";
+  bundleSha256 = "584c1a0d6616d513b708e8e62223b98448090c4c09a7a6afbe10174cab38534c";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
