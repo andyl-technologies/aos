@@ -16,6 +16,8 @@
   openssl,
   libcap,
 }: let
+  # The native metadata reader and target disassembler must describe one release.
+  nativeLlvm = assert buildPackages.llvm.version == llvm.version; buildPackages.llvm;
   kernelBuild = "${linux.dev}/lib/modules/${linuxSource.version}/build";
   hostIncludes = "${buildPackages.elfutils}/include:${buildPackages.openssl}/include:${buildPackages.zlib}/include:${buildPackages.zstd}/include";
   hostLibraries = "${buildPackages.elfutils}/lib:${buildPackages.openssl}/lib:${buildPackages.zlib}/lib:${buildPackages.zstd}/lib";
@@ -127,6 +129,33 @@ in
       {
         name = "build";
         script = ''
+          aos_llvm_config=llvm-config
+          ${lib.optionalString stdenv.isCross ''
+            # The target llvm-config cannot execute on the build machine.
+            # Translate the matching native tool's metadata and reject any
+            # other build-side store dependency instead of linking it silently.
+            mkdir -p .aos-native-tools
+            cat > .aos-native-tools/llvm-config <<'LLVM_CONFIG_WRAPPER'
+            #!${buildPackages.bash}/bin/bash
+            set -euo pipefail
+
+            native_output=$('${nativeLlvm}/bin/llvm-config' "$@")
+            target_output=$(printf '%s\n' "$native_output" |
+              sed 's|${nativeLlvm}|${llvm}|g')
+
+            for store_root in $(printf '%s\n' "$target_output" |
+              grep -oE '/nix/store/[0-9a-z]{32}-[A-Za-z0-9+._?=-]+' || true); do
+              if [ "$store_root" != '${llvm}' ]; then
+                echo "bpftool: llvm-config exposed an unmapped build-side path: $store_root" >&2
+                exit 1
+              fi
+            done
+            printf '%s\n' "$target_output"
+            LLVM_CONFIG_WRAPPER
+            chmod +x .aos-native-tools/llvm-config
+            aos_llvm_config="$PWD/.aos-native-tools/llvm-config"
+          ''}
+
           # Pin BTF to the AOS target kernel. Never probe the builder's /sys or
           # /boot; the same source also builds bpftool's private bootstrap libbpf.
           make -j$NIX_BUILD_CORES \
@@ -135,7 +164,10 @@ in
             HOSTCC="env C_INCLUDE_PATH=${hostIncludes} LIBRARY_PATH=${hostLibraries} ${buildPackages.cc}/bin/cc" \
             HOSTAR="${buildPackages.binutils}/bin/ar" \
             HOSTLD="${buildPackages.binutils}/bin/ld" \
-            CLANG=clang LLVM_CONFIG=llvm-config LLVM_STRIP=llvm-strip \
+            CLANG="${nativeLlvm}/bin/clang" \
+            LLVM_CONFIG="$aos_llvm_config" \
+            LLVM_STRIP="${nativeLlvm}/bin/llvm-strip" \
+            ARCH=${stdenv.hostPlatform.linuxArch} \
             VMLINUX_BTF="${kernelBuild}/vmlinux"
 
           # Missing optional dependencies must not silently remove features

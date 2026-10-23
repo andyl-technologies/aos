@@ -10642,6 +10642,19 @@ The current effect-module checks pass at
 Core evaluation passes at
 `/nix/store/p0dcd4r7i1xmwbd0byjs53q3kybpd8s2-aos-eval-core-checks-0`.
 
+The bpftool recipe also separates native LLVM execution from target library
+metadata for cross builds. It requires matching LLVM releases, translates only
+that release's store root, rejects other build-side roots, and selects the
+target kernel architecture for BPF skeletons. The native package passes at
+`/nix/store/gm3q8is3ina6r5iwfkqk6g71jrk9q858-bpftool-7.2.3`.
+The actual rendered ARM metadata wrapper passes its version, include/library
+directory, compiler/linker flag, library and system-library queries against the
+native LLVM binary without leaking its store root. ARM derivation evaluation
+passes; a complete ARM cross-build and installed execution remain unqualified.
+The rebuilt native binary's RPATH and dynamic-linker VM checks pass at
+`/nix/store/vpz9v3afaakf3g8pa2rwwgmp0md1lg13-aos-vm-test-bpftool-rpath-0` and
+`/nix/store/c213nxvmbvngmmn41qln6y4r9k93g7r1-aos-vm-test-bpftool-dynamic-linker-0`.
+
 ### Fixed private-directory child creation (installed execution pending)
 
 The fixed view-root walker creates children beneath Controller-owned mode-0700
