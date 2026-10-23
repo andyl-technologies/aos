@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 614 bindings: 595 component and nineteen native, across 243 requirements. | 145 requirements remain uncovered and none fully qualified. |
+| Requirements | 616 bindings: 597 component and nineteen native, across 243 requirements. | 145 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2710,7 +2710,7 @@ owners and 268 registered tests are independently checked with the exact-count
 guards intact. All 686 engine tests, 95 policy controls and storage/portable-RAM
 Clippy pass. Full license checking fails in its controller dependency with 639
 strict Host-library Clippy errors; its boundary assertions did not run. The
-required application-target check remains in progress. Signed topology-sort
+required application-target check passes at `50jh57inhnknd3z9ah549l22n7kjn2dc`. Signed topology-sort
 commit `6d6ed0a2e4` is pushed. Application
 compilation uses immutable source `y0w8a5yif7q92rk2mz5s7ghksv5hflqk`; all 5,415 committed Rust/TOML files and
 six required fixtures match before subsequent source edits. These component
@@ -2743,7 +2743,8 @@ Inventory `qzcgpwnjyhj9b168acs7qvqm86bv2y20` validates 608 bindings across
 storage tests, 686 engine tests, 95 policy controls and storage/portable-RAM
 Clippy pass. Hermetic storage output `phyi4n3wb8535pd7ijf4c03g3440fdpn` passes
 all 85 selected cases and 106 independently checked successful nested summaries.
-Required application-target compilation is running from immutable source
+Required application-target compilation passes at
+`v8721fyspimkg62dydd0vk73gmbzl7zq` from immutable source
 `2ibv3vfapr9x1yydmy87l2vl6lp1x5kb`; all 5,415 committed Rust/TOML files and
 six required fixtures match before subsequent source edits.
 
@@ -2834,9 +2835,36 @@ Inventory `bl5ld37i9lwc2qdx0a9w4r2vvqml8yv9` validates 614 bindings across
 243 requirements: 570 model, 25 format and nineteen native bindings. The same
 145 requirements remain uncovered and none is fully qualified.
 All 751 ordinary storage tests, 95 policy controls and storage/portable-RAM
-Clippy pass. The hermetic selected-storage gate remains in progress. Required
+Clippy pass. Hermetic storage output `0qp82njh3npx8xkfx5l5jf2cnza2sxw7` passes
+all 91 selected cases and 112 independently checked successful nested summaries. Required
 application compilation is running from immutable source
 `3m7mq5bc8sc4acf8kgchcl9ykab88bks`; all 5,417 committed Rust/TOML files and
+six required fixtures match before subsequent source edits.
+
+Capture and update now revalidate the original caller after the external
+root-retention receipt and its identity check, before constructing the returned
+root. A valid lease identifies retained content; it cannot preserve the caller's
+authority through arbitrary retention-owner code. The existing typed admission
+conversion retains that same original account without a new loan, clock,
+entitlement or callback. Receipt-identity error precedence remains unchanged.
+
+Both genuine predecessor controls fail because publication returns an accepted
+`LeasedRamRoot` after irreversible revocation inside the successful retention
+callback. Before observing that incorrect return, the controls require the real
+retention owner to have issued its actual lease and independently authenticate
+the stored canonical root under the separately live backend account. After the
+correction, all 89 metadata-lifetime controls pass. Both refusal paths preserve
+the original typed revocation and caller charge after caller close until final
+error close. Durable objects and retention can remain present; this is a refused
+operation return, not rollback or execution authorization.
+
+Inventory `a8l44c19zv7mv4s2cf5i5sbf0k1dfspc` validates 616 bindings across
+243 requirements: 572 model, 25 format and nineteen native bindings. The same
+145 requirements remain uncovered and none is fully qualified.
+All 753 ordinary storage tests, 95 policy controls and storage/portable-RAM
+Clippy pass. The hermetic selected-storage gate remains in progress. Required
+application compilation is running from immutable source
+`a7nvfkdc595yzhp2az89s32536ia63d1`; all 5,418 committed Rust/TOML files and
 six required fixtures match before subsequent source edits.
 
 The separate source-only exclusive-wait packet

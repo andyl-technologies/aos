@@ -127,6 +127,10 @@ impl RamStore {
         if lease.root() != id {
             return Err(RamStoreError::Invalid("retention root receipt"));
         }
+        // A successful external receipt does not preserve caller authority.
+        original
+            .verify_live()
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         Ok(LeasedRamRoot {
             record: Arc::new(record),
             regions: regions.into(),
@@ -294,6 +298,9 @@ impl RamStore {
         if lease.root() != id {
             return Err(RamStoreError::Invalid("retention root receipt"));
         }
+        original
+            .verify_live()
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         Ok(LeasedRamRoot {
             record: Arc::new(record),
             regions: regions.into(),
