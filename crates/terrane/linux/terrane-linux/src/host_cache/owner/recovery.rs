@@ -285,6 +285,14 @@ impl CompletedRecovery {
     }
 }
 
+/// Selects whether recovery waits for closure or retains original draining custody.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(super) enum ExposureRecovery {
+    RequireClosed,
+    #[cfg(feature = "surface-fuse")]
+    RetainDraining,
+}
+
 impl NativeMetadataOwner {
     /// Runs bounded actual recovery in the retained physical command queue.
     ///
@@ -298,11 +306,41 @@ impl NativeMetadataOwner {
     /// native synchronization, uncertain transport, quota excess and a changed
     /// publisher barrier. Late failure retains faulted custody and its hold.
     pub async fn recover(&self) -> io::Result<CompletedRecovery> {
+        self.request_recovery(ExposureRecovery::RequireClosed).await
+    }
+
+    /// Recovers while preserving original exposure obligations as draining.
+    ///
+    /// The authenticated census may prove an exposure already closed. Otherwise
+    /// every original backing binding, pin and lease survives the funded recovery
+    /// snapshot. Recovery retires disposable index names, while actual kernel
+    /// charges retain unlinked descriptors and mappings. Existing content pins
+    /// still require independently verified native recovery. No old exposure is
+    /// resumed or authorized to accept another backing request.
+    ///
+    /// After acknowledged Resume, the original owner can reconcile draining
+    /// exposures through its authenticated census. Until closure succeeds their
+    /// obligations remain durable. Cancellation retains accepted physical work.
+    ///
+    /// # Errors
+    /// Refuses invalid or foreign bindings, unavailable census, unresolved content
+    /// pins, exhausted bounds, failed durability, unknown or excessive quota,
+    /// uncertain publisher custody and every ordinary [`Self::recover`] failure.
+    #[cfg(feature = "surface-fuse")]
+    pub async fn recover_retaining_surface_exposures(&self) -> io::Result<CompletedRecovery> {
+        self.request_recovery(ExposureRecovery::RetainDraining)
+            .await
+    }
+
+    async fn request_recovery(&self, exposures: ExposureRecovery) -> io::Result<CompletedRecovery> {
         let (response, receive) = oneshot::channel();
         self.commands
             .as_ref()
             .ok_or_else(|| io::Error::other("native recovery owner stopped"))?
-            .try_send(Command::Recover { response })
+            .try_send(Command::Recover {
+                exposures,
+                response,
+            })
             .map_err(|error| match error {
                 mpsc::TrySendError::Full(_) => {
                     io::Error::new(io::ErrorKind::WouldBlock, "native recovery queue is full")
@@ -323,7 +361,10 @@ impl NativeMetadataOwner {
 /// Refuses every unresolved record/name/candidate, stale native or publisher
 /// custody, failed durability, unknown quota or excessive actual charge. After
 /// the first snapshot attempt, failures retain the owner's hold and fault state.
-pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<CompletedRecovery> {
+pub(super) async fn run(
+    executor: &mut NativeOwnerExecutor,
+    exposures: ExposureRecovery,
+) -> io::Result<CompletedRecovery> {
     let custody = Arc::clone(executor.custody());
     let (session, inspector, mut shared, state_parent, requires_cold_backing, cold) = {
         let mut owner = custody
@@ -346,10 +387,13 @@ pub(super) async fn run(executor: &mut NativeOwnerExecutor) -> io::Result<Comple
         // The captured records are candidates; actual adoption still follows the
         // new synchronized bootstrap and original publisher Drain context.
         #[cfg(feature = "surface-fuse")]
-        let cold = super::surface_index::closure::cold_policy(&mut owner)?;
+        let cold = super::surface_index::closure::cold_policy(&mut owner, exposures)?;
         #[cfg(not(feature = "surface-fuse"))]
-        let cold =
-            super::recovery_cold::ColdPolicy::capture(&owner.preparation.config, &owner.state)?;
+        let cold = match exposures {
+            ExposureRecovery::RequireClosed => {
+                super::recovery_cold::ColdPolicy::capture(&owner.preparation.config, &owner.state)?
+            }
+        };
         let requires_cold_backing = cold.requires_backing();
         let state_parent = StateParentObservation::inspect(&owner.preparation)?;
         let shared = SharedNamespaceObservation::inspect(&owner.preparation)?;

@@ -188,6 +188,7 @@ pub(super) enum Command {
     },
     /// Runs actual recovery without enabling Resume or service readiness.
     Recover {
+        exposures: super::recovery::ExposureRecovery,
         response: oneshot::Sender<io::Result<super::CompletedRecovery>>,
     },
     /// Synchronizes and pins independently verified reconstruction metadata.
@@ -587,8 +588,11 @@ impl NativeMetadataOwner {
                             // The executor retains the physical outcome before reply.
                             let _ = response.send(result);
                         }
-                        Command::Recover { response } => {
-                            let result = runtime.block_on(executor.recover());
+                        Command::Recover {
+                            exposures,
+                            response,
+                        } => {
+                            let result = runtime.block_on(executor.recover(exposures));
                             let _ = response.send(result);
                         }
                         Command::Retain { identity, response } => {

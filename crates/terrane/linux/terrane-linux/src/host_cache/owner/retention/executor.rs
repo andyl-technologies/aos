@@ -732,9 +732,12 @@ impl NativeOwnerExecutor {
     /// # Errors
     /// Refuses unsupported candidates, stale custody, failed synchronization,
     /// quota reconciliation or a prior handoff; all adopted handles stay owned.
-    pub(super) async fn recover(&mut self) -> io::Result<CompletedRecovery> {
+    pub(super) async fn recover(
+        &mut self,
+        exposures: super::super::recovery::ExposureRecovery,
+    ) -> io::Result<CompletedRecovery> {
         self.check_recovery_phase()?;
-        super::super::recovery::run(self).await
+        super::super::recovery::run(self, exposures).await
     }
 
     /// Retains the complete acknowledged or failed handoff before any reply.

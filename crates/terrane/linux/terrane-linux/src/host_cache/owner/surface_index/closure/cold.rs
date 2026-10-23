@@ -1,17 +1,23 @@
-//! Reconciles already retired cold exposures before funding native recovery.
+//! Selects closed or durably draining exposure candidates for funded recovery.
 //!
 //! No native backing is reconstructed from policy rows. The authenticated helper
 //! must prove every recorded original inode closed before the recovery bootstrap
-//! can omit an exposure. A failed observation leaves the original snapshot intact.
+//! can omit an exposure. Explicit draining recovery retains every unresolved
+//! obligation. A failed observation leaves the original snapshot intact.
 
 use crate::{
-    host_cache::owner::{consumer::state, recovery_cold::ColdPolicy, retention::Custody},
+    host_cache::owner::{
+        consumer::state, recovery::ExposureRecovery, recovery_cold::ColdPolicy, retention::Custody,
+    },
     host_quota::{MAX_CENSUS_EXCLUSIONS, ProjectInode},
 };
 use std::{collections::BTreeSet, io};
 
 /// Returns checked recovery candidates without changing any physical policy.
-pub(in crate::host_cache::owner) fn capture(owner: &mut Custody) -> io::Result<ColdPolicy> {
+pub(in crate::host_cache::owner) fn capture(
+    owner: &mut Custody,
+    policy: ExposureRecovery,
+) -> io::Result<ColdPolicy> {
     owner
         .state
         .encoded_len(owner.preparation.config.state)
@@ -49,9 +55,20 @@ pub(in crate::host_cache::owner) fn capture(owner: &mut Custody) -> io::Result<C
     }
     let excluded: Vec<_> = excluded.into_iter().collect();
     if !owner.preparation.exposure_inodes_closed(&excluded)? {
-        return Err(unresolved(
-            "cold exposure retains unresolved native kernel custody",
-        ));
+        if policy == ExposureRecovery::RequireClosed {
+            return Err(unresolved(
+                "cold exposure retains unresolved native kernel custody",
+            ));
+        }
+
+        // This keeps every physical obligation; it proves no backing closed and
+        // adopts no source. The funded bootstrap persists the phase transition
+        // before native recovery may complete or Resume may be acknowledged.
+        let mut next = owner.state.clone();
+        for exposure in &mut next.exposures {
+            exposure.phase = terrane_sdk::host::cache::ExposurePhase::Draining;
+        }
+        return ColdPolicy::capture_draining(&owner.preparation.config, &next);
     }
 
     // Closure is monotonic, independently of the old phase. A crashed owner

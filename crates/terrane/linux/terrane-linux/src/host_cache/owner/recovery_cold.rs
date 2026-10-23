@@ -66,10 +66,33 @@ impl ColdPolicy {
     /// # Errors
     /// Refuses invalid state, foreign charge owners and pins without a lease.
     pub(super) fn capture(config: &NativeCacheOwnerConfig, state: &CacheState) -> io::Result<Self> {
+        Self::capture_checked(config, state, false)
+    }
+
+    /// Copies draining policy without treating any backing row as native proof.
+    ///
+    /// # Errors
+    /// Refuses non-draining or unbound exposures, invalid policy, foreign charge
+    /// owners and pins without a lease. Native recovery still verifies all pins.
+    #[cfg(feature = "surface-fuse")]
+    pub(super) fn capture_draining(
+        config: &NativeCacheOwnerConfig,
+        state: &CacheState,
+    ) -> io::Result<Self> {
+        Self::capture_checked(config, state, true)
+    }
+
+    fn capture_checked(
+        config: &NativeCacheOwnerConfig,
+        state: &CacheState,
+        draining: bool,
+    ) -> io::Result<Self> {
         state.encoded_len(config.state).map_err(io::Error::other)?;
-        // Until a complete kernel-closure census and exposure re-verification
-        // exist, retain every old obligation and refuse before recovery effects.
-        if !state.exposures.is_empty() {
+        if state.exposures.iter().any(|row| {
+            !draining
+                || row.phase != terrane_sdk::host::cache::ExposurePhase::Draining
+                || row.backings.is_empty()
+        }) {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
                 "cold exposure requires retained-kernel-reference reconciliation",

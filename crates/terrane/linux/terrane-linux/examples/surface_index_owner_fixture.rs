@@ -154,6 +154,7 @@ fn main() -> Result<()> {
             | "file-closure"
             | "cold-closure"
             | "cold-active-closure"
+            | "cold-retained"
             | "index-closure"
             | "worker-send"
             | "worker-network"
@@ -205,6 +206,9 @@ fn main() -> Result<()> {
             return worker_crash::run(launched, &runtime, &owner, &inputs);
         }
         return scoped_worker::run(launched, &runtime, &owner, &inputs);
+    }
+    if mode == "cold-retained" {
+        return exposure::retained_cold::verify(owner, &runtime, &inputs, policy, confinement);
     }
     if matches!(mode.as_str(), "cold-closure" | "cold-active-closure") {
         return exposure::cold_closure::verify(

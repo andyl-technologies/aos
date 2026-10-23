@@ -15786,3 +15786,52 @@ and cannot qualify the corrected source. The status enrollment VM at
 source files, 5,359 bound inputs, the actual Cargo artifact and installed ELF,
 17 executed selectors, all four status observations and exact original private
 inode retirement. Later source still requires fresh qualification.
+
+
+#### Retained draining exposures across funded recovery
+
+At frozen `37e337cf5f`, the native surface-owner VM passes in 855.293 seconds.
+Complete review matches all 8,080 immutable source files, both bound input
+inventories, four base compiler artifacts and the actual surface-owner ELF.
+All original runtime witnesses and the new active-exposure closure control pass.
+Mandatory application compilation also passes at `37e337cf5f` in 1,242.482
+seconds. Complete immutable-source and compiler-record review matches 185 test
+targets across 59 packages. This is component qualification and compilation;
+no whole trunk task is accepted.
+
+An explicit native recovery entry point now preserves unresolved original
+exposures as draining. The existing strict recovery entry point still refuses
+them before mutation. Both paths require the authenticated bounded inode census,
+original partition bindings and independently verified content recovery. The
+new funded bootstrap persists every retained binding, pin and lease with the
+draining phase before recovery can complete and Resume can be acknowledged.
+No old exposure resumes or gains another backing grant. Disposable index names
+and future copy allowances retire under the existing native recovery sequence;
+physical kernel charges remain separate.
+
+A new isolated native control keeps the real original index mapping alive
+across strict refusal, explicit recovery and the new acknowledged Resume. It
+requires the exact original exposure record with only its phase changed, a
+readable mapping, no remaining index name, and refusal to discharge through
+the new Running owner while the mapping survives. Final unmap must release
+exactly the original allocated index blocks and one inode before any closure
+snapshot. Only authenticated reconciliation then removes its exposure policy.
+The original actor and whole-VM bounds and all existing controls remain. This
+entry point still requires fresh native qualification; production configured
+role composition and complete file-backing recovery remain open.
+
+The corrected empty-status checkpoint `af90462e20` passes initial enrollment
+in 296.308 seconds. Complete review matches all 8,080 immutable files, 5,359
+bound inputs, the actual Cargo/installed ELF and all seventeen native selectors.
+Its four fresh status observations and exact private inode retirement pass.
+Mandatory application compilation passes in 968.601 seconds; complete review
+matches all 8,080 immutable files and 185 test targets across 59 packages. The
+earlier status checkpoint `d7fed2dbb7` also passes application compilation in
+1,642.747 seconds with the same complete review scope. The separate full-cache
+request remains pending; these results do not inherit a full-cache pass.
+
+The retained-draining increment passes strict Linux all-feature/all-target
+Clippy, a separate non-FUSE Tokio build check, actual native fixture compilation,
+Rust formatting, supervisor syntax and diff checks. Native lifecycle execution
+remains confined to disposable ext4 VMs. Fresh runtime and mandatory application
+qualification are required for this new committed source.

@@ -202,6 +202,11 @@ def main():
             "PASS surface admission requires actual recovery and acknowledged Resume",
             "PASS cold active exposure preserves policy through actual namespace loss and retained mapping; final unmap alone permits authenticated closure in funded recovery before Resume"],
             "actual cold active exposure closure actor failed")
+        result = actor("pin", "cold-retained")
+        require(result.returncode == 0 and result.stdout.splitlines() == [
+            "PASS surface admission requires actual recovery and acknowledged Resume",
+            "PASS funded cold recovery retains actual old mapping and draining exposure through new Resume; unchanged native obligations discharge only after final unmap and authenticated closure"],
+            "actual retained cold exposure recovery actor failed")
         objects = support.root("empty") / "objects"
         originals = list(objects.glob(".terrane-surface:2:*"))
         require(len(originals) == 1, "cold refusal has no unique real admitted index")
