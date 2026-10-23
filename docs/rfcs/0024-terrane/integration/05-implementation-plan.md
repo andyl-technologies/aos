@@ -15957,3 +15957,16 @@ Mandatory application compilation at `fe105ddf1f` passes in 1,404.035 seconds.
 Complete source and compiler-record review matches 8,081 immutable files and
 all 185 test targets across 59 packages. This is compilation only; its separately
 retained surface-owner stack failure remains a failed runtime qualification.
+
+
+#### Retained-file fixture deadline correction
+
+The immutable `221c6c6a6d` surface-owner VM fails in 769.364 seconds after
+all original controls and the new retained-index recovery scenario pass.
+The retained-file setup requests `now + 120` for a file inside an exposure
+created with `now + 90`. Production correctly refuses that out-of-scope
+request with the original exposure Read denial. The fixture now captures one
+absolute 90-second exposure deadline and uses it for the enclosed file request.
+No production check or deadline changes. Strict all-feature/all-target Clippy,
+actual fixture compilation, formatting and diff checks pass. The original failed
+receipt remains failed; fresh native qualification is required.

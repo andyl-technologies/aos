@@ -39,6 +39,7 @@ impl RetainedFile {
         fixture: &RepositoryFixture,
         admitted: &NativeRootIndex,
         exposure: &NativeExposureLease,
+        expires: u64,
     ) -> Result<Self> {
         let identity = TERRANE_V1.calculate(IdentityKind::Chunk, BODY)?;
         let descriptor = Descriptor::from_identity(&TERRANE_V1, &identity, BODY)?;
@@ -55,7 +56,7 @@ impl RetainedFile {
             )
             .await?;
         let backing = owner
-            .prepare_exposure_file_backing(exposure, admitted, selection, now()? + 120)
+            .prepare_exposure_file_backing(exposure, admitted, selection, expires)
             .await?;
         let file = File::from(backing.as_fd().try_clone_to_owned()?);
         let original = file.metadata()?;

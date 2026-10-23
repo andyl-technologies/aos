@@ -50,7 +50,8 @@ pub(crate) fn verify(
     ))?;
     let admitted = runtime.block_on(owner.prepare_surface_mapping(selection))?;
     let key = admitted.key();
-    let lease = runtime.block_on(owner.retain_surface_exposure(&admitted, now()? + 90))?;
+    let expires = now()? + 90;
+    let lease = runtime.block_on(owner.retain_surface_exposure(&admitted, expires))?;
     let id = lease.id().to_owned();
     let generation = lease.generation();
     let selection = runtime.block_on(fixture.repository.prepare_root_read(
@@ -68,7 +69,7 @@ pub(crate) fn verify(
     let mapping = MappedIndex::open(file.into(), key.root(), &seal, maximum)?;
     let retained = if retain_file {
         Some(runtime.block_on(retained_file::RetainedFile::prepare(
-            &owner, &fixture, &admitted, &lease,
+            &owner, &fixture, &admitted, &lease, expires,
         ))?)
     } else {
         None
