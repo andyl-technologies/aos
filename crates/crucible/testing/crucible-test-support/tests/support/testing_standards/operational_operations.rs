@@ -666,6 +666,7 @@ fn contracts() -> impl Iterator<Item = &'static Contract> {
         .chain(production_publication::CONTRACTS)
         .chain(worker_custody::CONTRACTS)
         .chain(lifecycle_retirement::CONTRACTS)
+        .chain(lifecycle_retirement::CALLER_CONTRACTS)
         .chain(host_physical_custody::CONTRACTS)
         .chain(hot_fork_retirement::CONTRACTS)
         .chain(hot_fork_retirement::PRE_VM_CONTRACTS)

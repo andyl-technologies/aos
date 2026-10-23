@@ -19,6 +19,22 @@ mod pre_vm;
 
 pub(super) const PRE_VM_CONTRACTS: &[Contract] = pre_vm::CONTRACTS;
 
+/// Shares the actual phase producers with the containing construction carrier.
+pub(super) const SHARED_BODY: Companion = Companion {
+    path: "crates/crucible/control/crucible-daemon/src/vm_lifecycle/hot_fork/shared_source.rs",
+    required: shared::CONTRACT.required,
+};
+/// Shares the saved rearm refusal and actual Source body return.
+pub(super) const REARM_BODY: Companion = Companion {
+    path: "crates/crucible/control/crucible-daemon/src/vm_lifecycle/hot_fork/rearm_return.rs",
+    required: owners::REARM.required,
+};
+/// Shares preparation rollback and the same Source retirement delegate.
+pub(super) const PREPARATION_BODY: Companion = Companion {
+    path: "crates/crucible/control/crucible-daemon/src/vm_lifecycle/hot_fork/preparation.rs",
+    required: owners::PREPARATION.required,
+};
+
 /// Reuses the unchanged actual complete-body shutdown ordering.
 pub(super) const CONSTRUCTOR_BODY: Companion = Companion {
     path: source::CONTRACT.companions[3].path,

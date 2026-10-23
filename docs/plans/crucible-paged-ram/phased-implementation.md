@@ -1367,6 +1367,31 @@ Two earlier application-target builds pass: lifecycle classification at
 independently matched all committed Rust/TOML inputs and six required fixtures
 before subsequent edits.
 
+The remaining executor and construction-carrier cleanup paths now bind their
+actual saved owners. Component executor shutdown closes workers, materializer,
+hot-fork owners and the canonical cleanup queue before dispatcher return. Main
+panic handback continues through its saved completion header and body. Partial,
+complete, shared Source, rearm-refusal and preparation phases propagate actual
+refusals before publishing physical closure. Node destruction precedes external
+lease return, and a refused generation lease stays in the same carrier.
+
+The component controls preserve their original negative launchers, pointer and
+cause identities, call/drop counts, real file leaves and canonical queued
+destruction assertions. All 90 testing-standard controls now pass, including the
+broad operational-wait gate and unchanged causal mutations. Source shape passes.
+These source contracts grant no Main, Source or execution capability. Mandatory
+application-target compilation for this increment is pending.
+
+Independent read-only review of sealed legacy source manifest
+`b4fcc11b43b5b143475bb23cca99871ff297ac5a4cacd7520340095f75a2270e`
+verifies all 66 payloads, its detached signature, both signed commits and exact
+incremental trees/diffs, and all 78,470 Git/disk/archive paths, including 72 literal
+symlinks. All 236 pure controls pass. The six guards reverse byte-exact after ten
+digest substitutions, and independent extraction reproduces all three outputs
+with 179 roots and 1,299 functions unchanged. Meson AST parsing is source evidence;
+configuration, object transformations, actual link ownership, the 187-case legacy
+fixture and native execution remain unqualified.
+
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's
 journal exactly once before any target effect. Four attempt cells and six error

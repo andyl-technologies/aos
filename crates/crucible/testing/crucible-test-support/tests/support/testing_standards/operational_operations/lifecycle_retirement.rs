@@ -22,6 +22,13 @@ mod queue;
 #[path = "lifecycle_retirement/receipts.rs"]
 mod receipts;
 
+#[path = "lifecycle_retirement/construction_custody.rs"]
+mod construction_custody;
+#[path = "lifecycle_retirement/custody_controls.rs"]
+mod custody_controls;
+#[path = "lifecycle_retirement/executor_callers.rs"]
+mod executor_callers;
+
 use companions::{BACKEND, ORIGINAL, RECEIVER, SERVICE, SOURCE};
 use owners::{
     AFTER_BODY, ATTACHED_BODY, CONSTRUCTION_FINISH, DISPATCHER, DRIVER_OWNER, FILE_ONLY,
@@ -32,6 +39,12 @@ use owners::{
 pub(super) const SERVICE_DRIVER: &Contract = &queue::DRIVER;
 pub(super) const SERVICE_POST_BODY: &Contract = &queue::POST_BODY;
 pub(super) const SERVICE_RECEIPT: &Contract = &receipts::RETIREMENT;
+
+pub(super) const CALLER_CONTRACTS: &[Contract] = &[
+    construction_custody::CONTRACT,
+    custody_controls::CONTRACT,
+    executor_callers::CONTRACT,
+];
 
 pub(super) const CONTRACTS: &[Contract] = &[
     queue::DRIVER,
@@ -83,7 +96,7 @@ pub(super) fn omission_replacement(contract: &Contract, requirement: &str) -> Op
 /// Produces a foreign-argument mutant only for this module's exact call spans.
 #[cfg(test)]
 pub(super) fn altered_expression(expression: &str) -> String {
-    if !CONTRACTS.iter().any(|contract| {
+    if !CONTRACTS.iter().chain(CALLER_CONTRACTS).any(|contract| {
         contract
             .expressions
             .iter()
