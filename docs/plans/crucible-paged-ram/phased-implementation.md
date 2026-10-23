@@ -1295,8 +1295,9 @@ complete host run passes 1,369 controls and exposes one stale formatted-message
 assertion alongside the eight existing unissued helper-custody failures. That
 assertion now checks the actual typed ECHILD and zero public-poll allocations.
 The complete rerun passes 1,370 controls with only the same eight helper-custody
-failures and four ignored controls. License boundary and mandatory
-application-target compilation remain in progress. Controller-return causes and heap-backed public
+failures and four ignored controls. All eighteen license-boundary controls pass;
+the complete license gate then fails on 639 host Clippy errors. Mandatory
+application-target compilation remains in progress. Controller-return causes and heap-backed public
 shutdown-report collections still need complete prebirth funding; these changes
 do not qualify Main/Source issuance or native return.
 
@@ -1310,6 +1311,17 @@ All 35 Source controls, both exact Source observation contracts and source shape
 pass. Restoring the old zero-based `usize` representation makes the optional
 extent assertion fail at 24 versus 16 bytes; exact restoration passes all 35
 Source controls. Complete application-target compilation remains pending.
+
+The scheduling-only `HostRetryCadence` helper and its public re-export now have
+exact source-policy contracts. They bind the complete finite owner and methods,
+the actual monotonic clock and all three component controls. A changed schedule,
+renewal, quarantine reset, weakened observation, foreign clock or added retry
+remains visible to the flaky-test scanner. The contracts issue no operation or
+effect authority; each caller still needs its own saved-original checks. All
+three actual cadence controls, both classification controls and source shape
+pass. The complete testing-standards suite now passes 78 controls and retains
+one broad failure over twenty other unclassified retry paths. Mandatory
+application-target compilation remains pending.
 
 #### Cumulative construction and request ownership source
 

@@ -26,6 +26,9 @@ mod operational_ram_read;
 #[path = "operational_source_observations.rs"]
 mod operational_source_observations;
 
+#[path = "operational_retry_cadence.rs"]
+mod operational_retry_cadence;
+
 struct Companion {
     path: &'static str,
     required: &'static [&'static str],
@@ -322,6 +325,7 @@ pub(super) fn mask(package: &str, target: &str, code: &str) -> String {
         .chain(operational_sqlite::CONTRACTS)
         .chain(operational_ram_read::CONTRACTS)
         .chain(operational_source_observations::CONTRACTS)
+        .chain(operational_retry_cadence::CONTRACTS)
         .chain(operational_packed::CONTRACTS)
         .chain(operational_measurement::CONTRACTS)
         .find(|contract| contract.package == package && contract.target == target)
