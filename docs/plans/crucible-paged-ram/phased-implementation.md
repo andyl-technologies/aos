@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 564 bindings: 545 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 570 bindings: 551 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2093,7 +2093,8 @@ in controller compilation: its Host configuration reports 639 errors and returns
 101. This is distinct from the private-feature strict Clippy counts above.
 Neither the ABI result nor passing storage controls replaces that failed gate.
 Signed commit `e9321233eb` is pushed. Mandatory application-target compilation
-is running. All 5,397 committed Rust/TOML files and six required fixtures match
+passes at `wqlld8m6iis24ksbvhlhlnbmxzmw7mfw`. All 5,397 committed Rust/TOML
+files and six required fixtures match
 frozen source `a66wk4sbxqch8zj5hpmz0gcbns2a15rj` before later edits.
 
 The configure aggregate-observation proposal is independently reviewed as
@@ -2218,7 +2219,56 @@ requirements, with 148 uncovered and zero qualified. Broad validation passes
 717 storage tests, 686 engine tests, 95 policy controls and storage Clippy.
 Hermetic storage output `l3drg8s5xaqbyjg8whc3r56w8xjyicph` passes all 56
 selected cases and 70 nested test summaries. Required application-target
-compilation will freeze this committed source before subsequent Rust changes.
+compilation is running from `fxnjnn0zxgjcfj5n4ym1vnm2y336y7f4`; all 5,400
+committed Rust/TOML files and six required fixtures match before subsequent
+root-publication edits.
+
+Root publication now admits a complete closed input partition before logical
+encoding, body, child roles, B-tree storage and the shared envelope. A separate
+canonical partition borrows the same genuine disposable original child. The
+logical encoder preserves its actual `TryReserveError`; fallible body, schema
+and role buffers retain that cause in the existing paid diagnostic bank. Child
+roles are emitted from a fixed stack array. Backend and retention callbacks use
+the original account, and ready owned envelopes avoid the old borrowed copy.
+Page/tree bounds, canonical wire bytes and external resource ceilings remain
+unchanged. General capture/update metadata funding, fallible B-tree/Arc and final
+canonical allocation, native issuance and physical OOM remain separate gaps.
+
+Six focused controls pass, including one, twelve and 4,096 maximum-name regions
+through real durable publication and decoding. That maximum-width component has
+its own explicit finite 32 MiB namespace; ordinary 4 MiB fixtures are unchanged.
+Original-retention callbacks and final loan refund remain checked. Actual logical,
+body, schema and role allocation refusals precede publication. The admission
+control leaves room for a genuine child and logical buffer alone but requires
+the complete partition to refuse before that buffer exists. Replacing the paid
+logical error with an allocating diagnostic fails the retained-credit assertion;
+omitting whole-input prepayment fails because the logical allocation already
+exists. Exact restoration passes all six cases. Inventory
+`n9dvc774vjag41lnjdhp3pwi5ambfdqg` validates 570 bindings across 243 requirements,
+with 148 uncovered and zero qualified. Broad storage passes 723 tests, portable
+RAM passes all 25 cases and plugin unit validation passes all 1,179 tests.
+Hermetic storage output `nmzb10i93xg37pw9zx6vc2yz08z1h0sp` passes all 62
+selected cases and 76 nested summaries. Private-feature Host validation passes
+1,385 tests, retains four ignored cases and reproduces exactly the previous
+eight helper-custody failures, including identical failure details after thread-ID
+normalization. All 686 engine tests, 95 policy controls and storage Clippy pass.
+ABI conformance passes at `kp4hm4nv57jafqgllmd6kjxlqx2jpa9j`. The complete
+license-boundary run remains pending in controller compilation; preceding
+controller failures remain unresolved. Required application-target compilation
+will freeze this committed source before further Rust changes.
+
+The source-only configure observation assessment
+`b81e015f86affdd3ccdfd1c07e4f75bf4a89ec2bf4617f1d8a1c49d844bcba23`
+passes independent authentication of all 55 payloads, thirty actual inputs,
+thirteen archive-exact Linux 6.18.57 members and 96 pure controls. All 57 files
+remain unchanged and the runtime diff is empty. Actual selected Popen-method
+replay converts a trace stop to a terminal return code and competing ECHILD to
+zero, so a second wait consumer is unsound. Complete prebirth observation still
+needs an exclusive traced-wait owner, syscall-entry admission, clone/thread
+identity handling, explicit custody-versus-role boundaries and stop-aware cleanup.
+Kernel-source findings establish neither the running kernel tuple nor actual
+traced behavior. The original refusal and all bounds stand; no replacement
+invocation is authorized.
 
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's

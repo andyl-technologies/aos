@@ -47,7 +47,7 @@ pub(super) fn object_limits(id: ContentId) -> Result<(u64, usize), RamStoreError
 
 // The closed record phase charges these exact buffers before either helper is
 // called. Allocation refusal retains that same partition's paid first cause.
-fn allocate_charged_body(
+pub(super) fn allocate_charged_body(
     account: &DecodeBudget,
     capacity: usize,
 ) -> Result<Vec<u8>, RamStoreError> {
@@ -57,7 +57,7 @@ fn allocate_charged_body(
     Ok(body)
 }
 
-fn copy_charged_identifier(
+pub(super) fn copy_charged_identifier(
     account: &DecodeBudget,
     identifier: &str,
 ) -> Result<String, RamStoreError> {
@@ -105,7 +105,7 @@ impl RamStore {
         )
     }
 
-    fn put_envelope_with_account(
+    pub(super) fn put_envelope_with_account(
         &self,
         input: PublicationInput<'_>,
         kind: ObjectKind,
@@ -536,31 +536,6 @@ impl RamStore {
         super::bounded_read::read_tree(self.backend.as_ref(), reference, work)
     }
 
-    pub(super) fn put_root(
-        &self,
-        record: &RootRecord,
-        regions: &[TreeRef],
-        retention: &dyn RamRetention,
-        work: &mut Work<'_>,
-    ) -> Result<ContentId, RamStoreError> {
-        let canonical = record.encode();
-        let length = u32::try_from(canonical.len())
-            .map_err(|_| RamStoreError::Limit("logical root record"))?;
-        let mut body = Vec::with_capacity(4 + canonical.len() + 44 * regions.len());
-        body.extend_from_slice(&length.to_be_bytes());
-        body.extend_from_slice(&canonical);
-        let mut children = BTreeSet::new();
-        for (index, reference) in regions.iter().enumerate() {
-            encode_ref(&mut body, *reference);
-            children.insert(ContentChild::new(
-                format!("region-{index:08x}"),
-                reference.id,
-            )?);
-        }
-        let envelope = ContentEnvelope::new(ROOT_SCHEMA, SCHEMA_VERSION, children, body)?;
-        self.put_envelope(&envelope, ObjectKind::ExactManifest, retention, work)
-    }
-
     pub(super) fn read_root(
         &self,
         id: ContentId,
@@ -797,7 +772,7 @@ pub(super) fn validate_tree_parts<'a>(
     Ok(node)
 }
 
-fn encode_ref(bytes: &mut Vec<u8>, reference: TreeRef) {
+pub(super) fn encode_ref(bytes: &mut Vec<u8>, reference: TreeRef) {
     bytes.extend_from_slice(reference.digest.as_bytes());
     bytes.extend_from_slice(&reference.height.to_be_bytes());
     bytes.extend_from_slice(&reference.pages.to_be_bytes());

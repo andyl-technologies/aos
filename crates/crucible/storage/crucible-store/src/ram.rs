@@ -40,6 +40,7 @@ pub(crate) use bounded_read::{
 mod codec;
 mod codec_ownership;
 mod record_account;
+mod root_publication;
 pub use backing::maximum_encoded_ram_graph_bytes;
 mod failure_cause;
 pub use failure_cause::{

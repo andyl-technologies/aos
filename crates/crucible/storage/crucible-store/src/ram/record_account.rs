@@ -1,22 +1,20 @@
-//! Prepaid monotone allocation partitions for closed page and tree codecs.
+//! Prepaid monotone allocation partitions for closed RAM record codecs.
 //!
 //! One genuine original-child scratch loan funds the exact bounded codec phase.
-//! Partition receipts share that loan; they do not request another grant. Root
-//! records, generic decoders and backend I/O retain their original accounting.
+//! Partition receipts share that loan; they do not request another grant.
+//! Generic decoders and backend I/O retain their original accounting.
 
 use std::alloc::Layout;
 use std::sync::{Arc, Mutex};
 
 use crate::content_envelope::ContentChild;
 use crate::content_store::StoreError;
-use crate::owned_decode::{
-    DecodeAdmissionError, DecodeBudget, DecodeResourceAuthority, DecodeScratch,
-};
+use crate::owned_decode::{DecodeAdmissionError, DecodeBudget, DecodeResourceAuthority, DecodeScratch};
 
 use super::RamStoreError;
 use super::codec_ownership::{admission, encoded_source_bytes};
 
-/// Bounds allocations before the first owned page/tree codec value is created.
+/// Bounds allocations before the first owned closed-record codec value is created.
 pub(super) struct RecordAllocationPlan {
     partition: u64,
 }
@@ -49,8 +47,40 @@ impl RecordAllocationPlan {
         Ok(Self { partition: extent })
     }
 
+    pub(super) fn root_input(
+        logical_length: usize,
+        body_length: usize,
+        children: usize,
+    ) -> Result<Self, RamStoreError> {
+        if children > crucible_ram::Limits::default().max_regions
+            || logical_length as u64 > super::MAX_RAM_OBJECT_BYTES
+            || body_length as u64 > super::MAX_RAM_OBJECT_BYTES
+        {
+            return Err(RamStoreError::Limit("prepaid RAM root"));
+        }
+        let mut extent = DecodeBudget::allocation_bytes();
+        add(&mut extent, logical_length as u64)?;
+        add(&mut extent, body_length as u64)?;
+        add(&mut extent, super::codec::ROOT_SCHEMA.len() as u64)?;
+        add(
+            &mut extent,
+            shared_extent::<super::codec_ownership::OwnedEnvelope>()?,
+        )?;
+        add(&mut extent, (child_node_bytes() + 15) * children as u64)?;
+        add(&mut extent, receipt_bytes() * (4 + 2 * children) as u64)?;
+        Ok(Self { partition: extent })
+    }
+
+    pub(super) fn root_canonical(length: usize) -> Result<Self, RamStoreError> {
+        Self::canonical_bounded(length, super::MAX_RAM_OBJECT_BYTES)
+    }
+
     pub(super) fn canonical(length: usize) -> Result<Self, RamStoreError> {
-        if length > 8192 {
+        Self::canonical_bounded(length, 8192)
+    }
+
+    fn canonical_bounded(length: usize, maximum: u64) -> Result<Self, RamStoreError> {
+        if length as u64 > maximum {
             return Err(RamStoreError::Limit("prepaid RAM record"));
         }
         let mut extent = DecodeBudget::allocation_bytes();
@@ -84,7 +114,11 @@ impl RecordAllocationPlan {
 // Rust 1.98's B-tree first leaf holds eleven keys, a parent pointer and
 // scalar headers. Sixteen full ContentChild slots plus 512 header/alignment
 // bytes conservatively cover that allocation, including the first insertion.
-// At most two children cannot split a leaf; each insertion is billed separately.
+// Internal nodes add at most twelve edge pointers, also inside that bound.
+// An insertion-only tree has at least one distinct key per allocated node:
+// splits move keys and never leave an empty retained node. Thus one complete
+// node per inserted child covers all live nodes at every prefix, including
+// root splits, without relying on the next insertion to pay existing storage.
 pub(super) fn child_node_bytes() -> u64 {
     (16 * std::mem::size_of::<ContentChild>() + 512) as u64
 }

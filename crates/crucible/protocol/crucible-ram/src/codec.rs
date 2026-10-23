@@ -185,13 +185,11 @@ impl RootRecord {
     ///
     /// # Errors
     ///
-    /// Returns [`RamError::Allocation`] if the exact record buffer cannot be
+    /// Returns the actual allocator refusal if the exact record buffer cannot be
     /// allocated. Callers separately reserve and retain its metadata charge.
-    pub fn try_encode(&self) -> Result<Vec<u8>, RamError> {
+    pub fn try_encode(&self) -> Result<Vec<u8>, std::collections::TryReserveError> {
         let mut output = Vec::new();
-        output
-            .try_reserve_exact(self.encoded_len())
-            .map_err(|_| RamError::Allocation)?;
+        output.try_reserve_exact(self.encoded_len())?;
         self.encode_into(&mut output);
         Ok(output)
     }
