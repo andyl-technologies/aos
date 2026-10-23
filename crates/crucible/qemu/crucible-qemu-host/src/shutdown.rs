@@ -452,6 +452,18 @@ pub(crate) fn wait_child(
     child: &mut impl OwnedChildWait,
     timeout: Duration,
 ) -> Result<QemuChildWait, QemuShutdownTargetError> {
+    wait_child_raw(child, timeout)
+        .map_err(|error| QemuShutdownTargetError::new("wait for QEMU child", error.to_string()))
+}
+
+/// Preserves the actual kernel wait error without allocating a diagnostic.
+///
+/// # Errors
+/// Returns the unchanged error from the actual owned child's poll.
+pub(crate) fn wait_child_raw(
+    child: &mut impl OwnedChildWait,
+    timeout: Duration,
+) -> std::io::Result<QemuChildWait> {
     let step = Duration::from_millis(1);
     let mut waited = Duration::ZERO;
     loop {
@@ -462,12 +474,7 @@ pub(crate) fn wait_child(
                 thread::sleep(step);
                 waited = waited.saturating_add(step);
             }
-            Err(error) => {
-                return Err(QemuShutdownTargetError::new(
-                    "wait for QEMU child",
-                    error.to_string(),
-                ));
-            }
+            Err(error) => return Err(error),
         }
     }
 }

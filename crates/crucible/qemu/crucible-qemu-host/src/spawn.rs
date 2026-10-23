@@ -1017,6 +1017,9 @@ impl QemuSpawnedChild {
 /// Errors returned while preparing or spawning a QEMU child.
 #[derive(Debug, Error)]
 pub enum QemuSpawnError {
+    /// The containing launch's physical child-return slot was already consumed.
+    #[error("the original child-return recipient is unavailable")]
+    ChildReturnUnavailable,
     /// The constructor-bound helper recipient is unavailable or occupied.
     ///
     /// This custody refusal retains no boxed I/O error or diagnostic allocation.
@@ -1519,6 +1522,16 @@ pub(crate) fn spawn_prepared_qemu_child_with_preexec(
                 .map_err(|source| QemuSpawnError::Preexec { source })
         })
         .transpose()?;
+    let mut child_return_recipient = if let Some(cleanup) = launch_cleanup.as_ref() {
+        Some(
+            cleanup
+                .claim_child_return()
+                .ok_or(QemuSpawnError::ChildReturnUnavailable)?,
+        )
+    } else {
+        None
+    };
+
     // Three socket pairs, three temporary duplicated child endpoints, two
     // shared-memory descriptors, two wake descriptors, and three image pins.
     let service_lease = host_services
@@ -1626,6 +1639,9 @@ pub(crate) fn spawn_prepared_qemu_child_with_preexec(
             Ok(child) => QemuNodeChild::from_authenticated_source(child),
             Err((child, source)) => {
                 let mut child = QemuNodeChild::new(child);
+                if let Some(recipient) = child_return_recipient.take() {
+                    child.retain_child_return(recipient);
+                }
                 if let Some(cleanup) = launch_cleanup {
                     child.retain_launch_cleanup(cleanup);
                 }
@@ -1638,6 +1654,9 @@ pub(crate) fn spawn_prepared_qemu_child_with_preexec(
         },
         None => QemuNodeChild::new(child),
     };
+    if let Some(recipient) = child_return_recipient.take() {
+        child.retain_child_return(recipient);
+    }
     if let Some(owner) = prepared_preexec.take() {
         child.retain_preexec_setup(owner);
     }

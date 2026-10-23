@@ -22,6 +22,10 @@ use crucible_qemu_protocol::ram_control::RamControlError;
 
 mod retained_record;
 use retained_record::RetainedCleanupRecord;
+#[cfg(target_os = "linux")]
+mod unreaped_child;
+#[cfg(target_os = "linux")]
+pub(crate) use unreaped_child::UnreapedChildRetention;
 
 /// Retains final-close custody for one independently admitted QEMU launch.
 ///
@@ -136,6 +140,10 @@ struct CleanupRecord {
     preexec_claimed: AtomicBool,
     #[cfg(target_os = "linux")]
     abandoned_preexec: OnceLock<crate::spawn::preexec_setup::PreexecAbandonment>,
+    #[cfg(target_os = "linux")]
+    child_return_claimed: AtomicBool,
+    #[cfg(target_os = "linux")]
+    abandoned_child: OnceLock<Mutex<crate::node::AbandonedChild>>,
     child_started: AtomicBool,
     child_reaped: AtomicBool,
     pending_joins: AtomicUsize,
@@ -189,6 +197,10 @@ impl LaunchCleanup {
                 preexec_claimed: AtomicBool::new(false),
                 #[cfg(target_os = "linux")]
                 abandoned_preexec: OnceLock::new(),
+                #[cfg(target_os = "linux")]
+                child_return_claimed: AtomicBool::new(false),
+                #[cfg(target_os = "linux")]
+                abandoned_child: OnceLock::new(),
                 child_started: AtomicBool::new(false),
                 child_reaped: AtomicBool::new(false),
                 pending_joins: AtomicUsize::new(0),
@@ -240,6 +252,10 @@ impl LaunchCleanup {
                 preexec_claimed: AtomicBool::new(false),
                 #[cfg(target_os = "linux")]
                 abandoned_preexec: OnceLock::new(),
+                #[cfg(target_os = "linux")]
+                child_return_claimed: AtomicBool::new(false),
+                #[cfg(target_os = "linux")]
+                abandoned_child: OnceLock::new(),
                 child_started: AtomicBool::new(false),
                 child_reaped: AtomicBool::new(false),
                 pending_joins: AtomicUsize::new(0),

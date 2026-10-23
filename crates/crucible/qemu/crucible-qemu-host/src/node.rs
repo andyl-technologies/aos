@@ -63,6 +63,8 @@ impl ChildNaturalWaitFailure {
 
 mod channels;
 mod child;
+#[cfg(target_os = "linux")]
+pub(crate) use child::AbandonedChild;
 #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
 mod guarded_reset;
 #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
@@ -359,6 +361,8 @@ pub struct QemuNodeChild {
     ram_source_start: Option<crate::ram_source::SourceInput>,
     #[cfg(target_os = "linux")]
     launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
+    #[cfg(target_os = "linux")]
+    child_return: Option<crate::launch_cleanup::UnreapedChildRetention>,
     #[cfg(target_os = "linux")]
     original_plugin_startup: Option<crate::spawn::OriginalPluginStartup>,
     #[cfg(target_os = "linux")]

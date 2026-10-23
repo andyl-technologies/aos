@@ -1060,7 +1060,9 @@ controls refund the complete paired loan. Nix engineering hygiene and the Rust
 source-shape integration check pass. The
 matching strict Host lint result remains 690 library errors and fourteen warnings,
 with 757 test errors and five warnings; no exemption is added. Mandatory
-application-target compilation remains required for this change.
+application-target compilation passes at `02x255pmhxjikap5zjyjac9niqjjc55j`
+against commit `c2747bbf05`; all 5,364 Rust/TOML inputs and six fixture/license
+files match its immutable build source.
 
 The unreaped-child fallback now retains the complete live RAM Source facade
 in another single-publication slot inside its original outcome allocation.
@@ -1088,6 +1090,30 @@ integration check and Nix engineering hygiene pass. The matching strict Host
 lint result remains 690 library errors and fourteen warnings, with 757 test
 errors and five warnings; no exemption is added. Mandatory application-target
 compilation remains required for this change.
+
+The containing cleanup record now also reserves a sole child-return recipient
+before actual process birth. Both successful enrollment and refused enrollment
+install that same linear recipient. If bounded final cleanup cannot observe
+reap, Drop transfers the actual wait owner, pending RAM input, original startup
+and checkpoint owners, and independent kill/wait observations into its funded
+record. The same transfer retains the live Source facade and pre-exec history.
+It creates neither a substitute wait authority nor a reap receipt. Final wait
+polling preserves the original kernel error without allocating diagnostic text.
+The complete recipient layout and construction overlap are admitted before birth.
+
+Three actual-child component controls pass, alongside thirty Source, thirteen
+cleanup, nine pre-exec, four child-exit and two stopped-child controls. They
+check a single prebirth claim, unchanged actual wait identity and pending
+backing, zero transfer allocations/reallocations, conservative paired-credit
+retention, and complete refund after an actual reap closes an unused recipient.
+A real externally reaped child supplies the raw ECHILD allocation control.
+Omitting only child publication fails the real-process retention assertion;
+restoring the exact source passes all affected controls. These component checks
+supply no Main/Source issuance or native-profile activation. The source-shape
+integration check and Nix engineering hygiene pass. Strict Host lint findings
+remain 690 library errors
+and fourteen warnings, with 757 test errors and five warnings; no exemption is
+added. Mandatory application-target compilation remains required for this change.
 
 #### Cumulative construction and request ownership source
 

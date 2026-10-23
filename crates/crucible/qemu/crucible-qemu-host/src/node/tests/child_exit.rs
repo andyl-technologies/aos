@@ -93,7 +93,9 @@ fn helper_poll_retains_the_actual_wait_error_without_boxing() -> Result<(), Box<
     let pid = match &child.child {
         OwnedNodeChild::Ordinary(child) => Pid::from_child(child),
         #[cfg(target_os = "linux")]
-        OwnedNodeChild::Source(_) => return Err("fixture requires an ordinary child".into()),
+        OwnedNodeChild::Source(_) | OwnedNodeChild::Transferred => {
+            return Err("fixture requires an ordinary child".into());
+        }
     };
     let (waited, _) = rustix::process::waitpid(Some(pid), rustix::process::WaitOptions::empty())?
         .ok_or("blocking waitpid returned no child")?;
@@ -104,6 +106,17 @@ fn helper_poll_retains_the_actual_wait_error_without_boxing() -> Result<(), Box<
 
     let result = reaped.0.try_wait_natural_exit_raw();
     let public_result = reaped.0.try_wait_natural_exit();
+    let (bounded_result, counts) =
+        crucible_host_resources::test_support::TestAllocationObserver::count(|| {
+            crate::shutdown::wait_child_raw(&mut reaped.0.child, Duration::ZERO)
+        });
+
+    let bounded_error = bounded_result.expect_err("the actual wait owner observes kernel ECHILD");
+    assert_eq!(bounded_error.raw_os_error(), Some(libc::ECHILD));
+    assert!(bounded_error.get_ref().is_none());
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
 
     let failure = result.expect_err("the kernel child was already reaped externally");
     let crate::QemuSpawnError::Io { operation, source } =
@@ -129,7 +142,9 @@ fn wait_for_test_child_exit_pending(child: &QemuNodeChild) -> Result<(), Box<dyn
     let pid = match &child.child {
         OwnedNodeChild::Ordinary(child) => Pid::from_child(child),
         #[cfg(target_os = "linux")]
-        OwnedNodeChild::Source(_) => return Err("fixture requires an ordinary child".into()),
+        OwnedNodeChild::Source(_) | OwnedNodeChild::Transferred => {
+            return Err("fixture requires an ordinary child".into());
+        }
     };
     waitid(
         WaitId::Pid(pid),

@@ -29,6 +29,8 @@ impl QemuNodeChild {
             #[cfg(target_os = "linux")]
             launch_cleanup: None,
             #[cfg(target_os = "linux")]
+            child_return: None,
+            #[cfg(target_os = "linux")]
             original_plugin_startup: None,
             #[cfg(target_os = "linux")]
             preexec_setup: None,
@@ -48,6 +50,8 @@ impl QemuNodeChild {
             #[cfg(target_os = "linux")]
             ram_source_start: None,
             launch_cleanup: None,
+            #[cfg(target_os = "linux")]
+            child_return: None,
             original_plugin_startup: None,
             preexec_setup: None,
             checkpoint_original: None,
@@ -90,6 +94,15 @@ impl QemuNodeChild {
     pub(crate) fn retain_launch_cleanup(&mut self, cleanup: crate::launch_cleanup::LaunchCleanup) {
         cleanup.child_started();
         self.launch_cleanup = Some(cleanup);
+    }
+
+    /// Installs the sole recipient reserved before this child's actual birth.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn retain_child_return(
+        &mut self,
+        recipient: crate::launch_cleanup::UnreapedChildRetention,
+    ) {
+        self.child_return = Some(recipient);
     }
 
     #[cfg(target_os = "linux")]
@@ -340,26 +353,89 @@ impl QemuNodeChild {
     }
 }
 
+/// Keeps the actual wait authority and borrowers after bounded cleanup expires.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub(crate) struct AbandonedChild {
+    _child: source_child::OwnedNodeChild,
+    _pending_source: Option<crate::ram_source::SourceInput>,
+    _startup: Option<crate::spawn::OriginalPluginStartup>,
+    _checkpoint: Option<exact_snapshot::capture_original::CheckpointOriginal>,
+    _containment: Option<ChildDropContainment>,
+}
+
+/// Records the actual kill request and independent raw wait observation.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+struct ChildDropContainment {
+    _kill: std::io::Result<()>,
+    _wait: std::io::Result<QemuChildWait>,
+}
+
+#[cfg(target_os = "linux")]
+impl QemuNodeChild {
+    /// Publishes unknown child custody into its preborn linear recipient.
+    fn retain_unreaped_fields(&mut self, containment: Option<ChildDropContainment>) -> bool {
+        let Some(recipient) = self.child_return.take() else {
+            return false;
+        };
+        if let Some(source) = self.ram_source.take() {
+            source.retain_for_unreaped_receiver();
+        }
+        if let Some(owner) = self.preexec_setup.take() {
+            drop(owner);
+        }
+
+        recipient.retain(AbandonedChild {
+            _child: self.child.take_for_abandonment(),
+            _pending_source: self.ram_source_start.take(),
+            _startup: self.original_plugin_startup.take(),
+            _checkpoint: self.checkpoint_original.take(),
+            _containment: containment,
+        });
+        true
+    }
+}
+
 impl Drop for QemuNodeChild {
     fn drop(&mut self) {
+        #[cfg(target_os = "linux")]
+        if self.child.transferred() {
+            return;
+        }
         // Force-kill (SIGKILL) and reap within a hard deadline. A blocking
         // `wait()` here would hang teardown indefinitely on a wedged child;
         // `wait_child` polls non-blockingly up to `DROP_REAP_DEADLINE` and then
         // abandons. `reaped` stays false on abandonment so the wrapper never
-        // claims a reap it did not observe; the process was already SIGKILL'd,
-        // so the OS reaps the zombie once it leaves any uninterruptible section.
+        // claims a reap it did not observe. A kill request cannot replace the
+        // actual wait owner, including while a kernel operation remains stuck.
         // The destructor has no error channel and this crate's lint bans direct
         // stderr diagnostics, so an abandonment is intentionally silent.
+        #[cfg(target_os = "linux")]
+        let mut containment = None;
         if !self.reaped {
-            let _ = self.child.kill();
-            if let Ok(QemuChildWait::Exited) = wait_child(&mut self.child, DROP_REAP_DEADLINE) {
+            let killed = self.child.kill();
+            let waited = crate::shutdown::wait_child_raw(&mut self.child, DROP_REAP_DEADLINE);
+            if matches!(waited, Ok(QemuChildWait::Exited)) {
                 self.mark_reaped();
             }
+            #[cfg(target_os = "linux")]
+            {
+                containment = Some(ChildDropContainment {
+                    _kill: killed,
+                    _wait: waited,
+                });
+            }
+            #[cfg(not(target_os = "linux"))]
+            let _observations = (killed, waited);
         }
         #[cfg(target_os = "linux")]
         if !self.reaped {
             if let Some(cleanup) = &self.launch_cleanup {
                 cleanup.quarantine();
+            }
+            if self.retain_unreaped_fields(containment) {
+                return;
             }
             // A destructor cannot transfer quarantine ownership. Keep the
             // immutable backing alive rather than revoke pages from an
@@ -380,3 +456,6 @@ impl Drop for QemuNodeChild {
         }
     }
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests;
