@@ -63,7 +63,7 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | Signed atomic `b62dc60749`, conventional `b34f6e7097`, tree `4c95a54a` imports the reviewed postbody and returned-recipient composition. Independent review verifies all 342 sealed artifacts and 78,461 source paths; the license ledger covers 654 created files. | The preceding `ee8eebc886` tuple passes genuine configure, all 35 owning variants, both passive units and all 39 getter readbacks, with an independently reproduced 478,294-byte fixed passive floor. Those values do not price the larger current tree; fresh compilation and geometry remain required. The registered Source unit still has eighteen unresolved link providers. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
+| Native integration | Signed atomic `e07752457b`, conventional `66d8bdaf01`, tree `e5c162ba` adds the reviewed no-Target successor to the composed postbody owners. Independent review verifies all 697 sealed artifacts and 78,462 source paths; the license ledger covers 655 created files. | The preceding `ee8eebc886` tuple passes genuine configure, all 35 owning variants, both passive units and all 39 getter readbacks, with an independently reproduced 478,294-byte fixed passive floor. Those values do not price the larger current tree; fresh compilation and geometry remain required. The registered Source unit still has eighteen unresolved link providers. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The latest completed canonical license-boundary check stops at strict controller Clippy with 660 host-library errors; its boundary assertions did not run. Earlier attempts and their larger finding counts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
@@ -1197,6 +1197,46 @@ the preceding header tuple's measured floor is not reused. The separate
 system-link alias and no-Target successor remain excluded from this import.
 No native runtime, paid-profile or successful physical-return qualification is
 claimed.
+
+#### Coherent no-Target successor
+
+Signed atomic `e07752457bbafc69359ac7cc5cbaa3bd950e1c77` imports conventional
+`66d8bdaf015b7676f4b9a144cc3dcb1a24dfbcd0`, the sole child of `b34f6e7097`.
+Both have tree `e5c162ba94a949808f0a87cd98a78d488ec41cf9`. The actual reviewed
+R61-to-R62 production delta is applied to the current composition: thirteen
+owning paths are byte-identical to the reviewed draft, the newer execution
+header receives the genuine loan-pristine declaration, and the current unit
+dependency union gains the new fragment. Six literal guards retain their
+other bytes and previous keys. No historical audit-input overlays are used.
+The no-Target path requires complete never-issued Target/Outcome history,
+actual Runtime registration and Target enrollment, and strict raw return
+observations after the actual C return. Partial, touched, repeated, negative
+or unknown histories preserve their existing debt; parent Source, Main,
+Original, Module, Control and resource obligations remain independent.
+
+Independent review authenticates the coherent cohort's 636 payloads, all 503
+current Git source identities and 509 archive rows. Source, Core and Outcome
+composition reviews pass. Isolated peer replays report 491 parsed functions,
+120 locked roots and 217 reachable direct statics, with no reachable `getpid`;
+142 expression, six ordering and 112-field controls pass. The two additional
+statics over the historical 215 are the already-canonical Native matched-Advance
+closed and untouched helpers. Literal extraction reports 179 roots and 1,299
+functions, with all four outputs reproduced. These are source-parser results,
+not complete indirect-call or runtime qualification. The independent coherent
+review record has SHA-256
+`8110c921d363289111f6f0ff197740c298e770adcfafcbf08e4546662ec251bc`.
+
+Complete signed correspondence independently verifies all 697 sealed payloads,
+78,462 tracked paths, 78,390 regular files totaling 699,751,286 bytes and 72
+literal symlinks against both signed Git trees and the full source archive.
+The record has SHA-256
+`814c4e25b6f84e5da80b0156ec95d4a46cea63ebdeaff716689f295c42b43157`.
+The new fragment retains its explicit GPL-2.0-or-later identifier and brings
+the cumulative created-file ledger to 655 rows. The ledger passes at
+`7if63n9kpjqcskrypc75k3zqa567zjc3`; hermetic patch/bundle reconstruction passes
+at `256xqjvx3r6z34j8prqd4kbgkmg90f11`. Fresh owning compilation and
+geometry for this exact combined tree remain required. No native runtime,
+paid-profile, activation or successful physical-return result is claimed.
 
 #### Initial loader storage component
 

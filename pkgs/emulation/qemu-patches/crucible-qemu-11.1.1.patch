@@ -1,15 +1,11 @@
-From b62dc6074984e9976572cceca6d971e8105735a7 Mon Sep 17 00:00:00 2001
+From e07752457bbafc69359ac7cc5cbaa3bd950e1c77 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: compose retained native execution and postbody
- custody
+Subject: [PATCH] crucible: bind checked source owners and retained Outcome
+ return
 
-Retain the complete reviewed source lineage, typed process protocols, actual
-owning Source, Core, Native and Outcome implementations and their public
-source/dependency contracts as one reconstructible source revision.
-
-Preserve ordinary paths, finite refusal behavior and every source license.
-Complete-profile and paid process admission remain unavailable.
+Compose checked source and native owners, retained postbody resource return,
+and complete never-issued Outcome inventories with their genuine providers.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -3209,10 +3205,10 @@ index 0000000000000000000000000000000000000000..30846b4fd0fc5bc39840b2363c6cbdd4
 +#endif
 diff --git a/accel/tcg/crucible-outcome-boundary.inc.h b/accel/tcg/crucible-outcome-boundary.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..5c13cbd933be03a03d878ceb6a89ca991ad15cd3
+index 0000000000000000000000000000000000000000..a2e7dfc0c61cd452a3a8f5c9d38f4f8cb629e99d
 --- /dev/null
 +++ b/accel/tcg/crucible-outcome-boundary.inc.h
-@@ -0,0 +1,613 @@
+@@ -0,0 +1,648 @@
 +/*
 + * Physical RR boundary invocation records; no semantic Outcome is issued.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -3507,6 +3503,41 @@ index 0000000000000000000000000000000000000000..5c13cbd933be03a03d878ceb6a89ca99
 +        !*frame->holder && !frame->uncertain &&
 +        frame->completed_phases == expected_phases &&
 +        rr_boundary_outcome_record_closed(frame) ? 0 : -EINPROGRESS;
++}
++
++int qemu_crucible_core_quantum_boundary_loan_pristine_v1(
++    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t serial,
++    uint32_t kind)
++{
++    /* Select the permanent kind slot before reading any nominated frame.
++     * Neither the frame's semantic lifetime nor its containing pin is needed
++     * to query this retained fact in the same synchronous RR caller. */
++    if (kind < RR_BOUNDARY_DISPATCH || kind > RR_BOUNDARY_SETTLED_IDLE ||
++        frame != &rr_boundary_journal.frames[kind - 1]) {
++        return -EPERM;
++    }
++    if (!serial || serial == UINT64_MAX || serial != frame->serial ||
++        serial != rr_boundary_journal.epochs[kind - 1] ||
++        frame->kind != kind || frame->process != getpid() ||
++        frame->holder != &rr_boundary_journal.holders[kind - 1] ||
++        !frame->attempted || !qemu_thread_is_self(&frame->thread) ||
++        !single_tcg_cpu_thread ||
++        !qemu_thread_is_self(single_tcg_cpu_thread) || !bql_locked()) {
++        return -ESTALE;
++    }
++
++    /* Every loan and release field is part of the negative inventory. A
++     * partial nomination, refused retain or incomplete release stays debt. */
++    return !frame->borrower && !frame->borrower_holder &&
++        !frame->borrower_serial && !frame->loan_first_status &&
++        !frame->loan_post_status && !frame->loan_identity_status &&
++        !frame->release_first_status && !frame->release_post_status &&
++        !frame->loan_attempted && !frame->loan_returned &&
++        !frame->loan_post_attempted && !frame->loan_post_returned &&
++        !frame->loan_retained && !frame->loan_no_entry &&
++        !frame->release_attempted && !frame->release_returned &&
++        !frame->release_post_attempted && !frame->release_post_returned &&
++        !frame->loan_consumed && !frame->loan_uncertain ? 0 : -EINPROGRESS;
 +}
 +
 +static int rr_boundary_loan_identity(
@@ -6820,10 +6851,10 @@ index 0000000000000000000000000000000000000000..76140d303d1b89512472ebc4f0d0577a
 +    }
 +}
 diff --git a/accel/tcg/tcg-accel-ops-rr.c b/accel/tcg/tcg-accel-ops-rr.c
-index cdaa3e118082d7f100dd7655e57e28b55418d294..a674cd9ce0288125a50543f3bc84fead05817686 100644
+index cdaa3e118082d7f100dd7655e57e28b55418d294..066fe7c0c1400a6bc51b2d60686fafe683f6edd7 100644
 --- a/accel/tcg/tcg-accel-ops-rr.c
 +++ b/accel/tcg/tcg-accel-ops-rr.c
-@@ -27,45 +27,2263 @@
+@@ -27,45 +27,2266 @@
  #include "qemu/lockable.h"
  #include "system/tcg.h"
  #include "system/replay.h"
@@ -6925,6 +6956,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a674cd9ce0288125a50543f3bc84fead
 +    QemuCrucibleCoreOutcomePostbodyReturnResult returned;
 +    int callback_status;
 +    int capture_status;
++    int return_observation_status;
 +    int first;
 +    const uint64_t frame_epoch = frame->serial;
 +
@@ -6942,11 +6974,13 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a674cd9ce0288125a50543f3bc84fead
 +        entered.child, entered.epoch, frame, frame_epoch, kind, callback_status);
 +    returned = qemu_crucible_core_outcome_postbody_return_result_v1(
 +        entered.child, entered.epoch, frame, frame_epoch, kind);
++    return_observation_status = qemu_crucible_outcome_postbody_return_observed_v1(
++        frame, frame_epoch, kind, entered.child, entered.epoch, returned);
 +
 +    const int statuses[] = {
 +        callback_status, capture_status, returned.admission_status,
 +        returned.first_status, returned.first_capture_status,
-+        returned.post_status, returned.post_capture_status,
++        returned.post_status, returned.post_capture_status, return_observation_status,
 +    };
 +
 +    for (size_t index = 0; index < G_N_ELEMENTS(statuses); index++) {
@@ -9107,7 +9141,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a674cd9ce0288125a50543f3bc84fead
  }
  
  /* Kick the currently round-robin scheduled vCPU to next */
-@@ -84,18 +2302,30 @@ static void rr_kick_next_cpu(void)
+@@ -84,18 +2305,30 @@ static void rr_kick_next_cpu(void)
  
  static void rr_kick_thread(void *opaque)
  {
@@ -9140,7 +9174,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a674cd9ce0288125a50543f3bc84fead
      }
  }
  
-@@ -110,15 +2340,131 @@ static void rr_wait_io_event(void)
+@@ -110,15 +2343,131 @@ static void rr_wait_io_event(void)
  {
      CPUState *cpu;
  
@@ -9274,7 +9308,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a674cd9ce0288125a50543f3bc84fead
      }
  }
  
-@@ -140,6 +2486,18 @@ static void rr_deal_with_unplugged_cpus(void)
+@@ -140,6 +2489,18 @@ static void rr_deal_with_unplugged_cpus(void)
  
  static void rr_force_rcu(Notifier *notify, void *data)
  {
@@ -9293,7 +9327,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a674cd9ce0288125a50543f3bc84fead
      rr_kick_next_cpu();
  }
  
-@@ -184,6 +2542,8 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -184,6 +2545,8 @@ static void *rr_cpu_thread_fn(void *arg)
      CPUState *cpu = arg;
  
      assert(tcg_enabled());
@@ -9302,7 +9336,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a674cd9ce0288125a50543f3bc84fead
      rcu_register_thread();
      force_rcu.notify = rr_force_rcu;
      rcu_add_force_rcu_notifier(&force_rcu);
-@@ -204,41 +2564,225 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -204,41 +2567,225 @@ static void *rr_cpu_thread_fn(void *arg)
          /* process any pending work */
          CPU_FOREACH(cpu) {
              current_cpu = cpu;
@@ -9546,7 +9580,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a674cd9ce0288125a50543f3bc84fead
  
          if (icount_enabled()) {
              int cpu_count = rr_cpu_count();
-@@ -254,11 +2798,31 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -254,11 +2801,31 @@ static void *rr_cpu_thread_fn(void *arg)
              cpu_budget = icount_percpu_budget(cpu_count);
          }
  
@@ -9579,7 +9613,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a674cd9ce0288125a50543f3bc84fead
  
          while (cpu && cpu_work_list_empty(cpu)) {
              /*
-@@ -276,28 +2840,129 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -276,28 +2843,129 @@ static void *rr_cpu_thread_fn(void *arg)
              qemu_clock_enable(QEMU_CLOCK_VIRTUAL,
                                (cpu->singlestep_flags & SSTEP_NOTIMER) == 0);
  
@@ -9724,7 +9758,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a674cd9ce0288125a50543f3bc84fead
              } else if (cpu->stop) {
                  if (cpu->unplug) {
                      cpu = CPU_NEXT(cpu);
-@@ -305,11 +2970,137 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -305,11 +2973,137 @@ static void *rr_cpu_thread_fn(void *arg)
                  break;
              }
  
@@ -9864,7 +9898,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a674cd9ce0288125a50543f3bc84fead
      }
  
      g_assert_not_reached();
-@@ -318,13 +3109,34 @@ static void *rr_cpu_thread_fn(void *arg)
+@@ -318,13 +3112,34 @@ static void *rr_cpu_thread_fn(void *arg)
  void rr_start_vcpu_thread(CPUState *cpu)
  {
      char thread_name[VCPU_THREAD_NAME_SIZE];
@@ -9901,7 +9935,7 @@ index cdaa3e118082d7f100dd7655e57e28b55418d294..a674cd9ce0288125a50543f3bc84fead
          single_tcg_halt_cond = cpu->halt_cond;
          single_tcg_cpu_thread = cpu->thread;
  
-@@ -335,11 +3147,25 @@ void rr_start_vcpu_thread(CPUState *cpu)
+@@ -335,11 +3150,25 @@ void rr_start_vcpu_thread(CPUState *cpu)
                             cpu, QEMU_THREAD_JOINABLE);
      } else {
          /* we share the thread, dump spare data */
@@ -22555,10 +22589,10 @@ index 0000000000000000000000000000000000000000..c4a21c892e7b70d65d6a5e71e820c726
 +that caller as absent were corrected without changing the frozen packets.
 diff --git a/docs/devel/crucible-outcome-postbody.rst b/docs/devel/crucible-outcome-postbody.rst
 new file mode 100644
-index 0000000000000000000000000000000000000000..bf75ed5541f6ae29ce8cf2c418177a08e543ff76
+index 0000000000000000000000000000000000000000..725b26128487b7a447622ff0c3c5f79a1241793d
 --- /dev/null
 +++ b/docs/devel/crucible-outcome-postbody.rst
-@@ -0,0 +1,50 @@
+@@ -0,0 +1,81 @@
 +.. SPDX-License-Identifier: GPL-2.0-or-later
 +
 +Retained RR post-body custody
@@ -22609,6 +22643,37 @@ index 0000000000000000000000000000000000000000..bf75ed5541f6ae29ce8cf2c418177a08
 +if its later physical capture refuses. That capture authenticates retained
 +return custody directly; it never asks an ended callback for Current. Unknown
 +capture keeps the pin and return debt, without reopening the invocation.
++
++Complete unentered Outcome case
++-------------------------------
++
++A selected dispatch or settled-idle boundary may run without issuing an
++Outcome only when the real Runtime registration and Target enrollment have
++completed positively and every named field of this implementation's Target,
++Use, Outcome, factory, callback, request and descendant histories remains in
++its pre-factory state. The enrolled slots, result geometry, Runtime ranges
++and output exclusions are checked before those outputs are read. An empty
++output, wrong boundary kind, consumed prior Target, failed factory or partial
++capture cannot select this case. Never-registered owners remain unsupported.
++
++Each boundary kind has a separate once-only absence journal. The actual
++semantic callback observes Core's live boundary Current twice; the actual
++fixed postbody callback separately observes its own entered pin twice.
++Each pass also records the independent complete request-capsule and physical
++Boundary-loan inventories outside the Source gate. Raw observations precede
++fallible captures. Later physical child queries recheck the same complete
++inventory and keep their own two once-only receipts. No Target, Original,
++Module or constructor is consumed by this operation; preexisting Source,
++Main, Control, deferred and application parents retain their own lifetimes.
++
++After the real Core return function returns to RR, the wrapper passes its
++whole by-value return result to a distinct final observer. That observer
++records the real factual returned query and strict closed query independently,
++without querying an ended Current. Two child queries or cleared slots alone
++cannot complete this history. Earlier semantic or capture refusal remains
++strict debt even when independently established physical custody has returned.
++The new journals are included by the actual fixed storage getter; no size,
++funded profile, compiler, complete-link or runtime qualification is inferred.
 diff --git a/docs/devel/crucible-outcome-recipient-history.rst b/docs/devel/crucible-outcome-recipient-history.rst
 new file mode 100644
 index 0000000000000000000000000000000000000000..67a1713fd460f2ce762bff06dc3e3ae9c4681612
@@ -100176,10 +100241,10 @@ index 508444ccf1c30b215914743946066395f29db7c3..247f074c9beaf9d8f499d951e0af164c
  void cpu_synchronize_all_post_init(void);
 diff --git a/include/system/crucible-advance-outcome.h b/include/system/crucible-advance-outcome.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..242e7a4ddabbbafafdfe2e42376371dc566eba92
+index 0000000000000000000000000000000000000000..dfd52c50f56e19f68940395a3cf968e01d59a64d
 --- /dev/null
 +++ b/include/system/crucible-advance-outcome.h
-@@ -0,0 +1,269 @@
+@@ -0,0 +1,270 @@
 +/*
 + * Private persistent command-target Outcome owning sites.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -100261,6 +100326,7 @@ index 0000000000000000000000000000000000000000..242e7a4ddabbbafafdfe2e42376371dc
 +int qemu_crucible_source_outcome_request_attach_v1(
 +    QemuCrucibleOutcomeRequest *request, uint64_t request_epoch);
 +void qemu_crucible_source_outcome_request_refused_v1(int status);
++int qemu_crucible_outcome_request_unentered_v1(void);
 +int qemu_crucible_outcome_request_identity_v1(
 +    QemuCrucibleOutcomeRequest *request, uint64_t request_epoch,
 +    QemuCrucibleSourceAdvanceCommandTarget *target, uint64_t target_epoch,
@@ -103793,10 +103859,10 @@ index 0000000000000000000000000000000000000000..a7f16bb75e222e827e6a8ba5689ee517
 +#endif
 diff --git a/include/system/crucible-outcome-postbody.h b/include/system/crucible-outcome-postbody.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..b43fc3c97adfaa5abe163f98dbf8e7f11157b396
+index 0000000000000000000000000000000000000000..086c9d47b21f0a216bfafb02ab4da2fab72da07f
 --- /dev/null
 +++ b/include/system/crucible-outcome-postbody.h
-@@ -0,0 +1,83 @@
+@@ -0,0 +1,90 @@
 +/*
 + * Retained physical custody of the actual RR post-body invocation.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -103878,6 +103944,13 @@ index 0000000000000000000000000000000000000000..b43fc3c97adfaa5abe163f98dbf8e7f1
 +    QemuCrucibleCoreOutcomePostbodyChild *child, uint64_t child_epoch,
 +    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_epoch,
 +    uint32_t kind);
++
++/* The genuine RR caller retains the entire actual ReturnResult before this
++ * independent final receipt. It supplies no live Current after C return. */
++int qemu_crucible_outcome_postbody_return_observed_v1(
++    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_epoch,
++    uint32_t kind, QemuCrucibleCoreOutcomePostbodyChild *child,
++    uint64_t child_epoch, QemuCrucibleCoreOutcomePostbodyReturnResult returned);
 +
 +#endif
 diff --git a/include/system/crucible-outcome-prepare.h b/include/system/crucible-outcome-prepare.h
@@ -104165,10 +104238,10 @@ index 0000000000000000000000000000000000000000..3cfd6f85ff2035a46a07819b08677b6b
 +#endif
 diff --git a/include/system/crucible-quantum-execution.h b/include/system/crucible-quantum-execution.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..5558fedd5739b67d5ac5910480c2d9449ec4649c
+index 0000000000000000000000000000000000000000..6210c162e642d586f108eaedb4a45cfa270599fa
 --- /dev/null
 +++ b/include/system/crucible-quantum-execution.h
-@@ -0,0 +1,261 @@
+@@ -0,0 +1,268 @@
 +/*
 + * Private RR CPU custody; observations do not issue Quantum authority.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -104354,6 +104427,13 @@ index 0000000000000000000000000000000000000000..5558fedd5739b67d5ac5910480c2d944
 +    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_serial,
 +    uint32_t boundary_kind, QemuCrucibleCoreQuantumBoundaryUse *use,
 +    QemuCrucibleCoreQuantumBoundaryUse **holder, uint64_t use_serial);
++/* Complete never-issued loan/release history in the permanent RR frame.
++ * Valid on the actual RR caller both before and after frame/pin return; this
++ * is no live callback, frame, postbody or Work permission. */
++int qemu_crucible_core_quantum_boundary_loan_pristine_v1(
++    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_serial,
++    uint32_t boundary_kind);
++
 +int qemu_crucible_core_quantum_boundary_loan_returned_v1(
 +    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_serial,
 +    uint32_t boundary_kind, QemuCrucibleCoreQuantumBoundaryUse *use,
@@ -126689,10 +126769,10 @@ index 0000000000000000000000000000000000000000..7584b5c6e08956147bfbda5aa98c2bf3
 +}
 diff --git a/plugins/crucible-advance-outcome-closure.inc.h b/plugins/crucible-advance-outcome-closure.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..0ebee11469f731f1c50facb72ee72ffd0ec57f6d
+index 0000000000000000000000000000000000000000..104941d7f71e47d11b4c35e9528ffc9f1af90f10
 --- /dev/null
 +++ b/plugins/crucible-advance-outcome-closure.inc.h
-@@ -0,0 +1,509 @@
+@@ -0,0 +1,513 @@
 +/*
 + * Complete persistent Outcome debt and immutable receipt closure.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -127189,6 +127269,10 @@ index 0000000000000000000000000000000000000000..0ebee11469f731f1c50facb72ee72ffd
 +
 +static bool advance_outcome_closed_locked(void)
 +{
++    if (!advance_outcome_no_target_histories_closed_locked()) {
++        return false;
++    }
++
 +    /* Only the actual installed successful path has a complete move,
 +     * descendant disposal, returned callback and final history-use producer.
 +     * Other touched installed/Original histories retain strict refusal. */
@@ -128315,10 +128399,10 @@ index 0000000000000000000000000000000000000000..397f6576f0f6e5873a5bb8758fc1f84c
 +#endif
 diff --git a/plugins/crucible-advance-outcome-construction.inc.h b/plugins/crucible-advance-outcome-construction.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..ca253a4d4d161a286f0158828c266becbeaaa094
+index 0000000000000000000000000000000000000000..c1b3caee566bf6f6f18445f5ddadd3bda78d87ba
 --- /dev/null
 +++ b/plugins/crucible-advance-outcome-construction.inc.h
-@@ -0,0 +1,1410 @@
+@@ -0,0 +1,1411 @@
 +/*
 + * Genuine opt-in fixed ModulePending birth inside MATCHED_CONSTRUCT.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -128684,6 +128768,7 @@ index 0000000000000000000000000000000000000000..ca253a4d4d161a286f0158828c266bec
 +        cleanup != &startup_source.quantum_roles.cleanup ||
 +        work_epoch != startup_source.quantum_roles.work.epoch ||
 +        cleanup_epoch != startup_source.quantum_roles.cleanup.epoch ||
++        !advance_outcome_no_target_histories_closed_locked() ||
 +        !advance_outcome_construction_untouched_locked()) {
 +        result.admission_status = -ESTALE;
 +    } else {
@@ -132490,10 +132575,10 @@ index 0000000000000000000000000000000000000000..c18554424862ff92e6530f4ef4dcdd07
 +#endif
 diff --git a/plugins/crucible-advance-outcome-installed.inc.h b/plugins/crucible-advance-outcome-installed.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..220d300521954632de91571179c3ebb338a886f0
+index 0000000000000000000000000000000000000000..bf7fd1a8f897c7efa4cdc2bac5f55fbf6382fb60
 --- /dev/null
 +++ b/plugins/crucible-advance-outcome-installed.inc.h
-@@ -0,0 +1,719 @@
+@@ -0,0 +1,720 @@
 +/*
 + * Concrete installed construct/Current callbacks over the real enrolled loan.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -132704,7 +132789,8 @@ index 0000000000000000000000000000000000000000..220d300521954632de91571179c3ebb3
 +            sizeof(QemuCrucibleOutcomeConstructionStorageV2))) {
 +        first = -ESTALE;
 +    }
-+    if (!first && !advance_outcome_installed_untouched_locked()) {
++    if (!first && (!advance_outcome_no_target_histories_closed_locked() ||
++        !advance_outcome_installed_untouched_locked())) {
 +        first = -EALREADY;
 +    }
 +    if (!first) {
@@ -133666,6 +133752,769 @@ index 0000000000000000000000000000000000000000..46625eb12acbb465b6e98d4943f03cb0
 +    qatomic_store_release(&owner->ready, true);
 +    return advance_outcome_moved_original_result_status(&result);
 +}
+diff --git a/plugins/crucible-advance-outcome-no-target.inc.h b/plugins/crucible-advance-outcome-no-target.inc.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..5bc984e862dc32b4a57905c1e3e42c0030b8fdec
+--- /dev/null
++++ b/plugins/crucible-advance-outcome-no-target.inc.h
+@@ -0,0 +1,757 @@
++/*
++ * Complete unentered Outcome inventory beneath a real retained RR frame pin.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++static bool advance_outcome_no_target_journal_untouched(
++    const struct qemu_plugin_crucible_outcome_journal_v1 *journal)
++{
++    const struct qemu_plugin_crucible_outcome_cut_v1 *cuts[] = {
++        &journal->prepare, &journal->prepared_current, &journal->prepare_source_post,
++        &journal->acquire, &journal->acquire_post, &journal->produce, &journal->produce_post,
++        &journal->target_return, &journal->returned_current, &journal->acquire_source_post,
++        &journal->produce_source_post, &journal->return_source_post, &journal->publish,
++        &journal->publish_source_post, &journal->completion, &journal->completion_post,
++    };
++
++    if (journal->schema_version || journal->struct_size || journal->source_use_epoch ||
++        journal->target_epoch || journal->outcome_epoch || journal->boundary_epoch ||
++        journal->boundary_kind || journal->reserved || journal->module_born ||
++        journal->no_birth_confirmed || journal->target_consumed || journal->boundary_consumed ||
++        journal->source_consumed || journal->completion_acknowledged ||
++        journal->uncertain || journal->first_status) {
++        return false;
++    }
++    for (size_t index = 0; index < ARRAY_SIZE(cuts); index++) {
++        if (!advance_outcome_plain_cut_untouched(cuts[index])) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static bool advance_outcome_no_target_observation_untouched(
++    const struct qemu_plugin_crucible_advance_outcome_observation_v1 *observation)
++{
++    const struct qemu_plugin_crucible_advance_binding_v1 zero = { 0 };
++
++    return !observation->schema_version && !observation->struct_size &&
++        advance_outcome_request_binding_equal(&observation->binding, &zero) &&
++        !observation->source_outcome_serial && !observation->final_raw_icount &&
++        !observation->completed_next_idle_generation && !observation->outcome &&
++        !observation->reserved;
++}
++
++static bool advance_outcome_no_target_work_untouched(const AdvanceOutcomeWorkCut *work)
++{
++    return advance_outcome_plain_cut_untouched(&work->current) &&
++        advance_outcome_plain_cut_untouched(&work->capture) &&
++        !work->mask.registry && !work->mask.frame && !work->mask.serial &&
++        !work->mask.suppressed && !work->callback && !work->callback_epoch &&
++        !work->thread.thread && !work->frame && !work->operation && !work->operation_holder &&
++        !work->advance && !work->advance_holder && !work->operation_epoch &&
++        !work->advance_epoch && !work->frame_epoch && !work->target_epoch &&
++        !work->use_epoch && !work->boundary_kind && !work->process && !work->phase;
++}
++
++static bool advance_outcome_no_target_disposition_enrolled(
++    const struct qemu_plugin_crucible_outcome_target_result_v1 *result)
++{
++    return result->schema_version == 1 && result->struct_size == sizeof(*result) &&
++        !result->target_epoch && !result->born && !result->consumed &&
++        !result->return_attempted && !result->return_returned &&
++        !result->post_attempted && !result->post_returned &&
++        !result->first_status && !result->post_status && !result->uncertain && !result->reserved;
++}
++
++/* Enrollment is a real completed operation, not part of the untouched factory.
++ * Runtime ranges are authenticated before any enrolled output is read. */
++static bool advance_outcome_no_target_enrollment_locked(void)
++{
++    const AdvanceOutcomeTargetOwner *owner = &advance_outcome.command_target;
++    const struct qemu_plugin_crucible_pending_constructor_registration_v1 *registered =
++        &advance_outcome.registration;
++    const void *fields[] = {
++        advance_outcome.source_holder, advance_outcome.source_epoch,
++        advance_outcome.target_holder, advance_outcome.target_epoch,
++        advance_outcome.outcome_holder, advance_outcome.outcome_epoch,
++        advance_outcome.observation, advance_outcome.module_receipt,
++        advance_outcome.completed_receipt, advance_outcome.final_receipt,
++        advance_outcome.result, owner->holder, owner->epoch, owner->result,
++    };
++    const size_t extents[] = {
++        sizeof(*advance_outcome.source_holder), sizeof(*advance_outcome.source_epoch),
++        sizeof(*advance_outcome.target_holder), sizeof(*advance_outcome.target_epoch),
++        sizeof(*advance_outcome.outcome_holder), sizeof(*advance_outcome.outcome_epoch),
++        sizeof(*advance_outcome.observation), sizeof(*advance_outcome.module_receipt),
++        sizeof(*advance_outcome.completed_receipt), sizeof(*advance_outcome.final_receipt),
++        sizeof(*advance_outcome.result), sizeof(*owner->holder), sizeof(*owner->epoch),
++        sizeof(*owner->result),
++    };
++
++    if (!advance_outcome_registration_closed_locked() ||
++        registered->schema_version != 1 || registered->struct_size != sizeof(*registered) ||
++        registered->registered != 1 || registered->reserved ||
++        registered->registration_serial != 1 || registered->first_status ||
++        registered->post_status || !advance_outcome.creator.thread || !owner->enrolled ||
++        !advance_outcome_cut_ok(&owner->enrollment) ||
++        !advance_outcome_cut_ok(&owner->enrollment_post) ||
++        !advance_outcome_cut_ok(&owner->enrollment_output) ||
++        !advance_outcome_no_target_disposition_enrolled(&owner->disposition) ||
++        advance_outcome.callbacks.schema_version != 1 ||
++        advance_outcome.callbacks.struct_size != sizeof(advance_outcome.callbacks) ||
++        !advance_outcome.callbacks.prepare || !advance_outcome.callbacks.prepared_current ||
++        !advance_outcome.callbacks.target_acquire || !advance_outcome.callbacks.target_current ||
++        !advance_outcome.callbacks.produce || !advance_outcome.callbacks.publish ||
++        !advance_outcome.callbacks.target_return || !advance_outcome.callbacks.returned_current ||
++        !advance_outcome.callbacks.completed) {
++        return false;
++    }
++    for (size_t index = 0; index < ARRAY_SIZE(fields); index++) {
++        if (!pending_runtime_field(advance_outcome.runtime_base, advance_outcome.runtime_extent,
++                fields[index], extents[index], _Alignof(uint64_t)) ||
++            callback_child_output_overlap(fields[index], extents[index],
++                advance_outcome.module_journal, advance_outcome.module_journal_bytes)) {
++            return false;
++        }
++        for (size_t prior = 0; prior < index; prior++) {
++            if (callback_child_output_overlap(fields[index], extents[index],
++                    fields[prior], extents[prior])) {
++                return false;
++            }
++        }
++    }
++    return !*advance_outcome.source_holder && !*advance_outcome.source_epoch &&
++        !*advance_outcome.target_holder && !*advance_outcome.target_epoch &&
++        !*advance_outcome.outcome_holder && !*advance_outcome.outcome_epoch &&
++        !*owner->holder && !*owner->epoch &&
++        advance_outcome_no_target_disposition_enrolled(owner->result) &&
++        advance_outcome.result->schema_version == registered->schema_version &&
++        advance_outcome.result->struct_size == registered->struct_size &&
++        advance_outcome.result->registered == registered->registered &&
++        advance_outcome.result->reserved == registered->reserved &&
++        advance_outcome.result->registration_serial == registered->registration_serial &&
++        advance_outcome.result->first_status == registered->first_status &&
++        advance_outcome.result->post_status == registered->post_status &&
++        advance_outcome_no_target_observation_untouched(advance_outcome.observation) &&
++        advance_outcome_no_target_journal_untouched(advance_outcome.module_receipt) &&
++        advance_outcome_no_target_journal_untouched(advance_outcome.final_receipt) &&
++        advance_outcome_no_target_observation_untouched(&advance_outcome.completed_receipt->outcome) &&
++        advance_outcome_no_target_journal_untouched(&advance_outcome.completed_receipt->journal);
++}
++
++static bool advance_outcome_no_target_factory_untouched_locked(void)
++{
++    const AdvanceOutcomeTargetOwner *owner = &advance_outcome.command_target;
++    const QemuCrucibleSourceAdvanceCommandTarget *target = &advance_outcome.target;
++    const struct qemu_plugin_crucible_advance_binding_v1 zero = { 0 };
++    const struct qemu_plugin_crucible_outcome_cut_v1 *cuts[] = {
++        &owner->factory, &owner->factory_post, &owner->factory_output, &owner->prepared,
++        &owner->acquire_current, &owner->produce_current, &owner->request,
++        &owner->physical, &owner->complete, &owner->returned, &owner->return_post,
++        &owner->return_output, &advance_outcome.boundary_factory,
++        &advance_outcome.boundary_factory_post, &advance_outcome.boundary_factory_capture,
++        &advance_outcome.target_production, &advance_outcome.target_consumption,
++        &advance_outcome.boundary_return, &advance_outcome.boundary_consumption,
++        &advance_outcome.boundary_closure, &advance_outcome.boundary_terminal,
++        &advance_outcome.boundary_terminal_capture, &advance_outcome.target_staged_post,
++        &advance_outcome.target_staged_post_capture,
++    };
++
++    if (!advance_outcome_no_target_enrollment_locked() ||
++        !advance_outcome_request_binding_equal(&target->binding, &zero) ||
++        target->entry || target->entry_epoch || target->advance || target->advance_holder ||
++        target->advance_epoch || target->module_advance_holder || target->module_advance_epoch ||
++        target->epoch || target->held || advance_outcome.use.epoch || advance_outcome.use.held ||
++        advance_outcome.outcome.epoch || advance_outcome.outcome.born ||
++        owner->loan.epoch || owner->loan.held || owner->request_owner || owner->request_epoch ||
++        owner->physical_frame || owner->physical_frame_epoch || owner->final_raw_icount ||
++        owner->physical_kind || owner->attempted || owner->consumed || owner->uncertain ||
++        !advance_outcome_no_target_work_untouched(&owner->acquire_work) ||
++        !advance_outcome_no_target_work_untouched(&owner->produce_current_work) ||
++        !advance_outcome_no_target_work_untouched(&owner->complete_work) ||
++        advance_outcome.advance || advance_outcome.advance_holder || advance_outcome.advance_epoch ||
++        advance_outcome.born_target || advance_outcome.born_target_epoch ||
++        advance_outcome.frame || advance_outcome.frame_epoch || advance_outcome.operation ||
++        advance_outcome.operation_holder || advance_outcome.operation_epoch || advance_outcome.boundary ||
++        advance_outcome.boundary_holder || advance_outcome.boundary_epoch ||
++        advance_outcome.boundary_attached || advance_outcome.boundary_return_attempted ||
++        advance_outcome.target_attach_attempted || advance_outcome.target_attach_returned ||
++        advance_outcome.target_attach_status || advance_outcome.target_actor_attempted ||
++        advance_outcome.target_actor_returned || advance_outcome.target_actor_status ||
++        advance_outcome.target_actor_post_attempted || advance_outcome.target_actor_post_returned ||
++        advance_outcome.target_actor_post_status || advance_outcome.boundary_factory_observation_ready ||
++        advance_outcome.boundary_factory_observed.use ||
++        advance_outcome.boundary_factory_observed.use_epoch ||
++        advance_outcome.boundary_factory_observed.first_status ||
++        advance_outcome.boundary_factory_observed.post_status ||
++        advance_outcome.boundary_consumption_observed_status ||
++        advance_outcome.boundary_consumption_observation_ready || advance_outcome.post_capture_uncertain ||
++        advance_outcome.phase != ADVANCE_OUTCOME_NONE || advance_outcome.attempted ||
++        advance_outcome.transition || advance_outcome.idle_armed || advance_outcome.completion_frozen ||
++        advance_outcome.final_confirmed || advance_outcome.callback_entered ||
++        advance_outcome.callback_returned || advance_outcome.callback_thread.thread ||
++        advance_outcome.active_callback || advance_outcome.callback_serial || advance_outcome.callback_status ||
++        advance_outcome.mask.registry || advance_outcome.mask.frame || advance_outcome.mask.serial ||
++        advance_outcome.mask.suppressed || advance_outcome.entry || advance_outcome.entry_epoch ||
++        !advance_outcome_no_target_journal_untouched(&advance_outcome.journal) ||
++        !advance_outcome_no_target_journal_untouched(&advance_outcome.final) ||
++        !advance_outcome_no_target_journal_untouched(&advance_outcome.completed.journal) ||
++        !advance_outcome_no_target_observation_untouched(&advance_outcome.completed.outcome) ||
++        !advance_outcome_no_target_observation_untouched(&advance_outcome.produced)) {
++        return false;
++    }
++    for (size_t index = 0; index < ARRAY_SIZE(cuts); index++) {
++        if (!advance_outcome_plain_cut_untouched(cuts[index])) {
++            return false;
++        }
++    }
++    for (size_t index = 0; index < ARRAY_SIZE(owner->prepare_observed); index++) {
++        if (owner->prepare_observation_ready[index] ||
++            !advance_outcome_prepare_result_untouched(&owner->prepare_observed[index])) {
++            return false;
++        }
++    }
++    for (size_t index = 0; index < ARRAY_SIZE(advance_outcome.physical_posts); index++) {
++        const AdvanceOutcomePhysicalPost *post = &advance_outcome.physical_posts[index];
++
++        if (!advance_outcome_plain_cut_untouched(&post->runtime) ||
++            !advance_outcome_plain_cut_untouched(&post->native) ||
++            !advance_outcome_plain_cut_untouched(&post->recipient) ||
++            !advance_outcome_plain_cut_untouched(&post->core)) {
++            return false;
++        }
++    }
++    /* These are this fixed implementation's complete factory histories. Other
++     * Source/Main resource parents are neither consumed nor declared absent. */
++    return advance_outcome_callbacks_untouched_locked() &&
++        advance_outcome_request_untouched_locked() && advance_outcome_work_end_untouched_locked() &&
++        advance_outcome_refusal_untouched_locked() && advance_outcome_terminal_untouched_locked() &&
++        advance_outcome_postbody_untouched_locked() &&
++        advance_outcome_finite_completed_untouched_locked() &&
++        advance_outcome_finite_wrapper_untouched_locked() &&
++        advance_outcome_finite_descendants_untouched_locked() &&
++        advance_outcome_construction_untouched_locked() && advance_outcome_original_untouched_locked() &&
++        advance_outcome_installed_untouched_locked() &&
++        advance_outcome_moved_original_untouched_locked() &&
++        advance_outcome_success_module_untouched_locked() &&
++        advance_outcome_installed_last_use_untouched_locked() &&
++        advance_outcome_installed_last_use_call_untouched_locked();
++}
++
++static bool advance_outcome_no_target_return_untouched(
++    const QemuCrucibleCoreOutcomePostbodyReturnResult *result)
++{
++    return !result->admission_status && !result->first_status &&
++        !result->first_capture_status && !result->post_status &&
++        !result->post_capture_status && !result->attempted &&
++        !result->first_returned && !result->post_returned && !result->consumed;
++}
++
++static bool advance_outcome_no_target_stage_untouched(
++    const AdvanceOutcomeNoTargetStage *stage)
++{
++    if (!advance_outcome_plain_cut_untouched(&stage->invocation) ||
++        !advance_outcome_plain_cut_untouched(&stage->finish) ||
++        stage->finish_process || stage->pending || stage->finished) {
++        return false;
++    }
++    for (size_t pass = 0; pass < ARRAY_SIZE(stage->current); pass++) {
++        if (!advance_outcome_plain_cut_untouched(&stage->current[pass]) ||
++            !advance_outcome_plain_cut_untouched(&stage->capture[pass]) ||
++            stage->observed[pass] || stage->capsule_observed[pass] || stage->loan_observed[pass] ||
++            stage->ready[pass] || stage->capsule_ready[pass] || stage->loan_ready[pass] ||
++            stage->capture_process[pass]) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static bool advance_outcome_no_target_owner_untouched(
++    const AdvanceOutcomeNoTargetOwner *owner)
++{
++    if (owner->frame || owner->frame_epoch || owner->kind || owner->child ||
++        owner->child_epoch || owner->thread.thread || owner->process ||
++        !advance_outcome_no_target_stage_untouched(&owner->semantic) ||
++        !advance_outcome_no_target_stage_untouched(&owner->postbody) ||
++        !advance_outcome_no_target_return_untouched(&owner->returned) ||
++        owner->return_attempted || owner->return_ready || owner->physical_status || owner->strict_status ||
++        owner->physical_ready || owner->strict_ready || owner->return_capsule_status ||
++        owner->return_capsule_ready || owner->return_loan_status || owner->return_loan_ready ||
++        owner->return_process ||
++        !advance_outcome_plain_cut_untouched(&owner->return_capture) ||
++        owner->first_status || owner->uncertain) {
++        return false;
++    }
++    for (size_t pass = 0; pass < ARRAY_SIZE(owner->children); pass++) {
++        if (!advance_outcome_plain_cut_untouched(&owner->children[pass]) ||
++            !advance_outcome_plain_cut_untouched(&owner->children_capture[pass]) ||
++            owner->children_observed[pass] || owner->children_capsule_observed[pass] ||
++            owner->children_loan_observed[pass] || owner->children_ready[pass] ||
++            owner->children_capsule_ready[pass] || owner->children_loan_ready[pass] ||
++            owner->children_process[pass]) {
++            return false;
++        }
++    }
++    return true;
++}
++
++/* Known physical observations keep their actual negative status. Positive
++ * final retirement is a separate predicate below. */
++static bool advance_outcome_no_target_stage_known(
++    const AdvanceOutcomeNoTargetStage *stage, pid_t process)
++{
++    if (stage->invocation.attempted != 1 || stage->invocation.returned != 1 ||
++        stage->invocation.reserved || stage->invocation.status || stage->pending ||
++        !stage->finished || !advance_outcome_cut_ok(&stage->finish) ||
++        stage->finish_process != process) {
++        return false;
++    }
++    for (size_t pass = 0; pass < ARRAY_SIZE(stage->current); pass++) {
++        const struct qemu_plugin_crucible_outcome_cut_v1 *cut = &stage->current[pass];
++
++        if (cut->attempted != 1 || cut->returned != 1 || cut->reserved ||
++            !qatomic_load_acquire(&stage->ready[pass]) ||
++            !qatomic_load_acquire(&stage->capsule_ready[pass]) || stage->capsule_observed[pass] ||
++            !qatomic_load_acquire(&stage->loan_ready[pass]) || stage->loan_observed[pass] ||
++            cut->status != stage->observed[pass] ||
++            !advance_outcome_cut_ok(&stage->capture[pass]) ||
++            stage->capture_process[pass] != process) {
++            return false;
++        }
++    }
++    return true;
++}
++
++static void advance_outcome_no_target_first(AdvanceOutcomeNoTargetOwner *owner, int status)
++{
++    if (status) {
++        qatomic_cmpxchg(&owner->first_status, 0, status);
++    }
++}
++
++static int advance_outcome_no_target_identity_locked(
++    AdvanceOutcomeNoTargetOwner *owner,
++    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_epoch,
++    uint32_t kind, pid_t process)
++{
++    int status = advance_outcome_runtime_at_process_locked(process);
++
++    if (status) {
++        return status;
++    }
++    if (kind < 1 || kind > ARRAY_SIZE(advance_outcome.no_target) ||
++        owner != &advance_outcome.no_target[kind - 1] || !frame || !frame_epoch ||
++        owner->frame != frame || owner->frame_epoch != frame_epoch ||
++        owner->kind != kind || owner->process != process ||
++        !qemu_thread_is_self(&owner->thread) || owner->uncertain ||
++        !advance_outcome_no_target_factory_untouched_locked()) {
++        return -ESTALE;
++    }
++    return 0;
++}
++
++static bool advance_outcome_no_target_histories_closed_locked(void)
++{
++    for (size_t index = 0; index < ARRAY_SIZE(advance_outcome.no_target); index++) {
++        const AdvanceOutcomeNoTargetOwner *owner = &advance_outcome.no_target[index];
++        const QemuCrucibleCoreOutcomePostbodyReturnResult *returned = &owner->returned;
++
++        if (advance_outcome_no_target_owner_untouched(owner)) {
++            continue;
++        }
++        if (!owner->frame || !owner->frame_epoch || owner->kind != index + 1 ||
++            !owner->child || !owner->child_epoch || !owner->thread.thread ||
++            !owner->process || owner->first_status || owner->uncertain ||
++            !advance_outcome_no_target_stage_known(&owner->semantic, owner->process) ||
++            !advance_outcome_no_target_stage_known(&owner->postbody, owner->process) ||
++            !owner->return_attempted || !qatomic_load_acquire(&owner->return_ready) ||
++            !qatomic_load_acquire(&owner->physical_ready) ||
++            !qatomic_load_acquire(&owner->strict_ready) ||
++            !qatomic_load_acquire(&owner->return_capsule_ready) || owner->return_capsule_status ||
++            !qatomic_load_acquire(&owner->return_loan_ready) || owner->return_loan_status ||
++            owner->physical_status || owner->strict_status ||
++            owner->return_process != owner->process ||
++            !advance_outcome_cut_ok(&owner->return_capture) ||
++            returned->admission_status || returned->first_status ||
++            returned->first_capture_status || returned->post_status ||
++            returned->post_capture_status || returned->attempted != 1 ||
++            returned->first_returned != 1 || returned->post_returned != 1 ||
++            returned->consumed != 1) {
++            return false;
++        }
++        for (size_t pass = 0; pass < ARRAY_SIZE(owner->children); pass++) {
++            if (!advance_outcome_cut_ok(&owner->children[pass]) ||
++                !advance_outcome_cut_ok(&owner->children_capture[pass]) ||
++                !qatomic_load_acquire(&owner->children_ready[pass]) ||
++                owner->children_observed[pass] ||
++                !qatomic_load_acquire(&owner->children_capsule_ready[pass]) ||
++                owner->children_capsule_observed[pass] ||
++                !qatomic_load_acquire(&owner->children_loan_ready[pass]) ||
++                owner->children_loan_observed[pass] || owner->children_process[pass] != owner->process ||
++                owner->semantic.observed[pass] || owner->postbody.observed[pass]) {
++                return false;
++            }
++        }
++    }
++    return true;
++}
++
++/* These two finite calls are actual independent Current observations under
++ * the live semantic callback or the separately entered postbody child. */
++static int advance_outcome_no_target_stage_run(
++    AdvanceOutcomeNoTargetOwner *owner, bool postbody)
++{
++    AdvanceOutcomeNoTargetStage *stage = postbody ? &owner->postbody : &owner->semantic;
++    QemuMutexMetadataSection section = { 0 };
++    int first = 0;
++    int capture;
++    pid_t process;
++
++    for (size_t pass = 0; pass < ARRAY_SIZE(stage->current); pass++) {
++        int observed;
++
++        qatomic_set(&stage->current[pass].attempted, 1);
++        observed = postbody ? qemu_crucible_core_outcome_postbody_current_v1(
++            owner->child, owner->child_epoch, owner->frame, owner->frame_epoch, owner->kind) :
++            qemu_crucible_core_quantum_boundary_outcome_current_v1(
++                owner->frame, owner->frame_epoch, owner->kind);
++        stage->observed[pass] = observed;
++        qatomic_store_release(&stage->ready[pass], true);
++        advance_outcome_no_target_first(owner, observed);
++        stage->loan_observed[pass] = qemu_crucible_core_quantum_boundary_loan_pristine_v1(
++            owner->frame, owner->frame_epoch, owner->kind);
++        qatomic_store_release(&stage->loan_ready[pass], true);
++        advance_outcome_no_target_first(owner, stage->loan_observed[pass]);
++        stage->capsule_observed[pass] = qemu_crucible_outcome_request_unentered_v1();
++        qatomic_store_release(&stage->capsule_ready[pass], true);
++        advance_outcome_no_target_first(owner, stage->capsule_observed[pass]);
++        if (!first) {
++            first = observed ? observed : (stage->loan_observed[pass] ?
++                stage->loan_observed[pass] : stage->capsule_observed[pass]);
++        }
++        qatomic_set(&stage->capture[pass].attempted, 1);
++        process = getpid();
++        stage->capture_process[pass] = process;
++        capture = advance_outcome_terminal_capture_begin(&section, process);
++        if (!capture) {
++            capture = advance_outcome_no_target_identity_locked(
++                owner, owner->frame, owner->frame_epoch, owner->kind, process);
++            if (!capture && (!stage->pending || stage->finished ||
++                stage->current[pass].attempted != 1 || stage->current[pass].returned ||
++                stage->current[pass].reserved || stage->current[pass].status ||
++                !qatomic_load_acquire(&stage->ready[pass]) ||
++                !qatomic_load_acquire(&stage->capsule_ready[pass]) ||
++                !qatomic_load_acquire(&stage->loan_ready[pass]))) {
++                capture = -ESTALE;
++            }
++            if (!capture) {
++                stage->current[pass].status = observed;
++                stage->current[pass].returned = 1;
++                stage->capture[pass].returned = 1;
++            }
++            qemu_mutex_metadata_end(&section);
++        }
++        if (capture) {
++            qatomic_cmpxchg(&stage->capture[pass].status, 0, capture);
++            qatomic_set(&owner->uncertain, true);
++        }
++        advance_outcome_no_target_first(owner, capture);
++        if (!first) {
++            first = capture;
++        }
++    }
++
++    qatomic_set(&stage->finish.attempted, 1);
++    process = getpid();
++    stage->finish_process = process;
++    capture = advance_outcome_terminal_capture_begin(&section, process);
++    if (!capture) {
++        capture = advance_outcome_no_target_identity_locked(
++            owner, owner->frame, owner->frame_epoch, owner->kind, process);
++        if (!capture && (!stage->pending || stage->finished ||
++            !advance_outcome_cut_ok(&stage->capture[0]) ||
++            !advance_outcome_cut_ok(&stage->capture[1]))) {
++            capture = -ESTALE;
++        }
++        if (!capture) {
++            stage->pending = false;
++            stage->finished = true;
++            stage->invocation.returned = 1;
++            stage->finish.returned = 1;
++        }
++        qemu_mutex_metadata_end(&section);
++    }
++    if (capture) {
++        qatomic_cmpxchg(&stage->finish.status, 0, capture);
++        qatomic_set(&owner->uncertain, true);
++    }
++    advance_outcome_no_target_first(owner, capture);
++    return first ? first : capture;
++}
++
++static int advance_outcome_no_target_semantic(
++    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_epoch, uint32_t kind)
++{
++    QemuMutexMetadataSection section = { 0 };
++    AdvanceOutcomeNoTargetOwner *owner;
++    QemuThread thread;
++    pid_t process = getpid();
++    int status;
++
++    if (!frame || !frame_epoch || kind < 1 || kind > ARRAY_SIZE(advance_outcome.no_target)) {
++        return -EINVAL;
++    }
++    owner = &advance_outcome.no_target[kind - 1];
++    qemu_thread_get_self(&thread);
++    status = advance_outcome_terminal_capture_begin(&section, process);
++    if (status) {
++        return status;
++    }
++    status = advance_outcome_runtime_at_process_locked(process);
++    if (!status && (!advance_outcome_no_target_factory_untouched_locked() ||
++        !advance_outcome_no_target_histories_closed_locked() ||
++        !advance_outcome_no_target_owner_untouched(owner))) {
++        status = -ENOKEY;
++    }
++    if (!status) {
++        owner->frame = frame;
++        owner->frame_epoch = frame_epoch;
++        owner->kind = kind;
++        owner->process = process;
++        owner->thread = thread;
++        owner->semantic.invocation.attempted = 1;
++        owner->semantic.pending = true;
++    }
++    qemu_mutex_metadata_end(&section);
++    return status ? status : advance_outcome_no_target_stage_run(owner, false);
++}
++
++static int advance_outcome_no_target_postbody(
++    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_epoch, uint32_t kind,
++    QemuCrucibleCoreOutcomePostbodyChild *child, uint64_t child_epoch)
++{
++    QemuMutexMetadataSection section = { 0 };
++    AdvanceOutcomeNoTargetOwner *owner;
++    pid_t process = getpid();
++    int status;
++
++    if (!child || !child_epoch || kind < 1 || kind > ARRAY_SIZE(advance_outcome.no_target)) {
++        return -EINVAL;
++    }
++    owner = &advance_outcome.no_target[kind - 1];
++    status = advance_outcome_terminal_capture_begin(&section, process);
++    if (status) {
++        return status;
++    }
++    status = advance_outcome_no_target_identity_locked(owner, frame, frame_epoch, kind, process);
++    if (!status && (!advance_outcome_no_target_stage_known(&owner->semantic, process) ||
++        !advance_outcome_no_target_stage_untouched(&owner->postbody) ||
++        owner->child || owner->child_epoch)) {
++        status = -EINPROGRESS;
++    }
++    if (!status) {
++        owner->child = child;
++        owner->child_epoch = child_epoch;
++        owner->postbody.invocation.attempted = 1;
++        owner->postbody.pending = true;
++    }
++    qemu_mutex_metadata_end(&section);
++    return status ? status : advance_outcome_no_target_stage_run(owner, true);
++}
++
++static int advance_outcome_no_target_children(
++    QemuCrucibleCoreOutcomePostbodyChild *child, uint64_t child_epoch,
++    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_epoch, uint32_t kind)
++{
++    QemuMutexMetadataSection section = { 0 };
++    AdvanceOutcomeNoTargetOwner *owner;
++    pid_t process = getpid();
++    size_t pass = 0;
++    int observed;
++    int capture;
++
++    if (kind < 1 || kind > ARRAY_SIZE(advance_outcome.no_target)) {
++        return -EINVAL;
++    }
++    owner = &advance_outcome.no_target[kind - 1];
++    capture = advance_outcome_terminal_capture_begin(&section, process);
++    if (capture) {
++        return capture;
++    }
++    capture = advance_outcome_no_target_identity_locked(owner, frame, frame_epoch, kind, process);
++    if (!capture && (owner->child != child || owner->child_epoch != child_epoch ||
++        !advance_outcome_no_target_stage_known(&owner->semantic, process) ||
++        !advance_outcome_no_target_stage_known(&owner->postbody, process))) {
++        capture = -EINPROGRESS;
++    }
++    if (!capture && !advance_outcome_plain_cut_untouched(&owner->children[0])) {
++        pass = 1;
++        if (!advance_outcome_cut_ok(&owner->children[0]) ||
++            !advance_outcome_cut_ok(&owner->children_capture[0]) ||
++            !qatomic_load_acquire(&owner->children_ready[0]) ||
++            owner->children_observed[0] ||
++            !qatomic_load_acquire(&owner->children_capsule_ready[0]) ||
++            owner->children_capsule_observed[0] ||
++            !qatomic_load_acquire(&owner->children_loan_ready[0]) ||
++            owner->children_loan_observed[0] || owner->children_process[0] != process) {
++            capture = -EINPROGRESS;
++        }
++    }
++    if (!capture && (!advance_outcome_plain_cut_untouched(&owner->children[pass]) ||
++        !advance_outcome_plain_cut_untouched(&owner->children_capture[pass]) ||
++        owner->children_ready[pass] || owner->children_observed[pass] ||
++        owner->children_capsule_ready[pass] || owner->children_capsule_observed[pass] ||
++        owner->children_loan_ready[pass] || owner->children_loan_observed[pass] ||
++        owner->children_process[pass])) {
++        capture = -EALREADY;
++    }
++    if (!capture) {
++        owner->children[pass].attempted = 1;
++    }
++    qemu_mutex_metadata_end(&section);
++    if (capture) {
++        return capture;
++    }
++
++    /* The first gate selected and checked the actual complete inventory. This
++     * distinct reobservation checks it again after the completed callback. */
++    owner->children_loan_observed[pass] = qemu_crucible_core_quantum_boundary_loan_pristine_v1(
++        frame, frame_epoch, kind);
++    qatomic_store_release(&owner->children_loan_ready[pass], true);
++    advance_outcome_no_target_first(owner, owner->children_loan_observed[pass]);
++    owner->children_capsule_observed[pass] = qemu_crucible_outcome_request_unentered_v1();
++    qatomic_store_release(&owner->children_capsule_ready[pass], true);
++    advance_outcome_no_target_first(owner, owner->children_capsule_observed[pass]);
++    process = getpid();
++    observed = advance_outcome_terminal_capture_begin(&section, process);
++    if (!observed) {
++        observed = advance_outcome_no_target_identity_locked(
++            owner, frame, frame_epoch, kind, process);
++        qemu_mutex_metadata_end(&section);
++    }
++    owner->children_observed[pass] = observed;
++    qatomic_store_release(&owner->children_ready[pass], true);
++    advance_outcome_no_target_first(owner, observed);
++    qatomic_set(&owner->children_capture[pass].attempted, 1);
++    process = getpid();
++    owner->children_process[pass] = process;
++    capture = advance_outcome_terminal_capture_begin(&section, process);
++    if (!capture) {
++        capture = advance_outcome_no_target_identity_locked(owner, frame, frame_epoch, kind, process);
++        if (!capture && (owner->child != child || owner->child_epoch != child_epoch ||
++            owner->children[pass].attempted != 1 || owner->children[pass].returned ||
++            owner->children[pass].reserved || owner->children[pass].status ||
++            !qatomic_load_acquire(&owner->children_ready[pass]) ||
++            !qatomic_load_acquire(&owner->children_capsule_ready[pass]) ||
++            !qatomic_load_acquire(&owner->children_loan_ready[pass]) ||
++            !advance_outcome_no_target_stage_known(&owner->semantic, process) ||
++            !advance_outcome_no_target_stage_known(&owner->postbody, process))) {
++            capture = -ESTALE;
++        }
++        if (!capture) {
++            owner->children[pass].status = observed;
++            owner->children[pass].returned = 1;
++            owner->children_capture[pass].returned = 1;
++        }
++        qemu_mutex_metadata_end(&section);
++    }
++    if (capture) {
++        qatomic_cmpxchg(&owner->children_capture[pass].status, 0, capture);
++        qatomic_set(&owner->uncertain, true);
++    }
++    advance_outcome_no_target_first(owner, capture);
++    return owner->children_loan_observed[pass] ? owner->children_loan_observed[pass] :
++        (owner->children_capsule_observed[pass] ? owner->children_capsule_observed[pass] :
++         (observed ? observed : capture));
++}
++
++/* This is called by the real RR wrapper only after ReturnResult's actual C
++ * return. Neither a child-query count nor a cleared output proves pin return. */
++int qemu_crucible_outcome_postbody_return_observed_v1(
++    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_epoch, uint32_t kind,
++    QemuCrucibleCoreOutcomePostbodyChild *child, uint64_t child_epoch,
++    QemuCrucibleCoreOutcomePostbodyReturnResult returned)
++{
++    AdvanceOutcomeNoTargetOwner *owner;
++    QemuMutexMetadataSection section = { 0 };
++    pid_t process;
++    int physical;
++    int strict;
++    int capture;
++
++    if (kind < 1 || kind > ARRAY_SIZE(advance_outcome.no_target)) {
++        return -EINVAL;
++    }
++    owner = &advance_outcome.no_target[kind - 1];
++    if (!qatomic_load_acquire(&owner->frame)) {
++        return 0;
++    }
++    /* The once claim only prevents overwriting an earlier raw observation.
++     * Exact tuple/caller authentication and both real Core proofs follow. */
++    if (qatomic_cmpxchg(&owner->return_attempted, false, true)) {
++        return -EALREADY;
++    }
++    owner->returned = returned;
++    qatomic_store_release(&owner->return_ready, true);
++    const int statuses[] = {
++        returned.admission_status, returned.first_status, returned.first_capture_status,
++        returned.post_status, returned.post_capture_status,
++    };
++
++    for (size_t index = 0; index < ARRAY_SIZE(statuses); index++) {
++        advance_outcome_no_target_first(owner, statuses[index]);
++    }
++    physical = qemu_crucible_core_outcome_postbody_returned_v1(
++        child, child_epoch, frame, frame_epoch, kind);
++    owner->physical_status = physical;
++    qatomic_store_release(&owner->physical_ready, true);
++    advance_outcome_no_target_first(owner, physical);
++    strict = qemu_crucible_core_outcome_postbody_closed_v1(
++        child, child_epoch, frame, frame_epoch, kind);
++    owner->strict_status = strict;
++    qatomic_store_release(&owner->strict_ready, true);
++    advance_outcome_no_target_first(owner, strict);
++
++    owner->return_loan_status = qemu_crucible_core_quantum_boundary_loan_pristine_v1(
++        frame, frame_epoch, kind);
++    qatomic_store_release(&owner->return_loan_ready, true);
++    advance_outcome_no_target_first(owner, owner->return_loan_status);
++    owner->return_capsule_status = qemu_crucible_outcome_request_unentered_v1();
++    qatomic_store_release(&owner->return_capsule_ready, true);
++    advance_outcome_no_target_first(owner, owner->return_capsule_status);
++    qatomic_set(&owner->return_capture.attempted, 1);
++    process = getpid();
++    owner->return_process = process;
++    capture = advance_outcome_terminal_capture_begin(&section, process);
++    if (!capture) {
++        capture = advance_outcome_no_target_identity_locked(owner, frame, frame_epoch, kind, process);
++        if (!capture && (owner->child != child || owner->child_epoch != child_epoch ||
++            !owner->return_attempted || !qatomic_load_acquire(&owner->return_ready) ||
++            !qatomic_load_acquire(&owner->physical_ready) ||
++            !qatomic_load_acquire(&owner->strict_ready) ||
++            !qatomic_load_acquire(&owner->return_capsule_ready) ||
++            !qatomic_load_acquire(&owner->return_loan_ready) ||
++            !advance_outcome_no_target_stage_known(&owner->semantic, process) ||
++            !advance_outcome_no_target_stage_known(&owner->postbody, process) ||
++            !advance_outcome_cut_ok(&owner->children[0]) ||
++            !advance_outcome_cut_ok(&owner->children[1]) ||
++            !advance_outcome_cut_ok(&owner->children_capture[0]) ||
++            !advance_outcome_cut_ok(&owner->children_capture[1]))) {
++            capture = -EINPROGRESS;
++        }
++        if (!capture) {
++            owner->return_capture.returned = 1;
++        }
++        qemu_mutex_metadata_end(&section);
++    }
++    if (capture) {
++        qatomic_cmpxchg(&owner->return_capture.status, 0, capture);
++        qatomic_set(&owner->uncertain, true);
++    }
++    advance_outcome_no_target_first(owner, capture);
++    return physical ? physical : (strict ? strict :
++        (owner->return_loan_status ? owner->return_loan_status :
++        (owner->return_capsule_status ? owner->return_capsule_status : capture)));
++}
 diff --git a/plugins/crucible-advance-outcome-original-types.inc.h b/plugins/crucible-advance-outcome-original-types.inc.h
 new file mode 100644
 index 0000000000000000000000000000000000000000..838964fc2d565bca47f169feafe3a69b42bf6db7
@@ -134054,10 +134903,10 @@ index 0000000000000000000000000000000000000000..d3e0febeccd2e1412d6630a749d4facf
 +#endif
 diff --git a/plugins/crucible-advance-outcome-original.inc.h b/plugins/crucible-advance-outcome-original.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..625bcc9e4bc60137d5832c232c69734bac1bd448
+index 0000000000000000000000000000000000000000..60bc77dca8e7528224889bd001a6fb5c85c48197
 --- /dev/null
 +++ b/plugins/crucible-advance-outcome-original.inc.h
-@@ -0,0 +1,841 @@
+@@ -0,0 +1,842 @@
 +/*
 + * Actual same-invocation matched Work borrower and enrolled nominal Original.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -134355,6 +135204,7 @@ index 0000000000000000000000000000000000000000..625bcc9e4bc60137d5832c232c69734b
 +        module != pending->born || module_epoch != pending->born_epoch ||
 +        work != pending->work || work_epoch != pending->work_epoch ||
 +        cleanup != pending->cleanup || cleanup_epoch != pending->cleanup_epoch ||
++        !advance_outcome_no_target_histories_closed_locked() ||
 +        !advance_outcome_original_untouched_locked()) {
 +        result.admission_status = -ESTALE;
 +    } else {
@@ -135243,10 +136093,10 @@ index 0000000000000000000000000000000000000000..4f3bfe29be7af6860b0832498486cf7d
 +#endif
 diff --git a/plugins/crucible-advance-outcome-postbody.inc.h b/plugins/crucible-advance-outcome-postbody.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..b1ff97b6157e21c16bca7ceacf667ab69079b7d9
+index 0000000000000000000000000000000000000000..2df8365401afc49aa4ba97ccc8290f28ef369797
 --- /dev/null
 +++ b/plugins/crucible-advance-outcome-postbody.inc.h
-@@ -0,0 +1,649 @@
+@@ -0,0 +1,659 @@
 +/*
 + * Actual fixed post-body invocation, independent of ended terminal permission.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -135607,11 +136457,16 @@ index 0000000000000000000000000000000000000000..b1ff97b6157e21c16bca7ceacf667ab6
 +        return first;
 +    }
 +    first = advance_outcome_runtime_at_process_locked(process);
++    if (!first && kind >= 1 && kind <= ARRAY_SIZE(advance_outcome.no_target) &&
++        advance_outcome.no_target[kind - 1].frame) {
++        qemu_mutex_metadata_end(&section);
++        return advance_outcome_no_target_postbody(frame, frame_epoch, kind, child, child_epoch);
++    }
 +    if (!first && !advance_outcome_postbody_untouched_locked()) {
 +        first = -EALREADY;
 +    }
-+    /* A complete no-Target branch needs its own actual inventory. Its absence
-+     * retains the Core pin rather than turning empty outputs into no-entry. */
++    /* An unrecognized or touched lifetime retains the pin. Only the distinct
++     * recorded semantic absence invocation above can select the no-Target path. */
 +    if (!first && (!child || !child_epoch || !frame || !frame_epoch ||
 +        frame != advance_outcome.frame || frame_epoch != advance_outcome.frame_epoch ||
 +        kind != advance_outcome.journal.boundary_kind ||
@@ -135831,6 +136686,11 @@ index 0000000000000000000000000000000000000000..b1ff97b6157e21c16bca7ceacf667ab6
 +    capture = advance_outcome_terminal_capture_begin(&section, process);
 +    if (capture) {
 +        return capture;
++    }
++    if (kind >= 1 && kind <= ARRAY_SIZE(advance_outcome.no_target) &&
++        advance_outcome.no_target[kind - 1].frame) {
++        qemu_mutex_metadata_end(&section);
++        return advance_outcome_no_target_children(child, child_epoch, frame, frame_epoch, kind);
 +    }
 +    capture = advance_outcome_postbody_physical_children_locked(
 +        child, child_epoch, frame, frame_epoch, kind, process);
@@ -136515,10 +137375,10 @@ index 0000000000000000000000000000000000000000..13cdd69c560af27c2cd058132d0a9a20
 +}
 diff --git a/plugins/crucible-advance-outcome-request.inc.h b/plugins/crucible-advance-outcome-request.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..30c2fc7ba5a6395574f164ca33e68ef43139654b
+index 0000000000000000000000000000000000000000..3e09b853467b9652f757a469dd3f9f863789278f
 --- /dev/null
 +++ b/plugins/crucible-advance-outcome-request.inc.h
-@@ -0,0 +1,86 @@
+@@ -0,0 +1,98 @@
 +/*
 + * Actual time-request capsule, published only after the owning reservation CAS.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -136541,6 +137401,18 @@ index 0000000000000000000000000000000000000000..30c2fc7ba5a6395574f164ca33e68ef4
 +size_t qemu_crucible_outcome_request_storage_bytes_v1(void)
 +{
 +    return sizeof(outcome_request);
++}
++
++/* A distinct factual inventory of the actual once-only request capsule. It
++ * grants no reservation, target, Work or parent-return authority. */
++int qemu_crucible_outcome_request_unentered_v1(void)
++{
++    return !outcome_request.target && !outcome_request.target_epoch &&
++        !outcome_request.target_tick && !outcome_request.epoch &&
++        !outcome_request.process && !outcome_request.settled_status &&
++        !qatomic_read(&outcome_request.attempted) &&
++        !qatomic_load_acquire(&outcome_request.published) &&
++        !qatomic_load_acquire(&outcome_request.settled) ? 0 : -ESTALE;
 +}
 +
 +int qemu_crucible_outcome_request_identity_v1(
@@ -139690,10 +140562,10 @@ index 0000000000000000000000000000000000000000..397dc6318cd6d63a491c8f2ddf9629fb
 +}
 diff --git a/plugins/crucible-advance-outcome.inc.h b/plugins/crucible-advance-outcome.inc.h
 new file mode 100644
-index 0000000000000000000000000000000000000000..68768133499e571bf04ded9fbd11b5e69d8846fc
+index 0000000000000000000000000000000000000000..42d54dca7d2b2ec2e4a33ccba33ca0cc01fe723c
 --- /dev/null
 +++ b/plugins/crucible-advance-outcome.inc.h
-@@ -0,0 +1,2314 @@
+@@ -0,0 +1,2392 @@
 +/*
 + * Persistent command-target Outcome custody under the actual paid Runtime.
 + * SPDX-License-Identifier: GPL-2.0-or-later
@@ -140008,6 +140880,61 @@ index 0000000000000000000000000000000000000000..68768133499e571bf04ded9fbd11b5e6
 +    bool uncertain;
 +} AdvanceOutcomePostbodyOwner;
 +
++/* Separate once histories for an actual RR boundary that issued no Outcome.
++ * Their custody is the real Core frame pin, never an absent Target. */
++typedef struct AdvanceOutcomeNoTargetStage {
++    struct qemu_plugin_crucible_outcome_cut_v1 invocation;
++    struct qemu_plugin_crucible_outcome_cut_v1 current[2];
++    struct qemu_plugin_crucible_outcome_cut_v1 capture[2];
++    struct qemu_plugin_crucible_outcome_cut_v1 finish;
++    int observed[2];
++    int capsule_observed[2];
++    int loan_observed[2];
++    bool ready[2];
++    bool capsule_ready[2];
++    bool loan_ready[2];
++    pid_t capture_process[2];
++    pid_t finish_process;
++    bool pending;
++    bool finished;
++} AdvanceOutcomeNoTargetStage;
++
++typedef struct AdvanceOutcomeNoTargetOwner {
++    QemuCrucibleCoreQuantumBoundaryFrame *frame;
++    uint64_t frame_epoch;
++    uint32_t kind;
++    QemuCrucibleCoreOutcomePostbodyChild *child;
++    uint64_t child_epoch;
++    QemuThread thread;
++    pid_t process;
++    AdvanceOutcomeNoTargetStage semantic;
++    AdvanceOutcomeNoTargetStage postbody;
++    struct qemu_plugin_crucible_outcome_cut_v1 children[2];
++    struct qemu_plugin_crucible_outcome_cut_v1 children_capture[2];
++    int children_observed[2];
++    int children_capsule_observed[2];
++    int children_loan_observed[2];
++    bool children_ready[2];
++    bool children_capsule_ready[2];
++    bool children_loan_ready[2];
++    pid_t children_process[2];
++    QemuCrucibleCoreOutcomePostbodyReturnResult returned;
++    bool return_attempted;
++    bool return_ready;
++    int physical_status;
++    int strict_status;
++    int return_capsule_status;
++    int return_loan_status;
++    bool physical_ready;
++    bool strict_ready;
++    bool return_capsule_ready;
++    bool return_loan_ready;
++    struct qemu_plugin_crucible_outcome_cut_v1 return_capture;
++    pid_t return_process;
++    int first_status;
++    bool uncertain;
++} AdvanceOutcomeNoTargetOwner;
++
 +#include "crucible-advance-outcome-construction-types.inc.h"
 +#include "crucible-advance-outcome-original-types.inc.h"
 +
@@ -140068,6 +140995,7 @@ index 0000000000000000000000000000000000000000..68768133499e571bf04ded9fbd11b5e6
 +    AdvanceOutcomeRefusalOwner refusal_operation;
 +    AdvanceOutcomeTerminalOwner terminal_operation;
 +    AdvanceOutcomePostbodyOwner postbody_operation;
++    AdvanceOutcomeNoTargetOwner no_target[2];
 +    AdvanceOutcomeFiniteCompletionOwner finite_completion;
 +    AdvanceOutcomeFiniteWrapperOwner finite_wrapper;
 +    AdvanceOutcomeFiniteDescendants finite_descendants;
@@ -140297,6 +141225,15 @@ index 0000000000000000000000000000000000000000..68768133499e571bf04ded9fbd11b5e6
 +static bool advance_outcome_original_untouched_locked(void);
 +static bool advance_outcome_installed_untouched_locked(void);
 +static bool advance_outcome_installed_transfer_known_locked(pid_t process);
++static bool advance_outcome_no_target_histories_closed_locked(void);
++static int advance_outcome_no_target_semantic(
++    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t epoch, uint32_t kind);
++static int advance_outcome_no_target_postbody(
++    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_epoch,
++    uint32_t kind, QemuCrucibleCoreOutcomePostbodyChild *child, uint64_t child_epoch);
++static int advance_outcome_no_target_children(
++    QemuCrucibleCoreOutcomePostbodyChild *child, uint64_t child_epoch,
++    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_epoch, uint32_t kind);
 +
 +/* Strict closure is defined before its owning implementation fragments. */
 +static bool advance_outcome_construction_disposal_untouched_locked(void);
@@ -140491,6 +141428,7 @@ index 0000000000000000000000000000000000000000..68768133499e571bf04ded9fbd11b5e6
 +        !advance_outcome.registration_identity_post_returned ||
 +        advance_outcome.registration_identity_post_status ||
 +        advance_outcome.registration.post_status || advance_outcome.attempted ||
++        !advance_outcome_no_target_histories_closed_locked() ||
 +        !advance_outcome.command_target.enrolled ||
 +        !advance_outcome_cut_ok(&advance_outcome.command_target.enrollment) ||
 +        !advance_outcome_cut_ok(&advance_outcome.command_target.enrollment_post) ||
@@ -141312,6 +142250,8 @@ index 0000000000000000000000000000000000000000..68768133499e571bf04ded9fbd11b5e6
 +#include "crucible-advance-outcome-installed-last-use.inc.h"
 +#include "crucible-advance-outcome-postbody.inc.h"
 +
++#include "crucible-advance-outcome-no-target.inc.h"
++
 +static int advance_outcome_boundary(void *frame, uint64_t epoch, uint32_t kind, pid_t process)
 +{
 +    int first;
@@ -141320,8 +142260,10 @@ index 0000000000000000000000000000000000000000..68768133499e571bf04ded9fbd11b5e6
 +    if (qatomic_load_acquire(&qemu_crucible_selected_process_id) != process) {
 +        return 0;
 +    }
-+    if (!advance_outcome.registered || !advance_outcome.target.held ||
-+        advance_outcome.target.binding.stop_mode != kind) {
++    if (!advance_outcome.target.held) {
++        return advance_outcome_no_target_semantic(frame, epoch, kind);
++    }
++    if (!advance_outcome.registered || advance_outcome.target.binding.stop_mode != kind) {
 +        return -ENOKEY;
 +    }
 +    first = qemu_crucible_source_outcome_target_begin_v1(
@@ -141848,6 +142790,14 @@ index 0000000000000000000000000000000000000000..68768133499e571bf04ded9fbd11b5e6
 +{
 +    return qatomic_load_acquire(&qemu_crucible_selected_process_id) ==
 +        getpid() ? -ENOTSUP : 0;
++}
++
++int qemu_crucible_outcome_postbody_return_observed_v1(
++    QemuCrucibleCoreQuantumBoundaryFrame *frame, uint64_t frame_epoch, uint32_t kind,
++    QemuCrucibleCoreOutcomePostbodyChild *child, uint64_t child_epoch,
++    QemuCrucibleCoreOutcomePostbodyReturnResult returned)
++{
++    return -ENOTSUP;
 +}
 +
 +int qemu_crucible_outcome_postbody_children_returned_v1(
@@ -306857,7 +307807,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..401b19167e2671d89cfefa8ebf8fe3088949b06f
+index 0000000000000000000000000000000000000000..6f319e68c4b77348898713834889570cc52b2ca8
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,184 @@
@@ -306929,7 +307879,7 @@ index 0000000000000000000000000000000000000000..401b19167e2671d89cfefa8ebf8fe308
 +    'include/plugins/qemu-plugin.h':
 +        '98dffedb987540b27b5725b202fb65deaec3c9b1bedf0f80c7fcf6fcda499fe4',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'd39f68576b050606b446429d76595153db977d44f3d8644829cbd9d99d20de54',
++        'fb095a4a03ee76b31dbc96138682206ebc31c5aa562d9ed37b0f11677096a2e4',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '6a7d82751791bdf81a1ccf64d81ed12c28680068b507b220199b245c760748e5',
 +}
@@ -370663,7 +371613,7 @@ index 0000000000000000000000000000000000000000..267e313f943977d178885522eee43768
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..4623f6c510b9f3b3843cbdcb5f3baea78f5c7d30
+index 0000000000000000000000000000000000000000..c031e4f73d04509d28450e3b8f6ff1a22fe03a30
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -370681,7 +371631,7 @@ index 0000000000000000000000000000000000000000..4623f6c510b9f3b3843cbdcb5f3baea7
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'd39f68576b050606b446429d76595153db977d44f3d8644829cbd9d99d20de54',
++        'fb095a4a03ee76b31dbc96138682206ebc31c5aa562d9ed37b0f11677096a2e4',
 +}
 +
 +FUNCTIONS = (
@@ -370769,7 +371719,7 @@ index 0000000000000000000000000000000000000000..4623f6c510b9f3b3843cbdcb5f3baea7
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..06c1d30f1d52b7a8836429338048c11b6aad5efb
+index 0000000000000000000000000000000000000000..d629d8879d8f28fd5c4aeb0bf418dbc5c80b560c
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -370800,7 +371750,7 @@ index 0000000000000000000000000000000000000000..06c1d30f1d52b7a8836429338048c11b
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'd39f68576b050606b446429d76595153db977d44f3d8644829cbd9d99d20de54',
++        'fb095a4a03ee76b31dbc96138682206ebc31c5aa562d9ed37b0f11677096a2e4',
 +}
 +
 +FUNCTIONS = (
@@ -371016,7 +371966,7 @@ index 0000000000000000000000000000000000000000..06c1d30f1d52b7a8836429338048c11b
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a764d3618b452a011357896ccb0c8891a335a8d8
+index 0000000000000000000000000000000000000000..c74a6d250210340103d3ee624fcb67365a96240e
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -371040,7 +371990,7 @@ index 0000000000000000000000000000000000000000..a764d3618b452a011357896ccb0c8891
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'd39f68576b050606b446429d76595153db977d44f3d8644829cbd9d99d20de54',
++        'fb095a4a03ee76b31dbc96138682206ebc31c5aa562d9ed37b0f11677096a2e4',
 +}
 +
 +FUNCTIONS = (
@@ -371134,7 +372084,7 @@ index 0000000000000000000000000000000000000000..a764d3618b452a011357896ccb0c8891
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..1b60e65a7d9a9bff9ea5e350f2230222c054eb17
+index 0000000000000000000000000000000000000000..7524aea6477feab4ecbe2f71012afba4b17823e9
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,795 @@
@@ -371220,15 +372170,15 @@ index 0000000000000000000000000000000000000000..1b60e65a7d9a9bff9ea5e350f2230222
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'd39f68576b050606b446429d76595153db977d44f3d8644829cbd9d99d20de54',
++        'fb095a4a03ee76b31dbc96138682206ebc31c5aa562d9ed37b0f11677096a2e4',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        'b676430be914b6954bf628620f1bed54ef66ab09d3378a13a4ff5c3fdba90a0b',
++        '0cd0717156062d20eb121dacfc802534d641c90fa6ffe8363bc2447a42a69f16',
 +    'meson.build':
 +        '4956f0f67df2d9676e331d14e06fe1d7e9c9f93abac451ead7487f14bd5200ef',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        '153138370240e25a5a429685f6557dfa76e0309ff6fe3700530215ae61158269',
 +    'tests/unit/meson.build':
-+        '1be4612503f8b0b97be96853e0496e20366d2dace995cae59d321f70b45e1203',
++        '52642b9244b9f18761c3fdbdd0792e9e0ad7ab8c0dd314f192dfbd693ca502e3',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '6a7d82751791bdf81a1ccf64d81ed12c28680068b507b220199b245c760748e5',
 +    'system/crucible-preexec-publisher-offer.inc.h':
@@ -371935,10 +372885,10 @@ index 0000000000000000000000000000000000000000..1b60e65a7d9a9bff9ea5e350f2230222
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..3dd595942fbf9024d0e467d4134b9c45b985756e
+index 0000000000000000000000000000000000000000..0a73981ae5d31a4f83f80ce4b3df686a7f5d2989
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
-@@ -0,0 +1,2028 @@
+@@ -0,0 +1,2029 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +"""Extract literal startup integration control cuts, never an issuer fixture."""
 +
@@ -371948,7 +372898,8 @@ index 0000000000000000000000000000000000000000..3dd595942fbf9024d0e467d4134b9c45
 +from pathlib import Path
 +
 +SOURCE_HASHES = {
-+    'plugins/crucible-advance-outcome-postbody.inc.h': '76f2880692cfbc18d347a4db567c52469470869b0594c2a1e341daec23d8fb4c',
++    'plugins/crucible-advance-outcome-no-target.inc.h': '60ee6c6773545007b193b7e68f1a5a0d038ccf651184094f168016fa0beaa01a',
++    'plugins/crucible-advance-outcome-postbody.inc.h': '58cf34137d561880516e2a777f26b44a6a6bb90ec8b10584c9ad844413fc38f3',
 +
 +    'plugins/crucible-outcome-constructor-recipient.inc.h': 'ac65d6514f68e70d1665594d2b3c36fcd270ba45135da9d49d697f7c5c1043a9',
 +    'plugins/crucible-outcome-constructor-retirement.h': '649d46fd263199a7b1ddc803f1223a07bfe6d1930c05fdfea6c050caf65ab100',
@@ -371967,14 +372918,14 @@ index 0000000000000000000000000000000000000000..3dd595942fbf9024d0e467d4134b9c45
 +    'system/crucible-preexec-publisher-matched-request.inc.h': '32ea908ba27ecb99fb0a13f66b0162757dbdf056249e45728797d373d5b89054',
 +    'plugins/crucible-advance-outcome-construction-types.inc.h': '310f1ada3302a8200358fed8635a63ef3765736bbbc9579d5930999beb45f841',
 +    'plugins/crucible-advance-outcome-construction-unentered.inc.h': 'adfdff9b466d5777dbce294d1bedaa93bc95be72407417b2da7efbbadb63567b',
-+    'plugins/crucible-advance-outcome-construction.inc.h': '8fb36a91e04c35cea6706f8dee77a64a587398a3ae20c3d7cf920b6ed12297c7',
++    'plugins/crucible-advance-outcome-construction.inc.h': '1c757cd57c2e63d1d92cba92a192c413ab2aea407e4e3a08372bcc9aaf4a2d35',
 +    'plugins/crucible-advance-outcome-installed-enter.inc.h': '7d8042df5a5d8a32d88186f3b1af35f3b635a081504b51eb3107b514d86c5388',
 +    'plugins/crucible-advance-outcome-installed-last-use-checks.h': '223ea110890b44cfe815ecdad470a11ee9677707e4792b8b0ae5c9a880b22d3a',
 +    'plugins/crucible-advance-outcome-installed-last-use.inc.h': 'f57d6681bb5e5c2f5b29ab8c3fa27cbbaeb0a2e6c2effa95365d7c0d8151687f',
-+    'plugins/crucible-advance-outcome-installed.inc.h': 'ba584ad4d82dd912a8a84080bb9aa99348702ee0c01278ce42ae82d65ca4a5b8',
++    'plugins/crucible-advance-outcome-installed.inc.h': 'b7ece8d20203032702d7eb319bec70df083a0b6deb14237f4ed34ad726c0ab06',
 +    'plugins/crucible-advance-outcome-moved-original.inc.h': 'e0a6f66e56da8fd4849a94d92d42623f758954e43e20144176a9d037650bf240',
 +    'plugins/crucible-advance-outcome-original-types.inc.h': 'c65cd961e62e0a7e739e6ec9d966d2dda77442cd6ff28368a06a2b86dc310755',
-+    'plugins/crucible-advance-outcome-original.inc.h': 'eb45ec23382ce3328e8cd0bfcbcd25c903ef7c8743f50ff044ebf2718b9faa6b',
++    'plugins/crucible-advance-outcome-original.inc.h': 'd70bfcb7221724770f39095c498ad1bbed9d914fd7d9537255063b1f73b2003b',
 +    'plugins/crucible-advance-outcome-success-module.inc.h': 'f99195642351482fb84503d790a6c6505a3ca6f42690f9d6666a64b57093bb6a',
 +    'plugins/crucible-core-quantum-construction-dispose.inc.h': '2fb6a266078ac56e13ceecb29bb589f03b2a111abd5d3f0ecf488af0966760e0',
 +    'plugins/crucible-core-quantum-constructor-resource.inc.h': '3e9e3e5874f16856d787c2fd5bf1669777f25f71f2a38973b992072855e8d8de',
@@ -372158,13 +373109,13 @@ index 0000000000000000000000000000000000000000..3dd595942fbf9024d0e467d4134b9c45
 +    'plugins/crucible-matched-advance-registration.inc.h':
 +        'b6d3cd2ae4b44dbfeb7ffc5718d90b4590d631b0e41ffae7dbbf285095dad8ed',
 +    'plugins/crucible-advance-outcome.inc.h':
-+        'edfa9cd2a231336e067b19bd2147e1ea015bd2d148fa8a2f6f62301711b4831e',
++        'ba81a6202d75f80efc0d10491fa246de085c9fb6e811328282d11606dfe3e044',
 +    'plugins/crucible-advance-outcome-work.inc.h':
 +        '559f849ccbfdce217c3e6fdd43547feae2c78c5ddef4302cac6cf172d3087916',
 +    'plugins/crucible-advance-outcome-target.inc.h':
 +        '2e9f529b3fd86c4fc86b2acfaaa5afc214cf7b7cb017d821ac6fbc16a75ee72c',
 +    'plugins/crucible-advance-outcome-request.inc.h':
-+        '00565c8f938df8272bb355a868b903aaf7814f0ebe138b3689665eaac107d613',
++        'cf705b87519d17b66a997df60534c8cdf3c6fc1c5d3dc67421e0c63730740a13',
 +    'plugins/crucible-advance-outcome-registration.inc.h':
 +        '629aa5f217421c4883caff119e670037a6fbaabd0ea7f4f6e8e9f5a341273507',
 +    'plugins/crucible-advance-outcome-post.inc.h':
@@ -372172,13 +373123,13 @@ index 0000000000000000000000000000000000000000..3dd595942fbf9024d0e467d4134b9c45
 +    'plugins/crucible-advance-outcome-dispatch.inc.h':
 +        'f0bef55056ee8e84ad40c4949714f82f50a2535e7d761007addc0a695e5f197d',
 +    'plugins/crucible-advance-outcome-closure.inc.h':
-+        'd8a3438d7f89cecae4f7211f7920d9a6f03f6b529018ee0b492b4cca67e8f416',
++        '0fcaa4941d32832ef9deffb034965c110ded4a7c2f02fa9fa61ed4b7ec075f54',
 +    'plugins/crucible-advance-outcome-boundary.inc.h':
 +        '7e7854e6081e0cae20b72f67715a1118804a8e29142484e906a5d877e9e5945f',
 +    'plugins/crucible-advance-outcome-attach.inc.h':
 +        '606d3bc7a1e4098cc91b36defdaf5d184cb5859e78f52e17dd5a856d3cc24f12',
 +    'include/system/crucible-advance-outcome.h':
-+        '1dc0589e38b15bacbb37cb02711e048895811a3451032f0e21b83fc3c538bf7f',
++        '7156f523612ee438baa5c22129421b7767b53b37b7d5a45c6840ce50c973a785',
 +    'plugins/crucible-core-quantum-target.inc.h':
 +        '86d8cc0698a2eaa9ecdd84f25b99615db3d1d74d2b382e602da7f6491a9a5e98',
 +    'system/runstate.c':
@@ -372474,7 +373425,7 @@ index 0000000000000000000000000000000000000000..3dd595942fbf9024d0e467d4134b9c45
 +    'tests/unit/crucible-fault-node-restore-fixture.inc.h':
 +        '3daaa09d9d1fa487a29e49d63c568798fc3c3a3420387b40aa36758e4b49632e',
 +    'tests/unit/meson.build':
-+        '1be4612503f8b0b97be96853e0496e20366d2dace995cae59d321f70b45e1203',
++        '52642b9244b9f18761c3fdbdd0792e9e0ad7ab8c0dd314f192dfbd693ca502e3',
 +    'tests/unit/test-crucible-action-edge-post.py':
 +        '5f2722de0b58309235281639b41072c1b6f94139170afe8c0de1d2b7fa713b42',
 +    'tests/unit/test-crucible-apic-getter-custody.py':
@@ -372508,13 +373459,13 @@ index 0000000000000000000000000000000000000000..3dd595942fbf9024d0e467d4134b9c45
 +    'util/qemu-timer.c':
 +        '7688924d0642e40da474d76b757e34d562f54a50dd33953cec68dda1f0eda8ff',
 +    'include/system/crucible-quantum-execution.h':
-+        'c44e15f75f54e94ef2302477b724877d4b3a4b288507c97d608dbe423d1a3f21',
++        'f9a4fe73b7a1d7b16f152f6e0f4cb3dfa256980c13dc17841e2c822408079c77',
 +    'accel/tcg/crucible-outcome-boundary.inc.h':
-+        '26d8b43a3c69c5801617baadf7d091b763175aa77be46aebcadf0a18fbc2ee34',
++        '9fec1d2bfed6b2327da5b6522ce0bdb734effaac836e24e70ce5ccdbda8785d5',
 +    'accel/tcg/crucible-outcome-postbody.inc.h':
 +        '6e671f543ecc5aa398fd2266e8bdeec08c1ef7af750d74136e7b10ca6c4d6d6d',
 +    'include/system/crucible-outcome-postbody.h':
-+        '48f8bde5e091d2d8bcd1ab14eedc3bdc2da9642a63677e94efdf7286e96ea60e',
++        '086c46bc0e64ad843d041988ed530f8cce7a4896a04475a6488183e0949d9efa',
 +    'tests/unit/test-crucible-outcome-boundary.py':
 +        '06138544e600ed73363eac7d9431fa0a2799985708618a86b460ff243100d798',
 +    'accel/tcg/crucible-executor-cleanup.inc.h':
@@ -372524,7 +373475,7 @@ index 0000000000000000000000000000000000000000..3dd595942fbf9024d0e467d4134b9c45
 +    'tests/unit/test-crucible-quantum-execution.py':
 +        '8db9415ff195af8fa9a9648718bbebd89e522bdc86ec6325123dab05887bb705',
 +    'accel/tcg/tcg-accel-ops-rr.c':
-+        '6e984462dc34d0fc32de4c6be0857e2bcf35fc0018c0995d6d7c4e615b80ef2c',
++        '308e25ce9bb47349ff97e31f543d9a8c30a25d22eb994e62571d6703a1763ccf',
 +    'accel/tcg/tcg-accel-ops.c':
 +        'd11da9eca153ae1147bfafb7fddd2283954c63e23eeca85fd5d8d53b83bd8f53',
 +    'accel/tcg/cpu-exec.c':
@@ -374066,7 +375017,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..1b9ee3e1b09bf777ee434fc8b8d4e9fab28860dc 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8fb29aabb84c8d548eb4a918af61533d9fbff9ca 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -374141,7 +375092,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..1b9ee3e1b09bf777ee434fc8b8d4e9fa
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1752 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1753 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -375396,6 +376347,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..1b9ee3e1b09bf777ee434fc8b8d4e9fa
 +                        '../../tcg/tcg.c',
 +                        '../../include/tcg/tcg.h',
 +                        '../../plugins/crucible-advance-outcome-postbody.inc.h',
++                        '../../plugins/crucible-advance-outcome-no-target.inc.h',
 +    ),
 +  )
 +  startup_source_test = executable(

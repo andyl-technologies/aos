@@ -6,20 +6,20 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "830043df94e79afc8f43894b914d34fb287a9b32d7fa694fbf3fd519842b16d1";
-  subject = "crucible: compose retained native execution and postbody custody";
-  body = "Retain the complete reviewed source lineage, typed process protocols, actual\nowning Source, Core, Native and Outcome implementations and their public\nsource/dependency contracts as one reconstructible source revision.\n\nPreserve ordinary paths, finite refusal behavior and every source license.\nComplete-profile and paid process admission remain unavailable.";
-  commit = "b62dc6074984e9976572cceca6d971e8105735a7";
-  tree = "4c95a54a92e688d81ded1a500f6b6515540ea9aa";
+  sha256 = "9a5a9142d394a33efe48908df839712ae28e8f2a310071b3fb88da9c40e04c07";
+  subject = "crucible: bind checked source owners and retained Outcome return";
+  body = "Compose checked source and native owners, retained postbody resource return,\nand complete never-issued Outcome inventories with their genuine providers.";
+  commit = "e07752457bbafc69359ac7cc5cbaa3bd950e1c77";
+  tree = "e5c162ba94a949808f0a87cd98a78d488ec41cf9";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/quantum-postbody-owner-successor-atomic";
+  branchRef = "dplecki/quantum-no-target-owner-successor-atomic";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "e9981100ba4f46c31a6ca3a4b57e7c5bd35b3ed762fcb8d21a474c5785e2ba07";
+  bundleSha256 = "143c06f05815eed97e5d69085b5ef81391e1ec99854c411954db5bd4f8f372bd";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
