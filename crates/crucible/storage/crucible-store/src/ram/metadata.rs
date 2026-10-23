@@ -5,10 +5,9 @@ use std::sync::Arc;
 use crucible_ram::RootRecord;
 
 use crate::content_store::{ContentId, StorePhysicalQuotaGuard};
+use crate::owned_decode::ResourceLoan;
 
-use super::{
-    LeasedRamRoot, RamRootLease, RamStore, RamStoreError, maximum_ram_root_decoding_bytes,
-};
+use super::{LeasedRamRoot, RamRootLease, RamStore, RamStoreError, maximum_ram_root_decoding_bytes};
 
 /// Authenticated discovery metadata retaining its predecode resource credit.
 ///
@@ -16,7 +15,7 @@ use super::{
 /// record can be borrowed while its original namespace credit remains live.
 pub struct AdmittedRamRootMetadata {
     record: RootRecord,
-    _resources: Arc<RootMetadataResources>,
+    _resources: ResourceLoan,
 }
 
 impl AdmittedRamRootMetadata {
@@ -30,27 +29,6 @@ impl AdmittedRamRootMetadata {
 pub(super) struct RootMetadataResources {
     _authority: Arc<dyn StorePhysicalQuotaGuard>,
     _credit: crate::owned_decode::ResourceLoan,
-}
-
-struct AdmittedRootLease {
-    lease: Arc<dyn RamRootLease>,
-    _resources: Arc<RootMetadataResources>,
-}
-
-impl RamRootLease for AdmittedRootLease {
-    fn root(&self) -> ContentId {
-        self.lease.root()
-    }
-}
-
-pub(super) fn retain_resources(
-    lease: Arc<dyn RamRootLease>,
-    resources: Arc<RootMetadataResources>,
-) -> Arc<dyn RamRootLease> {
-    Arc::new(AdmittedRootLease {
-        lease,
-        _resources: resources,
-    })
 }
 
 impl RamStore {
@@ -72,7 +50,9 @@ impl RamStore {
     ) -> Result<LeasedRamRoot, RamStoreError> {
         boundary()?;
         let resources = self.reserve_root_metadata(1)?;
-        self.open(retain_resources(lease, resources), original, boundary)
+        let mut root = self.open(lease, original, boundary)?;
+        root.metadata_resources = resources.into();
+        Ok(root)
     }
 
     /// Inspects root metadata while retaining original predecode admission.
@@ -101,23 +81,40 @@ impl RamStore {
     pub(super) fn reserve_root_metadata(
         &self,
         simultaneous_roots: u64,
-    ) -> Result<Arc<RootMetadataResources>, RamStoreError> {
+    ) -> Result<ResourceLoan, RamStoreError> {
         let authority = self.backend.metadata_resources()?;
         authority.verify()?;
-        let bytes = maximum_ram_root_decoding_bytes()?
-            .checked_mul(simultaneous_roots)
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<AdmittedRootLease>() as u64))
-            .and_then(|bytes| {
-                bytes.checked_add(std::mem::size_of::<RootMetadataResources>() as u64)
-            })
-            .and_then(|bytes| {
-                bytes.checked_add(std::mem::size_of::<AdmittedRamRootMetadata>() as u64)
-            })
-            .ok_or(RamStoreError::Limit("root metadata admission"))?;
+        let bytes = allocation_bytes(simultaneous_roots)?;
         let credit = authority.reserve_resources(0, bytes)?;
-        Ok(Arc::new(RootMetadataResources {
+        // ResourceLoan frees its own shared control before dropping this
+        // concrete credit. Storage retention supplies no financial custody.
+        Ok(ResourceLoan::new(RootMetadataResources {
             _authority: authority,
             _credit: credit,
         }))
     }
+}
+
+pub(super) fn allocation_bytes(simultaneous_roots: u64) -> Result<u64, RamStoreError> {
+    // The decoder's bound covers the temporary reference Vec. Conversion
+    // to the shared slice overlaps that Vec, so admit the complete second
+    // allocation, including its counters and alignment, before decoding.
+    let references = std::alloc::Layout::array::<super::codec::TreeRef>(
+        crucible_ram::Limits::default().max_regions,
+    )
+    .map_err(|_| RamStoreError::Limit("root metadata admission"))?;
+    let (references, _) = std::alloc::Layout::new::<[usize; 2]>()
+        .extend(references)
+        .map_err(|_| RamStoreError::Limit("root metadata admission"))?;
+    let record = super::record_account::shared_extent::<RootRecord>()?;
+    maximum_ram_root_decoding_bytes()?
+        .checked_add(references.pad_to_align().size() as u64)
+        .and_then(|bytes| bytes.checked_add(record))
+        .and_then(|bytes| bytes.checked_mul(simultaneous_roots))
+        .and_then(|bytes| {
+            bytes.checked_add(ResourceLoan::allocation_bytes::<RootMetadataResources>())
+        })
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<LeasedRamRoot>() as u64))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<AdmittedRamRootMetadata>() as u64))
+        .ok_or(RamStoreError::Limit("root metadata admission"))
 }

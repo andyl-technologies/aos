@@ -123,6 +123,7 @@ impl RamStore {
             regions: regions.into(),
             metadata_custody: Arc::clone(&lease),
             lease,
+            metadata_resources: Default::default(),
         })
     }
 
@@ -150,6 +151,7 @@ impl RamStore {
             regions: regions.into(),
             metadata_custody: Arc::clone(&lease),
             lease,
+            metadata_resources: Default::default(),
         })
     }
 
@@ -283,6 +285,7 @@ impl RamStore {
             regions: regions.into(),
             metadata_custody: Arc::clone(&lease),
             lease,
+            metadata_resources: Default::default(),
         })
     }
 

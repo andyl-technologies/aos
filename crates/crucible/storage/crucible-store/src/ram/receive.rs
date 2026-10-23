@@ -49,7 +49,7 @@ pub struct RamTransferReceiver<'a> {
     requested: u64,
     received: u64,
     terminal: bool,
-    metadata_resources: Arc<super::metadata::RootMetadataResources>,
+    metadata_resources: crate::owned_decode::ResourceLoan,
     _offer_credit: Option<crate::owned_decode::DecodeScratch>,
 }
 
@@ -205,10 +205,7 @@ impl<'a> RamTransferReceiver<'a> {
         self.store.flush_publication_batch(work)?;
         work.pending = None;
         self.publish(self.root, &envelope, existing, work)?;
-        let lease = super::metadata::retain_resources(
-            self.retention.retain_root(self.root)?,
-            Arc::clone(&self.metadata_resources),
-        );
+        let lease = self.retention.retain_root(self.root)?;
         if lease.root() != self.root {
             return Err(RamStoreError::Invalid("transfer retained root identity"));
         }
@@ -226,6 +223,7 @@ impl<'a> RamTransferReceiver<'a> {
                 regions: regions.into(),
                 metadata_custody: Arc::clone(&lease),
                 lease,
+                metadata_resources: self.metadata_resources.clone().into(),
             },
             report: self.report,
         }))

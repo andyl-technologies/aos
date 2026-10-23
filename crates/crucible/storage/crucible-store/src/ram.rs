@@ -220,10 +220,12 @@ pub trait RamRetention: Send + Sync {
 pub struct LeasedRamRoot {
     record: Arc<RootRecord>,
     regions: Arc<[codec::TreeRef]>,
-    // A destination transfer may share these decoded allocations. Their
-    // original admission stays live even when storage retention is replaced.
+    // A destination transfer shares the original metadata's storage retention.
     metadata_custody: Arc<dyn RamRootLease>,
     lease: Arc<dyn RamRootLease>,
+    // Declared last so all shared metadata and retention controls close before
+    // refundable financial credit. Transfers clone the same terminal loan.
+    metadata_resources: crate::owned_decode::ResourceLoanSlot,
 }
 
 impl std::fmt::Debug for LeasedRamRoot {

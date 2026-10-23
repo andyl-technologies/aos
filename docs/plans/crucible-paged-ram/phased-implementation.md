@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 561 bindings: 542 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 564 bindings: 545 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2047,7 +2047,8 @@ eight helper-custody failures and four ignored cases. All ninety testing-standar
 and five hygiene controls pass. Store Clippy passes all targets. Strict Host
 Clippy retains the same 674 library and 723 test-target errors, with fourteen
 and five warnings; no lint is waived or error payload discarded. Signed commit
-`84583ceb34` is pushed. Mandatory application-target compilation is running;
+`84583ceb34` is pushed. Mandatory application-target compilation passes at
+`9pxwzfkgr1gzf2zajmr08zl03h29bfn3`;
 all 5,396 committed Rust/TOML files and six required fixtures independently
 match frozen source `zma80nh74vzi5sn9zl7kq3vvv34yxcvz` before later edits.
 
@@ -2161,6 +2162,63 @@ passes all 53 exact cases at `p3aiknw31az8mv3yy0g880fj90krlsqj`;
 all 65 successful summaries, including nested results, are independently
 checked. Inventory `69qfvbs43jg7x7j3rdxjxx3yw6xrg5a8` validates 561 bindings
 across 243 requirements, with 148 uncovered and zero qualified.
+
+Signed record-buffer commit `4ebf0e6188` is pushed. Mandatory application-target
+compilation is running; all 5,399 committed Rust/TOML files and six required
+fixtures match immutable source `wa3255scqx992d6wb07k38j4mklj2ah3` before
+metadata-custody edits.
+
+Corrected concrete plan-r9 under manifest
+`796887af6213db6b6aafd63d38bd7fa618e00b595aa62f71cb76bc924169459e`
+passes independent review of all 659 signed payloads, 7,727 external plus ten
+reconstruction inputs, 72 complete tool roots and six full immutable baselines.
+All 105 recursive Python payloads, 25 actual runtime closure entries and 245
+current hash claims match actual bytes. Recomputed inherited audits preserve
+all fifty original top-level stale claims; retained nested-reference reports
+confer no enclosing-plan permission. Plan-r8 remains unexecuted after its
+preparation audit incorrectly scoped three reference rows. All 19,043 actual
+plan controls and 359 production controls pass independently. Approved runtime
+helpers, source, graph, driver, environment relocation and original bounds
+remain unchanged. These checks authorize one exact bounded build attempt and
+no native activation.
+
+That original attempt returns one during configure: descriptor acquisition for
+an authenticated process returns `ProcessLookupError` before retained exit
+ownership exists. No operation, query or target edge is accepted. The direct
+configure child returns -9. Exception cleanup actually reaps adopted PID 17,
+start 23605869, with raw wait status zero before observing ECHILD; the independent
+final cleanup separately observes no children and ECHILD. Original exit occurs
+at 180.974 seconds and final whole evidence at 194.602 seconds under the
+unchanged 5,400-second cap. The native lane is released. Independent review
+authenticates all 64 result payloads, 44 execution paths and 86,116 reconstruction
+paths against actual disk and archive bytes. The separate signed race diagnosis
+passes all 134 retained-data adapter controls without native effects. No
+replacement attempt is authorized and no missing descriptor readiness is inferred.
+
+Admitted root metadata now retains financial custody in its own terminal
+`ResourceLoan`, independently of storage retention. The original predecode grant
+includes the shared record control, complete reference-slice conversion overlap,
+terminal loan control and result holders. Resource custody is the final root
+field; ordinary root clones and cross-store transfers share the same original
+loan. Discovery and archive receivers use that terminal loan too. The old
+resource-bearing GC-lease wrapper is removed. This preserves wire records,
+canonical identities and GC retention while preventing refund before the paid
+shared control closes. Explicit caller-funded capture, update and plain-open
+paths retain their existing external resource contract; this revision supplies
+no native issue, general root-publication prepayment or physical OOM handling.
+
+All three focused controls pass. Restoring ordinary control destruction fails
+the physical-close/refund control. Omitting only the transfer's resource clone
+returns all 22,542,484 metadata bytes while the destination still holds its
+shared record and makes the transfer control fail. Exact source restoration
+passes all three. The original finite component ceilings remain unchanged;
+preexisting backend credit is accounted separately. Inventory
+`06v8qxzs4j2ly4zl1cwm377iwk1qzjgm` validates 564 bindings across 243
+requirements, with 148 uncovered and zero qualified. Broad validation passes
+717 storage tests, 686 engine tests, 95 policy controls and storage Clippy.
+Hermetic storage output `l3drg8s5xaqbyjg8whc3r56w8xjyicph` passes all 56
+selected cases and 70 nested test summaries. Required application-target
+compilation will freeze this committed source before subsequent Rust changes.
 
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's

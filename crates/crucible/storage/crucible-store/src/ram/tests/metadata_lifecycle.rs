@@ -16,6 +16,7 @@ use super::*;
 
 mod checked_sources;
 mod hash_reuse;
+mod metadata_custody;
 mod proof_allocation;
 mod record_prepay;
 

@@ -206,6 +206,7 @@ impl RamStore {
             regions: source.regions.clone(),
             metadata_custody: Arc::clone(&source.metadata_custody),
             lease,
+            metadata_resources: source.metadata_resources.clone(),
         };
         report.object_visits = work.visits;
         Ok(RamClosureStored { root, report })
