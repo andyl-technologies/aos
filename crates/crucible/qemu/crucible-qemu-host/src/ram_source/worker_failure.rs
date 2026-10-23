@@ -133,6 +133,7 @@ impl QemuRamWorkerFailure {
                     super::worker_outcome::WorkerOutcome::allocation_peak_bytes().ok()?,
                 )
             })
+            .and_then(|bytes| bytes.checked_add(super::stop::StopState::journal_peak_bytes()?))
             .ok_or(QemuRamSourceError::Ownership)
     }
 

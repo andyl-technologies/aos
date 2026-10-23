@@ -117,6 +117,7 @@ fn expired_cleanup_retains_blocked_service_then_joins_same_worker_without_renewa
 
     assert!(!joined);
     let first = status.unwrap_err();
+    let first_record = (*first).clone();
     assert!(
         matches!(first.observations[0].0, Some(HostSupervisionError::DeadlineExpired { operation_id, .. }) if operation_id == id)
     );
@@ -159,7 +160,8 @@ fn expired_cleanup_retains_blocked_service_then_joins_same_worker_without_renewa
     )));
     assert!(joined);
     status?;
-    assert_eq!(service.stop.history, joined_history);
+    assert_eq!(service.stop.history, *joined_history);
+    assert_eq!(*first, first_record);
     // Saved history, not a second worker, holds the same original worker loan.
     drop(service);
     assert!(matches!(
@@ -167,6 +169,12 @@ fn expired_cleanup_retains_blocked_service_then_joins_same_worker_without_renewa
         Err(HostServiceError::CapacityExhausted)
     ));
     drop(joined_history);
+    assert!(matches!(
+        services.reserve_resources(1, 0, 0),
+        Err(HostServiceError::CapacityExhausted)
+    ));
+    drop(first);
+    drop(first_record);
     assert!(services.reserve_resources(1, 0, 0).is_ok());
     Ok(())
 }
@@ -203,12 +211,33 @@ fn refused_creation_retains_both_checks_and_closes_only_actual_no_birth()
 
     // Known no-birth is factual. It needs neither a fresh Cleanup nor a wait
     // under the now-refused creation Original, and cannot authorize any work.
-    let (returned, history) = service.stop(None);
+    let ((returned, history), counts) =
+        crucible_host_resources::test_support::TestAllocationObserver::count(|| service.stop(None));
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
     assert!(returned);
     let history = history.unwrap_err();
     assert!(history.birth.0.is_some() && history.birth.1.is_some());
     assert_eq!(history.native_status, None);
+    let (alias, counts) =
+        crucible_host_resources::test_support::TestAllocationObserver::count(|| history.clone());
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert!(std::ptr::eq(&*history, &*alias));
+
     drop(service);
+    assert!(matches!(
+        services.reserve_resources(1, 0, 0),
+        Err(HostServiceError::CapacityExhausted)
+    ));
+    drop(history);
+    assert!(matches!(
+        services.reserve_resources(1, 0, 0),
+        Err(HostServiceError::CapacityExhausted)
+    ));
+    drop(alias);
     let _whole = services.reserve_resources(1, 4, 8 * 1024 * 1024)?;
     Ok(())
 }

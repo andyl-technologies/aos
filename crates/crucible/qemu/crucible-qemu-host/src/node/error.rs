@@ -919,7 +919,7 @@ impl From<QemuNodeError> for BackendError {
             QemuNodeError::RamCleanup {
                 stage,
                 stage_latest,
-                mut sources,
+                sources,
                 controllers,
             } => {
                 // A sole worker cause already owns its original allocation and
@@ -940,10 +940,10 @@ impl From<QemuNodeError> for BackendError {
                                 .all(|(pre, post)| pre.is_none() && post.is_none())
                     });
                 if sole_worker {
-                    for history in sources.iter_mut().flatten() {
-                        if let Some(worker) = history.worker.take() {
+                    for history in sources.iter().flatten() {
+                        if let Some(worker) = history.worker.as_ref() {
                             let source = crate::QemuAsyncDriverHealthError::ram_source(
-                                crate::ram_source::QemuRamSourceError::WorkerFailed(worker),
+                                crate::ram_source::QemuRamSourceError::WorkerFailed(worker.clone()),
                             );
                             return Self::RetainedOperationalFailure {
                                 kind: source.operational_kind(),

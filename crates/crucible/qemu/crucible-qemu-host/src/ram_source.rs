@@ -347,6 +347,7 @@ impl QemuRamSourceService {
             let failure = worker_outcome::WorkerOutcome::new(service_lease.clone());
             let launch_failure = worker_failure::WorkerFailureJournal::new(service_lease.clone());
             let worker_failure = worker_failure::WorkerFailureJournal::new(service_lease.clone());
+            let stop = stop::StopState::funded(service_lease.clone());
             // All fallible work leaves the caller's SAME input untouched.
             // The final transfer into its retained Service is a pure move.
             let SourceInput {
@@ -355,7 +356,7 @@ impl QemuRamSourceService {
                 binding,
             } = input.take().ok_or(QemuRamSourceError::Ownership)?;
             Ok(Self {
-                stop: stop::StopState::new(),
+                stop,
                 binding,
                 backing,
                 cancellation,
@@ -858,4 +859,4 @@ mod tests;
 mod scoped_response_tests;
 
 mod stop;
-pub use stop::QemuRamSourceStopHistory;
+pub use stop::{QemuRamSourceStopHistory, QemuRamSourceStopRecord};

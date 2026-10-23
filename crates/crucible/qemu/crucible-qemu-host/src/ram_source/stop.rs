@@ -3,27 +3,9 @@
 use super::*;
 use crucible_engine::BackendOperationalCause;
 
-/// Preserves a source's raw return history independently of physical join.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("RAM source return refused: {self:?}")]
-pub struct QemuRamSourceStopHistory {
-    /// Same actual creation Original's independent pre/post observations.
-    pub birth: (Option<HostSupervisionError>, Option<HostSupervisionError>),
-    /// First actual cancellation transport failure.
-    pub cancellation: Option<BackendOperationalCause>,
-    /// First same-original failures around cancellation, waiting, and joining.
-    pub observations: [(Option<HostSupervisionError>, Option<HostSupervisionError>); 3],
-    /// The original failure returned by the actual joined worker.
-    pub worker: Option<QemuRamWorkerFailure>,
-    /// Actual caught panic payload and original loan, retained after body removal.
-    pub panic: Option<QemuRamWorkerPanic>,
-    /// First unexpected actual native join result, independent of Original status.
-    pub native: Option<NativeJoinError>,
-    /// Latest attempted libc status, including known busy or physical zero.
-    pub native_status: Option<i32>,
-    /// Whether an entered cancellation or join has no returned disposition.
-    pub uncertain: bool,
-}
+mod history;
+pub use history::{QemuRamSourceStopHistory, QemuRamSourceStopRecord};
+use history::StopJournal;
 
 #[derive(Debug)]
 pub(super) struct StopState {
@@ -31,7 +13,8 @@ pub(super) struct StopState {
     cancel_returned: bool,
     join_returned: bool,
     outcome_captured: bool,
-    history: QemuRamSourceStopHistory,
+    history: QemuRamSourceStopRecord,
+    journal: StopJournal,
     version: u8,
     reported: u8,
 }
@@ -48,7 +31,7 @@ impl StopState {
             cancel_returned: false,
             join_returned: false,
             outcome_captured: false,
-            history: QemuRamSourceStopHistory {
+            history: QemuRamSourceStopRecord {
                 birth: (None, None),
                 cancellation: None,
                 observations: [(None, None); 3],
@@ -58,9 +41,21 @@ impl StopState {
                 native_status: None,
                 uncertain: false,
             },
+            journal: StopJournal::empty(),
             version: 0,
             reported: 0,
         }
+    }
+
+    pub(super) fn funded(lease: crucible_host_resources::host_services::HostServiceLease) -> Self {
+        Self {
+            journal: StopJournal::new(lease),
+            ..Self::new()
+        }
+    }
+
+    pub(super) fn journal_peak_bytes() -> Option<u64> {
+        StopJournal::peak_bytes()
     }
 
     fn observe(&mut self, index: usize, after: bool, failure: Option<HostSupervisionError>) {
@@ -115,7 +110,7 @@ impl QemuRamSourceService {
                 .history
                 .native
                 .get_or_insert(NativeJoinError::ForeignProcess);
-            return (false, Err(self.stop.history.clone()));
+            return (false, Err(self.stop.journal.snapshot(&self.stop.history)));
         }
         if self.stop.history.birth != (self.birth_before, self.birth_after) {
             self.stop.history.birth = (self.birth_before, self.birth_after);
@@ -253,7 +248,7 @@ impl QemuRamSourceService {
             && (!joined || !self.stop.outcome_captured || self.stop.reported != self.stop.version);
         if failure {
             self.stop.reported = self.stop.version;
-            (joined, Err(self.stop.history.clone()))
+            (joined, Err(self.stop.journal.snapshot(&self.stop.history)))
         } else {
             (joined, Ok(()))
         }

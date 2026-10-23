@@ -1162,6 +1162,26 @@ Strict Host lint remains at 678 library errors and fourteen warnings; test-targe
 errors fall to 729 with five warnings. The remaining diagnostics concern large
 error carriers. Mandatory application-target compilation remains required.
 
+Source stop receipts now borrow immutable records in a finite journal admitted
+under the same service loan before worker birth. The journal covers all monotone
+birth, cancellation, Original-boundary, worker, panic and native-status changes;
+repeated observations share the existing record. Even a receipt containing only
+an Original refusal retains the journal and original charge after the Source
+body closes. The last receipt frees the actual shared header before destroying
+its records and returning the loan. Publication and cloning allocate nothing.
+Scheduler conversion borrows those immutable records and shares the same worker
+cause. No Main/Source issuer or native-return authority is added.
+
+All thirty-one Source, three Source-health and nine node-error controls pass.
+The actual allocation observer verifies zero receipt-publication and clone
+allocations, immutable earlier observations, continued charge after body removal,
+and original credit retained across actual shared-header deallocation. Omitting
+only header-before-record destruction fails that real credit assertion; restoring
+the exact source passes all affected controls. The source-shape check and Nix
+engineering hygiene pass. Strict Host lint still fails, with findings falling to
+674 library errors and fourteen warnings, and 723 test errors and five warnings;
+no exemption is added. Mandatory application-target compilation remains required.
+
 #### Cumulative construction and request ownership source
 
 Signed atomic `e82bb4c78da7af3351ef6473935a2be2feb01a2d` imports conventional
