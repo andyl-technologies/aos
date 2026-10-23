@@ -40,7 +40,7 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
-exports_files(["compile.bzl", "crates.bzl", "license.bzl", "package.bzl", "rust_package.bzl", "test.bzl", "generated.bzl"])
+exports_files(["compile.bzl", "crates.bzl", "license.bzl", "package.bzl", "rust_package.bzl", "source_package.bzl", "test.bzl", "generated.bzl"])
 
 exports_files(["clippy.toml", "rustfmt.toml"])
 

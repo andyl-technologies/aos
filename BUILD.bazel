@@ -1,1 +1,23 @@
+load("//tools/bazel/rules:package.bzl", "aos_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_catalog")
+
 exports_files(["MODULE.bazel"])
+
+aos_source_catalog(
+    name = "source_catalog",
+    packages = [
+        "//crates:source_catalog",
+        "//tools/accache:source_package",
+        "//tools/accache/frontend:source_package",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+aos_package(
+    name = "source_catalog_package",
+    package_name = "aos-source-catalog",
+    version = "1",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+    artifacts = {":source_catalog": "share/aos/source-catalog.json"},
+)

@@ -3,6 +3,7 @@ load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
 load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:test.bzl", "aos_rust_test")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
 
 RUST_PACKAGE = aos_rust_package(
     edition = "2024",
@@ -75,4 +76,11 @@ rustfmt_test(
 rust_doc(
     name = "documentation",
     crate = ":lib",
+)
+
+aos_source_package(
+    name = "source_package",
+    package = RUST_PACKAGE,
+    srcs = glob(["**/*.rs"]),
+    visibility = ["//visibility:public"],
 )

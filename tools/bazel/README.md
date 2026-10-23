@@ -287,6 +287,23 @@ consumers depend on an output file rather than the rule label. The fixture uses
 Python closure. It also builds its procedural macro for the execution platform
 and links a Rust binary to the native library through an explicit C ABI.
 
+## Repository source ownership
+
+Each Rust package declares `source_package` using the same `RUST_PACKAGE`
+identity as its compilation targets. `//crates:source_catalog` collects all
+77 workspace members; `//:source_catalog` also includes the two standalone
+accache packages. The catalogs declare Rust source ownership and expose those
+files as runfiles for repository-wide structural tests. Nested Bazel packages
+retain separate ownership.
+
+Catalog generation uses Bazel's built-in write action and reads no Cargo
+manifest. `checks.build.bazel.source-catalog.all` compares identities and exact
+source coverage against the retained Cargo migration inventory and rejects any
+external tool execution. Metadata declarations for packages awaiting conversion
+do not claim that their compilation, tests, or installation have migrated.
+The engine conversion uses this foundation to preserve repository-wide audits
+while replacing manifest-based workspace discovery.
+
 ## Isolated Rust tests
 
 `rules/test.bzl` compiles ordinary `rules_rust` libtest artifacts and runs each

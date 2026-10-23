@@ -5,6 +5,7 @@ load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:test.bzl", "aos_rust_test")
 load("//tools/bazel/rules:generated.bzl", "aos_python_generator")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
 
 package(default_visibility = ["//crates/crucible:__subpackages__"])
 
@@ -132,4 +133,11 @@ aos_package(
     package = RUST_PACKAGE,
     artifacts = {":crucible-guest": "bin/crucible-guest", ":build_info": "nix-support/crucible-guest-build-info"},
     executables = ["bin/crucible-guest"],
+)
+
+aos_source_package(
+    name = "source_package",
+    package = RUST_PACKAGE,
+    srcs = glob(["**/*.rs"]),
+    visibility = ["//visibility:public"],
 )
