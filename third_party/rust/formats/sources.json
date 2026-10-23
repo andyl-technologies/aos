@@ -1,6 +1,6 @@
 {
   "contracts": {
-    "third_party/rust/BUILD.bazel": "1af62a7129cbbe2b64559bdbb90e5aacb89b16937e816f563c52e2f5ed959107",
+    "third_party/rust/BUILD.bazel": "ade40873555ac4a548901154eddf7ae943bcbac37bc71c9acfcfc1721daec519",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
     "tools/bazel/metadata/update_rust.py": "b8c9643aa163440eb9029803f20474e7b05077a39cd5fc56d25493a55b9f7837",
     "tools/bazel/rules/crates.bzl": "f8c14b49f3349864021d7acc1995c3a89c40025905bd3216f277f164786df56a"
@@ -42,6 +42,7 @@
     "BUILD.hashbrown-0.17.1.bazel": "5904ae0e2b55186b6c2b907e33200ab4247809ab8c3dad2b417b44a42a1cb9da",
     "BUILD.heck-0.5.0.bazel": "a2332b901e48ca981a73560fcf899cd896365837993d2e4e002f46fc5d81b103",
     "BUILD.hex-0.4.3.bazel": "013b1640dcb18f0fbd463ef56903598b86270923a8018efeb8ae4553f8dea1e1",
+    "BUILD.humantime-2.3.0.bazel": "abc4eb24024e79a0b1779b608d1d5ea879963eb3466aba44954280684a29528b",
     "BUILD.id-arena-2.3.0.bazel": "f4358c02d3f07785d1398565114ac3866772fcc637315ded8fc6b3c082dd0622",
     "BUILD.indexmap-2.14.0.bazel": "9ecdc63b0cf1dbc3698f7c5ab52123ce6b9ccdd6741dfc7eca2616bcb3420af6",
     "BUILD.itoa-1.0.18.bazel": "738ecd15a34ef5bd02b6b05c473bf79c5829152c9a7ed894dd59049ba59cff11",
@@ -117,11 +118,11 @@
     "BUILD.zstd-0.13.3.bazel": "8da4e5234532760cc13e66d04118e1443e94dfe8e2469238331447aee3a4ccb4",
     "BUILD.zstd-safe-7.2.4.bazel": "0b3036b061e42d6746c855c5dcdaa1aaaa1ca92f461c361688153f98484fbd40",
     "BUILD.zstd-sys-2.0.16+zstd.1.5.7.bazel": "d541176dbe59316bfd03ff0f4aebfdf1d04ea3afd01e283fa574f98d3106e073",
-    "Cargo.lock": "5dce8150d1cd7c7d487c0a23b0de0f6881dc94cd66dda46d23d866eb552bcdec",
-    "aliases.bzl": "37362b55c7946d5df7ab16a1e3a272bd26a9807a240ea5d4ed4f4f21a8f6df55",
-    "cargo-bazel.json": "9f43c9acb5d26ab69e44dec3ec873931fcb3c313304cbb2aaecc74cd013001c4",
+    "Cargo.lock": "94658335c6b5d55c6925838914bdd35cabacbdc5eb0551f30f8ce8eb33420bc7",
+    "aliases.bzl": "280e9b0c467d5a26106534a23bec10d944229d63b1248997e24d0bc76182b411",
+    "cargo-bazel.json": "ea9786cb049e9161f8525b483a4844f75605162d6dc7b5027bb2ee1a98ed9026",
     "generator-config.json": "977f0a48f7ebf275f3882af4e4f88faae6bb7eddea335a83ae8fb0309e36294f",
-    "repositories.MODULE.bazel": "e3086191bb0032e11cedda9ecd63dc2456541f38b24a4372b1ea31e85ebc525c"
+    "repositories.MODULE.bazel": "02f77c9f6d2b8b8a681b861317ccf11b684d3e439e0f261e6abf937a4b6430eb"
   },
   "schema_version": 1,
   "sources": {
@@ -474,6 +475,16 @@
       "strip_prefix": "hex-0.4.3",
       "url": "https://static.crates.io/crates/hex/0.4.3/download",
       "version": "0.4.3"
+    },
+    "aos_formats_crates__humantime-2.3.0": {
+      "build_file": "BUILD.humantime-2.3.0.bazel",
+      "license": "MIT OR Apache-2.0",
+      "license_domain": "apache-host",
+      "name": "humantime",
+      "sha256": "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424",
+      "strip_prefix": "humantime-2.3.0",
+      "url": "https://static.crates.io/crates/humantime/2.3.0/download",
+      "version": "2.3.0"
     },
     "aos_formats_crates__id-arena-2.3.0": {
       "build_file": "BUILD.id-arena-2.3.0.bazel",
@@ -1296,7 +1307,7 @@
       "Zlib OR Apache-2.0 OR MIT"
     ],
     "contracts": {
-      "third_party/rust/BUILD.bazel": "1af62a7129cbbe2b64559bdbb90e5aacb89b16937e816f563c52e2f5ed959107",
+      "third_party/rust/BUILD.bazel": "ade40873555ac4a548901154eddf7ae943bcbac37bc71c9acfcfc1721daec519",
       "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
       "tools/bazel/rules/crates.bzl": "f8c14b49f3349864021d7acc1995c3a89c40025905bd3216f277f164786df56a"
     },
@@ -1372,6 +1383,11 @@
         "default-features": true,
         "features": [],
         "version": "=0.4.3"
+      },
+      "humantime": {
+        "default-features": true,
+        "features": [],
+        "version": "=2.3.0"
       },
       "regex": {
         "default-features": true,

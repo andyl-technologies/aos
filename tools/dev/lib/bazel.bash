@@ -18,7 +18,7 @@ aos_dev_bazel() (
 
   local launcher_attribute=pkgs.aosBazelLauncher
   if [[ $1 == --family ]]; then
-    [[ $# -ge 3 ]] || aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats> <command> [labels]'
+    [[ $# -ge 3 ]] || aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts> <command> [labels]'
     case $2 in
       guest) launcher_attribute=pkgs.aosBazelGuestLauncher ;;
       engine) launcher_attribute=pkgs.aosBazelEngineLauncher ;;
@@ -28,9 +28,10 @@ aos_dev_bazel() (
       qemu-host) launcher_attribute=pkgs.aosBazelQemuHostLauncher ;;
       store-s3) launcher_attribute=pkgs.aosBazelStoreS3Launcher ;;
       daemon) launcher_attribute=pkgs.aosBazelDaemonLauncher ;;
+      contracts) launcher_attribute=pkgs.aosBazelContractsLauncher ;;
       formats) launcher_attribute=pkgs.aosBazelFormatsLauncher ;;
       crucible-cli) launcher_attribute=pkgs.aosBazelCrucibleCliLauncher ;;
-      *) aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats> <command> [labels]' ;;
+      *) aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts> <command> [labels]' ;;
     esac
     shift 2
   fi
@@ -45,6 +46,11 @@ aos_dev_bazel() (
       project_options+=(--rust-project-package crates/crucible/guest/crucible-guest)
     elif [[ $launcher_attribute == pkgs.aosBazelQuotaLauncher ]]; then
       project_options+=(--rust-project-package crates/shared/aos-linux-project-quota)
+    elif [[ $launcher_attribute == pkgs.aosBazelContractsLauncher ]]; then
+      project_options+=(--rust-project-package crates/aos/release/aos-release-format)
+      project_options+=(--rust-project-package crates/aos/modules/aos-module-docs)
+      project_options+=(--rust-project-package crates/aos/packages/aos-deployment-format)
+      project_options+=(--rust-project-package crates/aos/boot/aos-storage-layout)
     elif [[ $launcher_attribute == pkgs.aosBazelFormatsLauncher ]]; then
       project_options+=(--rust-project-package crates/shared/aos-nar)
       project_options+=(--rust-project-package crates/aos/modules/aos-module-format)

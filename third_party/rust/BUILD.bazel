@@ -176,8 +176,8 @@ CRUCIBLE_CLI_PACKAGES = dict(DAEMON_PACKAGES.items() + {
     "zeroize": crate.spec(version = "=1.9.0"),
 }.items())
 
-# These portable formats share one coherent graph. Zstandard is reachable only
-# from the NAR compression variant; default format targets remain pure Rust.
+# Portable formats and their contract consumers share one coherent graph.
+# Zstandard is reachable only from NAR compression; other roots remain pure Rust.
 FORMATS_PACKAGES = {
     "anyhow": CORE_PACKAGES["anyhow"],
     "base64": CORE_PACKAGES["base64"],
@@ -185,6 +185,7 @@ FORMATS_PACKAGES = {
     "ed25519-dalek": STORE_PACKAGES["ed25519-dalek"],
     "flate2": crate.spec(version = "=1.1.9", default_features = False, features = ["rust_backend"]),
     "hex": crate.spec(version = "=0.4.3"),
+    "humantime": crate.spec(version = "=2.3.0"),
     "regex": crate.spec(version = "=1.12.4"),
     "schemars": crate.spec(version = "=1.2.2"),
     "semver": crate.spec(version = "=1.0.28"),

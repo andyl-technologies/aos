@@ -179,6 +179,14 @@
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
   };
+  aosBazelContractsWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = ["crates/shared" "crates/aos/modules" "crates/aos/registry/aos-registry-format" "crates/aos/release/aos-release-format" "crates/aos/packages/aos-deployment-format" "crates/aos/boot/aos-storage-layout" "tools/bazel" "third_party/rust"];
+    repositories = aosBazelRepositories // aosBazelRustRepositories.formats // {aos_native = aosBazelStoreLibraries;};
+    dependencyProfile = "formats";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = ["//crates/aos/release/aos-release-format:unit" "//crates/aos/modules/aos-module-docs:unit" "//crates/aos/packages/aos-deployment-format:unit" "//crates/aos/boot/aos-storage-layout:unit"];
+  };
   aosBazelFormatsWorkspace = mkAosBazelWorkspace {
     root = ../../..;
     sourceDirectories = ["crates/shared" "crates/aos/modules/aos-module-format" "crates/aos/registry/aos-registry-format" "tools/bazel" "third_party/rust"];
@@ -267,6 +275,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelContractsLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelContractsWorkspace;
     }).launcher;
   aosBazelFormatsLauncher =
     (import ./development.nix {

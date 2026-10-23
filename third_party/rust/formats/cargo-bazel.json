@@ -1,5 +1,5 @@
 {
-  "checksum": "32cf9a628177325a5eb341970215a06f055065b1584ba325af72de5131ca661b",
+  "checksum": "dd292be49e9224f237f719203cb3a957be1944a2f83ae42e901f042b09196564",
   "crates": {
     "adler2 2.0.1": {
       "name": "adler2",
@@ -1061,6 +1061,10 @@
             {
               "id": "hex 0.4.3",
               "target": "hex"
+            },
+            {
+              "id": "humantime 2.3.0",
+              "target": "humantime"
             },
             {
               "id": "regex 1.12.4",
@@ -2215,6 +2219,45 @@
         },
         "edition": "2018",
         "version": "0.4.3"
+      },
+      "license": "MIT OR Apache-2.0",
+      "license_ids": [
+        "Apache-2.0",
+        "MIT"
+      ],
+      "license_file": "LICENSE-APACHE"
+    },
+    "humantime 2.3.0": {
+      "name": "humantime",
+      "version": "2.3.0",
+      "package_url": "https://github.com/chronotope/humantime",
+      "repository": {
+        "Http": {
+          "url": "https://static.crates.io/crates/humantime/2.3.0/download",
+          "sha256": "135b12329e5e3ce057a9f972339ea52bc954fe1e9358ef27f95e89716fbc5424"
+        }
+      },
+      "targets": [
+        {
+          "Library": {
+            "crate_name": "humantime",
+            "crate_root": "src/lib.rs",
+            "srcs": {
+              "allow_empty": true,
+              "include": [
+                "**/*.rs"
+              ]
+            }
+          }
+        }
+      ],
+      "library_target_name": "humantime",
+      "common_attrs": {
+        "compile_data_glob": [
+          "**"
+        ],
+        "edition": "2021",
+        "version": "2.3.0"
       },
       "license": "MIT OR Apache-2.0",
       "license_ids": [
@@ -6989,6 +7032,7 @@
     "ed25519-dalek 2.2.0",
     "flate2 1.1.9",
     "hex 0.4.3",
+    "humantime 2.3.0",
     "regex 1.12.4",
     "schemars 1.2.2",
     "semver 1.0.28",

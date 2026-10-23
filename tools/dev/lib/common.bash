@@ -18,7 +18,7 @@ Commands:
   bazel <arguments>         Run offline Bazel with AOS tools and a local disk cache
   bazel update-deps <core|device|store|guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats>  Resolve and pin third-party Rust sources
   bazel rust-project <labels>  Generate editor metadata from configured Rust targets
-  bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats> <arguments>  Select the family's target configuration
+  bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts> <arguments>  Select the family's target configuration
   all <packages|checks|builds|format|ci> [Nix flags]
   fmt [nix|rust|all] [--check]
   release <arguments>       Run aos maintain release without shared caches

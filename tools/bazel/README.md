@@ -1530,15 +1530,42 @@ The test now verifies that individual requirements retain true values and omit
 false defaults, while preserving the round-trip, digest, and legacy-field checks.
 `tests/evidence/release-format-cargo-baseline.json` records the successful rerun:
 152 executed cases, one existing ignored Nix-inventory case, 72 external crate
-identities, and six first-party libraries. The required workspace Rust check is
-running separately for this correction. Bazel conversion remains pending.
+identities, and six first-party libraries. Release-format now has native Bazel
+qualification in the connected contract family below. Workspace Rust compilation
+is recorded separately.
 
-## Connected contract baseline
+## Connected contract qualification
 
 `tests/evidence/contracts-cargo-baseline.json` records the connected
 `aos-release-format`, `aos-module-docs`, `aos-deployment-format`, and
 `aos-storage-layout` Cargo baseline before changes to their Rust sources.
 It executes 225 cases across six test artifacts, with the existing Nix-inventory
 case ignored. All four doctest targets contain zero cases. The graph contains
-72 external crate identities and nine first-party libraries. Bazel parity and
-production migration remain pending.
+72 external crate identities and nine first-party libraries.
+
+The contracts family uses the shared format dependency profile, extended with
+the pinned `humantime` source. All previous archive pins and 110 generated crate
+declarations remain unchanged. It declares each library, unit and integration
+artifact, doctest, license check, and developer target.
+
+```sh
+aos-dev bazel update-deps formats
+aos-dev bazel --family contracts test //crates/aos/release/aos-release-format:qualification
+nix-build tools/bazel/tests/contracts.nix -A all --no-out-link --max-jobs 4 --cores 4
+```
+
+`tests/evidence/native-linux-contracts.json` retains passing native execution,
+fresh Cargo case and feature parity, developer checks, license closures, and
+editor parity. All 225 executable cases and the existing ignored case match;
+the four doctest targets remain empty. Editor comparison preserves the single
+selected unknown-type location. An integration test's declared sibling fixture
+is visible through its compiler-declared package boundary. Explicit generated
+source directories remain intact, with two regression tests for source roots.
+
+`tests/evidence/contracts-configured-graph.json` retains 152 distinct configured
+reports, 140 source files, all 17 refreshed family inventories, 13 dependency
+specifications, and 150 passing policy tests. All 12 other dependency locks are
+unchanged. Workspace Rust compilation and the broader editor and metadata
+regression checks run separately. The complete-checkout Nix-inventory case,
+foreign and Wasm qualification, performance acceptance, and production migration
+remain separate gates.

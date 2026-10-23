@@ -56,6 +56,7 @@ case " $* " in
   *' -A pkgs.aosBazelSessionLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelControlLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelDaemonLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.aosBazelContractsLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelFormatsLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelCrucibleCliLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelStoreS3Launcher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
@@ -222,6 +223,11 @@ test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:crucible-c
 grep -Fq -- '-A pkgs.aosBazelCrucibleCliLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family crucible-cli rust-project //example:crucible-cli
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/control/crucible-cli><--><build><//example:crucible-cli>"
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family contracts build //example:contracts
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:contracts>"
+grep -Fq -- '-A pkgs.aosBazelContractsLauncher ' "$AOS_DEV_TEST_LOG"
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family contracts rust-project //example:contracts
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/aos/release/aos-release-format><--rust-project-package><crates/aos/modules/aos-module-docs><--rust-project-package><crates/aos/packages/aos-deployment-format><--rust-project-package><crates/aos/boot/aos-storage-layout><--><build><//example:contracts>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family formats build //example:formats
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:formats>"
 grep -Fq -- '-A pkgs.aosBazelFormatsLauncher ' "$AOS_DEV_TEST_LOG"

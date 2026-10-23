@@ -7,6 +7,7 @@ CRATES = {
     "ed25519-dalek": "@aos_formats_crates__ed25519-dalek-2.2.0//:ed25519_dalek",
     "flate2": "@aos_formats_crates__flate2-1.1.9//:flate2",
     "hex": "@aos_formats_crates__hex-0.4.3//:hex",
+    "humantime": "@aos_formats_crates__humantime-2.3.0//:humantime",
     "regex": "@aos_formats_crates__regex-1.12.4//:regex",
     "schemars": "@aos_formats_crates__schemars-1.2.2//:schemars",
     "semver": "@aos_formats_crates__semver-1.0.28//:semver",
