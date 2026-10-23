@@ -1882,7 +1882,14 @@ integration targets also compile at the frozen Crucible lint checkpoint;
 single changed Rust file and its source derivation. Later CLI support changes
 are checked independently.
 
-Dedicated license, provider and assembled-system gates, foreign and Wasm
+The dedicated native `gate:license-boundary` also passes at its frozen source.
+`tests/evidence/activation-crucible-license-boundary.json` records 5,566 passing
+workspace tests across 267 binaries, with 75 existing skips, followed by the
+dependency, feature, corresponding-source reconstruction, and offline archived
+plugin checks. This checkpoint covers the earlier Crucible and CLI changes;
+later application changes retain their own qualification.
+
+Dedicated provider and assembled-system gates, foreign and Wasm
 execution, compiler invocation equivalence, numeric performance acceptance,
 production migration, and Cargo removal remain separate qualification.
 
