@@ -1514,6 +1514,12 @@ in
                         "$f" 2>/dev/null || true
                     done
 
+                  ${lib.optionalString (builtins.compareVersions version "9.0.0" >= 0) ''
+                    # Run after path substitution so the pinned shell is not rewritten twice.
+                    # Workspace status uses CommandBuilder independently of the rule shell.
+                    ${buildPython3}/bin/python3 ${./patch-bazel-command-shell.py} ${buildBash}/bin/bash
+                  ''}
+
                   # Patch Python bootstrap template shebang placeholder
                   sed -i "s|%shebang%|#!${buildPython3}/bin/python3|" \
                     tools/python/python_bootstrap_template.txt 2>/dev/null || true

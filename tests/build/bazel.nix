@@ -129,6 +129,7 @@ in
     protocol = import ./_bazel-protocol.nix {inherit pkgs;};
     shared = import ./_bazel-shared.nix {inherit pkgs;};
     directory-packages = import ./_bazel-directory-packages.nix {inherit pkgs;};
+    workspace-status = import ./_bazel-workspace-status.nix {inherit pkgs;};
     device = import ./_bazel-device.nix {inherit pkgs;};
     store = import ./_bazel-store.nix {inherit pkgs;};
     guest = import ./_bazel-guest.nix {inherit pkgs;};
@@ -487,6 +488,7 @@ in
             daemon.all
             crucible-cli.all
             directory-packages
+            workspace-status
             formats.all
             contracts.all
             native-foundation.all
