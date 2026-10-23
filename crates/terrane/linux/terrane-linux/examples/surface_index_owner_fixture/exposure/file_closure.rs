@@ -155,7 +155,14 @@ pub(crate) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     Ok(())
 }
 
-async fn pressure(owner: &NativeMetadataOwner, inputs: &config::Inputs) -> Result<usize> {
+/// Requests one byte beyond actual available capacity without inventing quota.
+///
+/// # Errors
+/// Preserves native eviction, policy, arithmetic and quota observation failures.
+pub(super) async fn pressure(
+    owner: &NativeMetadataOwner,
+    inputs: &config::Inputs,
+) -> Result<usize> {
     let current = owner.evict_cached(0).await?;
     let incoming = inputs
         .owner_config()?

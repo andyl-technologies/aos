@@ -15835,3 +15835,29 @@ Clippy, a separate non-FUSE Tokio build check, actual native fixture compilation
 Rust formatting, supervisor syntax and diff checks. Native lifecycle execution
 remains confined to disposable ext4 VMs. Fresh runtime and mandatory application
 qualification are required for this new committed source.
+
+
+#### Original file descriptor across cold recovery
+
+The retained-exposure native scenario now has a separate whole-file control.
+It publishes the exact guarded source plaintext into genuine native sealed
+backing, grants the actual exposure descriptor, releases ordinary receipts, and
+keeps the original descriptor through strict recovery refusal, explicit funded
+recovery and a new acknowledged Resume. Both original index and file bindings,
+all pins and all lease deadlines must survive the recovery with only the
+exposure phase changed. The file must remain readable at its original inode.
+
+After final index unmap, the descriptor still prevents exposure discharge. The
+new owner must honor genuine pre-crash producer/consumer grace and retire the
+recovered body through the existing native publisher acknowledgment. Actual
+unlink must retain readable original bytes and unchanged exposure obligations.
+Only final descriptor close may release exactly its allocated blocks and one
+inode, before the separate authenticated reconciliation removes exposure policy.
+This tests named body recovery; already-unlinked file recovery remains open.
+
+The control shares the existing quota-pressure calculation and preserves every
+prior actor, assertion and timeout. The new file actor uses the existing
+120-second whole-file contract; the original whole-VM limit is unchanged. Strict
+Linux all-feature/all-target Clippy, actual fixture compilation, Rust formatting,
+supervisor syntax and diff checks pass. Fresh runtime and mandatory application
+qualification remain required; no complete task or mounted worker is accepted.

@@ -1,6 +1,6 @@
 //! Recovers new Running custody while an old exposure's real mapping survives.
 
-use super::{Result, config, limits, now, snapshot};
+use super::{Result, config, limits, now, retained_file, snapshot};
 use crate::{
     repository_fixture::{MAIN, RepositoryFixture},
     restart,
@@ -21,9 +21,15 @@ pub(crate) fn verify(
     inputs: &config::Inputs,
     policy: SurfaceIndexPolicy,
     confinement: Arc<Installed>,
+    retain_file: bool,
 ) -> Result<()> {
     let fixture = runtime.block_on(RepositoryFixture::new(&inputs.domain))?;
-    runtime.block_on(fixture.commit(b"original exposure retained across native recovery"))?;
+    let body = if retain_file {
+        retained_file::BODY
+    } else {
+        b"original exposure retained across native recovery"
+    };
+    runtime.block_on(fixture.commit(body))?;
     let selection = runtime.block_on(fixture.repository.prepare_root_read(
         &ViewTarget::Ref(MAIN.parse()?),
         fixture.authority.token(),
@@ -48,6 +54,13 @@ pub(crate) fn verify(
     let original_inode = file.metadata()?;
     let maximum = usize::try_from(original_inode.len())?;
     let mapping = MappedIndex::open(file.into(), key.root(), &seal, maximum)?;
+    let retained = if retain_file {
+        Some(runtime.block_on(retained_file::RetainedFile::prepare(
+            &owner, &fixture, &admitted, &lease,
+        ))?)
+    } else {
+        None
+    };
     let original = runtime.block_on(snapshot(inputs))?;
     let mut expected = original
         .exposures
@@ -56,7 +69,7 @@ pub(crate) fn verify(
         .cloned()
         .ok_or("original retained exposure is absent")?;
     if expected.phase != ExposurePhase::Active
-        || expected.backings.len() != 1
+        || expected.backings.len() != if retain_file { 2 } else { 1 }
         || !expected
             .backings
             .iter()
@@ -111,6 +124,9 @@ pub(crate) fn verify(
         return Err("funded recovery lost original draining custody or bypassed Resume".into());
     }
     runtime.block_on(restarted.resume_recovered(completed))?;
+    if let Some(file) = &retained {
+        file.check_readable()?;
+    }
     let running = runtime.block_on(restarted.status())?;
     if running.active_exposures != 0 || running.draining_exposures != 1 {
         return Err("new Running status omitted the retained draining exposure".into());
@@ -144,6 +160,9 @@ pub(crate) fn verify(
     if std::fs::read(&policy_path)? != before {
         return Err("physical unmap discharged policy without authenticated reconciliation".into());
     }
+    if let Some(file) = retained {
+        runtime.block_on(file.retire(&restarted, inputs, &id, generation))?;
+    }
     runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
@@ -167,8 +186,14 @@ pub(crate) fn verify(
     {
         return Err("final native closure retained an already discharged exposure".into());
     }
-    println!(
-        "PASS funded cold recovery retains actual old mapping and draining exposure through new Resume; unchanged native obligations discharge only after final unmap and authenticated closure"
-    );
+    if retain_file {
+        println!(
+            "PASS funded cold recovery re-verifies original sealed file and retains descriptor through new Resume and publisher retirement; exact inode charges release only on final closure before exposure reconciliation"
+        );
+    } else {
+        println!(
+            "PASS funded cold recovery retains actual old mapping and draining exposure through new Resume; unchanged native obligations discharge only after final unmap and authenticated closure"
+        );
+    }
     Ok(())
 }
