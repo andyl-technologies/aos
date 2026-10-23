@@ -132,6 +132,9 @@
       # This gate terminates in the admission-only initrd target, so keep the
       # unrelated system-root image cheap when the fleet harness materializes it.
       aos.image.erofsCompressionLevel = 1;
+      # The materialized runtime measures 810-823 MiB at this compression level.
+      # Match the enforcing handoff fixture without changing root partitions.
+      aos.image.budgets.maxRootMiB = 896;
     };
 
   productionModule = {
