@@ -53,6 +53,8 @@ type aos_nix_offline_prepare_exec_t;
 type aos_nix_offline_prepare_profile_t;
 type aos_nix_offline_prepare_credential_t;
 type aos_nix_offline_prepare_state_t;
+# An object label only: no domain or broad socket/file attribute membership.
+type aos_nix_offline_public_output_t;
 
 allow init_t aos_nix_offline_prepare_exec_t:file { execute execute_no_trans getattr map open read };
 # Preserve the selected hard and soft bounds. Otherwise Linux substitutes
@@ -67,10 +69,12 @@ allow aos_nix_offline_prepare_t aos_nix_offline_prepare_exec_t:file { entrypoint
 allow aos_nix_offline_prepare_t self:capability { chown dac_override };
 allow aos_nix_offline_prepare_t self:process { fork getattr getsched sigchld signal };
 allow aos_nix_offline_prepare_t init_t:fd use;
-# The selected unit supplies the journal output stream. This type-wide write
-# supports the bounded public candidate export; new init_t connections and
-# reads remain forbidden, and no private candidate bytes enter the stream.
-allow aos_nix_offline_prepare_t init_t:unix_stream_socket write;
+# PID 1 labels only the fixed unit's existing public journal stream. Linux
+# requires both file modes to survive exec, even after shutdown(SHUT_RD).
+# The preparer can use that inherited output, but cannot create or connect it.
+allow init_t aos_nix_offline_public_output_t:unix_stream_socket { connect create getattr getopt read setopt shutdown write };
+allow aos_nix_offline_public_output_t init_t:unix_stream_socket connectto;
+allow aos_nix_offline_prepare_t aos_nix_offline_public_output_t:unix_stream_socket { getattr read write };
 allow aos_nix_offline_prepare_t null_device_t:chr_file { getattr open read write };
 allow aos_nix_offline_prepare_t { root_t var_t var_lib_t var_run_t usr_t etc_t }:dir { getattr open search };
 allow aos_nix_offline_prepare_t { usr_t etc_t }:file { getattr open read };

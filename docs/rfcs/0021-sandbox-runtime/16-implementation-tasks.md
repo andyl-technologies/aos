@@ -10786,3 +10786,48 @@ shows inherited init_t journal sockets being replaced by Linux's unauthorized-FD
 flush because their file mode requests both read and write; the generic socket
 read denial remains intact. Public output delivery still needs an independently
 confined solution and actual candidate-export qualification.
+
+
+### Fixed public journal-output label (installed execution pending)
+
+The selected offline executor now labels its existing journal-output socket
+with aos_nix_offline_public_output_t before connecting it to the init_t journal
+endpoint. That label is an object only, excluded from domain and file_type.
+Only PID1 can create/connect it; the preparer can inherit its read/write file
+modes but cannot create, connect, listen or change it. Foreign Sandbox roles
+remain denied. The former preparer-to-init_t generic socket write grant is
+removed, and both generic read and write are checked as forbidden.
+
+The fixed unit explicitly selects journal stdout and inherited stderr. Its
+literal name and exact non-ignored SELinux context select the label, without a
+new helper process, descriptor, socket activation unit or storage sink. Failed
+label entry, creation or restoration terminates that executor without logging
+or unwinding under an unknown creation context. The context must start and
+finish unset. A journal connection failure also refuses the fixed service
+instead of silently falling back to null. Ordinary units retain their existing
+journal behavior.
+
+The actual production label-owner header passes strict C17 tests with SELinux
+support both enabled and disabled at
+`/nix/store/04ggq81kqkx6pam6nsiv3qmf99q0y5xy-aos-offline-public-output-unit`.
+Tests exercise literal unit selection, wrong/ignored contexts, loader/feature
+refusal, foreign initial context, set/socket/reset/readback failures, foreign
+restored context, and the successful exact set/create/reset/readback sequence.
+All 154 effective-policy checker tests pass. The complete AOS systemd package
+build passes at
+`/nix/store/c9byc379agz21m6p592fhcj5ncchkppd-systemd-261.2`, including these
+same source tests and the output-label check in its installed executor.
+The hardware profile rejects null output or an independent stderr stream and
+checks their actual rendered lines. Full compiled-policy, profile build and
+installed candidate/history exports remain pending; no
+hardware, method-46 or public lifecycle gate is opened by these component tests.
+
+The preceding selected-limit inheritance change passes all 152 checker tests.
+
+
+The installed preparation test also temporarily replaces the public journal
+socket pathname, retaining and restoring its live original in a finally block.
+The actual fixed service must fail at executor EXIT_STDOUT=209 before its
+private directory exists and export no candidate. After restoration, the same
+ordinary start must export the real candidate; all prior reboot, replacement
+and private-read refusals remain. These installed assertions are pending.

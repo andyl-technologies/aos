@@ -113,6 +113,8 @@ in {
           && (service.ExtraFileDescriptorNames or []) == []
           && (service.FileDescriptorStoreMax or null) == 0
           && (service.Restart or null) == "no"
+          && (service.StandardOutput or null) == "journal"
+          && (service.StandardError or null) == "inherit"
           && (service.CapabilityBoundingSet or null) == ["CAP_CHOWN" "CAP_DAC_OVERRIDE"]
           && (service.AmbientCapabilities or null) == ""
           && (service.NoNewPrivileges or null) == true
@@ -168,6 +170,8 @@ in {
           Type = "exec";
           ExecStart = command;
           Restart = "no";
+          StandardOutput = "journal";
+          StandardError = "inherit";
           User = "root";
           Group = "root";
           SupplementaryGroups = "";

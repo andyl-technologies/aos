@@ -39,6 +39,7 @@ OFFLINE_PREPARE_EXECUTABLE = "aos_nix_offline_prepare_exec_t"
 OFFLINE_PREPARE_PROFILE = "aos_nix_offline_prepare_profile_t"
 OFFLINE_PREPARE_CREDENTIAL = "aos_nix_offline_prepare_credential_t"
 OFFLINE_PREPARE_STATE = "aos_nix_offline_prepare_state_t"
+OFFLINE_PUBLIC_OUTPUT = "aos_nix_offline_public_output_t"
 OFFLINE_HELPER = "aos_nix_offline_tpm_helper_t"
 OFFLINE_HELPER_EXECUTABLE = "aos_nix_offline_tpm_helper_exec_t"
 RUNTIME_PUBLISHER = "aos_runtime_deployment_publisher_t"
@@ -461,7 +462,6 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         Access(OFFLINE_PREPARE, OFFLINE_PREPARE, "capability", "chown"),
         Access(OFFLINE_PREPARE, OFFLINE_PREPARE, "capability", "dac_override"),
         Access(OFFLINE_PREPARE, "init_t", "fd", "use"),
-        Access(OFFLINE_PREPARE, "init_t", "unix_stream_socket", "write"),
         Access(OFFLINE_PREPARE, "init_t", "system", "status"),
         Access(OFFLINE_PREPARE, "systemd_unit_t", "service", "status"),
         Access(OFFLINE_PREPARE_CREDENTIAL, "tmpfs_t", "filesystem", "associate"),
@@ -470,6 +470,27 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         OFFLINE_PREPARE, OFFLINE_PREPARE_EXECUTABLE, "file",
         ("entrypoint", "execute", "getattr", "map", "open", "read"),
     ))
+    positive.extend(accesses(
+        "init_t", OFFLINE_PUBLIC_OUTPUT, "unix_stream_socket",
+        ("connect", "create", "getattr", "getopt", "read", "setopt", "shutdown", "write"),
+    ))
+    positive.append(Access(OFFLINE_PUBLIC_OUTPUT, "init_t", "unix_stream_socket", "connectto"))
+    positive.extend(accesses(
+        OFFLINE_PREPARE, OFFLINE_PUBLIC_OUTPUT, "unix_stream_socket", ("getattr", "read", "write"),
+    ))
+    negative.extend(accesses(
+        OFFLINE_PREPARE, OFFLINE_PUBLIC_OUTPUT, "unix_stream_socket",
+        ("accept", "bind", "connect", "connectto", "create", "listen", "setopt", "shutdown"),
+    ))
+    for source in all_roles:
+        negative.extend(accesses(source, OFFLINE_PUBLIC_OUTPUT, "process", ("transition", "dyntransition")))
+        if source not in ("init_t", OFFLINE_PREPARE):
+            negative.extend(accesses(
+                source, OFFLINE_PUBLIC_OUTPUT, "unix_stream_socket",
+                ("accept", "bind", "connect", "connectto", "create", "getattr", "getopt",
+                 "listen", "read", "setopt", "shutdown", "write"),
+            ))
+
     for reader in (OFFLINE_PREPARE, "init_t"):
         positive.extend(accesses(reader, OFFLINE_PREPARE_PROFILE, "file", file_read))
     positive.extend(accesses(OFFLINE_PREPARE, OFFLINE_PREPARE_CREDENTIAL, "file", file_read))
@@ -508,7 +529,7 @@ def matrix(Access, Transition, accesses, ordinary_domains):
     negative.append(Access(OFFLINE_PREPARE, "*", "file", "execute_no_trans"))
     negative.append(Access(OFFLINE_PREPARE, OFFLINE_PREPARE, "process", "transition"))
     negative.extend(accesses(
-        OFFLINE_PREPARE, "init_t", "unix_stream_socket", ("connectto", "read"),
+        OFFLINE_PREPARE, "init_t", "unix_stream_socket", ("connectto", "read", "write"),
     ))
     negative.append(Access(OFFLINE_PREPARE, "aos_method46_tpm_device_t", "chr_file", "open"))
     for target in ("cgroup_t", "sysctl_kernel_t"):

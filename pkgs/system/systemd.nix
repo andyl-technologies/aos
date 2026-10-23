@@ -320,6 +320,7 @@ in
       ./patches/0035-merged-usr-immutable-image-paths.patch
       ./patches/0036-select-sandbox-resource-unit-families.patch
       ./patches/0037-account-view-root-preparation.patch
+      ./patches/0038-confine-offline-public-output.patch
     ];
 
     buildDeps = [
@@ -436,6 +437,7 @@ in
       {
         name = "configure";
         script = ''
+                  cp ${./aos-offline-public-output.h} src/core/aos-offline-public-output.h
                   # Ensure meson's Python module, pefile, and pyelftools
                   # are findable both at meson-configure time and when
                   # ninja later invokes patched python3 scripts (e.g.
@@ -646,6 +648,17 @@ in
           '';
       }
       {
+        name = "check-aos-offline-public-output";
+        script = ''
+          for selinux_enabled in 0 1; do
+            $CC -std=c17 -Wall -Wextra -Werror \
+              -DHAVE_SELINUX=$selinux_enabled -I../src/core \
+              ${./tests/offline-public-output.c} -o test-aos-offline-public-output
+            ${lib.optionalString (!stdenv.isCross) "./test-aos-offline-public-output"}
+          done
+        '';
+      }
+      {
         name = "install";
         # DESTDIR=/ satisfies systemd's "test -n $DESTDIR" guard that skips
         # live-system mutations during packaging.  With --prefix=$out, all
@@ -659,6 +672,11 @@ in
           # authenticated switch-root guard; enforce it on the installed ELF.
           ${grep}/bin/grep -aFq 'Cannot open authenticated AOS root-handoff guard' \
             "$out/lib/systemd/systemd"
+
+          # The fixed public-output label must be in the installed executor,
+          # not only in an unapplied patch or its isolated state-machine test.
+          ${grep}/bin/grep -aFq 'aos_nix_offline_public_output_t' \
+            "$out/lib/systemd/systemd-executor"
 
           # This target realizes the provider-neutral boot-integrity-failure
           # milestone for the selected systemd boot platform.

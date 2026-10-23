@@ -613,6 +613,7 @@ class EffectivePolicyTest(unittest.TestCase):
             + len(effective_policy.POSITIVE_ACCESS)
             + len(effective_policy.NEGATIVE_ACCESS)
             + 4  # Two closed delivery sets and two source attribute cuts.
+            + 2  # Public output is neither a domain nor a broad file type.
             + 8,  # Three namespace, four pidfs and one state ioctl cells.
         )
 
@@ -800,6 +801,43 @@ class EffectivePolicyTest(unittest.TestCase):
                 policy.allows[access] = [FakeRule("unexpected helper re-exec")]
 
                 with self.assertRaisesRegex(ValueError, "forbidden allow exists"):
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
+    def test_offline_output_requires_the_inherited_public_stream(self) -> None:
+        owner = effective_policy.owner_policy
+        for source, target, permissions in (
+            ("init_t", owner.OFFLINE_PUBLIC_OUTPUT,
+             ("connect", "create", "getattr", "getopt", "read", "setopt", "shutdown", "write")),
+            (owner.OFFLINE_PUBLIC_OUTPUT, "init_t", ("connectto",)),
+            (owner.OFFLINE_PREPARE, owner.OFFLINE_PUBLIC_OUTPUT, ("getattr", "read", "write")),
+        ):
+            for permission in permissions:
+                with self.subTest(source=source, permission=permission):
+                    self.assert_missing_allow_rejected(
+                        effective_policy.Access(source, target, "unix_stream_socket", permission)
+                    )
+
+    def test_offline_output_cannot_become_generic_ipc_or_a_process(self) -> None:
+        owner = effective_policy.owner_policy
+        for access in (
+            effective_policy.Access(owner.OFFLINE_PREPARE, "init_t", "unix_stream_socket", "read"),
+            effective_policy.Access(owner.OFFLINE_PREPARE, "init_t", "unix_stream_socket", "write"),
+            effective_policy.Access(owner.OFFLINE_PREPARE, owner.OFFLINE_PUBLIC_OUTPUT, "unix_stream_socket", "create"),
+            effective_policy.Access(owner.OFFLINE_HELPER, owner.OFFLINE_PUBLIC_OUTPUT, "unix_stream_socket", "read"),
+            effective_policy.Access("aos_sandbox_controller_t", owner.OFFLINE_PUBLIC_OUTPUT, "unix_stream_socket", "write"),
+            effective_policy.Access("init_t", owner.OFFLINE_PUBLIC_OUTPUT, "process", "transition"),
+        ):
+            with self.subTest(access=access):
+                self.assert_forbidden_allow_rejected(access)
+
+        for attribute in ("domain", "file_type"):
+            with self.subTest(attribute=attribute):
+                policy = self._storage_policy()
+                if attribute == "file_type":
+                    policy.file_types.add(owner.OFFLINE_PUBLIC_OUTPUT)
+                else:
+                    policy.attributes[attribute].add(owner.OFFLINE_PUBLIC_OUTPUT)
+                with self.assertRaisesRegex(ValueError, "offline public output inherited"):
                     effective_policy.check_policy(FAKE_SETOOLS, policy)
 
     def test_offline_preparer_preserves_only_manager_limit_inheritance(self) -> None:

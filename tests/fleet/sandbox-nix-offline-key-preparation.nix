@@ -211,6 +211,35 @@ in {
         timeout=30,
     )
 
+    # Missing public output must refuse before the preparer creates private
+    # candidates. Preserve the live journal socket and restore it even on error.
+    journal_socket = "/run/systemd/journal/stdout"
+    saved_socket = "/run/systemd/journal/aos-offline-output-test-saved"
+    vm.succeed(
+        f"test -S {journal_socket} && test ! -e {saved_socket} && "
+        f"${pkgs.coreutils}/bin/mv {journal_socket} {saved_socket}"
+    )
+    try:
+        placeholder = (
+            "import os; "
+            f"fd = os.open({journal_socket!r}, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600); "
+            "os.close(fd)"
+        )
+        vm.succeed(f"{python} -c {shlex.quote(placeholder)}")
+        vm.fail(f"systemctl start {unit}")
+        # EXIT_STDOUT belongs to the real executor, before the selected ELF.
+        vm.wait_until_succeeds(
+            f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 209"
+        )
+        vm.succeed(f"test ! -e {root}")
+        assert public_candidate_exports() == []
+    finally:
+        vm.succeed(
+            f"${pkgs.coreutils}/bin/rm -f {journal_socket} && "
+            f"${pkgs.coreutils}/bin/mv {saved_socket} {journal_socket}"
+        )
+        vm.execute(f"systemctl reset-failed {unit}")
+
     vm.succeed(f"systemctl start {unit}")
     vm.wait_until_succeeds(
         f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 0 && "

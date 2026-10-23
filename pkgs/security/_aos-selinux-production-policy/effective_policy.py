@@ -1713,6 +1713,11 @@ def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False
         if source in members:
             raise ValueError(f"Storage credential source inherited {attribute}")
         evidence.append(f"deny-attribute\t{source}\t{attribute}")
+    for attribute, members in (("domain", domains), ("file_type", file_types)):
+        output = owner_policy.OFFLINE_PUBLIC_OUTPUT
+        if output in members:
+            raise ValueError(f"offline public output inherited {attribute}")
+        evidence.append(f"deny-attribute\t{output}\t{attribute}")
     guest_file_policy.validate_names(policy, file_types)
     for object_type in GUARDED_OBJECT_TYPES:
         if object_type in file_types:

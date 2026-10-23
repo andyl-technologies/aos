@@ -24,6 +24,12 @@
       })
     ];
   };
+  withoutPublicOutput = offline.machines.vm.system.extendModules {
+    modules = [{systemd.services.aos-sandbox-nix-floor-provision.serviceConfig.StandardOutput = lib.mkForce "null";}];
+  };
+  withIndependentErrorStream = offline.machines.vm.system.extendModules {
+    modules = [{systemd.services.aos-sandbox-nix-floor-provision.serviceConfig.StandardError = lib.mkForce "journal";}];
+  };
   caseFor = command: let
     system = offline.machines.vm.system.extendModules {
       modules = [{aos.sandbox.nixOfflinePrepare.command = command;}];
@@ -39,9 +45,13 @@
     assert !accepts withoutFunding;
     assert !accepts withoutInstallationOwner;
     assert !accepts withOnlineSubdivision;
+    assert !accepts withoutPublicOutput;
+    assert !accepts withIndependentErrorStream;
     assert builtins.all (check: check.assertion) cfg.assertions;
     assert service.DeviceAllow == ["/dev/tpmrm0 rw"];
     assert service.PrivateDevices == false;
+    assert service.StandardOutput == "journal";
+    assert service.StandardError == "inherit";
     assert cfg.aos.sandbox.resourceBank.policy != null;
     assert cfg.environment.etc."aos/resource-bootstrap-v1".source
     == "${cfg.aos.sandbox.resourceBank._imagePolicy}/bootstrap.bin";
@@ -80,6 +90,8 @@ in
             f"OpenFile={profile_path}:aos-nix-offline-prepare-profile:read-only\n"
         ).encode()
         assert unit.splitlines(keepends=True).count(original) == 1
+        assert unit.splitlines().count(b"StandardOutput=journal") == 1
+        assert unit.splitlines().count(b"StandardError=inherit") == 1
         measured = unit.replace(
             original,
             b"OpenFile=@AOS_NIX_OFFLINE_PREPARE_PROFILE@:aos-nix-offline-prepare-profile:read-only\n",
