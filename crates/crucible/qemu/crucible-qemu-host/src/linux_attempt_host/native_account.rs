@@ -21,9 +21,7 @@ use crucible_host_resources::host_supervision::{
     HostOperationGuard, HostOperationSupervisor, HostSupervisionError,
 };
 #[cfg(feature = "private-measurement-domain")]
-use crucible_host_resources::measurement_origin::{
-    AuthenticatedActorFamily, MeasurementOriginError,
-};
+use crucible_host_resources::measurement_origin::{AuthenticatedActorFamily, MeasurementOriginError};
 
 /// Refuses certified account publication without substituting an original.
 #[derive(Debug, thiserror::Error)]
@@ -416,7 +414,7 @@ impl OriginalNativeAccountCredit {
                 .as_ref()
                 .ok_or(OriginalActorAccountError::Unavailable)?;
             process.verify_original_actor_family(family)?;
-            return self.require_original();
+            self.require_original()
         }
         #[cfg(not(feature = "private-measurement-domain"))]
         Err(OriginalActorAccountError::Unavailable)

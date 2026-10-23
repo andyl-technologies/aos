@@ -655,8 +655,8 @@ impl OriginalSourceSupervision {
             action.observation.row_count
         };
         let mut held = std::array::from_fn::<_, 4, _>(|_| None);
-        for index in 0..count as usize {
-            held[index] = Some(
+        for (index, holder) in held.iter_mut().enumerate().take(count as usize) {
+            *holder = Some(
                 self.publisher.action_loans[index]
                     .lock()
                     .map_err(|_| HostSupervisionError::Unavailable)?,

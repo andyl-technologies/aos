@@ -868,6 +868,21 @@ their original order. All five existing preexec controls pass; focused
 formatting passes and the strict Host command reports 715 remaining findings.
 The mandatory application build for this grouping is running.
 
+The remaining simple control-flow findings now use the same final original
+check, ordered action-loan iteration and direct fresh-node error propagation.
+All 27 existing native-account and action controls pass, focused formatting and
+engineering hygiene pass, and strict Host findings are down to 712. There are
+no new lint exceptions; retained error sizes and other required gate failures
+remain unresolved. Mandatory application compilation is running.
+
+The missing-helper-cause correction passes application-target compilation at
+`bcikwrhnzsr5in369zllhill83qwv1qf`; the refusal adapters pass at
+`4v0145697ak7llgcbfbwhiizy1360vbg`; the cleanup retry cadence passes at
+`6xk8qyq86jir9q6vsv6r85x149zh1xmi`; and the prepaid refusal carrier passes at
+`hjjw1p5mdgwlcffmw5d2whylx16nvd9i`. Their previously verified committed
+Rust/TOML inputs and fixture/license correspondence remain exact. These are
+compilation results, not a native launch or complete RFC qualification.
+
 The preceding refusal-carrier revision passes all 404 counted supervision
 cases at `ki9kfmxkqzv7n56wmyx46zj3fxqdsw4j`. This is component evidence,
 not qualification of the missing native Source issuer or complete RFC.

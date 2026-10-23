@@ -752,7 +752,7 @@ pub(super) fn launch_guarded_source_placed(
         )));
     }
     let launch_config = config.clone().with_run_directory(source_directory.path());
-    let node = match launch_qemu_production_fresh_node(
+    let node = launch_qemu_production_fresh_node(
         &launch_config,
         QemuProductionFreshLaunchAdmission::admit(
             &launch_config,
@@ -764,10 +764,7 @@ pub(super) fn launch_guarded_source_placed(
                 crash_detector: "live-hot-fork-child",
             },
         )?,
-    ) {
-        Ok(node) => node,
-        Err(error) => return Err(error),
-    };
+    )?;
     let source_vmstate_path = source_directory.path().join(DEFAULT_VMSTATE_FILE_NAME);
     Ok(GuardedSource {
         factory,
