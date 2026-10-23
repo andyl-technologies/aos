@@ -4,6 +4,7 @@
 //! remain the same unused precharged allocations; no Capture cut is bound and
 //! no model, Control, report or protocol bytes are copied by this walk.
 
+use super::capture_candidate::NativeCaptureCandidateInputs;
 use super::*;
 use crate::client::DeadlineStream;
 use crate::connection::NativeCaptureSdkCompletedQuote;
@@ -326,13 +327,15 @@ impl PacketEndpoint<DeadlineStream> {
             (quoted, preparation, record)
         };
         let candidate_owner = super::capture_candidate::quote_original_candidate_owner(
-            connection,
-            uploads,
-            &context,
-            native,
-            request,
-            &sdk,
-            &currency,
+            NativeCaptureCandidateInputs {
+                connection,
+                blobs: uploads,
+                context: &context,
+                native,
+                original: request,
+                sdk: &sdk,
+                currency: &currency,
+            },
             &report_shape,
             &future_capture_request,
             &complete.metadata_birth_facts.ok_or_else(refused)?,
@@ -578,6 +581,8 @@ pub(crate) fn original_capture_report_quote_layout_data() -> usize {
     )>() + std::mem::size_of::<[usize; 6]>()
         + std::mem::size_of::<std::array::IntoIter<usize, 6>>()
         + std::mem::size_of::<Option<usize>>()
+        // Price the defining candidate walk before borrowing its live roots.
+        + super::capture_candidate::counter_scratch_data()
         + std::mem::size_of::<usize>()
         + crate::reference_packet::service::ack_emitter::original_native_report_startup_scope_layout_data();
     [

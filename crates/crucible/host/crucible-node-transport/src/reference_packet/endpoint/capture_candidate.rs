@@ -83,31 +83,76 @@ fn encoding_sum(parts: &[&NativeSerializationStorageData]) -> Result<usize, Prov
     })
 }
 
+/// Borrows the actual current owners used by the fourth-owner projection.
+///
+/// The loan exposes no allocation or Capture permission. The defining quote
+/// still authenticates both the SDK and Control currency around the full walk.
+pub(super) struct NativeCaptureCandidateInputs<'a, 'context> {
+    pub(super) connection: &'a Connection<crate::client::DeadlineStream>,
+    pub(super) blobs: &'a BlobReceiver,
+    pub(super) context: &'a OriginalNativeCaptureContext<'context>,
+    pub(super) native: &'a PacketControl,
+    pub(super) original: &'a Envelope,
+    pub(super) sdk: &'a NativeCaptureSdkCompletedQuote,
+    pub(super) currency: &'a PacketLiveCaptureControlCurrency,
+}
+
+/// Quotes the defining current-owner loan and candidate projection controls.
+///
+/// The startup preflight and returned candidate row use the same declaration.
+/// These fixed layouts exclude compiler frames and retain every independently
+/// borrowed metadata window; a numeric quote supplies no Capture permission.
+pub(super) fn counter_scratch_data() -> usize {
+    use std::mem::{size_of, size_of_val};
+
+    let controls = [
+        BorrowedCompactBytes::requested_serialization_scratch_bytes(),
+        crate::retained_metadata::original_metadata_observer_layout_bytes() * 2,
+        size_of::<NativeCaptureCandidateOwnerData>(),
+        size_of::<NativeCaptureCandidateInputs<'static, 'static>>() * 2,
+        size_of::<crate::retained_metadata::RetainedProtocolMetadataFacts>() * 2,
+        size_of::<crate::protocol_snapshot::compact_bytes::CompactBytesSerializationLayoutData>(),
+        size_of::<Option<usize>>() * 4,
+        size_of::<Result<usize, ProviderError>>(),
+        size_of::<usize>() * 4,
+    ];
+    let views = size_of_val(&controls)
+        + size_of::<&[usize]>() * 2
+        + size_of::<std::slice::Iter<'static, usize>>()
+        + size_of::<std::iter::Copied<std::slice::Iter<'static, usize>>>();
+
+    controls
+        .iter()
+        .copied()
+        .try_fold(views, usize::checked_add)
+        .unwrap_or(usize::MAX)
+}
+
+/// Quotes the next Capture owner's requested storage from its original roots.
+///
+/// # Errors
+/// Refuses mismatched SDK or Control currency, invalid report geometry,
+/// arithmetic overflow or an independently insufficient requested bound.
 pub(super) fn quote_original_candidate_owner(
-    connection: &Connection<crate::client::DeadlineStream>,
-    blobs: &BlobReceiver,
-    context: &OriginalNativeCaptureContext<'_>,
-    native: &PacketControl,
-    original: &Envelope,
-    sdk: &NativeCaptureSdkCompletedQuote,
-    currency: &PacketLiveCaptureControlCurrency,
+    inputs: NativeCaptureCandidateInputs<'_, '_>,
     report: &NativeCaptureReportProjectionData,
     capture: &NativeProjectedCaptureRequestData,
     metadata: &PacketNative5ProtocolMetadataBirthFacts,
     maximum: usize,
 ) -> Result<NativeCaptureCandidateOwnerData, ProviderError> {
+    let NativeCaptureCandidateInputs {
+        connection,
+        blobs,
+        context,
+        native,
+        original,
+        sdk,
+        currency,
+    } = inputs;
+
     currency.authenticate_before_observe(native)?;
     sdk.authenticate_current(connection, blobs, context)?;
-    let declared_scratch_bytes = sum(&[
-        BorrowedCompactBytes::requested_serialization_scratch_bytes(),
-        crate::retained_metadata::original_metadata_observer_layout_bytes(),
-        crate::retained_metadata::original_metadata_observer_layout_bytes(),
-        std::mem::size_of::<NativeCaptureCandidateOwnerData>(),
-        2 * std::mem::size_of::<crate::retained_metadata::RetainedProtocolMetadataFacts>(),
-        std::mem::size_of::<
-            crate::protocol_snapshot::compact_bytes::CompactBytesSerializationLayoutData,
-        >(),
-    ])?;
+    let declared_scratch_bytes = counter_scratch_data();
     if declared_scratch_bytes > maximum {
         return Err(exhausted());
     }
@@ -152,7 +197,8 @@ pub(super) fn quote_original_candidate_owner(
             .maximum_base64_bytes
             .checked_sub(compact.final_encoded_chunk_bytes)
             .ok_or_else(exhausted)?
-            / compact.full_chunks;
+            .checked_div(compact.full_chunks)
+            .ok_or_else(exhausted)?;
         for _ in 0..compact.full_chunks {
             layout.add_unescaped_ascii_extent(full_chunk_extent)?;
         }
