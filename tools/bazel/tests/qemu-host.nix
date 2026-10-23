@@ -4,6 +4,7 @@
 in
   (import ../../../tests/build/_bazel-qemu-host.nix {inherit pkgs;})
   // {
+    cross-linux = import ../../../tests/build/_bazel-qemu-host-cross.nix {inherit pkgs;};
     conservative = import ../../../tests/build/_bazel-qemu-host.nix {
       inherit pkgs;
       sourceInventory = null;

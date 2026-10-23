@@ -1323,7 +1323,16 @@ all 841 cases in both configurations, with four existing ignored cases and
 15 libtest artifacts each. External features match all 107 Cargo identities.
 Developer checks and production license closures pass. Editor parity preserves
 the same 27 selected-package diagnostics as Cargo; it does not claim complete
-inference. Foreign execution and production migration remain pending.
+inference. Production migration remains pending.
+
+`tests/evidence/aarch64-linux-qemu-host-compilation.json` records all 15 foreign
+test artifacts compiling with AArch64 ELF headers and the expected Rust flags.
+The `cross-linux` check qualifies compilation. Its separate
+`cross-linux.runtime-probe` remains available for platform work: the full guest
+run failed 46 unit cases, including rejection by the existing x86_64-only
+shared-memory ABI and an unresolved trace-inode assertion. Failure details are
+retained. Foreign runtime parity is not qualified, and the probe is outside the
+passing aggregate. The ABI restriction and test inventory remain intact.
 
 ## S3 adapter baseline
 
