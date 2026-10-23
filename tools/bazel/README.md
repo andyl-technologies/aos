@@ -1463,6 +1463,11 @@ Its existing assertions remain unchanged. The full feature, editor, developer,
 and workspace Rust qualification builds are still running at this checkpoint.
 Production migration remains pending.
 
+`tests/evidence/crucible-cli-metadata-evaluation.json` records passing metadata
+parity for 291 compiled first-party targets and the core Nix evaluation checks.
+It retains the complete metadata report for the frozen CLI checkpoint before
+the format library conversion.
+
 ## AOS format library baselines
 
 `tests/evidence/formats-cargo-feature-baselines.json` retains the connected
