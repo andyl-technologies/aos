@@ -432,8 +432,10 @@ fn canonical_display_hash_admits_scratch_before_formatting() -> Result<(), Box<d
         }
     }
 
-    let authority = authority(512);
-    let budget = DecodeBudget::new(authority.clone(), 512)?;
+    // Leave finite formatting space after the complete diagnostic bank is paid.
+    let maximum = 768;
+    let authority = authority(maximum);
+    let budget = DecodeBudget::new(authority.clone(), maximum)?;
     let initial = authority.used.load(Ordering::SeqCst);
     let calls = AtomicU64::new(0);
     let peak = AtomicU64::new(0);
@@ -455,7 +457,7 @@ fn canonical_display_hash_admits_scratch_before_formatting() -> Result<(), Box<d
     assert_eq!(authority.used.load(Ordering::SeqCst), initial);
     assert!(budget.failure()?.is_none());
 
-    let held = budget.reserve_scratch_bytes(512 - initial)?;
+    let held = budget.reserve_scratch_bytes(maximum - initial)?;
     let result = crate::ContentHash::from_canonical_display("display-test", &material);
 
     assert!(matches!(
@@ -464,7 +466,7 @@ fn canonical_display_hash_admits_scratch_before_formatting() -> Result<(), Box<d
     ));
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert!(budget.failure()?.is_some());
-    assert_eq!(authority.used.load(Ordering::SeqCst), 512);
+    assert_eq!(authority.used.load(Ordering::SeqCst), maximum);
 
     drop(scope);
     drop(held);

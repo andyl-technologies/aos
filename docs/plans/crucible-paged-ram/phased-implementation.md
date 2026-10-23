@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 537 bindings: 518 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 539 bindings: 520 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -1569,6 +1569,60 @@ is unchanged. The pure deadline model arms no timer and qualifies no process
 cleanup; complete live guard wiring and a fresh sealed plan remain unexecuted.
 
 
+The subsequent unexecuted plan
+`e6d216d548381778ea9f44368eb4d03238c760adce4a5e2b45296360ecff5610`
+is preserved after source review identifies a live timer gap: compiler entry
+could restore the outer evidence deadline rather than the original request cap.
+No worker runs under that plan. The separately sealed successor
+`566ecf1a46db0ad1446c01fd7574be955d4370f84ad937c4f765b7cece8f36b4`
+passes independent authentication of 239 payloads, 3,838 external and ten
+reconstruction identities, 72 complete tool roots and six immutable baselines.
+All 16,445 plan controls and 359 unchanged production controls pass. Independent review
+first rejects incorrect diff-header and result-writer assumptions in its own
+verifier; both refusals are retained before the corrected full review passes.
+
+The successor binds each request to the earlier of its original launch-before
+plus 180/30 seconds and the outer evidence deadline. Its generator prefix stays
+within 30 seconds; compiler entry preserves the same original request deadline.
+Actual signal expiry and late return refuse in every phase. Cleanup receives
+only its distinct original absolute reserve and cannot grant another request.
+Independent direct return, cleanup, descriptor readiness and final close remain
+separate observations. One original bounded compile/transform/link invocation
+was authorized under this exact manifest. Its original worker returns 1 after
+188 actual operations return 0: configure, thirteen graph queries and 174
+accepted scheduled edges. Guard setup refuses the generated Meson launcher's
+unowned `/bin/sh` before edge 176 is launched. There is no partial fixture
+object, transform, archive or final executable. The complete invocation and
+final evidence take 327.349 seconds within the original 5,400-second limit.
+
+The signed original result
+`9bdb27d28914a5994f082e6015bda0ac9bee7a30840b27f51f93b34566247083`
+passes independent authentication of all 46 payloads, full 6,991-path execution
+and 86,117-path reconstruction archives, 72 tool roots and six unchanged
+baselines. All 190 actual cleanup cuts report empty children and ECHILD without
+signals, waits, adoptions or errors. All 1,681 aggregate and 2,806 self samples
+stay within the original six-GiB bound. The verifier first retains its own
+obsolete canonical-source expectation; the corrected complete review checks the
+previously approved, exact prepared version-script shebang delta and passes.
+The failed invocation is preserved; no replacement invocation is authorized.
+
+The source-only generated-interpreter diagnosis
+`80b734b2856831a52f8d27839f62e21496dc8eab70fbcb178822ddcdf55a77e5`
+passes independent review of all 103 payloads, 269 actual inputs, 68 genuine
+producer/template controls, 1,625 complete diagnostic role rows and 1,926 graph
+field occurrences. Both pinned distlib producers generate a shell trampoline
+for the 167-byte venv Python coordinate. All fifteen generated entry scripts
+match their complete registered templates and definitions. Fourteen of the
+fifteen original nominated interpreters authenticate; `/bin/sh` and its resolved
+host Bash do not. The existing guard also omits the subsequent same-PID exec
+into Python. Source and retained configure output distinguish the installed
+Meson 1.11.1 entry metadata from the selected 1.12.0 module. The verifier's first
+attempt assumes every retained input has a separate copy; its corrected review
+also authenticates the original archived process samples. No launcher rewrite,
+replacement owner, additional native run, TAP, ELF loading, profile activation
+or native issuance is established by this diagnosis.
+
+
 The service-client ownership contracts pass mandatory application-target
 compilation at `wx20fkrpphs9zk5lrwlg7kx10d84x8b9`. Before later edits, all
 5,389 committed Rust/TOML inputs and six required fixtures independently matched
@@ -1685,8 +1739,41 @@ credit through the final error alias. The inventory passes at
 148 uncovered and zero fully qualified. The hermetic store-transfer gate passes
 all 29 exact cases at `w6vzv4qfnpgaai19siaabnrhcmkmnv0w`. The full store
 suite passes 691 tests with three costly 512 MiB cases explicitly excluded; all
-686 engine tests pass. Host and policy checks remain pending. These component
-diagnostics issue no Main, Source or native authority.
+686 engine tests pass. The host retains 1,385 passes, the same eight genuine
+helper-custody failures and four ignored tests. All ninety testing-standard and
+five hygiene controls pass. Strict Clippy retains 674 library and 723 test-target
+errors, with fourteen and five warnings. Mandatory application-target compilation
+remains pending for this increment. These component diagnostics issue
+no Main, Source or native authority.
+
+
+B-tree multiplication and node-overlap overflow now use the explicit admitting
+account's preborn diagnostic storage. An independently installed codec scope
+cannot redirect that credit. Standalone geometry queries retain their existing
+unscoped error path; typed layout and conversion errors also retain their
+existing behavior. The original first sticky failure, message text and typed
+accounting cause remain intact. The enlarged holder is reserved before birth;
+errors retain its original credit independently of the closed account.
+
+All fifteen focused account controls pass with the actual allocator installed.
+Restoring the two former allocating arithmetic-error paths makes exactly two
+controls fail; exact restoration passes all fifteen. The node control constructs
+no huge value: it measures valid type layouts whose doubled overlap overflows,
+under a foreign thread scope, and observes no allocations or credit growth.
+Both controls verify the final error's retained loan. The inventory passes at
+`qlm83f0w5107na7x181hsa3yar76jlg5`: 539 bindings, 243 requirements,
+148 uncovered and zero fully qualified. The hermetic storage-transfer gate
+passes all 31 exact cases at `rrwc61q59ds95apig67bkmf0rwpqk4sj`. The full store suite passes 692
+tests, with three costly 512 MiB cases explicitly excluded. The first engine
+run has 685 passes and one finite formatting fixture that cannot admit scratch
+space after paying for the enlarged bank. Its finite allowance is increased to
+768 bytes, and its refusal control still fills the complete remaining allowance
+before calling the formatter. All 686 tests pass in the corrected complete
+engine run. The host retains 1,385 passes, the same eight genuine helper-custody failures
+and four ignored tests. All ninety testing-standard and five hygiene controls
+pass. Strict Clippy retains 674 library and 723 test-target errors, with fourteen
+and five warnings. Mandatory application-target compilation remains pending.
+This component increment supplies no Main, Source or native issuance.
 
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's

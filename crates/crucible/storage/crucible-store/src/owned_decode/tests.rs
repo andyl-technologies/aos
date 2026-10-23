@@ -1,4 +1,4 @@
-//! Empty and populated scratch loans under a finite original authority.
+//! Original decode-account credit, diagnostic custody and scratch lifetimes.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -218,13 +218,45 @@ fn bulk_btree_bound_is_one_target_request_and_overflow_is_sticky()
         2 * btree_entry_bytes::<u8, ()>()? + (4 * std::mem::size_of::<ResourceLoan>()) as u64
     );
 
-    let error = budget
-        .charge_btree_entries::<u64, u64>(usize::MAX)
-        .unwrap_err();
-    assert_eq!(budget.failure()?, Some(error.clone()));
     let calls = authority.calls.load(Ordering::SeqCst);
-    assert_eq!(budget.charge_btree_entries::<u8, ()>(0), Err(error));
+    let used = authority.used.load(Ordering::SeqCst);
+    let (error, counts) =
+        crucible_host_resources::test_support::TestAllocationObserver::count(|| {
+            budget
+                .charge_btree_entries::<u64, u64>(usize::MAX)
+                .unwrap_err()
+        });
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
     assert_eq!(authority.calls.load(Ordering::SeqCst), calls);
+    assert_eq!(authority.used.load(Ordering::SeqCst), used);
+    assert_eq!(
+        error.to_string(),
+        if usize::BITS == 64 {
+            "decoded B-tree size overflow"
+        } else {
+            "decoded metadata allowance exhausted"
+        }
+    );
+    assert!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<AccountingRefusal>())
+            .is_some()
+    );
+    assert_eq!(budget.failure()?, Some(error.clone()));
+    assert_eq!(budget.charge_btree_entries::<u8, ()>(0), Err(error.clone()));
+    assert_eq!(authority.calls.load(Ordering::SeqCst), calls);
+
+    drop(budget);
+    assert_eq!(
+        authority.used.load(Ordering::SeqCst),
+        PrepaidRefusals::peak_bytes()
+    );
+    drop(error);
+    assert_eq!(authority.used.load(Ordering::SeqCst), 0);
     Ok(())
 }
 
@@ -523,6 +555,56 @@ fn vector_size_overflow_retains_the_innermost_prepaid_cause_without_allocating()
         PrepaidRefusals::peak_bytes()
     );
     drop(outer_error);
+    assert_eq!(authority.used.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn btree_node_overflow_uses_its_own_prepaid_account_under_a_foreign_scope()
+-> Result<(), DecodeAdmissionError> {
+    let authority = authority();
+    let budget = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let foreign = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let foreign_initial = used_bytes(&foreign)?;
+    let foreign_scope = foreign.enter();
+    let calls = authority.calls.load(Ordering::SeqCst);
+    let used = authority.used.load(Ordering::SeqCst);
+
+    // Both eleven-element layouts are valid; their doubled node overlap is not.
+    // No value of this type is constructed or allocated by the geometry query.
+    type LargeField = [u8; 1 << 59];
+    let (error, counts) =
+        crucible_host_resources::test_support::TestAllocationObserver::count(|| {
+            budget
+                .charge_btree_entry::<LargeField, LargeField>()
+                .unwrap_err()
+        });
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(authority.calls.load(Ordering::SeqCst), calls);
+    assert_eq!(authority.used.load(Ordering::SeqCst), used);
+    assert_eq!(error.to_string(), "decoded tree node size overflow");
+    assert!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<AccountingRefusal>())
+            .is_some()
+    );
+    assert_eq!(budget.failure()?, Some(error.clone()));
+    assert_eq!(foreign.failure()?, None);
+
+    drop(budget);
+    assert_eq!(
+        authority.used.load(Ordering::SeqCst),
+        foreign_initial + PrepaidRefusals::peak_bytes()
+    );
+    drop(error);
+    assert_eq!(authority.used.load(Ordering::SeqCst), foreign_initial);
+    drop(foreign_scope);
+    drop(foreign);
     assert_eq!(authority.used.load(Ordering::SeqCst), 0);
     Ok(())
 }

@@ -668,12 +668,7 @@ impl DecodeBudget {
     /// # Errors
     /// Refuses multiplication or pinned-toolchain node-layout overflow.
     pub fn btree_control_bytes<K, V>(count: usize) -> Result<u64, DecodeAdmissionError> {
-        if count == 0 {
-            return Ok(0);
-        }
-        btree_entry_bytes::<K, V>()?
-            .checked_mul(u64::try_from(count).map_err(DecodeAdmissionError::new)?)
-            .ok_or_else(|| refusal("decoded B-tree size overflow"))
+        btree_control_bytes::<K, V>(count, None)
     }
 
     /// Admits the audited B-tree node bound under this original account.
@@ -695,7 +690,8 @@ impl DecodeBudget {
         let result = if count == 0 {
             self.check()
         } else {
-            Self::btree_control_bytes::<K, V>(count).and_then(|bytes| self.charge_bytes(bytes))
+            btree_control_bytes::<K, V>(count, Some(&self.0.refusals))
+                .and_then(|bytes| self.charge_bytes(bytes))
         };
         if let Err(error) = &result {
             self.record_failure(error.clone());
@@ -704,7 +700,38 @@ impl DecodeBudget {
     }
 }
 
+fn btree_control_bytes<K, V>(
+    count: usize,
+    refusals: Option<&PrepaidRefusals>,
+) -> Result<u64, DecodeAdmissionError> {
+    if count == 0 {
+        return Ok(0);
+    }
+
+    btree_entry_bytes_with_refusals::<K, V>(refusals)?
+        .checked_mul(u64::try_from(count).map_err(DecodeAdmissionError::new)?)
+        .ok_or_else(|| btree_refusal(refusals, AccountRefusal::BtreeOverflow))
+}
+
+// Geometry queries have no account. Admitted operations pass their own bank,
+// independently of any other account installed in the thread's codec scope.
+fn btree_refusal(
+    refusals: Option<&PrepaidRefusals>,
+    refusal: AccountRefusal,
+) -> DecodeAdmissionError {
+    refusals.map_or_else(
+        || DecodeAdmissionError::new(refusal.diagnostic()),
+        |refusals| refusals.error(refusal),
+    )
+}
+
 pub(crate) fn btree_entry_bytes<K, V>() -> Result<u64, DecodeAdmissionError> {
+    btree_entry_bytes_with_refusals::<K, V>(None)
+}
+
+fn btree_entry_bytes_with_refusals<K, V>(
+    refusals: Option<&PrepaidRefusals>,
+) -> Result<u64, DecodeAdmissionError> {
     use std::alloc::Layout;
 
     // alloc::collections::btree::node in the pinned toolchain: LeafNode has
@@ -727,7 +754,7 @@ pub(crate) fn btree_entry_bytes<K, V>() -> Result<u64, DecodeAdmissionError> {
                 .and_then(|padding| bytes.checked_add(padding))
         })
         .and_then(|bytes| bytes.checked_mul(2))
-        .ok_or_else(|| refusal("decoded tree node size overflow"))?;
+        .ok_or_else(|| btree_refusal(refusals, AccountRefusal::TreeNodeOverflow))?;
     u64::try_from(bytes).map_err(DecodeAdmissionError::new)
 }
 

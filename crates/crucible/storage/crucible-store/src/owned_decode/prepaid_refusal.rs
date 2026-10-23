@@ -14,6 +14,8 @@ pub(super) enum AccountRefusal {
     ArrayOverflow,
     ScratchArrayOverflow,
     VectorOverflow,
+    BtreeOverflow,
+    TreeNodeOverflow,
 }
 
 impl AccountRefusal {
@@ -25,6 +27,8 @@ impl AccountRefusal {
             Self::ArrayOverflow => "decoded array size overflow",
             Self::ScratchArrayOverflow => "decoded scratch array size overflow",
             Self::VectorOverflow => "decoded vector size overflow",
+            Self::BtreeOverflow => "decoded B-tree size overflow",
+            Self::TreeNodeOverflow => "decoded tree node size overflow",
         })
     }
 }
@@ -36,6 +40,8 @@ struct RefusalStorage {
     array_overflow: AccountingRefusal,
     scratch_array_overflow: AccountingRefusal,
     vector_overflow: AccountingRefusal,
+    btree_overflow: AccountingRefusal,
+    tree_node_overflow: AccountingRefusal,
     // TerminalOwner frees this storage's shared header before returning credit.
     _credit: ResourceLoan,
 }
@@ -64,6 +70,8 @@ impl PrepaidRefusals {
                 array_overflow: AccountRefusal::ArrayOverflow.diagnostic(),
                 scratch_array_overflow: AccountRefusal::ScratchArrayOverflow.diagnostic(),
                 vector_overflow: AccountRefusal::VectorOverflow.diagnostic(),
+                btree_overflow: AccountRefusal::BtreeOverflow.diagnostic(),
+                tree_node_overflow: AccountRefusal::TreeNodeOverflow.diagnostic(),
                 _credit: credit,
             }),
         }
@@ -86,6 +94,8 @@ impl PrepaidRefusals {
             AccountRefusal::ArrayOverflow => &self.storage.array_overflow,
             AccountRefusal::ScratchArrayOverflow => &self.storage.scratch_array_overflow,
             AccountRefusal::VectorOverflow => &self.storage.vector_overflow,
+            AccountRefusal::BtreeOverflow => &self.storage.btree_overflow,
+            AccountRefusal::TreeNodeOverflow => &self.storage.tree_node_overflow,
         }
     }
 
