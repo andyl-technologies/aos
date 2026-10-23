@@ -66,8 +66,9 @@ Wasm qualification compares each deployment with a fresh Cargo build consuming
 the same declared Console assets. It checks every CDN asset byte for byte,
 validates both modules with the source-built Node runtime, compares public
 Wasm export names and kinds, and compares compiled dependency features.
-Numbered bindgen function-element trampolines encode compiler-private indices;
-each module retains its own matching generated JavaScript glue.
+Numbered bindgen function-element trampolines encode compiler-private indices
+and may carry numeric collision suffixes. Each module retains its own matching
+generated JavaScript glue.
 
 The separate KVM-backed VM gate injects the Bazel-built probe deployment into
 the existing real-workerd launcher and driver. It exercises the genuine

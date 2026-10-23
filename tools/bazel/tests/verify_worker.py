@@ -26,6 +26,14 @@ process.stdout.write(JSON.stringify(WebAssembly.Module.exports(module)));
     return {entry["name"]: entry["kind"] for entry in exports}
 
 
+def public_exports(exports):
+    """Omits bindgen function indices and their numeric collision suffixes."""
+    return {
+        name: kind for name, kind in exports.items()
+        if not re.fullmatch(r"__wasm_bindgen_func_elem_\d+(?:_\d+)?", name)
+    }
+
+
 def compare(bazel, cargo, build, node, packages, test_hooks):
     """Requires identical assets, public Wasm exports and Cargo feature units."""
     assets = {}
@@ -49,18 +57,17 @@ def compare(bazel, cargo, build, node, packages, test_hooks):
 
     # Bindgen's numbered element trampolines encode compiler-private function
     # indices. Each deployment carries its matching generated JavaScript glue.
-    public_exports = {
-        role: {name: kind for name, kind in entries.items()
-               if not re.fullmatch(r"__wasm_bindgen_func_elem_\d+", name)}
+    contracts = {
+        role: public_exports(entries)
         for role, entries in exports.items()
     }
-    if public_exports["bazel"] != public_exports["cargo"]:
+    if contracts["bazel"] != contracts["cargo"]:
         raise ValueError("Bazel/Cargo Worker Wasm export contracts differ")
     features = compare_features(build / "inventory.json", cargo / "cargo-messages.jsonl", packages,
                                 required_packages=["aos-hub-worker"])
     return {
         "status": "PASS", "bazel": str(bazel), "cargo": str(cargo), "build": str(build),
-        "assets": assets["bazel"], "exports": exports, "public_exports": public_exports["bazel"],
+        "assets": assets["bazel"], "exports": exports, "public_exports": contracts["bazel"],
         "artifacts": {role: {name: artifact(root / name) for name in ["index.wasm", "shim.mjs"]}
                       for role, root in [("bazel", bazel), ("cargo", cargo)]},
         "features": features,
