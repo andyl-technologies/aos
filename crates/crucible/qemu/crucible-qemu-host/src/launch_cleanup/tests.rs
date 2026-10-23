@@ -9,7 +9,9 @@ use std::process::Command;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use crucible_host_resources::host_services::{HostServiceAllocator, HostServiceLease};
+use crucible_host_resources::host_services::{
+    HostServiceAllocator, HostServiceLease, HostServiceLeasePair,
+};
 use crucible_host_resources::host_supervision::{HostOperationBudgets, HostOperationSupervisor};
 use crucible_host_resources::ram_policy::{HostRamMode, HostRamPolicy};
 use crucible_qemu_protocol::ram_page::{RamPageBinding, RamPageRequest};
@@ -21,6 +23,8 @@ use crucible_ram::{
 use crate::ram_control::RamControlClient;
 use crate::ram_source::{QemuRamBacking, QemuRamSourceError, QemuRamSourceService};
 
+mod allocation;
+
 struct Registrar {
     services: HostServiceAllocator,
     descriptors: Arc<Mutex<Vec<DescriptorWitness>>>,
@@ -31,6 +35,7 @@ struct Registrar {
     refuse_retirement: bool,
     quarantine_notice: Option<mpsc::Sender<()>>,
     quarantine_release: Mutex<Option<mpsc::Receiver<()>>>,
+    _funding: Option<HostServiceLeasePair>,
 }
 
 impl RamControlRegistrar for Registrar {
@@ -193,6 +198,14 @@ fn registration(
     refuse_retirement: bool,
     notice: Option<mpsc::Sender<()>>,
 ) -> (RamControlRegistration, Arc<Registrar>) {
+    registration_with_funding(refuse_retirement, notice, None)
+}
+
+fn registration_with_funding(
+    refuse_retirement: bool,
+    notice: Option<mpsc::Sender<()>>,
+    funding: Option<HostServiceLeasePair>,
+) -> (RamControlRegistration, Arc<Registrar>) {
     let services = HostServiceAllocator::new(1, 32, 1024 * 1024)
         .unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}"));
     let registrar = Arc::new(Registrar {
@@ -205,6 +218,7 @@ fn registration(
         refuse_retirement,
         quarantine_notice: notice,
         quarantine_release: Mutex::new(None),
+        _funding: funding,
     });
     (
         RamControlRegistration {

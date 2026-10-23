@@ -7,16 +7,19 @@
 //! Unpublished owners retain strong admission authority. Publication switches
 //! to independent retirement authority; closing the registry's controller prepares
 //! retirement, while final resource destruction still owns capacity discharge.
+//! The final observer frees its shared allocation before the extracted record
+//! retires custody; the original control loan is the record's last field.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crucible_host_resources::ram_policy::{HostRamTarget, HostResourceVector};
 
-use crate::ram_control::{
-    RamControlRegistrar, RamControlRegistration, RamControlRetirementAuthority,
-};
+use crate::ram_control::{RamControlRegistrar, RamControlRegistration, RamControlRetirementAuthority};
 use crucible_qemu_protocol::ram_control::RamControlError;
+
+mod retained_record;
+use retained_record::RetainedCleanupRecord;
 
 /// Retains final-close custody for one independently admitted QEMU launch.
 ///
@@ -67,13 +70,13 @@ impl QemuRamLaunchCustody {
     }
 
     pub(crate) fn same_launch(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.cleanup.inner, &other.cleanup.inner)
+        self.cleanup.inner.same_owner(&other.cleanup.inner)
     }
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct LaunchCleanup {
-    inner: Arc<CleanupRecord>,
+    inner: RetainedCleanupRecord,
 }
 
 /// Retains admitted manifest metadata and its original native cleanup authority.
@@ -118,9 +121,6 @@ struct CleanupRecord {
         >,
     >,
     #[cfg(target_os = "linux")]
-    source_control:
-        Option<crucible_host_resources::host_services::process_birth::SourceHostControlLease>,
-    #[cfg(target_os = "linux")]
     installed_incarnation: Mutex<Option<crate::linux_attempt_host::InstalledIncarnationRetirement>>,
     #[cfg(target_os = "linux")]
     target_binding: Mutex<Option<crate::linux_attempt_host::OriginalNativeNodeBinding>>,
@@ -136,6 +136,10 @@ struct CleanupRecord {
     pending_imports: AtomicUsize,
     #[cfg(target_os = "linux")]
     external_basis: Mutex<Option<crate::QemuHotForkChildProcessBasis>>,
+    // The shared allocation and every extracted physical owner close first.
+    #[cfg(target_os = "linux")]
+    source_control:
+        Option<crucible_host_resources::host_services::process_birth::SourceHostControlLease>,
 }
 
 impl std::fmt::Debug for CleanupRecord {
@@ -152,15 +156,12 @@ impl std::fmt::Debug for CleanupRecord {
 
 impl LaunchCleanup {
     pub(crate) fn retained_control_bytes() -> Option<u64> {
-        let (layout, _) = std::alloc::Layout::new::<(AtomicUsize, AtomicUsize)>()
-            .extend(std::alloc::Layout::new::<CleanupRecord>())
-            .ok()?;
-        u64::try_from(layout.pad_to_align().size()).ok()
+        RetainedCleanupRecord::allocation_peak_bytes()
     }
 
     pub(crate) fn new(registration: &RamControlRegistration) -> Self {
         Self {
-            inner: Arc::new(CleanupRecord {
+            inner: RetainedCleanupRecord::new(CleanupRecord {
                 target: Some(registration.target),
                 authority: Mutex::new(CleanupAuthority {
                     registrar: Some(Arc::clone(&registration.registrar)),
@@ -170,8 +171,6 @@ impl LaunchCleanup {
                 }),
                 #[cfg(target_os = "linux")]
                 source_purpose: Mutex::new(None),
-                #[cfg(target_os = "linux")]
-                source_control: None,
                 #[cfg(target_os = "linux")]
                 installed_incarnation: Mutex::new(None),
                 #[cfg(target_os = "linux")]
@@ -186,6 +185,8 @@ impl LaunchCleanup {
                 pending_imports: AtomicUsize::new(0),
                 #[cfg(target_os = "linux")]
                 external_basis: Mutex::new(None),
+                #[cfg(target_os = "linux")]
+                source_control: None,
             }),
         }
     }
@@ -210,7 +211,7 @@ impl LaunchCleanup {
             .reserve_controls(0, bytes)
             .map_err(crate::linux_attempt_host::OriginalActorAccountError::from)?;
         Ok(Self {
-            inner: Arc::new(CleanupRecord {
+            inner: RetainedCleanupRecord::new(CleanupRecord {
                 target: registration.map(|registration| registration.target),
                 authority: Mutex::new(CleanupAuthority {
                     registrar: registration.map(|registration| Arc::clone(&registration.registrar)),
@@ -220,7 +221,6 @@ impl LaunchCleanup {
                         .map_or(admission.resources(), |registration| registration.resources),
                 }),
                 source_purpose: Mutex::new(Some(admission.host_purpose().clone())),
-                source_control: Some(control),
                 installed_incarnation: Mutex::new(None),
                 target_binding: Mutex::new(None),
                 target_workspace: Mutex::new(None),
@@ -231,6 +231,7 @@ impl LaunchCleanup {
                 pending_joins: AtomicUsize::new(0),
                 pending_imports: AtomicUsize::new(0),
                 external_basis: Mutex::new(None),
+                source_control: Some(control),
             }),
         })
     }

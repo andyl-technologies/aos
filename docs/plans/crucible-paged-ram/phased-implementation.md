@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The fresh canonical license-boundary check stops at strict controller Clippy (908 host-library and 962 host-test errors after the fork-envelope correction); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 521 bindings: 502 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 524 bindings: 505 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -839,6 +839,27 @@ The descriptor-alias revision's mandatory application-target build passes at
 passes at `6gns9hv88l4pa6kn3b67sbxh30dy9755`. Their previously recorded complete
 committed-input and fixture/license correspondence remains exact. These
 compilation results do not qualify a launched native profile.
+
+The actual shared launch-cleanup record now frees its allocation before its
+extracted payload retires custody. Every observer uses the same private
+`Arc::into_inner` destruction route; no weak or raw shared alias escapes.
+The original Source control loan is the payload's last field, so other
+physical owners close before that loan returns. Admission also covers the
+construction/extraction overlap and owner handle. Three causal controls first
+failed on the old implementation: both paired charges had already returned
+when the actual allocation was freed, and the recipe omitted the extracted
+frame. All thirteen cleanup controls pass after the fix, including eight
+concurrent final observers and observed funding immediately before and after
+the actual free. The fixture provides mechanism funding without issuing Main,
+Source or native retirement authority. Inventory
+`3vjnw0zv535q2z8zk6bqbmh9s40bklsj` verifies 524 bindings; 148 requirements
+remain uncovered and none qualified. Engineering hygiene passes. Strict Host
+linting still reports 716 findings; application-target compilation and the
+fresh counted supervision check remain in progress.
+
+The preceding refusal-carrier revision passes all 404 counted supervision
+cases at `ki9kfmxkqzv7n56wmyx46zj3fxqdsw4j`. This is component evidence,
+not qualification of the missing native Source issuer or complete RFC.
 
 #### Initial loader storage component
 
