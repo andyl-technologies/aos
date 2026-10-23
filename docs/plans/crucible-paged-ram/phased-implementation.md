@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 598 bindings: 579 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 601 bindings: 582 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2453,9 +2453,9 @@ run and it supplies no passing boundary qualification. The storage logical-error
 erases typed causes and requires a separate correction.
 
 Signed allocator-cause commit `c57ed96bf7` is pushed. Required application-target
-compilation is running from immutable source
-`aicrv7qw24camwz3am1h4lsaniq9f4v5`; all 5,408 committed Rust/TOML files and
-six required fixtures match before subsequent storage-bridge edits.
+compilation passes at `cwkgfvjdjpyjvjaw4g5ng6ihydqnhf2z` from immutable
+source `aicrv7qw24camwz3am1h4lsaniq9f4v5`; all 5,408 committed Rust/TOML
+files and six required fixtures match before subsequent storage-bridge edits.
 
 The storage logical-error bridge now retains the actual portable RAM error in
 its existing inline `LogicalValidation` variant instead of formatting it into a
@@ -2552,8 +2552,42 @@ selected cases and 99 independently checked successful nested summaries. All
 738 storage tests, 38 portable-RAM tests across eight targets and 1,179 plugin
 tests pass locally. Host validation reports 1,385 passes, eight failures and four
 ignored tests; complete failure reports match the earlier baseline after
-normalizing thread IDs only. Engine, policy, Clippy, ABI and required application
-target validation remain in progress at this checkpoint.
+normalizing thread IDs only. All 686 engine tests, 95 policy controls and
+storage/portable-RAM Clippy pass. ABI conformance passes at
+`bjypplv7gixk3wxq1yb43kayxbb46dz0`, including the executed wire-fuzz,
+doorbell, guest and aggregate targets with exact-count guards. The full
+license-boundary gate has no new passing result; its preceding 639-error Host
+compilation refusal remains unresolved.
+
+Signed repeated-descriptor commit `712d5d429d` is pushed. Required
+application-target compilation is running from immutable source
+`50z2gjirq0yn09k0dma83061ikgfwdk4`; all 5,411 committed Rust/TOML files and
+six required fixtures match before subsequent update-coordinate edits.
+
+Ordered page updates now retain the incoming region identifier for their next
+coordinate check instead of cloning it for every changed page. The comparison
+borrows both identifiers before any page replacement, preserving strict
+lexicographic ordering and the original stream's terminal error. Existing
+caller-funded vectors, record outputs, resource ceilings and canonical bytes
+remain unchanged.
+
+Both genuine maximum-byte identifier cost controls fail on the original loop;
+the four duplicate-coordinate, descending-page, descending-region and original
+stream-refusal scenarios already pass. All three controls pass after the storage
+ownership correction. ASCII and UTF-8 update paths allocate no additional
+255-byte identifier extent across same-region, cross-region and partial-page
+changes. Their logical records and canonical CAS roots equal an independent
+complete capture, and predecessor pages remain unchanged. Every rejected stream
+stops on its second read, retains the original cause and publishes no successor
+root. Its unnamed partial children establish no readiness. The same finite
+caller account stays live through results, page-read borrowers and error close,
+then returns to its original baseline; no native authority or performance
+qualification is inferred.
+
+Inventory `8mdfz8d96bqxbrhkw6cd092486yrg767` validates 601 bindings across
+243 requirements, with 148 uncovered and zero qualified. Broader storage,
+engine, policy, Clippy, hermetic storage and required application-target checks
+are in progress for this increment.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`

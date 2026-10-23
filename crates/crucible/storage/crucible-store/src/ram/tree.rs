@@ -250,10 +250,10 @@ impl RamStore {
             let Some(change) = next()? else {
                 break;
             };
-            let coordinate = (change.region_id.clone(), change.page_index);
+            let coordinate = (change.region_id.as_str(), change.page_index);
             if previous
                 .as_ref()
-                .is_some_and(|previous| previous >= &coordinate)
+                .is_some_and(|(id, index)| (id.as_str(), *index) >= coordinate)
             {
                 return Err(RamStoreError::Invalid("nonascending page changes"));
             }
@@ -270,7 +270,10 @@ impl RamStore {
             )?;
             roots[index] =
                 crucible_ram::region_tree_digest(region.geometry(), regions[index].digest);
-            previous = Some(coordinate);
+
+            // Retain the incoming storage for the next ordering check instead
+            // of allocating another identifier for every changed page.
+            previous = Some((change.region_id, change.page_index));
         }
 
         let record = RootRecord::new(root.record.topology().clone(), root.record.scope(), roots)
