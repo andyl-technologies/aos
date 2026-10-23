@@ -1,0 +1,457 @@
+{
+  "actual_cargo_test_profile": {
+    "debug": 0,
+    "opt_level": "s"
+  },
+  "bazel_fastbuild_profile": {
+    "debug": 0,
+    "opt_level": "0"
+  },
+  "limitations": [
+    "The original provenance and README assumed Cargo dev defaults instead of reading test artifact profiles.",
+    "This correction verifies every retained first-party Cargo test artifact profile across all 36 Cargo samples.",
+    "The original report and its wall times are retained unchanged.",
+    "The default Cargo and Bazel optimization levels differ; these samples do not establish matched-profile performance acceptance."
+  ],
+  "manifest": "/nix/store/ad3y5sz1nazg2p19ds8gw7a83rkqj85z-crucible-cargo-src/crates/Cargo.toml",
+  "manifest_sha256": "8761ede65c4d2a37b93a130f16436aba18112776494133f86e026d2a9acb6aee",
+  "measurement": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance",
+  "original_report": "native-linux-device-compile-baseline.json",
+  "original_report_sha256": "93f0a6df4fc28a7a4cdacbdd9aa1397abb58dd5c21f8f0e84729594e6077fcb6",
+  "samples": [
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/0-cargo-incremental/cold/command.log",
+      "command_log_sha256": "430c18d7f1ffec668a954d0d466d7f8f7d09686d57b5eb176aa04d04360a8a86",
+      "mode": "cargo-incremental",
+      "repetition": 0,
+      "scenario": "cold"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/0-cargo-incremental/warm/command.log",
+      "command_log_sha256": "e621de99da2b25134c306bccd3b10d48b76f07fc89b759edbf50638dcc425614",
+      "mode": "cargo-incremental",
+      "repetition": 0,
+      "scenario": "warm"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/0-cargo-incremental/implementation-edit/command.log",
+      "command_log_sha256": "4179f92f768df46330731e6ced692a525f5439d9f98131012c5fdcb36bcb06a5",
+      "mode": "cargo-incremental",
+      "repetition": 0,
+      "scenario": "implementation-edit"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/0-cargo-incremental/public-api-edit/command.log",
+      "command_log_sha256": "471e29eb84024ea4e634048859a2341b13fd09fa900bb92cacf950fc9004ae08",
+      "mode": "cargo-incremental",
+      "repetition": 0,
+      "scenario": "public-api-edit"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/0-cargo-incremental/second-worktree/command.log",
+      "command_log_sha256": "ff411205d27af6f3599da85969b12e16f6e135a0331d468caef40114f77f0ce3",
+      "mode": "cargo-incremental",
+      "repetition": 0,
+      "scenario": "second-worktree"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/0-cargo-incremental/fresh-build-directory/command.log",
+      "command_log_sha256": "f4e41dd6dc4a55ac6b7e0bff3cb961aa9867e68aaa637ff7426b9e6a24a320c4",
+      "mode": "cargo-incremental",
+      "repetition": 0,
+      "scenario": "fresh-build-directory"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/0-cargo-nonincremental-accache/cold/command.log",
+      "command_log_sha256": "4343dc72db457ca901c075203edbeef989441e81aed23808534a107a8299b557",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 0,
+      "scenario": "cold"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/0-cargo-nonincremental-accache/warm/command.log",
+      "command_log_sha256": "78e174f37578d4c7ab5b7dd77672a15f53bb4a4f8647f2a5d21796e873ce4488",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 0,
+      "scenario": "warm"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/0-cargo-nonincremental-accache/implementation-edit/command.log",
+      "command_log_sha256": "7745e858733ab619ab5c4fa44b81135b7fb7dd1b5268e1999eeb26af4c0a7526",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 0,
+      "scenario": "implementation-edit"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/0-cargo-nonincremental-accache/public-api-edit/command.log",
+      "command_log_sha256": "c9147f4a6daecb99258e5836eaa2d8cbc52485f326bb7ac141ecb544b7d79a85",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 0,
+      "scenario": "public-api-edit"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/0-cargo-nonincremental-accache/second-worktree/command.log",
+      "command_log_sha256": "a8aacbd633a4df4acc9faa5e2e44003d3ae9eda269ccc513860bcc2446264352",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 0,
+      "scenario": "second-worktree"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/0-cargo-nonincremental-accache/fresh-build-directory/command.log",
+      "command_log_sha256": "a786e76d0a4c8991ac33d06e1e79d469ed27bb74ccfa98b36236ecb13760ab20",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 0,
+      "scenario": "fresh-build-directory"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/1-cargo-nonincremental-accache/cold/command.log",
+      "command_log_sha256": "c4485b0b744d851c5e2aec995a6fa37c83912638cf89fe387d621940baddeb28",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 1,
+      "scenario": "cold"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/1-cargo-nonincremental-accache/warm/command.log",
+      "command_log_sha256": "2110ea32b40a41844e18af897851d964137c55fed8ead50431d11e3be6e4f2a1",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 1,
+      "scenario": "warm"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/1-cargo-nonincremental-accache/implementation-edit/command.log",
+      "command_log_sha256": "2b250d628e9e59d2e35bad083ddd970ccfb9cb5debdb096b07761329affe94f9",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 1,
+      "scenario": "implementation-edit"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/1-cargo-nonincremental-accache/public-api-edit/command.log",
+      "command_log_sha256": "a583c288876a16e739e5c8452a1d128f544568fa391419a9c44a162c2a9933e0",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 1,
+      "scenario": "public-api-edit"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/1-cargo-nonincremental-accache/second-worktree/command.log",
+      "command_log_sha256": "1b96cec9b51bd9a9b0d0c7bb69ca55d34183ea371694032ad085b858996d676e",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 1,
+      "scenario": "second-worktree"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/1-cargo-nonincremental-accache/fresh-build-directory/command.log",
+      "command_log_sha256": "53678d270fcf4536594bae3be9ea7cf2e95c519f9f3596cd75a6feb1421f0a42",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 1,
+      "scenario": "fresh-build-directory"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/1-cargo-incremental/cold/command.log",
+      "command_log_sha256": "518100f56bc13b51d49bf0ab531b415cca68b33eeda5b6bb93293bd4eb95217c",
+      "mode": "cargo-incremental",
+      "repetition": 1,
+      "scenario": "cold"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/1-cargo-incremental/warm/command.log",
+      "command_log_sha256": "41e803b7250891468f256b8cf4751d99fef69d3e6788bb1370dc4dd8b9f54dea",
+      "mode": "cargo-incremental",
+      "repetition": 1,
+      "scenario": "warm"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/1-cargo-incremental/implementation-edit/command.log",
+      "command_log_sha256": "9f96114a2363d10986739a6df2ff1ed005666e2f3a5d86d23c1cb310382b5348",
+      "mode": "cargo-incremental",
+      "repetition": 1,
+      "scenario": "implementation-edit"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/1-cargo-incremental/public-api-edit/command.log",
+      "command_log_sha256": "561e6198566e39cdd747cb2591e4e01eae17cd9bc3bb24f6025d9ca7461bd51d",
+      "mode": "cargo-incremental",
+      "repetition": 1,
+      "scenario": "public-api-edit"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/1-cargo-incremental/second-worktree/command.log",
+      "command_log_sha256": "7c48121cf897e91552b148b2bcff3046a705b046403aa2d0e9ad6e783bc3c037",
+      "mode": "cargo-incremental",
+      "repetition": 1,
+      "scenario": "second-worktree"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/1-cargo-incremental/fresh-build-directory/command.log",
+      "command_log_sha256": "06b4226c500c10a0ce81b839b0aa5ce2eed28a91594445cb29edefd89b3e74f4",
+      "mode": "cargo-incremental",
+      "repetition": 1,
+      "scenario": "fresh-build-directory"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/2-cargo-incremental/cold/command.log",
+      "command_log_sha256": "b65eeb3f0c1ed418aee62c12b42fddd1f5a259cd2761a3580e4d05c32e8d4199",
+      "mode": "cargo-incremental",
+      "repetition": 2,
+      "scenario": "cold"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/2-cargo-incremental/warm/command.log",
+      "command_log_sha256": "9b72b65e07512320820a727a9e9d09019045d50b832d98d968533d1b36c15014",
+      "mode": "cargo-incremental",
+      "repetition": 2,
+      "scenario": "warm"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/2-cargo-incremental/implementation-edit/command.log",
+      "command_log_sha256": "e65927eee6f8478081b315f73319420863a9601bb9fdf86172a873958596ac5e",
+      "mode": "cargo-incremental",
+      "repetition": 2,
+      "scenario": "implementation-edit"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/2-cargo-incremental/public-api-edit/command.log",
+      "command_log_sha256": "8aeadcda210762c8934cd80bf0aa7eb293594668361e0e3fca55829a5f0a3743",
+      "mode": "cargo-incremental",
+      "repetition": 2,
+      "scenario": "public-api-edit"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/2-cargo-incremental/second-worktree/command.log",
+      "command_log_sha256": "d0601f71aee75e3fc39e1db460816b680784accd2823e2dfb9db1995955aa94e",
+      "mode": "cargo-incremental",
+      "repetition": 2,
+      "scenario": "second-worktree"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": true,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/2-cargo-incremental/fresh-build-directory/command.log",
+      "command_log_sha256": "54724dd2d694538292cc79efaea0983b981ecce524192467f0b567377ed2ef56",
+      "mode": "cargo-incremental",
+      "repetition": 2,
+      "scenario": "fresh-build-directory"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/2-cargo-nonincremental-accache/cold/command.log",
+      "command_log_sha256": "f28cca626c35dc09ba7834d6e20fcf5832d138889b4b584de89ecce4a3dbba19",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 2,
+      "scenario": "cold"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/2-cargo-nonincremental-accache/warm/command.log",
+      "command_log_sha256": "6597eace4ad30044e0b88218d93892471ac334ccbe2925671f486ddec125d889",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 2,
+      "scenario": "warm"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/2-cargo-nonincremental-accache/implementation-edit/command.log",
+      "command_log_sha256": "b177e2471017175526022c0c215c04d965ffd0b37f189ae2486d778c71ca19d3",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 2,
+      "scenario": "implementation-edit"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/2-cargo-nonincremental-accache/public-api-edit/command.log",
+      "command_log_sha256": "93dd1b45837a0f2f6e49dad4bc5bb6aeec8dd29b2d8d56f46421d87a4df19ae1",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 2,
+      "scenario": "public-api-edit"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/2-cargo-nonincremental-accache/second-worktree/command.log",
+      "command_log_sha256": "86be1a5a20f057bb2cacb4da037f2915a53eddaf84723101833f7321a8859eec",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 2,
+      "scenario": "second-worktree"
+    },
+    {
+      "actual_profile": {
+        "debug": 0,
+        "incremental": false,
+        "opt_level": "s"
+      },
+      "command_log": "/nix/store/55jkp654mcsmdksixanf2brkbskkjiim-aos-bazel-device-performance/2-cargo-nonincremental-accache/fresh-build-directory/command.log",
+      "command_log_sha256": "f2411a79aa2e8334bd80d8e0b3ef9c4615cf1e841333e33e0912846b5be7c198",
+      "mode": "cargo-nonincremental-accache",
+      "repetition": 2,
+      "scenario": "fresh-build-directory"
+    }
+  ],
+  "schema_version": 1,
+  "scope": "Correction of descriptive Cargo profile labels; original timing samples are unchanged"
+}

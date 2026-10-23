@@ -32,14 +32,45 @@ def cargo_binaries(events, packages):
             continue
         target = event["target"]
         package = Path(event["manifest_path"]).parent.name
-        if package not in packages or not set(target["kind"]) & {"lib", "test"}:
+        if package not in packages or not set(target["kind"]) & {"lib", "bin", "test"}:
             continue
-        name = "unit" if "lib" in target["kind"] else target["name"]
+        name = ("unit" if "lib" in target["kind"] else
+                "bin_" + target["name"] if "bin" in target["kind"] else target["name"])
         label = f"//{packages[package]}:{name}"
         if label in binaries:
             raise ValueError(f"ambiguous Cargo test artifact: {label}")
         binaries[label] = Path(event["executable"])
     return binaries
+
+
+def compilation_profile(events, binaries, incremental):
+    """Records the actual Cargo artifact profiles instead of assuming defaults."""
+    profiles = {(event["profile"]["opt_level"], event["profile"]["debuginfo"])
+                for event in events if event.get("reason") == "compiler-artifact"
+                and event.get("executable") in {str(binary) for binary in binaries.values()}}
+    if len(profiles) != 1:
+        raise ValueError(f"measured Cargo test artifacts have ambiguous profiles: {profiles}")
+    optimization, debug = profiles.pop()
+    return {"opt_level": optimization, "debug": debug, "incremental": incremental}
+
+
+def apply_edit(workspace, configuration, scenario):
+    """Changes a declared first-party input without allowing paths outside it."""
+    defaults = {
+        "implementation-edit": "crates/crucible/engine/crucible-device/src/lib.rs",
+        "public-api-edit": "crates/crucible/engine/crucible-determinism/src/lib.rs",
+    }
+    relative = Path(configuration.get("edits", defaults)[scenario])
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError("measurement edit must name a relative source file")
+    path = workspace / relative
+    if not path.resolve().is_relative_to(workspace.resolve()) or not path.is_file():
+        raise ValueError("measurement edit source is missing or outside the workspace")
+    declaration = ("#[allow(dead_code)]\nfn measurement_private_edit() -> u32 { 1 }"
+                   if scenario == "implementation-edit" else
+                   "/// Exposes the measurement's changed shared interface.\npub fn measurement_api_edit() -> u32 { 2 }")
+    with path.open("a") as file:
+        file.write("\n" + declaration + "\n")
 
 
 def series(configuration, mode, repetition, scratch, output):
@@ -62,6 +93,7 @@ def series(configuration, mode, repetition, scratch, output):
                    if not key.startswith(("CARGO_", "ACCACHE_", "RUST"))}
     environment.update(CARGO_HOME=str(root / "cargo-home"), CARGO_TARGET_DIR=str(root / "cargo-target"),
                        CARGO_INCREMENTAL="0" if "accache" in mode else "1", RUSTC=configuration["rustc"])
+    environment.update(configuration.get("cargo_environment", {}))
     if mode == "cargo-incremental-debug0":
         # Match rules_rust's fastbuild profile without changing the existing
         # development-profile baseline. Cargo's test profile inherits dev, but
@@ -78,14 +110,8 @@ def series(configuration, mode, repetition, scratch, output):
     samples = []
     try:
         for scenario in SCENARIOS:
-            if scenario == "implementation-edit":
-                path = workspace / configuration["packages"]["crucible-device"] / "src/lib.rs"
-                with path.open("a") as file:
-                    file.write("\n#[allow(dead_code)]\nfn measurement_private_edit() -> u32 { 1 }\n")
-            elif scenario == "public-api-edit":
-                path = workspace / configuration["packages"]["crucible-determinism"] / "src/lib.rs"
-                with path.open("a") as file:
-                    file.write("\n/// Exposes the measurement's changed shared interface.\npub fn measurement_api_edit() -> u32 { 2 }\n")
+            if scenario in {"implementation-edit", "public-api-edit"}:
+                apply_edit(workspace, configuration, scenario)
             elif scenario == "second-worktree":
                 relocated = root / "second-worktree"
                 copy_workspace(workspace, relocated)
@@ -110,10 +136,9 @@ def series(configuration, mode, repetition, scratch, output):
                            "--jobs", str(configuration["jobs"]), "--lib", "--tests", "--no-run", "--message-format=json"]
                 for package in sorted(configuration["packages"]):
                     command.extend(["-p", package])
+                command.extend(configuration.get("cargo_flags", []))
             sample = measure(command, workspace, environment, directory / "command.log")
-            sample.update(mode=mode, repetition=repetition, scenario=scenario,
-                          compilation_profile={"opt_level": 0, "debug": 0 if bazel or mode.endswith("debug0") else 2,
-                                               "incremental": not bazel and "accache" not in mode})
+            sample.update(mode=mode, repetition=repetition, scenario=scenario)
             if bazel:
                 events = [json.loads(line) for line in (directory / "events.json").read_text().splitlines()]
                 binaries = bazel_binaries(events, configuration["targets"])
@@ -123,12 +148,18 @@ def series(configuration, mode, repetition, scratch, output):
                                                  for event in execution_events(directory)))
                 sample["jvm"] = json.loads((directory / "launcher.json").read_text())
                 sample["resource_scope"] = "waited launcher/client descendants; private JVM resources recorded separately"
+                sample["compilation_profile"] = dict(configuration.get("bazel_compilation_profile", {
+                    "opt_level": "0", "debug": 0,
+                }), incremental=False)
             else:
                 events = [json.loads(line) for line in (directory / "command.log").read_text().splitlines() if line.startswith("{")]
                 binaries = cargo_binaries(events, configuration["packages"])
+                sample["compilation_profile"] = compilation_profile(events, binaries, "accache" not in mode)
                 sample["cargo_artifacts"] = dict(Counter("fresh" if event["fresh"] else "rebuilt"
                                                         for event in events if event.get("reason") == "compiler-artifact"))
-            validate(binaries, expected, workspace, directory, environment)
+            validate(binaries, expected, workspace, directory, environment,
+                     case_runner=configuration.get("case_runner"), policy=configuration.get("test_policy"),
+                     jobs=configuration["jobs"])
             sample["validated_cases"] = sum(len(item["executed"]) for item in expected.values())
             samples.append(sample)
         if "accache" in mode:
@@ -178,7 +209,7 @@ def main():
     for sample in samples:
         groups[sample["mode"] + ":" + sample["scenario"]].append(sample["wall_seconds"])
     report = {
-        "schema_version": 1, "scope": "connected device-family libtest compilation; validation is untimed; excludes Nix evaluation/preparation/installation",
+        "schema_version": 1, "scope": configuration.get("scope", "connected device-family libtest compilation") + "; validation is untimed; excludes Nix evaluation/preparation/installation",
         "configuration": configuration, "platform": list(os.uname()), "cpu_count": os.cpu_count(),
         "cpu_affinity": sorted(os.sched_getaffinity(0)), "memory": Path("/proc/meminfo").read_text(),
         "samples": samples, "budgets": "not established; requires end-to-end acceptance measurements",

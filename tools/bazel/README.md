@@ -799,6 +799,38 @@ and action fingerprints. This is a compiler/target separation check; Worker
 runtime behavior, external WASM dependencies, and foreign-target developer
 workflows remain family-specific qualification work.
 
+## Storage/campaign compile measurements
+
+```sh
+nix-build tools/bazel/bench/check.nix \
+  --no-out-link --max-jobs 4 --cores 4 --option substitute false
+nix-build tools/bazel/bench/store.nix --argstr trial UNIQUE-TRIAL \
+  -A measurement --no-out-link --max-jobs 4 --cores 4 --option substitute false
+```
+
+The storage/campaign workload includes all 13 default-feature libtest
+executables, including the fleet-store binary libtest. After every compile
+sample, discovery must match all 599 executed and one ignored qualified cases.
+The ordinary test policy runner then executes each selected case in its own
+process, preserving its case timeout and exclusive scheduling. Validation is
+untimed; an executable-wide timeout cannot stand in for that policy.
+
+Three repetitions rotate Cargo incremental, Cargo nonincremental with accache,
+and Bazel with a private JVM and local disk cache. Each series measures cold,
+warm, a campaign implementation edit, a shared store API edit, a second
+worktree, and a fresh build directory. The source configuration and caches
+remain private to the series. Cargo profiles come from its actual artifact
+events; the ordinary workspace test profile and selected Bazel flags both use
+optimization `s` and debug 0. Nix evaluation, dependency preparation, test
+execution, and installation are excluded. In particular, Cargo builds its
+pinned bundled zstd C source, while Bazel imports the prepared AOS threaded
+zstd archive. These are compile-loop measurements, not end-to-end acceptance.
+
+The `configuration` attribute exposes the immutable workload inputs without
+running measurements. `bench/check.nix` runs 20 measurement regression tests
+with AOS Python in the Nix sandbox. Feature/target-change timing and family
+regression budgets remain separate qualification work.
+
 ## Device-family compile measurements
 
 ```sh
@@ -823,8 +855,11 @@ Median compile-loop wall times in seconds:
 | Cargo nonincremental + accache | 50.351 | 0.339 | 30.295 | 30.574 | 0.418 | 46.120 |
 | Bazel private JVM + disk cache | 90.426 | 0.509 | 10.898 | 11.549 | 10.889 | 9.820 |
 
-These measure current defaults: Cargo dev has debug level 2, while Bazel
-fastbuild has debug level 0; both use optimization level 0. Matching targets
+The original harness incorrectly labelled Cargo's profile as optimization 0
+and debug 2. `tests/evidence/native-linux-device-profile-correction.json`
+verifies the retained artifact events for all 36 Cargo samples: the workspace
+test profile used optimization `s` and debug 0. Bazel fastbuild used optimization
+0 and debug 0. The original timings are unchanged. Matching targets
 and runtime behavior does not make those profiles equivalent. Qualification
 jobs also ran concurrently on this shared host; samples retain load averages.
 The recorded immutable configuration predates the editor metadata fixes.
@@ -834,7 +869,7 @@ compile actions, 18 build scripts and 49 Cargo-environment extraction actions,
 with no compiler execution. Implementation/API edits compiled 5/11 Rust
 actions. Accache admitted misses but recorded no hits, so these results do not
 establish an accache benefit. Bazel's edit loop regresses against Cargo
-incremental even with less debug information. Nix evaluation, preparation,
+incremental in this comparison. Nix evaluation, preparation,
 installation and timed test execution are excluded. Matched-profile and
 end-to-end measurements, improvements and numeric regression budgets remain
 required before production cutover.

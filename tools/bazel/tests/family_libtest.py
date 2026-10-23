@@ -3,7 +3,9 @@
 from pathlib import Path
 import re
 import subprocess
+import sys
 from urllib.parse import unquote, urlparse
+import xml.etree.ElementTree as ET
 
 
 def bazel_binaries(events, targets):
@@ -50,8 +52,11 @@ def bazel_binaries(events, targets):
     return binaries
 
 
-def validate(binaries, expected, workspace, directory, environment, executable_prefix=()):
+def validate(binaries, expected, workspace, directory, environment, executable_prefix=(), *,
+             case_runner=None, policy=None, jobs=4):
     """Requires the qualified case inventory and successful runtime behavior."""
+    if bool(case_runner) != bool(policy) or case_runner and executable_prefix:
+        raise ValueError("isolated validation requires both runner and policy, without a foreign executable prefix")
     if binaries.keys() != expected.keys():
         raise ValueError(f"compiled test targets differ: {binaries.keys() ^ expected.keys()}")
     for index, (label, binary) in enumerate(sorted(binaries.items())):
@@ -66,6 +71,22 @@ def validate(binaries, expected, workspace, directory, environment, executable_p
             if actual != sorted(oracle):
                 raise ValueError(f"discovered test inventory differs: {label}")
         log_path = directory / f"validation-{index}.log"
+        if case_runner:
+            junit = directory / f"validation-{index}.xml"
+            command = [sys.executable, str(case_runner), "--binary", str(binary),
+                       "--package", cwd.name, "--policy", str(policy), "--jobs", str(jobs)]
+            if not expected[label]["executed"] and not expected[label]["ignored"]:
+                command.append("--allow-empty")
+            with log_path.open("w") as log:
+                result = subprocess.run(command, cwd=cwd, env=dict(environment, XML_OUTPUT_FILE=str(junit)),
+                                        stdout=log, stderr=subprocess.STDOUT)
+            if result.returncode:
+                raise ValueError(f"isolated family test execution failed: {label}:\n{log_path.read_text()}")
+            cases = ET.parse(junit).findall("testcase")
+            if (sorted(case.attrib["name"] for case in cases) != sorted(expected[label]["executed"])
+                    or any(case.find("failure") is not None for case in cases)):
+                raise ValueError(f"isolated executed test inventory differs: {label}")
+            continue
         try:
             with log_path.open("w") as log:
                 subprocess.run([*map(str, executable_prefix), str(binary), "--test-threads=1"], cwd=cwd, env=environment,
