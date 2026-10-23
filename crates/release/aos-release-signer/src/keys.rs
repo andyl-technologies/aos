@@ -13,8 +13,6 @@ use aos_release_format::digest::Sha256Digest;
 use base64::Engine as _;
 use ed25519_dalek::SigningKey;
 use ed25519_dalek::pkcs8::DecodePrivateKey as _;
-use rsa::RsaPrivateKey;
-use rsa::pkcs1::DecodeRsaPrivateKey as _;
 use ssh_key::PrivateKey;
 
 use crate::config::KeyMaterial;
@@ -32,8 +30,6 @@ pub enum LoadedKey {
     },
     /// RSA key whose public identity is a file the image assembly embeds.
     Rsa {
-        /// Parsed private key.
-        key: RsaPrivateKey,
         /// Absolute path of the PEM private key, for external tools.
         private_key_path: PathBuf,
         /// Absolute path of the certificate or public key PEM.
@@ -48,9 +44,9 @@ impl LoadedKey {
     ///
     /// # Errors
     ///
-    /// Returns an error when a file cannot be read or parsed, an OpenSSH key
-    /// is encrypted or not Ed25519, or the configured trust line does not
-    /// match the key.
+    /// Returns an error when a file cannot be read or parsed, an RSA key file
+    /// is empty, an OpenSSH key is encrypted or not Ed25519, or the configured
+    /// trust line does not match the key.
     pub fn load(material: &KeyMaterial) -> Result<Self> {
         match material {
             KeyMaterial::Ed25519Pkcs8Pem { private_key } => {
@@ -82,8 +78,7 @@ impl LoadedKey {
                 private_key,
                 certificate,
             } => Ok(Self::Rsa {
-                key: read_rsa(private_key)?,
-                private_key_path: private_key.clone(),
+                private_key_path: require_nonempty_file(private_key, "RSA private key")?,
                 public_path: certificate.clone(),
                 certificate: true,
             }),
@@ -91,8 +86,7 @@ impl LoadedKey {
                 private_key,
                 public_key,
             } => Ok(Self::Rsa {
-                key: read_rsa(private_key)?,
-                private_key_path: private_key.clone(),
+                private_key_path: require_nonempty_file(private_key, "RSA private key")?,
                 public_path: public_key.clone(),
                 certificate: false,
             }),
@@ -168,16 +162,13 @@ fn read_pem_body(path: &Path, label: &str) -> Result<Vec<u8>> {
         .with_context(|| format!("decoding {label} PEM in {}", path.display()))
 }
 
-fn read_rsa(path: &Path) -> Result<RsaPrivateKey> {
-    let pem = read_text(path, "RSA private key")?;
-    let key = if pem.contains("BEGIN RSA PRIVATE KEY") {
-        let der = read_pem_body(path, "RSA PRIVATE KEY")?;
-        RsaPrivateKey::from_pkcs1_der(&der).map_err(anyhow::Error::from)
-    } else {
-        let der = read_pem_body(path, "PRIVATE KEY")?;
-        RsaPrivateKey::from_pkcs8_der(&der).map_err(anyhow::Error::from)
-    };
-    key.with_context(|| format!("parsing RSA private key {}", path.display()))
+fn require_nonempty_file(path: &Path, label: &str) -> Result<PathBuf> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("reading {label} {}", path.display()))?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        bail!("{label} {} is not a nonempty regular file", path.display());
+    }
+    Ok(path.to_path_buf())
 }
 
 /// Requires the configured trust line to carry exactly this key's public blob.

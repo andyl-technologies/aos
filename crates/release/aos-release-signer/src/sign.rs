@@ -16,9 +16,6 @@ use aos_release_format::signing::{
 };
 use base64::Engine as _;
 use ed25519_dalek::Signer as _;
-use rsa::RsaPrivateKey;
-use rsa::signature::SignatureEncoding as _;
-use sha2::Sha256;
 use ssh_key::{HashAlg, LineEnding};
 
 use crate::config::SignerConfigV1;
@@ -200,8 +197,14 @@ fn produce(
         (
             SignatureAlgorithm::PublicKeySha256,
             SigningOperation::SignPayload,
-            LoadedKey::Rsa { key, .. },
-        ) => detached(encode(&rsa_sha256_sign(key, payload))),
+            LoadedKey::Rsa {
+                private_key_path, ..
+            },
+        ) => detached(encode(&image::rsa_sha256_sign(
+            config.tool("openssl")?,
+            private_key_path,
+            payload,
+        )?)),
         (
             SignatureAlgorithm::Authenticode,
             SigningOperation::SignPe,
@@ -235,8 +238,14 @@ fn produce(
         (
             SignatureAlgorithm::PcrPolicy,
             SigningOperation::SignPcrPolicy,
-            LoadedKey::Rsa { key, .. },
-        ) => transformed(image::sign_pcr_policy(key, payload)?),
+            LoadedKey::Rsa {
+                private_key_path, ..
+            },
+        ) => transformed(image::sign_pcr_policy(
+            config.tool("openssl")?,
+            private_key_path,
+            payload,
+        )?),
         _ => bail!(
             "key {} cannot perform {:?} with {:?}",
             request.key_id,
@@ -267,12 +276,6 @@ fn sshsig_namespace(request: &SigningRequest) -> Result<&'static str> {
             "SSHSIG signing requires Git, registry catalog metadata, or provenance DSSE context"
         ),
     }
-}
-
-/// Signs bytes with RSA PKCS#1 v1.5 over SHA-256, matching `openssl dgst -sha256 -sign`.
-pub(crate) fn rsa_sha256_sign(key: &RsaPrivateKey, payload: &[u8]) -> Vec<u8> {
-    let signing_key = rsa::pkcs1v15::SigningKey::<Sha256>::new(key.clone());
-    signing_key.sign(payload).to_vec()
 }
 
 #[cfg(test)]
@@ -394,6 +397,40 @@ mod tests {
             .verifying_key()
             .verify(payload, &signature)
             .unwrap();
+    }
+
+    #[test]
+    fn rsa_payload_signing_requires_the_configured_openssl_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let private_key = dir.path().join("private.pem");
+        let public_key = dir.path().join("public.pem");
+        std::fs::write(&private_key, "nonempty private key fixture").unwrap();
+        std::fs::write(&public_key, "public key fixture").unwrap();
+
+        let mut config = config(dir.path());
+        config.keys.push(KeyEntry {
+            key_id: "rsa-v1".into(),
+            roles: vec![SignerRole::ReleaseEvidence],
+            verification_identity: "rsa-authority".into(),
+            material: KeyMaterial::RsaPublicPem {
+                private_key,
+                public_key,
+            },
+        });
+        let payload = b"signed payload";
+        let mut request = request(SignerRole::ReleaseEvidence, "rsa-v1", payload);
+        request.algorithm = SignatureAlgorithm::PublicKeySha256;
+
+        let error = match sign_exchange(&config, &exchange(&request, payload)) {
+            Ok(_) => panic!("RSA signing unexpectedly succeeded without OpenSSL"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error
+                .to_string()
+                .contains("signer configuration does not name the openssl tool")
+        );
     }
 
     #[test]

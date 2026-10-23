@@ -13,12 +13,8 @@ use std::process::{Command, Stdio};
 use anyhow::{Context as _, Result, bail};
 use aos_release_format::canonical;
 use hex::ToHex as _;
-use rsa::RsaPrivateKey;
-use rsa::pkcs8::EncodePublicKey as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
-
-use crate::sign::rsa_sha256_sign;
 
 /// Trailer that Linux expects after an appended module signature.
 const MODULE_SIGNATURE_MAGIC: &[u8] = b"~Module signature appended~\n";
@@ -167,9 +163,9 @@ struct SignedPolicyRecord {
 ///
 /// # Errors
 ///
-/// Returns an error for a noncanonical or malformed policy document, a
-/// policy digest that is not 32 bytes, or a public key that cannot be encoded.
-pub fn sign_pcr_policy(key: &RsaPrivateKey, payload: &[u8]) -> Result<Vec<u8>> {
+/// Returns an error for a noncanonical or malformed policy document, a policy
+/// digest that is not 32 bytes, or an OpenSSL invocation that fails.
+pub fn sign_pcr_policy(openssl: &Path, key: &Path, payload: &[u8]) -> Result<Vec<u8>> {
     use base64::Engine as _;
 
     canonical::require_canonical(payload, "PCR policy document")?;
@@ -177,11 +173,8 @@ pub fn sign_pcr_policy(key: &RsaPrivateKey, payload: &[u8]) -> Result<Vec<u8>> {
     if policy.sha256.is_empty() {
         bail!("PCR policy document selects no policies");
     }
-    let public_der = key
-        .to_public_key()
-        .to_public_key_der()
-        .context("encoding PCR public key")?;
-    let fingerprint: String = Sha256::digest(public_der.as_bytes()).encode_hex();
+    let public_der = rsa_public_der(openssl, key)?;
+    let fingerprint: String = Sha256::digest(&public_der).encode_hex();
 
     let mut signed = Vec::with_capacity(policy.sha256.len());
     for record in policy.sha256 {
@@ -189,7 +182,7 @@ pub fn sign_pcr_policy(key: &RsaPrivateKey, payload: &[u8]) -> Result<Vec<u8>> {
         if policy_bytes.len() != 32 {
             bail!("PCR policy digest must be 32 bytes");
         }
-        let signature = rsa_sha256_sign(key, &policy_bytes);
+        let signature = rsa_sha256_sign(openssl, key, &policy_bytes)?;
         signed.push(SignedPolicyRecord {
             pcrs: record.pcrs,
             pkfp: fingerprint.clone(),
@@ -198,6 +191,62 @@ pub fn sign_pcr_policy(key: &RsaPrivateKey, payload: &[u8]) -> Result<Vec<u8>> {
         });
     }
     canonical::to_vec(&SignedPolicyDocument { sha256: signed })
+}
+
+/// Signs bytes with RSA PKCS#1 v1.5 over SHA-256 through the configured tool.
+pub(crate) fn rsa_sha256_sign(openssl: &Path, key: &Path, payload: &[u8]) -> Result<Vec<u8>> {
+    let scratch = tempfile::Builder::new()
+        .prefix("aos-release-signer-rsa-")
+        .tempdir()
+        .context("creating RSA signing scratch directory")?;
+    let input = scratch.path().join("payload");
+    let signature = scratch.path().join("signature");
+    fs::write(&input, payload).context("writing RSA signing input")?;
+
+    run_tool(
+        openssl,
+        &[
+            "dgst",
+            "-sha256",
+            "-sign",
+            path_text(key)?,
+            "-out",
+            path_text(&signature)?,
+            path_text(&input)?,
+        ],
+    )?;
+    let signature = fs::read(&signature).context("reading RSA signature")?;
+    if signature.is_empty() {
+        bail!("openssl produced an empty RSA signature");
+    }
+    Ok(signature)
+}
+
+fn rsa_public_der(openssl: &Path, key: &Path) -> Result<Vec<u8>> {
+    let scratch = tempfile::Builder::new()
+        .prefix("aos-release-signer-rsa-public-")
+        .tempdir()
+        .context("creating RSA public-key scratch directory")?;
+    let output = scratch.path().join("public.der");
+
+    run_tool(
+        openssl,
+        &[
+            "pkey",
+            "-in",
+            path_text(key)?,
+            "-pubout",
+            "-outform",
+            "DER",
+            "-out",
+            path_text(&output)?,
+        ],
+    )?;
+    let public_der = fs::read(&output).context("reading RSA public key")?;
+    if public_der.is_empty() {
+        bail!("openssl produced an empty RSA public key");
+    }
+    Ok(public_der)
 }
 
 /// Runs one external tool with a cleared environment and captured diagnostics.
@@ -227,8 +276,6 @@ fn path_text(path: &Path) -> Result<&str> {
 
 #[cfg(test)]
 mod tests {
-    use base64::Engine as _;
-
     use super::*;
 
     #[test]
@@ -249,75 +296,18 @@ mod tests {
     }
 
     #[test]
-    fn pcr_policy_signatures_verify_with_the_public_key() {
-        use rsa::pkcs1v15::{Signature, VerifyingKey};
-        use rsa::signature::Verifier as _;
-
-        let key = test_rsa_key();
+    fn pcr_policy_requires_the_configured_signing_tool() {
+        let dir = tempfile::tempdir().unwrap();
+        let key = dir.path().join("private.pem");
+        fs::write(&key, "not used when the tool cannot start").unwrap();
         let policy = b"{\"sha256\":[{\"pcrs\":[11],\"pol\":\"".to_vec();
         let mut document = policy;
         document.extend(b"00".repeat(32));
         document.extend(b"\"}]}");
 
-        let signed = sign_pcr_policy(&key, &document).unwrap();
-
-        let parsed: serde_json::Value = serde_json::from_slice(&signed).unwrap();
-        let record = &parsed["sha256"][0];
-        assert_eq!(record["pcrs"], serde_json::json!([11]));
-        let expected_fingerprint: String =
-            Sha256::digest(key.to_public_key().to_public_key_der().unwrap().as_bytes())
-                .encode_hex();
-        assert_eq!(record["pkfp"], serde_json::json!(expected_fingerprint));
-        let signature = base64::engine::general_purpose::STANDARD
-            .decode(record["sig"].as_str().unwrap())
-            .unwrap();
-        VerifyingKey::<Sha256>::new(key.to_public_key())
-            .verify(
-                &[0_u8; 32],
-                &Signature::try_from(signature.as_slice()).unwrap(),
-            )
-            .unwrap();
-        assert!(sign_pcr_policy(&key, b"{\"sha256\":[]}").is_err());
+        let missing_tool = dir.path().join("missing-openssl");
+        let error = sign_pcr_policy(&missing_tool, &key, &document).unwrap_err();
+        assert!(error.to_string().contains("running"));
+        assert!(sign_pcr_policy(&missing_tool, &key, b"{\"sha256\":[]}").is_err());
     }
-
-    /// Deterministic 1024-bit test key; generation is too slow for unit tests.
-    fn test_rsa_key() -> RsaPrivateKey {
-        use rsa::traits::PrivateKeyParts as _;
-
-        let mut rng = DeterministicRng([0x5a; 32]);
-        let key = RsaPrivateKey::new(&mut rng, 1024).unwrap();
-        assert!(!key.primes().is_empty());
-        key
-    }
-
-    /// Minimal counter-based RNG so the test does not depend on the `rand` crate.
-    struct DeterministicRng([u8; 32]);
-
-    impl rsa::rand_core::RngCore for DeterministicRng {
-        fn next_u32(&mut self) -> u32 {
-            let mut bytes = [0_u8; 4];
-            self.fill_bytes(&mut bytes);
-            u32::from_le_bytes(bytes)
-        }
-
-        fn next_u64(&mut self) -> u64 {
-            let mut bytes = [0_u8; 8];
-            self.fill_bytes(&mut bytes);
-            u64::from_le_bytes(bytes)
-        }
-
-        fn fill_bytes(&mut self, dest: &mut [u8]) {
-            for chunk in dest.chunks_mut(32) {
-                self.0 = Sha256::digest(self.0).into();
-                chunk.copy_from_slice(&self.0[..chunk.len()]);
-            }
-        }
-
-        fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rsa::rand_core::Error> {
-            self.fill_bytes(dest);
-            Ok(())
-        }
-    }
-
-    impl rsa::rand_core::CryptoRng for DeterministicRng {}
 }
