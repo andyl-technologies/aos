@@ -131,6 +131,8 @@
                   raise ValueError("rules_rust analyzer build metadata patch no longer applies")
               analyzer.write_text(source.replace(original, replacement))
               PY
+              ${pkgs.python3}/bin/python3 ${../../../tools/bazel/metadata/patch_analyzer_identity.py} \
+                rust/private/rust_analyzer.bzl
               # Compile the unchanged upstream helper once in Nix, rather
               # than rebuilding its dependency graph in every empty Bazel
               # output base. This remains an explicit executable action input.
