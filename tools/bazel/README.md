@@ -1876,7 +1876,11 @@ The dedicated native `checks.crucible.phase2.abiConformance` gate also passes.
 result, generated-header and golden-vector checks, exact-version rejection,
 and guest/engine doorbell coverage. Its source filter explicitly includes the
 Bazel repository marker and guest Nix qualification contract; the assertions
-and ABI versions are unchanged.
+and ABI versions are unchanged. Required workspace application unit and
+integration targets also compile at the frozen Crucible lint checkpoint;
+`tests/evidence/activation-crucible-required-rust-targets.json` identifies the
+single changed Rust file and its source derivation. Later CLI support changes
+are checked independently.
 
 Dedicated license, provider and assembled-system gates, foreign and Wasm
 execution, compiler invocation equivalence, numeric performance acceptance,
