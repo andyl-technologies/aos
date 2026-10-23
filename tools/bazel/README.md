@@ -1355,8 +1355,12 @@ store conformance API. This baseline makes no live-service qualification claim.
 `tests/evidence/store-s3-configured-graph.json` records passing offline source
 inventories, all ten dependency specifications, 147 policy tests, CLI checks,
 and exact agreement with all 222 Cargo dependency feature sets. The existing
-nine dependency locks remain unchanged. Native execution, developer/editor
-qualification, and production migration remain pending.
+nine dependency locks remain unchanged.
+
+`tests/evidence/native-linux-store-s3.json` records passing native execution of
+all 11 cases and preservation of the one ignored case across two artifacts.
+Developer and production license checks pass. The selected editor package has
+zero diagnostics in both Bazel and Cargo. Production migration remains pending.
 
 The live-conformance target explicitly permits a suite containing only ignored
 cases. Its complete ignored inventory remains in parity evidence. Empty and
