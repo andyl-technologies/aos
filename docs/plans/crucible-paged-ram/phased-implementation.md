@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 573 bindings: 554 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 575 bindings: 556 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2166,9 +2166,9 @@ checked. Inventory `69qfvbs43jg7x7j3rdxjxx3yw6xrg5a8` validates 561 bindings
 across 243 requirements, with 148 uncovered and zero qualified.
 
 Signed record-buffer commit `4ebf0e6188` is pushed. Mandatory application-target
-compilation is running; all 5,399 committed Rust/TOML files and six required
-fixtures match immutable source `wa3255scqx992d6wb07k38j4mklj2ah3` before
-metadata-custody edits.
+compilation passes at `jq0gfyh95yd87jmixvxf0ys5ny5dgwdi`; all 5,399 committed
+Rust/TOML files and six required fixtures match immutable source
+`wa3255scqx992d6wb07k38j4mklj2ah3` before metadata-custody edits.
 
 Corrected concrete plan-r9 under manifest
 `796887af6213db6b6aafd63d38bd7fa618e00b595aa62f71cb76bc924169459e`
@@ -2286,6 +2286,36 @@ mutation method; all existing custody assertions and causal retry controls
 remain required. Final hermetic storage output
 `pnxf6bb0c38wrwnisvz8n7lb0w9wzgzw` passes all 65 selected cases and 82
 independently checked successful summaries, including nested results.
+
+Signed shared-control commit `bd53528b8a` is pushed. Mandatory application-target
+compilation is running from `jwcj6gvfamn4h4wwdrqwhhw5j5yajqrc`; all 5,403
+committed Rust/TOML files and six required fixtures match before subsequent
+descriptor-hashing edits.
+
+Topology and scoped-root hashing now stream canonical descriptor fields through
+the same field emitter used by serialization. The previous per-region temporary
+vector is removed from both hash constructors. Tag bytes, field order, scope
+membership, wire records and conservative decode allowances remain unchanged.
+Input identifier strings, inventory conversion and root vectors retain their
+existing caller-funded contract; this change supplies no native memory authority.
+
+Both actual-allocation controls fail against the original code and pass after
+the change. Root construction observes zero allocation and reallocation calls;
+inventory construction no longer creates the old 269-byte descriptor buffer.
+Empty, single, twelve and 4,096-region cases use maximum-width ASCII and UTF-8
+identifiers, all four region classes and all three root scopes, followed by
+public serialization and decoding. Inventory
+`vsha506ihl3f051fkinx6nwhxcvi6gb0` validates 575 bindings across 243 requirements,
+with 148 uncovered and zero qualified. All 728 storage tests, 25 portable RAM
+tests including frozen digest vectors, and 1,179 plugin tests pass. Hermetic
+storage output `6jykm9xvzgpfqhfqam9vq50llh9qmvdq` passes all 67 selected
+cases and 84 independently checked successful summaries. Private-feature Host
+passes 1,385 tests, retains four ignored cases and reproduces the same eight
+helper-custody failures; complete failure details match the previous run after
+normalizing only thread IDs. ABI conformance passes at
+`5r61k4j7h46hwgr2cdlj17zgypyjkr3y`. All 686 engine tests, 95 policy
+controls and Store Clippy pass. The full license-boundary run is pending;
+preceding controller failures remain unresolved.
 
 The source-only configure observation assessment
 `b81e015f86affdd3ccdfd1c07e4f75bf4a89ec2bf4617f1d8a1c49d844bcba23`

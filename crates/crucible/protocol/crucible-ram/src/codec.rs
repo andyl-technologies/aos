@@ -116,9 +116,9 @@ impl RootRecord {
             .filter(|region| scope.includes(region.class()))
             .zip(&roots)
         {
-            let mut encoded = Vec::with_capacity(269);
-            region.encode_into(&mut encoded);
-            hasher.update(&encoded);
+            region.emit_encoding(|bytes| {
+                hasher.update(bytes);
+            });
             hasher.update(root.as_bytes());
         }
         Ok(Self {

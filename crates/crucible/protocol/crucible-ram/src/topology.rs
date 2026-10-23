@@ -226,11 +226,19 @@ impl RegionDescriptor {
     }
 
     pub(crate) fn encode_into(&self, output: &mut Vec<u8>) {
-        output.extend_from_slice(&(self.id.len() as u32).to_be_bytes());
-        output.extend_from_slice(self.id.as_bytes());
-        output.push(self.class as u8);
-        output.push(self.coverage_mask());
-        output.extend_from_slice(&self.logical_length().to_be_bytes());
+        self.emit_encoding(|bytes| output.extend_from_slice(bytes));
+    }
+
+    /// Emits canonical region fields without allocating descriptor scratch.
+    ///
+    /// Hashing and serialization share this field order. The callback borrows
+    /// each stack field only for the duration of its call.
+    pub(crate) fn emit_encoding(&self, mut emit: impl FnMut(&[u8])) {
+        emit(&(self.id.len() as u32).to_be_bytes());
+        emit(self.id.as_bytes());
+        emit(&[self.class as u8]);
+        emit(&[self.coverage_mask()]);
+        emit(&self.logical_length().to_be_bytes());
     }
 }
 
@@ -312,9 +320,9 @@ impl Topology {
         hasher.update(&LOGICAL_PAGE_SIZE.to_be_bytes());
         hasher.update(&(regions.len() as u32).to_be_bytes());
         for region in &regions {
-            let mut descriptor = Vec::with_capacity(269);
-            region.encode_into(&mut descriptor);
-            hasher.update(&descriptor);
+            region.emit_encoding(|bytes| {
+                hasher.update(bytes);
+            });
         }
         Ok(Self {
             regions: regions.into(),
