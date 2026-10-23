@@ -8,6 +8,7 @@ use super::*;
 use crucible_engine::SharedOperationalCause;
 use crucible_host_resources::host_services::HostServiceLease;
 use std::fmt;
+use std::num::NonZeroUsize;
 use std::ops::Deref;
 use std::sync::OnceLock;
 
@@ -55,7 +56,8 @@ impl fmt::Debug for QemuRamSourceStopRecord {
 #[derive(Clone)]
 pub struct QemuRamSourceStopHistory {
     journal: StopJournal,
-    index: usize,
+    // One-based slots keep optional receipts within the same prepaid extent.
+    index: NonZeroUsize,
 }
 
 impl Deref for QemuRamSourceStopHistory {
@@ -66,7 +68,7 @@ impl Deref for QemuRamSourceStopHistory {
             .journal
             .shared
             .as_ref()
-            .and_then(|journal| journal.records[self.index].get())
+            .and_then(|journal| journal.records[self.index.get() - 1].get())
         {
             Some(record) => record,
             None => unreachable!("a stop receipt borrows only its initialized prepaid record"),
@@ -199,6 +201,11 @@ impl StopJournal {
         };
         for (index, slot) in journal.records.iter().enumerate() {
             if slot.get_or_init(|| record.clone()) == record {
+                // The finite journal has sixteen slots, so this addition is
+                // bounded and every published receipt has a nonzero index.
+                let Some(index) = NonZeroUsize::new(index + 1) else {
+                    unreachable!("a prepaid stop slot has a nonzero one-based index");
+                };
                 return QemuRamSourceStopHistory {
                     journal: self.clone(),
                     index,
@@ -227,6 +234,40 @@ mod tests {
         HostOperationBudget, HostOperationBudgets, HostOperationSupervisor,
     };
     use crucible_host_resources::test_support::TestAllocationObserver;
+
+    #[test]
+    fn optional_stop_receipts_fit_their_existing_prepaid_extent() {
+        assert_eq!(
+            std::mem::size_of::<Option<QemuRamSourceStopHistory>>(),
+            std::mem::size_of::<QemuRamSourceStopHistory>(),
+        );
+        #[cfg(target_pointer_width = "64")]
+        assert_eq!(std::mem::size_of::<QemuRamSourceStopHistory>(), 16);
+    }
+
+    #[test]
+    fn every_prepaid_slot_borrows_its_own_immutable_record_without_allocating() {
+        let bytes = StopJournal::peak_bytes().unwrap();
+        let account = HostServiceAllocator::new(1, 1, bytes).unwrap();
+        let loan = account.reserve_resources(0, 0, bytes).unwrap();
+        let journal = StopJournal::new(loan);
+        let mut record = StopState::new().history;
+
+        // These are component observations, not native status or return grants.
+        // Exercise the first and final one-based offsets in the actual journal.
+        for slot in 0..STOP_SNAPSHOTS {
+            record.native_status = Some(i32::try_from(slot).unwrap());
+            let ((receipt, repeated), counts) = TestAllocationObserver::count(|| {
+                (journal.snapshot(&record), journal.snapshot(&record))
+            });
+
+            assert_eq!(counts.allocations, 0);
+            assert_eq!(counts.reallocations, 0);
+            assert!(!counts.overflow);
+            assert_eq!(*receipt, record);
+            assert!(std::ptr::eq(&*receipt, &*repeated));
+        }
+    }
 
     #[test]
     fn immutable_stop_receipts_keep_original_credit_through_actual_header_free() {

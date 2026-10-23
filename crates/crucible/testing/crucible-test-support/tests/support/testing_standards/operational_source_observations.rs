@@ -405,6 +405,11 @@ const JOURNAL: &str = r#"impl StopJournal {
         };
         for (index, slot) in journal.records.iter().enumerate() {
             if slot.get_or_init(|| record.clone()) == record {
+                // The finite journal has sixteen slots, so this addition is
+                // bounded and every published receipt has a nonzero index.
+                let Some(index) = NonZeroUsize::new(index + 1) else {
+                    unreachable!("a prepaid stop slot has a nonzero one-based index");
+                };
                 return QemuRamSourceStopHistory {
                     journal: self.clone(),
                     index,

@@ -63,7 +63,7 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | Signed atomic `bbac33ec36`, conventional `fb922ae3f8`, tree `9f3afa75` adds the nineteen-case genuine-provider companion and corrects its dictionary guard. Independent review verifies all 54 corrected source artifacts and 78,464 Git/disk/archive paths; the license ledger covers 657 created files. | Canonical patch reconstruction and the license ledger pass. Corrected configuration and complete companion compilation/link succeed with 1,954 edges, 1,622 selected C rows, 3,304 database variants and 1,544 leaves; TAP remains unexecuted. Prior `ce0d15fb5d` passes the 35-owner/getter and genuine full-system link checks recorded below, with a 557,830-byte fixed passive floor and separate 230,856-byte preexec root. The registered legacy Source unit's separate link remains unresolved. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
+| Native integration | Signed atomic `bbac33ec36`, conventional `fb922ae3f8`, tree `9f3afa75` adds the nineteen-case genuine-provider companion and corrects its dictionary guard. Independent review verifies all 54 corrected source artifacts and 78,464 Git/disk/archive paths; the license ledger covers 657 created files. | Canonical patch reconstruction and the license ledger pass. Corrected configuration and complete companion compilation/link succeed with 1,954 edges, 1,622 selected C rows, 3,304 database variants and 1,544 leaves. All nineteen ordinary/unissued-state companion TAP cases pass once, with exact source/build preservation and actual child closure. Prior `ce0d15fb5d` passes the 35-owner/getter and genuine full-system link checks recorded below, with a 557,830-byte fixed passive floor and separate 230,856-byte preexec root. The registered legacy Source unit's separate link remains unresolved. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The latest completed canonical license-boundary check stops at strict controller Clippy with 653 host-library errors; its boundary assertions did not run. Earlier attempts and their larger finding counts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
@@ -1300,6 +1300,17 @@ application-target compilation remain in progress. Controller-return causes and 
 shutdown-report collections still need complete prebirth funding; these changes
 do not qualify Main/Source issuance or native return.
 
+Source stop receipts now encode their bounded journal slot as a nonzero,
+one-based index. On 64-bit hosts an optional receipt occupies the same sixteen
+bytes as a present receipt, instead of adding an eight-byte discriminant. The
+storage and original loan stay in the existing prepaid journal; no heap object
+or authority is added. Actual component controls exercise every one of the
+sixteen slots, repeated immutable observations and zero publication allocations.
+All 35 Source controls, both exact Source observation contracts and source shape
+pass. Restoring the old zero-based `usize` representation makes the optional
+extent assertion fail at 24 versus 16 bytes; exact restoration passes all 35
+Source controls. Complete application-target compilation remains pending.
+
 #### Cumulative construction and request ownership source
 
 Signed atomic `e82bb4c78da7af3351ef6473935a2be2feb01a2d` imports conventional
@@ -1746,6 +1757,30 @@ remain unexercised. The 22,393 aggregate samples peak at 1,027,379,200 RSS and
 1,189,502,976 virtual bytes, below six GiB; samples do not prove unsampled peaks.
 This establishes compile/link and static ELF observations only. TAP,
 installation and activation are not executed.
+
+A separately reviewed 60-second TAP plan
+`0e0d60a4eabf475124a9d47a9089b89cd62a5809b3390bad34d4a3da227dd55b`
+binds all 44 signed payloads, seven external inputs, 70 complete tool/runtime
+roots, and all 6,583 build and 86,111 reconstruction entries. Its historical
+86 pure controls precede sealing; independent read-only replay adds the final
+`seal.py` syntax check for 87 controls. One original invocation executes the
+exact produced ELF with `--tap -k` and the startup selector absent. It returns
+zero after 28.934 seconds, including authentication and final evidence; the
+actual TAP process returns zero in 0.061314 seconds. All nineteen exact paths
+appear once with consecutive ordinals, no skipped or expected-failure case.
+
+Independent review of sealed result
+`3c4791791a5be95b92a23e58a2c64d993a81140fbef7a3addeedef8bd18c4ded`
+verifies all 35 signed payloads, 24 original execution/archive entries and the
+complete source/build before/after inventories. Actual cleanup observes empty
+kernel children and ECHILD, with no adoption, signal, wait or cleanup error.
+One aggregate sample observes 105,676,800 RSS and 194,097,152 virtual bytes;
+559 worker samples remain within the six-GiB ceiling. These periodic samples
+do not prove unsampled peaks. Genuine constructors, the detached RCU worker
+and normal atexit remain present. Process return supplies no explicit RCU drain,
+callback retirement or worker join. This passes only the ordinary/unissued
+companion; the legacy fixture, complete paid profile, emulator/guest execution,
+installation and activation remain separately unqualified.
 
 #### Initial loader storage component
 
