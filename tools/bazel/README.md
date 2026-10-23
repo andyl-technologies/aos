@@ -1926,6 +1926,11 @@ covers 395 Rust targets across 25 analysis-only selections with no external
 actions; core evaluation passes. Its evidence is retained in
 `tests/evidence/cli-support-metadata-evaluation.json`.
 
+`tests/evidence/cli-support-required-rust-targets.json` retains the passing
+required workspace unit and integration target compilation for all nine CLI
+support Rust changes. Its source is frozen before the build-service conversion;
+that later work requires its own qualification.
+
 Installed consumers, dedicated provider and assembled-system gates, foreign and
 Wasm execution, complete compiler invocation equivalence, numeric performance
 acceptance, production migration, and Cargo removal remain separate work.
