@@ -2451,9 +2451,23 @@ across 37 analysis-only selections with no external actions, and core evaluation
 passes. Frozen outputs are retained in
 `tests/evidence/package-manager-metadata-evaluation.json`.
 
-Strict configured staging, fresh Cargo feature and generated-API comparisons,
-selected editor parity, and required workspace Rust compilation qualify
-separate checkpoints. Installed boot, provisioning,
+`tests/evidence/native-linux-package-manager.json` retains passing strict
+source selection, fresh Cargo runtime and feature comparisons, production
+feature parity, generated-source parity, license closure, developer checks,
+and selected editor parity. The test and production graphs match their
+unchanged baselines independently: 331 and 308 external packages, respectively,
+with 23 first-party packages each. All four generated Hub API files match.
+Nine test roots run uncached in the Linux sandbox; a tenth TestRunner spawn
+generates the doctest XML. Their actions invoke no Cargo executable, and the
+strict compilation workspace contains no first-party Cargo manifests.
+
+Selected editor diagnostics match with nineteen deduplicated diagnostics and
+162 raw rows on each side. Cargo retains 1,215 unselected diagnostic rows and
+no unattributed rows. Both reports retain incomplete inference; aggregate
+statistics and diagnostic multiplicities are not claimed equivalent.
+
+Required workspace Rust unit and integration target compilation qualifies a
+separate checkpoint. Installed boot, provisioning,
 metadata transactions, system services, VM workflows, native publication, and
 conditional real-cache fixtures retain their existing dedicated gates. No
 service or remote cache is introduced. Performance of ordered collections, complete
