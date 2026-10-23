@@ -7,6 +7,8 @@ bazel_dep(name = "rules_cc", version = "0.2.17")
 bazel_dep(name = "platforms", version = "1.1.0")
 
 # Generated declarations contain no fetch logic. Nix supplies hashed sources.
+include("//third_party/rust:hub-model/repositories.MODULE.bazel")
+include("//third_party/rust:hub-model-tests/repositories.MODULE.bazel")
 include("//third_party/rust:hub-portable/repositories.MODULE.bazel")
 include("//third_party/rust:deployment/repositories.MODULE.bazel")
 include("//third_party/rust:build-services/repositories.MODULE.bazel")
@@ -50,3 +52,5 @@ aos_tools(name = "aos_codegen")
 register_toolchains("@aos_tools//:all")
 
 aos_tools(name = "aos_nix_test_tools")
+
+aos_tools(name = "aos_hub_model_test_sources")

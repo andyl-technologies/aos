@@ -2087,3 +2087,60 @@ workspace Rust compilation for the Hub UI test-only lint annotation. The frozen
 source predates the Hub model changes. Installed Hub services, foreign/Wasm
 execution, complete compiler invocation equivalence, numeric performance
 acceptance, production migration, and Cargo removal remain separate work.
+
+## Hub model family
+
+`aos-dev bazel --family hub-model` selects `aos-hub-model`, with its native
+library, unit tests, retained-control integration target, doctests, Clippy,
+formatting, documentation, license checks, and editor graph. Production uses
+an independently pinned 124-source dependency profile; tests use 167 sources.
+Their compiled external feature inventories contain 116 and 142 packages,
+respectively, with four production and five test first-party packages. The API
+generator belongs to the test dependency graph. Six guarded test-profile
+policies preserve Cargo's target/execution feature separation.
+
+`tests/evidence/native-linux-hub-model.json` retains passing strict source
+selection, runtime and feature parity against the independent unchanged Cargo
+baselines: 172 executed cases, no ignored cases, and four passing doctests.
+The merged inventory contains 11 requested roots, 351 configured reports, and
+91 declared files, including 82 Rust files. Existing credential entropy,
+AES-GCM nonce generation, authentication timestamps, and membership-only route
+validation retain their behavior through scoped lint exceptions. Mechanical
+lint fixes preserve the scanner's parsing and contract assertions; moving the
+ETag helper before its test module is a separate commit.
+
+The retained-control hard-cut case recursively scans the complete production
+source universe. Its original scanner deliberately ignores symlinks, so ordinary
+Bazel runfiles would omit source files. A source-built Nix package inventories
+all 4,856 regular production files, and a declared Python action verifies their
+sizes and hashes before copying them into a regular-file tree inside the Linux
+sandbox. The actual integration case traverses that tree without skipping its
+audit. Independent checks verify every selected path and byte against the
+checkout and every declared copy-action input against the immutable manifest.
+Path enumeration also works in read-only Nix evaluation before the filtered
+source enters the store.
+
+The external audit tree deliberately includes production Cargo manifests as
+text inspected by the scanner. They do not drive Bazel compilation: the strict
+compilation source contains no first-party Cargo manifests, and the recorded
+Bazel actions invoke no Cargo executable. Source-built protoc generates the
+test dependency's API through its declared generator graph. No host service or
+remote cache is introduced.
+
+Editor parity retains ten matching unknown type expressions in the selected
+model package, no unattributed diagnostics, and seven unselected Cargo
+diagnostics. Both inference reports remain incomplete; aggregate inference
+statistics and diagnostic multiplicities are not claimed equivalent.
+
+`tests/evidence/hub-model-configured-graph.json` records 27 configured family
+inventories, all 28 dependency specifications, 175 policy tests, and CLI checks
+for 22 launchers. All previous 26 dependency locks and 4,117 generated crate
+BUILD files remain unchanged. Metadata parity covers 415 Rust targets across
+29 analysis-only selections with no external actions, and core evaluation
+passes; the frozen outputs are retained in
+`tests/evidence/hub-model-metadata-evaluation.json`.
+
+Required workspace Rust compilation runs separately. The `test-fixtures` and
+Wasm variants, installed Hub services, complete compiler invocation equivalence,
+numeric performance acceptance, production migration, and Cargo removal remain
+separate qualification work.

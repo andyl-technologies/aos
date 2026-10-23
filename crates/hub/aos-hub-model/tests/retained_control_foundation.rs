@@ -2,6 +2,10 @@
 
 #[path = "../src/retained_control/classifier.rs"]
 mod classifier;
+#[allow(
+    dead_code,
+    reason = "This integration target exercises a subset of the production primitives"
+)]
 #[path = "../src/retained_control/primitives.rs"]
 mod primitives;
 
@@ -87,11 +91,22 @@ fn hard_cut_fixture_scans_the_complete_production_source_universe() {
         "fixtures/retained-control-forbidden-symbols-v1.json"
     ))
     .unwrap();
-    let repository_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .find(|candidate| candidate.join("crates/Cargo.toml").is_file())
-        .expect("retained-control inventory requires the AOS source workspace");
-    let matches = fixture.scan_repository_root(repository_root).unwrap();
+    // A hermetic runner supplies the complete immutable production source tree.
+    // Cargo uses its ordinary workspace, preserving this audit in both builders.
+    let repository_root = std::env::var_os("AOS_TEST_PRODUCTION_SOURCE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .ancestors()
+                .find(|candidate| candidate.join("crates/Cargo.toml").is_file())
+                .expect("retained-control inventory requires the AOS source workspace")
+                .to_path_buf()
+        });
+    assert!(
+        repository_root.join("crates/Cargo.toml").is_file(),
+        "production audit requires a complete source workspace"
+    );
+    let matches = fixture.scan_repository_root(&repository_root).unwrap();
     assert!(
         matches.is_empty(),
         "forbidden hard-cut symbols remain: {matches:#?}"

@@ -393,11 +393,11 @@ pub enum RecentReleaseError {
 /// # Errors
 ///
 /// Returns [`RecentReleaseError::InvalidCount`] unless `count` is in `1..=100`.
-pub fn select_recent_releases<'a>(
-    releases: &'a [VerifiedRelease],
+pub fn select_recent_releases(
+    releases: &[VerifiedRelease],
     count: u32,
     include_prereleases: bool,
-) -> Result<Vec<&'a VerifiedRelease>, RecentReleaseError> {
+) -> Result<Vec<&VerifiedRelease>, RecentReleaseError> {
     if !(1..=100).contains(&count) {
         return Err(RecentReleaseError::InvalidCount);
     }

@@ -78,6 +78,7 @@
       };
     };
   };
+  aosBazelRepositoryTestSources = import ./repository-test-sources.nix {inherit pkgs lib;};
   aosBazelNixTestTools = import ./nix-test-tools.nix {inherit pkgs;};
   aosBazelCodegenTools = import ./codegen-tools.nix {inherit pkgs;};
   aosBazelDependencyGenerator = pkgs.callPackage ../../tools/workerd/_cargo-bazel.nix {};
@@ -94,6 +95,16 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    hub-model-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-model-tests";
+    };
+    hub-model = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-model";
+    };
     hub-portable = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -278,6 +289,30 @@
     dependencyProfile = "control";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
+  };
+  aosBazelHubModelWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = [
+      "tools/bazel"
+      "third_party/rust"
+      "api/proto"
+      "docs/rfcs/0012-hub-surface-topology"
+      "crates/aos/registry/aos-registry-format"
+      "crates/hub/aos-hub-api"
+      "crates/hub/aos-hub-model"
+      "crates/shared/aos-core"
+      "crates/shared/aos-oci-types"
+    ];
+    repositories =
+      aosBazelRepositories
+      // aosBazelRustRepositories.hub-model-tests
+      // {
+        aos_codegen = aosBazelCodegenTools;
+        aos_hub_model_test_sources = aosBazelRepositoryTestSources;
+      };
+    dependencyProfile = "hub-model-tests";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = ["//crates/hub/aos-hub-model:unit"];
   };
   aosBazelHubPortableWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -505,6 +540,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelHubModelLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelHubModelWorkspace;
     }).launcher;
   aosBazelHubPortableLauncher =
     (import ./development.nix {

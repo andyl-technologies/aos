@@ -244,3 +244,15 @@ config_setting(
     flag_values = {":dependency_profile": "hub-portable"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "hub_model_dependencies",
+    flag_values = {":dependency_profile": "hub-model"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_model_tests_dependencies",
+    flag_values = {":dependency_profile": "hub-model-tests"},
+    visibility = ["//visibility:public"],
+)

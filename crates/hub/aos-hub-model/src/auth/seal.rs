@@ -93,6 +93,10 @@ impl AesGcmSealer {
 }
 
 impl SecretSealer for AesGcmSealer {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "AES-GCM nonces require fresh host entropy"
+    )]
     fn seal(&self, plaintext: &str) -> Result<String> {
         let nonce_bytes: [u8; NONCE_LEN] = rand::rng().random();
         let nonce = Nonce::from_slice(&nonce_bytes);

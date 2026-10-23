@@ -10,6 +10,10 @@ pub const MAGIC_LINK_TTL_SECS: i64 = 15 * 60;
 /// Only its SHA-256 hash is persisted; the plaintext is embedded in the
 /// emailed URL.
 #[must_use]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Hub credentials require unpredictable host entropy"
+)]
 pub fn new_magic_secret() -> String {
     let bytes: [u8; 32] = rand::rng().random();
     hex::encode(bytes)
