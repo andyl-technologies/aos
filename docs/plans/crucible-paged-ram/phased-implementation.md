@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 596 bindings: 577 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 598 bindings: 579 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2518,6 +2518,42 @@ independently checked successful nested summaries. All 738 storage tests and
 classification controls pass, with each exact test name and nonzero result
 independently checked. All 95 policy controls and storage/portable-RAM Clippy pass.
 Kernel quotas, physical OOM, native custody and performance remain unqualified.
+
+Signed catalog-decoding commit `97bc8ac04c` is pushed. Required application-target
+compilation is running from immutable source
+`jijgdajw1kbbn3rzc5yg0nd6ffpqv3lg`; all 5,410 committed Rust/TOML files and
+six required fixtures match before subsequent repeated-descriptor edits.
+The earlier logical-terminal application-target build now passes at
+`dy4np3apdjw6l834c3sfbq50xn9xrfhc`, retaining its independently checked
+5,407 committed Rust/TOML inputs and six fixtures.
+
+Repeated scoped root descriptors now validate borrowed identifiers directly
+against their owned inventory entries. Owned inventory decoding and borrowed
+comparison share the canonical field parser. Full identifier and geometry
+validation still precedes comparison, preserving existing rejection precedence.
+No discarded identifier string is constructed, no wire bytes or allowances
+change, and caller-owned input remains borrowed only during decoding.
+
+The original cost control fails at five allocations versus the four needed for
+its measured inventory prefix and retained selected-root vector. All thirteen
+malformed-field controls pass on both original and corrected decoding. The
+corrected cost control passes all 96 combinations of empty, single, twelve and
+maximum-width inventories, four classes, three scopes and maximum-byte ASCII or
+UTF-8 identifiers. The same finite caller account prepays the complete existing
+decode bound and remains charged through returned-result or error close. All
+seven existing real allocator-cause controls also pass. These are format and
+logical accounting controls, with no physical OOM or native authority claimed.
+Hermetic format output `mf21gda3xjycs0q6s38n1x69864frf3p` passes all thirteen
+selected cases and independently checked successful summaries. Inventory
+`8vkjnx4ygn38819bi6hms0p78r55nv6w` validates 598 bindings across 243
+requirements, with 148 uncovered and zero qualified.
+Hermetic storage output `f2mgvqp0z07axaxx76sf6kpi5i6k96z9` passes all 78
+selected cases and 99 independently checked successful nested summaries. All
+738 storage tests, 38 portable-RAM tests across eight targets and 1,179 plugin
+tests pass locally. Host validation reports 1,385 passes, eight failures and four
+ignored tests; complete failure reports match the earlier baseline after
+normalizing thread IDs only. Engine, policy, Clippy, ABI and required application
+target validation remain in progress at this checkpoint.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`

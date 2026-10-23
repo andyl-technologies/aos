@@ -19,6 +19,10 @@
   };
   components = {
     format = component "gate:ram-format" "format" [
+      (group "protocol/crucible-ram" "descriptor_decode" [] [
+        (case "selected_descriptor_checks_allocate_no_identifier_copies" "adversarial" ["RAM-9" "RAM-12"] "Actual root decoding adds only its retained selected-root vector to the measured inventory prefix across 96 empty, single, twelve and maximum-width inventory/class/scope/identifier combinations. Repeated descriptors borrow canonical input instead of allocating discarded identifiers; finite caller credit grants no native authority.")
+        (case "selected_descriptor_validation_preserves_original_error_kinds" "adversarial" ["RAM-9" "RAM-12"] "Thirteen actual malformed repeated-descriptor cases preserve the original identifier, class, mask, geometry and comparison error precedence. Canonical input is built before finite caller admission, which stays live through returned-error close; no physical OOM or native qualification is claimed.")
+      ])
       (group "protocol/crucible-ram" "conformance" [] [
         (case "canonical_golden_vectors" "positive" ["RAM-3" "RAM-4" "RAM-5" "RAM-7"] "Canonical construction and mathematical scope selection; no machine inventory admission.")
         (case "primitive_mode_and_output_are_fixed" "adversarial" ["RAM-7"] "Official unkeyed vectors and refusal of keyed or derived modes.")

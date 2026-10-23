@@ -270,7 +270,7 @@ impl RootRecord {
             .iter()
             .filter(|region| scope.includes(region.class()))
         {
-            if read_descriptor(&mut reader)? != *region {
+            if !read_descriptor_matches(&mut reader, region)? {
                 return Err(RamError::InvalidEncoding);
             }
             roots.push(RegionTreeDigest::from_bytes(reader.digest()?));
@@ -318,17 +318,37 @@ fn read_inventory(reader: &mut Reader<'_>, limits: Limits) -> Result<Topology, R
 }
 
 fn read_descriptor(reader: &mut Reader<'_>) -> Result<RegionDescriptor, RamError> {
-    let encoded_id = reader.string(255)?;
+    let (encoded_id, class, logical_length) = read_descriptor_fields(reader)?;
     let mut id = String::new();
     id.try_reserve_exact(encoded_id.len())
         .map_err(RamError::Allocation)?;
     id.push_str(encoded_id);
 
+    RegionDescriptor::new(id, class, logical_length)
+}
+
+// Repeated scoped descriptors need validation, not another owned identifier.
+fn read_descriptor_matches(
+    reader: &mut Reader<'_>,
+    expected: &RegionDescriptor,
+) -> Result<bool, RamError> {
+    let (id, class, logical_length) = read_descriptor_fields(reader)?;
+    validate_id(id)?;
+    let geometry = Geometry::new(logical_length)?;
+
+    Ok(id == expected.id() && class == expected.class() && geometry == expected.geometry())
+}
+
+// Owned inventory decoding and borrowed root checks share one canonical grammar.
+fn read_descriptor_fields<'a>(
+    reader: &mut Reader<'a>,
+) -> Result<(&'a str, RegionClass, u64), RamError> {
+    let id = reader.string(255)?;
     let class = RegionClass::decode(reader.u8()?)?;
     if reader.u8()? != class.coverage_mask() {
         return Err(RamError::InvalidEncoding);
     }
-    RegionDescriptor::new(id, class, reader.u64()?)
+    Ok((id, class, reader.u64()?))
 }
 
 /// A bounded region-local sibling path that additionally requires a complete root record.
