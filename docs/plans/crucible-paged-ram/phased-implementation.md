@@ -68,7 +68,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 637 bindings: 618 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 640 bindings: 621 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -3022,7 +3022,7 @@ owned fixture directories removed after process exit, and ordinary GC rerun
 with the stress case excluded. This interruption is not a stress qualification.
 Hermetic storage output `kppj8ry71299w59n2l5db19g5dzvy6id` passes all
 109 selected cases and 130 independently checked successful nested summaries.
-Required application compilation is running from corrected immutable source
+Its application compilation was superseded by the final cumulative check; its corrected immutable source is
 `pziny533k85pja76ak5fairhaswymr1f`; all 5,420 committed Rust/TOML files and
 six required fixtures match `2363c178d2` before subsequent source edits. These metadata-archive controls do not
 qualify the complete transfer identity roster, restart reconciliation,
@@ -3053,7 +3053,7 @@ All 762 ordinary storage tests, 95 policy controls and strict
 storage/portable-RAM Clippy pass. Hermetic storage output
 `vwawxfg1p1d55l55lmvgj209q49dk5x5` passes all 112 selected cases and
 133 independently checked successful nested summaries. Required application
-compilation is running from immutable source `k7qjy3vckj6p3iassvgpd0nydznz493z`;
+compilation was superseded by the final cumulative check; its immutable source is `k7qjy3vckj6p3iassvgpd0nydznz493z`;
 all 5,421 committed Rust/TOML files and six fixtures match `e31cbbfb8d` before
 subsequent source edits. The
 fault controls establish component error custody, without inducing physical
@@ -3078,11 +3078,45 @@ Inventory `0l9mdw9byy247ny8rl5yhvdrzsjkh80y` validates 637 bindings across
 243 requirements: 593 model, 25 format and nineteen native bindings. There are
 still 142 uncovered requirements and zero fully qualified requirements. Ordinary
 storage checks pass all 764 ordinary tests. All 95 policy controls and strict
-storage/portable-RAM Clippy also pass. The expanded hermetic storage gate and
-required application compilation are running
-from immutable source `rrr3m5wfnbvckxccq2rvr56lf8kcxrj8`; committed source and
-fixture matching is required before subsequent source edits. These codec
+storage/portable-RAM Clippy also pass. Hermetic storage output
+`g6s26fa4qzckp08d9cdr0m2fhf3m68n7` passes all 114 selected cases and
+135 independently checked successful nested summaries. Required application
+compilation was superseded by the final cumulative check; its immutable source is `rrr3m5wfnbvckxccq2rvr56lf8kcxrj8`;
+all 5,422 committed Rust/TOML files and six fixtures match `ec9984a23a` before
+subsequent source edits. These codec
 controls grant no whole-world readiness or native resource authority.
+
+Deferred encoded-source opens now report both child-account admission and
+reader-credit refusal through their saved source original. Each inline typed
+admission error retains that original's existing custody instead of allocating
+a boxed supervision error. A foreign ambient account is never selected as the
+payer. Successful deferred reader behavior and funding remain source-owned.
+
+Both genuine predecessor refusal cases fail: irreversible revocation before
+child admission and revocation at the actual reader-credit request each leave
+zero caller bytes charged after source handles close, despite 8,773 bytes of
+existing original prepayment. The latter control measures the real healthy
+child-admission prefix before selecting the next verification cut. The healthy
+seventeen-byte reader-lifetime control passes. After correction all seven
+checked-source controls pass. Both refusal paths preserve their actual typed
+revocation cause and full original prepayment through final error close; the
+foreign account acquires no loan and closes independently. A successful reader
+still retains its bytes after source, codec and original handles close, and
+releases them after exact EOF and reader close.
+
+Inventory `6lvplgx5j1c55xjdhi9yxwzxi9q99ncm` validates 640 bindings across
+243 requirements: 596 model, 25 format and nineteen native bindings. There are
+still 142 uncovered requirements and zero fully qualified requirements. All
+767 ordinary storage tests, 95 policy controls and strict storage/portable-RAM
+Clippy pass. The expanded hermetic storage gate and final cumulative required
+application-target compilation are running from immutable source
+`a3vgq505px99d20slkwn6swplagy48iw`; committed source and fixture matching is
+required before subsequent source edits. Four earlier application check clients
+were deliberately stopped as superseded by this final cumulative check; their
+immutable input matches remain recorded above, without a compilation-pass
+claim. The already active receiver application check continues separately.
+These controls establish finite storage-component custody, without admitting
+native physical resources or resolving the blocked native-provider work.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`

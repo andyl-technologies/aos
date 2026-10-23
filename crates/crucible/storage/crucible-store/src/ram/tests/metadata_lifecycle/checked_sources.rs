@@ -1,6 +1,104 @@
 //! Checked encoded-source opens retain the stored original V5 account.
 
 use super::*;
+use std::io::Read;
+
+#[test]
+fn deferred_encoded_source_keeps_its_reader_after_creating_handles_close() {
+    let quota = ObservedQuota::new();
+    let original = DecodeBudget::for_store(quota.clone()).unwrap();
+    let codec = original.child().unwrap();
+    codec.charge_array::<u8>(17).unwrap();
+    let source =
+        crate::ram::codec_ownership::encoded_source(vec![7; 17], &codec, &original).unwrap();
+    let mut reader = source.open().unwrap();
+
+    drop(source);
+    drop(codec);
+    drop(original);
+    assert!(quota.used() > 17);
+    let mut bytes = [0; 17];
+    reader.read_exact(&mut bytes).unwrap();
+    assert_eq!(bytes, [7; 17]);
+    assert_eq!(reader.read(&mut [0]).unwrap(), 0);
+    drop(reader);
+    assert_eq!(quota.used(), 0);
+}
+
+fn deferred_source_refusal(revoke_during_reader_credit: bool) {
+    let quota = ObservedQuota::new();
+    let original = DecodeBudget::for_store(quota.clone()).unwrap();
+    original.charge_bytes(8197).unwrap();
+    let admitted_original = quota.used();
+    let codec = original.child().unwrap();
+    codec.charge_array::<u8>(17).unwrap();
+    let source =
+        crate::ram::codec_ownership::encoded_source(vec![7; 17], &codec, &original).unwrap();
+    let foreign_quota = ObservedQuota::new();
+    let foreign = DecodeBudget::for_store(foreign_quota.clone()).unwrap();
+    foreign.charge_bytes(239).unwrap();
+    let foreign_requests = foreign_quota.reservations.load(Ordering::SeqCst);
+    let foreign_scope = foreign.enter();
+
+    if revoke_during_reader_credit {
+        // Observe the real child-admission prefix; revoke at its next original
+        // verification, when the actual deferred open asks for reader storage.
+        let before = quota.verifications.load(Ordering::SeqCst);
+        let child = original.child().unwrap();
+        let prefix = quota.verifications.load(Ordering::SeqCst) - before;
+        assert!(prefix > 0);
+        drop(child);
+        quota
+            .revoke_after_verifications
+            .store(prefix + 1, Ordering::SeqCst);
+    } else {
+        quota.revoked.store(true, Ordering::SeqCst);
+    }
+    let error = source.open().err().unwrap();
+    assert!(quota.revoked.load(Ordering::SeqCst));
+    let mut cause = Some(&error as &(dyn Error + 'static));
+    let mut actual_revocation = false;
+    while let Some(current) = cause {
+        if current.is::<RevokedOriginalAuthority>() {
+            actual_revocation = true;
+            break;
+        }
+        cause = current.source();
+    }
+    assert!(
+        actual_revocation,
+        "the actual original refusal remains typed"
+    );
+    let funded = matches!(&error, StoreError::DecodeAdmission { .. });
+    assert_eq!(
+        foreign_quota.reservations.load(Ordering::SeqCst),
+        foreign_requests
+    );
+
+    drop(foreign_scope);
+    drop(foreign);
+    assert_eq!(foreign_quota.used(), 0);
+    drop(source);
+    drop(codec);
+    drop(original);
+    let retained = quota.used();
+    drop(error);
+    assert_eq!(quota.used(), 0);
+    assert!(
+        funded && retained >= admitted_original,
+        "deferred-open refusal must retain its actual original: funded={funded}, retained={retained}, admitted={admitted_original}"
+    );
+}
+
+#[test]
+fn deferred_encoded_source_admission_refusal_retains_original_without_foreign_credit() {
+    deferred_source_refusal(false);
+}
+
+#[test]
+fn deferred_encoded_source_reader_credit_refusal_retains_original_without_foreign_credit() {
+    deferred_source_refusal(true);
+}
 
 #[test]
 fn checked_encoded_source_opens_after_creating_scope_and_refuses_original_revocation() {

@@ -216,13 +216,13 @@ impl BlobSource for EncodedSource {
             .0
             .original
             .child()
-            .map_err(|source| StoreError::Supervision {
-                source: Box::new(source),
+            .map_err(|source| {
+                crate::content_store::batch::admission_under(&self.0.original, source)
             })?;
         let credit = account
             .reserve_scratch_bytes(std::mem::size_of::<EncodedReader>() as u64)
-            .map_err(|source| StoreError::Supervision {
-                source: Box::new(source),
+            .map_err(|source| {
+                crate::content_store::batch::admission_under(&self.0.original, source)
             })?;
         Ok(Box::new(EncodedReader {
             reader: Cursor::new(SharedBytes(self.0.clone())),
