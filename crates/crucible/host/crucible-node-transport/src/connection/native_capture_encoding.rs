@@ -526,15 +526,19 @@ fn future_bank_serialization_data(
 fn add(left: usize, right: usize) -> Result<usize, ProviderError> {
     left.checked_add(right).ok_or_else(credit)
 }
+
 fn mul(left: usize, right: usize) -> Result<usize, ProviderError> {
     left.checked_mul(right).ok_or_else(credit)
 }
+
 fn sum(values: &[usize]) -> Result<usize, ProviderError> {
     values.iter().try_fold(0, |total, value| add(total, *value))
 }
+
 fn refused() -> ProviderError {
     ProviderError::Correlation("native12 current Observe encoding association")
 }
+
 fn credit() -> ProviderError {
     ProviderError::ResourceExhausted("native12 prospective complete encoding")
 }
