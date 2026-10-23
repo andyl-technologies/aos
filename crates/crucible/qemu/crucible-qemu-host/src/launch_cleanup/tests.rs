@@ -77,10 +77,10 @@ impl RamControlRegistrar for Registrar {
         &self,
         _: HostRamTarget,
     ) -> crate::ram_control::RamControlRetirementOutcome {
-        crate::ram_control::RamControlRetirementOutcome::from_known((|| {
+        crate::ram_control::RamControlRetirementOutcome::from_known({
             self.prepared.store(true, Ordering::Release);
             Ok(())
-        })())
+        })
     }
 
     fn retire_after_cleanup(&self, _: HostRamTarget) -> Result<(), RamControlError> {

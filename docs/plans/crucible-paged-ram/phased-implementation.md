@@ -965,6 +965,16 @@ against commit `a2aa1d11bb`; all 5,364 Rust/TOML inputs and six fixture/license
 files match its immutable build source. These changes do not qualify
 native birth, issued Cleanup, paid profiles or physical retirement.
 
+The shutdown and startup component fixtures now return named records instead
+of anonymous four- and five-field tuples, preserving field and destruction
+order. Cleanup's test registrar uses a direct block for its preparation result.
+All thirty existing causal controls pass: nine shutdown, eight startup and
+thirteen cleanup cases. Focused formatting and engineering hygiene pass. The matching strict Host
+lint command retains 692 library errors and fourteen warnings; test findings
+fall from 763 to 759 with five warnings. All three tuple-complexity findings
+and the immediate closure-call finding are removed without lint exemptions.
+Mandatory application-target compilation remains required for this test revision.
+
 #### Cumulative construction and request ownership source
 
 Signed atomic `e82bb4c78da7af3351ef6473935a2be2feb01a2d` imports conventional
@@ -1100,13 +1110,33 @@ Hermetic patch/bundle reconstruction passes at
 `iklsrqyaniq8jvfwzxj2idply5zj6cbg`; the unchanged 641-file license ledger,
 core evaluation and focused Nix formatting pass.
 
-The proposed fresh owning-compile plan remains unexecuted: independent review
-finds one stale nested inventory digest in its reconstruction inputs. The
-original sealed plan and its failure are retained while a separate corrected
-plan is prepared. The earlier genuine native-invocation compile failure and
+Independent review rejects the first fresh owning-compile plan before execution
+because one nested reconstruction inventory digest is stale. Its sealed bytes
+remain intact. The corrected successor authenticates all 102 payloads, 128
+actual inputs and ten nested reconstruction inputs; its eleven execution
+scripts and owning roster are byte-identical to the preceding genuine run.
+All 31 source-effect, seven sampler and ten evaluator controls pass. The
+review record has SHA-256
+`1c94a9e2527f3ff79f727c4d2e4a1287689f4d306211979eb6c011d430f2bec7`.
+The exact bounded single-worker reconstruction/configure/compile run is active.
+The earlier genuine native-invocation compile failure and
 the registered Source unit's eighteen unresolved providers remain preserved;
 neither is qualified by this source-only correction. Fresh owning compilation,
 getter readback, runtime, paid profiles and physical return remain required.
+
+The separate no-Target Outcome draft's original audit packet omits actual
+script inputs. Its evidence-only successor preserves all 91 production rows
+and freezes 88 additional historical inputs, six unchanged audit/parser scripts
+and the runtime identities used for replay. Complete independent correspondence
+verifies 106 artifacts and 185 archive members. Seventy added inputs equal the
+canonical source; eighteen differ and remain historical evidence, never join
+overlays. Isolated peer replay reproduces the original partial counts of
+486 parsed functions and 208 reachable static names, and the complete cohort's
+491 functions and 215 names. Both retain 120 roots and pass 142 expression,
+six ordering and 112-field controls. The correspondence record has SHA-256
+`6fe2632700c2ff2ed5c9ca7f97e43294a366468da728dbdd160ae3bc20658c28`.
+These source audits qualify neither the coherent canonical closure nor C,
+layout, runtime, paid-profile or successful physical return.
 
 #### Initial loader storage component
 

@@ -166,16 +166,16 @@ fn startup_outside_request_keeps_the_actual_body_and_subscriber_extents() {
 // These component controls retain real Setup and resource loans. The actual ELF
 // reader supplies the observation; no PluginStartupState or Source is fabricated.
 #[cfg(target_os = "linux")]
-fn component_setup() -> Result<
-    (
-        HostOperationSupervisor,
-        HostOperationGuard,
-        rustix::fd::OwnedFd,
-        HostServiceAllocator,
-        crucible_host_resources::host_services::HostServiceLease,
-    ),
-    Box<dyn std::error::Error>,
-> {
+struct ComponentSetup {
+    supervisor: HostOperationSupervisor,
+    original: HostOperationGuard,
+    event: rustix::fd::OwnedFd,
+    services: HostServiceAllocator,
+    control: crucible_host_resources::host_services::HostServiceLease,
+}
+
+#[cfg(target_os = "linux")]
+fn component_setup() -> Result<ComponentSetup, Box<dyn std::error::Error>> {
     let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
     let extent = OriginalPluginStartup::host_allocation_extent()?;
     let services = HostServiceAllocator::new(1, 2, extent)?;
@@ -196,7 +196,13 @@ fn component_setup() -> Result<
     let alias = rustix::io::fcntl_dupfd_cloexec(&event, 3)?;
     let original = supervisor.begin_control(HostOperationClass::Setup)?;
     original.retain_original_setup_cancellation(alias, subscriber)?;
-    Ok((supervisor, original, event, services, control))
+    Ok(ComponentSetup {
+        supervisor,
+        original,
+        event,
+        services,
+        control,
+    })
 }
 
 #[cfg(target_os = "linux")]
@@ -206,7 +212,13 @@ fn receiver_component_refusal_retains_actual_setup_and_control_until_physical_dr
     use crate::artifact_identity::native_constructor_test_support as artifacts;
     use std::io::Write;
 
-    let (_supervisor, original, event, services, control) = component_setup()?;
+    let ComponentSetup {
+        supervisor: _supervisor,
+        original,
+        event,
+        services,
+        control,
+    } = component_setup()?;
     let mut file = tempfile::tempfile()?;
     file.write_all(&artifacts::receiver_elf(&[artifacts::receiver_record(
         0, 0,
@@ -256,7 +268,13 @@ fn cancelled_setup_precedes_artifact_refusal_and_preserves_independent_original_
     use std::cell::Cell;
     use std::io::Write;
 
-    let (_supervisor, original, event, services, control) = component_setup()?;
+    let ComponentSetup {
+        supervisor: _supervisor,
+        original,
+        event,
+        services,
+        control,
+    } = component_setup()?;
     let mut file = tempfile::tempfile()?;
     file.write_all(&artifacts::receiver_elf(&[artifacts::receiver_record(
         0, 0,
@@ -301,7 +319,13 @@ fn actual_artifact_first_cause_keeps_a_later_same_original_cancellation_post()
     use crate::artifact_identity::native_constructor_test_support as artifacts;
     use std::io::Write;
 
-    let (supervisor, original, event, services, control) = component_setup()?;
+    let ComponentSetup {
+        supervisor,
+        original,
+        event,
+        services,
+        control,
+    } = component_setup()?;
     let mut file = tempfile::tempfile()?;
     file.write_all(&artifacts::receiver_elf(&[artifacts::receiver_record(
         0, 0,

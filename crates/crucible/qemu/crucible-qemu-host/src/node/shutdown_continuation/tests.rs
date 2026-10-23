@@ -100,32 +100,21 @@ impl QemuNodeExternalProcessControl for ControlledChild {
     }
 }
 
-fn fixture(
-    expire: bool,
-) -> Result<
-    (
-        QemuNode,
-        HostOperationSupervisor,
-        Arc<AtomicBool>,
-        Arc<Mutex<Vec<QemuShutdownRung>>>,
-    ),
-    Box<dyn Error>,
-> {
+struct ShutdownFixture {
+    node: QemuNode,
+    supervisor: HostOperationSupervisor,
+    closed: Arc<AtomicBool>,
+    signals: Arc<Mutex<Vec<QemuShutdownRung>>>,
+}
+
+fn fixture(expire: bool) -> Result<ShutdownFixture, Box<dyn Error>> {
     fixture_with_poll_expiry(expire, false)
 }
 
 fn fixture_with_poll_expiry(
     expire: bool,
     expire_poll: bool,
-) -> Result<
-    (
-        QemuNode,
-        HostOperationSupervisor,
-        Arc<AtomicBool>,
-        Arc<Mutex<Vec<QemuShutdownRung>>>,
-    ),
-    Box<dyn Error>,
-> {
+) -> Result<ShutdownFixture, Box<dyn Error>> {
     let mut node = super::super::tests::shutdown_continuation_fixture()?;
     // Dispose the real fixture child before installing a distinct modeled
     // generation. The new child gets its own unentered journal, never a copy.
@@ -144,7 +133,12 @@ fn fixture_with_poll_expiry(
         reap_and_expire_on_poll: expire_poll.then(|| supervisor.clone()),
     }));
     node.child_shutdown = ChildShutdown::new();
-    Ok((node, supervisor, closed, signals))
+    Ok(ShutdownFixture {
+        node,
+        supervisor,
+        closed,
+        signals,
+    })
 }
 
 fn close(
@@ -221,7 +215,12 @@ fn actual_shutdown_bracket_retains_refused_entry_without_diagnostic_allocation()
 -> Result<(), Box<dyn Error>> {
     use crucible_host_resources::test_support::TestAllocationObserver;
 
-    let (mut node, supervisor, closed, _) = fixture(false)?;
+    let ShutdownFixture {
+        mut node,
+        supervisor,
+        closed,
+        ..
+    } = fixture(false)?;
     let original = supervisor.begin(HostOperationClass::Cleanup)?;
     original.complete()?;
     let first = original.wait_slice().unwrap_err();
@@ -278,7 +277,12 @@ fn check_shutdown_bracket_without_diagnostic_allocation(
     use crucible_host_resources::test_support::TestAllocationObserver;
 
     for work_refuses in [false, true] {
-        let (mut node, supervisor, closed, _) = fixture(false)?;
+        let ShutdownFixture {
+            mut node,
+            supervisor,
+            closed,
+            ..
+        } = fixture(false)?;
         let original = supervisor.begin(HostOperationClass::Cleanup)?;
         let (revision, mut budgets) = supervisor.budgets()?;
         budgets.classes[HostOperationClass::Cleanup as usize] =
@@ -351,7 +355,12 @@ fn check_shutdown_bracket_without_diagnostic_allocation(
 #[test]
 fn entered_refusal_and_independent_posts_survive_same_original_until_factual_close()
 -> Result<(), Box<dyn Error>> {
-    let (mut node, supervisor, closed, signals) = fixture(true)?;
+    let ShutdownFixture {
+        mut node,
+        supervisor,
+        closed,
+        signals,
+    } = fixture(true)?;
     let first = close(&mut node, &supervisor).unwrap_err();
     let QemuNodeError::ShutdownOriginal {
         report,
@@ -418,7 +427,12 @@ fn entered_refusal_and_independent_posts_survive_same_original_until_factual_clo
 #[test]
 fn healthy_closure_returns_the_same_operation_record_without_restarting_on_reentry()
 -> Result<(), Box<dyn Error>> {
-    let (mut node, supervisor, _, signals) = fixture(false)?;
+    let ShutdownFixture {
+        mut node,
+        supervisor,
+        signals,
+        ..
+    } = fixture(false)?;
     assert!(close(&mut node, &supervisor)?.reaped);
     assert!(node.child_shutdown.completion_effect);
     assert!(node.child_shutdown.completion_failure.is_none());
@@ -438,8 +452,17 @@ fn healthy_closure_returns_the_same_operation_record_without_restarting_on_reent
 #[test]
 fn partial_nodeset_shutdown_keeps_both_actual_nodes_without_replaying_closed_peer()
 -> Result<(), Box<dyn Error>> {
-    let (healthy, _, _, healthy_signals) = fixture(false)?;
-    let (refused, _, closed, refused_signals) = fixture(true)?;
+    let ShutdownFixture {
+        node: healthy,
+        signals: healthy_signals,
+        ..
+    } = fixture(false)?;
+    let ShutdownFixture {
+        node: refused,
+        closed,
+        signals: refused_signals,
+        ..
+    } = fixture(true)?;
     let first = NodeId {
         name: String::from("a-closed"),
     };
@@ -474,7 +497,7 @@ fn partial_nodeset_shutdown_keeps_both_actual_nodes_without_replaying_closed_pee
 #[test]
 fn channel_timeout_preserves_actual_initiator_and_independent_shutdown_report()
 -> Result<(), Box<dyn Error>> {
-    let (mut node, _, _, _) = fixture(true)?;
+    let ShutdownFixture { mut node, .. } = fixture(true)?;
     let first = QemuNodeChannelError::bounded_await_timeout(
         "component channel",
         "actual first failure",
@@ -505,7 +528,12 @@ fn channel_timeout_preserves_actual_initiator_and_independent_shutdown_report()
 #[test]
 fn actual_wait_exit_survives_post_refusal_and_stops_every_later_effect()
 -> Result<(), Box<dyn Error>> {
-    let (mut node, supervisor, _, signals) = fixture_with_poll_expiry(false, true)?;
+    let ShutdownFixture {
+        mut node,
+        supervisor,
+        signals,
+        ..
+    } = fixture_with_poll_expiry(false, true)?;
     let failure = close(&mut node, &supervisor).unwrap_err();
     let QemuNodeError::ShutdownAndRam { first, ram } = failure else {
         panic!("process post and whole-body completion must both be returned");
