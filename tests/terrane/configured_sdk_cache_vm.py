@@ -374,7 +374,7 @@ def run_surface(driver, image, surface_image):
     store = tomllib.loads(config.read_text())["store"]
     original = 'role = "serve"\nstore = ' + json.dumps(store) + "\n"
 
-    for mode in ["disabled", "bound", "admit"]:
+    for mode in ["disabled", "bound", "admit", "recover-draining"]:
         text = original + host_configuration(driver)
         if mode != "disabled":
             node_bytes = 32 if mode == "bound" else 65536
@@ -390,10 +390,12 @@ future_hold_bytes = 327680
         stdout, _ = actor(driver, surface_image, "surface-" + mode,
                           ["surface-index-owner-fixture", "configured-surface", config, mode],
                           mount_policy="readonly")
-        witness = (
-            "PASS configured funded surface policy reaches actual recovered owner and warm reuse retains original sealed inode"
-            if mode == "admit" else
-            f"PASS configured surface {mode} policy refuses before durable mutation")
+        if mode == "recover-draining":
+            witness = "PASS configured funded cache reopen completes actual recovery and new Resume while retaining the original draining mapping; exact final-unmap charge release precedes authenticated policy discharge"
+        elif mode == "admit":
+            witness = "PASS configured funded surface policy reaches actual recovered owner and warm reuse retains original sealed inode"
+        else:
+            witness = f"PASS configured surface {mode} policy refuses before durable mutation"
         driver.require(stdout.decode().splitlines() == [witness],
                        "configured surface control lacks its exact native witness: " + mode)
 

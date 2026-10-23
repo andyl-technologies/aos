@@ -53,6 +53,12 @@ impl NativeReady {
     /// recovery can cross its physical Resume turn. A changed portable checkpoint
     /// refuses the open; it never imports a cold epoch as current authority.
     ///
+    /// With `surface-fuse` and an explicitly funded surface-index policy, old
+    /// kernel references remain draining through the new Resume. Their original
+    /// bindings, pins and physical charges remain protected until authenticated
+    /// closure; recovery grants no authority to resume the old exposure.
+    /// Without that policy, unresolved exposure custody refuses startup.
+    ///
     /// The caller installs confinement in its fresh role process before calling
     /// this method, using the same native bootstrap required by cache preparation.
     /// Failures may leave completed recovery effects and must not trigger a
@@ -83,6 +89,8 @@ impl NativeReady {
         let reads = config.reads;
         let max_requests = config.inventory_entries;
         let consumer_release_grace = config.policy.release_grace;
+        #[cfg(feature = "surface-fuse")]
+        let retain_surface_exposures = config.surface_index.is_some();
         let mut preparation = NativeCachePreparation::inspect(config, confinement)?;
         preparation.bind_portable_catalog(&before)?;
         let layout = Arc::clone(preparation.layout());
@@ -92,6 +100,13 @@ impl NativeReady {
             .map_err(io::Error::other)?;
 
         let owner = NativeMetadataOwner::start(preparation)?;
+        #[cfg(feature = "surface-fuse")]
+        let completed = if retain_surface_exposures {
+            owner.recover_retaining_surface_exposures().await?
+        } else {
+            owner.recover().await?
+        };
+        #[cfg(not(feature = "surface-fuse"))]
         let completed = owner.recover().await?;
         owner
             .resume_recovered(completed)

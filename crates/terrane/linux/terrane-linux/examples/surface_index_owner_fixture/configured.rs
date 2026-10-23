@@ -8,6 +8,9 @@ use std::{io, path::PathBuf, sync::Arc};
 use terrane_linux::{configured::NativeCachePlan, quota_confinement};
 use terrane_sdk::config::Config;
 
+#[path = "configured/recovery.rs"]
+mod recovery;
+
 /// Runs the fresh actor without adding its async frame to the other selectors.
 ///
 /// # Errors
@@ -20,7 +23,12 @@ pub(super) fn run() -> Result<()> {
     let mode = arguments
         .next()
         .ok_or("missing configured surface control")?;
-    if arguments.next().is_some() || !matches!(mode.as_str(), "disabled" | "bound" | "admit") {
+    if arguments.next().is_some()
+        || !matches!(
+            mode.as_str(),
+            "disabled" | "bound" | "admit" | "recover-draining"
+        )
+    {
         return Err("invalid configured surface control".into());
     }
 
@@ -40,6 +48,10 @@ async fn verify(
     confinement: Arc<quota_confinement::Installed>,
     mode: &str,
 ) -> Result<()> {
+    if mode == "recover-draining" {
+        return Box::pin(recovery::verify(plan, host, confinement)).await;
+    }
+
     let caches = plan.open(confinement).await?;
     let cache = caches
         .get("public")

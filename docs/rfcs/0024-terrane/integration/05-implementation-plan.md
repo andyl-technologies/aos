@@ -8699,39 +8699,42 @@ module gate at `5e815dc29f` (102 checks, complete source/report review).
 The four other T2 tasks, deployed runtime composition and milestone exit
 remain open. This scoped packaging acceptance does not accept a role runtime.
 
-Current qualification (2026-10-22): 27 of 64 trunk tasks are accepted. The
-`f82429a92d` runtime checkpoint passes all four cold inline/manifest pressure
-and no-pressure native scenarios, with complete source/artifact and runtime
-reviews. At `2e34a1d9fe`, the maintained SDK VM, refusal SDK VM and mandatory
-two-VM aggregate all pass. Each VM's review matches all 8,074 immutable source
-files, its four actual Cargo executables, all fifteen enrollment/root controls,
-and its complete assigned lifecycle, namespace, publication and lower-failure
-controls. The aggregate retains exactly both reviewed VM outputs. Required
-application compilation at `f82429a92d` also passes in 1,597.841 seconds with
-185 test targets across 59 packages and complete 8,074-file source review;
-this is compilation only. The earlier `230375f940` application compilation
-also passes with all 8,073 immutable source files reviewed.
+Current qualification (2026-10-22): 27 of 64 trunk tasks are accepted.
+At `af90462e20`, the full native cache VM passes in 1,542.715 seconds with all
+8,080 immutable files, 5,370 bound inputs, four actual Cargo/installed ELFs,
+92 fixture selectors, 129 native unit cases and required regression witnesses
+reviewed. Its independent enrollment VM passes with all 17 executed selectors
+and four fresh status observations reviewed. The `37e337cf5f` surface-owner VM
+passes all original controls and cold active-exposure closure with complete
+source and artifact review. At `5c427bfc16`, the owning blame gate and all six
+CLI workflows pass with complete source/compiler-record review. The four
+`f82429a92d` cold inline/manifest pressure and no-pressure scenarios and both
+`2e34a1d9fe` maintained/refusal SDK VMs retain their separately reviewed passes.
+These results qualify their own immutable sources and scopes.
 
-The broader `2e34a1d9fe` requests expose two harness failures before the full
-cache VM runs: the shared-directory importer omits a required proof argument,
-and the cache image misclassifies one pure policy test as an administrative
-creator. Both corrections are pushed through `8dc8dd6311`; the actual compiled
-129-case inventory now validates as 124 ordinary-user and five creator cases,
-with every original case retained. The fresh full-cache ext4 VM at
-`8dc8dd6311` now passes, with complete source, four-executable and runtime review;
-all 129 unit cases execute, and all 92 fixture selectors remain in its bound
-inventory. Its eleven-component request subsequently fails on the old native
-enrollment namespace expectation. Measured inode evidence supports its correction;
-the `cba326c877` enrollment VM passes with complete 8,079-file, 5,358-input,
-actual-executable and 17-case review. At `5c427bfc16`, the owning blame gate and
-all six CLI workflows pass with complete source/compiler-record review. Required
-application compilation passes at both preceding blame checkpoints, each with
-185 actual test targets across 59 packages and all 8,079 source files checked.
-Fresh eleven-component and application requests continue at `5c427bfc16`.
-The new native status observation has strict lint, fixture compilation and public
-documentation checks, but requires fresh native qualification. No full current
-owning-gate or feature-matrix success is claimed. Complete production role
-composition, unresolved cold kernel custody and later trunk milestones remain open.
+Required application compilation passes at `221c6c6a6d` and `a23eb54259`,
+respectively in 1,477.731 and 805.834 seconds. Each complete review matches all
+8,082 immutable files and 185 test targets across 59 packages; compilation
+provides no native runtime receipt. Their surface-owner VMs pass the retained
+index recovery scenario, then correctly refuse an invalid fixture request whose
+file deadline exceeds its enclosing exposure. Both failed receipts remain failed.
+The fixture deadline correction is pushed at `42fe82a0fc`; `7be7d8fb87` separates
+the named-file and already-unlinked-file scenarios into independent VMs without
+enlarging any actor or guest bound. Fresh native aggregate and application
+qualification run from that immutable source. The runner's first attempts fail
+before building because its temporary directory was absent; corrected retries
+retain those setup failures separately.
+
+The configured native factory now selects retained-exposure recovery only when
+FUSE support is compiled and the operator explicitly funds the index policy.
+It preserves original physical obligations as draining through new Resume;
+no old serving authority is revived. A new native configured control exercises
+that public opener, unchanged-policy refusal without the funded policy, portable
+revalidation, retained mapping and exact physical release before authenticated
+closure. Strict lint, non-FUSE compilation and actual fixture compilation pass;
+its new native qualification remains required. Complete production FUSE role
+composition and later trunk milestones remain open. No full current owning-gate,
+feature-matrix or RFC completion is claimed.
 
 The dated entries below preserve earlier checkpoints and provisional results;
 the current status and task checkboxes govern acceptance.
@@ -15985,3 +15988,30 @@ are PASS and retains links to all complete receipts. Separating genuine grace
 windows prevents cumulative fixture work from enlarging the original contract.
 The installed supervisor and actual compiler-artifact verification run before
 and after each scenario. Fresh native qualification remains required.
+
+
+#### Configured recovery retains old physical exposure custody
+
+`NativeReady::open` now composes the retained-exposure recovery policy with the
+existing portable validation, native funding and publisher Resume sequence.
+Selection requires both compiled FUSE support and an explicitly configured
+surface-index policy. The lower-level strict recovery API remains strict;
+removing the funded policy makes configured startup refuse unresolved exposure
+custody. Every original bound, partition check, census and funding requirement
+still applies, and no old worker or backing grant is reconstructed.
+
+A new configured native actor creates a genuine signed root and actual mapped
+index, records its original inode and durable exposure, and drops the complete
+old configured cache composition while retaining only the external mapping. It
+first requires unfunded public-factory startup to refuse with unchanged exposure
+policy, then reopens through the funded public factory without manually calling
+recovery or Resume. It requires valid portable closure, exact original bindings,
+pins and leases, draining Running status, and refusal to reconcile while the
+mapping survives. Final unmap must release the original blocks and one inode
+before any policy write; only authenticated final closure may discharge policy.
+Host administration enables the existing finite authenticated census before
+starting the actual quota helper. Existing configured controls remain selected
+with unchanged actor and guest deadlines. Strict all-feature/all-target lint,
+non-FUSE compilation, actual fixture compilation, formatting and Python syntax
+checks pass. Fresh configured native and mandatory application qualification
+remain required; no additional trunk task is accepted.

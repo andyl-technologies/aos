@@ -355,6 +355,14 @@ def main():
     for selector in ADMIN_CASES:
         run_case(selector, admin_command(selector))
 
+    if SCENARIO == "surface":
+        # Host administration explicitly funds the bounded original-inode
+        # census before starting the real authenticated quota helper.
+        host_config = ROOT / "positive/host.toml"
+        host_config.write_text(
+            "project_census = { retained_inodes = 512, directory_entries = 4096, depth = 16 }\n"
+            + host_config.read_text())
+
     broker = subprocess.Popen(admin_command("serve-positive", query=True),
                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                               start_new_session=True)
