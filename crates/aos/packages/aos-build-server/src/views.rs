@@ -22,6 +22,11 @@
 //! shared store does not leak it across views. The symlinks double as Nix
 //! GC roots, so anything visible in a view also survives `nix-store --gc`.
 
+#![allow(
+    clippy::disallowed_types,
+    reason = "Named host view configuration retains its existing lookup-map API outside Crucible replay state."
+)]
+
 use std::collections::HashMap;
 use std::fs;
 use std::os::unix;
@@ -190,6 +195,10 @@ impl ViewManager {
     ///
     /// Returns an error if `nix-store -qR` cannot be run or exits non-zero,
     /// or if creating a root or writing metadata fails.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Host source-mirror roots record actual retention timestamps."
+    )]
     pub fn create_source_roots(
         &self,
         view: &str,
@@ -260,6 +269,10 @@ impl ViewManager {
     ///
     /// Returns an error if the root or its metadata cannot be written, or
     /// if the system clock is before the Unix epoch.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Temporary host upload roots expire relative to their actual creation time."
+    )]
     pub fn create_tmp_root(&self, view: &str, hash: &str, store_path: &str) -> Result<()> {
         self.create_gc_root(view, "tmp", hash, store_path)?;
 
@@ -349,6 +362,10 @@ impl ViewManager {
     ///
     /// Returns an error if a hash cannot be extracted from a path, or if
     /// creating a root or writing its metadata fails.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Host closure retention records the actual creation time of each view root."
+    )]
     pub fn create_roots_for_closure(&self, view: &str, ns: &str, paths: &[String]) -> Result<()> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)

@@ -423,9 +423,7 @@ async fn import_nar_data(data: &[u8]) -> Result<String, String> {
 
     let imported = String::from_utf8_lossy(&output.stdout).trim().to_string();
 
-    if let Err(reason) = pack::validate_imported_path(&imported) {
-        return Err(reason);
-    }
+    pack::validate_imported_path(&imported)?;
 
     Ok(imported)
 }

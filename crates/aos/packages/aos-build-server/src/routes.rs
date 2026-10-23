@@ -75,6 +75,10 @@ use tracing;
 /// View names become filesystem path components under `gcroots/` and
 /// `meta/`, so names containing path traversal sequences (`..`), directory
 /// separators, or null bytes are rejected with `400 Bad Request`.
+#[allow(
+    clippy::result_large_err,
+    reason = "Preserve ready-made HTTP error responses and their existing status and body handling."
+)]
 fn validate_view_name(name: &str) -> Result<(), Response> {
     if name.is_empty()
         || name.contains("..")
@@ -177,9 +181,8 @@ fn build_connectrpc_router(state: Arc<AppState>) -> connectrpc::Router {
     let router = cache_svc.register(router);
     let router = build_svc.register(router);
     let router = gc_svc.register(router);
-    let router = auth_svc.register(router);
 
-    router
+    auth_svc.register(router)
 }
 
 // ---------------------------------------------------------------------------
@@ -206,11 +209,11 @@ async fn cache_info_handler(
     };
 
     // Enforce auth unless anonymous_read is enabled.
-    if !view_config.anonymous_read {
-        if let AuthResult::Anonymous = auth {
-            tracing::warn!(view = %view, "auth required for cache-info");
-            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
-        }
+    if !view_config.anonymous_read
+        && let AuthResult::Anonymous = auth
+    {
+        tracing::warn!(view = %view, "auth required for cache-info");
+        return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
     }
 
     let mut body = nix_cache_info(&state.store_dir, 30);
@@ -239,11 +242,11 @@ async fn narinfo_handler(
         None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
     };
 
-    if !view_config.anonymous_read {
-        if let AuthResult::Anonymous = auth {
-            tracing::warn!(view = %view, hash = %hash_narinfo, "auth required for narinfo");
-            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
-        }
+    if !view_config.anonymous_read
+        && let AuthResult::Anonymous = auth
+    {
+        tracing::warn!(view = %view, hash = %hash_narinfo, "auth required for narinfo");
+        return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
     }
 
     let hash = match hash_narinfo.strip_suffix(".narinfo") {
@@ -329,11 +332,11 @@ async fn nar_handler(
         None => return (StatusCode::NOT_FOUND, "unknown view").into_response(),
     };
 
-    if !view_config.anonymous_read {
-        if let AuthResult::Anonymous = auth {
-            tracing::warn!(view = %view, filename = %filename, "auth required for NAR");
-            return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
-        }
+    if !view_config.anonymous_read
+        && let AuthResult::Anonymous = auth
+    {
+        tracing::warn!(view = %view, filename = %filename, "auth required for NAR");
+        return (StatusCode::UNAUTHORIZED, "authentication required").into_response();
     }
 
     let zstd_level = state.config.compression.level;
@@ -612,22 +615,22 @@ async fn upload_path_handler(
     }
 
     // Enforce per-view max_paths quota.
-    if let Some(view_config) = state.views.get_view(&view) {
-        if let Some(max_paths) = view_config.max_paths {
-            match state.views.count_roots(&view) {
-                Ok(count) if count >= max_paths => {
-                    tracing::warn!(view = %view, count, max_paths, "upload rejected: max_paths exceeded");
-                    return (
-                        StatusCode::INSUFFICIENT_STORAGE,
-                        format!("view has {count} rooted paths, max is {max_paths}"),
-                    )
-                        .into_response();
-                }
-                Err(e) => {
-                    tracing::error!(view = %view, error = %e, "failed to count roots for quota check");
-                }
-                _ => {}
+    if let Some(view_config) = state.views.get_view(&view)
+        && let Some(max_paths) = view_config.max_paths
+    {
+        match state.views.count_roots(&view) {
+            Ok(count) if count >= max_paths => {
+                tracing::warn!(view = %view, count, max_paths, "upload rejected: max_paths exceeded");
+                return (
+                    StatusCode::INSUFFICIENT_STORAGE,
+                    format!("view has {count} rooted paths, max is {max_paths}"),
+                )
+                    .into_response();
             }
+            Err(e) => {
+                tracing::error!(view = %view, error = %e, "failed to count roots for quota check");
+            }
+            _ => {}
         }
     }
 
@@ -731,6 +734,10 @@ async fn upload_path_handler(
 /// [`pack::validate_imported_path`]. Failures are returned as ready-made
 /// error responses (`500` for process errors, `400` for import or
 /// validation rejections).
+#[allow(
+    clippy::result_large_err,
+    reason = "Preserve ready-made HTTP error responses and their existing status and body handling."
+)]
 async fn import_nar(data: &[u8]) -> Result<String, Response> {
     let mut child = Command::new("nix-store")
         .envs(aos_nix_env())
@@ -800,10 +807,10 @@ async fn import_nar_with_tmp_root(data: &[u8], views: &ViewManager, view: &str) 
     };
 
     // Create a temporary GC root to protect the path until its build creates bin/ roots.
-    if let Some(hash) = ViewManager::store_path_hash(&imported) {
-        if let Err(e) = views.create_tmp_root(view, hash, &imported) {
-            tracing::warn!(view = %view, path = %imported, error = %e, "failed to create tmp GC root");
-        }
+    if let Some(hash) = ViewManager::store_path_hash(&imported)
+        && let Err(e) = views.create_tmp_root(view, hash, &imported)
+    {
+        tracing::warn!(view = %view, path = %imported, error = %e, "failed to create tmp GC root");
     }
 
     Json(serde_json::json!({ "path": imported })).into_response()
@@ -941,10 +948,10 @@ async fn build_handler(
     let live_stream = BroadcastStream::new(rx).filter_map(move |result| match result {
         Ok(event) => {
             // Skip events we already replayed.
-            if let Some(max_id) = highest_replayed {
-                if event.id <= max_id {
-                    return None;
-                }
+            if let Some(max_id) = highest_replayed
+                && event.id <= max_id
+            {
+                return None;
             }
             Some(Ok::<_, Infallible>(event.to_sse()))
         }
@@ -1096,8 +1103,7 @@ async fn build_closure_handler(
     }
     drop(merged_tx); // Close when all spawned tasks finish.
 
-    let stream =
-        tokio_stream::wrappers::ReceiverStream::new(merged_rx).map(|s| Ok::<_, Infallible>(s));
+    let stream = tokio_stream::wrappers::ReceiverStream::new(merged_rx).map(Ok::<_, Infallible>);
 
     let body = Body::from_stream(stream);
 
@@ -1157,22 +1163,22 @@ async fn upload_pack_handler(
     }
 
     // Enforce per-view max_paths quota.
-    if let Some(view_config) = state.views.get_view(&view) {
-        if let Some(max_paths) = view_config.max_paths {
-            match state.views.count_roots(&view) {
-                Ok(count) if count >= max_paths => {
-                    tracing::warn!(view = %view, count, max_paths, "upload-pack rejected: max_paths exceeded");
-                    return (
-                        StatusCode::INSUFFICIENT_STORAGE,
-                        format!("view has {count} rooted paths, max is {max_paths}"),
-                    )
-                        .into_response();
-                }
-                Err(e) => {
-                    tracing::error!(view = %view, error = %e, "failed to count roots for quota check");
-                }
-                _ => {}
+    if let Some(view_config) = state.views.get_view(&view)
+        && let Some(max_paths) = view_config.max_paths
+    {
+        match state.views.count_roots(&view) {
+            Ok(count) if count >= max_paths => {
+                tracing::warn!(view = %view, count, max_paths, "upload-pack rejected: max_paths exceeded");
+                return (
+                    StatusCode::INSUFFICIENT_STORAGE,
+                    format!("view has {count} rooted paths, max is {max_paths}"),
+                )
+                    .into_response();
             }
+            Err(e) => {
+                tracing::error!(view = %view, error = %e, "failed to count roots for quota check");
+            }
+            _ => {}
         }
     }
 
@@ -1190,10 +1196,10 @@ async fn upload_pack_handler(
         Ok(paths) => {
             // Create temporary GC roots for all imported paths.
             for path in &paths {
-                if let Some(hash) = ViewManager::store_path_hash(path) {
-                    if let Err(e) = state.views.create_tmp_root(&view, hash, path) {
-                        tracing::warn!(view = %view, path = %path, error = %e, "failed to create tmp GC root for pack entry");
-                    }
+                if let Some(hash) = ViewManager::store_path_hash(path)
+                    && let Err(e) = state.views.create_tmp_root(&view, hash, path)
+                {
+                    tracing::warn!(view = %view, path = %path, error = %e, "failed to create tmp GC root for pack entry");
                 }
             }
             tracing::info!(view = %view, accepted = count, paths = paths.len(), "pack upload completed");
