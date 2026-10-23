@@ -1340,6 +1340,17 @@ testing-standards suite passes 82 controls and retains one broad failure over
 sixteen other unclassified retry paths. Mandatory application-target compilation
 for this increment remains pending.
 
+Publisher refusal classifications now bind the exact retained mapping return,
+command preflight/publication journal, and sticky native-current/transfer paths.
+The component controls retain actual kernel roles and mapped bytes, or borrowed
+ABI views; they issue no native Source or physical-return authority. Changing a
+physical disposition, reusing failed command birth, erasing the first native
+refusal, or adding another retry defeats the corresponding classification.
+All 22 host publisher controls, seven plugin publisher controls, both new
+classification controls and source shape pass. The complete testing-standards
+suite passes 84 controls and retains one broad failure over thirteen daemon
+paths. Mandatory application-target compilation remains pending.
+
 #### Cumulative construction and request ownership source
 
 Signed atomic `e82bb4c78da7af3351ef6473935a2be2feb01a2d` imports conventional
