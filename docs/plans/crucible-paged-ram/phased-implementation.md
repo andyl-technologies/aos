@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 575 bindings: 556 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 576 bindings: 557 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2220,9 +2220,9 @@ requirements, with 148 uncovered and zero qualified. Broad validation passes
 717 storage tests, 686 engine tests, 95 policy controls and storage Clippy.
 Hermetic storage output `l3drg8s5xaqbyjg8whc3r56w8xjyicph` passes all 56
 selected cases and 70 nested test summaries. Required application-target
-compilation is running from `fxnjnn0zxgjcfj5n4ym1vnm2y336y7f4`; all 5,400
-committed Rust/TOML files and six required fixtures match before subsequent
-root-publication edits.
+compilation passes at `3d8f6q5szqss81n3cmi3pcqj684r7w6g` from immutable
+source `fxnjnn0zxgjcfj5n4ym1vnm2y336y7f4`; all 5,400 committed Rust/TOML
+files and six required fixtures match before subsequent root-publication edits.
 
 Root publication now admits a complete closed input partition before logical
 encoding, body, child roles, B-tree storage and the shared envelope. A separate
@@ -2316,6 +2316,42 @@ normalizing only thread IDs. ABI conformance passes at
 `5r61k4j7h46hwgr2cdlj17zgypyjkr3y`. All 686 engine tests, 95 policy
 controls and Store Clippy pass. The full license-boundary run is pending;
 preceding controller failures remain unresolved.
+
+Signed descriptor-hashing commit `8404a4e703` is pushed. Required
+application-target compilation is running from
+`rasi23lk4xzdmr9ir6ch4dkicpb5qxg1`; all 5,404 committed Rust/TOML files and
+six required fixtures match before subsequent updated-inventory custody edits.
+
+Updated RAM roots now retain the admitted input's existing financial loan for
+their shared inventory. Successor records and root vectors keep their explicit
+caller-funded allocation contract; this change issues no additional grant or
+allowance. The existing retention and immutable update semantics are unchanged.
+
+The genuine finite-resource control creates two successive page updates,
+checks shared inventory identity and actual updated page bytes, and closes the
+admitted source and storage facade before final descendant aliases. The original
+code returns all 22,542,484 bytes at source close while those borrowers remain;
+retaining the existing loan keeps exactly that grant until the last alias closes,
+then returns it to zero. No new kernel quota or native custody is qualified.
+Inventory `lmdqz7iqvf4zngscrgmf1kd7068lmyx6` validates 576 bindings across
+243 requirements, with 148 uncovered and zero qualified. Broad validation
+passes 729 storage tests, 686 engine tests, 95 policy controls and storage
+Clippy. Hermetic storage output `gmc823grd2sfdr8hpn13ragsmi64nqq5` passes
+all 68 selected cases and 86 successful nested test summaries.
+
+The separate source-only exclusive-wait packet
+`19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`
+passes independent review of all 75 payloads, 58 actual inputs, five signatures,
+sixteen archive-exact kernel members and 222 actual replay controls. All 77
+sealed files remain unchanged through replay. All 25 actual approved runtime
+modules also match the original signed build-plan-r9 manifest independently. The
+new source-only owner distinguishes tracer notification from natural-parent
+reap, preserves independent whole deadlines and rejects malformed clock and
+wait observations. Its native factory and acceptance remain unconditional
+refusals: clone3 memory ownership, fatal-before-binding, thread/exec identity,
+actual wait handoff and physical natural-parent/adoption reconciliation have no
+complete supported Linux transport. The original configure refusal is unchanged;
+no execution plan, invocation or native effect is authorized by this packet.
 
 The source-only configure observation assessment
 `b81e015f86affdd3ccdfd1c07e4f75bf4a89ec2bf4617f1d8a1c49d844bcba23`

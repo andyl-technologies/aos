@@ -220,3 +220,92 @@ fn transferred_admitted_metadata_retains_origin_financial_credit_after_source_cl
     drop(destination_store);
     assert_eq!(destination_quota.0.usage().unwrap(), (0, 0));
 }
+
+#[test]
+fn updated_admitted_inventory_retains_origin_credit_after_source_close() {
+    if sqlite_process::isolated() {
+        return;
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let (store, quota) = admitted_store(directory.path(), RamStoreLimits::default());
+    let retention = Retention::default();
+    let captured = store
+        .capture(
+            topology(8193),
+            Scope::Exact,
+            &mut patterned,
+            &retention,
+            &fixture_original(&store),
+            &mut || Ok(()),
+        )
+        .unwrap();
+    let source = store
+        .open_with_metadata_resources(
+            retention.retain_root(captured.object_id()).unwrap(),
+            &fixture_original(&store),
+            &mut || Ok(()),
+        )
+        .unwrap();
+    drop(captured);
+
+    let first = store
+        .update(
+            &source,
+            [RamPageChange {
+                region_id: "main".into(),
+                page_index: 0,
+                bytes: vec![99; 4096],
+            }],
+            &retention,
+            &fixture_original(&store),
+            &mut || Ok(()),
+        )
+        .unwrap();
+    let second = store
+        .update(
+            &first,
+            [RamPageChange {
+                region_id: "main".into(),
+                page_index: 1,
+                bytes: vec![101; 4096],
+            }],
+            &retention,
+            &fixture_original(&store),
+            &mut || Ok(()),
+        )
+        .unwrap();
+
+    for descendant in [&first, &second] {
+        assert_eq!(
+            source.record().topology().regions().as_ptr(),
+            descendant.record().topology().regions().as_ptr()
+        );
+    }
+    assert_ne!(source.logical_digest(), first.logical_digest());
+    assert_ne!(first.logical_digest(), second.logical_digest());
+    for (index, expected) in [(0, 99), (1, 101)] {
+        let page = store
+            .read_page(
+                &second,
+                "main",
+                index,
+                &fixture_original(&store),
+                &mut || Ok(()),
+            )
+            .unwrap();
+        assert_eq!(page.as_ref(), &[expected; 4096]);
+    }
+
+    // The shared original inventory has one genuine existing loan. Newly
+    // allocated successor records retain their explicit caller-funded contract.
+    let alias = second.clone();
+    drop(source);
+    drop(first);
+    drop(store);
+    let original_bytes = crate::ram::metadata::allocation_bytes(1).unwrap();
+    assert_eq!(quota.0.usage().unwrap(), (0, original_bytes));
+    drop(second);
+    assert_eq!(quota.0.usage().unwrap(), (0, original_bytes));
+    drop(alias);
+    assert_eq!(quota.0.usage().unwrap(), (0, 0));
+}

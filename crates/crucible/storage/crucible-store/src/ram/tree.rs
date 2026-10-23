@@ -285,7 +285,10 @@ impl RamStore {
             regions: regions.into(),
             metadata_custody: Arc::clone(&lease),
             lease,
-            metadata_resources: Default::default(),
+            // The new record borrows the admitted input's shared inventory.
+            // Its original loan must outlive every returned inventory borrower;
+            // new record allocations keep their caller-funded contract.
+            metadata_resources: root.metadata_resources.clone(),
         })
     }
 
