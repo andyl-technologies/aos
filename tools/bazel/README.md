@@ -1374,6 +1374,12 @@ All three selected Rust compilation actions use the foreign toolchain and the
 reviewed profile flags; procedural macros run on the native toolchain. The guest
 has loopback networking and no external network interface or S3 service.
 
+`tests/evidence/native-linux-store-s3-aggregate.json` records the passing frozen
+aggregate through the S3 adapter and core evaluation checks. One device AArch64
+VM initially reached its existing 180-second timeout; the exact derivation and
+then the unchanged aggregate passed on retry. The evidence retains that history.
+This checkpoint predates the daemon graph and separate S3 foreign runtime gate.
+
 ## Daemon family
 
 The `daemon` graph declares the default, test-support, destructive recovery,
@@ -1387,7 +1393,7 @@ protocol library without the static guest runtime.
 baseline: 1,111 executed cases, 24 existing ignored cases, four test artifacts,
 and 264 external crate identities. The component-contract and exact-closure
 integration suites require test-support and remain in the nondefault target
-sets. Bazel execution, editor parity, and production migration remain pending.
+sets. Production migration remains pending.
 
 `tests/evidence/daemon-cargo-feature-baselines.json` retains the additional
 passing Cargo configurations: recovery executes 1,114 cases with 24 ignored;
@@ -1408,6 +1414,13 @@ tests, and CLI checks. Its default test graph matches all 264 external and
 16 first-party Cargo feature identities. The existing ten dependency locks
 remain unchanged. The schema registry has an explicit daemon export, and the
 three newly enabled shared crypto dependencies retain reviewed source licenses.
+
+`tests/evidence/native-linux-daemon.json` records native execution and Cargo
+parity passing in all four feature configurations, with the same case counts,
+ignored inventories, example, and 264 external crate identities. Developer and
+production license checks pass. Editor parity preserves Cargo's selected
+diagnostics; it does not claim complete inference. The frozen source precedes
+the CLI graph. Foreign daemon execution and production migration remain pending.
 
 ## Crucible CLI baseline
 
