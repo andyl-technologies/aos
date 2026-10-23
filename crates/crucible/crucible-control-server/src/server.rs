@@ -28,8 +28,9 @@ use hyper_util::service::TowerToHyperService;
 use std::convert::Infallible;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, OwnedMutexGuard, watch};
+use tokio::sync::{Mutex, OwnedMutexGuard, Semaphore, watch};
 use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 
@@ -76,6 +77,27 @@ const RESUME_SESSION_RPC_MODEL_ENVELOPE_MAX_BYTES: usize = 512 * 1024 * 1024;
 const RESUME_SESSION_RPC_BODY_MAX_BYTES: usize = RESUME_SESSION_RPC_MODEL_ENVELOPE_MAX_BYTES
     + RESUME_REPLAY_CLOSURE_MAX_BYTES * 2
     + RESUME_OBSERVATION_SOURCE_MAX_BYTES * 2;
+
+const TLS_CONNECTION_LIMIT: usize = 256;
+const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+const TLS_SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_secs(10);
+
+#[derive(Clone, Copy, Debug)]
+struct TlsTransportLimits {
+    maximum_connections: usize,
+    handshake_timeout: Duration,
+    shutdown_grace_period: Duration,
+}
+
+impl Default for TlsTransportLimits {
+    fn default() -> Self {
+        Self {
+            maximum_connections: TLS_CONNECTION_LIMIT,
+            handshake_timeout: TLS_HANDSHAKE_TIMEOUT,
+            shutdown_grace_period: TLS_SHUTDOWN_GRACE_PERIOD,
+        }
+    }
+}
 
 /// Runtime policy for the HTTP/2 lifecycle server.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -385,6 +407,35 @@ where
         + 'static,
     S: Future<Output = ()> + Send + 'static,
 {
+    serve_shared_lifecycle_http2_mtls_with_limits_until_shutdown(
+        listener,
+        control_plane,
+        mode,
+        tls_acceptor,
+        debug_authorization,
+        TlsTransportLimits::default(),
+        shutdown,
+    )
+    .await
+}
+
+async fn serve_shared_lifecycle_http2_mtls_with_limits_until_shutdown<L, F, S>(
+    listener: TcpListener,
+    control_plane: SharedLifecycleControlPlane<L, F>,
+    mode: LifecycleServerMode,
+    tls_acceptor: TlsAcceptor,
+    debug_authorization: DebugAuthorizationPolicy,
+    limits: TlsTransportLimits,
+    shutdown: S,
+) -> Result<(), std::io::Error>
+where
+    L: QuantumLoop + Send + 'static,
+    F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
+        + Send
+        + Sync
+        + 'static,
+    S: Future<Output = ()> + Send + 'static,
+{
     let (shutdown_sender, shutdown_receiver) = watch::channel(false);
     let app = lifecycle_router(Http2LifecycleState {
         control_plane,
@@ -396,27 +447,47 @@ where
     });
     tokio::pin!(shutdown);
     let mut connections = JoinSet::new();
+    let connection_permits = Arc::new(Semaphore::new(limits.maximum_connections));
 
     loop {
         tokio::select! {
             biased;
-            result = listener.accept() => {
-                let (stream, _peer) = result?;
-                let acceptor = tls_acceptor.clone();
-                let app = app.clone();
-                let connection_shutdown = shutdown_receiver.clone();
-                connections.spawn(async move {
-                    serve_authenticated_connection(stream, acceptor, app, connection_shutdown).await;
-                });
-            }
             () = &mut shutdown => {
                 let _ = shutdown_sender.send(true);
                 break;
             }
+            _completed = connections.join_next(), if !connections.is_empty() => {}
+            result = listener.accept() => {
+                let (stream, _peer) = result?;
+                let Ok(permit) = Arc::clone(&connection_permits).try_acquire_owned() else {
+                    continue;
+                };
+                let acceptor = tls_acceptor.clone();
+                let app = app.clone();
+                let connection_shutdown = shutdown_receiver.clone();
+                connections.spawn(async move {
+                    let _permit = permit;
+                    serve_authenticated_connection(
+                        stream,
+                        acceptor,
+                        app,
+                        connection_shutdown,
+                        limits,
+                    )
+                    .await;
+                });
+            }
         }
     }
 
-    while connections.join_next().await.is_some() {}
+    let drain_connections = async { while connections.join_next().await.is_some() {} };
+    if tokio::time::timeout(limits.shutdown_grace_period, drain_connections)
+        .await
+        .is_err()
+    {
+        connections.abort_all();
+        while connections.join_next().await.is_some() {}
+    }
     Ok(())
 }
 
@@ -425,9 +496,18 @@ async fn serve_authenticated_connection(
     acceptor: TlsAcceptor,
     app: Router,
     mut shutdown: watch::Receiver<bool>,
+    limits: TlsTransportLimits,
 ) {
-    let Ok(tls_stream) = acceptor.accept(stream).await else {
-        return;
+    let handshake = tokio::time::timeout(limits.handshake_timeout, acceptor.accept(stream));
+    let tls_stream = tokio::select! {
+        biased;
+        () = wait_for_shutdown(&mut shutdown) => return,
+        result = handshake => {
+            let Ok(Ok(tls_stream)) = result else {
+                return;
+            };
+            tls_stream
+        }
     };
     let Some(certificate) = tls_stream
         .get_ref()
@@ -450,8 +530,24 @@ async fn serve_authenticated_connection(
         changed = shutdown.changed() => {
             if changed.is_ok() && *shutdown.borrow() {
                 connection.as_mut().graceful_shutdown();
-                let _ = connection.await;
+                let _ = tokio::time::timeout(
+                    limits.shutdown_grace_period,
+                    connection.as_mut(),
+                )
+                .await;
             }
+        }
+    }
+}
+
+async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
+    if *shutdown.borrow() {
+        return;
+    }
+
+    while shutdown.changed().await.is_ok() {
+        if *shutdown.borrow() {
+            return;
         }
     }
 }

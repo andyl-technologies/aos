@@ -38,3 +38,4 @@ uuid = { workspace = true }
 crucible-engine = { path = "../crucible-engine", features = ["test-double", "test-support"] }
 crucible-session = { path = "../crucible-session", features = ["test-support"] }
 crucible-qemu-shmem = { path = "../crucible-qemu-shmem" }
+rcgen = { workspace = true }

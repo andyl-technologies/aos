@@ -2852,6 +2852,7 @@ dependencies = [
  "crucible-session",
  "futures-util",
  "hyper-util",
+ "rcgen",
  "rustix 1.1.4",
  "rustls",
  "rustls-pemfile",
