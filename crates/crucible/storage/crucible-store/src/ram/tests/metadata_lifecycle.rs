@@ -14,6 +14,7 @@ use crate::owned_decode::DecodeBudget;
 
 use super::*;
 
+mod capture_allocation;
 mod checked_sources;
 mod codec_close;
 mod descriptor_hashing;

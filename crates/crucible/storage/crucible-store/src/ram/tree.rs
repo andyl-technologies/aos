@@ -88,9 +88,14 @@ impl RamStore {
         original
             .verify_live()
             .map_err(|source| RamStoreError::from_admission(original, source))?;
+        let selected_regions = topology
+            .regions()
+            .iter()
+            .filter(|region| scope.includes(region.class()))
+            .count();
+        let mut regions = try_root_vector_with_capacity(selected_regions, original)?;
+        let mut roots = try_root_vector_with_capacity(selected_regions, original)?;
         self.begin_publication_batch(&mut work)?;
-        let mut regions = Vec::new();
-        let mut roots = Vec::new();
 
         for region in topology
             .regions()
@@ -508,20 +513,28 @@ fn try_copy_root_vector<T: Copy>(
     values: &[T],
     original: &crate::owned_decode::DecodeBudget,
 ) -> Result<Vec<T>, RamStoreError> {
+    let mut output = try_root_vector_with_capacity(values.len(), original)?;
+    output.extend_from_slice(values);
+    Ok(output)
+}
+
+fn try_root_vector_with_capacity<T>(
+    capacity: usize,
+    original: &crate::owned_decode::DecodeBudget,
+) -> Result<Vec<T>, RamStoreError> {
     // Backend headroom checks may run external code after entry admission.
-    // Revalidate the same caller before allocating each successor copy.
+    // Revalidate the same caller before allocating each output vector.
     original
         .verify_live()
         .map_err(|source| RamStoreError::from_admission(original, source))?;
 
     let mut output = Vec::new();
-    output.try_reserve_exact(values.len()).map_err(|source| {
+    output.try_reserve_exact(capacity).map_err(|source| {
         crate::content_store::StoreError::Allocation {
             source,
             custody: Some(original.custody()),
         }
     })?;
-    output.extend_from_slice(values);
     Ok(output)
 }
 
