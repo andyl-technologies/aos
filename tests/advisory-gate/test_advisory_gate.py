@@ -159,6 +159,29 @@ class AdvisoryGateTests(unittest.TestCase):
         with self.assertRaisesRegex(advisory_gate.GateError, "expired"):
             advisory_gate.validate(self._arguments())
 
+    def test_resolved_component_cannot_keep_disposition(self) -> None:
+        self._write_json(
+            "exceptions.json",
+            {
+                "schema": "aos.advisory-exceptions/v1",
+                "exceptions": [
+                    {
+                        "id": "RUSTSEC-FIXTURE",
+                        "component": "clean@2.0.0",
+                        "owner": "fixture",
+                        "reason": "fixture",
+                        "remediation": "fixture",
+                        "expires_on": "2026-10-23",
+                    }
+                ],
+            },
+        )
+
+        with self.assertRaisesRegex(
+            advisory_gate.GateError, "dispositions do not match a current finding"
+        ):
+            advisory_gate.validate(self._arguments())
+
     def test_stale_snapshot_fails(self) -> None:
         with self.assertRaisesRegex(advisory_gate.GateError, "days old"):
             advisory_gate.validate(self._arguments(today="2026-11-23"))
