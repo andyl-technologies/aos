@@ -92,6 +92,11 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    cli-support = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "cli-support";
+    };
     activation-crucible = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -257,6 +262,14 @@
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
   };
+  aosBazelCliSupportWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = ["crates/aos/cli/aos-cli-ui" "crates/aos/cli/aos-closure-analysis" "crates/aos/cli/aos-nix-docs" "crates/shared/aos-core" "crates/shared/aos-nar" "crates/shared/aos-nix" "crates/shared/aos-transfer" "tools/bazel" "third_party/rust"];
+    repositories = aosBazelRepositories // aosBazelRustRepositories.cli-support;
+    dependencyProfile = "cli-support";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = ["//crates/aos/cli/aos-cli-ui:unit" "//crates/aos/cli/aos-closure-analysis:unit" "//crates/aos/cli/aos-nix-docs:unit"];
+  };
   aosBazelActivationCrucibleWorkspace = mkAosBazelWorkspace {
     root = ../../..;
     sourceDirectories = ["crates/aos/activation" "crates/aos/modules/aos-module-format" "crates/shared/aos-core" "crates/shared/aos-artifact-evidence" "crates/crucible" "tools/bazel" "third_party/rust"];
@@ -411,6 +424,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelCliSupportLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelCliSupportWorkspace;
     }).launcher;
   aosBazelActivationCrucibleLauncher =
     (import ./development.nix {

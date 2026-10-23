@@ -1874,3 +1874,47 @@ The frozen checkpoint is in
 Dedicated ABI, license, provider and assembled-system gates, foreign and Wasm
 execution, compiler invocation equivalence, numeric performance acceptance,
 production migration, and Cargo removal remain separate qualification.
+
+## CLI support libraries
+
+`aos-dev bazel --family cli-support` selects `aos-cli-ui`,
+`aos-closure-analysis`, and `aos-nix-docs`. Build, test, Clippy, formatting,
+documentation, license, and editor targets use the same configured family.
+Transfer transport stays disabled, and each library preserves whether it
+inherits the Cargo workspace lint configuration. Existing production builders
+remain in place during qualification.
+
+The pinned `cli-support` profile contains 165 source crates. Production matches
+Cargo's 108 compiled external crate identities and seven first-party packages;
+tests match 111 external identities and the same seven first-party packages.
+Every shared compiled feature-unit set matches. The three test-only external
+identities are `fastrand`, `getrandom` 0.4.2, and `tempfile`. Version-guarded
+specializations remove resolver-only features from Serde, Serde Core, and Syn.
+Ordinary builds resolve no registries and download no tools or binaries.
+
+`tests/evidence/native-linux-cli-support.json` retains passing strict checks:
+61 unit cases, no ignored unit cases, three libtest artifacts, and five
+compile-only doctests. The documentation library has no doctest cases, matching
+Cargo. Production feature, developer, license, and editor comparisons pass.
+Lint corrections preserve progress defaults, byte formatting, documentation
+cache freshness, the public scanner API, and existing test assertions.
+
+Editor comparison retains one identical unknown-type diagnostic in the closure
+scanner in both models, two Cargo diagnostics outside the selection, and no
+unattributed diagnostics. Neither inference model is complete: Bazel reports
+one unknown expression and Cargo reports three. Their aggregate statistics and
+diagnostic multiplicities are not claimed equivalent. The configured inventory
+contains 24 requested roots, 187 reports, and 64 declared source files, including
+61 Rust files.
+
+`tests/evidence/cli-support-configured-graph.json` records validation of all 23
+family inventories and dependency specifications, 164 policy tests, the source
+catalog, and CLI checks with 18 launchers. The previous 22 dependency locks and
+3,521 generated crate build files remain unchanged. The frozen metadata report
+covers 395 Rust targets across 25 analysis-only selections with no external
+actions; core evaluation passes. Its evidence is retained in
+`tests/evidence/cli-support-metadata-evaluation.json`.
+
+Installed consumers, dedicated provider and assembled-system gates, foreign and
+Wasm execution, complete compiler invocation equivalence, numeric performance
+acceptance, production migration, and Cargo removal remain separate work.

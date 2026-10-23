@@ -1,6 +1,7 @@
 load("@rules_rust//crate_universe:defs.bzl", "crate")
 load("//tools/bazel/rules:crates.bzl", "aos_crate_specifications")
 load("//tools/bazel/rules:package.bzl", "aos_package")
+load(":cli-support/aliases.bzl", CLI_SUPPORT_CRATES = "CRATES")
 load(":activation-crucible/aliases.bzl", ACTIVATION_CRUCIBLE_CRATES = "CRATES")
 load(":activation-crucible-tests/aliases.bzl", ACTIVATION_CRUCIBLE_TESTS_CRATES = "CRATES")
 load(":activation-systemd/aliases.bzl", ACTIVATION_SYSTEMD_CRATES = "CRATES")
@@ -33,6 +34,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:cli_support_dependencies": CLI_SUPPORT_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:activation_crucible_dependencies": ACTIVATION_CRUCIBLE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:activation_crucible_tests_dependencies": ACTIVATION_CRUCIBLE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:activation_systemd_dependencies": ACTIVATION_SYSTEMD_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -58,7 +60,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(dict(ACTIVATION_CRUCIBLE_CRATES.items() + ACTIVATION_CRUCIBLE_TESTS_CRATES.items() + ACTIVATION_SYSTEMD_CRATES.items() + ACTIVATION_STORAGE_CRATES.items() + ACTIVATION_CORE_CRATES.items() + ACTIVATION_CORE_TESTS_CRATES.items() + CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items() + CRUCIBLE_CLI_CRATES.items() + NATIVE_FOUNDATION_CRATES.items() + NATIVE_FOUNDATION_TESTS_CRATES.items() + NATIVE_FOUNDATION_MINIMAL_CRATES.items() + FORMATS_CRATES.items()))
+    for name in sorted(dict(CLI_SUPPORT_CRATES.items() + ACTIVATION_CRUCIBLE_CRATES.items() + ACTIVATION_CRUCIBLE_TESTS_CRATES.items() + ACTIVATION_SYSTEMD_CRATES.items() + ACTIVATION_STORAGE_CRATES.items() + ACTIVATION_CORE_CRATES.items() + ACTIVATION_CORE_TESTS_CRATES.items() + CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items() + CRUCIBLE_CLI_CRATES.items() + NATIVE_FOUNDATION_CRATES.items() + NATIVE_FOUNDATION_TESTS_CRATES.items() + NATIVE_FOUNDATION_MINIMAL_CRATES.items() + FORMATS_CRATES.items()))
 ]
 
 CORE_PACKAGES = {
@@ -311,6 +313,21 @@ ACTIVATION_SYSTEMD_PACKAGES = dict(ACTIVATION_CORE_PACKAGES.items() + {
         "tracing",
         "zbus",
     ]
+}.items())
+
+# Presentation and Nix inspection use the lightweight transfer library. Keep
+# transport/TLS/cloud dependencies outside this family, including its tests.
+CLI_SUPPORT_PACKAGES = dict({
+    name: NATIVE_FOUNDATION_PACKAGES[name]
+    for name in ["anyhow", "base64", "ed25519-dalek", "hex", "rustix", "serde", "serde_json", "sha2", "tempfile", "thiserror", "tokio"]
+}.items() + {
+    "regex": crate.spec(version = "=1.12.4"),
+    "console": crate.spec(version = "=0.15.11"),
+    "indicatif": crate.spec(version = "=0.17.11"),
+    "ratatui": crate.spec(version = "=0.29.0"),
+    "crossterm": crate.spec(version = "=0.28.1"),
+    "glob": crate.spec(version = "=0.3.3"),
+    "ignore": crate.spec(version = "=0.4.25"),
 }.items())
 
 NATIVE_FOUNDATION_TESTS_PACKAGES = {
@@ -647,6 +664,65 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    "cli-support": {
+        "serde": json.encode({
+            "version": "1.0.228",
+            "resolved_features": [
+                "alloc",
+                "default",
+                "derive",
+                "rc",
+                "serde_derive",
+                "std"
+            ],
+            "features": [
+                "default",
+                "derive",
+                "rc",
+                "serde_derive",
+                "std"
+            ]
+        }),
+        "serde_core": json.encode({
+            "version": "1.0.228",
+            "resolved_features": [
+                "alloc",
+                "rc",
+                "result",
+                "std"
+            ],
+            "features": [
+                "rc",
+                "result",
+                "std"
+            ]
+        }),
+        "syn": json.encode({
+            "version": "2.0.118",
+            "resolved_features": [
+                "clone-impls",
+                "default",
+                "derive",
+                "extra-traits",
+                "full",
+                "parsing",
+                "printing",
+                "proc-macro",
+                "visit",
+                "visit-mut"
+            ],
+            "features": [
+                "clone-impls",
+                "default",
+                "derive",
+                "extra-traits",
+                "full",
+                "parsing",
+                "printing",
+                "proc-macro"
+            ]
+        }),
+    },
     "activation-crucible-tests": {
         "indexmap": json.encode({
             "version": "2.14.0",
@@ -810,6 +886,7 @@ APPROVED_LICENSES = [
         host_only_licenses = ["Apache-2.0"],
     )
     for family, packages, annotations, license_domain in [
+        ("cli-support", CLI_SUPPORT_PACKAGES, {}, "apache-host"),
         ("activation-crucible", ACTIVATION_CRUCIBLE_PACKAGES, {}, "apache-host"),
         ("activation-crucible-tests", ACTIVATION_CRUCIBLE_TESTS_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("activation-systemd", ACTIVATION_SYSTEMD_PACKAGES, {}, "apache-host"),
@@ -844,5 +921,5 @@ APPROVED_LICENSES = [
         license_domain = "apache-host",
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
-    for family in ["activation-crucible", "activation-crucible-tests", "activation-systemd", "activation-storage", "activation-core", "activation-core-tests", "core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "native-foundation", "native-foundation-tests", "native-foundation-minimal", "formats"]
+    for family in ["cli-support", "activation-crucible", "activation-crucible-tests", "activation-systemd", "activation-storage", "activation-core", "activation-core-tests", "core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "native-foundation", "native-foundation-tests", "native-foundation-minimal", "formats"]
 ]
