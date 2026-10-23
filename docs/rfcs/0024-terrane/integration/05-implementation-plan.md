@@ -8724,8 +8724,10 @@ explicit actor-owned source parent outside native projects, identify separate
 retained-file expiry/unlink stages and report background retirement errors
 without repeated log flooding. Configured native qualification at immutable `a2faeb2547` now passes with
 complete source/artifact review. Its required application compilation also
-passes; independent file recovery remains running with all original time limits
-and assertions. The first configured request uses a
+passes. The later keep-going request confirms already-unlinked-file recovery
+passes; named-file recovery retains its failure and the owner actor exceeds
+its original 30-second bound at foreign-source initialization. All original
+time limits and assertions remain. The first configured request uses a
 missing attribute and fails before building; the corrected exact check runs
 in a separate retained packet.
 
@@ -16132,3 +16134,26 @@ all-target lint, actual fixture compilation, formatting and diff checks pass.
 Fresh qualification remains required. An additional request with keep-going
 allows the original owner and already-unlinked-file VM siblings to finish
 independently of the known named-file failure, using the same frozen images.
+
+
+#### Actual original-device transport qualification
+
+The actual FUSE transport VM at immutable `0706c9c456` passes in 235.667
+seconds. Complete review matches 8,090 immutable source files, 5,361 bound
+inputs, the actual compiler/installed ELF and all three fresh actual-device
+connections. Serving exercises real kernel INIT, metadata, directory and
+negative lookup traffic; timeout and cancellation close the worker's original
+device and subsequent worker-dependent operations report ENOTCONN. The explicit
+supervisor acknowledgement follows completed unmount. This is transport
+qualification, not a production repository dispatcher, complete sandbox,
+mount broker or exposure-retirement proof. Mandatory application compilation
+remains running. The original `eb2f778d7b` failed receipt is preserved.
+
+The separate keep-going request at `a2faeb2547` finishes in 335.246 seconds
+and remains failed. The already-unlinked-file VM passes its exact original
+witness, including non-adoption, new Resume, retained descriptor, exact physical
+release and authenticated closure. The named-file VM reproduces its elapsed
+bound after final unlink. The owner VM separately exceeds its unchanged
+30-second actor bound after entering foreign-source initialization. Neither
+failure is excused by the passing sibling. Exact final-close diagnostics and
+mandatory application compilation run from immutable `d171a64e51`.
