@@ -1567,8 +1567,8 @@ source directories remain intact, with two regression tests for source roots.
 `tests/evidence/contracts-configured-graph.json` retains 152 distinct configured
 reports, 140 source files, all 17 refreshed family inventories, 13 dependency
 specifications, and 150 passing policy tests. All 12 other dependency locks are
-unchanged. Workspace Rust compilation and the broader editor and metadata
-regression checks run separately. The complete-checkout Nix-inventory case,
+unchanged. Workspace Rust compilation and broader editor regression checks
+run separately. The complete-checkout Nix-inventory case,
 foreign and Wasm qualification, performance acceptance, and production migration
 remain separate gates.
 
@@ -1579,6 +1579,11 @@ at a CLI runtime dependency: its host-profile test observed a fingerprint
 divergence before the CLI editor comparison. The failure and unchanged retry
 scope are retained in `tests/evidence/contracts-editor-regression-initial-failure.json`;
 that initial run is not counted as passing editor qualification.
+`tests/evidence/contracts-editor-regression.json` retains the successful retry
+of the identical 14 derivations: 13 family comparisons and the editor fixture.
+It preserves each comparison's scope and unknown types, including the guest
+model's 84 unattributed Cargo diagnostics. The retry does not establish the
+cause of the runtime fingerprint divergence.
 
 ## Native integration library baseline
 
