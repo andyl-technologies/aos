@@ -200,6 +200,7 @@ def source_unit_inventory(workspace):
     gated = [
         ("structural_index", "lib.rs", "pub mod structural_index;"),
         ("inode_policy", "lib.rs", "pub mod inode_policy;"),
+        ("fuse_protocol", "lib.rs", "pub mod fuse_protocol;"),
         ("host_cache/owner/surface_index", "host_cache/owner/mod.rs", "mod surface_index;"),
         ("host_cache/owner/recovery_namespace/surface", "host_cache/owner/recovery_namespace.rs", "mod surface;"),
         ("host_cache/owner/recovery_cold/tests/surface_tests", "host_cache/owner/recovery_cold.rs", "    mod surface_tests;"),
@@ -226,6 +227,12 @@ def source_unit_inventory(workspace):
     shared.require((root / "worker_channel/mod.rs").is_file(),
         "worker channel feature module missing")
     gated.append(("worker_channel", "lib.rs", "pub mod worker_channel;"))
+    shared.require('#[cfg(all(feature = "surface-fuse", feature = "tokio"))]\n'
+        'pub mod fuse_connection;' in (root / "lib.rs").read_text(),
+        "FUSE connection lost its explicit runtime/surface feature gate")
+    shared.require((root / "fuse_connection.rs").is_file(),
+        "FUSE connection feature module missing")
+    gated.append(("fuse_connection", "lib.rs", "pub mod fuse_connection;"))
     declared = []
     for path in sorted(root.rglob("*.rs")):
         relative = path.relative_to(root).as_posix()

@@ -8735,7 +8735,7 @@ The configured native factory retains surviving physical exposure obligations
 as draining through funded recovery and new Resume only with compiled FUSE
 support and an explicit index policy. It restores no old serving authority.
 The Linux FUSE framing/connection component now has bounded real-device VM
-controls; its native qualification is still required. Complete production
+controls; actual transport qualification passes at `0706c9c456`. Complete production
 worker, mount broker and role composition remain open. No full current-head
 owning-gate, feature-matrix, milestone or RFC completion is claimed.
 
@@ -16157,3 +16157,23 @@ bound after final unlink. The owner VM separately exceeds its unchanged
 30-second actor bound after entering foreign-source initialization. Neither
 failure is excused by the passing sibling. Exact final-close diagnostics and
 mandatory application compilation run from immutable `d171a64e51`.
+
+
+#### FUSE feature inventory boundary correction
+
+The `d171a64e51` recovery aggregate fails before boot in 500.345 seconds.
+The image's complete source-test inventory counts the thirteen new FUSE framing
+cases although its actual library feature set excludes FUSE. No named-file
+close diagnostic is executed, and no new lifecycle cause is established.
+
+The source check now verifies the exact `surface-fuse` module gate before
+excluding FUSE framing declarations, matching its existing structural-index
+and inode-policy treatment. It also checks the connection's exact combined
+runtime/surface gate. The retained real compiler artifact reports exactly
+130 cases under `native-test-fixtures,tokio`, and the corrected complete source
+comparison matches all 130 without extra or missing declarations. Only the
+libtest inventory is listed on the host; no native case is executed there.
+The separate all-feature thirteen-case framing qualification remains required
+and retains its existing pass. Original compiled inventory, runtime selectors,
+per-case assertions and guest bounds are unchanged. Fresh native qualification
+remains required.
