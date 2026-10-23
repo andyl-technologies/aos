@@ -1,0 +1,19 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "8773b1cd13",
+  "compiled_changed_rust_inputs_sha256": {
+    "crates/hub/aos-hub-ui/src/lib.rs": "35f551e68f7cd823106225bda602843f6e87ac4d243f732b7c8acdf0c047f186"
+  },
+  "derivation": "/nix/store/xays7y75jjxcbd5gwc1lzvd3b05120wc-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "f8e662fda72b999a89861510271252621d15f1e9b76eadec6666fc9c1e9d78e9",
+  "implementation_commit": "b0bffa3bc1",
+  "limits": [
+    "This gate compiles application unit and integration targets without executing them. Native Bazel/Cargo execution is retained separately.",
+    "This frozen source contains the Hub UI test-only lint annotation. Later Hub model Rust changes are not qualified by this checkpoint."
+  ],
+  "log_sha256": "65a472db1856c0812004fa64a3d1430681be48571d076cba2ae37d5d39afb185",
+  "output": "/nix/store/0cgdciwqky45j7qxbgaspnab7n2g0aiz-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/gf5pfgwvlfzf1rhz5jarngijwwjggkzi-aos-workspace-src",
+  "status": "Required workspace Rust application unit and integration targets compiled successfully"
+}

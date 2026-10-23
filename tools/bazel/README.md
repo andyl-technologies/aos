@@ -2082,6 +2082,8 @@ parity covers 412 Rust targets across 28 analysis-only selections, with no
 external actions; core evaluation passes. Its frozen evidence is retained in
 `tests/evidence/hub-portable-metadata-evaluation.json`.
 
-Required workspace Rust compilation, installed Hub services, foreign/Wasm
+`tests/evidence/hub-portable-required-rust-targets.json` retains passing required
+workspace Rust compilation for the Hub UI test-only lint annotation. The frozen
+source predates the Hub model changes. Installed Hub services, foreign/Wasm
 execution, complete compiler invocation equivalence, numeric performance
 acceptance, production migration, and Cargo removal remain separate work.
