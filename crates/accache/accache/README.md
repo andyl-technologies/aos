@@ -358,7 +358,13 @@ are mapped through the current invocation, never trusted from cache data.
 Use shared cache roots only among trusted build users. Content hashing detects
 accidental corruption; it is not authentication against malicious writers.
 Default ACLs configured by `cache init` allow different Nix build users to
-write entries. Restored artifacts respect destination ACLs and the build umask.
+read and write entries. Environment values contribute to action keys as
+SHA-256 digests and remain in the compiler process; accache does not persist
+their plaintext in action or provenance records. Compiler arguments, outputs,
+and captured stdout and stderr are retained verbatim, and a compiler can copy
+an environment value into any of them. Keep credentials out of these retained
+channels and restrict cache readers to the corresponding build trust domain.
+Restored artifacts respect destination ACLs and the build umask.
 `aos-dev cache accache` provides status, entries, builds, prune, compact, and
 clear commands. Global usage/prune/clear include the action cache. Cleanup
 leaves the separate state directory intact, retaining provenance and locks.
@@ -378,8 +384,9 @@ hits, misses, bypasses, failed compilation, unstable inputs, and write errors.
 They retain arguments, input hashes, effective environment hashes, timestamps,
 and the build output path when available. `ACCACHE_DERIVATION` optionally
 records a `.drv` path without making it an action-key input. The build output
-can also be resolved to its deriver using Nix. Command blobs contain the actual
-effective environment; treat cache storage with the same care as build inputs.
+can also be resolved to its deriver using Nix. Command blobs use the same
+environment hashes; plaintext values exist only in the compiler process unless
+the compiler copies them into a retained argument, output, or diagnostic.
 
 `ACCACHE_VERBOSE=1` prints each outcome. `ACCACHE_DISABLE=1` or an absent
 `ACCACHE_DIR` runs the compiler directly.

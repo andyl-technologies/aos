@@ -1,6 +1,7 @@
 """Exercise real compiler results, invalidation, corruption, and concurrency.
 
-Run with AOS-built accache, GCC, Clang, and rustc paths as the four arguments.
+Run with AOS-built accache, GCC, Clang, rustc, and the environment-probe
+compiler paths as the five arguments.
 The Nix check supplies the authoritative manifest through ACCACHE_MANIFEST.
 """
 
@@ -14,7 +15,7 @@ import sys
 import tempfile
 
 
-binary, gcc, clang, rustc = sys.argv[1:]
+binary, gcc, clang, rustc, environment_probe_compiler = sys.argv[1:]
 
 
 def run_suite(root):
@@ -34,6 +35,32 @@ def run_suite(root):
         event = json.loads(subprocess.check_output([binary, "explain"], env=env))
         assert event["outcome"] == expected, event
         return event
+
+    # Environment values partition actions and reach the compiler without
+    # being retained in cache or provenance storage.
+    (work / "environment.c").write_text("int environment_probe(void) { return 17; }\n")
+    environment_args = ["-c", "environment.c", "-o", "environment.o"]
+    sentinels = ["cache-environment-probe-one", "cache-environment-probe-two"]
+    environment_actions = []
+    for sentinel in sentinels:
+        event = invoke(
+            environment_probe_compiler,
+            environment_args,
+            extra={"CACHE_TEST_SENTINEL": sentinel},
+        )
+        environment_actions.append(event["action"])
+        invoke(
+            environment_probe_compiler,
+            environment_args,
+            "hit",
+            {"CACHE_TEST_SENTINEL": sentinel},
+        )
+    assert environment_actions[0] != environment_actions[1]
+    for path in [root / "cache", root / "state"]:
+        for entry in path.rglob("*"):
+            if entry.is_file():
+                contents = entry.read_bytes()
+                assert all(sentinel.encode() not in contents for sentinel in sentinels), entry
 
     for compiler in [gcc, clang]:
         (work / "first").mkdir(exist_ok=True)

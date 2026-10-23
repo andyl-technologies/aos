@@ -163,6 +163,8 @@ struct Prepared {
     action: String,
 }
 
+const LOCAL_ACTION_INVENTORY: &str = "accache-local-v2.json";
+
 fn prepare(backend: &Backend, compiler: &str, args: &[String]) -> Result<Prepared> {
     let manifest = Manifest::read(&PathBuf::from(
         env::var_os("ACCACHE_MANIFEST").context("ACCACHE_MANIFEST is unset")?,
@@ -202,7 +204,7 @@ fn prepare(backend: &Backend, compiler: &str, args: &[String]) -> Result<Prepare
     let root = backend.put(
         &proto::Directory {
             files: vec![proto::FileNode {
-                name: "accache-local-v1.json".into(),
+                name: LOCAL_ACTION_INVENTORY.into(),
                 digest: Some(inventory),
                 is_executable: false,
             }],
@@ -219,11 +221,12 @@ fn prepare(backend: &Backend, compiler: &str, args: &[String]) -> Result<Prepare
             arguments: std::iter::once(compiler.to_owned())
                 .chain(command_arguments.iter().cloned())
                 .collect(),
-            environment_variables: environment
+            environment_variables: identity
+                .environment
                 .iter()
-                .map(|(name, value)| proto::EnvironmentVariable {
+                .map(|(name, digest)| proto::EnvironmentVariable {
                     name: name.clone(),
-                    value: value.clone(),
+                    value: format!("sha256:{digest}"),
                 })
                 .collect(),
             working_directory: identity.cwd.trim_start_matches('/').into(),
