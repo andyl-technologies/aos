@@ -58,15 +58,17 @@
     (builtins.attrNames dependencyPackages);
   nativeLibraries = [pkgs.sqlite pkgs.zstdStaticMultithread];
   nativeTools = [pkgs.pkg-config];
+  rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
   excludedTests = ["gate_replay_oracle" "gate_abi_conformance" "gate_scheduler_liveness" "gate_e2e_determinism_concurrency"];
   emptyTests = ["guest_host_channel_determinism" "guest_host_marker_observability" "property_fingerprint_neutrality"];
   family = import (root + "/tests/build/_bazel-rust-family.nix") {
-    inherit pkgs packages dependencyPackages sourceInventory nativeLibraries nativeTools cargoSource cargoSetup excludedTests;
+    inherit pkgs packages dependencyPackages sourceInventory nativeLibraries nativeTools cargoSource cargoSetup excludedTests rustcFlags;
     pname = "aos-bazel-engine";
     dependencyProfile = "engine";
     editorComparisonScope = "selected-packages";
     emptyTests = map (name: "${label}:${name}") emptyTests;
-    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    editorRustcFlags = rustcFlags;
+    editorDiagnosticContext = true;
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.engine // {aos_native = pkgs.aosBazelStoreLibraries;};
     extraSourceDirectories = ["BUILD.bazel" "crates" "tests/crucible" "docs/rfcs/0014-signal-driven-fault-model" "docs/rfcs/0020-crucible-campaigns" "docs/users/crucible"];
   };
@@ -137,11 +139,13 @@ in
       pkgs.runCommand "aos-bazel-engine-qualified-checks" {
         buildDeps = [family.all family.editor-parity test-support test-double all-features sourceCatalog.all];
       } ''
-        mkdir -p "$out/variants"
+        mkdir -p "$out/variants" "$out/editor"
         cp -r ${family.all}/evidence "$out/evidence"
         cp ${family.all}/inventory.json "$out/inventory.json"
         cp ${family.oracle}/parity.json "$out/default.json"
         cp ${family.editor-parity}/parity.json "$out/editor-parity.json"
+        cp -r ${family.editor} "$out/editor/bazel"
+        cp -r ${family.editor-cargo-oracle} "$out/editor/cargo"
         cp ${sourceCatalog.crates}/share/aos/source-catalog.json "$out/source-catalog.json"
         cp -r ${test-support} "$out/variants/test-support"
         cp -r ${test-double} "$out/variants/test-double"

@@ -5,6 +5,8 @@
   packages,
   dependencyPackages ? {},
   editorComparisonScope ? "whole-model",
+  editorRustcFlags ? [],
+  editorDiagnosticContext ? false,
   sourceInventory ? null,
   extraSourceDirectories ? [],
   dependencyProfile ? null,
@@ -21,6 +23,10 @@
   cargoFlags ? [],
 }: let
   names = builtins.attrNames packages;
+  editorOutput =
+    if editorDiagnosticContext
+    then "analyzer-output.txt"
+    else "diagnostics.csv";
   label = name: "//${packages.${name}}";
   directoryTargets = name: directoryName: let
     directory = ../.. + "/${packages.${name}}/${directoryName}";
@@ -95,11 +101,14 @@ in rec {
       # generated first-party inputs come from the configured Bazel graph above.
       CARGO=${workspace.toolchains}/bin/cargo \
         RUSTC=${workspace.toolchains}/bin/rustc RAYON_NUM_THREADS=4 \
-        ${workspace.toolchains}/developer/bin/rust-analyzer analysis-stats "$PWD" --output csv \
+        ${workspace.toolchains}/developer/bin/rust-analyzer${pkgs.lib.optionalString editorDiagnosticContext " -v -v"} analysis-stats "$PWD" --output csv \
           --disable-build-scripts \
           --proc-macro-srv ${workspace.toolchains}/developer/bin/proc-macro-srv \
-          > "$out/diagnostics.csv" 2> "$out/analysis.log"
-      ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/verify_family_editor.py} \
+          > "$out/${editorOutput}" 2> "$out/analysis.log"
+      ${pkgs.lib.optionalString editorDiagnosticContext ''
+        ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/normalize_editor_diagnostics.py} \
+          --input "$out/analyzer-output.txt" --output "$out/diagnostics.csv" --analysis-log "$out/analysis.log"
+      ''}${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/verify_family_editor.py} \
         --project rust-project.json --workspace "$PWD/workspace" \
         --inventory ${tests}/inventory.json --analysis-log "$out/analysis.log" --diagnostics "$out/diagnostics.csv" \
         --packages ${builtins.toFile "${pname}-packages.json" (builtins.toJSON packages)} \
@@ -172,12 +181,19 @@ in rec {
           --output "$out/target-selection.json"
       ''}
       cp source/.cargo/config.toml "$CARGO_HOME/config.toml"
-      ${cargoSetup}CARGO=${pkgs.rust}/bin/cargo RUSTC=${workspace.toolchains}/bin/rustc \
+      ${cargoSetup}${pkgs.lib.optionalString (editorRustcFlags != []) ''
+        # rust-analyzer queries Cargo with -O, so make semantic profile settings
+        # explicit instead of hiding debug-assertion-gated first-party APIs.
+        export RUSTFLAGS=${pkgs.lib.escapeShellArg (pkgs.lib.concatStringsSep " " editorRustcFlags)}
+      ''}CARGO=${pkgs.rust}/bin/cargo RUSTC=${workspace.toolchains}/bin/rustc \
         RUST_SRC_PATH=${workspace.toolchains}/developer/rust-src/library RAYON_NUM_THREADS=4 \
-        ${workspace.toolchains}/developer/bin/rust-analyzer analysis-stats "$PWD/source/crates" --output csv \
+        ${workspace.toolchains}/developer/bin/rust-analyzer${pkgs.lib.optionalString editorDiagnosticContext " -v -v"} analysis-stats "$PWD/source/crates" --output csv \
           --proc-macro-srv ${workspace.toolchains}/developer/bin/proc-macro-srv \
-          > "$out/diagnostics.csv" 2> "$out/analysis.log"
-      cp ${../../tools/bazel/tests/verify_family_editor.py} verify_family_editor.py
+          > "$out/${editorOutput}" 2> "$out/analysis.log"
+      ${pkgs.lib.optionalString editorDiagnosticContext ''
+        ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/normalize_editor_diagnostics.py} \
+          --input "$out/analyzer-output.txt" --output "$out/diagnostics.csv" --analysis-log "$out/analysis.log"
+      ''}cp ${../../tools/bazel/tests/verify_family_editor.py} verify_family_editor.py
       ${pkgs.python3}/bin/python3 - "$out" <<'PYTHON'
       import json
       from pathlib import Path

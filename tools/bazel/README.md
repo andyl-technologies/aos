@@ -635,6 +635,15 @@ temporary Cargo oracle receives the same generated catalog. Bazel compilation
 does not consume first-party Cargo manifests. Engine-specific test source and
 runtime inputs remain scoped to the tests that inspect them.
 
+The Cargo editor oracle receives the same assertion and overflow settings as
+the compiled engine. The analyzer's default optimized configuration would
+otherwise hide assertion-gated test helpers. Verbose analyzer output attributes
+synthetic expression diagnostics to their enclosing source file and body byte
+range. The comparison preserves their types and multiplicity, and checks row
+counts against the analyzer's statistics. The complete raw output, normalized
+diagnostics, and analysis logs are retained under `editor/` in the qualification
+output; missing source context still fails the check.
+
 ## Shared Crucible protocol graph
 
 `checks.build.bazel.protocol.all` builds `crucible-qemu-protocol` and
