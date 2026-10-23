@@ -1,0 +1,30 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "76f870048a",
+  "compiled_changed_rust_inputs_sha256": {
+    "crates/aos/activation/aos-activation-bpf-lsm/src/lib.rs": "7b096742bc28bf0b58e55108f8a993888e9912141038df440a78e2a40a4c7e97",
+    "crates/aos/activation/aos-activation-bpf-lsm/src/native.rs": "5e7952cf0e92f05ba5b3160492165253af4c7a29f8543b0b930f6b4cb5723259",
+    "crates/aos/activation/aos-activation-bpf-network/src/lib.rs": "b5c74baf819b5f73f19446f94656f5764b9180d3ab8b979aeae4204bac7b0f88",
+    "crates/aos/activation/aos-activation-bpf-network/src/native.rs": "ab0601ad7fbcd7114432bf626e9a3b343609dd6e05c980054d1624a64d77cacb",
+    "crates/aos/activation/aos-activation-config-files/src/io.rs": "aa55ba2d6a24956c3cb56d15cf7ebf44b5ae6d61c52ce495fefdffd9707b386f",
+    "crates/aos/activation/aos-activation-config-files/src/lib.rs": "088bf7226a10ddccac64f820f80cf55ec9469cbc9bb28aaabf55144685707b8c",
+    "crates/aos/activation/aos-activation/src/activation/controller.rs": "1063cc82387771218c03179eaa1435e8d1796d2225fff0e8feebbe4791b5c0b0",
+    "crates/aos/activation/aos-activation/src/activation/inspection.rs": "870f7f70180951c4d7fb99b20270d696336e540984880fed546d81a5db0c1683",
+    "crates/aos/activation/aos-activation/src/activation/journal.rs": "959fd61843ee02e89cf8d214b8a330246e1dd73b4efaf02d341a53dea44f1b60",
+    "crates/aos/activation/aos-activation/src/activation/mod.rs": "c2b5170a67cc04c2d5567441bd53afba9a0436770aa20adc16187077e7f18b74",
+    "crates/aos/activation/aos-activation/src/activation/socket_observer.rs": "e12fa80f0d39e3a987e3ab6996c5273edb29f28cefbf7091fb9cacf1e75fdaa6",
+    "crates/aos/activation/aos-activation/src/journal/file.rs": "c128da759f8079fa8297ae29f2bd37d569575e9ac2fae58263b291d627b220a5"
+  },
+  "derivation": "/nix/store/rxrdw3pzl6k7sh6ra0d4c66jvq3b4jv2-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "71cece5b594bc51092971a23aff83d13985c7a9384bcc1c82c3b8612a7b2648a",
+  "implementation_commit": "aa792e3d51",
+  "limits": [
+    "This gate compiles application unit and integration targets without executing them. Native Bazel/Cargo execution is retained separately.",
+    "This frozen checkpoint includes the twelve core activation Rust lint corrections. It predates filesystem/storage lint corrections and later Bazel declarations."
+  ],
+  "log_sha256": "613f62a6eba00710a9b2f4ccbf2b286299157bcd6d55392b461c1d9d3b6e7408",
+  "output": "/nix/store/1afs959d5x4a6qrgix3jd7xc4gx7b58f-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/f1n8ywngcp4v7i4lv893bjbpcn170yy3-aos-workspace-src",
+  "status": "Required workspace Rust application unit and integration targets compiled successfully"
+}
