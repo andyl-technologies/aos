@@ -10988,3 +10988,9 @@ stops before QEMU because the initrd measures 224.57 MiB against its previous
 UKIs measure 241.0 MiB and retain their existing 256 MiB bound; the ESP, root
 partitions and resource-bank limits are unchanged. Formatting and diff checks
 pass. This packaging correction supplies no installed Host-readiness receipt.
+
+The admission fixture independently stops at the same bound: its initrd is
+224.59 MiB and each normal signed UKI is 241.01 MiB. Its initrd bound and the
+enforcing handoff fixture's matching BPF boot profile now permit 240 MiB.
+Their 256 MiB UKI and 736 MiB ESP bounds remain unchanged. The admission proof
+and handoff assertions still require actual VM execution.

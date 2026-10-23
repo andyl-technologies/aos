@@ -139,9 +139,9 @@
       # Match the enforcing handoff fixture without changing root partitions.
       aos.image.budgets = {
         maxRootMiB = 896;
-        # The signed early-boot payload measures 219 MiB; each UKI is 236 MiB.
+        # BPF support brings the initrd to 224.6 MiB and each UKI to 241.0 MiB.
         # Retain both boot slots and both 62 MiB recovery artifacts in the ESP.
-        maxInitrdMiB = 224;
+        maxInitrdMiB = 240;
         maxBootExecutableMiB = 256;
         maxFirmwarePartitionMiB = 736;
         maxDownloadMiB = 1536;

@@ -123,7 +123,8 @@
         # and bound the additional signed image payload separately from the base.
         aos.image.budgets = {
           maxRootMiB = 896;
-          maxInitrdMiB = 224;
+          # Include the BPF-enabled manager in the same bounded boot profile.
+          maxInitrdMiB = 240;
           maxBootExecutableMiB = 256;
           maxFirmwarePartitionMiB = 736;
           maxDownloadMiB = 1536;
