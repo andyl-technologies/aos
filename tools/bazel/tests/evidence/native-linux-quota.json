@@ -1,4 +1,13 @@
 {
+  "aggregate_regression_checks": {
+    "checkpoint_commit": "7d188f29a40e8305358f7fbab6669e22ac8381bb",
+    "evidence": "native-linux-session-aggregate.json",
+    "outputs": [
+      "/nix/store/90m8m3fmjz9314q3qximj5zy9gqshsf6-aos-bazel-checks",
+      "/nix/store/aah8g2szam8h4ccl8dlj6fz67g2y2i8q-aos-native-evaluation-checks-0"
+    ],
+    "status": "passed"
+  },
   "cli_checks": {
     "output": "/nix/store/38ygpdy50sjxmnhsq7slpgc9p2x953aj-aos-dev-cli-check-0",
     "scope": "Includes quota update, launcher selection, and editor export routing.",
@@ -245,6 +254,6 @@
   ],
   "schema_version": 1,
   "source": "/nix/store/z85y7yw8lmizbd4b95pbd51kp9ci9g6r-aos-bazel-workspace",
-  "status": "native, installed runtime, AArch64 unit and ext4 VM qualification passed; aggregate regression pending",
+  "status": "native, installed runtime, AArch64 unit, ext4 VM and corrected aggregate regression qualification passed",
   "tested_tree_parent_commit": "feb900ad3fee8267373d7d3194672635d2ac65ad"
 }

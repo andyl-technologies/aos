@@ -1227,8 +1227,11 @@ models are identical. Both analyzers report the same single unresolved type
 at `src/lifecycle/session_contract.rs:876` in the control API. The raw report
 retains all 1,510 Cargo diagnostics outside these selected packages and no
 unattributed diagnostics. The foreign run covers the default family; additional
-feature configurations remain qualified natively only. Production consumer
-migration and performance acceptance remain separate requirements.
+feature configurations remain qualified natively only.
+`tests/evidence/native-linux-session-aggregate.json` records the passing aggregate
+and core evaluation checks at the session checkpoint, including the corrected
+quota package description. Production consumer migration and performance
+acceptance remain separate requirements.
 
 ## Control transport family
 

@@ -1,4 +1,13 @@
 {
+  "aggregate_regression_checks": {
+    "checkpoint_commit": "7d188f29a40e8305358f7fbab6669e22ac8381bb",
+    "evidence": "native-linux-session-aggregate.json",
+    "outputs": [
+      "/nix/store/90m8m3fmjz9314q3qximj5zy9gqshsf6-aos-bazel-checks",
+      "/nix/store/aah8g2szam8h4ccl8dlj6fz67g2y2i8q-aos-native-evaluation-checks-0"
+    ],
+    "status": "passed"
+  },
   "baseline": "session-cargo-baseline.json",
   "command": "nix-build tools/bazel/tests/session.nix -A all --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
   "configuration": "/nix/store/i93alz39bz25m2xq1nafg642zpwdr85h-aos-bazel-configuration.json",
