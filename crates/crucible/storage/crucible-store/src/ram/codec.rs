@@ -45,6 +45,30 @@ pub(super) fn object_limits(id: ContentId) -> Result<(u64, usize), RamStoreError
     }
 }
 
+// The closed record phase charges these exact buffers before either helper is
+// called. Allocation refusal retains that same partition's paid first cause.
+fn allocate_charged_body(
+    account: &DecodeBudget,
+    capacity: usize,
+) -> Result<Vec<u8>, RamStoreError> {
+    let mut body = Vec::new();
+    body.try_reserve_exact(capacity)
+        .map_err(|source| admission(account.retain_allocation_refusal(source)))?;
+    Ok(body)
+}
+
+fn copy_charged_identifier(
+    account: &DecodeBudget,
+    identifier: &str,
+) -> Result<String, RamStoreError> {
+    let mut owned = String::new();
+    owned
+        .try_reserve_exact(identifier.len())
+        .map_err(|source| admission(account.retain_allocation_refusal(source)))?;
+    owned.push_str(identifier);
+    Ok(owned)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TreeRef {
     pub id: ContentId,
@@ -352,11 +376,12 @@ impl RamStore {
             .codec
             .charge_array::<u8>(PAGE_SCHEMA.len())
             .map_err(admission)?;
-        let mut body = Vec::with_capacity(body_length);
+        let mut body = allocate_charged_body(&record.codec, body_length)?;
         body.extend_from_slice(digest.as_bytes());
         body.extend_from_slice(&(bytes.len() as u32).to_be_bytes());
         body.extend_from_slice(bytes);
-        let envelope = ContentEnvelope::new(PAGE_SCHEMA, SCHEMA_VERSION, BTreeSet::new(), body)?;
+        let schema = copy_charged_identifier(&record.codec, PAGE_SCHEMA)?;
+        let envelope = ContentEnvelope::new(schema, SCHEMA_VERSION, BTreeSet::new(), body)?;
         record
             .codec
             .charge_bytes(shared_extent::<OwnedEnvelope>()?)
@@ -435,12 +460,21 @@ impl RamStore {
         let (kind, digest) = match node {
             TreeNode::Padding => (0, empty_node(height)?),
             TreeNode::Leaf { page, digest } => {
-                children.insert(ContentChild::new("page", *page)?);
+                children.insert(ContentChild::new(
+                    copy_charged_identifier(&record.codec, "page")?,
+                    *page,
+                )?);
                 (1, crucible_ram::leaf_digest(*digest))
             }
             TreeNode::Branch { left, right } => {
-                children.insert(ContentChild::new("left", left.id)?);
-                children.insert(ContentChild::new("right", right.id)?);
+                children.insert(ContentChild::new(
+                    copy_charged_identifier(&record.codec, "left")?,
+                    left.id,
+                )?);
+                children.insert(ContentChild::new(
+                    copy_charged_identifier(&record.codec, "right")?,
+                    right.id,
+                )?);
                 (
                     2,
                     crucible_ram::inner_digest(height, left.digest, right.digest)
@@ -449,7 +483,7 @@ impl RamStore {
             }
         };
 
-        let mut body = Vec::with_capacity(133);
+        let mut body = allocate_charged_body(&record.codec, 133)?;
         body.push(kind);
         body.extend_from_slice(digest.as_bytes());
         body.extend_from_slice(&height.to_be_bytes());
@@ -462,7 +496,8 @@ impl RamStore {
                 encode_ref(&mut body, *right);
             }
         }
-        let envelope = ContentEnvelope::new(TREE_SCHEMA, SCHEMA_VERSION, children, body)?;
+        let schema = copy_charged_identifier(&record.codec, TREE_SCHEMA)?;
+        let envelope = ContentEnvelope::new(schema, SCHEMA_VERSION, children, body)?;
         record
             .codec
             .charge_bytes(shared_extent::<OwnedEnvelope>()?)

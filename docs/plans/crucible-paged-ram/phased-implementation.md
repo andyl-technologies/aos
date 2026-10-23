@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 556 bindings: 537 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 561 bindings: 542 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2000,8 +2000,9 @@ and four ignored cases. Strict Clippy retains 674 library and 723 test-target
 errors, with fourteen and five warnings. Hermetic storage passes all 36 exact
 cases at `j4nbb0i8d527709gfvkcr1gz384rkarh`; all 48 successful summaries,
 including nested child results, are independently checked. Mandatory application
-compilation is running for `e501b58d92`; all 5,394 committed Rust/TOML files
-and six required fixtures independently match frozen source
+compilation passes for `e501b58d92` at `irky8q3z3kvjrxc64zxpj68hz4fw9lc5`;
+all 5,394 committed Rust/TOML files and six required fixtures independently match
+frozen source
 `2ksfppd4azphg6aiklk524jmbj79mzly` before the lazy-page changes.
 
 The previously excluded 512 MiB packed traversal/repack cost case passes at
@@ -2086,8 +2087,10 @@ the same eight helper-custody failures and four ignored cases. All ninety testin
 standard and five hygiene controls pass, and Store Clippy passes all targets.
 Strict Host Clippy retains 674 library and 723 test-target errors with fourteen
 and five warnings. ABI conformance passes at
-`dfs5vwdn7wf62fq1vx925w3jf7ifx6ih`. The complete license-boundary gate remains
-in progress; neither the ABI result nor passing storage controls replaces it.
+`dfs5vwdn7wf62fq1vx925w3jf7ifx6ih`. The complete license-boundary gate fails
+in controller compilation: its Host configuration reports 639 errors and returns
+101. This is distinct from the private-feature strict Clippy counts above.
+Neither the ABI result nor passing storage controls replaces that failed gate.
 Signed commit `e9321233eb` is pushed. Mandatory application-target compilation
 is running. All 5,397 committed Rust/TOML files and six required fixtures match
 frozen source `a66wk4sbxqch8zj5hpmz0gcbns2a15rj` before later edits.
@@ -2136,6 +2139,28 @@ five hygiene controls pass; Store Clippy passes all targets. Hermetic storage
 passes all 48 exact cases at `gk4lm4ld77jxvb85z0a73m54g4f8iyfd`; all sixty
 successful summaries, including nested results, are independently checked.
 These controls qualify neither physical OOM nor native resource custody.
+Signed commit `3c36193493` is pushed. Mandatory application-target compilation
+is running; all 5,398 committed Rust/TOML files and six required fixtures match
+frozen source `qb9nc0x44fwc92x007ddf3l7x0qx0k5b` before subsequent edits.
+
+Page and tree body buffers, schema strings and child-role strings now reserve
+fallibly within their existing closed-record prepaid partitions. Actual allocator
+refusal retains the original typed source and paid partition loan before any
+publication. The outer account remains healthy under the existing partition
+contract; final diagnostic closure returns the retained credit. Wire bytes,
+digests, complete record charges and allocation allowances are unchanged. These
+buffers do not establish fallible B-tree or Arc allocation, root-metadata funding,
+physical OOM handling or native custody.
+
+All five exact-layout controls pass. Replacing only their prepaid cause retention
+with an unfunded diagnostic makes all five fail; exact source restoration passes
+all five. The full storage regression passes 714 tests, with the three separately
+bounded 512 MiB controls retained. All 686 engine tests, ninety testing-standard
+controls, five hygiene controls and Store Clippy targets pass. Hermetic storage
+passes all 53 exact cases at `p3aiknw31az8mv3yy0g880fj90krlsqj`;
+all 65 successful summaries, including nested results, are independently
+checked. Inventory `69qfvbs43jg7x7j3rdxjxx3yw6xrg5a8` validates 561 bindings
+across 243 requirements, with 148 uncovered and zero qualified.
 
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's

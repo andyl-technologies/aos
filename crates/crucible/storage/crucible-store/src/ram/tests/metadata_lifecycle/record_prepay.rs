@@ -3,6 +3,7 @@
 
 mod publication_allocation;
 mod publication_width;
+mod record_allocation;
 
 use super::*;
 use crate::ram::codec::{PAGE_SCHEMA, TreeNode};
