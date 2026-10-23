@@ -208,3 +208,15 @@ config_setting(
     flag_values = {":dependency_profile": "activation-systemd"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "activation_crucible_dependencies",
+    flag_values = {":dependency_profile": "activation-crucible"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "activation_crucible_tests_dependencies",
+    flag_values = {":dependency_profile": "activation-crucible-tests"},
+    visibility = ["//visibility:public"],
+)

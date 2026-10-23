@@ -1,6 +1,8 @@
 load("@rules_rust//crate_universe:defs.bzl", "crate")
 load("//tools/bazel/rules:crates.bzl", "aos_crate_specifications")
 load("//tools/bazel/rules:package.bzl", "aos_package")
+load(":activation-crucible/aliases.bzl", ACTIVATION_CRUCIBLE_CRATES = "CRATES")
+load(":activation-crucible-tests/aliases.bzl", ACTIVATION_CRUCIBLE_TESTS_CRATES = "CRATES")
 load(":activation-systemd/aliases.bzl", ACTIVATION_SYSTEMD_CRATES = "CRATES")
 load(":activation-storage/aliases.bzl", ACTIVATION_STORAGE_CRATES = "CRATES")
 load(":activation-core/aliases.bzl", ACTIVATION_CORE_CRATES = "CRATES")
@@ -31,6 +33,8 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:activation_crucible_dependencies": ACTIVATION_CRUCIBLE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:activation_crucible_tests_dependencies": ACTIVATION_CRUCIBLE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:activation_systemd_dependencies": ACTIVATION_SYSTEMD_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:activation_storage_dependencies": ACTIVATION_STORAGE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:activation_core_dependencies": ACTIVATION_CORE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -54,7 +58,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(dict(ACTIVATION_SYSTEMD_CRATES.items() + ACTIVATION_STORAGE_CRATES.items() + ACTIVATION_CORE_CRATES.items() + ACTIVATION_CORE_TESTS_CRATES.items() + CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items() + CRUCIBLE_CLI_CRATES.items() + NATIVE_FOUNDATION_CRATES.items() + NATIVE_FOUNDATION_TESTS_CRATES.items() + NATIVE_FOUNDATION_MINIMAL_CRATES.items() + FORMATS_CRATES.items()))
+    for name in sorted(dict(ACTIVATION_CRUCIBLE_CRATES.items() + ACTIVATION_CRUCIBLE_TESTS_CRATES.items() + ACTIVATION_SYSTEMD_CRATES.items() + ACTIVATION_STORAGE_CRATES.items() + ACTIVATION_CORE_CRATES.items() + ACTIVATION_CORE_TESTS_CRATES.items() + CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items() + CRUCIBLE_CLI_CRATES.items() + NATIVE_FOUNDATION_CRATES.items() + NATIVE_FOUNDATION_TESTS_CRATES.items() + NATIVE_FOUNDATION_MINIMAL_CRATES.items() + FORMATS_CRATES.items()))
 ]
 
 CORE_PACKAGES = {
@@ -241,6 +245,17 @@ ACTIVATION_STORAGE_PACKAGES = dict(
     libc = CORE_PACKAGES["libc"],
     tempfile = STORE_PACKAGES["tempfile"],
 )
+
+# The optional static adapter consumes only the public guest protocol in
+# production. Engine/store support belongs exclusively to its test profile.
+ACTIVATION_CRUCIBLE_PACKAGES = dict(ACTIVATION_CORE_PACKAGES.items() + {
+    name: CORE_PACKAGES[name]
+    for name in ["blake3", "libc", "unicode-normalization"]
+}.items() + {
+    "rustix": crate.spec(version = "=1.1.4", features = ["event", "fs", "net"]),
+}.items())
+
+ACTIVATION_CRUCIBLE_TESTS_PACKAGES = dict(ENGINE_PACKAGES.items() + ACTIVATION_CRUCIBLE_PACKAGES.items())
 
 # Native integrations retain separate production, test, and optional-transport
 # graphs. D-Bus test features never enter the production specification.
@@ -431,6 +446,14 @@ GUEST_PERMISSIVE_CRATES = [
     "unicode-ident@1.0.24",
     "unicode-normalization@0.1.25",
     "version_check@0.9.5",
+]
+
+# Production omits campaign random sources and Zstandard's parallel C compiler.
+# Keep the reviewed protocol closure without requesting absent host test crates.
+ACTIVATION_CRUCIBLE_PERMISSIVE_CRATES = [
+    identity
+    for identity in GUEST_PERMISSIVE_CRATES
+    if identity not in ["getrandom@0.2.17", "jobserver@0.1.34", "rand_core@0.6.4"]
 ]
 
 # Shared-memory protocol types also compile Serde/JSON in this host family.
@@ -624,6 +647,13 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    "activation-crucible-tests": {
+        "indexmap": json.encode({
+            "version": "2.14.0",
+            "resolved_features": ["default", "serde", "std"],
+            "features": ["default", "std"],
+        }),
+    },
     "activation-systemd": {
         "indexmap": NATIVE_FOUNDATION_FEATURE_VARIANTS["indexmap"],
         "serde": json.encode({
@@ -771,7 +801,7 @@ APPROVED_LICENSES = [
         packages = packages,
         annotations = annotations,
         feature_variants = FAMILY_FEATURE_VARIANTS.get(family, {}),
-        permissive_crates = NATIVE_FOUNDATION_PERMISSIVE_CRATES if family in ["native-foundation", "native-foundation-tests", "native-foundation-minimal"] else FORMATS_PERMISSIVE_CRATES if family == "formats" else DAEMON_PERMISSIVE_CRATES if family in ["daemon", "crucible-cli"] else ENGINE_PERMISSIVE_CRATES if family in ["engine", "session", "control", "qemu-host"] else GUEST_PERMISSIVE_CRATES if family == "guest" else [],
+        permissive_crates = NATIVE_FOUNDATION_PERMISSIVE_CRATES if family in ["native-foundation", "native-foundation-tests", "native-foundation-minimal"] else FORMATS_PERMISSIVE_CRATES if family == "formats" else DAEMON_PERMISSIVE_CRATES if family in ["daemon", "crucible-cli"] else ACTIVATION_CRUCIBLE_PERMISSIVE_CRATES if family == "activation-crucible" else ENGINE_PERMISSIVE_CRATES if family in ["activation-crucible-tests", "engine", "session", "control", "qemu-host"] else GUEST_PERMISSIVE_CRATES if family == "guest" else [],
         platforms = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
         license_domain = license_domain,
         approved_licenses = APPROVED_LICENSES,
@@ -780,6 +810,8 @@ APPROVED_LICENSES = [
         host_only_licenses = ["Apache-2.0"],
     )
     for family, packages, annotations, license_domain in [
+        ("activation-crucible", ACTIVATION_CRUCIBLE_PACKAGES, {}, "apache-host"),
+        ("activation-crucible-tests", ACTIVATION_CRUCIBLE_TESTS_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("activation-systemd", ACTIVATION_SYSTEMD_PACKAGES, {}, "apache-host"),
         ("activation-storage", ACTIVATION_STORAGE_PACKAGES, {}, "apache-host"),
         ("activation-core", ACTIVATION_CORE_PACKAGES, {}, "apache-host"),
@@ -812,5 +844,5 @@ APPROVED_LICENSES = [
         license_domain = "apache-host",
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
-    for family in ["activation-systemd", "activation-storage", "activation-core", "activation-core-tests", "core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "native-foundation", "native-foundation-tests", "native-foundation-minimal", "formats"]
+    for family in ["activation-crucible", "activation-crucible-tests", "activation-systemd", "activation-storage", "activation-core", "activation-core-tests", "core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "native-foundation", "native-foundation-tests", "native-foundation-minimal", "formats"]
 ]

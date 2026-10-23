@@ -92,6 +92,16 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    activation-crucible = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "activation-crucible";
+    };
+    activation-crucible-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "activation-crucible-tests";
+    };
     activation-systemd = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -247,6 +257,14 @@
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
   };
+  aosBazelActivationCrucibleWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = ["crates/aos/activation" "crates/aos/modules/aos-module-format" "crates/shared/aos-core" "crates/shared/aos-artifact-evidence" "crates/crucible" "tools/bazel" "third_party/rust"];
+    repositories = aosBazelRepositories // aosBazelRustRepositories.activation-crucible-tests // {aos_native = aosBazelGuestLibraries;};
+    dependencyProfile = "activation-crucible-tests";
+    rustcFlags = ["-Copt-level=3" "-Cdebuginfo=0" "-Ctarget-feature=+crt-static" "-Crelocation-model=static"];
+    analysisTargets = ["//crates/aos/activation/aos-activation-crucible:unit"];
+  };
   aosBazelActivationSystemdWorkspace = mkAosBazelWorkspace {
     root = ../../..;
     sourceDirectories = ["crates/aos/activation" "crates/aos/modules/aos-module-format" "crates/shared" "tools/bazel" "third_party/rust"];
@@ -393,6 +411,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelActivationCrucibleLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelActivationCrucibleWorkspace;
     }).launcher;
   aosBazelActivationSystemdLauncher =
     (import ./development.nix {

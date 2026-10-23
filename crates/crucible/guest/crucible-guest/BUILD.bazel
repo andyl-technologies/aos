@@ -27,6 +27,7 @@ INTEGRATIONS = glob(["tests/*.rs"], allow_empty = True)
 
 rust_library(
     name = "lib",
+    visibility = ["//crates/crucible:__subpackages__", "//crates/aos/activation/aos-activation-crucible:__pkg__"],
     package = RUST_PACKAGE,
     lint_config = "//tools/bazel/rules:workspace_lints",
     crate_name = "crucible_guest",

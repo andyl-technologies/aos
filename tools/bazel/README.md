@@ -1829,3 +1829,48 @@ Zstandard sources; dependency preparation is outside the measured scope.
 These results expose edit and no-op regressions against Cargo incremental.
 They do not establish end-to-end performance, numeric acceptance budgets,
 production readiness, or permission to remove Cargo.
+
+## Static Crucible activation adapter
+
+`aos-dev bazel --family activation-crucible` selects the optional AOS adapter
+library, its tests, and the `aos-ability-crucible` command. The export preserves
+the existing Nix package and command names independently of the Rust crate name
+`aos-activation-crucible`. Production keeps static linkage and runtime inputs;
+the original production builder remains in place during qualification.
+
+The `activation-crucible` dependency profile matches Cargo's 49 external crate
+identities and seven first-party packages. `activation-crucible-tests` matches
+115 external identities and thirteen first-party packages, adding engine test
+support and AOS-built static SQLite/Zstandard. Production declares only the
+static compiler runtime. Scoped guest and engine library visibility admits the
+adapter without exposing other implementation targets. Protocol dependencies
+retain their reviewed permissive licenses; QEMU implementation code and headers
+do not enter either compiled closure.
+
+`tests/evidence/native-linux-activation-crucible.json` retains passing strict
+qualification: nine executed cases, no ignored cases, two libtest artifacts,
+and one empty doctest target. The command test artifact is empty, matching Cargo.
+The tests include host verdict and reproduction through generic guest markers.
+Clippy, formatting, documentation, license closures, and production feature
+comparison pass. The static runtime gate checks the actual sandboxed link and
+archive digests, installed ELF format, five startup-error comparisons with Cargo,
+and a Nix closure retaining only glibc's optional data reference.
+
+Editor comparison reports zero selected or unattributed diagnostics. The Bazel
+model has complete inference for the selected roots; Cargo retains incomplete
+inference and 2,806 diagnostics outside the selection. Both models' statistics
+and different aggregate sizes remain explicit. The source inventory contains
+nine requested roots, 255 configured reports, and 840 declared source files,
+including 835 Rust files across the adapter and its dependencies.
+
+`tests/evidence/activation-crucible-configured-graph.json` records all 22 family
+inventory validations, 22 dependency specifications, 164 policy tests, and CLI
+checks with 17 launchers. The previous 20 locks and 3,324 generated crate build
+files remain unchanged. Metadata parity covers 388 Rust targets across 24
+analysis-only selections with no external actions, and core Nix evaluation passes.
+The frozen checkpoint is in
+`tests/evidence/activation-crucible-metadata-evaluation.json`.
+
+Dedicated ABI, license, provider and assembled-system gates, foreign and Wasm
+execution, compiler invocation equivalence, numeric performance acceptance,
+production migration, and Cargo removal remain separate qualification.

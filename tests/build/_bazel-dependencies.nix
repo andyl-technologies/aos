@@ -24,7 +24,7 @@ in rec {
       };
       packageLabel = "//third_party/rust:${family}_specification_package";
     };
-  }) ["activation-systemd" "activation-storage" "activation-core" "activation-core-tests" "core" "device" "store" "guest" "engine" "quota" "session" "control" "qemu-host" "store-s3" "daemon" "crucible-cli" "native-foundation" "native-foundation-tests" "native-foundation-minimal" "formats"]);
+  }) ["activation-crucible" "activation-crucible-tests" "activation-systemd" "activation-storage" "activation-core" "activation-core-tests" "core" "device" "store" "guest" "engine" "quota" "session" "control" "qemu-host" "store-s3" "daemon" "crucible-cli" "native-foundation" "native-foundation-tests" "native-foundation-minimal" "formats"]);
   core = pkgs.mkAosBazelCheck {
     pname = "aos-bazel-external-rust-pilot";
     workspace = pkgs.mkAosBazelWorkspace {

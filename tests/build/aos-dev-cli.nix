@@ -16,6 +16,7 @@
     "aosBazelNativeFoundationLauncher"
     "aosBazelActivationCoreLauncher"
     "aosBazelActivationStorageLauncher"
+    "aosBazelActivationCrucibleLauncher"
     "aosBazelActivationSystemdLauncher"
     "aosBazelCrucibleCliLauncher"
   ];
