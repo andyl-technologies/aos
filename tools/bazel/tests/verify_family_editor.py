@@ -142,6 +142,18 @@ def compare_analysis(bazel, cargo, packages, scope="whole-model"):
             "unattributed_cargo_diagnostics": [row for row in expected if row[0] == "synthetic"],
         })
         expected = [row for row in expected if selected(row)]
+        # Separate library/libtest views can report the same source location
+        # twice. Compare locations and inferred types while retaining every
+        # raw occurrence; whole-model statistics and multiplicities differ.
+        report["bazel_diagnostics"] = bazel["diagnostics"]
+        report["cargo_selected_diagnostics"] = expected
+        report["diagnostic_multiplicity_comparable"] = False
+        actual = sorted(set(map(tuple, bazel["diagnostics"])))
+        expected = sorted(set(map(tuple, expected)))
+        if actual != expected:
+            raise ValueError("Bazel/Cargo editor diagnostic locations or types differ")
+        report["diagnostics"] = [list(row) for row in expected]
+        return report
     if bazel["diagnostics"] != expected:
         raise ValueError("Bazel/Cargo editor diagnostic locations or types differ")
     report["diagnostics"] = expected

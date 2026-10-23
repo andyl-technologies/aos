@@ -26,6 +26,27 @@ class EditorComparisonTests(unittest.TestCase):
         self.assertEqual(report["diagnostics"], [self.row])
         self.assertEqual(report["unselected_cargo_diagnostics"], self.cargo["diagnostics"][1:])
 
+    def test_scoped_comparison_retains_duplicate_contexts_without_equating_counts(self):
+        self.bazel["diagnostics"] = [self.row, self.row]
+
+        report = compare_analysis(self.bazel, self.cargo, self.packages, "selected-packages")
+
+        self.assertEqual(report["diagnostics"], [self.row])
+        self.assertEqual(report["bazel_diagnostics"], [self.row, self.row])
+        self.assertEqual(report["cargo_selected_diagnostics"], [self.row])
+        self.assertFalse(report["diagnostic_multiplicity_comparable"])
+
+        self.bazel["diagnostics"].append([*self.row[:-1], "different_type"])
+        with self.assertRaisesRegex(ValueError, "diagnostic locations or types differ"):
+            compare_analysis(self.bazel, self.cargo, self.packages, "selected-packages")
+
+    def test_whole_model_comparison_still_requires_diagnostic_multiplicity(self):
+        self.cargo = {**self.bazel["analysis"], "diagnostics": [self.row]}
+        self.bazel["diagnostics"] = [self.row, self.row]
+
+        with self.assertRaisesRegex(ValueError, "diagnostic locations or types differ"):
+            compare_analysis(self.bazel, self.cargo, self.packages)
+
     def test_owned_diagnostic_regressions_and_unexpected_bazel_scope_fail(self):
         self.bazel["diagnostics"] = []
         with self.assertRaisesRegex(ValueError, "diagnostic locations or types differ"):

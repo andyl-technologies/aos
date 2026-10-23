@@ -1269,8 +1269,13 @@ nix-build tools/bazel/tests/control.nix -A cross-linux --no-out-link --max-jobs 
 `tests/evidence/aarch64-linux-control.json` records all 107 default-family cases
 passing across nine artifacts in the foreign guest, with no platform case
 exceptions. Both native configurations pass the same test inventory and
-194-crate feature comparison; developer and editor qualification remains in
-progress. Production consumers remain on Cargo.
+194-crate feature comparison. `tests/evidence/native-linux-control.json` records
+the passing developer checks and editor comparison against the retained
+compiled graphs. The three distinct selected-package diagnostic locations and
+types match Cargo. Separate library/libtest views emit six raw occurrences;
+the report retains those, Cargo's three occurrences, and both inference summaries
+without claiming equal multiplicities or whole-model inference. Production
+consumers remain on Cargo.
 
 The editor exporter keeps a library and its unit-test target separate when
 combining their development dependencies would create a cycle. In this family,
