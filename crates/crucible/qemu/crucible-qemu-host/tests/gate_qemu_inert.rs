@@ -92,7 +92,8 @@ fn assert_contains(haystack: &str, needle: &str) {
 fn workspace_root() -> Result<PathBuf, Box<dyn Error>> {
     let mut current = std::env::current_dir()?;
     loop {
-        if current.join("crates/Cargo.toml").is_file()
+        // Locate the audit's declared inputs independently of the Rust build system.
+        if current.join("pkgs/emulation/qemu.nix").is_file()
             && current.join("tests/crucible/default.nix").is_file()
         {
             return Ok(current);

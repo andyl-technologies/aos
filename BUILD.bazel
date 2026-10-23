@@ -3,6 +3,21 @@ load("//tools/bazel/rules:source_package.bzl", "aos_source_catalog")
 
 exports_files(["MODULE.bazel"])
 
+filegroup(
+    name = "qemu_host_build_audit",
+    testonly = True,
+    srcs = ["pkgs/default.nix", "pkgs/emulation/qemu.nix"],
+    visibility = ["//crates/crucible/qemu/crucible-qemu-host:__pkg__"],
+)
+
+# QMP tests inspect checked-in patch text; no QEMU code is linked into the host.
+filegroup(
+    name = "qemu_host_patch_audit",
+    testonly = True,
+    srcs = ["pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch"],
+    visibility = ["//crates/crucible/qemu/crucible-qemu-host:__pkg__"],
+)
+
 aos_source_catalog(
     name = "source_catalog",
     packages = [

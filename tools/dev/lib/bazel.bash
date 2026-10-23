@@ -5,7 +5,7 @@ aos_dev_bazel() (
   (( $# > 0 )) || aos_dev_error 'bazel requires a command and optional labels'
   if [[ $1 == update-deps ]]; then
     shift
-    [[ $# == 1 && ( $1 == core || $1 == device || $1 == store || $1 == guest || $1 == engine || $1 == quota || $1 == session || $1 == control ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device|store|guest|engine|quota|session|control>'
+    [[ $# == 1 && ( $1 == core || $1 == device || $1 == store || $1 == guest || $1 == engine || $1 == quota || $1 == session || $1 == control || $1 == qemu-host ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device|store|guest|engine|quota|session|control|qemu-host>'
     local updater specifications family=$1
     updater=$(aos_dev_nix_build_ordinary -A pkgs.aosBazelDependencyUpdater --no-out-link)
     specifications=$(aos_dev_nix_build_ordinary -A "checks.build.bazel.dependencies.specification-packages.$family" --no-out-link)
@@ -18,14 +18,15 @@ aos_dev_bazel() (
 
   local launcher_attribute=pkgs.aosBazelLauncher
   if [[ $1 == --family ]]; then
-    [[ $# -ge 3 ]] || aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control> <command> [labels]'
+    [[ $# -ge 3 ]] || aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host> <command> [labels]'
     case $2 in
       guest) launcher_attribute=pkgs.aosBazelGuestLauncher ;;
       engine) launcher_attribute=pkgs.aosBazelEngineLauncher ;;
       quota) launcher_attribute=pkgs.aosBazelQuotaLauncher ;;
       session) launcher_attribute=pkgs.aosBazelSessionLauncher ;;
       control) launcher_attribute=pkgs.aosBazelControlLauncher ;;
-      *) aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control> <command> [labels]' ;;
+      qemu-host) launcher_attribute=pkgs.aosBazelQemuHostLauncher ;;
+      *) aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host> <command> [labels]' ;;
     esac
     shift 2
   fi
@@ -40,6 +41,8 @@ aos_dev_bazel() (
       project_options+=(--rust-project-package crates/crucible/guest/crucible-guest)
     elif [[ $launcher_attribute == pkgs.aosBazelQuotaLauncher ]]; then
       project_options+=(--rust-project-package crates/shared/aos-linux-project-quota)
+    elif [[ $launcher_attribute == pkgs.aosBazelQemuHostLauncher ]]; then
+      project_options+=(--rust-project-package crates/crucible/qemu/crucible-qemu-host)
     elif [[ $launcher_attribute == pkgs.aosBazelControlLauncher ]]; then
       project_options+=(--rust-project-package crates/crucible/control/crucible-control-client)
       project_options+=(--rust-project-package crates/crucible/control/crucible-control-server)

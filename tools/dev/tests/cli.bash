@@ -55,6 +55,7 @@ case " $* " in
   *' -A pkgs.aosBazelQuotaLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelSessionLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelControlLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.aosBazelQemuHostLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelDependencyUpdater '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A checks.build.bazel.dependencies.specification-packages.'*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *) printf '%s\n' /tmp/aos-dev-test-output ;;
@@ -160,6 +161,8 @@ bash "$root/tools/dev/aos-dev" bazel update-deps session
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/session/Cargo.lock><--output><$root/third_party/rust/session>"
 bash "$root/tools/dev/aos-dev" bazel update-deps control
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/control/Cargo.lock><--output><$root/third_party/rust/control>"
+bash "$root/tools/dev/aos-dev" bazel update-deps qemu-host
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/qemu-host/Cargo.lock><--output><$root/third_party/rust/qemu-host>"
 if bash "$root/tools/dev/aos-dev" bazel update-deps unknown 2>/dev/null; then
   echo 'Bazel dependency update accepted an unknown family' >&2
   exit 1
@@ -189,6 +192,11 @@ test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:control>"
 grep -Fq -- '-A pkgs.aosBazelControlLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family control rust-project //example:control
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/control/crucible-control-client><--rust-project-package><crates/crucible/control/crucible-control-server><--><build><//example:control>"
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family qemu-host build //example:qemu-host
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:qemu-host>"
+grep -Fq -- '-A pkgs.aosBazelQemuHostLauncher ' "$AOS_DEV_TEST_LOG"
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family qemu-host rust-project //example:qemu-host
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/qemu/crucible-qemu-host><--><build><//example:qemu-host>"
 if bash "$root/tools/dev/aos-dev" bazel --family unknown build //example:guest 2>/dev/null; then
   echo 'Bazel accepted an unknown target configuration' >&2
   exit 1

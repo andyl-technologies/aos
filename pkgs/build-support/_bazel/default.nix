@@ -71,6 +71,11 @@
       root = ../../..;
       family = "guest";
     };
+    qemu-host = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "qemu-host";
+    };
     control = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -146,6 +151,25 @@
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
   };
+  aosBazelQemuHostWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = [
+      "BUILD.bazel"
+      "crates"
+      "native"
+      "tools/bazel"
+      "third_party/rust"
+      "docs/rfcs/0020-crucible-campaigns"
+      "tests/crucible"
+      "pkgs/default.nix"
+      "pkgs/emulation/qemu.nix"
+      "pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch"
+    ];
+    repositories = aosBazelRepositories // aosBazelRustRepositories.qemu-host // {aos_native = aosBazelStoreLibraries;};
+    dependencyProfile = "qemu-host";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = ["//crates/crucible/qemu/crucible-qemu-host:unit"];
+  };
   mkAosBazelShell = {workspace ? aosBazelWorkspace}:
     (import ./development.nix {inherit pkgs lib workspace;}).shell;
   aosBazelLauncher =
@@ -177,5 +201,10 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelQemuHostLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelQemuHostWorkspace;
     }).launcher;
 }

@@ -1,6 +1,6 @@
 exports_files(
     ["schema-registry.tsv"],
-    visibility = ["//crates/crucible/protocol:__subpackages__", "//crates/crucible/engine/crucible-campaign:__pkg__"],
+    visibility = ["//crates/crucible/protocol:__subpackages__", "//crates/crucible/engine/crucible-campaign:__pkg__", "//crates/crucible/qemu/crucible-qemu-host:__pkg__"],
 )
 
 exports_files(

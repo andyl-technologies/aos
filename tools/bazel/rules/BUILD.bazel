@@ -1,5 +1,16 @@
 load("@rules_rust//rust:defs.bzl", "rust_lint_config")
-load(":profiles.bzl", "dependency_profile", "device_profile_required", "engine_profile_required", "guest_profile_required", "quota_profile_required", "session_profile_required", "control_profile_required", "store_profile_required")
+load(":profiles.bzl", "dependency_profile", "device_profile_required", "engine_profile_required", "guest_profile_required", "quota_profile_required", "session_profile_required", "control_profile_required", "qemu_host_profile_required", "store_profile_required")
+
+qemu_host_profile_required(
+    name = "qemu_host_profile_required",
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "qemu_host_dependencies",
+    flag_values = {":dependency_profile": "qemu-host"},
+    visibility = ["//visibility:public"],
+)
 
 control_profile_required(
     name = "control_profile_required",

@@ -1278,7 +1278,20 @@ client tests use the server, whose library uses the client. Dependent crates
 retain the ordinary library identity while separate workspace roots analyze
 the unit tests and their development dependencies.
 
-## QEMU host baseline
+## QEMU host family
+
+The `qemu-host` family selects the Apache-licensed `crucible-qemu-host`
+package. Its source-only dependency profile adds tempfile and preserves the
+Linux process, network, parameter, and time features required by its tests.
+Production libraries keep their ordinary engine dependencies; test libraries,
+integration targets, and examples preserve Cargo's engine test-double feature.
+Default and `test-support` configurations have separate qualification oracles.
+
+```sh
+aos-dev bazel update-deps qemu-host
+aos-dev bazel --family qemu-host test //crates/crucible/qemu/crucible-qemu-host:unit
+nix-build tools/bazel/tests/qemu-host.nix -A all --no-out-link --max-jobs 4 --cores 4
+```
 
 `tests/evidence/qemu-host-cargo-baseline.json` records the pre-conversion
 `crucible-qemu-host` Cargo run: 841 executed cases, four existing ignored cases,
@@ -1290,4 +1303,13 @@ The baseline includes the checked-in patch text, schema registry, and five Nix
 files used by source audits. These audit inputs and all compiled Rust sources
 have retained hashes. This is the Apache host-side crate; its ordinary Cargo
 tests do not replace the separate patched-QEMU runtime, process-boundary, or VM
-gates. Its Bazel conversion remains pending.
+gates. Bazel declares those audit files as compile or runtime inputs, without
+linking QEMU implementation code. The runtime source audit locates its declared
+Nix inputs independently of Cargo manifests.
+
+`tests/evidence/qemu-host-configured-graph.json` records the passing offline
+configured graph, refreshed source inventories, dependency specifications,
+142 policy tests, CLI checks, and workspace Rust target compilation. Its 107
+external crate feature sets exactly match the Cargo baseline, and the existing
+eight dependency locks remain unchanged. Native Bazel execution, editor parity,
+foreign execution, and production migration remain pending.

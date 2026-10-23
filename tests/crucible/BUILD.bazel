@@ -6,6 +6,13 @@ exports_files([
 exports_files(["engineering-hygiene-baseline.txt"])
 
 filegroup(
+    name = "qemu_host_gate_audit",
+    testonly = True,
+    srcs = ["default.nix", "phase2-qemu-inert.nix", "phase2-patch-microtests.nix"],
+    visibility = ["//crates/crucible/qemu/crucible-qemu-host:__pkg__"],
+)
+
+filegroup(
     name = "engine_fixture_inputs",
     srcs = [
         "fixtures/debugger-live-x86_64.scenario.toml",

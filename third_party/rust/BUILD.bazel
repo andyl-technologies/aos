@@ -9,6 +9,7 @@ load(":engine/aliases.bzl", ENGINE_CRATES = "CRATES")
 load(":quota/aliases.bzl", QUOTA_CRATES = "CRATES")
 load(":session/aliases.bzl", SESSION_CRATES = "CRATES")
 load(":control/aliases.bzl", CONTROL_CRATES = "CRATES")
+load(":qemu-host/aliases.bzl", QEMU_HOST_CRATES = "CRATES")
 
 # Every first-party dependency in one configuration selects the same resolved
 # family. This preserves Rust type identity without globally unioning features.
@@ -16,6 +17,7 @@ load(":control/aliases.bzl", CONTROL_CRATES = "CRATES")
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:qemu_host_dependencies": QEMU_HOST_CRATES.get(name, "//tools/bazel/rules:qemu_host_profile_required"),
             "//tools/bazel/rules:control_dependencies": CONTROL_CRATES.get(name, "//tools/bazel/rules:control_profile_required"),
             "//tools/bazel/rules:session_dependencies": SESSION_CRATES.get(name, "//tools/bazel/rules:session_profile_required"),
             "//tools/bazel/rules:quota_dependencies": QUOTA_CRATES.get(name, "//tools/bazel/rules:quota_profile_required"),
@@ -27,7 +29,7 @@ load(":control/aliases.bzl", CONTROL_CRATES = "CRATES")
         }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items()))
+    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items()))
 ]
 
 CORE_PACKAGES = {
@@ -103,6 +105,12 @@ ENGINE_PACKAGES = dict(
     regex = crate.spec(version = "=1.12.4"),
     toml = crate.spec(version = "=0.8.23"),
     tracing = crate.spec(version = "=0.1.44"),
+)
+
+# The QEMU host adds Linux process/socket APIs without the session/TLS closure.
+QEMU_HOST_PACKAGES = dict(
+    ENGINE_PACKAGES,
+    rustix = crate.spec(version = "=1.1.4", features = ["event", "fs", "net", "param", "process", "time"]),
 )
 
 # Session actors add only the workspace's reviewed Tokio feature set.
@@ -230,6 +238,14 @@ FAMILY_FEATURE_VARIANTS = {
             "features": ["default", "std"],
         }),
     },
+    # The host's process APIs do not alter indexmap's target-side feature set.
+    "qemu-host": {
+        "indexmap": json.encode({
+            "version": "2.14.0",
+            "resolved_features": ["default", "serde", "std"],
+            "features": ["default", "std"],
+        }),
+    },
     # Target and build libc units now enable the same default/std features.
     "guest": dict(
         {name: value for name, value in STORE_FEATURE_VARIANTS.items() if name != "libc"},
@@ -266,7 +282,7 @@ APPROVED_LICENSES = [
         packages = packages,
         annotations = annotations,
         feature_variants = FAMILY_FEATURE_VARIANTS.get(family, {}),
-        permissive_crates = ENGINE_PERMISSIVE_CRATES if family in ["engine", "session", "control"] else GUEST_PERMISSIVE_CRATES if family == "guest" else [],
+        permissive_crates = ENGINE_PERMISSIVE_CRATES if family in ["engine", "session", "control", "qemu-host"] else GUEST_PERMISSIVE_CRATES if family == "guest" else [],
         platforms = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
         license_domain = license_domain,
         approved_licenses = APPROVED_LICENSES,
@@ -283,6 +299,7 @@ APPROVED_LICENSES = [
         ("quota", QUOTA_PACKAGES, {}, "apache-host"),
         ("session", SESSION_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("control", CONTROL_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
+        ("qemu-host", QEMU_HOST_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
     ]
 ]
 
@@ -295,5 +312,5 @@ APPROVED_LICENSES = [
         license_domain = "apache-host",
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
-    for family in ["core", "device", "store", "guest", "engine", "quota", "session", "control"]
+    for family in ["core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host"]
 ]
