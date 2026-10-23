@@ -2466,8 +2466,10 @@ Selected editor diagnostics match with nineteen deduplicated diagnostics and
 no unattributed rows. Both reports retain incomplete inference; aggregate
 statistics and diagnostic multiplicities are not claimed equivalent.
 
-Required workspace Rust unit and integration target compilation qualifies a
-separate checkpoint. Installed boot, provisioning,
+`tests/evidence/package-manager-required-rust-targets.json` retains passing
+workspace Rust unit and integration target compilation for all forty-one
+changed Rust inputs. This gate compiles those targets without executing them;
+native execution is retained separately above. Installed boot, provisioning,
 metadata transactions, system services, VM workflows, native publication, and
 conditional real-cache fixtures retain their existing dedicated gates. No
 service or remote cache is introduced. Performance of ordered collections, complete
