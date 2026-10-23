@@ -10,6 +10,7 @@
   dependencyProfile ? null,
   repositories ? pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.core // pkgs.aosBazelRustRepositories.device,
   excludedTests ? [],
+  emptyTests ? [],
   extraTests ? [],
   extraEditorTargets ? [],
   nativeLibraries ? [],
@@ -224,7 +225,8 @@ in rec {
     packageOptions =
       pkgs.lib.concatMap (name: ["--package-path" "${name}=${packages.${name}}"]) names
       ++ pkgs.lib.concatMap (name: ["--dependency-package-path" "${name}=${dependencyPackages.${name}}"])
-      (builtins.attrNames dependencyPackages);
+      (builtins.attrNames dependencyPackages)
+      ++ pkgs.lib.concatMap (label: ["--allow-empty-test" label]) emptyTests;
   in
     pkgs.runCommand "${pname}-cargo-parity" {buildDeps = [pkgs.python3];} ''
       mkdir -p "$out"

@@ -46,11 +46,30 @@ class ProtocolParityTests(unittest.TestCase):
         self.verify = verification.start()
         self.addCleanup(verification.stop)
 
-    def compare(self, dependency_paths=None):
+    def compare(self, dependency_paths=None, allow_empty_tests=()):
         self.messages.write_text("".join(json.dumps(event) + "\n" for event in self.events))
         self.inventory.write_text(json.dumps({"configured_targets": self.reports}))
         (self.root / "index.json").write_text(json.dumps({"results": self.results}))
-        return verify_protocol.compare(self.root, self.inventory, self.messages, dependency_paths=dependency_paths)
+        return verify_protocol.compare(
+            self.root,
+            self.inventory,
+            self.messages,
+            dependency_paths=dependency_paths,
+            allow_empty_tests=allow_empty_tests,
+        )
+
+    def test_explicit_empty_test_requires_an_empty_cargo_artifact(self):
+        with patch.object(verify_protocol, "cases", return_value=[]):
+            self.compare(allow_empty_tests=[self.label])
+
+        self.assertEqual(self.verify.call_args.kwargs["allow_empty"], {self.label})
+        with patch.object(verify_protocol, "cases", return_value=["present"]):
+            with self.assertRaisesRegex(ValueError, "nonempty Cargo cases"):
+                self.compare(allow_empty_tests=[self.label])
+
+    def test_empty_test_exception_cannot_name_an_absent_artifact(self):
+        with self.assertRaisesRegex(ValueError, "no Cargo artifact"):
+            self.compare(allow_empty_tests=[self.label + "_absent"])
 
     def test_first_party_dependencies_require_features_without_unselected_tests(self):
         self.events.append({
@@ -124,7 +143,7 @@ class ProtocolParityTests(unittest.TestCase):
     def test_family_dependencies_keep_exact_feature_parity(self):
         label = self.reports[0]["label"]
         features = list(self.reports[0]["features"])
-        for family in ["device", "store", "guest"]:
+        for family in ["device", "store", "guest", "engine"]:
             with self.subTest(family=family):
                 self.reports[0]["label"] = label.replace("aos_core_crates__", f"aos_{family}_crates__")
                 self.reports[0]["features"] = list(features)
@@ -169,6 +188,31 @@ class ProtocolParityTests(unittest.TestCase):
         self.reports.append({**self.reports[0], "label": unknown, "tags": ["crate-name=unknown"], "version": "1.0.0"})
         with self.assertRaisesRegex(ValueError, "resolved Rust feature inventories differ"):
             self.compare()
+
+    def test_examples_preserve_the_selected_feature_variant(self):
+        suffix = "_test_support"
+        self.events.append({
+            **self.events[0],
+            "target": {"kind": ["example"], "name": "example"},
+            "profile": {"test": False},
+        })
+        self.reports.append({
+            "label": self.label.replace(":unit", ":example") + suffix,
+            "kind": "rust_binary", "features": [],
+            "sources": ["crates/crucible/protocol/crucible-qemu-protocol/examples/example.rs"],
+        })
+        self.results[0]["identity"]["label"] += suffix
+        self.messages.write_text("".join(json.dumps(event) + "\n" for event in self.events))
+        self.inventory.write_text(json.dumps({"configured_targets": self.reports}))
+        (self.root / "index.json").write_text(json.dumps({"results": self.results}))
+
+        result = verify_protocol.compare(self.root, self.inventory, self.messages, target_suffix=suffix)
+
+        self.assertEqual(result["examples"], [self.reports[-1]["label"]])
+        self.reports[-1]["label"] = self.reports[-1]["label"].removesuffix(suffix)
+        self.inventory.write_text(json.dumps({"configured_targets": self.reports}))
+        with self.assertRaisesRegex(ValueError, "example inventories differ"):
+            verify_protocol.compare(self.root, self.inventory, self.messages, target_suffix=suffix)
 
 
 class DoctestParityTests(unittest.TestCase):

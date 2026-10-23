@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import re
 
-from verify_pilot import verify
+from verify_pilot import cases, verify
 
 
 PACKAGE_PATHS = {
@@ -64,7 +64,16 @@ def compare_doctests(tests, cargo_log, package_paths, target_suffix=""):
     return compared
 
 
-def compare(tests, inventory, messages, package_paths=None, cargo_log=None, target_suffix="", dependency_paths=None):
+def compare(
+    tests,
+    inventory,
+    messages,
+    package_paths=None,
+    cargo_log=None,
+    target_suffix="",
+    dependency_paths=None,
+    allow_empty_tests=(),
+):
     package_paths = PACKAGE_PATHS if package_paths is None else package_paths
     first_party_paths = {**(dependency_paths or {}), **package_paths}
     oracles = {}
@@ -84,7 +93,7 @@ def compare(tests, inventory, messages, package_paths=None, cargo_log=None, targ
         if name in first_party_paths:
             cargo_first_party_features.setdefault(name, set()).add(tuple(sorted(event["features"])))
         if name in package_paths and "example" in event["target"]["kind"]:
-            cargo_examples.add(f"//{package_paths[name]}:" + event["target"]["name"])
+            cargo_examples.add(f"//{package_paths[name]}:" + event["target"]["name"] + target_suffix)
         if (name in package_paths and event["profile"]["test"] and event.get("executable")
                 and set(event["target"]["kind"]) & {"lib", "test", "bin"}):
             target = event["target"]
@@ -104,6 +113,12 @@ def compare(tests, inventory, messages, package_paths=None, cargo_log=None, targ
             cargo_features.setdefault((name, version), set()).add(tuple(sorted(event["features"])))
 
     # Listing the Cargo binaries checks ignored cases as well as executed cases.
+    for label in allow_empty_tests:
+        if label not in oracles:
+            raise ValueError(f"empty-test exception has no Cargo artifact: {label}")
+        if cases(oracles[label]):
+            raise ValueError(f"empty-test exception has nonempty Cargo cases: {label}")
+        empty_allowed.add(label)
     result = verify(tests, oracles, allow_empty=empty_allowed)
     executed_labels = {
         event["identity"]["label"]
@@ -137,7 +152,7 @@ def compare(tests, inventory, messages, package_paths=None, cargo_log=None, targ
 
     bazel_features = {}
     for report in reports:
-        match = re.search(r"aos_(?:core|device|store|guest)_crates__([^/]+)//", report["label"])
+        match = re.search(r"aos_(?:core|device|store|guest|engine)_crates__([^/]+)//", report["label"])
         if match and report["kind"] in {"rust_library", "rust_proc_macro"}:
             # Repository names normalize SemVer build metadata. Compare the
             # declared package identity instead of trying to reverse that loss.
@@ -175,7 +190,18 @@ if __name__ == "__main__":
     parser.add_argument("--dependency-package-path", action="append", default=[], metavar="NAME=PATH")
     parser.add_argument("--cargo-log", type=Path)
     parser.add_argument("--target-suffix", default="")
+    parser.add_argument("--allow-empty-test", action="append", default=[], metavar="LABEL")
     options = parser.parse_args()
     package_paths = dict(value.split("=", 1) for value in options.package_path) if options.package_path else None
     dependencies = dict(value.split("=", 1) for value in options.dependency_package_path)
-    options.output.write_text(json.dumps(compare(options.tests, options.inventory, options.messages, package_paths, options.cargo_log, options.target_suffix, dependencies), indent=2, sort_keys=True) + "\n")
+    result = compare(
+        options.tests,
+        options.inventory,
+        options.messages,
+        package_paths=package_paths,
+        cargo_log=options.cargo_log,
+        target_suffix=options.target_suffix,
+        dependency_paths=dependencies,
+        allow_empty_tests=options.allow_empty_test,
+    )
+    options.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
