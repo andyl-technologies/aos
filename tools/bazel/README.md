@@ -1367,3 +1367,9 @@ cases. Its complete ignored inventory remains in parity evidence. Empty and
 filtered zero-match selections still fail, and newly active cases execute
 normally. Running that target without external resources does not qualify the
 live S3 service contract.
+
+`tests/evidence/aarch64-linux-store-s3.json` records the same 11 executed cases
+and one ignored case in an AOS AArch64 Linux guest, across both test artifacts.
+All three selected Rust compilation actions use the foreign toolchain and the
+reviewed profile flags; procedural macros run on the native toolchain. The guest
+has loopback networking and no external network interface or S3 service.

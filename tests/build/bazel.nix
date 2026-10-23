@@ -320,6 +320,7 @@ in
             (import ./_bazel-session-cross.nix {inherit pkgs;})
             (import ./_bazel-control-cross.nix {inherit pkgs;})
             (import ./_bazel-qemu-host-cross.nix {inherit pkgs;})
+            (import ./_bazel-store-s3-cross.nix {inherit pkgs;})
           ];
       } ''
         mkdir -p "$out"
@@ -333,6 +334,7 @@ in
     cross-session = import ./_bazel-session-cross.nix {inherit pkgs;};
     cross-control = import ./_bazel-control-cross.nix {inherit pkgs;};
     cross-qemu-host = import ./_bazel-qemu-host-cross.nix {inherit pkgs;};
+    cross-store-s3 = import ./_bazel-store-s3-cross.nix {inherit pkgs;};
   }
   // pkgs.lib.optionalAttrs (sharedBazelCacheDir != null) {
     cache = import ./_bazel-cache.nix {inherit pkgs workspace;};

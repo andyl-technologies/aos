@@ -4,6 +4,7 @@
 in
   (import ../../../tests/build/_bazel-store-s3.nix {inherit pkgs;})
   // {
+    cross-linux = import ../../../tests/build/_bazel-store-s3-cross.nix {inherit pkgs;};
     conservative = import ../../../tests/build/_bazel-store-s3.nix {
       inherit pkgs;
       sourceInventory = null;
