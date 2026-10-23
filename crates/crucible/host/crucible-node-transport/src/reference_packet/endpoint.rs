@@ -793,16 +793,15 @@ impl<S: ProviderStream> PacketEndpoint<S> {
         let (connection, record) = exchange.into_parts();
         self.records.push(record);
         self.transport = Some(Transport::Connected(connection));
-        if request.method == Method::Admit {
-            if let (Some(boot), Some(Transport::Connected(connection))) =
+        if request.method == Method::Admit
+            && let (Some(boot), Some(Transport::Connected(connection))) =
                 (self.canonical_ack_boot.as_ref(), self.transport.as_ref())
-            {
-                super::service::ack_emitter::NativeAckBoot::complete_original_native_birth(
-                    boot,
-                    connection,
-                    &self.records,
-                )?;
-            }
+        {
+            super::service::ack_emitter::NativeAckBoot::complete_original_native_birth(
+                boot,
+                connection,
+                &self.records,
+            )?;
         }
         self.held = false;
         Ok(())

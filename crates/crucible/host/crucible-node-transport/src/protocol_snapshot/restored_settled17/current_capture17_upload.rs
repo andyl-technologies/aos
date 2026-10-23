@@ -420,13 +420,12 @@ pub(crate) fn read_current_capture17_upload_data<'body, 'rows>(
         }
         CurrentCaptureUploadPhase17::ReplyComplete
         | CurrentCaptureUploadPhase17::Publishing
-        | CurrentCaptureUploadPhase17::Published => {
+        | CurrentCaptureUploadPhase17::Published
             if effect
                 .as_ref()
-                .is_none_or(|effect| effect.phase != CurrentBlobUploadPhase17::ReplyComplete)
-            {
-                return Err(invalid());
-            }
+                .is_none_or(|effect| effect.phase != CurrentBlobUploadPhase17::ReplyComplete) =>
+        {
+            return Err(invalid());
         }
         _ => {}
     }

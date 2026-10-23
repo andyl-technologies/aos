@@ -600,15 +600,14 @@ impl NativeAckBoot {
         })();
         if result.is_err() {
             startup.failed = true;
-            if let Ok(mut owner) = original.try_borrow_mut() {
-                if let Some(suffix) = owner
+            if let Ok(mut owner) = original.try_borrow_mut()
+                && let Some(suffix) = owner
                     .startup
                     .as_mut()
                     .and_then(|startup| startup.restored_suffix.as_mut())
-                {
-                    suffix.failed = true;
-                    suffix.ledger.interrupt_data();
-                }
+            {
+                suffix.failed = true;
+                suffix.ledger.interrupt_data();
             }
         }
         result
@@ -1185,17 +1184,16 @@ impl Drop for OriginalRestoredSuffixObserveRead<'_> {
             return;
         }
 
-        if let Ok(mut owner) = self.boot.try_borrow_mut() {
-            if let Some(state) = owner
+        if let Ok(mut owner) = self.boot.try_borrow_mut()
+            && let Some(state) = owner
                 .startup
                 .as_mut()
                 .and_then(|startup| startup.restored_suffix.as_mut())
-            {
-                state.failed = true;
-                state.ledger.interrupt_data();
-                if let Ok(mut attempt) = self.attempt.try_borrow_mut() {
-                    attempt.interrupt_data();
-                }
+        {
+            state.failed = true;
+            state.ledger.interrupt_data();
+            if let Ok(mut attempt) = self.attempt.try_borrow_mut() {
+                attempt.interrupt_data();
             }
         }
     }
