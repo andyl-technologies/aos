@@ -32,6 +32,7 @@ in
   assert cacheNamespace == null || builtins.match "[a-zA-Z0-9][a-zA-Z0-9_-]*" cacheNamespace != null;
     pkgs.mkDerivation {
       inherit pname version requiredSystemFeatures;
+      passthru.bazelSelection = {inherit workspace targets;};
       src = workspace.source;
       sharedBuildCache = false;
       buildDeps = [pkgs.bazel pkgs.openjdk pkgs.python3];

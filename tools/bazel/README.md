@@ -1710,3 +1710,13 @@ and 2,996 generated crate build files remain unchanged; their metadata records
 the new declaration digest. The native family refresh retains all 957 reports
 across its production, default, transfer-disabled, and integration selections.
 The 164 policy tests and CLI checks pass with all 14 launchers exported.
+
+`tests/evidence/activation-core-metadata-evaluation.json` retains metadata parity
+for 347 compiled targets and core Nix evaluation at the core activation
+checkpoint. `tests/evidence/metadata-analysis-only.json` compares its original
+compilation-backed result with analysis-only inventories: both reports are
+byte-identical across all 347 targets. Each of the 20 selections keeps its
+original workspace source and requested roots, and executes no external actions.
+The metadata oracle now requests only inventory reports and rejects a nonempty
+external action log. Runtime, feature, license, developer, and editor qualification
+remain independently required by the family checks and aggregate.

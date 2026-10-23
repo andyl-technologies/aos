@@ -7,6 +7,14 @@
     root = ../..;
     sourceDirectories = ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/testing" "tools/bazel/tests/fixture"];
   };
+  # Package identity is an analysis result. Keep exactly the compiled check's
+  # configured roots, while requesting only inventory reports for this oracle.
+  metadataInventory = check:
+    pkgs.mkAosBazelBuild {
+      pname = "${check.pname}-metadata-inventory";
+      inherit (check.passthru.bazelSelection) workspace targets;
+      inventoryOnly = true;
+    };
   # Only the temporary parity check reads these manifests. They never enter
   # the Bazel workspace or its compilation inputs.
   metadataOracle = builtins.path {
@@ -281,28 +289,43 @@ in
         --workspace "$PWD/workspace" --launcher ${../../tools/bazel/launcher.py} \
         --config ${workspace.configuration} --output-base "$TMPDIR/metadata/bazel" --output "$out"
     '';
-    metadata-parity = pkgs.runCommand "aos-bazel-package-metadata-parity" {buildDeps = [pkgs.python3];} ''
-      mkdir -p "$out"
-      ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/verify_package_metadata.py} \
-        --root ${metadataOracle} --inventory ${pilot.build}/inventory.json \
-        --inventory ${pilot.unit}/inventory.json --inventory ${protocol.tests}/inventory.json \
-        --inventory ${dependencies.core}/inventory.json --inventory ${shared.tests}/inventory.json \
-        --inventory ${device.tests}/inventory.json --inventory ${store.tests}/inventory.json \
-        --inventory ${guest.tests}/inventory.json \
-        --inventory ${engine.tests}/inventory.json \
-        --inventory ${quota.tests}/inventory.json \
-        --inventory ${session.tests}/inventory.json \
-        --inventory ${control.tests}/inventory.json \
-        --inventory ${qemu-host.tests}/inventory.json \
-        --inventory ${store-s3.tests}/inventory.json \
-        --inventory ${daemon.tests}/inventory.json \
-        --inventory ${crucible-cli.tests}/inventory.json \
-        --inventory ${formats.tests}/inventory.json \
-        --inventory ${contracts.tests}/inventory.json \
-        --inventory ${native-foundation.tests}/inventory.json \
-        --inventory ${activation-core.tests}/inventory.json \
-        --output "$out/parity.json"
-    '';
+    metadata-parity = let
+      inventories = map metadataInventory [
+        pilot.build
+        pilot.unit
+        protocol.tests
+        dependencies.core
+        shared.tests
+        device.tests
+        store.tests
+        guest.tests
+        engine.tests
+        quota.tests
+        session.tests
+        control.tests
+        qemu-host.tests
+        store-s3.tests
+        daemon.tests
+        crucible-cli.tests
+        formats.tests
+        contracts.tests
+        native-foundation.tests
+        activation-core.tests
+      ];
+      inventoryArguments = pkgs.lib.concatMap (inventory: ["--inventory" "${inventory}/inventory.json"]) inventories;
+    in
+      pkgs.runCommand "aos-bazel-package-metadata-parity" {buildDeps = [pkgs.python3];} ''
+        mkdir -p "$out"
+        for inventory in ${pkgs.lib.escapeShellArgs (map toString inventories)}; do
+          if test -s "$inventory/evidence/execution.json"; then
+            echo "package metadata inventory executed external actions: $inventory" >&2
+            exit 1
+          fi
+        done
+        ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/verify_package_metadata.py} \
+          --root ${metadataOracle} ${pkgs.lib.escapeShellArgs inventoryArguments} \
+          --output "$out/parity.json"
+      '';
     runner = pkgs.runCommand "aos-bazel-runner-evidence" {buildDeps = [pkgs.python3];} ''
       ${pkgs.python3}/bin/python3 - ${unit}/evidence/tests <<'PY'
       import json
