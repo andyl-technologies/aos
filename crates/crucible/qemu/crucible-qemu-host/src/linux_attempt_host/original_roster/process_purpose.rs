@@ -81,6 +81,55 @@ pub(super) struct ForkTargetGeometry {
     pub(super) credential_ids: (u32, u32),
 }
 
+/// Describes one installed image and its requested process subdivision.
+///
+/// These inputs retain the authenticated installer identity. The receiving
+/// roster still validates the original, contract, paths and complete geometry
+/// before issuing its existing family loan.
+pub(crate) struct InstalledProcessPreparation<'a> {
+    /// Borrows the actual original operation admitting this launch.
+    pub(in crate::linux_attempt_host) original: &'a Arc<HostOperationGuard>,
+    /// Borrows the process contract already bound to this family.
+    pub(in crate::linux_attempt_host) contract: &'a QemuChildProcessContract,
+    /// Borrows the selected emulator path authenticated by `controls`.
+    pub(in crate::linux_attempt_host) qemu: &'a Path,
+    /// Borrows the selected plugin path authenticated by `controls`.
+    pub(in crate::linux_attempt_host) plugin: &'a Path,
+    /// Retains the actual installed artifacts' authenticated control geometry.
+    pub(in crate::linux_attempt_host) controls: InstallerControlIdentity,
+    /// Specifies the guest RAM assigned to this incarnation.
+    pub(in crate::linux_attempt_host) guest_ram_bytes: u64,
+    /// Specifies the selected setup mapping's checked extent.
+    pub(in crate::linux_attempt_host) setup_mapping: SetupMappingRequest,
+    /// Identifies the next process incarnation in the existing family journal.
+    pub(in crate::linux_attempt_host) process_generation: u64,
+}
+
+/// Borrows the actual Setup consumer corroborating an issued process record.
+///
+/// This view allocates no heap storage and grants no authority. Record access still
+/// checks the retained loan, Source admission, standing publication and optional
+/// RAM endpoint against these same consumer coordinates.
+pub(crate) struct IssuedProcessConsumer<'a> {
+    /// Borrows the installed child's actual process contract.
+    pub(crate) contract: &'a QemuChildProcessContract,
+    /// Borrows the supervisor owning the current capture operation.
+    pub(crate) supervisor: &'a HostOperationSupervisor,
+    /// Borrows the actual paging registration when paging is selected.
+    pub(crate) registration: Option<&'a crate::ram_control::RamControlRegistration>,
+    /// Borrows the retained Source admission for this incarnation.
+    pub(crate) admission: &'a InstalledSourceAdmission,
+    /// Borrows the standing publication tied to that same admission.
+    pub(crate) standing: &'a crate::spawn::source_supervision::OriginalSourceSupervision,
+    /// Identifies the incarnation consuming this record.
+    pub(crate) process_generation: u64,
+    /// Records the actual shared-memory mapping extent being sealed.
+    pub(crate) setup_region_bytes: u64,
+    /// Borrows the paid child endpoint when paging is selected.
+    pub(crate) ram_endpoint:
+        Option<&'a crate::spawn::ram_endpoint_binding::IssuedRamControlEndpoint<'a>>,
+}
+
 pub(super) struct InstalledProcessState {
     envelope: ConfiguredProcessEnvelope,
     family: Option<InstalledProcessFamily>,
@@ -585,17 +634,25 @@ impl NativeAccountAttempt {
     /// operation authenticates the final installed plugin before supplying the
     /// opaque vector. Known compulsory RAM/control terms must fit the family;
     /// native constructors still consume their subdivisions through Source.
+    ///
+    /// # Errors
+    /// Refuses changed original, contract or artifact identities, reused process
+    /// generations, missing family custody, or geometry exceeding its envelope.
     pub(crate) fn prepare_installed_process_purpose(
         &self,
-        original: &Arc<HostOperationGuard>,
-        contract: &QemuChildProcessContract,
-        qemu: &Path,
-        plugin: &Path,
-        controls: InstallerControlIdentity,
-        guest_ram_bytes: u64,
-        setup_mapping: SetupMappingRequest,
-        process_generation: u64,
+        preparation: InstalledProcessPreparation<'_>,
     ) -> Result<InstalledProcessPurposeLoan, InstalledProcessPurposeError> {
+        let InstalledProcessPreparation {
+            original,
+            contract,
+            qemu,
+            plugin,
+            controls,
+            guest_ram_bytes,
+            setup_mapping,
+            process_generation,
+        } = preparation;
+
         let roster = self
             .roster
             .upgrade()
@@ -1054,18 +1111,26 @@ impl OriginalNativeNodeBinding {
     }
 
     /// Lends this issuer's one record after checking the actual Setup consumer.
+    ///
+    /// # Errors
+    /// Refuses a changed consumer, missing Source loan or issued record, invalid
+    /// setup extent, or endpoint/publication outside the same retained admission.
     pub(crate) fn with_issued_process_record<T>(
         &self,
-        contract: &QemuChildProcessContract,
-        supervisor: &HostOperationSupervisor,
-        registration: Option<&crate::ram_control::RamControlRegistration>,
-        admission: &InstalledSourceAdmission,
-        standing: &crate::spawn::source_supervision::OriginalSourceSupervision,
-        process_generation: u64,
-        setup_region_bytes: u64,
-        ram_endpoint: Option<&crate::spawn::ram_endpoint_binding::IssuedRamControlEndpoint<'_>>,
+        consumer: IssuedProcessConsumer<'_>,
         borrow: impl FnOnce(&[u8; record::ISSUED_PROCESS_RECORD_BYTES]) -> T,
     ) -> Result<T, crate::spawn::source_supervision::SourceEmissionError> {
+        let IssuedProcessConsumer {
+            contract,
+            supervisor,
+            registration,
+            admission,
+            standing,
+            process_generation,
+            setup_region_bytes,
+            ram_endpoint,
+        } = consumer;
+
         // Initial preexec has only Source custody. Target's historical prefix
         // remains private until its distinct native creator is implemented.
         self.installed_process

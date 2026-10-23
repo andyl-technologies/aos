@@ -6,6 +6,7 @@
 //! this witness creates no descriptor, deadline or resource allowance.
 
 use super::super::InstalledProcessPurposeError;
+use super::super::original_roster::process_purpose::InstalledProcessPreparation;
 use super::*;
 
 /// Borrows one actual installed host's process-stage and original generation.
@@ -183,16 +184,16 @@ impl InstalledNodeLaunchIssuer {
             )
             .map_err(FreshLaunchCause::Purpose)?;
             let purpose = attempt
-                .prepare_installed_process_purpose(
+                .prepare_installed_process_purpose(InstalledProcessPreparation {
                     original,
                     contract,
-                    config.qemu_executable(),
-                    config.original_plugin_path(),
+                    qemu: config.qemu_executable(),
+                    plugin: config.original_plugin_path(),
                     controls,
-                    guest_bytes,
+                    guest_ram_bytes: guest_bytes,
                     setup_mapping,
-                    config.original_process_generation(),
-                )
+                    process_generation: config.original_process_generation(),
+                })
                 .map_err(FreshLaunchCause::Purpose)?;
             // Move the already reserved workspace host term before snapshotting
             // the issued carrier. The local loan retains the incarnation while

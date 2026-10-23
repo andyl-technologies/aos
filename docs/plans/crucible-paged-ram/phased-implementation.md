@@ -65,7 +65,7 @@ failed attempts appear in the dated entries below.
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
 | Native integration | `3a2b06e626` imports signed atomic `e82bb4c78d`, conventional `ce726d4a9b`, tree `3b3b3181`. Independent review verifies all eighty sealed artifacts and 78,447 tracked source paths. Patch/bundle reconstruction, the 640-file license ledger, core evaluation and ABI conformance pass. Actual request Work and returned-recipient history providers now exist. | Fresh configure succeeds, but the complete source-effect check refuses an additional ordinary test scratch directory before owning compilation; that failure remains preserved. A fresh exact-effect validation plan is frozen. The registered Source unit fails to compile because the extracted caller appears after its uses and request predicates refer to two nonexistent Source fields; genuine declaration ordering and owning-coordinate corrections remain pending. Successful postbody resource custody, complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
-| Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The fresh canonical license-boundary check stops at strict controller Clippy (908 host-library and 962 host-test errors after the fork-envelope correction); its boundary assertions did not run. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
+| Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The latest completed canonical license-boundary check stops at strict controller Clippy with 660 host-library errors; its boundary assertions did not run. Earlier attempts and their larger finding counts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 525 bindings: 506 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
@@ -923,6 +923,18 @@ formatting and engineering hygiene also pass. Strict Host linting reports
 removed. Mandatory application-target compilation is running; this cleanup
 does not supply the missing native issuer.
 
+The installed image preparation and issued-record consumer now use named input
+records. Artifact, original, contract, generation, Source publication and endpoint
+checks retain their existing order and values; the records add no heap allocation.
+All fifteen focused process-purpose and preexec controls pass, as does the actual
+source-shape integration check against refreshed hashes and responsibilities.
+Focused formatting passes for the three edited implementation files; the roster's
+unrelated existing whole-file formatting differences remain preserved. The Nix
+engineering-hygiene gate also passes. Strict default-feature Host linting remains
+failed (624 library and 697 test diagnostics); the two former process-purpose
+argument-count findings are absent. The separate feature-matched lint run and
+mandatory application-target compilation are recorded after completion.
+
 #### Cumulative construction and request ownership source
 
 Signed atomic `e82bb4c78da7af3351ef6473935a2be2feb01a2d` imports conventional
@@ -957,8 +969,11 @@ this exact tree; the earlier 409,334-byte observation is not a price for this
 new source. Complete successful postbody resource custody, funded profile
 issuance, activation, external physical reap and the remaining RFC requirements
 remain unfinished. ABI conformance subsequently passes at
-`agbbmbj61fpji8g23c8sqzaicrmxhhzq`; strict license-boundary qualification remains
-in progress. The fresh genuine configure returns zero in 42.290 seconds, then
+`agbbmbj61fpji8g23c8sqzaicrmxhhzq`. The subsequent canonical license-boundary
+attempt fails in the strict controller dependency with 660 Host-library Clippy
+errors; its boundary assertions do not execute. The original failed derivation
+is `49j1qzy5x56n31l1fw0zxm8r77ljkk1v`. The fresh genuine configure returns
+zero in 42.290 seconds, then
 the complete source-effect assertion refuses an additional empty test scratch
 directory before any owning-object, passive or getter compilation. No original
 source row changes or disappears. Both the original failure and the ordinary

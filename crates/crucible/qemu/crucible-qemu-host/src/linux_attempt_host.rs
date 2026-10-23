@@ -70,8 +70,8 @@ pub(crate) use original_roster::TargetWatcherOriginal;
 pub(crate) use original_roster::device_digest::AllocationWorkspaceRecord;
 pub(crate) use original_roster::{
     InstalledIncarnationRetirement, InstalledProcessPurposeError, InstalledSourceAdmission,
-    InstalledSourceSubject, NativeAccountAttempt, OriginalDeviceDigestWorkspacePurpose,
-    OriginalNativeNodeBinding,
+    InstalledSourceSubject, IssuedProcessConsumer, NativeAccountAttempt,
+    OriginalDeviceDigestWorkspacePurpose, OriginalNativeNodeBinding,
 };
 pub use original_roster::{OriginalNativeAccountFactoryBinding, OriginalNativeAccountRoster};
 use std::sync::atomic::{AtomicU8, Ordering};

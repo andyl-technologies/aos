@@ -23,7 +23,7 @@ use crucible_qemu_protocol::plugin_setup_plan::{
 };
 
 use super::{OriginalPluginStartup, QemuChildProcessContract};
-use crate::linux_attempt_host::OriginalNativeNodeBinding;
+use crate::linux_attempt_host::{IssuedProcessConsumer, OriginalNativeNodeBinding};
 use crate::ram_control::RamControlRegistration;
 
 const FRAME_BYTES: usize = 125;
@@ -259,14 +259,16 @@ impl PreparedPreexecSetup {
 
             let record = binding
                 .with_issued_process_record(
-                    contract,
-                    supervisor,
-                    registration,
-                    startup.admission().map_err(PreexecSetupCause::Startup)?,
-                    startup.standing().map_err(PreexecSetupCause::Startup)?,
-                    startup_record.fields().process_generation,
-                    region_len,
-                    ram_endpoint,
+                    IssuedProcessConsumer {
+                        contract,
+                        supervisor,
+                        registration,
+                        admission: startup.admission().map_err(PreexecSetupCause::Startup)?,
+                        standing: startup.standing().map_err(PreexecSetupCause::Startup)?,
+                        process_generation: startup_record.fields().process_generation,
+                        setup_region_bytes: region_len,
+                        ram_endpoint,
+                    },
                     |record| *record,
                 )
                 .map_err(PreexecSetupCause::Purpose)?;
