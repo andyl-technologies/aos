@@ -113,6 +113,23 @@ also pass. This qualifies the preboot initial Source census, not post-Hello
 Source/Controller funding, opaque five-phase Recipe/Initial production, native
 Ready, Capture, performance or full RFC-0025 completion.
 
+## Fallible borrowed JSON cursor qualification
+
+Commit `4114a7ae88` names the borrowed cursor operation `next_value` in the
+Transport facade and all four Engine readers. The defining scanner, borrowed
+spans, errors, storage counters and wire formats are unchanged. Ordinary Rust
+iterators retain `next`; this fallible cursor does not implement Iterator.
+
+All three cursor controls pass in each standard and raw-JSON Transport mode.
+All 18 focused Engine controls for parent framing, historical scope proofs,
+initial declarations and Source reader construction also pass. Formatting,
+all-feature/all-target Transport/Engine/Daemon checking and all six architecture
+gates pass. The application gate compiles 180 test executables across 58
+packages, including 71 integration targets; all 453 frozen Rust/Cargo inputs
+match the pushed revision and captured source. Production-library Clippy still
+fails with 53 errors and 1,733 warnings under the unchanged workspace policy.
+No new VM or full RFC qualification is claimed.
+
 ## Historical Control model and Controller layout qualification
 
 Commits `e7bf876227` and `5af66c7f3b` separate the closed Controller17 layout
