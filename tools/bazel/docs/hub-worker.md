@@ -53,6 +53,13 @@ retains both successful configurations with the local disk action cache. The
 all 54 Rust SDKs and 40 configured source inventories. These records distinguish
 their scope from the uncached and live-runtime checks below.
 
+The [native uncached qualification](../tests/evidence/hub-worker-native-qualified.json)
+passed both configurations with the final Worker source. Its strict source
+snapshots contain no Cargo manifests, and its compiler and test execution
+records contain no action-cache hits. The
+[required workspace compile gate](../tests/evidence/hub-worker-required-rust-targets.json)
+also passed for those source bytes.
+
 ```sh
 nix-build tools/bazel/tests/hub-worker.nix -A all --no-out-link \
   --max-jobs 4 --cores 4 --option substitute false
