@@ -184,38 +184,38 @@ impl TreeState {
 
     /// Moves the selection one visible row down (clamped at the end).
     fn move_down(&mut self) {
-        if let Some(sel) = self.list_state.selected() {
-            if sel + 1 < self.visible.len() {
-                self.list_state.select(Some(sel + 1));
-            }
+        if let Some(sel) = self.list_state.selected()
+            && sel + 1 < self.visible.len()
+        {
+            self.list_state.select(Some(sel + 1));
         }
     }
 
     /// Moves the selection one visible row up (clamped at the start).
     fn move_up(&mut self) {
-        if let Some(sel) = self.list_state.selected() {
-            if sel > 0 {
-                self.list_state.select(Some(sel - 1));
-            }
+        if let Some(sel) = self.list_state.selected()
+            && sel > 0
+        {
+            self.list_state.select(Some(sel - 1));
         }
     }
 
     /// Toggles expansion of the selected node (no-op on leaves), keeping the
     /// selection in bounds after the visible row count changes.
     fn toggle_expand(&mut self) {
-        if let Some(node_idx) = self.selected_node() {
-            if !self.nodes[node_idx].children.is_empty() {
-                self.nodes[node_idx].expanded = !self.nodes[node_idx].expanded;
-                let sel_pos = self.list_state.selected();
-                self.rebuild_visible();
-                // Keep selection within bounds.
-                if let Some(pos) = sel_pos {
-                    if pos >= self.visible.len() {
-                        self.list_state
-                            .select(Some(self.visible.len().saturating_sub(1)));
-                    } else {
-                        self.list_state.select(Some(pos));
-                    }
+        if let Some(node_idx) = self.selected_node()
+            && !self.nodes[node_idx].children.is_empty()
+        {
+            self.nodes[node_idx].expanded = !self.nodes[node_idx].expanded;
+            let sel_pos = self.list_state.selected();
+            self.rebuild_visible();
+            // Keep selection within bounds.
+            if let Some(pos) = sel_pos {
+                if pos >= self.visible.len() {
+                    self.list_state
+                        .select(Some(self.visible.len().saturating_sub(1)));
+                } else {
+                    self.list_state.select(Some(pos));
                 }
             }
         }
@@ -532,10 +532,10 @@ fn run_event_loop(
                     }
                     KeyCode::Enter => {
                         // Navigate to selected search result.
-                        if let Some(sel) = app.search_list_state.selected() {
-                            if let Some(&(entry_idx, _)) = app.search_results.get(sel) {
-                                navigate_to_entry(&mut app, entry_idx);
-                            }
+                        if let Some(sel) = app.search_list_state.selected()
+                            && let Some(&(entry_idx, _)) = app.search_results.get(sel)
+                        {
+                            navigate_to_entry(&mut app, entry_idx);
                         }
                         app.searching = false;
                         app.search_query.clear();
@@ -550,17 +550,17 @@ fn run_event_loop(
                         update_search(&mut app);
                     }
                     KeyCode::Down => {
-                        if let Some(sel) = app.search_list_state.selected() {
-                            if sel + 1 < app.search_results.len() {
-                                app.search_list_state.select(Some(sel + 1));
-                            }
+                        if let Some(sel) = app.search_list_state.selected()
+                            && sel + 1 < app.search_results.len()
+                        {
+                            app.search_list_state.select(Some(sel + 1));
                         }
                     }
                     KeyCode::Up => {
-                        if let Some(sel) = app.search_list_state.selected() {
-                            if sel > 0 {
-                                app.search_list_state.select(Some(sel - 1));
-                            }
+                        if let Some(sel) = app.search_list_state.selected()
+                            && sel > 0
+                        {
+                            app.search_list_state.select(Some(sel - 1));
                         }
                     }
                     _ => {}
@@ -651,11 +651,11 @@ fn handle_nav_down(app: &mut App) {
                 app.update_func_list();
             }
             1 => {
-                if let Some(sel) = app.func_list_state.selected() {
-                    if sel + 1 < app.func_list.len() {
-                        app.func_list_state.select(Some(sel + 1));
-                        app.detail_scroll = 0;
-                    }
+                if let Some(sel) = app.func_list_state.selected()
+                    && sel + 1 < app.func_list.len()
+                {
+                    app.func_list_state.select(Some(sel + 1));
+                    app.detail_scroll = 0;
                 }
             }
             _ => app.detail_scroll = app.detail_scroll.saturating_add(1),
@@ -673,11 +673,11 @@ fn handle_nav_up(app: &mut App) {
                 app.update_func_list();
             }
             1 => {
-                if let Some(sel) = app.func_list_state.selected() {
-                    if sel > 0 {
-                        app.func_list_state.select(Some(sel - 1));
-                        app.detail_scroll = 0;
-                    }
+                if let Some(sel) = app.func_list_state.selected()
+                    && sel > 0
+                {
+                    app.func_list_state.select(Some(sel - 1));
+                    app.detail_scroll = 0;
                 }
             }
             _ => app.detail_scroll = app.detail_scroll.saturating_sub(1),
@@ -689,13 +689,12 @@ fn handle_nav_up(app: &mut App) {
 fn handle_enter(app: &mut App) {
     match app.tab {
         Tab::Language => app.lang_tree.toggle_expand(),
-        Tab::Functions => match app.func_pane {
-            0 => {
+        Tab::Functions => {
+            if app.func_pane == 0 {
                 app.func_tree.toggle_expand();
                 app.update_func_list();
             }
-            _ => {}
-        },
+        }
     }
 }
 
@@ -712,27 +711,17 @@ fn handle_tab_cycle(app: &mut App) {
 
 /// Handles `h`/Left: moves pane focus one pane to the left.
 fn handle_pane_left(app: &mut App) {
-    match app.tab {
-        Tab::Functions => {
-            if app.func_pane > 0 {
-                app.func_pane -= 1;
-                app.detail_scroll = 0;
-            }
-        }
-        _ => {}
+    if app.tab == Tab::Functions && app.func_pane > 0 {
+        app.func_pane -= 1;
+        app.detail_scroll = 0;
     }
 }
 
 /// Handles `l`/Right: moves pane focus one pane to the right.
 fn handle_pane_right(app: &mut App) {
-    match app.tab {
-        Tab::Functions => {
-            if app.func_pane < 2 {
-                app.func_pane += 1;
-                app.detail_scroll = 0;
-            }
-        }
-        _ => {}
+    if app.tab == Tab::Functions && app.func_pane < 2 {
+        app.func_pane += 1;
+        app.detail_scroll = 0;
     }
 }
 
@@ -1201,16 +1190,16 @@ fn render_markdown_lines(text: &str) -> Vec<Line<'static>> {
         }
 
         // Headings.
-        if trimmed.starts_with("## ") {
+        if let Some(heading) = trimmed.strip_prefix("## ") {
             lines.push(Line::from(Span::styled(
-                trimmed[3..].to_string(),
+                heading.to_string(),
                 Style::default().bold().underlined(),
             )));
             continue;
         }
-        if trimmed.starts_with("# ") {
+        if let Some(heading) = trimmed.strip_prefix("# ") {
             lines.push(Line::from(Span::styled(
-                trimmed[2..].to_string(),
+                heading.to_string(),
                 Style::default().bold(),
             )));
             continue;

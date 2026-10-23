@@ -41,6 +41,8 @@ use crate::nix_parser;
 ///
 /// Returns an error if a directory listing or file read fails while
 /// scanning `lib/` (other walks tolerate per-file I/O errors).
+// Wall-clock time is cache freshness metadata for the host documentation index.
+#[allow(clippy::disallowed_methods)]
 pub fn build_index(root: &Path) -> Result<DocIndex> {
     let mut entries = Vec::new();
 
@@ -167,8 +169,7 @@ fn extract_language_ref(entries: &mut Vec<DocEntry>) {
                     .name
                     .to_ascii_lowercase()
                     .replace(' ', "-")
-                    .replace('(', "")
-                    .replace(')', "")
+                    .replace(['(', ')'], "")
             );
             entries.push(DocEntry {
                 path: doc_path,
