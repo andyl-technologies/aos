@@ -1,0 +1,248 @@
+{
+  "command": "nix-build /tmp/aos-bazel-722/contracts-editor-regression.nix --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "families": {
+    "contracts": {
+      "aggregate_statistics_comparable": false,
+      "bazel_raw_diagnostics": 1,
+      "cargo_raw_selected_diagnostics": 1,
+      "comparison_scope": [
+        "crates/aos/boot/aos-storage-layout",
+        "crates/aos/modules/aos-module-docs",
+        "crates/aos/packages/aos-deployment-format",
+        "crates/aos/release/aos-release-format"
+      ],
+      "derivation": "/nix/store/viva8dkxz6p5sqdk85jsa2kvv9xycdvb-aos-bazel-contracts-editor-parity.drv",
+      "diagnostic_multiplicity_comparable": false,
+      "output": "/nix/store/v1zpsn57iyag4zzs8h6qih0qyp3989mv-aos-bazel-contracts-editor-parity",
+      "report_sha256": "1831f7fb7a750e0d747811eae7b8773ef9ed1b76610610eccc5e969b1a722fed",
+      "selected_distinct_diagnostics": 1,
+      "unattributed_cargo_diagnostics": 0,
+      "unselected_cargo_diagnostics": 7
+    },
+    "control": {
+      "aggregate_statistics_comparable": false,
+      "bazel_raw_diagnostics": 6,
+      "cargo_raw_selected_diagnostics": 3,
+      "comparison_scope": [
+        "crates/crucible/control/crucible-control-client",
+        "crates/crucible/control/crucible-control-server"
+      ],
+      "derivation": "/nix/store/05p22vvbchmgrz09in0k0mhp784as2jb-aos-bazel-control-editor-parity.drv",
+      "diagnostic_multiplicity_comparable": false,
+      "output": "/nix/store/gga4mjxa48q1z1b9yzyyifp44rh4hkp3-aos-bazel-control-editor-parity",
+      "report_sha256": "7fd242e8790edc9d2e28b0fa0f8dca91af58a8f15f08f4d67c6821f14e471986",
+      "selected_distinct_diagnostics": 3,
+      "unattributed_cargo_diagnostics": 0,
+      "unselected_cargo_diagnostics": 1511
+    },
+    "crucible-cli": {
+      "aggregate_statistics_comparable": false,
+      "bazel_raw_diagnostics": 184,
+      "cargo_raw_selected_diagnostics": 184,
+      "comparison_scope": [
+        "crates/crucible/control/crucible-cli"
+      ],
+      "derivation": "/nix/store/7hzjmcic1xyxxq8j6lhn8dv3d0mxsaml-aos-bazel-crucible-cli-editor-parity.drv",
+      "diagnostic_multiplicity_comparable": false,
+      "output": "/nix/store/brq9dgpg9fqm3b8q4a5waa8lz5jkxwg0-aos-bazel-crucible-cli-editor-parity",
+      "report_sha256": "6d1ff0d9bcc578066f68fa86d6e206484545856c3697ba98027353b51ae7fbe0",
+      "selected_distinct_diagnostics": 90,
+      "unattributed_cargo_diagnostics": 0,
+      "unselected_cargo_diagnostics": 1921
+    },
+    "daemon": {
+      "aggregate_statistics_comparable": false,
+      "bazel_raw_diagnostics": 9,
+      "cargo_raw_selected_diagnostics": 9,
+      "comparison_scope": [
+        "crates/crucible/control/crucible-daemon"
+      ],
+      "derivation": "/nix/store/v2917dpml4lzizqhzqgn6x86j985lsdg-aos-bazel-daemon-editor-parity.drv",
+      "diagnostic_multiplicity_comparable": false,
+      "output": "/nix/store/xf3q67b3whlb66w0zg1z2r2n820rcnvs-aos-bazel-daemon-editor-parity",
+      "report_sha256": "5dc63a15375c52d5cc823d46b89819cc8876c4204fade921a34f02ad59068147",
+      "selected_distinct_diagnostics": 9,
+      "unattributed_cargo_diagnostics": 0,
+      "unselected_cargo_diagnostics": 1837
+    },
+    "device": {
+      "aggregate_statistics_comparable": true,
+      "bazel_raw_diagnostics": 20,
+      "cargo_raw_selected_diagnostics": 20,
+      "comparison_scope": [
+        "Existing full editor graph comparison"
+      ],
+      "derivation": "/nix/store/hc3a8ymxv4zhkv7h2j25fs0g41cp17va-aos-bazel-device-editor-parity.drv",
+      "diagnostic_multiplicity_comparable": true,
+      "output": "/nix/store/az8cnfzqlf78f1zjk28gcz772sq3kcj6-aos-bazel-device-editor-parity",
+      "report_sha256": "bda2b7271299e65528fd5bafd02195ddffc4a2e115ab44aa79f6cc1e8fd7efeb",
+      "selected_distinct_diagnostics": 20,
+      "unattributed_cargo_diagnostics": 0,
+      "unselected_cargo_diagnostics": 0
+    },
+    "engine": {
+      "aggregate_statistics_comparable": false,
+      "bazel_raw_diagnostics": 50,
+      "cargo_raw_selected_diagnostics": 50,
+      "comparison_scope": [
+        "crates/crucible/engine/crucible-engine"
+      ],
+      "derivation": "/nix/store/7y5d2an53mq3i54v0h5mwcy6p151raih-aos-bazel-engine-editor-parity.drv",
+      "diagnostic_multiplicity_comparable": false,
+      "output": "/nix/store/qsfy2gmc2gn0mw51x2x44020l49r6l1i-aos-bazel-engine-editor-parity",
+      "report_sha256": "75af3180ed707eb72f0530b6db9ecd6c131efaefe76c782b8ad50253e15f3470",
+      "selected_distinct_diagnostics": 44,
+      "unattributed_cargo_diagnostics": 0,
+      "unselected_cargo_diagnostics": 1498
+    },
+    "fixture": {
+      "derivation": "/nix/store/ddhwvdg6rnq3brk55z0kww7vq09y7xac-aos-bazel-editor-check.drv",
+      "files_sha256": {
+        "analysis.log": "8bcee3601656e0f4eb7c5ac7f3afabc48ef21bf83f966dc5dc7ec0dba4c680d4",
+        "nix-support/aos-target-platform": "d3b7abad38647ed804b5017c5b990acab7c85648b552a97043d4d86c70ce1f9d",
+        "rust-project.json": "ae599abab476b35eab86c2ab2804f5797d7c2452949a7a9c105393b9823f7d41"
+      },
+      "output": "/nix/store/3rsa0xdznr7xl8h9j11580964fd0w9z1-aos-bazel-editor-check"
+    },
+    "formats": {
+      "aggregate_statistics_comparable": false,
+      "bazel_raw_diagnostics": 8,
+      "cargo_raw_selected_diagnostics": 8,
+      "comparison_scope": [
+        "crates/aos/modules/aos-module-format",
+        "crates/aos/registry/aos-registry-format",
+        "crates/shared/aos-nar"
+      ],
+      "derivation": "/nix/store/q8wqb32n86dh65lxpav2sv8l1rpvip06-aos-bazel-formats-editor-parity.drv",
+      "diagnostic_multiplicity_comparable": false,
+      "output": "/nix/store/6vsbma8fhd2g4080ixwnnjcmxn9nmjjf-aos-bazel-formats-editor-parity",
+      "report_sha256": "b387e2a4f7ae10e97a50912b7e8d359cb2b645f596a66a96a1d02e4740c3d478",
+      "selected_distinct_diagnostics": 8,
+      "unattributed_cargo_diagnostics": 0,
+      "unselected_cargo_diagnostics": 0
+    },
+    "guest": {
+      "aggregate_statistics_comparable": false,
+      "bazel_raw_diagnostics": 3,
+      "cargo_raw_selected_diagnostics": 3,
+      "comparison_scope": [
+        "crates/crucible/guest/crucible-guest"
+      ],
+      "derivation": "/nix/store/zb64j0va228f8vc4h2yivcbacqnhdxr5-aos-bazel-guest-editor-parity.drv",
+      "diagnostic_multiplicity_comparable": false,
+      "output": "/nix/store/gn1sngaxl4h4rfjcq5a4j6l93gswp4zy-aos-bazel-guest-editor-parity",
+      "report_sha256": "650fc6d06e8a8eaf36395b1b2b105355ed967329c86bcbbd366a2d3537728077",
+      "selected_distinct_diagnostics": 3,
+      "unattributed_cargo_diagnostics": 84,
+      "unselected_cargo_diagnostics": 1375
+    },
+    "qemu-host": {
+      "aggregate_statistics_comparable": false,
+      "bazel_raw_diagnostics": 27,
+      "cargo_raw_selected_diagnostics": 27,
+      "comparison_scope": [
+        "crates/crucible/qemu/crucible-qemu-host"
+      ],
+      "derivation": "/nix/store/5mdd1r4kx06blk6n0bxx65qhzdd04nvp-aos-bazel-qemu-host-editor-parity.drv",
+      "diagnostic_multiplicity_comparable": false,
+      "output": "/nix/store/v6cd8dlp2qvm93wp9qi5fcyikkawpi5d-aos-bazel-qemu-host-editor-parity",
+      "report_sha256": "6f2d32f9355e9cb24174c56b3ba162c906956372833065d1c6ecb2418ae812dc",
+      "selected_distinct_diagnostics": 27,
+      "unattributed_cargo_diagnostics": 0,
+      "unselected_cargo_diagnostics": 1510
+    },
+    "quota": {
+      "aggregate_statistics_comparable": true,
+      "bazel_raw_diagnostics": 0,
+      "cargo_raw_selected_diagnostics": 0,
+      "comparison_scope": [
+        "Existing full editor graph comparison"
+      ],
+      "derivation": "/nix/store/cxjna4rxxqxwqydcifacgvd4vd3hgl80-aos-bazel-quota-editor-parity.drv",
+      "diagnostic_multiplicity_comparable": true,
+      "output": "/nix/store/c8ga6lb3bp5r5wjjp66kwqkdn8nym7z5-aos-bazel-quota-editor-parity",
+      "report_sha256": "d0c4844ecaa2d986927ccd676e2c0631686e8c8b1bd0933e17c848a8c2e30e15",
+      "selected_distinct_diagnostics": 0,
+      "unattributed_cargo_diagnostics": 0,
+      "unselected_cargo_diagnostics": 0
+    },
+    "session": {
+      "aggregate_statistics_comparable": false,
+      "bazel_raw_diagnostics": 1,
+      "cargo_raw_selected_diagnostics": 1,
+      "comparison_scope": [
+        "crates/crucible/control/crucible-control-api",
+        "crates/crucible/control/crucible-session"
+      ],
+      "derivation": "/nix/store/v07qgvickxjfyzz8zz8jx6rdv3z16qpd-aos-bazel-session-editor-parity.drv",
+      "diagnostic_multiplicity_comparable": false,
+      "output": "/nix/store/8x4blqagxn86xi6bjwf0niz45c2kdk0c-aos-bazel-session-editor-parity",
+      "report_sha256": "1b4b864b64e339a7b596a2f0a317b405b76048f4b5c54c529f050e65bb6a7169",
+      "selected_distinct_diagnostics": 1,
+      "unattributed_cargo_diagnostics": 0,
+      "unselected_cargo_diagnostics": 1510
+    },
+    "store": {
+      "aggregate_statistics_comparable": true,
+      "bazel_raw_diagnostics": 12,
+      "cargo_raw_selected_diagnostics": 12,
+      "comparison_scope": [
+        "Existing full editor graph comparison"
+      ],
+      "derivation": "/nix/store/8gg3xw8z2lzh2xs0vgy5y9d24qc3wnnw-aos-bazel-store-editor-parity.drv",
+      "diagnostic_multiplicity_comparable": true,
+      "output": "/nix/store/bm987xp8b1v5iiysydfwknq1ay767yan-aos-bazel-store-editor-parity",
+      "report_sha256": "a953f9a1f9ce3a6002b26b7f4fbbc9198259ae977e07251ba1fbf2daa88935e2",
+      "selected_distinct_diagnostics": 12,
+      "unattributed_cargo_diagnostics": 0,
+      "unselected_cargo_diagnostics": 0
+    },
+    "store-s3": {
+      "aggregate_statistics_comparable": false,
+      "bazel_raw_diagnostics": 0,
+      "cargo_raw_selected_diagnostics": 0,
+      "comparison_scope": [
+        "crates/crucible/storage/crucible-store-s3"
+      ],
+      "derivation": "/nix/store/zvw8dxc2dk23b6kzkawri1v3pmbgh8ab-aos-bazel-store-s3-editor-parity.drv",
+      "diagnostic_multiplicity_comparable": false,
+      "output": "/nix/store/2qk82kwy1i8lb82qr5sqs9269baa0z10-aos-bazel-store-s3-editor-parity",
+      "report_sha256": "939a9801f33ee5a026545a1f142ca4d84d78c46caad1fac0abb0d0195e35743d",
+      "selected_distinct_diagnostics": 0,
+      "unattributed_cargo_diagnostics": 0,
+      "unselected_cargo_diagnostics": 1287
+    }
+  },
+  "limits": [
+    "Diagnostic parity preserves unknown types and each existing comparison scope; complete inference is not claimed.",
+    "The guest comparison retains its existing unattributed Cargo diagnostics.",
+    "Native integration library editor qualification is recorded separately against its final source snapshot.",
+    "These are the frozen derivations named by the original build plan, not a later live Nix evaluation."
+  ],
+  "log_sha256": "0dc07f8698e90f6ceb42721bc55151cda6c78b516f527253cbd591c4a624c315",
+  "patch_sha256": "f438da7231df5bc5f07c68686e4bdcdcdd6a41b86236f346e147070bf39a9c36",
+  "policy_and_cli_outputs": [
+    "/nix/store/jh7cmcjk426dlk3hywqnlzqf05riscph-aos-bazel-policy-checks",
+    "/nix/store/4q7d48kcv74v0akwdy4k9ydsmliv4zs5-aos-dev-cli-check-0"
+  ],
+  "policy_tests": 164,
+  "regression_tests_sha256": "c0f7086c53cb2b98c71ee0880ce85e9625ac9de173dbe6d224ee8616281f7aad",
+  "schema_version": 1,
+  "selection": [
+    "checks.build.bazel.contracts.editor-parity",
+    "checks.build.bazel.control.editor-parity",
+    "checks.build.bazel.crucible-cli.editor-parity",
+    "checks.build.bazel.daemon.editor-parity",
+    "checks.build.bazel.device.editor-parity",
+    "checks.build.bazel.engine.editor-parity",
+    "checks.build.bazel.formats.editor-parity",
+    "checks.build.bazel.guest.editor-parity",
+    "checks.build.bazel.qemu-host.editor-parity",
+    "checks.build.bazel.quota.editor-parity",
+    "checks.build.bazel.session.editor-parity",
+    "checks.build.bazel.store.editor-parity",
+    "checks.build.bazel.store-s3.editor-parity",
+    "checks.build.bazel.editor"
+  ],
+  "status": "Thirteen family editor comparisons and the editor fixture passed with configured external crate identities"
+}

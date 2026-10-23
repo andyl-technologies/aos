@@ -1649,7 +1649,13 @@ parity for 320 compiled targets and core Nix evaluation at its frozen checkpoint
 The configured external editor identity correction is documented separately
 in `tests/evidence/editor-external-configurations.json`.
 
-Dedicated D-Bus integration gates, workspace Rust compilation, and the broader
-editor regression run separately. Foreign and Wasm qualification, compiler
-invocation equivalence, performance acceptance, production migration, and
-Cargo removal remain pending.
+`tests/evidence/native-foundation-editor-regression.json` records the passing
+regression across 13 earlier family editor comparisons and the editor fixture
+with configured external crate identities. Whole-model comparisons preserve
+inference statistics and diagnostic multiplicities; selected-package comparisons
+preserve distinct locations and types while retaining raw diagnostic counts.
+The guest comparison retains its 84 unattributed Cargo diagnostics.
+
+Dedicated D-Bus integration gates and workspace Rust compilation run separately.
+Foreign and Wasm qualification, compiler invocation equivalence, performance
+acceptance, production migration, and Cargo removal remain pending.
