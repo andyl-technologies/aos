@@ -608,8 +608,18 @@ static runtime inputs and closure, and the scoped editor comparison. The
 `test-double`, and combined feature checks. Each configuration compares exact
 test cases, ignored cases, examples, doctests, and first-party and external
 features with an offline Cargo oracle. Its `all` target also requests Clippy,
-formatting, documentation, and editor parity. Qualification is in progress;
-production consumers retain their existing builders.
+formatting, documentation, and editor parity. Native x86_64 Linux qualification
+passes; production consumers retain their existing builders while performance
+acceptance and other platform gates remain open.
+
+`tests/evidence/native-linux-engine.json` records 1,235 executed libtest cases
+for default and `test-support`, and 1,298 for `test-double` and combined features,
+with one ignored case per configuration. Each matches 104 external crate
+identities, eight first-party feature configurations, both examples, and the
+compile-only doctest. The scoped editor comparison matches all 50 owned
+diagnostics, including nine attributed synthetic diagnostics, with no analyzer
+panics. Its inference totals remain distinct from Cargo's wider dependency
+model. The 133 policy tests and required Rust test-target compilation also pass.
 
 Three integration artifacts have no cases without `test-double`. Those labels
 have explicit empty-test allowances; parity requires the corresponding Cargo
