@@ -1,4 +1,24 @@
 {
+  "checkpoint_regression_checks": {
+    "aggregate": "/nix/store/2v3k3sv2kmdz6j4953cvbm10ydricymc-aos-bazel-checks",
+    "checkpoint": "312e080a14",
+    "command": [
+      "nix-build",
+      "-A",
+      "checks.build.bazel.all",
+      "--keep-going",
+      "--no-out-link",
+      "--max-jobs",
+      "4",
+      "--cores",
+      "4",
+      "--option",
+      "substitute",
+      "false"
+    ],
+    "scope": "Source-ownership checkpoint regression; later engine and test-profile changes require separate qualification.",
+    "status": "passed"
+  },
   "configuration_sha256": {
     "BUILD.bazel": "76b5cb5f45710c031b137fd2d88c1cccc60ea5980bc874f9c01ed38f0494bf64",
     "crates/BUILD.bazel": "6e310f477d8c1459ddfcef0d4c783e76fa9bb24c585c380b2e810278ee53c417",
@@ -101,7 +121,6 @@
   "limits": [
     "The catalog contains identities and source paths; it does not compile packages or establish runtime/linkage qualification.",
     "Cargo inventory is retained only as the migration oracle; catalog generation does not read Cargo manifests.",
-    "The catalog checkpoint aggregate regression suite was still running when this evidence was recorded.",
     "No production package selection, cache services, or Cargo removal is introduced by source ownership declarations."
   ],
   "paths": {
