@@ -1440,3 +1440,13 @@ and 18 first-party feature identities. The four packaged-flight combinations
 compile only: their listed inventories are retained separately from execution.
 Their existing VM gates must supply the kernel, patched QEMU, plugin, root image,
 and deployment resources before packaged runtime qualification can pass.
+
+## AOS format library baselines
+
+`tests/evidence/formats-cargo-feature-baselines.json` retains the connected
+`aos-nar`, `aos-module-format`, and `aos-registry-format` Cargo baselines. Default
+features execute 158 cases; NAR compression executes 175. Both have zero ignored
+cases and one passing doctest. The graphs contain 71 and 79 external crate
+identities respectively, with six first-party libraries. Compression uses the
+AOS multithreaded Zstandard package. Bazel conversion, Wasm qualification, and
+production migration remain pending.
