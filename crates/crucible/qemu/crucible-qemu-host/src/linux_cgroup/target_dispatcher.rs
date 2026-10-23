@@ -455,40 +455,38 @@ impl TargetDispatcher {
         }
         let path = self.path.clone();
         self.retry_abandoned_jobs()?;
-        if matches!(self.phase, WorkerPhase::Reserved | WorkerPhase::Running) {
-            if let Some(state) = self.state.as_ref() {
-                let slots = match state.slots.try_lock() {
-                    Ok(slots) => slots,
-                    Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
-                    Err(TryLockError::WouldBlock) => {
-                        return Err(failure(&path, "Target retirement custody is pending"));
-                    }
-                };
-                if slots.iter().any(|slot| {
-                    slot.phase != JobPhase::Idle
-                        || slot.control.is_some()
-                        || slot.original.is_some()
-                }) {
-                    return Err(failure(
-                        &path,
-                        "Target dispatcher still owns an actual job or returned control",
-                    ));
+        if matches!(self.phase, WorkerPhase::Reserved | WorkerPhase::Running)
+            && let Some(state) = self.state.as_ref()
+        {
+            let slots = match state.slots.try_lock() {
+                Ok(slots) => slots,
+                Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
+                Err(TryLockError::WouldBlock) => {
+                    return Err(failure(&path, "Target retirement custody is pending"));
                 }
-                let running = match state.running.try_lock() {
-                    Ok(running) => running,
-                    Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
-                    Err(TryLockError::WouldBlock) => {
-                        return Err(failure(&path, "Target worker custody is pending"));
-                    }
-                };
-                if running.iter().any(Option::is_some) {
-                    return Err(failure(&path, "Target worker still owns actual controls"));
-                }
-                // Only the complete absence of every actual slot/worker owner
-                // permits retiring poison; individual job recovery never does.
-                state.running.clear_poison();
-                state.slots.clear_poison();
+            };
+            if slots.iter().any(|slot| {
+                slot.phase != JobPhase::Idle || slot.control.is_some() || slot.original.is_some()
+            }) {
+                return Err(failure(
+                    &path,
+                    "Target dispatcher still owns an actual job or returned control",
+                ));
             }
+            let running = match state.running.try_lock() {
+                Ok(running) => running,
+                Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
+                Err(TryLockError::WouldBlock) => {
+                    return Err(failure(&path, "Target worker custody is pending"));
+                }
+            };
+            if running.iter().any(Option::is_some) {
+                return Err(failure(&path, "Target worker still owns actual controls"));
+            }
+            // Only the complete absence of every actual slot/worker owner
+            // permits retiring poison; individual job recovery never does.
+            state.running.clear_poison();
+            state.slots.clear_poison();
         }
         if self.cleanup.is_none() {
             self.cleanup = Some(
@@ -1017,16 +1015,15 @@ fn run(state: Arc<DispatcherState>, event_capacity: usize) {
             if let Err(source) = after {
                 job.failure.get_or_insert_default().after = Some(source);
             }
-            if populated == Some(false)
+            if (populated == Some(false)
                 || populated.is_none()
                 || job
                     .failure
                     .as_ref()
-                    .is_some_and(|failure| failure.after.is_some())
+                    .is_some_and(|failure| failure.after.is_some()))
+                && !return_job(&state, index, entry)
             {
-                if !return_job(&state, index, entry) {
-                    return;
-                }
+                return;
             }
         }
         if shutting_down && running.iter().all(Option::is_none) {

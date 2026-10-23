@@ -113,10 +113,10 @@ impl QemuNodeSet {
                     ),
                 });
             }
-            if let Err(error) = backend.force_quarantine_and_reap() {
-                if first.is_none() {
-                    first = Some(error);
-                }
+            if let Err(error) = backend.force_quarantine_and_reap()
+                && first.is_none()
+            {
+                first = Some(error);
             }
         }
         first.map_or(Ok(()), |first| Err(BackendError::from(first)))

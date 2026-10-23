@@ -506,11 +506,10 @@ impl QemuLaunchPluginConfig {
             self.app_random_branch_plan().clone(),
             self.selectable_catalog_plan().clone(),
         );
-        let plan = match self.original_startup {
+        match self.original_startup {
             Some(startup) => plan.with_startup_operation(startup),
             None => plan,
-        };
-        plan
+        }
     }
 
     /// Moves already-owned plans into the command without a second deep copy.
@@ -522,7 +521,8 @@ impl QemuLaunchPluginConfig {
             .map(|config| config.branch_plan)
             .unwrap_or_default();
         let catalog = self.selectable_catalog_plan.unwrap_or_default();
-        let plan = crucible_qemu_protocol::plugin_setup_plan::PluginSetupPlan::new(app_random, catalog);
+        let plan =
+            crucible_qemu_protocol::plugin_setup_plan::PluginSetupPlan::new(app_random, catalog);
         match self.original_startup {
             Some(startup) => plan.with_startup_operation(startup),
             None => plan,

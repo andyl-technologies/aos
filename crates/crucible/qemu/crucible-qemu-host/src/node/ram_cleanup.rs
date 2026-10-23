@@ -100,11 +100,11 @@ impl RamCleanup {
         status: Result<(), RamControlRetirementHistory>,
     ) {
         self.entered = true;
-        if let Err(first) = status {
-            if self.controllers[index].as_ref() != Some(&first) {
-                self.controllers[index] = Some(first);
-                self.unreported = true;
-            }
+        if let Err(first) = status
+            && self.controllers[index].as_ref() != Some(&first)
+        {
+            self.controllers[index] = Some(first);
+            self.unreported = true;
         }
     }
 }

@@ -220,17 +220,17 @@ impl QemuRamSourceService {
             Some(worker) => worker.outcome.snapshot(),
             None => self.failure.snapshot(),
         };
-        if let Some(first) = outcome.failure {
-            if self.stop.history.worker.is_none() {
-                self.stop.history.worker = Some(first);
-                self.stop.version += 1;
-            }
+        if let Some(first) = outcome.failure
+            && self.stop.history.worker.is_none()
+        {
+            self.stop.history.worker = Some(first);
+            self.stop.version += 1;
         }
-        if let Some(panic) = outcome.panic {
-            if self.stop.history.panic.is_none() {
-                self.stop.history.panic = Some(panic);
-                self.stop.version += 1;
-            }
+        if let Some(panic) = outcome.panic
+            && self.stop.history.panic.is_none()
+        {
+            self.stop.history.panic = Some(panic);
+            self.stop.version += 1;
         }
         self.stop.outcome_captured = outcome.delivered;
         if (!outcome.delivered || outcome.uncertain) && !self.stop.history.uncertain {

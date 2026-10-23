@@ -194,30 +194,26 @@ impl QemuHotForkRamStage {
             .ok_or(HostSupervisionError::Unavailable)
             .and_then(|original| original.wait_slice())
             .err();
-        if self.preparation_before.is_none() {
-            if self.source_start.is_some() {
-                match QemuRamSourceService::prepare(
-                    &mut self.source_start,
-                    self.supervisor.clone(),
-                    self.registration.host_services.clone(),
-                ) {
-                    Ok(service) => {
-                        self.source_service = Some(service);
-                        if let (Some(service), Some(original)) =
-                            (self.source_service.as_mut(), self.preparation.as_ref())
-                        {
-                            if let Err(first) =
-                                service.publish_retained(original, Some(self.cleanup.clone()))
-                            {
-                                self.source_start_failure =
-                                    Some(crucible_engine::BackendOperationalCause::new(first));
-                            }
-                        }
-                    }
-                    Err(first) => {
+        if self.preparation_before.is_none() && self.source_start.is_some() {
+            match QemuRamSourceService::prepare(
+                &mut self.source_start,
+                self.supervisor.clone(),
+                self.registration.host_services.clone(),
+            ) {
+                Ok(service) => {
+                    self.source_service = Some(service);
+                    if let (Some(service), Some(original)) =
+                        (self.source_service.as_mut(), self.preparation.as_ref())
+                        && let Err(first) =
+                            service.publish_retained(original, Some(self.cleanup.clone()))
+                    {
                         self.source_start_failure =
-                            Some(crucible_engine::BackendOperationalCause::new(first))
+                            Some(crucible_engine::BackendOperationalCause::new(first));
                     }
+                }
+                Err(first) => {
+                    self.source_start_failure =
+                        Some(crucible_engine::BackendOperationalCause::new(first))
                 }
             }
         }
@@ -229,12 +225,13 @@ impl QemuHotForkRamStage {
             .ok_or(HostSupervisionError::Unavailable)
             .and_then(|original| original.wait_slice())
             .err();
-        if self.preparation_before.is_none() && self.source_start_failure.is_none() {
-            if let Some(original) = &self.preparation {
-                let (completed, post) = original.complete_observed();
-                self.preparation_completed = completed;
-                self.preparation_completion = post.err();
-            }
+        if self.preparation_before.is_none()
+            && self.source_start_failure.is_none()
+            && let Some(original) = &self.preparation
+        {
+            let (completed, post) = original.complete_observed();
+            self.preparation_completed = completed;
+            self.preparation_completion = post.err();
         }
         if self.preparation_completed && self.preparation_completion.is_none() {
             self.preparation = None;
@@ -539,10 +536,10 @@ impl QemuHotForkRamContinuation {
             history.controller(1, status);
             returned &= closed;
         }
-        if history.take_unreported() {
-            if let Some(first) = history.failure() {
-                return Err(stage_failure(&self.lender_failure, first));
-            }
+        if history.take_unreported()
+            && let Some(first) = history.failure()
+        {
+            return Err(stage_failure(&self.lender_failure, first));
         }
         if returned {
             self.cleanup_original = None;

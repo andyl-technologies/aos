@@ -485,11 +485,11 @@ impl QemuNodeShutdownTarget<'_, '_, '_> {
             Err(first) => (None, Some(first)),
         };
         let after = original.and_then(|original| original.wait_slice().err());
-        if let Some(after) = after {
-            if self.observations[index].1.is_none() {
-                self.observations[index].1 = Some(after);
-                *self.history_pending = true;
-            }
+        if let Some(after) = after
+            && self.observations[index].1.is_none()
+        {
+            self.observations[index].1 = Some(after);
+            *self.history_pending = true;
         }
         let status = match (first, after) {
             (Some(first), _) => Err(first),

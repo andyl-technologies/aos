@@ -14,11 +14,11 @@ impl QemuNode {
             let mut returned = true;
             #[cfg(target_os = "linux")]
             {
-                if let Some(stage) = stage {
-                    if let Err(first) = stage.finish_source() {
-                        history.retain_stage(first);
-                        returned = false;
-                    }
+                if let Some(stage) = stage
+                    && let Err(first) = stage.finish_source()
+                {
+                    history.retain_stage(first);
+                    returned = false;
                 }
                 if let QemuNodeProcessControl::Direct(child) = child {
                     drop(child.ram_source_start.take());

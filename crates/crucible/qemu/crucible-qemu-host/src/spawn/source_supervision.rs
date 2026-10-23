@@ -406,14 +406,15 @@ impl SourcePublisher {
             .filter(|end| *end <= payload.len())
             .ok_or(HostSupervisionError::InvalidBudget)?;
         payload[HEADER_BYTES..end].copy_from_slice(&roster);
-        if let Some(action) = state.action.as_ref() {
-            if !action.clearing && action.observation.borrowed_mask != 0 {
-                let bytes = action
-                    .observation
-                    .encode()
-                    .map_err(|_| HostSupervisionError::InvalidBudget)?;
-                payload[600..].copy_from_slice(&bytes);
-            }
+        if let Some(action) = state.action.as_ref()
+            && !action.clearing
+            && action.observation.borrowed_mask != 0
+        {
+            let bytes = action
+                .observation
+                .encode()
+                .map_err(|_| HostSupervisionError::InvalidBudget)?;
+            payload[600..].copy_from_slice(&bytes);
         }
         crucible_qemu_protocol::source_supervision::decode_source_supervision_payload(&payload)
             .map_err(|_| HostSupervisionError::InvalidBudget)?;

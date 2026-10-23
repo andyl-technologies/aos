@@ -682,12 +682,11 @@ impl Drop for QemuLiveHostIoRuntime {
             // Failure or attempted publication keeps the original mapping debt.
             let _ = source.return_unpublished_action(region, self.vm_slot);
         }
-        if let Some(source) = &self.source_supervision {
-            if source.action_is_pending() {
-                if let Some(region) = self.region.take() {
-                    source.retain_uncertain_mapping(region);
-                }
-            }
+        if let Some(source) = &self.source_supervision
+            && source.action_is_pending()
+            && let Some(region) = self.region.take()
+        {
+            source.retain_uncertain_mapping(region);
         }
         let Some(cleanup) = &self.launch_cleanup else {
             return;

@@ -978,13 +978,12 @@ impl HostActionPublisher for SourcePublisher {
     }
 
     fn invalidate_action(&self, binding: ActionBinding) {
-        if let Ok(mut state) = self.state.lock() {
-            if let Some(action) = state.action.as_mut() {
-                if action.observation.binding == binding {
-                    action.refused = true;
-                    action.observation.cohort_current = false;
-                }
-            }
+        if let Ok(mut state) = self.state.lock()
+            && let Some(action) = state.action.as_mut()
+            && action.observation.binding == binding
+        {
+            action.refused = true;
+            action.observation.cohort_current = false;
         }
         if let Ok(mut session) = self.publisher_session.lock() {
             let _ = session.revoke_born_command();

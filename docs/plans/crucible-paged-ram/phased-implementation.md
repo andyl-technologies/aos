@@ -825,6 +825,21 @@ errors and other findings still prevent a passing host/license gate.
 Engineering hygiene passes after review and correction of the preceding spawn
 adapter/test source digests; no threshold or waiver changes.
 
+Cleanup and publication branches now use ordered let chains, preserving the
+same physical effects, original observations and first-failure retention while
+removing all seventeen nested-branch lint findings and one redundant return
+binding. The existing focused dispatcher, hot-fork, shutdown, Source-stop and
+publication checks pass all 59 cases. The same strict private-feature Host
+Clippy command now reports 716 remaining findings; enclosing error custody and
+other required gate work remain incomplete. Engineering hygiene passes with
+the two containing-source reviews refreshed; no lint policy changes.
+
+The descriptor-alias revision's mandatory application-target build passes at
+`wm62a08l5ap5d1dgkdqxvwzrraxklg4s`, and the four-record public-vector revision
+passes at `6gns9hv88l4pa6kn3b67sbxh30dy9755`. Their previously recorded complete
+committed-input and fixture/license correspondence remains exact. These
+compilation results do not qualify a launched native profile.
+
 #### Initial loader storage component
 
 The package imports signed `cff34ac416ff0650048fd85d50e156434f5cb9ed`, tree
