@@ -1,0 +1,18 @@
+{
+  "changed_rust_source_sha256": {
+    "crates/crucible/engine/crucible-engine/tests/formal_trace_export.rs": "0ec962b0883de554b1fba58a1f10cac2b2676f641dd599442d65767e5f4d57c0",
+    "crates/crucible/engine/crucible-engine/tests/workload_model.rs": "0cfc47edb71afdc0cc677c131157fa651dd9583a95c0b56ccadd3dbaa8ca3d2e",
+    "crates/crucible/testing/crucible-test-support/tests/support/workspace.rs": "4ac243344ecac20454ef41a0bbfb1b0f9497daf376d7283390490f8d5cdc9f4b"
+  },
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "derivation": "/nix/store/92xf7p7gywm4j7zd01zs8vva732kn1mx-aos-test-targets-0.1.0.drv",
+  "limits": [
+    "The immutable source snapshot contains the final three Rust edits; their hashes match checkpoint 697f72e284. Subsequent engine BUILD declarations and dependency metadata are qualified by the separate Bazel engine checks.",
+    "Compilation is not test execution, feature parity, performance acceptance, or a production cutover."
+  ],
+  "output": "/nix/store/bji546wakx1wqhvsqqgw1m7fcfsns8f3-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "scope": "Compiles every application crate unit and integration test target without running them.",
+  "source": "/nix/store/filf96civikczk68wh71jh6809sdswb6-aos-workspace-src",
+  "status": "passed"
+}
