@@ -23,6 +23,9 @@ mod operational_sqlite;
 #[path = "operational_ram_read.rs"]
 mod operational_ram_read;
 
+#[path = "operational_source_observations.rs"]
+mod operational_source_observations;
+
 struct Companion {
     path: &'static str,
     required: &'static [&'static str],
@@ -318,6 +321,7 @@ pub(super) fn mask(package: &str, target: &str, code: &str) -> String {
         .iter()
         .chain(operational_sqlite::CONTRACTS)
         .chain(operational_ram_read::CONTRACTS)
+        .chain(operational_source_observations::CONTRACTS)
         .chain(operational_packed::CONTRACTS)
         .chain(operational_measurement::CONTRACTS)
         .find(|contract| contract.package == package && contract.target == target)

@@ -133,7 +133,8 @@ impl QemuRamSourceService {
             self.stop.cancel_entered = true;
             self.cancellation.store(true, Ordering::Release);
             if let Err(first) = self.wake.shutdown(Shutdown::Both) {
-                self.stop.history.cancellation = Some(BackendOperationalCause::new(first));
+                self.stop.history.cancellation =
+                    Some(self.stop.journal.cancellation_failure(first));
                 self.stop.version += 1;
             }
             self.stop.cancel_returned = true;

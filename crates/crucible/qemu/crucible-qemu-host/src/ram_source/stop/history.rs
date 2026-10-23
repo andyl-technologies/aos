@@ -5,6 +5,7 @@
 //! worker loan; cloning and publishing a receipt allocate nothing.
 
 use super::*;
+use crucible_engine::SharedOperationalCause;
 use crucible_host_resources::host_services::HostServiceLease;
 use std::fmt;
 use std::ops::Deref;
@@ -102,9 +103,35 @@ impl Eq for QemuRamSourceStopHistory {}
 // exclusively borrowed Source publishes; receipt aliases cannot change records.
 const STOP_SNAPSHOTS: usize = 16;
 
+// The same prebirth loan funds this separate shared cause. An erased observer
+// may outlive the stop journal, so the cause retains its own alias of that loan.
+#[derive(Debug)]
+struct CancellationCause {
+    first: OnceLock<std::io::Error>,
+    _lease: HostServiceLease,
+}
+
+impl fmt::Display for CancellationCause {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.first.get() {
+            Some(first) => first.fmt(formatter),
+            None => formatter.write_str("Source cancellation has no returned failure"),
+        }
+    }
+}
+
+impl std::error::Error for CancellationCause {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.first
+            .get()
+            .map(|first| first as &dyn std::error::Error)
+    }
+}
+
 #[derive(Debug)]
 struct StopJournalAllocation {
     records: [OnceLock<QemuRamSourceStopRecord>; STOP_SNAPSHOTS],
+    cancellation: SharedOperationalCause<CancellationCause>,
     // Snapshot payloads close before the original charge is returned.
     _lease: HostServiceLease,
 }
@@ -120,9 +147,14 @@ impl StopJournal {
     }
 
     pub(super) fn new(lease: HostServiceLease) -> Self {
+        let cancellation = SharedOperationalCause::new(CancellationCause {
+            first: OnceLock::new(),
+            _lease: lease.clone(),
+        });
         Self {
             shared: Some(Arc::new(StopJournalAllocation {
                 records: std::array::from_fn(|_| OnceLock::new()),
+                cancellation,
                 _lease: lease,
             })),
         }
@@ -137,7 +169,28 @@ impl StopJournal {
             .checked_add(std::mem::size_of::<StopJournalAllocation>() as u64)?
             .checked_add(std::mem::size_of::<QemuRamSourceStopRecord>() as u64)?
             .checked_add(std::mem::size_of::<QemuRamSourceStopHistory>() as u64)?
-            .checked_add(std::mem::size_of::<Self>() as u64)
+            .checked_add(std::mem::size_of::<Self>() as u64)?
+            .checked_add(
+                u64::try_from(
+                    SharedOperationalCause::<CancellationCause>::allocation_bytes().ok()?,
+                )
+                .ok()?,
+            )?
+            .checked_add(std::mem::size_of::<CancellationCause>() as u64)?
+            .checked_add(std::mem::size_of::<SharedOperationalCause<CancellationCause>>() as u64)
+    }
+
+    /// Publishes the original syscall failure from its prepaid shared body.
+    pub(super) fn cancellation_failure(&self, first: std::io::Error) -> BackendOperationalCause {
+        let Some(journal) = self.shared.as_ref() else {
+            unreachable!("only a funded Source can publish cancellation failure");
+        };
+        journal
+            .cancellation
+            .source_ref()
+            .first
+            .get_or_init(|| first);
+        journal.cancellation.backend_cause()
     }
 
     pub(super) fn snapshot(&self, record: &QemuRamSourceStopRecord) -> QemuRamSourceStopHistory {
@@ -187,7 +240,7 @@ mod tests {
             TestAllocationObserver::capture_layout_and_count(layout.pad_to_align(), || {
                 StopJournal::new(loan)
             });
-        assert_eq!(counts.allocations, 1);
+        assert_eq!(counts.allocations, 2);
         assert_eq!(counts.reallocations, 0);
         assert!(!counts.overflow);
 
@@ -233,6 +286,90 @@ mod tests {
         ));
 
         // Both observer channels inspect this same component account.
+        let (_, observations) = TestAllocationObserver::observe_controls(
+            [&account, &account],
+            None,
+            [identity, None, None],
+            || drop(alias),
+        );
+        let observed = observations[0].unwrap();
+        assert_eq!(observed.before.original_bytes, [Some(bytes); 2]);
+        assert_eq!(observed.after.original_bytes, [Some(bytes); 2]);
+        let _whole = account.reserve_resources(0, 0, bytes).unwrap();
+    }
+
+    #[test]
+    fn cancellation_observers_keep_prepaid_cause_through_actual_header_free() {
+        use std::error::Error;
+
+        let bytes = StopJournal::peak_bytes().unwrap();
+        let account = HostServiceAllocator::new(1, 1, bytes).unwrap();
+        let loan = account.reserve_resources(0, 0, bytes).unwrap();
+        let (layout, _) = std::alloc::Layout::new::<[std::sync::atomic::AtomicUsize; 2]>()
+            .extend(std::alloc::Layout::new::<CancellationCause>())
+            .unwrap();
+        let (journal, identity, counts) =
+            TestAllocationObserver::capture_layout_and_count(layout.pad_to_align(), || {
+                StopJournal::new(loan)
+            });
+        assert_eq!(counts.allocations, 2);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+
+        let first = std::io::Error::from_raw_os_error(libc::EPIPE);
+        let ((cause, alias, receipt), counts) = TestAllocationObserver::count(|| {
+            let cause = journal.cancellation_failure(first);
+            let alias = cause.clone();
+            let mut record = StopState::new().history;
+            record.cancellation = Some(cause.clone());
+            (cause, alias, journal.snapshot(&record))
+        });
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert_eq!(cause, alias);
+        assert_eq!(receipt.cancellation.as_ref(), Some(&cause));
+        let original = cause
+            .source()
+            .unwrap()
+            .source()
+            .unwrap()
+            .downcast_ref::<std::io::Error>()
+            .unwrap();
+        assert_eq!(original.raw_os_error(), Some(libc::EPIPE));
+        let original_identity = std::ptr::from_ref(original);
+
+        // A repeated observation retains the first actual returned error. It
+        // creates neither another error body nor another service reservation.
+        let (repeated, counts) = TestAllocationObserver::count(|| {
+            journal.cancellation_failure(std::io::Error::from_raw_os_error(libc::EINVAL))
+        });
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert_eq!(repeated, cause);
+        assert_eq!(
+            std::ptr::from_ref(
+                repeated
+                    .source()
+                    .unwrap()
+                    .source()
+                    .unwrap()
+                    .downcast_ref::<std::io::Error>()
+                    .unwrap()
+            ),
+            original_identity,
+        );
+
+        drop(receipt);
+        drop(journal);
+        drop(cause);
+        drop(repeated);
+        assert!(matches!(
+            account.reserve_resources(0, 0, 1),
+            Err(HostServiceError::CapacityExhausted)
+        ));
+
         let (_, observations) = TestAllocationObserver::observe_controls(
             [&account, &account],
             None,

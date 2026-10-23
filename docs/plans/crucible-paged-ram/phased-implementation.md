@@ -1238,6 +1238,31 @@ produces `5nlic3q5nrk05i7c4rj6ly0b77nf45kj`, and `3e090c3243` produces
 `rgagh52sxn61plpzppbgpkfsl5rjyrmw`. The stop-journal and newer source-contract
 application builds remain in progress.
 
+Source cancellation failure publication now uses a separate immutable cause
+body allocated under the stop journal's original loan before worker birth.
+The complete journal peak includes its shared header, body, construction storage
+and owner handle. The first returned I/O error fills its private once-only cell;
+receipt publication and cloning share that existing allocation. An erased cause
+observer retains the same original loan independently of the stop journal, and
+the last observer frees its shared header before dropping the error and loan.
+The original I/O error remains reachable through the standard error chain.
+
+All 33 Source controls pass, including zero-allocation cause publication,
+first-error identity preservation, complete-peak admission refusal and physical
+shared-header credit observations. No Main/Source issuance or native-return
+authority is added. Replacing the shared cause's actual header-before-payload
+closure with ordinary destruction defeats the physical-credit control; exact
+restoration passes all 33 Source controls again. Both cleanup witnesses and
+both new component-observation contracts pass. Those contracts bind the complete
+actual journal and worker observations, prebirth funding and finite poll bounds;
+controls reject foreign owners, invented return receipts and additional waits.
+
+Source shape passes. The complete testing-standard suite passes 76 controls;
+its remaining broad operational-wait failure reports 22 findings in 22 other
+paths. Strict host Clippy remains blocked by the unchanged 674 library and 723
+test-target errors, with 14 and five warnings respectively. Mandatory packaged
+application-target compilation for this increment remains pending.
+
 #### Cumulative construction and request ownership source
 
 Signed atomic `e82bb4c78da7af3351ef6473935a2be2feb01a2d` imports conventional
@@ -1655,7 +1680,20 @@ authenticates all 35 payloads, 2,911 execution and 86,111 reconstruction
 paths, their complete archives and the original raw graph. Exactly 33 unselected
 whole-graph command fields differ; all selected edges, 3,304 database variants,
 rules and leaves match. Each differing command names a Meson serialized-command
-artifact whose exact producer remains under review.
+artifact. Sealed diagnosis
+`55acb67a9a4a6525bee2c2fba33bda7e1d3e312012abe5d1b61c4b29c263fb41`
+binds all 76 payloads and independently derives every old/current filename from
+the actual QEMU functional-test environment and pinned Meson hashing code.
+Changing only these 33 derived names explains the entire original graph.
+
+Fresh plan `b1370f131dd0d4dccd0b1b754202b8e2152a46ad7a19eebdef99d1c14581f608`
+authenticates all 88 payloads, 174 external inputs, ten reconstruction inputs
+and the same complete 70 tool roots. Independent review checks every graph
+field, schedule and leaf, derives all ten object and 33 serialized-command
+coordinates with actual pinned Meson code, and confirms all eight runtime
+helpers remain byte-exact. One new original invocation is authorized with the
+same bounds and fresh coordinates. Compilation and link results remain pending;
+TAP, installation and activation are not executed.
 
 #### Initial loader storage component
 
