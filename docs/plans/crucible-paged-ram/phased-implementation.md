@@ -1399,6 +1399,19 @@ These component receipts grant no Main, Source, operation or physical-return
 authority. Other large shutdown variants and public report collections still
 need work. Mandatory application-target compilation remains pending.
 
+Lifecycle failure classification now binds its complete pure status projection
+and actual typed-cause controls to the retained protected first-error and
+quarantine owners. Missing or foreign projections remain terminal; later cleanup
+cannot authorize another initiating attempt. Exact companion contracts reject
+changes to the protected projection, quarantine observation, original cause or
+status assertions. The classification schedules no work and issues no Main,
+Source, cleanup or physical-return authority.
+
+All ten daemon failure-classification controls, both new classification controls
+and source shape pass. The complete testing-standards suite passes 86 controls
+and retains one broad failure over twelve other daemon paths. Mandatory
+application-target compilation for this increment remains pending.
+
 #### Cumulative construction and request ownership source
 
 Signed atomic `e82bb4c78da7af3351ef6473935a2be2feb01a2d` imports conventional
@@ -1869,6 +1882,35 @@ and normal atexit remain present. Process return supplies no explicit RCU drain,
 callback retirement or worker join. This passes only the ordinary/unissued
 companion; the legacy fixture, complete paid profile, emulator/guest execution,
 installation and activation remain separately unqualified.
+
+The unchanged legacy fixture still has 187 registrations, 179 extracted Source
+roots and thirteen lookup definitions. An independently reviewed compile-only
+probe retains all three existing utility variants, without linking or changing
+production/test source. Its first invocation stops on an unauthenticated zombie
+observation and separately retains a missing Linux-header ownership failure.
+Sealed failure `a90bd96fe03b4f6134a181199b389b639f6ec182b3d62f3b766c39da88cebf2a`
+has all 55 signed payloads and forty original disk/copy/archive entries verified.
+It establishes no completed admitted command.
+
+A new finite probe authenticates the complete additional header root already
+selected by GCC specs and records terminal zombie observations separately from
+live executable identities. It accepts two original C commands, taking 0.302231
+and 0.405296 seconds. Their actual objects contain 24 and 56 symbols and 770 and
+7,740 relocations, including debug records. The third command stops when a raw
+process sample combines state R with no executable or arguments and zero memory.
+Its object is absent. All three partial depfiles authenticate 309, 510 and 748
+input observations; all 819 completed dependency posts match.
+
+Independent review of failure packet
+`9144faaaac741c5798f135227e4de41ede1fe194dd5c4197d0bf42700a8a2573`
+verifies all 97 signed payloads, 82 original disk/copy/archive entries, both
+complete actual object inventories and all 6,583 build/86,111 reconstruction
+entries before and after. The original worker returns one after 46.988958 seconds.
+Cleanup retains the killed wrapper's -9 and adopted raw waits 9 and zero,
+then observes empty kernel children and ECHILD. All eight independent final
+evidence cuts succeed. All 312 aggregate and 597 worker samples stay below six
+GiB; unsampled peaks remain unproved. The missing third object, complete fixture
+symbol isolation, genuine legacy link and executed legacy cases remain unresolved.
 
 #### Initial loader storage component
 
