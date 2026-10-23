@@ -18,7 +18,7 @@
 //! rewrites the package metadata, rebuilds the merged FHS tree, and switches
 //! atomically. The previous generation remains intact for `apm rollback`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 
 use anyhow::{Context, Result};
@@ -96,6 +96,10 @@ pub struct UpgradeCandidate {
 /// ([`PackageError::UserCancelled`]), a sysroot-lock violation is not waived,
 /// closure resolution / download / hash verification / NAR import fails, or
 /// the new generation cannot be created, populated, or switched to.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native package transactions record their host audit time."
+)]
 pub async fn run(
     config: &ApmConfig,
     packages: &[String],
@@ -268,26 +272,23 @@ pub async fn run(
     collect_closure_secondary_artifacts(&upgrade_closures, &mut secondary_artifacts)?;
 
     // Sysroot-lock check for upgraded packages.
-    if !matches!(ignore_lock, IgnoreSysrootLock::All) {
-        if let Some((sysroot_refs, sys_name, sys_version)) =
+    if !matches!(ignore_lock, IgnoreSysrootLock::All)
+        && let Some((sysroot_refs, sys_name, sys_version)) =
             sysroot_lock::get_sysroot_references(config)?
-        {
-            let lookup = sysroot_lock::build_registry_lookup(config)?;
-            for (_reg_name, closure_metas) in &upgrade_closures {
-                let pkg_refs: Vec<String> = closure_metas
-                    .iter()
-                    .map(|m| store_path_hash(&m.store_path).to_string())
-                    .collect();
+    {
+        let lookup = sysroot_lock::build_registry_lookup(config)?;
+        for (_reg_name, closure_metas) in &upgrade_closures {
+            let pkg_refs: Vec<String> = closure_metas
+                .iter()
+                .map(|m| store_path_hash(&m.store_path).to_string())
+                .collect();
 
-                let violations =
-                    sysroot_lock::check_sysroot_lock(&sysroot_refs, &pkg_refs, &lookup);
-                let remaining = ignore_lock.filter(violations);
+            let violations = sysroot_lock::check_sysroot_lock(&sysroot_refs, &pkg_refs, &lookup);
+            let remaining = ignore_lock.filter(violations);
 
-                if !remaining.is_empty() {
-                    let msg =
-                        sysroot_lock::format_violation_error(&remaining, &sys_name, &sys_version);
-                    anyhow::bail!(msg);
-                }
+            if !remaining.is_empty() {
+                let msg = sysroot_lock::format_violation_error(&remaining, &sys_name, &sys_version);
+                anyhow::bail!(msg);
             }
         }
     }
@@ -333,7 +334,7 @@ pub async fn run(
         None
     };
     let missing = filter_missing(&store_paths).await?;
-    let missing_set: HashSet<&str> = missing.iter().map(|s| s.as_str()).collect();
+    let missing_set: BTreeSet<&str> = missing.iter().map(|s| s.as_str()).collect();
     let to_download: Vec<&PackageMeta> = all_new_metas
         .iter()
         .filter(|m| missing_set.contains(m.store_path.as_str()))
@@ -471,7 +472,7 @@ pub async fn run(
 
     // Create GC roots for all new closure members.
     let unique_for_roots: Vec<PackageMeta> = {
-        let mut seen = HashSet::new();
+        let mut seen = BTreeSet::new();
         all_new_metas
             .into_iter()
             .filter(|m| seen.insert(store_path_hash(&m.store_path).to_string()))
@@ -650,8 +651,8 @@ struct InstalledFlags {
 
 /// Index the explicit/held flags of installed packages by name, so upgraded
 /// entries keep their previous flags.
-fn installed_flags_by_name(installed: &[InstalledPackageRecord]) -> HashMap<&str, InstalledFlags> {
-    let mut flags: HashMap<&str, InstalledFlags> = HashMap::new();
+fn installed_flags_by_name(installed: &[InstalledPackageRecord]) -> BTreeMap<&str, InstalledFlags> {
+    let mut flags: BTreeMap<&str, InstalledFlags> = BTreeMap::new();
 
     for meta in installed {
         let Some(apm) = meta.apm.as_ref() else {
@@ -680,12 +681,12 @@ async fn needed_hashes_after_upgrade(
     installed: &[InstalledPackageRecord],
     to_upgrade: &[UpgradeCandidate],
     new_metas: &[PackageMeta],
-) -> Result<HashSet<String>> {
-    let mut needed: HashSet<String> = new_metas
+) -> Result<BTreeSet<String>> {
+    let mut needed: BTreeSet<String> = new_metas
         .iter()
         .map(|meta| store_path_hash(&meta.store_path).to_string())
         .collect();
-    let upgraded_names: HashSet<&str> = to_upgrade.iter().map(|c| c.name.as_str()).collect();
+    let upgraded_names: BTreeSet<&str> = to_upgrade.iter().map(|c| c.name.as_str()).collect();
     let pending_remove_hashes = hashes_for_installed_names(installed, &upgraded_names);
 
     for index in retained_installed_indexes(installed, &pending_remove_hashes) {
@@ -707,8 +708,8 @@ async fn needed_hashes_after_upgrade(
 
 fn hashes_for_installed_names(
     installed: &[InstalledPackageRecord],
-    names: &HashSet<&str>,
-) -> HashSet<String> {
+    names: &BTreeSet<&str>,
+) -> BTreeSet<String> {
     installed
         .iter()
         .filter_map(|meta| {
@@ -723,9 +724,9 @@ fn hashes_for_installed_names(
 /// Hashes of every root owned by installed entries absent from the needed set.
 fn obsolete_installed_hashes(
     installed: &[InstalledPackageRecord],
-    needed_hashes: &HashSet<String>,
-) -> HashSet<String> {
-    let mut hashes = HashSet::new();
+    needed_hashes: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut hashes = BTreeSet::new();
     for meta in installed {
         let Some(apm) = meta.apm.as_ref() else {
             continue;
@@ -753,14 +754,14 @@ pub fn filter_held_and_excluded(
     installed: &[InstalledPackageRecord],
     exclude: &[String],
 ) -> (Vec<UpgradeCandidate>, Vec<UpgradeCandidate>) {
-    let held_names: HashSet<String> = installed
+    let held_names: BTreeSet<String> = installed
         .iter()
         .filter_map(|m| m.apm.as_ref())
         .filter(|a| a.held)
         .map(|a| a.name.clone())
         .collect();
 
-    let exclude_set: HashSet<&str> = exclude.iter().map(|s| s.as_str()).collect();
+    let exclude_set: BTreeSet<&str> = exclude.iter().map(|s| s.as_str()).collect();
 
     let mut to_upgrade = Vec::new();
     let mut held_back = Vec::new();
@@ -782,6 +783,10 @@ pub fn filter_held_and_excluded(
 
 /// Build the JSON document for `apm upgrade` (planned, held_back, current,
 /// or upgraded).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The result schema reports each independent upgrade outcome."
+)]
 fn upgrade_result_json(
     status: &str,
     packages: &[String],
@@ -921,7 +926,7 @@ fn build_download_requests(
 ) -> Result<Vec<DownloadRequest>> {
     // Build a map of registry_name -> mirror chain (primary + fallbacks).
     let registries_base = config.scope.registries_path();
-    let mirror_map: std::collections::HashMap<String, Vec<String>> = closures
+    let mirror_map: std::collections::BTreeMap<String, Vec<String>> = closures
         .iter()
         .map(|(registry_name, _)| {
             let reg_config = config
@@ -939,8 +944,8 @@ fn build_download_requests(
         .collect();
 
     // Build a map of store_path_hash -> registry_name.
-    let mut hash_to_registry: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut hash_to_registry: std::collections::BTreeMap<String, String> =
+        std::collections::BTreeMap::new();
     for (registry_name, closure) in closures {
         for meta in closure {
             let hash = store_path_hash(&meta.store_path).to_string();
@@ -979,7 +984,7 @@ fn collect_closure_secondary_artifacts(
         .iter()
         .enumerate()
         .map(|(index, artifact)| (artifact.store_path.clone(), index))
-        .collect::<HashMap<_, _>>();
+        .collect::<BTreeMap<_, _>>();
     for (registry_name, packages) in closures {
         for package in packages {
             for artifact in [&package.deployment, &package.module_documentation]
@@ -1003,7 +1008,7 @@ fn collect_closure_secondary_artifacts(
 
 fn push_secondary_artifact(
     artifacts: &mut Vec<SecondaryArtifactDownload>,
-    seen: &mut HashMap<String, usize>,
+    seen: &mut BTreeMap<String, usize>,
     registry_name: &str,
     store_path: &str,
     nar_hash: &str,
@@ -1046,7 +1051,7 @@ fn verify_secondary_artifact_downloads(
     let expected = artifacts
         .iter()
         .map(|artifact| (artifact.store_path.as_str(), artifact))
-        .collect::<HashMap<_, _>>();
+        .collect::<BTreeMap<_, _>>();
 
     for result in results {
         let Some(artifact) = expected.get(result.store_path.as_str()) else {
@@ -1079,7 +1084,7 @@ fn build_secondary_artifact_download_requests(
     let missing = missing_store_paths
         .iter()
         .map(String::as_str)
-        .collect::<HashSet<_>>();
+        .collect::<BTreeSet<_>>();
     let mut requests = Vec::new();
 
     for artifact in artifacts {
@@ -1105,7 +1110,7 @@ fn build_secondary_artifact_download_requests(
 
 /// Deduplicate download requests by store path while preserving first-seen order.
 fn dedupe_download_requests(requests: &mut Vec<DownloadRequest>) {
-    let mut seen = HashSet::new();
+    let mut seen = BTreeSet::new();
     requests.retain(|request| seen.insert(request.store_path.clone()));
 }
 
@@ -1475,7 +1480,7 @@ references = []
                 apm: None,
             },
         ];
-        let needed = HashSet::from(["keptroot".to_string(), "newruntimehash".to_string()]);
+        let needed = BTreeSet::from(["keptroot".to_string(), "newruntimehash".to_string()]);
 
         let obsolete = obsolete_installed_hashes(&installed, &needed);
 

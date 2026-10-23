@@ -18,6 +18,8 @@ RUST_PACKAGE = aos_rust_package(
 
 # These consumers explicitly opt in without enabling the Cargo default flag.
 TRANSFER_FEATURES = select({
+    "//tools/bazel/rules:package_manager_dependencies": ["transfer"],
+    "//tools/bazel/rules:package_manager_tests_dependencies": ["transfer"],
     "//tools/bazel/rules:boot_preparation_dependencies": ["transfer"],
     "//tools/bazel/rules:boot_preparation_minimal_dependencies": ["transfer"],
     "//tools/bazel/rules:release_coordination_dependencies": ["transfer"],

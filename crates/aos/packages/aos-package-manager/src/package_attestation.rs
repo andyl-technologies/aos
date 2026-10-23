@@ -2453,7 +2453,7 @@ fn parse_quote_nonce_hex(value: &str) -> Result<String> {
     if value.is_empty() {
         bail!("quote nonce must not be empty");
     }
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         bail!("quote nonce must be an even-length hex string");
     }
     if !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
@@ -2477,6 +2477,10 @@ fn private_quote_bundle_snapshot(quote_dir: &Path, include_identity: bool) -> Re
     Ok(snapshot_dir)
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native attestation work directories use the host clock for unique names."
+)]
 fn unique_quote_work_dir(parent: &Path) -> Result<PathBuf> {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2489,6 +2493,10 @@ fn unique_quote_work_dir(parent: &Path) -> Result<PathBuf> {
     )
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native attestation work directories use the host clock for unique names."
+)]
 fn unique_temp_dir(prefix: &str) -> Result<PathBuf> {
     let root = std::env::temp_dir();
     let nanos = SystemTime::now()
@@ -3727,8 +3735,8 @@ mod tests {
         assert_eq!(enrolled.method, "credential-activation");
         assert!(enrolled.evidence_sha256.starts_with("sha256:"));
 
-        let trust =
-            verify_quote_bundle_trust(tmp.path(), &[catalog.clone()]).expect("enrolled identity");
+        let trust = verify_quote_bundle_trust(tmp.path(), std::slice::from_ref(&catalog))
+            .expect("enrolled identity");
         assert_eq!(
             trust,
             Some(PackageQuoteTrustMatch {

@@ -1228,6 +1228,7 @@ fn acquire_runtime_config_lock(worktree: &Path) -> Result<std::fs::File> {
         .read(true)
         .write(true)
         .create(true)
+        .truncate(false)
         .open(parent.join("modules.lock"))?;
     rustix::fs::flock(&lock, rustix::fs::FlockOperation::LockExclusive)
         .context("locking runtime configuration worktree")?;
@@ -1536,10 +1537,8 @@ pub async fn run(
     } = command
     {
         let generation = profile::deployment::current_committed_generation(profile)?;
-        if !*committed_during_recovery {
-            if let Some(generation) = generation {
-                profile::deployment::committed_generation(profile, generation)?;
-            }
+        if !*committed_during_recovery && let Some(generation) = generation {
+            profile::deployment::committed_generation(profile, generation)?;
         }
         println!("{}", serde_json::json!({"generation": generation}));
         return Ok(());
@@ -2084,6 +2083,10 @@ fn read_attestation_measurement(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Attestation verification keeps each command selection explicit."
+)]
 fn run_verify_package_attestation(
     config: &config::ApmConfig,
     event_log: &PathBuf,
@@ -2511,7 +2514,7 @@ fn read_attestation_nonce(nonce: &Option<String>, nonce_file: &Option<PathBuf>) 
 
 fn run_produce_package_attestation_quote(
     nonce: &str,
-    output_dir: &PathBuf,
+    output_dir: &Path,
     printer: &Printer,
 ) -> Result<()> {
     let quote = package_attestation::produce_package_quote(nonce, output_dir)?;
@@ -2530,11 +2533,11 @@ fn run_produce_package_attestation_quote(
 }
 
 fn run_enroll_package_attestation_quote(
-    quote_dir: &PathBuf,
-    catalog_file: &PathBuf,
+    quote_dir: &Path,
+    catalog_file: &Path,
     label: &str,
     method: AttestEnrollmentMethod,
-    evidence_file: &PathBuf,
+    evidence_file: &Path,
     printer: &Printer,
 ) -> Result<()> {
     let enrollment = package_attestation::enroll_quote_identity(

@@ -24,7 +24,7 @@
 //! resulting [`DownloadResult`]s carry everything [`crate::store::import_nar`]
 //! needs to preserve cache signatures at the store trust boundary.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -381,8 +381,8 @@ where
         return Ok(Vec::new());
     }
 
-    let mut fetched: HashMap<String, ResolvedDownload> = HashMap::new();
-    let mut requested: HashSet<String> = HashSet::new();
+    let mut fetched: BTreeMap<String, ResolvedDownload> = BTreeMap::new();
+    let mut requested: BTreeSet<String> = BTreeSet::new();
     let mut pending = Vec::new();
 
     for request in requests {
@@ -438,7 +438,7 @@ async fn filter_missing_download_requests(
         .map(|request| request.store_path.clone())
         .collect::<Vec<_>>();
     let missing = filter_missing(&candidate_paths).await?;
-    let missing = missing.into_iter().collect::<HashSet<_>>();
+    let missing = missing.into_iter().collect::<BTreeSet<_>>();
 
     Ok(candidates
         .into_iter()
@@ -516,7 +516,7 @@ pub(crate) fn order_resolved_downloads(
     roots: &[DownloadRequest],
     resolved: Vec<ResolvedDownload>,
 ) -> Result<Vec<ResolvedDownload>> {
-    let mut fetched = HashMap::new();
+    let mut fetched = BTreeMap::new();
 
     for item in resolved {
         let hash = narinfo::store_hash(&item.narinfo.store_path).to_string();
@@ -530,11 +530,11 @@ pub(crate) fn order_resolved_downloads(
 /// starting from each root.
 fn order_narinfo_closure(
     roots: &[DownloadRequest],
-    fetched: &HashMap<String, ResolvedDownload>,
+    fetched: &BTreeMap<String, ResolvedDownload>,
 ) -> Result<Vec<ResolvedDownload>> {
     let mut ordered = Vec::with_capacity(fetched.len());
-    let mut pushed = HashSet::new();
-    let mut visiting = HashSet::new();
+    let mut pushed = BTreeSet::new();
+    let mut visiting = BTreeSet::new();
 
     for root in roots {
         let hash = narinfo::store_hash(&root.store_path);
@@ -549,9 +549,9 @@ fn order_narinfo_closure(
 /// rather than recursing forever; self-references are ignored.
 fn push_narinfo_dependencies_first(
     hash: &str,
-    fetched: &HashMap<String, ResolvedDownload>,
-    pushed: &mut HashSet<String>,
-    visiting: &mut HashSet<String>,
+    fetched: &BTreeMap<String, ResolvedDownload>,
+    pushed: &mut BTreeSet<String>,
+    visiting: &mut BTreeSet<String>,
     ordered: &mut Vec<ResolvedDownload>,
 ) -> Result<()> {
     if pushed.contains(hash) {
@@ -868,11 +868,11 @@ fn short_label(store_path: &str) -> String {
     store_path
         .rsplit('/')
         .next()
-        .and_then(|basename| {
+        .map(|basename| {
             if basename.len() >= 33 {
-                Some(basename[33..].to_string())
+                basename[33..].to_string()
             } else {
-                Some(basename.to_string())
+                basename.to_string()
             }
         })
         .unwrap_or_else(|| store_path.to_string())
@@ -1063,7 +1063,7 @@ mod tests {
         );
         let leaf = resolved_download("/nix/store/cccccccccccccccccccccccccccccccc-leaf-1.0", &[]);
 
-        let mut fetched = HashMap::new();
+        let mut fetched = BTreeMap::new();
         fetched.insert("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(), root.clone());
         fetched.insert("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string(), mid);
         fetched.insert("cccccccccccccccccccccccccccccccc".to_string(), leaf);

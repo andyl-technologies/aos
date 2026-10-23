@@ -89,10 +89,10 @@ pub(crate) fn root_names(envelopes: &[Envelope]) -> Result<BTreeSet<String>> {
     let mut has_parent = vec![false; representatives.len()];
     for (source, targets) in outgoing.iter().enumerate() {
         for &target in targets {
-            if components[source] != components[target] {
-                if let Some(component) = components[target] {
-                    has_parent[component] = true;
-                }
+            if components[source] != components[target]
+                && let Some(component) = components[target]
+            {
+                has_parent[component] = true;
             }
         }
     }

@@ -12,7 +12,7 @@
 //! package. `apm remove --autoremove` removes orphans created by the
 //! removal; `apm autoremove` removes all current orphans.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::io::Write;
 
 use anyhow::{Context, Result};
@@ -206,7 +206,7 @@ pub async fn run_autoremove(
         .ok_or_else(|| anyhow::anyhow!("no current generation -- nothing installed"))?;
     let installed = list_meta(&inspect_profile)?;
     // Step 2: Find orphaned packages.
-    let empty_exclude: HashSet<String> = HashSet::new();
+    let empty_exclude: BTreeSet<String> = BTreeSet::new();
     let orphans = find_orphans(&installed, &empty_exclude).await?;
 
     if orphans.is_empty() {
@@ -301,7 +301,7 @@ fn publish_removal(
     profile: &Profile,
     generation: &crate::profile::Generation,
     installed: &[InstalledPackageRecord],
-    removed: &HashSet<String>,
+    removed: &BTreeSet<String>,
     printer: &Printer,
 ) -> Result<()> {
     let registries = aos_registry_client::registry::RegistrySet::new(Vec::new());
@@ -343,6 +343,10 @@ fn publish_removal(
 // ---------------------------------------------------------------------------
 
 /// Build the JSON document for `apm remove`/`autoremove` results.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The result schema reports each independent removal outcome."
+)]
 fn remove_result_json(
     action: &str,
     status: &str,
@@ -410,7 +414,7 @@ fn select_installed_for_removal(
     names: &[String],
 ) -> Result<Vec<InstalledPackageRecord>> {
     let mut selected = Vec::new();
-    let mut selected_hashes = HashSet::new();
+    let mut selected_hashes = BTreeSet::new();
 
     for name in names {
         let matches: Vec<InstalledPackageRecord> = installed
@@ -463,7 +467,7 @@ fn select_installed_for_removal(
 /// after removing the packages in `pending_remove_hashes`.
 async fn find_orphans(
     installed: &[InstalledPackageRecord],
-    pending_remove_hashes: &HashSet<String>,
+    pending_remove_hashes: &BTreeSet<String>,
 ) -> Result<Vec<InstalledPackageRecord>> {
     let needed_hashes =
         needed_hashes_for_remaining_explicit(installed, pending_remove_hashes).await?;
@@ -479,9 +483,9 @@ async fn find_orphans(
 /// that is not slated for removal — the set of hashes that must stay.
 async fn needed_hashes_for_remaining_explicit(
     installed: &[InstalledPackageRecord],
-    pending_remove_hashes: &HashSet<String>,
-) -> Result<HashSet<String>> {
-    let mut needed = HashSet::new();
+    pending_remove_hashes: &BTreeSet<String>,
+) -> Result<BTreeSet<String>> {
+    let mut needed = BTreeSet::new();
 
     for index in retained_installed_indexes(installed, pending_remove_hashes) {
         let meta = &installed[index];
@@ -500,7 +504,7 @@ async fn needed_hashes_for_remaining_explicit(
 /// Return non-removed explicit package entries.
 pub(crate) fn retained_installed_indexes(
     installed: &[InstalledPackageRecord],
-    pending_remove_hashes: &HashSet<String>,
+    pending_remove_hashes: &BTreeSet<String>,
 ) -> Vec<usize> {
     installed
         .iter()
@@ -517,8 +521,8 @@ pub(crate) fn retained_installed_indexes(
 /// in the needed set.
 fn find_orphans_from_meta(
     installed: &[InstalledPackageRecord],
-    pending_remove_hashes: &HashSet<String>,
-    needed_hashes: &HashSet<String>,
+    pending_remove_hashes: &BTreeSet<String>,
+    needed_hashes: &BTreeSet<String>,
 ) -> Vec<InstalledPackageRecord> {
     installed
         .iter()
@@ -537,8 +541,8 @@ fn find_orphans_from_meta(
 /// Every returned hash names a GC root owned by the profile generation. Keeping
 /// these identities together ensures removal drops all artifacts belonging to
 /// removed packages without disturbing retained packages' offline docs.
-fn root_hashes_for_installed(installed: &[InstalledPackageRecord]) -> HashSet<String> {
-    let mut hashes = HashSet::new();
+fn root_hashes_for_installed(installed: &[InstalledPackageRecord]) -> BTreeSet<String> {
+    let mut hashes = BTreeSet::new();
     for meta in installed {
         hashes.insert(store_path_hash(&meta.store_path).to_string());
         if let Some(apm) = &meta.apm {
@@ -563,7 +567,7 @@ fn root_hashes_for_installed(installed: &[InstalledPackageRecord]) -> HashSet<St
 fn copy_roots_except(
     from: &super::profile::Generation,
     to: &super::profile::Generation,
-    exclude: &HashSet<String>,
+    exclude: &BTreeSet<String>,
 ) -> Result<()> {
     use std::os::unix::fs::symlink;
 
@@ -741,7 +745,7 @@ mod tests {
             select_installed_for_removal(&installed, &["curl".into(), "jq".into()]).unwrap();
         assert_eq!(found.len(), 2);
 
-        let names: HashSet<String> = found
+        let names: BTreeSet<String> = found
             .iter()
             .filter_map(|m| m.apm.as_ref().map(|a| a.name.clone()))
             .collect();
@@ -828,13 +832,13 @@ mod tests {
         )
         .unwrap();
 
-        let empty: HashSet<String> = HashSet::new();
-        let needed: HashSet<String> = HashSet::new();
+        let empty: BTreeSet<String> = BTreeSet::new();
+        let needed: BTreeSet<String> = BTreeSet::new();
         let installed = list_meta(&profile).unwrap();
         let orphans = find_orphans_from_meta(&installed, &empty, &needed);
         assert_eq!(orphans.len(), 2);
 
-        let names: HashSet<String> = orphans
+        let names: BTreeSet<String> = orphans
             .iter()
             .filter_map(|m| m.apm.as_ref().map(|a| a.name.clone()))
             .collect();
@@ -856,8 +860,8 @@ mod tests {
         .unwrap();
         write_meta(&profile, "def456", &sample_installed("jq", "def456", true)).unwrap();
 
-        let empty: HashSet<String> = HashSet::new();
-        let needed: HashSet<String> = HashSet::new();
+        let empty: BTreeSet<String> = BTreeSet::new();
+        let needed: BTreeSet<String> = BTreeSet::new();
         let installed = list_meta(&profile).unwrap();
         let orphans = find_orphans_from_meta(&installed, &empty, &needed);
         assert!(orphans.is_empty());
@@ -888,7 +892,7 @@ mod tests {
         };
 
         // Exclude abc123 (curl).
-        let mut exclude = HashSet::new();
+        let mut exclude = BTreeSet::new();
         exclude.insert("abc123".to_string());
 
         copy_roots_except(&from_gen, &to_gen, &exclude).unwrap();
@@ -921,7 +925,7 @@ mod tests {
             path: to_path.clone(),
         };
 
-        let exclude: HashSet<String> = HashSet::new();
+        let exclude: BTreeSet<String> = BTreeSet::new();
         copy_roots_except(&from_gen, &to_gen, &exclude).unwrap();
 
         assert!(to_path.join("usr/abc123").symlink_metadata().is_ok());
@@ -978,10 +982,10 @@ mod tests {
         .unwrap();
 
         // Pretend zlib is already being removed.
-        let mut pending: HashSet<String> = HashSet::new();
+        let mut pending: BTreeSet<String> = BTreeSet::new();
         pending.insert("def456".to_string());
 
-        let needed: HashSet<String> = HashSet::new();
+        let needed: BTreeSet<String> = BTreeSet::new();
         let installed = list_meta(&profile).unwrap();
         let orphans = find_orphans_from_meta(&installed, &pending, &needed);
         assert_eq!(orphans.len(), 1);
@@ -1037,7 +1041,7 @@ mod tests {
         };
 
         // Exclude abc123 and its src hash.
-        let mut exclude = HashSet::new();
+        let mut exclude = BTreeSet::new();
         exclude.insert("abc123".to_string());
         exclude.insert("src111".to_string());
 

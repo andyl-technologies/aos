@@ -3,7 +3,7 @@
 //! Payload selection stays fixed; only explicitly eligible module dependency
 //! choices are rediscovered. Semantically identical choices publish no generation.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 
 use anyhow::{Context, Result, ensure};
 
@@ -19,6 +19,10 @@ use aos_registry_format::consumer::PackageMeta;
 /// # Errors
 /// Returns an error for invalid original admission or companion identity,
 /// untrusted or malformed release metadata, failed transport, or cancellation.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Module realization keeps the installed state and selection inputs separate."
+)]
 pub(crate) async fn realize_module_upgrades(
     config: &ApmConfig,
     profile: &Profile,
@@ -125,7 +129,7 @@ pub(crate) async fn prepare_module_upgrade(
         installed,
         &[],
         &candidates,
-        &HashSet::new(),
+        &BTreeSet::new(),
         Some(refresh_names),
     )?;
     let next = aos_deployment::input::read_evaluation_input_in(

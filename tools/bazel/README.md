@@ -2415,3 +2415,39 @@ unit/integration compilation are retained in their separate boot evidence
 files. Full compiler invocation equivalence, foreign/Wasm execution, numeric
 performance acceptance, production migration, and Cargo removal remain
 separate work.
+
+## Package manager family
+
+`aos-dev bazel --family package-manager` selects `aos-package-manager`, its five
+helper commands, two integration targets, and the deployment-check example.
+The example compiles during test qualification, matching Cargo's behavior; its
+publication and source-GC workflow retains a separate execution gate. The
+production and test dependency profiles pin 382 and 407 source crates, with
+nine and twelve reviewed target/exec feature roles. Registry-client test support
+and the test-only Zbus dependency remain outside the production profile.
+
+`tests/evidence/package-manager-developer-checkpoint.json` retains conservative
+native execution of all 621 existing nonignored Cargo cases and one doctest,
+strict Clippy for fifteen artifacts, Rustdoc, and formatting. All seven ignored
+cases retain their source attributes. The source audit preserves the names and
+assertion counts across all 628 existing unit and integration cases. The
+configured inventory contains thirty requested roots, 871 configured reports,
+and 499 declared files, including 490 Rust files.
+
+String and tuple keyed collections use ordered maps and sets, including their
+entry APIs. Native timestamps, solver deadlines, subprocess test deadlines,
+and existing transaction argument sets have function-scoped lint exceptions
+with explicit reasons. Native attestation activation IDs use fallible OS
+entropy, and runtime configuration lock files explicitly preserve existing
+contents before acquiring their lock. Other lint repairs preserve conditional,
+borrowing, membership, and map behavior; documentation transport helpers move
+intact before their tests.
+
+Strict configured staging, fresh Cargo feature and generated-API comparisons,
+selected editor parity, metadata evaluation, and required workspace Rust
+compilation qualify separate checkpoints. Installed boot, provisioning,
+metadata transactions, system services, VM workflows, native publication, and
+conditional real-cache fixtures retain their existing dedicated gates. No
+service or remote cache is introduced. Performance of ordered collections, complete
+compiler invocation equivalence, foreign/Wasm execution, numeric performance acceptance,
+production migration, and Cargo removal remain separate work.

@@ -8,7 +8,7 @@ mod module_upgrade;
 use module_upgrade::module_selection_changed;
 pub(crate) use module_upgrade::{prepare_module_upgrade, realize_module_upgrades};
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, ensure};
@@ -66,6 +66,10 @@ pub(crate) async fn realize_modules(
     .await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Module discovery carries both original authority and resolved closures."
+)]
 async fn discover_modules(
     config: &ApmConfig,
     registries: &RegistrySet,
@@ -610,6 +614,10 @@ pub(crate) fn recover(profile: &Profile) -> Result<()> {
     consumer.recover(cancellation.token())
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Deployment preparation keeps each transaction input explicit."
+)]
 pub(crate) fn prepare(
     config: &ApmConfig,
     profile: &Profile,
@@ -617,7 +625,7 @@ pub(crate) fn prepare(
     installed: &[InstalledPackageRecord],
     closures: &[ResolvedClosure],
     realized_modules: &[(String, PackageMeta)],
-    obsolete: &HashSet<String>,
+    obsolete: &BTreeSet<String>,
     refresh_names: Option<&BTreeSet<String>>,
 ) -> Result<Prepared> {
     prepare_with_inputs(
@@ -635,6 +643,10 @@ pub(crate) fn prepare(
     )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Deployment preparation keeps original and newly resolved inputs separate."
+)]
 fn prepare_with_inputs(
     config: &ApmConfig,
     profile: &Profile,
@@ -642,7 +654,7 @@ fn prepare_with_inputs(
     installed: &[InstalledPackageRecord],
     closures: &[ResolvedClosure],
     realized_modules: &[(String, PackageMeta)],
-    obsolete: &HashSet<String>,
+    obsolete: &BTreeSet<String>,
     refresh_names: Option<&BTreeSet<String>>,
     runtime: Option<&crate::runtime_modules::RuntimeModuleSnapshot>,
     base: Option<(EvaluationInput, Deployment)>,
@@ -1043,7 +1055,7 @@ pub(crate) fn reconfigure_at(
         .current_generation()?
         .context("native configuration requires an active profile")?;
     let base = crate::profile::deployment::committed_generation(&profile.path, current.number)?;
-    let installed = crate::profile::meta::list_meta(&profile)?;
+    let installed = crate::profile::meta::list_meta(profile)?;
     let (_, mut descriptor) = crate::native_deployment::read_retained_evaluation_in(
         &current.path.join("evaluation.json"),
         &base.deployment,
@@ -1084,12 +1096,12 @@ pub(crate) fn reconfigure_at(
     let packages = configuration::acquire(config, names, &installed, printer)?;
     let prepared = prepare_with_inputs(
         config,
-        &profile,
+        profile,
         &packages.registries,
         &installed,
         &packages.closures,
         &packages.modules,
-        &HashSet::new(),
+        &BTreeSet::new(),
         None,
         Some(runtime),
         None,
@@ -1123,7 +1135,7 @@ pub(crate) fn reconfigure_at(
     let generation = profile.new_generation()?;
     configuration::stage(&generation, profile, &installed, &packages, &prepared)?;
     crate::profile::merge::build_generation_fhs_tree(&generation, printer)?;
-    prepared.commit(&profile, &generation)?;
+    prepared.commit(profile, &generation)?;
     printer.success(&format!("Configured generation {}.", generation.number));
     Ok(())
 }
@@ -1163,7 +1175,7 @@ pub(crate) fn append_runtime_snapshot(
         &installed,
         &[],
         &[],
-        &HashSet::new(),
+        &BTreeSet::new(),
         None,
         Some(&combined),
         None,
@@ -1175,7 +1187,7 @@ pub(crate) fn append_runtime_snapshot(
     );
     let desired = prepared.deployment.clone();
     let generation = profile.new_generation()?;
-    super::copy_roots_except_hashes(&current, &generation, &HashSet::new())?;
+    super::copy_roots_except_hashes(&current, &generation, &BTreeSet::new())?;
     let staged = Profile {
         path: generation.path.clone(),
         scope: profile.scope,
@@ -1259,7 +1271,7 @@ pub(crate) fn rollback_locked(
     )?;
     evaluation.admit(&desired, &mut admission)?;
     let generation = profile.new_generation()?;
-    super::copy_roots_except_hashes(target, &generation, &HashSet::new())?;
+    super::copy_roots_except_hashes(target, &generation, &BTreeSet::new())?;
     let staged = Profile {
         path: generation.path.clone(),
         scope: profile.scope,

@@ -97,6 +97,16 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    package-manager = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "package-manager";
+    };
+    package-manager-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "package-manager-tests";
+    };
     boot-preparation = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -326,6 +336,50 @@
     dependencyProfile = "control";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
+  };
+  aosBazelPackageManagerWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = [
+      "tools/bazel"
+      "third_party/rust"
+      "api/proto"
+      "crates/hub/aos-hub-native"
+      "crates/aos/activation/aos-activation"
+      "crates/aos/boot/aos-platform-metadata"
+      "crates/aos/boot/aos-storage-layout"
+      "crates/aos/cli/aos-cli-ui"
+      "crates/aos/modules/aos-module-docs"
+      "crates/aos/modules/aos-module-format"
+      "crates/aos/packages/aos-deployment"
+      "crates/aos/packages/aos-deployment-format"
+      "crates/aos/packages/aos-nix-cache"
+      "crates/aos/packages/aos-package-manager"
+      "crates/aos/registry/aos-registry-authoring"
+      "crates/aos/registry/aos-registry-client"
+      "crates/aos/registry/aos-registry-format"
+      "crates/aos/release/aos-release-format"
+      "crates/hub/aos-hub-api"
+      "crates/hub/aos-hub-client"
+      "crates/shared/aos-artifact-evidence"
+      "crates/shared/aos-core"
+      "crates/shared/aos-nar"
+      "crates/shared/aos-nix"
+      "crates/shared/aos-oci"
+      "crates/shared/aos-oci-types"
+      "crates/shared/aos-transfer"
+    ];
+    repositories =
+      aosBazelRepositories
+      // aosBazelRustRepositories.package-manager-tests
+      // {
+        aos_codegen = aosBazelCodegenTools;
+        aos_native = aosBazelNativeFoundationLibraries;
+        aos_cli_runtime = aosBazelCrucibleCliRuntime;
+        aos_registry_runtime = aosBazelRegistryTestTools;
+      };
+    dependencyProfile = "package-manager-tests";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = ["//crates/aos/packages/aos-package-manager:unit"];
   };
   aosBazelBootPreparationWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -738,6 +792,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelPackageManagerLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelPackageManagerWorkspace;
     }).launcher;
   aosBazelBootPreparationLauncher =
     (import ./development.nix {

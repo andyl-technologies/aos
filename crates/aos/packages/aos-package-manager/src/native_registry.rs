@@ -475,6 +475,10 @@ impl<'a> NativeRegistry<'a> {
         self.admission
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Scope resolution keeps admission, payload, and selection inputs explicit."
+    )]
     pub(crate) fn resolve_scope(
         &mut self,
         system: &str,

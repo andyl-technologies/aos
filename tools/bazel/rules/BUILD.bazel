@@ -298,3 +298,15 @@ config_setting(
     flag_values = {":dependency_profile": "boot-preparation-minimal"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "package_manager_dependencies",
+    flag_values = {":dependency_profile": "package-manager"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "package_manager_tests_dependencies",
+    flag_values = {":dependency_profile": "package-manager-tests"},
+    visibility = ["//visibility:public"],
+)

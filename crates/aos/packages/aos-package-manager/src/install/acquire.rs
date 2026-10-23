@@ -5,7 +5,7 @@
 //! until the caller publishes durable roots. Module discovery and activation
 //! remain separate operations; acquiring bytes does not select live policy.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use anyhow::{Context as _, Result, ensure};
@@ -106,7 +106,7 @@ pub(crate) async fn acquire(
     trust.enforce_totality()?;
 
     let missing = crate::store::filter_missing(&store_paths).await?;
-    let missing_set = missing.iter().map(String::as_str).collect::<HashSet<_>>();
+    let missing_set = missing.iter().map(String::as_str).collect::<BTreeSet<_>>();
     let missing_metadata = metadata
         .iter()
         .filter(|package| missing_set.contains(package.store_path.as_str()))

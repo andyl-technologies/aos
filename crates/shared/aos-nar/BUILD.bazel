@@ -24,6 +24,19 @@ DEPENDENCIES = [
     "//third_party/rust:core_sha2",
 ]
 
+# Cargo unifies compression across package dispatch and registry consumers.
+LIBRARY_FEATURES = select({
+    "//tools/bazel/rules:package_manager_dependencies": ["compression", "default"],
+    "//tools/bazel/rules:package_manager_tests_dependencies": ["compression", "default"],
+    "//conditions:default": ["default"],
+})
+
+COMPRESSION_DEPENDENCIES = select({
+    "//tools/bazel/rules:package_manager_dependencies": ["//third_party/rust:core_thiserror", "//third_party/rust:core_zstd"],
+    "//tools/bazel/rules:package_manager_tests_dependencies": ["//third_party/rust:core_thiserror", "//third_party/rust:core_zstd"],
+    "//conditions:default": [],
+})
+
 rust_library(
     name = "lib",
     package = RUST_PACKAGE,
@@ -31,8 +44,8 @@ rust_library(
     crate_name = "aos_nar",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
-    crate_features = ["default"],
-    deps = DEPENDENCIES,
+    crate_features = LIBRARY_FEATURES,
+    deps = DEPENDENCIES + COMPRESSION_DEPENDENCIES,
 )
 
 aos_rust_test(
@@ -40,7 +53,7 @@ aos_rust_test(
     package = RUST_PACKAGE,
     lint_config = "//tools/bazel/rules:workspace_lints",
     crate = ":lib",
-    crate_features = ["default"],
+    crate_features = LIBRARY_FEATURES,
     deps = ["//third_party/rust:core_tempfile"],
 )
 

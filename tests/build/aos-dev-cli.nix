@@ -17,6 +17,7 @@
     "aosBazelActivationCoreLauncher"
     "aosBazelActivationStorageLauncher"
     "aosBazelCliSupportLauncher"
+    "aosBazelPackageManagerLauncher"
     "aosBazelBootPreparationLauncher"
     "aosBazelReleaseCoordinationLauncher"
     "aosBazelRegistryNativeLauncher"

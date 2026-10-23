@@ -8,7 +8,7 @@
 
 mod native_target;
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::io::ErrorKind;
 use std::path::Path;
 
@@ -133,7 +133,7 @@ pub struct SysrootLockViolation {
 pub fn check_sysroot_lock(
     sysroot_references: &[String],
     package_references: &[String],
-    registry_packages: &HashMap<String, (String, String, String)>,
+    registry_packages: &BTreeMap<String, (String, String, String)>,
 ) -> Vec<SysrootLockViolation> {
     // Build name -> (hash, version) maps for both closures.
     let sysroot_map = build_name_map(sysroot_references, registry_packages);
@@ -141,16 +141,16 @@ pub fn check_sysroot_lock(
 
     let mut violations = Vec::new();
     for (name, (pkg_hash, pkg_version)) in &package_map {
-        if let Some((sys_hash, sys_version)) = sysroot_map.get(name) {
-            if pkg_hash != sys_hash {
-                violations.push(SysrootLockViolation {
-                    name: name.clone(),
-                    sysroot_version: sys_version.clone(),
-                    sysroot_hash: sys_hash.clone(),
-                    package_version: pkg_version.clone(),
-                    package_hash: pkg_hash.clone(),
-                });
-            }
+        if let Some((sys_hash, sys_version)) = sysroot_map.get(name)
+            && pkg_hash != sys_hash
+        {
+            violations.push(SysrootLockViolation {
+                name: name.clone(),
+                sysroot_version: sys_version.clone(),
+                sysroot_hash: sys_hash.clone(),
+                package_version: pkg_version.clone(),
+                package_hash: pkg_hash.clone(),
+            });
         }
     }
 
@@ -163,9 +163,9 @@ pub fn check_sysroot_lock(
 /// hashes, using the registry lookup table.
 fn build_name_map(
     references: &[String],
-    registry_packages: &HashMap<String, (String, String, String)>,
-) -> HashMap<String, (String, String)> {
-    let mut map = HashMap::new();
+    registry_packages: &BTreeMap<String, (String, String, String)>,
+) -> BTreeMap<String, (String, String)> {
+    let mut map = BTreeMap::new();
     for ref_hash in references {
         if let Some((name, version, store_path)) = registry_packages.get(ref_hash) {
             let hash = store_path_hash(store_path).to_string();
@@ -242,7 +242,7 @@ impl IgnoreSysrootLock {
 /// so malformed registry state cannot disable the lock check.
 pub fn build_registry_lookup(
     config: &ApmConfig,
-) -> Result<HashMap<String, (String, String, String)>> {
+) -> Result<BTreeMap<String, (String, String, String)>> {
     let reg_configs = config.enabled_registries();
     let cache_dir = config.cache_path();
     let platform = native_platform();
@@ -254,7 +254,7 @@ pub fn build_registry_lookup(
     )
     .context("loading registry metadata for sysroot-lock lookup")?;
 
-    let mut lookup = HashMap::new();
+    let mut lookup = BTreeMap::new();
     for reg in registries.registries() {
         for meta in reg.package_versions() {
             let hash = store_path_hash(&meta.store_path).to_string();
@@ -474,8 +474,8 @@ mod tests {
     // check_sysroot_lock
     // -----------------------------------------------------------------------
 
-    fn make_lookup() -> HashMap<String, (String, String, String)> {
-        let mut m = HashMap::new();
+    fn make_lookup() -> BTreeMap<String, (String, String, String)> {
+        let mut m = BTreeMap::new();
         // Sysroot versions.
         m.insert(
             "aaa111".to_string(),

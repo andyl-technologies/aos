@@ -10,8 +10,8 @@
 //! possible so listings show `name version [registry]` instead of bare
 //! store paths.
 
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 use anyhow::{Result, bail};
 
@@ -195,34 +195,32 @@ pub async fn run(
     let current_roots = current.roots()?;
     let target_roots = target.roots()?;
 
-    let current_hashes: HashSet<&str> = current_roots.iter().map(|(h, _)| h.as_str()).collect();
-    let target_hashes: HashSet<&str> = target_roots.iter().map(|(h, _)| h.as_str()).collect();
+    let current_hashes: BTreeSet<&str> = current_roots.iter().map(|(h, _)| h.as_str()).collect();
+    let target_hashes: BTreeSet<&str> = target_roots.iter().map(|(h, _)| h.as_str()).collect();
 
     let added: Vec<_> = target_hashes.difference(&current_hashes).copied().collect();
     let removed: Vec<_> = current_hashes.difference(&target_hashes).copied().collect();
     let current_by_hash = roots_by_hash(&current_roots);
     let target_by_hash = roots_by_hash(&target_roots);
 
-    if json_mode {
-        if dry_run {
-            let registries = load_registries(config)?;
-            printer.json(&rollback_result_json(
-                "planned",
-                generation,
-                current.number,
-                target.number,
-                dry_run,
-                None,
-                &added,
-                &removed,
-                &target_by_hash,
-                &current_by_hash,
-                &current_roots,
-                &target_roots,
-                &registries,
-            ));
-            return Ok(());
-        }
+    if json_mode && dry_run {
+        let registries = load_registries(config)?;
+        printer.json(&rollback_result_json(
+            "planned",
+            generation,
+            current.number,
+            target.number,
+            dry_run,
+            None,
+            &added,
+            &removed,
+            &target_by_hash,
+            &current_by_hash,
+            &current_roots,
+            &target_roots,
+            &registries,
+        ));
+        return Ok(());
     }
 
     if printer.mode() != OutputMode::Json && (!added.is_empty() || !removed.is_empty()) {
@@ -269,6 +267,10 @@ pub async fn run(
 }
 
 /// Build the JSON document emitted for `apm rollback` (planned or applied).
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The result schema reports the complete rollback transition."
+)]
 fn rollback_result_json(
     status: &str,
     requested_generation: Option<u32>,
@@ -278,8 +280,8 @@ fn rollback_result_json(
     generation: Option<u32>,
     restored: &[&str],
     removed: &[&str],
-    restored_roots: &HashMap<&str, &PathBuf>,
-    removed_roots: &HashMap<&str, &PathBuf>,
+    restored_roots: &BTreeMap<&str, &PathBuf>,
+    removed_roots: &BTreeMap<&str, &PathBuf>,
     current_roots: &[(String, PathBuf)],
     target_roots: &[(String, PathBuf)],
     registries: &RegistrySet,
@@ -300,7 +302,7 @@ fn rollback_result_json(
 }
 
 /// Index generation roots by their store-path hash.
-fn roots_by_hash(roots: &[(String, PathBuf)]) -> HashMap<&str, &PathBuf> {
+fn roots_by_hash(roots: &[(String, PathBuf)]) -> BTreeMap<&str, &PathBuf> {
     roots
         .iter()
         .map(|(hash, path)| (hash.as_str(), path))
@@ -310,7 +312,7 @@ fn roots_by_hash(roots: &[(String, PathBuf)]) -> HashMap<&str, &PathBuf> {
 /// Render a subset of roots (selected by hash) as sorted JSON entries.
 fn roots_json(
     hashes: &[&str],
-    roots: &HashMap<&str, &PathBuf>,
+    roots: &BTreeMap<&str, &PathBuf>,
     registries: &RegistrySet,
 ) -> Vec<serde_json::Value> {
     let mut sorted = hashes.to_vec();
@@ -347,7 +349,7 @@ fn all_roots_json(roots: &[(String, PathBuf)], registries: &RegistrySet) -> Vec<
 
 /// Render one root as JSON, attaching package name/version/registry when the
 /// hash is known to an enabled registry cache.
-fn root_json(hash: &str, path: &PathBuf, registries: &RegistrySet) -> serde_json::Value {
+fn root_json(hash: &str, path: &Path, registries: &RegistrySet) -> serde_json::Value {
     for registry in registries.registries() {
         if let Some(package) = registry.get_by_hash(hash) {
             return serde_json::json!({

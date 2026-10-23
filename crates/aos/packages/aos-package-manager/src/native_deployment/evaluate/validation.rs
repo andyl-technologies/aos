@@ -181,13 +181,13 @@ fn validate_with(
     let mut os_requirements = Vec::new();
     for envelope in envelopes.values() {
         solver::check_os_requirement(envelope, descriptor.os_release.as_ref())?;
-        if envelope.module.is_none() {
-            if let Some(os_version) = &envelope.os_version {
-                os_requirements.push(aos_module_docs::runtime::OsRequirement {
-                    owner: envelope.package.name.clone(),
-                    os_version: os_version.clone(),
-                });
-            }
+        if envelope.module.is_none()
+            && let Some(os_version) = &envelope.os_version
+        {
+            os_requirements.push(aos_module_docs::runtime::OsRequirement {
+                owner: envelope.package.name.clone(),
+                os_version: os_version.clone(),
+            });
         }
     }
     let package_releases = envelopes

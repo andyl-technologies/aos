@@ -22,7 +22,7 @@
 //! `Reboot` drains when requested and queues a full reboot. Kexec and a live
 //! userspace-only switch are not valid for an immutable image transition.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::os::unix::fs::OpenOptionsExt;
@@ -302,6 +302,10 @@ fn read_toplevel_meta(toplevel: &Path, name: &str) -> Result<String> {
 /// package, image admission or staging fails, a required platform operation is
 /// unavailable, or the native image-selection transaction fails.
 #[allow(clippy::too_many_arguments)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native image generations record their host creation time."
+)]
 pub async fn install_system(
     config: &ApmConfig,
     packages: &[String],
@@ -425,7 +429,7 @@ pub async fn upgrade_system(
     // Delegate to install_system for the actual upgrade.
     install_system(
         config,
-        &[current_gen.package_name.clone()],
+        std::slice::from_ref(&current_gen.package_name),
         Some(&reg_name),
         None,
         None,
@@ -636,7 +640,7 @@ pub fn check_sysroot_containment(
             continue;
         }
 
-        let mut image_refs: HashSet<&str> = image.references.iter().map(String::as_str).collect();
+        let mut image_refs: BTreeSet<&str> = image.references.iter().map(String::as_str).collect();
         image_refs.insert(image_hash);
         if package_closure_is_contained(package_hash, &package.references, &image_refs) {
             return Some((current.package_name.clone(), current.version.clone()));
@@ -650,7 +654,7 @@ pub fn check_sysroot_containment(
 fn package_closure_is_contained(
     package_hash: &str,
     references: &[String],
-    image_refs: &HashSet<&str>,
+    image_refs: &BTreeSet<&str>,
 ) -> bool {
     image_refs.contains(package_hash)
         && references

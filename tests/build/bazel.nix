@@ -36,6 +36,7 @@
         "crates/aos/packages/aos-deployment-format/Cargo.toml"
         "crates/aos/packages/aos-nix-cache/Cargo.toml"
         "crates/aos/registry/aos-registry-authoring/Cargo.toml"
+        "crates/aos/packages/aos-package-manager/Cargo.toml"
         "crates/aos/boot/aos-boot-runtime/Cargo.toml"
         "crates/aos/boot/aos-configuration-image/Cargo.toml"
         "crates/aos/boot/aos-platform-metadata/Cargo.toml"
@@ -138,6 +139,7 @@ in
     native-foundation = import ./_bazel-native-foundation.nix {inherit pkgs;};
     activation-core = import ./_bazel-activation-core.nix {inherit pkgs;};
     activation-storage = import ./_bazel-activation-storage.nix {inherit pkgs;};
+    package-manager = import ./_bazel-package-manager.nix {inherit pkgs;};
     boot-preparation = import ./_bazel-boot-preparation.nix {inherit pkgs;};
     release-coordination = import ./_bazel-release-coordination.nix {inherit pkgs;};
     registry-native = import ./_bazel-registry-native.nix {inherit pkgs;};
@@ -351,6 +353,7 @@ in
         native-foundation.tests
         activation-core.tests
         activation-storage.tests
+        package-manager.tests
         boot-preparation.tests
         boot-preparation.without-boot-tools.tests
         boot-preparation.standalone
@@ -466,6 +469,7 @@ in
             activation-crucible.all
             cli-support.all
             build-services.all
+            package-manager.all
             boot-preparation.all
             release-coordination.all
             registry-native.all

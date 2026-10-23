@@ -61,6 +61,7 @@ TEST_RUNFILES = {
 }
 
 TEST_FEATURES = select({
+    "//tools/bazel/rules:package_manager_tests_dependencies": ["test-support"],
     "//tools/bazel/rules:registry_native_tests_dependencies": ["test-support"],
     "//conditions:default": [],
 })
@@ -75,6 +76,7 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     crate_features = TEST_FEATURES,
     deps = DEPENDENCIES + select({
+        "//tools/bazel/rules:package_manager_tests_dependencies": ["//third_party/rust:core_ed25519_dalek"],
         "//tools/bazel/rules:registry_native_tests_dependencies": ["//third_party/rust:core_ed25519_dalek"],
         "//conditions:default": [],
     }),

@@ -215,6 +215,10 @@ mod tests {
         command
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "This native test bounds real subprocess or solver execution with the host clock."
+    )]
     fn wait_for_probe_exit(child: &mut std::process::Child) -> std::process::ExitStatus {
         let deadline = Instant::now() + PROBE_TIMEOUT;
         loop {
@@ -229,6 +233,10 @@ mod tests {
         }
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "This native test bounds real subprocess or solver execution with the host clock."
+    )]
     fn wait_for_probe_readiness(child: &mut std::process::Child, ready_path: &std::path::Path) {
         let deadline = Instant::now() + PROBE_TIMEOUT;
         while !ready_path.is_file() {
