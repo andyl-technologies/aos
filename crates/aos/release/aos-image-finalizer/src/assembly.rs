@@ -650,6 +650,29 @@ fn require_store_executable_path(value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Enumerates the complete captured native document set for one image stage.
+pub(crate) fn native_deployment_files(stage: &str) -> Vec<(AssemblyFileKind, &'static str)> {
+    use AssemblyFileKind::*;
+    match stage {
+        "initrd" => vec![
+            (InitrdTransaction, "transaction.json"),
+            (InitrdPackages, "packages.json"),
+            (InitrdAdmission, "admission.json"),
+            (InitrdAdmissionDigest, "admission-sha256"),
+            (InitrdEvaluation, "evaluation.json"),
+        ],
+        "host" => vec![
+            (HostTransaction, "transaction.json"),
+            (HostPackages, "packages.json"),
+            (HostAdmission, "admission.json"),
+            (HostAdmissionDigest, "admission-sha256"),
+            (HostEvaluation, "evaluation.json"),
+            (HostInstalled, "installed.json"),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ImageBudgetsV1, require_store_executable_path};
@@ -704,28 +727,5 @@ mod tests {
         let current: ImageBudgetsV1 = serde_json::from_str(updated).unwrap();
         assert_eq!(current.converted_download_limit_mib(), 896);
         assert_eq!(current.recovery_bundle_limit_mib(), 1024);
-    }
-}
-
-/// Enumerates the complete captured native document set for one image stage.
-pub(crate) fn native_deployment_files(stage: &str) -> Vec<(AssemblyFileKind, &'static str)> {
-    use AssemblyFileKind::*;
-    match stage {
-        "initrd" => vec![
-            (InitrdTransaction, "transaction.json"),
-            (InitrdPackages, "packages.json"),
-            (InitrdAdmission, "admission.json"),
-            (InitrdAdmissionDigest, "admission-sha256"),
-            (InitrdEvaluation, "evaluation.json"),
-        ],
-        "host" => vec![
-            (HostTransaction, "transaction.json"),
-            (HostPackages, "packages.json"),
-            (HostAdmission, "admission.json"),
-            (HostAdmissionDigest, "admission-sha256"),
-            (HostEvaluation, "evaluation.json"),
-            (HostInstalled, "installed.json"),
-        ],
-        _ => Vec::new(),
     }
 }
