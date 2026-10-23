@@ -1572,6 +1572,14 @@ regression checks run separately. The complete-checkout Nix-inventory case,
 foreign and Wasm qualification, performance acceptance, and production migration
 remain separate gates.
 
+`tests/evidence/contracts-metadata-evaluation.json` records passing metadata
+parity for 307 compiled first-party targets and core Nix evaluation checks at
+the frozen contracts checkpoint. The initial broader editor regression stopped
+at a CLI runtime dependency: its host-profile test observed a fingerprint
+divergence before the CLI editor comparison. The failure and unchanged retry
+scope are retained in `tests/evidence/contracts-editor-regression-initial-failure.json`;
+that initial run is not counted as passing editor qualification.
+
 ## Native integration library baseline
 
 `tests/evidence/native-foundation-cargo-baselines.json` retains connected Cargo
