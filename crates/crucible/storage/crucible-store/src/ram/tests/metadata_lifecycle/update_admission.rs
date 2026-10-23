@@ -1,7 +1,8 @@
-//! Refuses revoked update originals before constructing successor metadata.
+//! Refuses revoked publication originals before backend or successor effects.
 //!
-//! A genuinely captured root has an independently live backend. Its finite
-//! caller prepays the existing output bound, then revokes that same authority.
+//! Publication uses an independently live backend. Its finite caller prepays
+//! the existing output bound, then revokes that same authority. Update controls
+//! start from a genuinely captured root.
 //! The actual admission-refusal prefix distinguishes diagnostic allocations
 //! from copies of successor vectors; no native resources are qualified.
 
@@ -257,6 +258,97 @@ fn update_rechecks_original_after_backend_headroom_before_successor_effects() {
     assert_eq!(
         caller_quota.reservations.load(Ordering::SeqCst),
         before_update + admission_requests
+    );
+    assert_eq!(caller_quota.used(), admitted);
+    assert_eq!(backend_quota.used(), backend_baseline);
+    assert!(!backend_quota.revoked.load(Ordering::SeqCst));
+
+    drop(original);
+    assert_eq!(caller_quota.used(), admitted);
+    drop(error);
+    assert_eq!(caller_quota.used(), 0);
+}
+
+#[test]
+fn revoked_capture_original_refuses_before_backend_headroom_admission() {
+    capture_refusal_at_backend_admission(true);
+}
+
+#[test]
+fn capture_rechecks_original_after_backend_headroom_before_page_publication() {
+    capture_refusal_at_backend_admission(false);
+}
+
+fn capture_refusal_at_backend_admission(revoked_before_entry: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let backend_quota = ObservedQuota::with_limit(32 << 20);
+    let store = directory_store(directory.path(), &backend_quota);
+    let backend_baseline = backend_quota.used();
+    let caller_quota = ObservedQuota::with_limit(32 << 20);
+    let original = DecodeBudget::for_store(caller_quota.clone()).unwrap();
+    original
+        .charge_bytes(crate::ram::maximum_ram_root_decoding_bytes().unwrap())
+        .unwrap();
+    let admitted = caller_quota.used();
+    let requests = caller_quota.reservations.load(Ordering::SeqCst);
+    let backend = Arc::new(HeadroomRevocation {
+        backend: store.backend.clone(),
+        caller: caller_quota.clone(),
+        admissions: AtomicU64::new(0),
+    });
+    let capture_store = RamStore::new(backend.clone(), store.durability, store.limits).unwrap();
+    let topology = topology(4097);
+    let retention = Retention::default();
+    // Entry preparation legitimately reserves two diagnostic carriers. Measure
+    // that actual prefix while the caller is live, before irreversible closure.
+    let admission_requests = if revoked_before_entry {
+        0
+    } else {
+        let mut boundary = || Ok(());
+        let work = Work::new(store.limits, &original, &mut boundary).unwrap();
+        drop(work);
+        assert_eq!(caller_quota.used(), admitted);
+        caller_quota.reservations.load(Ordering::SeqCst) - requests
+    };
+    let before_capture = caller_quota.reservations.load(Ordering::SeqCst);
+    if revoked_before_entry {
+        caller_quota.revoked.store(true, Ordering::SeqCst);
+    }
+
+    let mut reads = 0;
+    let mut callbacks = 0;
+    let error = capture_store
+        .capture(
+            topology,
+            Scope::Exact,
+            &mut |region, index, bytes| {
+                reads += 1;
+                patterned(region, index, bytes)
+            },
+            &retention,
+            &original,
+            &mut || {
+                callbacks += 1;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+    assert!(contains_original_revocation(&error));
+    assert!(matches!(
+        &error,
+        RamStoreError::Store(StoreError::DecodeAdmission { .. })
+    ));
+    assert_eq!(
+        backend.admissions.load(Ordering::SeqCst),
+        u64::from(!revoked_before_entry)
+    );
+    assert!(caller_quota.revoked.load(Ordering::SeqCst));
+    assert_eq!((reads, callbacks), (0, 0));
+    assert!(retention.objects.lock().unwrap().is_empty());
+    assert_eq!(
+        caller_quota.reservations.load(Ordering::SeqCst),
+        before_capture + admission_requests
     );
     assert_eq!(caller_quota.used(), admitted);
     assert_eq!(backend_quota.used(), backend_baseline);

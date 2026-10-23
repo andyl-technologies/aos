@@ -82,8 +82,12 @@ impl RamStore {
         original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<LeasedRamRoot, RamStoreError> {
-        self.admit_ram_publication(&topology, scope)?;
+        // Backend admission cannot authorize or preserve caller liveness.
         let mut work = Work::new(self.limits, original, boundary)?;
+        self.admit_ram_publication(&topology, scope)?;
+        original
+            .verify_live()
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         self.begin_publication_batch(&mut work)?;
         let mut regions = Vec::new();
         let mut roots = Vec::new();

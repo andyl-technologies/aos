@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 610 bindings: 591 component and nineteen native, across 243 requirements. | 145 requirements remain uncovered and none fully qualified. |
+| Requirements | 612 bindings: 593 component and nineteen native, across 243 requirements. | 145 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2771,9 +2771,44 @@ gains positive and adversarial component evidence; 145 requirements remain
 uncovered and none is fully qualified. These checks establish neither native
 authority, whole-world readiness nor physical-memory or performance qualification.
 All 747 ordinary storage tests, 95 policy controls and storage/portable-RAM
-Clippy pass. The hermetic selected-storage gate remains in progress. Required
+Clippy pass. Hermetic storage output `q66q4vcyi5dbjkwbq20z5p1m1rgn8iz5` passes
+all 87 selected cases and 108 independently checked successful nested summaries. Required
 application-target compilation is running from immutable source
 `h4717h4ipgjmgbqgyxq5cr259cckc99a`; all 5,416 committed Rust/TOML files and
+six required fixtures match before subsequent source edits.
+
+Capture now admits its original caller before invoking backend headroom code,
+then explicitly revalidates that same caller before preparing publication
+staging. An already revoked caller previously reached actual directory-backed
+headroom admission once; its genuine predecessor control fails at one call
+versus zero. Reordering entry alone exposes the second custody gap: a caller
+revoked inside actual backend admission then reached staging's raw admission
+conversion, and its account refunded on caller close while the returned error
+remained live. The intermediate control records zero retained bytes instead of
+the original 22,182,220-byte charge. The explicit post-backend check uses the
+existing custody-preserving conversion and closes that gap without another
+account, operation clock, boundary callback or resource entitlement.
+
+Both actual capture refusal controls now pass alongside the two existing update
+admission controls. They observe no page read, progress callback or retained
+object, and the independently live backend keeps its original credit. For the
+post-backend case, the real successful entry prefix is measured before
+irreversible revocation; this accounts for its legitimate diagnostic carrier
+reservations instead of assuming entry is free. A preliminary control that
+incorrectly expected no entry reservations is retained separately. Original
+credit survives caller close through final returned-error close in both cases,
+then returns to zero. These observations provide no native race-freedom or
+physical-memory qualification.
+
+Inventory `zy92rcp18s7fchqlwzy8b1735sdkbv5h` validates 612 bindings across
+243 requirements: 568 model, 25 format and nineteen native bindings. The same
+145 requirements remain uncovered and none is fully qualified.
+All 749 ordinary storage tests, 686 engine tests, 95 policy controls and
+storage/portable-RAM Clippy pass. Hermetic storage output
+`nhdwp33rjzp0b011kzm1jlxa72xfkfpn` passes all 89 selected cases and 110
+independently checked successful nested summaries. Required application
+compilation is running from immutable source
+`2kryjf5s0p3xh78j6qgxbas6i891f4s3`; all 5,416 committed Rust/TOML files and
 six required fixtures match before subsequent source edits.
 
 The separate source-only exclusive-wait packet
