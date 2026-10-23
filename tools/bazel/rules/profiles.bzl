@@ -1,7 +1,7 @@
 """Selects a coherent third-party feature graph for a Rust compilation family."""
 
 def _dependency_profile_impl(ctx):
-    if ctx.build_setting_value not in ["build-services", "cli-support", "activation-crucible", "activation-crucible-tests", "activation-systemd", "activation-storage", "activation-core", "activation-core-tests", "core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "native-foundation", "native-foundation-tests", "native-foundation-minimal", "formats"]:
+    if ctx.build_setting_value not in ["deployment", "build-services", "cli-support", "activation-crucible", "activation-crucible-tests", "activation-systemd", "activation-storage", "activation-core", "activation-core-tests", "core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "native-foundation", "native-foundation-tests", "native-foundation-minimal", "formats"]:
         fail("unknown Rust dependency profile: " + ctx.build_setting_value)
     return []
 

@@ -78,6 +78,7 @@
       };
     };
   };
+  aosBazelNixTestTools = import ./nix-test-tools.nix {inherit pkgs;};
   aosBazelCodegenTools = import ./codegen-tools.nix {inherit pkgs;};
   aosBazelDependencyGenerator = pkgs.callPackage ../../tools/workerd/_cargo-bazel.nix {};
   aosBazelDependencyUpdater = import ./updater.nix {
@@ -93,6 +94,11 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    deployment = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "deployment";
+    };
     build-services = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -267,6 +273,34 @@
     dependencyProfile = "control";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
+  };
+  aosBazelDeploymentWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = [
+      "tools/bazel"
+      "third_party/rust"
+      "crates/aos/activation/aos-activation"
+      "crates/aos/modules/aos-module-docs"
+      "crates/aos/modules/aos-module-format"
+      "crates/aos/packages/aos-deployment"
+      "crates/aos/packages/aos-deployment-format"
+      "crates/aos/registry/aos-registry-format"
+      "crates/aos/release/aos-release-format"
+      "crates/shared/aos-artifact-evidence"
+      "crates/shared/aos-core"
+      "crates/shared/aos-nar"
+      "crates/shared/aos-nix"
+      "crates/shared/aos-oci-types"
+    ];
+    repositories =
+      aosBazelRepositories
+      // aosBazelRustRepositories.deployment
+      // {
+        aos_nix_test_tools = aosBazelNixTestTools;
+      };
+    dependencyProfile = "deployment";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = ["//crates/aos/packages/aos-deployment:unit"];
   };
   aosBazelBuildServicesWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -444,6 +478,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelDeploymentLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelDeploymentWorkspace;
     }).launcher;
   aosBazelBuildServicesLauncher =
     (import ./development.nix {

@@ -1991,3 +1991,45 @@ conversion, whose Rust changes require their own compilation checkpoint.
 Dedicated service and assembled-system qualification, foreign/Wasm execution,
 complete compiler invocation equivalence, numeric performance acceptance,
 production migration, and Cargo removal remain separate work.
+
+## Authenticated deployment
+
+`aos-dev bazel --family deployment` selects `aos-deployment`, with eleven
+first-party dependency libraries. The pinned profile contains 101 source crates.
+Production and tests both match Cargo's 72 compiled external identities and
+12 first-party packages, including every compiled feature-unit set. A guarded
+IndexMap policy removes its resolver-only Serde feature.
+
+`tests/evidence/native-linux-deployment.json` retains passing strict source
+selection, unit and doctest parity, production features, Clippy, formatting,
+documentation, license, and editor checks. All 35 unit cases match Cargo with
+no ignored libtest cases; the library has no doctests. Five evaluator cases run
+in separate subprocesses with private local-root Nix stores, preserving their
+original assertions. The selected-store regression executes with source-built
+AOS Nix. The immutable-document case returns when its external fixture is
+absent; this checkpoint does not qualify that fixture.
+
+The test action ran uncached in the Linux sandbox with declared AOS Nix inputs
+and a retained immutable closure identity. Its Bazel source contains no
+first-party Cargo manifests, and the action log contains no Cargo executable
+calls. The configured inventory contains ten requested roots, 135 reports, and
+183 source files, including 180 Rust files. Two inventory-only roots retain
+source inputs required to load a dependency's BUILD declaration.
+
+The editor comparison reports no selected or unattributed diagnostics and
+retains 952 unselected Cargo diagnostics. Bazel has complete inference for the
+selected roots; Cargo's aggregate inference remains incomplete. Their aggregate
+statistics and diagnostic multiplicities are not claimed equivalent.
+
+`tests/evidence/deployment-configured-graph.json` records all 25 configured
+family inventories and dependency specifications, 167 policy tests, the source
+catalog, and CLI checks with 20 launchers. The previous 24 dependency locks and
+3,949 generated crate BUILD files remain unchanged. Metadata parity covers 406
+Rust targets across 27 analysis-only selections, with no external actions; core
+evaluation passes. Its frozen evidence is retained in
+`tests/evidence/deployment-metadata-evaluation.json`.
+
+Required workspace Rust compilation runs separately. Dedicated provider and
+assembled-system gates, external deployment fixtures, foreign/Wasm execution,
+complete compiler invocation equivalence, numeric performance acceptance,
+production migration, and Cargo removal remain separate qualification.

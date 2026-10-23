@@ -232,3 +232,9 @@ config_setting(
     flag_values = {":dependency_profile": "build-services"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "deployment_dependencies",
+    flag_values = {":dependency_profile": "deployment"},
+    visibility = ["//visibility:public"],
+)

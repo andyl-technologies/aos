@@ -1,6 +1,7 @@
 load("@rules_rust//crate_universe:defs.bzl", "crate")
 load("//tools/bazel/rules:crates.bzl", "aos_crate_specifications")
 load("//tools/bazel/rules:package.bzl", "aos_package")
+load(":deployment/aliases.bzl", DEPLOYMENT_CRATES = "CRATES")
 load(":build-services/aliases.bzl", BUILD_SERVICES_CRATES = "CRATES")
 load(":cli-support/aliases.bzl", CLI_SUPPORT_CRATES = "CRATES")
 load(":activation-crucible/aliases.bzl", ACTIVATION_CRUCIBLE_CRATES = "CRATES")
@@ -35,6 +36,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:deployment_dependencies": DEPLOYMENT_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:build_services_dependencies": BUILD_SERVICES_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:cli_support_dependencies": CLI_SUPPORT_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:activation_crucible_dependencies": ACTIVATION_CRUCIBLE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -62,7 +64,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(dict(BUILD_SERVICES_CRATES.items() + CLI_SUPPORT_CRATES.items() + ACTIVATION_CRUCIBLE_CRATES.items() + ACTIVATION_CRUCIBLE_TESTS_CRATES.items() + ACTIVATION_SYSTEMD_CRATES.items() + ACTIVATION_STORAGE_CRATES.items() + ACTIVATION_CORE_CRATES.items() + ACTIVATION_CORE_TESTS_CRATES.items() + CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items() + CRUCIBLE_CLI_CRATES.items() + NATIVE_FOUNDATION_CRATES.items() + NATIVE_FOUNDATION_TESTS_CRATES.items() + NATIVE_FOUNDATION_MINIMAL_CRATES.items() + FORMATS_CRATES.items()))
+    for name in sorted(dict(DEPLOYMENT_CRATES.items() + BUILD_SERVICES_CRATES.items() + CLI_SUPPORT_CRATES.items() + ACTIVATION_CRUCIBLE_CRATES.items() + ACTIVATION_CRUCIBLE_TESTS_CRATES.items() + ACTIVATION_SYSTEMD_CRATES.items() + ACTIVATION_STORAGE_CRATES.items() + ACTIVATION_CORE_CRATES.items() + ACTIVATION_CORE_TESTS_CRATES.items() + CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items() + CRUCIBLE_CLI_CRATES.items() + NATIVE_FOUNDATION_CRATES.items() + NATIVE_FOUNDATION_TESTS_CRATES.items() + NATIVE_FOUNDATION_MINIMAL_CRATES.items() + FORMATS_CRATES.items()))
 ]
 
 CORE_PACKAGES = {
@@ -316,6 +318,27 @@ ACTIVATION_SYSTEMD_PACKAGES = dict(ACTIVATION_CORE_PACKAGES.items() + {
         "zbus",
     ]
 }.items())
+
+# Deployment preserves its authenticated format and evaluator dependency closure.
+DEPLOYMENT_PACKAGES = {
+    "anyhow": crate.spec(version = "=1.0.102"),
+    "base64": crate.spec(version = "=0.22.1"),
+    "crc32fast": crate.spec(version = "=1.5.0"),
+    "ed25519-dalek": crate.spec(version = "=2.2.0", features = ["pkcs8"]),
+    "flate2": crate.spec(version = "=1.1.9", default_features = False, features = ["rust_backend"]),
+    "hex": crate.spec(version = "=0.4.3"),
+    "humantime": crate.spec(version = "=2.3.0"),
+    "regex": crate.spec(version = "=1.12.4"),
+    "rustix": crate.spec(version = "=1.1.4", features = ["event", "fs", "net", "process"]),
+    "schemars": crate.spec(version = "=1.2.2"),
+    "semver": crate.spec(version = "=1.0.28"),
+    "serde": crate.spec(version = "=1.0.228", features = ["derive", "rc"]),
+    "serde_json": crate.spec(version = "=1.0.150"),
+    "sha2": crate.spec(version = "=0.10.9", features = ["compress"]),
+    "tempfile": crate.spec(version = "=3.27.0"),
+    "thiserror": crate.spec(version = "=2.0.18"),
+    "toml": crate.spec(version = "=0.8.23"),
+}
 
 # Build-service and code-generator roots preserve the selected workspace features.
 BUILD_SERVICES_PACKAGES = {
@@ -715,6 +738,13 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    "deployment": {
+        "indexmap": json.encode({
+            "version": "2.14.0",
+            "resolved_features": ["default", "serde", "std"],
+            "features": ["default", "std"],
+        }),
+    },
     "build-services": {
         "base64": json.encode({
             "version": "0.22.1",
@@ -1180,6 +1210,7 @@ APPROVED_LICENSES = [
         host_only_licenses = ["Apache-2.0"],
     )
     for family, packages, annotations, license_domain in [
+        ("deployment", DEPLOYMENT_PACKAGES, {}, "apache-host"),
         ("build-services", BUILD_SERVICES_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("cli-support", CLI_SUPPORT_PACKAGES, {}, "apache-host"),
         ("activation-crucible", ACTIVATION_CRUCIBLE_PACKAGES, {}, "apache-host"),
@@ -1216,5 +1247,5 @@ APPROVED_LICENSES = [
         license_domain = "apache-host",
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
-    for family in ["build-services", "cli-support", "activation-crucible", "activation-crucible-tests", "activation-systemd", "activation-storage", "activation-core", "activation-core-tests", "core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "native-foundation", "native-foundation-tests", "native-foundation-minimal", "formats"]
+    for family in ["deployment", "build-services", "cli-support", "activation-crucible", "activation-crucible-tests", "activation-systemd", "activation-storage", "activation-core", "activation-core-tests", "core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "native-foundation", "native-foundation-tests", "native-foundation-minimal", "formats"]
 ]
