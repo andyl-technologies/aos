@@ -3,7 +3,7 @@
 use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::Duration,
 };
 use terrane_format::{
@@ -41,11 +41,19 @@ impl RepositoryFixture {
     /// # Errors
     /// Preserves filesystem, signing, domain and repository initialization failures.
     pub(super) async fn new(domain: &str) -> FixtureResult<Self> {
+        Box::pin(Self::new_in(domain, &std::env::temp_dir())).await
+    }
+
+    /// Initializes signed source custody beneath an explicitly writable parent.
+    ///
+    /// # Errors
+    /// Preserves filesystem, signing, domain and repository initialization failures.
+    pub(super) async fn new_in(domain: &str, parent: &Path) -> FixtureResult<Self> {
         let entropy = TokioLocalFs.random_bytes(16).await?;
         let suffix: String = entropy.iter().map(|byte| format!("{byte:02x}")).collect();
         // Source and protected signing authority are separate from the quota
         // project under test; no fixture metadata enters the physical cache.
-        let path = std::env::temp_dir().join(format!("terrane-scoped-file-{suffix}"));
+        let path = parent.join(format!("terrane-scoped-file-{suffix}"));
         fs::create_dir(&path)?;
         let directory = FixtureDirectory(path);
         fs::set_permissions(&directory.0, fs::Permissions::from_mode(0o700))?;

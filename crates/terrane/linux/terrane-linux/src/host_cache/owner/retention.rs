@@ -373,10 +373,14 @@ impl NativeMetadataOwner {
                         // get its real restoration turn even under queue delay.
                         if *remaining == 0 {
                             if let Some((due, _)) = maintenance.take() {
-                                let _ = runtime.block_on(super::publication::eviction::finish_due(
-                                    &mut executor,
-                                    due,
-                                ));
+                                let result = runtime.block_on(
+                                    super::publication::eviction::finish_due(&mut executor, due),
+                                );
+                                if let Err(error) = result {
+                                    eprintln!(
+                                        "terrane: due cache retirement retained for recovery: {error}"
+                                    );
+                                }
                             }
                             continue;
                         }
@@ -387,11 +391,14 @@ impl NativeMetadataOwner {
                             }
                             Err(mpsc::TryRecvError::Empty) => {
                                 if let Some((due, _)) = maintenance.take() {
-                                    let _ =
-                                        runtime.block_on(super::publication::eviction::finish_due(
-                                            &mut executor,
-                                            due,
-                                        ));
+                                    let result = runtime.block_on(
+                                        super::publication::eviction::finish_due(&mut executor, due),
+                                    );
+                                    if let Err(error) = result {
+                                        eprintln!(
+                                            "terrane: due cache retirement retained for recovery: {error}"
+                                        );
+                                    }
                                 }
                                 continue;
                             }

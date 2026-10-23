@@ -16015,3 +16015,30 @@ with unchanged actor and guest deadlines. Strict all-feature/all-target lint,
 non-FUSE compilation, actual fixture compilation, formatting and Python syntax
 checks pass. Fresh configured native and mandatory application qualification
 remain required; no additional trunk task is accepted.
+
+
+#### Configured source isolation and retained-file failure diagnostics
+
+Frozen `b3e271af24` configured qualification fails in 711.895 seconds.
+The three existing configured controls pass; the new recovery actor receives
+PermissionDenied while creating its signed source beneath the supervisor's
+root-private TMPDIR. The fixture now accepts an explicit parent and places
+its private signed source beside the actor-owned configuration, outside all
+native cache projects. Native permissions and confinement remain unchanged.
+
+The independent surface aggregates at `7be7d8fb87` and `b3e271af24` fail in
+862.439 and 860.952 seconds respectively. Their named-file recovery actor
+passes initial recovery and Resume, then reports an elapsed observation bound.
+The retained-file fixture now distinguishes ordinary-pin expiry from publisher
+unlink timeout and reports the accepted retirement stage. The owner also reports
+background retirement completion failures that it previously discarded. These
+diagnostics retain all original deadlines, assertions and custody on failure.
+Fresh native qualification is required; neither failed receipt becomes a pass.
+
+The earlier `221c6c6a6d` full native cache VM passes in 1,499.435 seconds.
+Complete review matches 8,082 immutable source files, 5,372 bound inputs,
+four actual compiler/installed ELFs, 92 fixture selectors, all 130 native unit
+cases and 27 regression witnesses. Application compilation at `7be7d8fb87`
+passes in 666.642 seconds; review matches 8,082 immutable files and all 185
+test executables across 59 packages. Compilation does not replace the failed
+surface runtime result. No additional trunk task is accepted.

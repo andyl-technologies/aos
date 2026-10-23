@@ -4,7 +4,11 @@
 //! publisher/quota services. This actor opens no repository signing authority.
 
 use super::{CompiledIndex, File, MetadataExt, Result, fs, require_empty_capabilities, tree};
-use std::{io, path::PathBuf, sync::Arc};
+use std::{
+    io,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use terrane_linux::{configured::NativeCachePlan, quota_confinement};
 use terrane_sdk::config::Config;
 
@@ -32,14 +36,21 @@ pub(super) fn run() -> Result<()> {
         return Err("invalid configured surface control".into());
     }
 
-    let config = Config::parse(&fs::read_to_string(path)?)?;
+    let source_parent = path.parent().ok_or("configured TOML has no parent")?;
+    let config = Config::parse(&fs::read_to_string(&path)?)?;
     let host = config.host_tier().ok_or("missing configured host tier")?;
     let plan = NativeCachePlan::from_host(host, Default::default())?;
     let confinement = Arc::new(quota_confinement::install()?);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(Box::pin(verify(plan, host, confinement, &mode)))
+    runtime.block_on(Box::pin(verify(
+        plan,
+        host,
+        confinement,
+        &mode,
+        source_parent,
+    )))
 }
 
 async fn verify(
@@ -47,9 +58,10 @@ async fn verify(
     host: &terrane_sdk::config::host::HostTier,
     confinement: Arc<quota_confinement::Installed>,
     mode: &str,
+    source_parent: &Path,
 ) -> Result<()> {
     if mode == "recover-draining" {
-        return Box::pin(recovery::verify(plan, host, confinement)).await;
+        return Box::pin(recovery::verify(plan, host, confinement, source_parent)).await;
     }
 
     let caches = plan.open(confinement).await?;

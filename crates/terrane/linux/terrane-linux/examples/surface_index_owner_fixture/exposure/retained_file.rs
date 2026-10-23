@@ -118,18 +118,25 @@ impl RetainedFile {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
         })
-        .await??;
+        .await
+        .map_err(|_| "ordinary retained-file pins did not expire within actual release grace")??;
+        eprintln!("RETAINED_FILE_STAGE phase=ordinary-grace-complete");
         let protected = snapshot(inputs).await?.exposures;
         if file_closure::pressure(owner, inputs).await? != 1 {
             return Err("Running owner failed actual original body retirement".into());
         }
+        eprintln!("RETAINED_FILE_STAGE phase=publisher-retirement-accepted");
         tokio::time::timeout(Duration::from_secs(40), async {
             while self.file.metadata()?.nlink() != 0 {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             Ok::<_, Box<dyn std::error::Error>>(())
         })
-        .await??;
+        .await
+        .map_err(
+            |_| "publisher did not unlink the retained original file within retirement bound",
+        )??;
+        eprintln!("RETAINED_FILE_STAGE phase=publisher-final-removal-observed");
         self.check_readable()?;
         if owner.reconcile_surface_exposure(id, generation).await?
             || snapshot(inputs).await?.exposures != protected

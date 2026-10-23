@@ -18,6 +18,7 @@ pub(super) async fn verify(
     plan: NativeCachePlan,
     host: &HostTier,
     confinement: Arc<quota_confinement::Installed>,
+    source_parent: &Path,
 ) -> Result<()> {
     let domain = &host.domains["public"];
     let root = Path::new(&domain.path);
@@ -30,7 +31,9 @@ pub(super) async fn verify(
     let caches = plan.open(Arc::clone(&confinement)).await?;
     let cache = caches.get("public").ok_or("missing configured cache")?;
     let owner = cache.content().ready().owner();
-    let fixture = Box::pin(RepositoryFixture::new("public")).await?;
+    // The supervisor's TMPDIR is private to root. Keep signed source beside
+    // the actor-owned configuration, outside every native cache project.
+    let fixture = Box::pin(RepositoryFixture::new_in("public", source_parent)).await?;
     Box::pin(fixture.commit(b"configured recovery retains the original mapping")).await?;
     let selection = fixture
         .repository
