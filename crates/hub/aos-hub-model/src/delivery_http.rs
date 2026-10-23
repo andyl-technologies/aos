@@ -3052,6 +3052,38 @@ fn civil_from_days(days: i64) -> (i32, u8, u8) {
     (year as i32, month as u8, day as u8)
 }
 
+/// Formats an inventory ETag as one strong HTTP `If-Match` entity tag.
+///
+/// # Errors
+///
+/// Returns an error for an empty, weak, quoted-malformed, or control-bearing
+/// value.
+pub fn strong_if_match_etag(etag: &str) -> anyhow::Result<String> {
+    let etag = etag.trim();
+    if etag.is_empty() || etag.starts_with("W/") {
+        anyhow::bail!("inventory ETag is not a strong HTTP entity tag");
+    }
+    if etag.starts_with('"') || etag.ends_with('"') {
+        if etag.len() < 2 || !etag.starts_with('"') || !etag.ends_with('"') {
+            anyhow::bail!("inventory ETag has malformed quotes");
+        }
+        if etag[1..etag.len() - 1]
+            .bytes()
+            .any(|byte| byte < 0x21 || byte == b'"' || byte == b'\\' || byte == 0x7f)
+        {
+            anyhow::bail!("inventory ETag contains an invalid entity-tag byte");
+        }
+        return Ok(etag.to_string());
+    }
+    if etag
+        .bytes()
+        .any(|byte| byte < 0x21 || byte == b'"' || byte == b'\\' || byte == 0x7f)
+    {
+        anyhow::bail!("inventory ETag contains an invalid entity-tag byte");
+    }
+    Ok(format!("\"{etag}\""))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -4311,36 +4343,4 @@ mod tests {
             PRIVATE_CACHE_CONTROL
         );
     }
-}
-
-/// Formats an inventory ETag as one strong HTTP `If-Match` entity tag.
-///
-/// # Errors
-///
-/// Returns an error for an empty, weak, quoted-malformed, or control-bearing
-/// value.
-pub fn strong_if_match_etag(etag: &str) -> anyhow::Result<String> {
-    let etag = etag.trim();
-    if etag.is_empty() || etag.starts_with("W/") {
-        anyhow::bail!("inventory ETag is not a strong HTTP entity tag");
-    }
-    if etag.starts_with('"') || etag.ends_with('"') {
-        if etag.len() < 2 || !etag.starts_with('"') || !etag.ends_with('"') {
-            anyhow::bail!("inventory ETag has malformed quotes");
-        }
-        if etag[1..etag.len() - 1]
-            .bytes()
-            .any(|byte| byte < 0x21 || byte == b'"' || byte == b'\\' || byte == 0x7f)
-        {
-            anyhow::bail!("inventory ETag contains an invalid entity-tag byte");
-        }
-        return Ok(etag.to_string());
-    }
-    if etag
-        .bytes()
-        .any(|byte| byte < 0x21 || byte == b'"' || byte == b'\\' || byte == 0x7f)
-    {
-        anyhow::bail!("inventory ETag contains an invalid entity-tag byte");
-    }
-    Ok(format!("\"{etag}\""))
 }
