@@ -286,3 +286,15 @@ config_setting(
     flag_values = {":dependency_profile": "release-coordination"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "boot_preparation_dependencies",
+    flag_values = {":dependency_profile": "boot-preparation"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "boot_preparation_minimal_dependencies",
+    flag_values = {":dependency_profile": "boot-preparation-minimal"},
+    visibility = ["//visibility:public"],
+)

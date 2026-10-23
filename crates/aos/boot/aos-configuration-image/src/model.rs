@@ -209,17 +209,11 @@ impl Input {
                 .map(|key| format!("aos-job-scripts/{key}")),
         );
         for (target, entry) in &self.files {
-            if let Entry::StoreSymlink { target: source } = entry {
-                if std::fs::metadata(source)?.is_dir() {
-                    paths.remove(target);
-                    collect_tree_paths(
-                        self,
-                        Path::new(source),
-                        target,
-                        &mut Vec::new(),
-                        &mut paths,
-                    )?;
-                }
+            if let Entry::StoreSymlink { target: source } = entry
+                && std::fs::metadata(source)?.is_dir()
+            {
+                paths.remove(target);
+                collect_tree_paths(self, Path::new(source), target, &mut Vec::new(), &mut paths)?;
             }
         }
         for tree in &self.etc_trees {

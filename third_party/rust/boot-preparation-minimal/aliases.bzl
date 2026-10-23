@@ -1,0 +1,31 @@
+"""Generated direct dependency labels for this resolved family."""
+
+CRATES = {
+    "anyhow": "@aos_boot_preparation_minimal_crates__anyhow-1.0.102//:anyhow",
+    "async-trait": "@aos_boot_preparation_minimal_crates__async-trait-0.1.89//:async_trait",
+    "aws-config": "@aos_boot_preparation_minimal_crates__aws-config-1.8.17//:aws_config",
+    "aws-sdk-s3": "@aos_boot_preparation_minimal_crates__aws-sdk-s3-1.134.0//:aws_sdk_s3",
+    "aws-types": "@aos_boot_preparation_minimal_crates__aws-types-1.3.16//:aws_types",
+    "base64": "@aos_boot_preparation_minimal_crates__base64-0.22.1//:base64",
+    "bytes": "@aos_boot_preparation_minimal_crates__bytes-1.11.1//:bytes",
+    "digest": "@aos_boot_preparation_minimal_crates__digest-0.10.7//:digest",
+    "ed25519-dalek": "@aos_boot_preparation_minimal_crates__ed25519-dalek-2.2.0//:ed25519_dalek",
+    "futures-util": "@aos_boot_preparation_minimal_crates__futures-util-0.3.32//:futures_util",
+    "hex": "@aos_boot_preparation_minimal_crates__hex-0.4.3//:hex",
+    "rand": "@aos_boot_preparation_minimal_crates__rand-0.9.4//:rand",
+    "regex": "@aos_boot_preparation_minimal_crates__regex-1.12.4//:regex",
+    "reqwest": "@aos_boot_preparation_minimal_crates__reqwest-0.12.28//:reqwest",
+    "rustix": "@aos_boot_preparation_minimal_crates__rustix-1.1.4//:rustix",
+    "schemars": "@aos_boot_preparation_minimal_crates__schemars-1.2.2//:schemars",
+    "serde": "@aos_boot_preparation_minimal_crates__serde-1.0.228//:serde",
+    "serde_json": "@aos_boot_preparation_minimal_crates__serde_json-1.0.150//:serde_json",
+    "sha2": "@aos_boot_preparation_minimal_crates__sha2-0.10.9//:sha2",
+    "ssh-key": "@aos_boot_preparation_minimal_crates__ssh-key-0.6.7//:ssh_key",
+    "ssh2": "@aos_boot_preparation_minimal_crates__ssh2-0.9.5//:ssh2",
+    "tempfile": "@aos_boot_preparation_minimal_crates__tempfile-3.27.0//:tempfile",
+    "thiserror": "@aos_boot_preparation_minimal_crates__thiserror-2.0.18//:thiserror",
+    "tokio": "@aos_boot_preparation_minimal_crates__tokio-1.52.3//:tokio",
+    "tokio-util": "@aos_boot_preparation_minimal_crates__tokio-util-0.7.18//:tokio_util",
+    "tracing": "@aos_boot_preparation_minimal_crates__tracing-0.1.44//:tracing",
+    "url": "@aos_boot_preparation_minimal_crates__url-2.5.8//:url"
+}

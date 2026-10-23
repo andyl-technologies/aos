@@ -134,6 +134,10 @@ pub(super) fn validate_clean_payload(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Test fixtures and assertions fail immediately on unexpected errors"
+)]
 mod tests {
     use std::cell::RefCell;
     use std::os::unix::fs::symlink;

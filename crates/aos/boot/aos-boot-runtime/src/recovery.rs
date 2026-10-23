@@ -264,6 +264,10 @@ fn read_regular_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Test fixtures and assertions fail immediately on unexpected errors"
+)]
 mod tests {
     use super::*;
 

@@ -32,6 +32,8 @@ aos_dev_bazel() (
       $1 == build-services ||
       $1 == deployment ||
       $1 == hub-portable ||
+      $1 == boot-preparation ||
+      $1 == boot-preparation-minimal ||
       $1 == release-coordination ||
       $1 == registry-native ||
       $1 == registry-native-tests ||
@@ -39,7 +41,7 @@ aos_dev_bazel() (
       $1 == hub-client ||
       $1 == hub-model ||
       $1 == hub-model-tests
-    ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device|store|guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|native-foundation|native-foundation-tests|native-foundation-minimal|activation-core|activation-core-tests|activation-storage|activation-systemd|activation-crucible|activation-crucible-tests|cli-support|build-services|deployment|hub-portable|hub-model|hub-model-tests|hub-client|release-preparation|registry-native|registry-native-tests|release-coordination>'
+    ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device|store|guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|native-foundation|native-foundation-tests|native-foundation-minimal|activation-core|activation-core-tests|activation-storage|activation-systemd|activation-crucible|activation-crucible-tests|cli-support|build-services|deployment|hub-portable|hub-model|hub-model-tests|hub-client|release-preparation|registry-native|registry-native-tests|release-coordination|boot-preparation|boot-preparation-minimal>'
     local updater specifications family=$1
     updater=$(aos_dev_nix_build_ordinary -A pkgs.aosBazelDependencyUpdater --no-out-link)
     specifications=$(aos_dev_nix_build_ordinary -A "checks.build.bazel.dependencies.specification-packages.$family" --no-out-link)
@@ -52,7 +54,7 @@ aos_dev_bazel() (
 
   local launcher_attribute=pkgs.aosBazelLauncher
   if [[ $1 == --family ]]; then
-    [[ $# -ge 3 ]] || aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client|release-preparation|registry-native|release-coordination> <command> [labels]'
+    [[ $# -ge 3 ]] || aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client|release-preparation|registry-native|release-coordination|boot-preparation> <command> [labels]'
     case $2 in
       guest) launcher_attribute=pkgs.aosBazelGuestLauncher ;;
       engine) launcher_attribute=pkgs.aosBazelEngineLauncher ;;
@@ -66,6 +68,7 @@ aos_dev_bazel() (
       native-foundation) launcher_attribute=pkgs.aosBazelNativeFoundationLauncher ;;
       activation-core) launcher_attribute=pkgs.aosBazelActivationCoreLauncher ;;
       activation-storage) launcher_attribute=pkgs.aosBazelActivationStorageLauncher ;;
+      boot-preparation) launcher_attribute=pkgs.aosBazelBootPreparationLauncher ;;
       release-coordination) launcher_attribute=pkgs.aosBazelReleaseCoordinationLauncher ;;
       registry-native) launcher_attribute=pkgs.aosBazelRegistryNativeLauncher ;;
       release-preparation) launcher_attribute=pkgs.aosBazelReleasePreparationLauncher ;;
@@ -79,7 +82,7 @@ aos_dev_bazel() (
       activation-systemd) launcher_attribute=pkgs.aosBazelActivationSystemdLauncher ;;
       formats) launcher_attribute=pkgs.aosBazelFormatsLauncher ;;
       crucible-cli) launcher_attribute=pkgs.aosBazelCrucibleCliLauncher ;;
-      *) aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client|release-preparation|registry-native|release-coordination> <command> [labels]' ;;
+      *) aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client|release-preparation|registry-native|release-coordination|boot-preparation> <command> [labels]' ;;
     esac
     shift 2
   fi
@@ -94,6 +97,10 @@ aos_dev_bazel() (
       project_options+=(--rust-project-package crates/crucible/guest/crucible-guest)
     elif [[ $launcher_attribute == pkgs.aosBazelQuotaLauncher ]]; then
       project_options+=(--rust-project-package crates/shared/aos-linux-project-quota)
+    elif [[ $launcher_attribute == pkgs.aosBazelBootPreparationLauncher ]]; then
+      project_options+=(--rust-project-package crates/aos/boot/aos-boot-runtime)
+      project_options+=(--rust-project-package crates/aos/boot/aos-configuration-image)
+      project_options+=(--rust-project-package crates/aos/boot/aos-platform-metadata)
     elif [[ $launcher_attribute == pkgs.aosBazelReleaseCoordinationLauncher ]]; then
       project_options+=(--rust-project-package crates/aos/release/aos-release-coordinator)
     elif [[ $launcher_attribute == pkgs.aosBazelRegistryNativeLauncher ]]; then

@@ -571,6 +571,10 @@ fn openstack_imds_facts_include_network_data() {
 }
 
 #[test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "The HTTP transport timeout test measures a real host deadline outside Crucible replayable state"
+)]
 fn production_http_timeout_bounds_a_nonresponding_endpoint() {
     use std::time::{Duration, Instant};
 

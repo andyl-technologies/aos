@@ -1833,6 +1833,11 @@
     "crates/shared/aos-transfer/src/transfer.rs": "d7f938cc182bafefb8a59db9aeadbaa651b0f3e0b64800b9cd929da8278d69a2",
     "crates/shared/aos-transfer/src/types.rs": "2ee7954292b5db912bda67dc478ba35df3c78486afc3b0a9766398300b09e802"
   },
+  "fixture_inputs_sha256": {
+    "crates/aos/boot/aos-platform-metadata/tests/fixtures/metadata/nocloud/meta-data.yaml": "8d369768c7c5f9129a0afab903c40cfb929bfd1db29a324fe547bde42fcd2adf",
+    "crates/aos/boot/aos-platform-metadata/tests/fixtures/metadata/nocloud/network-config-flow.yaml": "51a75ce19eebbdbae05da837c9de02a86257be352a9404bb56efe7402bb696db",
+    "crates/aos/boot/aos-platform-metadata/tests/fixtures/metadata/nocloud/network-config-malformed-flow.yaml": "1ca0aaa0e51085749f64984c2371c7bd5d848f70c7fb31c7281ba61f6dba0bf8"
+  },
   "limits": [
     "Native Linux Cargo baseline only. Bazel qualification, foreign execution, compiler invocation parity, performance acceptance and production cutover remain separate.",
     "Configuration commands embed the actual source-built EROFS, mount and package-runtime tools. These compilation inputs are not substitute commands.",

@@ -16,7 +16,7 @@
 //! A 404 is *not* an error here: it is surfaced as [`HttpResponse`] with
 //! `status == 404` so a fetcher can map "no user-data attached" to `Ok(None)`.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use anyhow::{Result, anyhow};
@@ -227,7 +227,7 @@ impl MetadataHttp for EngineHttp {
 }
 
 /// HTTP verb used as a fixture key in [`RecordedHttp`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RecordedMethod {
     /// A recorded GET (covers both plain and content-pinned).
     Get,
@@ -242,7 +242,7 @@ pub enum RecordedMethod {
 /// (which it cannot, anyway).
 #[derive(Default)]
 pub struct RecordedHttp {
-    responses: HashMap<(RecordedMethod, String), HttpResponse>,
+    responses: BTreeMap<(RecordedMethod, String), HttpResponse>,
 }
 
 impl RecordedHttp {

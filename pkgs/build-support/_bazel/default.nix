@@ -79,6 +79,7 @@
     };
   };
   aosBazelRepositoryTestSources = import ./repository-test-sources.nix {inherit pkgs lib;};
+  aosBazelBootTools = import ./boot-tools.nix {inherit pkgs lib;};
   aosBazelRegistryTestTools = import ./registry-test-tools.nix {inherit pkgs lib;};
   aosBazelNixTestTools = import ./nix-test-tools.nix {inherit pkgs;};
   aosBazelCodegenTools = import ./codegen-tools.nix {inherit pkgs;};
@@ -96,6 +97,16 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    boot-preparation = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "boot-preparation";
+    };
+    boot-preparation-minimal = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "boot-preparation-minimal";
+    };
     release-coordination = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -315,6 +326,38 @@
     dependencyProfile = "control";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
+  };
+  aosBazelBootPreparationWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = [
+      "tools/bazel"
+      "third_party/rust"
+      "crates/aos/activation/aos-activation"
+      "crates/aos/boot/aos-boot-identity"
+      "crates/aos/boot/aos-boot-runtime"
+      "crates/aos/boot/aos-configuration-image"
+      "crates/aos/boot/aos-platform-metadata"
+      "crates/aos/boot/aos-storage-layout"
+      "crates/aos/modules/aos-module-format"
+      "crates/aos/registry/aos-registry-format"
+      "crates/aos/release/aos-release-format"
+      "crates/shared/aos-artifact-evidence"
+      "crates/shared/aos-core"
+      "crates/shared/aos-nar"
+      "crates/shared/aos-nix"
+      "crates/shared/aos-oci-types"
+      "crates/shared/aos-transfer"
+    ];
+    repositories =
+      aosBazelRepositories
+      // aosBazelRustRepositories.boot-preparation
+      // {
+        aos_native = aosBazelNativeFoundationLibraries;
+        aos_boot_tools = aosBazelBootTools;
+      };
+    dependencyProfile = "boot-preparation";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = ["//crates/aos/boot/aos-boot-runtime:unit" "//crates/aos/boot/aos-configuration-image:unit" "//crates/aos/boot/aos-platform-metadata:unit"];
   };
   aosBazelReleaseCoordinationWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -695,6 +738,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelBootPreparationLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelBootPreparationWorkspace;
     }).launcher;
   aosBazelReleaseCoordinationLauncher =
     (import ./development.nix {
