@@ -538,6 +538,8 @@ in {
   integration.project-census-image = (import ./project-census.nix {inherit pkgs lib sourceGateWithInputs;}).image;
   integration.worker-channel = (import ./worker-channel.nix {inherit pkgs lib sourceGateWithInputs;}).native;
   integration.worker-channel-image = (import ./worker-channel.nix {inherit pkgs lib sourceGateWithInputs;}).image;
+  integration.fuse-connection = (import ./fuse-connection.nix {inherit pkgs lib sourceGateWithInputs;}).native;
+  integration.fuse-connection-image = (import ./fuse-connection.nix {inherit pkgs lib sourceGateWithInputs;}).image;
   integration.surface-index-owner =
     (import ./host-cache-proof.nix {
       inherit pkgs lib sourceGateWithInputs;

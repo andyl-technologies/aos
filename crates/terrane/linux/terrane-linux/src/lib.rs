@@ -15,6 +15,10 @@ compile_error!("terrane-linux requires Linux (CRATE-11)");
 pub mod configured;
 #[cfg(feature = "tokio")]
 pub mod configured_sdk;
+#[cfg(all(feature = "surface-fuse", feature = "tokio"))]
+pub mod fuse_connection;
+#[cfg(feature = "surface-fuse")]
+pub mod fuse_protocol;
 pub mod host_cache;
 pub mod host_quota;
 #[cfg(feature = "surface-fuse")]

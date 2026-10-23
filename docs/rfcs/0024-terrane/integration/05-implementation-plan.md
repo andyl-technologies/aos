@@ -8700,41 +8700,41 @@ The four other T2 tasks, deployed runtime composition and milestone exit
 remain open. This scoped packaging acceptance does not accept a role runtime.
 
 Current qualification (2026-10-22): 27 of 64 trunk tasks are accepted.
-At `af90462e20`, the full native cache VM passes in 1,542.715 seconds with all
-8,080 immutable files, 5,370 bound inputs, four actual Cargo/installed ELFs,
-92 fixture selectors, 129 native unit cases and required regression witnesses
-reviewed. Its independent enrollment VM passes with all 17 executed selectors
-and four fresh status observations reviewed. The `37e337cf5f` surface-owner VM
-passes all original controls and cold active-exposure closure with complete
-source and artifact review. At `5c427bfc16`, the owning blame gate and all six
-CLI workflows pass with complete source/compiler-record review. The four
-`f82429a92d` cold inline/manifest pressure and no-pressure scenarios and both
-`2e34a1d9fe` maintained/refusal SDK VMs retain their separately reviewed passes.
-These results qualify their own immutable sources and scopes.
+The eleven-component T2 request at `5c427bfc16` passes in 6,872.816 seconds;
+complete source, exact selected-case, actual compiler-artifact and native
+prerequisite reviews pass. The full native cache VM at `221c6c6a6d` passes in
+1,499.435 seconds with all 8,082 immutable files, 5,372 bound inputs, four actual
+ELFs, 92 fixture selectors, 130 native unit cases and 27 regression witnesses
+reviewed. The earlier status, cold exposure closure, cold inline/manifest
+lifecycles, maintained SDK and CLI results retain their separately reviewed
+passes. Each result qualifies its own immutable source and scope.
 
-Required application compilation passes at `221c6c6a6d` and `a23eb54259`,
-respectively in 1,477.731 and 805.834 seconds. Each complete review matches all
-8,082 immutable files and 185 test targets across 59 packages; compilation
-provides no native runtime receipt. Their surface-owner VMs pass the retained
-index recovery scenario, then correctly refuse an invalid fixture request whose
-file deadline exceeds its enclosing exposure. Both failed receipts remain failed.
-The fixture deadline correction is pushed at `42fe82a0fc`; `7be7d8fb87` separates
-the named-file and already-unlinked-file scenarios into independent VMs without
-enlarging any actor or guest bound. Fresh native aggregate and application
-qualification run from that immutable source. The runner's first attempts fail
-before building because its temporary directory was absent; corrected retries
-retain those setup failures separately.
+Required application compilation passes at `221c6c6a6d`, `a23eb54259`,
+`7be7d8fb87` and `b3e271af24`. Complete immutable-source and compiler-record
+reviews verify all 185 test executables across 59 packages. Compilation does
+not replace native lifecycle qualification. The `221c6c6a6d` and `a23eb54259`
+surface VMs retain their fixture deadline failures. The independent aggregates
+at `7be7d8fb87` and `b3e271af24` fail when the named-file actor reaches an
+observation timeout after startup Resume. The configured VM at `b3e271af24`
+passes its three original controls, then fails creating signed fixture source
+beneath root-private TMPDIR. All failed receipts remain failed.
 
-The configured native factory now selects retained-exposure recovery only when
-FUSE support is compiled and the operator explicitly funds the index policy.
-It preserves original physical obligations as draining through new Resume;
-no old serving authority is revived. A new native configured control exercises
-that public opener, unchanged-policy refusal without the funded policy, portable
-revalidation, retained mapping and exact physical release before authenticated
-closure. Strict lint, non-FUSE compilation and actual fixture compilation pass;
-its new native qualification remains required. Complete production FUSE role
-composition and later trunk milestones remain open. No full current owning-gate,
-feature-matrix or RFC completion is claimed.
+Pushed corrections `87bb2fd34c` and `a2faeb2547` give the configured fixture an
+explicit actor-owned source parent outside native projects, identify separate
+retained-file expiry/unlink stages and report background retirement errors
+without repeated log flooding. Fresh configured, independent recovery and
+mandatory application qualification run from immutable `a2faeb2547` with all
+original time limits and assertions. The first configured request uses a
+missing attribute and fails before building; the corrected exact check runs
+in a separate retained packet.
+
+The configured native factory retains surviving physical exposure obligations
+as draining through funded recovery and new Resume only with compiled FUSE
+support and an explicit index policy. It restores no old serving authority.
+The Linux FUSE framing/connection component now has bounded real-device VM
+controls; its native qualification is still required. Complete production
+worker, mount broker and role composition remain open. No full current-head
+owning-gate, feature-matrix, milestone or RFC completion is claimed.
 
 The dated entries below preserve earlier checkpoints and provisional results;
 the current status and task checkboxes govern acceptance.
@@ -16042,3 +16042,43 @@ cases and 27 regression witnesses. Application compilation at `7be7d8fb87`
 passes in 666.642 seconds; review matches 8,082 immutable files and all 185
 test executables across 59 packages. Compilation does not replace the failed
 surface runtime result. No additional trunk task is accepted.
+
+
+#### Original FUSE connection transport
+
+The Linux component now parses bounded native-order FUSE request/reply framing
+without native structure casts or per-record allocation. It rejects truncated,
+concatenated and oversized records, unnegotiated extensions, reserved padding
+and malformed error replies. Unknown opcodes remain visible to the dispatcher;
+framing grants no inode, repository, backing or outstanding-request authority.
+
+A Tokio transport owns one supplied nonblocking read/write FUSE device and the
+originating process's actual worker-network confinement. Reads and single-record
+writes have finite deadlines. Short writes, accepted-exchange errors, timeout
+and cancellation close the retained device; a closed connection cannot be
+reused. Invalid exchange arguments fail before consuming a request. Kernel
+backing reference closure and exposure accounting remain separate obligations.
+
+A new dedicated VM control mounts the actual device opened by an unprivileged
+worker. The administrative supervisor receives one mount alias and closes it
+before the worker exchanges traffic. A minimal empty root exercises genuine
+INIT, GETATTR, directory and lookup traffic through the Rust transport. Separate
+fresh connections require real receive timeout and cancellation to close the
+last device descriptor, prohibit reuse and produce ENOTCONN for subsequent
+worker-dependent metadata. All fixture bytes, actual Cargo artifacts and native
+driver inputs are recorded. The fixture is not a Terrane repository surface,
+production dispatcher, full sandbox or mount broker. All thirteen pure framing
+regressions, strict all-feature/all-target lint, non-FUSE compilation, actual
+fixture compilation, formatting, Python syntax and derivation evaluation pass.
+Native qualification and
+mandatory application-target compilation remain required.
+
+The earlier eleven-component T2 request at `5c427bfc16` passes in 6,872.816
+seconds. Complete review matches all 8,079 immutable files, 400 executed cases
+and eleven actual VM prerequisites for the four owning host gates. Review of
+the remaining seven gates verifies their exact selected cases, source-bound
+images and actual native witnesses, including publication ordering and wipe
+refusal. Required application compilation at `b3e271af24` passes in 1,488.056
+seconds with all 8,083 immutable files, 185 test executables and 59 packages
+reviewed. These results qualify their original checkpoints, preserve the later
+recovery failures and do not accept another trunk task.
