@@ -1,0 +1,20 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "2aef3c9e61",
+  "compiled_changed_rust_inputs_sha256": {
+    "crates/aos/activation/aos-activation-filesystem/src/handler/native.rs": "d8bb5afae8f4f748db392487e1ea65acb3766890eb58bc004b2cbc6205027480",
+    "crates/aos/activation/aos-activation-storage/src/native_zfs_pool.rs": "36b8609ca70c63203629bc95b30421a5e465e07dc433d697f56d5a878727446c"
+  },
+  "derivation": "/nix/store/19f89bp32gy38kpa0ks1lz51xmng3jhv-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "7d2791b32988d6ea28bd3c223a4aa1a8647cdac23c7b7215eff18d36a61a6e56",
+  "implementation_commit": "7d3dec156b",
+  "limits": [
+    "This gate compiles application unit and integration targets without executing them. Native Bazel/Cargo execution is retained separately.",
+    "This frozen checkpoint includes the two filesystem and storage Rust lint corrections, and the earlier core activation corrections. It predates systemd declarations and later Rust changes."
+  ],
+  "log_sha256": "5add469352dde6c654b550cc42a9ebaa93f19303d9115a399ddee25bc3500a46",
+  "output": "/nix/store/04bwcnc7ihcm2k1ikhl3pdz728g0yzbq-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/vqrx872lswnhkb3aw0wa7wm0n0xyri47-aos-workspace-src",
+  "status": "Required workspace Rust application unit and integration targets compiled successfully"
+}
