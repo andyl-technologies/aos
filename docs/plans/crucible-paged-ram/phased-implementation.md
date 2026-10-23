@@ -1202,6 +1202,19 @@ snapshot publication. Their causal mutations reject a return to inline history
 copies while retaining the actual native-return, saved-Cleanup and independent
 post-observation obligations. The source-shape check also passes.
 
+The broader source-contract suite initially passes 51 controls and fails 23.
+Its Target-dispatcher witness now binds the actual retained-worker cell,
+fallible host cadence polling and cadence-failure retention, while preserving
+actual native return and saved-Cleanup observations. Mutating either cadence
+poll to immediate readiness is rejected. The focused dispatcher control passes;
+the complete suite now passes 52 controls and fails 22. These remaining source
+classification failures still prevent a complete testing-standards pass.
+
+Mandatory application-target compilation for unreaped-child retention commit
+`16927f3a5a` passes, producing `b6437jdpvrgi1nwm0dbvrjrq7ix51zdn`.
+The previously recorded immutable source and protocol-fixture correspondence
+binds that result; newer mandatory application builds remain in progress.
+
 #### Cumulative construction and request ownership source
 
 Signed atomic `e82bb4c78da7af3351ef6473935a2be2feb01a2d` imports conventional

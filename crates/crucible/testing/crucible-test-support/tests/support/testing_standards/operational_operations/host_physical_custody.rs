@@ -131,8 +131,22 @@ fn target_native_join_requires_unique_handle_process_and_irreversible_receipt()
     )?;
     let code = crate::scrub_comments_and_strings(&source);
     let evidence = super::read_companions(contract)?;
+    let details = super::lifecycle_retirement::contract_diagnostics(contract, &code, &evidence);
+    assert!(details.is_empty(), "{}: {details:#?}", contract.target);
     assert_ne!(super::mask_contract(contract, &code, &evidence), code);
     for (needle, replacement) in [
+        (
+            "job.next_attempt.poll(CGROUP_KILL_INTERVAL)",
+            "Ok(Duration::ZERO)",
+        ),
+        (
+            "slot.next_retry.poll(CGROUP_KILL_INTERVAL)",
+            "Ok(Duration::ZERO)",
+        ),
+        (
+            "retained_worker: OnceLock::new(),",
+            "retained_worker: None,",
+        ),
         (
             "self.state = Some(Arc::new(DispatcherState",
             "self.state = None; let _ = Some(Arc::new(DispatcherState",

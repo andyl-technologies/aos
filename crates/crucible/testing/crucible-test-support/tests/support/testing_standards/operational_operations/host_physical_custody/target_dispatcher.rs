@@ -13,6 +13,7 @@ pub(super) const CONTRACT: Contract = Contract {
             readiness,
             shutdown: AtomicBool::new(false),
             worker_exited: AtomicBool::new(false),
+            retained_worker: OnceLock::new(),
             startup: Mutex::new(None),
             outcome: Mutex::new(None),
             wake,
@@ -143,40 +144,38 @@ pub(super) const CONTRACT: Contract = Contract {
         }
         let path = self.path.clone();
         self.retry_abandoned_jobs()?;
-        if matches!(self.phase, WorkerPhase::Reserved | WorkerPhase::Running) {
-            if let Some(state) = self.state.as_ref() {
-                let slots = match state.slots.try_lock() {
-                    Ok(slots) => slots,
-                    Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
-                    Err(TryLockError::WouldBlock) => {
-                        return Err(failure(&path, "Target retirement custody is pending"));
-                    }
-                };
-                if slots.iter().any(|slot| {
-                    slot.phase != JobPhase::Idle
-                        || slot.control.is_some()
-                        || slot.original.is_some()
-                }) {
-                    return Err(failure(
-                        &path,
-                        "Target dispatcher still owns an actual job or returned control",
-                    ));
+        if matches!(self.phase, WorkerPhase::Reserved | WorkerPhase::Running)
+            && let Some(state) = self.state.as_ref()
+        {
+            let slots = match state.slots.try_lock() {
+                Ok(slots) => slots,
+                Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
+                Err(TryLockError::WouldBlock) => {
+                    return Err(failure(&path, "Target retirement custody is pending"));
                 }
-                let running = match state.running.try_lock() {
-                    Ok(running) => running,
-                    Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
-                    Err(TryLockError::WouldBlock) => {
-                        return Err(failure(&path, "Target worker custody is pending"));
-                    }
-                };
-                if running.iter().any(Option::is_some) {
-                    return Err(failure(&path, "Target worker still owns actual controls"));
-                }
-                // Only the complete absence of every actual slot/worker owner
-                // permits retiring poison; individual job recovery never does.
-                state.running.clear_poison();
-                state.slots.clear_poison();
+            };
+            if slots.iter().any(|slot| {
+                slot.phase != JobPhase::Idle || slot.control.is_some() || slot.original.is_some()
+            }) {
+                return Err(failure(
+                    &path,
+                    "Target dispatcher still owns an actual job or returned control",
+                ));
             }
+            let running = match state.running.try_lock() {
+                Ok(running) => running,
+                Err(TryLockError::Poisoned(poison)) => poison.into_inner(),
+                Err(TryLockError::WouldBlock) => {
+                    return Err(failure(&path, "Target worker custody is pending"));
+                }
+            };
+            if running.iter().any(Option::is_some) {
+                return Err(failure(&path, "Target worker still owns actual controls"));
+            }
+            // Only the complete absence of every actual slot/worker owner
+            // permits retiring poison; individual job recovery never does.
+            state.running.clear_poison();
+            state.slots.clear_poison();
         }
         if self.cleanup.is_none() {
             self.cleanup = Some(
@@ -215,7 +214,7 @@ pub(super) const CONTRACT: Contract = Contract {
                 };
                 // The actual native zero is recorded before independent post.
                 if matches!(observed, Ok(NativeJoinObservation::Returned)) {
-                    drop(self.worker.take());
+                    self.worker = None;
                     self.phase = WorkerPhase::Joined;
                 }
                 let after = cleanup.wait_slice();
@@ -311,14 +310,22 @@ pub(super) const CONTRACT: Contract = Contract {
             .get_or_insert(source);
         return Err(error);
     }
-    let now = Instant::now();
-    if slot.next_retry.is_some_and(|next| next > now) {
+    let delay = match slot.next_retry.poll(CGROUP_KILL_INTERVAL) {
+        Ok(delay) => delay,
+        Err(source) => {
+            slot.failure
+                .get_or_insert_default()
+                .cadence
+                .get_or_insert(source);
+            return Err(failure(&state.path, source));
+        }
+    };
+    if !delay.is_zero() {
         return Err(failure(
             &state.path,
             "Target physical retry cadence is pending",
         ));
     }
-    slot.next_retry = now.checked_add(CGROUP_KILL_INTERVAL);
     let control = slot
         .control
         .as_mut()
@@ -514,6 +521,26 @@ self.phase = WorkerPhase::Running;"#,
             r#"self.first = started.err(); self.post = post().err();"#,
             1,
         ),
+        (
+            r#"let delay = match job.next_attempt.poll(CGROUP_KILL_INTERVAL) {
+                Ok(delay) => delay,
+                Err(source) => {
+                    job.failure
+                        .get_or_insert_default()
+                        .cadence
+                        .get_or_insert(source);
+                    if !return_job(&state, index, entry) {
+                        return;
+                    }
+                    continue;
+                }
+            };
+            if !delay.is_zero() {
+                timeout = timeout.min(delay);
+                continue;
+            }"#,
+            1,
+        ),
         (r#"let after = job.wait_slice();"#, 1),
         (r#"HostOperationSupervisor::new("#, 0),
         (r#"begin_original_cleanup_control("#, 0),
@@ -521,8 +548,8 @@ self.phase = WorkerPhase::Running;"#,
         (r#"HostOperationClass::Cleanup"#, 0),
         (r#"thread::spawn("#, 0),
         (r#"thread::sleep("#, 2),
-        (r#"now.checked_add(CGROUP_KILL_INTERVAL)"#, 2),
-        (r#"Instant::now()"#, 2),
+        (r#"now.checked_add(CGROUP_KILL_INTERVAL)"#, 0),
+        (r#"Instant::now()"#, 0),
         (r#"self.cleanup = None;"#, 1),
         (r#".spawn_worker("#, 1),
     ],
@@ -537,7 +564,7 @@ self.phase = WorkerPhase::Running;"#,
     identifiers: &[
         (r#"retry_abandoned_jobs"#, 2),
         (r#"retry_quarantined"#, 2),
-        (r#"next_retry"#, 7),
+        (r#"next_retry"#, 6),
     ],
     companions: &[
         Companion {
