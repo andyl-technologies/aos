@@ -1576,7 +1576,10 @@ def main():
         # A new physical owner must preserve the first owner's durable hold,
         # synchronize a distinct bootstrap and account both without reusing H.
         old_policy = tomllib.loads((root("empty") / "state/cache/records.toml").read_text())
-        actor("empty", "empty", uuid)
+        empty = actor("empty", "empty", uuid)
+        require(empty.splitlines().count(
+            "PASS actual pre-Resume status refused without policy mutation") == 1,
+            "empty recovery omitted actual pre-Resume status refusal")
         new_policy = tomllib.loads((root("empty") / "state/cache/records.toml").read_text())
         require(len(old_policy["reservations"]) == 1 and len(new_policy["reservations"]) == 2
                 and all(new_policy["reservations"].count(row) == 1 for row in old_policy["reservations"])

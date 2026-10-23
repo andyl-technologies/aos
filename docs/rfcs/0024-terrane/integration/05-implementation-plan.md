@@ -15774,3 +15774,15 @@ compilation, Rust formatting, supervisor syntax and diff checks pass. Fresh nati
 surface-owner and mandatory application qualification remain required for this
 increment. This does not complete recovery while original backing names
 or kernel references remain, production worker recovery, or any whole T2 task.
+
+
+The status refusal witness is scoped to the actual empty-recovery actor. The
+supervisor requires it exactly once. Other actors retain their original exact
+stdout protocols, including pending recovery, publication and Running retention.
+All original assertions remain. Inspection caught the initially shared witness
+would add a line to those protocols; the first full-cache request remains frozen
+and cannot qualify the corrected source. The status enrollment VM at
+`d7fed2dbb7` passes in 317.048 seconds. Complete review matches all 8,080 immutable
+source files, 5,359 bound inputs, the actual Cargo artifact and installed ELF,
+17 executed selectors, all four status observations and exact original private
+inode retirement. Later source still requires fresh qualification.
