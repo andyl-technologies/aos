@@ -392,6 +392,7 @@ fn run_partial_transfer(stage: PartialStage) {
         let durability = DurabilityRequirement::new(1, false).expect("durability");
         let operation = CampaignTransferOperationId::for_archive(
             plan.manifest_id(),
+            "source",
             "destination",
             "partial",
             None,

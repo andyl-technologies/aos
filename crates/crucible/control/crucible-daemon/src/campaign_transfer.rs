@@ -7,7 +7,7 @@
 //! ```text
 //! <root>/writer.lock
 //! <root>/records/<operation-id>.transfer
-//!   TransferRecordV1(operation, source|destination, manifest, [(object, length)...])
+//!   TransferRecordV2(source-bound operation, source|destination, manifest, [(object, length)...])
 //! <root>/staging/<operation-id>.staging
 //! ```
 //!
@@ -53,8 +53,10 @@ use journal_io::{
     hash_field, io_error, read_bounded_file, sync_directory, write_atomic,
 };
 
-const JOURNAL_MAGIC: &[u8; 32] = b"CRUCIBLE-CAMPAIGN-TRANSFER-V1!!!";
-const JOURNAL_VERSION: u32 = 1;
+// Edition two binds the selected source into operation identities. Previous
+// records remain in place but cannot establish current transfer ownership.
+const JOURNAL_MAGIC: &[u8; 32] = b"CRUCIBLE-CAMPAIGN-TRANSFER-V2!!!";
+const JOURNAL_VERSION: u32 = 2;
 const WRITER_LOCK: &str = "writer.lock";
 const RECORDS_DIRECTORY: &str = "records";
 const STAGING_DIRECTORY: &str = "staging";
@@ -67,12 +69,16 @@ thread_local! {
     static FAIL_NEXT_DIRECTORY_SYNC: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Identity of one destination- and publication-bound transfer operation.
+/// Identity of an archive operation bound to both endpoints and publication.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CampaignTransferOperationId([u8; 32]);
 
 impl CampaignTransferOperationId {
-    /// Derives an operation identity from immutable content and destination intent.
+    /// Derives an archive operation identity from content, both endpoints and intent.
+    ///
+    /// Endpoint identities name the selected managed repository authorities.
+    /// Retrying the same inputs preserves the identity; selecting another source
+    /// changes it even when that source offers the same immutable archive.
     ///
     /// # Errors
     ///
@@ -80,12 +86,15 @@ impl CampaignTransferOperationId {
     /// operational name is empty or exceeds 1,024 bytes.
     pub fn for_archive(
         manifest: CampaignArchiveManifestId,
+        source_identity: &str,
         destination_identity: &str,
         archive_name: &str,
         campaign_name: Option<&str>,
         destination_durability: DurabilityRequirement,
     ) -> Result<Self, CampaignTransferJournalError> {
-        if destination_identity.is_empty()
+        if source_identity.is_empty()
+            || source_identity.len() > 1_024
+            || destination_identity.is_empty()
             || destination_identity.len() > 1_024
             || archive_name.is_empty()
             || archive_name.len() > 1_024
@@ -94,8 +103,9 @@ impl CampaignTransferOperationId {
             return Err(CampaignTransferJournalError::InvalidOperation);
         }
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"crucible.campaign.transfer-operation.v1");
+        hasher.update(b"crucible.campaign.transfer-operation.v2");
         hash_field(&mut hasher, manifest.content_id().encode().as_bytes());
+        hash_field(&mut hasher, source_identity.as_bytes());
         hash_field(&mut hasher, destination_identity.as_bytes());
         hash_field(&mut hasher, archive_name.as_bytes());
         hash_field(&mut hasher, campaign_name.unwrap_or("").as_bytes());
@@ -131,7 +141,7 @@ pub struct CampaignArchiveDurabilityReceipt {
 }
 
 impl CampaignArchiveDurabilityReceipt {
-    /// Returns the destination- and publication-bound transfer identity.
+    /// Returns the transfer identity bound to both endpoints and publication.
     #[must_use]
     pub const fn operation(self) -> CampaignTransferOperationId {
         self.operation
@@ -865,6 +875,7 @@ pub fn transfer_campaign_archive_durably_with_boundary(
     }
     let operation = CampaignTransferOperationId::for_archive(
         plan.manifest_id(),
+        source.identity,
         destination.identity,
         archive_name,
         campaign_name,
@@ -1040,7 +1051,7 @@ pub enum CampaignTransferJournalError {
     /// The record directory contains an unexpected entry.
     #[error("campaign transfer journal contains an unexpected entry")]
     UnexpectedEntry,
-    /// Transfer destination identity or intended ref name is invalid.
+    /// A transfer endpoint identity or intended ref name is invalid.
     #[error("campaign transfer operation identity input is invalid")]
     InvalidOperation,
     /// A GC retention visitor rejected one root.

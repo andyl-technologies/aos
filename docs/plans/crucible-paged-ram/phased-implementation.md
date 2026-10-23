@@ -36,6 +36,7 @@ The current transport source contracts are:
 | Sealed standing corroboration | The purpose's 1520-byte tail binds the retained publication file identity/extent and its initial 1496-byte observation. Copied fields issue no authority. |
 | Standing cancellation | A separate nonblocking eventfd, with kernel event identity encoded as raw ID plus one. It is distinct from the wake event and Setup amendment event. |
 | Operational durations | One exact-nanosecond roster under RAM schema 11; Host operational frames use schema 4. Configured values are positive and checked; observed expiry may be zero. |
+| Archive transfer journal | Edition 2 binds the selected source as well as destination and publication intent into operation identities. Previous records are refused and preserved for explicit recovery. |
 
 Source publication preserves the same cap, original monotonic origin and nominal
 Source subject across policy revisions. Publication commits through odd/even
@@ -67,7 +68,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 629 bindings: 610 component and nineteen native, across 243 requirements. | 144 requirements remain uncovered and none fully qualified. |
+| Requirements | 632 bindings: 613 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2837,7 +2838,7 @@ Inventory `bl5ld37i9lwc2qdx0a9w4r2vvqml8yv9` validates 614 bindings across
 All 751 ordinary storage tests, 95 policy controls and storage/portable-RAM
 Clippy pass. Hermetic storage output `0qp82njh3npx8xkfx5l5jf2cnza2sxw7` passes
 all 91 selected cases and 112 independently checked successful nested summaries. Required
-application compilation is running from immutable source
+application compilation passes at `jjvfgnz71bas8iha9yx2l2k4j6sbfsbc` from immutable source
 `3m7mq5bc8sc4acf8kgchcl9ykab88bks`; all 5,417 committed Rust/TOML files and
 six required fixtures match before subsequent source edits.
 
@@ -2864,7 +2865,7 @@ Inventory `a8l44c19zv7mv4s2cf5i5sbf0k1dfspc` validates 616 bindings across
 All 753 ordinary storage tests, 95 policy controls and storage/portable-RAM
 Clippy pass. Hermetic storage output `cjrcvarhw8ms469z4cgn4mz52rilf9ls` passes
 all 93 selected cases and 114 independently checked successful nested summaries. Required
-application compilation is running from immutable source
+application compilation passes at `p1m083lkn094p2ypdvk26vs3zg6n8x9y`, from immutable source
 `a7nvfkdc595yzhp2az89s32536ia63d1`; all 5,418 committed Rust/TOML files and
 six required fixtures match before subsequent source edits.
 
@@ -2893,7 +2894,7 @@ storage tests, 95 policy controls and storage/portable-RAM Clippy pass. The
 hermetic selected-storage gate passes at `vynl6fnvcvh64y0dycgavzj6hnaywa8l`,
 with all 95 selected cases and 116 independently checked successful nested
 summaries. Required application
-compilation is running from immutable source
+compilation passes at `qacz89nh0ic1xw2l2y9bc7hv7amxza8v`, from immutable source
 `5swyk31cdpclg4v7bg9sxal8n1wkqil8`; all 5,418 committed Rust/TOML files and
 six required fixtures match before subsequent source edits.
 
@@ -2920,7 +2921,7 @@ Inventory `9xk3yk1lq96r6fsv2rqjmb0y24rlcqy2` validates 622 bindings across
 storage tests, 95 policy controls and storage/portable-RAM Clippy pass. Hermetic
 storage output `fmz58hqcd3vphxb0yz4v0xrssk8d0ya8` passes all 99 selected cases
 and 120 independently checked successful nested summaries. Required application
-compilation is running from immutable source
+compilation passes at `s40nqf2gfw2qff0hn6lh2brg6fjzw2a1`, from immutable source
 `3gzj0q5ng9wfif8nz1rprbmpb4zz1vwr`; all 5,418 committed Rust/TOML inputs and
 six required fixtures match before subsequent source edits.
 
@@ -2987,6 +2988,43 @@ fully qualified. Expanded hermetic storage output
 127 independently checked successful nested summaries. These controls do not
 establish a native faulting pager's deletion races, fork safety, whole-kernel
 resource admission or performance parity.
+
+Archive operation identities now bind the selected source endpoint in addition
+to the archive manifest, destination, publication names and durability. The
+public derivation requires and bounds both endpoint identities, and the actual
+coordinator supplies its selected managed source identity before journaling or
+copying. The hash domain and journal edition advance to two. A previous-edition
+ownership record cannot be reinterpreted as source-bound authority: decoding
+and journal reopening refuse it, leaving the record unchanged for explicit
+recovery. No old journal is automatically rewritten or deleted.
+
+Two genuine predecessor controls fail against independent directory metadata
+repositories. Transfers of the same authenticated archive through different
+selected sources receive the same operation ID; an empty source identity also
+completes a transfer of twelve objects and 7,333 bytes. After correction all
+three focused controls pass. Same-source retries retain their operation and
+authenticate existing destination possession, distinct sources receive distinct
+operations, and both empty and oversized source names refuse before journal
+records, destination object storage or archive publication. A separate edition
+control accepts the current record and refuses a checksum-valid previous record
+with its actual source-independent operation derivation; failed reopening
+preserves the old file byte for byte.
+
+Inventory `4vb10w747i6a8n566w0l9rnh5457dv0f` validates 632 bindings across
+243 requirements: 588 model, 25 format and nineteen native bindings. TRANSFER-3
+gains both component roles and TRANSFER-13 gains a journal-edition refusal case;
+142 requirements remain uncovered and none is fully qualified. All nineteen
+archive tests, 46 ordinary GC tests and 95 policy controls pass. The policy
+suite initially rejected a repeated-transfer receipt variable named `retry`;
+renaming it changes no test behavior. The initial broad GC selector also started
+a 512-MiB stress case; that invocation was deliberately terminated, its two
+owned fixture directories removed after process exit, and ordinary GC rerun
+with the stress case excluded. This interruption is not a stress qualification.
+Required application compilation is running from corrected immutable source
+`pziny533k85pja76ak5fairhaswymr1f`; committed source and fixture matching is
+required before subsequent source edits. These metadata-archive controls do not
+qualify the complete transfer identity roster, restart reconciliation,
+whole-world readiness or execution handoff.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`

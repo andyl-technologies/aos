@@ -30,6 +30,7 @@ use crucible_store::content_store::{
 };
 
 mod catalog_gc;
+mod operation_binding;
 
 fn archive_plan() -> CampaignArchivePlan {
     let repository = CampaignRepository::new(
@@ -118,6 +119,7 @@ fn same_manifest_transfers_to_two_destinations_remain_independent() {
         .expect("open journal");
     let first = CampaignTransferOperationId::for_archive(
         plan.manifest_id(),
+        "source",
         "destination-a",
         "archive",
         None,
@@ -126,6 +128,7 @@ fn same_manifest_transfers_to_two_destinations_remain_independent() {
     .expect("first operation");
     let second = CampaignTransferOperationId::for_archive(
         plan.manifest_id(),
+        "source",
         "destination-b",
         "archive",
         None,
@@ -157,6 +160,7 @@ fn reopening_cleans_a_torn_staging_file_without_losing_complete_records() {
     let journal_root = temporary.path().join("journal");
     let operation = CampaignTransferOperationId::for_archive(
         plan.manifest_id(),
+        "source",
         "destination",
         "archive",
         Some("campaign"),
@@ -191,6 +195,7 @@ fn retries_reestablish_durability_after_visible_journal_mutations() {
         .expect("open journal");
     let operation = CampaignTransferOperationId::for_archive(
         plan.manifest_id(),
+        "source",
         "destination",
         "archive",
         None,
@@ -431,6 +436,7 @@ fn durable_transfer_rejects_read_only_source_before_journaling() {
             .contains(
                 CampaignTransferOperationId::for_archive(
                     plan.manifest_id(),
+                    "source",
                     "destination",
                     "metadata",
                     None,
@@ -476,6 +482,7 @@ fn invalid_publication_intent_is_rejected_before_transfer_ownership() {
     let durability = DurabilityRequirement::new(1, false).expect("durability");
     let operation = CampaignTransferOperationId::for_archive(
         plan.manifest_id(),
+        "source",
         "destination",
         "metadata",
         Some("ordinary-head"),
@@ -559,6 +566,7 @@ fn corrupt_destination_object_retains_ownership_and_retries_after_repair() {
     let durability = DurabilityRequirement::new(1, false).expect("durability");
     let operation = CampaignTransferOperationId::for_archive(
         plan.manifest_id(),
+        "source",
         "destination",
         "metadata",
         None,

@@ -142,6 +142,7 @@ fn metadata_archive_cannot_obtain_execution_possession_or_publish_a_journal() {
     ));
     let operation = CampaignTransferOperationId::for_archive(
         plan.manifest_id(),
+        "source",
         "destination",
         "metadata",
         None,
