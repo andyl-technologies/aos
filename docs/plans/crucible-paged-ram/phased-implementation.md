@@ -68,7 +68,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 632 bindings: 613 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 635 bindings: 616 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -3020,11 +3020,42 @@ renaming it changes no test behavior. The initial broad GC selector also started
 a 512-MiB stress case; that invocation was deliberately terminated, its two
 owned fixture directories removed after process exit, and ordinary GC rerun
 with the stress case excluded. This interruption is not a stress qualification.
+Hermetic storage output `kppj8ry71299w59n2l5db19g5dzvy6id` passes all
+109 selected cases and 130 independently checked successful nested summaries.
 Required application compilation is running from corrected immutable source
-`pziny533k85pja76ak5fairhaswymr1f`; committed source and fixture matching is
-required before subsequent source edits. These metadata-archive controls do not
+`pziny533k85pja76ak5fairhaswymr1f`; all 5,420 committed Rust/TOML files and
+six required fixtures match `2363c178d2` before subsequent source edits. These metadata-archive controls do not
 qualify the complete transfer identity roster, restart reconciliation,
 whole-world readiness or execution handoff.
+
+Receiver object assembly now reuses the already admitted codec allocation
+helper. A real `try_reserve_exact` failure retains its original typed allocator
+cause in the same prepaid diagnostic bank, instead of creating a new boxed
+supervision error without account custody. The existing maximum assembly loan
+still precedes the attempted allocation; no resource limit is raised.
+
+The genuine predecessor passes the healthy RAM transfer and observed-prefix
+controls but fails the allocator refusal: after receiver and caller close, the
+returned diagnostic retains zero caller bytes. After correction all three
+controls pass. The exact-layout fault targets an existing fallible 60,013-byte
+assembly reservation for a bounded, incomplete peer chunk. A separate real
+prefix includes portable response encoding and proves that no earlier allocation
+has that extent. Refusal preserves the exact allocator cause, cancels once,
+publishes no root or stored acknowledgment, and keeps the finite caller charged
+until final error close. The healthy control completes three RAM objects and
+independently verifies one page and seventeen logical bytes. The archive owner
+is an explicit RAM-only fixture label; no complete-world offer is claimed.
+
+Inventory `mf88c4vaif0z2f9s9313ddvjlgb0bcgz` validates 635 bindings across
+243 requirements: 591 model, 25 format and nineteen native bindings. All 142
+uncovered requirements and the zero fully qualified count remain unchanged.
+All 762 ordinary storage tests, 95 policy controls and strict
+storage/portable-RAM Clippy pass. The expanded hermetic storage gate is running.
+Required application compilation is running from immutable source
+`k7qjy3vckj6p3iassvgpd0nydznz493z`; committed
+source and fixture matching is required before subsequent source edits. The
+fault controls establish component error custody, without inducing physical
+memory pressure or qualifying native resource admission.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`

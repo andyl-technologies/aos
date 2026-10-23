@@ -23,6 +23,7 @@ mod logical_causes;
 mod metadata_custody;
 mod proof_allocation;
 mod publication_receipt;
+mod receiver_allocation;
 mod record_prepay;
 mod representation_domains;
 mod root_decode;

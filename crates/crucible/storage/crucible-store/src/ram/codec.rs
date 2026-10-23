@@ -46,8 +46,8 @@ pub(super) fn object_limits(id: ContentId) -> Result<(u64, usize), RamStoreError
     }
 }
 
-// The closed record phase charges these exact buffers before either helper is
-// called. Allocation refusal retains that same partition's paid first cause.
+// Callers admit these exact buffers before either helper is called. Allocation
+// refusal retains that same partition's paid first cause.
 pub(super) fn allocate_charged_body(
     account: &DecodeBudget,
     capacity: usize,

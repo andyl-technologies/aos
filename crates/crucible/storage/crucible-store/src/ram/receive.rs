@@ -382,11 +382,9 @@ impl<'a> RamTransferReceiver<'a> {
                 }
                 let length = usize::try_from(length)
                     .map_err(|_| RamStoreError::Limit("transfer object allocation"))?;
-                object
-                    .try_reserve_exact(length)
-                    .map_err(|source| StoreError::Supervision {
-                        source: Box::new(source),
-                    })?;
+                // Assembly scratch is already admitted. Preserve the actual
+                // allocator refusal in that same account's prepaid diagnostic.
+                object = super::codec::allocate_charged_body(&account, length)?;
                 declared = Some(length as u64);
             }
             work.visit(bytes.len() as u64)?;
