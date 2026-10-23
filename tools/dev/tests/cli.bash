@@ -69,6 +69,11 @@ case " $* " in
   *' -A pkgs.aosBazelPackageManagerLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelHubConsoleLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelHubConsoleWasmLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.aosBazelHubWorkerLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.aosBazelHubWorkerAllFeaturesLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.aosBazelHubWorkerWasmLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.aosBazelHubWorkerWasmDoE2eLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.aosBazelHubWorkerWasmAllFeaturesLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelHubNativeLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelHubServiceLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelHubServiceAllFeaturesLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
@@ -197,7 +202,7 @@ bash "$root/tools/dev/aos-dev" bazel update-deps daemon
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/daemon/Cargo.lock><--output><$root/third_party/rust/daemon>"
 bash "$root/tools/dev/aos-dev" bazel update-deps crucible-cli
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/crucible-cli/Cargo.lock><--output><$root/third_party/rust/crucible-cli>"
-for family in formats native-foundation native-foundation-tests native-foundation-minimal activation-core activation-core-tests activation-storage activation-systemd activation-crucible activation-crucible-tests cli-support build-services deployment hub-portable hub-model hub-model-tests hub-client release-preparation registry-native registry-native-tests release-coordination boot-preparation boot-preparation-minimal package-manager package-manager-tests hub-db hub-db-tests hub-db-all-features hub-db-all-features-tests hub-console hub-console-wasm hub-service hub-service-tests hub-service-all-features hub-service-all-features-tests hub-native-postgres hub-native-tests; do
+for family in formats native-foundation native-foundation-tests native-foundation-minimal activation-core activation-core-tests activation-storage activation-systemd activation-crucible activation-crucible-tests cli-support build-services deployment hub-portable hub-model hub-model-tests hub-client release-preparation registry-native registry-native-tests release-coordination boot-preparation boot-preparation-minimal package-manager package-manager-tests hub-db hub-db-tests hub-db-all-features hub-db-all-features-tests hub-console hub-console-wasm hub-service hub-service-tests hub-service-all-features hub-service-all-features-tests hub-native-postgres hub-native-tests hub-worker-tests hub-worker-all-features-tests hub-worker-wasm hub-worker-wasm-do-e2e hub-worker-wasm-all-features; do
   bash "$root/tools/dev/aos-dev" bazel update-deps "$family"
   test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/$family/Cargo.lock><--output><$root/third_party/rust/$family>"
 done
@@ -250,6 +255,36 @@ test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:crucible-c
 grep -Fq -- '-A pkgs.aosBazelCrucibleCliLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family crucible-cli rust-project //example:crucible-cli
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/control/crucible-cli><--><build><//example:crucible-cli>"
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family hub-worker build //example:hub-worker
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:hub-worker>"
+
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family hub-worker rust-project //example:hub-worker
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/hub/aos-hub-worker><--><build><//example:hub-worker>"
+
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family hub-worker-all-features build //example:hub-worker-all-features
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:hub-worker-all-features>"
+
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family hub-worker-all-features rust-project //example:hub-worker-all-features
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/hub/aos-hub-worker><--><build><//example:hub-worker-all-features>"
+
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family hub-worker-wasm build //example:hub-worker-wasm
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:hub-worker-wasm>"
+
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family hub-worker-wasm rust-project //example:hub-worker-wasm
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/hub/aos-hub-worker><--><build><//example:hub-worker-wasm>"
+
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family hub-worker-wasm-do-e2e build //example:hub-worker-wasm-do-e2e
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:hub-worker-wasm-do-e2e>"
+
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family hub-worker-wasm-do-e2e rust-project //example:hub-worker-wasm-do-e2e
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/hub/aos-hub-worker><--><build><//example:hub-worker-wasm-do-e2e>"
+
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family hub-worker-wasm-all-features build //example:hub-worker-wasm-all-features
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:hub-worker-wasm-all-features>"
+
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family hub-worker-wasm-all-features rust-project //example:hub-worker-wasm-all-features
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/hub/aos-hub-worker><--><build><//example:hub-worker-wasm-all-features>"
+
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family hub-native build //example:hub-native
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:hub-native>"
 grep -Fq -- '-A pkgs.aosBazelHubNativeLauncher ' "$AOS_DEV_TEST_LOG"

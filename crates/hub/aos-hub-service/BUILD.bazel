@@ -20,11 +20,19 @@ RUST_PACKAGE = aos_rust_package(
 )
 
 LIBRARY_FEATURES = select({
+    "//tools/bazel/rules:hub_worker_all_features_tests_dependencies": ["default", "do-e2e-test-support", "query-timing"],
+    "//tools/bazel/rules:hub_worker_wasm_do_e2e_dependencies": ["default", "do-e2e-test-support"],
+    "//tools/bazel/rules:hub_worker_wasm_all_features_dependencies": ["default", "do-e2e-test-support", "query-timing"],
     "//tools/bazel/rules:hub_native_tests_dependencies": ["default", "test-fixtures"],
     "//tools/bazel/rules:hub_service_all_features_dependencies": ["default", "postgres", "mysql", "query-timing", "do-e2e-test-support", "test-fixtures"],
     "//tools/bazel/rules:hub_service_all_features_tests_dependencies": ["default", "postgres", "mysql", "query-timing", "do-e2e-test-support", "test-fixtures"],
     "//conditions:default": ["default"],
 })
+
+config_setting(
+    name = "wasm32",
+    constraint_values = ["@platforms//cpu:wasm32", "@platforms//os:none"],
+)
 
 DEPENDENCIES = [
     "//crates/aos/modules/aos-module-docs:lib",
@@ -56,7 +64,6 @@ DEPENDENCIES = [
     "//third_party/rust:core_serde_json",
     "//third_party/rust:core_sha2",
     "//third_party/rust:core_thiserror",
-    "//third_party/rust:core_tokio",
     "//third_party/rust:core_toml",
     "//third_party/rust:core_toml_edit",
     "//third_party/rust:core_tracing",
@@ -64,7 +71,10 @@ DEPENDENCIES = [
     "//third_party/rust:core_url",
     "//third_party/rust:core_uuid",
     "//third_party/rust:core_zeroize"
-]
+] + select({
+    ":wasm32": ["//third_party/rust:core_getrandom", "//third_party/rust:core_getrandom_03", "//third_party/rust:core_wasm_bindgen", "//third_party/rust:core_wasm_bindgen_futures", "//third_party/rust:core_js_sys", "//third_party/rust:core_send_wrapper"],
+    "//conditions:default": ["//third_party/rust:core_tokio"],
+})
 
 # Every artifact is declared. Missing assets fail instead of using build.rs's
 # development fallback, and no browser tool executes inside the native graph.
@@ -106,6 +116,11 @@ rust_library(
     srcs = glob(["src/**/*.rs"]),
     compile_data = glob(["src/web/static_assets/*"]) + ["//api/proto:hub_api_definitions"],
     deps = [":build_script"] + DEPENDENCIES,
+    # Cargo names getrandom 0.3 separately from the 0.2 dependency on Wasm.
+    aliases = select({
+        ":wasm32": {"//third_party/rust:core_getrandom_03": "getrandom_03"},
+        "//conditions:default": {},
+    }),
     proc_macro_deps = ["//third_party/rust:core_async_trait"],
 )
 
@@ -188,4 +203,17 @@ filegroup(
     name = "presentation_stylesheet",
     srcs = ["src/web/static_assets/style.css"],
     visibility = ["//crates/hub/aos-hub-ui:__pkg__"],
+)
+
+filegroup(
+    name = "static_assets",
+    srcs = [
+        "src/web/static_assets/style.css",
+        "src/web/static_assets/app.js",
+        "src/web/static_assets/theme.js",
+        "src/web/static_assets/Geist-Variable.woff2",
+        "src/web/static_assets/GeistMono-Variable.woff2",
+        "src/web/static_assets/OFL.txt",
+    ],
+    tags = ["aos-license:apache-host"],
 )

@@ -59,6 +59,10 @@ use crate::surface::{R2SurfaceProvider, R2SurfaceWriteProvider};
 /// # Errors
 ///
 /// Returns an error only if the registry inventory cannot be read.
+#[allow(
+    clippy::arc_with_non_send_sync,
+    reason = "Shared service APIs use Arc within the single-threaded Worker isolate"
+)]
 pub async fn index_all(
     backend: Box<dyn aos_hub_db::backend::Backend>,
     bucket: Bucket,
@@ -131,6 +135,10 @@ pub async fn index_all(
 /// # Errors
 ///
 /// Returns an error only if the cache inventory cannot be read from HubDb.
+#[allow(
+    clippy::arc_with_non_send_sync,
+    reason = "Shared service APIs use Arc within the single-threaded Worker isolate"
+)]
 pub async fn rescan_all(
     backend: Box<dyn aos_hub_db::backend::Backend>,
     bucket: Bucket,

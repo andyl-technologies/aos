@@ -19,6 +19,8 @@ RUST_PACKAGE = aos_rust_package(
 
 # The installed package enables PostgreSQL; ordinary tests retain Cargo defaults.
 NATIVE_FEATURES = select({
+    "//tools/bazel/rules:hub_worker_tests_dependencies": ["default", "test-support"],
+    "//tools/bazel/rules:hub_worker_all_features_tests_dependencies": ["default", "test-support"],
     "//tools/bazel/rules:hub_native_postgres_dependencies": ["default", "postgres"],
     "//conditions:default": ["default"],
 })

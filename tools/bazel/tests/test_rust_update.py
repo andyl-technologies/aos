@@ -174,6 +174,45 @@ class RustUpdateTests(unittest.TestCase):
         self.assertIn(f'aos_crate(name = "{label}")', (self.staged / "repositories.MODULE.bazel").read_text())
         self.assertIn(f'@{label}//:example', (self.staged / "aliases.bzl").read_text())
 
+    def alias_context(self):
+        return {
+            "direct_deps": ["one", "two"],
+            "workspace_members": {"root": ""},
+            "crates": {
+                "one": {"name": "example", "version": "1", "library_target_name": "example"},
+                "two": {"name": "example", "version": "2", "library_target_name": "example"},
+                "root": {"common_attrs": {
+                    "deps": {"common": [{"id": "one"}], "selects": {}},
+                    "proc_macro_deps": {"common": [{"id": "two", "alias": "example_v2"}], "selects": {}},
+                }},
+            },
+        }
+
+    def test_direct_aliases_preserve_renamed_versions_and_macro_dependencies(self):
+        aliases = updater.direct_aliases(self.alias_context(), "sdk")
+        self.assertEqual(aliases, {
+            "example": "@sdk__example-1//:example",
+            "example_v2": "@sdk__example-2//:example",
+        })
+
+    def test_direct_aliases_reject_collisions_and_missing_root_edges(self):
+        context = self.alias_context()
+        context["crates"]["root"]["common_attrs"]["proc_macro_deps"]["common"][0].pop("alias")
+        with self.assertRaisesRegex(ValueError, "ambiguous direct dependency alias"):
+            updater.direct_aliases(context, "sdk")
+
+        context = self.alias_context()
+        context["crates"]["root"]["common_attrs"].pop("proc_macro_deps")
+        with self.assertRaisesRegex(ValueError, "do not cover"):
+            updater.direct_aliases(context, "sdk")
+
+    def test_direct_aliases_retain_conditional_root_edges(self):
+        context = self.alias_context()
+        selection = context["crates"]["root"]["common_attrs"]["deps"]
+        selection["selects"]["cfg(unix)"] = selection["common"]
+        selection["common"] = []
+        self.assertEqual(len(updater.direct_aliases(context, "sdk")), 2)
+
     def feature_graph(self):
         context = {"crates": {"libc": {
             "name": "libc", "version": "0.2.186", "library_target_name": "libc",

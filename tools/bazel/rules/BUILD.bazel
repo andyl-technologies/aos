@@ -137,7 +137,7 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
-exports_files(["crucible_cli_graph.bzl", "daemon_graph.bzl", "compile.bzl", "build_script.bzl", "crates.bzl", "license.bzl", "package.bzl", "rust_package.bzl", "source_package.bzl", "test.bzl", "generated.bzl", "wasm.bzl"])
+exports_files(["crucible_cli_graph.bzl", "daemon_graph.bzl", "compile.bzl", "build_script.bzl", "crates.bzl", "license.bzl", "package.bzl", "rust_package.bzl", "source_package.bzl", "test.bzl", "generated.bzl", "wasm.bzl", "worker.bzl"])
 
 exports_files(["clippy.toml", "rustfmt.toml"])
 
@@ -380,5 +380,35 @@ config_setting(
 config_setting(
     name = "hub_native_tests_dependencies",
     flag_values = {":dependency_profile": "hub-native-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_worker_tests_dependencies",
+    flag_values = {":dependency_profile": "hub-worker-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_worker_all_features_tests_dependencies",
+    flag_values = {":dependency_profile": "hub-worker-all-features-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_worker_wasm_dependencies",
+    flag_values = {":dependency_profile": "hub-worker-wasm"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_worker_wasm_do_e2e_dependencies",
+    flag_values = {":dependency_profile": "hub-worker-wasm-do-e2e"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_worker_wasm_all_features_dependencies",
+    flag_values = {":dependency_profile": "hub-worker-wasm-all-features"},
     visibility = ["//visibility:public"],
 )

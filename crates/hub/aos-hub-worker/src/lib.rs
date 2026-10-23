@@ -155,10 +155,13 @@ pub mod indexer;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod pitr;
 pub mod placeholder;
+#[cfg(any(target_arch = "wasm32", test))]
 pub(crate) mod r2_adapter;
 #[cfg(target_arch = "wasm32")]
 mod remotebackend;
+#[cfg(any(target_arch = "wasm32", test))]
 mod remoteprotocol;
+#[cfg(any(target_arch = "wasm32", test))]
 mod requestshard;
 #[cfg(target_arch = "wasm32")]
 pub mod secretversions;
@@ -184,6 +187,7 @@ pub mod workerqueue;
 /// after an earlier source returned an unchanged or stale surface.
 /// The format domain also changes when an upgrade adds derived projections;
 /// otherwise a finished build would bypass the indexer's completeness checks.
+#[cfg(any(target_arch = "wasm32", test))]
 fn registry_index_build_id(
     registry_id: i64,
     registry_resource_version: i64,
@@ -840,6 +844,10 @@ mod entry {
 
     /// Builds the complete shared router with the live-workerd storage adapter.
     #[cfg(feature = "do-e2e")]
+    #[allow(
+        clippy::arc_with_non_send_sync,
+        reason = "Shared service APIs use Arc within the single-threaded Worker isolate"
+    )]
     async fn router_from_do_e2e(
         state: &State,
         env: &Env,
@@ -947,6 +955,10 @@ mod entry {
         ExecutionShard,
     }
 
+    #[allow(
+        clippy::arc_with_non_send_sync,
+        reason = "Shared service APIs use Arc within the single-threaded Worker isolate"
+    )]
     async fn router_from(
         env: &Env,
         db: Arc<Database>,
@@ -1906,6 +1918,10 @@ mod entry {
     ///
     /// Queue callers use the remote SQL backend; the retained internal endpoint
     /// uses colocated SQL for compatibility and runtime tests.
+    #[allow(
+        clippy::arc_with_non_send_sync,
+        reason = "Shared service APIs use Arc within the single-threaded Worker isolate"
+    )]
     async fn run_job(
         envelope: &aos_hub_service::jobs::JobEnvelope,
         state: Option<&State>,
@@ -2528,6 +2544,10 @@ mod entry {
     ///
     /// Provider inventories use the Worker dispatch budget; a pass that can
     /// continue immediately enqueues a bounded follow-up topology pass.
+    #[allow(
+        clippy::arc_with_non_send_sync,
+        reason = "Shared service APIs use Arc within the single-threaded Worker isolate"
+    )]
     async fn run_registry_deletions(
         backend: Box<dyn aos_hub_db::backend::Backend>,
         env: &Env,
@@ -2574,6 +2594,10 @@ mod entry {
         Ok(())
     }
 
+    #[allow(
+        clippy::arc_with_non_send_sync,
+        reason = "Shared service APIs use Arc within the single-threaded Worker isolate"
+    )]
     async fn run_domain_probes(
         backend: Box<dyn aos_hub_db::backend::Backend>,
         env: &Env,
@@ -2694,6 +2718,10 @@ mod entry {
             Option<Arc<aos_hub_service::delivery_attestation::DeliveryAttestationVerifier>>,
     }
 
+    #[allow(
+        clippy::arc_with_non_send_sync,
+        reason = "Shared service APIs use Arc within the single-threaded Worker isolate"
+    )]
     async fn shard_request_runtime(
         env: &Env,
         runtime: &Mutex<Option<HubShardRuntime>>,
@@ -2929,6 +2957,10 @@ mod entry {
             }
         }
 
+        #[allow(
+            clippy::arc_with_non_send_sync,
+            reason = "Shared service APIs use Arc within the single-threaded Worker isolate"
+        )]
         async fn fetch(&self, mut req: Request) -> Result<Response> {
             // Durable Objects execute in an isolate distinct from the outer
             // Worker, so they must install their own tracing subscriber.
@@ -3264,6 +3296,10 @@ mod entry {
 
         /// Builds immutable request dependencies once per object activation.
         #[cfg(not(feature = "do-e2e"))]
+        #[allow(
+            clippy::arc_with_non_send_sync,
+            reason = "Shared service APIs use Arc within the single-threaded Worker isolate"
+        )]
         async fn request_runtime(&self) -> Result<HubRequestRuntime> {
             let mut runtime = self.request_runtime.lock().await;
             if let Some(runtime) = runtime.as_ref() {

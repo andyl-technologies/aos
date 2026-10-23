@@ -18,6 +18,9 @@ RUST_PACKAGE = aos_rust_package(
 
 # Optional backends and fixture helpers are enabled only by the explicit matrix.
 LIBRARY_FEATURES = select({
+    "//tools/bazel/rules:hub_worker_all_features_tests_dependencies": ["default", "do-e2e-test-support", "query-timing"],
+    "//tools/bazel/rules:hub_worker_wasm_do_e2e_dependencies": ["default", "do-e2e-test-support"],
+    "//tools/bazel/rules:hub_worker_wasm_all_features_dependencies": ["default", "do-e2e-test-support", "query-timing"],
     "//tools/bazel/rules:hub_native_postgres_dependencies": ["default", "postgres"],
     "//tools/bazel/rules:hub_native_tests_dependencies": ["default", "test-fixtures"],
     "//tools/bazel/rules:hub_service_tests_dependencies": ["default", "test-fixtures"],
@@ -27,6 +30,11 @@ LIBRARY_FEATURES = select({
     "//tools/bazel/rules:hub_db_all_features_tests_dependencies": ["default", "postgres", "mysql", "query-timing", "do-e2e-test-support", "test-fixtures"],
     "//conditions:default": ["default"],
 })
+
+config_setting(
+    name = "wasm32",
+    constraint_values = ["@platforms//cpu:wasm32", "@platforms//os:none"],
+)
 
 DEPENDENCIES = [
     "//crates/aos/modules/aos-module-docs:lib",
@@ -44,15 +52,16 @@ DEPENDENCIES = [
     "//third_party/rust:core_serde",
     "//third_party/rust:core_serde_json",
     "//third_party/rust:core_sha2",
-    "//third_party/rust:core_sqlx",
     "//third_party/rust:core_thiserror",
-    "//third_party/rust:core_tokio",
     "//third_party/rust:core_toml",
     "//third_party/rust:core_tracing",
     "//third_party/rust:core_unicode_normalization",
     "//third_party/rust:core_url",
     "//third_party/rust:core_uuid",
-]
+] + select({
+    ":wasm32": [],
+    "//conditions:default": ["//third_party/rust:core_tokio", "//third_party/rust:core_sqlx"],
+})
 
 rust_library(
     name = "lib",

@@ -2764,3 +2764,7 @@ directory. All three Wasm baselines passed with that change. They precede the
 Worker Bazel conversion; real workerd/Durable Object execution, editor and
 compiler parity, performance acceptance and production migration remain
 separate gates.
+
+The [Worker build graph](docs/hub-worker.md) describes the five Bazel
+configurations, deployment packaging and separate native, Wasm and real-runtime
+gates.

@@ -1861,6 +1861,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit (bazelSupport) aosBazelRepositoryTestSources;
       inherit (bazelSupport) aosBazelHubConsoleWorkspace aosBazelHubConsoleLauncher;
       inherit (bazelSupport) aosBazelHubConsoleWasmWorkspace aosBazelHubConsoleWasmLauncher;
+      inherit (bazelSupport) aosBazelHubWorkerWorkspace aosBazelHubWorkerLauncher;
+      inherit (bazelSupport) aosBazelHubWorkerAllFeaturesWorkspace aosBazelHubWorkerAllFeaturesLauncher;
+      inherit (bazelSupport) aosBazelHubWorkerWasmWorkspace aosBazelHubWorkerWasmLauncher;
+      inherit (bazelSupport) aosBazelHubWorkerWasmDoE2eWorkspace aosBazelHubWorkerWasmDoE2eLauncher;
+      inherit (bazelSupport) aosBazelHubWorkerWasmAllFeaturesWorkspace aosBazelHubWorkerWasmAllFeaturesLauncher;
       inherit (bazelSupport) aosBazelHubNativeWorkspace aosBazelHubNativeLauncher;
       inherit (bazelSupport) aosBazelHubServiceWorkspace aosBazelHubServiceLauncher;
       inherit (bazelSupport) aosBazelHubServiceAllFeaturesWorkspace aosBazelHubServiceAllFeaturesLauncher;
@@ -1882,7 +1887,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit (bazelSupport) aosBazelActivationSystemdWorkspace aosBazelActivationSystemdLauncher;
       inherit (bazelSupport) aosBazelCrucibleCliRuntime aosBazelCrucibleCliWorkspace aosBazelCrucibleCliLauncher;
       inherit (bazelSupport) aosBazelDependencyGenerator aosBazelDependencyUpdater aosBazelCodegenTools;
-      inherit (bazelSupport) aosBazelWasmTools aosBazelConsoleAssets;
+      inherit (bazelSupport) aosBazelWasmTools aosBazelWorkerTools aosBazelConsoleAssets;
       inherit (bazelSupport) aosBazelRepositories aosBazelRustRepositories;
       inherit mkCargoPackage mkAosCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
       inherit mkOciTools ociTools mkOciMultiPlatformContainer mkOciPackageEvidence;

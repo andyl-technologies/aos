@@ -2,6 +2,11 @@
 
 def _dependency_profile_impl(ctx):
     if ctx.build_setting_value not in [
+        "hub-worker-tests",
+        "hub-worker-all-features-tests",
+        "hub-worker-wasm",
+        "hub-worker-wasm-do-e2e",
+        "hub-worker-wasm-all-features",
         "hub-native-postgres",
         "hub-native-tests",
         "hub-service",

@@ -44,12 +44,16 @@
   nix,
   workerd-source,
   bash,
+  workerDist ? null,
 }: let
   # The worker built with the `do-e2e` probe endpoint compiled in (never in the
   # production/default build). Built via `callPackage` with an explicit
   # `cargoFeatures` rather than `.override`, which the repo's wrapped
   # `mkDerivation` does not thread into a discovered package's function args.
-  dist = callPackage ./aos-hub-worker-dist.nix {cargoFeatures = "do-e2e";};
+  dist =
+    if workerDist == null
+    then callPackage ./aos-hub-worker-dist.nix {cargoFeatures = "do-e2e";}
+    else workerDist;
 
   egressFixture = ./aos-hub-direct-egress-fixture.mjs;
   stateFixture = ./aos-hub-worker-state-fixture.mjs;

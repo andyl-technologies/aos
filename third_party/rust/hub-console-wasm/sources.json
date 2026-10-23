@@ -1,9 +1,9 @@
 {
   "contracts": {
-    "third_party/rust/BUILD.bazel": "3d06f07997905c56a4e406f04052fcc17bf3b94a82a2659546b08e8f20f2ade0",
+    "third_party/rust/BUILD.bazel": "9c2cb21ec5211b0867a7a1df8784b63428d27eee1ec67ff673a0c17841a5fbf7",
     "third_party/rust/hub-console.bzl": "f286d141015ff23ffd42faf1dc830ad8866b89ce2159f4607c6c718a46af3fbe",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
-    "tools/bazel/metadata/update_rust.py": "580f4d32a30afcfec404fe60e51b986e5ed027dbddc21e438b60931922aa8c68",
+    "tools/bazel/metadata/update_rust.py": "dbc88bf6155320e30cea520dfaa5c05a43fea136d9daa1b6c04c478894e4b3d7",
     "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
   },
   "family": "hub-console-wasm",
@@ -2818,10 +2818,10 @@
       "Zlib OR Apache-2.0 OR MIT"
     ],
     "contracts": {
-      "third_party/rust/BUILD.bazel": "3d06f07997905c56a4e406f04052fcc17bf3b94a82a2659546b08e8f20f2ade0",
+      "third_party/rust/BUILD.bazel": "9c2cb21ec5211b0867a7a1df8784b63428d27eee1ec67ff673a0c17841a5fbf7",
       "third_party/rust/hub-console.bzl": "f286d141015ff23ffd42faf1dc830ad8866b89ce2159f4607c6c718a46af3fbe",
       "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
-      "tools/bazel/metadata/update_rust.py": "580f4d32a30afcfec404fe60e51b986e5ed027dbddc21e438b60931922aa8c68",
+      "tools/bazel/metadata/update_rust.py": "dbc88bf6155320e30cea520dfaa5c05a43fea136d9daa1b6c04c478894e4b3d7",
       "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
     },
     "family": "hub-console-wasm",

@@ -65,6 +65,7 @@
   aosBazelNixTestTools = import ./nix-test-tools.nix {inherit pkgs;};
   aosBazelCodegenTools = import ./codegen-tools.nix {inherit pkgs;};
   aosBazelWasmTools = import ./wasm-tools.nix {inherit pkgs;};
+  aosBazelWorkerTools = import ./worker-tools.nix {inherit pkgs;};
   aosBazelConsoleAssets = import ./console-assets.nix {
     inherit pkgs;
     build = (import ../../../tests/build/_bazel-hub-console-wasm.nix {inherit pkgs;}).build;
@@ -83,6 +84,36 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    hub-worker-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-worker-tests";
+    };
+
+    hub-worker-all-features-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-worker-all-features-tests";
+    };
+
+    hub-worker-wasm = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-worker-wasm";
+    };
+
+    hub-worker-wasm-do-e2e = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-worker-wasm-do-e2e";
+    };
+
+    hub-worker-wasm-all-features = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-worker-wasm-all-features";
+    };
+
     hub-native-postgres = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -383,6 +414,29 @@
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
   };
+  aosBazelHubWorkerWorkspace =
+    (import ../../../tests/build/_bazel-hub-worker.nix {
+      inherit pkgs;
+    }).workspace;
+  aosBazelHubWorkerAllFeaturesWorkspace =
+    (import ../../../tests/build/_bazel-hub-worker.nix {
+      inherit pkgs;
+      allFeatures = true;
+    }).workspace;
+  aosBazelHubWorkerWasmWorkspace =
+    (import ../../../tests/build/_bazel-hub-worker-wasm.nix {
+      inherit pkgs;
+    }).workspace;
+  aosBazelHubWorkerWasmDoE2eWorkspace =
+    (import ../../../tests/build/_bazel-hub-worker-wasm.nix {
+      inherit pkgs;
+      featureSet = "do-e2e";
+    }).workspace;
+  aosBazelHubWorkerWasmAllFeaturesWorkspace =
+    (import ../../../tests/build/_bazel-hub-worker-wasm.nix {
+      inherit pkgs;
+      featureSet = "all-features";
+    }).workspace;
   aosBazelHubNativeWorkspace =
     (import ../../../tests/build/_bazel-hub-native.nix {
       inherit pkgs;
@@ -924,6 +978,31 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelHubWorkerLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelHubWorkerWorkspace;
+    }).launcher;
+  aosBazelHubWorkerAllFeaturesLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelHubWorkerAllFeaturesWorkspace;
+    }).launcher;
+  aosBazelHubWorkerWasmLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelHubWorkerWasmWorkspace;
+    }).launcher;
+  aosBazelHubWorkerWasmDoE2eLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelHubWorkerWasmDoE2eWorkspace;
+    }).launcher;
+  aosBazelHubWorkerWasmAllFeaturesLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelHubWorkerWasmAllFeaturesWorkspace;
     }).launcher;
   aosBazelHubNativeLauncher =
     (import ./development.nix {

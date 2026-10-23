@@ -268,6 +268,41 @@ def specialize_feature_graph(specification, context, builds, repository):
     return builds
 
 
+def direct_aliases(context, repository):
+    """Preserves Cargo dependency renames without collapsing multiple versions."""
+    direct = set(context["direct_deps"])
+    dependencies = []
+    for identifier in context.get("workspace_members", {}):
+        attributes = context["crates"][identifier].get("common_attrs", {})
+        for field in ["deps", "proc_macro_deps"]:
+            selection = attributes.get(field, {})
+            dependencies.extend(selection.get("common", []))
+            for selected in selection.get("selects", {}).values():
+                dependencies.extend(selected)
+
+    # Older contexts without workspace metadata can still describe unambiguous
+    # ordinary roots. A repeated name must never silently replace another version.
+    if not context.get("workspace_members"):
+        dependencies = [{"id": identifier} for identifier in direct]
+    aliases = {}
+    covered = set()
+    for dependency in dependencies:
+        identifier = dependency["id"]
+        if identifier not in direct:
+            continue
+        crate = context["crates"][identifier]
+        name, version = crate["name"], crate["version"]
+        alias = dependency.get("alias") or name
+        label = f"@{crate_repository(repository, name, version)}//:{crate['library_target_name']}"
+        if alias in aliases and aliases[alias] != label:
+            raise ValueError(f"ambiguous direct dependency alias: {alias}")
+        aliases[alias] = label
+        covered.add(identifier)
+    if covered != direct:
+        raise ValueError("workspace dependency aliases do not cover all resolved direct dependencies")
+    return aliases
+
+
 def prepare_sources(specification, scratch, repository, staged):
     """Checks registry archive hashes and annotates rendered integration scope."""
     context = json.loads((scratch / "context.json").read_text())
@@ -326,11 +361,7 @@ def prepare_sources(specification, scratch, repository, staged):
     for (name, version), rendered in builds.items():
         (staged / f"BUILD.{name}-{version}.bazel").write_text(rendered)
     (staged / "repositories.MODULE.bazel").write_text("\n".join(declarations) + "\n")
-    aliases = {}
-    for identifier in context["direct_deps"]:
-        crate = context["crates"][identifier]
-        name, version = crate["name"], crate["version"]
-        aliases[name] = f"@{crate_repository(repository, name, version)}//:{crate['library_target_name']}"
+    aliases = direct_aliases(context, repository)
     (staged / "aliases.bzl").write_text(
         '"""Generated direct dependency labels for this resolved family."""\n\n'
         + "CRATES = " + json.dumps(aliases, indent=4, sort_keys=True) + "\n"

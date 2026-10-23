@@ -30,6 +30,9 @@ const MAIN_HTTP_ENDPOINT_ID: &str = "worker-e2e-http";
 const PUBLIC_BOUNDARY_ID: &str = "instance:public";
 const MAIN_HTTP_PORT: u16 = 8799;
 
+/// Stored bytes, content hash, strong ETag and byte size from the SQL adapter.
+type StoredObjectRow = (Vec<u8>, String, String, i64);
+
 /// Persistent test provider rooted in Durable Object SQLite.
 pub(crate) struct DoE2eSurfaceProvider {
     sql: SqlStorage,
@@ -587,7 +590,7 @@ impl DoE2eSurface {
         }
     }
 
-    fn load_object(&self, path: &str) -> Result<Option<(Vec<u8>, String, String, i64)>> {
+    fn load_object(&self, path: &str) -> Result<Option<StoredObjectRow>> {
         let object_key = self.object_key(path);
         let cursor = self.sql.exec(
             "SELECT byte_size, content_hash, strong_etag FROM aos_e2e_surface_objects

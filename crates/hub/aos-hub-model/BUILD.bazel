@@ -17,6 +17,11 @@ RUST_PACKAGE = aos_rust_package(
     license_domain = "apache-host",
 )
 
+config_setting(
+    name = "wasm32",
+    constraint_values = ["@platforms//cpu:wasm32", "@platforms//os:none"],
+)
+
 DEPENDENCIES = [
     "//crates/aos/registry/aos-registry-format:lib",
     "//third_party/rust:core_aes_gcm",
@@ -35,8 +40,16 @@ DEPENDENCIES = [
     "//third_party/rust:core_unicode_normalization",
     "//crates/shared/aos-oci-types:lib",
     "//third_party/rust:core_password_hash",
-    "//third_party/rust:core_tokio",
-]
+] + select({
+    ":wasm32": [
+        "//third_party/rust:core_getrandom",
+        "//third_party/rust:core_getrandom_03",
+        "//third_party/rust:core_wasm_bindgen",
+        "//third_party/rust:core_wasm_bindgen_futures",
+        "//third_party/rust:core_js_sys",
+    ],
+    "//conditions:default": ["//third_party/rust:core_tokio"],
+})
 
 DEVELOPMENT_DEPENDENCIES = ["//crates/hub/aos-hub-api:lib"]
 
@@ -64,6 +77,10 @@ rust_library(
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     deps = DEPENDENCIES,
+    aliases = select({
+        ":wasm32": {"//third_party/rust:core_getrandom_03": "getrandom_03"},
+        "//conditions:default": {},
+    }),
     proc_macro_deps = ["//third_party/rust:core_async_trait"],
 )
 
