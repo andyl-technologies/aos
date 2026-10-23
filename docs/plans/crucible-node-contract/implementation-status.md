@@ -10,6 +10,28 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Shared parent and native initial-construction arithmetic
+
+Commit `7b28a81a48` routes the native initial-construction projection through
+its existing parent producer after checking the actual private-key and birth-ID
+widths. Both original entry paths now use one complete formula. The fixed
+counter includes the additional borrowed projection and result headers; each
+original row remains independently authenticated without moving grant between axes.
+
+All eight focused initial-construction/reconstruction tests pass in each
+standard and raw-JSON mode, including 30 actual inherited-socket flights per
+mode. All-feature/all-target Transport/Engine/Daemon checking, formatting and
+all six architecture gates pass. The required application gate compiles 180
+test executables across 58 packages, including 71 integration targets.
+
+The registered funded Source/Birth VM also passes both fresh positive consumers,
+small-policy spent-retry controls, the foreign-pin refusal, terminal cleanup and
+the default-feature CLI refusal controls. All 456 frozen Rust/Cargo inputs match
+the committed revision and the application, VM support, default CLI and ordinary
+peer component captures. This qualifies the shared arithmetic and preboot Source
+census. It excludes subsequent Bootstrap input and deadline changes and does not
+produce opaque Recipe/Initial values or qualify Native18 readiness or full RFC-0025.
+
 ## Isolated parent private Birth construction
 
 Commit `07aad75c6f` connects the accepted original worker result and
