@@ -9,3 +9,6 @@ in
       sourceInventory = null;
     };
   }
+  // pkgs.lib.optionalAttrs (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) {
+    cross-linux = import ../../../tests/build/_bazel-quota-cross.nix {inherit pkgs;};
+  }

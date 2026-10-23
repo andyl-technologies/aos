@@ -8,6 +8,7 @@
   "completed_realisation_command": "nix-store --realise /nix/store/gvrbr96s8zzdgi6hd2dywy98x7b1sixh-aos-bazel-quota-qualified-checks.drv --max-jobs 4 --cores 4 --option substitute false",
   "configuration": "/nix/store/6fbj4r76dx6c8n6wkg0xv1bqc5j0myls-aos-bazel-configuration.json",
   "configuration_sha256": "6b7b0e79833465263974c9e1c28b91816ed3dc085b8c3c6874057d0029a73104",
+  "cross_linux_qualification": "aarch64-linux-quota.json",
   "doctest_cases": 0,
   "editor_parity": {
     "analysis": {
@@ -91,7 +92,7 @@
   "libtest_targets": 1,
   "limits": [
     "The flight executable is compiled and installed, but only the separate ext4 VM check exercises privileged quota enforcement.",
-    "Production consumers remain on Cargo; no performance budget or additional platform is accepted."
+    "Production consumers remain on Cargo; no performance budget is accepted. The separate AArch64 record covers unit execution only."
   ],
   "output": "/nix/store/8mf6m7crkdhhb6m11zh6066svi0z9lv0-aos-bazel-quota-qualified-checks",
   "parity": {
@@ -209,6 +210,6 @@
   ],
   "schema_version": 1,
   "source": "/nix/store/z85y7yw8lmizbd4b95pbd51kp9ci9g6r-aos-bazel-workspace",
-  "status": "native qualification passed; VM, aggregate regression and additional platforms pending",
+  "status": "native and AArch64 unit qualification passed; ext4 VM enforcement and aggregate regression pending",
   "tested_tree_parent_commit": "916dfab7a1dd03fc19716029abb424c19e29167d"
 }

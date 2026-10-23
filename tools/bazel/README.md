@@ -1157,6 +1157,7 @@ aos-dev bazel update-deps quota
 aos-dev bazel --family quota test //crates/shared/aos-linux-project-quota:unit
 nix-build tools/bazel/tests/quota.nix -A all --no-out-link
 nix-build tools/bazel/tests/quota.nix -A vm --no-out-link
+nix-build tools/bazel/tests/quota.nix -A cross-linux --no-out-link
 ```
 
 The native check covers test and dependency-feature parity, the example,
@@ -1168,5 +1169,12 @@ patterns, with no unknown types, partial types or panics). The separate `vm`
 check uses the existing ext4 enforcement
 assertions with the Bazel-built executable and requires a KVM builder. Native
 qualification, VM enforcement and additional platform results must be recorded
-before migrating production consumers. Production package builders remain on
-Cargo during this qualification.
+before migrating production consumers. `cross-linux` compiles the same unit
+cases for AArch64 with native procedural macros and runs their binaries under
+an AOS AArch64 kernel in QEMU. The shared-memory protocol retains its explicit
+foreign-layout rejection case when present in a family; the quota family
+requires the exact native case inventory without that unrelated adjustment.
+`tests/evidence/aarch64-linux-quota.json` records all eight quota cases passing,
+native procedural macros, sandboxed AArch64 compilation, and the existing
+device family's 642-case regression. The associated policy suite passes 136
+tests. Production package builders remain on Cargo during this qualification.

@@ -4,6 +4,7 @@
   targetPackages,
   compilation,
   source,
+  pname ? "aos-bazel-device-aarch64",
 }: let
   kernel = targetPackages.linux;
   runner = pkgs.runCommand "aos-bazel-family-guest-runner" {} ''
@@ -30,7 +31,7 @@
     ${targetPackages.stdenv.cc}/bin/cc reboot.c -o "$out/bin/reboot"
   '';
   closure = (pkgs.lib.build.closureInfo {inherit pkgs;}) {
-    pname = "aos-bazel-device-aarch64-runtime-closure";
+    pname = "${pname}-runtime-closure";
     rootPaths = [
       targetPackages.bash
       targetPackages.coreutils
@@ -43,7 +44,7 @@
     ];
   };
   rootfs =
-    pkgs.runCommand "aos-bazel-device-aarch64-test-rootfs" {
+    pkgs.runCommand "${pname}-test-rootfs" {
       buildDeps = [pkgs.e2fsprogs pkgs.fakeroot];
     } ''
       mkdir -p rootfs/nix/store rootfs/dev rootfs/proc rootfs/sys rootfs/tmp rootfs/run rootfs/bin rootfs/build/bazel/execroot
@@ -82,7 +83,7 @@
     '';
 in
   assert targetPackages.stdenv.hostPlatform.config == "aarch64-unknown-linux-gnu";
-    pkgs.runCommand "aos-bazel-device-aarch64-parity" {
+    pkgs.runCommand "${pname}-parity" {
       buildDeps = [pkgs.qemu pkgs.coreutils pkgs.python3];
       # Repository VM checks require this scheduling feature, including TCG guests.
       requiredSystemFeatures = ["kvm"];

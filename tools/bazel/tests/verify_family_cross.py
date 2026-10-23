@@ -33,19 +33,27 @@ def compiler_arguments(workspace, arguments):
     return expanded
 
 
-def verify(workspace, events_path, execution, parity, output, evidence):
-    """Checks toolchain roles and exports declared binaries for guest execution."""
-    expected = json.loads(parity.read_text())["targets"]
-    # The protocol pins region allocation to the published x86_64 layout.
-    # Foreign builds must exercise its rejection path, without widening that
-    # ABI policy or silently accepting arbitrary discovered inventory changes.
+def platform_case_differences(expected):
+    """Applies the reviewed shared-memory layout case only when that target exists."""
     layout = "//crates/crucible/protocol/crucible-qemu-shmem:region_layout"
+    if layout not in expected:
+        return {}
+
+    # The protocol pins region allocation to the published x86_64 layout.
+    # Its foreign rejection case preserves that policy in larger host families.
     native_case = "region_allocation_initializes_slots_rings_and_storage"
     foreign_case = "region_allocation_rejects_unpinned_developer_targets"
     cases = expected[layout]["executed"]
     if cases.count(native_case) != 1 or foreign_case in cases:
         raise ValueError("pinned-layout platform case contract changed; review the foreign oracle")
     expected[layout]["executed"] = sorted(foreign_case if case == native_case else case for case in cases)
+    return {layout: {"native_only": [native_case], "foreign_only": [foreign_case]}}
+
+
+def verify(workspace, events_path, execution, parity, output, evidence):
+    """Checks toolchain roles and exports declared binaries for guest execution."""
+    expected = json.loads(parity.read_text())["targets"]
+    platform_differences = platform_case_differences(expected)
     events = [json.loads(line) for line in events_path.read_text().splitlines()]
     targets = [label + "_binary" for label in expected]
     binaries = bazel_binaries(events, targets)
@@ -102,7 +110,7 @@ def verify(workspace, events_path, execution, parity, output, evidence):
         "execution": "x86_64-unknown-linux-gnu",
         "runtime": "compile-only; guest execution is a separate qualification",
         "native_inventory_sha256": hashlib.sha256(parity.read_bytes()).hexdigest(),
-        "platform_differences": {layout: {"native_only": [native_case], "foreign_only": [foreign_case]}},
+        "platform_differences": platform_differences,
         "artifacts": artifacts,
         "first_party_compiles": sorted(first_party),
         "native_procedural_macros": sorted(native_macros),
