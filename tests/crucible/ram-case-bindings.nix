@@ -19,6 +19,11 @@
   };
   components = {
     format = component "gate:ram-format" "format" [
+      (group "protocol/crucible-ram" "topology_sort" [] [
+        (case "ascii_inventory_ordering_allocates_only_its_shared_output" "adversarial" ["RAM-1" "RAM-12"] "Actual construction across empty, single, twelve, 64 and 4096-region maximum-width ASCII inventories and four input orders allocates only its shared output. An independent binary inventory and topology hash preserve canonical ordering; the same finite caller prepays the complete existing decode bound through output close, with no native authority.")
+        (case "utf8_inventory_ordering_allocates_only_its_shared_output" "adversarial" ["RAM-1" "RAM-12"] "Maximum-width UTF-8 inventories use an in-place unsigned-byte sort across all four classes and four input orders. Actual allocation observation permits only shared output, and independently encoded inventory bytes and digest match under unchanged finite caller funding; physical memory and execution are not qualified.")
+        (case "duplicate_inventory_refusal_needs_no_sorting_allocation" "adversarial" ["RAM-1" "RAM-12"] "Actual duplicate identifiers in two, 64 and 4096-region inventories refuse with the existing InvalidOrder error across scrambled, sorted, reversed and rotated inputs, without allocation or reallocation. Original finite caller credit stays charged throughout the refusal observation; no physical OOM is injected.")
+      ])
       (group "protocol/crucible-ram" "descriptor_decode" [] [
         (case "selected_descriptor_checks_allocate_no_identifier_copies" "adversarial" ["RAM-9" "RAM-12"] "Actual root decoding adds only its retained selected-root vector to the measured inventory prefix across 96 empty, single, twelve and maximum-width inventory/class/scope/identifier combinations. Repeated descriptors borrow canonical input instead of allocating discarded identifiers; finite caller credit grants no native authority.")
         (case "selected_descriptor_validation_preserves_original_error_kinds" "adversarial" ["RAM-9" "RAM-12"] "Thirteen actual malformed repeated-descriptor cases preserve the original identifier, class, mask, geometry and comparison error precedence. Canonical input is built before finite caller admission, which stays live through returned-error close; no physical OOM or native qualification is claimed.")

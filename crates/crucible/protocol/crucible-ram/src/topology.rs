@@ -322,7 +322,9 @@ impl Topology {
         if regions.len() > limits.max_regions.min(4096) {
             return Err(RamError::ResourceLimit);
         }
-        regions.sort_by(|left, right| left.id.as_bytes().cmp(right.id.as_bytes()));
+        // Valid identifiers have a unique canonical position. Duplicate keys
+        // are rejected below, so stable sorting would only add scratch storage.
+        regions.sort_unstable_by(|left, right| left.id.as_bytes().cmp(right.id.as_bytes()));
         let mut total_length = 0_u64;
         let mut previous: Option<&str> = None;
         for region in &regions {

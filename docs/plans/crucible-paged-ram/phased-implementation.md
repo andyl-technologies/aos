@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 604 bindings: 585 component and nineteen native, across 243 requirements. | 146 requirements remain uncovered and none fully qualified. |
+| Requirements | 607 bindings: 588 component and nineteen native, across 243 requirements. | 146 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2561,8 +2561,8 @@ license-boundary gate has no new passing result; its preceding 639-error Host
 compilation refusal remains unresolved.
 
 Signed repeated-descriptor commit `712d5d429d` is pushed. Required
-application-target compilation is running from immutable source
-`50z2gjirq0yn09k0dma83061ikgfwdk4`; all 5,411 committed Rust/TOML files and
+application-target compilation passes at `sybih144pjwgabsy98rwf3d1asm3vifv`
+from immutable source `50z2gjirq0yn09k0dma83061ikgfwdk4`; all 5,411 committed Rust/TOML files and
 six required fixtures match before subsequent update-coordinate edits.
 
 Ordered page updates now retain the incoming region identifier for their next
@@ -2602,9 +2602,11 @@ copy of its actual passing storage test binary with SHA-256
 `40a70b55346bfc172662ec293309a4c544d8129d9db49eb9936094aeaa34ad2a`.
 Its 512 MiB depth-first read-cost case passes in 314.42 seconds, with actual
 child reap/ECHILD and removal of its own scratch confirmed. The incompressible
-and shared archive/restore/repack controls remain in progress; earlier volume
-passes are not substituted for this frozen revision. No native, physical-memory
-floor or performance parity qualification is established.
+archive/restore/repack control also passes in 2,320.58 seconds, with actual
+terminal reap/ECHILD and its scratch removal independently verified. The shared
+control is running under the same limits; earlier volume passes are not
+substituted for this frozen revision. No native, physical-memory floor or
+performance parity qualification is established.
 
 Update entry now admits the actual caller account before backend headroom
 checks and successor-vector copies. A retained input root grants no permission
@@ -2661,8 +2663,53 @@ Inventory `ba8kv32lpplvw6z4j44niz67qg3wyjwd` validates 604 bindings across
 243 requirements: 563 model, 22 format and nineteen native bindings. The same
 146 requirements remain uncovered and none is fully qualified. All 744 ordinary
 storage tests, 686 engine tests, 95 policy controls and storage/portable-RAM
-Clippy pass. Hermetic storage and required application-target checks for this
-fallible-copy increment remain in progress.
+Clippy pass. Hermetic storage output `2n8y5rnq4gf86rzz7g8rr96minvfn550`
+passes all 84 selected cases and 105 independently checked successful nested
+summaries. Signed fallible-copy commit `84bd3a132c` is pushed. Required
+application-target compilation is running from immutable source
+`hsv0bqx8mxcax3vj60zyhzmkp1mcqc5h`; all 5,414 committed Rust/TOML files and
+six required fixtures match before subsequent topology-sort edits.
+
+Topology construction now orders its input descriptor vector in place. Valid
+identifiers have unique canonical positions; duplicate identifiers remain
+invalid. Stable ordering of equivalent keys supplies no successful inventory
+semantics, and its temporary allocation is unnecessary. The constructor keeps
+its existing count, aggregate-length and duplicate checks and caller-funded
+shared output. Canonical inventory encoding and topology commitments stay
+unchanged for valid inputs. No resource allowance, wire edition or native
+execution permission changes.
+
+Both actual maximum-width ASCII and UTF-8 controls fail on the original
+scrambled 4096-region constructor at two allocations instead of the one shared
+output. The actual duplicate control likewise fails at one allocation instead
+of zero. All three pass after the in-place sort, across empty, single, twelve,
+64 and 4096-region valid inventories, all four classes and scrambled, sorted,
+reversed and rotated input. A separately authored binary inventory and hash
+check exact bytes and the topology commitment. Twelve duplicate/order cases
+retain InvalidOrder without allocation or reallocation. Each finite caller
+prepays the complete existing decode bound before constructing input and keeps
+that same credit through output close or the refusal observation. A preliminary
+sandbox refusal is recorded separately from the genuine three predecessor test
+failures.
+
+Hermetic format output `b1m1gcsamymw465i75hifflvyf7as6d4` passes all sixteen
+selected cases and sixteen independently checked successful nested summaries.
+Inventory `gcr1zg3fl3vckabs0s67afb0hkigglfd` validates 607 bindings across
+243 requirements: 563 model, 25 format and nineteen native bindings. The same
+146 requirements remain uncovered and none is fully qualified. All 744 ordinary
+storage tests, 41 portable-RAM tests across nine binaries and 1,179 plugin tests
+pass. Host has 1,385 passes, four ignored cases and the same eight helper-custody
+failures; complete failure bodies match the prior baseline with only thread IDs
+normalized. ABI conformance output `8bzny4799liln50wrzvg9w5fqga21yha` passes,
+including actual wire-fuzz, doorbell, guest and aggregate owners. All 47 canonical
+owners and 268 registered tests are independently checked with the exact-count
+guards intact. All 686 engine tests, 95 policy controls and storage/portable-RAM
+Clippy pass. Full license and required application-target checks remain in
+progress. Application compilation uses immutable source
+`y0w8a5yif7q92rk2mz5s7ghksv5hflqk`; all 5,415 committed Rust/TOML files and
+six required fixtures match before subsequent source edits. These component
+observations establish no physical memory, native custody or performance parity
+qualification.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`
