@@ -1382,7 +1382,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     src = aosWorkspaceVendorSource;
     name = "aos-workspace-vendor";
     sourceRoot = "source";
-    hash = "sha256-9RtAQfCneDb6+5n3hqhXniXRRGfaKn59JKGul+1kYAc=";
+    hash = "sha256-7C9PNVGhGSBkkhuSJw66ne++V1IIx4HqxbsjJGf1Yss=";
   };
 
   # Auto-discover packages from subdirectories.
