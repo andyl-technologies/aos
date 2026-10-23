@@ -71,7 +71,7 @@
       files = builtins.readDir (root + "/${packages.${name}}/tests");
       integrations = map (pkgs.lib.removeSuffix ".rs") (builtins.filter (file: files.${file} == "regular" && pkgs.lib.hasSuffix ".rs" file) (builtins.attrNames files));
     in
-      map (target: "//${packages.${name}}:${target}${suffix}") (["unit" "doc" "license_closure"] ++ builtins.filter (target: builtins.elem suffix ["_test_support" "_all_features"] || !(builtins.elem target supportTests)) integrations))
+      map (target: "//${packages.${name}}:${target}${suffix}") (["unit" "doc" "license_closure" "crucible-e2e-determinism-scenario"] ++ builtins.filter (target: builtins.elem suffix ["_test_support" "_all_features"] || !(builtins.elem target supportTests)) integrations))
     (builtins.attrNames packages);
   featureVariant = name: features: let
     suffix = "_${name}";

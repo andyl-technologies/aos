@@ -1,7 +1,7 @@
 {
   "baseline": "daemon-cargo-baseline.json",
   "cli_checks": "/nix/store/dcwh8yl4v5fxl6fia79aj5aqnx66magi-aos-dev-cli-check-0",
-  "configured_targets": 443,
+  "configured_targets": 447,
   "default_unit_first_party_features": {
     "aos-linux-project-quota": [
       []
@@ -82,6 +82,7 @@
     "/nix/store/nq8lmnhyhwm5cc9i747c6na9d3iniw23-aos-rust-store-specifications-1",
     "/nix/store/5lkr2q6m9bk2m996nxfnapd2gjlpc7lb-aos-rust-store-s3-specifications-1"
   ],
+  "example_correction": "The first strict execution requested the existing scenario materializer, which was missing from the daemon BUILD declarations. All four feature graphs now declare its binary, license, developer and editor inputs; required target and example inventory comparisons remain enforced.",
   "existing_ten_dependency_locks": "unchanged after explicit dependency update",
   "external_crate_identities": 264,
   "external_features": {
@@ -1643,7 +1644,7 @@
     "crates/crucible/control/crucible-control-api/BUILD.bazel": "2d623e4ff2820e1f9a45d0e3a8fd2165fbd66e42b20b35fe5ef3f5954904e692",
     "crates/crucible/control/crucible-control-client/BUILD.bazel": "8c215189fc9f88199c9916d2a3d75939c86208fb58132303f5ca373f0af57098",
     "crates/crucible/control/crucible-control-server/BUILD.bazel": "355f7ddc85e1a81631e8850753c986e1bdba545698217e1ae879a45cd9dfbd00",
-    "crates/crucible/control/crucible-daemon/BUILD.bazel": "2000d322b614492c9f5c0625236bace3daf9b50b0a36540610d298cd0f5e9c35",
+    "crates/crucible/control/crucible-daemon/BUILD.bazel": "6957a1c0f931cffb323782e0a3a75aba810d6d6a284d499ed258d313babf6a61",
     "crates/crucible/control/crucible-session/BUILD.bazel": "17da26c7134e7e85fdfe900d5a7828cb6b16415795764ae8f9a1c704cac76020",
     "crates/crucible/engine/crucible-engine/BUILD.bazel": "6821547982c295ce149ff777da5e7f9bf82b7cdb8d508096a8bda8c885a42802",
     "crates/crucible/guest/crucible-guest/BUILD.bazel": "bc159c3b716e602920d4204e70a832bc17fb9d2bd0aee94bda34c50017b85c39",
@@ -1651,7 +1652,7 @@
     "crates/crucible/storage/crucible-store-s3/BUILD.bazel": "55c4bfd604b30d563cc87d3a26963ad4c3bc1e9aed24f2623db3211eae2da19c",
     "docs/rfcs/0020-crucible-campaigns/BUILD.bazel": "0b84f59e4acc204ffd0d2eb848e1d0e76686baed7ad50bf8339c3f716bc3cea4",
     "pkgs/build-support/_bazel/default.nix": "02bca8bee60edd8fd7ed5e1f5efa07b70cdda14682e6a969d6d3d1e6f10f5e65",
-    "tests/build/_bazel-daemon.nix": "19ba8f4b6c48d550964a6c0409d928c2c990249e43a4a32e88a74f979b156e7a",
+    "tests/build/_bazel-daemon.nix": "93fd22d586f0014e63fa2acbe09ba037136284703d9e32eb8cb59e4f594d2bab",
     "tests/build/_bazel-dependencies.nix": "af5939fdc0d01d23eb57a9f8cf1096c8f882d95fa6467f038d9f70f0bb799780",
     "tests/build/bazel.nix": "284afb3c6ec8085b3b0e2dab1ec16d11effa0a38d7edf09db6530914411a099a",
     "tests/crucible/BUILD.bazel": "8332e5fce9dcb53b08f7831fa46da0ade305bba2049fbe3ff198906ac8c86957",
@@ -2002,9 +2003,9 @@
     "tools/bazel/README.md": "9e9c073a8becfd191789e47ea37d8d815e35081f367fc92ad700d07723946752",
     "tools/bazel/metadata/boot-pilot-inventory.json": "b2cd2e67625a8e0a4396593b88abbad1f3fafeb18e63fd411761a2b046bf0e22",
     "tools/bazel/metadata/control-inventory.json": "685e44e119eaff54f91474b1174841983f399695f3e4abb6ffefc6879ded8ddf",
-    "tools/bazel/metadata/daemon-inventory.json": "98c136a29674c8b74e633be7d657b075c39942ffefab4f9aeb217b12498dfd03",
+    "tools/bazel/metadata/daemon-inventory.json": "a6ce157a228d55671826cb74f09595d94e52776e20415d0f2d9abe453378ff2c",
     "tools/bazel/metadata/device-inventory.json": "d72379b19fb5bee1f67461b2a2cb117ecd97e45ad61e6b38fe58b266f5086b2f",
-    "tools/bazel/metadata/engine-inventory.json": "c5f4f50803510627a523aa4676ac0c6b7bdf716081b7d38113449d34fee5c20a",
+    "tools/bazel/metadata/engine-inventory.json": "216f8ce8b228979cebd9bd61b9a4ce550fcbcf09b353639a9eb6e39b84490eb7",
     "tools/bazel/metadata/fixture-inventory.json": "357449b95775023af572b7e58b299284593c3945ca84753a7187159043ea287c",
     "tools/bazel/metadata/guest-inventory.json": "bd5b9cf3543b0fd35bfaf9f0b562cfb4aaa5f09b8376766cc0f44b2af2e74e8e",
     "tools/bazel/metadata/protocol-inventory.json": "0d0ad677fb216b971970759a0f591e55bccf40994b002a6cc06ecc656ff1830b",
@@ -2025,21 +2026,21 @@
   },
   "inventory_correction": "The first analysis rejected the existing daemon schema-registry input because its export omitted daemon visibility. The specific package export is now declared; no Rust tests or runtime behavior changed.",
   "inventory_refresh_outputs": [
-    "/nix/store/marlk865sj9bfgqnj8s2kzbg44j6gy7l-aos-bazel-boot-pilot-inventory-1",
-    "/nix/store/cbvziij9rpn26wllqg970bp51imikyf1-aos-bazel-control-inventory-1",
-    "/nix/store/6gln4sv9gw24ybmg949fjz5y93iz0rj5-aos-bazel-daemon-inventory-1",
-    "/nix/store/cigx3szmgs55ca184l3i2jmm4w19j56h-aos-bazel-device-inventory-1",
-    "/nix/store/b7w3yrkrkx0w172sbrlxlp1mqb2d5gfa-aos-bazel-engine-inventory-1",
-    "/nix/store/24x66ckiz6r8cqgc299lfd9rs16ksmhz-aos-bazel-fixture-inventory-1",
-    "/nix/store/67dx9w8bhwmqgaq952bnwfs9fjffrqnc-aos-bazel-guest-inventory-1",
-    "/nix/store/5ppgkwdfgb79h0y040klcpzh1bhn2a8q-aos-bazel-protocol-inventory-1",
-    "/nix/store/hb4l5g8vyf0fzl71x95kr0my4r1mwsxz-aos-bazel-qemu-host-inventory-1",
-    "/nix/store/49rps4a24bi87k6kzj9waql1ba2zvpi1-aos-bazel-quota-inventory-1",
-    "/nix/store/29s5k5m79arcap69rnxyr8msp5bg4n5g-aos-bazel-session-inventory-1",
-    "/nix/store/4yabkbdbdabb1aamynhbyadrnrs33mca-aos-bazel-shared-inventory-1",
-    "/nix/store/srgpkfsy8pjdk4xfrwlsb6svpcc2811p-aos-bazel-source-catalog-checks",
-    "/nix/store/rm49gsclrgpdhbgjhz44p48ask7gy20w-aos-bazel-store-inventory-1",
-    "/nix/store/3xrkbzk46gafnqa7wzypdz1dyf4yyyl0-aos-bazel-store-s3-inventory-1"
+    "/nix/store/xj1kbyqj1phrmz4wvz2in4vqpgjyfzxb-aos-bazel-boot-pilot-inventory-1",
+    "/nix/store/6y05pwxm246f00g3p4dl0vqwqcm9fl0c-aos-bazel-control-inventory-1",
+    "/nix/store/a587xlljh7czsh2am2byh85k54j3j9mc-aos-bazel-daemon-inventory-1",
+    "/nix/store/ylwmyhdg7cfz36kfr69zzzfxjdsxcx9p-aos-bazel-device-inventory-1",
+    "/nix/store/a533davamr5w35va94wpghcd1gbxyq36-aos-bazel-engine-inventory-1",
+    "/nix/store/52srdc5j052fxnzcxmqivmb5ws8snqps-aos-bazel-fixture-inventory-1",
+    "/nix/store/zkqkiadfaff9xxqmd2x93w5m3cs74w3q-aos-bazel-guest-inventory-1",
+    "/nix/store/pqx2k3ljnwqn8hla2w5mn0s1n6bkibsg-aos-bazel-protocol-inventory-1",
+    "/nix/store/s2ii2ilhfm3i85gfas6qhm8k80yjnkj4-aos-bazel-qemu-host-inventory-1",
+    "/nix/store/7mv6igbsrsh93v1aanmik2dkh1vmldvk-aos-bazel-quota-inventory-1",
+    "/nix/store/7h4d1zv5ddijgjikg23fhwy1wqq59y04-aos-bazel-session-inventory-1",
+    "/nix/store/r8vigrg88f2wk5wk74ywf9476c1skcfl-aos-bazel-shared-inventory-1",
+    "/nix/store/i6pg149lqr970h4wi4lxgbw36bqzgpd6-aos-bazel-source-catalog-checks",
+    "/nix/store/fgapbkf121i2cy5hhjdfgk4ykgnw1355-aos-bazel-store-inventory-1",
+    "/nix/store/9d13havaqx1zd54lhzsiimp5x7hcvjbw-aos-bazel-store-s3-inventory-1"
   ],
   "license_correction": "AWS signing enables generic-array/zeroize and digest/const-oid/subtle. Their exact pinned source licenses and retained MIT/BSD files were reviewed before adding only these daemon dependency identities to the permissive closure. License aspect enforcement and the QEMU process boundary are unchanged.",
   "limits": [
@@ -2081,7 +2082,7 @@
       "source_archive_sha256": "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
     }
   },
-  "source_files": 1545,
+  "source_files": 1546,
   "status": "offline configured graph, source inventories, dependency specifications, policy and CLI checks passed; native execution pending",
-  "tested_tree_parent_commit": "3fba62796cd453122c44f729dbb093e335d5f410"
+  "tested_tree_parent_commit": "0464a16b1660ddceea296f28650b27a8466d5288"
 }

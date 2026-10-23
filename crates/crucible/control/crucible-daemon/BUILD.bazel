@@ -1,5 +1,5 @@
 load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
-load("//tools/bazel/rules:compile.bzl", "rust_library")
+load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
 load("//tools/bazel/rules:daemon_graph.bzl", "DAEMON_VARIANTS", "daemon_dependencies")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
@@ -33,6 +33,7 @@ COMPILE_INPUTS = [
 ]
 SOURCES = glob(["src/**/*.rs"])
 INTEGRATIONS = glob(["tests/*.rs"], allow_empty = True)
+EXAMPLES = glob(["examples/*.rs"], allow_empty = True)
 SUPPORT_TESTS = ["gate_campaign_component_contract", "gate_exact_closure_streaming"]
 
 [
@@ -94,6 +95,22 @@ SUPPORT_TESTS = ["gate_campaign_component_contract", "gate_exact_closure_streami
 ]
 
 [
+    rust_binary(
+        name = source.removeprefix("examples/").removesuffix(".rs") + suffix,
+        testonly = True,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_name = source.removeprefix("examples/").removesuffix(".rs").replace("-", "_"),
+        crate_root = source,
+        srcs = [source],
+        crate_features = ["default"] + features,
+        deps = [":lib_for_tests" + suffix] + COMMON_DEPENDENCIES + DEVELOPMENT_DEPENDENCIES + daemon_dependencies(LIBRARIES, suffix, development = True),
+    )
+    for suffix, features in DAEMON_VARIANTS.items()
+    for source in EXAMPLES
+]
+
+[
     rust_doc_test(name = "doc" + suffix, crate = ":lib_for_tests" + suffix)
     for suffix in DAEMON_VARIANTS
 ]
@@ -105,15 +122,21 @@ TEST_ARTIFACTS = [":unit" + suffix + "_binary" for suffix in DAEMON_VARIANTS] + 
     if "test-support" in features or source.removeprefix("tests/").removesuffix(".rs") not in SUPPORT_TESTS
 ]
 
+EXAMPLE_ARTIFACTS = [
+    ":" + source.removeprefix("examples/").removesuffix(".rs") + suffix
+    for suffix in DAEMON_VARIANTS
+    for source in EXAMPLES
+]
+
 rust_clippy(
     name = "clippy",
     testonly = True,
-    deps = [":lib" + suffix for suffix in DAEMON_VARIANTS] + [":lib_for_tests" + suffix for suffix in DAEMON_VARIANTS] + TEST_ARTIFACTS,
+    deps = [":lib" + suffix for suffix in DAEMON_VARIANTS] + [":lib_for_tests" + suffix for suffix in DAEMON_VARIANTS] + TEST_ARTIFACTS + EXAMPLE_ARTIFACTS,
 )
 
 rustfmt_test(
     name = "format",
-    targets = [":lib" + suffix for suffix in DAEMON_VARIANTS] + [":lib_for_tests" + suffix for suffix in DAEMON_VARIANTS] + TEST_ARTIFACTS,
+    targets = [":lib" + suffix for suffix in DAEMON_VARIANTS] + [":lib_for_tests" + suffix for suffix in DAEMON_VARIANTS] + TEST_ARTIFACTS + EXAMPLE_ARTIFACTS,
 )
 
 rust_doc(name = "documentation", crate = ":lib")
@@ -126,6 +149,9 @@ rust_doc(name = "documentation", crate = ":lib")
             ":" + source.removeprefix("tests/").removesuffix(".rs") + suffix + "_binary"
             for source in INTEGRATIONS
             if "test-support" in features or source.removeprefix("tests/").removesuffix(".rs") not in SUPPORT_TESTS
+        ] + [
+            ":" + source.removeprefix("examples/").removesuffix(".rs") + suffix
+            for source in EXAMPLES
         ],
         license_domain = RUST_PACKAGE.license_domain,
     )
