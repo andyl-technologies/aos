@@ -66,7 +66,7 @@ fn verified_release_inventory_is_closed_sorted_and_rejects_missing_layers() {
     let release = support::add_signed_release_graph(&fixture);
     let graph = aos_oci::registry::verified_release_graph(fixture.root(), &release)
         .expect("complete graph inventory");
-    assert_eq!(graph.len(), 18);
+    assert_eq!(graph.len(), support::SIGNED_RELEASE_OBJECT_COUNT);
     assert!(graph.windows(2).all(|pair| pair[0].digest < pair[1].digest));
     assert!(
         graph
@@ -150,7 +150,7 @@ async fn interrupted_signed_release_graph_resumes_offsets_and_withholds_all_tags
         .await
         .expect("resume the exact immutable graph");
     assert_eq!(pushed.root_index_digest, release.oci.index.digest);
-    assert_eq!(pushed.object_count, 18);
+    assert_eq!(pushed.object_count, support::SIGNED_RELEASE_OBJECT_COUNT);
     assert!(
         registry
             .state
@@ -200,7 +200,7 @@ async fn signed_release_push_uploads_every_evidence_object_by_digest_only() {
         .await
         .expect("complete signed graph push");
     assert_eq!(pushed.root_index_digest, release.oci.index.digest);
-    assert_eq!(pushed.object_count, 20);
+    assert_eq!(pushed.object_count, support::SIGNED_RELEASE_OBJECT_COUNT);
 
     let manifests = registry.state.manifests.lock().expect("manifest lock");
     for descriptor in [

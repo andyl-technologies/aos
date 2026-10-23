@@ -1569,3 +1569,20 @@ unchanged. Workspace Rust compilation and the broader editor and metadata
 regression checks run separately. The complete-checkout Nix-inventory case,
 foreign and Wasm qualification, performance acceptance, and production migration
 remain separate gates.
+
+## Native integration library baseline
+
+`tests/evidence/native-foundation-cargo-baselines.json` retains connected Cargo
+baselines for `aos-nix`, `aos-transfer`, `aos-oci`, and `aos-systemd-client`.
+Default features execute 210 cases and four doctests; disabling transfer executes
+111 cases and one doctest. Both retain two existing ignored broker integration
+cases, and the default transfer doctests retain one ignored case. The graphs
+contain 281 and 181 external crate identities respectively, and eight first-party
+libraries. Native inputs are source-built AOS OpenSSL, libssh2, zlib, and Zstandard.
+
+`tests/evidence/native-foundation-initial-cargo-failure.json` retains the initial
+OCI test failure. Two assertions expected 18 objects although their shared signed
+release fixture contains 20. Those assertions and the existing 20-object assertion
+now share a documented fixture count. The object inventory, upload checks, and
+failure assertions remain intact. These are Cargo baselines; native integration
+library Bazel qualification remains pending.

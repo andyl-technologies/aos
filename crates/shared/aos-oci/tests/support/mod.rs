@@ -21,6 +21,10 @@ use flate2::Compression;
 use flate2::write::GzEncoder;
 use tempfile::TempDir;
 
+/// Counts four image objects, seven evidence payload/manifest pairs, one shared
+/// empty config, and one source archive in the signed release fixture.
+pub const SIGNED_RELEASE_OBJECT_COUNT: usize = 20;
+
 pub struct Fixture {
     pub temporary: TempDir,
     pub index: Vec<u8>,
