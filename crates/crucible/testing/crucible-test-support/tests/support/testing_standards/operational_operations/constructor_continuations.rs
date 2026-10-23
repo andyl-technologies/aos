@@ -29,6 +29,10 @@ mod members;
 mod native;
 #[path = "constructor_continuations/retained.rs"]
 mod retained;
+#[path = "constructor_continuations/factory_callers.rs"]
+mod factory_callers;
+
+pub(super) const CALLER_CONTRACTS: &[Contract] = factory_callers::CONTRACTS;
 
 pub(super) const CONTRACTS: &[Contract] = &[
     node::CONTRACT,
@@ -45,7 +49,7 @@ pub(super) const CONTRACTS: &[Contract] = &[
 /// Mutates only an owned continuation's actual receiver or argument.
 #[cfg(test)]
 pub(super) fn altered_expression(expression: &str) -> String {
-    if !CONTRACTS.iter().any(|contract| {
+    if !CONTRACTS.iter().chain(CALLER_CONTRACTS).any(|contract| {
         contract
             .expressions
             .iter()

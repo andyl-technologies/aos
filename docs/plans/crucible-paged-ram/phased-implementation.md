@@ -1332,6 +1332,25 @@ The earlier compact controller-receipt application-target build passes at
 required fixtures independently matched the immutable build source before later
 edits.
 
+
+The native Flight and ordinary/exact-resume factory adapters now classify only
+their exact retained-owner calls. They share the existing Source publication,
+Main retirement, original receipt and native-body producer contracts. Flight
+continues to borrow its same factory; resume cleanup continues through the saved
+installation owner. All 89 focused/source-policy controls and source shape pass,
+including the unchanged generic foreign-owner, omitted-obligation and additional-
+attempt mutations. The remaining broad retry-policy finding covers six daemon
+paths. Mandatory application-target compilation for this increment is pending.
+
+Independent read-only review of the sealed legacy provider-isolation design
+`0113b3c9ab4826cd4f971ffea3bb8cd1a2c9d07efd7f911f45765d77f5146f37`
+checks all 69 payloads and their signature, all 4,865 pure controls and all
+4,050,630 proposed relocation rows. The original build and reconstruction
+baselines remain unchanged. The proposed namespace selects 87 private objects
+and 2,854 names while keeping actual production providers unmodified. This is
+source/design evidence; object transformation, actual archive/version winners,
+final linking and the 187-case legacy fixture remain unqualified.
+
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's
 journal exactly once before any target effect. Four attempt cells and six error

@@ -677,6 +677,7 @@ fn contracts() -> impl Iterator<Item = &'static Contract> {
         .chain(retained_continuations::CONTRACTS)
         .chain(custody_delegation::CONTRACTS)
         .chain(constructor_continuations::CONTRACTS)
+        .chain(constructor_continuations::CALLER_CONTRACTS)
         .chain(construction_endpoint::CONTRACTS)
         .chain(service_continuations::CONTRACTS)
 }
