@@ -43,8 +43,12 @@ impl PreparedCompleteRestoration {
 
         let controls = [
             size_of::<&Self>() * 3,
-            size_of::<bool>() * 3,
+            size_of::<bool>() * 5,
             size_of::<&Rc<crate::node_control::deployment::InstalledDeployment>>(),
+            size_of::<Option<&Rc<crate::node_control::deployment::InstalledDeployment>>>(),
+            size_of::<
+                Result<&Rc<crate::node_control::deployment::InstalledDeployment>, RuntimeError>,
+            >(),
             size_of::<DeploymentResourceReadContext<'static>>(),
             size_of::<Result<DeploymentResourceReadContext<'static>, RuntimeError>>(),
             size_of::<&DeploymentResourceReadContext<'static>>() * 2,
@@ -53,6 +57,7 @@ impl PreparedCompleteRestoration {
             size_of::<&Rc<PacketCompleteSemanticSource>>(),
             size_of::<Result<&Rc<PacketCompleteSemanticSource>, RuntimeError>>(),
             size_of::<SourceDeploymentStorageRead<'static>>() * 3,
+            size_of::<&SourceDeploymentStorageRead<'static>>() * 3,
             size_of::<Result<SourceDeploymentStorageRead<'static>, RuntimeError>>() * 3,
             size_of::<Result<(), RuntimeError>>() * 5,
             size_of::<Result<usize, std::num::TryFromIntError>>(),
@@ -194,17 +199,119 @@ impl PreparedCompleteRestoration {
                         return Err(error);
                     }
                     self.import18_templates.members[selected].stage = Stage::DerivedBanks;
+                    self.prepare_funded_initial_banks(selected)?;
                     self.prepare_funded_private_seed(selected)?;
                 }
                 Stage::DerivedBanks => {
+                    self.prepare_funded_initial_banks(selected)?;
                     self.prepare_funded_private_seed(selected)?;
                 }
+                Stage::InitialBanks => self.prepare_funded_private_seed(selected)?,
                 Stage::PrivateSeed => self.prepare_funded_private_birth(selected)?,
                 Stage::PrivateBirth => {}
                 _ => return Err(RuntimeError::OutstandingObligations),
             }
         }
         Ok(true)
+    }
+
+    /// Reserves actual initial-lifecycle banks before constructing private Birth.
+    ///
+    /// The isolated worker's accepted banks stay in their original completion.
+    /// These separate Capture reservations use the same Source's own quote and
+    /// are admitted beside every existing holder before allocation. No native
+    /// startup, model, Initial, Recipe or phase permission follows.
+    ///
+    /// # Errors
+    /// Refuses a foreign member or phase, missing installed policy, unavailable
+    /// Source custody, a failed original quote, insufficient funding or actual
+    /// reservation failure. Every started policy/bank prefix remains retained.
+    fn prepare_funded_initial_banks(&mut self, selected: usize) -> Result<(), RuntimeError> {
+        if selected >= self.import18_templates.members.len()
+            || self.import18_templates.members[selected].stage != Stage::DerivedBanks
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        self.observe_import18_templates_data([
+            0,
+            0,
+            Self::funded_initial_banks_counter_scratch_data(),
+        ])?;
+        let maximum_records = self
+            .selected
+            .maximum_coordinator_records
+            .ok_or(RuntimeError::OwnerUnavailable)?;
+        let maximum = usize::try_from(self.selected.resources.memory_bytes.get())
+            .map_err(|_| RuntimeError::ResourceLimit)?;
+
+        self.note_funded_operation_stage("binding isolated Source initial-lifecycle policy");
+        let result = self.import18_templates.members[selected]
+            .output
+            .completed_unique_data()?
+            .bind_original_restored_settled_coordinator_policy18(maximum_records);
+        let observed = self.observe_import18_templates_data([0; 3]);
+        result.and(observed)?;
+
+        self.note_funded_operation_stage("quoting isolated Source Capture banks");
+        let row = self.import18_templates.members[selected]
+            .output
+            .completed_data()?
+            .original_import18_capture_bank_construction_data(
+                self.selected.maximum_native_rows,
+                maximum,
+            )?;
+        let (retained, transient, scratch) = row.requested_storage_data();
+        self.import18_templates.members[selected].bank_row = Some(row);
+        self.observe_import18_templates_data([retained, transient, scratch])?;
+
+        self.note_funded_operation_stage("reserving isolated Source Capture banks");
+        let result = self.import18_templates.members[selected]
+            .output
+            .completed_unique_data()?
+            .reserve_original_import18_capture_banks_data(&row);
+        // End the mutable Source loan before counting either a complete bank
+        // transfer or every failed constructor prefix in its original owner.
+        let observed = self.observe_import18_templates_data([0; 3]);
+        result.and(observed)?;
+        self.import18_templates.members[selected].stage = Stage::InitialBanks;
+        Ok(())
+    }
+
+    /// Names both defining constructors and the actor's fixed handoff controls.
+    pub(super) fn funded_initial_banks_counter_scratch_data() -> usize {
+        use std::mem::{size_of, size_of_val};
+
+        let controls = [
+            size_of::<&mut Self>(),
+            size_of::<&Self>() * 3,
+            size_of::<&str>() * 3,
+            size_of::<usize>() * 10,
+            size_of::<bool>() * 5,
+            size_of::<Stage>() * 2,
+            size_of::<Option<usize>>(),
+            size_of::<Result<usize, RuntimeError>>(),
+            size_of::<Result<usize, std::num::TryFromIntError>>(),
+            size_of::<&Rc<PacketCompleteSemanticSource>>() * 2,
+            size_of::<Result<&Rc<PacketCompleteSemanticSource>, RuntimeError>>() * 2,
+            size_of::<&mut PacketCompleteSemanticSource>() * 2,
+            size_of::<Result<&mut PacketCompleteSemanticSource, RuntimeError>>() * 2,
+            size_of::<OriginalImport18CaptureBankConstructionData>() * 3,
+            size_of::<Option<OriginalImport18CaptureBankConstructionData>>(),
+            size_of::<Result<OriginalImport18CaptureBankConstructionData, RuntimeError>>(),
+            size_of::<&OriginalImport18CaptureBankConstructionData>() * 2,
+            size_of::<(usize, usize, usize)>() * 2,
+            size_of::<[usize; 3]>() * 5,
+            size_of::<Result<(), RuntimeError>>() * 10,
+            size_of::<std::slice::Iter<'static, usize>>(),
+            size_of::<std::iter::Copied<std::slice::Iter<'static, usize>>>(),
+        ];
+        PacketCompleteSemanticSource::original_import18_capture_bank_counter_scratch_data()
+            .saturating_add(
+                PacketCompleteSemanticSource::original_restored_settled_coordinator_policy18_counter_scratch_data(),
+            )
+            .saturating_add(controls.iter().copied().fold(0usize, usize::saturating_add))
+            .saturating_add(size_of_val(&controls))
+            .saturating_add(size_of_val(&controls.into_iter()))
     }
 
     fn prepare_funded_private_seed(&mut self, selected: usize) -> Result<(), RuntimeError> {
@@ -435,6 +542,7 @@ impl PreparedCompleteRestoration {
                 Stage::DerivationExporting
                     | Stage::DerivationRunning
                     | Stage::DerivedBanks
+                    | Stage::InitialBanks
                     | Stage::PrivateSeed
                     | Stage::PrivateBirth
                     | Stage::DerivationFailed

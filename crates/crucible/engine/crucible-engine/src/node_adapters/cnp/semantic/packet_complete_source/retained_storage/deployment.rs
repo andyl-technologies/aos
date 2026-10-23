@@ -71,6 +71,7 @@ impl PacketCompleteSemanticSource {
             size_of::<&DeploymentResourceReadContext<'static>>(),
             size_of::<Option<&Rc<VerifiedSourceBirthMechanism>>>(),
             size_of::<&Rc<VerifiedSourceBirthMechanism>>(),
+            size_of::<Result<&Rc<VerifiedSourceBirthMechanism>, RuntimeError>>(),
             size_of::<&DeploymentResourceLease>() * 2,
             size_of::<Result<&DeploymentResourceLease, RuntimeError>>(),
             size_of::<SourceDeploymentStorageRead<'static>>() * 2,

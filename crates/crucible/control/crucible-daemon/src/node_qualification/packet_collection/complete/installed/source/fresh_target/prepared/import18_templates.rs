@@ -42,6 +42,7 @@ enum Stage {
     DerivationExporting,
     DerivationRunning,
     DerivedBanks,
+    InitialBanks,
     PrivateSeed,
     PrivateBirth,
     DerivationFailed,
@@ -170,7 +171,7 @@ impl MemberObservation<'_> {
         deployment: Option<&InstalledDeployment>,
     ) -> Result<(), RuntimeError> {
         let Self {
-            stage: _,
+            stage,
             registration_row: _,
             registration,
             template_row: _,
@@ -203,10 +204,21 @@ impl MemberObservation<'_> {
         }
         if let (Some(deployment), Some(source)) = (deployment, output.partial_data()) {
             let context = deployment.context()?;
-            let read = source.original_isolated_template_deployment_storage_data(
-                &context,
-                counter.remaining(),
-            )?;
+            // Once this member retains its private Birth, count the complete
+            // initial-lifecycle owners, including later Bootstrap journals.
+            // The stage selects a data visitor; original Source/deployment
+            // custody and unresolved native-read obligations remain mandatory.
+            let read = if *stage == Stage::PrivateBirth {
+                source.original_initial_lifecycle_deployment_storage_data(
+                    &context,
+                    counter.remaining(),
+                )
+            } else {
+                source.original_isolated_template_deployment_storage_data(
+                    &context,
+                    counter.remaining(),
+                )
+            }?;
             read.authenticate_original(&context)?;
             counter
                 .add(read.known_requested_bytes_data())
@@ -309,6 +321,8 @@ const TEMPLATE_PROJECTION_CONTROLS: usize = size_of::<&Option<RuntimeError>>() *
 
 const MEMBER_CHARGE_CONTROLS: usize = size_of::<&MemberObservation<'static>>() // actual helper receiver
     + size_of::<&mut Counter>() // actual helper counter argument
+    + size_of::<&Stage>() // copied stage view selects the actual component visitor
+    + size_of::<bool>() // visitor selection comparison
     + size_of::<&registration_plan::Attempt>() // copied actual registration reference
     + size_of::<&OriginalNativeSourceTemplate18Attempt>() // copied actual output reference
     + size_of::<&Option<SourceBirthDerivationJob>>() // copied actual external job slot
@@ -419,6 +433,8 @@ impl Templates {
             + OriginalNativeSourceTemplate18Attempt::retained_counter_scratch_data()
             + registration_plan::Attempt::counter_scratch_data()
             + SourceBirthDerivationJob::deployment_storage_counter_scratch_data()
+            + PreparedCompleteRestoration::funded_initial_banks_counter_scratch_data()
+            + PacketCompleteSemanticSource::initial_lifecycle_deployment_counter_scratch_data()
             + size_of::<&Self>()
             + size_of::<&mut Counter>()
             + size_of::<usize>()
