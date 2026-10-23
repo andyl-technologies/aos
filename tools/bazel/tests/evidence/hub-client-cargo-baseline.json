@@ -1,0 +1,740 @@
+{
+  "command": "nix-build /tmp/aos-bazel-722/hub-client-baselines.nix -A tests -A production --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "derivation": "/nix/store/r1xvmcqpxqhl1g34pdlglhshbagz7sad-aos-bazel-hub-client-cargo-baseline-1.drv",
+  "derivation_sha256": "294d2946b5883d3a515ac0d82c7bb87b7693aa4758d5b8a916fafedb201f703e",
+  "doctests": {
+    "aos-hub-client": {}
+  },
+  "executed_cases": 10,
+  "external_features": {
+    "anyhow@1.0.102": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "atomic-waker@1.1.2": [
+      []
+    ],
+    "base64@0.21.7": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "base64@0.22.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "bitflags@2.13.0": [
+      [],
+      [
+        "std"
+      ]
+    ],
+    "bytes@1.11.1": [
+      [],
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "cc@1.2.65": [
+      []
+    ],
+    "cfg-if@1.0.4": [
+      []
+    ],
+    "displaydoc@0.2.6": [
+      []
+    ],
+    "either@1.16.0": [
+      [
+        "std",
+        "use_std"
+      ]
+    ],
+    "equivalent@1.0.2": [
+      []
+    ],
+    "errno@0.3.14": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "fastrand@2.4.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "find-msvc-tools@0.1.9": [
+      []
+    ],
+    "fixedbitset@0.5.7": [
+      []
+    ],
+    "form_urlencoded@1.2.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-channel@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-core@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-sink@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-task@0.3.32": [
+      [
+        "alloc"
+      ]
+    ],
+    "futures-util@0.3.32": [
+      [
+        "alloc",
+        "slab"
+      ]
+    ],
+    "getrandom@0.2.17": [
+      []
+    ],
+    "getrandom@0.4.2": [
+      []
+    ],
+    "hashbrown@0.17.1": [
+      []
+    ],
+    "heck@0.5.0": [
+      []
+    ],
+    "http-body-util@0.1.3": [
+      [
+        "default"
+      ]
+    ],
+    "http-body@1.0.1": [
+      []
+    ],
+    "http@1.4.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "httparse@1.10.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "hyper-rustls@0.27.9": [
+      [
+        "http1",
+        "native-tokio",
+        "ring",
+        "rustls-native-certs",
+        "tls12"
+      ]
+    ],
+    "hyper-util@0.1.20": [
+      [
+        "client",
+        "client-legacy",
+        "client-proxy",
+        "default",
+        "http1",
+        "tokio"
+      ]
+    ],
+    "hyper@1.10.0": [
+      [
+        "client",
+        "default",
+        "http1"
+      ]
+    ],
+    "icu_collections@2.2.0": [
+      []
+    ],
+    "icu_locale_core@2.2.0": [
+      [
+        "zerovec"
+      ]
+    ],
+    "icu_normalizer@2.2.0": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "icu_normalizer_data@2.2.0": [
+      []
+    ],
+    "icu_properties@2.2.0": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "icu_properties_data@2.2.0": [
+      []
+    ],
+    "icu_provider@2.2.0": [
+      [
+        "baked"
+      ]
+    ],
+    "idna@1.1.0": [
+      [
+        "alloc",
+        "compiled_data",
+        "std"
+      ]
+    ],
+    "idna_adapter@1.2.2": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "indexmap@2.14.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "ipnet@2.12.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "itertools@0.13.0": [
+      [
+        "default",
+        "use_alloc",
+        "use_std"
+      ]
+    ],
+    "itertools@0.14.0": [
+      [
+        "default",
+        "use_alloc",
+        "use_std"
+      ]
+    ],
+    "itoa@1.0.18": [
+      []
+    ],
+    "libc@0.2.186": [
+      [],
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "linux-raw-sys@0.12.1": [
+      [
+        "auxvec",
+        "elf",
+        "errno",
+        "general",
+        "ioctl",
+        "no_std"
+      ]
+    ],
+    "litemap@0.8.2": [
+      []
+    ],
+    "log@0.4.30": [
+      []
+    ],
+    "memchr@2.8.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "mio@1.2.1": [
+      [
+        "net",
+        "os-ext",
+        "os-poll"
+      ]
+    ],
+    "multimap@0.10.1": [
+      []
+    ],
+    "once_cell@1.21.4": [
+      [
+        "alloc",
+        "default",
+        "race",
+        "std"
+      ]
+    ],
+    "openssl-probe@0.2.1": [
+      []
+    ],
+    "pbjson-build@0.7.0": [
+      []
+    ],
+    "pbjson@0.7.0": [
+      []
+    ],
+    "percent-encoding@2.3.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "petgraph@0.7.1": [
+      []
+    ],
+    "pin-project-lite@0.2.17": [
+      []
+    ],
+    "potential_utf@0.1.5": [
+      [
+        "zerovec"
+      ]
+    ],
+    "prettyplease@0.2.37": [
+      []
+    ],
+    "proc-macro2@1.0.106": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "prost-build@0.13.5": [
+      [
+        "default",
+        "format"
+      ]
+    ],
+    "prost-derive@0.13.5": [
+      []
+    ],
+    "prost-types@0.13.5": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "prost@0.13.5": [
+      [
+        "default",
+        "derive",
+        "prost-derive",
+        "std"
+      ],
+      [
+        "default",
+        "derive",
+        "std"
+      ]
+    ],
+    "quote@1.0.46": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "regex-automata@0.4.14": [
+      [
+        "alloc",
+        "meta",
+        "nfa-pikevm",
+        "nfa-thompson",
+        "std",
+        "syntax",
+        "unicode-bool"
+      ]
+    ],
+    "regex-syntax@0.8.11": [
+      [
+        "std",
+        "unicode-bool"
+      ]
+    ],
+    "regex@1.12.4": [
+      [
+        "std",
+        "unicode-bool"
+      ]
+    ],
+    "reqwest@0.12.28": [
+      [
+        "__rustls",
+        "__rustls-ring",
+        "__tls",
+        "json",
+        "rustls-tls-native-roots",
+        "rustls-tls-native-roots-no-provider",
+        "stream"
+      ]
+    ],
+    "ring@0.17.14": [
+      [
+        "alloc",
+        "default",
+        "dev_urandom_fallback"
+      ]
+    ],
+    "rustix@1.1.4": [
+      [
+        "alloc",
+        "default",
+        "fs",
+        "std"
+      ]
+    ],
+    "rustls-native-certs@0.8.3": [
+      []
+    ],
+    "rustls-pki-types@1.14.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "rustls-webpki@0.103.13": [
+      [
+        "alloc",
+        "ring",
+        "std"
+      ]
+    ],
+    "rustls@0.23.40": [
+      [
+        "ring",
+        "std",
+        "tls12"
+      ]
+    ],
+    "ryu@1.0.23": [
+      []
+    ],
+    "serde@1.0.228": [
+      [
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std"
+      ]
+    ],
+    "serde_core@1.0.228": [
+      [
+        "rc",
+        "result",
+        "std"
+      ]
+    ],
+    "serde_derive@1.0.228": [
+      [
+        "default"
+      ]
+    ],
+    "serde_json@1.0.150": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "serde_urlencoded@0.7.1": [
+      []
+    ],
+    "shlex@2.0.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "signal-hook-registry@1.4.8": [
+      []
+    ],
+    "slab@0.4.12": [
+      []
+    ],
+    "smallvec@1.15.2": [
+      [
+        "const_generics",
+        "const_new"
+      ]
+    ],
+    "socket2@0.6.4": [
+      [
+        "all"
+      ]
+    ],
+    "stable_deref_trait@1.2.1": [
+      []
+    ],
+    "subtle@2.6.1": [
+      []
+    ],
+    "syn@2.0.118": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "fold",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit"
+      ]
+    ],
+    "sync_wrapper@1.0.2": [
+      [
+        "futures",
+        "futures-core"
+      ]
+    ],
+    "synstructure@0.13.2": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "tempfile@3.27.0": [
+      [
+        "default",
+        "getrandom"
+      ]
+    ],
+    "tinystr@0.8.3": [
+      [
+        "zerovec"
+      ]
+    ],
+    "tokio-macros@2.7.0": [
+      []
+    ],
+    "tokio-rustls@0.26.4": [
+      [
+        "ring",
+        "tls12"
+      ]
+    ],
+    "tokio-util@0.7.18": [
+      [
+        "default",
+        "io"
+      ]
+    ],
+    "tokio@1.52.3": [
+      [
+        "bytes",
+        "default",
+        "fs",
+        "io-std",
+        "io-util",
+        "libc",
+        "macros",
+        "mio",
+        "net",
+        "process",
+        "rt",
+        "rt-multi-thread",
+        "signal",
+        "signal-hook-registry",
+        "socket2",
+        "sync",
+        "time",
+        "tokio-macros"
+      ]
+    ],
+    "tower-http@0.6.11": [
+      [
+        "follow-redirect",
+        "futures-util",
+        "tower"
+      ]
+    ],
+    "tower-layer@0.3.3": [
+      []
+    ],
+    "tower-service@0.3.3": [
+      []
+    ],
+    "tower@0.5.3": [
+      [
+        "futures-core",
+        "futures-util",
+        "pin-project-lite",
+        "retry",
+        "sync_wrapper",
+        "timeout",
+        "tokio",
+        "util"
+      ]
+    ],
+    "tracing-core@0.1.36": [
+      [
+        "once_cell",
+        "std"
+      ]
+    ],
+    "tracing@0.1.44": [
+      [
+        "std"
+      ]
+    ],
+    "try-lock@0.2.5": [
+      []
+    ],
+    "unicode-ident@1.0.24": [
+      []
+    ],
+    "untrusted@0.9.0": [
+      []
+    ],
+    "url@2.5.8": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "utf8_iter@1.0.4": [
+      []
+    ],
+    "want@0.3.1": [
+      []
+    ],
+    "writeable@0.6.3": [
+      []
+    ],
+    "yoke-derive@0.8.2": [
+      []
+    ],
+    "yoke@0.8.3": [
+      [
+        "derive",
+        "zerofrom"
+      ]
+    ],
+    "zerofrom-derive@0.1.7": [
+      []
+    ],
+    "zerofrom@0.1.8": [
+      [
+        "derive"
+      ]
+    ],
+    "zeroize@1.9.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "zerotrie@0.2.4": [
+      [
+        "yoke",
+        "zerofrom"
+      ]
+    ],
+    "zerovec-derive@0.11.3": [
+      []
+    ],
+    "zerovec@0.11.6": [
+      [
+        "derive",
+        "yoke"
+      ]
+    ],
+    "zmij@1.0.21": [
+      []
+    ]
+  },
+  "first_party_features": {
+    "aos-hub-api": [
+      []
+    ],
+    "aos-hub-client": [
+      []
+    ]
+  },
+  "first_party_source_sha256": {
+    "api/proto/aos/hub/v1/hub.proto": "77005b93fb1df0a6830325e9b30a1b8bd83db2d1008a6bcee88a0a36f51adec5",
+    "crates/Cargo.lock": "033bfad7de38812960028c5c2f69c2737eaa5a73dba2a810dfcf2f992268e6fd",
+    "crates/Cargo.toml": "8761ede65c4d2a37b93a130f16436aba18112776494133f86e026d2a9acb6aee",
+    "crates/hub/aos-hub-api/Cargo.toml": "569398cdddd5b291c68460b9fceb4fc0132c01868d0200d433c7a4cc472df6c5",
+    "crates/hub/aos-hub-api/build.rs": "f33e462a0e1a690a7fbecf612cc310543a932c81837f6074ac8e13f57ee2e9ca",
+    "crates/hub/aos-hub-api/src/lib.rs": "cf03f7a9fa1c04210498a0a69c05c89ccb5e3db6d48aae74380d85982a5333ea",
+    "crates/hub/aos-hub-api/tests/contract_inventory.rs": "4771db975f7e5ead657e6edc51c3605fb4f21424e2832cfe219cb45af27ad32b",
+    "crates/hub/aos-hub-client/Cargo.toml": "03c70141c5ff53a1eb07148f51b6a3d10823415354959ebeae04ccbb12bf3a64",
+    "crates/hub/aos-hub-client/src/hub.rs": "c931f1a0f7bd98d8d43040142e478ff69e861b652f5a6ee19ef258652dc66c5c",
+    "crates/hub/aos-hub-client/src/lib.rs": "92b0b07327f64cebadc93655635c62a31f6a2bfeaa97255f07db1d54bce93abb",
+    "crates/hub/aos-hub-client/src/login.rs": "0c1b6c581704f2653198f719c41b4deb39c75610cbde1f4999ef563a5327c70f"
+  },
+  "ignored_cases": 0,
+  "libtest_artifacts": 1,
+  "limits": [
+    "Native Linux Cargo baseline only; Bazel, foreign/Wasm execution, installed services, performance acceptance and production cutover remain separate qualification.",
+    "Production and development dependency feature graphs are retained independently; this baseline does not claim that their feature units are identical.",
+    "The ten cases validate request construction, typed references, error handling and URL syntax. Live Hub authentication and service operations are not exercised."
+  ],
+  "output": "/nix/store/ph6nhh9rhiab9jw6zrhbr85f6h1f3iaw-aos-bazel-hub-client-cargo-baseline-1",
+  "recipe": "let\n  root = /home/dylan/src/aos/.worktrees/codex/bazel-integration-722;\n  pkgs = (import root {}).pkgs;\nin import (root + \"/tests/build/_bazel-cargo-oracle.nix\") {\n  inherit pkgs;\n  pname = \"aos-bazel-hub-client-cargo-baseline\";\n  packages = [\"aos-hub-client\"];\n  cargoSource = import (root + \"/pkgs/tools/crucible/_cargo-source.nix\") {\n    inherit (pkgs) lib;\n    extraPaths = [\"api/proto/aos/hub/v1/hub.proto\"];\n  };\n  nativeTools = [pkgs.protobuf];\n  cargoSetup = ''\n    export PROTOC=\"${pkgs.protobuf}/bin/protoc\"\n    export PROTOC_INCLUDE=\"${pkgs.protobuf}/include\"\n  '';\n}\n",
+  "report_sha256": {
+    "cargo-messages.jsonl": "3e7343ad098d4aa977f44fa5839e92a3e19990e59e6af95ac8a2c61d99a145d7",
+    "cargo-tests.log": "4a869d2d2f8818c4eb126b70cca54e2bcb476e823a185eb64b8c39360b53e778"
+  },
+  "schema_version": 1,
+  "source": "/nix/store/kzwkmrq3k48h1rdn61vgwgj4zv1380s6-crucible-cargo-src",
+  "status": "Unchanged typed Hub client unit and doctest execution passed before Bazel conversion",
+  "targets": {
+    "aos-hub-client/unit": {
+      "binary_sha256": "e4c3839d4c070755dbc0e8dcb107d456319843a2355638d4947e57be8d7f9943",
+      "executed": [
+        "hub::tests::cache_and_operation_methods_use_only_the_cutover_package",
+        "hub::tests::container_methods_use_the_distinct_service",
+        "hub::tests::optional_reads_only_suppress_exact_not_found_envelopes",
+        "hub::tests::placement_mutations_serialize_normalized_specs_and_camel_case_fields",
+        "hub::tests::requests_include_connect_protocol_and_json_headers",
+        "hub::tests::surface_ref_parser_preserves_kind_and_nested_slug",
+        "hub::tests::surface_ref_parser_rejects_ambiguous_or_empty_values",
+        "hub::tests::surface_refs_round_trip_as_canonical_oneofs",
+        "tests::preserves_http_base_paths",
+        "tests::rejects_non_http_and_malformed_urls"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    }
+  }
+}
