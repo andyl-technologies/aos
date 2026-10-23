@@ -872,6 +872,44 @@ fn map_storage_error(
     }
 }
 
+impl LinuxQemuAttemptHostOwner {
+    /// Reserves actual cloned-contract controls in this node's retained Source.
+    ///
+    /// The returned lease must be held beside the duplicated contract and
+    /// dropped after its actual FDs. This funds no Source or Target execution.
+    ///
+    /// # Errors
+    /// Refuses a terminal host, foreign contract/family, unavailable genuine
+    /// Source payer or exhausted originally reserved control peak.
+    pub fn reserve_contract_controls(
+        &self,
+        contract: &crate::QemuChildProcessContract,
+        descriptors: u64,
+        bytes: u64,
+    ) -> Result<
+        crucible_host_resources::host_services::process_birth::SourceHostControlLease,
+        QemuVmRealizationError,
+    > {
+        if self.terminal {
+            return Err(missing_authority("reserve retired contract controls"));
+        }
+        let attempt = match self.fork_target.as_ref() {
+            Some(target) => &target.reservation.attempt,
+            None => self
+                .original_account
+                .as_ref()
+                .ok_or_else(|| missing_authority("reserve contract controls without original"))?,
+        };
+        attempt
+            .reserve_contract_controls(contract, descriptors, bytes)
+            .map_err(original_roster::original_error)
+    }
+}
+
+pub(crate) use original_roster::TargetCleanupOriginal;
+
+pub(crate) use original_roster::{SourceCleanupLender, SourceCleanupOriginal};
+
 // Fixture policy reserves an explicit finite descriptor ceiling independently of vCPU count.
 #[cfg(test)]
 const TEST_HOST_FILE_DESCRIPTORS: u64 = 1_024;
@@ -1120,41 +1158,3 @@ mod tests {
         );
     }
 }
-
-impl LinuxQemuAttemptHostOwner {
-    /// Reserves actual cloned-contract controls in this node's retained Source.
-    ///
-    /// The returned lease must be held beside the duplicated contract and
-    /// dropped after its actual FDs. This funds no Source or Target execution.
-    ///
-    /// # Errors
-    /// Refuses a terminal host, foreign contract/family, unavailable genuine
-    /// Source payer or exhausted originally reserved control peak.
-    pub fn reserve_contract_controls(
-        &self,
-        contract: &crate::QemuChildProcessContract,
-        descriptors: u64,
-        bytes: u64,
-    ) -> Result<
-        crucible_host_resources::host_services::process_birth::SourceHostControlLease,
-        QemuVmRealizationError,
-    > {
-        if self.terminal {
-            return Err(missing_authority("reserve retired contract controls"));
-        }
-        let attempt = match self.fork_target.as_ref() {
-            Some(target) => &target.reservation.attempt,
-            None => self
-                .original_account
-                .as_ref()
-                .ok_or_else(|| missing_authority("reserve contract controls without original"))?,
-        };
-        attempt
-            .reserve_contract_controls(contract, descriptors, bytes)
-            .map_err(original_roster::original_error)
-    }
-}
-
-pub(crate) use original_roster::TargetCleanupOriginal;
-
-pub(crate) use original_roster::{SourceCleanupLender, SourceCleanupOriginal};

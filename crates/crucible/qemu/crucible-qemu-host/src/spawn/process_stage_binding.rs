@@ -66,6 +66,43 @@ impl QemuChildProcessContract {
     }
 }
 
+/// Pins the existing contract allocation until physical aliases have closed.
+///
+/// The containing fixed target loan pays this same allocation before contract
+/// birth. Retaining this pin allocates nothing and lends no launch authority.
+pub(crate) struct QemuProcessStageRetirement {
+    attempt: Option<Arc<AttemptResourceBinding>>,
+}
+
+impl QemuChildProcessContract {
+    pub(crate) fn retain_process_stage_retirement(&self) -> QemuProcessStageRetirement {
+        QemuProcessStageRetirement {
+            attempt: Some(Arc::clone(&self.attempt_binding)),
+        }
+    }
+}
+
+impl QemuProcessStageRetirement {
+    /// Closes only the uniquely retained, physically retired contract allocation.
+    ///
+    /// Callers separately prove process and cgroup retirement. Surviving strong
+    /// contracts or weak stage witnesses refuse without dropping this same pin.
+    pub(crate) fn close(&mut self) -> Result<(), QemuProcessStageIdentityError> {
+        let attempt = self.attempt.as_mut().ok_or(QemuProcessStageIdentityError)?;
+        Arc::get_mut(attempt).ok_or(QemuProcessStageIdentityError)?;
+        drop(self.attempt.take());
+        Ok(())
+    }
+}
+
+impl Drop for QemuProcessStageRetirement {
+    fn drop(&mut self) {
+        if let Some(attempt) = self.attempt.take() {
+            std::mem::forget(attempt);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -107,42 +144,5 @@ mod tests {
         drop(original);
         assert!(duplicate.verify_process_stage_binding(&binding).is_ok());
         assert!(QemuProcessStageBinding::retained_control_bytes().unwrap() > 0);
-    }
-}
-
-/// Pins the existing contract allocation until physical aliases have closed.
-///
-/// The containing fixed target loan pays this same allocation before contract
-/// birth. Retaining this pin allocates nothing and lends no launch authority.
-pub(crate) struct QemuProcessStageRetirement {
-    attempt: Option<Arc<AttemptResourceBinding>>,
-}
-
-impl QemuChildProcessContract {
-    pub(crate) fn retain_process_stage_retirement(&self) -> QemuProcessStageRetirement {
-        QemuProcessStageRetirement {
-            attempt: Some(Arc::clone(&self.attempt_binding)),
-        }
-    }
-}
-
-impl QemuProcessStageRetirement {
-    /// Closes only the uniquely retained, physically retired contract allocation.
-    ///
-    /// Callers separately prove process and cgroup retirement. Surviving strong
-    /// contracts or weak stage witnesses refuse without dropping this same pin.
-    pub(crate) fn close(&mut self) -> Result<(), QemuProcessStageIdentityError> {
-        let attempt = self.attempt.as_mut().ok_or(QemuProcessStageIdentityError)?;
-        Arc::get_mut(attempt).ok_or(QemuProcessStageIdentityError)?;
-        drop(self.attempt.take());
-        Ok(())
-    }
-}
-
-impl Drop for QemuProcessStageRetirement {
-    fn drop(&mut self) {
-        if let Some(attempt) = self.attempt.take() {
-            std::mem::forget(attempt);
-        }
     }
 }

@@ -1155,6 +1155,13 @@ Mandatory application-target compilation remains required for this change.
 The fixture changes also pass Nix engineering hygiene at
 `zcvijji792yblcv5r97p578pnwrl3izi`.
 
+The subsequent ordering-only cleanup moves complete existing production blocks
+before their test modules, with byte-exact block contents preserved. All four
+attempt-owner and two process-stage controls pass, along with source shape.
+Strict Host lint remains at 678 library errors and fourteen warnings; test-target
+errors fall to 729 with five warnings. The remaining diagnostics concern large
+error carriers. Mandatory application-target compilation remains required.
+
 #### Cumulative construction and request ownership source
 
 Signed atomic `e82bb4c78da7af3351ef6473935a2be2feb01a2d` imports conventional
