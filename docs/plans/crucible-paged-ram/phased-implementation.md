@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 625 bindings: 606 component and nineteen native, across 243 requirements. | 145 requirements remain uncovered and none fully qualified. |
+| Requirements | 629 bindings: 610 component and nineteen native, across 243 requirements. | 144 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2963,9 +2963,30 @@ the complete policy rerun passes. Daemon Clippy stops in the unchanged host
 dependency on 622 errors before checking the daemon; it does not pass.
 Required application
 compilation is running from immutable source
-`jhin7x3fx9akk13jimw2vbcp2fld76pz`; committed source and fixture matching is
-required before subsequent source edits. These archive controls qualify no
+`jhin7x3fx9akk13jimw2vbcp2fld76pz`; all 5,419 committed Rust/TOML files and
+six required fixtures match before subsequent source edits. These archive controls qualify no
 native launch, whole-world restore readiness or execution ownership.
+
+STORE-9 now registers four existing packed-backend controls in the hermetic
+storage gate. Actual repacking replaces two packs with one while a separately
+synchronized old reader authenticates its original inode, and restart replays
+the committed generation idempotently. Adversarial controls refuse a stale
+generation and changed plan checksum while preserving actual objects, including
+an empty RAM-kind object. Checked views retain the selected physical source
+after view close; mutating actual committed bytes refuses both retained
+metadata lookup and an already-issued handle at EOF. Their final descriptor
+and resident observations return to the finite component baseline.
+
+All four cases already pass in the 759-test storage run. Registering their
+existing assertions changes neither production code nor test behavior.
+Inventory `ppg0877x9s5w0x44bwa28vnxw6i7qld2` validates 629 bindings across
+243 requirements: 585 model, 25 format and nineteen native bindings. STORE-9
+now has both component roles; 144 requirements remain uncovered and none is
+fully qualified. Expanded hermetic storage output
+`j3ici2h051c5j7d5ixsn8kz0i5v3xbga` passes all 106 selected cases and
+127 independently checked successful nested summaries. These controls do not
+establish a native faulting pager's deletion races, fork safety, whole-kernel
+resource admission or performance parity.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`
