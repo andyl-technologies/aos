@@ -3,10 +3,11 @@
 {
   pkgs,
   lib,
+  bazelProbe ? null,
 }: let
   source = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  probe = pkgs.mkDerivation {
+  cargoProbe = pkgs.mkDerivation {
     pname = "crucible-project-quota-flight";
     version = "0";
     src = source;
@@ -36,6 +37,11 @@
       }
     ];
   };
+  # The caller may qualify a Bazel-built probe with the same guest assertions.
+  probe =
+    if bazelProbe == null
+    then cargoProbe
+    else bazelProbe;
   quotaKernel = pkgs.linux.override {
     extraConfig = ''
       CONFIG_QUOTA=y

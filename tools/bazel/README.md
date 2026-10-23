@@ -381,7 +381,7 @@ must never become global inputs to every compilation action.
 
 `third_party/rust/BUILD.bazel` declares crate_universe specifications without a
 first-party Cargo manifest. Build the specification package normally, then run
-`aos-dev bazel update-deps <core|device|store|guest|engine>` to resolve the selected
+`aos-dev bazel update-deps <core|device|store|guest|engine|quota>` to resolve the selected
 third-party dependency profile explicitly.
 This command uses source-built Cargo and cargo-bazel in a private temporary
 Cargo home. It is the network-enabled update boundary; ordinary build and test
@@ -1143,3 +1143,30 @@ overlap that accounting and must not be added again. Existing-output samples
 contain no fresh builder resources. The installed Bazel candidate adds the
 declared GCC runtime library closure; it retains no compiler or JDK paths in
 its numeric measurement files.
+
+## Linux project-quota family
+
+The quota family owns `aos-linux-project-quota`, its unit tests and the
+`project-quota-flight` example. Its separate `quota` dependency profile retains
+Cargo's small libc/rustix/thiserror feature graph rather than inheriting the
+engine family's broader feature union. Qualification compiles the example;
+only the disposable ext4 VM flight executes it with quota authority.
+
+```sh
+aos-dev bazel update-deps quota
+aos-dev bazel --family quota test //crates/shared/aos-linux-project-quota:unit
+nix-build tools/bazel/tests/quota.nix -A all --no-out-link
+nix-build tools/bazel/tests/quota.nix -A vm --no-out-link
+```
+
+The native check covers test and dependency-feature parity, the example,
+doctests, Clippy, formatting, documentation, editor parity and installation of
+the flight package. `tests/evidence/native-linux-quota.json` records native qualification: eight
+executed unit cases, the compiled flight example, exact features for ten external
+crate identities, and complete editor inference (3,711 expressions and 746
+patterns, with no unknown types, partial types or panics). The separate `vm`
+check uses the existing ext4 enforcement
+assertions with the Bazel-built executable and requires a KVM builder. Native
+qualification, VM enforcement and additional platform results must be recorded
+before migrating production consumers. Production package builders remain on
+Cargo during this qualification.

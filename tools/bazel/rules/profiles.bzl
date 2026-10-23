@@ -1,7 +1,7 @@
 """Selects a coherent third-party feature graph for a Rust compilation family."""
 
 def _dependency_profile_impl(ctx):
-    if ctx.build_setting_value not in ["core", "device", "store", "guest", "engine"]:
+    if ctx.build_setting_value not in ["core", "device", "store", "guest", "engine", "quota"]:
         fail("unknown Rust dependency profile: " + ctx.build_setting_value)
     return []
 
@@ -29,3 +29,8 @@ def _engine_profile_required_impl(_ctx):
     fail("dependency is unavailable in the selected family; engine dependencies require --//tools/bazel/rules:dependency_profile=engine")
 
 engine_profile_required = rule(implementation = _engine_profile_required_impl)
+
+def _quota_profile_required_impl(_ctx):
+    fail("dependency is unavailable in the selected family; quota dependencies require --//tools/bazel/rules:dependency_profile=quota")
+
+quota_profile_required = rule(implementation = _quota_profile_required_impl)

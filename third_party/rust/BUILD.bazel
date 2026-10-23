@@ -6,6 +6,7 @@ load(":device/aliases.bzl", DEVICE_CRATES = "CRATES")
 load(":store/aliases.bzl", STORE_CRATES = "CRATES")
 load(":guest/aliases.bzl", GUEST_CRATES = "CRATES")
 load(":engine/aliases.bzl", ENGINE_CRATES = "CRATES")
+load(":quota/aliases.bzl", QUOTA_CRATES = "CRATES")
 
 # Every first-party dependency in one configuration selects the same resolved
 # family. This preserves Rust type identity without globally unioning features.
@@ -13,6 +14,7 @@ load(":engine/aliases.bzl", ENGINE_CRATES = "CRATES")
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:quota_dependencies": QUOTA_CRATES.get(name, "//tools/bazel/rules:quota_profile_required"),
             "//tools/bazel/rules:engine_dependencies": ENGINE_CRATES.get(name, "//tools/bazel/rules:engine_profile_required"),
             "//tools/bazel/rules:guest_dependencies": GUEST_CRATES.get(name, "//tools/bazel/rules:guest_profile_required"),
             "//tools/bazel/rules:device_dependencies": DEVICE_CRATES.get(name, "//tools/bazel/rules:store_profile_required"),
@@ -21,7 +23,7 @@ load(":engine/aliases.bzl", ENGINE_CRATES = "CRATES")
         }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items()))
+    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items()))
 ]
 
 CORE_PACKAGES = {
@@ -54,6 +56,13 @@ STORE_PACKAGES = {
     "unicode-normalization": CORE_PACKAGES["unicode-normalization"],
     "zeroize": crate.spec(version = "=1.9.0"),
     "zstd": crate.spec(version = "=0.13.3", features = ["zstdmt"]),
+}
+
+# Keep quota consumers independent of the broader host families' feature unions.
+QUOTA_PACKAGES = {
+    "libc": CORE_PACKAGES["libc"],
+    "rustix": STORE_PACKAGES["rustix"],
+    "thiserror": CORE_PACKAGES["thiserror"],
 }
 
 STORE_ANNOTATIONS = {
@@ -228,6 +237,7 @@ APPROVED_LICENSES = [
         ("store", STORE_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("guest", GUEST_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("engine", ENGINE_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
+        ("quota", QUOTA_PACKAGES, {}, "apache-host"),
     ]
 ]
 
@@ -240,5 +250,5 @@ APPROVED_LICENSES = [
         license_domain = "apache-host",
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
-    for family in ["core", "device", "store", "guest", "engine"]
+    for family in ["core", "device", "store", "guest", "engine", "quota"]
 ]
