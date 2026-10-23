@@ -10910,3 +10910,13 @@ passes at
 including its compiled negative fixtures. The installed offline preparation
 test remains pending. Core Nix evaluation also passes at
 `/nix/store/p0dcd4r7i1xmwbd0byjs53q3kybpd8s2-aos-eval-core-checks-0`.
+
+### BPF runtime loader inventory (installed execution pending)
+
+The BPF-enabled Host image correctly stops at stage-0 manifest construction:
+PID1's compiled optional-load names now include libbpf.so.1 and the legacy
+libbpf.so.0 fallback. The reviewed inventory now requires the current library
+in the authenticated closure and explicitly requires the fallback to be absent.
+It retains exact compiled-name equality and per-caller runtime search checks;
+no wildcard loader names or mutable paths are admitted. All 22 runtime-manifest
+unit tests pass. The rebuilt stage-0 and installed Host checks remain pending.

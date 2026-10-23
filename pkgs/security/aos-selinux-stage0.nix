@@ -117,6 +117,7 @@ in
             --known-dlopen-soname libacl.so.1 \
             --known-dlopen-soname libaudit.so.1 \
             --known-dlopen-soname libblkid.so.1 \
+            --known-dlopen-soname libbpf.so.1 \
             --known-dlopen-soname libc.so.6 \
             --known-dlopen-soname libcrypt.so.2 \
             --known-dlopen-soname libcryptsetup.so.12 \
@@ -142,6 +143,7 @@ in
             --known-dlopen-soname libz.so.1 \
             --known-dlopen-soname libzstd.so.1 \
             --known-absent-dlopen-soname libbz2.so.1 \
+            --known-absent-dlopen-soname libbpf.so.0 \
             --known-absent-dlopen-soname libcrypt.so.1 \
             --known-absent-dlopen-soname libcrypt.so.1.1 \
             --known-absent-dlopen-soname libcrypto.so.3 \
