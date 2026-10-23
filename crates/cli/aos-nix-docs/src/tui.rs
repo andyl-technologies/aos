@@ -29,7 +29,7 @@ use ratatui::{
     Frame, Terminal,
     layout::{Constraint, Direction, Layout, Rect},
     prelude::CrosstermBackend,
-    style::{Modifier, Style, Stylize},
+    style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
 };
@@ -1404,5 +1404,18 @@ mod tests {
             .unwrap();
 
         assert_eq!(topic_node.entry_idx, Some(0));
+    }
+
+    #[test]
+    fn layout_cache_evicts_old_rectangles_without_changing_results() {
+        let layout = Layout::horizontal([Constraint::Length(1), Constraint::Fill(1)]);
+
+        for width in 2..=64 {
+            let areas = layout.split(Rect::new(0, 0, width, 1));
+
+            assert_eq!(areas.len(), 2);
+            assert_eq!(areas[0].width, 1);
+            assert_eq!(areas[1].width, width - 1);
+        }
     }
 }
