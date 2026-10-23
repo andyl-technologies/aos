@@ -68,7 +68,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 635 bindings: 616 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 637 bindings: 618 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -3050,12 +3050,39 @@ Inventory `mf88c4vaif0z2f9s9313ddvjlgb0bcgz` validates 635 bindings across
 243 requirements: 591 model, 25 format and nineteen native bindings. All 142
 uncovered requirements and the zero fully qualified count remain unchanged.
 All 762 ordinary storage tests, 95 policy controls and strict
-storage/portable-RAM Clippy pass. The expanded hermetic storage gate is running.
-Required application compilation is running from immutable source
-`k7qjy3vckj6p3iassvgpd0nydznz493z`; committed
-source and fixture matching is required before subsequent source edits. The
+storage/portable-RAM Clippy pass. Hermetic storage output
+`vwawxfg1p1d55l55lmvgj209q49dk5x5` passes all 112 selected cases and
+133 independently checked successful nested summaries. Required application
+compilation is running from immutable source `k7qjy3vckj6p3iassvgpd0nydznz493z`;
+all 5,421 committed Rust/TOML files and six fixtures match `e31cbbfb8d` before
+subsequent source edits. The
 fault controls establish component error custody, without inducing physical
 memory pressure or qualifying native resource admission.
+
+Framed RAM input now reserves its already admitted byte buffer fallibly. Its
+inline allocator error retains the explicit caller's custody even when an
+unrelated account is installed in the ambient scope. Frame bounds, supervision
+checks and the portable wire format remain unchanged.
+
+Both focused controls pass. A canonical 45-byte terminal control still decodes
+with its complete input, three original callbacks and temporary credit retained
+until response close. The new allocator-refusal control stops after the four-byte
+length prefix and two callbacks, before body input. Its actual allocator cause
+remains visible, temporary frame credit closes, and all of the caller's original
+prepayment survives caller close until error close. The foreign account acquires
+no loan and closes while that error remains alive. Injection exercises only the
+new fallible reservation; it never targets the predecessor's infallible Vec
+allocation and makes no predecessor failure or physical OOM claim.
+
+Inventory `0l9mdw9byy247ny8rl5yhvdrzsjkh80y` validates 637 bindings across
+243 requirements: 593 model, 25 format and nineteen native bindings. There are
+still 142 uncovered requirements and zero fully qualified requirements. Ordinary
+storage checks pass all 764 ordinary tests. All 95 policy controls and strict
+storage/portable-RAM Clippy also pass. The expanded hermetic storage gate and
+required application compilation are running
+from immutable source `rrr3m5wfnbvckxccq2rvr56lf8kcxrj8`; committed source and
+fixture matching is required before subsequent source edits. These codec
+controls grant no whole-world readiness or native resource authority.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`

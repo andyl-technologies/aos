@@ -92,7 +92,13 @@ impl RamTransferResponse {
             .reserve_scratch_bytes(frame_peak(length + 4, offer)?)
             .map_err(admission)?;
         check(original, boundary)?;
-        let mut frame = Vec::with_capacity(length + 4);
+        let mut frame = Vec::new();
+        frame
+            .try_reserve_exact(length + 4)
+            .map_err(|source| crate::content_store::StoreError::Allocation {
+                source,
+                custody: Some(original.custody()),
+            })?;
         frame.extend_from_slice(&prefix);
         frame.resize(length + 4, 0);
         reader

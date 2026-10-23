@@ -18,6 +18,7 @@ mod capture_allocation;
 mod checked_sources;
 mod codec_close;
 mod descriptor_hashing;
+mod frame_allocation;
 mod hash_reuse;
 mod logical_causes;
 mod metadata_custody;
