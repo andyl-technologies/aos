@@ -29,13 +29,13 @@ pub struct Action {
     pub input_root_digest: Option<Digest>,
 }
 
-/// Records arguments, effective environment, and encoded output names.
+/// Records arguments, environment digests, and encoded output names.
 #[derive(Clone, PartialEq, Message)]
 pub struct Command {
     /// Compiler executable followed by its original arguments.
     #[prost(string, repeated, tag = "1")]
     pub arguments: Vec<String>,
-    /// Effective execution environment, with actual values.
+    /// Effective environment names and value digests for action identity.
     #[prost(message, repeated, tag = "2")]
     pub environment_variables: Vec<EnvironmentVariable>,
     /// Working directory encoded relative to the filesystem root.
@@ -46,13 +46,13 @@ pub struct Command {
     pub output_paths: Vec<String>,
 }
 
-/// Stores an effective environment variable in the command blob.
+/// Stores an effective environment name and value digest in the command blob.
 #[derive(Clone, PartialEq, Message)]
 pub struct EnvironmentVariable {
     /// Entry name within its containing message.
     #[prost(string, tag = "1")]
     pub name: String,
-    /// Environment value visible to the compiler.
+    /// SHA-256 digest of the environment value visible to the compiler.
     #[prost(string, tag = "2")]
     pub value: String,
 }

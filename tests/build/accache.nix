@@ -4,16 +4,41 @@
   lib,
   sccacheOracle ? import ./accache/sccache-oracle.nix {inherit pkgs;},
 }: let
+  environmentProbeCompiler = pkgs.mkDerivation {
+    pname = "accache-environment-probe-compiler";
+    version = "1";
+    src = null;
+    buildDeps = [pkgs.bash];
+    runtimeDeps = [pkgs.bash pkgs.cc];
+    phases = [
+      {
+        name = "install";
+        script = ''
+          mkdir -p "$out/bin"
+          cat > "$out/bin/cc" <<'SCRIPT'
+          #!${pkgs.bash}/bin/bash
+          case ''${CACHE_TEST_SENTINEL-} in
+            cache-environment-probe-one|cache-environment-probe-two) ;;
+            *) exit 86 ;;
+          esac
+          exec ${pkgs.cc}/bin/gcc "$@"
+          SCRIPT
+          chmod +x "$out/bin/cc"
+        '';
+      }
+    ];
+  };
   compilers = {
     "${builtins.unsafeDiscardStringContext (toString pkgs.cc)}/bin/gcc" = "c";
     "${builtins.unsafeDiscardStringContext (toString pkgs.cc)}/bin/g++" = "c";
     "${builtins.unsafeDiscardStringContext (toString pkgs.gccUnwrapped)}/bin/gcc" = "c";
     "${builtins.unsafeDiscardStringContext (toString pkgs.llvm)}/bin/clang" = "c";
     "${builtins.unsafeDiscardStringContext (toString pkgs.rust)}/bin/rustc" = "rust";
+    "${builtins.unsafeDiscardStringContext (toString environmentProbeCompiler)}/bin/cc" = "c";
   };
   cacheEnvironment = pkgs.mkAccacheEnvironment {
     inherit compilers;
-    roots = [pkgs.cc pkgs.gccUnwrapped pkgs.llvm pkgs.rust];
+    roots = [pkgs.cc pkgs.gccUnwrapped pkgs.llvm pkgs.rust environmentProbeCompiler];
     cacheDir = "/unused";
     stateDir = "/unused-state";
     llvmOptions = {
@@ -39,6 +64,7 @@ in
       pkgs.cmake
       pkgs.ninja
       pkgs.graphviz
+      environmentProbeCompiler
       sccacheOracle
     ];
     ACCACHE_MANIFEST = cacheEnvironment.ACCACHE_MANIFEST;
@@ -52,7 +78,8 @@ in
             ${sccacheOracle.passthru.upstreamSource} ${../../crates/accache/accache-frontend}
           ${pkgs.python3}/bin/python3 ${../../crates/accache/accache/tests/integration.py} \
             ${pkgs.accache}/bin/accache ${pkgs.cc}/bin/gcc \
-            ${pkgs.llvm}/bin/clang ${pkgs.rust}/bin/rustc
+            ${pkgs.llvm}/bin/clang ${pkgs.rust}/bin/rustc \
+            ${environmentProbeCompiler}/bin/cc
           ${pkgs.python3}/bin/python3 ${../../crates/accache/accache/tests/cmake_integration.py} \
             ${pkgs.accache}/bin/accache ${pkgs.cc}/bin/gcc \
             ${pkgs.cc}/bin/g++ ${pkgs.cmake}/bin/cmake ${pkgs.ninja}/bin/ninja
