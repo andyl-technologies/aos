@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 590 bindings: 571 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 594 bindings: 575 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2452,6 +2452,38 @@ still running. The preceding
 license attempt retains its 639 controller errors and supplies no passing
 boundary qualification. The storage logical-error formatting bridge still
 erases typed causes and requires a separate correction.
+
+Signed allocator-cause commit `c57ed96bf7` is pushed. Required application-target
+compilation is running from immutable source
+`aicrv7qw24camwz3am1h4lsaniq9f4v5`; all 5,408 committed Rust/TOML files and
+six required fixtures match before subsequent storage-bridge edits.
+
+The storage logical-error bridge now retains the actual portable RAM error in
+its existing inline `LogicalValidation` variant instead of formatting it into a
+new string. Validation and allocator sources remain in the standard error chain;
+public display and existing classification contracts stay intact. The legacy
+public string variant remains available to existing callers. No box, diagnostic
+account, replacement loan or native permission is introduced.
+
+All four original controls fail because the typed logical cause is missing;
+three actual root-catalog allocation refusals return only formatted text. All
+four pass after using the existing typed variant. Canonical catalog input is
+reconstructed from a genuine captured root and checked against its actual
+published content identity before admission and injection. The same finite
+caller account prepays the established maximum decode bound, stays charged
+through returned-error close and returns to its original baseline. Direct
+malformed-record conversion allocates nothing and requests no additional credit.
+Inventory `8m199rqdf7f1pq2kpx2gh33r0wgp6wk6` validates 594 bindings across
+243 requirements, with 148 uncovered and zero qualified. Hermetic storage
+output `8dj3230jb8p099pglc3r43i5ah4zjbpb` passes all 76 selected cases
+and 97 independently checked successful nested summaries. All 736 storage and
+686 engine tests pass. Both actual campaign integrity and checkpoint backing
+classification controls pass, with each exact test name and nonzero result
+independently checked. All 95 policy controls and storage/portable-RAM Clippy
+pass.
+Other direct formatting bridges and infallible catalog allocations remain
+separate work; these component controls qualify no kernel quota, physical OOM
+or native custody.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`

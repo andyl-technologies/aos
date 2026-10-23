@@ -18,6 +18,7 @@ mod checked_sources;
 mod codec_close;
 mod descriptor_hashing;
 mod hash_reuse;
+mod logical_causes;
 mod metadata_custody;
 mod proof_allocation;
 mod record_prepay;

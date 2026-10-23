@@ -539,8 +539,8 @@ impl<'a> Work<'a> {
     }
 }
 
-fn logical(error: impl std::fmt::Display) -> RamStoreError {
-    RamStoreError::Logical(error.to_string())
+fn logical(error: crucible_ram::RamError) -> RamStoreError {
+    RamStoreError::LogicalValidation(error)
 }
 
 fn page_count(length: u64) -> u64 {
