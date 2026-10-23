@@ -1,0 +1,310 @@
+{
+  "artifacts": {
+    "aos-hub-api": {
+      "kind": [
+        "lib"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 2,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": false
+      }
+    },
+    "aos-hub-ui": {
+      "kind": [
+        "lib"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 2,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": false
+      }
+    }
+  },
+  "command": "nix-build /tmp/aos-bazel-722/hub-portable-production-cargo.nix --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "derivation": "/nix/store/91cvkrqckglgf26624kx50ng4a3p2zjz-aos-bazel-hub-portable-production-cargo-baseline-1.drv",
+  "derivation_sha256": "d0631eff3a80b389e097cc364b6e974c15f47307e8999f1a69044e1e5ea42268",
+  "external_features": {
+    "anyhow@1.0.102": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "base64@0.21.7": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "bitflags@2.13.0": [
+      [
+        "std"
+      ]
+    ],
+    "bytes@1.11.1": [
+      []
+    ],
+    "cfg-if@1.0.4": [
+      []
+    ],
+    "either@1.16.0": [
+      [
+        "std",
+        "use_std"
+      ]
+    ],
+    "equivalent@1.0.2": [
+      []
+    ],
+    "fastrand@2.4.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "fixedbitset@0.5.7": [
+      []
+    ],
+    "getrandom@0.4.2": [
+      []
+    ],
+    "hashbrown@0.17.1": [
+      []
+    ],
+    "heck@0.5.0": [
+      []
+    ],
+    "indexmap@2.14.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "itertools@0.13.0": [
+      [
+        "default",
+        "use_alloc",
+        "use_std"
+      ]
+    ],
+    "itertools@0.14.0": [
+      [
+        "default",
+        "use_alloc",
+        "use_std"
+      ]
+    ],
+    "itoa@1.0.18": [
+      []
+    ],
+    "libc@0.2.186": [
+      []
+    ],
+    "linux-raw-sys@0.12.1": [
+      [
+        "auxvec",
+        "elf",
+        "errno",
+        "general",
+        "ioctl",
+        "no_std"
+      ]
+    ],
+    "log@0.4.30": [
+      []
+    ],
+    "memchr@2.8.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "multimap@0.10.1": [
+      []
+    ],
+    "once_cell@1.21.4": [
+      [
+        "alloc",
+        "default",
+        "race",
+        "std"
+      ]
+    ],
+    "pbjson-build@0.7.0": [
+      []
+    ],
+    "pbjson@0.7.0": [
+      []
+    ],
+    "petgraph@0.7.1": [
+      []
+    ],
+    "prettyplease@0.2.37": [
+      []
+    ],
+    "proc-macro2@1.0.106": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "prost-build@0.13.5": [
+      [
+        "default",
+        "format"
+      ]
+    ],
+    "prost-derive@0.13.5": [
+      []
+    ],
+    "prost-types@0.13.5": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "prost@0.13.5": [
+      [
+        "default",
+        "derive",
+        "prost-derive",
+        "std"
+      ],
+      [
+        "default",
+        "derive",
+        "std"
+      ]
+    ],
+    "quote@1.0.46": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "regex-automata@0.4.14": [
+      [
+        "alloc",
+        "meta",
+        "nfa-pikevm",
+        "nfa-thompson",
+        "std",
+        "syntax",
+        "unicode-bool"
+      ]
+    ],
+    "regex-syntax@0.8.11": [
+      [
+        "std",
+        "unicode-bool"
+      ]
+    ],
+    "regex@1.12.4": [
+      [
+        "std",
+        "unicode-bool"
+      ]
+    ],
+    "rustix@1.1.4": [
+      [
+        "alloc",
+        "default",
+        "fs",
+        "std"
+      ]
+    ],
+    "serde@1.0.228": [
+      [
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std"
+      ]
+    ],
+    "serde_core@1.0.228": [
+      [
+        "rc",
+        "result",
+        "std"
+      ]
+    ],
+    "serde_derive@1.0.228": [
+      [
+        "default"
+      ]
+    ],
+    "serde_json@1.0.150": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "syn@2.0.118": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro"
+      ]
+    ],
+    "tempfile@3.27.0": [
+      [
+        "default",
+        "getrandom"
+      ]
+    ],
+    "unicode-ident@1.0.24": [
+      []
+    ],
+    "zmij@1.0.21": [
+      []
+    ]
+  },
+  "first_party_features": {
+    "aos-hub-api": [
+      []
+    ],
+    "aos-hub-ui": [
+      []
+    ]
+  },
+  "first_party_source_sha256": {
+    "crates/Cargo.lock": "033bfad7de38812960028c5c2f69c2737eaa5a73dba2a810dfcf2f992268e6fd",
+    "crates/Cargo.toml": "8761ede65c4d2a37b93a130f16436aba18112776494133f86e026d2a9acb6aee",
+    "crates/hub/aos-hub-api/Cargo.toml": "569398cdddd5b291c68460b9fceb4fc0132c01868d0200d433c7a4cc472df6c5",
+    "crates/hub/aos-hub-api/build.rs": "f33e462a0e1a690a7fbecf612cc310543a932c81837f6074ac8e13f57ee2e9ca",
+    "crates/hub/aos-hub-api/src/lib.rs": "cf03f7a9fa1c04210498a0a69c05c89ccb5e3db6d48aae74380d85982a5333ea",
+    "crates/hub/aos-hub-api/tests/contract_inventory.rs": "4771db975f7e5ead657e6edc51c3605fb4f21424e2832cfe219cb45af27ad32b",
+    "crates/hub/aos-hub-ui/Cargo.toml": "8a8b0dbbde252274e8c71e2a31aa1aefe97ae78f60a815ebf4f1507a10200484",
+    "crates/hub/aos-hub-ui/src/lib.rs": "e22997eb50c3c8c86ea80a008178f31eeeaa13e19dbc6cbf752ca46da83d31d9"
+  },
+  "generated_api_files_sha256": {
+    "aos.hub.v1.descriptor.bin": "40e193e5a1e999dcb2f4fe0b1daad9bc9d11f54890f35c530ff3a2b7deb6e881",
+    "aos.hub.v1.rs": "127c514e16d9b94b6608456676d167a2d8390fb8ba0b65c24dc74bdca21f28de",
+    "aos.hub.v1.serde.rs": "4e2a1dd5c1fbca087eb224de84f9ef248e2a467d89e77205a22debda8bc3dba8",
+    "connect_paths.rs": "144464fc6e2748bb6802fdb1f7b99ed7ddcbcc2a08d641e149797d6b24863f2c"
+  },
+  "limits": [
+    "Compilation evidence only; library artifacts are not retained. Frozen derivation, compiler messages and Rust source identities identify the checkpoint.",
+    "All forty-four external compiled feature-unit sets and both first-party feature sets match the separate test baseline. The four generated source/descriptor artifacts are retained with exact digests.",
+    "Bazel parity, installed consumers, foreign/Wasm execution, performance acceptance and production cutover remain pending."
+  ],
+  "output": "/nix/store/wf1yx07wff5c14i6hpc93ahyv26npvkk-aos-bazel-hub-portable-production-cargo-baseline-1",
+  "recipe": "let\n  root = /home/dylan/src/aos/.worktrees/codex/bazel-integration-722;\n  pkgs = (import root {}).pkgs;\nin pkgs.mkDerivation {\n  pname = \"aos-bazel-hub-portable-production-cargo-baseline\";\n  version = \"1\";\n  src = import (root + \"/pkgs/tools/crucible/_cargo-source.nix\") {\n    inherit (pkgs) lib;\n    extraPaths = [\n      \"api/proto/aos/hub/v1/hub.proto\"\n      \"docs/rfcs/0012-hub-surface-topology/00-goals-and-invariants.md\"\n      \"docs/rfcs/0012-hub-surface-topology/01-domain-model.md\"\n      \"docs/rfcs/0012-hub-surface-topology/02-delivery-and-auth.md\"\n      \"docs/rfcs/0012-hub-surface-topology/03-registry-cache-relations.md\"\n      \"docs/rfcs/0012-hub-surface-topology/04-retention-and-gc.md\"\n      \"docs/rfcs/0012-hub-surface-topology/05-data-model-and-api.md\"\n      \"docs/rfcs/0012-hub-surface-topology/06-console-and-operations.md\"\n      \"docs/rfcs/0012-hub-surface-topology/07-implementation-plan.md\"\n      \"docs/rfcs/0012-hub-surface-topology/08-decisions-and-open-questions.md\"\n      \"docs/rfcs/0012-hub-surface-topology/09-interface-contracts.md\"\n      \"docs/rfcs/0012-hub-surface-topology/10-settings-information-architecture.md\"\n      \"docs/rfcs/0012-hub-surface-topology/11-web-route-cutover-ledger.md\"\n      \"docs/rfcs/0012-hub-surface-topology/12-topology-cutover-operator-runbook.md\"\n      \"docs/rfcs/0012-hub-surface-topology/13-control-plane-parity.md\"\n      \"docs/rfcs/0012-hub-surface-topology/14-settings-workflows.md\"\n      \"docs/rfcs/0012-hub-surface-topology/README.md\"\n      \"docs/rfcs/0012-hub-surface-topology/aos-cutover-schema-v1.metaschema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-api-manifest-v1.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-cli-json-schema-v1.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-control-plane-capabilities-v1.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-backup-d1-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-backup-do-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-bundle-generation-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-bundle-generation-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-bundle-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-database-restore-rules-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-digest-verification-v1.fixture-source.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-digest-verification-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-evidence-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-fixtures-v1.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-fixtures-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-plan-v1.fixture-source.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-plan-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-report-v1.fixture-source.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-report-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-signature-envelope-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-signer-key-map-v1.fixture-source.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-signer-key-map-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-source-deployment-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-source-export-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/run-topology-cutover-fixtures.jq\"\n      \"docs/rfcs/0012-hub-surface-topology/run-topology-cutover-validation.jq\"\n      \"docs/rfcs/0012-hub-surface-topology/validate-topology-cutover.jq\"\n      \"crates/hub/aos-hub-service/src/web/static_assets/style.css\"\n    ];\n  };\n  buildDeps = [pkgs.rust pkgs.sed pkgs.python3 pkgs.protobuf];\n  sharedBuildCache = false;\n  dontStrip = true;\n  dontPatchELF = true;\n  dontNukeRefs = true;\n  phases = [{\n    name = \"compile\";\n    script = ''\n      cp -R \"$src\" source\n      chmod -R u+w source\n      cd source\n      export CARGO_HOME=\"$TMPDIR/cargo\" CARGO_TARGET_DIR=\"$TMPDIR/target\"\n      mkdir -p \"$CARGO_HOME\" .cargo \"$out\"\n      sed 's|@vendor@|${pkgs.aos.passthru.cargoDeps}|g' \\\n        ${pkgs.aos.passthru.cargoDeps}/.cargo/config.toml > .cargo/config.toml\n      export PROTOC=\"${pkgs.protobuf}/bin/protoc\"\n      export PROTOC_INCLUDE=\"${pkgs.protobuf}/include\"\n      cargo build --frozen --offline --manifest-path crates/Cargo.toml --lib \\\n        -p aos-hub-api -p aos-hub-ui --jobs \"$NIX_BUILD_CORES\" \\\n        --message-format=json > \"$out/cargo-messages.jsonl\"\n      ${pkgs.python3}/bin/python3 - \"$out\" <<'PYGEN'\n      import json\n      from pathlib import Path\n      import shutil\n      import sys\n\n      output = Path(sys.argv[1])\n      events = [json.loads(line) for line in (output / \"cargo-messages.jsonl\").read_text().splitlines()]\n      scripts = [event for event in events if event.get(\"reason\") == \"build-script-executed\" and \"aos-hub-api\" in event[\"package_id\"]]\n      assert len(scripts) == 1\n      shutil.copytree(scripts[0][\"out_dir\"], output / \"generated-api\")\n      assert (output / \"generated-api/aos.hub.v1.rs\").is_file()\n      PYGEN\n    '';\n  }];\n}\n",
+  "report_sha256": "1f8a89cf1e9b0fda3eb98eb9ca574c1f08a71b67ec582356ba32fbe68017e68f",
+  "schema_version": 1,
+  "source": "/nix/store/5c7c99iljxvz0g1khyw7249w1bbn97yl-crucible-cargo-src",
+  "status": "Hub API and shared UI production libraries compiled before Bazel conversion"
+}
