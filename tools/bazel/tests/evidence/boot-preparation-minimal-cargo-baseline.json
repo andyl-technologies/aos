@@ -1,0 +1,1847 @@
+{
+  "command": "nix-build /tmp/aos-bazel-722/boot-preparation-baselines.nix -A baselines --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "common_inputs_recipe": "{ pkgs }: {\n  packages = [\"aos-registry-client\" \"aos-registry-authoring\" \"aos-nix-cache\"];\n  cargoSource = import /home/dylan/src/aos/.worktrees/codex/bazel-integration-722/pkgs/tools/crucible/_cargo-source.nix {\n    inherit (pkgs) lib;\n    extraPaths = [\"api/proto/aos/hub/v1/hub.proto\"];\n  };\n  nativeLibraries = [pkgs.openssl pkgs.libssh2 pkgs.zlib pkgs.zstdStaticMultithread];\n  nativeTools = [pkgs.pkg-config pkgs.cmake pkgs.perl pkgs.protobuf pkgs.git-minimal pkgs.openssh pkgs.zstd pkgs.nix pkgs.which];\n  cargoSetup = ''\n    export OPENSSL_DIR=\"${pkgs.openssl}\"\n    export OPENSSL_LIB_DIR=\"${pkgs.openssl}/lib\"\n    export OPENSSL_INCLUDE_DIR=\"${pkgs.openssl}/include\"\n    export OPENSSL_NO_VENDOR=1 OPENSSL_STATIC=0 ZSTD_SYS_USE_PKG_CONFIG=1\n    export SSL_CERT_FILE=\"${pkgs.ca-certificates}/etc/ssl/certs/ca-certificates.crt\"\n    unset SSL_CERT_DIR\n    export PROTOC=\"${pkgs.protobuf}/bin/protoc\"\n    export PROTOC_INCLUDE=\"${pkgs.protobuf}/include\"\n    export AOS_NIX_STORE=\"${pkgs.nix}/bin/nix-store\"\n    export AOS_NIX_INSTANTIATE=\"${pkgs.nix}/bin/nix-instantiate\"\n    export AOS_TEST_IDENTITY_PRELOAD=\"$TMPDIR/aos-test-identity.so\"\n    cc -shared -fPIC -O2 -Wall -Wextra -Werror \\\n      -o \"$AOS_TEST_IDENTITY_PRELOAD\" crates/hub/aos-hub-native/tests/nix_builder_identity.c\n    registry_nix_root=\"$TMPDIR/registry-ability-nix\"\n    mkdir -p \"$registry_nix_root/state/db\" \"$registry_nix_root/state/gcroots\" \\\n      \"$registry_nix_root/state/profiles\" \"$registry_nix_root/log\"\n    NIX_STORE_DIR=/nix/store NIX_STATE_DIR=\"$registry_nix_root/state\" \\\n      NIX_LOG_DIR=\"$registry_nix_root/log\" NIX_REMOTE=local \\\n      ${pkgs.nix}/bin/nix-store --init\n    export AOS_TEST_ABILITY_NIX_STORE_DIR=/nix/store\n    export AOS_TEST_ABILITY_NIX_STATE_DIR=\"$registry_nix_root/state\"\n    export AOS_TEST_ABILITY_NIX_LOG_DIR=\"$registry_nix_root/log\"\n    export AOS_TEST_ABILITY_NIX_REMOTE=local\n  '';\n}\n",
+  "comparison_base_commit": "9f51efede4",
+  "default_features": false,
+  "derivation": "/nix/store/alwa5xp47v5fll0shmcm7smzpmqxwlv3-aos-bazel-boot-preparation-minimal-cargo-baseline-1.drv",
+  "derivation_sha256": "9528dab08833a15a0913fbfb73df520b5498d79f65c036c63fe61084be859516",
+  "doctests": {
+    "aos-boot-runtime": {},
+    "aos-configuration-image": {},
+    "aos-platform-metadata": {}
+  },
+  "executed_cases": 66,
+  "external_features": {
+    "aho-corasick@1.1.4": [
+      [
+        "perf-literal",
+        "std"
+      ]
+    ],
+    "allocator-api2@0.2.21": [
+      [
+        "alloc"
+      ]
+    ],
+    "anyhow@1.0.102": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "arc-swap@1.9.1": [
+      []
+    ],
+    "async-trait@0.1.89": [
+      []
+    ],
+    "atomic-waker@1.1.2": [
+      []
+    ],
+    "autocfg@1.5.1": [
+      []
+    ],
+    "aws-config@1.8.17": [
+      [
+        "credentials-process",
+        "default",
+        "default-https-client",
+        "rt-tokio",
+        "sso"
+      ]
+    ],
+    "aws-credential-types@1.2.14": [
+      [
+        "test-util"
+      ]
+    ],
+    "aws-lc-rs@1.17.0": [
+      [
+        "aws-lc-sys",
+        "prebuilt-nasm"
+      ]
+    ],
+    "aws-lc-sys@0.41.0": [
+      [
+        "prebuilt-nasm"
+      ]
+    ],
+    "aws-runtime@1.7.4": [
+      [
+        "event-stream",
+        "http-02x",
+        "http-1x",
+        "sigv4a"
+      ]
+    ],
+    "aws-sdk-s3@1.134.0": [
+      [
+        "default-https-client",
+        "http-1x",
+        "rt-tokio",
+        "sigv4a"
+      ]
+    ],
+    "aws-sdk-sso@1.100.0": [
+      []
+    ],
+    "aws-sdk-ssooidc@1.102.0": [
+      []
+    ],
+    "aws-sdk-sts@1.105.0": [
+      []
+    ],
+    "aws-sigv4@1.4.4": [
+      [
+        "default",
+        "http0-compat",
+        "http1",
+        "sign-eventstream",
+        "sign-http",
+        "sigv4a"
+      ]
+    ],
+    "aws-smithy-async@1.2.14": [
+      [
+        "rt-tokio"
+      ]
+    ],
+    "aws-smithy-checksums@0.64.8": [
+      []
+    ],
+    "aws-smithy-eventstream@0.60.20": [
+      []
+    ],
+    "aws-smithy-http-client@1.1.12": [
+      [
+        "default-client",
+        "rustls-aws-lc"
+      ]
+    ],
+    "aws-smithy-http@0.63.6": [
+      [
+        "aws-smithy-eventstream",
+        "event-stream"
+      ]
+    ],
+    "aws-smithy-json@0.62.6": [
+      []
+    ],
+    "aws-smithy-observability@0.2.6": [
+      []
+    ],
+    "aws-smithy-query@0.60.15": [
+      []
+    ],
+    "aws-smithy-runtime-api-macros@1.0.0": [
+      []
+    ],
+    "aws-smithy-runtime-api@1.12.1": [
+      [
+        "client",
+        "default",
+        "http-02x",
+        "http-1x",
+        "http-auth",
+        "test-util"
+      ]
+    ],
+    "aws-smithy-runtime@1.11.3": [
+      [
+        "client",
+        "default-https-client",
+        "rt-tokio"
+      ]
+    ],
+    "aws-smithy-schema@0.1.0": [
+      []
+    ],
+    "aws-smithy-types@1.4.8": [
+      [
+        "byte-stream-poll-next",
+        "http-body-0-4-x",
+        "http-body-1-x",
+        "rt-tokio",
+        "test-util"
+      ]
+    ],
+    "aws-smithy-xml@0.60.15": [
+      []
+    ],
+    "aws-types@1.3.16": [
+      []
+    ],
+    "base16ct@0.2.0": [
+      [
+        "alloc"
+      ]
+    ],
+    "base64-simd@0.8.0": [
+      [
+        "alloc",
+        "default",
+        "detect",
+        "std"
+      ]
+    ],
+    "base64@0.22.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "base64ct@1.8.3": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "bitflags@2.13.0": [
+      [
+        "std"
+      ]
+    ],
+    "block-buffer@0.10.4": [
+      []
+    ],
+    "block-buffer@0.12.0": [
+      []
+    ],
+    "bytes-utils@0.1.4": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "bytes@1.11.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "cc@1.2.65": [
+      [
+        "parallel"
+      ]
+    ],
+    "cfg-if@1.0.4": [
+      []
+    ],
+    "cipher@0.4.4": [
+      []
+    ],
+    "cmake@0.1.58": [
+      []
+    ],
+    "cmov@0.5.4": [
+      []
+    ],
+    "const-oid@0.10.2": [
+      []
+    ],
+    "const-oid@0.9.6": [
+      []
+    ],
+    "cpufeatures@0.2.17": [
+      []
+    ],
+    "cpufeatures@0.3.0": [
+      []
+    ],
+    "crc-fast@1.10.0": [
+      [
+        "alloc",
+        "default",
+        "digest",
+        "ffi",
+        "panic-handler",
+        "std"
+      ]
+    ],
+    "crc32fast@1.5.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "crypto-bigint@0.5.5": [
+      [
+        "default",
+        "generic-array",
+        "rand",
+        "rand_core",
+        "zeroize"
+      ]
+    ],
+    "crypto-common@0.1.7": [
+      [
+        "std"
+      ]
+    ],
+    "crypto-common@0.2.2": [
+      []
+    ],
+    "ctutils@0.4.2": [
+      []
+    ],
+    "curve25519-dalek-derive@0.1.1": [
+      []
+    ],
+    "curve25519-dalek@4.1.3": [
+      [
+        "alloc",
+        "digest",
+        "precomputed-tables",
+        "zeroize"
+      ]
+    ],
+    "der@0.7.10": [
+      [
+        "alloc",
+        "oid",
+        "pem",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "deranged@0.5.8": [
+      [
+        "default",
+        "powerfmt"
+      ]
+    ],
+    "digest@0.10.7": [
+      [
+        "alloc",
+        "block-buffer",
+        "const-oid",
+        "core-api",
+        "default",
+        "mac",
+        "oid",
+        "std",
+        "subtle"
+      ]
+    ],
+    "digest@0.11.3": [
+      [
+        "alloc",
+        "block-api",
+        "default",
+        "mac",
+        "oid"
+      ]
+    ],
+    "displaydoc@0.2.6": [
+      []
+    ],
+    "dunce@1.0.5": [
+      []
+    ],
+    "dyn-clone@1.0.20": [
+      []
+    ],
+    "ecdsa@0.16.9": [
+      [
+        "alloc",
+        "arithmetic",
+        "der",
+        "digest",
+        "hazmat",
+        "pem",
+        "pkcs8",
+        "rfc6979",
+        "signing",
+        "spki",
+        "std",
+        "verifying"
+      ]
+    ],
+    "ed25519-dalek@2.2.0": [
+      [
+        "alloc",
+        "default",
+        "fast",
+        "pkcs8",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "ed25519@2.2.3": [
+      [
+        "alloc",
+        "pkcs8",
+        "std"
+      ]
+    ],
+    "either@1.16.0": [
+      []
+    ],
+    "elliptic-curve@0.13.8": [
+      [
+        "alloc",
+        "arithmetic",
+        "digest",
+        "ff",
+        "group",
+        "hazmat",
+        "pem",
+        "pkcs8",
+        "sec1",
+        "std"
+      ]
+    ],
+    "equivalent@1.0.2": [
+      []
+    ],
+    "errno@0.3.14": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "fastrand@2.4.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "ff@0.13.1": [
+      [
+        "alloc"
+      ]
+    ],
+    "find-msvc-tools@0.1.9": [
+      []
+    ],
+    "fnv@1.0.7": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "foldhash@0.2.0": [
+      []
+    ],
+    "form_urlencoded@1.2.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "fs_extra@1.3.0": [
+      []
+    ],
+    "futures-channel@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-core@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-macro@0.3.32": [
+      []
+    ],
+    "futures-sink@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-task@0.3.32": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "futures-util@0.3.32": [
+      [
+        "alloc",
+        "async-await",
+        "async-await-macro",
+        "default",
+        "futures-macro",
+        "slab",
+        "std"
+      ]
+    ],
+    "generic-array@0.14.7": [
+      [
+        "more_lengths",
+        "zeroize"
+      ]
+    ],
+    "getrandom@0.2.17": [
+      [
+        "std"
+      ]
+    ],
+    "getrandom@0.3.4": [
+      [
+        "std"
+      ]
+    ],
+    "getrandom@0.4.2": [
+      []
+    ],
+    "group@0.13.0": [
+      [
+        "alloc"
+      ]
+    ],
+    "h2@0.4.14": [
+      []
+    ],
+    "hashbrown@0.16.1": [
+      [
+        "allocator-api2",
+        "default",
+        "default-hasher",
+        "equivalent",
+        "inline-more",
+        "raw-entry"
+      ]
+    ],
+    "hashbrown@0.17.1": [
+      []
+    ],
+    "hex@0.4.3": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "hmac@0.12.1": [
+      [
+        "reset"
+      ]
+    ],
+    "hmac@0.13.0": [
+      []
+    ],
+    "http-body-util@0.1.3": [
+      [
+        "default"
+      ]
+    ],
+    "http-body@0.4.6": [
+      []
+    ],
+    "http-body@1.0.1": [
+      []
+    ],
+    "http@0.2.12": [
+      []
+    ],
+    "http@1.4.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "httparse@1.10.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "hybrid-array@0.4.12": [
+      []
+    ],
+    "hyper-rustls@0.27.9": [
+      [
+        "http1",
+        "http2",
+        "native-tokio",
+        "ring",
+        "rustls-native-certs",
+        "tls12"
+      ]
+    ],
+    "hyper-util@0.1.20": [
+      [
+        "client",
+        "client-legacy",
+        "client-proxy",
+        "default",
+        "http1",
+        "http2",
+        "tokio"
+      ]
+    ],
+    "hyper@1.10.0": [
+      [
+        "client",
+        "default",
+        "http1",
+        "http2"
+      ]
+    ],
+    "icu_collections@2.2.0": [
+      []
+    ],
+    "icu_locale_core@2.2.0": [
+      [
+        "zerovec"
+      ]
+    ],
+    "icu_normalizer@2.2.0": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "icu_normalizer_data@2.2.0": [
+      []
+    ],
+    "icu_properties@2.2.0": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "icu_properties_data@2.2.0": [
+      []
+    ],
+    "icu_provider@2.2.0": [
+      [
+        "baked"
+      ]
+    ],
+    "idna@1.1.0": [
+      [
+        "alloc",
+        "compiled_data",
+        "std"
+      ]
+    ],
+    "idna_adapter@1.2.2": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "indexmap@2.14.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "inout@0.1.4": [
+      []
+    ],
+    "ipnet@2.12.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "itoa@1.0.18": [
+      []
+    ],
+    "jobserver@0.1.34": [
+      []
+    ],
+    "libc@0.2.186": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "libssh2-sys@0.3.1": [
+      [
+        "vendored-openssl"
+      ]
+    ],
+    "libz-sys@1.1.28": [
+      [
+        "libc"
+      ]
+    ],
+    "linux-raw-sys@0.12.1": [
+      [
+        "auxvec",
+        "elf",
+        "errno",
+        "general",
+        "if_ether",
+        "ioctl",
+        "net",
+        "netlink",
+        "no_std",
+        "prctl",
+        "xdp"
+      ]
+    ],
+    "litemap@0.8.2": [
+      []
+    ],
+    "lock_api@0.4.14": [
+      [
+        "atomic_usize",
+        "default"
+      ]
+    ],
+    "log@0.4.30": [
+      []
+    ],
+    "lru@0.16.4": [
+      [
+        "default",
+        "hashbrown"
+      ]
+    ],
+    "md-5@0.11.0": [
+      [
+        "alloc",
+        "default",
+        "oid"
+      ]
+    ],
+    "memchr@2.8.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "mio@1.2.1": [
+      [
+        "net",
+        "os-ext",
+        "os-poll"
+      ]
+    ],
+    "num-conv@0.2.2": [
+      []
+    ],
+    "num-integer@0.1.46": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "num-traits@0.2.19": [
+      [
+        "i128",
+        "std"
+      ]
+    ],
+    "once_cell@1.21.4": [
+      [
+        "alloc",
+        "default",
+        "race",
+        "std"
+      ]
+    ],
+    "openssl-probe@0.2.1": [
+      []
+    ],
+    "openssl-src@300.6.0+3.6.2": [
+      [
+        "default",
+        "legacy"
+      ]
+    ],
+    "openssl-sys@0.9.116": [
+      [
+        "openssl-src",
+        "vendored"
+      ]
+    ],
+    "outref@0.5.2": [
+      []
+    ],
+    "p256@0.13.2": [
+      [
+        "alloc",
+        "arithmetic",
+        "default",
+        "digest",
+        "ecdsa",
+        "ecdsa-core",
+        "pem",
+        "pkcs8",
+        "sha2",
+        "sha256",
+        "std"
+      ]
+    ],
+    "parking_lot@0.12.5": [
+      [
+        "default"
+      ]
+    ],
+    "parking_lot_core@0.9.12": [
+      []
+    ],
+    "pem-rfc7468@0.7.0": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "percent-encoding@2.3.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "pin-project-lite@0.2.17": [
+      []
+    ],
+    "pin-utils@0.1.0": [
+      []
+    ],
+    "pkcs8@0.10.2": [
+      [
+        "alloc",
+        "pem",
+        "std"
+      ]
+    ],
+    "pkg-config@0.3.33": [
+      []
+    ],
+    "potential_utf@0.1.5": [
+      [
+        "zerovec"
+      ]
+    ],
+    "powerfmt@0.2.0": [
+      []
+    ],
+    "ppv-lite86@0.2.21": [
+      [
+        "simd",
+        "std"
+      ]
+    ],
+    "primeorder@0.13.6": [
+      []
+    ],
+    "proc-macro2@1.0.106": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "quote@1.0.46": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "rand@0.9.4": [
+      [
+        "alloc",
+        "default",
+        "os_rng",
+        "small_rng",
+        "std",
+        "std_rng",
+        "thread_rng"
+      ]
+    ],
+    "rand_chacha@0.9.0": [
+      [
+        "std"
+      ]
+    ],
+    "rand_core@0.6.4": [
+      [
+        "alloc",
+        "getrandom",
+        "std"
+      ]
+    ],
+    "rand_core@0.9.5": [
+      [
+        "os_rng",
+        "std"
+      ]
+    ],
+    "ref-cast-impl@1.0.27": [
+      []
+    ],
+    "ref-cast@1.0.27": [
+      []
+    ],
+    "regex-automata@0.4.14": [
+      [
+        "alloc",
+        "dfa-onepass",
+        "hybrid",
+        "meta",
+        "nfa-backtrack",
+        "nfa-pikevm",
+        "nfa-thompson",
+        "perf-inline",
+        "perf-literal",
+        "perf-literal-multisubstring",
+        "perf-literal-substring",
+        "std",
+        "syntax",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment",
+        "unicode-word-boundary"
+      ]
+    ],
+    "regex-lite@0.1.9": [
+      [
+        "default",
+        "std",
+        "string"
+      ]
+    ],
+    "regex-syntax@0.8.11": [
+      [
+        "default",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "regex@1.12.4": [
+      [
+        "default",
+        "perf",
+        "perf-backtrack",
+        "perf-cache",
+        "perf-dfa",
+        "perf-inline",
+        "perf-literal",
+        "perf-onepass",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "reqwest@0.12.28": [
+      [
+        "__rustls",
+        "__rustls-ring",
+        "__tls",
+        "json",
+        "rustls-tls-native-roots",
+        "rustls-tls-native-roots-no-provider",
+        "stream"
+      ]
+    ],
+    "rfc6979@0.4.0": [
+      []
+    ],
+    "ring@0.17.14": [
+      [
+        "alloc",
+        "default",
+        "dev_urandom_fallback"
+      ]
+    ],
+    "rustc_version@0.4.1": [
+      []
+    ],
+    "rustix@1.1.4": [
+      [
+        "alloc",
+        "default",
+        "event",
+        "fs",
+        "net",
+        "process",
+        "std"
+      ]
+    ],
+    "rustls-native-certs@0.8.3": [
+      []
+    ],
+    "rustls-pki-types@1.14.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "rustls-webpki@0.103.13": [
+      [
+        "alloc",
+        "aws-lc-rs",
+        "ring",
+        "std"
+      ]
+    ],
+    "rustls@0.23.40": [
+      [
+        "aws-lc-rs",
+        "aws_lc_rs",
+        "prefer-post-quantum",
+        "ring",
+        "std",
+        "tls12"
+      ]
+    ],
+    "rustversion@1.0.22": [
+      []
+    ],
+    "ryu@1.0.23": [
+      []
+    ],
+    "schemars@1.2.2": [
+      [
+        "default",
+        "derive",
+        "schemars_derive",
+        "std"
+      ]
+    ],
+    "schemars_derive@1.2.2": [
+      []
+    ],
+    "scopeguard@1.2.0": [
+      []
+    ],
+    "sec1@0.7.3": [
+      [
+        "alloc",
+        "default",
+        "der",
+        "pem",
+        "pkcs8",
+        "point",
+        "std",
+        "subtle",
+        "zeroize"
+      ]
+    ],
+    "semver@1.0.28": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "serde@1.0.228": [
+      [
+        "alloc",
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std"
+      ]
+    ],
+    "serde_core@1.0.228": [
+      [
+        "alloc",
+        "rc",
+        "result",
+        "std"
+      ]
+    ],
+    "serde_derive@1.0.228": [
+      [
+        "default"
+      ]
+    ],
+    "serde_derive_internals@0.30.0": [
+      []
+    ],
+    "serde_json@1.0.150": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "serde_urlencoded@0.7.1": [
+      []
+    ],
+    "sha1@0.10.6": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "sha1@0.11.0": [
+      [
+        "alloc",
+        "default",
+        "oid"
+      ]
+    ],
+    "sha2@0.10.9": [
+      [
+        "compress",
+        "default",
+        "std"
+      ]
+    ],
+    "sha2@0.11.0": [
+      [
+        "alloc",
+        "default",
+        "oid"
+      ]
+    ],
+    "shlex@2.0.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "signal-hook-registry@1.4.8": [
+      []
+    ],
+    "signature@2.2.0": [
+      [
+        "alloc",
+        "digest",
+        "rand_core",
+        "std"
+      ]
+    ],
+    "slab@0.4.12": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "smallvec@1.15.2": [
+      [
+        "const_generics",
+        "const_new"
+      ]
+    ],
+    "socket2@0.6.4": [
+      [
+        "all"
+      ]
+    ],
+    "spin@0.10.0": [
+      [
+        "mutex",
+        "once",
+        "rwlock",
+        "spin_mutex"
+      ]
+    ],
+    "spki@0.7.3": [
+      [
+        "alloc",
+        "pem",
+        "std"
+      ]
+    ],
+    "ssh-cipher@0.2.0": [
+      []
+    ],
+    "ssh-encoding@0.2.0": [
+      [
+        "alloc",
+        "base64",
+        "pem",
+        "sha2",
+        "std"
+      ]
+    ],
+    "ssh-key@0.6.7": [
+      [
+        "alloc",
+        "ed25519",
+        "rand_core",
+        "std"
+      ]
+    ],
+    "ssh2@0.9.5": [
+      [
+        "vendored-openssl"
+      ]
+    ],
+    "stable_deref_trait@1.2.1": [
+      []
+    ],
+    "subtle@2.6.1": [
+      [
+        "default",
+        "i128",
+        "std"
+      ]
+    ],
+    "syn@2.0.118": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "fold",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit",
+        "visit-mut"
+      ]
+    ],
+    "syn@3.0.5": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "parsing",
+        "printing",
+        "proc-macro"
+      ]
+    ],
+    "sync_wrapper@1.0.2": [
+      [
+        "futures",
+        "futures-core"
+      ]
+    ],
+    "synstructure@0.13.2": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "tempfile@3.27.0": [
+      [
+        "default",
+        "getrandom"
+      ]
+    ],
+    "thiserror-impl@2.0.18": [
+      []
+    ],
+    "thiserror@2.0.18": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "time-core@0.1.8": [
+      []
+    ],
+    "time@0.3.47": [
+      [
+        "alloc",
+        "default",
+        "parsing",
+        "std"
+      ]
+    ],
+    "tinystr@0.8.3": [
+      [
+        "zerovec"
+      ]
+    ],
+    "tokio-macros@2.7.0": [
+      []
+    ],
+    "tokio-rustls@0.26.4": [
+      [
+        "ring",
+        "tls12"
+      ]
+    ],
+    "tokio-util@0.7.18": [
+      [
+        "codec",
+        "default",
+        "io"
+      ]
+    ],
+    "tokio@1.52.3": [
+      [
+        "bytes",
+        "default",
+        "fs",
+        "io-std",
+        "io-util",
+        "libc",
+        "macros",
+        "mio",
+        "net",
+        "process",
+        "rt",
+        "rt-multi-thread",
+        "signal",
+        "signal-hook-registry",
+        "socket2",
+        "sync",
+        "time",
+        "tokio-macros"
+      ]
+    ],
+    "tower-http@0.6.11": [
+      [
+        "follow-redirect",
+        "futures-util",
+        "tower"
+      ]
+    ],
+    "tower-layer@0.3.3": [
+      []
+    ],
+    "tower-service@0.3.3": [
+      []
+    ],
+    "tower@0.5.3": [
+      [
+        "futures-core",
+        "futures-util",
+        "pin-project-lite",
+        "retry",
+        "sync_wrapper",
+        "timeout",
+        "tokio",
+        "util"
+      ]
+    ],
+    "tracing-attributes@0.1.31": [
+      []
+    ],
+    "tracing-core@0.1.36": [
+      [
+        "once_cell",
+        "std"
+      ]
+    ],
+    "tracing@0.1.44": [
+      [
+        "attributes",
+        "default",
+        "std",
+        "tracing-attributes"
+      ]
+    ],
+    "try-lock@0.2.5": [
+      []
+    ],
+    "typenum@1.20.1": [
+      [
+        "const-generics"
+      ]
+    ],
+    "unicode-ident@1.0.24": [
+      []
+    ],
+    "untrusted@0.9.0": [
+      []
+    ],
+    "url@2.5.8": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "urlencoding@2.1.3": [
+      []
+    ],
+    "utf8_iter@1.0.4": [
+      []
+    ],
+    "uuid@1.23.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "vcpkg@0.2.15": [
+      []
+    ],
+    "version_check@0.9.5": [
+      []
+    ],
+    "vsimd@0.8.0": [
+      [
+        "alloc",
+        "detect",
+        "std"
+      ]
+    ],
+    "want@0.3.1": [
+      []
+    ],
+    "writeable@0.6.3": [
+      []
+    ],
+    "xmlparser@0.13.6": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "yoke-derive@0.8.2": [
+      []
+    ],
+    "yoke@0.8.3": [
+      [
+        "derive",
+        "zerofrom"
+      ]
+    ],
+    "zerocopy@0.8.49": [
+      [
+        "simd"
+      ]
+    ],
+    "zerofrom-derive@0.1.7": [
+      []
+    ],
+    "zerofrom@0.1.8": [
+      [
+        "derive"
+      ]
+    ],
+    "zeroize@1.9.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "zerotrie@0.2.4": [
+      [
+        "yoke",
+        "zerofrom"
+      ]
+    ],
+    "zerovec-derive@0.11.3": [
+      []
+    ],
+    "zerovec@0.11.6": [
+      [
+        "derive",
+        "yoke"
+      ]
+    ],
+    "zmij@1.0.21": [
+      []
+    ]
+  },
+  "first_party_features": {
+    "aos-activation": [
+      []
+    ],
+    "aos-artifact-evidence": [
+      []
+    ],
+    "aos-boot-runtime": [
+      []
+    ],
+    "aos-configuration-image": [
+      []
+    ],
+    "aos-core": [
+      []
+    ],
+    "aos-module-format": [
+      []
+    ],
+    "aos-nar": [
+      [
+        "default"
+      ]
+    ],
+    "aos-nix": [
+      []
+    ],
+    "aos-platform-metadata": [
+      []
+    ],
+    "aos-storage-layout": [
+      []
+    ],
+    "aos-transfer": [
+      [
+        "transfer"
+      ]
+    ]
+  },
+  "first_party_source_sha256": {
+    "api/proto/aos/hub/v1/hub.proto": "77005b93fb1df0a6830325e9b30a1b8bd83db2d1008a6bcee88a0a36f51adec5",
+    "crates/Cargo.lock": "033bfad7de38812960028c5c2f69c2737eaa5a73dba2a810dfcf2f992268e6fd",
+    "crates/Cargo.toml": "8761ede65c4d2a37b93a130f16436aba18112776494133f86e026d2a9acb6aee",
+    "crates/aos/activation/aos-activation/Cargo.toml": "a573354dab88f40855642f005d86bab863cb6ebd2bddd68605bedfa9ea7f0410",
+    "crates/aos/activation/aos-activation/examples/module_graph_check.rs": "339b90a088ba42c184b53b5cc9bf306091c3fc093620b4921b719b3b5cd7ac5e",
+    "crates/aos/activation/aos-activation/src/activation/controller.rs": "1063cc82387771218c03179eaa1435e8d1796d2225fff0e8feebbe4791b5c0b0",
+    "crates/aos/activation/aos-activation/src/activation/inspection.rs": "870f7f70180951c4d7fb99b20270d696336e540984880fed546d81a5db0c1683",
+    "crates/aos/activation/aos-activation/src/activation/journal.rs": "959fd61843ee02e89cf8d214b8a330246e1dd73b4efaf02d341a53dea44f1b60",
+    "crates/aos/activation/aos-activation/src/activation/mod.rs": "c2b5170a67cc04c2d5567441bd53afba9a0436770aa20adc16187077e7f18b74",
+    "crates/aos/activation/aos-activation/src/activation/observer.rs": "c3b8be882375d5b6230be548f53e8772e07a7e6aacc729dcb29e3adefd8a4541",
+    "crates/aos/activation/aos-activation/src/activation/restoration.rs": "04d1daa6f24c6144cbb1e96cc45e8269f4438766fe29a70e2f43d25905427233",
+    "crates/aos/activation/aos-activation/src/activation/restoration_tests.rs": "8c4eb96ba83ffd5ff9b4ac424ef6cdb8fea0efad7ff38c6aac224fa03f335077",
+    "crates/aos/activation/aos-activation/src/activation/socket_observer.rs": "e12fa80f0d39e3a987e3ab6996c5273edb29f28cefbf7091fb9cacf1e75fdaa6",
+    "crates/aos/activation/aos-activation/src/activation/tests.rs": "cc9a83185e078414f8d06ced96db18d2561f1642c070215bac84587c21e196a0",
+    "crates/aos/activation/aos-activation/src/adapter.rs": "73a529a8347a8cd6ddadee73bb1e370c5412bb68258865f83c98fa29a79079d1",
+    "crates/aos/activation/aos-activation/src/journal/file.rs": "c128da759f8079fa8297ae29f2bd37d569575e9ac2fae58263b291d627b220a5",
+    "crates/aos/activation/aos-activation/src/journal/file/observation_tests.rs": "1536660dc936e1827b9817c289d54d74105fc06e3663072aac2dd6e50d79fd93",
+    "crates/aos/activation/aos-activation/src/journal/frame.rs": "f1dbdddeeafad6f90b955ee616e8c6ca19226e579d233b9fda033a854a1ba69b",
+    "crates/aos/activation/aos-activation/src/journal/mod.rs": "b003c030ee4de3d8dee9f9a7319e7dec34851d9f69e0a320f09727560104bd26",
+    "crates/aos/activation/aos-activation/src/lib.rs": "2f6586d523ad4ed2d61092e5967417173890a16dfbf42113a5a645f79b66be62",
+    "crates/aos/boot/aos-boot-runtime/Cargo.toml": "52f415f70250e4646a48c79d7ecaee760af77b9d701263b9e29d04676f9359f4",
+    "crates/aos/boot/aos-boot-runtime/src/bin/aos-boot-preparation-provider.rs": "e0056aa29bdca49a87a29c2e3839fd20a125b5f8aa3e91e995f3d26c7c6e1efd",
+    "crates/aos/boot/aos-boot-runtime/src/bin/aos-systemd-boot-platform.rs": "ceda529cd91e232a654179a2c5902c810512269ea89507d6d3ded589e6b12074",
+    "crates/aos/boot/aos-boot-runtime/src/bin/aos-systemd-image-evidence.rs": "19e794974f4ec5bb797947f1539524a1f7ed8d617aab2f1284958b07cc14abe8",
+    "crates/aos/boot/aos-boot-runtime/src/bin/aos-systemd-image-stage.rs": "f07cf091e0e1734f387773b173bb41f5201206bf47262b6a5789c6b6a6739022",
+    "crates/aos/boot/aos-boot-runtime/src/bin/aos-systemd-initrd-store.rs": "08ea78491b29f301b5ba907e0134bd1c829cf84018ee8ea5b55e970746d9385f",
+    "crates/aos/boot/aos-boot-runtime/src/boot_platform.rs": "e6d6d3e36c30a1f2c76e3a53db4a8ec9c5025a06a39990d1bb728e68d8f2bac4",
+    "crates/aos/boot/aos-boot-runtime/src/boot_platform/success.rs": "84d8776d2be025ff6d03c10e10f395c9078fd2eadcf5666c0f3c2ff5d326570c",
+    "crates/aos/boot/aos-boot-runtime/src/boot_storage.rs": "ad320720cc5a696663c4fe63c995748267f0ce87f39984442bc9a5e2367302a9",
+    "crates/aos/boot/aos-boot-runtime/src/commands.rs": "0e3741dd9b857c2d8c6cd0a9cd15aaab1d41d0904f11bfababedb7474ff7b5a6",
+    "crates/aos/boot/aos-boot-runtime/src/image_profile.rs": "50fd1f9ec9c02d92e4390982015c987ed7a0ccba1d57b870bf7d49077f90d2fc",
+    "crates/aos/boot/aos-boot-runtime/src/image_stage.rs": "4de7147f814ef8a208ddade2f194abb25f8be4f45a64195d3f031e8b321dee2b",
+    "crates/aos/boot/aos-boot-runtime/src/image_stage/copy_up.rs": "018d3baeb2ffbd589381c6b809a97a74102ba372263659112570abbf53b90d40",
+    "crates/aos/boot/aos-boot-runtime/src/initrd_archive.rs": "b67bd3afb3c668ae6ebb101a8f36281ca06ef04e707e566e87dc9764640a0e45",
+    "crates/aos/boot/aos-boot-runtime/src/initrd_store.rs": "d2a39f833bec0ac316019e257d52d03d1c94f534e5ae0fa2457708a12551007c",
+    "crates/aos/boot/aos-boot-runtime/src/initrd_store_tests.rs": "14047f5c57bcf77420bd77e0350d8fd6313cef8781f23a9c6a3c393bb44fcf78",
+    "crates/aos/boot/aos-boot-runtime/src/lib.rs": "5cd251fc887c0f09ed52035b6f36c62621f963369152d5dffa50b562e198a5f9",
+    "crates/aos/boot/aos-boot-runtime/src/measurement_index.rs": "25bf2b0409a4d730986d9cd0f0b06cc6c2ec22aa4b97ad9a17bbd863ade8ca40",
+    "crates/aos/boot/aos-boot-runtime/src/preparation.rs": "c490b9f2481bbd8d2416f2b80312e7cd0269bff463510b24814a0d09f43341c6",
+    "crates/aos/boot/aos-boot-runtime/src/process.rs": "d699eea3bf32d1bc2f98f96d2535af7809a7331fbf7fe432a455d3c003cc5fdf",
+    "crates/aos/boot/aos-boot-runtime/src/recovery.rs": "66095b30051e9e293d76155d940e5372aca3e0f797f7ebc9dd41956e2130390f",
+    "crates/aos/boot/aos-boot-runtime/src/store_closure.rs": "df9afc98cfabd28503e3fddad6b9c3a403a1a063fe2d5a7b06fc0a94b21a6f0f",
+    "crates/aos/boot/aos-boot-runtime/standalone/initrd_preparation.rs": "2b80691d80021119ea16aa925743bf7695b0bd902fadc2323961cfb9354ab826",
+    "crates/aos/boot/aos-configuration-image/Cargo.toml": "d7215418cbc2afa1a8712a6ebda0d975e95f917ab21a8f6f3b957d094a6b42d9",
+    "crates/aos/boot/aos-configuration-image/src/boot.rs": "d5088a6b4538d0dd9e537e065c40e0ec7ec67d2a577032942557ec8de5063818",
+    "crates/aos/boot/aos-configuration-image/src/boot_main.rs": "1e4e3cd9f6b1520a465f249fb936122acc8ec3a946e568659d8c2a9aff8373c4",
+    "crates/aos/boot/aos-configuration-image/src/certificate_main.rs": "a37f447c4ef46c2b0b17b4df4d7a14790fe098698d17e9ee0089f368a902fb7b",
+    "crates/aos/boot/aos-configuration-image/src/lib.rs": "d8bea38709a02d36042393a97ad2d468608e5889b70a645c5993b5112896bcd5",
+    "crates/aos/boot/aos-configuration-image/src/lower.rs": "8d2b34f8cb84da86391ea757de3f3f26584dcd5f317019970ac67fb622dd1876",
+    "crates/aos/boot/aos-configuration-image/src/main.rs": "e329e94b57631f6b02f16b7ba0cbdc61abbefccaf3751f9417c59446a54f8b6d",
+    "crates/aos/boot/aos-configuration-image/src/model.rs": "1d9b006b39ff82ac97da2d1d33166086eb26122871e8fc9a1b09bec1a8400aa6",
+    "crates/aos/boot/aos-configuration-image/src/mount.rs": "09834fe66ae85ea76c30e882e17627fc176bc5acaba8e9322bf1cc7e118bcb2c",
+    "crates/aos/boot/aos-configuration-image/src/mount_main.rs": "6643e56f194ae44d538655713aeca5229244b61c6009d1759763776cda704fc9",
+    "crates/aos/boot/aos-configuration-image/src/render.rs": "0b46ba2ff201f4d927547e0ff568bef0c493981868f11cb5de88af974f5367c3",
+    "crates/aos/boot/aos-platform-metadata/Cargo.toml": "719ca346e3ff4370eeb295e5f4449f426e63927f52b9dbc6fa1fc2db0c6c043d",
+    "crates/aos/boot/aos-platform-metadata/src/aws.rs": "71b9f1bd28a581d24b471640965da7793a1e8af95d33e2f02ee578adb5c054e5",
+    "crates/aos/boot/aos-platform-metadata/src/bin/aos-metadata-acquisition-provider.rs": "0e5bd27d85d514880a70582c6075c80b9a31a2b2356cbd6bc3759d1291a957e0",
+    "crates/aos/boot/aos-platform-metadata/src/bin/aos-metadata-policy-provider.rs": "0c990883910f42f014bc166e3550feae1083205d7d02b4da24c9720bdf0e440c",
+    "crates/aos/boot/aos-platform-metadata/src/bundle.rs": "e855961879d2887254967febc46ea84860b87527fd261d7c9d4f0de2cc509115",
+    "crates/aos/boot/aos-platform-metadata/src/cloud.rs": "fb96d822fe6ad7a362be0f6f272790fd9cd110bc6ed9757512965e19a4e675c6",
+    "crates/aos/boot/aos-platform-metadata/src/detect.rs": "2952fc5e038c43df10dc9713c132c1c0132fe70488401f8220a54353284a0935",
+    "crates/aos/boot/aos-platform-metadata/src/executable.rs": "24b300bd1be3235bfde8f628f48e6591017e54f1ec6d07caf4cafb6c3e29da6f",
+    "crates/aos/boot/aos-platform-metadata/src/facts_render.rs": "b189bdb08640e297ae4f22cc83917122c34dad37e9aa09fcc5a6d87c4882d419",
+    "crates/aos/boot/aos-platform-metadata/src/fetcher.rs": "897bdab91934f12d6d36fdf8dfe8cb4413e8749aaacbd45b76f9a8c1708b1c59",
+    "crates/aos/boot/aos-platform-metadata/src/http.rs": "7f7d42093566f06da592194fe89a4517096d108ea5459ac686a68cfec58509eb",
+    "crates/aos/boot/aos-platform-metadata/src/lib.rs": "307963558b419886efd3330fdbaa27d2b5bce6f8544e5df97f6312479160d27f",
+    "crates/aos/boot/aos-platform-metadata/src/mount.rs": "131f3a174c6905c85c26b92c0996ced5c87bb8ce9943ade7b4b1736eb5227055",
+    "crates/aos/boot/aos-platform-metadata/src/native_handler.rs": "2360687f8b88982714343cffafbd1a8a188288cae50d0fc11ea85f91eb64a88f",
+    "crates/aos/boot/aos-platform-metadata/src/network.rs": "33d2b5dab992eb106161458a9fcd065b311cf57f60d02b9d86f90851f7a0d799",
+    "crates/aos/boot/aos-platform-metadata/src/offline.rs": "5d996673bf57c4aade806333c676e0c31e1655aebc90a8f4d8f4f8f63338848f",
+    "crates/aos/boot/aos-platform-metadata/src/policy.rs": "b98ddaa2e44777ca8a8a063a70505fb76ac376d0393f2ce92e1b4204d0058200",
+    "crates/aos/boot/aos-platform-metadata/src/provider.rs": "a5115f4b7aa2639dafdd365c206331f5bfd610988b6b51e3b67f16ac244c604e",
+    "crates/aos/boot/aos-platform-metadata/src/staticnet.rs": "b9ff85601bbbc1242dec1dc53430e8c703be1b467fddc042e8bc52d487ddddfb",
+    "crates/aos/boot/aos-platform-metadata/src/tests.rs": "ae2ee1423b92b5485c7cfc4970d1529669cbf41b641ed59bb048dcc4efa8ee2c",
+    "crates/aos/boot/aos-platform-metadata/src/trust.rs": "e743895a61adf889c5f82cc7d17fbbf0c37d9a806bc0ec36feb202b1de80f38e",
+    "crates/aos/boot/aos-platform-metadata/src/yaml.rs": "9cda1badc881be155eea35d234c34d8c1ad067562b31056317fb51eda73ec514",
+    "crates/aos/boot/aos-storage-layout/Cargo.toml": "75b71d7145e0505263cf87884fad60f8606c7df0470ab8cbd2c0c6395f4b56a8",
+    "crates/aos/boot/aos-storage-layout/src/lib.rs": "1ce68a59a91b72089e1e0d23263638ec1e5cc3c1e3399c62b5cbad04601a425d",
+    "crates/aos/boot/aos-storage-layout/src/topology.rs": "4664c046b7517638f5ec887c88b286b6acd398fad6e00b743785ae2291014098",
+    "crates/aos/modules/aos-module-format/Cargo.toml": "865d3d1c001bd2e9316817361235bdb5bdf992514eec0e707fbcbfa093a59fda",
+    "crates/aos/modules/aos-module-format/src/diagnostic.rs": "16ce106d58218b8ba8431f8aa1baa693edf4a62500fc6309a969fdd56496069c",
+    "crates/aos/modules/aos-module-format/src/graph/mod.rs": "b2b11a93cbaed57681fbf9de632f0a1169a3d47aeb1d3cb1492b48a33b6f4468",
+    "crates/aos/modules/aos-module-format/src/graph/resolution.rs": "cc30d49ae23e651a8070fd79fae6ff9bbdb9826e7622897fba10b8269ef92d91",
+    "crates/aos/modules/aos-module-format/src/graph/tests.rs": "74b68a9bf925cf38a24ed4220804171651a28791e4ec22b0420ba3e02801a36f",
+    "crates/aos/modules/aos-module-format/src/graph/validation.rs": "fdcb8d545b0af2f001e9d19727798f2d2c531f8ccf63da161e432256b81761e4",
+    "crates/aos/modules/aos-module-format/src/graph/validation/tests.rs": "f5f1ad44802802fe675d7c278b677edb52e7d5bbc38240d2dc97a3a181a16543",
+    "crates/aos/modules/aos-module-format/src/identity.rs": "87a4198a21260e2de56626cc8300d52910470795a124dd5a62eab1f5f29da5cd",
+    "crates/aos/modules/aos-module-format/src/lib.rs": "8cd0b38729c0ea2a35cbbc283480932f7d294512d2608dd620d9b759943f4520",
+    "crates/aos/modules/aos-module-format/src/limits.rs": "6a5110b4981e4d0115910d826fe4b46f6c491e0fa8ef2babdab8032dfdbc2419",
+    "crates/aos/modules/aos-module-format/src/option.rs": "ae9b246770b273b25646c41efe661412622cbafdb6875405bf6f747b8dbe2cc4",
+    "crates/aos/modules/aos-module-format/src/schema.rs": "da5a2a78219883f2444de109e425d096253b2e7e4db6603c650fb22a5eacd60b",
+    "crates/aos/modules/aos-module-format/src/transaction_blob.rs": "c677b49f46370a4b1986d1232f939784b352e37382bbde507832fd2bb267a069",
+    "crates/aos/modules/aos-module-format/src/value.rs": "7fe4d3c24684ef8b95009b3e6cfa0efbb13da1cf9f7ae3aadae7fd7648382259",
+    "crates/hub/aos-hub-native/tests/nix_builder_identity.c": "38c89358e130b1732b2e6d0492e93c1d40e2d0d777bef2e7d2229de57e95f4b2",
+    "crates/shared/aos-artifact-evidence/Cargo.toml": "249f331d2c67207dc3d74d581105284273382b6278fb8186476f1ea353c9c329",
+    "crates/shared/aos-artifact-evidence/src/consumption.rs": "7e38f9f101fde359ad056e70f8ecba06c77137d561c29b609575eb5f8988862c",
+    "crates/shared/aos-artifact-evidence/src/diagnostic.rs": "1ad0a4401d80d32b31afdf0b16bf98e822449ff445a80191e1f827c512dfbf68",
+    "crates/shared/aos-artifact-evidence/src/document.rs": "b3223bef9a7dd87bb72f4afde800217a24317f64a45b2fb3413046c39af76078",
+    "crates/shared/aos-artifact-evidence/src/identity.rs": "a960256438697c76067c85c13c364da507ff8bdcad4fa098bea776a016915f5d",
+    "crates/shared/aos-artifact-evidence/src/lib.rs": "b96037a5a80f0563c3646bfb208cc7f5d44f979fff4cb166ae2dd0f466e15104",
+    "crates/shared/aos-artifact-evidence/src/limits.rs": "07d81f5fd738e4e3fe14613a1947f32beeeb9989b935f74b4242f56fc900950f",
+    "crates/shared/aos-artifact-evidence/src/model.rs": "6536a0109591d899397b86800199b262b8e427c460d3c5b301253850740f084d",
+    "crates/shared/aos-core/Cargo.toml": "a83ae101ada1471e2cf6e3592eff604b932b32bb6b9c08ca78e7f28a84386f0c",
+    "crates/shared/aos-core/src/digest.rs": "f2c3c762eaa35314f95fe60cc1a109083ceb2b4d1149d193243dc370a9f00403",
+    "crates/shared/aos-core/src/identity.rs": "d5b29def050947cd57a09ed3fec6c2e6af4ea3e13a1751fec2e7a4fe351f1686",
+    "crates/shared/aos-core/src/json.rs": "e4c9f02df4321930960b4c6586b8e93f0439c8f1eabe0b1e929ceb277c95fa45",
+    "crates/shared/aos-core/src/lib.rs": "14fadc5d679efeb8f0b7ea696886bbd44d5148f972fd0fedd8c030bae66c1198",
+    "crates/shared/aos-core/src/limits.rs": "d1071f9bbfe39c8cfde4b5bffb4e39e1e3ed935285d9eb7da3261151c9334c1b",
+    "crates/shared/aos-nar/Cargo.toml": "9f504f74d8e77ba4cf0b88d9901240a1c7b82dd0198b835032143d01104306f0",
+    "crates/shared/aos-nar/src/cache.rs": "6c7f1494a8cf8cdbfd136ae740956d26762dd655a80c48d835bdc285935c9b57",
+    "crates/shared/aos-nar/src/export.rs": "29e8f6e4b524120dad94160a6ae86c40a7dac5865a7f918fdacbb21abed3bd3b",
+    "crates/shared/aos-nar/src/info.rs": "82eba129a392e731ffe919de077a1b8ee914bfd7721ca17c416ed170cf494001",
+    "crates/shared/aos-nar/src/lib.rs": "494af663344e0b02c44b46bd2dcf18f423623dfe836699d17ddd0f1903b7dd81",
+    "crates/shared/aos-nar/src/pack.rs": "790ace68b70debb5bb62f602ac423aa580e7be72784c8370b42d49f2c937b0f1",
+    "crates/shared/aos-nar/src/verify.rs": "a143f5ca2005296a92f885f750a18173ddd5d219362b7c462ab71de294d49f53",
+    "crates/shared/aos-nix/Cargo.toml": "e4bb8aa01a43084f8f4ec7d4de96180bfcad27cb7e61285448df31b6daf1c2bc",
+    "crates/shared/aos-nix/src/drv.rs": "f13400d0d8ac79b794147e8d24ff6151cdbb30c6e4b96a847d2d7bee36f0e8c6",
+    "crates/shared/aos-nix/src/env.rs": "08ca13bbb1e786e2a57300339f7c3d2e951e8fd47ecf1ee41db06a2e8a1bc2ba",
+    "crates/shared/aos-nix/src/error.rs": "2328b524695a9ffc284b0f22d86afb1a7eb9cfbc36530aea0c68e3a3ef087f1e",
+    "crates/shared/aos-nix/src/executable.rs": "607616276be9c1eaa5c9d03ccf7eb819906f26f92ac48cb5e2a199bf8d6f8674",
+    "crates/shared/aos-nix/src/identity.rs": "b87a6ea311a45844c0a7f0fec68749bde55c8fdeb1bf3e61bb3008e95b8d6770",
+    "crates/shared/aos-nix/src/lib.rs": "8513e01b8a3843d6dac35d86f671a25ff6d78a999becae67675b95f908897d62",
+    "crates/shared/aos-nix/src/runner.rs": "73e2b2c2d51bb8a961879ecd0e3e51ac6d672c307e799f98cdc75083569d5517",
+    "crates/shared/aos-nix/src/runner/derivation_outputs.rs": "d981d04b7d98a9206753d302426f700eb11a9128724578da00f3ab88a2858d74",
+    "crates/shared/aos-nix/src/store.rs": "57664bedbbd8eff7bb5ac6a8ebe787ba6a376d77b5a7ae27dad48571e667fc56",
+    "crates/shared/aos-transfer/Cargo.toml": "d241ab53ece5510b82f1a35e56c55723fb920a68fee6a30c4fb34cdad95fb0eb",
+    "crates/shared/aos-transfer/src/auth.rs": "bb441b8c75296ebdf9abd0832dd381170cc7205b260e5d0f8986279116fc08d9",
+    "crates/shared/aos-transfer/src/bandwidth.rs": "80693a814a84755f5fc781d233cbb6c193f52e19a281193b401c45e620383900",
+    "crates/shared/aos-transfer/src/hash.rs": "ae0557d73c182c8fd583c38d5a789bea301a056475aa8379060224133b40f3f7",
+    "crates/shared/aos-transfer/src/lib.rs": "775ae902eb45490749dd391995d70ce1edd1e484d957eab3322d14c800ed5000",
+    "crates/shared/aos-transfer/src/managed.rs": "f39bbb6edf87de4056a871a4d98fa50fccd624fff2a4153b17cd4134ba4f1066",
+    "crates/shared/aos-transfer/src/multipart.rs": "8f96cfa0a9bdb60692d0955810ad6627dc2fe893b81aa8713be8710640b6dd9f",
+    "crates/shared/aos-transfer/src/pool.rs": "280308c7d0b47ce9ab94677291ece321feaa5a87f2b0ac9559d7031d5f6af7ce",
+    "crates/shared/aos-transfer/src/progress.rs": "e2f18643d3d6ee304496d1c51d3b4dce399e38a42ed67420e4a45d9fed20b443",
+    "crates/shared/aos-transfer/src/protocol/conditional.rs": "41e08dbb931fb7d42fe76b4caf77d541f7725f105a7e41b7c98602ee2f88a9a6",
+    "crates/shared/aos-transfer/src/protocol/fs.rs": "67c82111c4c5d62e17e0c2eae52a42acac6c20d9e14737bca6a48725389a570e",
+    "crates/shared/aos-transfer/src/protocol/http.rs": "1e0e7bd6a52709d1a9a5a5c7c9c57be3b5685eb98c8512bf866816750a6e4cf6",
+    "crates/shared/aos-transfer/src/protocol/mod.rs": "c5e24a7ce8e4d18d3cd92a45346c98083b04170191c4db908872e9f3ac22cd8c",
+    "crates/shared/aos-transfer/src/protocol/s3.rs": "22981e3115fe7ecaca006278eaacdb1ce3699a1c04d8e870c9a138dd28613ccc",
+    "crates/shared/aos-transfer/src/protocol/s3/conditional_tests.rs": "6ee84fedfc41ff9d2c53e6058c01e49dc99fcaa6fb6f798d7e3e13c93c1d3fbe",
+    "crates/shared/aos-transfer/src/protocol/s3/resume.rs": "f7a213ba00577567b8ea22861a698d81766d747f98357ff56d23bcb31d03fe35",
+    "crates/shared/aos-transfer/src/protocol/sftp.rs": "b9e27a0511759ba009018368fe257ed2ae7daa9a7e142d0731120972ee06a042",
+    "crates/shared/aos-transfer/src/protocol/sftp/atomic.rs": "46ab38ea30d79fd7af505445b045801b64558914b20eeb0ba0e40fff6be8f705",
+    "crates/shared/aos-transfer/src/retry.rs": "255c585e8381e5ac290de8c0bf1c1e7a6ae6461f093f1e13602720da9569ad28",
+    "crates/shared/aos-transfer/src/transfer.rs": "d7f938cc182bafefb8a59db9aeadbaa651b0f3e0b64800b9cd929da8278d69a2",
+    "crates/shared/aos-transfer/src/types.rs": "2ee7954292b5db912bda67dc478ba35df3c78486afc3b0a9766398300b09e802"
+  },
+  "ignored_cases": 1,
+  "libtest_artifacts": 10,
+  "limits": [
+    "Native Linux Cargo baseline only. Bazel qualification, foreign execution, compiler invocation parity, performance acceptance and production cutover remain separate.",
+    "Configuration commands embed the actual source-built EROFS, mount and package-runtime tools. These compilation inputs are not substitute commands.",
+    "The standalone initrd preparation source is compiled outside Cargo and is not qualified by these Cargo baselines.",
+    "The ignored native metadata transaction requires its existing separate qualification fixture."
+  ],
+  "output": "/nix/store/j14zf9vk073w11y5jpjxvjn3zi85ic4g-aos-bazel-boot-preparation-minimal-cargo-baseline-1",
+  "recipe": "let\n  root = /home/dylan/src/aos/.worktrees/codex/bazel-integration-722;\n  pkgs = (import root {}).pkgs;\n  inputs = import ./boot-preparation-baseline-inputs.nix {inherit pkgs;};\n  test = minimal: import (root + \"/tests/build/_bazel-cargo-oracle.nix\") (inputs // {\n    inherit pkgs;\n    pname = \"aos-bazel-boot-preparation-${if minimal then \"minimal-\" else \"\"}cargo-baseline\";\n    cargoFlags = pkgs.lib.optional minimal \"--no-default-features\";\n  });\n  production = minimal: pkgs.mkDerivation {\n    pname = \"aos-bazel-boot-preparation-${if minimal then \"minimal-\" else \"\"}production-cargo-baseline\";\n    version = \"1\";\n    src = inputs.cargoSource;\n    buildDeps = [pkgs.rust pkgs.sed] ++ inputs.nativeTools;\n    runtimeDeps = inputs.nativeLibraries;\n    sharedBuildCache = false;\n    dontStrip = true;\n    dontPatchELF = true;\n    dontNukeRefs = true;\n    phases = [{\n      name = \"compile\";\n      script = ''\n        cp -R \"$src\" source\n        chmod -R u+w source\n        cd source\n        export CARGO_HOME=\"$TMPDIR/cargo\" CARGO_TARGET_DIR=\"$TMPDIR/target\"\n        mkdir -p \"$CARGO_HOME\" .cargo \"$out\"\n        sed 's|@vendor@|${pkgs.aos.passthru.cargoDeps}|g' \\\n          ${pkgs.aos.passthru.cargoDeps}/.cargo/config.toml > .cargo/config.toml\n        ${inputs.cargoSetup}\n        cargo build --frozen --offline --manifest-path crates/Cargo.toml --lib --bins \\\n          -p aos-boot-runtime -p aos-configuration-image -p aos-platform-metadata \\\n          ${pkgs.lib.optionalString minimal \"--no-default-features\"} \\\n          --jobs \"$NIX_BUILD_CORES\" --message-format=json > \"$out/cargo-messages.jsonl\"\n      '';\n    }];\n  };\nin { baselines = [(test false) (production false) (test true) (production true)]; }\n",
+  "report_sha256": {
+    "cargo-messages.jsonl": "a6e65e3615231932f7a9e22fcc878003c0e63ad76837b934151b546504c75451",
+    "cargo-tests.log": "40505e284578ad2388f4dbbb48c83cd6455caf090d1db28b2f732c91878e855f"
+  },
+  "schema_version": 1,
+  "shared_inputs_recipe": "{pkgs}: let\n  common = import ./registry-native-baseline-inputs.nix {inherit pkgs;};\nin common // {\n  packages = [\"aos-boot-runtime\" \"aos-configuration-image\" \"aos-platform-metadata\"];\n  nativeTools = common.nativeTools ++ [pkgs.erofs-utils pkgs.util-linux pkgs.aos.packageRuntime];\n  cargoSetup = common.cargoSetup + ''\n    export AOS_MKFS_EROFS=\"${pkgs.erofs-utils}/bin/mkfs.erofs\"\n    export AOS_FSCK_EROFS=\"${pkgs.erofs-utils}/bin/fsck.erofs\"\n    export AOS_MOUNT=\"${pkgs.util-linux}/bin/mount\"\n    export AOS_UMOUNT=\"${pkgs.util-linux}/bin/umount\"\n    export AOS_PACKAGE_RUNTIME=\"${pkgs.aos.packageRuntime}/bin/aos-package-runtime\"\n  '';\n}\n",
+  "source": "/nix/store/p7im2inksp4fa2nxfalh832a0h0ibjwx-crucible-cargo-src",
+  "status": "Unchanged boot preparation test and doctest execution passed before Bazel conversion",
+  "targets": {
+    "aos-boot-runtime/bin_aos-boot-preparation-provider": {
+      "binary_sha256": "f4ad6e8962c458833e146be328b81f47cff67247d3e1a96e94c50a8a97a687cf",
+      "executed": [],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-boot-runtime/unit": {
+      "binary_sha256": "185fd03329935805af0079af49af3f1660acef816a4fa906f6efc70b2da2102a",
+      "executed": [
+        "preparation::tests::completed_preparation_is_not_replayed_and_teardown_retires_evidence",
+        "preparation::tests::interrupted_dispatch_is_indeterminate_and_never_retried",
+        "preparation::tests::preparation_rejects_mutable_or_parent_traversing_paths"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-configuration-image/bin_aos-certificate-bundle": {
+      "binary_sha256": "67a2ffb9e48222f7816ec82d3cd33f7b21429e44e41b24043733d7c0b53c7ba3",
+      "executed": [],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-configuration-image/bin_aos-configuration-boot": {
+      "binary_sha256": "db341cc8f7e928763938d4c2bb3e98f27df66fc25002641cbd3b146b11c1dc65",
+      "executed": [],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-configuration-image/bin_aos-configuration-lower": {
+      "binary_sha256": "511a8f08a2557e59c7ec82fcd7198442cc3832e0c9d6ba6cd6f55e432f79cc19",
+      "executed": [],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-configuration-image/bin_aos-configuration-mount": {
+      "binary_sha256": "0e4a6168e512a6c72dd95731cbcfd6328bd7a23199452514e85eb23419ddb3af",
+      "executed": [],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-configuration-image/unit": {
+      "binary_sha256": "da5f43e664b1dfe3f7c7ab9d73254cd0d512f1bc8bb16d1d9515dc6595afadb3",
+      "executed": [
+        "boot::tests::malformed_and_symlink_bindings_are_refused_before_runtime_lookup",
+        "boot::tests::nonzero_generation_requires_the_image_binding_before_any_mutation",
+        "boot::tests::regular_canonical_binding_is_consumed_for_the_selected_generation",
+        "lower::tests::explicit_retirement_whiteouts_persistent_orphans_and_allows_a_new_owner",
+        "lower::tests::nonliteral_persistent_orphan_keeps_upper_custody_without_inventing_boot_bytes",
+        "lower::tests::persistent_orphan_refuses_other_literal_and_live_claimants_without_changes",
+        "lower::tests::persistent_orphan_retains_bytes_mode_owner_and_identity_across_generations",
+        "lower::tests::same_effect_becoming_nonliteral_does_not_retain_the_old_lower_seed",
+        "lower::tests::same_effect_moves_and_lifetime_changes_replace_instead_of_orphaning",
+        "model::tests::native_file_metadata_requires_literal_unique_canonical_effects",
+        "model::tests::rejects_unowned_and_overlapping_paths",
+        "model::tests::rejects_unowned_trees_and_mutable_inventory",
+        "model::tests::rejects_unpinned_sources_and_path_traversal",
+        "model::tests::retirement_metadata_rejects_configured_duplicate_and_invalid_identities",
+        "mount::tests::persistent_upper_keeps_live_and_foreign_bytes_and_mode_while_retired_paths_drop",
+        "render::tests::certificate_bundle_rejects_empty_unsafe_and_malformed_inputs",
+        "render::tests::image_and_native_bundles_preserve_order_and_duplicates",
+        "render::tests::refuses_destination_symlink_escape",
+        "render::tests::rejects_private_key_certificate_stream",
+        "render::tests::renders_owned_files_and_retained_script_references"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-platform-metadata/bin_aos-metadata-acquisition-provider": {
+      "binary_sha256": "7209ac965f243132d0a503b37aecef77e0816040026a6850dded6d5e66ce1bdd",
+      "executed": [],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-platform-metadata/bin_aos-metadata-policy-provider": {
+      "binary_sha256": "37f51656f73b39e0dd4df163bbd5867e173200df225595c504d18f6a21cb8fee",
+      "executed": [],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-platform-metadata/unit": {
+      "binary_sha256": "55e02c17a5c7c890bf1ac0c1a16e6313e47ecb0165817a6bdb19b3c486b7da37",
+      "executed": [
+        "bundle::tests::bundle_preserves_imports_and_data_and_detects_changes",
+        "bundle::tests::rejects_escaping_paths_collisions_and_links",
+        "network::tests::absent_gateway_is_explicitly_null_and_round_trips",
+        "network::tests::checked_bootstrap_round_trips_through_the_semantic_boundary",
+        "network::tests::non_exact_selector_cannot_cross_the_semantic_boundary",
+        "policy::tests::platform_authorization_preserves_typed_input_without_file_round_trip",
+        "provider::tests::detected_platform_binds_network_requirement",
+        "tests::acquisition_context_carries_network_requirement_as_typed_data",
+        "tests::aos_metadata_fetcher_absent_user_data_is_none",
+        "tests::aos_metadata_fetcher_reads_host_nix_and_sig",
+        "tests::aws_imdsv2_404_user_data_is_none",
+        "tests::aws_imdsv2_host_pointer_resolved_with_pin",
+        "tests::aws_imdsv2_token_dance_and_facts",
+        "tests::config_drive_fetcher_parses_openstack_metadata",
+        "tests::config_drive_labels_priority",
+        "tests::detect_config_drive_short_circuits_cloud",
+        "tests::detect_reads_fake_sysfs",
+        "tests::digitalocean_facts_include_static_and_anchor_networks",
+        "tests::dmi_table_matches_nix_decision_order",
+        "tests::facts_identity_is_canonical_and_includes_static_network",
+        "tests::facts_render_antiquotation_neutralized",
+        "tests::facts_render_escapes_hostile_input",
+        "tests::facts_render_is_deterministic_and_typed",
+        "tests::fetch_metadata_offline_returns_exact_typed_result",
+        "tests::fetch_metadata_without_user_data_returns_facts_only",
+        "tests::native_cloud_fetchers_acquire_provider_user_data",
+        "tests::netplan_v2_cidr_addresses",
+        "tests::network_platforms_gated",
+        "tests::nocloud_fetcher_parses_netplan_network_config",
+        "tests::nocloud_fetcher_user_data_is_literal_host_nix",
+        "tests::nocloud_fixtures_support_common_flow_mappings_and_fail_closed",
+        "tests::openstack_imds_facts_include_network_data",
+        "tests::openstack_network_data_is_normalized",
+        "tests::production_http_timeout_bounds_a_nonresponding_endpoint",
+        "tests::qemu_fwcfg_reads_blob",
+        "tests::shared_bundle_pointer_checks_pin_and_entrypoint",
+        "trust::tests::exact_payload_and_namespace_select_the_enrolled_operator",
+        "trust::tests::revoked_and_missing_anchors_cannot_authorize_configuration",
+        "trust::tests::signed_bundle_authentication_covers_every_source_and_wrapper",
+        "yaml::tests::metadata_supports_quotes_and_comments",
+        "yaml::tests::netplan_supports_flow_and_block_sequences",
+        "yaml::tests::netplan_v1_static_subnet_is_supported",
+        "yaml::tests::tabs_fail_closed"
+      ],
+      "ignored": [
+        "policy::tests::serialized_metadata_results_match_exported_native_contracts"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    }
+  }
+}
