@@ -113,6 +113,25 @@ also pass. This qualifies the preboot initial Source census, not post-Hello
 Source/Controller funding, opaque five-phase Recipe/Initial production, native
 Ready, Capture, performance or full RFC-0025 completion.
 
+## Capture candidate inputs and defining scratch admission
+
+Commit `dc1c4e379b` groups the seven actual borrowed Capture owners into a
+named input view. Its defining candidate counter now includes those views,
+checked-result and fixed iteration storage. The outer report quote pays that
+same complete counter before borrowing live roots; the candidate reports it
+again for its own walk. Original SDK and control authentication still surround
+the callback, and compact chunk arithmetic retains its existing refusal order.
+
+All 75 focused report-startup, native Capture, observation-lifetime, continuation
+storage and endpoint test executions pass in each standard and raw-JSON mode.
+Formatting, all-feature/all-target Transport/Engine/Daemon checking and all six
+architecture gates pass. The required application gate compiles 180 test
+executables across 58 packages, including 71 integration targets. All 455 frozen
+Rust/Cargo inputs match this pushed revision and the captured source. Production
+Transport Clippy still fails with 51 errors and 1,733 warnings under the unchanged
+workspace policy. No new complete-library run, VM, full native Capture or full
+RFC qualification is claimed.
+
 ## Fallible borrowed JSON cursor qualification
 
 Commit `4114a7ae88` names the borrowed cursor operation `next_value` in the
