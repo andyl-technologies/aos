@@ -1313,3 +1313,12 @@ configured graph, refreshed source inventories, dependency specifications,
 external crate feature sets exactly match the Cargo baseline, and the existing
 eight dependency locks remain unchanged. Native Bazel execution, editor parity,
 foreign execution, and production migration remain pending.
+
+## S3 adapter baseline
+
+`tests/evidence/store-s3-cargo-baseline.json` records 11 executed cases across
+two artifacts and 222 external crate identities. The existing live-service
+conformance case remains ignored, with its original requirement for an
+exclusive test bucket and credentials. Development dependencies enable the
+store conformance API. The Bazel conversion is pending; this baseline makes no
+live-service qualification claim.
