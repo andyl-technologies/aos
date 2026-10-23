@@ -83,6 +83,36 @@ Separately admitted bank reservation and production-holder integration are the
 next implementation step. No positive initial-Source VM or full RFC result is
 claimed for this revision.
 
+## Funded initial Source banks and complete deployment census
+
+Commit `da6c5b3689` separately admits and reserves the defining Source Capture
+banks after accepting each original isolated worker result and before private
+Birth construction. It binds the actual installed coordinator policy, retains
+the Source-bound construction row before reservation, and observes every failed
+constructor prefix after releasing the mutable Source loan. Accepted worker
+banks remain in their original completion; this step runs no legacy BirthWorker.
+
+The production whole-Prepared observer uses the complete initial-lifecycle
+component visitor for retained private Births under the same original deployment.
+Earlier stages keep their strict prebirth visitor. Mandatory Capture banks,
+complete native-read checks and terminal custody checks remain enforced. The
+stage chooses a DATA visitor and supplies no native permission.
+
+All-feature/all-target Engine/Daemon checking, changed-file formatting and all
+six architecture gates pass. The required application gate compiles 180
+test executables across 58 packages, including 71 integration targets. All 443
+frozen Rust/Cargo inputs match this commit and the captured application, VM
+support, default-feature CLI and ordinary-peer component sources.
+
+The registered funded-template VM passes. Two fresh positive consumers retain
+all three actual worker results and private Births; each requires exact-bound
+Source deployment reads after one-byte-short refusal. Both small-policy
+failure/spent-retry controls, foreign-pin refusal, namespace/world-credit cleanup
+and the separate default-feature CLI's two public refusals and normal shutdown
+also pass. This qualifies the preboot initial Source census, not post-Hello
+Source/Controller funding, opaque five-phase Recipe/Initial production, native
+Ready, Capture, performance or full RFC-0025 completion.
+
 ## Process-child census and transport lint repairs
 
 The actual VM refusal exposed an absent runtime prerequisite. The pinned Linux
