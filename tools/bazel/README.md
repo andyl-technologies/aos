@@ -1485,3 +1485,15 @@ cases and one passing doctest. The graphs contain 71 and 79 external crate
 identities respectively, with six first-party libraries. Compression uses the
 AOS multithreaded Zstandard package. Bazel conversion, Wasm qualification, and
 production migration remain pending.
+
+## Release format baseline
+
+`tests/evidence/release-format-initial-cargo-failure.json` retains the initial
+Cargo failure: the canonical-encoding test rejected `production_only` anywhere
+in the document although the current requirement schema and fixture support it.
+The test now verifies that individual requirements retain true values and omit
+false defaults, while preserving the round-trip, digest, and legacy-field checks.
+`tests/evidence/release-format-cargo-baseline.json` records the successful rerun:
+152 executed cases, one existing ignored Nix-inventory case, 72 external crate
+identities, and six first-party libraries. The required workspace Rust check is
+running separately for this correction. Bazel conversion remains pending.

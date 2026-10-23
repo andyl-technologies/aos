@@ -1,0 +1,27 @@
+{
+  "command": "nix-build /tmp/aos-bazel-722/release-format-cargo-baseline-v1.nix --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "derivation": "/nix/store/d9pv8din6xamx0b9q1ampjffhvayp08k-aos-bazel-release-format-cargo-baseline-1.drv",
+  "failure": {
+    "artifact": "qualification",
+    "artifact_executed_passes": 8,
+    "artifact_failures": 1,
+    "case": "contract_identity_is_its_rust_canonical_encoding",
+    "message": "contract encoding carries \"production_only\""
+  },
+  "finding": "The fixture enables production_only on an ability requirement. The current typed requirement schema serializes that supported field when true, while the canonical-encoding test rejects the same spelling anywhere in the document.",
+  "limits": [
+    "The failure predates release-format Bazel conversion and any test correction.",
+    "The failing test was not skipped, ignored or filtered. These counts describe the failing artifact, not a complete package execution."
+  ],
+  "log_sha256": "39faec0eed0c356c90959e99a12672fe28134963f5277889f7a8284a9fd2a340",
+  "recipe": "let\n  root = /home/dylan/src/aos/.worktrees/codex/bazel-integration-722;\n  pkgs = (import root {}).pkgs;\nin import (root + \"/tests/build/_bazel-cargo-feature-oracles.nix\") {\n  inherit pkgs;\n  pname = \"aos-bazel-release-format-cargo-baseline\";\n  packages = [\"aos-release-format\"];\n  variants.default = [];\n}\n",
+  "recipe_sha256": "c085739efb5fc43a3a33ad46459dfd5aca94ed7c1e2aed1af43752c00fd97e2a",
+  "schema_version": 1,
+  "source": "/nix/store/8ps8a5kjailm75j4w9h6nxc7c4z7pzm0-crucible-cargo-src",
+  "status": "Initial release-format Cargo baseline failed; no passing migration parity is claimed",
+  "unchanged_source_inputs_sha256": {
+    "crates/aos/release/aos-release-format/src/qualification.rs": "9f31828e8d55fc3315ef66803bfaebd0707d867dc00fae740ac2e3fbb355f49d",
+    "crates/aos/release/aos-release-format/src/test_support/qualification/contract.rs": "3b0a65d5a3ef68890de4635d1684ef8879571d2d0812039b5ac71078907ed177",
+    "crates/aos/release/aos-release-format/tests/qualification.rs": "024a3b087ba7ab69a26bf212545a5672ecae565eabe00e8a0207b3bfb73b9d26"
+  }
+}
