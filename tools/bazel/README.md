@@ -1177,4 +1177,11 @@ requires the exact native case inventory without that unrelated adjustment.
 `tests/evidence/aarch64-linux-quota.json` records all eight quota cases passing,
 native procedural macros, sandboxed AArch64 compilation, and the existing
 device family's 642-case regression. The associated policy suite passes 136
-tests. Production package builders remain on Cargo during this qualification.
+tests. The native ext4 VM also passes byte and inode enforcement, fail-closed
+nonempty release and cleared project-ID reuse. The installed flight declares
+AOS `gcc-libs` as a runtime dependency; its ELF interpreter, runtime paths and
+unwinder closure are checked after ordinary fixup/reference scrubbing. The
+initial guest run caught the missing unwinder dependency before enforcement;
+the native evidence retains that failure and the successful corrected flight.
+Privileged ext4 enforcement is currently qualified only on x86_64. Production
+package builders remain on Cargo during this qualification.
