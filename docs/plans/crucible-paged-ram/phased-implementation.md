@@ -63,11 +63,11 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | Signed atomic `7b817c94ba`, conventional `060716ff3d`, tree `b26b7645` verifies the eleven function exports and two immutable layout objects using their genuine recorded attributes. Independent review verifies all 36 correction payloads, 78,470 Git/disk/archive paths and four byte-exact generated outputs; all 359 pure controls pass. | The earlier genuine-provider companion passes its complete build and all nineteen ordinary/unissued-state TAP cases. Fresh legacy configuration and all thirteen read-only Ninja queries pass; the complete graph and cleanup evidence are independently verified. Actual object transformation, final provider-binding proof and its 187-case TAP run remain unqualified. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
+| Native integration | Signed atomic `7b817c94ba`, conventional `060716ff3d`, tree `b26b7645` verifies the eleven function exports and two immutable layout objects using their genuine recorded attributes. Independent review verifies all 36 correction payloads, 78,470 Git/disk/archive paths and four byte-exact generated outputs; all 359 pure controls pass. | The earlier genuine-provider companion passes its complete build and all nineteen ordinary/unissued-state TAP cases. Fresh legacy configuration and all thirteen read-only Ninja queries pass. The first complete target attempt refuses an extra genuine always-stale generator after its first fixture compilation; original graph, build prefix and cleanup evidence are independently verified. Actual object transformation, final provider-binding proof and its 187-case TAP run remain unqualified. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 525 bindings: 506 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 535 bindings: 516 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -1523,7 +1523,38 @@ baselines. All 2,029 input leaves match their actual content; 790 aggregate and
 2,011 self-resource samples remain within the sealed limit. Replaying the
 original strict predicates against the retained actual graphs succeeds. This
 run performs no target compilation, transformation, archive, link, ELF load or
-TAP execution. A separate complete target-build plan remains unexecuted.
+TAP execution.
+
+The separately reviewed complete target-build plan
+`3b9ec60d9d86f578ccfe2f8a487d778a7933174a687b9938e1ff1262d3037a50`
+passes 14,682 plan controls and 359 production verifier controls. Its original
+execution refuses after 189 successful subprocess operations and 174 accepted
+scheduled edges. The first fixture compilation succeeds in 16.620 seconds, but
+its genuine Ninja log also records a repeated `qemu-version.h` generator. The
+strict one-effect predicate rejects that extra effect. No transformation,
+archive, final link, ELF load or TAP follows.
+
+Independent review of the original signed result
+`c263d843526f06c4e934b8cf090412bf7997d3772bd0d55ff447345a7f17f0d9`
+verifies all 48 payloads, 6,447 execution and 86,117 reconstruction paths against
+their complete archives, all four original baselines, the actual schedule prefix
+and the partial fixture ELF. All 191 cleanup cuts observe empty children and
+ECHILD without signals, waits, adoptions or errors. Aggregate and self-resource
+samples remain within the original six-GiB bound. The 282.985-second invocation
+is a preserved refusal, not target qualification.
+
+The separate signed diagnosis
+`b54d2ae56d7f5596b6ea257c729bc684a9f95d98512c54dc4a287bd2d3b30463`
+passes independent review of 54 payloads, 32 input identities and 1,988 pure
+controls. The pinned source declares the version generator always stale; the
+selected Meson and Ninja execute and record it even when output bytes remain
+unchanged. The graph predicts 1,625 repeated invocations beyond its own scheduled
+edge across a complete build. Only two version invocations were actually
+observed before refusal. A successor must authenticate each genuine repeated
+producer and enforce its independent live deadline. Read-only preparation also
+finds unqualified shell interpreters outside the accepted tool roots; explicit
+source preparation and tool provenance remain prerequisites. No accepting
+successor execution has occurred.
 
 The service-client ownership contracts pass mandatory application-target
 compilation at `wx20fkrpphs9zk5lrwlg7kx10d84x8b9`. Before later edits, all
@@ -1569,7 +1600,10 @@ allocates nothing. All 686 engine tests, ninety testing-standard controls and
 five hygiene controls pass. The host suite retains 1,385 passes, the same eight
 unissued helper-custody failures and four ignored controls. Strict Clippy retains
 674 library and 723 test-target errors, with fourteen and five warnings.
-Mandatory application-target compilation for this increment remains pending.
+Mandatory application-target compilation passes at
+`9pynb96pmckzck7y09wf17ww1ch9abb7`. All 5,392 committed Rust/TOML files and
+six required fixtures independently match the frozen source
+`1isy3prc6jr847mj0plqaqzd7wha1sxm` before later account changes.
 These parser controls grant no native issuance or execution authority.
 
 Four exact parser-credit controls are now bound into `gate:ram-supervision`.
@@ -1578,6 +1612,31 @@ The hermetic gate passes all 412 exact cases at
 `256dsc60864h4khhnr7lbh4h4v2c7v7d`, retaining 529 case bindings across 243
 requirements, 148 uncovered requirements and zero fully qualified requirements.
 Each new binding explicitly describes its component scope.
+
+Fixed live decode-account refusals now use a separate diagnostic holder reserved
+before either holder or account allocation. Poisoning, exhaustion and the scratch
+accounting invariant return the original typed fixed cause without allocating.
+Separate accounts retain distinct cause identities; sticky errors retain the
+holder without retaining the account or forming a cycle. The holder frees its
+shared header before returning its original loan. Its complete peak includes
+storage, construction/extraction overlap and returned handles. Constructor,
+layout-overflow and external-authority errors retain their existing paths and
+are not claimed as fully funded by this increment.
+
+All six new exact controls pass in the hermetic storage-transfer gate, along
+with its 21 existing cases, at `21rj3c3and8gawhh3r3482d8y6y94g9l`.
+The actual allocation observer verifies zero allocations for fixed refusals,
+credit-before-birth refusal and credit retention through physical control free.
+Restoring ordinary Arc drop makes both actual-free controls fail; exact source
+restoration passes both. The original broad store run reproduces an obsolete
+zero-credit assertion while two diagnostic aliases remain alive. That run was
+explicitly cancelled; the corrected assertion requires credit to remain through
+the first alias drop and return only after the final alias. The revised inventory
+passes at `y67fbiz56y4fl5hv2iapccdc45fdvcrz`: 535 bindings, 243 requirements,
+148 uncovered and zero fully qualified. The revised store suite passes all 689
+executed tests, with the three costly 512 MiB cases explicitly excluded. Engine,
+host, policy, strict Clippy and mandatory application-target checks remain
+pending for this increment.
 
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's

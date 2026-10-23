@@ -43,6 +43,14 @@ fn prepaid_codec_refusal_is_local_and_preserves_original_poisoning() {
     };
     assert_eq!(source, poisoned);
     drop(parent);
+
+    // The original cause keeps its prepaid diagnostic storage after the account
+    // closes, until the last error alias releases that same storage.
+    let retained = quota.used();
+    assert!(retained > 0 && retained < baseline);
+    drop(source);
+    assert_eq!(quota.used(), retained);
+    drop(poisoned);
     assert_eq!(quota.used(), 0);
 }
 

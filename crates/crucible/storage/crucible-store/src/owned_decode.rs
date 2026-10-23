@@ -12,6 +12,9 @@ use std::error::Error;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
+mod prepaid_refusal;
+use prepaid_refusal::{AccountRefusal, PrepaidRefusals};
+
 mod ownership;
 pub(crate) use ownership::DecodeBudgetSlot;
 use ownership::{Authority, TerminalOwner};
@@ -62,35 +65,79 @@ pub trait DecodeResourceAuthority: Send + Sync {
 }
 
 /// Retains a typed operational or decoder-accounting refusal.
-#[derive(Clone, Debug)]
+///
+/// Fixed failures of an admitted account share its prepaid diagnostic storage.
+/// Clones preserve that account-specific cause; errors from separate accounts
+/// remain distinct. The diagnostic can outlive its account without retaining it.
+#[derive(Clone)]
 pub struct DecodeAdmissionError {
-    source: Arc<dyn Error + Send + Sync>,
+    source: AdmissionSource,
+}
+
+#[derive(Clone)]
+enum AdmissionSource {
+    External(Arc<dyn Error + Send + Sync>),
+    Account {
+        retained: PrepaidRefusals,
+        refusal: AccountRefusal,
+    },
 }
 
 impl DecodeAdmissionError {
     /// Preserves an original typed resource refusal without string conversion.
     pub fn new(source: impl Error + Send + Sync + 'static) -> Self {
         Self {
-            source: Arc::new(source),
+            source: AdmissionSource::External(Arc::new(source)),
         }
+    }
+
+    fn original_source(&self) -> &(dyn Error + Send + Sync + 'static) {
+        match &self.source {
+            AdmissionSource::External(source) => source.as_ref(),
+            AdmissionSource::Account { retained, refusal } => retained.source(*refusal),
+        }
+    }
+}
+
+impl fmt::Debug for DecodeAdmissionError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DecodeAdmissionError")
+            .field("source", &self.original_source())
+            .finish()
     }
 }
 
 impl fmt::Display for DecodeAdmissionError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self.source.as_ref(), formatter)
+        fmt::Display::fmt(self.original_source(), formatter)
     }
 }
 
 impl Error for DecodeAdmissionError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        Some(self.source.as_ref())
+        Some(self.original_source())
     }
 }
 
 impl PartialEq for DecodeAdmissionError {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.source, &other.source)
+        match (&self.source, &other.source) {
+            (AdmissionSource::External(left), AdmissionSource::External(right)) => {
+                Arc::ptr_eq(left, right)
+            }
+            (
+                AdmissionSource::Account {
+                    retained: left,
+                    refusal: left_refusal,
+                },
+                AdmissionSource::Account {
+                    retained: right,
+                    refusal: right_refusal,
+                },
+            ) => left.shares_owner(right) && left_refusal == right_refusal,
+            _ => false,
+        }
     }
 }
 
@@ -117,6 +164,7 @@ struct Account {
     state: Mutex<State>,
     authority: Authority,
     maximum: u64,
+    refusals: PrepaidRefusals,
     _initial: crate::owned_decode::ResourceLoan,
 }
 
@@ -152,6 +200,10 @@ impl DecodeBudget {
 
     /// Returns the exact control extent charged by the account constructor.
     pub(crate) const fn allocation_bytes() -> u64 {
+        Self::account_bytes() + PrepaidRefusals::peak_bytes()
+    }
+
+    const fn account_bytes() -> u64 {
         (std::mem::size_of::<Account>() + 2 * std::mem::size_of::<usize>()) as u64
     }
 
@@ -175,7 +227,9 @@ impl DecodeBudget {
         if initial_bytes > maximum {
             return Err(refusal("decoded metadata allowance is too small"));
         }
-        let initial = authority.reserve(initial_bytes)?;
+        let initial = authority.reserve(Self::account_bytes())?;
+        let refusal_credit = authority.reserve(PrepaidRefusals::peak_bytes())?;
+        let refusals = PrepaidRefusals::new(refusal_credit);
         Ok(Self(TerminalOwner::new(Account {
             state: Mutex::new(State {
                 used: initial_bytes,
@@ -184,6 +238,7 @@ impl DecodeBudget {
             }),
             authority,
             maximum,
+            refusals,
             _initial: initial,
         })))
     }
@@ -213,7 +268,7 @@ impl DecodeBudget {
             .0
             .state
             .lock()
-            .map_err(|_| refusal("decoded metadata account is poisoned"))?;
+            .map_err(|_| self.0.refusals.error(AccountRefusal::Poisoned))?;
         if let Some(error) = &state.failure {
             return Err(error.clone());
         }
@@ -222,7 +277,7 @@ impl DecodeBudget {
             .checked_add(receipt_growth)
             .and_then(|bytes| state.used.checked_add(bytes).map(|used| (bytes, used)))
             .filter(|(_, used)| *used <= self.0.maximum)
-            .ok_or_else(|| refusal("decoded metadata allowance exhausted"))
+            .ok_or_else(|| self.0.refusals.error(AccountRefusal::Exhausted))
             .and_then(|(bytes, used)| {
                 self.0
                     .authority
@@ -320,7 +375,7 @@ impl DecodeBudget {
             .0
             .state
             .lock()
-            .map_err(|_| refusal("decoded metadata account is poisoned"))?
+            .map_err(|_| self.0.refusals.error(AccountRefusal::Poisoned))?
             .failure
             .clone())
     }
@@ -401,7 +456,12 @@ impl Drop for DecodeScratch {
             if let Some(remaining) = state.used.checked_sub(self.bytes) {
                 state.used = remaining;
             } else if state.failure.is_none() {
-                state.failure = Some(refusal("decoded scratch accounting invariant failed"));
+                state.failure = Some(
+                    self.budget
+                        .0
+                        .refusals
+                        .error(AccountRefusal::ScratchInvariant),
+                );
             }
         }
     }
@@ -422,7 +482,7 @@ impl DecodeBudget {
             .0
             .state
             .lock()
-            .map_err(|_| refusal("decoded metadata account is poisoned"))?;
+            .map_err(|_| self.0.refusals.error(AccountRefusal::Poisoned))?;
         if let Some(error) = &state.failure {
             return Err(error.clone());
         }
@@ -437,7 +497,7 @@ impl DecodeBudget {
             .used
             .checked_add(bytes)
             .filter(|used| *used <= self.0.maximum)
-            .ok_or_else(|| refusal("decoded metadata allowance exhausted"))
+            .ok_or_else(|| self.0.refusals.error(AccountRefusal::Exhausted))
             .and_then(|used| {
                 self.0
                     .authority

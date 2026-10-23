@@ -56,6 +56,12 @@
     ];
     store = component "gate:ram-store-transfer" "model" [
       (group "storage/crucible-store" "lib" [] [
+        (case "owned_decode::tests::exhausted_account_reports_its_prepaid_cause_without_allocating" "adversarial" ["RAM-12"] "Actual account exhaustion retains its typed prepaid cause without another allocator entry or resource request; component credit supplies no Native authority.")
+        (case "owned_decode::tests::prepaid_refusals_keep_account_identity_and_do_not_retain_the_account" "positive" ["RAM-12"] "Actual errors remain distinct across original accounts and retain only their separately paid diagnostics after both accounts close; no live machine admission.")
+        (case "owned_decode::tests::final_prepaid_refusal_control_frees_before_its_original_loan" "positive" ["RAM-12"] "The installed allocator observes the actual final diagnostic control deallocation while its same original loan is still charged; no Native physical-return qualification.")
+        (case "owned_decode::tests::poisoned_account_reports_from_prepaid_storage_without_allocating" "adversarial" ["RAM-12"] "A genuinely poisoned account reports its original typed refusal without allocating another holder; this component issues no Source custody.")
+        (case "owned_decode::tests::unused_prepaid_refusal_control_frees_before_its_original_loan" "positive" ["RAM-12"] "Unused diagnostic storage physically deallocates before returning its original loan, as observed by the actual allocator; component credit creates no Native authority.")
+        (case "owned_decode::tests::refusal_storage_is_not_born_when_its_original_credit_refuses" "adversarial" ["RAM-12"] "The original authority refuses diagnostic credit before its actual control allocation is born; no substitute account or Native authority is issued.")
         (case "ram::tests::lazy_lookup_proves_partial_pages_and_persistent_updates" "positive" ["STORE-1" "STORE-2" "STORE-3" "CHECK-5"] "Authenticated partial bytes and immutable predecessors; no installation into a live guest.")
         (case "ram::tests::transfer_authenticates_existing_closure_and_copies_only_changed_content" "positive" ["TRANSFER-4" "TRANSFER-5" "TRANSFER-7" "TRANSFER-14" "CHECK-6"] "Component durability and missing-only copying; no whole-world handoff readiness.")
         (case "ram::tests::exact_scope_includes_immutable_images_but_execution_omits_them" "positive" ["CHECK-3" "STORE-1"] "Logical exact scope includes immutable images.")
