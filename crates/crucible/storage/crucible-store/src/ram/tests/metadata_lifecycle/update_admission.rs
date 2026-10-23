@@ -359,3 +359,147 @@ fn capture_refusal_at_backend_admission(revoked_before_entry: bool) {
     drop(error);
     assert_eq!(caller_quota.used(), 0);
 }
+
+fn transfer_refusal_at_backend_admission(revoke_source: bool, revoked_before_entry: bool) {
+    let source_directory = tempfile::tempdir().unwrap();
+    let destination_directory = tempfile::tempdir().unwrap();
+    let source_backend_quota = ObservedQuota::with_limit(32 << 20);
+    let destination_backend_quota = ObservedQuota::with_limit(32 << 20);
+    let source_store = directory_store(source_directory.path(), &source_backend_quota);
+    let destination_store =
+        directory_store(destination_directory.path(), &destination_backend_quota);
+    let source_retention = Retention::default();
+    let destination_retention = Retention::default();
+    let topology = Topology::new(
+        vec![RegionDescriptor::new("main", RegionClass::MutableMain, 17).unwrap()],
+        Limits::default(),
+    )
+    .unwrap();
+    let root = source_store
+        .capture(
+            topology,
+            Scope::Exact,
+            &mut patterned,
+            &source_retention,
+            &fixture_original(&source_store),
+            &mut || Ok(()),
+        )
+        .unwrap();
+    let source_backend_baseline = source_backend_quota.used();
+    let destination_backend_baseline = destination_backend_quota.used();
+    let source_quota = ObservedQuota::with_limit(32 << 20);
+    let destination_quota = ObservedQuota::with_limit(32 << 20);
+    let source_original = DecodeBudget::for_store(source_quota.clone()).unwrap();
+    let destination_original = DecodeBudget::for_store(destination_quota.clone()).unwrap();
+    for original in [&source_original, &destination_original] {
+        original
+            .charge_bytes(crate::ram::maximum_ram_root_decoding_bytes().unwrap())
+            .unwrap();
+    }
+    let source_admitted = source_quota.used();
+    let destination_admitted = destination_quota.used();
+    let (revoked_quota, live_quota, retained) = if revoke_source {
+        (&source_quota, &destination_quota, source_admitted)
+    } else {
+        (&destination_quota, &source_quota, destination_admitted)
+    };
+    let backend = Arc::new(HeadroomRevocation {
+        backend: destination_store.backend.clone(),
+        caller: revoked_quota.clone(),
+        admissions: AtomicU64::new(0),
+    });
+    let destination = RamStore::new(
+        backend.clone(),
+        destination_store.durability,
+        destination_store.limits,
+    )
+    .unwrap();
+
+    // Observe legitimate entry preparation while both callers are live. A
+    // refusal may stop earlier, but cannot request more than this real prefix.
+    let source_requests = source_quota.reservations.load(Ordering::SeqCst);
+    let destination_requests = destination_quota.reservations.load(Ordering::SeqCst);
+    let mut boundary = || Ok(());
+    let mut work = Work::new(source_store.limits, &source_original, &mut boundary).unwrap();
+    work.destination(&destination_original).unwrap();
+    drop(work);
+    let source_prefix = source_quota.reservations.load(Ordering::SeqCst) - source_requests;
+    let destination_prefix =
+        destination_quota.reservations.load(Ordering::SeqCst) - destination_requests;
+    assert_eq!(source_quota.used(), source_admitted);
+    assert_eq!(destination_quota.used(), destination_admitted);
+    let source_before = source_quota.reservations.load(Ordering::SeqCst);
+    let destination_before = destination_quota.reservations.load(Ordering::SeqCst);
+    if revoked_before_entry {
+        revoked_quota.revoked.store(true, Ordering::SeqCst);
+    }
+
+    let mut callbacks = 0;
+    let error = source_store
+        .transfer_to(
+            &root,
+            &destination,
+            &destination_retention,
+            &source_original,
+            &destination_original,
+            &mut || {
+                callbacks += 1;
+                Ok(())
+            },
+        )
+        .unwrap_err();
+
+    assert!(contains_original_revocation(&error));
+    assert!(matches!(
+        &error,
+        RamStoreError::Store(StoreError::DecodeAdmission { .. })
+    ));
+    assert_eq!(
+        backend.admissions.load(Ordering::SeqCst),
+        u64::from(!revoked_before_entry)
+    );
+    assert!(revoked_quota.revoked.load(Ordering::SeqCst));
+    assert!(!live_quota.revoked.load(Ordering::SeqCst));
+    assert_eq!(callbacks, 0);
+    assert!(destination_retention.objects.lock().unwrap().is_empty());
+    assert!(source_quota.reservations.load(Ordering::SeqCst) <= source_before + source_prefix);
+    assert!(
+        destination_quota.reservations.load(Ordering::SeqCst)
+            <= destination_before + destination_prefix
+    );
+    assert_eq!(source_quota.used(), source_admitted);
+    assert_eq!(destination_quota.used(), destination_admitted);
+    assert_eq!(source_backend_quota.used(), source_backend_baseline);
+    assert_eq!(
+        destination_backend_quota.used(),
+        destination_backend_baseline
+    );
+
+    drop(source_original);
+    drop(destination_original);
+    assert_eq!(revoked_quota.used(), retained);
+    assert_eq!(live_quota.used(), 0);
+    drop(error);
+    assert_eq!(source_quota.used(), 0);
+    assert_eq!(destination_quota.used(), 0);
+}
+
+#[test]
+fn revoked_transfer_source_refuses_before_destination_headroom_admission() {
+    transfer_refusal_at_backend_admission(true, true);
+}
+
+#[test]
+fn revoked_transfer_destination_refuses_before_headroom_admission() {
+    transfer_refusal_at_backend_admission(false, true);
+}
+
+#[test]
+fn transfer_rechecks_source_after_destination_headroom_admission() {
+    transfer_refusal_at_backend_admission(true, false);
+}
+
+#[test]
+fn transfer_rechecks_destination_after_headroom_admission() {
+    transfer_refusal_at_backend_admission(false, false);
+}

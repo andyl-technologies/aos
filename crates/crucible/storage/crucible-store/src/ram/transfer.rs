@@ -146,7 +146,6 @@ impl RamStore {
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<RamClosureStored, RamStoreError> {
         self.admit_topology(source.record.topology())?;
-        destination.admit_ram_publication(source.record.topology(), source.record.scope())?;
         self.validate_root_catalogs(&source.record, &source.regions)?;
         // Both stores charge the same operation counter; neither endpoint gets
         // an additional budget by alternating reads between stores.
@@ -170,6 +169,13 @@ impl RamStore {
         };
         let mut work = Work::new(limits, source_original, boundary)?;
         work.destination(destination_original)?;
+        destination.admit_ram_publication(source.record.topology(), source.record.scope())?;
+        for original in [source_original, destination_original] {
+            original
+                .verify_live()
+                .map_err(|source| RamStoreError::from_admission(original, source))?;
+        }
+
         let mut report = RamTransferReport::default();
         for (region, reference) in source
             .record

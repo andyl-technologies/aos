@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 618 bindings: 599 component and nineteen native, across 243 requirements. | 145 requirements remain uncovered and none fully qualified. |
+| Requirements | 622 bindings: 603 component and nineteen native, across 243 requirements. | 145 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2890,10 +2890,39 @@ Inventory `yy54givg929ysbfkp29c3slxd6b1apk4` validates 618 bindings across
 243 requirements: 574 model, 25 format and nineteen native bindings. The same
 145 requirements remain uncovered and none is fully qualified. All 755 ordinary
 storage tests, 95 policy controls and storage/portable-RAM Clippy pass. The
-hermetic selected-storage gate remains in progress. Required application
+hermetic selected-storage gate passes at `vynl6fnvcvh64y0dycgavzj6hnaywa8l`,
+with all 95 selected cases and 116 independently checked successful nested
+summaries. Required application
 compilation is running from immutable source
 `5swyk31cdpclg4v7bg9sxal8n1wkqil8`; all 5,418 committed Rust/TOML files and
 six required fixtures match before subsequent source edits.
+
+Direct transfer now admits both original operation accounts before asking the
+destination backend for publication headroom. It revalidates both accounts after
+that external call, before traversal, progress callbacks or destination
+retention. The existing combined operation limits and independent source and
+destination financial accounts remain in force.
+
+Two genuine predecessor controls fail because a caller revoked before entry
+still reaches destination headroom admission. Two companion controls revoke the
+source or destination account inside a real successful backend admission; both
+already pass on the predecessor. All four pass after correction, together with
+all 95 metadata-lifetime controls. Each refuses with the original typed cause,
+without progress callbacks or destination retention. After both caller handles
+close, only the failing account retains its prepaid charge through final error
+close; both accounts then return to zero. The backend accounts remain live and
+their credit is unchanged. These component controls do not qualify native
+execution or whole-kernel resource funding.
+
+Inventory `9xk3yk1lq96r6fsv2rqjmb0y24rlcqy2` validates 622 bindings across
+243 requirements: 578 model, 25 format and nineteen native bindings. The same
+145 requirements remain uncovered and none is fully qualified. All 759 ordinary
+storage tests, 95 policy controls and storage/portable-RAM Clippy pass. Hermetic
+storage output `fmz58hqcd3vphxb0yz4v0xrssk8d0ya8` passes all 99 selected cases
+and 120 independently checked successful nested summaries. Required application
+compilation is running from immutable source
+`3gzj0q5ng9wfif8nz1rprbmpb4zz1vwr`; its committed Rust/TOML inputs and six
+required fixtures must match before subsequent source edits.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`
