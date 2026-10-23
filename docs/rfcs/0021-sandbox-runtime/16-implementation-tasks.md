@@ -11011,3 +11011,5 @@ The combined Nix/method-46 profile evaluates successfully with a regression
 comparing the complete independently replayed SSH readiness input against its
 actual image projection. This checks retained configuration, ownership and
 dependency addresses; it does not substitute for installed activation.
+Core evaluation (`checks.eval`) also passes at
+`/nix/store/kj94vsd9znhm7fnalzcsblb5an17hnm7-aos-native-evaluation-checks-0`.
