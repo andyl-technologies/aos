@@ -387,6 +387,42 @@ class DoctestParityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "summaries do not match"):
             verify_protocol.doctest_cases("running 0 tests\n", "crates/shared/example")
 
+    def test_generated_docs_require_declared_roots_and_preserve_ignored_status(self):
+        package = "crates/shared/example"
+        summary = "test result: ok. 0 passed; 0 failed; 1 ignored;\n"
+        cargo = "test /build/target/example/out/api.rs - Api (line 7) ... ignored\n" + summary
+        bazel = "test /build/bazel-out/bin/" + package + "/doc.runfiles/_main/" + package + "/generator.out_dir/api.rs - Api (line 7) ... ignored\n" + summary
+        expected = {"src/generated/api.rs - Api (line 7)": "ignored"}
+        self.assertEqual(verify_protocol.doctest_cases(cargo, package, {"/build/target/example/out": "src/generated"}), expected)
+        self.assertEqual(verify_protocol.doctest_cases(bazel, package, {"generator.out_dir": "src/generated"}), expected)
+        for log in [cargo, bazel]:
+            with self.assertRaisesRegex(ValueError, "outside the package"):
+                verify_protocol.doctest_cases(log, package)
+        with self.assertRaisesRegex(ValueError, "invalid generated"):
+            verify_protocol.doctest_cases(cargo.replace("out/api.rs", "out/../api.rs"), package,
+                                         {"/build/target/example/out": "src/generated"})
+
+    def test_generated_docs_reject_foreign_or_ambiguous_producers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            messages, inventory = root / "messages.jsonl", root / "inventory.json"
+            event = {"reason": "build-script-executed", "package_id": "path+file:///build/example#example@1.0.0", "out_dir": "/build/target/example/out"}
+            artifact = {"reason": "compiler-artifact", "package_id": event["package_id"], "manifest_path": "/build/source/crates/shared/example/Cargo.toml"}
+            report = {"label": "//crates/shared/example:lib", "generated_inputs": {"crates/shared/example/generator.out_dir": "//crates/shared/example:generator"}}
+            messages.write_text(json.dumps(artifact) + "\n" + json.dumps(event) + "\n")
+            inventory.write_text(json.dumps({"configured_targets": [report]}))
+            arguments = (messages, inventory, {"example": "crates/shared/example"}, {"example": "generator.out_dir"})
+            self.assertEqual(verify_protocol.generated_doctest_sources(*arguments),
+                             ({"example": {event["out_dir"]: "src/generated"}}, {"example": {"generator.out_dir": "src/generated"}}))
+            messages.write_text(json.dumps(artifact) + "\n" + json.dumps(event) + "\n" + json.dumps({**event, "out_dir": "/build/other/out"}) + "\n")
+            with self.assertRaisesRegex(ValueError, "unique Cargo"):
+                verify_protocol.generated_doctest_sources(*arguments)
+            messages.write_text(json.dumps(artifact) + "\n" + json.dumps(event) + "\n")
+            report["generated_inputs"]["crates/shared/example/generator.out_dir"] = "//foreign:generator"
+            inventory.write_text(json.dumps({"configured_targets": [report]}))
+            with self.assertRaisesRegex(ValueError, "package-local producer"):
+                verify_protocol.generated_doctest_sources(*arguments)
+
 
 if __name__ == "__main__":
     unittest.main()

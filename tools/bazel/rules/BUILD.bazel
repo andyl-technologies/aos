@@ -137,7 +137,7 @@ config_setting(
     visibility = ["//visibility:public"],
 )
 
-exports_files(["crucible_cli_graph.bzl", "daemon_graph.bzl", "compile.bzl", "crates.bzl", "license.bzl", "package.bzl", "rust_package.bzl", "source_package.bzl", "test.bzl", "generated.bzl"])
+exports_files(["crucible_cli_graph.bzl", "daemon_graph.bzl", "compile.bzl", "build_script.bzl", "crates.bzl", "license.bzl", "package.bzl", "rust_package.bzl", "source_package.bzl", "test.bzl", "generated.bzl"])
 
 exports_files(["clippy.toml", "rustfmt.toml"])
 
@@ -224,5 +224,11 @@ config_setting(
 config_setting(
     name = "cli_support_dependencies",
     flag_values = {":dependency_profile": "cli-support"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "build_services_dependencies",
+    flag_values = {":dependency_profile": "build-services"},
     visibility = ["//visibility:public"],
 )

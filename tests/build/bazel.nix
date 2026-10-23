@@ -34,6 +34,9 @@
         "crates/aos/release/aos-release-format/Cargo.toml"
         "crates/aos/modules/aos-module-docs/Cargo.toml"
         "crates/aos/packages/aos-deployment-format/Cargo.toml"
+        "crates/aos/packages/aos-build-api/Cargo.toml"
+        "crates/aos/packages/aos-build-client/Cargo.toml"
+        "crates/aos/packages/aos-build-server/Cargo.toml"
         "crates/aos/boot/aos-storage-layout/Cargo.toml"
         "crates/aos/activation/aos-activation/Cargo.toml"
         "crates/aos/activation/aos-activation-config-files/Cargo.toml"
@@ -120,6 +123,7 @@ in
     native-foundation = import ./_bazel-native-foundation.nix {inherit pkgs;};
     activation-core = import ./_bazel-activation-core.nix {inherit pkgs;};
     activation-storage = import ./_bazel-activation-storage.nix {inherit pkgs;};
+    build-services = import ./_bazel-build-services.nix {inherit pkgs;};
     cli-support = import ./_bazel-cli-support.nix {inherit pkgs;};
     activation-crucible = import ./_bazel-activation-crucible.nix {inherit pkgs;};
     activation-systemd = import ./_bazel-activation-systemd.nix {inherit pkgs;};
@@ -324,6 +328,7 @@ in
         native-foundation.tests
         activation-core.tests
         activation-storage.tests
+        build-services.tests
         cli-support.tests
         activation-crucible.tests
         activation-systemd.tests
@@ -384,7 +389,7 @@ in
     all =
       pkgs.runCommand "aos-bazel-checks" {
         buildDeps =
-          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection source-catalog.all sysroot-metadata manifest-extractor native-libraries static-runtime.all precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all store.all guest.all engine.all quota.all session.all control.all qemu-host.all store-s3.all daemon.all crucible-cli.all formats.all contracts.all native-foundation.all activation-core.all activation-storage.all activation-systemd.all activation-crucible.all cli-support.all wasm.all recovery]
+          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection source-catalog.all sysroot-metadata manifest-extractor native-libraries static-runtime.all precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all store.all guest.all engine.all quota.all session.all control.all qemu-host.all store-s3.all daemon.all crucible-cli.all formats.all contracts.all native-foundation.all activation-core.all activation-storage.all activation-systemd.all activation-crucible.all cli-support.all build-services.all wasm.all recovery]
           ++ pkgs.lib.optionals (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) [
             (import ./_bazel-cross-linux.nix {inherit pkgs;}).all
             (import ./_bazel-device-cross.nix {inherit pkgs;})

@@ -14,24 +14,38 @@ PACKAGE_PATHS = {
 }
 
 
-def doctest_cases(log, package_path):
+def doctest_cases(log, package_path, generated_sources=None):
     """Normalizes rustdoc's source-relative case names without losing status."""
+    def generated_source(source):
+        for directory, destination in (generated_sources or {}).items():
+            if source.startswith(directory + "/"):
+                relative = source.removeprefix(directory + "/")
+                if not relative or ".." in Path(relative).parts or Path(relative).is_absolute():
+                    raise ValueError(f"invalid generated rustdoc source: {source}")
+                return destination + "/" + relative
+        return source
+
     cases = {}
     for match in re.finditer(r"^test (.+?) \.\.\. (ok|ignored(?:, [^\n]*)?|FAILED)$", log, re.MULTILINE):
         name, status = match.groups()
         source, separator, location = name.partition(" - ")
         if not separator or not re.fullmatch(r"(?:.+ )?\(line \d+\)(?: - compile(?: fail)?)?", location):
             raise ValueError(f"unrecognized rustdoc case: {name}")
+        source = generated_source(source)
         for prefix in [package_path, package_path.removeprefix("crates/")]:
             marker = prefix + "/"
             if source.startswith(marker):
                 source = source.removeprefix(marker)
                 break
             if "/" + marker in source:
-                source = source.split("/" + marker, 1)[1]
+                # A rustdoc runfiles root can itself live under this package.
+                source = source.rsplit("/" + marker, 1)[1]
                 break
+        source = generated_source(source)
         if not source.startswith(("src/", "tests/", "examples/")):
             raise ValueError(f"rustdoc case is outside the package: {name}")
+        if ".." in Path(source).parts:
+            raise ValueError(f"rustdoc case escapes the package: {name}")
         key = source + " - " + location
         if key in cases:
             raise ValueError(f"duplicate rustdoc case: {key}")
@@ -44,7 +58,40 @@ def doctest_cases(log, package_path):
     return dict(sorted(cases.items()))
 
 
-def compare_doctests(tests, cargo_log, package_paths, target_suffix="", package_target_suffixes=None):
+def generated_doctest_sources(messages, inventory, package_paths, declarations):
+    """Binds generated doc sources to Cargo events and declared Bazel producers."""
+    cargo, bazel = {}, {}
+    events = [json.loads(line) for line in messages.read_text().splitlines()]
+    reports = json.loads(inventory.read_text())["configured_targets"]
+    for name, directory in declarations.items():
+        if name not in package_paths or not directory or "/" in directory or directory in {".", ".."}:
+            raise ValueError("invalid generated doctest package or output directory")
+        path = package_paths[name]
+        output = path + "/" + directory
+        producers = {report["generated_inputs"][output] for report in reports
+                     if report["label"] == "//" + path + ":lib"
+                     and output in report.get("generated_inputs", {})}
+        if len(producers) != 1 or not next(iter(producers)).startswith("//" + path + ":"):
+            raise ValueError("generated doctest directory has no unique package-local producer")
+        package_ids = {event["package_id"] for event in events
+                       if event.get("reason") == "compiler-artifact"
+                       and Path(event["manifest_path"]).as_posix().endswith("/" + path + "/Cargo.toml")}
+        if len(package_ids) != 1:
+            raise ValueError("generated doctest package has no unique compiled Cargo identity")
+        roots = {event["out_dir"] for event in events
+                 if event.get("reason") == "build-script-executed"
+                 and event["package_id"] in package_ids}
+        if len(roots) != 1 or not Path(next(iter(roots))).is_absolute():
+            raise ValueError("generated doctest directory has no unique Cargo build-script output")
+        cargo[name] = {next(iter(roots)): "src/generated"}
+        # rules_rust reports package-relative generated inputs; rustdoc prints
+        # their configured execution paths. Package normalization retains this
+        # exact output directory instead of accepting arbitrary generated files.
+        bazel[name] = {directory: "src/generated"}
+    return cargo, bazel
+
+
+def compare_doctests(tests, cargo_log, package_paths, target_suffix="", package_target_suffixes=None, generated_sources=None):
     """Compares actual doctest names, locations, and ignored cases per package."""
     log = cargo_log.read_text()
     sections = re.split(r"^\s*Doc-tests ([a-zA-Z0-9_]+)\s*$", log, flags=re.MULTILINE)
@@ -63,8 +110,9 @@ def compare_doctests(tests, cargo_log, package_paths, target_suffix="", package_
         selected = [result for result in results if result["identity"]["label"] == label]
         if len(selected) != 1 or selected[0]["status"] != "PASSED" or name.replace("-", "_") not in cargo:
             raise ValueError(f"missing successful Cargo/Bazel doctest target: {label}")
-        expected = doctest_cases(cargo[name.replace("-", "_")], path)
-        actual = doctest_cases((tests / selected[0]["outputs"]["test.log"]).read_text(), path)
+        cargo_sources, bazel_sources = generated_sources or ({}, {})
+        expected = doctest_cases(cargo[name.replace("-", "_")], path, cargo_sources.get(name))
+        actual = doctest_cases((tests / selected[0]["outputs"]["test.log"]).read_text(), path, bazel_sources.get(name))
         if actual != expected:
             raise ValueError(f"Rust doctest inventories differ for {label}: {actual!r} != {expected!r}")
         compared[label] = expected
@@ -104,7 +152,7 @@ def compare_features(inventory, messages, first_party_paths, required_packages=(
     }
     bazel_features = {}
     for report in reports:
-        match = re.search(r"aos_(?:core|device|store|guest|engine|quota|session|control|qemu_host|store_s3|daemon|crucible_cli|cli_support|formats|native_foundation(?:_tests|_minimal)?|activation_(?:core(?:_tests)?|crucible(?:_tests)?|storage|systemd))_crates__([^/]+)//", report["label"])
+        match = re.search(r"aos_(?:core|device|store|guest|engine|quota|session|control|qemu_host|store_s3|daemon|crucible_cli|cli_support|build_services|formats|native_foundation(?:_tests|_minimal)?|activation_(?:core(?:_tests)?|crucible(?:_tests)?|storage|systemd))_crates__([^/]+)//", report["label"])
         if match and report["kind"] in {"rust_library", "rust_proc_macro"}:
             # Repository names normalize SemVer build metadata. Compare the
             # declared package identity instead of trying to reverse that loss.
@@ -142,6 +190,7 @@ def compare(
     dependency_paths=None,
     allow_empty_tests=(),
     package_target_suffixes=None,
+    generated_doctests=None,
 ):
     package_paths = PACKAGE_PATHS if package_paths is None else package_paths
     suffixes = package_target_suffixes or {}
@@ -215,7 +264,8 @@ def compare(
     if cargo_log is not None:
         # Binary-only packages have libtests but no Cargo library doctest target.
         libraries = {name: path for name, path in package_paths.items() if name in cargo_libraries}
-        result["doctests"] = compare_doctests(tests, cargo_log, libraries, target_suffix, suffixes)
+        generated = generated_doctest_sources(messages, inventory, libraries, generated_doctests or {})
+        result["doctests"] = compare_doctests(tests, cargo_log, libraries, target_suffix, suffixes, generated)
     return result
 
 
@@ -232,6 +282,7 @@ if __name__ == "__main__":
     parser.add_argument("--target-suffix", default="")
     parser.add_argument("--package-target-suffix", action="append", default=[], metavar="NAME=SUFFIX")
     parser.add_argument("--allow-empty-test", action="append", default=[], metavar="LABEL")
+    parser.add_argument("--generated-doctest", action="append", default=[], metavar="NAME=OUTPUT_DIRECTORY")
     options = parser.parse_args()
     package_paths = dict(value.split("=", 1) for value in options.package_path) if options.package_path else None
     dependencies = dict(value.split("=", 1) for value in options.dependency_package_path)
@@ -255,5 +306,6 @@ if __name__ == "__main__":
             package_target_suffixes=dict(value.split("=", 1) for value in options.package_target_suffix),
             dependency_paths=dependencies,
             allow_empty_tests=options.allow_empty_test,
+            generated_doctests=dict(value.split("=", 1) for value in options.generated_doctest),
         )
     options.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")

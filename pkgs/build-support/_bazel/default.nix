@@ -78,6 +78,7 @@
       };
     };
   };
+  aosBazelCodegenTools = import ./codegen-tools.nix {inherit pkgs;};
   aosBazelDependencyGenerator = pkgs.callPackage ../../tools/workerd/_cargo-bazel.nix {};
   aosBazelDependencyUpdater = import ./updater.nix {
     inherit pkgs lib;
@@ -92,6 +93,11 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    build-services = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "build-services";
+    };
     cli-support = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -262,6 +268,20 @@
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
   };
+  aosBazelBuildServicesWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = ["crates/aos/packages/aos-build-api" "crates/aos/packages/aos-build-client" "crates/aos/packages/aos-build-server" "crates/shared/aos-core" "crates/shared/aos-nar" "crates/shared/aos-nix" "api/proto" "tools/bazel" "third_party/rust"];
+    repositories =
+      aosBazelRepositories
+      // aosBazelRustRepositories.build-services
+      // {
+        aos_native = aosBazelStoreLibraries;
+        aos_codegen = aosBazelCodegenTools;
+      };
+    dependencyProfile = "build-services";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = ["//crates/aos/packages/aos-build-api:unit" "//crates/aos/packages/aos-build-client:unit" "//crates/aos/packages/aos-build-server:unit"];
+  };
   aosBazelCliSupportWorkspace = mkAosBazelWorkspace {
     root = ../../..;
     sourceDirectories = ["crates/aos/cli/aos-cli-ui" "crates/aos/cli/aos-closure-analysis" "crates/aos/cli/aos-nix-docs" "crates/shared/aos-core" "crates/shared/aos-nar" "crates/shared/aos-nix" "crates/shared/aos-transfer" "tools/bazel" "third_party/rust"];
@@ -424,6 +444,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelBuildServicesLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelBuildServicesWorkspace;
     }).launcher;
   aosBazelCliSupportLauncher =
     (import ./development.nix {

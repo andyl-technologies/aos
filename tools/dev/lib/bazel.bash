@@ -5,7 +5,7 @@ aos_dev_bazel() (
   (( $# > 0 )) || aos_dev_error 'bazel requires a command and optional labels'
   if [[ $1 == update-deps ]]; then
     shift
-    [[ $# == 1 && ( $1 == core || $1 == device || $1 == store || $1 == guest || $1 == engine || $1 == quota || $1 == session || $1 == control || $1 == qemu-host || $1 == store-s3 || $1 == daemon || $1 == crucible-cli || $1 == formats || $1 == native-foundation || $1 == native-foundation-tests || $1 == native-foundation-minimal || $1 == activation-core || $1 == activation-core-tests || $1 == activation-storage || $1 == activation-systemd || $1 == activation-crucible || $1 == activation-crucible-tests || $1 == cli-support ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device|store|guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|native-foundation|native-foundation-tests|native-foundation-minimal|activation-core|activation-core-tests|activation-storage|activation-systemd|activation-crucible|activation-crucible-tests|cli-support>'
+    [[ $# == 1 && ( $1 == core || $1 == device || $1 == store || $1 == guest || $1 == engine || $1 == quota || $1 == session || $1 == control || $1 == qemu-host || $1 == store-s3 || $1 == daemon || $1 == crucible-cli || $1 == formats || $1 == native-foundation || $1 == native-foundation-tests || $1 == native-foundation-minimal || $1 == activation-core || $1 == activation-core-tests || $1 == activation-storage || $1 == activation-systemd || $1 == activation-crucible || $1 == activation-crucible-tests || $1 == cli-support || $1 == build-services ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device|store|guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|native-foundation|native-foundation-tests|native-foundation-minimal|activation-core|activation-core-tests|activation-storage|activation-systemd|activation-crucible|activation-crucible-tests|cli-support|build-services>'
     local updater specifications family=$1
     updater=$(aos_dev_nix_build_ordinary -A pkgs.aosBazelDependencyUpdater --no-out-link)
     specifications=$(aos_dev_nix_build_ordinary -A "checks.build.bazel.dependencies.specification-packages.$family" --no-out-link)
@@ -18,7 +18,7 @@ aos_dev_bazel() (
 
   local launcher_attribute=pkgs.aosBazelLauncher
   if [[ $1 == --family ]]; then
-    [[ $# -ge 3 ]] || aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support> <command> [labels]'
+    [[ $# -ge 3 ]] || aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services> <command> [labels]'
     case $2 in
       guest) launcher_attribute=pkgs.aosBazelGuestLauncher ;;
       engine) launcher_attribute=pkgs.aosBazelEngineLauncher ;;
@@ -32,12 +32,13 @@ aos_dev_bazel() (
       native-foundation) launcher_attribute=pkgs.aosBazelNativeFoundationLauncher ;;
       activation-core) launcher_attribute=pkgs.aosBazelActivationCoreLauncher ;;
       activation-storage) launcher_attribute=pkgs.aosBazelActivationStorageLauncher ;;
+      build-services) launcher_attribute=pkgs.aosBazelBuildServicesLauncher ;;
       cli-support) launcher_attribute=pkgs.aosBazelCliSupportLauncher ;;
       activation-crucible) launcher_attribute=pkgs.aosBazelActivationCrucibleLauncher ;;
       activation-systemd) launcher_attribute=pkgs.aosBazelActivationSystemdLauncher ;;
       formats) launcher_attribute=pkgs.aosBazelFormatsLauncher ;;
       crucible-cli) launcher_attribute=pkgs.aosBazelCrucibleCliLauncher ;;
-      *) aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support> <command> [labels]' ;;
+      *) aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services> <command> [labels]' ;;
     esac
     shift 2
   fi
@@ -52,6 +53,10 @@ aos_dev_bazel() (
       project_options+=(--rust-project-package crates/crucible/guest/crucible-guest)
     elif [[ $launcher_attribute == pkgs.aosBazelQuotaLauncher ]]; then
       project_options+=(--rust-project-package crates/shared/aos-linux-project-quota)
+    elif [[ $launcher_attribute == pkgs.aosBazelBuildServicesLauncher ]]; then
+      project_options+=(--rust-project-package crates/aos/packages/aos-build-api)
+      project_options+=(--rust-project-package crates/aos/packages/aos-build-client)
+      project_options+=(--rust-project-package crates/aos/packages/aos-build-server)
     elif [[ $launcher_attribute == pkgs.aosBazelCliSupportLauncher ]]; then
       project_options+=(--rust-project-package crates/aos/cli/aos-cli-ui)
       project_options+=(--rust-project-package crates/aos/cli/aos-closure-analysis)

@@ -23,6 +23,7 @@
   packageTargetSuffixes ? {},
   excludedTests ? [],
   emptyTests ? [],
+  generatedDoctests ? {},
   extraTests ? [],
   extraEditorTargets ? [],
   nativeLibraries ? [],
@@ -255,7 +256,9 @@ in rec {
       ++ pkgs.lib.concatMap (name: ["--package-target-suffix" "${name}=${packageTargetSuffixes.${name}}"]) (builtins.attrNames packageTargetSuffixes)
       ++ pkgs.lib.concatMap (name: ["--dependency-package-path" "${name}=${dependencyPackages.${name}}"])
       (builtins.attrNames dependencyPackages)
-      ++ pkgs.lib.concatMap (label: ["--allow-empty-test" label]) emptyTests;
+      ++ pkgs.lib.concatMap (label: ["--allow-empty-test" label]) emptyTests
+      ++ pkgs.lib.concatMap (name: ["--generated-doctest" "${name}=${generatedDoctests.${name}}"])
+      (builtins.attrNames generatedDoctests);
   in
     pkgs.runCommand "${pname}-cargo-parity" {buildDeps = [pkgs.python3];} ''
       mkdir -p "$out"

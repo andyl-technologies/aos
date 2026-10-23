@@ -1934,3 +1934,48 @@ that later work requires its own qualification.
 Installed consumers, dedicated provider and assembled-system gates, foreign and
 Wasm execution, complete compiler invocation equivalence, numeric performance
 acceptance, production migration, and Cargo removal remain separate work.
+
+## Build-service APIs, client and server
+
+`aos-dev bazel --family build-services` selects `aos-build-api`,
+`aos-build-client`, and `aos-build-server`, with `aos-core`, `aos-nar`, and
+`aos-nix` as first-party dependencies. The pinned profile contains 263 source
+crates. Test and production compilation both match Cargo's 197 external
+dependency identities and six first-party packages. Twelve guarded feature
+policies preserve the compiled units, including ten distinct target and
+execution-platform feature sets.
+
+The API target compiles the existing `build.rs` as an ordinary Rust binary and
+runs it directly through the pinned build-script runner. Its inputs declare all
+four protobuf schemas, AOS-built `protoc`, protobuf headers, and the compiler's
+immutable Nix closure identity. These Bazel actions use no Cargo executable or
+first-party Cargo manifests. The generated-source check requires exactly 17
+files and compares their content digests against fresh Cargo and the recorded
+pre-conversion production baseline.
+
+`tests/evidence/native-linux-build-services.json` retains passing strict source
+selection, unit/integration and doctest parity, production features, generated
+API sources, Clippy, formatting, documentation, license closure, and editor
+checks. All 20 unit/integration cases match Cargo across five libtest artifacts.
+The API and client library libtests remain empty. All 24 upstream-generated
+doctests remain ignored with matching names and locations; the client and
+server have no doctest cases.
+
+The editor comparison retains the same two unknown-type diagnostics at token
+generation expressions in both models, with no unattributed diagnostics and
+two unselected Cargo diagnostics. Inference remains incomplete in both models;
+aggregate statistics and diagnostic multiplicities are not claimed equivalent.
+The configured inventory contains 28 requested roots, 308 reports, and 57 source
+files, including 49 Rust files and all four schemas.
+
+`tests/evidence/build-services-configured-graph.json` records all 24 configured
+family inventories and dependency specifications, 166 policy tests, the source
+catalog, and CLI checks with 19 launchers. The previous 23 dependency locks and
+3,686 generated crate BUILD files remain unchanged. Metadata parity covers 404
+Rust targets across 26 analysis-only selections, with no external actions; core
+evaluation passes. Its frozen evidence is retained in
+`tests/evidence/build-services-metadata-evaluation.json`.
+
+Dedicated service and assembled-system qualification, foreign/Wasm execution,
+complete compiler invocation equivalence, numeric performance acceptance,
+production migration, and Cargo removal remain separate work.

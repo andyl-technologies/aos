@@ -1,6 +1,7 @@
 load("@rules_rust//crate_universe:defs.bzl", "crate")
 load("//tools/bazel/rules:crates.bzl", "aos_crate_specifications")
 load("//tools/bazel/rules:package.bzl", "aos_package")
+load(":build-services/aliases.bzl", BUILD_SERVICES_CRATES = "CRATES")
 load(":cli-support/aliases.bzl", CLI_SUPPORT_CRATES = "CRATES")
 load(":activation-crucible/aliases.bzl", ACTIVATION_CRUCIBLE_CRATES = "CRATES")
 load(":activation-crucible-tests/aliases.bzl", ACTIVATION_CRUCIBLE_TESTS_CRATES = "CRATES")
@@ -34,6 +35,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:build_services_dependencies": BUILD_SERVICES_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:cli_support_dependencies": CLI_SUPPORT_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:activation_crucible_dependencies": ACTIVATION_CRUCIBLE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:activation_crucible_tests_dependencies": ACTIVATION_CRUCIBLE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -60,7 +62,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(dict(CLI_SUPPORT_CRATES.items() + ACTIVATION_CRUCIBLE_CRATES.items() + ACTIVATION_CRUCIBLE_TESTS_CRATES.items() + ACTIVATION_SYSTEMD_CRATES.items() + ACTIVATION_STORAGE_CRATES.items() + ACTIVATION_CORE_CRATES.items() + ACTIVATION_CORE_TESTS_CRATES.items() + CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items() + CRUCIBLE_CLI_CRATES.items() + NATIVE_FOUNDATION_CRATES.items() + NATIVE_FOUNDATION_TESTS_CRATES.items() + NATIVE_FOUNDATION_MINIMAL_CRATES.items() + FORMATS_CRATES.items()))
+    for name in sorted(dict(BUILD_SERVICES_CRATES.items() + CLI_SUPPORT_CRATES.items() + ACTIVATION_CRUCIBLE_CRATES.items() + ACTIVATION_CRUCIBLE_TESTS_CRATES.items() + ACTIVATION_SYSTEMD_CRATES.items() + ACTIVATION_STORAGE_CRATES.items() + ACTIVATION_CORE_CRATES.items() + ACTIVATION_CORE_TESTS_CRATES.items() + CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items() + CRUCIBLE_CLI_CRATES.items() + NATIVE_FOUNDATION_CRATES.items() + NATIVE_FOUNDATION_TESTS_CRATES.items() + NATIVE_FOUNDATION_MINIMAL_CRATES.items() + FORMATS_CRATES.items()))
 ]
 
 CORE_PACKAGES = {
@@ -314,6 +316,55 @@ ACTIVATION_SYSTEMD_PACKAGES = dict(ACTIVATION_CORE_PACKAGES.items() + {
         "zbus",
     ]
 }.items())
+
+# Build-service and code-generator roots preserve the selected workspace features.
+BUILD_SERVICES_PACKAGES = {
+    "anyhow": crate.spec(version = "=1.0.102"),
+    "async-trait": crate.spec(version = "=0.1.89"),
+    "axum": crate.spec(version = "=0.8.9", features = ["macros"]),
+    "base64": crate.spec(version = "=0.22.1"),
+    "buffa": crate.spec(version = "=0.9.2"),
+    "connectrpc": crate.spec(version = "=0.9.1", features = ["axum", "client", "client-tls", "server"]),
+    "connectrpc-build": crate.spec(version = "=0.9.0"),
+    "console": crate.spec(version = "=0.15.11"),
+    "ed25519-dalek": crate.spec(version = "=2.2.0", features = ["pkcs8"]),
+    "futures": crate.spec(version = "=0.3.32"),
+    "futures-util": crate.spec(version = "=0.3.32"),
+    "glob": crate.spec(version = "=0.3.3"),
+    "hex": crate.spec(version = "=0.4.3"),
+    "http": crate.spec(version = "=1.4.1"),
+    "http-body": crate.spec(version = "=1.0.1"),
+    "humantime": crate.spec(version = "=2.3.0"),
+    "humantime-serde": crate.spec(version = "=1.1.1"),
+    "indicatif": crate.spec(version = "=0.17.11"),
+    "jsonwebtoken": crate.spec(version = "=9.3.1"),
+    "prost": crate.spec(version = "=0.13.5"),
+    "prost-types": crate.spec(version = "=0.13.5"),
+    "rand": crate.spec(version = "=0.9.4"),
+    "rcgen": crate.spec(version = "=0.14.8"),
+    "regex": crate.spec(version = "=1.12.4"),
+    "rusqlite": crate.spec(version = "=0.32.1"),
+    "rustix": crate.spec(version = "=1.1.4", features = ["event", "fs", "process"]),
+    "rustls": crate.spec(version = "=0.23.40"),
+    "rustls-native-certs": crate.spec(version = "=0.8.3"),
+    "rustls-pemfile": crate.spec(version = "=2.2.0"),
+    "rustls-pki-types": crate.spec(version = "=1.14.1"),
+    "serde": crate.spec(version = "=1.0.228", features = ["derive", "rc"]),
+    "serde_json": crate.spec(version = "=1.0.150"),
+    "sha2": crate.spec(version = "=0.10.9", features = ["compress"]),
+    "tempfile": crate.spec(version = "=3.27.0"),
+    "thiserror": crate.spec(version = "=2.0.18"),
+    "tokio": crate.spec(version = "=1.52.3", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"]),
+    "tokio-rustls": crate.spec(version = "=0.26.4"),
+    "tokio-stream": crate.spec(version = "=0.1.18", features = ["sync"]),
+    "tokio-util": crate.spec(version = "=0.7.18", features = ["io"]),
+    "toml": crate.spec(version = "=0.8.23"),
+    "tower-http": crate.spec(version = "=0.6.11", features = ["cors", "trace"]),
+    "tracing": crate.spec(version = "=0.1.44"),
+    "uuid": crate.spec(version = "=1.23.1", features = ["serde", "v4"]),
+    "webpki-roots": crate.spec(version = "=1.0.7"),
+    "zstd": crate.spec(version = "=0.13.3", features = ["zstdmt"]),
+}
 
 # Presentation and Nix inspection use the lightweight transfer library. Keep
 # transport/TLS/cloud dependencies outside this family, including its tests.
@@ -664,6 +715,249 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    "build-services": {
+        "base64": json.encode({
+            "version": "0.22.1",
+            "resolved_features": [
+                "alloc",
+                "default",
+                "std"
+            ],
+            "features": [
+                "alloc",
+                "default",
+                "std"
+            ],
+            "exec_features": [
+                "alloc"
+            ]
+        }),
+        "bytes": json.encode({
+            "version": "1.11.1",
+            "resolved_features": [
+                "default",
+                "serde",
+                "std"
+            ],
+            "features": [
+                "default",
+                "serde",
+                "std"
+            ],
+            "exec_features": [
+                "std"
+            ]
+        }),
+        "indexmap": json.encode({
+            "version": "2.14.0",
+            "resolved_features": [
+                "default",
+                "serde",
+                "std"
+            ],
+            "features": [
+                "default",
+                "std"
+            ]
+        }),
+        "linux-raw-sys": json.encode({
+            "version": "0.12.1",
+            "resolved_features": [
+                "auxvec",
+                "elf",
+                "errno",
+                "general",
+                "ioctl",
+                "no_std",
+                "prctl"
+            ],
+            "features": [
+                "auxvec",
+                "elf",
+                "errno",
+                "general",
+                "ioctl",
+                "no_std",
+                "prctl"
+            ],
+            "exec_features": [
+                "auxvec",
+                "elf",
+                "errno",
+                "general",
+                "ioctl",
+                "no_std"
+            ]
+        }),
+        "memchr": json.encode({
+            "version": "2.8.2",
+            "resolved_features": [
+                "alloc",
+                "default",
+                "std"
+            ],
+            "features": [
+                "alloc",
+                "default",
+                "std"
+            ],
+            "exec_features": [
+                "alloc",
+                "std"
+            ]
+        }),
+        "once_cell": json.encode({
+            "version": "1.21.4",
+            "resolved_features": [
+                "alloc",
+                "default",
+                "race",
+                "std"
+            ],
+            "features": [
+                "alloc",
+                "default",
+                "race",
+                "std"
+            ],
+            "exec_features": [
+                "alloc",
+                "race",
+                "std"
+            ]
+        }),
+        "rustix": json.encode({
+            "version": "1.1.4",
+            "resolved_features": [
+                "alloc",
+                "default",
+                "event",
+                "fs",
+                "process",
+                "std"
+            ],
+            "features": [
+                "alloc",
+                "default",
+                "event",
+                "fs",
+                "process",
+                "std"
+            ],
+            "exec_features": [
+                "alloc",
+                "default",
+                "fs",
+                "std"
+            ]
+        }),
+        "serde": json.encode({
+            "version": "1.0.228",
+            "resolved_features": [
+                "alloc",
+                "default",
+                "derive",
+                "rc",
+                "serde_derive",
+                "std"
+            ],
+            "features": [
+                "alloc",
+                "default",
+                "derive",
+                "rc",
+                "serde_derive",
+                "std"
+            ],
+            "exec_features": [
+                "alloc",
+                "derive",
+                "serde_derive",
+                "std"
+            ]
+        }),
+        "serde_core": json.encode({
+            "version": "1.0.228",
+            "resolved_features": [
+                "alloc",
+                "default",
+                "rc",
+                "result",
+                "std"
+            ],
+            "features": [
+                "alloc",
+                "default",
+                "rc",
+                "result",
+                "std"
+            ],
+            "exec_features": [
+                "alloc",
+                "result",
+                "std"
+            ]
+        }),
+        "serde_json": json.encode({
+            "version": "1.0.150",
+            "resolved_features": [
+                "alloc",
+                "default",
+                "raw_value",
+                "std"
+            ],
+            "features": [
+                "alloc",
+                "default",
+                "raw_value",
+                "std"
+            ],
+            "exec_features": [
+                "alloc",
+                "std"
+            ]
+        }),
+        "syn": json.encode({
+            "version": "2.0.118",
+            "resolved_features": [
+                "clone-impls",
+                "default",
+                "derive",
+                "extra-traits",
+                "full",
+                "parsing",
+                "printing",
+                "proc-macro",
+                "visit",
+                "visit-mut"
+            ],
+            "features": [
+                "clone-impls",
+                "default",
+                "derive",
+                "extra-traits",
+                "full",
+                "parsing",
+                "printing",
+                "proc-macro",
+                "visit-mut"
+            ]
+        }),
+        "thiserror": json.encode({
+            "version": "2.0.18",
+            "resolved_features": [
+                "default",
+                "std"
+            ],
+            "features": [
+                "default",
+                "std"
+            ],
+            "exec_features": [
+                "std"
+            ]
+        }),
+    },
     "cli-support": {
         "serde": json.encode({
             "version": "1.0.228",
@@ -886,6 +1180,7 @@ APPROVED_LICENSES = [
         host_only_licenses = ["Apache-2.0"],
     )
     for family, packages, annotations, license_domain in [
+        ("build-services", BUILD_SERVICES_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("cli-support", CLI_SUPPORT_PACKAGES, {}, "apache-host"),
         ("activation-crucible", ACTIVATION_CRUCIBLE_PACKAGES, {}, "apache-host"),
         ("activation-crucible-tests", ACTIVATION_CRUCIBLE_TESTS_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
@@ -921,5 +1216,5 @@ APPROVED_LICENSES = [
         license_domain = "apache-host",
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
-    for family in ["cli-support", "activation-crucible", "activation-crucible-tests", "activation-systemd", "activation-storage", "activation-core", "activation-core-tests", "core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "native-foundation", "native-foundation-tests", "native-foundation-minimal", "formats"]
+    for family in ["build-services", "cli-support", "activation-crucible", "activation-crucible-tests", "activation-systemd", "activation-storage", "activation-core", "activation-core-tests", "core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "native-foundation", "native-foundation-tests", "native-foundation-minimal", "formats"]
 ]
