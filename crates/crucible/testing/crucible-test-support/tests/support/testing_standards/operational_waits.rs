@@ -26,10 +26,23 @@ pub(super) fn mask_operational_waits(package: &str, target: &str, code: &str) ->
 fn mask_after_operations(package: &str, target: &str, code: &str) -> String {
     let operational = operational_inputs::mask(package, target, code);
     let recovery = operational_recovery::mask(package, target, &operational);
-    let code = recovery.as_str();
     if package == "crucible-qemu-host" && target == "src/linux_cgroup/target_dispatcher/tests" {
-        return mask_dispatcher_test_waits(code);
+        // Both contracts inspect the original transcript: masking retry names
+        // first would erase evidence needed to authenticate the actual wait.
+        // Each mask preserves byte offsets and only replaces text with spaces.
+        let waits = mask_dispatcher_test_waits(&operational);
+        return recovery
+            .char_indices()
+            .map(|(offset, character)| {
+                if waits.as_bytes()[offset] == b' ' {
+                    ' '
+                } else {
+                    character
+                }
+            })
+            .collect();
     }
+    let code = recovery.as_str();
     let (requirements, expressions): (&[&str], &[(&str, usize)]) = match (package, target) {
         ("crucible-daemon", "src/executor_pool/checkpoint") => (
             &[
@@ -330,9 +343,89 @@ const DISPATCHER_TEST_REQUIREMENTS: &[&str] = &[
     );
     assert_eq!(Arc::strong_count(&state), 1);"#,
     operational_recovery::DISPATCHER_FAILED_STARTUP,
+    operational_recovery::DISPATCHER_QUARANTINED_RETURN,
+    r#"fn abandoned_worker_keeps_its_actual_join_owner_in_preborn_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+
+    let directory = tempfile::tempdir()?;
+    let state = mechanism_state(directory.path(), 1)?;
+    assert!(state.retained_worker.get().is_none());
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+    let original = supervisor.begin(HostOperationClass::Preparation)?;
+    let (release, blocked) = std::sync::mpsc::sync_channel(1);
+    let worker = thread::spawn(move || blocked.recv().unwrap());
+    let identity = worker.thread().id();
+    let mut dispatcher = TargetDispatcher {
+        purpose: None,
+        capacity: 1,
+        state: Some(state),
+        worker: Some(NativeJoinOwner::from_worker(worker)),
+        worker_born: true,
+        failed: true,
+        cleanup: None,
+        phase: WorkerPhase::Reserved,
+        worker_panic: Mutex::new(None),
+        startup_history: DispatcherStartupHistory::default(),
+        join_observations: [(None, None); 2],
+        path: directory.path().to_owned(),
+    };
+
+    // Exercise Drop's exact transfer without leaking its retained Arc into the
+    // test process. No Main issuer, join observation or new recipient is made.
+    dispatcher.retain_abandoned_worker();
+    dispatcher.retain_abandoned_worker();
+
+    assert!(dispatcher.worker.is_none());
+    let state = dispatcher.state.take().unwrap();
+    let mut state = Arc::try_unwrap(state).ok().unwrap();
+    let retained = state.retained_worker.get_mut().unwrap();
+    assert_eq!(retained.thread_id(), identity);
+    assert_eq!(retained.last_status(), None);
+    assert!(retained.belongs_to_current_process());
+
+    // The same unique native owner remains capable of observing real return.
+    // This component cleanup does not assert authenticated Main retirement.
+    release.send(())?;
+    loop {
+        let slice = original.wait_slice()?;
+        let observed = retained.poll()?;
+        original.wait_slice()?;
+        if observed == NativeJoinObservation::Returned {
+            break;
+        }
+        thread::sleep(slice.min(WATCHER_WAIT_POLL_INTERVAL));
+    }
+    assert_eq!(retained.last_status(), Some(0));
+    Ok(())
+}"#,
 ];
 
 const DISPATCHER_TEST_LOOPS: &[(&str, usize)] = &[
+    ("std::thread::sleep(CGROUP_KILL_INTERVAL);", 1),
+    (
+        r#"for _ in 0..5_000 {
+        if worker.poll()? == NativeJoinObservation::Returned {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }"#,
+        1,
+    ),
+    (
+        r#"loop {
+        let slice = original.wait_slice()?;
+        let observed = retained.poll()?;
+        original.wait_slice()?;
+        if observed == NativeJoinObservation::Returned {
+            break;
+        }
+        thread::sleep(slice.min(WATCHER_WAIT_POLL_INTERVAL));
+    }"#,
+        1,
+    ),
     (
         r#"while !job.is_finished() && std::time::Instant::now() < end { thread::sleep(Duration::from_millis(1)); }"#,
         1,
@@ -354,8 +447,8 @@ const DISPATCHER_TEST_LOOPS: &[(&str, usize)] = &[
 fn mask_dispatcher_test_waits(code: &str) -> String {
     let compact = compact_code(code);
     let deadline = source_pattern("let end = std::time::Instant::now() + Duration::from_secs(5);");
-    // Two live-job controls and the unique native-join control retain fixed ends.
-    if expression_offsets(code, &deadline).len() != 3
+    // Live jobs retain fixed ends; native join has a finite poll allowance.
+    if expression_offsets(code, &deadline).len() != 2
         || !DISPATCHER_TEST_REQUIREMENTS
             .iter()
             .all(|required| compact.contains(&source_pattern(required)))
@@ -604,14 +697,25 @@ fn dispatcher_waits_require_each_fixed_deadline_and_whole_loop()
             .iter()
             .any(|finding| finding.contains("`thread::sleep`"))
     };
-    assert!(!has_wait(&source));
+    let code = super::scrub_comments_and_strings(&source);
+    let compact = compact_code(&code);
+    let missing = DISPATCHER_TEST_REQUIREMENTS
+        .iter()
+        .enumerate()
+        .filter(|(_, required)| !compact.contains(&source_pattern(required)))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    assert!(
+        !has_wait(&source),
+        "missing dispatcher obligations: {missing:?}"
+    );
 
     let deadline = "let end = std::time::Instant::now() + Duration::from_secs(5);";
     let deadlines = source
         .match_indices(deadline)
         .map(|(offset, _)| offset)
         .collect::<Vec<_>>();
-    assert_eq!(deadlines.len(), 3);
+    assert_eq!(deadlines.len(), 2);
     for offset in deadlines {
         let mut changed = source.clone();
         changed.replace_range(offset..offset + deadline.len(), "removed_deadline();");

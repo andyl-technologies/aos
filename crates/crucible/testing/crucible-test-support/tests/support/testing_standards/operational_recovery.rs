@@ -184,15 +184,17 @@ pub(super) const DISPATCHER_FAILED_STARTUP: &str = r#"fn failed_worker_startup_k
     // Historical failure does not prevent closing these actual component
     // resources. No authenticated Main purpose exists or is invented here.
     let mut worker = dispatcher.worker.take().unwrap();
-    let end = std::time::Instant::now() + Duration::from_secs(5);
-    while worker.poll()? == NativeJoinObservation::Pending {
-        assert!(
-            std::time::Instant::now() < end,
-            "component worker did not physically join"
-        );
-        thread::yield_now();
+    for _ in 0..5_000 {
+        if worker.poll()? == NativeJoinObservation::Returned {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
     }
-    assert_eq!(worker.last_status(), Some(0));
+    assert_eq!(
+        worker.last_status(),
+        Some(0),
+        "component worker did not physically join"
+    );
     drop(worker);
     drop(dispatcher.state.take());
     assert_descriptor_closed(descriptor, &expected);
@@ -218,6 +220,41 @@ pub(super) const DISPATCHER_FAILED_STARTUP: &str = r#"fn failed_worker_startup_k
     ));
     Ok(())
 }"#;
+
+pub(super) const DISPATCHER_QUARANTINED_RETURN: &str = r#"    assert!(dispatcher.retry_abandoned_jobs().is_err());
+    assert!(
+        state
+            .slots
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|slot| slot.failure_reported)
+    );
+    assert!(dispatcher.retry_abandoned_jobs().is_err());
+    {
+        let slots = state.slots.lock().unwrap();
+        assert_eq!(slots[0].phase, JobPhase::Quarantined);
+        assert!(slots[0].control.is_some());
+        assert!(slots[0].next_retry.is_scheduled());
+        assert_eq!(slots[1].phase, JobPhase::Idle);
+        assert!(slots[1].control.is_none());
+    }
+    // Wait out the actual retry cadence independently of the physical empty
+    // observation; neither fact changes the retained Cleanup authority.
+    fs::write(
+        directory.path().join("abandoned-0/cgroup.events"),
+        "populated 0\n",
+    )?;
+    std::thread::sleep(CGROUP_KILL_INTERVAL);
+    dispatcher.retry_abandoned_jobs()?;
+    assert!(
+        state
+            .slots
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|slot| slot.phase == JobPhase::Idle)
+    );"#;
 
 const CONTRACTS: &[Contract] = &[
     Contract {
@@ -634,7 +671,7 @@ const CONTRACTS: &[Contract] = &[
             original: None,
             draining: true,
             failure: None,
-            next_attempt: None,
+            next_attempt: HostRetryCadence::default(),
         });
     }"#,
             r#"let poisoned = Arc::clone(&state);
@@ -684,7 +721,7 @@ const CONTRACTS: &[Contract] = &[
             original: None,
             draining: false,
             failure: None,
-            next_attempt: None,
+            next_attempt: HostRetryCadence::default(),
         });
     }"#,
             r#"let poisoned = Arc::clone(&state);
@@ -764,40 +801,7 @@ const CONTRACTS: &[Contract] = &[
             panicked: true,
             ..JobFailure::default()
         });"#,
-            r#"assert!(dispatcher.retry_abandoned_jobs().is_err());
-    assert!(
-        state
-            .slots
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|slot| slot.failure_reported)
-    );
-    assert!(dispatcher.retry_abandoned_jobs().is_err());
-    {
-        let slots = state.slots.lock().unwrap();
-        assert_eq!(slots[0].phase, JobPhase::Quarantined);
-        assert!(slots[0].control.is_some());
-        assert!(slots[0].next_retry.is_some());
-        assert_eq!(slots[1].phase, JobPhase::Idle);
-        assert!(slots[1].control.is_none());
-    }
-    // Model a scheduler timestamp already beyond the next permitted pass;
-    // this changes no Cleanup authority or physical empty observation.
-    fs::write(
-        directory.path().join("abandoned-0/cgroup.events"),
-        "populated 0\n",
-    )?;
-    state.slots.lock().unwrap()[0].next_retry = Some(Instant::now());
-    dispatcher.retry_abandoned_jobs()?;
-    assert!(
-        state
-            .slots
-            .lock()
-            .unwrap()
-            .iter()
-            .all(|slot| slot.phase == JobPhase::Idle)
-    );"#,
+            DISPATCHER_QUARANTINED_RETURN,
             r#"assert!(
         !dispatcher.is_physically_retired(),
         "actual join alone is not a paid Main return"
@@ -819,7 +823,7 @@ const CONTRACTS: &[Contract] = &[
                 "slot_poison_exit_preserves_running_and_queued_controls_for_retry",
                 1,
             ),
-            ("next_retry", 3),
+            ("next_retry", 2),
             ("retry_abandoned_jobs", 5),
         ],
         expressions: &[
@@ -1004,7 +1008,23 @@ fn dispatcher_recovery_requires_each_actual_custody_observation()
             .iter()
             .any(|finding| finding.contains("`retry`"))
     };
-    assert!(!has_retry(&mask_contract(contract, &code)));
+    let compact = compact_code(&code);
+    let missing = contract
+        .required
+        .iter()
+        .enumerate()
+        .filter(|(_, required)| !compact.contains(&source_pattern(required)))
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+    let counts = contract
+        .identifiers
+        .iter()
+        .map(|(name, count)| (*name, *count, identifier_count(&code, name)))
+        .collect::<Vec<_>>();
+    assert!(
+        !has_retry(&mask_contract(contract, &code)),
+        "missing obligations: {missing:?}; identifier counts: {counts:?}"
+    );
     let offsets = code
         .char_indices()
         .filter(|(_, character)| !character.is_whitespace())
@@ -1020,7 +1040,7 @@ fn dispatcher_recovery_requires_each_actual_custody_observation()
         "assert_eq!(slots[0].epoch, 7);",
         "assert!(slots[0].control.is_some());",
         "assert!(slots[1].control.is_none());",
-        "assert!(slots[0].next_retry.is_some());",
+        "assert!(slots[0].next_retry.is_scheduled());",
     ] {
         let expression = source_pattern(requirement);
         let occurrences = expression_offsets(&code, &expression);
@@ -1142,17 +1162,17 @@ fn dispatcher_startup_wait_requires_the_same_original_worker_and_independent_his
             r#"join_observations: [(None, None); 1],"#,
         ),
         (
-            r#"while worker.poll()? == NativeJoinObservation::Pending"#,
-            r#"while worker.poll()? == NativeJoinObservation::Returned"#,
+            r#"if worker.poll()? == NativeJoinObservation::Returned"#,
+            r#"if worker.poll()? == NativeJoinObservation::Pending"#,
         ),
-        (r#"std::time::Instant::now() < end"#, r#"true"#),
+        (r#"for _ in 0..5_000"#, r#"loop"#),
         (
-            r#"thread::yield_now();"#,
+            r#"thread::sleep(Duration::from_millis(1));"#,
             r#"worker = NativeJoinOwner::from_worker(thread::spawn(|| ()));"#,
         ),
         (
-            r#"assert_eq!(worker.last_status(), Some(0));"#,
-            r#"assert_eq!(worker.last_status(), Some(libc::EBUSY));"#,
+            r#"worker.last_status(), Some(0),"#,
+            r#"worker.last_status(), Some(libc::EBUSY),"#,
         ),
         (
             r#"drop(worker); drop(dispatcher.state.take());"#,

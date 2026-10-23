@@ -531,11 +531,11 @@ pub(super) fn under_original_observed<T>(
         Err(first) => (None, Some(first)),
     };
     let after = original.and_then(|original| original.wait_slice().err());
-    if let Some(after) = after {
-        if self.observations[index].1.is_none() {
-            self.observations[index].1 = Some(after);
-            *self.history_pending = true;
-        }
+    if let Some(after) = after
+        && self.observations[index].1.is_none()
+    {
+        self.observations[index].1 = Some(after);
+        *self.history_pending = true;
     }
     let status = match (first, after) {
         (Some(first), _) => Err(first),
@@ -590,8 +590,13 @@ pub(super) const ACTUAL_CHILD: Companion = Companion {
     path: "crates/crucible/qemu/crucible-qemu-host/src/node/child.rs",
     required: &[
         ("use super::*;", 1),
-        ("impl QemuNodeChild {", 1),
+        ("impl QemuNodeChild {", 2),
         ("impl Drop for QemuNodeChild {", 1),
+        (r#"if self.child.transferred() { return; }"#, 1),
+        (
+            r#"if self.retain_unreaped_fields(containment) { return; }"#,
+            1,
+        ),
         (
             r#"pub(crate) const fn new(child: Child) -> Self {
     Self {
@@ -604,6 +609,8 @@ pub(super) const ACTUAL_CHILD: Companion = Companion {
         #[cfg(target_os = "linux")]
         launch_cleanup: None,
         #[cfg(target_os = "linux")]
+        child_return: None,
+        #[cfg(target_os = "linux")]
         original_plugin_startup: None,
         #[cfg(target_os = "linux")]
         preexec_setup: None,
@@ -611,6 +618,29 @@ pub(super) const ACTUAL_CHILD: Companion = Companion {
         checkpoint_original: None,
     }
 }"#,
+            1,
+        ),
+        (
+            r#"fn retain_unreaped_fields(&mut self, containment: Option<ChildDropContainment>) -> bool {
+        let Some(recipient) = self.child_return.take() else {
+            return false;
+        };
+        if let Some(source) = self.ram_source.take() {
+            source.retain_for_unreaped_receiver();
+        }
+        if let Some(owner) = self.preexec_setup.take() {
+            drop(owner);
+        }
+
+        recipient.retain(AbandonedChild {
+            _child: self.child.take_for_abandonment(),
+            _pending_source: self.ram_source_start.take(),
+            _startup: self.original_plugin_startup.take(),
+            _checkpoint: self.checkpoint_original.take(),
+            _containment: containment,
+        });
+        true
+    }"#,
             1,
         ),
         ("pub const fn reaped(&self) -> bool { self.reaped }", 1),
@@ -842,10 +872,25 @@ pub(super) const OWNED_WAIT: Companion = Companion {
     required: &[
         ("use std::process::{Child, ExitStatus};", 1),
         (
+            r#"pub(super) fn take_for_abandonment(&mut self) -> Self {
+    std::mem::replace(self, Self::Transferred)
+}"#,
+            1,
+        ),
+        (
+            r#"pub(super) fn transferred(&self) -> bool {
+    matches!(self, Self::Transferred)
+}"#,
+            1,
+        ),
+        (
             r#"pub(crate) enum OwnedNodeChild {
     Ordinary(Child),
     #[cfg(target_os = "linux")]
     Source(crucible_host_resources::host_services::process_birth::AuthenticatedSourceChild),
+    // Exists only after the actual owner moves into its preborn recipient.
+    #[cfg(target_os = "linux")]
+    Transferred,
 }"#,
             1,
         ),
@@ -855,6 +900,8 @@ pub(super) const OWNED_WAIT: Companion = Companion {
         Self::Ordinary(child) => child.try_wait(),
         #[cfg(target_os = "linux")]
         Self::Source(child) => child.try_wait(),
+        #[cfg(target_os = "linux")]
+        Self::Transferred => Err(std::io::Error::from_raw_os_error(libc::ECHILD)),
     }
 }"#,
             1,

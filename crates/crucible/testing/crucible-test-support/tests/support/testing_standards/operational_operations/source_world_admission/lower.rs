@@ -290,10 +290,9 @@ pub(in super::super) const POOL_CLAIM: Companion = Companion {
                 self.claim_world(identity, &rows, consumer_control_bytes, original, entered)
             }
             Err(cause) => Err(NativePoolRefusal {
-                world_assignment_refused: false,
                 cause,
-                after: self.held.root.verify_world_preparation(original).err(),
-                _retained: None,
+                after: self.held.root.verify_world_preparation(original).err().into(),
+                _retained: RetainedClaim::empty(),
             }),
         }
     }"#,
@@ -305,6 +304,7 @@ pub(in super::super) const POOL_CLAIM: Companion = Companion {
         let (result, after) = observe_world_attempt(
             || self.held.root.verify_world_preparation(original),
             || {
+                let prepared = PreparedRefusal::reserve(&self.held.root.owner)?;
                 let mut ledger = borrow_world_control(
                     &self.held.ledger,
                     "native World assignment ledger is busy or uncertain",
@@ -345,7 +345,7 @@ pub(in super::super) const POOL_CLAIM: Companion = Companion {
                     }),
                     returned: false,
                 };
-                born = Some(claim);
+                born = Some((claim, prepared));
 
                 let window = borrow_world_control(
                     &self.held.root.owner.host_descriptors,
@@ -360,19 +360,21 @@ pub(in super::super) const POOL_CLAIM: Companion = Companion {
         );
         let assignment_refused = assignment_refused && after.is_none();
         match (result, after) {
-            (Ok(()), None) => born.ok_or_else(|| NativePoolRefusal {
-                world_assignment_refused: false,
-                cause: ServiceBirthError::policy("native World publication is absent"),
-                after: None,
-                _retained: None,
-            }),
+            (Ok(()), None) => born
+                .map(|(claim, _prepared)| claim)
+                .ok_or_else(|| NativePoolRefusal {
+                    cause: ServiceBirthError::policy("native World publication is absent"),
+                    after: None.into(),
+                    _retained: RetainedClaim::empty(),
+                }),
             (result, after) => Err(NativePoolRefusal {
-                world_assignment_refused: assignment_refused,
                 cause: result
                     .err()
                     .unwrap_or_else(|| ServiceBirthError::policy("native World postcut refused")),
-                after,
-                _retained: born.map(RetainedClaim::world),
+                after: RefusalPostcut::world_attempt(after, assignment_refused),
+                _retained: born.map_or_else(RetainedClaim::empty, |(claim, prepared)| {
+                    RetainedClaim::world(claim, prepared)
+                }),
             }),
         }
     }"#,

@@ -1210,10 +1210,33 @@ poll to immediate readiness is rejected. The focused dispatcher control passes;
 the complete suite now passes 52 controls and fails 22. These remaining source
 classification failures still prevent a complete testing-standards pass.
 
+The shared World and Node witnesses now require the actual prepaid refusal
+carrier, reservation before World assignment, typed independent postcut and
+closed shared-header destruction before credit return. The helper witness keeps
+the same installed recipient after the error-conversion simplification. The
+child witness additionally requires the original preborn abandonment recipient,
+actual wait-authority transfer and ECHILD after transfer; causal controls reject
+foreign owners and invented reap observations.
+
+Dispatcher component checks require the real fallible cadence, independent
+physical-empty observation, finite native-join allowance and same retained
+worker. Wait and recovery contracts independently inspect the unchanged source
+before combining masks, so neither erases the other's ownership evidence. All
+74 focused controls pass; the remaining broad gate reports 25 findings across
+24 paths. These are open classification failures, not a complete standards pass.
+The final formatted source-shape check passes after reviewing the same recovery
+module and refreshing its content-bound digest and unchanged-threshold count.
+The original stale-record refusal remains recorded; no size limit is relaxed.
+
 Mandatory application-target compilation for unreaped-child retention commit
 `16927f3a5a` passes, producing `b6437jdpvrgi1nwm0dbvrjrq7ix51zdn`.
 The previously recorded immutable source and protocol-fixture correspondence
-binds that result; newer mandatory application builds remain in progress.
+binds that result. Three subsequent application builds also pass with their
+previously verified complete immutable source and fixture correspondence:
+`bc49492cf4` produces `jyckv3mdvmlkzb058xbzqkrgdwlfhc4p`, `29bdfa8a89`
+produces `5nlic3q5nrk05i7c4rj6ly0b77nf45kj`, and `3e090c3243` produces
+`rgagh52sxn61plpzppbgpkfsl5rjyrmw`. The stop-journal and newer source-contract
+application builds remain in progress.
 
 #### Cumulative construction and request ownership source
 
@@ -1610,7 +1633,29 @@ All 701 actual process samples include the monitor worker and remain below the
 six-GiB aggregate bound. Canonical atomic patch reconstruction passes at
 `qlh9wdmgax3gyx41fflg7yxjxk9rrqkz`; engineering hygiene passes at
 `zcvijji792yblcv5r97p578pnwrl3izi`. Target compilation, final provider symbol
-resolution and TAP execution remain unexecuted.
+resolution and TAP execution remain unexecuted. ABI conformance also passes at
+`nflj0wrhq0r255sjrvrrbb9np6sxddmg`.
+
+The separately sealed build plan
+`43ced7e66fea3da017b5089a674ddfed47ef69ff9f228628920ff6ef1aa03f36`
+authenticates all 71 payloads, 163 external inputs, ten reconstruction inputs
+and 70 complete tool/runtime roots. Independent graph translation checks every
+edge, database variant, leaf and the 1,952-effect schedule; the actual pinned
+Meson implementation independently derives all ten changed object coordinates.
+Its original invocation starts with a 5,400-second inclusive bound, one worker,
+180-second configure/C bounds, 30-second generator/archive/link bounds and a
+six-GiB address-space and sampled aggregate limit. The original invocation
+returns one after configure succeeds in 32.764 seconds: exact graph equality
+refuses before any target compilation. Final inventories complete within
+116.681 seconds; operation and exception cleanup independently observe empty
+actual children and ECHILD. No graph repair, target compile, final link or TAP
+execution is claimed. Independent review of sealed failure
+`ec1771c71bbd9b45f7842842b1c4c89b8b7075735552359aae47ff131f101591`
+authenticates all 35 payloads, 2,911 execution and 86,111 reconstruction
+paths, their complete archives and the original raw graph. Exactly 33 unselected
+whole-graph command fields differ; all selected edges, 3,304 database variants,
+rules and leaves match. Each differing command names a Meson serialized-command
+artifact whose exact producer remains under review.
 
 #### Initial loader storage component
 

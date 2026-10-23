@@ -40,12 +40,11 @@ pub(in super::super::super) const NODE_ISSUE: Companion = Companion {
         match (result, after) {
             (Ok(()), None) => Ok(()),
             (result, after) => Err(NativePoolRefusal {
-                world_assignment_refused: false,
                 cause: result
                     .err()
                     .unwrap_or_else(|| ServiceBirthError::policy("native node postcut refused")),
-                after,
-                _retained: None,
+                after: after.into(),
+                _retained: RetainedClaim::empty(),
             }),
         }
     }"#,
@@ -92,12 +91,11 @@ pub(in super::super::super) const NODE_CONVERSION: Companion = Companion {
         match (result, after) {
             (Ok(()), None) => Ok(()),
             (result, after) => Err(NativePoolRefusal {
-                world_assignment_refused: false,
                 cause: result.err().unwrap_or_else(|| {
                     ServiceBirthError::policy("native node issuer postcut refused")
                 }),
-                after,
-                _retained: None,
+                after: after.into(),
+                _retained: RetainedClaim::empty(),
             }),
         }
     }"#,

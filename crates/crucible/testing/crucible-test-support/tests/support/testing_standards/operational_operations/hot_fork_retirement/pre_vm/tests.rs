@@ -894,3 +894,38 @@ fn physical_cleanup_guard_requires_a_pre_call_fence_and_the_real_drop_control()
     }
     Ok(())
 }
+
+#[test]
+fn abandoned_child_requires_the_same_preborn_wait_owner() -> Result<(), Box<dyn std::error::Error>>
+{
+    let preparation = Fixture::load(0)?;
+    for (path, before, after, reason) in [
+        (
+            "node/child.rs",
+            "let Some(recipient) = self.child_return.take()",
+            "let Some(recipient) = foreign.child_return.take()",
+            "abandonment recipient must belong to this actual child",
+        ),
+        (
+            "node/child.rs",
+            "_child: self.child.take_for_abandonment()",
+            "_child: foreign.child.take_for_abandonment()",
+            "the original wait authority must move into its retained recipient",
+        ),
+        (
+            "node/child.rs",
+            "if self.retain_unreaped_fields(containment) { return; }",
+            "if self.retain_unreaped_fields(containment) { self.mark_reaped(); return; }",
+            "physical owner transfer cannot invent a reap",
+        ),
+        (
+            "node/source_child.rs",
+            "Self::Transferred => Err(std::io::Error::from_raw_os_error(libc::ECHILD))",
+            "Self::Transferred => Ok(None)",
+            "transferred authority cannot pretend to remain a live wait owner",
+        ),
+    ] {
+        preparation.rejects(path, before, after, reason);
+    }
+    Ok(())
+}

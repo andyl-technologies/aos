@@ -559,27 +559,32 @@ fn canonical_cell_and_source_receipt_obligations_reject_foreign_or_early_closure
         ),
         (
             "native_pool/refusal.rs",
-            r#"RetainedOwner::World { world } => world.take(),"#,
-            r#"RetainedOwner::World { world } => None,"#,
+            r#"drop(Arc::into_inner(allocation));"#,
+            r#"drop(allocation);"#,
         ),
         (
             "native_pool/refusal.rs",
-            r#"Self::new(RetainedOwner::World { world: Some(world) })"#,
-            r#"Self::new(RetainedOwner::World { world: None })"#,
+            r#"RetainedOwner::World(world) => world.take(),"#,
+            r#"RetainedOwner::World(world) => None,"#,
         ),
         (
             "native_pool/refusal.rs",
-            r#"Self::new(RetainedOwner::Dispatcher { _dispatcher: dispatcher, })"#,
-            r#"Self::new(RetainedOwner::None)"#,
+            r#"prepared.retain(RetainedOwner::World(Some(world)))"#,
+            r#"prepared.retain(RetainedOwner::World(None))"#,
         ),
         (
             "native_pool/refusal.rs",
-            r#"retained.delivery.get_or_insert(error);"#,
+            r#"prepared.retain(RetainedOwner::Dispatcher { _dispatcher: dispatcher, })"#,
+            r#"drop(prepared); RetainedClaim::empty()"#,
+        ),
+        (
+            "native_pool/refusal.rs",
+            r#"self._retained.delivery.get_or_insert(error);"#,
             r#"drop(error);"#,
         ),
         (
             "native_pool/refusal.rs",
-            r#"retained.receiver.get_or_insert(operation);"#,
+            r#"self._retained.receiver.get_or_insert(operation);"#,
             r#"drop(operation);"#,
         ),
         (

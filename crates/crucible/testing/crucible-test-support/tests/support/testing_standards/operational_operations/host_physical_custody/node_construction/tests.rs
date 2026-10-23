@@ -18,8 +18,18 @@ impl Fixture {
         .join(format!("{}.rs", contract.target));
         let code = crate::scrub_comments_and_strings(&std::fs::read_to_string(path)?);
         let companions = read_companions(contract)?;
+        let details = super::super::super::lifecycle_retirement::contract_diagnostics(
+            contract,
+            &code,
+            &companions,
+        );
+        assert!(details.is_empty(), "{}: {details:#?}", contract.target);
         let masked = mask_contract(contract, &code, &companions);
-        assert!(masked != code, "reviewed node owner changed: {}", contract.target);
+        assert!(
+            masked != code,
+            "reviewed node owner changed: {}",
+            contract.target
+        );
         assert!(crate::flaky_escape_failures("unreviewed", "unreviewed", &masked).is_empty());
         Ok(Self {
             contract,
@@ -189,6 +199,16 @@ fn node_construction_contracts_preserve_stages_physical_return_and_independent_p
             &NODE_OWNER,
             r#"let cleanup = purpose.retained_world_cleanup()?;"#,
             r#"let cleanup = renewed_cleanup()?;"#,
+        ),
+        (
+            &NODE_ISSUE,
+            r#"after: after.into(),"#,
+            r#"after: None.into(),"#,
+        ),
+        (
+            &NODE_CONVERSION,
+            r#"after: after.into(),"#,
+            r#"after: None.into(),"#,
         ),
         (&NODE_ISSUE, r#"if destination.is_some()"#, r#"if false"#),
         (

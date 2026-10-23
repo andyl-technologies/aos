@@ -20,6 +20,9 @@ impl Fixture {
         .join(format!("{}.rs", contract.target));
         let code = crate::scrub_comments_and_strings(&std::fs::read_to_string(path)?);
         let companions = read_companions(contract)?;
+        let details =
+            super::super::lifecycle_retirement::contract_diagnostics(contract, &code, &companions);
+        assert!(details.is_empty(), "{}: {details:#?}", contract.target);
         assert!(
             mask_contract(contract, &code, &companions) != code,
             "reviewed World admission changed: {}",
@@ -285,16 +288,30 @@ fn source_world_admission_preserves_actual_publication_and_initial_custody()
         ),
         (
             &POOL_CLAIM,
-            r#"after: self.held.root.verify_world_preparation(original).err(),"#,
-            r#"after: None,"#,
+            r#"after: self.held.root.verify_world_preparation(original).err().into(),"#,
+            r#"after: None.into(),"#,
         ),
         (
             &POOL_CLAIM,
             r#"&self.held.ledger,"#,
             r#"&foreign.held.ledger,"#,
         ),
+        (
+            &POOL_CLAIM,
+            r#"let prepared = PreparedRefusal::reserve(&self.held.root.owner)?;"#,
+            r#"let prepared = PreparedRefusal::empty();"#,
+        ),
+        (
+            &POOL_CLAIM,
+            r#"after: RefusalPostcut::world_attempt(after, assignment_refused),"#,
+            r#"after: RefusalPostcut::world_attempt(None, assignment_refused),"#,
+        ),
         (&POOL_CLAIM, r#"ledger.assign_source("#, r#"ledger.assign("#),
-        (&POOL_CLAIM, r#"born = Some(claim);"#, r#"drop(claim);"#),
+        (
+            &POOL_CLAIM,
+            r#"born = Some((claim, prepared));"#,
+            r#"drop(claim);"#,
+        ),
         (
             &POOL_CLAIM,
             r#"controls: AuthenticatedNativeWorldControlLease { held: Arc::clone(&self.held), epoch, closed: false, }"#,
@@ -307,8 +324,10 @@ fn source_world_admission_preserves_actual_publication_and_initial_custody()
         ),
         (
             &POOL_CLAIM,
-            r#"_retained: born.map(RetainedClaim::world),"#,
-            r#"_retained: None,"#,
+            r#"_retained: born.map_or_else(RetainedClaim::empty, |(claim, prepared)| {
+                    RetainedClaim::world(claim, prepared)
+                }),"#,
+            r#"_retained: RetainedClaim::empty(),"#,
         ),
         (
             &POOL_CLAIM,
