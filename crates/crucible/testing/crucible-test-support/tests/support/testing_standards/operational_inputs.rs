@@ -29,6 +29,12 @@ mod operational_source_observations;
 #[path = "operational_retry_cadence.rs"]
 mod operational_retry_cadence;
 
+#[path = "operational_plugin_refusals.rs"]
+mod operational_plugin_refusals;
+
+#[path = "operational_quantum_observers.rs"]
+mod operational_quantum_observers;
+
 struct Companion {
     path: &'static str,
     required: &'static [&'static str],
@@ -326,6 +332,8 @@ pub(super) fn mask(package: &str, target: &str, code: &str) -> String {
         .chain(operational_ram_read::CONTRACTS)
         .chain(operational_source_observations::CONTRACTS)
         .chain(operational_retry_cadence::CONTRACTS)
+        .chain(operational_plugin_refusals::CONTRACTS)
+        .chain(operational_quantum_observers::CONTRACTS)
         .chain(operational_packed::CONTRACTS)
         .chain(operational_measurement::CONTRACTS)
         .find(|contract| contract.package == package && contract.target == target)

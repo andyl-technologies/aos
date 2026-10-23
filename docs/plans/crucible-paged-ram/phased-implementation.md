@@ -1323,6 +1323,23 @@ pass. The complete testing-standards suite now passes 78 controls and retains
 one broad failure over twenty other unclassified retry paths. Mandatory
 application-target compilation remains pending.
 
+
+The plan-read and callback-diagnostic refusal controls now have exact component
+source-policy contracts. They bind the actual retained-original pre/post read
+path and the first-refusal diagnostic writer with its unconditional shutdown.
+The driver finish-refusal and bounded slot/report observations also bind their
+actual typed causes, same pending request and terminal-post handling. Changes
+to those owners or their assertions, and additional retries outside the reviewed
+blocks, remain visible. These classifications establish no native Source,
+operation payer, physical-return receipt or descriptor deadline.
+
+All six plan-read controls, three diagnostic controls, eleven actual driver
+supervision controls and four bounded quantum-observation controls pass. All
+four new classification controls and source shape pass. The complete
+testing-standards suite passes 82 controls and retains one broad failure over
+sixteen other unclassified retry paths. Mandatory application-target compilation
+for this increment remains pending.
+
 #### Cumulative construction and request ownership source
 
 Signed atomic `e82bb4c78da7af3351ef6473935a2be2feb01a2d` imports conventional
