@@ -1,7 +1,7 @@
 {
   "bazel_derivation": "/nix/store/dszhbi5a4i2y017sg4mpfkc491cqjjql-bazel-9.2.0.drv",
   "bazel_output": "/nix/store/2inj9nwplk2wisp9mhh8bl34qbxxqf0q-bazel-9.2.0",
-  "command": "nix-build -A checks.bazel.workspace-status --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "command": "nix-build -A checks.build.bazel.workspace-status --no-out-link --max-jobs 4 --cores 4 --option substitute false",
   "derivation": "/nix/store/c2b291xszmlph8ng32d7lhy7vmzvwayq-aos-bazel-workspace-status-check.drv",
   "limits": [
     "The check verifies the actual Bash process through its BASH variable, rather than relying on a script shebang or the presence of a compatibility shell.",
