@@ -2516,6 +2516,21 @@ files while Rust source ownership remains unchanged.
 for 487 Rust targets across 39 analysis-only selections, with no external
 actions. Core evaluation passes for the same checkpoint.
 
+`tests/evidence/native-linux-hub-db.json` retains passing strict source
+selection, fresh Cargo runtime and feature comparisons, production features,
+license closure, developer checks, and selected editor parity in both
+configurations. Default test and production graphs match 189 and 177 external
+packages; all-feature graphs match 211 and 200. Each retains nine first-party
+packages with identical compiled feature-unit sets. All 319 untouched baseline
+inputs still match, alongside the frozen thirty-two Rust corrections.
+
+Each configuration runs two test roots uncached in the Linux sandbox; a third
+TestRunner spawn generates doctest XML. These actions invoke no Cargo binary,
+and strict first-party compilation sources contain no Cargo manifests. Selected
+editor diagnostics match with four diagnostics, eighteen unselected Cargo
+rows, and no unattributed rows. Both reports retain incomplete inference;
+aggregate statistics and diagnostic multiplicities are not claimed equivalent.
+
 The unchanged Cargo baselines retain 272 default unit cases and 281 all-feature
 unit cases, with two passing and one ignored doctest in each configuration. Both Cargo
 and Bazel use four outer workers; the concurrent-installation case retains its
