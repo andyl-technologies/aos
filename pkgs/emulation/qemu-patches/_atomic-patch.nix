@@ -6,20 +6,20 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "0b76c7668f9c170e4536cc2a96bd74bc5de2c408ed0a0929b81f05e5b5ee483d";
-  subject = "crucible: retain stack debt and bounded-thread runtime custody";
-  body = "Keep canonical same-parent Main/RR stack lenders, factual return journals and\npaid external startup/registry storage. Add the optional installed bounded\npthread consumer for genuine supplied-stack birth and kernel/TLS/notifier/\nregistry retirement, preserving the ordinary pthread route.\n\nRetain the actual stack-closure helper in constructor and RR-parent literal\nfixtures, expose captured constructor compiler diagnostics, and bind their\nfinal transitive extraction fingerprints. Complete Source application and\nstack issuance, finite RR allocation and stop/drain closure, physical parent\nretirement and external Main reap remain required before profile admission.";
-  commit = "2564b502e49f7d164d07fcd64fdd4ec2bfad9545";
-  tree = "a5bf76c20ff8ac6d08704cfe5a792503ede92555";
+  sha256 = "a2bbcd226886dbde01a02f99f0780b2f8a68dd28b6c2c870519ae27a2f41032e";
+  subject = "plugins: retain bounded construction, request and history ownership";
+  body = "Carry the complete observation implementation and canonical owner lineage\nwith actual constructor, installed Original, request and retained history\nbodies. Preserve ordinary execution, independent observations and explicit\nrefusal where complete containing ownership or profiles are unavailable.\n\nThis cumulative source delivery does not assert binary, runtime, paid\nissuer or complete profile qualification.";
+  commit = "e82bb4c78da7af3351ef6473935a2be2feb01a2d";
+  tree = "3b3b318164d5092261bd2374744d72e4e8298910";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/quantum-stack-consumer-fixture-public-atomic";
+  branchRef = "dplecki/quantum-request-history-atomic";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "fd7802da3811d84ac73fe4e966e929a6b5b9dac4ffc74ddcc9f8fcecab1bcb56";
+  bundleSha256 = "11bdf714b64731cb47cb04e109241c996903dc161e39e9031a00d0b1d156c3aa";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

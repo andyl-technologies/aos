@@ -907,6 +907,46 @@ admission constructor. Inventory `l5fm3sidhm682fx9k9rlv310ncq1rcaw` verifies
 requirements remain uncovered and none qualified. Fresh application-target
 compilation and counted supervision remain in progress.
 
+The ordered cleanup/publication revision also passes mandatory application-target
+compilation at `c95k373n7dr23iq2k8rdgks1z9awcxj6`. Its previously recorded
+5,362 committed Rust/TOML inputs and six fixture/license files remain exact;
+this does not qualify the later revisions or a native launch.
+
+#### Cumulative construction and request ownership source
+
+Signed atomic `e82bb4c78da7af3351ef6473935a2be2feb01a2d` imports conventional
+`ce726d4a9b2fc37b6559c2cb39070b509678f318`, tree
+`3b3b318164d5092261bd2374744d72e4e8298910`. The conventional history retains
+the prior canonical stack consumer, complete construction and installed
+Original ownership, and independently reviewed request and returned-recipient
+history bodies. The two former missing request Work providers and the separate
+preexec history-post provider now have actual definitions. Prospective and live
+requests retain four distinct raw recipient observations; positive histories
+cannot be reset or reused. Callback return history has a distinct pending
+recipient selector and does not query ended Work authority.
+
+Independent correspondence checks verify all eighty sealed artifacts, both
+signed trees, every one of 78,447 tracked paths, 78,375 regular files totaling
+699,493,911 bytes, and 72 literal symlinks against signed Git blob identities
+and the complete source archive. The comparison record has SHA-256
+`5581f880cfd63c29230fbd8882b53869ec6231c1aa40af48f250305b2c3a57fd`.
+The cumulative license ledger contains 640 created files. Of its 207 added
+rows, 201 have explicit GPL-2.0-or-later notices and six retain QEMU's default
+GPL-2.0-or-later terms. The license-ledger check passes at
+`imz4xbxj2isks9slfbh9np4jy11iymcm`; core evaluation and focused Nix formatting
+also pass. Hermetic patch-and-bundle reconstruction reproduces the exact atomic
+tree at `5gr390s5cr4q8cf6d81yxch7a3zmskaf`. Engineering hygiene passes at
+`zcvijji792yblcv5r97p578pnwrl3izi`.
+
+The actual literal Source extraction passes with 175 roots and 1,227 functions;
+the literal preexec extraction passes. These source checks are separate from
+C compilation, linking and runtime qualification. A fresh genuine configuration,
+owning-translation-unit and complete getter measurement remains pending for
+this exact tree; the earlier 409,334-byte observation is not a price for this
+new source. Complete successful postbody resource custody, funded profile
+issuance, activation, external physical reap and the remaining RFC requirements
+remain unfinished. ABI and strict license-boundary checks are running.
+
 #### Initial loader storage component
 
 The package imports signed `cff34ac416ff0650048fd85d50e156434f5cb9ed`, tree
