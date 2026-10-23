@@ -15900,3 +15900,22 @@ main-thread stack during genuine source initialization, before the new retained
 recovery selector runs. The immutable failed receipt remains retained. No new
 retained-recovery runtime claim is made; fixture stack layout requires correction
 with unchanged assertions, process limits and actor/guest timeouts.
+
+
+#### Native fixture async stack boundaries
+
+The shared signed repository fixture now heap-pins its initializer and directory
+commit futures. Surface scenario dispatch also heap-pins the signed-root,
+exposure and whole-file scenarios at their synchronous executor boundary,
+matching the existing independent index-closure path. This changes fixture
+future placement; production authorization, native ownership and every original
+assertion, process stack limit, actor timeout and whole-VM limit remain unchanged.
+
+Static inspection of the failed installed ELF records a 689,720-byte `main`
+frame and a 2,345,032-byte signed-root scenario poll frame. The newly compiled
+AOS fixture has 351,720-byte and 1,229,752-byte frames respectively. These are
+static function-frame measurements, not a maximum live-stack census or native
+runtime qualification. Strict Linux all-feature/all-target Clippy, actual
+fixture compilation, Rust formatting, supervisor syntax and diff checks pass.
+No fixture executes on the host. Fresh native surface-owner, complete cache
+and mandatory application qualification will run from the next frozen commit.

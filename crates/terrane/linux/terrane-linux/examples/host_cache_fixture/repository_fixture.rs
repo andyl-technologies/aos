@@ -56,7 +56,9 @@ impl RepositoryFixture {
         };
         // Register the same immutable CDC profile as the native cache. Signing
         // keys and token identities still come from actual local entropy.
-        let (repository, authority) = Repository::initialize_local_with_seed(
+        // Unoptimized proof futures can be large. Keep repository initialization
+        // outside the enclosing scenario's fixed actor stack.
+        let (repository, authority) = Box::pin(Repository::initialize_local_with_seed(
             &location,
             LocalAuthorityParameters {
                 owner_uid,
@@ -91,7 +93,7 @@ impl RepositoryFixture {
             [0; 32],
             TokioLocalFs,
             TokioClock,
-        )
+        ))
         .await?;
         fs::create_dir(directory.0.join("source"))?;
         Ok(Self {
@@ -112,19 +114,17 @@ impl RepositoryFixture {
             .repository
             .begin(MAIN, self.authority.token(), "sdk")
             .await?;
-        let receipt = self
-            .repository
-            .commit_directory(
-                &mut session,
-                &source,
-                &self.authority,
-                CommitMetadata {
-                    message: "Publish scoped native fixture".into(),
-                    process: "native-fixture".into(),
-                    source: CommitSource::Built,
-                },
-            )
-            .await?;
+        let receipt = Box::pin(self.repository.commit_directory(
+            &mut session,
+            &source,
+            &self.authority,
+            CommitMetadata {
+                message: "Publish scoped native fixture".into(),
+                process: "native-fixture".into(),
+                source: CommitSource::Built,
+            },
+        ))
+        .await?;
         Ok(receipt.commit)
     }
 }

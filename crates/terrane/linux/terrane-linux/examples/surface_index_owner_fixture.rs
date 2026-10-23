@@ -229,7 +229,7 @@ fn main() -> Result<()> {
         );
     }
     if mode == "file-closure" {
-        return runtime.block_on(exposure::file_closure::verify(&owner, &inputs));
+        return runtime.block_on(Box::pin(exposure::file_closure::verify(&owner, &inputs)));
     }
     if mode == "index-closure" {
         return runtime.block_on(Box::pin(exposure::verify_index_closure(
@@ -240,7 +240,7 @@ fn main() -> Result<()> {
         return maintenance::run(launched, &runtime, &owner, &inputs);
     }
     if mode == "exposure" {
-        runtime.block_on(exposure::verify(&owner, &inputs))?;
+        runtime.block_on(Box::pin(exposure::verify(&owner, &inputs)))?;
         drop(owner);
         let before = snapshot(&inputs)?;
         let restarted = restart(&inputs, policy, confinement)?;
@@ -449,7 +449,7 @@ fn main() -> Result<()> {
         "PASS cold recompilation creates a distinct inode and final old-index unmap releases exactly its project charge"
     );
     eviction::verify(&runtime, &restarted, &inputs, replacement)?;
-    runtime.block_on(scoped::verify(&restarted, &inputs))?;
+    runtime.block_on(Box::pin(scoped::verify(&restarted, &inputs)))?;
     require_empty_capabilities()?;
     Ok(())
 }
