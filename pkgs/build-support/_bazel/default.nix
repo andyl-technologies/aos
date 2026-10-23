@@ -30,37 +30,18 @@
     modules = aosBazelModules;
   };
   aosBazelNativeFoundationLibraries = mkAosBazelNativeLibraries {
-    libraries = {
-      openssl = {
-        package = pkgs.openssl;
-        libraryFile = "lib/libssl.so";
-        pkgConfigFiles = ["lib/pkgconfig/openssl.pc" "lib/pkgconfig/libssl.pc"];
-        pkgConfigDependencies = ["crypto"];
+    libraries = import ./native-foundation-libraries.nix {inherit pkgs;};
+  };
+  aosBazelHubServiceLibraries = mkAosBazelNativeLibraries {
+    libraries =
+      (import ./native-foundation-libraries.nix {inherit pkgs;})
+      // {
+        sqlite = {
+          package = pkgs.sqlite;
+          libraryFile = "lib/libsqlite3.so";
+          pkgConfigFiles = ["lib/pkgconfig/sqlite3.pc"];
+        };
       };
-      crypto = {
-        package = pkgs.openssl;
-        libraryFile = "lib/libcrypto.so";
-        pkgConfigFiles = ["lib/pkgconfig/libcrypto.pc"];
-      };
-      ssh = {
-        package = pkgs.libssh2;
-        libraryFile = "lib/libssh2.so";
-        pkgConfigFiles = ["lib/pkgconfig/libssh2.pc"];
-        pkgConfigDependencies = ["crypto" "zlib"];
-      };
-      zlib = {
-        package = pkgs.zlib;
-        libraryFile = "lib/libz.so";
-        compilerResponseFile = true;
-        pkgConfigFiles = ["lib/pkgconfig/zlib.pc"];
-      };
-      zstd = {
-        package = pkgs.zstdStaticMultithread;
-        libraryFile = "lib/libzstd.a";
-        linkage = "static";
-        pkgConfigFiles = ["lib/pkgconfig/libzstd.pc"];
-      };
-    };
   };
   aosBazelGuestLibraries = mkAosBazelStaticLibraries {
     libraries = {
@@ -84,6 +65,10 @@
   aosBazelNixTestTools = import ./nix-test-tools.nix {inherit pkgs;};
   aosBazelCodegenTools = import ./codegen-tools.nix {inherit pkgs;};
   aosBazelWasmTools = import ./wasm-tools.nix {inherit pkgs;};
+  aosBazelConsoleAssets = import ./console-assets.nix {
+    inherit pkgs;
+    build = (import ../../../tests/build/_bazel-hub-console-wasm.nix {inherit pkgs;}).build;
+  };
   aosBazelDependencyGenerator = pkgs.callPackage ../../tools/workerd/_cargo-bazel.nix {};
   aosBazelDependencyUpdater = import ./updater.nix {
     inherit pkgs lib;
