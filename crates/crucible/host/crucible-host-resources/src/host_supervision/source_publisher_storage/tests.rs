@@ -42,6 +42,59 @@ struct Fixture {
     bytes: u64,
 }
 
+struct RefusedBody {
+    accounts: [HostServiceAllocator; 2],
+    bytes: u64,
+    dropped_while_funded: Arc<AtomicBool>,
+}
+
+impl Drop for RefusedBody {
+    fn drop(&mut self) {
+        let funded = self
+            .accounts
+            .iter()
+            .all(|account| account.reserve_resources(0, 0, self.bytes).is_err());
+        self.dropped_while_funded.store(funded, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn refused_publisher_closes_value_before_returning_original_charge() {
+    let bytes = 4096;
+    let accounts: [HostServiceAllocator; 2] =
+        std::array::from_fn(|_| HostServiceAllocator::new(1, 1, bytes).unwrap());
+    let charge = AllocationCharge::Component {
+        _lease: HostServiceLeasePair::new(
+            accounts[0].reserve_resources(0, 0, bytes).unwrap(),
+            accounts[1].reserve_resources(0, 0, bytes).unwrap(),
+        ),
+    };
+    let dropped_while_funded = Arc::new(AtomicBool::new(false));
+    let body = RefusedBody {
+        accounts: accounts.clone(),
+        bytes,
+        dropped_while_funded: dropped_while_funded.clone(),
+    };
+
+    let (result, counts) = TestAllocationObserver::count(|| {
+        FundedSourcePublisher::construct_after_validation(
+            body,
+            charge,
+            Err(HostSupervisionError::CapacityExhausted),
+        )
+    });
+
+    assert!(matches!(
+        result,
+        Err(HostSupervisionError::CapacityExhausted)
+    ));
+    assert!(dropped_while_funded.load(Ordering::SeqCst));
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    verify_refunded(&accounts, bytes);
+}
+
 fn fixture() -> Fixture {
     let bytes = FundedSourcePublisher::<Body>::allocation_bytes().unwrap() as u64;
     let accounts: [HostServiceAllocator; 2] =

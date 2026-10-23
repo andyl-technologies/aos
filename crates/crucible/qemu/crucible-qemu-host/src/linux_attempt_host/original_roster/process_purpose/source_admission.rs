@@ -3,12 +3,16 @@
 //! The actual Source0 loan and immutable family produce its subject. Its host
 //! controls retain the same authenticated Main payer and node supervisor; neither
 //! a RAM Target, copied limits nor a caller-supplied subject constructs admission.
+//! The original storage loan stays outside the shared value until its allocation
+//! is freed; destroying that value alone cannot return its storage charge.
 // SPDX-License-Identifier: Apache-2.0
 
 use std::sync::Mutex;
 
 use crucible_host_resources::host_services::process_birth::AuthenticatedSourceHostPurpose;
-use crucible_host_resources::host_supervision::{HostDeferredCleanupIssuer, HostSupervisionError};
+use crucible_host_resources::host_supervision::{
+    FundedSourcePublisher, HostDeferredCleanupIssuer, HostSupervisionError,
+};
 use crucible_host_resources::ram_policy::HostResourceVector;
 
 use super::*;
@@ -26,7 +30,7 @@ pub(crate) struct InstalledSourceSubject {
 /// Retains actual initial Source enrollment and its already funded host controls.
 #[derive(Clone, Debug)]
 pub(crate) struct InstalledSourceAdmission {
-    held: Arc<InstalledSourceState>,
+    held: FundedSourcePublisher<InstalledSourceState>,
 }
 
 #[derive(Debug)]
@@ -39,7 +43,6 @@ struct InstalledSourceState {
     supervisor: HostOperationSupervisor,
     cleanup_issuer: Mutex<Option<HostDeferredCleanupIssuer>>,
     host: AuthenticatedSourceHostPurpose,
-    _control: crucible_host_resources::host_services::process_birth::SourceHostControlLease,
 }
 
 impl OriginalNativeNodeBinding {
@@ -202,21 +205,26 @@ impl OriginalNativeNodeBinding {
         let receiver = controls
             .native_receiver_artifact()
             .ok_or(InstalledProcessPurposeError::Identity)?;
-        Ok(construct_source_admission(
-            InstalledSourceSubject {
-                containing_cap,
-                reservation,
-                account_generation,
-                process_generation,
+        let held = FundedSourcePublisher::new(
+            InstalledSourceState {
+                subject: InstalledSourceSubject {
+                    containing_cap,
+                    reservation,
+                    account_generation,
+                    process_generation,
+                },
+                resources: normal.bounds(),
+                original_metadata_bytes: credit.total_metadata_bytes(),
+                artifact_digest: *controls.plugin_sha256(),
+                receiver,
+                supervisor: node_supervisor,
+                cleanup_issuer: Mutex::new(None),
+                host,
             },
-            normal.bounds(),
-            credit.total_metadata_bytes(),
-            *controls.plugin_sha256(),
-            receiver,
-            node_supervisor,
-            host,
             control,
-        ))
+        )
+        .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
+        Ok(InstalledSourceAdmission { held })
     }
 
     /// Corroborates the installed Source loan and its actual containing payer.
@@ -315,18 +323,17 @@ impl OriginalNativeNodeBinding {
 /// Describes the one Main-paid peak shared across verification and process birth.
 pub(in crate::linux_attempt_host) fn source_host_peak()
 -> Result<(u64, u64, u64), InstalledProcessPurposeError> {
-    let (layout, _) = std::alloc::Layout::new::<(
-        std::sync::atomic::AtomicUsize,
-        std::sync::atomic::AtomicUsize,
-    )>()
-    .extend(std::alloc::Layout::new::<InstalledSourceState>())
-    .map_err(|_| InstalledProcessPurposeError::Capacity)?;
+    // Both concrete shared allocations and the funding constructor are admitted
+    // before either allocation; the Source value and holder coexist here too.
+    let storage = FundedSourcePublisher::<InstalledSourceState>::allocation_bytes()
+        .map_err(|_| InstalledProcessPurposeError::Capacity)?;
     let supervisor_extent =
         crucible_host_resources::host_supervision::HostSupervisionBootstrap::structure_bytes()
             .map_err(|source| InstalledProcessPurposeError::Original(source.into()))?;
-    let source_extent = u64::try_from(layout.pad_to_align().size())
+    let source_extent = u64::try_from(storage)
         .ok()
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<InstalledSourceState>() as u64))
+        .and_then(|bytes| bytes.checked_add(std::mem::size_of::<InstalledSourceAdmission>() as u64))
         .and_then(|bytes| bytes.checked_add(supervisor_extent))
         .and_then(|bytes| bytes.checked_add(std::mem::size_of::<crate::QemuNodeChild>() as u64))
         .and_then(|bytes| bytes.checked_add(crate::node::child_shutdown_control_extent()?))
@@ -369,32 +376,6 @@ pub(in crate::linux_attempt_host) fn source_host_peak()
     ))
 }
 
-/// Builds the retained candidate only after its actual Main body peak is paid.
-fn construct_source_admission(
-    subject: InstalledSourceSubject,
-    resources: HostResourceVector,
-    original_metadata_bytes: u64,
-    artifact_digest: [u8; 32],
-    receiver: crate::artifact_identity::NativeReceiverArtifact,
-    supervisor: HostOperationSupervisor,
-    host: AuthenticatedSourceHostPurpose,
-    control: crucible_host_resources::host_services::process_birth::SourceHostControlLease,
-) -> InstalledSourceAdmission {
-    InstalledSourceAdmission {
-        held: Arc::new(InstalledSourceState {
-            subject,
-            resources,
-            original_metadata_bytes,
-            artifact_digest,
-            receiver,
-            supervisor,
-            cleanup_issuer: Mutex::new(None),
-            host,
-            _control: control,
-        }),
-    }
-}
-
 impl InstalledSourceAdmission {
     /// Retains the exact node owner's future Cleanup issuer during real Setup.
     ///
@@ -423,7 +404,7 @@ impl InstalledSourceAdmission {
     }
 
     pub(crate) fn same_owner(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.held, &other.held)
+        self.held.same_owner(&other.held)
     }
 
     pub(crate) fn subject(&self) -> InstalledSourceSubject {

@@ -56,16 +56,23 @@ impl<T> FundedSourcePublisher<T> {
     ///
     /// # Errors
     /// Refuses an overflowing allocation recipe or an undersized actual loan
-    /// before allocating either shared control.
+    /// before allocating either shared control. A refused value closes while
+    /// the original loan is still held.
     pub fn new(value: T, lease: SourceHostControlLease) -> Result<Self, HostSupervisionError> {
-        let bytes = Self::allocation_bytes().map_err(|_| HostSupervisionError::InvalidBudget)?;
-        if !lease.covers_metadata(bytes) {
-            return Err(HostSupervisionError::CapacityExhausted);
-        }
-        Ok(Self::construct(
+        let validation = Self::allocation_bytes()
+            .map_err(|_| HostSupervisionError::InvalidBudget)
+            .and_then(|bytes| {
+                if lease.covers_metadata(bytes) {
+                    Ok(())
+                } else {
+                    Err(HostSupervisionError::CapacityExhausted)
+                }
+            });
+        Self::construct_after_validation(
             value,
             AllocationCharge::Source { _lease: lease },
-        ))
+            validation,
+        )
     }
 
     /// Prices both shared allocations and the funding constructor's inline body.
@@ -90,6 +97,21 @@ impl<T> FundedSourcePublisher<T> {
     #[cfg(test)]
     pub(super) fn component(value: T, lease: crate::host_services::HostServiceLeasePair) -> Self {
         Self::construct(value, AllocationCharge::Component { _lease: lease })
+    }
+
+    fn construct_after_validation(
+        value: T,
+        charge: AllocationCharge,
+        validation: Result<(), HostSupervisionError>,
+    ) -> Result<Self, HostSupervisionError> {
+        if let Err(error) = validation {
+            // Ordinary argument destruction would refund the later loan first.
+            // A refusal must keep the same credit through actual value close.
+            drop(value);
+            drop(charge);
+            return Err(error);
+        }
+        Ok(Self::construct(value, charge))
     }
 
     fn construct(value: T, charge: AllocationCharge) -> Self {

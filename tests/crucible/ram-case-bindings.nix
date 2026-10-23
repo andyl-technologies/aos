@@ -396,6 +396,7 @@
       ])
       (group "host/crucible-host-resources" "lib" [] [
         (case "host_supervision::source_publisher_storage::tests::final_publisher_and_funding_allocations_close_before_original_refund" "positive" ["TIME-9"] "Both actual shared allocations close before the same paired mechanism charges return; no Source or Main is issued.")
+        (case "host_supervision::source_publisher_storage::tests::refused_publisher_closes_value_before_returning_original_charge" "adversarial" ["TIME-9"] "An actual constructor refusal closes its value while both original mechanism charges remain held, allocates nothing and refunds after close; no authenticated Main or Source is issued.")
         (case "host_supervision::source_publisher_storage::tests::dead_publisher_weak_retains_complete_storage_charge_until_actual_free" "adversarial" ["TIME-9"] "Dead-value weak observers retain the complete actual allocation charge through physical storage free; no publication or operation authority.")
         (case "host_supervision::source_publisher_storage::tests::publisher_upgrade_and_cloning_allocate_nothing_and_retain_same_charge" "positive" ["TIME-9"] "Actual closed owner upgrades and clones share the existing charge without allocating or issuing authority.")
         (case "host_supervision::source_publisher_storage::tests::concurrent_publisher_observers_return_one_original_charge_after_join" "adversarial" ["TIME-9"] "Concurrent strong closes leave the original charge with the final actual weak observer until its return; no semantic Source permission.")
