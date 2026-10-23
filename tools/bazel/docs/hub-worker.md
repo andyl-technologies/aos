@@ -77,6 +77,13 @@ Numbered bindgen function-element trampolines encode compiler-private indices
 and may carry numeric collision suffixes. Each module retains its own matching
 generated JavaScript glue.
 
+The [uncached Wasm qualification](../tests/evidence/hub-worker-wasm-qualified.json)
+passed all three configurations with the final Worker source and the pinned
+workspace-status shell fix. Each preserves 93 public exports, 11 identical CDN
+assets, and 241 external plus 13 first-party compiled feature identities.
+Production compilation and Clippy run in Linux sandboxes without action-cache
+hits; the strict source snapshots contain no Cargo manifests.
+
 The separate KVM-backed VM gate injects the Bazel-built probe deployment into
 the existing real-workerd launcher and driver. It exercises the genuine
 SQLite Durable Object, provider dispatch, multipart concurrency, request body
