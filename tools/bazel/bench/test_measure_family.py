@@ -10,7 +10,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "metadata"))
-from measure_family import apply_edit, bazel_binaries, cargo_binaries, compilation_profile, validate
+from measure_family import apply_edit, bazel_binaries, cargo_binaries, compilation_profile, validate, validate_bazel_profile, validate_profile
 
 
 class FamilyMeasurementTests(unittest.TestCase):
@@ -59,15 +59,45 @@ class FamilyMeasurementTests(unittest.TestCase):
     def test_profile_records_compiled_artifacts_and_rejects_mixed_profiles(self):
         binary = Path("/target/unit")
         event = {"reason": "compiler-artifact", "executable": str(binary),
-                 "profile": {"opt_level": "s", "debuginfo": 0}}
+                 "profile": {"opt_level": "s", "debuginfo": 0, "debug_assertions": True, "overflow_checks": True}}
         self.assertEqual(compilation_profile([event], {"unit": binary}, True), {
-            "opt_level": "s", "debug": 0, "incremental": True,
+            "opt_level": "s", "debug": 0, "debug_assertions": True, "overflow_checks": True, "incremental": True,
         })
-        other = {**event, "profile": {"opt_level": "0", "debuginfo": 2}}
+        other = {**event, "profile": {**event["profile"], "opt_level": "0", "debuginfo": 2}}
         with self.assertRaisesRegex(ValueError, "ambiguous profiles"):
             compilation_profile([event, other], {"unit": binary}, True)
         with self.assertRaisesRegex(ValueError, "ambiguous profiles"):
             compilation_profile([], {"unit": binary}, True)
+
+        for key in ["debug_assertions", "overflow_checks"]:
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "ambiguous profiles"):
+                compilation_profile([event, {**event, "profile": {**event["profile"], key: False}}], {"unit": binary}, True)
+
+    def test_matched_profiles_reject_disabled_assertions_and_overflow_checks(self):
+        profile = {"opt_level": "s", "debug": 0, "debug_assertions": True, "overflow_checks": True}
+        configuration = {"require_matched_profiles": True, "bazel_compilation_profile": profile}
+
+        validate_profile(dict(profile, incremental=True), configuration)
+
+        for key in ["debug_assertions", "overflow_checks"]:
+            with self.subTest(key=key), self.assertRaisesRegex(ValueError, "compilation profile differs"):
+                validate_profile({**profile, key: False}, configuration)
+
+    def test_launcher_profile_must_explicitly_match_before_measurement(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            launcher = Path(temporary) / "launcher.json"
+            profile = {"opt_level": "s", "debug": 0, "debug_assertions": True, "overflow_checks": True}
+            configuration = {"require_matched_profiles": True, "bazel_compilation_profile": profile,
+                             "bazel_config": str(launcher)}
+            flags = ["-Copt-level=s", "-Cdebuginfo=0", "-Cdebug-assertions=yes", "-Coverflow-checks=yes"]
+            launcher.write_text(json.dumps({"rustc_flags": flags}))
+
+            validate_bazel_profile(configuration)
+
+            for invalid in [flags[:2], flags + ["-Cdebug-assertions=no"], [*flags[:3], "-Coverflow-checks=no"]]:
+                with self.subTest(flags=invalid), self.assertRaisesRegex(ValueError, "launcher profile must declare"):
+                    launcher.write_text(json.dumps({"rustc_flags": invalid}))
+                    validate_bazel_profile(configuration)
 
     def test_declared_edits_preserve_inputs_and_reject_missing_or_escaped_paths(self):
         with tempfile.TemporaryDirectory() as temporary:

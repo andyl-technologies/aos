@@ -45,13 +45,43 @@ def cargo_binaries(events, packages):
 
 def compilation_profile(events, binaries, incremental):
     """Records the actual Cargo artifact profiles instead of assuming defaults."""
-    profiles = {(event["profile"]["opt_level"], event["profile"]["debuginfo"])
+    profiles = {(event["profile"]["opt_level"], event["profile"]["debuginfo"],
+                 event["profile"]["debug_assertions"], event["profile"]["overflow_checks"])
                 for event in events if event.get("reason") == "compiler-artifact"
                 and event.get("executable") in {str(binary) for binary in binaries.values()}}
     if len(profiles) != 1:
         raise ValueError(f"measured Cargo test artifacts have ambiguous profiles: {profiles}")
-    optimization, debug = profiles.pop()
-    return {"opt_level": optimization, "debug": debug, "incremental": incremental}
+    optimization, debug, assertions, overflow = profiles.pop()
+    return {"opt_level": optimization, "debug": debug, "debug_assertions": assertions,
+            "overflow_checks": overflow, "incremental": incremental}
+
+
+def validate_profile(profile, configuration):
+    """Rejects profile drift in workloads requiring a matched comparison."""
+    if configuration.get("require_matched_profiles", False):
+        expected = configuration["bazel_compilation_profile"]
+        actual = {key: value for key, value in profile.items() if key != "incremental"}
+        if actual != expected:
+            raise ValueError(f"measured compilation profile differs: {actual!r} != {expected!r}")
+
+
+def validate_bazel_profile(configuration):
+    """Requires explicit launcher flags for every matched profile setting."""
+    if not configuration.get("require_matched_profiles", False):
+        return
+    profile = configuration["bazel_compilation_profile"]
+    flags = json.loads(Path(configuration["bazel_config"]).read_text())["rustc_flags"]
+    settings = {
+        "opt-level": str(profile["opt_level"]),
+        "debuginfo": str(profile["debug"]),
+        "debug-assertions": "yes" if profile["debug_assertions"] else "no",
+        "overflow-checks": "yes" if profile["overflow_checks"] else "no",
+    }
+    for setting, value in settings.items():
+        prefix = "-C" + setting + "="
+        actual = [flag for flag in flags if flag.startswith(prefix)]
+        if actual != [prefix + value]:
+            raise ValueError(f"Bazel launcher profile must declare {prefix + value}: {actual!r}")
 
 
 def apply_edit(workspace, configuration, scenario):
@@ -110,6 +140,7 @@ def series(configuration, mode, repetition, scratch, output):
     samples = []
     try:
         for scenario in SCENARIOS:
+            print(f"measuring repetition {repetition}: {mode}: {scenario}", flush=True)
             if scenario in {"implementation-edit", "public-api-edit"}:
                 apply_edit(workspace, configuration, scenario)
             elif scenario == "second-worktree":
@@ -149,7 +180,7 @@ def series(configuration, mode, repetition, scratch, output):
                 sample["jvm"] = json.loads((directory / "launcher.json").read_text())
                 sample["resource_scope"] = "waited launcher/client descendants; private JVM resources recorded separately"
                 sample["compilation_profile"] = dict(configuration.get("bazel_compilation_profile", {
-                    "opt_level": "0", "debug": 0,
+                    "opt_level": "0", "debug": 0, "debug_assertions": True, "overflow_checks": True,
                 }), incremental=False)
             else:
                 events = [json.loads(line) for line in (directory / "command.log").read_text().splitlines() if line.startswith("{")]
@@ -157,6 +188,7 @@ def series(configuration, mode, repetition, scratch, output):
                 sample["compilation_profile"] = compilation_profile(events, binaries, "accache" not in mode)
                 sample["cargo_artifacts"] = dict(Counter("fresh" if event["fresh"] else "rebuilt"
                                                         for event in events if event.get("reason") == "compiler-artifact"))
+            validate_profile(sample["compilation_profile"], configuration)
             validate(binaries, expected, workspace, directory, environment,
                      case_runner=configuration.get("case_runner"), policy=configuration.get("test_policy"),
                      jobs=configuration["jobs"])
@@ -198,6 +230,7 @@ def main():
     if len(set(modes)) != len(modes):
         parser.error("measurement modes must not repeat")
     configuration = json.loads(options.configuration.read_text())
+    validate_bazel_profile(configuration)
     options.scratch.mkdir()
     options.output.mkdir(parents=True, exist_ok=True)
     samples = []

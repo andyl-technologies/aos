@@ -16,7 +16,7 @@
     pname = "aos-bazel-store";
     dependencyProfile = "store";
     # Match the workspace Cargo test profile for campaign scale workloads.
-    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0"];
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.store // {aos_native = pkgs.aosBazelStoreLibraries;};
     extraSourceDirectories = ["docs/rfcs/0020-crucible-campaigns"];
     excludedTests = ["gate_campaign_store_equivalence" "gate_campaign_mutation_scaling"];

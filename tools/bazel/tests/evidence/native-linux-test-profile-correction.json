@@ -1,0 +1,209 @@
+{
+  "aborted_measurement": {
+    "derivation": "/nix/store/jypqs2s7h0pxw0md6lj3bx6s6j1ljbz0-aos-bazel-store-performance.drv",
+    "reason": "Mismatched assertion settings discovered before accepting the measurement.",
+    "status": "interrupted with status 130; no timing result accepted",
+    "trial": "store-native-20261023-v1"
+  },
+  "cargo_artifact_profiles": [
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_campaign_store_composition"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "crucible-fleet-store"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "crucible_store"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_campaign_continuity"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_lazy_frontier"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_campaign_cold_continuity"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_campaign_model"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_campaign_statistics"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_attempt_idempotence"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_typed_choice"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_campaign_replay"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_branch_point_model"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "crucible_campaign"
+    }
+  ],
+  "cargo_messages": "/nix/store/7h7cl7w1g6r0z57b9s5w3fhrhzpr5i6x-aos-bazel-store-cargo-oracle-1/cargo-messages.jsonl",
+  "cargo_messages_sha256": "f2534771f92f03b7418f7501ad8a38ada2310bc3985675d5fcd4724111214478",
+  "configuration_sha256": {
+    "tests/build/_bazel-store.nix": "5f4cee6d33d6afc4e4338c10bb4eb3836e4baf1cfb20a31d5883892eb1658b4d",
+    "tools/bazel/bench/measure_family.py": "4a670085fcf9df168c72dc1fc0e6522b983275efbd45113fd43407c659741f84",
+    "tools/bazel/bench/store.nix": "43696c006a133248e1a0e1bbfae447c5a1daab94d51a72d8543128766efd314e",
+    "tools/bazel/bench/test_measure_family.py": "9d727e8a6be918955429c90d85e8a4e7de6950e0355e26963a05e8f57afb3e97"
+  },
+  "corrected_rustc_flags": [
+    "-Copt-level=s",
+    "-Cdebuginfo=0",
+    "-Cdebug-assertions=yes",
+    "-Coverflow-checks=yes"
+  ],
+  "limits": [
+    "Prior storage case/feature and runtime checks retain their recorded scope; they do not establish compiler-profile equivalence.",
+    "Corrected storage and engine qualification is required before a production cutover or performance acceptance."
+  ],
+  "measurement_checks": {
+    "path": "/nix/store/zcrkr6n18308z1g2z2injrijxjhfrgdw-aos-bazel-measurement-checks",
+    "status": "passed",
+    "tests": 22
+  },
+  "measurement_guard": "Cargo artifact profiles now record assertion/overflow settings; matched workloads reject profile drift.",
+  "observed_engine_compile_failure": {
+    "builder": "/nix/store/5z3h758h8n1j800gqk1kvgxxcmpi04gh-aos-bazel-engine-initial-tests-1.drv",
+    "message": "cannot find test_support in crate; the module was configured out by cfg(any(debug_assertions, feature = \"test-support\"))"
+  },
+  "problem": "The optimized storage and initial engine Bazel test configurations omitted debug assertions and overflow checks retained by Cargo test.",
+  "schema_version": 1
+}

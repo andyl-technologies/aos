@@ -31,6 +31,7 @@
       inherit trial packages targets modes;
       jobs = 4;
       scope = "connected storage/campaign default-feature libtest compilation";
+      require_matched_profiles = true;
       edits = {
         implementation-edit = "${packages.crucible-campaign}/src/lib.rs";
         public-api-edit = "${packages.crucible-store}/src/lib.rs";
@@ -38,6 +39,8 @@
       bazel_compilation_profile = {
         opt_level = "s";
         debug = 0;
+        debug_assertions = true;
+        overflow_checks = true;
       };
       bazel_source = toString family.workspace.source;
       bazel_config = toString family.workspace.configuration;
