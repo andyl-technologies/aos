@@ -10655,6 +10655,22 @@ The rebuilt native binary's RPATH and dynamic-linker VM checks pass at
 `/nix/store/vpz9v3afaakf3g8pa2rwwgmp0md1lg13-aos-vm-test-bpftool-rpath-0` and
 `/nix/store/c213nxvmbvngmmn41qln6y4r9k93g7r1-aos-vm-test-bpftool-dynamic-linker-0`.
 
+### Remaining fixed runtime ELF mappings (installed execution pending)
+
+The same post-credential ELF mapping requirement applies to five older entry
+pairs: Host, Network publisher, Network lifecycle worker, Guest root publisher
+and Guest bootstrap. Each had its entrypoint permission but lacked access to
+map its own immutable executable after changing SID. Their exact rules now
+include execute, getattr, map, open and read. The closed checker cohort includes
+all fourteen affected fixed pairs and requires entrypoint plus those five
+permissions, while rejecting same-image execute_no_trans and self-transition.
+Guest bootstrap's later execution of its distinct fixed systemd image retains
+its existing rule. Shell script entry, foreign entry, mount transitions, caps
+and NoNewPrivileges are unchanged. Compiled-policy and installed qualification
+remain required; these mapping rules grant no startup or lifecycle readiness.
+All 154 effective-policy checker tests pass with the expanded cohort, including
+per-permission removal and same-image reexec mutation checks for every pair.
+
 ### Fixed private-directory child creation (installed execution pending)
 
 The fixed view-root walker creates children beneath Controller-owned mode-0700

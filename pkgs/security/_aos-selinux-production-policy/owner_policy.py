@@ -19,6 +19,11 @@ HELPER_DOMAINS = tuple(f"aos_method46_{role}_helper_t" for role in HELPERS)
 # ELF text mappings use the new role after exec's credential transition.
 # These closed pairs grant no execute_no_trans or additional process entry.
 FIXED_ELF_ENTRIES = (
+    ("aos_sandbox_host_t", "aos_sandbox_host_exec_t"),
+    ("aos_sandbox_network_publisher_t", "aos_sandbox_network_publisher_exec_t"),
+    ("aos_sandbox_network_lifecycle_worker_t", "aos_sandbox_network_lifecycle_worker_exec_t"),
+    ("aos_sandbox_guest_root_publisher_t", "aos_sandbox_guest_root_publisher_exec_t"),
+    ("aos_sandbox_guest_owner_t", "aos_sandbox_payload_bootstrap_exec_t"),
     *zip(OWNER_DOMAINS, (f"aos_sandbox_{role}_exec_t" for role in OWNERS)),
     *((domain, "aos_method46_helper_exec_t") for domain in HELPER_DOMAINS),
     ("aos_sandbox_git_gateway_t", "aos_sandbox_git_gateway_exec_t"),
@@ -774,7 +779,7 @@ def matrix(Access, Transition, accesses, ordinary_domains):
 
     for domain, executable in FIXED_ELF_ENTRIES:
         positive.extend(accesses(
-            domain, executable, "file", ("execute", "getattr", "map", "open", "read"),
+            domain, executable, "file", ("entrypoint", "execute", "getattr", "map", "open", "read"),
         ))
         negative.append(Access(domain, executable, "file", "execute_no_trans"))
         negative.append(Access(domain, domain, "process", "transition"))

@@ -186,7 +186,7 @@ type aos_sandbox_guest_root_publisher_exec_t;
 allow init_t aos_sandbox_guest_root_publisher_exec_t:file { execute getattr map open read };
 allow init_t aos_sandbox_guest_root_publisher_t:process transition;
 allow init_t aos_sandbox_guest_root_publisher_t:process2 nnp_transition;
-allow aos_sandbox_guest_root_publisher_t aos_sandbox_guest_root_publisher_exec_t:file entrypoint;
+allow aos_sandbox_guest_root_publisher_t aos_sandbox_guest_root_publisher_exec_t:file { entrypoint execute getattr map open read };
 type_transition init_t aos_sandbox_guest_root_publisher_exec_t:process aos_sandbox_guest_root_publisher_t;
 
 # The outer nspawn supervisor and shifted guest payload are separate enforcing
@@ -253,7 +253,8 @@ type aos_nspawn_exec_t;
 # PID 1 alone enters each fixed domain through its labeled executable.
 allow init_t aos_sandbox_host_exec_t:file { execute getattr map open read };
 allow init_t aos_sandbox_host_t:process transition;
-allow aos_sandbox_host_t aos_sandbox_host_exec_t:file entrypoint;
+# The new SID owns ELF text mapping after the credential transition.
+allow aos_sandbox_host_t aos_sandbox_host_exec_t:file { entrypoint execute getattr map open read };
 type_transition init_t aos_sandbox_host_exec_t:process aos_sandbox_host_t;
 
 # These fixed services retain NoNewPrivileges; PID 1 may enter only their
@@ -261,7 +262,7 @@ type_transition init_t aos_sandbox_host_exec_t:process aos_sandbox_host_t;
 allow init_t aos_sandbox_network_publisher_exec_t:file { execute getattr map open read };
 allow init_t aos_sandbox_network_publisher_t:process transition;
 allow init_t aos_sandbox_network_publisher_t:process2 nnp_transition;
-allow aos_sandbox_network_publisher_t aos_sandbox_network_publisher_exec_t:file entrypoint;
+allow aos_sandbox_network_publisher_t aos_sandbox_network_publisher_exec_t:file { entrypoint execute getattr map open read };
 type_transition init_t aos_sandbox_network_publisher_exec_t:process aos_sandbox_network_publisher_t;
 
 allow init_t aos_sandbox_namespace_inspector_exec_t:file { execute getattr map open read };
@@ -288,7 +289,7 @@ allow aos_sandbox_namespace_inspector_t security_t:file { getattr open read };
 allow init_t aos_sandbox_network_lifecycle_worker_exec_t:file { execute getattr map open read };
 allow init_t aos_sandbox_network_lifecycle_worker_t:process transition;
 allow init_t aos_sandbox_network_lifecycle_worker_t:process2 nnp_transition;
-allow aos_sandbox_network_lifecycle_worker_t aos_sandbox_network_lifecycle_worker_exec_t:file entrypoint;
+allow aos_sandbox_network_lifecycle_worker_t aos_sandbox_network_lifecycle_worker_exec_t:file { entrypoint execute getattr map open read };
 type_transition init_t aos_sandbox_network_lifecycle_worker_exec_t:process aos_sandbox_network_lifecycle_worker_t;
 
 # A distinct, immutable stage0 copy receives only executable custody. The
@@ -355,7 +356,7 @@ allow aos_nspawn_t self:process setexec;
 allow aos_nspawn_t aos_sandbox_guest_owner_t:process transition;
 allow aos_nspawn_t aos_sandbox_guest_owner_t:process2 { nnp_transition nosuid_transition };
 allow aos_nspawn_t aos_sandbox_payload_bootstrap_exec_t:file { execute getattr map open read };
-allow aos_sandbox_guest_owner_t aos_sandbox_payload_bootstrap_exec_t:file entrypoint;
+allow aos_sandbox_guest_owner_t aos_sandbox_payload_bootstrap_exec_t:file { entrypoint execute getattr map open read };
 allow aos_sandbox_guest_owner_t aos_sandbox_payload_systemd_exec_t:file { execute execute_no_trans getattr map open read };
 
 # The existing zero-cap Guest publisher runs in its own domain. Linux delegates
