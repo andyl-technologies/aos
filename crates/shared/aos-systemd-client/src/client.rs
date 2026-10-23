@@ -1764,7 +1764,7 @@ mod pinned_tests {
         let revision = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         let marker = unit_revision_receipt_uri("example.service", revision).unwrap();
 
-        require_unit_revision("example.service", &[marker.clone()], revision).unwrap();
+        require_unit_revision("example.service", std::slice::from_ref(&marker), revision).unwrap();
         assert!(matches!(
             require_unit_revision("example.service", &[], revision),
             Err(Error::UnitRevisionUnknown { .. })
