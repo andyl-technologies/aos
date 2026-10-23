@@ -10941,8 +10941,8 @@ its own domain, then was denied read of the existing tmpfs_t aos directory.
 The bootstrap handoff creates /run/aos before systemd's normal labeling pass;
 the view walker correctly requires var_run_t instead.
 
-The initial kernel-domain loader now labels /run and its fixed aos parent after
-loading and verifying the exact policy, before the first init_t handoff. It
+The initial init_t guard labels /run and its fixed aos parent after verifying
+the exact loaded policy and physical systemd, before handing off to systemd. It
 opens the directories without following symlinks and requires root ownership,
 mode 0755, tmpfs, and either the initial tmpfs_t or canonical var_run_t context.
 It verifies the label after writing. Later root handoffs and view provisioning
@@ -10960,3 +10960,22 @@ against the prior authenticated manifest header, together with those helper
 tests, at
 `/nix/store/8gg6mzsjrcrscdzksilm66pl4xr7ax6f-aos-rfc21-runtime-parent-unit-0`.
 This checks source integration, not a boot or a newly authenticated manifest.
+
+The compiled policy inspection corrects the initial call placement: kernel_t
+has no var_run_t relabelto grant. The initial init_t guard already has both
+required relabel permissions, so it owns this bootstrap operation with no
+policy expansion. An existing root-handoff marker refuses initial labeling;
+normal switch-root/reexec paths continue to validate without invoking it. The
+first Root retry was canceled before boot to incorporate this correction.
+
+The complete policy with all fourteen fixed ELF entries passes at
+`/nix/store/k0k4f1l72z0fqd1m57i03vf1787rlwrn-aos-selinux-production-policy-1`,
+including all compiled negative fixtures and the kernel class-map checks. This
+does not establish installed startup or public lifecycle readiness.
+The corrected guard placement and complete C translation unit pass strict native
+compilation with the production helper tests at
+`/nix/store/msfji3vw3h824cca84cyfahb2ahndc3s-aos-rfc21-runtime-parent-guard-unit-0`.
+The preceding BPF loader inventory independently passes the complete stage-0
+package build at
+`/nix/store/c40xfpjvnfr29lrc2pzryh7n9pz25xfy-aos-selinux-stage0-1`.
+That package predates the runtime-parent change and does not qualify its boot.

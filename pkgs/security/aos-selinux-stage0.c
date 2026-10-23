@@ -195,12 +195,16 @@ static void ensure_directory(const char *path, mode_t mode) {
 #include "_aos-selinux-stage0-runtime-parent.inc"
 
 static void prepare_initial_runtime_parent(void) {
+    struct stat marker;
     int run_descriptor;
     int aos_descriptor;
 
-    /* Only the initial kernel-domain loader labels these bootstrap parents.
+    /* Only the initial init-domain guard labels these bootstrap parents.
      * Later handoffs and the confined view walker validate them without repair.
      * A carrier may already have created /run/aos before policy was loaded. */
+    if (lstat(AOS_HANDOFF_MARKER_PATH, &marker) == 0 || errno != ENOENT) {
+        fail_closed("initial runtime labeling cannot follow a root handoff");
+    }
     run_descriptor = open("/run", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
     if (run_descriptor < 0) {
         fail_closed("open initial runtime root: %s", strerror(errno));
@@ -2096,7 +2100,6 @@ static void run_outer_loader(void) {
     load_policy();
     validate_loaded_policy();
     require_current_context(EXPECTED_KERNEL_CONTEXT);
-    prepare_initial_runtime_parent();
     verify_physical_target(
         "/sbin/init",
         AOS_GUARD_PATH,
@@ -2153,6 +2156,7 @@ static void run_inner_guard(void) {
 #endif
     verify_systemd_exec(systemd_context);
 
+    prepare_initial_runtime_parent();
     prepare_initial_store_state();
 
     if (AOS_ADMISSION_UNIT[0] != '\0') {
