@@ -2612,3 +2612,10 @@ run in the Linux sandbox, with no Cargo or C/C++ fallback action.
 required workspace application unit/integration compilation gate. All fifteen
 frozen console Rust edits match both its source and the strict native/browser
 qualifications. This gate compiles test targets without executing them.
+
+The all-feature Hub service Cargo baselines retain the same 508 unit/integration
+cases and five doctests. Their compiled closures have 380 external packages for
+tests and 267 for production, with 24 and twelve first-party packages respectively.
+Both default and all-feature source records also retain all seven embedded web
+asset/font files, including the font license. Optional database driver compilation
+does not qualify a live PostgreSQL/MySQL service.
