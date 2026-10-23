@@ -187,7 +187,8 @@ impl<'a> RamTransferReceiver<'a> {
             object: self.root.to_string(),
         };
         let (envelope, existing) = self.object(self.root, request, exchange, work)?;
-        let (record, regions) = decode_root_envelope(&envelope)?;
+        let (mut record, regions) = decode_root_envelope(&envelope)?;
+        super::metadata::retain_inventory_resources(&mut record, &self.metadata_resources)?;
         if record != self.record {
             return Err(RamStoreError::Invalid("transfer offered logical root"));
         }

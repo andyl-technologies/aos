@@ -309,3 +309,144 @@ fn updated_admitted_inventory_retains_origin_credit_after_source_close() {
     drop(alias);
     assert_eq!(quota.0.usage().unwrap(), (0, 0));
 }
+
+fn detached_inventory_credit(discovery: bool) {
+    let directory = tempfile::tempdir().unwrap();
+    let (store, quota) = admitted_store(directory.path(), RamStoreLimits::default());
+    let retention = Retention::default();
+    let captured = store
+        .capture(
+            topology(8193),
+            Scope::Exact,
+            &mut patterned,
+            &retention,
+            &fixture_original(&store),
+            &mut || Ok(()),
+        )
+        .unwrap();
+    let original_bytes = crate::ram::metadata::allocation_bytes(1).unwrap();
+    let record = if discovery {
+        let admitted = store
+            .inspect_root_with_metadata_resources(
+                captured.object_id(),
+                &fixture_original(&store),
+                &mut || Ok(()),
+            )
+            .unwrap();
+        let record = admitted.record().clone();
+        assert_eq!(
+            record.topology().regions().as_ptr(),
+            admitted.record().topology().regions().as_ptr()
+        );
+        drop(admitted);
+        record
+    } else {
+        let admitted = store
+            .open_with_metadata_resources(
+                retention.retain_root(captured.object_id()).unwrap(),
+                &fixture_original(&store),
+                &mut || Ok(()),
+            )
+            .unwrap();
+        let record = admitted.record().clone();
+        assert_eq!(
+            record.topology().regions().as_ptr(),
+            admitted.record().topology().regions().as_ptr()
+        );
+        drop(admitted);
+        record
+    };
+    drop(captured);
+    drop(store);
+
+    // Root-record cloning allocates a new caller-funded root vector, but its
+    // inventory remains the same physically shared, originally admitted slice.
+    assert_eq!(quota.0.usage().unwrap(), (0, original_bytes));
+    let inventory = record.topology().clone();
+    let alias = inventory.clone();
+    let encoded = record.encode();
+    let decoded = RootRecord::decode(&encoded, crucible_ram::Limits::default()).unwrap();
+    assert_eq!(record, decoded);
+    assert_eq!(record.digest(), decoded.digest());
+    drop(decoded);
+    drop(record);
+    assert_eq!(quota.0.usage().unwrap(), (0, original_bytes));
+    drop(inventory);
+    assert_eq!(quota.0.usage().unwrap(), (0, original_bytes));
+    assert_eq!(alias.regions()[0].id(), "main");
+    drop(alias);
+    assert_eq!(quota.0.usage().unwrap(), (0, 0));
+}
+
+#[test]
+fn detached_opened_inventory_retains_origin_credit_after_outer_owner_close() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
+    detached_inventory_credit(false);
+}
+
+#[test]
+fn detached_discovered_inventory_retains_origin_credit_after_outer_owner_close() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
+    detached_inventory_credit(true);
+}
+
+#[test]
+fn detached_received_inventory_retains_origin_credit_after_receiver_close() {
+    if sqlite_process::isolated() {
+        return;
+    }
+
+    let source_directory = tempfile::tempdir().unwrap();
+    let destination_directory = tempfile::tempdir().unwrap();
+    let source = store(source_directory.path(), RamStoreLimits::default());
+    let (destination, quota) =
+        admitted_store(destination_directory.path(), RamStoreLimits::default());
+    let retention = Retention::default();
+    let captured = source
+        .capture(
+            topology(8193),
+            Scope::Exact,
+            &mut patterned,
+            &retention,
+            &fixture_original(&source),
+            &mut || Ok(()),
+        )
+        .unwrap();
+    let stored = source
+        .transfer_archive_to(
+            &captured,
+            ContentId::for_bytes(ObjectKind::ExactManifest, 6, b"inventory custody archive"),
+            &destination,
+            "inventory-custody-destination",
+            [83; 32],
+            &retention,
+            &fixture_original(&source),
+            &fixture_original(&destination),
+            &mut || Ok(()),
+        )
+        .unwrap();
+    assert_eq!(stored.root().logical_digest(), captured.logical_digest());
+    let inventory = stored.root().record().topology().clone();
+    assert_eq!(
+        inventory.regions().as_ptr(),
+        stored.root().record().topology().regions().as_ptr()
+    );
+    drop(stored);
+    drop(captured);
+    drop(source);
+    drop(destination);
+
+    let original_bytes = crate::ram::metadata::allocation_bytes(1).unwrap();
+    assert_eq!(quota.0.usage().unwrap(), (0, original_bytes));
+    let alias = inventory.clone();
+    drop(inventory);
+    assert_eq!(quota.0.usage().unwrap(), (0, original_bytes));
+    drop(alias);
+    assert_eq!(quota.0.usage().unwrap(), (0, 0));
+}

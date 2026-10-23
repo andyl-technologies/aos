@@ -33,6 +33,25 @@ pub struct RootRecord {
 }
 
 impl RootRecord {
+    /// Retains an existing inventory loan through subsequent topology clones.
+    ///
+    /// The caller admits this inventory before decoding or constructing it and
+    /// attaches its existing loan before exposing any clones. This method adds
+    /// no allocation, reservation, storage retention or execution authority.
+    /// Logical equality, digests and encoding exclude financial custody. New
+    /// root vectors created by cloning remain the caller's allocation duty.
+    ///
+    /// # Errors
+    /// Returns the supplied loan unchanged when the inventory already retains
+    /// an original loan or has shared aliases. Existing custody is never
+    /// replaced or refunded, and earlier aliases cannot escape the attachment.
+    pub fn retain_topology_resources(
+        &mut self,
+        resources: crate::ResourceLoan,
+    ) -> Result<(), crate::ResourceLoan> {
+        self.topology.retain_resources(resources)
+    }
+
     /// Returns retained root metadata, including the complete shared topology.
     ///
     /// A shared topology is included conservatively. Callers may account for

@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 576 bindings: 557 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 580 bindings: 561 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2257,7 +2257,8 @@ ABI conformance passes at `kp4hm4nv57jafqgllmd6kjxlqx2jpa9j`. The complete
 license-boundary attempt fails in controller compilation with 639 Host-library
 errors; its boundary assertions have no passing result. Signed commit
 `e991e457df` is pushed.
-Required application-target compilation is running from
+Required application-target compilation passes at
+`v2pxqbmpcziwkifr906ak25h9jn8lnbj` from immutable source
 `yqypw0rbmjbbrw89xszf6c8i73y7xhq4`; all 5,402 committed Rust/TOML files and
 six required fixtures match before subsequent shared-control edits.
 
@@ -2314,8 +2315,8 @@ passes 1,385 tests, retains four ignored cases and reproduces the same eight
 helper-custody failures; complete failure details match the previous run after
 normalizing only thread IDs. ABI conformance passes at
 `5r61k4j7h46hwgr2cdlj17zgypyjkr3y`. All 686 engine tests, 95 policy
-controls and Store Clippy pass. The full license-boundary run is pending;
-preceding controller failures remain unresolved.
+controls and Store Clippy pass. The full license-boundary run fails on 639
+controller library Clippy errors; its boundary assertions did not run.
 
 Signed descriptor-hashing commit `8404a4e703` is pushed. Required
 application-target compilation is running from
@@ -2339,6 +2340,41 @@ passes 729 storage tests, 686 engine tests, 95 policy controls and storage
 Clippy. Hermetic storage output `gmc823grd2sfdr8hpn13ragsmi64nqq5` passes
 all 68 selected cases and 86 successful nested test summaries.
 
+Signed updated-inventory commit `3973923582` is pushed. Required
+application-target compilation is running from
+`1i446qwhn988hg7y1y8gpigshzabbhgp`; all 5,404 committed Rust/TOML files and
+six required fixtures match before subsequent detached-inventory custody edits.
+
+Public logical-record and topology clones now retain the admitted inventory's
+same original loan after their outer opened/discovered owner closes. The actual
+archive receiver attaches its existing destination loan before exposing its
+returned record. Plain caller-funded constructors remain caller-funded, and
+cloned root vectors require their own caller funding. No replacement account or
+native permission is introduced. A second loan cannot replace an already
+retained original: the supplied loan is returned unchanged.
+
+Both original open/discovery controls reproduce premature refund of the entire
+22,542,484-byte grant while their cloned records still share the inventory. Both
+pass with inventory-local custody. A separate finite component control observes
+actual shared-slice deallocation before original refund, allocation-free loan
+attachment and topology cloning, unchanged canonical encoding/equality/digest,
+and replacement refusal without allocating or returning the original credit.
+Attachment also refuses an already shared inventory before changing custody.
+Omitting only the archive receiver attachment reproduces premature refund of
+its actual 22,542,532-byte grant; restoring it passes all seven metadata lifecycle
+controls. The checked bound includes the added inline custody handles. Inventory
+`xcy29n799kcvd7hndzml5v5akcaxpnas` validates 580 bindings across 243
+requirements, with 148 uncovered and zero qualified. Hermetic storage output
+`ksph0z53h8r79msi55qlfrgvx8ywx3nm` passes all 72 selected cases and 93
+successful nested test summaries. Broad validation passes 732 storage tests,
+26 portable RAM tests and 1,179 plugin tests. Host validation passes 1,385
+tests with four ignored cases and the same eight missing-helper-custody
+failures; complete failure details match the preceding baseline after thread-ID
+normalization only. ABI conformance passes at
+`mqgp1s9m5qdn48yqxf6h6r87nhm3zbm9`. All 686 engine tests, 95 policy
+controls and storage/portable-RAM Clippy pass. The current full license-boundary
+attempt is pending; its preceding 639 controller errors remain unresolved.
+
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`
 passes independent review of all 75 payloads, 58 actual inputs, five signatures,
@@ -2352,6 +2388,18 @@ refusals: clone3 memory ownership, fatal-before-binding, thread/exec identity,
 actual wait handoff and physical natural-parent/adoption reconciliation have no
 complete supported Linux transport. The original configure refusal is unchanged;
 no execution plan, invocation or native effect is authorized by this packet.
+
+Further source-only review of the authenticated Linux 6.18.57 archive identifies
+a restricted traced-zombie retention contract: with prebirth ptrace linkage and
+an exclusive consuming waiter, a fatal exit before the first observed stop can
+retain the kernel task/PID until tracer consumption. SIGCHLD-ignore autoreap is
+guarded against traced tasks, and pidfd acquisition does not require a live mm.
+This permits only a candidate negative-birth cleanup observation. An exited
+child's missing live executable/argv cannot satisfy existing execution-role
+binding or positive acceptance. Namespace/lineage, single-threaded-leader,
+exclusive-wait and actual descriptor observations remain unqualified; natural
+parent reap remains separate from tracer consumption and pidfd readiness. No
+runtime policy, transport implementation or execution authorization changed.
 
 The source-only configure observation assessment
 `b81e015f86affdd3ccdfd1c07e4f75bf4a89ec2bf4617f1d8a1c49d844bcba23`

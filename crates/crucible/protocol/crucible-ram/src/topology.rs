@@ -7,7 +7,7 @@
 //! ```
 
 use crate::digest::tagged;
-use crate::{LOGICAL_PAGE_SIZE, RamError, TopologyDigest};
+use crate::{LOGICAL_PAGE_SIZE, RamError, ResourceLoan, ResourceLoanSlot, TopologyDigest};
 use std::sync::Arc;
 
 /// Receiver-controlled bounds checked before traversal or allocation.
@@ -255,14 +255,36 @@ pub(crate) fn validate_id(id: &str) -> Result<(), RamError> {
 }
 
 /// An immutable complete inventory sorted by unsigned UTF-8 identifier bytes.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct Topology {
     regions: Arc<[RegionDescriptor]>,
     digest: TopologyDigest,
     total_length: u64,
+    // Inventory clones retain their original loan. Declared last so the
+    // shared slice closes before its financial custody can be refunded.
+    resources: ResourceLoanSlot,
 }
 
+impl PartialEq for Topology {
+    fn eq(&self, other: &Self) -> bool {
+        self.regions == other.regions
+            && self.digest == other.digest
+            && self.total_length == other.total_length
+    }
+}
+
+impl Eq for Topology {}
+
 impl Topology {
+    pub(crate) fn retain_resources(&mut self, resources: ResourceLoan) -> Result<(), ResourceLoan> {
+        if self.resources.as_ref().is_some() || Arc::get_mut(&mut self.regions).is_none() {
+            return Err(resources);
+        }
+
+        self.resources = resources.into();
+        Ok(())
+    }
+
     /// Bounds the retained inventory allocation sizes, including identifier capacity.
     ///
     /// The bound includes the shared region slice and its reference counters.
@@ -328,6 +350,7 @@ impl Topology {
             regions: regions.into(),
             digest: TopologyDigest::from_bytes(*hasher.finalize().as_bytes()),
             total_length,
+            resources: ResourceLoanSlot::default(),
         })
     }
 

@@ -51,6 +51,12 @@ impl RamStore {
         boundary()?;
         let resources = self.reserve_root_metadata(1)?;
         let mut root = self.open(lease, original, boundary)?;
+        // Open has not exposed any aliases. Attach the original inventory loan
+        // before public record/topology clones can escape the outer owner.
+        let record = Arc::get_mut(&mut root.record).ok_or(RamStoreError::Invalid(
+            "shared root before metadata admission",
+        ))?;
+        retain_inventory_resources(record, &resources)?;
         root.metadata_resources = resources.into();
         Ok(root)
     }
@@ -71,7 +77,8 @@ impl RamStore {
     ) -> Result<AdmittedRamRootMetadata, RamStoreError> {
         boundary()?;
         let resources = self.reserve_root_metadata(1)?;
-        let record = self.inspect_root(id, original, boundary)?;
+        let mut record = self.inspect_root(id, original, boundary)?;
+        retain_inventory_resources(&mut record, &resources)?;
         Ok(AdmittedRamRootMetadata {
             record,
             _resources: resources,
@@ -93,6 +100,15 @@ impl RamStore {
             _credit: credit,
         }))
     }
+}
+
+pub(super) fn retain_inventory_resources(
+    record: &mut RootRecord,
+    resources: &ResourceLoan,
+) -> Result<(), RamStoreError> {
+    record
+        .retain_topology_resources(resources.clone())
+        .map_err(|_| RamStoreError::Invalid("inventory resource attachment refused"))
 }
 
 pub(super) fn allocation_bytes(simultaneous_roots: u64) -> Result<u64, RamStoreError> {
