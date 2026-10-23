@@ -2029,8 +2029,13 @@ Rust targets across 27 analysis-only selections, with no external actions; core
 evaluation passes. Its frozen evidence is retained in
 `tests/evidence/deployment-metadata-evaluation.json`.
 
-Required workspace Rust compilation runs separately. Dedicated provider and
-assembled-system gates, external deployment fixtures, foreign/Wasm execution,
+`tests/evidence/deployment-required-rust-targets.json` retains passing required
+workspace unit and integration target compilation for all five deployment Rust
+changes, including isolated evaluator fixtures and scoped lint corrections.
+Its source is frozen before the later Hub UI annotation.
+
+Dedicated provider and assembled-system gates, external deployment fixtures,
+foreign/Wasm execution,
 complete compiler invocation equivalence, numeric performance acceptance,
 production migration, and Cargo removal remain separate qualification.
 
