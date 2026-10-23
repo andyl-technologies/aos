@@ -1,6 +1,7 @@
 //! Closed-record allocation and original-callback provenance regressions.
 #![cfg(test)]
 
+mod publication_allocation;
 mod publication_width;
 
 use super::*;

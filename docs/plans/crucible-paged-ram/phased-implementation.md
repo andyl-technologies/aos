@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 554 bindings: 535 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 556 bindings: 537 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2088,6 +2088,54 @@ Strict Host Clippy retains 674 library and 723 test-target errors with fourteen
 and five warnings. ABI conformance passes at
 `dfs5vwdn7wf62fq1vx925w3jf7ifx6ih`. The complete license-boundary gate remains
 in progress; neither the ABI result nor passing storage controls replaces it.
+Signed commit `e9321233eb` is pushed. Mandatory application-target compilation
+is running. All 5,397 committed Rust/TOML files and six required fixtures match
+frozen source `a66wk4sbxqch8zj5hpmz0gcbns2a15rj` before later edits.
+
+The configure aggregate-observation proposal is independently reviewed as
+source-only under manifest
+`017e11de88d5b842bff101d4a3ee1f5fd24cff762f4ea05ac3bf8b27a408999e`.
+All eighty signed payloads and 110 actual inputs authenticate. The actual
+read-only replay passes 1,325 named controls; all 72 complete tool roots and
+six immutable baselines independently match. The complete actual diff is
+checked, and every preexisting descriptor-method AST remains identical. The
+initial reviewer used a wrong reference-directory alias; that failure is
+preserved before the corrected complete review passes. Configure observation
+uses original descriptor binding and positive exit readiness, preserves
+absent liabilities, and selects its explicit finite 1,024-identity history
+before ownership; live capacity 32 and target history 256 remain unchanged.
+Four actual historical executable/argument transitions remain refused
+limitations. No old failure is requalified, historical readiness supplied,
+native invocation performed or replacement run authorized by this review.
+Concrete unexecuted plan-r7 arrives under manifest
+`096b5022e8b9ae3ecc25c592a889b53fb990cfa86e7d9f79795b6bd47563d3f6`.
+Its 632 payloads, 6,440 external plus ten reconstruction inputs, all 72 complete
+tool roots and six full baselines authenticate. Independent review then refuses
+its current-correspondence claims: eight current Python hashes and three current
+runtime-module hashes retain preceding values. The immutable plan and first
+refusal are preserved. A corrected complete successor and an audit of all
+inherited current-coordinate claims are requested. No native invocation or
+replacement run is authorized. Remaining read-only review independently passes
+all 18,844 actual plan controls and 359 unchanged production controls, complete
+source/preparation and runtime bindings, environment/driver relocation and
+original bounds. That success does not repair the current-hash refusal.
+
+RAM publication staging now retains actual pending-array allocation refusal in
+its original prepaid diagnostic bank. Flush input-vector allocation is fallible
+under the existing complete scratch reservation. Refusal precedes backend
+publication, closes staged sources before their refundable credit and prevents
+replacement admission through the original sticky first cause. No allocation
+allowance is added. Both exact-layout controls pass under unchanged finite
+component resources. Restoring the allocating pending diagnostic fails one;
+omitting the flush refusal's sticky publication fails the other. Exact source
+restoration passes both. Inventory `cnn6znjkayga83rrilb6cp3zqrsr2kmz` validates
+556 bindings across 243 requirements, 148 uncovered and zero qualified.
+The full storage regression passes 709 tests, with three separately bounded
+512 MiB controls. All 686 engine tests pass. All ninety testing-standard and
+five hygiene controls pass; Store Clippy passes all targets. Hermetic storage
+passes all 48 exact cases at `gk4lm4ld77jxvb85z0a73m54g4f8iyfd`; all sixty
+successful summaries, including nested results, are independently checked.
+These controls qualify neither physical OOM nor native resource custody.
 
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's

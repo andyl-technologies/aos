@@ -199,10 +199,15 @@ impl RamStore {
                     pending.len(),
                 )
                 .map_err(|error| crate::content_store::batch::admission_under(original, error))?;
-            let objects = pending
-                .iter()
-                .map(|object| (object.id, object.source.clone()))
-                .collect::<Vec<_>>();
+            let mut objects = Vec::new();
+            objects
+                .try_reserve_exact(pending.len())
+                .map_err(|source| admission(original.retain_allocation_refusal(source)))?;
+            objects.extend(
+                pending
+                    .iter()
+                    .map(|object| (object.id, object.source.clone())),
+            );
             let receipts = work.checked(|original, boundary| {
                 self.backend
                     .put_many_if_absent_with_boundary(original, &objects, boundary)
@@ -254,10 +259,7 @@ impl RamStore {
         let mut objects = Vec::new();
         objects
             .try_reserve_exact(count)
-            .map_err(|source| StoreError::StreamIo {
-                operation: "allocate RAM publication batch",
-                source: std::io::Error::other(source),
-            })?;
+            .map_err(|source| admission(account.retain_allocation_refusal(source)))?;
         if objects.capacity() != count {
             return Err(RamStoreError::Limit("RAM publication batch capacity"));
         }
