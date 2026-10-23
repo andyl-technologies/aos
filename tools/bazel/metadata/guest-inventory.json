@@ -13122,7 +13122,7 @@
     "MODULE.bazel": "bf0797817464703da9d98feb177564c58d8790df64beb5f82c6396cd75728b4d",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
     "crates/crucible/engine/crucible-campaign/BUILD.bazel": "444b95e4588c3ff3e700e1d5cf8a5f2841b10e4012da67300e1641b9f553dda9",
-    "crates/crucible/guest/crucible-guest/BUILD.bazel": "5de72929be6e92d6935d3eeab6bad343c0cb8478c5d8adef74170d41635aa455",
+    "crates/crucible/guest/crucible-guest/BUILD.bazel": "bc159c3b716e602920d4204e70a832bc17fb9d2bd0aee94bda34c50017b85c39",
     "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel": "38abae726ad1d52d04b639f593c5be8e805174f7685b68a1e58a78e3586500fb",
     "crates/crucible/storage/crucible-store/BUILD.bazel": "3b55a3b50f81447aba444c9cdc298c3f9b309112adfe8f29a273eb5224f1f394",
     "docs/rfcs/0010-crucible/BUILD.bazel": "76795ae55d6e9fc9c83f20dd01c47b5a8367d07adb0f540c79961d6fc241512d",

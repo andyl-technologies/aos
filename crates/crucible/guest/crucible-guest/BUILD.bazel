@@ -22,6 +22,9 @@ DEPENDENCIES = [
     "//third_party/rust:core_thiserror",
 ]
 
+# Dependency-only workspaces omit guest integration-test source roots.
+INTEGRATIONS = glob(["tests/*.rs"], allow_empty = True)
+
 rust_library(
     name = "lib",
     package = RUST_PACKAGE,
@@ -88,7 +91,7 @@ aos_rust_test(
             "//docs/rfcs/0010-crucible:24-determinism-harness-testing.md",
         ]),
     )
-    for source in glob(["tests/*.rs"])
+    for source in INTEGRATIONS
 ]
 
 rust_doc_test(
@@ -98,7 +101,7 @@ rust_doc_test(
 
 TEST_ARTIFACTS = [":unit_binary", ":bin_crucible-guest_binary"] + [
     ":" + source.removeprefix("tests/").removesuffix(".rs") + "_binary"
-    for source in glob(["tests/*.rs"])
+    for source in INTEGRATIONS
 ]
 
 rust_clippy(
