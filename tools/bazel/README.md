@@ -1531,3 +1531,13 @@ false defaults, while preserving the round-trip, digest, and legacy-field checks
 152 executed cases, one existing ignored Nix-inventory case, 72 external crate
 identities, and six first-party libraries. The required workspace Rust check is
 running separately for this correction. Bazel conversion remains pending.
+
+## Connected contract baseline
+
+`tests/evidence/contracts-cargo-baseline.json` records the connected
+`aos-release-format`, `aos-module-docs`, `aos-deployment-format`, and
+`aos-storage-layout` Cargo baseline before changes to their Rust sources.
+It executes 225 cases across six test artifacts, with the existing Nix-inventory
+case ignored. All four doctest targets contain zero cases. The graph contains
+72 external crate identities and nine first-party libraries. Bazel parity and
+production migration remain pending.
