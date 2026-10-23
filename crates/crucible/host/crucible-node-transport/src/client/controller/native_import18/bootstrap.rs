@@ -56,6 +56,20 @@ pub use history::{
 };
 pub use storage::OriginalNativeImport18BootstrapConstructionData;
 
+/// Borrows the original Hello and both independently produced birth results.
+///
+/// These references preserve their actual owners without cloning, decoding or
+/// authenticating them. The constructor independently matches all three against
+/// its retained row; this view grants no funding, phase or native permission.
+pub struct OriginalNativeImport18BootstrapBirthInputs<'a> {
+    /// Borrows the original journal belonging to the actual Controller.
+    pub hello: &'a OriginalHelloJournal,
+    /// Borrows the complete independently produced five-phase recipe DATA.
+    pub recipe: &'a PacketNativeImport18PrebirthRecipeData,
+    /// Borrows the separately produced initial construction funding DATA.
+    pub initial: &'a PacketNativeImport18InitialFundingData,
+}
+
 /// Retains the same Bootstrap18 row and moved typed inputs after either outcome.
 ///
 /// This noncloneable owner retains original publication progress and failures.
@@ -107,9 +121,7 @@ impl CnpController {
     /// changed recipe/Initial/request, reused ID or the admitted storage bound.
     pub fn retain_original_native_import18_bootstrap_into_data(
         &self,
-        hello: &OriginalHelloJournal,
-        recipe: &PacketNativeImport18PrebirthRecipeData,
-        initial: &PacketNativeImport18InitialFundingData,
+        inputs: OriginalNativeImport18BootstrapBirthInputs<'_>,
         request_id: &mut Option<Id>,
         request: &mut Option<PacketNativeImport18BootstrapRequest>,
         row: &OriginalNativeImport18BootstrapConstructionData,
@@ -153,9 +165,7 @@ impl CnpController {
         let owner = output.as_mut().ok_or_else(invalid)?;
         owner.row.authenticate_data(
             self,
-            hello,
-            recipe,
-            initial,
+            &inputs,
             owner.request_id.as_ref().ok_or_else(invalid)?,
             owner.request.as_ref().ok_or_else(invalid)?,
             maximum_requested_bytes,

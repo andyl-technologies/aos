@@ -142,9 +142,11 @@ fn quote_after_assignment(
     }
     owner.row.authenticate_data(
         controller,
-        hello,
-        &owner.row.recipe,
-        &owner.row.initial,
+        &OriginalNativeImport18BootstrapBirthInputs {
+            hello,
+            recipe: &owner.row.recipe,
+            initial: &owner.row.initial,
+        },
         owner.request_id.as_ref().ok_or_else(invalid)?,
         owner.request.as_ref().ok_or_else(invalid)?,
         storage::checked_sum_data(&owner.row.axes)?,

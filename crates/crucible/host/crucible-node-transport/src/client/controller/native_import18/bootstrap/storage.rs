@@ -62,25 +62,29 @@ impl OriginalNativeImport18BootstrapConstructionData {
     pub(super) fn authenticate_data(
         &self,
         controller: &CnpController,
-        hello: &OriginalHelloJournal,
-        recipe: &PacketNativeImport18PrebirthRecipeData,
-        initial: &PacketNativeImport18InitialFundingData,
+        inputs: &OriginalNativeImport18BootstrapBirthInputs<'_>,
         request_id: &Id,
         request: &PacketNativeImport18BootstrapRequest,
         maximum: usize,
     ) -> Result<(), ProviderError> {
         self.controller.ensure_current()?;
         if !Rc::ptr_eq(&self.controller, &controller.protocol_owner)
-            || self.recipe.announcement_data() != recipe.announcement_data()
-            || !same_initial_data(&self.initial, initial)
+            || self.recipe.announcement_data() != inputs.recipe.announcement_data()
+            || !same_initial_data(&self.initial, inputs.initial)
             || self.frontier != controller.original_native5_storage_facts()?
-            || self.hello != controller.original_canonical_ack_hello_frame_digests(hello)?
+            || self.hello != controller.original_canonical_ack_hello_frame_digests(inputs.hello)?
             || self.input_identity != input_identity_data(request_id, request)?
             || checked_sum_data(&self.axes)? > maximum
         {
             return Err(invalid());
         }
-        authenticate_inputs_data(controller, recipe, initial, request_id, request)
+        authenticate_inputs_data(
+            controller,
+            inputs.recipe,
+            inputs.initial,
+            request_id,
+            request,
+        )
     }
 }
 
@@ -98,17 +102,15 @@ impl CnpController {
     /// mismatched opaque operands, malformed request or checked storage excess.
     pub fn quote_original_native_import18_bootstrap_construction_data(
         &self,
-        hello: &OriginalHelloJournal,
-        recipe: &PacketNativeImport18PrebirthRecipeData,
-        initial: &PacketNativeImport18InitialFundingData,
+        inputs: OriginalNativeImport18BootstrapBirthInputs<'_>,
         request_id: &Id,
         request: &PacketNativeImport18BootstrapRequest,
         maximum: usize,
     ) -> Result<OriginalNativeImport18BootstrapConstructionData, ProviderError> {
         self.protocol_owner.ensure_current()?;
-        authenticate_inputs_data(self, recipe, initial, request_id, request)?;
+        authenticate_inputs_data(self, inputs.recipe, inputs.initial, request_id, request)?;
         let frontier = self.original_native5_storage_facts()?;
-        let hello = self.original_canonical_ack_hello_frame_digests(hello)?;
+        let hello = self.original_canonical_ack_hello_frame_digests(inputs.hello)?;
         let mut observer = MetadataObserver::new();
         observer.shared_original(
             MetadataSharedKind::ProtocolOwner,
@@ -137,8 +139,8 @@ impl CnpController {
             controller: Rc::clone(&self.protocol_owner),
             frontier,
             hello,
-            recipe: *recipe,
-            initial: *initial,
+            recipe: *inputs.recipe,
+            initial: *inputs.initial,
             input_identity: input_identity_data(request_id, request)?,
             axes,
         })
@@ -151,6 +153,10 @@ impl CnpController {
     pub fn original_native_import18_bootstrap_counter_scratch_data() -> usize {
         crate::client::ClientSession::original_bootstrap_hello_cut_counter_scratch_data()
             + size_of::<&Self>()
+            // Caller/callee input views and the row check's shared reborrow
+            // coexist; the conservative individual operand controls stay below.
+            + size_of::<OriginalNativeImport18BootstrapBirthInputs<'static>>() * 2
+            + size_of::<&OriginalNativeImport18BootstrapBirthInputs<'static>>() * 2
             + size_of::<&OriginalHelloJournal>()
             + size_of::<&PacketNativeImport18PrebirthRecipeData>() * 2
             + size_of::<&PacketNativeImport18InitialFundingData>() * 2

@@ -37,8 +37,9 @@ use std::rc::Rc;
 #[path = "native_import18/bootstrap.rs"]
 mod bootstrap;
 pub use bootstrap::{
-    OriginalNativeImport18Bootstrap, OriginalNativeImport18BootstrapConstructionData,
-    OriginalNativeImport18BootstrapHistoryData, OriginalNativeImport18BootstrapRowHistoryData,
+    OriginalNativeImport18Bootstrap, OriginalNativeImport18BootstrapBirthInputs,
+    OriginalNativeImport18BootstrapConstructionData, OriginalNativeImport18BootstrapHistoryData,
+    OriginalNativeImport18BootstrapRowHistoryData,
 };
 
 #[path = "native_import18/assigned_normalization.rs"]
