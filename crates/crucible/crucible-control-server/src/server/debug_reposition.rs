@@ -170,7 +170,7 @@ async fn authorized_debug_reposition_body<L, F>(
     state: &Http2LifecycleState<L, F>,
     identity: Option<&Extension<DebugTransportIdentity>>,
     request: Request<Body>,
-) -> Result<Vec<u8>, Box<Response>>
+) -> Result<BoundedRpcBody, Box<Response>>
 where
     L: QuantumLoop + Send + 'static,
     F: Fn(&ScenarioDef, Option<&ScenarioDefForm>, Seed) -> Result<L, LifecycleApiError>
@@ -182,7 +182,7 @@ where
         return Err(Box::new(read_only_rejection_response("debug-reposition")));
     }
     debug_principal(&state.debug_authorization, identity)?;
-    read_debug_rpc_body(request).await
+    read_debug_rpc_body(request, &state.rpc_body_budget).await
 }
 
 async fn authorized_reposition_dispatch<L, F>(
