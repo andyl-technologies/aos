@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 549 bindings: 530 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 554 bindings: 535 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2045,15 +2045,49 @@ passes all 41 exact cases at `y5xlj7d724xsl8dqfdv0hi2nra9b2bdc`, with all
 eight helper-custody failures and four ignored cases. All ninety testing-standard
 and five hygiene controls pass. Store Clippy passes all targets. Strict Host
 Clippy retains the same 674 library and 723 test-target errors, with fourteen
-and five warnings; no lint is waived or error payload discarded.
+and five warnings; no lint is waived or error payload discarded. Signed commit
+`84583ceb34` is pushed. Mandatory application-target compilation is running;
+all 5,396 committed Rust/TOML files and six required fixtures independently
+match frozen source `zma80nh74vzi5sn9zl7kq3vvv34yxcvz` before later edits.
 
 The separately bounded incompressible 512 MiB capture/archive/restore/repack
 case at `ceb341b17f` passes in 2,340.20 seconds under its unchanged 3,600-second
 wall/CPU and 2 GiB address-space limits. Actual final cleanup observes ECHILD
 before removing its own disk-backed scratch. The separate shared-volume case
-continues under its own original bounds. These frozen preceding-source results
+also passes, in 909.55 seconds under its own unchanged bounds, with actual ECHILD
+and scratch removal. These frozen preceding-source results
 are storage component evidence and qualify neither the later lazy path nor
 native execution or performance parity.
+
+Lazy page sibling storage, region-name storage and proof encoding now allocate
+fallibly under their existing complete proof reservation. Portable encoding
+preserves the same canonical bytes and capacity. Its new fallible API returns
+the actual allocator refusal; the response owner saves that source in the same
+prepaid diagnostic bank and closes decoded page storage before refunding proof
+scratch. This adds neither an allocation allowance nor another diagnostic loan.
+The first failure remains sticky, including when an earlier cause already exists.
+
+All five focused controls pass: minimum/maximum encoding bounds, actual sibling
+and region allocation failures on the lazy path, actual encoding failure with
+zero replacement diagnostic allocations, and earlier-cause precedence. Each
+uses unchanged finite component resources and exact-layout refusal, without
+claiming physical OOM or native funding. Replacing the prepaid diagnostic with
+an allocating wrapper fails exactly one control; removing sticky publication
+fails three. Exact production restoration passes all five. The initial fixture
+compile missed a digest import; that failure is retained before the corrected
+fixture passes. Inventory `72zm95l2rgixpjn2y9p5qvgjjzmyrab8` validates 554 bindings,
+243 requirements, 148 uncovered and zero fully qualified. The full storage
+regression passes 707 tests, with three 512 MiB cases separately bounded. All
+25 logical RAM unit/integration tests pass, including the frozen canonical
+format vectors. All 686 engine tests pass. Hermetic storage passes all 46 exact
+cases at `7q2al0rac82fizfxgi7h8vlkvws8zvri`; all 58 successful summaries,
+including nested results, are independently checked. Host retains 1,385 passes,
+the same eight helper-custody failures and four ignored cases. All ninety testing
+standard and five hygiene controls pass, and Store Clippy passes all targets.
+Strict Host Clippy retains 674 library and 723 test-target errors with fourteen
+and five warnings. ABI conformance passes at
+`dfs5vwdn7wf62fq1vx925w3jf7ifx6ih`. The complete license-boundary gate remains
+in progress; neither the ABI result nor passing storage controls replaces it.
 
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's

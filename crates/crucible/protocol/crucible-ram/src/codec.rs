@@ -456,8 +456,29 @@ impl PageProof {
     /// Encodes a bounded path without page bytes or native storage references.
     pub fn encode(&self) -> Vec<u8> {
         let mut output = Vec::with_capacity(64 + self.region_id.len() + self.siblings.len() * 32);
+        self.encode_into(&mut output);
+        output
+    }
+
+    /// Encodes the path using one fallible allocation of the admitted capacity.
+    ///
+    /// The caller separately reserves and retains the allocation's resource
+    /// credit. This method preserves the actual allocator refusal, including
+    /// its layout, without allocating another diagnostic.
+    ///
+    /// # Errors
+    /// Returns the actual allocation refusal if the proof buffer cannot be
+    /// reserved. The validated proof bounds make its capacity representable.
+    pub fn try_encode(&self) -> Result<Vec<u8>, std::collections::TryReserveError> {
+        let mut output = Vec::new();
+        output.try_reserve_exact(64 + self.region_id.len() + self.siblings.len() * 32)?;
+        self.encode_into(&mut output);
+        Ok(output)
+    }
+
+    fn encode_into(&self, output: &mut Vec<u8>) {
         output.extend_from_slice(PROOF_MAGIC);
-        put_string(&mut output, &self.region_id);
+        put_string(output, &self.region_id);
         output.extend_from_slice(&self.page_index.to_be_bytes());
         output.extend_from_slice(&self.valid_length.to_be_bytes());
         output.extend_from_slice(self.page_digest.as_bytes());
@@ -465,7 +486,6 @@ impl PageProof {
         for sibling in &self.siblings {
             output.extend_from_slice(sibling.as_bytes());
         }
-        output
     }
 
     /// Decodes a structural proof within receiver-controlled record limits.

@@ -30,6 +30,19 @@ impl EncodedPageProof {
         Self { proof, encoded }
     }
 
+    /// Encodes an existing proof once using fallible admitted storage.
+    ///
+    /// The caller retains the original resource credit for the proof and its
+    /// encoding. Failure closes the supplied proof before returning its actual
+    /// allocator refusal; no replacement diagnostic allocation is performed.
+    ///
+    /// # Errors
+    /// Returns the actual allocation refusal if the encoding cannot be reserved.
+    pub fn try_new(proof: PageProof) -> Result<Self, std::collections::TryReserveError> {
+        let encoded = proof.try_encode()?;
+        Ok(Self { proof, encoded })
+    }
+
     /// Borrows the membership proof committed by the encoding.
     #[must_use]
     pub fn proof(&self) -> &PageProof {

@@ -16,6 +16,7 @@ use super::*;
 
 mod checked_sources;
 mod hash_reuse;
+mod proof_allocation;
 mod record_prepay;
 
 const METADATA_BYTES: u64 = 4 * 1024 * 1024;

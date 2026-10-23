@@ -78,13 +78,32 @@ pub struct RamPageRead {
 }
 
 impl RamPageRead {
-    pub(super) fn new(page: RamPageBytes, proof: PageProof, credit: DecodeScratch) -> Self {
-        let proof = crucible_ram::EncodedPageProof::new(proof);
-        Self {
+    /// Encodes the proof fallibly while retaining its existing allocation credit.
+    ///
+    /// # Errors
+    /// Preserves the actual allocator refusal in the same prepaid diagnostic
+    /// bank, after closing decoded bytes before their refundable credit.
+    pub(super) fn try_new(
+        page: RamPageBytes,
+        proof: PageProof,
+        credit: DecodeScratch,
+    ) -> Result<Self, RamStoreError> {
+        let proof = match crucible_ram::EncodedPageProof::try_new(proof) {
+            Ok(proof) => proof,
+            Err(source) => {
+                let failure = credit.original_account().retain_allocation_refusal(source);
+                // Decoded bytes close before their proof scratch credit. The
+                // actual failure independently retains its prepaid diagnostic.
+                drop(page);
+                drop(credit);
+                return Err(super::codec_ownership::admission(failure));
+            }
+        };
+        Ok(Self {
             page,
             proof,
             _credit: credit,
-        }
+        })
     }
 
     pub(super) fn into_page(self) -> RamPageBytes {
@@ -216,7 +235,7 @@ impl RamPageRead {
             proof.siblings().to_vec(),
         )
         .map_err(logical)?;
-        Ok(Self::new(page, proof, credit))
+        Self::try_new(page, proof, credit)
     }
 }
 

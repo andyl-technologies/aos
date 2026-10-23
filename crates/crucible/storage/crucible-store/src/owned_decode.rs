@@ -377,6 +377,23 @@ impl DecodeBudget {
         }
     }
 
+    /// Retains an actual failure of storage already paid by this account.
+    ///
+    /// This records the source in the existing prepaid diagnostic bank and
+    /// preserves an earlier sticky refusal. It acquires no resource credit and
+    /// must not be used as admission for an allocation.
+    pub(crate) fn retain_allocation_refusal(
+        &self,
+        source: std::collections::TryReserveError,
+    ) -> DecodeAdmissionError {
+        let failure = self.0.refusals.allocation_error(source);
+        self.record_failure(failure.clone());
+        match self.check() {
+            Err(first) => first,
+            Ok(()) => failure,
+        }
+    }
+
     /// Verifies the same original resource owner after checking sticky failure.
     ///
     /// # Errors

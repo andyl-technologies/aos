@@ -121,7 +121,23 @@ impl Readback<'_> {
             self.region_id,
             reference.height as usize,
         )?;
-        let mut siblings = Vec::with_capacity(reference.height as usize);
+        let mut siblings = Vec::new();
+        siblings
+            .try_reserve_exact(reference.height as usize)
+            .map_err(|source| {
+                crate::ram::codec_ownership::admission(
+                    work.original().retain_allocation_refusal(source),
+                )
+            })?;
+        let mut region_id = String::new();
+        region_id
+            .try_reserve_exact(self.region_id.len())
+            .map_err(|source| {
+                crate::ram::codec_ownership::admission(
+                    work.original().retain_allocation_refusal(source),
+                )
+            })?;
+        region_id.push_str(self.region_id);
 
         loop {
             match access.tree(reference, work)? {
@@ -138,7 +154,7 @@ impl Readback<'_> {
                     }
                     siblings.reverse();
                     let proof = PageProof::new(
-                        self.region_id,
+                        region_id,
                         self.page_index,
                         self.expected_length as u32,
                         digest,
@@ -148,7 +164,7 @@ impl Readback<'_> {
                     proof
                         .verify(&bytes, &self.root.record, self.root.logical_digest())
                         .map_err(crate::ram::logical)?;
-                    return Ok(RamPageRead::new(bytes, proof, proof_credit));
+                    return RamPageRead::try_new(bytes, proof, proof_credit);
                 }
                 TreeNode::Branch { left, right } => {
                     let width = 1_u64 << (reference.height - 1);
