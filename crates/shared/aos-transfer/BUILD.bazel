@@ -16,6 +16,13 @@ RUST_PACKAGE = aos_rust_package(
     license_domain = "apache-host",
 )
 
+# Registry consumers explicitly opt in without enabling the Cargo default flag.
+TRANSFER_FEATURES = select({
+    "//tools/bazel/rules:registry_native_dependencies": ["transfer"],
+    "//tools/bazel/rules:registry_native_tests_dependencies": ["transfer"],
+    "//conditions:default": ["default", "transfer"],
+})
+
 TRANSFER_DEPENDENCIES = [
     "//third_party/rust:core_aws_config",
     "//third_party/rust:core_aws_sdk_s3",
@@ -47,7 +54,7 @@ rust_library(
     crate_name = "aos_transfer",
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
-    crate_features = ["default", "transfer"],
+    crate_features = TRANSFER_FEATURES,
     deps = COMMON_DEPENDENCIES + TRANSFER_DEPENDENCIES,
     proc_macro_deps = ["//third_party/rust:core_async_trait"],
 )
@@ -57,14 +64,14 @@ aos_rust_test(
     package = RUST_PACKAGE,
     runfile_env = {"SSL_CERT_FILE": "@aos_cli_runtime//:ca-certificates.crt"},
     crate = ":lib",
-    crate_features = ["default", "transfer"],
+    crate_features = TRANSFER_FEATURES,
     deps = TEST_DEPENDENCIES,
 )
 
 rust_doc_test(
     name = "doc",
     crate = ":lib",
-    crate_features = ["default", "transfer"],
+    crate_features = TRANSFER_FEATURES,
 )
 
 # Disabling transfer leaves the lightweight shared error/config surface.
@@ -124,7 +131,7 @@ rustfmt_test(
 rust_doc(
     name = "documentation",
     crate = ":lib",
-    crate_features = ["default", "transfer"],
+    crate_features = TRANSFER_FEATURES,
 )
 
 aos_license_check(

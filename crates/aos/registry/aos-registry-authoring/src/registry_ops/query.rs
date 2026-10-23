@@ -619,10 +619,10 @@ pub async fn verify(
         }
     }
 
-    if let Some(filter) = package {
-        if !matched_package_filter {
-            bail!("package '{filter}' not found in registry");
-        }
+    if let Some(filter) = package
+        && !matched_package_filter
+    {
+        bail!("package '{filter}' not found in registry");
     }
 
     if fix {

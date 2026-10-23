@@ -464,6 +464,10 @@ fn print_stage_record(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep existing publication transaction inputs explicit without changing their API"
+)]
 async fn stage_registry_release(
     dir: &Path,
     registry: &str,
@@ -1234,10 +1238,10 @@ fn write_tuf_release_metadata(
 }
 
 fn tuf_signing_key_id(dir: &Path, trust_key: &str) -> Result<String> {
-    if let Some(roster) = keys::load_keys_toml(dir)? {
-        if let Some(entry) = roster.active.iter().find(|entry| entry.key == trust_key) {
-            return Ok(entry.id.clone());
-        }
+    if let Some(roster) = keys::load_keys_toml(dir)?
+        && let Some(entry) = roster.active.iter().find(|entry| entry.key == trust_key)
+    {
+        return Ok(entry.id.clone());
     }
     let (_registry, _algorithm, public_key) = parse_signing_key(trust_key)?;
     Ok(format!("key-{}", key_fingerprint(&public_key)))

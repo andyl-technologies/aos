@@ -180,7 +180,7 @@ pub async fn fetch_with_optional_head(
         if !new_packs.is_empty() {
             let reader = &reader;
             set_phase(progress, "Downloading registry packs");
-            let packs: Vec<Vec<u8>> = stream::iter(new_packs.into_iter())
+            let packs: Vec<Vec<u8>> = stream::iter(new_packs)
                 .map(|name| async move { fetch_pack(reader, base_url, &name, progress).await })
                 .buffer_unordered(MAX_CONCURRENCY)
                 .collect::<Vec<_>>()
@@ -226,7 +226,7 @@ pub async fn fetch_with_optional_head(
             let objects_dir = &objects_dir;
             let reader = &reader;
             verified.invalidate();
-            stream::iter(missing.into_iter())
+            stream::iter(missing)
                 .map(|oid| async move {
                     fetch_loose(reader, base_url, objects_dir, &oid, progress).await
                 })

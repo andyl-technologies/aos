@@ -42,12 +42,11 @@ pub(in crate::registry_ops) fn resolve_registry_name(
         let mut names: Vec<String> = Vec::new();
         if let Ok(entries) = std::fs::read_dir(&registries_path) {
             for entry in entries.flatten() {
-                if entry.path().is_dir() {
-                    if let Some(name) = entry.file_name().to_str() {
-                        if validate_registry_name(name).is_ok() {
-                            names.push(name.to_string());
-                        }
-                    }
+                if entry.path().is_dir()
+                    && let Some(name) = entry.file_name().to_str()
+                    && validate_registry_name(name).is_ok()
+                {
+                    names.push(name.to_string());
                 }
             }
         }

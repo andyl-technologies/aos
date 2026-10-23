@@ -176,6 +176,24 @@ class ProtocolParityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "feature inventories differ"):
             self.compare()
 
+    def test_registry_native_repositories_preserve_exact_feature_checks(self):
+        self.reports[0]["label"] = "@@+aos_tools_repository+aos_registry_native_crates__serde-1.0.228//:serde"
+
+        self.compare()
+
+        self.reports[0]["features"] = ["default"]
+        with self.assertRaisesRegex(ValueError, "feature inventories differ"):
+            self.compare()
+
+    def test_registry_native_tests_repositories_preserve_exact_feature_checks(self):
+        self.reports[0]["label"] = "@@+aos_tools_repository+aos_registry_native_tests_crates__serde-1.0.228//:serde"
+
+        self.compare()
+
+        self.reports[0]["features"] = ["default"]
+        with self.assertRaisesRegex(ValueError, "feature inventories differ"):
+            self.compare()
+
     def test_explicit_empty_test_requires_an_empty_cargo_artifact(self):
         with patch.object(verify_protocol, "cases", return_value=[]):
             self.compare(allow_empty_tests=[self.label])

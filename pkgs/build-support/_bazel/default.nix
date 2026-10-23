@@ -79,6 +79,7 @@
     };
   };
   aosBazelRepositoryTestSources = import ./repository-test-sources.nix {inherit pkgs lib;};
+  aosBazelRegistryTestTools = import ./registry-test-tools.nix {inherit pkgs lib;};
   aosBazelNixTestTools = import ./nix-test-tools.nix {inherit pkgs;};
   aosBazelCodegenTools = import ./codegen-tools.nix {inherit pkgs;};
   aosBazelDependencyGenerator = pkgs.callPackage ../../tools/workerd/_cargo-bazel.nix {};
@@ -95,6 +96,16 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    registry-native = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "registry-native";
+    };
+    registry-native-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "registry-native-tests";
+    };
     release-preparation = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -299,6 +310,51 @@
     dependencyProfile = "control";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
+  };
+  aosBazelRegistryNativeWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = [
+      "tools/bazel"
+      "third_party/rust"
+      "api/proto"
+      "crates/hub/aos-hub-native"
+      "crates/aos/activation/aos-activation"
+      "crates/shared/aos-artifact-evidence"
+      "crates/aos/cli/aos-cli-ui"
+      "crates/shared/aos-core"
+      "crates/aos/packages/aos-deployment"
+      "crates/aos/packages/aos-deployment-format"
+      "crates/hub/aos-hub-api"
+      "crates/hub/aos-hub-client"
+      "crates/aos/modules/aos-module-docs"
+      "crates/aos/modules/aos-module-format"
+      "crates/shared/aos-nar"
+      "crates/shared/aos-nix"
+      "crates/aos/packages/aos-nix-cache"
+      "crates/shared/aos-oci"
+      "crates/shared/aos-oci-types"
+      "crates/aos/registry/aos-registry-authoring"
+      "crates/aos/registry/aos-registry-client"
+      "crates/aos/registry/aos-registry-format"
+      "crates/aos/release/aos-release-format"
+      "crates/shared/aos-transfer"
+    ];
+    repositories =
+      aosBazelRepositories
+      // aosBazelRustRepositories.registry-native-tests
+      // {
+        aos_codegen = aosBazelCodegenTools;
+        aos_native = aosBazelNativeFoundationLibraries;
+        aos_cli_runtime = aosBazelCrucibleCliRuntime;
+        aos_registry_runtime = aosBazelRegistryTestTools;
+      };
+    dependencyProfile = "registry-native-tests";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = [
+      "//crates/aos/packages/aos-nix-cache:unit"
+      "//crates/aos/registry/aos-registry-authoring:unit"
+      "//crates/aos/registry/aos-registry-client:unit"
+    ];
   };
   aosBazelReleasePreparationWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -596,6 +652,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelRegistryNativeLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelRegistryNativeWorkspace;
     }).launcher;
   aosBazelReleasePreparationLauncher =
     (import ./development.nix {

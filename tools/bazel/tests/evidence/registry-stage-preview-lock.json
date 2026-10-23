@@ -1,0 +1,47 @@
+{
+  "derivation": "/nix/store/caf9zg5p5rfm021h79v2z95w8jz5lm2n-aos-bazel-stage-preview-lock-regression-1.drv",
+  "derivation_sha256": "3801ace9fd00511d48140ba7179d02b517500828e1e8ac95630463581550677a",
+  "frozen_compilation_source": "/nix/store/n5i3hw63rvbrs6cmacj56w74jn39jca5-aos-bazel-workspace",
+  "input_sha256": {
+    "crates/aos/registry/aos-registry-authoring/src/registry/staging.rs": "700ec7afff090abfcfef086954b890915a04394df79524a72a502648c9ecebae",
+    "crates/aos/registry/aos-registry-authoring/src/registry/staging/gc.rs": "71e92708d9c43868b4aee4a5b83f3fbdf205246f765795ca7fcfbcf40403298b",
+    "tests/build/_bazel-stage-preview-lock.nix": "4f1d193d0557bc0f16c716b454aec7150a89bef5ad8a03600c869ba88c81b084"
+  },
+  "limits": [
+    "The fixed-source passing suite and required workspace compilation are retained in the native registry qualification evidence separately."
+  ],
+  "mutation": "Removes only StageLock Drop's explicit flock unlock; keeps the real preview method and regression unchanged.",
+  "negative_build_log_sha256": "85dfb92a44737eeffee2612a13bf45d8d8478ae5cd7d13d4ce8b144be399724e",
+  "negative_check_report": {
+    "close_only_release_fails_with_inherited_description": true,
+    "regression": "registry::staging::gc::tests::preview_releases_its_lock_while_an_inherited_description_remains_open",
+    "status": "PASS"
+  },
+  "negative_junit_sha256": "f45326409a4c9dbb804fbf893487dae508b1a63790674087594060e87cef7c6e",
+  "negative_result": {
+    "cached_locally": false,
+    "duration": "0.719s",
+    "identity": {
+      "attempt": 1,
+      "configuration": {
+        "id": "14d0a4ddf280349d70f605161173d5ef9e6e5a2a8a800142bd3adced8595f8e8"
+      },
+      "label": "//crates/aos/registry/aos-registry-authoring:unit",
+      "run": 1,
+      "shard": 1
+    },
+    "outputs": {
+      "test.log": "d55803d19a05c26208411f3dfd54abed3429141f8a48f2b74ef246866590fbe6/test.log",
+      "test.xml": "d55803d19a05c26208411f3dfd54abed3429141f8a48f2b74ef246866590fbe6/test.xml"
+    },
+    "status": "FAILED"
+  },
+  "observed_parallel_cargo_failure": {
+    "case": "registry::staging::gc::tests::collects_retired_bytes_after_grace_but_preserves_shared_active_bytes_and_history",
+    "error": "another local stage operation is running: Resource temporarily unavailable (os error 11)",
+    "log_sha256": "96e3ee0070d4708d693fff5b864f3db4778beab6bc6cb4213878eecdc83e3af6"
+  },
+  "output": "/nix/store/pgala68732bms5mqhckp2j0rh3ir62rl-aos-bazel-stage-preview-lock-regression-1",
+  "schema_version": 1,
+  "status": "The new preview regression rejects close-only release while a duplicate file description remains open"
+}

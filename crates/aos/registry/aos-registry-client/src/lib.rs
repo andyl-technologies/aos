@@ -4,6 +4,10 @@
 //! configuration discovery, transport, trusted-key storage, and provenance
 //! verification; installation and activation policy live in their own projects.
 
+// Native registry I/O uses host time, entropy for signing keys and temporary
+// names, and process-local lookup tables. It is outside Crucible state paths.
+#![allow(clippy::disallowed_methods, clippy::disallowed_types)]
+
 pub mod cleanup;
 pub mod config;
 pub mod dry_run;

@@ -23,7 +23,7 @@ def _specifications_impl(ctx):
         "approved_licenses": ctx.attr.approved_licenses,
         "host_only_licenses": ctx.attr.host_only_licenses,
     }) + "\n")
-    contracts = [ctx.file.definition, ctx.file._rules, ctx.file._exporter]
+    contracts = [ctx.file.definition, ctx.file._rules, ctx.file._exporter] + ctx.files.extra_definitions
     arguments = ctx.actions.args()
     arguments.add(ctx.file._exporter)
     arguments.add("--input", specification)
@@ -47,6 +47,7 @@ aos_crate_specifications = rule(
     attrs = {
         "family": attr.string(mandatory = True),
         "definition": attr.label(mandatory = True, allow_single_file = True),
+        "extra_definitions": attr.label_list(allow_files = True),
         "packages": attr.string_dict(mandatory = True),
         "annotations": attr.string_dict(),
         "feature_variants": attr.string_dict(),

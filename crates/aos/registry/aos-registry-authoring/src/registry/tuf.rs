@@ -888,7 +888,8 @@ mod tests {
             repo.join("packages/z/zlib.toml"),
             "new exact catalog bytes\n",
         )?;
-        let stale = verify_worktree_metadata(&repo, "core", &[key.trust.clone()]).unwrap_err();
+        let stale =
+            verify_worktree_metadata(&repo, "core", std::slice::from_ref(&key.trust)).unwrap_err();
         assert!(format!("{stale:#}").contains("catalog does not match"));
         assert_eq!(
             git2::Repository::open(&repo)?

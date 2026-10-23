@@ -172,7 +172,7 @@ fn mutates(args: &[&str]) -> bool {
 fn init(dir: &Path, rest: &[&str]) -> Result<Output> {
     let mut opts = git2::RepositoryInitOptions::new();
     opts.bare(rest.contains(&"--bare"));
-    if rest.iter().any(|a| *a == "--object-format=sha256") {
+    if rest.contains(&"--object-format=sha256") {
         opts.object_format(git2::ObjectFormat::Sha256);
     }
     if let Some(branch) = rest
@@ -464,19 +464,19 @@ fn cat_file_p(dir: &Path, spec: &str) -> Result<Output> {
 fn resolve_blob_bytes(repo: &Repository, spec: &str) -> Result<Option<Vec<u8>>> {
     // ":path" or ":0:path" names a stage-0 index entry, which git2's revparse
     // does not resolve.
-    if let Some(rest) = spec.strip_prefix(':') {
-        if !rest.starts_with(':') {
-            let path = rest.strip_prefix("0:").unwrap_or(rest);
-            let index = repo.index().context("opening index")?;
-            return match index.get_path(Path::new(path), 0) {
-                Some(entry) => {
-                    let odb = repo.odb().context("opening object database")?;
-                    let raw = odb.read(entry.id).context("reading staged object")?;
-                    Ok(Some(raw.data().to_vec()))
-                }
-                None => Ok(None),
-            };
-        }
+    if let Some(rest) = spec.strip_prefix(':')
+        && !rest.starts_with(':')
+    {
+        let path = rest.strip_prefix("0:").unwrap_or(rest);
+        let index = repo.index().context("opening index")?;
+        return match index.get_path(Path::new(path), 0) {
+            Some(entry) => {
+                let odb = repo.odb().context("opening object database")?;
+                let raw = odb.read(entry.id).context("reading staged object")?;
+                Ok(Some(raw.data().to_vec()))
+            }
+            None => Ok(None),
+        };
     }
     match repo.revparse_single(spec) {
         Ok(object) => {
@@ -622,7 +622,7 @@ fn update_ref(dir: &Path, name: &str, oid: &str) -> Result<Output> {
 /// Map a libgit2 [`Status`] to a porcelain two-letter `XY` code.
 fn porcelain_code(status: Status) -> [u8; 2] {
     if status.contains(Status::WT_NEW) && !status.intersects(Status::INDEX_NEW) {
-        return [b'?', b'?'];
+        return *b"??";
     }
     let x = if status.contains(Status::INDEX_NEW) {
         b'A'
@@ -687,20 +687,20 @@ fn ls_files(dir: &Path, rest: &[&str]) -> Result<Output> {
             .statuses(Some(&mut opts))
             .context("listing untracked files")?;
         for entry in statuses.iter() {
-            if entry.status().contains(Status::WT_NEW) {
-                if let Ok(path) = entry.path() {
-                    let _ = writeln!(out, "{path}");
-                }
+            if entry.status().contains(Status::WT_NEW)
+                && let Ok(path) = entry.path()
+            {
+                let _ = writeln!(out, "{path}");
             }
         }
     } else {
         let index = repo.index().context("opening index")?;
         for entry in index.iter() {
             let path = String::from_utf8_lossy(&entry.path);
-            if let Some(spec) = pathspec {
-                if !path.starts_with(spec) {
-                    continue;
-                }
+            if let Some(spec) = pathspec
+                && !path.starts_with(spec)
+            {
+                continue;
             }
             let _ = writeln!(out, "{path}");
         }
@@ -880,10 +880,10 @@ fn log(dir: &Path, rest: &[&str]) -> Result<Output> {
         }
         let oid = oid?;
         let commit = repo.find_commit(oid).context("reading commit")?;
-        if let Some(path) = path {
-            if !commit_touches_path(&repo, &commit, path)? {
-                continue;
-            }
+        if let Some(path) = path
+            && !commit_touches_path(&repo, &commit, path)?
+        {
+            continue;
         }
         out.push_str(&format_commit(&commit, &format));
         out.push('\n');
@@ -1294,7 +1294,7 @@ fn fetch(dir: &Path, args: &[&str]) -> Result<Output> {
 /// created.
 fn pull(dir: &Path, rest: &[&str]) -> Result<Output> {
     let repo = open(dir)?;
-    let rebase = rest.iter().any(|arg| *arg == "--rebase");
+    let rebase = rest.contains(&"--rebase");
     let mut remote = repo
         .find_remote("origin")
         .context("finding remote origin")?;

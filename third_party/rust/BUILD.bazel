@@ -1,6 +1,9 @@
 load("@rules_rust//crate_universe:defs.bzl", "crate")
 load("//tools/bazel/rules:crates.bzl", "aos_crate_specifications")
 load("//tools/bazel/rules:package.bzl", "aos_package")
+load(":registry-native.bzl", "REGISTRY_NATIVE_FEATURE_VARIANTS", "REGISTRY_NATIVE_PACKAGES")
+load(":registry-native/aliases.bzl", REGISTRY_NATIVE_CRATES = "CRATES")
+load(":registry-native-tests/aliases.bzl", REGISTRY_NATIVE_TESTS_CRATES = "CRATES")
 load(":release-preparation/aliases.bzl", RELEASE_PREPARATION_CRATES = "CRATES")
 load(":hub-client/aliases.bzl", HUB_CLIENT_CRATES = "CRATES")
 load(":hub-model/aliases.bzl", HUB_MODEL_CRATES = "CRATES")
@@ -41,6 +44,8 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:registry_native_dependencies": REGISTRY_NATIVE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:registry_native_tests_dependencies": REGISTRY_NATIVE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:release_preparation_dependencies": RELEASE_PREPARATION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_client_dependencies": HUB_CLIENT_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_model_tests_dependencies": HUB_MODEL_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -75,7 +80,9 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         visibility = ["//visibility:public"],
     )
     for name in sorted(dict(
-        RELEASE_PREPARATION_CRATES.items()
+        REGISTRY_NATIVE_CRATES.items()
+        + REGISTRY_NATIVE_TESTS_CRATES.items()
+        + RELEASE_PREPARATION_CRATES.items()
         + HUB_CLIENT_CRATES.items()
         + HUB_MODEL_TESTS_CRATES.items()
         + HUB_MODEL_CRATES.items()
@@ -890,6 +897,8 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    "registry-native": REGISTRY_NATIVE_FEATURE_VARIANTS,
+    "registry-native-tests": REGISTRY_NATIVE_FEATURE_VARIANTS,
     # The release baseline does not compile IndexMap's resolver-only Serde feature.
     "release-preparation": {
         "indexmap": json.encode({
@@ -1645,6 +1654,7 @@ APPROVED_LICENSES = [
         name = family + "_specifications",
         family = family,
         definition = "BUILD.bazel",
+        extra_definitions = ["registry-native.bzl"] if family in ["registry-native", "registry-native-tests"] else [],
         packages = packages,
         annotations = annotations,
         feature_variants = FAMILY_FEATURE_VARIANTS.get(family, {}),
@@ -1665,6 +1675,8 @@ APPROVED_LICENSES = [
         host_only_licenses = ["Apache-2.0"],
     )
     for family, packages, annotations, license_domain in [
+        ("registry-native", REGISTRY_NATIVE_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
+        ("registry-native-tests", REGISTRY_NATIVE_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
         ("release-preparation", RELEASE_PREPARATION_PACKAGES, {}, "apache-host"),
         ("hub-client", HUB_CLIENT_PACKAGES, {}, "apache-host"),
         ("hub-model", HUB_MODEL_PACKAGES, {}, "apache-host"),
@@ -1708,6 +1720,8 @@ APPROVED_LICENSES = [
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
     for family in [
+        "registry-native",
+        "registry-native-tests",
         "release-preparation",
         "hub-client",
         "hub-model-tests",

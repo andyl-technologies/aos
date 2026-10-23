@@ -34,6 +34,9 @@
         "crates/aos/release/aos-release-format/Cargo.toml"
         "crates/aos/modules/aos-module-docs/Cargo.toml"
         "crates/aos/packages/aos-deployment-format/Cargo.toml"
+        "crates/aos/packages/aos-nix-cache/Cargo.toml"
+        "crates/aos/registry/aos-registry-authoring/Cargo.toml"
+        "crates/aos/registry/aos-registry-client/Cargo.toml"
         "crates/aos/release/aos-image-finalizer/Cargo.toml"
         "crates/aos/release/aos-package-maintenance/Cargo.toml"
         "crates/aos/release/aos-release-signer/Cargo.toml"
@@ -131,6 +134,7 @@ in
     native-foundation = import ./_bazel-native-foundation.nix {inherit pkgs;};
     activation-core = import ./_bazel-activation-core.nix {inherit pkgs;};
     activation-storage = import ./_bazel-activation-storage.nix {inherit pkgs;};
+    registry-native = import ./_bazel-registry-native.nix {inherit pkgs;};
     release-preparation = import ./_bazel-release-preparation.nix {inherit pkgs;};
     hub-client = import ./_bazel-hub-client.nix {inherit pkgs;};
     hub-model = import ./_bazel-hub-model.nix {inherit pkgs;};
@@ -341,6 +345,7 @@ in
         native-foundation.tests
         activation-core.tests
         activation-storage.tests
+        registry-native.tests
         release-preparation.tests
         hub-client.tests
         hub-model.tests
@@ -383,6 +388,7 @@ in
       mkdir -p "$out"
       cp -r ${unit}/evidence/tests "$out/tests"
     '';
+    build-script-metadata = import ./_bazel-build-script-metadata.nix {inherit pkgs;};
     policy =
       pkgs.runCommand "aos-bazel-policy-checks" {
         buildDeps = [pkgs.python3];
@@ -417,6 +423,7 @@ in
             metadata-parity
             policy
             shell-bootstrap
+            build-script-metadata
             source-selection
             source-catalog.all
             sysroot-metadata
@@ -449,6 +456,7 @@ in
             activation-crucible.all
             cli-support.all
             build-services.all
+            registry-native.all
             release-preparation.all
             hub-client.all
             hub-model.all

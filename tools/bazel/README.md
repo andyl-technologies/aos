@@ -2241,3 +2241,65 @@ Its frozen source predates the registry conversion changes. Complete image and
 signing provider gates, foreign/Wasm execution, complete compiler invocation
 equivalence, numeric performance acceptance, production migration, and Cargo
 removal remain separate qualification work.
+
+
+## Native registry family
+
+`aos-dev bazel --family registry-native` selects `aos-registry-client`,
+`aos-registry-authoring`, and `aos-nix-cache`. Separate production and test
+profiles each pin 382 source crates. Both match unchanged Cargo's 308 compiled
+external packages and twenty first-party packages. Nine guarded policies retain
+Cargo's distinct target and generator feature units. The client's optional
+`test-support` feature remains confined to the test profile.
+
+`tests/evidence/native-linux-registry-native.json` retains strict source
+selection, test and production feature parity, Clippy, formatting, documentation,
+license closure, generated API parity, and selected editor checks. All 691
+existing executed cases and eight ignored cases match unchanged Cargo. A new
+preview-lock regression brings the executed count to 692. Two doctests pass;
+the authoring doctest inventory is empty. Thirteen test roots execute uncached
+in the Linux sandbox without a Cargo executable or first-party Cargo manifests
+in the compilation workspace. All four Hub API generated outputs match Cargo.
+
+The declared runtime supplies source-built Git, OpenSSH, Zstd, and Nix. Each
+libtest artifact gets a private rooted local Nix database. Existing fixtures
+apply the numeric-builder identity shim only to selected child processes. No
+service is started. Retained passing-case output confirms the change-request
+and localhost backend tests did not take their tool-availability or socket
+skip paths. The optional evaluated-native-publication fixture is absent, so
+that conditional path remains unqualified. Remote S3/SFTP credentials,
+selected-output and thin-pack fixtures, the Git-version matrix, and the
+performance benchmark account for the eight ignored cases.
+
+Parallel Cargo tests exposed a preview-lock release race: another thread's
+forked child could retain the lock's open-file description until exec. Preview
+now uses the writer's existing explicit-unlock guard without changing its
+read-only behavior. The new regression keeps a duplicate description alive and
+requires a subsequent preview to acquire the lock. A separate sandboxed
+mutation check removes explicit unlock and requires exactly that case to fail.
+`tests/evidence/registry-stage-preview-lock.json` retains the negative check.
+Mechanical Clippy corrections preserve existing assertions and public APIs;
+scoped exceptions document native time, entropy, process-local maps, command
+sizes, transaction arguments, and the existing ignored benchmark and matrix.
+Documentation generation passes with six existing client and eleven authoring
+rustdoc warnings.
+
+The strict inventory contains 35 requested roots, 831 configured reports, and
+372 declared files, including 366 Rust files. OCI and release-format source
+package roots retain nonempty integration-test globs without claiming those
+integration cases execute here. Selected editor diagnostics match: sixteen
+deduplicated diagnostics, 130 raw rows on each side, 952 unselected Cargo rows,
+and no unattributed rows. Both inference reports remain incomplete; aggregate
+statistics and diagnostic multiplicities are not claimed equivalent.
+
+`tests/evidence/registry-native-configured-graph.json` records all thirty
+configured family inventories, 32 source-built dependency specifications, 180
+policy tests, and CLI checks for 25 launchers. The previous thirty dependency
+locks and 4,785 generated crate BUILD files remain unchanged. Metadata parity
+covers 438 Rust targets across 32 analysis-only selections with no external
+actions, and core evaluation passes. Frozen outputs are retained in
+`tests/evidence/registry-native-metadata-evaluation.json`.
+
+External-provider and installed-service gates, foreign/Wasm execution, complete
+compiler invocation equivalence, numeric performance acceptance, production
+migration, and Cargo removal remain separate qualification work.

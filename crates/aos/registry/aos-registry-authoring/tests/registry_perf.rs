@@ -127,6 +127,10 @@ async fn registry_pack_delta_perf_harness_reports_metrics() -> Result<()> {
     Ok(())
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "This opt-in native performance harness measures host elapsed time"
+)]
 async fn timed_async<T>(
     future: impl std::future::Future<Output = Result<T>>,
 ) -> Result<(T, Duration)> {

@@ -268,3 +268,15 @@ config_setting(
     flag_values = {":dependency_profile": "release-preparation"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "registry_native_dependencies",
+    flag_values = {":dependency_profile": "registry-native"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "registry_native_tests_dependencies",
+    flag_values = {":dependency_profile": "registry-native-tests"},
+    visibility = ["//visibility:public"],
+)

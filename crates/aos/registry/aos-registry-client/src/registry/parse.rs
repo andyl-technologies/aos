@@ -96,6 +96,13 @@ pub fn parse_registry(
     Ok((packages, hash_index))
 }
 
+/// Contains latest packages by name, packages by hash, and every selected version.
+pub type ParsedRegistryPackages = (
+    HashMap<String, PackageMeta>,
+    HashMap<String, PackageMeta>,
+    Vec<PackageMeta>,
+);
+
 /// Parse a registry directory, retaining only versions matched by `version_req`.
 ///
 /// A missing `packages/` directory yields empty maps; packages with no entry
@@ -109,11 +116,7 @@ pub fn parse_registry_matching(
     dir: &Path,
     platform: &str,
     version_req: Option<&semver::VersionReq>,
-) -> Result<(
-    HashMap<String, PackageMeta>,
-    HashMap<String, PackageMeta>,
-    Vec<PackageMeta>,
-)> {
+) -> Result<ParsedRegistryPackages> {
     parse_registry_selection(
         dir,
         Some(platform),
@@ -139,11 +142,7 @@ fn parse_registry_selection(
     platform: Option<&str>,
     version_req: Option<&semver::VersionReq>,
     validate_meta: PackageMetaValidator,
-) -> Result<(
-    HashMap<String, PackageMeta>,
-    HashMap<String, PackageMeta>,
-    Vec<PackageMeta>,
-)> {
+) -> Result<ParsedRegistryPackages> {
     let packages_dir = dir.join("packages");
     let mut packages = HashMap::new();
     let mut all_versions = Vec::new();

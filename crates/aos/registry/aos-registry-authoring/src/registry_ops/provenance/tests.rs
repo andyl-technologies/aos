@@ -85,7 +85,7 @@ fn append_package_provenance_transparency_log_is_idempotent() {
     let content = fs::read_to_string(&log_path).unwrap();
     let entries = content
         .lines()
-        .map(|line| serde_json::from_str::<PackageProvenanceTransparencyLogEntry>(line))
+        .map(serde_json::from_str::<PackageProvenanceTransparencyLogEntry>)
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     assert_eq!(entries.len(), 1);
@@ -194,7 +194,7 @@ fn append_package_provenance_transparency_log_rejects_broken_previous_link() {
     let content = fs::read_to_string(&log_path).unwrap();
     let mut entries = content
         .lines()
-        .map(|line| serde_json::from_str::<PackageProvenanceTransparencyLogEntry>(line))
+        .map(serde_json::from_str::<PackageProvenanceTransparencyLogEntry>)
         .collect::<Result<Vec<_>, _>>()
         .unwrap();
     entries[1].body.previous_entry_hash = Some(format!("sha256:{}", "1".repeat(64)));

@@ -162,7 +162,7 @@ impl ApmConfig {
             }
         }
         // Sort by priority descending (highest priority first).
-        registries.sort_by(|a, b| b.0.priority.cmp(&a.0.priority));
+        registries.sort_by_key(|entry| std::cmp::Reverse(entry.0.priority));
 
         Ok(registries)
     }

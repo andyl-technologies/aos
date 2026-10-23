@@ -16,8 +16,13 @@ RUST_PACKAGE = aos_rust_package(
     license_domain = "apache-host",
 )
 
-DEPENDENCIES = [
-    "//crates/shared/aos-transfer:lib_without_transfer",
+# Cargo unifies transfer features across registry acquisition and presentation.
+# Both users must share one crate instance for observer trait identity.
+DEPENDENCIES = select({
+    "//tools/bazel/rules:registry_native_dependencies": ["//crates/shared/aos-transfer:lib"],
+    "//tools/bazel/rules:registry_native_tests_dependencies": ["//crates/shared/aos-transfer:lib"],
+    "//conditions:default": ["//crates/shared/aos-transfer:lib_without_transfer"],
+}) + [
     "//third_party/rust:core_console",
     "//third_party/rust:core_indicatif",
     "//third_party/rust:core_serde_json",

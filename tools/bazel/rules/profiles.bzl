@@ -2,6 +2,8 @@
 
 def _dependency_profile_impl(ctx):
     if ctx.build_setting_value not in [
+        "registry-native",
+        "registry-native-tests",
         "release-preparation",
         "hub-client",
         "hub-model",

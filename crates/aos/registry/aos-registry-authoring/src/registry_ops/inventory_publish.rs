@@ -143,7 +143,7 @@ pub(super) async fn publish_evaluated_package(
                 )?;
             }
 
-            publish_native_artifacts(registry_dir, &package, &platform, &store, &internal_printer)?;
+            publish_native_artifacts(registry_dir, package, &platform, &store, &internal_printer)?;
             for output in &package.outputs {
                 super::output_evidence::publish_output_evidence(
                     registry_dir,

@@ -28,11 +28,13 @@ def _libtest_impl(ctx):
         "--package", _quote(ctx.attr.package_name),
         "--jobs", str(ctx.attr.jobs),
     ]
+    if ctx.file.setup:
+        command = [_runfile(ctx, ctx.file.setup)] + command
     if ctx.attr.allow_empty:
         command.append("--allow-empty")
     if ctx.attr.allow_ignored_only:
         command.append("--allow-ignored-only")
-    runtime_files = []
+    runtime_files = [ctx.file.setup] if ctx.file.setup else []
     exports = []
     if len(ctx.attr.runfile_env_names) != len(ctx.attr.runfile_env_files):
         fail("runfile environment names and inputs differ")
@@ -61,6 +63,7 @@ _libtest_test = rule(
     test = True,
     attrs = {
         "binary": attr.label(mandatory = True, executable = True, cfg = "target"),
+        "setup": attr.label(allow_single_file = True, executable = True, cfg = "exec"),
         "package_name": attr.string(mandatory = True),
         "jobs": attr.int(default = 4),
         "allow_empty": attr.bool(default = False),
@@ -75,7 +78,7 @@ _libtest_test = rule(
     },
 )
 
-def aos_rust_test(name, package_name = None, package = None, jobs = 4, allow_empty = False, allow_ignored_only = False, runfile_env = {}, license_domain = None, tags = [], timeout = "long", size = "medium", args = [], **kwargs):
+def aos_rust_test(name, package_name = None, package = None, jobs = 4, allow_empty = False, allow_ignored_only = False, runfile_env = {}, setup = None, license_domain = None, tags = [], timeout = "long", size = "medium", args = [], **kwargs):
     """Preserves Rust compilation/runfiles while replacing only test scheduling."""
     if kwargs.get("env_inherit", []):
         fail("declare test environment through env; ambient inheritance is not supported")
@@ -109,6 +112,7 @@ def aos_rust_test(name, package_name = None, package = None, jobs = 4, allow_emp
         name = name,
         binary = ":" + name + "_binary",
         package_name = package_name,
+        setup = setup,
         jobs = jobs,
         allow_empty = allow_empty,
         allow_ignored_only = allow_ignored_only,

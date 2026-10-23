@@ -1047,6 +1047,10 @@ impl RegistryReleaseTransaction {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep existing publication transaction inputs explicit without changing their API"
+)]
 async fn prepare_registry(
     intent: &RegistryReleaseIntent,
     source_registry: &Path,
@@ -1414,12 +1418,11 @@ impl PreparedRegistryRelease {
             })
             .transpose()?;
         let mut parents = vec![&parent];
-        if let Some(predecessor) = &predecessor {
-            if parent.id() != predecessor.id()
-                && !repository.graph_descendant_of(parent.id(), predecessor.id())?
-            {
-                parents.push(predecessor);
-            }
+        if let Some(predecessor) = &predecessor
+            && parent.id() != predecessor.id()
+            && !repository.graph_descendant_of(parent.id(), predecessor.id())?
+        {
+            parents.push(predecessor);
         }
         let commit_buffer = repository
             .commit_create_buffer(&signature, &signature, &message, &tree, &parents)
@@ -1953,13 +1956,13 @@ fn set_container_release(directory: &Path, bytes: Option<&[u8]>) -> Result<()> {
         return Ok(());
     }
     let bytes = bytes.context("container sidecar bytes disappeared")?;
-    if let Ok(metadata) = fs::symlink_metadata(&path) {
-        if !metadata.file_type().is_file() {
-            bail!(
-                "container sidecar destination is not a regular file: {}",
-                path.display()
-            );
-        }
+    if let Ok(metadata) = fs::symlink_metadata(&path)
+        && !metadata.file_type().is_file()
+    {
+        bail!(
+            "container sidecar destination is not a regular file: {}",
+            path.display()
+        );
     }
     let mut file = OpenOptions::new()
         .create(true)

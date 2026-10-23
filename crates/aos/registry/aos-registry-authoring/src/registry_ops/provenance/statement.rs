@@ -40,7 +40,7 @@ pub(in crate::registry_ops) fn validate_package_provenance_transparency_statemen
         "statement predicateType",
     )?;
 
-    let predicate = json_object(&statement, "predicate")?;
+    let predicate = json_object(statement, "predicate")?;
     let build_definition = json_object(predicate, "buildDefinition")?;
     let run_details = json_object(predicate, "runDetails")?;
     let builder = json_object(run_details, "builder")?;

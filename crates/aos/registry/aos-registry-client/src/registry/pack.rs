@@ -9,7 +9,6 @@ pub const ZSTD_LEVEL: &str = "-22";
 pub const ZSTD_LONG: &str = "27";
 
 #[cfg(test)]
-
 /// Generate a self-contained full pack over `release_commit`.
 ///
 /// # Errors
@@ -29,7 +28,6 @@ pub async fn full_pack(repo: &Path, release_commit: &str, out_dir: &Path) -> Res
 }
 
 #[cfg(test)]
-
 /// Build a self-contained pack of everything reachable from `release_commit`
 /// with libgit2's pack builder and indexer, named `pack-<hash>.pack` after its
 /// trailing checksum.

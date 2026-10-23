@@ -1,3 +1,4 @@
+load("//tools/bazel/rules:compile.bzl", "cc_binary")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
 
@@ -15,4 +16,14 @@ aos_source_package(
     package = RUST_PACKAGE,
     srcs = glob(["**/*.rs"]),
     visibility = ["//visibility:public"],
+)
+
+# Source-built Git/OpenSSH fixtures need an identity even when the Nix build
+# user is absent from passwd. Existing tests scope this shim to child commands.
+cc_binary(
+    name = "libnix_test_identity.so",
+    srcs = ["tests/nix_builder_identity.c"],
+    copts = ["-O2", "-fPIC", "-Wall", "-Wextra", "-Werror"],
+    linkshared = True,
+    visibility = ["//crates/aos:__subpackages__"],
 )

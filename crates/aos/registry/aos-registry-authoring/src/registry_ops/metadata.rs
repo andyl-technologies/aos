@@ -277,6 +277,10 @@ pub(crate) fn record_named_output(
 /// # Errors
 /// Returns an error when the exact package coordinate is missing or malformed,
 /// an artifact locator is invalid, or feature gates cannot be merged.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep existing publication transaction inputs explicit without changing their API"
+)]
 pub(crate) fn record_native_artifacts(
     existing: &str,
     name: &str,
