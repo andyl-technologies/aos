@@ -1,0 +1,14 @@
+filegroup(
+    name = "engine_contracts",
+    srcs = [
+        "README.md",
+        "bindings.md",
+        "network-faults.md",
+        "reference.md",
+        "signal-driven-faults.md",
+        "signals.md",
+        "storage-node-faults.md",
+        "topology.md",
+    ],
+    visibility = ["//crates/crucible/engine/crucible-engine:__pkg__"],
+)

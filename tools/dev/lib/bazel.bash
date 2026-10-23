@@ -5,20 +5,25 @@ aos_dev_bazel() (
   (( $# > 0 )) || aos_dev_error 'bazel requires a command and optional labels'
   if [[ $1 == update-deps ]]; then
     shift
-    [[ $# == 1 && ( $1 == core || $1 == device || $1 == store || $1 == guest ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device|store|guest>'
+    [[ $# == 1 && ( $1 == core || $1 == device || $1 == store || $1 == guest || $1 == engine ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device|store|guest|engine>'
     local updater specifications family=$1
     updater=$(aos_dev_nix_build_ordinary -A pkgs.aosBazelDependencyUpdater --no-out-link)
     specifications=$(aos_dev_nix_build_ordinary -A "checks.build.bazel.dependencies.specification-packages.$family" --no-out-link)
     "$updater/bin/aos-bazel-rust-update" \
       --root "$aos_dev_root" --specifications "$specifications/specifications.json" \
+      --seed-lock "$aos_dev_root/third_party/rust/$family/Cargo.lock" \
       --output "$aos_dev_root/third_party/rust/$family"
     return
   fi
 
   local launcher_attribute=pkgs.aosBazelLauncher
   if [[ $1 == --family ]]; then
-    [[ $# -ge 3 && $2 == guest ]] || aos_dev_error 'usage: aos-dev bazel --family guest <command> [labels]'
-    launcher_attribute=pkgs.aosBazelGuestLauncher
+    [[ $# -ge 3 ]] || aos_dev_error 'usage: aos-dev bazel --family <guest|engine> <command> [labels]'
+    case $2 in
+      guest) launcher_attribute=pkgs.aosBazelGuestLauncher ;;
+      engine) launcher_attribute=pkgs.aosBazelEngineLauncher ;;
+      *) aos_dev_error 'usage: aos-dev bazel --family <guest|engine> <command> [labels]' ;;
+    esac
     shift 2
   fi
 
@@ -30,6 +35,8 @@ aos_dev_bazel() (
     project_options=(--rust-project-output "$aos_dev_root/rust-project.json")
     if [[ $launcher_attribute == pkgs.aosBazelGuestLauncher ]]; then
       project_options+=(--rust-project-package crates/crucible/guest/crucible-guest)
+    elif [[ $launcher_attribute == pkgs.aosBazelEngineLauncher ]]; then
+      project_options+=(--rust-project-package crates/crucible/engine/crucible-engine)
     fi
     set -- build "$@"
   fi

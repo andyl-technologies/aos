@@ -2,3 +2,18 @@ exports_files([
     "phase1-production-fingerprint-sample.nix",
     "phase7-production-rust-plugin-flight.nix",
 ])
+
+exports_files(["engineering-hygiene-baseline.txt"])
+
+filegroup(
+    name = "engine_fixture_inputs",
+    srcs = [
+        "fixtures/debugger-live-x86_64.scenario.toml",
+        "fixtures/debugger-live-aarch64.scenario.toml",
+        "fixtures/live-qemu-search.scenario.toml",
+        "fixtures/live-qemu-fuzz.family.toml",
+        "fixtures/nginx-curl-http-200.scenario.toml",
+        "fixtures/happy-path.scenario.toml",
+    ],
+    visibility = ["//crates/crucible/engine/crucible-engine:__pkg__"],
+)

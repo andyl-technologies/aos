@@ -381,7 +381,7 @@ must never become global inputs to every compilation action.
 
 `third_party/rust/BUILD.bazel` declares crate_universe specifications without a
 first-party Cargo manifest. Build the specification package normally, then run
-`aos-dev bazel update-deps <core|device|store>` to resolve the selected
+`aos-dev bazel update-deps <core|device|store|guest|engine>` to resolve the selected
 third-party dependency profile explicitly.
 This command uses source-built Cargo and cargo-bazel in a private temporary
 Cargo home. It is the network-enabled update boundary; ordinary build and test
@@ -601,6 +601,39 @@ requirements before cutover.
 identities and four first-party packages, six installed CLI comparisons,
 static runtime inputs and closure, and the scoped editor comparison. The
 117 policy tests and direct `aos-dev` command regression check also pass.
+
+## Engine conversion
+
+`tools/bazel/tests/engine.nix` exposes the engine's default, `test-support`,
+`test-double`, and combined feature checks. Each configuration compares exact
+test cases, ignored cases, examples, doctests, and first-party and external
+features with an offline Cargo oracle. Its `all` target also requests Clippy,
+formatting, documentation, and editor parity. Qualification is in progress;
+production consumers retain their existing builders.
+
+Three integration artifacts have no cases without `test-double`. Those labels
+have explicit empty-test allowances; parity requires the corresponding Cargo
+artifacts to exist and to list no cases. Other zero-case selections still fail.
+
+```sh
+aos-dev bazel --family engine test //crates/crucible/engine/crucible-engine:unit
+aos-dev bazel --family engine rust-project //crates/crucible/engine/crucible-engine:lib
+aos-dev bazel update-deps engine
+nix-build tools/bazel/tests/engine.nix -A all \
+  --no-out-link --max-jobs 4 --cores 4 --option substitute false
+```
+
+The family launcher selects the engine dependency profile, declared SQLite and
+threaded zstd imports, and Cargo's optimized test settings, including debug
+assertions and overflow checks. The `engine` profile preserves the shared-memory
+protocol's reviewed permissive dependency closure while keeping other host
+dependencies in their existing license domain.
+
+Source audits receive their Rust files, fixtures, and documentation as declared
+inputs. The repository-wide size audit uses `//crates:source_catalog`; the
+temporary Cargo oracle receives the same generated catalog. Bazel compilation
+does not consume first-party Cargo manifests. Engine-specific test source and
+runtime inputs remain scoped to the tests that inspect them.
 
 ## Shared Crucible protocol graph
 
@@ -856,6 +889,10 @@ retains the Cargo artifact profiles and the engine compile failure that exposed
 the mismatch. The initial storage timing run was interrupted; no result from
 that run is accepted. Earlier storage case/feature and runtime checks retain
 their recorded scope and do not establish compiler-profile equivalence.
+The corrected storage qualification passes all four feature configurations,
+native and installed runtime checks, and whole-model editor parity. The same
+evidence file records its immutable configuration, report hashes, and case
+counts; performance acceptance remains separate.
 
 Source selection indexes selected paths and their ancestors once instead of
 scanning every inventory path for each candidate file.

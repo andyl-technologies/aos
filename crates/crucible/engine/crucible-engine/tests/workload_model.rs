@@ -246,11 +246,13 @@ fn workload_reserved_parameter_rejects_malformed_toml_and_binary_forms() {
 
 #[test]
 fn engine_source_has_no_application_traffic_origination_path() {
-    let mut engine_sources = Vec::new();
-    collect_rust_sources(
-        &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
-        &mut engine_sources,
+    // Bazel declares the runtime source tree separately from its compile action.
+    let source_directory = std::env::var_os("AOS_ENGINE_SOURCE_DIR").map_or_else(
+        || Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+        PathBuf::from,
     );
+    let mut engine_sources = Vec::new();
+    collect_rust_sources(&source_directory, &mut engine_sources);
     assert!(!engine_sources.is_empty());
 
     let forbidden_needles = [

@@ -52,12 +52,12 @@ aos_rust_test(
         crate_features = ["default"],
         deps = [":lib"] + DEPENDENCIES,
     )
-    for source in glob(["tests/*.rs"])
+    for source in glob(["tests/*.rs"], allow_empty = True)
 ]
 
 TEST_ARTIFACTS = [":unit_binary"] + [
     ":" + source.removeprefix("tests/").removesuffix(".rs") + "_binary"
-    for source in glob(["tests/*.rs"])
+    for source in glob(["tests/*.rs"], allow_empty = True)
 ]
 
 rust_doc_test(

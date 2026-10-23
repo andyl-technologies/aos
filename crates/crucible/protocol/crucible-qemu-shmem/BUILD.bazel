@@ -15,6 +15,14 @@ RUST_PACKAGE = aos_rust_package(
 
 package(default_visibility = ["//crates/crucible:__subpackages__"])
 
+exports_files(
+    ["src/abi_version.in"],
+    visibility = [
+        "//crates/crucible/engine/crucible-engine:__pkg__",
+        "//crates/crucible/testing/crucible-test-support:__pkg__",
+    ],
+)
+
 DEPENDENCIES = [
     "//third_party/rust:core_blake3",
     "//third_party/rust:core_libc",
@@ -54,7 +62,7 @@ aos_rust_test(
         crate_root = source,
         srcs = [source] + glob([source.removesuffix(".rs") + "/**/*.rs"], allow_empty = True),
         deps = [":lib"] + DEPENDENCIES,
-        compile_data = glob(["src/**/*.rs", "include/**", "tests/fixtures/**"]),
+        compile_data = glob(["src/**/*.rs"]) + glob(["include/**", "tests/fixtures/**"], allow_empty = True),
     )
     for source in glob(["tests/*.rs"])
 ]
