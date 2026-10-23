@@ -36,6 +36,24 @@ def _package_impl(ctx):
     for destination in ctx.attr.executables:
         if destination not in destinations:
             fail("executable destination is not a declared artifact: " + destination)
+    for target, destination in ctx.attr.directories.items():
+        check_domains(ctx.label, ctx.attr.license_domain, target[AosLicenseInfo].domains.to_list())
+        destination = _destination(destination)
+        if destination in destinations:
+            fail("duplicate package destination: " + destination)
+        destinations[destination] = True
+        files = target[DefaultInfo].files.to_list()
+        if len(files) != 1 or not files[0].is_directory:
+            fail("each package directory must select exactly one tree artifact: " + str(target.label))
+        output = ctx.actions.declare_directory(ctx.label.name + ".trees/" + destination)
+        ctx.actions.symlink(output = output, target_file = files[0])
+        outputs.append(output)
+        entries.append({
+            "destination": destination,
+            "source": ctx.label.name + ".trees/" + destination,
+            "kind": "directory",
+            "mode": "0644",
+        })
     manifest = ctx.actions.declare_file(ctx.label.name + ".aos-package.json")
     label = str(ctx.label)
     if label.startswith("@@//"):
@@ -62,6 +80,7 @@ _aos_package = rule(
     implementation = _package_impl,
     attrs = {
         "artifacts": attr.label_keyed_string_dict(mandatory = True, allow_files = True, aspects = [aos_license_aspect]),
+        "directories": attr.label_keyed_string_dict(allow_files = True, aspects = [aos_license_aspect]),
         "executables": attr.string_list(),
         "package_name": attr.string(mandatory = True),
         "version": attr.string(mandatory = True),

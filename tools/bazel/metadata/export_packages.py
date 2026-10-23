@@ -68,16 +68,38 @@ def export_manifest(manifest, output):
     package.mkdir(parents=True)
     destinations = set()
     artifacts = []
+    entries = []
     for entry in metadata["artifacts"]:
         destination = relative_path(entry["destination"])
-        source_name = relative_path(entry["source"])
-        if str(destination) in destinations:
-            raise ValueError(f"duplicate package destination: {destination}")
+        source = manifest.parent / relative_path(entry["source"])
+        kind = entry.get("kind", "file")
+        if kind == "file":
+            entries.append((entry, source))
+        elif kind == "directory":
+            if not source.is_dir():
+                raise ValueError(f"missing or invalid package directory: {source}")
+            # Package rules alias declared tree artifacts just as they alias
+            # regular files. Inspect the completed tree, never sandbox input links.
+            source = source.resolve(strict=True)
+            for path in sorted(source.rglob("*")):
+                if path.is_symlink() or not (path.is_file() or path.is_dir()):
+                    raise ValueError(f"nonregular package directory entry: {path}")
+                if path.is_file():
+                    entries.append(({
+                        "destination": str(destination / path.relative_to(source)),
+                        "mode": entry["mode"],
+                    }, path))
+        else:
+            raise ValueError(f"unsupported package artifact kind: {kind}")
+    for entry, source in entries:
+        destination = relative_path(entry["destination"])
+        if any(destination == previous or destination in previous.parents or previous in destination.parents
+               for previous in map(PurePosixPath, destinations)):
+            raise ValueError(f"overlapping package destination: {destination}")
         destinations.add(str(destination))
         mode = entry["mode"]
         if mode not in {"0644", "0755"}:
             raise ValueError(f"unsupported artifact mode: {mode}")
-        source = manifest.parent / source_name
         if not source.is_file():
             raise ValueError(f"missing package artifact: {source}")
         target = package / "files" / destination

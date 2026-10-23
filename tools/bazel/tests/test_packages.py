@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -88,6 +89,57 @@ class PackageTests(unittest.TestCase):
         events[-1]["completed"]["success"] = False
         with self.assertRaisesRegex(ValueError, "unsuccessful"):
             exporter.completed_manifests(events)
+
+    def add_tree(self):
+        source = self.root / "generated-assets"
+        source.mkdir()
+        (source / "console-12345678.js").write_bytes(b"content-addressed module")
+        nested = source / "fonts"
+        nested.mkdir()
+        (nested / "font.woff2").write_bytes(b"font bytes")
+        self.metadata["artifacts"].append({
+            "source": source.name, "destination": "assets", "kind": "directory", "mode": "0644",
+        })
+        return source
+
+    def test_generated_tree_is_flattened_hashed_and_installed(self):
+        self.add_tree()
+        package = self.export()
+        entries = json.loads((package / "manifest.json").read_text())["artifacts"]
+        self.assertEqual({entry["destination"] for entry in entries}, {
+            "bin/app", "assets/console-12345678.js", "assets/fonts/font.woff2",
+        })
+        self.assertTrue(all("sha256" in entry and "kind" not in entry for entry in entries))
+
+        self.install()
+        self.assertEqual((self.root / "installed/assets/fonts/font.woff2").read_bytes(), b"font bytes")
+
+    def test_generated_tree_rejects_links(self):
+        source = self.add_tree()
+        (source / "escape").symlink_to(self.root / "fixture.files/bin/app")
+        with self.assertRaisesRegex(ValueError, "nonregular"):
+            self.export()
+
+    def test_generated_tree_rejects_special_files(self):
+        source = self.add_tree()
+        os.mkfifo(source / "pipe")
+        with self.assertRaisesRegex(ValueError, "nonregular"):
+            self.export()
+
+    def test_generated_tree_cannot_overlap_explicit_files(self):
+        self.add_tree()
+        self.metadata["artifacts"][0]["destination"] = "assets/fonts"
+        with self.assertRaisesRegex(ValueError, "overlapping"):
+            self.export()
+
+    def test_generated_tree_alias_is_resolved_before_regular_file_validation(self):
+        source = self.add_tree()
+        link = self.root / "linked-assets"
+        link.symlink_to(source, target_is_directory=True)
+        self.metadata["artifacts"][-1]["source"] = link.name
+        self.export()
+        self.install()
+        self.assertEqual((self.root / "installed/assets/fonts/font.woff2").read_bytes(), b"font bytes")
 
 
 if __name__ == "__main__":

@@ -127,6 +127,7 @@ in
     dependencies = import ./_bazel-dependencies.nix {inherit pkgs;};
     protocol = import ./_bazel-protocol.nix {inherit pkgs;};
     shared = import ./_bazel-shared.nix {inherit pkgs;};
+    directory-packages = import ./_bazel-directory-packages.nix {inherit pkgs;};
     device = import ./_bazel-device.nix {inherit pkgs;};
     store = import ./_bazel-store.nix {inherit pkgs;};
     guest = import ./_bazel-guest.nix {inherit pkgs;};
@@ -477,6 +478,7 @@ in
             store-s3.all
             daemon.all
             crucible-cli.all
+            directory-packages
             formats.all
             contracts.all
             native-foundation.all
