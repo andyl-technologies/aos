@@ -411,10 +411,10 @@ fn desired(
         replacement: None,
         complete: false,
     };
-    if operation != "membership" {
-        if let Some(old) = prior.filter(|old| old.input == *input) {
-            receipt.rows = old.rows.clone();
-        }
+    if operation != "membership"
+        && let Some(old) = prior.filter(|old| old.input == *input)
+    {
+        receipt.rows = old.rows.clone();
     }
     let mut wanted = BTreeSet::new();
     let mut replace_membership = false;
@@ -492,14 +492,13 @@ fn desired(
                     "existing principal login, home, or description differs from managed policy"
                 );
             }
-            if let Some(prior) = prior {
-                if prior
+            if let Some(prior) = prior
+                && prior
                     .rows
                     .get(file)
                     .is_some_and(|line| line.split(':').next() == Some(value.name.as_str()))
-                {
-                    receipt.rows = prior.rows.clone();
-                }
+            {
+                receipt.rows = prior.rows.clone();
             }
         } else {
             ensure!(
@@ -929,6 +928,7 @@ fn execute_at(
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
     fn fixture() -> tempfile::TempDir {
