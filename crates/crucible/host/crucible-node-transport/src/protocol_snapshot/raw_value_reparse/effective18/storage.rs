@@ -210,6 +210,7 @@ impl NativeImport18EffectiveTextConstructionData {
             + size_of::<std::slice::Iter<'static, Edge>>()
             + size_of::<std::slice::Iter<'static, Frame>>()
             + size_of::<std::collections::btree_map::Iter<'static, String, usize>>()
+            + size_of::<std::collections::btree_map::Keys<'static, String, usize>>()
             + size_of::<(&String, &usize)>()
             + size_of::<Option<(&String, &usize)>>()
             + size_of::<std::ops::Range<usize>>()
@@ -279,7 +280,7 @@ impl NativeImport18EffectiveTextAttemptData {
                         containers = add(containers, 1)?;
                     }
                     members = add(members, values.len())?;
-                    for (key, _) in values {
+                    for key in values.keys() {
                         text = add(text, key.capacity())?;
                     }
                 }

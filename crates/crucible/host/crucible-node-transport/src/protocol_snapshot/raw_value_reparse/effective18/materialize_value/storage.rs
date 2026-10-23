@@ -92,7 +92,7 @@ impl ConstructionData {
                         &mut row,
                         constructors::map_insertion_series_data(values.len(), maximum)?,
                     )?;
-                    for (key, _) in values {
+                    for key in values.keys() {
                         combine(
                             &mut row,
                             constructors::string_copy_data(key.len(), maximum)?,
@@ -328,6 +328,9 @@ fn fixed_counter_data() -> usize {
         + size_of::<std::slice::Iter<'static, usize>>()
         + size_of::<std::slice::Iter<'static, Node>>()
         + size_of::<std::collections::btree_map::Iter<'static, String, usize>>()
+        + size_of::<std::collections::btree_map::Keys<'static, String, usize>>()
+        + size_of::<&String>()
+        + size_of::<Option<&String>>()
         + size_of::<(&String, &usize)>()
         + size_of::<Option<(&String, &usize)>>()
         + size_of::<&mut Vec<Work>>()
