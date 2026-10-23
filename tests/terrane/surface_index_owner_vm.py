@@ -50,7 +50,10 @@ def verify_surface(image, source):
 
 def main():
     """Runs real provision/query/publisher processes and bounded confined actors."""
-    image, source = map(Path, sys.argv[1:])
+    image, source = map(Path, sys.argv[1:3])
+    scenario = sys.argv[3]
+    require(scenario in {"owner", "cold-retained-file", "cold-retired-file"},
+            "unknown native surface scenario")
     require(os.geteuid() == 0, "surface supervisor requires explicit administration")
     spec = importlib.util.spec_from_file_location("native_owner_support", image / "share/host_cache_vm.py")
     require(spec is not None and spec.loader is not None, "native support unavailable")
@@ -140,6 +143,19 @@ def main():
             require(publisher.poll() is None and time.monotonic() < deadline,
                     "actual surface publisher failed preparation: " + result.stderr)
             time.sleep(0.02)
+        if scenario != "owner":
+            witnesses = {
+                "cold-retained-file": "PASS funded cold recovery re-verifies original sealed file and retains descriptor through new Resume and publisher retirement; exact inode charges release only on final closure before exposure reconciliation",
+                "cold-retired-file": "PASS funded recovery retains already-unlinked original file as draining custody without adoption; new Resume preserves readable descriptor and exact charges until authenticated final closure",
+            }
+            result = actor("pin", scenario, timeout=120)
+            require(result.returncode == 0 and result.stdout.splitlines() == [
+                "PASS surface admission requires actual recovery and acknowledged Resume",
+                witnesses[scenario]], "actual cold file recovery actor failed: " + scenario)
+            verify_surface(image, source)
+            print("PASS independent native surface scenario: " + scenario, flush=True)
+            return
+
         expected = {
             "run": [
                 "PASS surface admission requires actual recovery and acknowledged Resume",
@@ -207,16 +223,6 @@ def main():
             "PASS surface admission requires actual recovery and acknowledged Resume",
             "PASS funded cold recovery retains actual old mapping and draining exposure through new Resume; unchanged native obligations discharge only after final unmap and authenticated closure"],
             "actual retained cold exposure recovery actor failed")
-        result = actor("pin", "cold-retained-file", timeout=120)
-        require(result.returncode == 0 and result.stdout.splitlines() == [
-            "PASS surface admission requires actual recovery and acknowledged Resume",
-            "PASS funded cold recovery re-verifies original sealed file and retains descriptor through new Resume and publisher retirement; exact inode charges release only on final closure before exposure reconciliation"],
-            "actual retained cold file recovery actor failed")
-        result = actor("pin", "cold-retired-file", timeout=120)
-        require(result.returncode == 0 and result.stdout.splitlines() == [
-            "PASS surface admission requires actual recovery and acknowledged Resume",
-            "PASS funded recovery retains already-unlinked original file as draining custody without adoption; new Resume preserves readable descriptor and exact charges until authenticated final closure"],
-            "actual unlinked cold file recovery actor failed")
         objects = support.root("empty") / "objects"
         originals = list(objects.glob(".terrane-surface:2:*"))
         require(len(originals) == 1, "cold refusal has no unique real admitted index")

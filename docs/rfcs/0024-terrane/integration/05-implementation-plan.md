@@ -15970,3 +15970,18 @@ absolute 90-second exposure deadline and uses it for the enclosed file request.
 No production check or deadline changes. Strict all-feature/all-target Clippy,
 actual fixture compilation, formatting and diff checks pass. The original failed
 receipt remains failed; fresh native qualification is required.
+
+
+#### Independent retained-file native lifecycles
+
+The surface-owner qualification now requires three independent disposable ext4
+VMs: the complete original owner sequence including retained-index recovery,
+retained named-file recovery, and recovery of an already-unlinked original file.
+Each file scenario starts with a freshly provisioned project and genuine original
+publisher/quota services. All original assertions remain selected; each file
+actor retains its existing 120-second limit and every guest retains the original
+180-second limit. The aggregate succeeds only when all three actual VM results
+are PASS and retains links to all complete receipts. Separating genuine grace
+windows prevents cumulative fixture work from enlarging the original contract.
+The installed supervisor and actual compiler-artifact verification run before
+and after each scenario. Fresh native qualification remains required.
