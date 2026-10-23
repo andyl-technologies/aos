@@ -1,0 +1,728 @@
+{
+  "compiled_rust_and_cargo_manifests_match_default_source": true,
+  "default_baseline": "daemon-cargo-baseline.json",
+  "default_source": "/nix/store/mfi2mwzhl74fc711lasgmxnl752083vr-crucible-cargo-src",
+  "limits": [
+    "No performance or Bazel execution claim is made.",
+    "Original ignored cases remain ignored; required-feature integration suites are included in their enabled configurations."
+  ],
+  "schema_version": 1,
+  "status": "all three additional Cargo feature oracles passed; Bazel qualification pending",
+  "tested_tree_parent_commit": "1535e41998e561050bfe7032152d209070e3da4d",
+  "variants": {
+    "all_features": {
+      "bazel_metadata_changes_from_default_source": {
+        "crates/crucible/control/crucible-control-api/BUILD.bazel": {
+          "default_sha256": "117849e2851829207a9053604faf86155a972118e564201b4c11b96d33194482",
+          "variant_sha256": "2d623e4ff2820e1f9a45d0e3a8fd2165fbd66e42b20b35fe5ef3f5954904e692"
+        },
+        "crates/crucible/control/crucible-control-client/BUILD.bazel": {
+          "default_sha256": "034a2fa852a063e55a5f92c467b862194098ad645ce5aa45e4fcbbe3ff0776c8",
+          "variant_sha256": "8c215189fc9f88199c9916d2a3d75939c86208fb58132303f5ca373f0af57098"
+        },
+        "crates/crucible/control/crucible-control-server/BUILD.bazel": {
+          "default_sha256": "f4ec52dd18f4d4bc0f16e5f74d44185aa08500f4ac0e71bdc4d555329c614351",
+          "variant_sha256": "355f7ddc85e1a81631e8850753c986e1bdba545698217e1ae879a45cd9dfbd00"
+        },
+        "crates/crucible/control/crucible-daemon/BUILD.bazel": {
+          "default_sha256": "4513487402c6d0d243354d679f6597cedc008273e688fe010c70e3cd72e7ba43",
+          "variant_sha256": "2000d322b614492c9f5c0625236bace3daf9b50b0a36540610d298cd0f5e9c35"
+        },
+        "crates/crucible/control/crucible-session/BUILD.bazel": {
+          "default_sha256": "d5137cb964338fa1a4e9adf3c89411b9ce62a2170f1c9af0d77069e5dbdc7b88",
+          "variant_sha256": "17da26c7134e7e85fdfe900d5a7828cb6b16415795764ae8f9a1c704cac76020"
+        },
+        "crates/crucible/engine/crucible-engine/BUILD.bazel": {
+          "default_sha256": "7bd15ecb9eea0abdeccb468665c16a218483b92a188a46d51aadf1240525a8a0",
+          "variant_sha256": "6821547982c295ce149ff777da5e7f9bf82b7cdb8d508096a8bda8c885a42802"
+        },
+        "crates/crucible/guest/crucible-guest/BUILD.bazel": {
+          "default_sha256": "8ee53679b200a4ee39334189637e06b77639765360e992f2dd409626f385efab",
+          "variant_sha256": "5de72929be6e92d6935d3eeab6bad343c0cb8478c5d8adef74170d41635aa455"
+        },
+        "crates/crucible/qemu/crucible-qemu-host/BUILD.bazel": {
+          "default_sha256": "80d62e5bd32605bec33a0fcec3860467049c6e72c39368735ab904e97dbdfd36",
+          "variant_sha256": "af9318173e4bf2f0dfd49ad67ecd74e8f1b56efae89112a1c927b5a71e2d0113"
+        },
+        "crates/crucible/storage/crucible-store-s3/BUILD.bazel": {
+          "default_sha256": "cec82ca6887e335ff6bd45b241f034b7ec1d103d657768dfdb13208849a3f069",
+          "variant_sha256": "55c4bfd604b30d563cc87d3a26963ad4c3bc1e9aed24f2623db3211eae2da19c"
+        }
+      },
+      "derivation": "/nix/store/ghnm37yznismsx0l1qacscqsqzy1c56z-aos-bazel-daemon-all_features-cargo-oracle-1.drv",
+      "executed_cases": 1125,
+      "external_crate_identities": 264,
+      "external_features_match_default_baseline": true,
+      "first_party_features": {
+        "aos-linux-project-quota": [
+          []
+        ],
+        "crucible-campaign": [
+          [
+            "destructive-recovery-faults"
+          ]
+        ],
+        "crucible-control-api": [
+          []
+        ],
+        "crucible-control-client": [
+          []
+        ],
+        "crucible-control-server": [
+          [
+            "default",
+            "test-support"
+          ]
+        ],
+        "crucible-daemon": [
+          [
+            "default",
+            "destructive-recovery-faults",
+            "test-support"
+          ]
+        ],
+        "crucible-determinism": [
+          []
+        ],
+        "crucible-device": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-engine": [
+          [
+            "default",
+            "test-double",
+            "test-support"
+          ]
+        ],
+        "crucible-guest": [
+          []
+        ],
+        "crucible-qemu-host": [
+          [
+            "default",
+            "test-support"
+          ]
+        ],
+        "crucible-qemu-protocol": [
+          []
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ],
+        "crucible-session": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-store": [
+          [
+            "destructive-recovery-faults"
+          ]
+        ],
+        "crucible-store-s3": [
+          []
+        ]
+      },
+      "ignored_cases": 26,
+      "libtest_artifacts": 6,
+      "output": "/nix/store/n7wy6ksp0ppqxbjc4nrdpy58zqy7wdp8-aos-bazel-daemon-all_features-cargo-oracle-1",
+      "report_sha256": {
+        "cargo-messages.jsonl": "ca72627593dfbfdb7b393bed6f700d00771ecb012c957793b5baa6b26f5bf5a1",
+        "cargo-tests.log": "16ac1633afca4f466a9c581cd8fbbbe252ee640122f6085c8554167649474395"
+      },
+      "source": "/nix/store/lnlhhniqmsc5rjz2qxn4zn08g1b9l8ki-crucible-cargo-src",
+      "targets": {
+        "crucible-daemon/gate_campaign_component_contract": {
+          "added_executed_cases": [
+            "same_campaign_survives_direct_rpc_and_independent_component_restarts"
+          ],
+          "binary_sha256": "99d02769fdf6fcd49be48598bcdcec7920108b5a962059dbf94fd0fb57dddc85",
+          "executed_cases": 1,
+          "ignored": [
+            "coordinator_process_helper",
+            "executor_process_helper"
+          ],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          },
+          "removed_executed_cases": []
+        },
+        "crucible-daemon/gate_campaign_metadata_million": {
+          "added_executed_cases": [],
+          "binary_sha256": "357d926b8e612c7b6ead4d7db4d7194ad8d5c47da238f5864ffd5b63e5e131cf",
+          "executed_cases": 1,
+          "ignored": [
+            "million_real_admissions_fit_compact_metadata_budget",
+            "small_real_admission_corpus_exercises_the_same_path"
+          ],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          },
+          "removed_executed_cases": []
+        },
+        "crucible-daemon/gate_control_responsive": {
+          "added_executed_cases": [],
+          "binary_sha256": "0bb6de1f9bcf4155d000aba5b6a9dd1f59e88c36207ae84123ca5a08e8f2d005",
+          "executed_cases": 3,
+          "ignored": [],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          },
+          "removed_executed_cases": []
+        },
+        "crucible-daemon/gate_exact_closure_streaming": {
+          "added_executed_cases": [
+            "direct_production_closure_streams_across_durable_placements_and_failures"
+          ],
+          "binary_sha256": "8f5af9130ad683136cfcf1afcbe4456ba4aff1d46dc5ea13ce7563daabb26030",
+          "executed_cases": 1,
+          "ignored": [],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          },
+          "removed_executed_cases": []
+        },
+        "crucible-daemon/production_effect_matrix": {
+          "added_executed_cases": [],
+          "binary_sha256": "6f3308bbfb423748680b6a4788375109bcd1984012a05a3bd9eb6941b55fc350",
+          "executed_cases": 1,
+          "ignored": [],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          },
+          "removed_executed_cases": []
+        },
+        "crucible-daemon/unit": {
+          "added_executed_cases": [
+            "exact_checkpoint_store::production::tests::production_exact_capture_enospc_restart_retries_root_last_publication",
+            "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::child_resource_alias_rejects_before_fork_and_restores_source_world",
+            "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::world_fork_preflight_failure_restores_source_world",
+            "vm_lifecycle::checkpoint_store::tests::baked_snapshot_catalog_exposes_only_authenticated_modeled_snapshots",
+            "vm_lifecycle::checkpoint_store::tests::materialized_baked_snapshots_survive_native_catalog_retirement",
+            "vm_lifecycle::checkpoint_store::tests::v9_artifact_refusal::v9_loader_rejects_missing_or_corrupt_device_chunks",
+            "vm_lifecycle::checkpoint_store::tests::v9_exact_ram_fixture_retains_the_complete_layer_chain",
+            "vm_lifecycle::checkpoint_store::tests::v9_exact_ram_loader_authenticates_declared_sha256_digests",
+            "vm_lifecycle::checkpoint_store::tests::v9_exact_ram_loader_derives_the_qmp_identity_from_authenticated_state",
+            "vm_lifecycle::quantum_loop::checkpoint_capture::tests::failed_terminal_capture_refreshes_same_configuration_snapshot",
+            "vm_lifecycle::quantum_loop::checkpoint_capture::tests::indeterminate_v9_retry_rehydrates_the_parent_used_by_the_next_delta",
+            "vm_lifecycle::quantum_loop::tests::terminal_v9_restore_rejects_a_stale_precommit_snapshot"
+          ],
+          "binary_sha256": "9995882b774b1bdcdcfd0c8a417dee14753ade67d7841c5e901144f4eb6d9b63",
+          "executed_cases": 1118,
+          "ignored": [
+            "executor_worker::tests::host_watchdog_child_fixture",
+            "planner_process::pipes::tests::child",
+            "qemu_campaign_lifecycle::tests::host_parallel_native::production_lifecycle_host_parallel_rounds_are_canonical_and_recoverable",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_meets_whole_world_performance_ratchets",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_scales_across_three_guest_memory_sizes",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_scales_across_three_semantic_template_depths",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_single_node_hot_fork_matches_thin_and_exact",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_single_vm_child_ready_p95_is_below_100_milliseconds",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_whole_world_survives_ten_thousand_lifecycles_without_leaks",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::siblings::production_managed_source_keeps_bounded_native_siblings_live",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_exposes_no_world_when_second_real_adoption_fails",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_exposes_no_world_when_second_real_fork_fails",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_across_repository_publication_retry",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_until_target_cleanup_retries",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_source_preparation_failure_exposes_no_template",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::final_audit::production_hot_fork_resource_roots_are_clean_after_packaged_flights",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_aliased_child_files_with_live_qemu_source",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_missing_child_file_with_live_qemu_source",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::production_source_idle_prefix_reaches_exact_tick"
+          ],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          },
+          "removed_executed_cases": []
+        }
+      }
+    },
+    "recovery_faults": {
+      "bazel_metadata_changes_from_default_source": {
+        "crates/crucible/control/crucible-control-api/BUILD.bazel": {
+          "default_sha256": "117849e2851829207a9053604faf86155a972118e564201b4c11b96d33194482",
+          "variant_sha256": "2d623e4ff2820e1f9a45d0e3a8fd2165fbd66e42b20b35fe5ef3f5954904e692"
+        },
+        "crates/crucible/control/crucible-control-client/BUILD.bazel": {
+          "default_sha256": "034a2fa852a063e55a5f92c467b862194098ad645ce5aa45e4fcbbe3ff0776c8",
+          "variant_sha256": "8c215189fc9f88199c9916d2a3d75939c86208fb58132303f5ca373f0af57098"
+        },
+        "crates/crucible/control/crucible-control-server/BUILD.bazel": {
+          "default_sha256": "f4ec52dd18f4d4bc0f16e5f74d44185aa08500f4ac0e71bdc4d555329c614351",
+          "variant_sha256": "355f7ddc85e1a81631e8850753c986e1bdba545698217e1ae879a45cd9dfbd00"
+        },
+        "crates/crucible/control/crucible-daemon/BUILD.bazel": {
+          "default_sha256": "4513487402c6d0d243354d679f6597cedc008273e688fe010c70e3cd72e7ba43",
+          "variant_sha256": "2000d322b614492c9f5c0625236bace3daf9b50b0a36540610d298cd0f5e9c35"
+        },
+        "crates/crucible/control/crucible-session/BUILD.bazel": {
+          "default_sha256": "d5137cb964338fa1a4e9adf3c89411b9ce62a2170f1c9af0d77069e5dbdc7b88",
+          "variant_sha256": "17da26c7134e7e85fdfe900d5a7828cb6b16415795764ae8f9a1c704cac76020"
+        },
+        "crates/crucible/engine/crucible-engine/BUILD.bazel": {
+          "default_sha256": "7bd15ecb9eea0abdeccb468665c16a218483b92a188a46d51aadf1240525a8a0",
+          "variant_sha256": "6821547982c295ce149ff777da5e7f9bf82b7cdb8d508096a8bda8c885a42802"
+        },
+        "crates/crucible/guest/crucible-guest/BUILD.bazel": {
+          "default_sha256": "8ee53679b200a4ee39334189637e06b77639765360e992f2dd409626f385efab",
+          "variant_sha256": "5de72929be6e92d6935d3eeab6bad343c0cb8478c5d8adef74170d41635aa455"
+        },
+        "crates/crucible/qemu/crucible-qemu-host/BUILD.bazel": {
+          "default_sha256": "80d62e5bd32605bec33a0fcec3860467049c6e72c39368735ab904e97dbdfd36",
+          "variant_sha256": "af9318173e4bf2f0dfd49ad67ecd74e8f1b56efae89112a1c927b5a71e2d0113"
+        },
+        "crates/crucible/storage/crucible-store-s3/BUILD.bazel": {
+          "default_sha256": "cec82ca6887e335ff6bd45b241f034b7ec1d103d657768dfdb13208849a3f069",
+          "variant_sha256": "55c4bfd604b30d563cc87d3a26963ad4c3bc1e9aed24f2623db3211eae2da19c"
+        }
+      },
+      "derivation": "/nix/store/b9gqwyypxqm66b0k6dy2y3j25iawjkfd-aos-bazel-daemon-recovery_faults-cargo-oracle-1.drv",
+      "executed_cases": 1114,
+      "external_crate_identities": 264,
+      "external_features_match_default_baseline": true,
+      "first_party_features": {
+        "aos-linux-project-quota": [
+          []
+        ],
+        "crucible-campaign": [
+          [
+            "destructive-recovery-faults"
+          ]
+        ],
+        "crucible-control-api": [
+          []
+        ],
+        "crucible-control-client": [
+          []
+        ],
+        "crucible-control-server": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-daemon": [
+          [
+            "default",
+            "destructive-recovery-faults"
+          ]
+        ],
+        "crucible-determinism": [
+          []
+        ],
+        "crucible-device": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-engine": [
+          [
+            "default",
+            "test-double",
+            "test-support"
+          ]
+        ],
+        "crucible-guest": [
+          []
+        ],
+        "crucible-qemu-host": [
+          [
+            "default",
+            "test-support"
+          ]
+        ],
+        "crucible-qemu-protocol": [
+          []
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ],
+        "crucible-session": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-store": [
+          [
+            "destructive-recovery-faults"
+          ]
+        ],
+        "crucible-store-s3": [
+          []
+        ]
+      },
+      "ignored_cases": 24,
+      "libtest_artifacts": 4,
+      "output": "/nix/store/p3mwp2bqc6gn6wsk1lk3bbkiz8qd92pj-aos-bazel-daemon-recovery_faults-cargo-oracle-1",
+      "report_sha256": {
+        "cargo-messages.jsonl": "db66fd0d498dc81571bc36456ee5a0f318010bdcd198cc422c8195b5a52df87a",
+        "cargo-tests.log": "5ac3e326c1fd6fcf708a50fb5473ece49d885654ca6fabb62a1a4b351a75d96a"
+      },
+      "source": "/nix/store/lnlhhniqmsc5rjz2qxn4zn08g1b9l8ki-crucible-cargo-src",
+      "targets": {
+        "crucible-daemon/gate_campaign_metadata_million": {
+          "added_executed_cases": [],
+          "binary_sha256": "97d36d19469dbfb340cd37d9354ef2c09b7056294e4ed66f7145b342024e4523",
+          "executed_cases": 1,
+          "ignored": [
+            "million_real_admissions_fit_compact_metadata_budget",
+            "small_real_admission_corpus_exercises_the_same_path"
+          ],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          },
+          "removed_executed_cases": []
+        },
+        "crucible-daemon/gate_control_responsive": {
+          "added_executed_cases": [],
+          "binary_sha256": "d0e83f3cffa65835f1ba3b8daf3c95be0f543f7fe8a1c4cda98b367197959f7b",
+          "executed_cases": 3,
+          "ignored": [],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          },
+          "removed_executed_cases": []
+        },
+        "crucible-daemon/production_effect_matrix": {
+          "added_executed_cases": [],
+          "binary_sha256": "91f3d4bfe130d64fe8e9ebe55c35ec7d40326ff1af580bfa420421aac5f1fb3f",
+          "executed_cases": 1,
+          "ignored": [],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          },
+          "removed_executed_cases": []
+        },
+        "crucible-daemon/unit": {
+          "added_executed_cases": [
+            "exact_checkpoint_store::production::tests::production_exact_capture_enospc_restart_retries_root_last_publication",
+            "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::child_resource_alias_rejects_before_fork_and_restores_source_world",
+            "qemu_hot_fork_world_factory::tests::reconciliation::lifecycle::world_fork_preflight_failure_restores_source_world"
+          ],
+          "binary_sha256": "adde438f76799b78436877f88112f6d8a091e5bed9e9c2919436053ab35f522b",
+          "executed_cases": 1109,
+          "ignored": [
+            "executor_worker::tests::host_watchdog_child_fixture",
+            "planner_process::pipes::tests::child",
+            "qemu_campaign_lifecycle::tests::host_parallel_native::production_lifecycle_host_parallel_rounds_are_canonical_and_recoverable",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_meets_whole_world_performance_ratchets",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_scales_across_three_guest_memory_sizes",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_scales_across_three_semantic_template_depths",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_single_node_hot_fork_matches_thin_and_exact",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_single_vm_child_ready_p95_is_below_100_milliseconds",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_whole_world_survives_ten_thousand_lifecycles_without_leaks",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::siblings::production_managed_source_keeps_bounded_native_siblings_live",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_exposes_no_world_when_second_real_adoption_fails",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_exposes_no_world_when_second_real_fork_fails",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_across_repository_publication_retry",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_until_target_cleanup_retries",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_source_preparation_failure_exposes_no_template",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::final_audit::production_hot_fork_resource_roots_are_clean_after_packaged_flights",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_aliased_child_files_with_live_qemu_source",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_missing_child_file_with_live_qemu_source",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::production_source_idle_prefix_reaches_exact_tick"
+          ],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          },
+          "removed_executed_cases": []
+        }
+      }
+    },
+    "test_support": {
+      "bazel_metadata_changes_from_default_source": {
+        "crates/crucible/control/crucible-control-api/BUILD.bazel": {
+          "default_sha256": "117849e2851829207a9053604faf86155a972118e564201b4c11b96d33194482",
+          "variant_sha256": "2d623e4ff2820e1f9a45d0e3a8fd2165fbd66e42b20b35fe5ef3f5954904e692"
+        },
+        "crates/crucible/control/crucible-control-client/BUILD.bazel": {
+          "default_sha256": "034a2fa852a063e55a5f92c467b862194098ad645ce5aa45e4fcbbe3ff0776c8",
+          "variant_sha256": "8c215189fc9f88199c9916d2a3d75939c86208fb58132303f5ca373f0af57098"
+        },
+        "crates/crucible/control/crucible-control-server/BUILD.bazel": {
+          "default_sha256": "f4ec52dd18f4d4bc0f16e5f74d44185aa08500f4ac0e71bdc4d555329c614351",
+          "variant_sha256": "355f7ddc85e1a81631e8850753c986e1bdba545698217e1ae879a45cd9dfbd00"
+        },
+        "crates/crucible/control/crucible-daemon/BUILD.bazel": {
+          "default_sha256": "4513487402c6d0d243354d679f6597cedc008273e688fe010c70e3cd72e7ba43",
+          "variant_sha256": "2000d322b614492c9f5c0625236bace3daf9b50b0a36540610d298cd0f5e9c35"
+        },
+        "crates/crucible/control/crucible-session/BUILD.bazel": {
+          "default_sha256": "d5137cb964338fa1a4e9adf3c89411b9ce62a2170f1c9af0d77069e5dbdc7b88",
+          "variant_sha256": "17da26c7134e7e85fdfe900d5a7828cb6b16415795764ae8f9a1c704cac76020"
+        },
+        "crates/crucible/engine/crucible-engine/BUILD.bazel": {
+          "default_sha256": "7bd15ecb9eea0abdeccb468665c16a218483b92a188a46d51aadf1240525a8a0",
+          "variant_sha256": "6821547982c295ce149ff777da5e7f9bf82b7cdb8d508096a8bda8c885a42802"
+        },
+        "crates/crucible/guest/crucible-guest/BUILD.bazel": {
+          "default_sha256": "8ee53679b200a4ee39334189637e06b77639765360e992f2dd409626f385efab",
+          "variant_sha256": "5de72929be6e92d6935d3eeab6bad343c0cb8478c5d8adef74170d41635aa455"
+        },
+        "crates/crucible/qemu/crucible-qemu-host/BUILD.bazel": {
+          "default_sha256": "80d62e5bd32605bec33a0fcec3860467049c6e72c39368735ab904e97dbdfd36",
+          "variant_sha256": "af9318173e4bf2f0dfd49ad67ecd74e8f1b56efae89112a1c927b5a71e2d0113"
+        },
+        "crates/crucible/storage/crucible-store-s3/BUILD.bazel": {
+          "default_sha256": "cec82ca6887e335ff6bd45b241f034b7ec1d103d657768dfdb13208849a3f069",
+          "variant_sha256": "55c4bfd604b30d563cc87d3a26963ad4c3bc1e9aed24f2623db3211eae2da19c"
+        }
+      },
+      "derivation": "/nix/store/kgi9jk53aa9dcjizl512whx97fwymgba-aos-bazel-daemon-test_support-cargo-oracle-1.drv",
+      "executed_cases": 1122,
+      "external_crate_identities": 264,
+      "external_features_match_default_baseline": true,
+      "first_party_features": {
+        "aos-linux-project-quota": [
+          []
+        ],
+        "crucible-campaign": [
+          []
+        ],
+        "crucible-control-api": [
+          []
+        ],
+        "crucible-control-client": [
+          []
+        ],
+        "crucible-control-server": [
+          [
+            "default",
+            "test-support"
+          ]
+        ],
+        "crucible-daemon": [
+          [
+            "default",
+            "test-support"
+          ]
+        ],
+        "crucible-determinism": [
+          []
+        ],
+        "crucible-device": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-engine": [
+          [
+            "default",
+            "test-double",
+            "test-support"
+          ]
+        ],
+        "crucible-guest": [
+          []
+        ],
+        "crucible-qemu-host": [
+          [
+            "default",
+            "test-support"
+          ]
+        ],
+        "crucible-qemu-protocol": [
+          []
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ],
+        "crucible-session": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-store": [
+          []
+        ],
+        "crucible-store-s3": [
+          []
+        ]
+      },
+      "ignored_cases": 26,
+      "libtest_artifacts": 6,
+      "output": "/nix/store/m8v0ickikyxrazgnplmnci0skqfmm7ga-aos-bazel-daemon-test_support-cargo-oracle-1",
+      "report_sha256": {
+        "cargo-messages.jsonl": "e3eb2ccefcaf509fcad7602ed43117db9da2de2a1349819a1667563f8001e7df",
+        "cargo-tests.log": "92b354fb8c4a64b23b463ce5173106cf52210db1dd5abfd64aa9607270160e0d"
+      },
+      "source": "/nix/store/lnlhhniqmsc5rjz2qxn4zn08g1b9l8ki-crucible-cargo-src",
+      "targets": {
+        "crucible-daemon/gate_campaign_component_contract": {
+          "added_executed_cases": [
+            "same_campaign_survives_direct_rpc_and_independent_component_restarts"
+          ],
+          "binary_sha256": "9d5c28c0653b8cedc76b39c9f2b632bc7175cadb4161be830bcbfa5fa8aa8cee",
+          "executed_cases": 1,
+          "ignored": [
+            "coordinator_process_helper",
+            "executor_process_helper"
+          ],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          },
+          "removed_executed_cases": []
+        },
+        "crucible-daemon/gate_campaign_metadata_million": {
+          "added_executed_cases": [],
+          "binary_sha256": "29cef062dd692284c7abec83ff9be70634c6512d522c3110a83ca99bbe49e70f",
+          "executed_cases": 1,
+          "ignored": [
+            "million_real_admissions_fit_compact_metadata_budget",
+            "small_real_admission_corpus_exercises_the_same_path"
+          ],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          },
+          "removed_executed_cases": []
+        },
+        "crucible-daemon/gate_control_responsive": {
+          "added_executed_cases": [],
+          "binary_sha256": "698c78f6449b03943d9fcbb5c0a8f4419649b985611baf3b8a30d0d0a27efc2e",
+          "executed_cases": 3,
+          "ignored": [],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          },
+          "removed_executed_cases": []
+        },
+        "crucible-daemon/gate_exact_closure_streaming": {
+          "added_executed_cases": [
+            "direct_production_closure_streams_across_durable_placements_and_failures"
+          ],
+          "binary_sha256": "cbd386d7b95bdac47817e772ea4ebdda66ab5734d03a6d00e213a3ce717cc31f",
+          "executed_cases": 1,
+          "ignored": [],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          },
+          "removed_executed_cases": []
+        },
+        "crucible-daemon/production_effect_matrix": {
+          "added_executed_cases": [],
+          "binary_sha256": "19fd2b63c1f81b6bde05d26333c2e9e85a6d66f495889ccf818e74b5056871cd",
+          "executed_cases": 1,
+          "ignored": [],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          },
+          "removed_executed_cases": []
+        },
+        "crucible-daemon/unit": {
+          "added_executed_cases": [
+            "vm_lifecycle::checkpoint_store::tests::baked_snapshot_catalog_exposes_only_authenticated_modeled_snapshots",
+            "vm_lifecycle::checkpoint_store::tests::materialized_baked_snapshots_survive_native_catalog_retirement",
+            "vm_lifecycle::checkpoint_store::tests::v9_artifact_refusal::v9_loader_rejects_missing_or_corrupt_device_chunks",
+            "vm_lifecycle::checkpoint_store::tests::v9_exact_ram_fixture_retains_the_complete_layer_chain",
+            "vm_lifecycle::checkpoint_store::tests::v9_exact_ram_loader_authenticates_declared_sha256_digests",
+            "vm_lifecycle::checkpoint_store::tests::v9_exact_ram_loader_derives_the_qmp_identity_from_authenticated_state",
+            "vm_lifecycle::quantum_loop::checkpoint_capture::tests::failed_terminal_capture_refreshes_same_configuration_snapshot",
+            "vm_lifecycle::quantum_loop::checkpoint_capture::tests::indeterminate_v9_retry_rehydrates_the_parent_used_by_the_next_delta",
+            "vm_lifecycle::quantum_loop::tests::terminal_v9_restore_rejects_a_stale_precommit_snapshot"
+          ],
+          "binary_sha256": "26a6a3863bbd423b68dda2185dca9116f0cb7f5434529713ba83311254657678",
+          "executed_cases": 1115,
+          "ignored": [
+            "executor_worker::tests::host_watchdog_child_fixture",
+            "planner_process::pipes::tests::child",
+            "qemu_campaign_lifecycle::tests::host_parallel_native::production_lifecycle_host_parallel_rounds_are_canonical_and_recoverable",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_matches_thin_and_exact_from_execution_and_exact_templates",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_meets_whole_world_performance_ratchets",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_scales_across_three_guest_memory_sizes",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_hot_fork_scales_across_three_semantic_template_depths",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_single_node_hot_fork_matches_thin_and_exact",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_single_vm_child_ready_p95_is_below_100_milliseconds",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::production_whole_world_survives_ten_thousand_lifecycles_without_leaks",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::equivalence::siblings::production_managed_source_keeps_bounded_native_siblings_live",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_exposes_no_world_when_second_real_adoption_fails",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_exposes_no_world_when_second_real_fork_fails",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_across_repository_publication_retry",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_factory_keeps_source_private_until_target_cleanup_retries",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::failures::production_source_preparation_failure_exposes_no_template",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::final_audit::production_hot_fork_resource_roots_are_clean_after_packaged_flights",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_aliased_child_files_with_live_qemu_source",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_native_negative::production_factory_rejects_missing_child_file_with_live_qemu_source",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::isolation_negative::production_factory_rejects_the_complete_isolation_negative_matrix_before_readiness",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::production_factory_forks_complete_live_world_atomically",
+            "qemu_hot_fork_world_factory::tests::native_acceptance::production_source_idle_prefix_reaches_exact_tick"
+          ],
+          "profile": {
+            "debug_assertions": true,
+            "debuginfo": 0,
+            "opt_level": "s",
+            "overflow_checks": true,
+            "test": true
+          },
+          "removed_executed_cases": []
+        }
+      }
+    }
+  }
+}
