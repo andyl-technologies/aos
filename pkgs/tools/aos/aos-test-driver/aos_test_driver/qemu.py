@@ -79,6 +79,7 @@ class QemuMachine(Machine):
     var_size_mib: int | None
     extra_disks: list[dict[str, object]]
     host_store_mount: bool
+    filter_unicast: bool
     extra_disk_copies: list[str]
     memory_mib: int
     vcpu_count: int
@@ -122,6 +123,7 @@ class QemuMachine(Machine):
         var_size_mib: int | None = None,
         extra_disks: list[dict[str, object]] | None = None,
         host_store_mount: bool = False,
+        filter_unicast: bool = False,
         tpm: bool = False,
         swtpm_bin: str | None = None,
         kernel_params: list[str] | None = None,
@@ -138,6 +140,7 @@ class QemuMachine(Machine):
         self.var_size_mib = var_size_mib
         self.extra_disks = extra_disks or []
         self.host_store_mount = host_store_mount
+        self.filter_unicast = filter_unicast
         self.extra_disk_copies = []
         self.memory_mib = memory_mib
         self.vcpu_count = vcpu_count
@@ -582,6 +585,8 @@ class QemuMachine(Machine):
             argv += ["-no-reboot"]
 
         log.info("[%s] qemu argv: %s", self.name, " ".join(argv))
+        if self.filter_unicast and sys.platform != "linux":
+            raise RuntimeError("multicast receive filtering requires Linux")
         self._qemu_log_fd = open(self.qemu_log, "ab")
         self.qemu_proc = subprocess.Popen(
             argv,
@@ -601,12 +606,20 @@ class QemuMachine(Machine):
         if sys.platform == "linux":
             try:
                 receive, send = configure_multicast_buffers(
-                    self.qemu_proc.pid, (MCAST_GROUP, MCAST_PORT)
+                    self.qemu_proc.pid,
+                    (MCAST_GROUP, MCAST_PORT),
+                    destination_mac=self.mac if self.filter_unicast else None,
                 )
                 log.info(
                     "[%s] multicast buffers: receive=%d send=%d", self.name, receive, send
                 )
+                if self.filter_unicast:
+                    log.info("[%s] multicast receive destination filter installed", self.name)
             except OSError as error:
+                if self.filter_unicast:
+                    raise RuntimeError(
+                        f"[{self.name}] required multicast receive filter unavailable"
+                    ) from error
                 # Restricted hosts can deny pidfd_getfd. Keep ordinary boot
                 # available and expose the untuned transport in the test log.
                 log.warning(

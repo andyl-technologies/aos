@@ -846,12 +846,14 @@ in {
   timeout = fleetBodyTimeout;
   bootTimeout = 600;
 
+  # Keep bulk frames for one role out of unrelated multicast receive queues.
   machines =
     {
       client = {
         system = clientSystem;
         bootMode = "image";
         hostStoreMount = true;
+        filterUnicast = true;
         # Signed container preparation retains both its full source cache and
         # staged publication. The proxy workload also needs this headroom.
         imageDiskMiB = 32768;
@@ -865,6 +867,7 @@ in {
         system = nativeSystem;
         bootMode = "image";
         hostStoreMount = true;
+        filterUnicast = true;
         hostAliases = ["aos-origin.fleet.test"];
         # Native-only parity retains the finalized OCI graph, upload chunks,
         # multipart assembly, and immutable readback snapshots together.
@@ -876,6 +879,7 @@ in {
         system = edgeSystem;
         bootMode = "image";
         hostStoreMount = true;
+        filterUnicast = true;
         hostAliases = ["aos.fleet.test"];
         # Worker-only parity retains its signed source graph beside the R2
         # emulator's multipart parts and finalized objects.
@@ -888,6 +892,7 @@ in {
         system = edgeSystem;
         bootMode = "image";
         hostStoreMount = true;
+        filterUnicast = true;
         hostAliases = ["s3.fleet.test"];
         imageDiskMiB =
           if externalDirect
@@ -902,6 +907,7 @@ in {
         system = databaseSystem;
         bootMode = "image";
         hostStoreMount = true;
+        filterUnicast = true;
         imageDiskMiB = 16384;
         memoryMiB = 2048;
         varProvisioning = "repart";

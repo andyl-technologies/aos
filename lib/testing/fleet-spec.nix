@@ -209,6 +209,18 @@
         '';
       };
 
+      filterUnicast = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Filter Ethernet unicast for other MAC addresses before it enters this
+          QEMU guest's host multicast receive queue. Broadcast and multicast
+          remain available. Requires Linux and access to the owned QEMU socket;
+          leave disabled for guests that need promiscuous reception. Applies to
+          the Python test driver.
+        '';
+      };
+
       hostStoreMount = mkOption {
         type = types.bool;
         default = false;

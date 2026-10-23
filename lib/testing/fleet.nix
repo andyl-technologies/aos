@@ -95,6 +95,7 @@
       extraModules = m.extraModules or [];
       extraClosures = m.extraClosures or [];
       hostStoreMount = m.hostStoreMount or false;
+      filterUnicast = m.filterUnicast or false;
       metadata = m.metadata or {};
       varSizeMiB = m.varSizeMiB or 256;
       imageDiskMiB = m.imageDiskMiB or 40960;
@@ -301,7 +302,7 @@
           m.extraDisks;
       in
         {
-          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB vcpuCount expectAgent hostStoreMount;
+          inherit (m) name ip mac debugMac index packages bootMode tpm varProvisioning varSizeMiB memoryMiB vcpuCount expectAgent hostStoreMount filterUnicast;
           extraDisks = resolvedExtraDisks;
           inherit metadataISO;
           system = effectiveSystem;
@@ -375,6 +376,7 @@
                 expect_agent = mb.expectAgent;
                 extra_disks = mb.extraDisks;
                 host_store_mount = mb.hostStoreMount;
+                filter_unicast = mb.filterUnicast;
                 swtpm_bin = "${pkgs.swtpm}/bin/swtpm";
               }
               // (
