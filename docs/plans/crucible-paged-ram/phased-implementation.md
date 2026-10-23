@@ -975,6 +975,22 @@ fall from 763 to 759 with five warnings. All three tuple-complexity findings
 and the immediate closure-call finding are removed without lint exemptions.
 Mandatory application-target compilation remains required for this test revision.
 
+The Target dispatcher now retains its actual unresolved native join owner when
+the facade is abandoned. A single-publication slot lives in the containing
+state allocated before worker birth; its exact layout is included in the
+existing control peak. Abandonment moves the unique record into that slot
+before retaining the state and payer, without allocation, joining or a new
+wait. A native-zero result still clears the active owner before independent
+Cleanup postchecks. All thirteen dispatcher component tests pass, including a
+real blocked worker whose unchanged identity and unqueried native handle
+survive transfer and subsequently observe actual return. The source-shape
+integration check and Nix engineering hygiene pass. The matching strict Host
+lint command reports 690 library errors and fourteen warnings, with 757 test
+errors and five warnings; both previous non-Drop ownership diagnostics are
+removed without exemptions. Mandatory application-target compilation remains
+required for this revision. These component results do not issue Main custody
+or qualify complete native retirement.
+
 #### Cumulative construction and request ownership source
 
 Signed atomic `e82bb4c78da7af3351ef6473935a2be2feb01a2d` imports conventional

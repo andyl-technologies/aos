@@ -50,6 +50,7 @@ fn mechanism_state(
         running: Mutex::new((0..capacity).map(|_| None).collect()),
         shutdown: AtomicBool::new(false),
         worker_exited: AtomicBool::new(false),
+        retained_worker: OnceLock::new(),
         startup: Mutex::new(None),
         outcome: Mutex::new(None),
         wake,
@@ -818,5 +819,65 @@ fn failed_worker_startup_keeps_independent_original_post_after_physical_close()
             })
         ))
     ));
+    Ok(())
+}
+
+#[cfg(target_env = "gnu")]
+#[test]
+fn abandoned_worker_keeps_its_actual_join_owner_in_preborn_state()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+
+    let directory = tempfile::tempdir()?;
+    let state = mechanism_state(directory.path(), 1)?;
+    assert!(state.retained_worker.get().is_none());
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None)?;
+    let original = supervisor.begin(HostOperationClass::Preparation)?;
+    let (release, blocked) = std::sync::mpsc::sync_channel(1);
+    let worker = thread::spawn(move || blocked.recv().unwrap());
+    let identity = worker.thread().id();
+    let mut dispatcher = TargetDispatcher {
+        purpose: None,
+        capacity: 1,
+        state: Some(state),
+        worker: Some(NativeJoinOwner::from_worker(worker)),
+        worker_born: true,
+        failed: true,
+        cleanup: None,
+        phase: WorkerPhase::Reserved,
+        worker_panic: Mutex::new(None),
+        startup_history: DispatcherStartupHistory::default(),
+        join_observations: [(None, None); 2],
+        path: directory.path().to_owned(),
+    };
+
+    // Exercise Drop's exact transfer without leaking its retained Arc into the
+    // test process. No Main issuer, join observation or new recipient is made.
+    dispatcher.retain_abandoned_worker();
+    dispatcher.retain_abandoned_worker();
+
+    assert!(dispatcher.worker.is_none());
+    let state = dispatcher.state.take().unwrap();
+    let mut state = Arc::try_unwrap(state).ok().unwrap();
+    let retained = state.retained_worker.get_mut().unwrap();
+    assert_eq!(retained.thread_id(), identity);
+    assert_eq!(retained.last_status(), None);
+    assert!(retained.belongs_to_current_process());
+
+    // The same unique native owner remains capable of observing real return.
+    // This component cleanup does not assert authenticated Main retirement.
+    release.send(())?;
+    loop {
+        let slice = original.wait_slice()?;
+        let observed = retained.poll()?;
+        original.wait_slice()?;
+        if observed == NativeJoinObservation::Returned {
+            break;
+        }
+        thread::sleep(slice.min(WATCHER_WAIT_POLL_INTERVAL));
+    }
+    assert_eq!(retained.last_status(), Some(0));
     Ok(())
 }

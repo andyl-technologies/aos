@@ -13,7 +13,7 @@ use crucible_host_resources::host_services::process_birth::{
 use crucible_host_resources::host_supervision::{HostOperationGuard, HostRetryCadence};
 use rustix::event::epoll;
 use std::sync::atomic::AtomicBool;
-use std::sync::{Mutex, TryLockError};
+use std::sync::{Mutex, OnceLock, TryLockError};
 
 const RUNTIME_CONTROL_OVERLAP: u64 = 2 * 1024 * 1024;
 
@@ -54,6 +54,9 @@ struct DispatcherState {
     readiness: OwnedFd,
     shutdown: AtomicBool,
     worker_exited: AtomicBool,
+    // Included in control_peak and allocated before worker birth. Only the
+    // containing dispatcher publishes its unique join owner here on abandonment.
+    retained_worker: OnceLock<NativeJoinOwner>,
     // The actual worker publishes its fallible local buffer allocation before
     // start can accept jobs. The same state retains the initiating failure.
     startup: Mutex<Option<Result<(), std::collections::TryReserveError>>>,
@@ -231,6 +234,19 @@ impl TargetDispatcher {
         }
     }
 
+    /// Moves unresolved native ownership into its already-paid containing state.
+    fn retain_abandoned_worker(&mut self) {
+        // start installs state before publishing worker, and never starts twice.
+        // Neither the worker nor any job writes this cell. Taking our unique
+        // owner makes this the sole publication, even if called again; therefore
+        // get_or_init cannot contend, wait, or discard an incoming owner.
+        if let Some(state) = self.state.as_ref()
+            && let Some(worker) = self.worker.take()
+        {
+            state.retained_worker.get_or_init(|| worker);
+        }
+    }
+
     pub(crate) fn purpose(&self) -> Option<&AuthenticatedTargetDispatcherPurpose> {
         self.purpose.as_ref()
     }
@@ -354,6 +370,7 @@ impl TargetDispatcher {
             readiness,
             shutdown: AtomicBool::new(false),
             worker_exited: AtomicBool::new(false),
+            retained_worker: OnceLock::new(),
             startup: Mutex::new(None),
             outcome: Mutex::new(None),
             wake,
@@ -525,7 +542,7 @@ impl TargetDispatcher {
                 };
                 // The actual native zero is recorded before independent post.
                 if matches!(observed, Ok(NativeJoinObservation::Returned)) {
-                    drop(self.worker.take());
+                    self.worker = None;
                     self.phase = WorkerPhase::Joined;
                 }
                 let after = cleanup.wait_slice();
@@ -1407,7 +1424,7 @@ impl Drop for TargetDispatcher {
         }
         // Drop never invents a wait or new deadline. Explicit finish owns real
         // join; otherwise these actual owners remain paid until Main exits.
-        std::mem::forget(self.worker.take());
+        self.retain_abandoned_worker();
         std::mem::forget(self.state.take());
         std::mem::forget(self.purpose.take());
         std::mem::forget(self.cleanup.take());
