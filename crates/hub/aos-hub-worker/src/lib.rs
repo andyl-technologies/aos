@@ -138,6 +138,8 @@ mod bridge_dispatch;
 pub mod bridge;
 #[cfg(target_arch = "wasm32")]
 pub mod consoleports;
+#[cfg(any(target_arch = "wasm32", test))]
+mod coordinator_protocol;
 #[cfg(target_arch = "wasm32")]
 pub mod coordinatorobj;
 #[cfg(all(target_arch = "wasm32", feature = "do-e2e"))]
