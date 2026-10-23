@@ -152,18 +152,18 @@ impl Activation {
     ) -> Result<ActivationOutcome> {
         let retirement: Vec<_> = retire.iter().cloned().collect();
         let fingerprint = super::journal::policy_fingerprint(desired, &retirement, policy)?;
-        if let Some((id, content, outputs)) = &self.state.completed {
-            if transaction == Some(id.as_str()) {
-                ensure!(
-                    content == &fingerprint,
-                    "transaction identity reused with different content"
-                );
-                self.preflight(desired, adapter)?;
-                return Ok(ActivationOutcome {
-                    outputs: outputs.clone(),
-                    deferred: self.state.completed_deferred.clone(),
-                });
-            }
+        if let Some((id, content, outputs)) = &self.state.completed
+            && transaction == Some(id.as_str())
+        {
+            ensure!(
+                content == &fingerprint,
+                "transaction identity reused with different content"
+            );
+            self.preflight(desired, adapter)?;
+            return Ok(ActivationOutcome {
+                outputs: outputs.clone(),
+                deferred: self.state.completed_deferred.clone(),
+            });
         }
         self.preflight(desired, adapter)?;
         if let Some(active) = self.state.active.clone() {
