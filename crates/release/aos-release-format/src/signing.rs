@@ -4,6 +4,8 @@
 //! command line. The response repeats the request digest and signer role so it
 //! cannot be replayed across releases, registries, roles, or operations.
 
+use std::collections::BTreeSet;
+
 use anyhow::{Context as _, Result, bail};
 use base64::Engine as _;
 use ed25519_dalek::pkcs8::DecodePublicKey as _;
@@ -630,11 +632,32 @@ impl TrustedEd25519Key {
     }
 }
 
+/// Validates that a trust roster contains independent Ed25519 keys.
+pub(crate) fn validate_trusted_ed25519_keys(keys: &[TrustedEd25519Key]) -> Result<()> {
+    let mut key_ids = BTreeSet::new();
+    let mut public_keys = BTreeSet::new();
+
+    for key in keys {
+        require_identifier(&key.key_id, "trusted key id")?;
+        VerifyingKey::from_bytes(&key.public_key).context("parsing trusted Ed25519 public key")?;
+        if !key_ids.insert(key.key_id.as_str()) {
+            bail!("trusted key input contains duplicate key ids");
+        }
+        if !public_keys.insert(key.public_key) {
+            bail!("trusted key input contains duplicate public key material");
+        }
+    }
+
+    Ok(())
+}
+
 fn parse_public_key(encoded: &[u8]) -> Result<[u8; 32]> {
     if encoded.len() == 32 {
-        return encoded
+        let bytes = encoded
             .try_into()
-            .map_err(|_| anyhow::anyhow!("Ed25519 public key must contain 32 bytes"));
+            .map_err(|_| anyhow::anyhow!("Ed25519 public key must contain 32 bytes"))?;
+        VerifyingKey::from_bytes(&bytes).context("parsing Ed25519 public key")?;
+        return Ok(bytes);
     }
     let text = std::str::from_utf8(encoded)
         .context("Ed25519 public key is neither raw bytes nor UTF-8")?
@@ -747,6 +770,8 @@ pub fn verify_response_binding(
 
 #[cfg(test)]
 mod tests {
+    use ed25519_dalek::SigningKey;
+
     use super::*;
 
     fn request() -> SigningRequest {
@@ -769,6 +794,29 @@ mod tests {
             payload_digest: Sha256Digest::of_bytes("payload"),
             approval_policy_digest: Sha256Digest::of_bytes("approval"),
         }
+    }
+
+    fn trusted_key(key_id: &str, seed: u8) -> TrustedEd25519Key {
+        TrustedEd25519Key {
+            key_id: key_id.to_owned(),
+            public_key: SigningKey::from_bytes(&[seed; 32])
+                .verifying_key()
+                .to_bytes(),
+        }
+    }
+
+    #[test]
+    fn trusted_key_rosters_require_unique_cryptographic_material() {
+        let independent = [
+            trusted_key("key-1", 1),
+            trusted_key("key-2", 2),
+            trusted_key("key-3", 3),
+        ];
+        assert!(validate_trusted_ed25519_keys(&independent).is_ok());
+
+        let aliases = [trusted_key("key-1", 1), trusted_key("key-2", 1)];
+        let error = validate_trusted_ed25519_keys(&aliases).unwrap_err();
+        assert!(error.to_string().contains("duplicate public key material"));
     }
 
     #[test]

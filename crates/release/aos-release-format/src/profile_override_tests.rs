@@ -129,6 +129,23 @@ fn threshold_signed_overrides_bind_into_the_plan() -> anyhow::Result<()> {
     forged.authority_id = "evidence-a".into();
     assert!(verify(&[first.clone(), signed(&forged, 12)]).is_err());
 
+    let aliased_keys = [trusted("evidence-a", 11), trusted("evidence-b", 11)];
+    let aliased_second = signed(&emergency(&plan, "evidence-b"), 11);
+    let alias_error = verify_overrides(
+        &contract,
+        &plan.registry,
+        &plan.release_id,
+        &plan.signers,
+        &[first.clone(), aliased_second],
+        &aliased_keys,
+    )
+    .unwrap_err();
+    assert!(
+        alias_error
+            .to_string()
+            .contains("duplicate public key material")
+    );
+
     let accepted = verify(&[first, second])?;
     assert_eq!(accepted.signers, ["evidence-a", "evidence-b"]);
     assert!(

@@ -788,6 +788,23 @@ fn independent_review_follows_the_destination_review_threshold() -> anyhow::Resu
     let reviewed = STABLE;
 
     assert!(verify_reviews(&plan, reviewed, report, &[bytes.clone()], &keys).is_ok());
+    let alias = crate::signing::TrustedEd25519Key {
+        key_id: "review-key-alias".into(),
+        public_key: keys[0].public_key,
+    };
+    let alias_error = verify_reviews(
+        &plan,
+        reviewed,
+        report,
+        &[bytes.clone()],
+        &[keys[0].clone(), alias],
+    )
+    .unwrap_err();
+    assert!(
+        alias_error
+            .to_string()
+            .contains("duplicate public key material")
+    );
     assert!(verify_reviews(&plan, reviewed, report, &[], &keys).is_err());
     assert!(
         verify_reviews(

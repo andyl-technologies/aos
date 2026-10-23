@@ -122,7 +122,7 @@ async fn write_metadata_with_signer(
     let previous_root = published_root.as_ref().or(existing_root.as_ref());
 
     let (keys, roles) = root_policy_for_signers(previous_root, &signing_keys);
-    validate_root_policy(&keys, &roles)?;
+    validate_root_policy_for_registry(&keys, &roles, registry)?;
 
     let now = unix_now_secs();
     let root_signed = RootSigned {

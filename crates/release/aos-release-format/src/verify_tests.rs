@@ -962,6 +962,26 @@ fn complete_release_fixture_verifies() -> anyhow::Result<()> {
 }
 
 #[test]
+fn release_verification_rejects_trusted_key_aliases() -> anyhow::Result<()> {
+    let fixture = release_fixture()?;
+    let alias = TrustedEd25519Key {
+        key_id: "key-releaseevidence-alias".to_owned(),
+        public_key: fixture.key.public_key,
+    };
+
+    let error = verify_release(
+        &fixture.plan,
+        &fixture.envelope,
+        &fixture.files,
+        &[fixture.key, alias],
+    )
+    .unwrap_err();
+
+    assert!(error.to_string().contains("duplicate public key material"));
+    Ok(())
+}
+
+#[test]
 fn release_plan_rejects_a_destination_without_its_gates() -> anyhow::Result<()> {
     let fixture = release_fixture()?;
     let mut plan: ReleasePlan = canonical::from_slice(&fixture.plan, "release plan")?;

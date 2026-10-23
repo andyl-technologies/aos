@@ -7,6 +7,7 @@ use aos_registry_format::tuf::*;
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use sha2::{Digest, Sha256};
+use ssh_key::PublicKey;
 use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::Path;
@@ -61,8 +62,8 @@ pub fn verify_commit_metadata(
     let snapshot: Envelope<SnapshotSigned> = parse_envelope(&files.snapshot, SNAPSHOT_JSON)?;
     let timestamp: Envelope<TimestampSigned> = parse_envelope(&files.timestamp, TIMESTAMP_JSON)?;
 
-    validate_root_policy(&root.signed.keys, &root.signed.roles)?;
     ensure_registry(&root.signed.registry, registry, ROOT_JSON)?;
+    validate_root_policy_for_registry(&root.signed.keys, &root.signed.roles, registry)?;
     ensure_registry(&targets.signed.registry, registry, TARGETS_JSON)?;
     ensure_registry(&snapshot.signed.registry, registry, SNAPSHOT_JSON)?;
     ensure_registry(&timestamp.signed.registry, registry, TIMESTAMP_JSON)?;
@@ -357,16 +358,48 @@ pub fn validate_root_policy(
     keys: &BTreeMap<String, TufKey>,
     roles: &BTreeMap<String, TufRoleSpec>,
 ) -> Result<()> {
+    validate_root_policy_inner(keys, roles, None)
+}
+
+/// Validates a catalog root policy and binds every trust line to `registry`.
+///
+/// # Errors
+///
+/// Returns the same errors as [`validate_root_policy`], and rejects keys whose
+/// trust-line registry differs from `registry`.
+pub fn validate_root_policy_for_registry(
+    keys: &BTreeMap<String, TufKey>,
+    roles: &BTreeMap<String, TufRoleSpec>,
+    registry: &str,
+) -> Result<()> {
+    validate_root_policy_inner(keys, roles, Some(registry))
+}
+
+fn validate_root_policy_inner(
+    keys: &BTreeMap<String, TufKey>,
+    roles: &BTreeMap<String, TufRoleSpec>,
+    registry: Option<&str>,
+) -> Result<()> {
     if keys.is_empty() {
         bail!("TUF root metadata has no keys");
     }
-    for (key_id, key) in keys {
-        crate::security::parse_signing_key(&key.key)
-            .with_context(|| format!("invalid TUF key '{key_id}'"))?;
-    }
     let mut seen_key_material = HashSet::new();
     for (key_id, key) in keys {
-        if !seen_key_material.insert(key.key.as_str()) {
+        let (key_registry, _, public_key) = crate::security::parse_signing_key(&key.key)
+            .with_context(|| format!("invalid TUF key '{key_id}'"))?;
+        if registry.is_some_and(|registry| key_registry != registry) {
+            bail!("TUF key '{key_id}' names a different registry");
+        }
+        let parsed = PublicKey::from_openssh(&format!("ssh-ed25519 {public_key}"))
+            .with_context(|| format!("invalid TUF key '{key_id}'"))?;
+        let canonical = parsed
+            .to_openssh()
+            .context("encoding canonical TUF public key")?;
+        let material = canonical
+            .split_whitespace()
+            .nth(1)
+            .context("canonical TUF public key has no key material")?;
+        if !seen_key_material.insert(material.to_owned()) {
             bail!("TUF root metadata contains duplicate public key material at '{key_id}'");
         }
     }
@@ -949,4 +982,62 @@ pub fn semver_tag_versions(directory: &Path) -> Result<Vec<semver::Version>> {
     versions.sort();
     versions.dedup();
     Ok(versions)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sshkey::Ed25519Keypair;
+
+    fn roles(key_id: &str) -> BTreeMap<String, TufRoleSpec> {
+        [ROLE_ROOT, ROLE_TARGETS, ROLE_SNAPSHOT, ROLE_TIMESTAMP]
+            .into_iter()
+            .map(|role| {
+                (
+                    role.to_owned(),
+                    TufRoleSpec {
+                        key_ids: vec![key_id.to_owned()],
+                        threshold: 1,
+                    },
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn root_policy_normalizes_key_material_and_registry_identity() {
+        let first = Ed25519Keypair::from_seed([1; 32]);
+        let second = Ed25519Keypair::from_seed([2; 32]);
+        let valid = BTreeMap::from([
+            (
+                "key-a".to_owned(),
+                TufKey {
+                    key: first.trust_key_line("core"),
+                },
+            ),
+            (
+                "key-b".to_owned(),
+                TufKey {
+                    key: second.trust_key_line("core"),
+                },
+            ),
+        ]);
+        assert!(validate_root_policy_for_registry(&valid, &roles("key-a"), "core").is_ok());
+
+        let aliased = BTreeMap::from([
+            (
+                "key-a".to_owned(),
+                TufKey {
+                    key: first.trust_key_line("core"),
+                },
+            ),
+            (
+                "key-b".to_owned(),
+                TufKey {
+                    key: first.trust_key_line("alias"),
+                },
+            ),
+        ]);
+        assert!(validate_root_policy(&aliased, &roles("key-a")).is_err());
+    }
 }

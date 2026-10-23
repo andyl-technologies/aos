@@ -14,7 +14,9 @@ use crate::canonical;
 use crate::digest::Sha256Digest;
 use crate::manifest::{MANIFEST_DOMAIN, MANIFEST_ENVELOPE_V1, ManifestEnvelopeV1};
 use crate::plan::ReleasePlan;
-use crate::signing::{SignerRole, TrustedEd25519Key, verify_ed25519_response};
+use crate::signing::{
+    SignerRole, TrustedEd25519Key, validate_trusted_ed25519_keys, verify_ed25519_response,
+};
 use crate::state::{JournalEntry, JournalSummary};
 
 /// Exact captured regular file supplied to the pure verifier.
@@ -231,6 +233,7 @@ fn verify_manifest_signatures(
     envelope: &ManifestEnvelopeV1,
     trusted_keys: &[TrustedEd25519Key],
 ) -> Result<usize> {
+    validate_trusted_ed25519_keys(trusted_keys)?;
     let requirement = plan
         .signers
         .iter()
@@ -240,9 +243,6 @@ fn verify_manifest_signatures(
         .iter()
         .map(|key| (key.key_id.as_str(), key))
         .collect();
-    if trusted.len() != trusted_keys.len() {
-        bail!("trusted key input contains duplicate key ids");
-    }
 
     let mut verified = BTreeSet::new();
     for signature in &envelope.signatures {
