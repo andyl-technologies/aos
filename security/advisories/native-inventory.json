@@ -3,7 +3,7 @@
   "components": [
     {
       "name": "openssl",
-      "version": "4.0.2",
+      "version": "4.0.3",
       "kind": "nix-literal",
       "path": "pkgs/security/openssl.nix",
       "field": "version"
