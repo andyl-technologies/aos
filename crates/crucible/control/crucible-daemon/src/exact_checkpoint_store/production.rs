@@ -1633,6 +1633,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     mod choice_closure;
+    mod receiver_admission;
     mod root_credit;
 
     use crate::build_authenticated_production_checkpoint_codec_fixture;

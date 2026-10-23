@@ -147,8 +147,9 @@ impl<'a> RamTransferReceiver<'a> {
     ///
     /// The callback exchanges one bounded control/data message. Its owner must
     /// enforce transport deadlines; the boundary callback services cancellation
-    /// before every request and storage operation. Failure never yields a root
-    /// lease or a stored acknowledgment. No process restore is attempted here.
+    /// before every request and storage operation. Failure never returns an
+    /// accepted root. Durable objects, retention and an acknowledgment exchanged
+    /// before a late refusal can remain. No process restore is attempted here.
     ///
     /// # Errors
     ///
@@ -210,6 +211,11 @@ impl<'a> RamTransferReceiver<'a> {
         if lease.root() != self.root {
             return Err(RamStoreError::Invalid("transfer retained root identity"));
         }
+        let original = work.original();
+        original
+            .verify_live()
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
+
         let acknowledgment = self.message(RamTransferControl::ClosureStored {
             ram_root: self.root.to_string(),
         });
@@ -217,6 +223,10 @@ impl<'a> RamTransferReceiver<'a> {
         if response.message() != &acknowledgment {
             return Err(RamStoreError::Invalid("transfer stored acknowledgment"));
         }
+        original
+            .verify_live()
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
+
         self.report.object_visits = work.visits;
         Ok(RamTransferStep::ClosureStored(RamClosureStored {
             root: LeasedRamRoot {

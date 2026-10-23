@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 622 bindings: 603 component and nineteen native, across 243 requirements. | 145 requirements remain uncovered and none fully qualified. |
+| Requirements | 625 bindings: 606 component and nineteen native, across 243 requirements. | 145 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2775,7 +2775,7 @@ authority, whole-world readiness nor physical-memory or performance qualificatio
 All 747 ordinary storage tests, 95 policy controls and storage/portable-RAM
 Clippy pass. Hermetic storage output `q66q4vcyi5dbjkwbq20z5p1m1rgn8iz5` passes
 all 87 selected cases and 108 independently checked successful nested summaries. Required
-application-target compilation is running from immutable source
+application-target compilation passes at `86pcsj6w0ss8hzbvs1hcqapf7ixp3a6s` from immutable source
 `h4717h4ipgjmgbqgyxq5cr259cckc99a`; all 5,416 committed Rust/TOML files and
 six required fixtures match before subsequent source edits.
 
@@ -2809,7 +2809,7 @@ All 749 ordinary storage tests, 686 engine tests, 95 policy controls and
 storage/portable-RAM Clippy pass. Hermetic storage output
 `nhdwp33rjzp0b011kzm1jlxa72xfkfpn` passes all 89 selected cases and 110
 independently checked successful nested summaries. Required application
-compilation is running from immutable source
+compilation passes at `i47vr7nrzlw5inss1w0f2iiqj8lswy14` from immutable source
 `2kryjf5s0p3xh78j6qgxbas6i891f4s3`; all 5,416 committed Rust/TOML files and
 six required fixtures match before subsequent source edits.
 
@@ -2921,8 +2921,51 @@ storage tests, 95 policy controls and storage/portable-RAM Clippy pass. Hermetic
 storage output `fmz58hqcd3vphxb0yz4v0xrssk8d0ya8` passes all 99 selected cases
 and 120 independently checked successful nested summaries. Required application
 compilation is running from immutable source
-`3gzj0q5ng9wfif8nz1rprbmpb4zz1vwr`; its committed Rust/TOML inputs and six
-required fixtures must match before subsequent source edits.
+`3gzj0q5ng9wfif8nz1rprbmpb4zz1vwr`; all 5,418 committed Rust/TOML inputs and
+six required fixtures match before subsequent source edits.
+
+The archive receiver now revalidates its same original account after actual
+destination retention and root-identity validation, before sending a stored
+acknowledgment. It revalidates again after the matching response, before
+returning `ClosureStored`. These checks add no callback, clock, loan or wire
+format. An already exchanged acknowledgment or durable object is not rolled
+back by a late refusal; the API documentation now states that distinction.
+
+Three component controls publish and reload a complete production checkpoint,
+authenticate its whole-world-to-RAM binding, open its independently retained
+RAM source and use the genuine sender against a separate durable destination.
+Both ref namespaces are explicitly ephemeral component authorities. The
+receiver caller and backend use separate finite accounts, and the caller
+prepays the existing complete root-decoding bound. The live predecessor control
+passes. Two genuine predecessor controls fail: revocation after successful
+retention still sends one acknowledgment instead of zero; revocation during
+the stored exchange still accepts a closure after copying thirteen objects and
+11,073 canonical bytes in 41 visits. The durable destination root authenticates
+under the independently live backend before either refusal assertion.
+
+All three corrected receiver controls pass. Both refusals preserve the actual
+typed receiver revocation. After closing the receiver and caller, the error
+alone still prevents reserving the caller's full finite allowance; closing that
+error permits the complete allowance again. The live control independently
+closes its stored result and releases the same caller account. No account is
+reactivated, and the backend's separate account remains live.
+
+Inventory `vrcpdmkck9kvrhaiai8lif86jdb1mi1s` validates 625 bindings across
+243 requirements: 581 model, 25 format and nineteen native bindings. The same
+145 requirements remain uncovered and none is fully qualified. Hermetic storage
+output `4j06sr0h9s8n4xj8lxvccmb62fsxs9ks` passes all 102 selected cases and
+123 independently checked successful nested summaries. All 759 ordinary storage
+tests, seventeen production-checkpoint tests, 95 policy controls and
+storage/portable-RAM Clippy pass. The initial policy attempt correctly refuses
+the stale content-bound review after registering the test module; refreshing
+that review preserves the unchanged 1,623-line implementation allowance and
+the complete policy rerun passes. Daemon Clippy stops in the unchanged host
+dependency on 622 errors before checking the daemon; it does not pass.
+Required application
+compilation is running from immutable source
+`jhin7x3fx9akk13jimw2vbcp2fld76pz`; committed source and fixture matching is
+required before subsequent source edits. These archive controls qualify no
+native launch, whole-world restore readiness or execution ownership.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`
