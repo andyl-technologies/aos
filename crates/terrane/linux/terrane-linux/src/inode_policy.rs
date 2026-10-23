@@ -296,6 +296,11 @@ impl InodeTable {
     pub fn is_empty(&self) -> bool {
         self.entries.len() == 0
     }
+
+    /// Distinguishes startup-reserved worker storage from the lazy constructor.
+    pub(crate) fn is_reserved(&self) -> bool {
+        matches!(self.entries, Entries::Reserved(_))
+    }
 }
 
 #[cfg(test)]

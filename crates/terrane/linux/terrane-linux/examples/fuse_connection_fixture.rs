@@ -16,8 +16,11 @@ use std::{
 };
 use terrane_linux::{
     fuse_connection::Connection,
+    fuse_directory,
     fuse_protocol::{self, Reply, Request},
+    inode_policy::InodeTable,
     quota_confinement,
+    structural_index::{self, Index},
 };
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -66,6 +69,14 @@ fn main() -> Result {
         let control = tokio::io::unix::AsyncFd::new(io::stdout())?;
         let mut input = vec![0; LIMIT];
         let mut output = vec![0; LIMIT];
+        let mut directory_page = vec![0; LIMIT - 16];
+        // This empty metadata fixture is not an authenticated repository view.
+        // It exercises the production encoder against actual kernel READDIR.
+        let directory_bytes = structural_index::compile([7; 32], &[], 1, 4096)?;
+        let directory = Index::open(&directory_bytes)?;
+        let mut inodes = InodeTable::with_reserved_capacity(1, 4096)?;
+        let root = directory.lookup(b"").ok_or("empty index lost root")?;
+        let root_inode = u64::from(inodes.touch_entry(root)?.1.number());
 
         // Invalid arguments must fail before accepting or consuming real INIT.
         let error = connection
@@ -155,7 +166,7 @@ fn main() -> Result {
             let (body, errno) = match (request.opcode(), request.node()) {
                 (3, 1) => {
                     // attr_out's validity header precedes the 88-byte fuse_attr.
-                    attributes[16..24].copy_from_slice(&1_u64.to_ne_bytes());
+                    attributes[16..24].copy_from_slice(&root_inode.to_ne_bytes());
                     attributes[76..80].copy_from_slice(&(libc::S_IFDIR | 0o555).to_ne_bytes());
                     attributes[80..84].copy_from_slice(&2_u32.to_ne_bytes());
                     attributes[96..100].copy_from_slice(&4096_u32.to_ne_bytes());
@@ -165,7 +176,23 @@ fn main() -> Result {
                     opened[..8].copy_from_slice(&1_u64.to_ne_bytes());
                     (Some(opened.as_slice()), 0)
                 }
-                (28 | 29 | 34, 1) | (38, _) => (Some([].as_slice()), 0),
+                (28, 1) => {
+                    if request.body().len() != 40 {
+                        return Err("actual READDIR body has unexpected length".into());
+                    }
+                    let cookie = request.body_u64(8)?;
+                    let requested = request.body_u32(16)? as usize;
+                    let capacity = requested.min(directory_page.len());
+                    let length = fuse_directory::read(
+                        directory,
+                        b"",
+                        cookie,
+                        &mut inodes,
+                        &mut directory_page[..capacity],
+                    )?;
+                    (Some(&directory_page[..length]), 0)
+                }
+                (29 | 34, 1) | (38, _) => (Some([].as_slice()), 0),
                 (1, _) => (None, libc::ENOENT),
                 _ => (None, libc::ENOSYS),
             };

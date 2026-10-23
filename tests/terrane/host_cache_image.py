@@ -200,6 +200,7 @@ def source_unit_inventory(workspace):
     gated = [
         ("structural_index", "lib.rs", "pub mod structural_index;"),
         ("inode_policy", "lib.rs", "pub mod inode_policy;"),
+        ("fuse_directory", "lib.rs", "pub mod fuse_directory;"),
         ("fuse_protocol", "lib.rs", "pub mod fuse_protocol;"),
         ("host_cache/owner/surface_index", "host_cache/owner/mod.rs", "mod surface_index;"),
         ("host_cache/owner/recovery_namespace/surface", "host_cache/owner/recovery_namespace.rs", "mod surface;"),

@@ -559,6 +559,13 @@ impl<'a> Iterator for Children<'a> {
         self.index.entry(position as u32)
     }
 
+    fn nth(&mut self, count: usize) -> Option<Self::Item> {
+        let skipped = count.min(self.remaining);
+        self.next += skipped;
+        self.remaining -= skipped;
+        self.next()
+    }
+
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.remaining, Some(self.remaining))
     }

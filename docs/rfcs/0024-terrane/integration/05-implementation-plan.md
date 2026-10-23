@@ -16193,3 +16193,34 @@ runtime. This reduces serialized fixture setup and does not establish the
 previous timeout's internal cause. Strict all-feature/all-target lint, actual
 fixture compilation, formatting and diff checks pass; fresh native qualification
 is required.
+
+
+#### Bounded FUSE directory response encoding
+
+The Linux FUSE component now writes native-order, eight-byte-aligned directory
+records directly from checked structural entries into a caller-owned buffer.
+It emits dot entries and only direct children, retains original raw names and
+types, uses the connection's checked canonical hard-link inode assignment, and
+requires startup-reserved inode storage before any request effect. Stable
+cookies permit rewind, one-record pages and direct resumption in the contiguous
+child-index run. Oversized offsets return EOF; an insufficient first-record
+buffer fails without consuming an inode, and no partial record or uninitialized
+padding is exposed. This grants no repository or exposure authority.
+
+Six pure byte/metadata regressions cover nested trees, exact record boundaries,
+raw maximum-length names, rewind, parent identity, lazy-storage refusal, inode
+exhaustion and hard-link sharing versus equal-content distinct files. The
+allocation proof counts zero allocations through first touches, repeated reads,
+small-buffer and non-directory refusals, and inode-capacity failure. The direct
+child-iterator resume regression also passes, including oversized offsets and
+fused exhaustion. No native fixture runs on the host. The actual-device fixture
+now uses this encoder for genuine kernel READDIR and shares its original root
+inode number with GETATTR. Fresh native and application qualification remain
+required. The non-FUSE image's exact source comparison still accounts for all
+130 declarations after verifying the new module's actual feature gate.
+
+Required application compilation at `eb2f778d7b`, `0706c9c456` and
+`d171a64e51` passes in 1,606.283, 1,047.717 and 856.311 seconds respectively.
+Each complete review matches 8,090 immutable source files and all 185 test
+executables across 59 packages. These are compilation results; the failed
+`d171a64e51` image receipt remains failed and establishes no lifecycle result.

@@ -4,8 +4,10 @@
 //! verity modules provide native boundaries for host-tier policy. Surfaces are
 //! added by their implementation tasks; declaring a module does not register
 //! a surface or establish its conformance.
-//! Optional structural-index and inode-policy modules supply FUSE metadata
-//! primitives without operating a connection or granting exposure authority.
+//! Optional structural-index, inode-policy and directory modules supply FUSE
+//! metadata primitives. Framing and connection modules exchange bounded records
+//! on an original confined device; production worker composition and exposure
+//! authority remain separate obligations.
 
 #![deny(unsafe_op_in_unsafe_fn)]
 
@@ -17,6 +19,8 @@ pub mod configured;
 pub mod configured_sdk;
 #[cfg(all(feature = "surface-fuse", feature = "tokio"))]
 pub mod fuse_connection;
+#[cfg(feature = "surface-fuse")]
+pub mod fuse_directory;
 #[cfg(feature = "surface-fuse")]
 pub mod fuse_protocol;
 pub mod host_cache;

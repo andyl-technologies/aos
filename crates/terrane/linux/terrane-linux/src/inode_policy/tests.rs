@@ -6,6 +6,59 @@ use super::*;
 
 mod allocation;
 
+#[test]
+fn directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch() {
+    use crate::structural_index::{Index, Kind, Record, compile};
+
+    let bytes = compile(
+        [7; 32],
+        &[Record {
+            path: b"link",
+            kind: Kind::Symlink(b"exact target"),
+        }],
+        2,
+        4096,
+    )
+    .unwrap();
+    let index = Index::open(&bytes).unwrap();
+    let mut table = InodeTable::with_reserved_capacity(2, 4096).unwrap();
+    let mut limited = InodeTable::with_reserved_capacity(1, 4096).unwrap();
+    let mut output = [0; 512];
+
+    let ((), allocations) = allocation::measure(|| {
+        for _ in 0..3 {
+            assert_eq!(
+                crate::fuse_directory::read(index, b"", 0, &mut table, &mut output),
+                Ok(96)
+            );
+            assert_eq!(
+                crate::fuse_directory::read(index, b"", 2, &mut table, &mut output),
+                Ok(32)
+            );
+            assert_eq!(
+                crate::fuse_directory::read(index, b"", 3, &mut table, &mut []),
+                Ok(0)
+            );
+            assert_eq!(
+                crate::fuse_directory::read(index, b"", 0, &mut table, &mut []),
+                Err(crate::fuse_directory::Error::BufferTooSmall)
+            );
+            assert_eq!(
+                crate::fuse_directory::read(index, b"link", 0, &mut table, &mut output),
+                Err(crate::fuse_directory::Error::NotDirectory)
+            );
+            assert_eq!(
+                crate::fuse_directory::read(index, b"", 0, &mut limited, &mut output),
+                Err(crate::fuse_directory::Error::Inode(Error::Capacity))
+            );
+        }
+    });
+
+    assert_eq!(allocations, 0);
+    assert_eq!(table.len(), 2);
+    assert_eq!(limited.len(), 1);
+}
+
 type Constructor = fn(u32) -> Result<InodeTable, Error>;
 
 fn constructors() -> [Constructor; 2] {

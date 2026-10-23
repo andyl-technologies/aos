@@ -63,6 +63,23 @@ fn fixture() -> Vec<u8> {
 }
 
 #[test]
+fn child_resume_skips_direct_indices_and_remains_exhausted_for_oversized_offsets() {
+    let bytes = fixture();
+    let index = Index::open(&bytes).unwrap();
+    let mut children = index.lookup(b"a").unwrap().children().unwrap();
+
+    assert_eq!(children.nth(1).unwrap().path(), b"a/link");
+    assert_eq!(children.len(), 0);
+    assert!(children.next().is_none());
+    assert!(children.nth(usize::MAX).is_none());
+
+    let mut root_children = index.lookup(b"").unwrap().children().unwrap();
+    assert!(root_children.nth(usize::MAX).is_none());
+    assert_eq!(root_children.len(), 0);
+    assert!(root_children.next().is_none());
+}
+
+#[test]
 fn nested_tree_has_sorted_paths_and_contiguous_direct_child_indices() {
     let bytes = fixture();
     let index = Index::open(&bytes).unwrap();
