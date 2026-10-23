@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 608 bindings: 589 component and nineteen native, across 243 requirements. | 146 requirements remain uncovered and none fully qualified. |
+| Requirements | 610 bindings: 591 component and nineteen native, across 243 requirements. | 145 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2595,7 +2595,8 @@ are being revalidated separately, sequentially, under their existing per-case
 3,600-second wall/CPU, 2 GiB address-space and zero-core limits.
 
 Signed update-identifier commit `add3447f42` is pushed. Required
-application-target compilation is running from immutable source
+application-target compilation passes at `dvmd8d16mkr8gkv11c6fp9s1s9gql1af`
+from immutable source
 `q6lx26ii57szvhzv4pqf8qd757mvj6ns`; all 5,412 committed Rust/TOML files and
 six required fixtures match. The long storage controls use a separately frozen
 copy of its actual passing storage test binary with SHA-256
@@ -2636,7 +2637,7 @@ storage tests, 686 engine tests, 95 policy controls and storage/portable-RAM
 Clippy pass. Hermetic store output `xhxi31ijr130wa79jv9z10qbn5kaw9qv` passes
 all 82 selected cases and 103 independently checked successful nested summaries.
 Signed admission commit `cc3f8b2048` is pushed. Required application-target
-compilation is running from immutable source
+compilation passes at `pzky6da9jhq2d8hz6gyw4494x00vcyxy` from immutable source
 `yinmpvln8iizq1j3hflbc3qjlmnnjj1w`; all 5,413 committed Rust/TOML files and
 six required fixtures match.
 
@@ -2706,8 +2707,10 @@ normalized. ABI conformance output `8bzny4799liln50wrzvg9w5fqga21yha` passes,
 including actual wire-fuzz, doorbell, guest and aggregate owners. All 47 canonical
 owners and 268 registered tests are independently checked with the exact-count
 guards intact. All 686 engine tests, 95 policy controls and storage/portable-RAM
-Clippy pass. Full license and required application-target checks remain in
-progress. Signed topology-sort commit `6d6ed0a2e4` is pushed. Application
+Clippy pass. Full license checking fails in its controller dependency with 639
+strict Host-library Clippy errors; its boundary assertions did not run. The
+required application-target check remains in progress. Signed topology-sort
+commit `6d6ed0a2e4` is pushed. Application
 compilation uses immutable source `y0w8a5yif7q92rk2mz5s7ghksv5hflqk`; all 5,415 committed Rust/TOML files and
 six required fixtures match before subsequent source edits. These component
 observations establish no physical memory, native custody or performance parity
@@ -2741,6 +2744,36 @@ Clippy pass. Hermetic storage output `phyi4n3wb8535pd7ijf4c03g3440fdpn` passes
 all 85 selected cases and 106 independently checked successful nested summaries.
 Required application-target compilation is running from immutable source
 `2ibv3vfapr9x1yydmy87l2vl6lp1x5kb`; all 5,415 committed Rust/TOML files and
+six required fixtures match before subsequent source edits.
+
+Actual directory-backed representation controls now distinguish canonical CAS
+authentication from logical page commitment explicitly. Twelve positive cases
+span all four region classes and one-byte, seventeen-byte and full-page lengths.
+Each stored page authenticates its canonical envelope, its logical digest hashes
+the valid bytes, and its region root agrees with an independent oracle. The CAS
+identity neither authenticates raw page bytes nor equals their logical digest.
+
+The adversarial control publishes a real page envelope, leaf and root whose
+recorded logical relationships all consistently substitute a genuine storage
+hash for a page digest. Every object authenticates by its own actual CAS
+identity, and catalog opening succeeds. Complete verification, page read and
+traversal nevertheless reject the actual logical page digest, before delivering
+any page to the visitor. Temporarily removing only the byte-hash comparison
+causes the adversarial test to fail because verification incorrectly succeeds;
+the positive control still passes. Production source is restored byte for byte
+after this sensitivity check. No production behavior or wire format changes in
+this increment. Both controls retain the same finite prepaid caller through
+inputs, outputs and error close, then return its charge to baseline.
+
+Inventory `rhh4n0gh1g2ibaisyajrfmn5pg8wyq6q` validates 610 bindings across
+243 requirements: 566 model, 25 format and nineteen native bindings. RAM-11
+gains positive and adversarial component evidence; 145 requirements remain
+uncovered and none is fully qualified. These checks establish neither native
+authority, whole-world readiness nor physical-memory or performance qualification.
+All 747 ordinary storage tests, 95 policy controls and storage/portable-RAM
+Clippy pass. The hermetic selected-storage gate remains in progress. Required
+application-target compilation is running from immutable source
+`h4717h4ipgjmgbqgyxq5cr259cckc99a`; all 5,416 committed Rust/TOML files and
 six required fixtures match before subsequent source edits.
 
 The separate source-only exclusive-wait packet
