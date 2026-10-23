@@ -1654,6 +1654,18 @@ complete review passes. Complete execution-ready reconstruction, ownership,
 graph and role review remain required. No new target run, runtime root or
 native authority is issued.
 
+The execution-ready successor plan
+`384a060c59933dfc2f1704cb6e43f66707ee3151c20511c2fff5ea4d25a87304`
+passes independent review of all 452 signed readonly payloads, 5,130 external
+and ten reconstruction inputs, 72 full tool roots and six complete baselines.
+All 17,259 plan controls and 359 production controls replay independently. Its
+worker authenticates the actual generated editable `.pth` and `direct_url.json`
+bytes and their exact RECORD hashes, in addition to all 115 launcher/history
+artifacts. Approved launcher preparation and all critical graph, ownership,
+process and cleanup predicates remain intact. The intermediate unexecuted plan
+is preserved. One original build attempt is authorized with the exact sealed
+environment and unchanged original deadlines; execution is in progress. No
+successful build, runtime, TAP, installation, profile or activation is claimed.
 
 The service-client ownership contracts pass mandatory application-target
 compilation at `wx20fkrpphs9zk5lrwlg7kx10d84x8b9`. Before later edits, all
@@ -1810,8 +1822,11 @@ before calling the formatter. All 686 tests pass in the corrected complete
 engine run. The host retains 1,385 passes, the same eight genuine helper-custody failures
 and four ignored tests. All ninety testing-standard and five hygiene controls
 pass. Strict Clippy retains 674 library and 723 test-target errors, with fourteen
-and five warnings. Mandatory application-target compilation remains pending.
-This component increment supplies no Main, Source or native issuance.
+and five warnings. Mandatory application-target compilation passes at
+`bn7z6w0djjyd1im0qf1w1a98lh65z3q0`; all 5,393 committed Rust/TOML files
+and six required fixtures independently match its frozen source before later
+implementation changes. This component increment supplies no Main, Source or
+native issuance.
 
 Typed B-tree layout errors now preserve the actual standard-library cause inline
 in the already charged error handle. Retaining the separate diagnostic holder
@@ -1862,9 +1877,33 @@ excluded. The inventory passes at `mzr1axfpl1biq2sxcwnxd9y4vndrayw2`;
 Hermetic storage passes all 35 exact cases at `qa3bm2ysl8k4flkb4p38dmpcfpz2nps0`;
 all case logs, including nested child results, are independently checked. The
 complete engine suite passes all 686 tests. All five final hygiene controls
-pass. Host, policy, strict Clippy and mandatory application compilation remain
-pending. Actual receipt-vector allocator failure is not
+pass. The host retains 1,385 passes, the exact same eight genuine helper-custody
+failures and four ignored tests. All ninety testing-standard and five hygiene
+controls pass. Strict Clippy retains 674 library and 723 test-target errors,
+with fourteen and five warnings. Mandatory application compilation is running
+for `df060fe997`; all 5,393 committed Rust/TOML files and six required fixtures
+independently match frozen source `rfykbsjd3cj1l366xkridk6f573p9h7h` before
+further implementation changes. Actual receipt-vector allocator failure is not
 injected by the capacity control. No Main, Source or native authority is issued.
+
+The vector-refusal fixture now independently prepays each provider-owned loan's
+control storage in addition to its requested payload. Its finite initial sum
+covers all four preborn loans, and the final diagnostic aliases retain both the
+original diagnostic payload and that loan's control charge until final close.
+This corrects component accounting without changing production allocation or
+claiming native physical funding. All nineteen focused controls pass; restoring
+the allocating wrapper makes exactly the allocation control fail, and exact
+production-source restoration passes all nineteen controls again.
+
+The previously excluded 512 MiB packed traversal/repack cost case passes at
+`df060fe997`, under a fixed 3,600-second wall/CPU limit, 2 GiB address-space
+limit and disabled core dumps. It returns in 318.80 seconds; the supervisor
+reaps the test, observes ECHILD and removes only its own disk-backed scratch.
+Both warm reads authenticate zero manifests, rows or manifest bytes. Repacking
+reduces packs from 1,537 to 628 and retained metadata from 39,164,872 to
+29,029,832 bytes, but increases traversal pack switches from 11,775 to 391,776.
+The result verifies this storage component workload and preserves that locality
+cost; it does not establish native execution or performance qualification.
 
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's

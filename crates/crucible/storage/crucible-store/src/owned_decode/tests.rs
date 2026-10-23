@@ -714,18 +714,23 @@ fn vector_capacity_refusal_keeps_actual_typed_source_without_allocating()
     ];
     let used = Arc::new(AtomicU64::new(0));
     let mut loans = std::collections::VecDeque::new();
+    // Each provider-owned loan needs independent control storage in addition
+    // to the payload admitted to the decode account.
+    let control_bytes = ResourceLoan::allocation_bytes::<Credit>();
     let maximum = requests
         .iter()
-        .try_fold(0u64, |total, bytes| total.checked_add(*bytes))
+        .try_fold(0u64, |total, bytes| {
+            total.checked_add(bytes.checked_add(control_bytes)?)
+        })
         .unwrap();
     for bytes in requests {
-        assert!(bytes >= ResourceLoan::allocation_bytes::<Credit>());
-        used.fetch_add(bytes, Ordering::SeqCst);
+        let charged = bytes.checked_add(control_bytes).unwrap();
+        used.fetch_add(charged, Ordering::SeqCst);
         loans.push_back((
             bytes,
             ResourceLoan::new(Credit {
                 used: used.clone(),
-                bytes,
+                bytes: charged,
             }),
         ));
     }
@@ -770,9 +775,10 @@ fn vector_capacity_refusal_keeps_actual_typed_source_without_allocating()
     assert_eq!(error, alias);
     drop(scope);
     drop(budget);
-    assert_eq!(used.load(Ordering::SeqCst), PrepaidRefusals::peak_bytes());
+    let retained = PrepaidRefusals::peak_bytes() + control_bytes;
+    assert_eq!(used.load(Ordering::SeqCst), retained);
     drop(error);
-    assert_eq!(used.load(Ordering::SeqCst), PrepaidRefusals::peak_bytes());
+    assert_eq!(used.load(Ordering::SeqCst), retained);
     drop(alias);
     assert_eq!(used.load(Ordering::SeqCst), 0);
     Ok(())
