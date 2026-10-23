@@ -141,7 +141,8 @@ pub(super) fn shared_extent<T>() -> Result<u64, RamStoreError> {
     Ok(layout.pad_to_align().size() as u64)
 }
 
-struct RecordAuthority {
+/// Owns one original prepaid partition and its existing shared loan.
+pub(super) struct RecordAuthority {
     issued: Mutex<u64>,
     maximum: u64,
     original: DecodeBudget,
@@ -213,7 +214,12 @@ impl RecordAccount {
         plan: RecordAllocationPlan,
     ) -> Result<Self, RamStoreError> {
         let authority = RecordAuthority::new(original, plan.partition)?;
+        // Construction can refuse before the account clones a receipt. Keep
+        // the same paid loan until that failed authority's shared control has
+        // actually closed; a successful account retains its own existing loans.
+        let construction_credit = authority.owner.clone();
         let codec = DecodeBudget::new(authority, plan.partition).map_err(admission)?;
+        drop(construction_credit);
         Ok(Self {
             codec,
             original: original.clone(),

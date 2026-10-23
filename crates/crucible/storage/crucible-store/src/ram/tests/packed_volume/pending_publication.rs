@@ -19,7 +19,7 @@ fn duplicate_input(input: &crate::ram::PendingPublication) -> crate::ram::Pendin
     crate::ram::PendingPublication {
         id: input.id,
         source: input.source.clone(),
-        envelope: PendingEnvelope::OwnedSmall(Arc::clone(envelope)),
+        envelope: PendingEnvelope::OwnedSmall(envelope.clone()),
     }
 }
 
@@ -176,7 +176,9 @@ fn pending_duplicate_still_compares_exact_envelope_and_preserves_retry_state() {
     let PendingEnvelope::OwnedSmall(envelope) = &mut pending.objects[0].envelope else {
         panic!("owned small page");
     };
-    Arc::get_mut(envelope).unwrap().body_mut()[36] ^= 1;
+    crate::ram::codec_ownership::SharedEnvelope::get_mut(envelope)
+        .unwrap()
+        .body_mut()[36] ^= 1;
     let held = fixture.quota.0.usage().unwrap();
 
     let error = fixture
@@ -194,7 +196,9 @@ fn pending_duplicate_still_compares_exact_envelope_and_preserves_retry_state() {
     let PendingEnvelope::OwnedSmall(envelope) = &mut pending.objects[0].envelope else {
         panic!("owned small page");
     };
-    Arc::get_mut(envelope).unwrap().body_mut()[36] ^= 1;
+    crate::ram::codec_ownership::SharedEnvelope::get_mut(envelope)
+        .unwrap()
+        .body_mut()[36] ^= 1;
     assert_eq!(
         fixture
             .store

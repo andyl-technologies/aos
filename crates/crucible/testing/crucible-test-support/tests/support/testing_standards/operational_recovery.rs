@@ -380,7 +380,7 @@ const CONTRACTS: &[Contract] = &[
         package: "crucible-store",
         target: "src/ram/tests/packed_volume/pending_publication",
         required: &[
-            r#"Arc::get_mut(envelope).unwrap().body_mut()[36] ^= 1;"#,
+            r#"crate::ram::codec_ownership::SharedEnvelope::get_mut(envelope).unwrap().body_mut()[36] ^= 1;"#,
             r#"matches!(error, RamStoreError::Store(StoreError::Corrupt { id: found }) if found == id)"#,
             r#"assert_eq!(pending.len(), 1);"#,
             r#"assert_eq!(pending.sorted_positions, positions);"#,

@@ -15,6 +15,7 @@ use crate::owned_decode::DecodeBudget;
 use super::*;
 
 mod checked_sources;
+mod codec_close;
 mod hash_reuse;
 mod metadata_custody;
 mod proof_allocation;

@@ -993,12 +993,12 @@ fn canonical_readers_do_not_retain_the_shared_input_phase() {
 
     let object = &work.pending.as_ref().unwrap()[0];
     let input = match &object.envelope {
-        crate::ram::codec_ownership::PendingEnvelope::OwnedSmall(input) => Arc::clone(input),
+        crate::ram::codec_ownership::PendingEnvelope::OwnedSmall(input) => input.clone(),
         crate::ram::codec_ownership::PendingEnvelope::OriginalCopy(_) => {
             panic!("typed page copied")
         }
     };
-    let input_clone = Arc::clone(&input);
+    let input_clone = input.clone();
     let source = object.source.clone();
     let mut reader =
         crate::content_store::BlobSource::open_with_boundary(&source, &parent, &mut || Ok(()))

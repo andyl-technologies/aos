@@ -2,11 +2,10 @@
 
 use std::io::{Cursor, Read};
 use std::ops::Deref;
-use std::sync::Arc;
 
 use crate::content_envelope::ContentEnvelope;
 use crate::content_store::{BlobHandle, BlobSource, StoreError};
-use crate::owned_decode::{DecodeBudget, DecodeCustody, DecodeScratch};
+use crate::owned_decode::{DecodeBudget, DecodeCustody, DecodeScratch, TerminalOwner};
 
 use super::RamStoreError;
 
@@ -66,10 +65,13 @@ impl PartialEq<ContentEnvelope> for OwnedEnvelope {
     }
 }
 
-/// Distinguishes original borrowed inputs from explicitly owned small records.
+/// Frees the shared envelope control before returning its prepaid account.
+pub(super) type SharedEnvelope = TerminalOwner<OwnedEnvelope>;
+
+/// Distinguishes original borrowed inputs from explicitly owned records.
 pub(super) enum PublicationInput<'a> {
     Borrowed(&'a ContentEnvelope),
-    OwnedSmall(Arc<OwnedEnvelope>),
+    OwnedSmall(SharedEnvelope),
 }
 
 impl PublicationInput<'_> {
@@ -105,7 +107,7 @@ impl PublicationInput<'_> {
 
 pub(super) enum PendingEnvelope {
     OriginalCopy(OwnedEnvelope),
-    OwnedSmall(Arc<OwnedEnvelope>),
+    OwnedSmall(SharedEnvelope),
 }
 
 impl Deref for PendingEnvelope {
@@ -119,15 +121,20 @@ impl Deref for PendingEnvelope {
     }
 }
 
-struct OwnedBytes {
+/// Retains a canonical byte image and its original codec account.
+pub(super) struct OwnedBytes {
     bytes: Vec<u8>,
     original: DecodeBudget,
     _custody: DecodeCustody,
 }
 
-struct EncodedSource(Arc<OwnedBytes>);
+// Both source and reader aliases use the same terminal owner. The outer blob
+// handle cannot close this independent inner control on their behalf.
+type SharedBody = TerminalOwner<OwnedBytes>;
 
-struct SharedBytes(Arc<OwnedBytes>);
+struct EncodedSource(SharedBody);
+
+struct SharedBytes(SharedBody);
 
 impl AsRef<[u8]> for SharedBytes {
     fn as_ref(&self) -> &[u8] {
@@ -166,7 +173,7 @@ impl BlobSource for EncodedSource {
         check()?;
         Ok(crate::content_store::CheckedReader::admitted(
             Box::new(CheckedEncodedReader {
-                reader: Cursor::new(SharedBytes(Arc::clone(&self.0))),
+                reader: Cursor::new(SharedBytes(self.0.clone())),
                 original,
                 caller: caller.clone(),
                 failed: false,
@@ -218,7 +225,7 @@ impl BlobSource for EncodedSource {
                 source: Box::new(source),
             })?;
         Ok(Box::new(EncodedReader {
-            reader: Cursor::new(SharedBytes(Arc::clone(&self.0))),
+            reader: Cursor::new(SharedBytes(self.0.clone())),
             _credit: credit,
         }))
     }
@@ -239,7 +246,7 @@ pub(super) fn encoded_source(
     account
         .charge_bytes(encoded_source_bytes())
         .map_err(admission)?;
-    let body = Arc::new(OwnedBytes {
+    let body = SharedBody::new(OwnedBytes {
         bytes,
         original: original.clone(),
         _custody: account.custody(),

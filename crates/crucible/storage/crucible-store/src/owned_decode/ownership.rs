@@ -6,15 +6,22 @@ use std::sync::Arc;
 use super::{DecodeAdmissionError, DecodeBudget, DecodeResourceAuthority, StoreAuthority};
 
 /// Closes the shared control before dropping its paid concrete value.
-pub(super) struct TerminalOwner<T> {
+pub(crate) struct TerminalOwner<T> {
     value: Option<Arc<T>>,
 }
 
 impl<T> TerminalOwner<T> {
-    pub(super) fn new(value: T) -> Self {
+    /// Retains a value until its final shared control has physically closed.
+    pub(crate) fn new(value: T) -> Self {
         Self {
             value: Some(Arc::new(value)),
         }
+    }
+
+    /// Borrows an exclusively held value for controlled test mutation.
+    #[cfg(test)]
+    pub(crate) fn get_mut(&mut self) -> Option<&mut T> {
+        self.value.as_mut().and_then(Arc::get_mut)
     }
 
     pub(super) fn shares_owner(&self, other: &Self) -> bool {

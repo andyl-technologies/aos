@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 570 bindings: 551 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 573 bindings: 554 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2142,8 +2142,9 @@ passes all 48 exact cases at `gk4lm4ld77jxvb85z0a73m54g4f8iyfd`; all sixty
 successful summaries, including nested results, are independently checked.
 These controls qualify neither physical OOM nor native resource custody.
 Signed commit `3c36193493` is pushed. Mandatory application-target compilation
-is running; all 5,398 committed Rust/TOML files and six required fixtures match
-frozen source `qb9nc0x44fwc92x007ddf3l7x0qx0k5b` before subsequent edits.
+passes at `7b0j3pqs1945rwd5kd9m5h0j3sjs71df`; all 5,398 committed Rust/TOML
+files and six required fixtures match frozen source
+`qb9nc0x44fwc92x007ddf3l7x0qx0k5b` before subsequent edits.
 
 Page and tree body buffers, schema strings and child-role strings now reserve
 fallibly within their existing closed-record prepaid partitions. Actual allocator
@@ -2253,9 +2254,38 @@ selected cases and 76 nested summaries. Private-feature Host validation passes
 eight helper-custody failures, including identical failure details after thread-ID
 normalization. All 686 engine tests, 95 policy controls and storage Clippy pass.
 ABI conformance passes at `kp4hm4nv57jafqgllmd6kjxlqx2jpa9j`. The complete
-license-boundary run remains pending in controller compilation; preceding
-controller failures remain unresolved. Required application-target compilation
-will freeze this committed source before further Rust changes.
+license-boundary attempt fails in controller compilation with 639 Host-library
+errors; its boundary assertions have no passing result. Signed commit
+`e991e457df` is pushed.
+Required application-target compilation is running from
+`yqypw0rbmjbbrw89xszf6c8i73y7xhq4`; all 5,402 committed Rust/TOML files and
+six required fixtures match before subsequent shared-control edits.
+
+Shared typed envelopes and canonical byte bodies now close their actual shared
+controls before returning the original codec partition. Both handle and checked
+reader aliases use the existing safe terminal owner; control layouts, complete
+reservation amounts and canonical bytes are unchanged. Account construction
+retains one allocation-free clone of the same existing whole loan until a failed
+authority's control has closed or a successful account owns its existing receipts.
+No additional grant, allowance, Main or Source issuer is introduced.
+
+Three isolated physical-close controls fail against the original ordinary shared
+owners and constructor path: the actual original grant is already zero at System
+free, instead of 5,021 input/constructor bytes or 4,963 canonical bytes. With the
+fix, the same actual grant is sampled before and after physical free, real alias
+and checked-reader lifetimes close before final refund, and all three pass.
+The original constructor is genuinely revoked after issuing its whole loan and
+preserves that actual typed failure. Each finite component has one 64 KiB
+namespace and exactly one observed whole partition; these checks qualify no
+kernel quota, native launch, general backend-reader funding or physical OOM.
+Inventory `pg5lcp852g6fd92rnhypkh0ybplxl81w` validates 573 bindings across
+243 requirements, with 148 uncovered and zero qualified. Broad validation
+passes 726 storage tests, 686 engine tests, all 95 policy controls and Store
+Clippy. The policy contract now names the terminal owner's actual exclusive
+mutation method; all existing custody assertions and causal retry controls
+remain required. Final hermetic storage output
+`pnxf6bb0c38wrwnisvz8n7lb0w9wzgzw` passes all 65 selected cases and 82
+independently checked successful summaries, including nested results.
 
 The source-only configure observation assessment
 `b81e015f86affdd3ccdfd1c07e4f75bf4a89ec2bf4617f1d8a1c49d844bcba23`

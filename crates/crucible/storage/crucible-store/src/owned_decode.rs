@@ -16,8 +16,8 @@ mod prepaid_refusal;
 use prepaid_refusal::{AccountRefusal, PrepaidRefusals};
 
 mod ownership;
-pub(crate) use ownership::DecodeBudgetSlot;
-use ownership::{Authority, TerminalOwner};
+pub(crate) use ownership::{DecodeBudgetSlot, TerminalOwner};
+use ownership::Authority;
 
 #[cfg(test)]
 mod tests;

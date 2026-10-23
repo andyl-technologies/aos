@@ -9,7 +9,6 @@
 //! ```
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 use crucible_ram::RootRecord;
 
@@ -20,7 +19,7 @@ use super::codec::{
     ROOT_SCHEMA, SCHEMA_VERSION, TreeRef, allocate_charged_body, copy_charged_identifier,
     encode_ref,
 };
-use super::codec_ownership::{OwnedEnvelope, PublicationInput, admission};
+use super::codec_ownership::{OwnedEnvelope, PublicationInput, SharedEnvelope, admission};
 use super::record_account::{RecordAccount, RecordAllocationPlan, child_node_bytes, shared_extent};
 use super::{MAX_RAM_OBJECT_BYTES, RamRetention, RamStore, RamStoreError, Work};
 
@@ -83,7 +82,7 @@ impl RamStore {
             .codec
             .charge_bytes(shared_extent::<OwnedEnvelope>()?)
             .map_err(admission)?;
-        let envelope = Arc::new(OwnedEnvelope::new(envelope, &account.codec));
+        let envelope = SharedEnvelope::new(OwnedEnvelope::new(envelope, &account.codec));
         drop(scope);
 
         let canonical = RecordAccount::phase(

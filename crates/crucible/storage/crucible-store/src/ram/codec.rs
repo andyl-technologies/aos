@@ -12,14 +12,15 @@
 //! body fields authenticate against the separately computed logical digests.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 
 use crucible_ram::{Limits, NodeDigest, PageDigest, RootRecord};
 
 use crate::content_envelope::{ContentChild, ContentEnvelope};
 use crate::content_store::{ContentId, ObjectKind, StoreError};
 
-use super::codec_ownership::{OwnedEnvelope, PublicationInput, admission, encoded_source};
+use super::codec_ownership::{
+    OwnedEnvelope, PublicationInput, SharedEnvelope, admission, encoded_source,
+};
 use super::record_account::{RecordAccount, RecordAllocationPlan, child_node_bytes, shared_extent};
 use crate::owned_decode::DecodeBudget;
 
@@ -386,7 +387,7 @@ impl RamStore {
             .codec
             .charge_bytes(shared_extent::<OwnedEnvelope>()?)
             .map_err(admission)?;
-        let envelope = Arc::new(OwnedEnvelope::new(envelope, &record.codec));
+        let envelope = SharedEnvelope::new(OwnedEnvelope::new(envelope, &record.codec));
         drop(scope);
         let canonical = RecordAccount::phase(
             &original,
@@ -502,14 +503,14 @@ impl RamStore {
             .codec
             .charge_bytes(shared_extent::<OwnedEnvelope>()?)
             .map_err(admission)?;
-        let envelope = Arc::new(OwnedEnvelope::new(envelope, &record.codec));
+        let envelope = SharedEnvelope::new(OwnedEnvelope::new(envelope, &record.codec));
         drop(scope);
         let canonical = RecordAccount::phase(
             &original,
             RecordAllocationPlan::canonical(canonical_length)?,
         )?;
         let id = self.put_envelope_with_account(
-            PublicationInput::OwnedSmall(Arc::clone(&envelope)),
+            PublicationInput::OwnedSmall(envelope.clone()),
             ObjectKind::RamTree,
             retention,
             work,
