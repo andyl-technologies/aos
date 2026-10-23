@@ -1,0 +1,302 @@
+{
+  "comparison_base_commit": "2aef3c9e61",
+  "core_activation_inventory_inputs": [
+    "/nix/store/ydgd75by7y9g3kpfmpysdsqg0zsxsp6g-aos-bazel-activation-core-inventory-1/inventory.json",
+    "/nix/store/8j1fsq5lkfpwmp3n5r8c084a8lj7vm5q-aos-bazel-activation-core-production-inventory-1/inventory.json"
+  ],
+  "dependency_profiles": {
+    "activation-storage": {
+      "crate_sources": 70,
+      "files_sha256": {
+        "third_party/rust/activation-storage/BUILD.aho-corasick-1.1.4.bazel": "e8330350a1a17d773614546bea77d8f9ed9da8ef01ce9b3e5dba8efef2af596c",
+        "third_party/rust/activation-storage/BUILD.anyhow-1.0.102.bazel": "1d6bb3222a1c213a130985e0aa7fc97a063c547468ebc61bc386faa6ec6b1683",
+        "third_party/rust/activation-storage/BUILD.bitflags-2.13.0.bazel": "2f626f5442a1b4624a9487c1952f1162952ece9130be96c4cb342f4d5b16230e",
+        "third_party/rust/activation-storage/BUILD.block-buffer-0.10.4.bazel": "f00d6549c9b43bcf52749ece51d7d651d996a47bd3e631d6caac9a86ef564e49",
+        "third_party/rust/activation-storage/BUILD.cfg-if-1.0.4.bazel": "ac150770f1983f0f9f496d200c336522f994364d60e86e96cc7895293c495ce2",
+        "third_party/rust/activation-storage/BUILD.cpufeatures-0.2.17.bazel": "5c8459a1cd0b475d861ceaca0ac86f0e7c26729f4c22c10611155d0ddd7f8feb",
+        "third_party/rust/activation-storage/BUILD.crypto-common-0.1.7.bazel": "f8fad390ebbfe1be6fa0e0084b538a16e2e36e58c4e968b5ba00aa8f610f7a10",
+        "third_party/rust/activation-storage/BUILD.digest-0.10.7.bazel": "c1de2075ec34e9a1d1ff6b282adcac9791736bcd83c466c646edea480e58cabd",
+        "third_party/rust/activation-storage/BUILD.dyn-clone-1.0.20.bazel": "79fb3f26512ebaf2ee4137ef965354913bd5f9eb478b5ead4ee9cb7cda433d25",
+        "third_party/rust/activation-storage/BUILD.equivalent-1.0.2.bazel": "33aa28e55fe81da154d6b94336ff14ed7ec630cac2ae1676d75baf7ba73e251d",
+        "third_party/rust/activation-storage/BUILD.errno-0.3.14.bazel": "a88b2e5477e25d5dd17be66d3d388c3a8984544f8fb093433b590e3aaafec68e",
+        "third_party/rust/activation-storage/BUILD.fastrand-2.4.1.bazel": "df807b9a841b27d196819797017ea99a4f021f056461b7c4494f4cb9f4227b75",
+        "third_party/rust/activation-storage/BUILD.foldhash-0.1.5.bazel": "2c64fbb264542cd8c4351e77aa52bd6a4bf2e93192221cd815da1fa6d546d82c",
+        "third_party/rust/activation-storage/BUILD.generic-array-0.14.7.bazel": "a9218b565b4d4223acb486c0cbaf3690aad9bc9b76c69c533ede583418a604e5",
+        "third_party/rust/activation-storage/BUILD.getrandom-0.4.2.bazel": "6f8c6cda55d4c6289153d2159c232730b9e4c6b0b606e7cf90c51846fe020ee6",
+        "third_party/rust/activation-storage/BUILD.hashbrown-0.15.5.bazel": "f653096c2a466f04aa9ff6342fb6f25f5259399325ab3c933b25da738c632a43",
+        "third_party/rust/activation-storage/BUILD.hashbrown-0.17.1.bazel": "64606b01d998341f390bf440b0d34b48450dc89ea5852a909d5752e97291b25c",
+        "third_party/rust/activation-storage/BUILD.heck-0.5.0.bazel": "c667459f62e776960c71a8ade2158b90822053d94cf09ab38017e7d261cc982c",
+        "third_party/rust/activation-storage/BUILD.id-arena-2.3.0.bazel": "bf4530b156a495623922bb34306bda90a33075bd2b9d7469d0fd9517cfe5f569",
+        "third_party/rust/activation-storage/BUILD.indexmap-2.14.0.bazel": "77e0a5bdce78487a81be7136f0cd94d39ad26170b5fbd5282f3e696cadaa7293",
+        "third_party/rust/activation-storage/BUILD.itoa-1.0.18.bazel": "9c70aac80ff63f6bbb466d15e9cfad66724cbadb581f1b54cb87fdb606504373",
+        "third_party/rust/activation-storage/BUILD.leb128fmt-0.1.0.bazel": "1a9dc27d1091723d13e4f530c5e84c07403eb0a02c247fc7f39ac106ee84d7cd",
+        "third_party/rust/activation-storage/BUILD.libc-0.2.186.bazel": "ab6c1176ffe388f5139b9feedf0e62d55e8d114b23567a52287c30eb93ad529a",
+        "third_party/rust/activation-storage/BUILD.linux-raw-sys-0.12.1.bazel": "6efd5d1ecb4b11994ff08eecfeea5a84e174410a23c89f9437cc93f0921638f6",
+        "third_party/rust/activation-storage/BUILD.log-0.4.30.bazel": "406506c8f0769d2842bca561c9f774c76623a42f7fbde1b43debd08453111a1d",
+        "third_party/rust/activation-storage/BUILD.memchr-2.8.2.bazel": "783824e6f918130e7a20ad8276bb460fa1f3f5ece1f17ae02baaf084116e0fef",
+        "third_party/rust/activation-storage/BUILD.once_cell-1.21.4.bazel": "219548ac34e34127d99bb6c4c6a54b71b70f1af7607c0d90befe73433704a4e8",
+        "third_party/rust/activation-storage/BUILD.prettyplease-0.2.37.bazel": "f2840dcc5fecbd6cc2e86146068b9120b57e6d0da6842d64affa38eacd4301db",
+        "third_party/rust/activation-storage/BUILD.proc-macro2-1.0.106.bazel": "df60716c4877efbedac0a8981649510ee78cb265d6b49872f9d8cbaa9b1e4e75",
+        "third_party/rust/activation-storage/BUILD.quote-1.0.46.bazel": "94b7e17c2f48f903e713ad59f25d90fa7aa09edb280cb481b4c1f146c28a813f",
+        "third_party/rust/activation-storage/BUILD.r-efi-6.0.0.bazel": "148d3eca4ba74d9c10b7bbc3ce41e817cf51104c9ee30ba924e21117f30a3ecb",
+        "third_party/rust/activation-storage/BUILD.ref-cast-1.0.27.bazel": "0f3317dbece59e826860614b00b323c58c44ffbab453d6950f02ce11bb51102b",
+        "third_party/rust/activation-storage/BUILD.ref-cast-impl-1.0.27.bazel": "939368f6de29beea7729ada6617c86bd550ebe34c06141fa60ea5a6369220703",
+        "third_party/rust/activation-storage/BUILD.regex-1.12.4.bazel": "39629a487af6d3214d8b9e6de0e4d31132306563112f60bf74f6a9fd525f5198",
+        "third_party/rust/activation-storage/BUILD.regex-automata-0.4.14.bazel": "3d0a1f83141dcba18d6a8408d5993be0dd0d6a849a9bdccc2052f3921301d4a0",
+        "third_party/rust/activation-storage/BUILD.regex-syntax-0.8.11.bazel": "6454a113be3038108f7797cedd8e2bde35e0417b4da57a48e9b8aa90ef50ded2",
+        "third_party/rust/activation-storage/BUILD.rustix-1.1.4.bazel": "74473b92bfc44ce6e13c8ec10e9bda193f6184e3221f08a460f8901159c5cd31",
+        "third_party/rust/activation-storage/BUILD.schemars-1.2.2.bazel": "88ab650fe7fe530d49bc8b731cb6b2d872b78c1eb4e521fca318299fc50e5a27",
+        "third_party/rust/activation-storage/BUILD.schemars_derive-1.2.2.bazel": "4cbecd52a64061dfc2f46a17c6b059abb6fc62e151745fd850ef7a8b1f40fd0f",
+        "third_party/rust/activation-storage/BUILD.semver-1.0.28.bazel": "dc38d02227e830cadee13b0495de9b2961ebc7064c237d0acdeacfeb5398caef",
+        "third_party/rust/activation-storage/BUILD.serde-1.0.228.bazel": "67514207d14085bddd0afd09779846ee835479e78ffbaecfd9af31363a74d72b",
+        "third_party/rust/activation-storage/BUILD.serde_core-1.0.228.bazel": "732b80667645ee1c53497241ca9aae99aeb06aa6bbc98752aad3e37ad22223de",
+        "third_party/rust/activation-storage/BUILD.serde_derive-1.0.228.bazel": "fe8f0fe8e265de77a971cd0741543199df0747f908ba3f449e463de692cdb183",
+        "third_party/rust/activation-storage/BUILD.serde_derive_internals-0.30.0.bazel": "a430794911543802fb7bdec5a319ea2b45c7efff24664a5864ca54836e89143a",
+        "third_party/rust/activation-storage/BUILD.serde_json-1.0.150.bazel": "24cded29b916c3ee0be9bdc26ac53ee0f4a981b30cdc4bbd2cb1969f30722d27",
+        "third_party/rust/activation-storage/BUILD.sha2-0.10.9.bazel": "dbecfcdb451f8c23b21b1f22777965b974d671811cbae1fa823b0b02cf998a3c",
+        "third_party/rust/activation-storage/BUILD.syn-2.0.118.bazel": "21c0dd75176dd9039bddc205f9dd7e725bf3de6d28d247f693d57c078b3e3619",
+        "third_party/rust/activation-storage/BUILD.syn-3.0.5.bazel": "b331e4454f56e3da9887fe102a4a258b2cf5edc6ff26726607da339f75eb6996",
+        "third_party/rust/activation-storage/BUILD.tempfile-3.27.0.bazel": "f46270a4bc1a70704b96ed28d442077e7f7eddbe33fa27f8195208afec3aef21",
+        "third_party/rust/activation-storage/BUILD.thiserror-2.0.18.bazel": "3466b664d5e884d5761971bac48e24626bc7d759673f517935631c70439a9427",
+        "third_party/rust/activation-storage/BUILD.thiserror-impl-2.0.18.bazel": "df82ab2cd98c33462ab42c36df5f6fd19da03943dded089c49762a11805ed086",
+        "third_party/rust/activation-storage/BUILD.typenum-1.20.1.bazel": "3331023c843d40775f9fce41f26e7189c6d681f6fdf6abf091c517c53448df26",
+        "third_party/rust/activation-storage/BUILD.unicode-ident-1.0.24.bazel": "316ce2aa958fa574d34618d625280f8637f13b2e1ba745866bbd77c5f0823340",
+        "third_party/rust/activation-storage/BUILD.unicode-xid-0.2.6.bazel": "00529de16974b07fb9084c4f83c64fc075bd3f94ffc8815cf85958924d7c51d7",
+        "third_party/rust/activation-storage/BUILD.version_check-0.9.5.bazel": "83cacaebef70837d35cf1226b0754b3beb317ac6a71e9f7f39324807c60ea3ad",
+        "third_party/rust/activation-storage/BUILD.wasip2-1.0.4+wasi-0.2.12.bazel": "bf4ea65e49078b5abf005361bd82b0b801026f7b6f2305d5d763cfdf95b64b5c",
+        "third_party/rust/activation-storage/BUILD.wasip3-0.4.0+wasi-0.3.0-rc-2026-01-06.bazel": "62615c8750238755ff2b951f6c0b48b4b375bf50b8810ffcf18362d313743d88",
+        "third_party/rust/activation-storage/BUILD.wasm-encoder-0.244.0.bazel": "b341f7c40c1e4f7e32081e80d2116ac063ed1e7270b9bafdcde26591745c62cc",
+        "third_party/rust/activation-storage/BUILD.wasm-metadata-0.244.0.bazel": "3529b12ef4a625d764075f20cc4ee525a978a237da02e4046808fcef1ee371e3",
+        "third_party/rust/activation-storage/BUILD.wasmparser-0.244.0.bazel": "47241d10c8523189bc8da7984535fc963e6849f4944b5db5e14722c4fac9d48b",
+        "third_party/rust/activation-storage/BUILD.windows-link-0.2.1.bazel": "dc87099dab8ca93679f0536b41db99dd569757a99374b070e87ea7679dfd88df",
+        "third_party/rust/activation-storage/BUILD.windows-sys-0.61.2.bazel": "8a8fcd005d1f5432643856416e11f571de9ee780a9a25ac220d4dd2ad8133c5b",
+        "third_party/rust/activation-storage/BUILD.wit-bindgen-0.51.0.bazel": "52f099fb4747c00d5cf58a58665f6866055765ebae9607c7d84713c31a0bd5be",
+        "third_party/rust/activation-storage/BUILD.wit-bindgen-0.57.1.bazel": "4d8cb8cd7f6cde8caaf83788a128bf96d7ef84911ce76be4a712fe881c0bcd7f",
+        "third_party/rust/activation-storage/BUILD.wit-bindgen-core-0.51.0.bazel": "65fe6722a8dbd7712c24834943cb7df10cb0c5394b567d223ad2da3ca464f1d6",
+        "third_party/rust/activation-storage/BUILD.wit-bindgen-rust-0.51.0.bazel": "3ee7830d8682ee77f0fb4301a4a8c77897b11d2af64a8a876c1cd52ed39626d0",
+        "third_party/rust/activation-storage/BUILD.wit-bindgen-rust-macro-0.51.0.bazel": "45c7505921052c94b59a2ac043ba957db1731a88ae82faabe4173f4b9a182868",
+        "third_party/rust/activation-storage/BUILD.wit-component-0.244.0.bazel": "10311a3d380f0cd9bd9d4205256d6b7f6522f7b8845911fd86dfb3ffff0e4505",
+        "third_party/rust/activation-storage/BUILD.wit-parser-0.244.0.bazel": "4f4874922cfe26a030d0541cb29f437837f50eb2572110c173c1cc22ad62e9ad",
+        "third_party/rust/activation-storage/BUILD.zmij-1.0.21.bazel": "86ce390418e934786f6c5f68dc1a15fe21ddbce9199fcf2df5ee1b0dcd2ae7d5",
+        "third_party/rust/activation-storage/Cargo.lock": "32530d93c3fc33e8a43c8053fa7c09ad38949b6091e727307f252924327bbac6",
+        "third_party/rust/activation-storage/aliases.bzl": "f916f67745cebd2d63ab16b411f75187a16990cd49641f370ff053be89ec6222",
+        "third_party/rust/activation-storage/cargo-bazel.json": "5466b366e6019bcc488fab9e4b077cf15bfb097363dfda397de35e5efc52c172",
+        "third_party/rust/activation-storage/generator-config.json": "04290396854829590d74780847baac70a618cdcb63c71df47b1575b0f3683d46",
+        "third_party/rust/activation-storage/repositories.MODULE.bazel": "f87d39f8568c2e6e4b8818699667f5ccb3e9cdd205721e871d9e0ff0aeecd6c4",
+        "third_party/rust/activation-storage/sources.json": "2c3f16606c02d534775f9a5db39692581973dcfa04e6f3d1019c8ab2eaba7c3e"
+      }
+    }
+  },
+  "dependency_specification_outputs": [
+    "/nix/store/i629f9v76gakn6kb5553pa2bs6lahmbl-aos-rust-activation-core-specifications-1",
+    "/nix/store/w5sds0rrpm9s5pv038ssmrdadfbrns21-aos-rust-activation-core-tests-specifications-1",
+    "/nix/store/636hrja2hppgp5bccglvys9malf138kp-aos-rust-activation-storage-specifications-1",
+    "/nix/store/37zabskjljrn7ahv4nnvjllq62sfqcwn-aos-rust-control-specifications-1",
+    "/nix/store/7hig6zvh07a9wwgwwspv3fp94pq481xs-aos-rust-core-specifications-1",
+    "/nix/store/jz88h06p1zz47yqq89cr0c46dv34c208-aos-rust-crucible-cli-specifications-1",
+    "/nix/store/9i3zfc5rj0050ys23982rbrgh7m184v7-aos-rust-daemon-specifications-1",
+    "/nix/store/5p4cwf6fbrmwq6ph9yzvqycm5m0xcafd-aos-rust-device-specifications-1",
+    "/nix/store/dzhysf1mhz1nimfh7xgaalw35s7pdn15-aos-rust-engine-specifications-1",
+    "/nix/store/y9pxbm9jad881na55xl2nm2rsv6rwscr-aos-rust-formats-specifications-1",
+    "/nix/store/vfiai7xcknz2h26mv2772a8b7sy3nzhr-aos-rust-guest-specifications-1",
+    "/nix/store/avq2yh1wl5gwh2x1qcw0cv2wy1w0r5m1-aos-rust-native-foundation-specifications-1",
+    "/nix/store/dw1i1j6hybdqxwcb270kgqqwhvswbw7x-aos-rust-native-foundation-minimal-specifications-1",
+    "/nix/store/2spnpk7byal4yqlk7mcj2m60g2mmy4mr-aos-rust-native-foundation-tests-specifications-1",
+    "/nix/store/kz8qskl8bpwmdv6wflasvsaxml65005s-aos-rust-qemu-host-specifications-1",
+    "/nix/store/cb8i68n3qhy445czfxpjdyj9z1q4bnxc-aos-rust-quota-specifications-1",
+    "/nix/store/rniv976sr8vl5avwqsipclzljc709b7h-aos-rust-session-specifications-1",
+    "/nix/store/wq44dc3rf501yjc63c7lbmq986sn44l4-aos-rust-store-specifications-1",
+    "/nix/store/zlpflsqh3b8iinzwwzxn7qv16fyg4d4l-aos-rust-store-s3-specifications-1"
+  ],
+  "existing_family_inventory_refresh_outputs": {
+    "activation-core": "/nix/store/ydgd75by7y9g3kpfmpysdsqg0zsxsp6g-aos-bazel-activation-core-inventory-1",
+    "activation-core-production": "/nix/store/8j1fsq5lkfpwmp3n5r8c084a8lj7vm5q-aos-bazel-activation-core-production-inventory-1",
+    "boot-pilot": "/nix/store/glgsikgracq48y7v801c48k4fivs0n76-aos-bazel-boot-pilot-inventory-1",
+    "contracts": "/nix/store/wngiwfl73q1prm71wxnq2cf2b3fyzrrb-aos-bazel-contracts-inventory-1",
+    "control": "/nix/store/q5lix5cy7rl6nx7jdcla6ag5s3rrrcr1-aos-bazel-control-inventory-1",
+    "crucible-cli": "/nix/store/1wyf7k15kncscvj0m41phaq5q0cszjy2-aos-bazel-crucible-cli-inventory-1",
+    "daemon": "/nix/store/qzf9x48bvxqxdhqi2rsrgi0bxyydjx23-aos-bazel-daemon-inventory-1",
+    "device": "/nix/store/4mapazxpxq63kdd4s2mvlxdvzmm1a751-aos-bazel-device-inventory-1",
+    "engine": "/nix/store/s76slf36f70qawnjza52qsbj37ksf6d5-aos-bazel-engine-inventory-1",
+    "fixture": "/nix/store/lkjdanjzyzi4nhivfjv446hwcim95xga-aos-bazel-fixture-inventory-1",
+    "formats": "/nix/store/s11kpbkk5r49sj1afhbpms1lvgx508b8-aos-bazel-formats-inventory-1",
+    "guest": "/nix/store/yb48dgh97zyyw2k2vyrcq4v5y41bayar-aos-bazel-guest-inventory-1",
+    "native-foundation": "/nix/store/hk0z50l7xs8ax2ksk1m9yr5a9p4b4876-aos-bazel-native-foundation-inventory-1",
+    "native-foundation-integration": "/nix/store/4yy7m6nzbbjvswpa6wwxjz7kgfp6qxg6-aos-bazel-native-foundation-integration-inventory-1",
+    "native-foundation-minimal": "/nix/store/f8dgrrm0kvls8zsmqz3hjqhkzqf06x1y-aos-bazel-native-foundation-minimal-inventory-1",
+    "native-foundation-production": "/nix/store/pq9dlwg85y3nvvkgckdswv1rwral84m5-aos-bazel-native-foundation-production-inventory-1",
+    "protocol": "/nix/store/20lnxcmlwkgzny7a5rnk8mq1fy9sm7rm-aos-bazel-protocol-inventory-1",
+    "qemu-host": "/nix/store/nla407hz8xrbsvz64hv7lw2x5kqj52j5-aos-bazel-qemu-host-inventory-1",
+    "quota": "/nix/store/j6ljkl2lqv42flihdrjl25b5yhssihax-aos-bazel-quota-inventory-1",
+    "session": "/nix/store/s7710ppziwnd4wij3adbip4zc9rf5anz-aos-bazel-session-inventory-1",
+    "shared": "/nix/store/3jy8slnnxca6pzfv4gb387mhc2f9df1m-aos-bazel-shared-inventory-1",
+    "source-catalog": "/nix/store/227hffhhdfrbapa0xqi1r1b2qh7hywbx-aos-bazel-source-catalog-checks",
+    "store": "/nix/store/8p10zpam4cdnq2p1abliklpm5zmbsb54-aos-bazel-store-inventory-1",
+    "store-s3": "/nix/store/rv5ni2x7i6pak5alqxljap8gf504sa68-aos-bazel-store-s3-inventory-1"
+  },
+  "families": {
+    "activation-core": {
+      "configured_reports": 237,
+      "sha256": "fc69a87da7ead7539a38647295b90169679ea991dae21d75e469b8a66470ba79",
+      "source_files": 62
+    },
+    "activation-storage": {
+      "configured_reports": 144,
+      "sha256": "87a3836d457235e0cbc69fe20b6f97d16c549f2c9d2a22cb27c0eedb1e92040f",
+      "source_files": 79
+    },
+    "boot-pilot": {
+      "configured_reports": 41,
+      "sha256": "2cd5d0bfd12c0c37551803a686878213d438880acc92bdff1abaec120e98048e",
+      "source_files": 15
+    },
+    "contracts": {
+      "configured_reports": 152,
+      "sha256": "252f4b3245da29e66772e5b8fa68f8c5c1fee7fb31153bf706d4f96dc820c5e8",
+      "source_files": 140
+    },
+    "control": {
+      "configured_reports": 306,
+      "sha256": "e40e28ba4cec28931d2448f5eea67472dc2fe6095655e5c0ed712d67beb88d8d",
+      "source_files": 883
+    },
+    "crucible-cli": {
+      "configured_reports": 578,
+      "sha256": "b229e9ce6350a225a67fbfeff83e64c3580ec2f212abf99013e69621e49f744e",
+      "source_files": 1737
+    },
+    "daemon": {
+      "configured_reports": 447,
+      "sha256": "83af69456607335c2a27c558242e52d1f62e566697f3c9a6eadd48c61ac1a4d5",
+      "source_files": 1546
+    },
+    "device": {
+      "configured_reports": 166,
+      "sha256": "28f0080bf2eb11083b41debdb9c6b698e6b1c1b314332fabb4156b6f2b3897b3",
+      "source_files": 280
+    },
+    "engine": {
+      "configured_reports": 1265,
+      "sha256": "c36ec8e18a2ed9a688e71e6280a3214b30ce80187f443c53299f200cebb819d2",
+      "source_files": 3754
+    },
+    "fixture": {
+      "configured_reports": 21,
+      "sha256": "85c43600d7ec03cd1495f7e4d1ed7699e5833124c6737731b58950e2619efb94",
+      "source_files": 9
+    },
+    "formats": {
+      "configured_reports": 162,
+      "sha256": "a9e4bcc18889cb95704ce5efd53f97e08a784a42382f6b600ef69b60bff3f218",
+      "source_files": 73
+    },
+    "guest": {
+      "configured_reports": 138,
+      "sha256": "280d8e7f706befa495c9b5ab425683700ce2e30225da45d742a8cdc50060f11f",
+      "source_files": 294
+    },
+    "native-foundation": {
+      "configured_reports": 957,
+      "sha256": "c898c51a21cab1d9a98a8cadda66cfb68d8d230951d57bd05f1855e8e4af44f4",
+      "source_files": 102
+    },
+    "protocol": {
+      "configured_reports": 129,
+      "sha256": "c35e8d41582c0be12fb7680c8c31d7a2debce3c8456840da08e73241d416f13c",
+      "source_files": 159
+    },
+    "qemu-host": {
+      "configured_reports": 249,
+      "sha256": "6cbffc83bc9d4389f0be0f2f625ec10df101802d1d95b1b4b04b54e938952909",
+      "source_files": 1126
+    },
+    "quota": {
+      "configured_reports": 49,
+      "sha256": "1c60ca5e579f29995dbc63c6b9cc6151af4fd9a573cdc2082dd8a61bcb7ab519",
+      "source_files": 6
+    },
+    "session": {
+      "configured_reports": 262,
+      "sha256": "b0c2ee443e04a360ceedbc95ed2172ccaaac2ebbe9af299010477802d56f2095",
+      "source_files": 840
+    },
+    "shared": {
+      "configured_reports": 85,
+      "sha256": "76fb122a191dfb1fd2c93c1208fd27006ea6626f2158d861888a182900c39e9e",
+      "source_files": 32
+    },
+    "store": {
+      "configured_reports": 277,
+      "sha256": "218cb748e8845ff7e7914778696dbf0d9319b3ad4a3c6f0fddf621a06faeb52a",
+      "source_files": 272
+    },
+    "store-s3": {
+      "configured_reports": 282,
+      "sha256": "31ff59451e3021cf066dbd2c37ce03af212d96006478a7984130ad91e130cdf6",
+      "source_files": 54
+    }
+  },
+  "limits": [
+    "Explicit dependency updates may access pinned source registries; ordinary preparation and builds remain offline.",
+    "Prior native and core activation refreshes retain production, default, transfer-disabled and integration selections.",
+    "Historical qualification evidence remains bound to its original frozen sources and derivations.",
+    "Runtime qualification is retained separately; compiler invocation equivalence, foreign/Wasm execution, performance acceptance and production cutover remain pending."
+  ],
+  "native_inventory_inputs": [
+    "/nix/store/hk0z50l7xs8ax2ksk1m9yr5a9p4b4876-aos-bazel-native-foundation-inventory-1/inventory.json",
+    "/nix/store/4yy7m6nzbbjvswpa6wwxjz7kgfp6qxg6-aos-bazel-native-foundation-integration-inventory-1/inventory.json",
+    "/nix/store/f8dgrrm0kvls8zsmqz3hjqhkzqf06x1y-aos-bazel-native-foundation-minimal-inventory-1/inventory.json",
+    "/nix/store/pq9dlwg85y3nvvkgckdswv1rwral84m5-aos-bazel-native-foundation-production-inventory-1/inventory.json"
+  ],
+  "policy_and_cli_outputs": [
+    "/nix/store/pa4290mdly8y0p2jp1jlg3h5p3cqp768-aos-bazel-policy-checks",
+    "/nix/store/a1h360vqwzbj40gwrlnj96c2gav2j75a-aos-dev-cli-check-0"
+  ],
+  "policy_tests": 164,
+  "previous_eighteen_dependency_locks_sha256": {
+    "third_party/rust/activation-core-tests/Cargo.lock": "493f656c4ba54d2fb00c00d8d6b35d921ca26ab419fddc0f87f6c8848a75afe1",
+    "third_party/rust/activation-core/Cargo.lock": "3917500263df5ec4c26625aceef53e94320803ec98441e1f9977d3c26bd4135a",
+    "third_party/rust/control/Cargo.lock": "3f3857940345cf61716d0ea38fcb63f504a41d52ba477f5372f4e5de8fc04d0d",
+    "third_party/rust/core/Cargo.lock": "0b168b602b191e454c706aef89dd82a597842773965ee254f1236851428bd615",
+    "third_party/rust/crucible-cli/Cargo.lock": "ca58d01c86eca1b93451263779117fe55d0a6c475fa24b96c9b50c560684e6c7",
+    "third_party/rust/daemon/Cargo.lock": "33e42d277aaf52eeada4522da629e077fc7781487969615e604c4be967a3a394",
+    "third_party/rust/device/Cargo.lock": "74fd85578ed6a2d23b373d12641b34bf5d9ca49de30004ea47dee4b4861885b6",
+    "third_party/rust/engine/Cargo.lock": "0d2a40fb1f2213cb0d753d2764eacea427b4ca02239ff70aafbdce7d272a9fb3",
+    "third_party/rust/formats/Cargo.lock": "94658335c6b5d55c6925838914bdd35cabacbdc5eb0551f30f8ce8eb33420bc7",
+    "third_party/rust/guest/Cargo.lock": "fa9f752ab8c424b1614e06824569f71243b6da005efdb3e0ec286e1df19992ce",
+    "third_party/rust/native-foundation-minimal/Cargo.lock": "1f238dc4f1270e0be31b915d277e66c39b313b147c362ef9a7b76bcfe8e2fe59",
+    "third_party/rust/native-foundation-tests/Cargo.lock": "c6ff33b3a77444a25cc4f284d9756b57c686d933e7fdebcec5e750d1cbb30ff6",
+    "third_party/rust/native-foundation/Cargo.lock": "c2c588c9a3868d7d9a0063823ed1a7c4fba8f0837e09a3ff2309579db525e617",
+    "third_party/rust/qemu-host/Cargo.lock": "0d2a40fb1f2213cb0d753d2764eacea427b4ca02239ff70aafbdce7d272a9fb3",
+    "third_party/rust/quota/Cargo.lock": "1fc90f99bcf9493f278b05f0b9a713f295ccabd7263a5adc6be2434c60a0daf2",
+    "third_party/rust/session/Cargo.lock": "f6123dd7b3a731831eb6d147fe1764980a2335bfe6c58b28a733feaa0ccf5f21",
+    "third_party/rust/store-s3/Cargo.lock": "e153e130a7c55ca6f4013455777ad12b1342640549b4000f02cfb5e1f71ef14d",
+    "third_party/rust/store/Cargo.lock": "933e9281b714ad7bee40fb4c1f3dfc0a89858d2e4ec16ab7067ab3a5b1992d8a"
+  },
+  "previous_generated_build_files": {
+    "count": 3113,
+    "sha256_of_sorted_json_path_to_sha256_mapping": "d1de46d47ef3cfbeb81200b4554eaaa3232e63a37b6a37b1c9d95eec6e36714a",
+    "unchanged": true
+  },
+  "previous_sdk_metadata_changes": [
+    "Root specification declaration digest in contracts and specification contracts; source pins, resolved features and generated builds are unchanged."
+  ],
+  "schema_version": 1,
+  "source_catalog": {
+    "output": "/nix/store/227hffhhdfrbapa0xqi1r1b2qh7hywbx-aos-bazel-source-catalog-checks",
+    "report": {
+      "crates": {
+        "packages": 77,
+        "sources": 3731
+      },
+      "external_build_actions": 0,
+      "repository": {
+        "packages": 79,
+        "sources": 3751
+      },
+      "schema_version": 1
+    },
+    "report_sha256": "6b586aaaf5100af1b783fe9066a02bdcd6284483951301d4652717ae1f403826"
+  },
+  "status": "Storage activation source profile and all twenty configured family inventories validated"
+}

@@ -1720,3 +1720,44 @@ original workspace source and requested roots, and executes no external actions.
 The metadata oracle now requests only inventory reports and rejects a nonempty
 external action log. Runtime, feature, license, developer, and editor qualification
 remain independently required by the family checks and aggregate.
+
+## Filesystem and storage activation providers
+
+`aos-dev bazel --family activation-storage` selects `aos-activation-filesystem`,
+`aos-activation-nix-store`, and `aos-activation-storage`. Their eleven command
+labels retain the filesystem, Nix-store, cryptsetup, format, ZFS, provisioning,
+and boot-storage provider names. Libraries, command test artifacts, developer
+tools, editor roots, and production license closures are declared explicitly.
+
+Nix-store activation uses tempfile in production, so production and tests share
+one `activation-storage` dependency profile. Both match Cargo's 42 external
+crate identities and eight first-party packages. Syn 2 retains its derive parser
+features independently of the separate Syn 3 instance used by schema derives.
+
+`tests/evidence/activation-storage-cargo-baseline.json` retains the unchanged
+Cargo baseline. `tests/evidence/native-linux-activation-storage.json` records
+passing qualification with the checked-in source inventory: 77 executed cases,
+one existing ignored Nix-store case, 14 library and command test artifacts,
+and three empty doctest targets. The ignored case requires `AOS_TEST_NIX_STORE`
+pointing to source-built Nix. Dedicated native tool, provider, and assembled-system
+gates remain required before production migration.
+
+Clippy, formatting, documentation, license closures, and selected-package editor
+comparison pass. Both editor models report zero selected diagnostics and no
+unattributed diagnostics. The Bazel model reports complete inference, while the
+Cargo model retains incomplete inference and 964 diagnostics outside the selected
+packages. Those diagnostics and the differing aggregate statistics are preserved.
+
+`tests/evidence/activation-storage-configured-graph.json` retains 46 requested
+roots, 144 configured reports, and 79 source files, together with all 20 validated
+family inventories and 19 dependency specification checks. The previous 18 locks,
+source pins, features, and 3,113 generated crate build files are unchanged. All
+164 policy tests and CLI checks pass with 15 exported launchers.
+`tests/evidence/activation-storage-metadata-evaluation.json` records metadata
+parity for 375 configured Rust targets and passing core Nix evaluation. Metadata
+collection uses 21 analysis-only selections with no external actions.
+
+Foreign and Wasm execution, compiler invocation equivalence, numeric performance
+acceptance, production migration, and Cargo removal remain separate qualification.
+Required workspace Rust target compilation runs independently against its frozen
+source checkpoint.

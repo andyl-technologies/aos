@@ -92,6 +92,11 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    activation-storage = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "activation-storage";
+    };
     activation-core = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -237,6 +242,18 @@
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
   };
+  aosBazelActivationStorageWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = ["crates/aos/activation" "crates/aos/boot/aos-storage-layout" "crates/aos/modules/aos-module-format" "crates/shared/aos-core" "crates/shared/aos-artifact-evidence" "tools/bazel" "third_party/rust"];
+    repositories = aosBazelRepositories // aosBazelRustRepositories.activation-storage;
+    dependencyProfile = "activation-storage";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = map (name: "//crates/aos/activation/${name}:unit") [
+      "aos-activation-filesystem"
+      "aos-activation-nix-store"
+      "aos-activation-storage"
+    ];
+  };
   aosBazelActivationCoreWorkspace = mkAosBazelWorkspace {
     root = ../../..;
     sourceDirectories = ["crates/aos/activation" "crates/aos/modules/aos-module-format" "crates/shared/aos-core" "crates/shared/aos-artifact-evidence" "tools/bazel" "third_party/rust"];
@@ -363,6 +380,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelActivationStorageLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelActivationStorageWorkspace;
     }).launcher;
   aosBazelActivationCoreLauncher =
     (import ./development.nix {

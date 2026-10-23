@@ -196,3 +196,9 @@ config_setting(
     flag_values = {":dependency_profile": "activation-core-tests"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "activation_storage_dependencies",
+    flag_values = {":dependency_profile": "activation-storage"},
+    visibility = ["//visibility:public"],
+)

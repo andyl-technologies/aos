@@ -15,6 +15,7 @@
     "aosBazelContractsLauncher"
     "aosBazelNativeFoundationLauncher"
     "aosBazelActivationCoreLauncher"
+    "aosBazelActivationStorageLauncher"
     "aosBazelCrucibleCliLauncher"
   ];
   src = builtins.path {
