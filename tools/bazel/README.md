@@ -1430,5 +1430,13 @@ baseline: 436 executed cases, 23 existing ignored cases, eight test artifacts,
 construction test needs trust roots even without making a network request;
 the sandbox declares `SSL_CERT_FILE` from the AOS certificate package. Its
 bundle digest and the successful Cargo reports are retained. CLI Bazel
-conversion, nondefault feature qualification, and production migration remain
-pending.
+qualification and production migration remain pending.
+
+`tests/evidence/crucible-cli-cargo-feature-baselines.json` retains eight Cargo
+configurations with unchanged CLI source and fixture inputs. Default and
+recovery each execute 436 cases with 23 ignored; test-double and combined
+recovery/test-double each execute 493 with 41 ignored. All preserve 281 external
+and 18 first-party feature identities. The four packaged-flight combinations
+compile only: their listed inventories are retained separately from execution.
+Their existing VM gates must supply the kernel, patched QEMU, plugin, root image,
+and deployment resources before packaged runtime qualification can pass.
