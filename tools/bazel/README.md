@@ -1799,3 +1799,33 @@ external actions, and core Nix evaluation passes; its frozen outputs are in
 Dedicated service and assembled-system gates, foreign and Wasm execution,
 compiler invocation equivalence, numeric performance acceptance, production
 migration, and Cargo removal remain required separately.
+
+## Storage/campaign compilation measurements
+
+`tests/evidence/store-performance-v3.json` identifies a frozen compilation trial
+with 54 samples: three repetitions of six scenarios in three build modes. The
+full report is retained in `tests/evidence/store-performance-v3-raw.json`,
+including source identities, commands, action counts, host load, JVM resources,
+and untimed validation of 599 cases per sample. Median compilation seconds were:
+
+| Scenario | Cargo incremental | Cargo nonincremental with accache | Bazel server |
+| --- | ---: | ---: | ---: |
+| Cold | 107.0 | 83.8 | 68.5 |
+| Warm | 0.6 | 0.3 | 5.0 |
+| Implementation edit | 5.4 | 52.4 | 37.7 |
+| Public API edit | 6.7 | 64.2 | 47.6 |
+| Second worktree | 0.3 | 0.4 | 8.3 |
+| Fresh build directory | 103.8 | 83.4 | 8.9 |
+
+Second-worktree Cargo builds can reuse their existing target directory; fresh
+build directories cannot. The first Bazel second-worktree sample took 66.7
+seconds, while the other two took about eight seconds. Those samples remain
+visible. Shared-host load also varies across the trial.
+
+Four selected artifact profile settings are matched. Complete compiler
+invocation, codegen-unit, and incremental equivalence are not established.
+Bazel imports the AOS Zstandard archive, while Cargo builds the pinned bundled
+Zstandard sources; dependency preparation is outside the measured scope.
+These results expose edit and no-op regressions against Cargo incremental.
+They do not establish end-to-end performance, numeric acceptance budgets,
+production readiness, or permission to remove Cargo.
