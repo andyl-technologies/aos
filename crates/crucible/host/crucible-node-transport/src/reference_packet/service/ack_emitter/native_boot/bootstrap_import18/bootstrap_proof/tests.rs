@@ -181,10 +181,12 @@ pub(in super::super::super) fn assert_child(
         original.cut = OperationalDeadline::after(Duration::from_secs(3)).unwrap();
     }
     let result = original.verify_bootstrap_proof_data(
-        &normalizations,
-        &literal,
-        &parsed,
-        &codec,
+        super::super::bootstrap_correlation::Predecessors {
+            normalizations: &normalizations,
+            literal: &literal,
+            parsed: &parsed,
+            codec: &codec,
+        },
         &mut correlation,
         &mut attempt,
         &model,
@@ -270,10 +272,12 @@ pub(in super::super::super) fn assert_child(
     assert!(
         original
             .verify_bootstrap_proof_data(
-                &normalizations,
-                &literal,
-                &parsed,
-                &codec,
+                super::super::bootstrap_correlation::Predecessors {
+                    normalizations: &normalizations,
+                    literal: &literal,
+                    parsed: &parsed,
+                    codec: &codec,
+                },
                 &mut correlation,
                 &mut attempt,
                 &model
@@ -283,10 +287,12 @@ pub(in super::super::super) fn assert_child(
     assert!(
         original
             .verify_bootstrap_proof_data(
-                &normalizations,
-                &literal,
-                &parsed,
-                &codec,
+                super::super::bootstrap_correlation::Predecessors {
+                    normalizations: &normalizations,
+                    literal: &literal,
+                    parsed: &parsed,
+                    codec: &codec,
+                },
                 &mut correlation,
                 &mut Attempt::empty_data(),
                 &model
@@ -371,10 +377,12 @@ pub(in super::super::super) fn verify_and_construct_reply(
         ],
     };
     original.verify_and_construct_bootstrap_reply_data(
-        normalizations,
-        literal,
-        parsed,
-        codec,
+        super::super::bootstrap_correlation::Predecessors {
+            normalizations,
+            literal,
+            parsed,
+            codec,
+        },
         correlation,
         verified,
         &model,
@@ -441,15 +449,19 @@ pub(in super::super::super) fn verify_prepare_publish_reply(
         ],
     };
     original.verify_prepare_and_publish_bootstrap_reply_data(
-        normalizations,
-        literal,
-        parsed,
-        codec,
+        super::super::bootstrap_correlation::Predecessors {
+            normalizations,
+            literal,
+            parsed,
+            codec,
+        },
         correlation,
         verified,
-        &model,
         reply,
-        preparation,
-        publication,
+        super::super::bootstrap_reply::publication::Admissions {
+            verification: &model,
+            preparation,
+            publication,
+        },
     )
 }

@@ -103,6 +103,19 @@ pub(in super::super) trait Admission {
     ) -> Result<(), ProviderError>;
 }
 
+/// Borrows the independently admitted verification, preparation and publication.
+///
+/// Each operation keeps its own defining callback and complete retained census.
+#[derive(Clone, Copy)]
+pub(in super::super::super) struct Admissions<'a> {
+    /// Admits proof verification and every surviving verifier output.
+    pub(in super::super::super) verification: &'a dyn proof::Admission,
+    /// Admits reply preparation and every constructed response prefix.
+    pub(in super::super::super) preparation: &'a dyn super::Admission,
+    /// Admits SDK mutation, physical publication and terminal record custody.
+    pub(in super::super::super) publication: &'a dyn Admission,
+}
+
 impl Attempt {
     fn current_publication_data<'a>(
         &'a self,
@@ -303,10 +316,7 @@ impl OriginalImport18RawBootstrap {
     /// partial/failed I/O, admission or any terminal original guard.
     pub(in super::super::super) fn publish_bootstrap_reply_data(
         &mut self,
-        normalizations: &super::super::bootstrap_normalizations::Attempt,
-        literal: &super::super::bootstrap_literal::Attempt,
-        parsed: &super::super::bootstrap_value::Attempt,
-        codec: &super::super::bootstrap_codec::Attempt,
+        predecessors: correlation::Predecessors<'_>,
         correlation: &mut correlation::Attempt,
         proof: &Proof,
         reply: &mut Attempt,
@@ -319,10 +329,10 @@ impl OriginalImport18RawBootstrap {
         reply.publication.started = true;
         let prior = correlation::Inputs {
             original: self,
-            normalizations,
-            literal,
-            parsed,
-            codec,
+            normalizations: predecessors.normalizations,
+            literal: predecessors.literal,
+            parsed: predecessors.parsed,
+            codec: predecessors.codec,
         };
         let inputs = Inputs {
             prior,
@@ -386,16 +396,11 @@ impl OriginalImport18RawBootstrap {
     /// proof/preparation, partial I/O, SDK settlement or any terminal guard.
     pub(in super::super::super) fn verify_prepare_and_publish_bootstrap_reply_data(
         &mut self,
-        normalizations: &super::super::bootstrap_normalizations::Attempt,
-        literal: &super::super::bootstrap_literal::Attempt,
-        parsed: &super::super::bootstrap_value::Attempt,
-        codec: &super::super::bootstrap_codec::Attempt,
+        predecessors: correlation::Predecessors<'_>,
         correlation: &mut correlation::Attempt,
         verified: &mut Proof,
-        verification: &dyn proof::Admission,
         reply: &mut Attempt,
-        preparation: &dyn super::Admission,
-        publication: &dyn Admission,
+        admissions: Admissions<'_>,
     ) -> Result<(), ProviderError> {
         if self.bootstrap_proof_started
             || self.bootstrap_reply_started
@@ -414,10 +419,10 @@ impl OriginalImport18RawBootstrap {
         reply.publication.started = true;
         let prior = correlation::Inputs {
             original: self,
-            normalizations,
-            literal,
-            parsed,
-            codec,
+            normalizations: predecessors.normalizations,
+            literal: predecessors.literal,
+            parsed: predecessors.parsed,
+            codec: predecessors.codec,
         };
         let outcome = correlation.with_publication_context_data(
             prior,
@@ -438,7 +443,7 @@ impl OriginalImport18RawBootstrap {
                 proof::verify_under_received_data(
                     inputs,
                     verified,
-                    verification,
+                    admissions.verification,
                     &received,
                     |proof, context, envelope, request, guard, operands| {
                         let verified = super::Verified {
@@ -454,7 +459,7 @@ impl OriginalImport18RawBootstrap {
                                 proof,
                             },
                             reply,
-                            preparation,
+                            admissions.preparation,
                             &verified,
                         )
                     },
@@ -468,7 +473,7 @@ impl OriginalImport18RawBootstrap {
                     guard,
                     envelope,
                     operands,
-                    publication,
+                    admissions.publication,
                 )
             },
         );

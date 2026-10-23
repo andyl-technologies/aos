@@ -27,6 +27,22 @@ type RequestValues<'a> =
 #[path = "bootstrap_correlation/storage.rs"]
 mod storage;
 
+/// Borrows external Bootstrap predecessors independently of the mutable receiver.
+///
+/// This view carries the same four owners into verification and publication.
+/// It supplies no currentness, admission, SDK settlement or phase permission.
+#[derive(Clone, Copy)]
+pub(in super::super) struct Predecessors<'a> {
+    /// Borrows the completed original normalization outputs.
+    pub(in super::super) normalizations: &'a Normalizations,
+    /// Borrows the retained post-Hello frame and read prefixes.
+    pub(in super::super) literal: &'a Literal,
+    /// Borrows the strict tree decoded from that frame.
+    pub(in super::super) parsed: &'a Parsed,
+    /// Borrows the corresponding unassigned typed request and proof.
+    pub(in super::super) codec: &'a Codec,
+}
+
 /// Borrows all actual predecessors without moving or substituting any owner.
 #[derive(Clone, Copy)]
 pub(in super::super) struct Inputs<'a> {

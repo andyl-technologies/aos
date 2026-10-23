@@ -321,10 +321,7 @@ impl OriginalImport18RawBootstrap {
     /// admission, assignment/context correspondence, MAC or terminal guards.
     pub(in super::super) fn verify_bootstrap_proof_data(
         &mut self,
-        normalizations: &super::bootstrap_normalizations::Attempt,
-        literal: &super::bootstrap_literal::Attempt,
-        parsed: &super::bootstrap_value::Attempt,
-        codec: &super::bootstrap_codec::Attempt,
+        predecessors: correlation::Predecessors<'_>,
         correlation: &mut Correlation,
         attempt: &mut Attempt,
         admission: &dyn Admission,
@@ -337,10 +334,10 @@ impl OriginalImport18RawBootstrap {
         let inputs = Inputs {
             prior: correlation::Inputs {
                 original: self,
-                normalizations,
-                literal,
-                parsed,
-                codec,
+                normalizations: predecessors.normalizations,
+                literal: predecessors.literal,
+                parsed: predecessors.parsed,
+                codec: predecessors.codec,
             },
             correlation: correlation.view_data(),
         };
@@ -604,6 +601,7 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usi
     let fields = [
         storage::counter_scratch_data(),
         received_core_counter_scratch_data::<()>()?,
+        size_of::<correlation::Predecessors<'static>>() * 2,
         size_of::<Inputs<'static>>() * 6,
         size_of::<&Attempt>() * 2,
         size_of::<&mut Attempt>(),
@@ -626,8 +624,8 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usi
         size_of::<Result<BodyLoans<'static>, ProviderError>>(),
         size_of::<&BootData>(),
         size_of::<Result<usize, std::num::TryFromIntError>>(),
-        size_of::<[usize; 26]>(),
-        size_of::<std::array::IntoIter<usize, 26>>(),
+        size_of::<[usize; 27]>(),
+        size_of::<std::array::IntoIter<usize, 27>>(),
     ];
     fields.into_iter().try_fold(
         Attempt::verified_loan_counter_scratch_data::<()>()?,

@@ -103,6 +103,8 @@ fn counter_scratch_data() -> Result<usize, ProviderError> {
         super::super::super::bootstrap_correlation::Attempt::received_loan_counter_scratch_data::<()>(
         )?,
         super::super::super::bootstrap_correlation::counter_scratch_data()?,
+        size_of::<correlation::Predecessors<'static>>() * 2,
+        size_of::<Admissions<'static>>() * 2,
         size_of::<Publication>(),
         size_of::<Inputs<'static>>() * 8,
         size_of::<&dyn proof::Admission>(),

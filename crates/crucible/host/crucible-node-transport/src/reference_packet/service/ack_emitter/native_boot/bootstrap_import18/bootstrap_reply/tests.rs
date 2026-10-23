@@ -276,10 +276,12 @@ pub(in super::super::super) fn assert_child(
     }
     let outcome = if suffix == "missing_proof" {
         original.construct_bootstrap_reply_data(
-            &normalizations,
-            &literal,
-            &parsed,
-            &codec,
+            super::super::bootstrap_correlation::Predecessors {
+                normalizations: &normalizations,
+                literal: &literal,
+                parsed: &parsed,
+                codec: &codec,
+            },
             &mut correlation,
             &proof,
             &mut attempt,
@@ -369,10 +371,12 @@ pub(in super::super::super) fn assert_child(
     assert!(
         original
             .construct_bootstrap_reply_data(
-                &normalizations,
-                &literal,
-                &parsed,
-                &codec,
+                super::super::bootstrap_correlation::Predecessors {
+                    normalizations: &normalizations,
+                    literal: &literal,
+                    parsed: &parsed,
+                    codec: &codec,
+                },
                 &mut correlation,
                 &proof,
                 &mut attempt,
@@ -383,10 +387,12 @@ pub(in super::super::super) fn assert_child(
     assert!(
         original
             .construct_bootstrap_reply_data(
-                &normalizations,
-                &literal,
-                &parsed,
-                &codec,
+                super::super::bootstrap_correlation::Predecessors {
+                    normalizations: &normalizations,
+                    literal: &literal,
+                    parsed: &parsed,
+                    codec: &codec,
+                },
                 &mut correlation,
                 &proof,
                 &mut Attempt::empty_data(),

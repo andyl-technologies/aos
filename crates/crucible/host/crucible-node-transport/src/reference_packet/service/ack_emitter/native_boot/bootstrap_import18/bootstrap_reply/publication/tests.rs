@@ -120,10 +120,12 @@ pub(in super::super::super::super) fn assert_child(
     }
     let outcome = if suffix == "missing_preparation" {
         original.publish_bootstrap_reply_data(
-            &normalizations,
-            &literal,
-            &parsed,
-            &codec,
+            correlation::Predecessors {
+                normalizations: &normalizations,
+                literal: &literal,
+                parsed: &parsed,
+                codec: &codec,
+            },
             &mut correlation,
             &proof,
             &mut reply,
@@ -206,10 +208,12 @@ pub(in super::super::super::super) fn assert_child(
     assert!(
         original
             .publish_bootstrap_reply_data(
-                &normalizations,
-                &literal,
-                &parsed,
-                &codec,
+                correlation::Predecessors {
+                    normalizations: &normalizations,
+                    literal: &literal,
+                    parsed: &parsed,
+                    codec: &codec,
+                },
                 &mut correlation,
                 &proof,
                 &mut reply,
@@ -220,10 +224,12 @@ pub(in super::super::super::super) fn assert_child(
     assert!(
         original
             .publish_bootstrap_reply_data(
-                &normalizations,
-                &literal,
-                &parsed,
-                &codec,
+                correlation::Predecessors {
+                    normalizations: &normalizations,
+                    literal: &literal,
+                    parsed: &parsed,
+                    codec: &codec,
+                },
                 &mut correlation,
                 &proof,
                 &mut super::super::Attempt::empty_data(),

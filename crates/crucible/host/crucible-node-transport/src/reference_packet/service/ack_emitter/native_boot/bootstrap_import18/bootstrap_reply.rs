@@ -219,10 +219,7 @@ impl OriginalImport18RawBootstrap {
     /// admission, output correspondence, receipt construction or terminal guards.
     pub(in super::super) fn construct_bootstrap_reply_data(
         &mut self,
-        normalizations: &super::bootstrap_normalizations::Attempt,
-        literal: &super::bootstrap_literal::Attempt,
-        parsed: &super::bootstrap_value::Attempt,
-        codec: &super::bootstrap_codec::Attempt,
+        predecessors: super::bootstrap_correlation::Predecessors<'_>,
         correlation: &mut super::bootstrap_correlation::Attempt,
         proof: &Proof,
         attempt: &mut Attempt,
@@ -237,10 +234,10 @@ impl OriginalImport18RawBootstrap {
             prior: proof::Inputs {
                 prior: super::bootstrap_correlation::Inputs {
                     original: self,
-                    normalizations,
-                    literal,
-                    parsed,
-                    codec,
+                    normalizations: predecessors.normalizations,
+                    literal: predecessors.literal,
+                    parsed: predecessors.parsed,
+                    codec: predecessors.codec,
                 },
                 correlation: correlation.view_data(),
             },
@@ -270,10 +267,7 @@ impl OriginalImport18RawBootstrap {
     /// verification/reply admission, assignment, MAC or terminal guards.
     pub(in super::super) fn verify_and_construct_bootstrap_reply_data(
         &mut self,
-        normalizations: &super::bootstrap_normalizations::Attempt,
-        literal: &super::bootstrap_literal::Attempt,
-        parsed: &super::bootstrap_value::Attempt,
-        codec: &super::bootstrap_codec::Attempt,
+        predecessors: super::bootstrap_correlation::Predecessors<'_>,
         correlation: &mut super::bootstrap_correlation::Attempt,
         verified: &mut Proof,
         verification: &dyn proof::Admission,
@@ -294,10 +288,10 @@ impl OriginalImport18RawBootstrap {
         let prior = proof::Inputs {
             prior: super::bootstrap_correlation::Inputs {
                 original: self,
-                normalizations,
-                literal,
-                parsed,
-                codec,
+                normalizations: predecessors.normalizations,
+                literal: predecessors.literal,
+                parsed: predecessors.parsed,
+                codec: predecessors.codec,
             },
             correlation: correlation.view_data(),
         };
@@ -567,12 +561,13 @@ pub(in crate::reference_packet::service) fn construction_data(
 /// # Errors
 /// Refuses checked layout accumulation overflow.
 pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usize, ProviderError> {
-    let fields: [usize; 28] = [
+    let fields: [usize; 29] = [
         // One context view survives both the constructor and step-helper borrows.
         size_of::<Verified<'static, 'static>>() + size_of::<&Verified<'static, 'static>>() * 2,
         storage::counter_scratch_data(),
         BootstrapAckOperands::framing_counter_scratch_data(),
         combined_counter_scratch_data(),
+        size_of::<super::bootstrap_correlation::Predecessors<'static>>() * 2,
         size_of::<Inputs<'static>>() * 6,
         size_of::<&Attempt>(),
         size_of::<&mut Attempt>(),
@@ -595,8 +590,8 @@ pub(in crate::reference_packet::service) fn counter_scratch_data() -> Result<usi
         size_of::<Weak<PacketNativeImport18SelectedLaunchWireData>>(),
         size_of::<usize>() * 7,
         size_of::<Option<usize>>(),
-        size_of::<[usize; 28]>(),
-        size_of::<std::array::IntoIter<usize, 28>>(),
+        size_of::<[usize; 29]>(),
+        size_of::<std::array::IntoIter<usize, 29>>(),
     ];
     fields.into_iter().try_fold(
         Proof::verified_loan_counter_scratch_data::<()>()?,
