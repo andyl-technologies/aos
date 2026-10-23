@@ -16177,3 +16177,19 @@ The separate all-feature thirteen-case framing qualification remains required
 and retains its existing pass. Original compiled inventory, runtime selectors,
 per-case assertions and guest bounds are unchanged. Fresh native qualification
 remains required.
+
+
+#### Concurrent independent scoped-source setup
+
+The scoped owner control now overlaps initialization and first commits for its
+two independently signed source repositories. Both use real local entropy,
+separate authority custody, guarded commits and original source cleanup.
+The foreign-domain root is still selected and refused at the original final
+assertion, after checking the served root, changed policy, actual backing,
+mapping receipt and index retirement. The actor retains its original thirty-
+second bound and every assertion; no source or admission receipt is reused.
+Large independent futures remain heap-pinned on the confined current-thread
+runtime. This reduces serialized fixture setup and does not establish the
+previous timeout's internal cause. Strict all-feature/all-target lint, actual
+fixture compilation, formatting and diff checks pass; fresh native qualification
+is required.

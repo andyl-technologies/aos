@@ -26,9 +26,18 @@ fn limits() -> RootNodeLimits {
 
 pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs) -> Result<()> {
     eprintln!("SURFACE_SCOPED_STAGE source-initialize");
-    let fixture = RepositoryFixture::new(&inputs.domain).await?;
+    // The repositories have independent signing custody and filesystem paths.
+    // Overlap their real setup instead of spending the actor's finite bound on
+    // unrelated source initialization after all native disclosure checks.
+    let (fixture, foreign) = tokio::try_join!(
+        Box::pin(RepositoryFixture::new(&inputs.domain)),
+        Box::pin(RepositoryFixture::new("tenant:foreign-surface")),
+    )?;
     eprintln!("SURFACE_SCOPED_STAGE source-commit");
-    fixture.commit(b"signed surface source").await?;
+    tokio::try_join!(
+        Box::pin(fixture.commit(b"signed surface source")),
+        Box::pin(foreign.commit(b"signed surface source")),
+    )?;
     eprintln!("SURFACE_SCOPED_STAGE root-read");
     let target = ViewTarget::Ref(MAIN.parse()?);
     let selection = fixture
@@ -150,8 +159,6 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     }
 
     eprintln!("SURFACE_SCOPED_STAGE foreign-source");
-    let foreign = RepositoryFixture::new("tenant:foreign-surface").await?;
-    foreign.commit(b"signed surface source").await?;
     let selection = foreign
         .repository
         .prepare_root_read(&target, foreign.authority.token(), "sdk", limits())
