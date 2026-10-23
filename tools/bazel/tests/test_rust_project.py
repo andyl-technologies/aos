@@ -94,6 +94,37 @@ class RustProjectTests(unittest.TestCase):
                 self.assertTrue(crates[0]["is_proc_macro"])
                 self.assertEqual(crates[0]["proc_macro_dylib_path"], "/exec/macro.so")
 
+    def test_development_cycle_keeps_library_and_libtest_roots_separate(self):
+        sources = [
+            spec("client"),
+            spec("server", deps=["client"]),
+            spec("client", is_test=True, crate_type="bin", deps=["server"]),
+            spec("server", is_test=True, crate_type="bin", deps=["client"]),
+        ]
+        original = copy.deepcopy(sources)
+
+        for order in [sources, list(reversed(sources))]:
+            with self.subTest(order=[item["display_name"] for item in order]):
+                crates = self.assemble(order)["crates"]
+                self.assertEqual(len(crates), 4)
+                libraries = {crate["display_name"]: index for index, crate in enumerate(crates)
+                             if not crate["is_workspace_member"]}
+                tests = {crate["display_name"]: crate for crate in crates
+                         if crate["is_workspace_member"]}
+
+                self.assertEqual(tests["client"]["deps"], [{"crate": libraries["server"], "name": "server"}])
+                self.assertEqual(tests["server"]["deps"], [{"crate": libraries["client"], "name": "client"}])
+                self.assertEqual(crates[libraries["server"]]["deps"], [{"crate": libraries["client"], "name": "client"}])
+                self.assertEqual(crates[libraries["client"]]["deps"], [])
+                self.assertNotIn("test", crates[libraries["client"]]["cfg"])
+                self.assertIn("test", tests["client"]["cfg"])
+
+        self.assertEqual(sources, original)
+
+    def test_a_library_dependency_cycle_fails_export(self):
+        with self.assertRaisesRegex(ValueError, "dependencies contain a cycle"):
+            self.assemble([spec("client", deps=["server"]), spec("server", deps=["client"])])
+
     def test_compiler_environment_paths_use_the_declared_execution_root(self):
         project = self.assemble([spec("lib", env={"CARGO_MANIFEST_DIR": "${pwd}/package"})])
         self.assertEqual(project["crates"][0]["env"]["CARGO_MANIFEST_DIR"], "/exec/package")

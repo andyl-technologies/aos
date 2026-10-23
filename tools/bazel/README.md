@@ -1266,5 +1266,14 @@ identities.
 nix-build tools/bazel/tests/control.nix -A cross-linux --no-out-link --max-jobs 4 --cores 4
 ```
 
-Bazel native and foreign qualification are in progress; production consumers
-remain on Cargo.
+`tests/evidence/aarch64-linux-control.json` records all 107 default-family cases
+passing across nine artifacts in the foreign guest, with no platform case
+exceptions. Both native configurations pass the same test inventory and
+194-crate feature comparison; developer and editor qualification remains in
+progress. Production consumers remain on Cargo.
+
+The editor exporter keeps a library and its unit-test target separate when
+combining their development dependencies would create a cycle. In this family,
+client tests use the server, whose library uses the client. Dependent crates
+retain the ordinary library identity while separate workspace roots analyze
+the unit tests and their development dependencies.

@@ -115,10 +115,65 @@ def current_specs(events):
     return sorted(paths)
 
 
+def dependency_cycle(specs):
+    """Finds a cycle after combining each crate's configured dependency edges."""
+    dependencies = {}
+    for spec in specs:
+        dependencies.setdefault(spec["crate_id"], set()).update(spec["deps"])
+
+    visited = set()
+    active = set()
+
+    def visit(identifier):
+        if identifier in active:
+            return True
+        if identifier in visited:
+            return False
+
+        active.add(identifier)
+        if any(visit(dependency) for dependency in dependencies.get(identifier, ())):
+            return True
+        active.remove(identifier)
+        visited.add(identifier)
+        return False
+
+    return any(visit(identifier) for identifier in dependencies)
+
+
+def separate_cyclic_libtests(specs):
+    """Preserves separate libtest roots when merged development dependencies would cycle."""
+    if not dependency_cycle(specs):
+        return specs
+
+    libraries = {spec["crate_id"] for spec in specs if not spec.get("is_test")}
+    tests = {spec["crate_id"] for spec in specs if spec.get("is_test")}
+    shared = libraries & tests
+    identifiers = libraries | tests
+    result = []
+    for original in specs:
+        spec = copy.deepcopy(original)
+        if spec["crate_id"] in shared:
+            if spec.get("is_test"):
+                identifier = spec["crate_id"] + "#aos-libtest"
+                if identifier in identifiers:
+                    raise ValueError("configured libtest identity collides with a Rust crate")
+                spec["crate_id"] = identifier
+            else:
+                # Dependents still reference the compiled library, while the
+                # separate workspace root analyzes its unit tests and dev deps.
+                spec["is_workspace_member"] = False
+                spec["cfg"] = [cfg for cfg in spec["cfg"] if cfg != "test"]
+        result.append(spec)
+
+    if dependency_cycle(result):
+        raise ValueError("configured Rust dependencies contain a cycle")
+    return result
+
+
 def assemble(specs, replacements, toolchain, workspace_packages=()):
     """Resolves configured crate specs, rejecting ambiguous feature variants."""
     crates = {}
-    for original in specs:
+    for original in separate_cyclic_libtests(specs):
         spec = compiler_metadata(original, replacements)
         identifier = spec["crate_id"]
         if identifier not in crates:
