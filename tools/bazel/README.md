@@ -1463,6 +1463,14 @@ Its existing assertions remain unchanged. The full feature, editor, developer,
 and workspace Rust qualification builds are still running at this checkpoint.
 Production migration remains pending.
 
+`tests/evidence/crucible-cli-configured-graph.json` retains 578 distinct
+configured reports, 1,737 declared source files, all 12 dependency specification
+outputs, and passing policy and CLI checks. The required workspace Rust target
+compilation passed with matching hashes for the changed Rust inputs. That gate
+compiles AOS application targets; CLI compilation and execution have their own
+Bazel and Cargo qualification. Existing dependency locks and resolved features
+remain unchanged.
+
 `tests/evidence/crucible-cli-metadata-evaluation.json` records passing metadata
 parity for 291 compiled first-party targets and the core Nix evaluation checks.
 It retains the complete metadata report for the frozen CLI checkpoint before
