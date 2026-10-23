@@ -250,14 +250,14 @@ pub(super) fn authenticate_borrowed_shape_data(bytes: &[u8]) -> Result<(), State
     for _ in 0..3 {
         let mut identity = Fields::array(
             identities
-                .next()
+                .next_value()
                 .map_err(crate::node_state::schema)?
                 .ok_or_else(|| refused("historical scope proof missing native identity"))?,
         )
         .map_err(crate::node_state::schema)?;
         for _ in 0..32 {
             identity
-                .next()
+                .next_value()
                 .map_err(crate::node_state::schema)?
                 .ok_or_else(|| refused("historical scope proof identity width differs"))?;
         }
@@ -280,26 +280,26 @@ pub(super) fn authenticate_borrowed_shape_data(bytes: &[u8]) -> Result<(), State
     let mut target = Fields::array(target).map_err(crate::node_state::schema)?;
     for _ in 0..3 {
         target
-            .next()
+            .next_value()
             .map_err(crate::node_state::schema)?
             .ok_or_else(|| refused("historical scope proof target tuple differs"))?;
     }
     let mut owners = Fields::array(
         target
-            .next()
+            .next_value()
             .map_err(crate::node_state::schema)?
             .ok_or_else(|| refused("historical scope proof target owners absent"))?,
     )
     .map_err(crate::node_state::schema)?;
     for _ in 0..4 {
         owners
-            .next()
+            .next_value()
             .map_err(crate::node_state::schema)?
             .ok_or_else(|| refused("historical scope proof target owner roster differs"))?;
     }
     owners.finish().map_err(crate::node_state::schema)?;
     target
-        .next()
+        .next_value()
         .map_err(crate::node_state::schema)?
         .ok_or_else(|| refused("historical scope proof target boundary absent"))?;
     target.finish().map_err(crate::node_state::schema)

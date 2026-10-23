@@ -397,7 +397,7 @@ impl Quote {
     fn bank(&mut self, bytes: &[u8]) -> Result<(), RuntimeError> {
         let mut array = Fields::array(bytes).map_err(invalid)?;
         let mut count = 0usize;
-        while let Some(value) = array.next().map_err(invalid)? {
+        while let Some(value) = array.next_value().map_err(invalid)? {
             let text = std::str::from_utf8(value).map_err(invalid)?;
             text.parse::<u8>().map_err(invalid)?;
             count = count
@@ -420,7 +420,7 @@ impl Quote {
         for _ in 0..4 {
             self.bank(
                 banks
-                    .next()
+                    .next_value()
                     .map_err(invalid)?
                     .ok_or(RuntimeError::InvalidReceipt)?,
             )?;
@@ -592,7 +592,7 @@ impl Quote {
             Fields::array(fields.named("observation").map_err(invalid)?).map_err(invalid)?;
         for index in 0..13 {
             let value = observation
-                .next()
+                .next_value()
                 .map_err(invalid)?
                 .ok_or(RuntimeError::InvalidReceipt)?;
             match index {
@@ -700,7 +700,7 @@ impl Quote {
         let mut attempts =
             Fields::array(fields.named("attempts").map_err(invalid)?).map_err(invalid)?;
         let mut count = 0usize;
-        while let Some(attempt) = attempts.next().map_err(invalid)? {
+        while let Some(attempt) = attempts.next_value().map_err(invalid)? {
             count = count
                 .checked_add(1)
                 .filter(|n| *n <= 4096)
@@ -727,7 +727,7 @@ impl Quote {
                     "uploads" => {
                         self.typed(value, Family::Producer.element_layout_data())?;
                         let mut uploads = Fields::array(value).map_err(invalid)?;
-                        while let Some(pair) = uploads.next().map_err(invalid)? {
+                        while let Some(pair) = uploads.next_value().map_err(invalid)? {
                             self.suffix_pair(pair)?;
                         }
                         uploads.finish().map_err(invalid)?;

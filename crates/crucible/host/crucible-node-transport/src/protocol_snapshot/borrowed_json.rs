@@ -48,7 +48,7 @@ impl<'a> BorrowedJsonFields<'a> {
     /// # Errors
     /// Refuses malformed separators, empty elements, unbalanced or truncated
     /// nested spans, or nesting beyond the defining fixed scanner stack.
-    pub fn next(&mut self) -> Result<Option<&'a [u8]>, ProviderError> {
+    pub fn next_value(&mut self) -> Result<Option<&'a [u8]>, ProviderError> {
         self.fields.next_value()
     }
 
@@ -98,8 +98,11 @@ mod tests {
         fields.finish().unwrap();
 
         let mut members = BorrowedJsonFields::array(members).unwrap();
-        assert_eq!(members.next().unwrap().unwrap(), b"1");
-        assert_eq!(members.next().unwrap().unwrap(), br#"{"nested":"a,b:c"}"#);
+        assert_eq!(members.next_value().unwrap().unwrap(), b"1");
+        assert_eq!(
+            members.next_value().unwrap().unwrap(),
+            br#"{"nested":"a,b:c"}"#
+        );
         members.finish().unwrap();
     }
 
@@ -112,7 +115,7 @@ mod tests {
         assert!(fields.named("known").is_err());
         for input in [b"[[1}]".as_slice(), b"[\"unterminated]", b"[1,]"] {
             let mut array = BorrowedJsonFields::array(input).unwrap();
-            assert!(array.next().is_err() || array.finish().is_err());
+            assert!(array.next_value().is_err() || array.finish().is_err());
         }
     }
 

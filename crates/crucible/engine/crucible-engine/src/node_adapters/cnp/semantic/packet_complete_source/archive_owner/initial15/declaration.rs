@@ -739,19 +739,21 @@ pub(super) fn settlement_reference_data<'a>(
 
 pub(super) fn metadata_rows_data(bytes: &[u8], maximum: usize) -> Result<usize, OperationFailure> {
     let mut outer = Fields::array(bytes).map_err(unknown)?;
-    if outer.next().map_err(unknown)? != Some(b"\"source-private.cnp-protocol/11\"".as_slice()) {
+    if outer.next_value().map_err(unknown)?
+        != Some(b"\"source-private.cnp-protocol/11\"".as_slice())
+    {
         return Err(refused("initial15 protocol outer class differs"));
     }
     outer
-        .next()
+        .next_value()
         .map_err(unknown)?
         .ok_or_else(|| refused("initial15 protocol payload absent"))?;
     let records = outer
-        .next()
+        .next_value()
         .map_err(unknown)?
         .ok_or_else(|| refused("initial15 metadata roster absent"))?;
     outer
-        .next()
+        .next_value()
         .map_err(unknown)?
         .ok_or_else(|| refused("initial15 alias roster absent"))?;
     outer.finish().map_err(unknown)?;

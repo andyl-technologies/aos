@@ -646,7 +646,7 @@ fn authenticate_borrowed_extents(
     let mut owners = Fields::array(owners).map_err(super::super::super::schema)?;
     let mut count = 0usize;
     while owners
-        .next()
+        .next_value()
         .map_err(super::super::super::schema)?
         .is_some()
     {
@@ -683,11 +683,11 @@ fn authenticate_borrowed_extents(
     fields.finish().map_err(super::super::super::schema)?;
     let mut pages = Fields::array(objects).map_err(super::super::super::schema)?;
     let mut count = 0usize;
-    while let Some(page) = pages.next().map_err(super::super::super::schema)? {
+    while let Some(page) = pages.next_value().map_err(super::super::super::schema)? {
         let mut entries = Fields::array(page).map_err(super::super::super::schema)?;
         let mut page_count = 0usize;
         while entries
-            .next()
+            .next_value()
             .map_err(super::super::super::schema)?
             .is_some()
         {
