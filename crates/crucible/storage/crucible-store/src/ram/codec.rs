@@ -13,7 +13,7 @@
 
 use std::collections::BTreeSet;
 
-use crucible_ram::{Limits, NodeDigest, PageDigest, RootRecord};
+use crucible_ram::{Limits, NodeDigest, PageDigest, RamError, RootRecord};
 
 use crate::content_envelope::{ContentChild, ContentEnvelope};
 use crate::content_store::{ContentId, ObjectKind, StoreError};
@@ -653,6 +653,12 @@ pub(super) fn decode_envelope(
     Ok(OwnedEnvelope::new(envelope, account))
 }
 
+/// Decodes root metadata under the caller's existing complete decode admission.
+///
+/// The returned logical record and catalog vector remain caller-funded.
+///
+/// # Errors
+/// Rejects malformed catalogs, invalid logical records or allocation refusal.
 pub(super) fn decode_root_envelope(
     envelope: &ContentEnvelope,
 ) -> Result<(RootRecord, Vec<TreeRef>), RamStoreError> {
@@ -666,10 +672,14 @@ pub(super) fn decode_root_envelope(
     if envelope.children().len() != record.region_roots().len() {
         return Err(RamStoreError::Invalid("root child count"));
     }
-    let mut regions = Vec::with_capacity(record.region_roots().len());
+    let mut regions = Vec::new();
+    regions
+        .try_reserve_exact(record.region_roots().len())
+        .map_err(|source| logical(RamError::Allocation(source)))?;
+
     for (index, child) in envelope.children().iter().enumerate() {
-        if child.role() != format!("region-{index:08x}") || child.id().kind() != ObjectKind::RamTree
-        {
+        let role = super::root_publication::region_role(index)?;
+        if child.role().as_bytes() != role.as_slice() || child.id().kind() != ObjectKind::RamTree {
             return Err(RamStoreError::Invalid("root child role or kind"));
         }
         regions.push(decode_ref(&mut decoder, child.id())?);

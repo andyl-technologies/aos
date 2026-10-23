@@ -13,7 +13,11 @@ use crucible_ram::{RamError, RegionTreeDigest, RootRecord};
 use std::alloc::Layout;
 use std::collections::TryReserveError;
 
-fn canonical_envelope(store: &RamStore) -> ContentEnvelope {
+/// Reconstructs canonical catalog input from a genuinely captured root.
+///
+/// # Panics
+/// Panics if capture, canonical identity or ordinary decoding fails.
+pub(super) fn canonical_envelope(store: &RamStore) -> ContentEnvelope {
     let root = store
         .capture(
             topology(4096),

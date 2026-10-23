@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 594 bindings: 575 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 596 bindings: 577 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2377,8 +2377,8 @@ attempt fails again on 639 controller library errors; its boundary assertions
 did not run.
 
 Signed detached-inventory commit `5cf62ecced` is pushed. Required
-application-target compilation is running from
-`yf7b3gi54fls5risj3xmzglmvwq5pcw0`; all 5,405 committed Rust/TOML files and
+application-target compilation passes at `ym1abqj65nm5dysjw98ny1r9v5r8s6wl`
+from immutable source `yf7b3gi54fls5risj3xmzglmvwq5pcw0`; all 5,405 committed Rust/TOML files and
 six required fixtures match before subsequent logical-control custody edits.
 
 Logical snapshots, persistent tree nodes and dirty-capture receipts now close
@@ -2447,10 +2447,9 @@ passes 1,385 tests with four ignored cases and the same eight missing-helper-
 custody failures; complete failure details match the preceding baseline after
 thread-ID normalization only. All 686 engine tests pass, and ABI conformance
 passes at `8n9jiz1wcq6js3z42c999yfv7wgm46vn`. All 95 policy controls and
-storage/portable-RAM Clippy pass. The current full license-boundary attempt is
-still running. The preceding
-license attempt retains its 639 controller errors and supplies no passing
-boundary qualification. The storage logical-error formatting bridge still
+storage/portable-RAM Clippy pass. The current full license-boundary attempt
+fails again on 639 controller library errors; its boundary assertions did not
+run and it supplies no passing boundary qualification. The storage logical-error formatting bridge still
 erases typed causes and requires a separate correction.
 
 Signed allocator-cause commit `c57ed96bf7` is pushed. Required application-target
@@ -2484,6 +2483,41 @@ pass.
 Other direct formatting bridges and infallible catalog allocations remain
 separate work; these component controls qualify no kernel quota, physical OOM
 or native custody.
+
+Signed storage-bridge commit `06d51fe738` is pushed. Required application-target
+compilation is running from immutable source
+`d1iw8h8mh5gcwd5qlxmx54spp22im589`; all 5,409 committed Rust/TOML files and
+six required fixtures match before subsequent root-catalog allocation edits.
+
+Root-catalog decoding now compares child roles against the same fixed-width
+ASCII encoder used by publication, without formatting a temporary string for
+every child. Its returned reference vector uses fallible reservation and retains
+the actual allocator source through the existing inline logical error carrier.
+Canonical bytes, root identity, caller-owned results and existing complete decode
+allowances stay unchanged. No additional account or native authority is issued.
+
+The actual-prefix cost control fails on the original decoder at seven
+allocations and one reallocation, versus the six allocations and zero
+reallocations needed for the logical record and returned reference vector. It
+passes after reusing the canonical role encoder. A separate fixed-path-only
+vector-refusal control also passes: actual allocation observation first rules
+out a matching earlier infallible inventory control, then the new fallible vector
+retains its typed cause without diagnostic allocation or another resource
+request. The caller prepays the complete storage decode bound before both
+controls and retains that same finite account through result/error close.
+The predecessor's infallible vector is never fault-injected.
+
+The checkpoint catalog's fixed-default decode-bound conversion also retains the
+existing typed logical variant. This is a direct conversion correction; no
+unreachable overflow is fabricated as runtime evidence. Inventory
+`lghwfgiicjvdcpk4gbjp0284awvxxrp1` validates 596 bindings across 243
+requirements, with 148 uncovered and zero qualified. Hermetic storage output
+`8rgl2j62whbvv9rnvn0c2kr8f5p9hcav` passes all 78 selected cases and 99
+independently checked successful nested summaries. All 738 storage tests and
+686 engine tests pass. Both actual campaign integrity and checkpoint backing
+classification controls pass, with each exact test name and nonzero result
+independently checked. All 95 policy controls and storage/portable-RAM Clippy pass.
+Kernel quotas, physical OOM, native custody and performance remain unqualified.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`

@@ -129,7 +129,11 @@ fn encoding_lengths(
     Ok((body, envelope))
 }
 
-fn region_role(index: usize) -> Result<[u8; 15], RamStoreError> {
+/// Encodes a canonical fixed-width root child role without allocation.
+///
+/// # Errors
+/// Refuses an index that does not fit the canonical 32-bit field.
+pub(super) fn region_role(index: usize) -> Result<[u8; 15], RamStoreError> {
     let index = u32::try_from(index).map_err(|_| RamStoreError::Limit("root region index"))?;
     let mut role = *b"region-00000000";
     for (position, byte) in role[7..].iter_mut().enumerate() {

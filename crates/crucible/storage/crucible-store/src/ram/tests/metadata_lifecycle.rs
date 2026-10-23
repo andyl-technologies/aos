@@ -22,6 +22,7 @@ mod logical_causes;
 mod metadata_custody;
 mod proof_allocation;
 mod record_prepay;
+mod root_decode;
 
 const METADATA_BYTES: u64 = 4 * 1024 * 1024;
 

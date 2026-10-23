@@ -213,7 +213,7 @@ impl PagedRamCatalog {
         &self,
     ) -> Result<crucible_store::owned_decode::ResourceLoan, RamStoreError> {
         let bytes = RootRecord::decoding_memory_bound(crucible_ram::Limits::default())
-            .map_err(|error| RamStoreError::Logical(error.to_string()))?;
+            .map_err(RamStoreError::LogicalValidation)?;
         self.provider
             .reserve_root_metadata(&self.retention.directory, bytes)
             .map_err(RamStoreError::from)
