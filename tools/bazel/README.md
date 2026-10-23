@@ -831,6 +831,15 @@ running measurements. `bench/check.nix` runs 20 measurement regression tests
 with AOS Python in the Nix sandbox. Feature/target-change timing and family
 regression budgets remain separate qualification work.
 
+Source selection indexes selected paths and their ancestors once instead of
+scanning every inventory path for each candidate file.
+`tests/evidence/native-linux-source-selection-index.json` records unchanged
+source bytes for all seven inventories and unchanged configured derivation
+identities for the six qualified families. Three alternating store source-path
+evaluation trials measured medians of 0.283s before and 0.120s after, with
+uncontrolled host load. This isolates source selection and does not resolve
+the broader end-to-end evaluation gap.
+
 ## Device-family compile measurements
 
 ```sh

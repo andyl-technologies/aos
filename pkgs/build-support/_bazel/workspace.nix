@@ -80,6 +80,14 @@
     ]
     ++ lib.optionals (inventory == null) ["third_party/rust"]
     ++ inventoryPaths ++ sourceDirectories ++ extraFiles;
+  pathPrefixes = path: let
+    components = lib.splitString "/" path;
+  in
+    builtins.genList (index: lib.concatStringsSep "/" (lib.take (index + 1) components)) (builtins.length components);
+  # Index both directions once. Walking each candidate's ancestors avoids
+  # scanning the entire configured inventory for every file in the repository.
+  selectedInputs = lib.genAttrs paths (_: true);
+  selectedAncestors = lib.genAttrs (lib.concatMap pathPrefixes paths) (_: true);
   accept = path: type: let
     absolute = toString path;
     relative = lib.removePrefix "${rootString}/" absolute;
@@ -89,9 +97,9 @@
       || lib.hasPrefix "bazel-" base
       # Nested result modules are source; Nix output links live at the root.
       || (dirOf absolute == rootString && (base == "result" || lib.hasPrefix "result-" base));
-    selected = builtins.any (input:
-      relative == input || lib.hasPrefix "${input}/" relative || lib.hasPrefix "${relative}/" input)
-    paths;
+    selected =
+      builtins.hasAttr relative selectedAncestors
+      || builtins.any (prefix: builtins.hasAttr prefix selectedInputs) (pathPrefixes relative);
   in
     absolute == rootString || (!excluded && selected);
   source = builtins.path {

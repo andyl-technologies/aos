@@ -21,6 +21,19 @@
   editedDocs = workspace "docs-edited";
   addedSource = workspace "source-added";
   changedGraph = workspace "graph-edited";
+  byDirectory = select {
+    root = fixture + "/original";
+    sourceDirectories = ["crates/example/src"];
+    extraFiles = ["crates/example/BUILD.bazel"];
+  };
+  byFile = select {
+    root = fixture + "/source-added";
+    extraFiles = ["crates/example/src/lib.rs" "crates/example/BUILD.bazel"];
+  };
+  similarPrefix = select {
+    root = fixture + "/original";
+    sourceDirectories = ["crates/exam"];
+  };
 in
   assert builtins.pathExists (cargoSource + "/crates/crucible/control/crucible-daemon/src/executor_worker/result/operations.rs");
   assert original.sourceSelection == "configured-inventory";
@@ -30,6 +43,10 @@ in
   assert builtins.pathExists (addedSource.source + "/crates/example/src/result/operations.rs");
   assert !builtins.pathExists (original.source + "/docs");
   assert !builtins.pathExists (original.source + "/target");
+  assert byDirectory.source == original.source;
+  assert byFile.source == original.source;
+  assert !builtins.pathExists (byFile.source + "/crates/example/src/new.rs");
+  assert !builtins.pathExists (similarPrefix.source + "/crates/example");
   assert !(builtins.tryEval changedGraph.source).success;
     pkgs.runCommand "aos-bazel-source-selection" {} ''
       mkdir -p "$out"
