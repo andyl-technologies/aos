@@ -1543,17 +1543,15 @@ pub(crate) fn spawn_prepared_qemu_child_with_preexec(
         })?;
         let owner = owner
             .prepare(
-                preexec.startup,
-                preexec.binding,
-                contract,
-                preexec.supervisor,
-                preexec.registration,
-                ram_endpoint.as_ref(),
-                command.plugin_setup_plan(),
-                region_len,
-                preexec.region_config,
-                &resources.shmem_fd,
-                &resources.wake_fd,
+                &preexec,
+                preexec_setup::PreexecSetupMaterial {
+                    contract,
+                    ram_endpoint: ram_endpoint.as_ref(),
+                    plan: command.plugin_setup_plan(),
+                    region_len,
+                    shmem: &resources.shmem_fd,
+                    wake: &resources.wake_fd,
+                },
             )
             .map_err(|source| QemuSpawnError::Preexec { source })?;
         let mut owner = owner

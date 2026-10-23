@@ -857,6 +857,17 @@ remain uncovered and none qualified. Engineering hygiene passes. Strict Host
 linting still reports 716 findings; application-target compilation and the
 fresh counted supervision check remain in progress.
 
+The cleanup fix's final application derivation matches all 5,364 committed
+Rust/TOML inputs and six protocol fixture/license files. The source comparison
+record has SHA-256
+`93b72cbc59d15025bdb0f9668707cbd3a0913a564e768de7c36e8f1f2537fed6`;
+compilation remains pending. Preexec preparation now borrows its existing
+source record and a focused plan/descriptor material record instead of twelve
+independent arguments. Validation, descriptor effects and failure custody keep
+their original order. All five existing preexec controls pass; focused
+formatting passes and the strict Host command reports 715 remaining findings.
+The mandatory application build for this grouping is running.
+
 The preceding refusal-carrier revision passes all 404 counted supervision
 cases at `ki9kfmxkqzv7n56wmyx46zj3fxqdsw4j`. This is component evidence,
 not qualification of the missing native Source issuer or complete RFC.

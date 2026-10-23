@@ -39,6 +39,22 @@ pub(crate) struct BorrowedPreexecSetup<'a> {
     pub(crate) region_config: crucible_qemu_shmem::RegionConfig,
 }
 
+/// Borrows the actual plan and descriptors for one already reserved handover.
+pub(super) struct PreexecSetupMaterial<'a> {
+    /// Borrows the admitted child's installed process contract.
+    pub(super) contract: &'a QemuChildProcessContract,
+    /// Borrows the same child's issued endpoint when paging is selected.
+    pub(super) ram_endpoint: Option<&'a super::ram_endpoint_binding::IssuedRamControlEndpoint<'a>>,
+    /// Borrows the canonical plan to encode under the retained owner.
+    pub(super) plan: &'a PluginSetupPlan,
+    /// Records the actual shared-memory descriptor's expected size.
+    pub(super) region_len: u64,
+    /// Borrows the backing that receives the initialized region image.
+    pub(super) shmem: &'a OwnedFd,
+    /// Borrows the wake descriptor duplicated into the child handover.
+    pub(super) wake: &'a OwnedFd,
+}
+
 /// Owns the actual local and queued descriptor history before its credit.
 #[derive(Debug)]
 pub(crate) struct PreparedPreexecSetup {
@@ -168,18 +184,25 @@ impl PreparedPreexecSetup {
     /// failure with its initiating cause and independent original postcut.
     pub(super) fn prepare(
         mut self,
-        startup: &OriginalPluginStartup,
-        binding: &OriginalNativeNodeBinding,
-        contract: &QemuChildProcessContract,
-        supervisor: &HostOperationSupervisor,
-        registration: Option<&RamControlRegistration>,
-        ram_endpoint: Option<&super::ram_endpoint_binding::IssuedRamControlEndpoint<'_>>,
-        plan: &PluginSetupPlan,
-        region_len: u64,
-        region_config: crucible_qemu_shmem::RegionConfig,
-        shmem: &OwnedFd,
-        wake: &OwnedFd,
+        source: &BorrowedPreexecSetup<'_>,
+        material: PreexecSetupMaterial<'_>,
     ) -> Result<Self, PreexecSetupError> {
+        let BorrowedPreexecSetup {
+            startup,
+            binding,
+            supervisor,
+            registration,
+            region_config,
+        } = *source;
+        let PreexecSetupMaterial {
+            contract,
+            ram_endpoint,
+            plan,
+            region_len,
+            shmem,
+            wake,
+        } = material;
+
         let prepared = (|| {
             startup.check().map_err(PreexecSetupCause::Original)?;
             if self.control.is_none() || self.queued || self.aliases.iter().any(Option::is_some) {
