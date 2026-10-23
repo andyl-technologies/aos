@@ -2300,6 +2300,11 @@ covers 438 Rust targets across 32 analysis-only selections with no external
 actions, and core evaluation passes. Frozen outputs are retained in
 `tests/evidence/registry-native-metadata-evaluation.json`.
 
+`tests/evidence/registry-native-required-rust-targets.json` retains passing
+required workspace unit and integration target compilation for all 44 changed
+Rust inputs, including the final lint corrections and preview-lock regression.
+Its frozen source predates the release-coordination conversion.
+
 External-provider and installed-service gates, foreign/Wasm execution, complete
 compiler invocation equivalence, numeric performance acceptance, production
 migration, and Cargo removal remain separate qualification work.
