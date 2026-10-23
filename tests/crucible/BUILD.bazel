@@ -24,3 +24,9 @@ filegroup(
     ],
     visibility = ["//crates/crucible/engine/crucible-engine:__pkg__"],
 )
+
+filegroup(
+    name = "daemon_fixture_inputs",
+    srcs = ["fixtures/e2e-determinism.scenario.toml"],
+    visibility = ["//crates/crucible/control/crucible-daemon:__pkg__"],
+)

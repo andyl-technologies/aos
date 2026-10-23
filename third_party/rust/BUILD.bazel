@@ -11,6 +11,7 @@ load(":session/aliases.bzl", SESSION_CRATES = "CRATES")
 load(":control/aliases.bzl", CONTROL_CRATES = "CRATES")
 load(":qemu-host/aliases.bzl", QEMU_HOST_CRATES = "CRATES")
 load(":store-s3/aliases.bzl", STORE_S3_CRATES = "CRATES")
+load(":daemon/aliases.bzl", DAEMON_CRATES = "CRATES")
 
 # Every first-party dependency in one configuration selects the same resolved
 # family. This preserves Rust type identity without globally unioning features.
@@ -18,6 +19,7 @@ load(":store-s3/aliases.bzl", STORE_S3_CRATES = "CRATES")
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:daemon_dependencies": DAEMON_CRATES.get(name, "//tools/bazel/rules:daemon_profile_required"),
             "//tools/bazel/rules:store_s3_dependencies": STORE_S3_CRATES.get(name, "//tools/bazel/rules:store_s3_profile_required"),
             "//tools/bazel/rules:qemu_host_dependencies": QEMU_HOST_CRATES.get(name, "//tools/bazel/rules:qemu_host_profile_required"),
             "//tools/bazel/rules:control_dependencies": CONTROL_CRATES.get(name, "//tools/bazel/rules:control_profile_required"),
@@ -31,7 +33,7 @@ load(":store-s3/aliases.bzl", STORE_S3_CRATES = "CRATES")
         }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items()))
+    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items()))
 ]
 
 CORE_PACKAGES = {
@@ -148,6 +150,14 @@ CONTROL_PACKAGES = dict(SESSION_PACKAGES.items() + {
     "uuid": crate.spec(version = "=1.23.1", features = ["v4", "serde"]),
 }.items())
 
+# The daemon combines host transports with the production S3 SDK. Its selected
+# tests do not activate the S3 adapter's aws-config development dependency.
+DAEMON_PACKAGES = dict(CONTROL_PACKAGES.items() + {
+    "aws-sdk-s3": STORE_S3_PACKAGES["aws-sdk-s3"],
+    "rand": crate.spec(version = "=0.9.4"),
+    "rustix": crate.spec(version = "=1.1.4", features = ["event", "fs", "net", "param", "process", "time"]),
+}.items())
+
 # Preserve the protocol library and its compiled build dependencies' domain
 # inside the larger host family. Exact versions and original licenses are checked
 # during updates; native bindings and other host dependencies keep host scope.
@@ -196,6 +206,15 @@ ENGINE_PERMISSIVE_CRATES = GUEST_PERMISSIVE_CRATES + [
     "zmij@1.0.21",
 ]
 
+# AWS signing enables additional digest/generic-array features on the canonical
+# protocol dependency instances. These exact pinned sources retain MIT or BSD
+# license alternatives; the rest of the daemon closure remains host-only.
+DAEMON_PERMISSIVE_CRATES = ENGINE_PERMISSIVE_CRATES + [
+    "const-oid@0.9.6",
+    "subtle@2.6.1",
+    "zeroize@1.9.0",
+]
+
 # crate_universe merges build/target features and includes proc macros from
 # unsupported platform dependencies. Preserve Cargo resolver-v2's actual Linux
 # units. Version and resolved-feature guards require review when the lock moves.
@@ -224,6 +243,14 @@ STORE_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    # Cargo retains indexmap's target-side default/std unit in the daemon.
+    "daemon": {
+        "indexmap": json.encode({
+            "version": "2.14.0",
+            "resolved_features": ["default", "serde", "std"],
+            "features": ["default", "std"],
+        }),
+    },
     "store": STORE_FEATURE_VARIANTS,
     # Toml enables Serde's alloc units here. Indexmap's target unit does not
     # enable the generator's resolver-unified Serde support.
@@ -274,7 +301,9 @@ APPROVED_LICENSES = [
     # of the process boundary. Keep upstream spellings; new expressions fail
     # the explicit update until reviewed here.
     "(MIT OR Apache-2.0) AND Unicode-3.0",
+    "Apache-2.0 OR MIT",
     "BSD-2-Clause",
+    "BSD-3-Clause",
     "BSD-2-Clause OR Apache-2.0 OR MIT",
     "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception",
     "CC0-1.0 OR MIT-0 OR Apache-2.0",
@@ -294,7 +323,7 @@ APPROVED_LICENSES = [
         packages = packages,
         annotations = annotations,
         feature_variants = FAMILY_FEATURE_VARIANTS.get(family, {}),
-        permissive_crates = ENGINE_PERMISSIVE_CRATES if family in ["engine", "session", "control", "qemu-host"] else GUEST_PERMISSIVE_CRATES if family == "guest" else [],
+        permissive_crates = DAEMON_PERMISSIVE_CRATES if family == "daemon" else ENGINE_PERMISSIVE_CRATES if family in ["engine", "session", "control", "qemu-host"] else GUEST_PERMISSIVE_CRATES if family == "guest" else [],
         platforms = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
         license_domain = license_domain,
         approved_licenses = APPROVED_LICENSES,
@@ -313,6 +342,7 @@ APPROVED_LICENSES = [
         ("control", CONTROL_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("qemu-host", QEMU_HOST_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("store-s3", STORE_S3_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
+        ("daemon", DAEMON_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
     ]
 ]
 
@@ -325,5 +355,5 @@ APPROVED_LICENSES = [
         license_domain = "apache-host",
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
-    for family in ["core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3"]
+    for family in ["core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon"]
 ]

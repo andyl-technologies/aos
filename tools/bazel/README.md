@@ -1373,3 +1373,38 @@ and one ignored case in an AOS AArch64 Linux guest, across both test artifacts.
 All three selected Rust compilation actions use the foreign toolchain and the
 reviewed profile flags; procedural macros run on the native toolchain. The guest
 has loopback networking and no external network interface or S3 service.
+
+## Daemon family
+
+The `daemon` graph declares the default, test-support, destructive recovery,
+and combined feature configurations. Its library edges preserve each selected
+Cargo graph, including recovery features on every indirect store reference.
+Daemon development dependencies enable the engine and QEMU test APIs without
+enabling the session's own development features. Host tests use the guest
+protocol library without the static guest runtime.
+
+`tests/evidence/daemon-cargo-baseline.json` records the passing default Cargo
+baseline: 1,111 executed cases, 24 existing ignored cases, four test artifacts,
+and 264 external crate identities. The component-contract and exact-closure
+integration suites require test-support and remain in the nondefault target
+sets. Bazel execution, editor parity, and production migration remain pending.
+
+`tests/evidence/daemon-cargo-feature-baselines.json` retains the additional
+passing Cargo configurations: recovery executes 1,114 cases with 24 ignored;
+test-support executes 1,122 with 26 ignored; combined features execute 1,125
+with 26 ignored. Test-support activates both feature-gated integration suites.
+All three retain the same 264 external identities and unchanged Rust sources
+and Cargo manifests; differences between source snapshots are Bazel metadata.
+
+```sh
+aos-dev bazel update-deps daemon
+aos-dev bazel --family daemon test //crates/crucible/control/crucible-daemon:unit
+nix-build tools/bazel/tests/daemon.nix -A all --no-out-link --max-jobs 4 --cores 4
+```
+
+`tests/evidence/daemon-configured-graph.json` records the passing offline graph,
+all 14 refreshed source inventories, 11 dependency specifications, 147 policy
+tests, and CLI checks. Its default test graph matches all 264 external and
+16 first-party Cargo feature identities. The existing ten dependency locks
+remain unchanged. The schema registry has an explicit daemon export, and the
+three newly enabled shared crypto dependencies retain reviewed source licenses.

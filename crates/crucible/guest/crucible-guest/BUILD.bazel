@@ -33,6 +33,18 @@ rust_library(
     link_deps = ["@aos_native//:static_runtime"],
 )
 
+# Host tests use the guest protocol library without the guest static runtime.
+rust_library(
+    name = "lib_host",
+    testonly = True,
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible_guest",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/main.rs", "src/selectable_group.rs"]),
+    deps = DEPENDENCIES,
+)
+
 rust_binary(
     name = "crucible-guest",
     package = RUST_PACKAGE,

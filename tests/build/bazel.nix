@@ -23,6 +23,7 @@
         "crates/shared/aos-oci-types/Cargo.toml"
         "crates/crucible/qemu/crucible-qemu-host/Cargo.toml"
         "crates/crucible/storage/crucible-store-s3/Cargo.toml"
+        "crates/crucible/control/crucible-daemon/Cargo.toml"
         "crates/crucible/control/crucible-control-client/Cargo.toml"
         "crates/crucible/control/crucible-control-server/Cargo.toml"
         "crates/crucible/control/crucible-session/Cargo.toml"
@@ -77,6 +78,7 @@ in
     control = import ./_bazel-control.nix {inherit pkgs;};
     qemu-host = import ./_bazel-qemu-host.nix {inherit pkgs;};
     store-s3 = import ./_bazel-store-s3.nix {inherit pkgs;};
+    daemon = import ./_bazel-daemon.nix {inherit pkgs;};
     wasm = import ./_bazel-wasm.nix {inherit pkgs;};
     recovery = import ./_bazel-recovery.nix {inherit pkgs;};
     license-boundary = import ./_bazel-license.nix {inherit pkgs workspace;};
@@ -269,6 +271,7 @@ in
         --inventory ${control.tests}/inventory.json \
         --inventory ${qemu-host.tests}/inventory.json \
         --inventory ${store-s3.tests}/inventory.json \
+        --inventory ${daemon.tests}/inventory.json \
         --output "$out/parity.json"
     '';
     runner = pkgs.runCommand "aos-bazel-runner-evidence" {buildDeps = [pkgs.python3];} ''
@@ -312,7 +315,7 @@ in
     all =
       pkgs.runCommand "aos-bazel-checks" {
         buildDeps =
-          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection source-catalog.all sysroot-metadata manifest-extractor native-libraries static-runtime.all precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all store.all guest.all engine.all quota.all session.all control.all qemu-host.all store-s3.all wasm.all recovery]
+          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection source-catalog.all sysroot-metadata manifest-extractor native-libraries static-runtime.all precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all store.all guest.all engine.all quota.all session.all control.all qemu-host.all store-s3.all daemon.all wasm.all recovery]
           ++ pkgs.lib.optionals (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) [
             (import ./_bazel-cross-linux.nix {inherit pkgs;}).all
             (import ./_bazel-device-cross.nix {inherit pkgs;})

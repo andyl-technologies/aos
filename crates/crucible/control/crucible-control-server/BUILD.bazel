@@ -1,5 +1,6 @@
 load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
 load("//tools/bazel/rules:compile.bzl", "rust_library")
+load("//tools/bazel/rules:daemon_graph.bzl", "daemon_dependency_libraries")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
@@ -174,4 +175,13 @@ aos_source_package(
     package = RUST_PACKAGE,
     srcs = glob(["**/*.rs"]),
     visibility = ["//visibility:public"],
+)
+
+# Daemon-selected features remain separate from this package's own test graph.
+daemon_dependency_libraries(
+    component = "server",
+    package = RUST_PACKAGE,
+    sources = SOURCES,
+    common_deps = COMMON_DEPENDENCIES,
+    compile_data = [],
 )
