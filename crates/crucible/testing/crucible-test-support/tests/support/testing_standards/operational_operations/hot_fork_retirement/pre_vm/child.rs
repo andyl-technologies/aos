@@ -697,7 +697,7 @@ impl ChildNaturalWaitFailure {
                 QemuShutdownTargetError::new("poll natural QEMU exit", "child was already reaped")
             }
             Self::Io(source) => {
-                QemuShutdownTargetError::new("poll natural QEMU exit", source.to_string())
+                QemuShutdownTargetError::io("poll natural QEMU exit", source)
             }
         }
     }

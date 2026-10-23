@@ -370,8 +370,8 @@ fn pre_vm_owning_contracts_require_actual_source_and_registry_dispositions()
         ),
         (
             "src/node.rs",
-            "Self::Io(source) => { QemuShutdownTargetError::new(\"poll natural QEMU exit\", source.to_string()) }",
-            "Self::Io(source) => { QemuShutdownTargetError::new(\"poll natural QEMU exit\", foreign_source.to_string()) }",
+            "Self::Io(source) => { QemuShutdownTargetError::io(\"poll natural QEMU exit\", source) }",
+            "Self::Io(source) => { QemuShutdownTargetError::io(\"poll natural QEMU exit\", foreign_source) }",
             "public formatter substitutes foreign actual cause",
         ),
     ] {

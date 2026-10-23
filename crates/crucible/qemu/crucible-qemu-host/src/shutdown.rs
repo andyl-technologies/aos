@@ -6,17 +6,19 @@
 //! unresponsive guests without spawning QEMU, while [`UnixQemuChildShutdownTarget`]
 //! provides the production Unix process adapter.
 
-use std::borrow::Cow;
 use std::io::Write;
 use std::process::Child;
 use std::thread;
 use std::time::Duration;
 
-use crucible_qemu_protocol::{HostMsg, control_encode_host_msg, write_control_frame};
+use crucible_qemu_protocol::CONTROL_QUIT_FRAME;
 use thiserror::Error;
 
 mod continuation;
 pub(crate) use continuation::QemuShutdownProgress;
+
+mod target_error;
+pub use target_error::QemuShutdownTargetError;
 
 /// Ordered shutdown rungs for one QEMU child.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,72 +125,6 @@ pub struct QemuShutdownReport {
     pub reaped: bool,
     /// Whether a live child remained after the final reap deadline.
     pub leaked: bool,
-}
-
-/// Error returned by a shutdown target operation.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct QemuShutdownTargetError {
-    /// Operation being attempted.
-    pub operation: &'static str,
-    /// Authored detail, borrowed for static text and empty for typed refusals.
-    pub message: Cow<'static, str>,
-    supervision: Option<crucible_host_resources::host_supervision::HostSupervisionError>,
-}
-
-impl std::fmt::Display for QemuShutdownTargetError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.supervision {
-            Some(source) if self.message.is_empty() => {
-                write!(formatter, "{} failed: {source}", self.operation)
-            }
-            _ => write!(formatter, "{} failed: {}", self.operation, self.message),
-        }
-    }
-}
-
-impl std::error::Error for QemuShutdownTargetError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.supervision.as_ref().map(|source| source as _)
-    }
-}
-
-impl QemuShutdownTargetError {
-    /// Creates a target error without copying its diagnostic.
-    ///
-    /// Static text is borrowed; owned messages retain their existing allocation.
-    /// Dynamic diagnostic construction still requires its own admission.
-    #[must_use]
-    pub fn new(operation: &'static str, message: impl Into<Cow<'static, str>>) -> Self {
-        Self {
-            operation,
-            message: message.into(),
-            supervision: None,
-        }
-    }
-
-    /// Retains a typed Cleanup refusal without formatting a diagnostic.
-    ///
-    /// This preserves the actual cause; it grants no further operation or
-    /// physical-return authority.
-    #[must_use]
-    pub fn operational_supervision(
-        operation: &'static str,
-        source: crucible_host_resources::host_supervision::HostSupervisionError,
-    ) -> Self {
-        Self {
-            operation,
-            message: Cow::Borrowed(""),
-            supervision: Some(source),
-        }
-    }
-
-    /// Returns the original typed operational refusal, when present.
-    #[must_use]
-    pub const fn operational_supervision_source(
-        &self,
-    ) -> Option<crucible_host_resources::host_supervision::HostSupervisionError> {
-        self.supervision
-    }
 }
 
 /// Typed errors returned by the shutdown escalation runner.
@@ -396,9 +332,10 @@ pub fn send_control_quit_frame<W>(writer: &mut W) -> Result<(), QemuShutdownTarg
 where
     W: Write,
 {
-    let frame = control_encode_host_msg(&HostMsg::Quit);
-    write_control_frame(writer, &frame)
-        .map_err(|error| QemuShutdownTargetError::new("send control Quit", error.to_string()))
+    writer
+        .write_all(&CONTROL_QUIT_FRAME)
+        .and_then(|()| writer.flush())
+        .map_err(|error| QemuShutdownTargetError::io("send control Quit", error))
 }
 
 /// QMP command issued during graceful shutdown.
@@ -418,7 +355,7 @@ where
         .write_all(QMP_QUIT_COMMAND)
         .and_then(|()| writer.write_all(b"\r\n"))
         .and_then(|()| writer.flush())
-        .map_err(|error| QemuShutdownTargetError::new("send QMP quit", error.to_string()))
+        .map_err(|error| QemuShutdownTargetError::io("send QMP quit", error))
 }
 
 fn execute_shutdown_rung<T>(
@@ -453,7 +390,7 @@ pub(crate) fn wait_child(
     timeout: Duration,
 ) -> Result<QemuChildWait, QemuShutdownTargetError> {
     wait_child_raw(child, timeout)
-        .map_err(|error| QemuShutdownTargetError::new("wait for QEMU child", error.to_string()))
+        .map_err(|error| QemuShutdownTargetError::io("wait for QEMU child", error))
 }
 
 /// Preserves the actual kernel wait error without allocating a diagnostic.
@@ -484,17 +421,21 @@ pub(crate) fn signal_child(
     signal: libc::c_int,
     operation: &'static str,
 ) -> Result<(), QemuShutdownTargetError> {
-    let pid = libc::pid_t::try_from(pid)
-        .map_err(|error| QemuShutdownTargetError::new(operation, error.to_string()))?;
+    let pid = libc::pid_t::try_from(pid).map_err(|_| {
+        QemuShutdownTargetError::new(
+            operation,
+            "child process identifier exceeds the native PID range",
+        )
+    })?;
     // SAFETY: `pid` was range-checked into `pid_t`; `kill` reads no Rust
     // memory. Callers must authenticate external PIDs before using this helper.
     let result = unsafe { libc::kill(pid, signal) };
     if result == 0 {
         Ok(())
     } else {
-        Err(QemuShutdownTargetError::new(
+        Err(QemuShutdownTargetError::io(
             operation,
-            std::io::Error::last_os_error().to_string(),
+            std::io::Error::last_os_error(),
         ))
     }
 }

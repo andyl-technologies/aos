@@ -105,7 +105,10 @@ fn helper_poll_retains_the_actual_wait_error_without_boxing() -> Result<(), Box<
     assert_eq!(waited, pid);
 
     let result = reaped.0.try_wait_natural_exit_raw();
-    let public_result = reaped.0.try_wait_natural_exit();
+    let (public_result, public_counts) =
+        crucible_host_resources::test_support::TestAllocationObserver::count(|| {
+            reaped.0.try_wait_natural_exit()
+        });
     let (bounded_result, counts) =
         crucible_host_resources::test_support::TestAllocationObserver::count(|| {
             crate::shutdown::wait_child_raw(&mut reaped.0.child, Duration::ZERO)
@@ -130,9 +133,18 @@ fn helper_poll_retains_the_actual_wait_error_without_boxing() -> Result<(), Box<
         source.get_ref().is_none(),
         "the OS error was not boxed text"
     );
-    let public = public_result.expect_err("the ordinary public poll still formats ECHILD");
+    let public = public_result.expect_err("the public poll retains the kernel ECHILD cause");
     assert_eq!(public.operation, "poll natural QEMU exit");
-    assert_eq!(public.message, source.to_string());
+    assert!(public.message.is_empty());
+    assert_eq!(public.io_source().unwrap().raw_os_error(), Some(libc::ECHILD));
+    assert!(public.io_source().unwrap().get_ref().is_none());
+    assert_eq!(public_counts.allocations, 0);
+    assert_eq!(public_counts.reallocations, 0);
+    assert!(!public_counts.overflow);
+    assert_eq!(
+        public.to_string(),
+        format!("poll natural QEMU exit failed: {source}"),
+    );
     drop(reaped);
     assert!(child.reaped());
     Ok(())

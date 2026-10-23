@@ -63,7 +63,7 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | Signed atomic `bbac33ec36`, conventional `fb922ae3f8`, tree `9f3afa75` adds the nineteen-case genuine-provider companion and corrects its dictionary guard. Independent review verifies all 54 corrected source artifacts and 78,464 Git/disk/archive paths; the license ledger covers 657 created files. | Canonical patch reconstruction and the license ledger pass. Corrected configuration and read-only discovery succeed with 1,954 edges, 1,622 selected C rows, 3,304 database variants and 1,544 leaves; companion compilation and TAP remain unexecuted. Prior `ce0d15fb5d` passes the 35-owner/getter and genuine full-system link checks recorded below, with a 557,830-byte fixed passive floor and separate 230,856-byte preexec root. The registered legacy Source unit's separate link remains unresolved. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
+| Native integration | Signed atomic `bbac33ec36`, conventional `fb922ae3f8`, tree `9f3afa75` adds the nineteen-case genuine-provider companion and corrects its dictionary guard. Independent review verifies all 54 corrected source artifacts and 78,464 Git/disk/archive paths; the license ledger covers 657 created files. | Canonical patch reconstruction and the license ledger pass. Corrected configuration and complete companion compilation/link succeed with 1,954 edges, 1,622 selected C rows, 3,304 database variants and 1,544 leaves; TAP remains unexecuted. Prior `ce0d15fb5d` passes the 35-owner/getter and genuine full-system link checks recorded below, with a 557,830-byte fixed passive floor and separate 230,856-byte preexec root. The registered legacy Source unit's separate link remains unresolved. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The latest completed canonical license-boundary check stops at strict controller Clippy with 653 host-library errors; its boundary assertions did not run. Earlier attempts and their larger finding counts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
@@ -1235,8 +1235,15 @@ binds that result. Three subsequent application builds also pass with their
 previously verified complete immutable source and fixture correspondence:
 `bc49492cf4` produces `jyckv3mdvmlkzb058xbzqkrgdwlfhc4p`, `29bdfa8a89`
 produces `5nlic3q5nrk05i7c4rj6ly0b77nf45kj`, and `3e090c3243` produces
-`rgagh52sxn61plpzppbgpkfsl5rjyrmw`. The stop-journal and newer source-contract
-application builds remain in progress.
+`rgagh52sxn61plpzppbgpkfsl5rjyrmw`. The stop-journal application build at `c169861aa6` passes at
+`9cfd0mjhsplmk3wxpzx9n6k2qh1j8xwh`; its source-contract successor
+`51e05754c3` passes at `k75bfxilxagaxpv720bdghn653bl6qpz`; and dispatcher
+contract commit `7aae80bc53` passes at `q96h3q0j3kcya4p3p93qfw5hk00jg87i`.
+All 5,368 committed Rust/TOML files and six fixtures were independently matched
+to each build's complete immutable source. The retained-custody contract build
+at `32cb19e316` also passes at `vw6alzv06iz8zr74fz3ssvmlvblvfwzc`, with the
+same complete source and fixture correspondence. The cancellation-cause
+application build remains in progress.
 
 Source cancellation failure publication now uses a separate immutable cause
 body allocated under the stop journal's original loan before worker birth.
@@ -1262,6 +1269,36 @@ its remaining broad operational-wait failure reports 22 findings in 22 other
 paths. Strict host Clippy remains blocked by the unchanged 674 library and 723
 test-target errors, with 14 and five warnings respectively. Mandatory packaged
 application-target compilation for this increment remains pending.
+
+Shutdown now retains raw native OS errors in the target error's inline typed
+cause, including the original `std::io::Error` exposed through the standard
+error chain. Clones preserve the complete raw code without allocating. QMP
+writes, owned-child waits, natural-exit polls and signal failures use this path;
+out-of-range PID conversion uses borrowed static text before any syscall.
+Authored non-OS diagnostics still require their existing separate admission.
+
+The control Quit writer now borrows `CONTROL_QUIT_FRAME` from the permissive
+protocol crate instead of allocating an encoded vector. Its bytes match the
+frozen protocol-v8 Quit vector, and the existing owned encoder returns the same
+bytes. Both a successful fixed-buffer write and actual closed Unix-socket
+control/QMP refusals make zero allocations. All 47 shutdown controls, all eight
+hot-fork return source contracts and source shape pass. The target error still
+fits its existing 64-byte extent. Restoring the old QMP formatting bridge causes
+the actual socket allocation control to fail; restoring the exact implementation
+passes all 47 controls. ABI conformance passes at
+`jmsykag70va3ypv1ib8r7ykvhaiqx42x`.
+
+Strict host Clippy retains the same 674 library and 723 test-target errors, with
+14 and five warnings. The complete testing-standards suite passes 76 controls
+and retains the same broad failure over 22 unclassified retry paths. An initial
+complete host run passes 1,369 controls and exposes one stale formatted-message
+assertion alongside the eight existing unissued helper-custody failures. That
+assertion now checks the actual typed ECHILD and zero public-poll allocations.
+The complete rerun passes 1,370 controls with only the same eight helper-custody
+failures and four ignored controls. License boundary and mandatory
+application-target compilation remain in progress. Controller-return causes and heap-backed public
+shutdown-report collections still need complete prebirth funding; these changes
+do not qualify Main/Source issuance or native return.
 
 #### Cumulative construction and request ownership source
 
@@ -1691,9 +1728,24 @@ authenticates all 88 payloads, 174 external inputs, ten reconstruction inputs
 and the same complete 70 tool roots. Independent review checks every graph
 field, schedule and leaf, derives all ten object and 33 serialized-command
 coordinates with actual pinned Meson code, and confirms all eight runtime
-helpers remain byte-exact. One new original invocation is authorized with the
-same bounds and fresh coordinates. Compilation and link results remain pending;
-TAP, installation and activation are not executed.
+helpers remain byte-exact. The original new invocation returns zero in
+1,602.043 seconds; final inventories complete in 1,626.270 seconds, within the
+same 5,400-second ceiling. All 1,952 scheduled effects and 1,960 monitored
+operations return zero. The actual 105,818,904-byte companion ELF has SHA-256
+`69b7c3cbf2cd358634750e91f631e521479090475921a97cfe80226d3c103fc6`.
+
+Independent review of sealed result
+`ca7030ecc91a957df9018ca1cd24e62835d761f592641fcc5037f05f7bae0e2e`
+authenticates all 45 signed payloads, all 43,085 execution and 86,111
+reconstruction paths against their complete archives, every graph field,
+all 1,622 objects and 622,373 actual compiler-dependency observations over
+4,424 literal paths. Repeated bounded AOS `nm`/`readelf` output matches the
+original bytes and finds all eighteen actual providers. All 1,960 cleanup cuts
+observe empty actual children and ECHILD; adoption, signal and reap branches
+remain unexercised. The 22,393 aggregate samples peak at 1,027,379,200 RSS and
+1,189,502,976 virtual bytes, below six GiB; samples do not prove unsampled peaks.
+This establishes compile/link and static ELF observations only. TAP,
+installation and activation are not executed.
 
 #### Initial loader storage component
 

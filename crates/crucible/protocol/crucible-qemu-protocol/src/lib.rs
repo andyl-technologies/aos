@@ -254,6 +254,14 @@ pub const TAG_SETUP: u8 = ControlTag::Setup.wire_value();
 pub const TAG_SETUP_ACK: u8 = ControlTag::SetupAck.wire_value();
 /// Quit frame tag value.
 pub const TAG_QUIT: u8 = ControlTag::Quit.wire_value();
+
+/// Canonical complete Quit frame, borrowed without allocating an encoded buffer.
+///
+/// The big-endian length counts its single tag byte and empty payload. This is
+/// the same protocol frame returned by [`control_encode_host_msg`].
+pub const CONTROL_QUIT_FRAME: [u8; FRAME_LENGTH_PREFIX_SIZE + FRAME_TAG_SIZE] =
+    [0, 0, 0, 1, TAG_QUIT];
+
 /// Hello frame tag value.
 pub const TAG_HELLO: u8 = ControlTag::Hello.wire_value();
 /// HelloAck frame tag value.
@@ -816,7 +824,7 @@ pub fn control_encode_host_msg(message: &HostMsg) -> Vec<u8> {
                 ],
             )
         }
-        HostMsg::Quit => encode_frame(ControlTag::Quit, &[]),
+        HostMsg::Quit => CONTROL_QUIT_FRAME.to_vec(),
     }
 }
 
