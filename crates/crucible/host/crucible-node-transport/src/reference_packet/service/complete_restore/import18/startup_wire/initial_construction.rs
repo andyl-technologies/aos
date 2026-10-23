@@ -197,49 +197,10 @@ pub(in crate::reference_packet) fn initial_construction_from_wire_data(
         private_launch: &boot.private_launch,
         host_executable: &boot.host_executable,
     };
-    let bodies = prospective::construction_data(launch, &private, maximum)?;
-    let source = source_authentication_projection_data(&private.declaration, launch, maximum)?;
-    combine(
-        bodies,
-        source,
-        initial_quote_formatter_data(launch)?,
-        LaunchConstructionData {
-            identity: native_import18_launch_identity_construction_data(launch, maximum)?,
-            validation: original_import18_launch_validation_construction_data(launch, maximum)?,
-        },
-        BootstrapConstructionData {
-            normalizations: super::initial_normalizations::construction_data(
-                launch, &private, maximum,
-            )?,
-            literal: original_import18_bootstrap_literal_construction_data(launch, maximum)?,
-            value: original_import18_bootstrap_value_construction_data(launch, maximum)?,
-            codec: original_import18_bootstrap_codec_construction_data(launch, maximum)?,
-            correlation: original_import18_bootstrap_correlation_construction_data(
-                launch, maximum,
-            )?,
-            proof: original_import18_bootstrap_proof_construction_data(launch, maximum)?,
-            reply: original_import18_bootstrap_reply_construction_data(launch, maximum)?,
-        },
-        HelloConstructionData {
-            roster: original_import18_hello_selection_construction_data(launch)?,
-            frames: original_import18_hello_frames_construction_data(launch)?,
-            literal: original_import18_hello_literal_construction_data(launch)?,
-            value: original_import18_hello_value_construction_bound_data(launch, maximum)?,
-            request: original_import18_hello_request_construction_bound_data(launch, maximum)?,
-            registrar: original_import18_hello_registrar_construction_data(launch, maximum)?,
-            sdk_request: original_import18_sdk_hello_request_construction_bound_data(
-                launch, maximum,
-            )?,
-            result: original_import18_hello_result_construction_data(launch, maximum)?,
-            envelope: original_import18_hello_envelope_construction_bound_data(launch, maximum)?,
-            response: original_import18_hello_response_construction_data(launch, maximum)?,
-            admission: original_import18_hello_initial_admission_construction_data(
-                launch, maximum,
-            )?,
-            publication: original_import18_hello_publication_construction_data(launch, maximum)?,
-        },
-        maximum,
-    )
+    // The receiver validates its actual secret widths above, then borrows the
+    // same operands as the parent. A second formula must not drift as physical
+    // Bootstrap and Hello constructors evolve.
+    initial_construction_projection_data(launch, &private, maximum)
 }
 
 /// Groups the original launch identity and its independent validation work.
@@ -581,6 +542,11 @@ pub fn native_import18_initial_construction_counter_scratch_data() -> usize {
         + size_of::<Result<(), ProviderError>>() * 5
         + size_of::<PacketNativeImport18SourceDeclarationView<'static>>()
         + size_of::<PrivateOperands<'static>>()
+        // Native reconstruction retains its operand owner across the common
+        // projection call and its independently returned construction result.
+        + size_of::<&PrivateOperands<'static>>() * 2
+        + size_of::<Result<InitialConstructionData, ProviderError>>()
+        + size_of::<usize>()
         + size_of::<&PacketNative5SourceLaunch>()
         + size_of::<&Id>()
         + size_of::<&ContentRef>()
