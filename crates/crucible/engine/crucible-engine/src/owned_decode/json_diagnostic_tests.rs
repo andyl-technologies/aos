@@ -9,6 +9,9 @@ use crate::owned_decode::json_profiles::{ClosedJsonProfile, assets, bootstrap, p
 use crucible_host_resources::test_support::TestAllocationObserver;
 use std::fmt::{self, Write};
 
+#[global_allocator]
+static ALLOCATOR: TestAllocationObserver = TestAllocationObserver;
+
 fn paid_error<'input, T: ClosedJsonProfile<'input>>(bytes: &'input [u8]) -> ClosedJsonError {
     let budget = DecodeBudget::new(authority(1 << 20), 1 << 20).unwrap();
     match from_json_slice_closed::<T>(bytes, &budget) {
@@ -164,6 +167,95 @@ fn an_existing_original_refusal_stays_first_without_new_allocation() {
     assert_eq!(actual, first);
     assert_eq!(count.allocations, 0);
     assert_eq!(count.reallocations, 0);
+}
+
+#[test]
+fn actual_diagnostic_and_its_control_free_before_original_credit_returns() {
+    let extent =
+        crate::owned_decode::json_diagnostic::diagnostic_custody_allocation_bytes().unwrap();
+    let reservation =
+        crate::owned_decode::json_diagnostic::reservation_extent::<policy::Projection<'_>>(b"{")
+            .unwrap();
+
+    for selected in [0, 1] {
+        let original = authority(1 << 20);
+        let budget = DecodeBudget::new(original.clone(), 1 << 20).unwrap();
+        let initial = original.used.load(Ordering::SeqCst);
+        let (result, identities) =
+            TestAllocationObserver::capture_controls([extent, 40, usize::MAX], || {
+                from_json_slice_closed::<policy::Projection<'_>>(b"{", &budget)
+            });
+        let Err(ClosedJsonError::Json(error)) = result else {
+            panic!("the original parser diagnostic was not retained");
+        };
+        let retained = original.used.load(Ordering::SeqCst);
+        assert!(retained > initial);
+
+        let ((), observed) = TestAllocationObserver::observe_atomic_after_free(
+            &original.used,
+            identities[selected].unwrap(),
+            || drop(error),
+        );
+
+        assert_eq!(observed, Some(retained));
+        // Typed seed charges stay with the account. Only this temporary
+        // diagnostic reservation returns when the error physically closes.
+        assert_eq!(original.used.load(Ordering::SeqCst), retained - reservation);
+        drop(budget);
+        assert_eq!(original.used.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[test]
+fn unused_diagnostic_control_frees_before_its_original_reservation() {
+    let original = authority(1 << 20);
+    let budget = DecodeBudget::new(original.clone(), 1 << 20).unwrap();
+    let initial = original.used.load(Ordering::SeqCst);
+    let extent =
+        crate::owned_decode::json_diagnostic::diagnostic_custody_allocation_bytes().unwrap();
+    let (prepared, identities) =
+        TestAllocationObserver::capture_controls([extent, usize::MAX, usize::MAX], || {
+            crate::owned_decode::json_diagnostic::PreparedDiagnostic::prepare::<
+                policy::Projection<'_>,
+            >(&budget, b"{")
+            .unwrap()
+        });
+    let retained = original.used.load(Ordering::SeqCst);
+    assert!(retained > initial);
+
+    let ((), observed) = TestAllocationObserver::observe_atomic_after_free(
+        &original.used,
+        identities[0].unwrap(),
+        || drop(prepared),
+    );
+
+    assert_eq!(observed, Some(retained));
+    assert_eq!(original.used.load(Ordering::SeqCst), initial);
+}
+
+#[test]
+fn retaining_the_actual_json_error_allocates_no_new_holder() {
+    let budget = DecodeBudget::new(authority(1 << 20), 1 << 20).unwrap();
+    let prepared = crate::owned_decode::json_diagnostic::PreparedDiagnostic::prepare::<
+        policy::Projection<'_>,
+    >(&budget, b"{")
+    .unwrap();
+    let actual = match serde_json::from_slice::<policy::Projection<'_>>(b"{") {
+        Ok(_) => panic!("the incomplete object was accepted"),
+        Err(error) => error,
+    };
+    let line = actual.line();
+    let column = actual.column();
+
+    let (retained, counts) = TestAllocationObserver::count(|| prepared.retain(actual));
+
+    assert_eq!(retained.line(), line);
+    assert_eq!(retained.column(), column);
+    assert!(retained.is_eof());
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert!(std::mem::size_of::<PaidJsonError>() <= 2 * std::mem::size_of::<usize>());
 }
 
 struct Sink {

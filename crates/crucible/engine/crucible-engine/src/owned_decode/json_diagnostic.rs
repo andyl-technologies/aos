@@ -4,7 +4,10 @@
 //! conversion. Its supported Display paths borrow their message; Debug uses
 //! the same presentation rather than Serde's allocating ErrorCode formatter.
 
+use std::alloc::Layout;
 use std::fmt;
+use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 use super::json_profiles::ClosedJsonProfile;
 use super::{DecodeAdmissionError, DecodeBudget, DecodeCustody, DecodeScratch};
@@ -16,8 +19,7 @@ use super::{DecodeAdmissionError, DecodeBudget, DecodeCustody, DecodeScratch};
 /// ownership extraction nor a raw error borrow is part of this API.
 pub struct PaidJsonError {
     error: serde_json::Error,
-    _diagnostic: DecodeScratch,
-    _custody: DecodeCustody,
+    _diagnostic: DiagnosticCustody,
 }
 
 impl PaidJsonError {
@@ -117,8 +119,61 @@ pub enum ClosedJsonError {
 }
 
 pub(super) struct PreparedDiagnostic {
-    credit: DecodeScratch,
-    custody: DecodeCustody,
+    custody: DiagnosticCustody,
+}
+
+// This private handle never exposes strong or weak aliases. Its allocation is
+// born under the original diagnostic reservation before the parser is entered.
+struct DiagnosticCustody {
+    retained: Option<Arc<DiagnosticCredit>>,
+}
+
+struct DiagnosticCredit {
+    _credit: DecodeScratch,
+    _custody: DecodeCustody,
+}
+
+impl DiagnosticCustody {
+    fn new(credit: DecodeScratch, custody: DecodeCustody) -> Self {
+        Self {
+            retained: Some(Arc::new(DiagnosticCredit {
+                _credit: credit,
+                _custody: custody,
+            })),
+        }
+    }
+
+    fn allocation_layout() -> Option<Layout> {
+        Layout::new::<[AtomicUsize; 2]>()
+            .extend(Layout::new::<DiagnosticCredit>())
+            .ok()
+            .map(|(layout, _)| layout.pad_to_align())
+    }
+
+    fn peak_bytes() -> Option<u64> {
+        Self::allocation_layout()?
+            .size()
+            .checked_add(std::mem::size_of::<DiagnosticCredit>())?
+            .checked_add(std::mem::size_of::<Self>())?
+            .try_into()
+            .ok()
+    }
+}
+
+#[cfg(test)]
+/// Reports the pinned control extent for observing its actual deallocation.
+pub(super) fn diagnostic_custody_allocation_bytes() -> Option<usize> {
+    Some(DiagnosticCustody::allocation_layout()?.size())
+}
+
+impl Drop for DiagnosticCustody {
+    fn drop(&mut self) {
+        if let Some(retained) = self.retained.take() {
+            // There are no Weak aliases. Extracting the record frees its Arc
+            // header before the diagnostic loan and original account close.
+            drop(Arc::into_inner(retained));
+        }
+    }
 }
 
 impl PreparedDiagnostic {
@@ -143,16 +198,14 @@ impl PreparedDiagnostic {
             .ok_or_else(|| Self::refusal(budget, "closed JSON diagnostic extent overflow"))?;
         let credit = budget.reserve_scratch_bytes(extent)?;
         Ok(Self {
-            credit,
-            custody: budget.custody(),
+            custody: DiagnosticCustody::new(credit, budget.custody()),
         })
     }
 
     pub(super) fn retain(self, error: serde_json::Error) -> PaidJsonError {
         PaidJsonError {
             error,
-            _diagnostic: self.credit,
-            _custody: self.custody,
+            _diagnostic: self.custody,
         }
     }
 
@@ -324,6 +377,7 @@ pub(super) fn reservation_extent<'input, T: ClosedJsonProfile<'input>>(
     bytes: &[u8],
 ) -> Option<u64> {
     diagnostic_extent(bytes, T::DIAGNOSTIC_LABELS)
+        .and_then(|extent| extent.checked_add(DiagnosticCustody::peak_bytes()?))
         .and_then(|extent| extent.checked_add(std::mem::size_of::<ClosedJsonError>() as u64))
         .and_then(|extent| extent.checked_add(std::mem::size_of::<PreparedDiagnostic>() as u64))
         .and_then(|extent| {

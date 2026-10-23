@@ -63,7 +63,7 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | Signed atomic `7b817c94ba`, conventional `060716ff3d`, tree `b26b7645` verifies the eleven function exports and two immutable layout objects using their genuine recorded attributes. Independent review verifies all 36 correction payloads, 78,470 Git/disk/archive paths and four byte-exact generated outputs; all 359 pure controls pass. | The earlier genuine-provider companion passes its complete build and all nineteen ordinary/unissued-state TAP cases. Fresh legacy graph discovery follows the preserved export-spelling refusal. Actual object transformation, final provider-binding proof and its 187-case TAP run remain unqualified. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
+| Native integration | Signed atomic `7b817c94ba`, conventional `060716ff3d`, tree `b26b7645` verifies the eleven function exports and two immutable layout objects using their genuine recorded attributes. Independent review verifies all 36 correction payloads, 78,470 Git/disk/archive paths and four byte-exact generated outputs; all 359 pure controls pass. | The earlier genuine-provider companion passes its complete build and all nineteen ordinary/unissued-state TAP cases. Fresh legacy configuration and all thirteen read-only Ninja queries pass; the complete graph and cleanup evidence are independently verified. Actual object transformation, final provider-binding proof and its 187-case TAP run remain unqualified. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
@@ -1505,6 +1505,31 @@ Hermetic reconstruction of this exact atomic source passes at
 `6m9s4h1j952w1pmd9pif32mzsqxvbmys`; its unchanged 663-file license ledger passes
 at `3b7agqxfxsprqfzi5dn8bc1r5rw3iyds`.
 
+The subsequent fresh configured-graph plan
+`e9e7093aec0d9a634dd405a006156dbac3f56ec82cc9945e7fa620e00474f654`
+passes all 122 pure controls. Its actual configured link declaration has exactly
+one pinned-Meson `-Wl,-export-dynamic` argument; aliases, duplicates, disabling
+arguments and foreign owners refuse. The original graph classifier is unchanged.
+Genuine configure returns zero in 32.874 seconds and all thirteen read-only Ninja
+queries return zero. The whole invocation completes in 200.269 seconds, within
+its original 900-second bound. All fifteen independent cleanup cuts observe
+empty children and ECHILD, without signals, waits, adoptions or cleanup errors.
+
+Independent review of original result
+`66e1c9ae4eeecdfff703a3f392df053d3c4f0474f332ebe64e072ee6501c9673`
+verifies all 53 signed payloads, 3,031 execution and 86,117 reconstruction
+paths against their complete archives, and both 6,583/86,111-path original
+baselines. All 2,029 input leaves match their actual content; 790 aggregate and
+2,011 self-resource samples remain within the sealed limit. Replaying the
+original strict predicates against the retained actual graphs succeeds. This
+run performs no target compilation, transformation, archive, link, ELF load or
+TAP execution. A separate complete target-build plan remains unexecuted.
+
+The service-client ownership contracts pass mandatory application-target
+compilation at `wx20fkrpphs9zk5lrwlg7kx10d84x8b9`. Before later edits, all
+5,389 committed Rust/TOML inputs and six required fixtures independently matched
+its complete immutable source `rpwqwy2pqc42m6azss40qfs2lx7qjrma`.
+
 The typed Source cleanup-status increment also passes mandatory application
 target compilation at `k6xqwqda0r9pa1kalk2yll311lfbwl6w`. Its complete immutable
 source matched all 5,382 committed Rust/TOML files and six required fixtures
@@ -1519,6 +1544,28 @@ cover their respective committed inputs before later changes.
 The Source-caller contract increment passes mandatory application-target
 compilation at `v4sf66zhav7aqw1jpwj4pmibp8yb1dxi`, with all 5,388 committed
 Rust/TOML files and six fixtures matching its frozen source before later edits.
+
+Closed JSON decoding now reserves and constructs a private diagnostic-credit
+holder before entering Serde. Retaining the actual error moves that existing
+holder without allocating; text, classification and source coordinates remain
+unchanged. The holder exposes no strong or weak aliases. Its final observer
+extracts the credit record after freeing the reference-count header, then returns
+the diagnostic loan and original custody in order. The complete reservation
+includes control storage and construction/extraction overlap. `PaidJsonError`
+occupies two machine words without exposing the raw Serde error.
+
+The engine test binary now installs its existing allocation observer as its
+actual global allocator; the previous controls had no installed observer. All
+sixteen focused controls pass with real observations. Restoring ordinary Arc
+drop causes both actual-control lifetime checks to fail because their original
+credit returns before physical control deallocation; exact restoration passes
+all eleven diagnostic-filter controls. Retaining a genuine prepared error
+allocates nothing. All 686 engine tests, ninety testing-standard controls and
+five hygiene controls pass. The host suite retains 1,385 passes, the same eight
+unissued helper-custody failures and four ignored controls. Strict Clippy retains
+674 library and 723 test-target errors, with fourteen and five warnings.
+Mandatory application-target compilation for this increment remains pending.
+These parser controls grant no native issuance or execution authority.
 
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's
