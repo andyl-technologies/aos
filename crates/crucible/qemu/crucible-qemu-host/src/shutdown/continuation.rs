@@ -12,12 +12,11 @@ enum Failure {
 }
 
 #[derive(Debug)]
-/// Stores fixed per-rung receipts without a second heap-backed report owner.
+/// Stores rung progress in the launch's original prepaid report cells.
 pub(crate) struct QemuShutdownProgress {
     next: usize,
     entered: Option<QemuShutdownRung>,
-    attempts: [Option<QemuShutdownAttempt>; 4],
-    failures: [Option<QemuShutdownFailure>; 6],
+    journal: ShutdownJournal,
     failure: Option<Failure>,
     /// Actual target or retained process observation of physical reap.
     pub(crate) reaped: bool,
@@ -25,13 +24,25 @@ pub(crate) struct QemuShutdownProgress {
 }
 
 impl QemuShutdownProgress {
-    /// Creates unentered progress for one actual child generation.
-    pub(crate) const fn new() -> Self {
+    /// Creates standalone component progress before any target effect.
+    pub(crate) fn new() -> Self {
+        Self::with_journal(ShutdownJournal::component())
+    }
+
+    /// Takes the native launch's existing storage; absence permits no effect.
+    pub(crate) fn from_launch(cleanup: &crate::launch_cleanup::LaunchCleanup) -> Self {
+        Self::with_journal(
+            cleanup
+                .claim_shutdown_journal()
+                .unwrap_or_else(ShutdownJournal::empty),
+        )
+    }
+
+    fn with_journal(journal: ShutdownJournal) -> Self {
         Self {
             next: 0,
             entered: None,
-            attempts: [None; 4],
-            failures: [const { None }; 6],
+            journal,
             failure: None,
             reaped: false,
             reap_attempted: false,
@@ -45,18 +56,21 @@ impl QemuShutdownProgress {
 
     /// Reports saved failure or an entered invocation without a return.
     pub(crate) fn failed(&self) -> bool {
-        self.entered.is_some() || self.failure.is_some()
+        !self.journal.available() || self.entered.is_some() || self.failure.is_some()
     }
 
     /// Saves the first independent parent-observation error before status use.
     pub(crate) fn retain_observation_failure(&mut self, source: QemuShutdownTargetError) -> bool {
-        if self.failures[5].is_some() {
+        if !self.journal.available() || self.journal.failure(5).is_some() {
             return false;
         }
-        self.failures[5] = Some(QemuShutdownFailure {
-            rung: QemuShutdownRung::Reap,
-            source,
-        });
+        self.journal.record_failure(
+            5,
+            QemuShutdownFailure {
+                rung: QemuShutdownRung::Reap,
+                source,
+            },
+        );
         if self.failure.is_none() {
             self.failure = Some(Failure::Target(5));
         }
@@ -65,19 +79,20 @@ impl QemuShutdownProgress {
 
     /// Projects the retained typed failure with its actual preceding outputs.
     pub(crate) fn failure(&self) -> Option<QemuShutdownError> {
+        if !self.journal.available() {
+            return Some(QemuShutdownError::StorageUnavailable);
+        }
         if let Some(rung) = self.entered {
             return Some(QemuShutdownError::Uncertain { rung });
         }
         match self.failure {
-            Some(Failure::Target(index)) => {
-                self.failures[index]
-                    .as_ref()
-                    .map(|failure| QemuShutdownError::Target {
-                        rung: failure.rung,
-                        source: failure.source.clone(),
-                        report: self.report(),
-                    })
-            }
+            Some(Failure::Target(index)) => self.journal.failure(index).and_then(|failure| {
+                Some(QemuShutdownError::Target {
+                    rung: failure.rung,
+                    source: self.journal.refusal(index)?,
+                    report: self.report(),
+                })
+            }),
             Some(Failure::Leaked) => Some(QemuShutdownError::LeakedChild {
                 report: self.report(),
             }),
@@ -87,12 +102,8 @@ impl QemuShutdownProgress {
 
     /// Projects the existing public report without consuming retained progress.
     pub(crate) fn report(&self) -> QemuShutdownReport {
-        QemuShutdownReport {
-            attempts: self.attempts.iter().flatten().copied().collect(),
-            failures: self.failures.iter().flatten().cloned().collect(),
-            reaped: self.reaped,
-            leaked: matches!(self.failure, Some(Failure::Leaked)),
-        }
+        self.journal
+            .report(self.reaped, matches!(self.failure, Some(Failure::Leaked)))
     }
 
     /// Advances the same ladder and returns its ordinary public output.
@@ -146,10 +157,8 @@ impl QemuShutdownProgress {
         while let Some(&(rung, wait)) = rungs.get(self.next) {
             // A prior returned exit survives even an interrupted factual
             // observer; resuming this owner cannot enter another command.
-            if self
-                .attempts
-                .iter()
-                .flatten()
+            if (0..4)
+                .filter_map(|index| self.journal.attempt(index))
                 .any(|attempt| attempt.child == QemuChildWait::Exited)
             {
                 break;
@@ -164,7 +173,8 @@ impl QemuShutdownProgress {
             let effect = execute_shutdown_rung(target, rung);
             let effect_failed = effect.is_err();
             if let Err(source) = effect {
-                self.failures[index] = Some(QemuShutdownFailure { rung, source });
+                self.journal
+                    .record_failure(index, QemuShutdownFailure { rung, source });
             }
             // The actual child can be reaped even when the independent post
             // refused. Preserve that error and stop before another effect.
@@ -178,13 +188,17 @@ impl QemuShutdownProgress {
                 continue;
             }
             let (output, status) = target.wait_for_exit_observed(rung, wait);
-            self.attempts[index] = Some(QemuShutdownAttempt {
-                rung,
-                wait,
-                child: output.unwrap_or(QemuChildWait::StillRunning),
-            });
+            self.journal.record_attempt(
+                index,
+                QemuShutdownAttempt {
+                    rung,
+                    wait,
+                    child: output.unwrap_or(QemuChildWait::StillRunning),
+                },
+            );
             if let Err(source) = status {
-                self.failures[index] = Some(QemuShutdownFailure { rung, source });
+                self.journal
+                    .record_failure(index, QemuShutdownFailure { rung, source });
             }
             self.entered = None;
             if target.child_reaped() {
@@ -206,10 +220,13 @@ impl QemuShutdownProgress {
                 Ok(QemuReap::Reaped) => self.reaped = true,
                 Ok(QemuReap::StillAlive) => self.failure = Some(Failure::Leaked),
                 Err(source) => {
-                    self.failures[4] = Some(QemuShutdownFailure {
-                        rung: QemuShutdownRung::Reap,
-                        source,
-                    });
+                    self.journal.record_failure(
+                        4,
+                        QemuShutdownFailure {
+                            rung: QemuShutdownRung::Reap,
+                            source,
+                        },
+                    );
                     self.failure = Some(Failure::Target(4));
                 }
             }

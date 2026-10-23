@@ -1304,9 +1304,9 @@ passes it. The controls issue no native Main, Source or physical-return grant.
 Source shape passes, and all 88 focused/source-policy controls pass apart from
 the existing broad operational-wait finding across eleven daemon paths. The
 unrestricted full daemon run has 1,657 passes, 114 failures and 43 ignored tests;
-its failures include quota-bound SQLite setup and out-of-memory refusals. A
-serial rerun remains pending after passing the unchanged 512-MiB packed-volume
-control.
+its failures include quota-bound SQLite setup and out-of-memory refusals. The
+serial rerun passes all 1,771 daemon tests with 43 ignored, including the unchanged
+512-MiB packed-volume control. No fixture capacity or assertion was relaxed.
 Mandatory application-target compilation for this increment is also pending.
 
 Two more mandatory application-target builds pass: four retained refusal paths
@@ -1314,6 +1314,37 @@ at `zr2039jhxnlx7722s45pgf0d9vl912cs` and publisher refusals at
 `jz3vyywv1sk1mgwm4yzskg7z1hldyrnn`. All committed Rust/TOML inputs and six
 required fixtures independently matched each build's complete immutable source
 before subsequent edits.
+
+
+Shutdown report storage is now reserved as part of the original complete Source
+control peak before launch. The canonical child continuation takes that launch's
+journal exactly once before any target effect. Four attempt cells and six error
+cells retain the actual returned outputs; immutable selection masks keep earlier
+reports unchanged as later independent observations arrive. Reports and typed
+refusals share the prepaid allocation without copying owned diagnostics. Missing
+or already-claimed storage fails closed before a command, wait or reap.
+
+The final observer extracts the journal only after freeing its reference-count
+header, then drops the actual errors before the original financial loan. The
+complete peak covers the header, construction/extraction overlap and output
+frames. The allocation observer checks all five prebirth allocations. The actual
+last-header control fails when ordinary Arc drop is restored and passes after
+exact restoration. All six new journal controls pass, including the actual
+shutdown ladder, original error-string identities, frozen receipts and a refused
+second claim with zero target effects or allocations.
+
+The full host suite passes 1,385 tests with the same eight existing unissued
+helper-custody failures and four ignored controls. Source shape passes. Testing
+standards pass 89 controls and retain the same broad retry-policy failure across
+eleven daemon paths; all eight new ownership mutations are rejected. Strict host
+Clippy retains 674 library and 723 test-target errors, with 14 and five warnings.
+Mandatory application-target compilation for this increment remains pending.
+These component controls do not establish Main/Source issuance or native return.
+
+The earlier prepaid controller storage application-target build passes at
+`k6wsvl3qa16xih2n1l5biqm7kv2g4y13`. All 5,378 committed Rust/TOML inputs and
+six required fixtures independently matched its complete immutable source before
+subsequent edits.
 
 Shutdown now retains raw native OS errors in the target error's inline typed
 cause, including the original `std::io::Error` exposed through the standard

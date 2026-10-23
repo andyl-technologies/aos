@@ -426,8 +426,8 @@ pub use realization::{
     QemuReplayValidationThinAdmission,
 };
 pub use shutdown::{
-    QEMU_SHUTDOWN_ESCALATION_ORDER, QMP_QUIT_COMMAND, QemuChildWait, QemuReap, QemuShutdownAttempt,
-    QemuShutdownError, QemuShutdownFailure, QemuShutdownPolicy, QemuShutdownReport,
+    QEMU_SHUTDOWN_ESCALATION_ORDER, QMP_QUIT_COMMAND, QemuChildWait, QemuReap, QemuShutdownAttempt, QemuShutdownAttempts,
+    QemuShutdownError, QemuShutdownFailure, QemuShutdownFailures, QemuShutdownRefusal, QemuShutdownPolicy, QemuShutdownReport,
     QemuShutdownRung, QemuShutdownTarget, QemuShutdownTargetError, UnixQemuChildShutdownTarget,
     send_control_quit_frame, send_qmp_quit_command, shutdown_qemu_child,
 };

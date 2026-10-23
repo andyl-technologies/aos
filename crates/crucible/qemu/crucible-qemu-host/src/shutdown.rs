@@ -20,6 +20,9 @@ pub(crate) use continuation::QemuShutdownProgress;
 mod target_error;
 pub use target_error::QemuShutdownTargetError;
 
+use crate::launch_cleanup::ShutdownJournal;
+pub use crate::launch_cleanup::{QemuShutdownAttempts, QemuShutdownFailures, QemuShutdownRefusal};
+
 /// Ordered shutdown rungs for one QEMU child.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum QemuShutdownRung {
@@ -118,25 +121,44 @@ pub struct QemuShutdownFailure {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct QemuShutdownReport {
     /// Rungs that were attempted before the child was reaped.
-    pub attempts: Vec<QemuShutdownAttempt>,
+    pub attempts: QemuShutdownAttempts,
     /// Non-fatal rung failures encountered while escalating.
-    pub failures: Vec<QemuShutdownFailure>,
+    pub failures: QemuShutdownFailures,
     /// Whether the final reap rung completed.
     pub reaped: bool,
     /// Whether a live child remained after the final reap deadline.
     pub leaked: bool,
 }
 
+impl QemuShutdownReport {
+    /// Returns an empty report for an independently established prior reap.
+    ///
+    /// This projection observes no child and grants no cleanup authority. The
+    /// caller must establish the actual reap before using this status.
+    #[must_use]
+    pub const fn already_reaped() -> Self {
+        Self {
+            attempts: QemuShutdownAttempts::empty(),
+            failures: QemuShutdownFailures::empty(),
+            reaped: true,
+            leaked: false,
+        }
+    }
+}
+
 /// Typed errors returned by the shutdown escalation runner.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QemuShutdownError {
+    /// The native launch's original prepaid shutdown cells were unavailable.
+    #[error("shutdown requires the original prepaid report storage")]
+    StorageUnavailable,
     /// A target operation failed.
     #[error("shutdown rung {rung:?} failed")]
     Target {
         /// Rung that was executing.
         rung: QemuShutdownRung,
         /// Underlying target error.
-        source: QemuShutdownTargetError,
+        source: QemuShutdownRefusal,
         /// Actual preceding rung outputs, including independent failures.
         report: QemuShutdownReport,
     },

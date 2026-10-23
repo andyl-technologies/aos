@@ -64,7 +64,7 @@ pub(crate) fn fixture_observing(layout: Layout) -> Fixture {
             LaunchCleanup::new(&registration)
         });
 
-    assert_eq!(counts.allocations, 4);
+    assert_eq!(counts.allocations, 5);
     assert_eq!(counts.reallocations, 0);
     assert!(!counts.overflow);
     // Only the actual cleanup record keeps this registrar and its real charges.

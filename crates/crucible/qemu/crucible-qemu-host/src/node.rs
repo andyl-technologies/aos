@@ -647,6 +647,10 @@ impl QemuNode {
             let binding = channels.original_native_binding.take();
             (channels, binding)
         };
+        #[cfg(target_os = "linux")]
+        let child_shutdown = shutdown_continuation::ChildShutdown::for_launch(launch_cleanup.as_ref());
+        #[cfg(not(target_os = "linux"))]
+        let child_shutdown = shutdown_continuation::ChildShutdown::new();
         Self {
             child: QemuNodeProcessControl::Direct(child),
             channels,
@@ -676,7 +680,7 @@ impl QemuNode {
             _hot_fork_scheduler_authority: None,
             lifecycle_state: QemuNodeLifecycleState::Running,
             shutdown_policy,
-            child_shutdown: shutdown_continuation::ChildShutdown::new(),
+            child_shutdown,
             async_policy,
             crash_detector,
             host_io_runtime,

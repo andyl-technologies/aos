@@ -8,6 +8,9 @@ use super::{Companion, Contract, source};
 #[path = "pre_vm/child.rs"]
 mod child;
 
+#[path = "pre_vm/shutdown_reports.rs"]
+pub(super) mod shutdown_reports;
+
 const LAUNCHER: Companion = Companion {
     path: source::CONTRACT.companions[4].path,
     required: source::CONTRACT.companions[4].required,
@@ -91,6 +94,11 @@ pub(super) const CONTRACTS: &[Contract] = &[
             child::OWNER,
             child::ORIGINAL,
             child::LADDER,
+            shutdown_reports::CELLS,
+            shutdown_reports::ALLOCATION,
+            shutdown_reports::SOURCE,
+            shutdown_reports::NODE,
+            shutdown_reports::FORK,
             child::WAIT,
             child::ACTUAL_CHILD,
             child::SHUTDOWN_TARGET,

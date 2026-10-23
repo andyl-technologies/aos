@@ -66,9 +66,23 @@ pub(super) struct ChildShutdown {
 
 impl ChildShutdown {
     /// Creates the unentered owner before the containing node is published.
-    pub(super) const fn new() -> Self {
+    pub(super) fn new() -> Self {
+        Self::with_progress(crate::shutdown::QemuShutdownProgress::new())
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn for_launch(cleanup: Option<&crate::launch_cleanup::LaunchCleanup>) -> Self {
+        match cleanup {
+            Some(cleanup) => {
+                Self::with_progress(crate::shutdown::QemuShutdownProgress::from_launch(cleanup))
+            }
+            None => Self::new(),
+        }
+    }
+
+    fn with_progress(progress: crate::shutdown::QemuShutdownProgress) -> Self {
         Self {
-            progress: crate::shutdown::QemuShutdownProgress::new(),
+            progress,
             begin_attempted: false,
             begin_returned: false,
             guard: None,
@@ -131,8 +145,9 @@ impl ChildShutdown {
     pub(super) fn from_ram(
         ram: super::ram_cleanup::RamCleanup,
         original: Option<crate::linux_attempt_host::TargetCleanupOriginal>,
+        cleanup: &crate::launch_cleanup::LaunchCleanup,
     ) -> Self {
-        let mut retained = Self::new();
+        let mut retained = Self::for_launch(Some(cleanup));
         retained.ram = ram;
         if let Some(original) = original {
             retained.retain_target_original(original);
@@ -416,12 +431,7 @@ impl ChildShutdown {
             self.health()?;
         }
         if previously_reaped {
-            return Ok(QemuShutdownReport {
-                attempts: Vec::new(),
-                failures: Vec::new(),
-                reaped: true,
-                leaked: false,
-            });
+            return Ok(QemuShutdownReport::already_reaped());
         }
         Ok(self.progress.report())
     }

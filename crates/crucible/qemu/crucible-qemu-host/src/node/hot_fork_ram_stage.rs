@@ -499,6 +499,7 @@ impl QemuHotForkRamContinuation {
         Ok(super::shutdown_continuation::ChildShutdown::from_ram(
             history,
             self.cleanup_original.take(),
+            &self.cleanup,
         ))
     }
 

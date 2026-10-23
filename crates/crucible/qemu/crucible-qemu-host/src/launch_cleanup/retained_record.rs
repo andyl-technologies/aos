@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize};
 
 use super::{
     CleanupFinalizer, CleanupRecord, ControllerReturnCause, ControllerReturnJournal,
-    ControllerReturnStorage, RetainedCleanupFinalizer,
+    ControllerReturnStorage, RetainedCleanupFinalizer, ShutdownJournal,
 };
 use crucible_engine::SharedOperationalCause;
 
@@ -37,6 +37,7 @@ impl RetainedCleanupRecord {
 
         Self {
             shared: Some(Arc::new(CleanupRecord {
+                shutdown_storage: Mutex::new(Some(ShutdownJournal::new(finalizer.clone()))),
                 finalizer,
                 retirement_storage: Mutex::new(Some(retirement_storage)),
                 retirement_claimed: AtomicBool::new(false),
@@ -60,7 +61,8 @@ impl RetainedCleanupRecord {
         root_peak
             .checked_add(RetainedCleanupFinalizer::allocation_peak_bytes()?)?
             .checked_add(ControllerReturnCause::peak_bytes()?)?
-            .checked_add(ControllerReturnJournal::peak_bytes()?)
+            .checked_add(ControllerReturnJournal::peak_bytes()?)?
+            .checked_add(ShutdownJournal::peak_bytes()?)
     }
 
     /// Compares existing allocation identities without granting cleanup.

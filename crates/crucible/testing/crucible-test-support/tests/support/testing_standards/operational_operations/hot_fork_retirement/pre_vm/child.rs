@@ -2,6 +2,11 @@
 
 use super::{Companion, source};
 
+#[path = "child_ladder.rs"]
+mod ladder;
+
+pub(super) const LADDER: Companion = ladder::CONTRACT;
+
 pub(super) const CALLER: Companion = Companion {
     path: source::PRE_VM_RECEIVER.path,
     required: &[
@@ -257,9 +262,14 @@ pub(super) const OWNER: Companion = Companion {
 }
 impl RetainedChild {
     pub(crate) fn new(child: QemuNodeChild, supervisor: Option<&HostOperationSupervisor>) -> Self {
+        #[cfg(target_os = "linux")]
+        let cleanup =
+            shutdown_continuation::ChildShutdown::for_launch(child.launch_cleanup.as_ref());
+        #[cfg(not(target_os = "linux"))]
+        let cleanup = shutdown_continuation::ChildShutdown::new();
         Self {
             child: QemuNodeProcessControl::Direct(child),
-            cleanup: shutdown_continuation::ChildShutdown::new(),
+            cleanup,
             supervisor: supervisor.cloned(),
         }
     }
@@ -308,23 +318,37 @@ pub(super) const ORIGINAL: Companion = Companion {
     path: "crates/crucible/qemu/crucible-qemu-host/src/node/shutdown_continuation.rs",
     required: &[
         (
-            r#"pub(super) const fn new() -> Self {
-    Self {
-        progress: crate::shutdown::QemuShutdownProgress::new(),
-        begin_attempted: false,
-        begin_returned: false,
-        guard: None,
-        ram: super::ram_cleanup::RamCleanup::new(),
-        begin_failure: None,
-        observations: [(None, None); 5],
-        completion_attempted: false,
-        completion_returned: false,
-        completion_effect: false,
-        completion_failure: None,
-        ladder_attempted: false,
-        history_pending: false,
+            r#"pub(super) fn new() -> Self {
+        Self::with_progress(crate::shutdown::QemuShutdownProgress::new())
     }
-}"#,
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn for_launch(cleanup: Option<&crate::launch_cleanup::LaunchCleanup>) -> Self {
+        match cleanup {
+            Some(cleanup) => {
+                Self::with_progress(crate::shutdown::QemuShutdownProgress::from_launch(cleanup))
+            }
+            None => Self::new(),
+        }
+    }
+
+    fn with_progress(progress: crate::shutdown::QemuShutdownProgress) -> Self {
+        Self {
+            progress,
+            begin_attempted: false,
+            begin_returned: false,
+            guard: None,
+            ram: super::ram_cleanup::RamCleanup::new(),
+            begin_failure: None,
+            observations: [(None, None); 5],
+            completion_attempted: false,
+            completion_returned: false,
+            completion_effect: false,
+            completion_failure: None,
+            ladder_attempted: false,
+            history_pending: false,
+        }
+    }"#,
             1,
         ),
         ("Self::Source(original) => original.original(),", 1),
@@ -482,9 +506,7 @@ fn process_health(&self) -> Result<(), QemuNodeError> {
         self.health()?;
     }
     if previously_reaped {
-        return Ok(QemuShutdownReport {
-            attempts: Vec::new(), failures: Vec::new(), reaped: true, leaked: false,
-        });
+        return Ok(QemuShutdownReport::already_reaped());
     }
     Ok(self.progress.report())
 }"#,
@@ -753,113 +775,6 @@ pub(super) const PROCESS_CONTROL: Companion = Companion {
             child.observe_reap();
             result
         }
-    }
-}"#,
-            1,
-        ),
-    ],
-};
-
-pub(super) const LADDER: Companion = Companion {
-    path: "crates/crucible/qemu/crucible-qemu-host/src/shutdown/continuation.rs",
-    required: &[
-        (
-            r#"pub(crate) const fn new() -> Self {
-    Self {
-        next: 0,
-        entered: None,
-        attempts: [None; 4],
-        failures: [const { None }; 6],
-        failure: None,
-        reaped: false,
-        reap_attempted: false,
-    }
-}
-pub(crate) fn observe_reaped(&mut self) { self.reaped = true; }
-pub(crate) fn failed(&self) -> bool { self.entered.is_some() || self.failure.is_some() }
-pub(crate) fn retain_observation_failure(&mut self, source: QemuShutdownTargetError) -> bool {
-    if self.failures[5].is_some() { return false; }
-    self.failures[5] = Some(QemuShutdownFailure { rung: QemuShutdownRung::Reap, source, });
-    if self.failure.is_none() { self.failure = Some(Failure::Target(5)); }
-    true
-}
-pub(crate) fn failure(&self) -> Option<QemuShutdownError> {
-    if let Some(rung) = self.entered { return Some(QemuShutdownError::Uncertain { rung }); }
-    match self.failure {
-        Some(Failure::Target(index)) => {
-            self.failures[index].as_ref().map(|failure| QemuShutdownError::Target {
-                rung: failure.rung, source: failure.source.clone(), report: self.report(),
-            })
-        }
-        Some(Failure::Leaked) => Some(QemuShutdownError::LeakedChild { report: self.report(), }),
-        None => None,
-    }
-}
-pub(crate) fn report(&self) -> QemuShutdownReport {
-    QemuShutdownReport {
-        attempts: self.attempts.iter().flatten().copied().collect(),
-        failures: self.failures.iter().flatten().cloned().collect(),
-        reaped: self.reaped,
-        leaked: matches!(self.failure, Some(Failure::Leaked)),
-    }
-}"#,
-            1,
-        ),
-        (
-            r#"pub(crate) fn advance_containment<T: QemuShutdownTarget>(
-    &mut self,
-    target: &mut T,
-    policy: QemuShutdownPolicy,
-) {
-    if self.entered.is_none() && !self.failed() { self.next = self.next.max(3); }
-    self.advance(target, policy);
-}
-pub(crate) fn advance<T: QemuShutdownTarget>(
-    &mut self,
-    target: &mut T,
-    policy: QemuShutdownPolicy,
-) {
-    if target.child_reaped() { self.observe_reaped(); }
-    if self.failed() || self.reaped { return; }
-    let rungs = [
-        (QemuShutdownRung::ControlQuit, policy.control_quit_wait),
-        (QemuShutdownRung::QmpQuit, policy.qmp_quit_wait),
-        (QemuShutdownRung::Sigterm, policy.sigterm_wait),
-        (QemuShutdownRung::Sigkill, policy.sigkill_wait),
-    ];
-    while let Some(&(rung, wait)) = rungs.get(self.next) {
-        if self.attempts.iter().flatten().any(|attempt| attempt.child == QemuChildWait::Exited) { break; }
-        if target.child_reaped() { self.observe_reaped(); break; }
-        let index = self.next;
-        self.next += 1;
-        self.entered = Some(rung);
-        let effect = execute_shutdown_rung(target, rung);
-        let effect_failed = effect.is_err();
-        if let Err(source) = effect { self.failures[index] = Some(QemuShutdownFailure { rung, source }); }
-        if target.child_reaped() { self.observe_reaped(); self.entered = None; break; }
-        if effect_failed { self.entered = None; continue; }
-        let (output, status) = target.wait_for_exit_observed(rung, wait);
-        self.attempts[index] = Some(QemuShutdownAttempt {
-            rung, wait, child: output.unwrap_or(QemuChildWait::StillRunning),
-        });
-        if let Err(source) = status { self.failures[index] = Some(QemuShutdownFailure { rung, source }); }
-        self.entered = None;
-        if target.child_reaped() { self.observe_reaped(); break; }
-        if output == Some(QemuChildWait::Exited) { break; }
-    }
-    if target.child_reaped() { self.observe_reaped(); }
-    if !self.reaped && !self.reap_attempted {
-        self.reap_attempted = true;
-        self.entered = Some(QemuShutdownRung::Reap);
-        match target.reap(policy.reap_wait) {
-            Ok(QemuReap::Reaped) => self.reaped = true,
-            Ok(QemuReap::StillAlive) => self.failure = Some(Failure::Leaked),
-            Err(source) => {
-                self.failures[4] = Some(QemuShutdownFailure { rung: QemuShutdownRung::Reap, source, });
-                self.failure = Some(Failure::Target(4));
-            }
-        }
-        self.entered = None;
     }
 }"#,
             1,

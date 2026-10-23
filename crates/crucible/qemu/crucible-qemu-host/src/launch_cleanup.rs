@@ -36,6 +36,10 @@ mod retirement_history;
 pub(crate) use retirement_history::ControllerReturnJournal;
 pub use retirement_history::{RamControlRetirementHistory, RamControlRetirementRecord};
 
+mod shutdown_journal;
+pub(crate) use shutdown_journal::ShutdownJournal;
+pub use shutdown_journal::{QemuShutdownAttempts, QemuShutdownFailures, QemuShutdownRefusal};
+
 #[cfg(target_os = "linux")]
 mod unreaped_child;
 #[cfg(target_os = "linux")]
@@ -143,6 +147,7 @@ struct CleanupRecord {
     // Release this identity alias before the finalizer can discharge accounting.
     registration_identity: Option<(HostRamTarget, std::sync::Weak<dyn RamControlRegistrar>)>,
     retirement_storage: Mutex<Option<ControllerReturnStorage>>,
+    shutdown_storage: Mutex<Option<ShutdownJournal>>,
     retirement_claimed: AtomicBool,
     finalizer: RetainedCleanupFinalizer,
 }
@@ -229,6 +234,11 @@ impl LaunchCleanup {
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()?;
         self.inner.retirement_storage.try_lock().ok()?.take()
+    }
+
+    /// Moves the prepaid shutdown cells before any target effect or report.
+    pub(crate) fn claim_shutdown_journal(&self) -> Option<ShutdownJournal> {
+        self.inner.shutdown_storage.try_lock().ok()?.take()
     }
 
     pub(crate) fn matches_return_registration(

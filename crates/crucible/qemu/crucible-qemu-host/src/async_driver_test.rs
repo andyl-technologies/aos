@@ -603,16 +603,13 @@ impl ScriptedTarget {
 impl QemuAsyncCrashEscalationTarget for ScriptedTarget {
     fn shutdown_after_crash(&mut self) -> Result<QemuShutdownReport, QemuAsyncDriverTargetError> {
         self.shutdowns += 1;
-        Ok(QemuShutdownReport {
-            attempts: vec![QemuShutdownAttempt {
-                rung: QemuShutdownRung::Sigkill,
-                wait: Duration::from_millis(1),
-                child: crate::QemuChildWait::Exited,
-            }],
-            failures: Vec::new(),
-            reaped: true,
-            leaked: false,
-        })
+        let journal = crate::launch_cleanup::ShutdownJournal::component();
+        journal.record_attempt(0, QemuShutdownAttempt {
+            rung: QemuShutdownRung::Sigkill,
+            wait: Duration::from_millis(1),
+            child: crate::QemuChildWait::Exited,
+        });
+        Ok(journal.report(true, false))
     }
 }
 

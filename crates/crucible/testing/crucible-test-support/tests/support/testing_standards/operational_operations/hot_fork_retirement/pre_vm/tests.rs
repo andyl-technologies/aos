@@ -6,6 +6,9 @@ use super::super::super::{mask_contract, read_companions, replace_one_obligation
 #[path = "exact_artifacts.rs"]
 mod exact_artifacts;
 
+#[path = "shutdown_reports_tests.rs"]
+mod shutdown_reports;
+
 struct Fixture {
     contract: &'static Contract,
     code: String,
@@ -226,8 +229,8 @@ fn pre_vm_owning_contracts_require_actual_source_and_registry_dispositions()
         ),
         (
             "shutdown/continuation.rs",
-            "self.attempts[index] = Some(QemuShutdownAttempt",
-            "discarded_attempt = Some(QemuShutdownAttempt",
+            "self.journal.record_attempt(index, QemuShutdownAttempt",
+            "discarded_journal.record_attempt(index, QemuShutdownAttempt",
             "returned wait disposition lost",
         ),
         (
@@ -352,8 +355,8 @@ fn pre_vm_owning_contracts_require_actual_source_and_registry_dispositions()
         ),
         (
             "shutdown/continuation.rs",
-            "failures: self.failures.iter().flatten().cloned().collect(),",
-            "failures: Vec::new(),",
+            "self.journal.report(self.reaped, matches!(self.failure, Some(Failure::Leaked)))",
+            "ShutdownJournal::empty().report(self.reaped, matches!(self.failure, Some(Failure::Leaked)))",
             "retained shutdown report drops real failures",
         ),
         (

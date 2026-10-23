@@ -53,9 +53,14 @@ pub(crate) struct RetainedChild {
 
 impl RetainedChild {
     pub(crate) fn new(child: QemuNodeChild, supervisor: Option<&HostOperationSupervisor>) -> Self {
+        #[cfg(target_os = "linux")]
+        let cleanup =
+            shutdown_continuation::ChildShutdown::for_launch(child.launch_cleanup.as_ref());
+        #[cfg(not(target_os = "linux"))]
+        let cleanup = shutdown_continuation::ChildShutdown::new();
         Self {
             child: QemuNodeProcessControl::Direct(child),
-            cleanup: shutdown_continuation::ChildShutdown::new(),
+            cleanup,
             supervisor: supervisor.cloned(),
         }
     }
