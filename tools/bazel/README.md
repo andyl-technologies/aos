@@ -2512,6 +2512,11 @@ configured reports, and 343 declared files: 332 Rust files, eight SQL files,
 and three Bazel support files. Engine loading inputs grow by the eight SQL
 files while Rust source ownership remains unchanged.
 
+`tests/evidence/hub-db-required-rust-targets.json` retains successful compilation
+of all application unit and integration targets with the frozen thirty-two Hub
+database Rust corrections. This compilation gate does not execute those targets;
+native execution is qualified separately below.
+
 `tests/evidence/hub-db-metadata-evaluation.json` retains passing metadata parity
 for 487 Rust targets across 39 analysis-only selections, with no external
 actions. Core evaluation passes for the same checkpoint.
