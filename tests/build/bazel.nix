@@ -45,6 +45,7 @@
         "crates/aos/activation/aos-activation-filesystem/Cargo.toml"
         "crates/aos/activation/aos-activation-nix-store/Cargo.toml"
         "crates/aos/activation/aos-activation-storage/Cargo.toml"
+        "crates/aos/activation/aos-activation-systemd/Cargo.toml"
         "crates/aos/boot/aos-boot-identity/Cargo.toml"
         "crates/aos/boot/aos-recovery/Cargo.toml"
         "crates/shared/aos-core/Cargo.toml"
@@ -115,6 +116,7 @@ in
     native-foundation = import ./_bazel-native-foundation.nix {inherit pkgs;};
     activation-core = import ./_bazel-activation-core.nix {inherit pkgs;};
     activation-storage = import ./_bazel-activation-storage.nix {inherit pkgs;};
+    activation-systemd = import ./_bazel-activation-systemd.nix {inherit pkgs;};
     wasm = import ./_bazel-wasm.nix {inherit pkgs;};
     recovery = import ./_bazel-recovery.nix {inherit pkgs;};
     license-boundary = import ./_bazel-license.nix {inherit pkgs workspace;};
@@ -316,6 +318,8 @@ in
         native-foundation.tests
         activation-core.tests
         activation-storage.tests
+        activation-systemd.tests
+        activation-systemd.parser-build
       ];
       inventoryArguments = pkgs.lib.concatMap (inventory: ["--inventory" "${inventory}/inventory.json"]) inventories;
     in
@@ -372,7 +376,7 @@ in
     all =
       pkgs.runCommand "aos-bazel-checks" {
         buildDeps =
-          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection source-catalog.all sysroot-metadata manifest-extractor native-libraries static-runtime.all precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all store.all guest.all engine.all quota.all session.all control.all qemu-host.all store-s3.all daemon.all crucible-cli.all formats.all contracts.all native-foundation.all activation-core.all activation-storage.all wasm.all recovery]
+          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection source-catalog.all sysroot-metadata manifest-extractor native-libraries static-runtime.all precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all store.all guest.all engine.all quota.all session.all control.all qemu-host.all store-s3.all daemon.all crucible-cli.all formats.all contracts.all native-foundation.all activation-core.all activation-storage.all activation-systemd.all wasm.all recovery]
           ++ pkgs.lib.optionals (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) [
             (import ./_bazel-cross-linux.nix {inherit pkgs;}).all
             (import ./_bazel-device-cross.nix {inherit pkgs;})

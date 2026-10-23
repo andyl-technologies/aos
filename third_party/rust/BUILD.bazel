@@ -1,6 +1,7 @@
 load("@rules_rust//crate_universe:defs.bzl", "crate")
 load("//tools/bazel/rules:crates.bzl", "aos_crate_specifications")
 load("//tools/bazel/rules:package.bzl", "aos_package")
+load(":activation-systemd/aliases.bzl", ACTIVATION_SYSTEMD_CRATES = "CRATES")
 load(":activation-storage/aliases.bzl", ACTIVATION_STORAGE_CRATES = "CRATES")
 load(":activation-core/aliases.bzl", ACTIVATION_CORE_CRATES = "CRATES")
 load(":activation-core-tests/aliases.bzl", ACTIVATION_CORE_TESTS_CRATES = "CRATES")
@@ -30,6 +31,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:activation_systemd_dependencies": ACTIVATION_SYSTEMD_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:activation_storage_dependencies": ACTIVATION_STORAGE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:activation_core_dependencies": ACTIVATION_CORE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:activation_core_tests_dependencies": ACTIVATION_CORE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -52,7 +54,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(dict(ACTIVATION_STORAGE_CRATES.items() + ACTIVATION_CORE_CRATES.items() + ACTIVATION_CORE_TESTS_CRATES.items() + CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items() + CRUCIBLE_CLI_CRATES.items() + NATIVE_FOUNDATION_CRATES.items() + NATIVE_FOUNDATION_TESTS_CRATES.items() + NATIVE_FOUNDATION_MINIMAL_CRATES.items() + FORMATS_CRATES.items()))
+    for name in sorted(dict(ACTIVATION_SYSTEMD_CRATES.items() + ACTIVATION_STORAGE_CRATES.items() + ACTIVATION_CORE_CRATES.items() + ACTIVATION_CORE_TESTS_CRATES.items() + CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items() + CRUCIBLE_CLI_CRATES.items() + NATIVE_FOUNDATION_CRATES.items() + NATIVE_FOUNDATION_TESTS_CRATES.items() + NATIVE_FOUNDATION_MINIMAL_CRATES.items() + FORMATS_CRATES.items()))
 ]
 
 CORE_PACKAGES = {
@@ -278,6 +280,23 @@ NATIVE_FOUNDATION_PACKAGES = {
     "zeroize": crate.spec(version = "=1.9.0"),
     "zstd": crate.spec(version = "=0.13.3", features = ["zstdmt"]),
 }
+
+# Systemd activation adds pure-Rust Nix/archive and D-Bus clients. Their
+# dependency-only selections do not enable transport or client test features.
+ACTIVATION_SYSTEMD_PACKAGES = dict(ACTIVATION_CORE_PACKAGES.items() + {
+    name: NATIVE_FOUNDATION_PACKAGES[name]
+    for name in [
+        "base64",
+        "ed25519-dalek",
+        "futures-util",
+        "hex",
+        "sha2",
+        "tempfile",
+        "tokio",
+        "tracing",
+        "zbus",
+    ]
+}.items())
 
 NATIVE_FOUNDATION_TESTS_PACKAGES = {
     "anyhow": crate.spec(version = "=1.0.102"),
@@ -605,6 +624,27 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    "activation-systemd": {
+        "indexmap": NATIVE_FOUNDATION_FEATURE_VARIANTS["indexmap"],
+        "serde": json.encode({
+            "version": "1.0.228",
+            "resolved_features": ["alloc", "default", "derive", "rc", "serde_derive", "std"],
+            "features": ["alloc", "default", "derive", "rc", "serde_derive", "std"],
+            "exec_features": ["default", "derive", "serde_derive", "std"],
+        }),
+        "serde_core": json.encode({
+            "version": "1.0.228",
+            "resolved_features": ["alloc", "rc", "result", "std"],
+            "features": ["alloc", "rc", "result", "std"],
+            "exec_features": ["result", "std"],
+        }),
+        "syn": json.encode({
+            "version": "2.0.118",
+            "resolved_features": ["clone-impls", "default", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "visit", "visit-mut"],
+            "features": ["clone-impls", "default", "derive", "extra-traits", "full", "parsing", "printing", "proc-macro"],
+            "exec_features": ["clone-impls", "default", "derive", "extra-traits", "fold", "full", "parsing", "printing", "proc-macro", "visit-mut"],
+        }),
+    },
     "activation-storage": {
         # The selected production and test graphs use Syn's derive parser.
         "syn": json.encode({
@@ -740,6 +780,7 @@ APPROVED_LICENSES = [
         host_only_licenses = ["Apache-2.0"],
     )
     for family, packages, annotations, license_domain in [
+        ("activation-systemd", ACTIVATION_SYSTEMD_PACKAGES, {}, "apache-host"),
         ("activation-storage", ACTIVATION_STORAGE_PACKAGES, {}, "apache-host"),
         ("activation-core", ACTIVATION_CORE_PACKAGES, {}, "apache-host"),
         ("activation-core-tests", ACTIVATION_CORE_TESTS_PACKAGES, {}, "apache-host"),
@@ -771,5 +812,5 @@ APPROVED_LICENSES = [
         license_domain = "apache-host",
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
-    for family in ["activation-storage", "activation-core", "activation-core-tests", "core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "native-foundation", "native-foundation-tests", "native-foundation-minimal", "formats"]
+    for family in ["activation-systemd", "activation-storage", "activation-core", "activation-core-tests", "core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "native-foundation", "native-foundation-tests", "native-foundation-minimal", "formats"]
 ]

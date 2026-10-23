@@ -1761,3 +1761,41 @@ Foreign and Wasm execution, compiler invocation equivalence, numeric performance
 acceptance, production migration, and Cargo removal remain separate qualification.
 Required workspace Rust target compilation runs independently against its frozen
 source checkpoint.
+
+## Systemd activation commands
+
+`aos-dev bazel --family activation-systemd` selects the native resource provider
+and credential encryption commands. The package has two command roots and no
+library. Both commands retain default and `systemd-parser-tests` test artifacts,
+with explicit developer, editor, documentation, format, and license selections.
+Production and both test configurations match Cargo's 103 external crate
+identities and eight first-party packages through one pinned dependency profile.
+
+`tests/evidence/native-linux-activation-systemd.json` records 56 default cases
+and 58 parser-enabled cases, with no ignored cases. Parser execution uses
+AOS-built Systemd, its vendor units, and AOS Bash inside the Nix sandbox. The
+Bazel-built libtest artifacts run through the shared case-isolating runner;
+they are not Bazel test actions. Their test-only export preserves compiler
+runtime references and synthetic store-path fixtures, and the adapter checks
+installed bytes against the Bazel export digests before execution.
+
+The configured source inventory retains 12 requested roots, 175 reports, and
+79 source files. Three unselected Systemd client test sources remain owned by
+its source target so Bazel can parse its package; dependency test execution is
+not selected. Clippy, formatting, documentation, license closures, production
+features, and editor comparison pass. Both editor models report zero selected
+or unattributed diagnostics. Cargo retains incomplete inference and 944
+diagnostics outside the selection; Bazel reports complete inference. Their
+aggregate statistics and differing root multiplicities remain explicit.
+
+`tests/evidence/activation-systemd-configured-graph.json` records validation of
+all 21 family inventories, 20 dependency specifications, 164 policy tests,
+and CLI checks with 16 exported launchers. The previous 19 locks, source pins,
+features, and 3,183 generated crate build files remain unchanged. Metadata
+parity covers 383 Rust targets across 23 analysis-only selections with no
+external actions, and core Nix evaluation passes; its frozen outputs are in
+`tests/evidence/activation-systemd-metadata-evaluation.json`.
+
+Dedicated service and assembled-system gates, foreign and Wasm execution,
+compiler invocation equivalence, numeric performance acceptance, production
+migration, and Cargo removal remain required separately.

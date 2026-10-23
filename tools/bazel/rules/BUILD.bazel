@@ -202,3 +202,9 @@ config_setting(
     flag_values = {":dependency_profile": "activation-storage"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "activation_systemd_dependencies",
+    flag_values = {":dependency_profile": "activation-systemd"},
+    visibility = ["//visibility:public"],
+)

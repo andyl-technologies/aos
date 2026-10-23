@@ -60,6 +60,7 @@ case " $* " in
   *' -A pkgs.aosBazelNativeFoundationLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelActivationCoreLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelActivationStorageLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.aosBazelActivationSystemdLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelFormatsLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelCrucibleCliLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelStoreS3Launcher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
@@ -177,7 +178,7 @@ bash "$root/tools/dev/aos-dev" bazel update-deps daemon
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/daemon/Cargo.lock><--output><$root/third_party/rust/daemon>"
 bash "$root/tools/dev/aos-dev" bazel update-deps crucible-cli
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/crucible-cli/Cargo.lock><--output><$root/third_party/rust/crucible-cli>"
-for family in formats native-foundation native-foundation-tests native-foundation-minimal activation-core activation-core-tests activation-storage; do
+for family in formats native-foundation native-foundation-tests native-foundation-minimal activation-core activation-core-tests activation-storage activation-systemd; do
   bash "$root/tools/dev/aos-dev" bazel update-deps "$family"
   test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/$family/Cargo.lock><--output><$root/third_party/rust/$family>"
 done
@@ -230,6 +231,11 @@ test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:crucible-c
 grep -Fq -- '-A pkgs.aosBazelCrucibleCliLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family crucible-cli rust-project //example:crucible-cli
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/control/crucible-cli><--><build><//example:crucible-cli>"
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family activation-systemd build //example:activation-systemd
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:activation-systemd>"
+grep -Fq -- '-A pkgs.aosBazelActivationSystemdLauncher ' "$AOS_DEV_TEST_LOG"
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family activation-systemd rust-project //example:activation-systemd
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/aos/activation/aos-activation-systemd><--><build><//example:activation-systemd>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family activation-storage build //example:activation-storage
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:activation-storage>"
 grep -Fq -- '-A pkgs.aosBazelActivationStorageLauncher ' "$AOS_DEV_TEST_LOG"
