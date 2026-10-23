@@ -1,0 +1,76 @@
+{
+  "command": "nix-build tools/bazel/tests/session.nix -A cross-linux --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "compilation": "/nix/store/vikanc957z6zspjq7vpdng1277ydaxs1-aos-bazel-session-aarch64-compilation",
+  "compilation_report_sha256": "63a626e252256e76fdf328c6ad430ecdc6d4a6994fa15733ce249dd6510a81be",
+  "compiler_arguments_sha256": "bbb21d727f9f5b0d4bbfc6d452d5abc0edf815e2ee44ee11d9a35714e1901a8c",
+  "configuration": "/nix/store/984c3lpgm1vd7hd4pzz768xmrncf6yv9-aos-bazel-configuration.json",
+  "configuration_sha256": "c36049a591f5edf73ea96c6bca5f90d21966cec8e2de4336322ad33504e942ca",
+  "evidence": "/nix/store/wxxi44d6vx812k3m2v99zn075y5cpf7n-aos-bazel-session-aarch64-compilation-evidence",
+  "execution_sha256": "1225823e7e6cc977028617d91b88febcb0bac7be42c330447a2a95fdc5b576eb",
+  "file_sha256": {
+    "tests/build/_bazel-family-vm.nix": "85df209ea3796f79b7e6f165cdec2a42283db8205c2994b759e5aa681ab7e338",
+    "tests/build/_bazel-session-cross.nix": "90a45f7cf10a33879e6b6646196208af3543c1fed2d2450303fdbfecdfdd182d",
+    "tools/bazel/metadata/session-inventory.json": "2c9cb57c675b6de6da3621a6317de5d64636b9593c19c5b5983b2bc61669dfa4",
+    "tools/bazel/tests/family_libtest.py": "2a86b91bc4d8ad2aa7cd14550f45afa6e0828bc92a41cd67baef979417cc112c",
+    "tools/bazel/tests/run_family_vm.py": "0842da3c35b1541f06603e904c6cce3b17adcb144733474f3c7c8ccaec0f9040",
+    "tools/bazel/tests/session.nix": "fc014dd8d52c2f3882adee46d3aa0d41941cb624e96a65812ba396c060f8794c",
+    "tools/bazel/tests/verify_family_cross.py": "f05cec4dc26cf7d84e548c2c594432f0350163db145b57ccad13c3e319a4d05a"
+  },
+  "first_party_cargo_manifests_in_bazel_workspace": false,
+  "libraries": "/nix/store/82b8kn3mhmcp5aa9b0d216v4f13jp1h8-aos-bazel-native-libraries-1",
+  "limits": [
+    "Covers the default session/control API test family; the three additional session feature configurations are qualified natively only.",
+    "Production consumers remain on Cargo and no performance budget is accepted."
+  ],
+  "native_library_metadata_sha256": {
+    "sqlite/closure.json": "b320fc872d2afd2655423046248ed9d337034703886e1c293b2d898d44677024",
+    "sqlite/pkg-config-tools.json": "5b0fcda1caad0d2f99a4a4fdbc332042dfa2dc138f6d4b40b21d4547e3726e38",
+    "zstd/closure.json": "9d31f17eadf9d0d723b708b9a1de36bf17a20eb8c0cd3b3b0cab67d2850a1706",
+    "zstd/pkg-config-tools.json": "5b0fcda1caad0d2f99a4a4fdbc332042dfa2dc138f6d4b40b21d4547e3726e38"
+  },
+  "native_procedural_macros": [
+    "@@+aos_tools_repository+aos_session_crates__serde_derive-1.0.228//:serde_derive",
+    "@@+aos_tools_repository+aos_session_crates__thiserror-impl-2.0.18//:thiserror_impl",
+    "@@+aos_tools_repository+aos_session_crates__tokio-macros-2.7.0//:tokio_macros",
+    "@@+aos_tools_repository+aos_session_crates__tracing-attributes-0.1.31//:tracing_attributes",
+    "@@+aos_tools_repository+aos_session_crates__zerocopy-derive-0.8.49//:zerocopy_derive"
+  ],
+  "native_qualification": "native-linux-session.json",
+  "output": "/nix/store/8n9jhri3gpjvg3yad0plb2h5qvfalb1z-aos-bazel-session-aarch64-parity",
+  "platform_differences": {},
+  "runtime": {
+    "compilation_sha256": "63a626e252256e76fdf328c6ad430ecdc6d4a6994fa15733ce249dd6510a81be",
+    "executed_cases": 132,
+    "executed_targets": 9,
+    "ignored_cases": 0,
+    "runtime": "AOS AArch64 Linux kernel under source-built QEMU system emulation",
+    "schema_version": 1,
+    "target": "aarch64-unknown-linux-gnu"
+  },
+  "runtime_report_sha256": "9e92b2d2553922fb2e3dafbc4703180add6cee41c82e382e8cc404c88e4ace08",
+  "schema_version": 1,
+  "serial_sha256": "62ef464ed753eecb0c6f159ad5b87b13bb935b7239aa4cb5d58ef09481b3ff83",
+  "source": "/nix/store/7i707r0knsndszijlhdcm5i55r2n1n1l-aos-bazel-workspace",
+  "status": "AArch64 Linux default-feature session/control API execution passed",
+  "tested_tree_parent_commit": "b67ced2a7d75f2a0881ff894c263f5f23ad4c558",
+  "toolchains": "/nix/store/as939vk2k6j0gv1msqwd2jb586587mhi-aos-bazel-cross-toolchains-aarch64-linux-1",
+  "verified_first_party_compile_labels": [
+    "//crates/crucible/control/crucible-session:lib_for_tests",
+    "//crates/crucible/control/crucible-control-api:lib_for_tests",
+    "//crates/crucible/control/crucible-control-api:gate_abi_conformance_binary",
+    "//crates/crucible/control/crucible-control-api:gate_open_set_payload_binary",
+    "//crates/crucible/control/crucible-control-api:gate_session_mapping_binary",
+    "//crates/crucible/control/crucible-control-api:unit_binary",
+    "//crates/crucible/control/crucible-session:event_log_stream_binary",
+    "//crates/crucible/control/crucible-session:gate_control_responsive_binary",
+    "//crates/crucible/control/crucible-session:gate_exploration_fork_binary",
+    "//crates/crucible/control/crucible-session:gate_exploration_lifecycle_binary",
+    "//crates/crucible/control/crucible-session:unit_binary"
+  ],
+  "verified_first_party_compiler_flags": [
+    "-Copt-level=s",
+    "-Cdebuginfo=0",
+    "-Cdebug-assertions=yes",
+    "-Coverflow-checks=yes"
+  ]
+}

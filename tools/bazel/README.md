@@ -1210,10 +1210,22 @@ default, test-support, test-double, and combined variants separately.
 
 `tests/evidence/session-cargo-baseline.json` records the 132-case Cargo baseline
 and the configured graph matching all 111 external crate identities and feature
-sets. Native Bazel execution qualification is in progress.
+sets. `tests/evidence/native-linux-session.json` records all four native
+configurations passing 132 cases each, zero ignored cases, both doctest targets,
+and developer-tool checks. `tests/evidence/aarch64-linux-session.json` records
+all 132 default-family cases passing under an AOS AArch64 Linux kernel in QEMU,
+with native procedural macros and target SQLite/zstd inputs.
+
+```sh
+nix-build tools/bazel/tests/session.nix -A cross-linux --no-out-link --max-jobs 4 --cores 4
+```
 
 The editor check selects those test libraries explicitly and compares
 diagnostics for the two selected packages. It retains aggregate inference
 statistics from both analyzers without claiming that the wider dependency
-models are identical. Production consumer migration, platform qualification,
-and performance acceptance remain separate requirements.
+models are identical. Both analyzers report the same single unresolved type
+at `src/lifecycle/session_contract.rs:876` in the control API. The raw report
+retains all 1,510 Cargo diagnostics outside these selected packages and no
+unattributed diagnostics. The foreign run covers the default family; additional
+feature configurations remain qualified natively only. Production consumer
+migration and performance acceptance remain separate requirements.

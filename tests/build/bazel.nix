@@ -307,6 +307,7 @@ in
             (import ./_bazel-cross-linux.nix {inherit pkgs;}).all
             (import ./_bazel-device-cross.nix {inherit pkgs;})
             (import ./_bazel-quota-cross.nix {inherit pkgs;})
+            (import ./_bazel-session-cross.nix {inherit pkgs;})
           ];
       } ''
         mkdir -p "$out"
@@ -317,6 +318,7 @@ in
     cross-linux = import ./_bazel-cross-linux.nix {inherit pkgs;};
     cross-device = import ./_bazel-device-cross.nix {inherit pkgs;};
     cross-quota = import ./_bazel-quota-cross.nix {inherit pkgs;};
+    cross-session = import ./_bazel-session-cross.nix {inherit pkgs;};
   }
   // pkgs.lib.optionalAttrs (sharedBazelCacheDir != null) {
     cache = import ./_bazel-cache.nix {inherit pkgs workspace;};
