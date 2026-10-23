@@ -41,6 +41,9 @@ mod operational_publisher_refusals;
 #[path = "operational_lifecycle_classification.rs"]
 mod operational_lifecycle_classification;
 
+#[path = "operational_component_launcher.rs"]
+mod operational_component_launcher;
+
 struct Companion {
     path: &'static str,
     required: &'static [&'static str],
@@ -342,6 +345,7 @@ pub(super) fn mask(package: &str, target: &str, code: &str) -> String {
         .chain(operational_quantum_observers::CONTRACTS)
         .chain(operational_publisher_refusals::CONTRACTS)
         .chain(operational_lifecycle_classification::CONTRACTS)
+        .chain(operational_component_launcher::CONTRACTS)
         .chain(operational_packed::CONTRACTS)
         .chain(operational_measurement::CONTRACTS)
         .find(|contract| contract.package == package && contract.target == target)

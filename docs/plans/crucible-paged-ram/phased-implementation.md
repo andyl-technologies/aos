@@ -1272,6 +1272,23 @@ paths. Strict host Clippy remains blocked by the unchanged 674 library and 723
 test-target errors, with 14 and five warnings respectively. Mandatory packaged
 application-target compilation for this increment remains pending.
 
+The resource-free component launcher's cleanup adapter now has an exact
+classification covering its test-only guards, absent native post-body, delegated
+finish and production launch/replay refusals. Removing a guard, introducing a
+native effect or adding another retry defeats the classification. Both mutation
+controls pass while preserving the actual source's token boundaries. This
+component adapter supplies no World, Service, Source or physical-return proof.
+Source shape passes. Testing standards pass 88 controls and retain one broad
+failure over eleven other daemon paths. Mandatory application-target compilation
+for this increment remains pending.
+
+Three earlier mandatory application-target builds now pass: shutdown error
+storage at `r08n6856z7ngm39mvncvzwx1fdp5gdvz`, compact Source receipts at
+`a1cwykmshg5190i6zkdi7s98s6z5vvzk`, and retry cadence at
+`97x3idhz1bh0m82k27kmicv3phfq8f6a`. Each frozen source had all committed
+Rust/TOML inputs and six required fixtures independently matched before later
+source edits.
+
 Shutdown now retains raw native OS errors in the target error's inline typed
 cause, including the original `std::io::Error` exposed through the standard
 error chain. Clones preserve the complete raw code without allocating. QMP
@@ -1911,6 +1928,22 @@ then observes empty kernel children and ECHILD. All eight independent final
 evidence cuts succeed. All 312 aggregate and 597 worker samples stay below six
 GiB; unsampled peaks remain unproved. The missing third object, complete fixture
 symbol isolation, genuine legacy link and executed legacy cases remain unresolved.
+
+A third finite probe retains independent raw stat-before, executable, argument
+and stat-after cuts. Independently verified failure
+`1253848ef0fd74b55724b98c4a50c583655cc25688c4cfdf51ed83d0f57e2fa4`
+contains 113 signed payloads and 82 matching original disk/copy/archive entries.
+It accepts the same two objects and refuses the third command after an
+executable read returns ENOENT while arguments are empty. Both actual stat cuts
+retain the same PID/start/parent, state R and zero memory; neither proves a
+zombie, completed exit or wait. The third object remains absent.
+
+The original worker returns one after 50.530266 seconds. Both independent cleanup
+cuts observe empty children and ECHILD, with adopted raw waits nine and zero
+retained separately from command status. All eight final evidence cuts succeed;
+318 aggregate and 654 worker samples remain below six GiB. Complete build and
+reconstruction inventories remain unchanged. No later observation qualifies the
+refused command or supplies the missing fixture link/runtime evidence.
 
 #### Initial loader storage component
 
