@@ -88,15 +88,27 @@ impl RetainedSourceInstall {
 
     pub(super) fn report(&self) -> QemuAttemptProductionVmLifecycleError {
         let diagnostic = match self {
-            Self::Api { owner, .. } => owner.to_string(),
-            Self::Handoff(_) => {
-                String::from("same Source cleanup receipt has not reached Complete")
-            }
+            Self::Api { .. } => "same Source factory retains its typed construction failure",
+            Self::Handoff(_) => "same Source cleanup receipt has not reached Complete",
             Self::MissingRetirementCarrier { .. } => {
-                String::from("same returned lifecycle retains missing construction custody")
+                "same returned lifecycle retains missing construction custody"
             }
         };
-        QemuAttemptProductionVmLifecycleError::SourceInstallRetained { diagnostic }
+        QemuAttemptProductionVmLifecycleError::SourceInstallRetained {
+            diagnostic,
+            source: None,
+        }
+    }
+}
+
+/// Moves both actual refusals without rendering or replacing either cause.
+pub(super) fn retained_cleanup_report(
+    attempt: Result<ProductionVmCleanupStage, LifecycleApiError>,
+    stage: Result<ProductionVmCleanupStage, LifecycleApiError>,
+) -> QemuAttemptProductionVmLifecycleError {
+    QemuAttemptProductionVmLifecycleError::SourceInstallRetained {
+        diagnostic: "same Source cleanup body or containing charge remains retained",
+        source: SourceInstallationCleanupRefusal::new(attempt.err(), stage.err()),
     }
 }
 
@@ -111,7 +123,8 @@ where
         if self.lifecycle_outstanding {
             return Err(
                 QemuAttemptProductionVmLifecycleError::SourceInstallRetained {
-                    diagnostic: String::from("same factory already lent its one live lifecycle"),
+                    diagnostic: "same factory already lent its one live lifecycle",
+                    source: None,
                 },
             );
         }
@@ -186,9 +199,8 @@ where
         if self.lifecycle_outstanding {
             return Err(
                 QemuAttemptProductionVmLifecycleError::SourceInstallRetained {
-                    diagnostic: String::from(
-                        "same factory still retains an outstanding lifecycle relation",
-                    ),
+                    diagnostic: "same factory still retains an outstanding lifecycle relation",
+                    source: None,
                 },
             );
         }
@@ -211,13 +223,7 @@ where
         let attempt = receipt.retry();
         let stage = receipt.stage();
         if !matches!(stage, Ok(ProductionVmCleanupStage::Complete)) {
-            let diagnostic = match (attempt, stage) {
-                (_, Err(first)) | (Err(first), _) => first.to_string(),
-                _ => String::from("same Source cleanup body or containing charge remains retained"),
-            };
-            return Err(
-                QemuAttemptProductionVmLifecycleError::SourceInstallRetained { diagnostic },
-            );
+            return Err(retained_cleanup_report(attempt, stage));
         }
         self.take_completed_install_history()
     }

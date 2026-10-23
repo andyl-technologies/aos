@@ -99,7 +99,8 @@ if !matches!(stage, Ok(ProductionVmCleanupStage::Complete)) {"#,
         if self.lifecycle_outstanding {
             return Err(
                 QemuAttemptProductionVmLifecycleError::SourceInstallRetained {
-                    diagnostic: String::from(                                                  ),
+                    diagnostic: "same factory already lent its one live lifecycle",
+                    source: None,
                 },
             );
         }

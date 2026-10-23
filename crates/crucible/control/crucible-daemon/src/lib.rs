@@ -625,7 +625,7 @@ pub use qemu_campaign_lifecycle::{
     QemuAttemptProductionVmLifecycleError, QemuFreshAttemptDriver, QemuFreshAttemptLifecycle,
     QemuFreshDriveOutcome, QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
     QemuFreshGenesisCheckpointError, QemuFreshStartMaterialization, QemuFreshStartReplayError,
-    SourceCleanupHistory, SourceMainPreparationRefusal,
+    SourceCleanupHistory, SourceInstallationCleanupRefusal, SourceMainPreparationRefusal,
 };
 pub(crate) use qemu_campaign_lifecycle::{
     QemuAttemptProductionVmLifecycleFactory, QemuFreshAttemptLifecycleFactory,

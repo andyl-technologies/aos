@@ -120,6 +120,16 @@ fn constructor_continuations_reject_replay_discarded_history_and_early_return()
 -> Result<(), Box<dyn std::error::Error>> {
     let cases: &[(usize, &str, &str)] = &[
         (
+            8,
+            "SourceInstallationCleanupRefusal::new(attempt.err(), stage.err())",
+            "SourceInstallationCleanupRefusal::new(None, stage.err())",
+        ),
+        (
+            8,
+            "SourceInstallationCleanupRefusal::new(attempt.err(), stage.err())",
+            "SourceInstallationCleanupRefusal::new(attempt.err(), None)",
+        ),
+        (
             0,
             r#"self.worker_panic.is_some() || self.launch.is_some() || self.detached.is_some()"#,
             r#"false"#,

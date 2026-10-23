@@ -83,8 +83,8 @@ pub(crate) use source_construction::{
 };
 
 pub use source_construction::{
-    ImportedSourcePreparationFailure, SourceGenerationStorageRefusal, SourceMainPreparationRefusal,
-    SourcePostInstallationRefusal,
+    ImportedSourcePreparationFailure, SourceGenerationStorageRefusal,
+    SourceInstallationCleanupRefusal, SourceMainPreparationRefusal, SourcePostInstallationRefusal,
 };
 
 mod resume_admission;
@@ -449,10 +449,16 @@ pub enum QemuAttemptProductionVmLifecycleError {
     #[error(transparent)]
     SourceCleanupHistory(#[from] SourceCleanupHistory),
     /// The actual Source factory retains installation custody for later cleanup.
+    ///
+    /// The original constructor cause stays in that same factory until its
+    /// terminal [`SourceCleanupHistory`] handoff; status projection does not copy it.
     #[error("Source installation remains retained: {diagnostic}")]
     SourceInstallRetained {
-        /// Diagnostic rendered only after the exact owning body was parked.
-        diagnostic: String,
+        /// Fixed status while the exact factory retains its owning body.
+        diagnostic: &'static str,
+        /// Actual cleanup invocation and independent stage-observation refusals.
+        #[source]
+        source: Option<SourceInstallationCleanupRefusal>,
     },
     /// Original artifact metadata authority refused a model or configuration copy.
     #[error("copy admitted production lifecycle metadata: {0}")]

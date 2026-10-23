@@ -6,6 +6,10 @@ mod capture;
 #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]
 mod native_observation;
 mod retained;
+mod retained_status;
+
+pub use retained_status::SourceInstallationCleanupRefusal;
+
 pub(super) use capture::authenticate_resume_contents;
 pub(crate) use capture::{capture_exact_prepared_source, capture_fresh_prepared_source};
 #[cfg(all(target_os = "linux", any(test, feature = "private-measurement-domain")))]

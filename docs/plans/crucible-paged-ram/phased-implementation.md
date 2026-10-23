@@ -1289,6 +1289,32 @@ storage at `r08n6856z7ngm39mvncvzwx1fdp5gdvz`, compact Source receipts at
 Rust/TOML inputs and six required fixtures independently matched before later
 source edits.
 
+Source installation cleanup reports now borrow fixed status text and move both
+actual cleanup and independent stage-observation refusals into inline typed
+storage. Repeated factory reports retain the original constructor cause in the
+same owning factory until terminal history handoff. They no longer render or
+copy that cause after effects. The existing independently observed Complete gate
+and physical custody rules remain unchanged.
+
+All three new component controls pass: repeated reporting allocates nothing,
+the original constructor retains its exact string storage, and both returned
+refusals retain their actual typed causes and string identities. Restoring the
+old diagnostic rendering defeats the allocation control; exact restoration
+passes it. The controls issue no native Main, Source or physical-return grant.
+Source shape passes, and all 88 focused/source-policy controls pass apart from
+the existing broad operational-wait finding across eleven daemon paths. The
+unrestricted full daemon run has 1,657 passes, 114 failures and 43 ignored tests;
+its failures include quota-bound SQLite setup and out-of-memory refusals. A
+serial rerun remains pending after passing the unchanged 512-MiB packed-volume
+control.
+Mandatory application-target compilation for this increment is also pending.
+
+Two more mandatory application-target builds pass: four retained refusal paths
+at `zr2039jhxnlx7722s45pgf0d9vl912cs` and publisher refusals at
+`jz3vyywv1sk1mgwm4yzskg7z1hldyrnn`. All committed Rust/TOML inputs and six
+required fixtures independently matched each build's complete immutable source
+before subsequent edits.
+
 Shutdown now retains raw native OS errors in the target error's inline typed
 cause, including the original `std::io::Error` exposed through the standard
 error chain. Clones preserve the complete raw code without allocating. QMP
@@ -1944,6 +1970,32 @@ retained separately from command status. All eight final evidence cuts succeed;
 318 aggregate and 654 worker samples remain below six GiB. Complete build and
 reconstruction inventories remain unchanged. No later observation qualifies the
 refused command or supplies the missing fixture link/runtime evidence.
+
+A fourth executed compile probe preserves the same three utility variants and
+unchanged fixture. It binds retained process descriptors with raw descriptor
+identity cuts before and after fresh process capture. Later unavailable process
+observations remain unresolved evidence until actual descriptor readiness; they
+supply neither a live role nor a wait status. Independently verified result
+`d347de9ff105123679eb2ddad9eaf4adc0e1457495c6186c30061655eb1c45a0`
+contains 188 signed payloads and 90 matching original disk/copy/archive entries.
+All three actual C commands return zero; the original worker returns zero in
+53.019206 seconds. The objects contain 24, 56 and 3,342 symbols, with 770, 7,740
+and 159,400 relocations respectively. All thirteen exported lookups are defined.
+
+All 1,567 actual dependency posts independently match their authenticated input
+owners. Signed erratum
+`ba3d0f2d268f165c714e265ae121ff9281c573419392b71202df197c99949e18`
+corrects only the packaged summary's per-variant counts to 309, 510 and 748;
+the original complete records and result remain unchanged. All ten observation
+descriptors have both actual binding cuts, actual exit readiness and recorded
+closure. Three unresolved observations remain preserved without fabricated roles
+or waits. Final owned-child cleanup observes empty children and ECHILD; no signal
+or adoption branch is exercised. All eight independent final evidence cuts pass.
+The 328 aggregate and 670 worker samples stay below six GiB. Both complete
+6,583-path build and 86,111-path reconstruction inventories remain unchanged.
+These results establish the three objects and their complete symbol/relocation
+inputs. Provider isolation, the genuine legacy link and executed legacy cases
+remain unresolved.
 
 #### Initial loader storage component
 
