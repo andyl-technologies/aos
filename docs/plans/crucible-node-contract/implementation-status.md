@@ -113,6 +113,27 @@ also pass. This qualifies the preboot initial Source census, not post-Hello
 Source/Controller funding, opaque five-phase Recipe/Initial production, native
 Ready, Capture, performance or full RFC-0025 completion.
 
+## Original Bootstrap predecessor and admission grouping
+
+Commit `b13804f4f6` groups the four actual borrowed Bootstrap predecessors and
+the three distinct proof, preparation and publication callbacks. Each operation
+keeps its original spent flags, received SDK loan, validation order and terminal
+guards. The defining counters separately price the new borrowed view headers;
+existing conservative terms remain charged. These views provide no funding,
+currentness, opaque Recipe, Initial result or native phase permission.
+
+Complete standard and raw-JSON Transport runs each pass 2,083 tests, with zero
+failures, no filtering and 16 existing ignores. Changed-file formatting,
+all-feature/all-target Transport/Engine/Daemon checking and all six architecture
+gates pass. The required application gate compiles 180 test executables across
+58 packages, including 71 integration targets. All 445 frozen Rust/Cargo inputs
+match the committed revision and its captured application source.
+
+Production-library Clippy falls from 66 to 61 errors under the unchanged
+workspace deny policy, with 1,733 warnings. Strict acceptance, complete
+Source/Controller funding, opaque five-phase Recipe/Initial production and full
+RFC-0025 implementation remain unfinished.
+
 ## Effective JSON key-visitor qualification
 
 Commit `c1c7dd3ae0` visits actual BTreeMap keys directly in the effective text
