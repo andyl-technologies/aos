@@ -1518,7 +1518,9 @@ dependency specifications, and passing policy and CLI checks. All 12 existing
 dependency locks and their source and feature pins remain unchanged.
 `tests/evidence/formats-metadata-evaluation.json` records passing metadata
 parity for 297 compiled first-party targets and core Nix evaluation checks
-at the frozen format checkpoint. Workspace Rust compilation runs separately.
+at the frozen format checkpoint. `tests/evidence/formats-required-rust-targets.json`
+records passing workspace application unit and integration target compilation,
+with hashes matching all 23 changed Rust inputs at that checkpoint.
 Wasm qualification, performance acceptance, and production migration remain pending.
 
 ## Release format baseline
