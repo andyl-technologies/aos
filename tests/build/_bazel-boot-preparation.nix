@@ -76,6 +76,11 @@
       extraEditorTargets = commandLabels ++ map (target: target + "_binary") testLabels;
       editorComparisonScope = "selected-packages";
       editorRustcFlags = rustcFlags;
+      editorCargoFlags = pkgs.lib.optional minimal "--no-default-features";
+      excludedEditorBins = pkgs.lib.optionals minimal bootCommands;
+      # Cargo discovers optional path dependencies as members even when their
+      # features are disabled. Keep all dependency packages outside the family.
+      editorDependencyPackages = commonDependencies // bootToolDependencies;
       editorDiagnosticContext = true;
       cargoFlags = pkgs.lib.optional minimal "--no-default-features";
     };

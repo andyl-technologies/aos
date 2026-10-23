@@ -1,13 +1,13 @@
 {
   "boot_preparation_inventory_generation_outputs": [
-    "/nix/store/wl7dfc165jdkggkxk05nncrn6k70dqbs-aos-bazel-boot-preparation-inventory-1",
-    "/nix/store/k8mccllbn584fcyh8yzpj236dsygfa9w-aos-bazel-boot-preparation-production-inventory-1",
-    "/nix/store/b34hzcvf2kdn0qa1q1886ri7ghy1srpb-aos-bazel-boot-preparation-minimal-inventory-1",
-    "/nix/store/kqvw46ryf5232y1y9diaxmzqqswpq9aa-aos-bazel-boot-preparation-minimal-production-inventory-1",
-    "/nix/store/k0mpjljzb220vr0l2gz8hfh8lq6nh9pz-aos-bazel-boot-preparation-standalone-inventory-1"
+    "/nix/store/xp6hvis05ii7z9rld39wps5x5ixmlajx-aos-bazel-boot-preparation-inventory-1",
+    "/nix/store/x5jhdgh450w6wabf1fv3b11cmdj9sdvd-aos-bazel-boot-preparation-production-inventory-1",
+    "/nix/store/g9fw8pxjphdvr8d82wxzp4pyymazrv23-aos-bazel-boot-preparation-minimal-inventory-1",
+    "/nix/store/cz2r6sz3lc907alpjcd39kbz95wh0yck-aos-bazel-boot-preparation-minimal-production-inventory-1",
+    "/nix/store/9knvifz5ckq883h145a2739waxdmjj07-aos-bazel-boot-preparation-standalone-inventory-1"
   ],
   "comparison_base_commit": "5dccc400af",
-  "current_policy_log_sha256": "7a335cac09d263ae8ae49e24d993a1bf5ddeb13ace91b4e408520b6ead70041e",
+  "current_policy_log_sha256": "b243d7a489656161b274a5cdc4fa9d853b4d7434ea38b2e9e3b6939951a47855",
   "dependency_profiles": {
     "boot-preparation": {
       "crate_sources": 337,
@@ -759,241 +759,241 @@
   ],
   "developer_launchers": 27,
   "existing_family_inventory_refresh_outputs": {
-    "activation-core": "/nix/store/wi0kld0msz3a4an7d39xsb3dza8ss21l-aos-bazel-activation-core-inventory-1",
-    "activation-core-production": "/nix/store/3cc64s31wysd31myag0kjbibgy16wm1l-aos-bazel-activation-core-production-inventory-1",
-    "activation-crucible": "/nix/store/87jck5gsxrkqlk2l8860nxwmriiid2dl-aos-bazel-activation-crucible-inventory-1",
-    "activation-crucible-production": "/nix/store/n4js6pqjrbsq7j5v9wl65pk8vq3g914b-aos-bazel-activation-crucible-production-inventory-1",
-    "activation-storage": "/nix/store/kr79ns4xvh213aqmk4xdfbx53b92dkik-aos-bazel-activation-storage-inventory-1",
-    "activation-storage-production": "/nix/store/sc94hrmspfd93hvfxiz3swrjg43bv7mp-aos-bazel-activation-storage-production-inventory-1",
-    "activation-systemd": "/nix/store/kk01k3ayzxqviq27q7qqxls1i2aipkcv-aos-bazel-activation-systemd-inventory-1",
-    "activation-systemd-parser": "/nix/store/cg3f4hi9r94sawxfzaj31v6xxr046ym0-aos-bazel-activation-systemd-parser-inventory-1",
-    "activation-systemd-production": "/nix/store/x2rvb1h9fyaky94h1k287mbig156z1ic-aos-bazel-activation-systemd-production-inventory-1",
-    "boot-pilot": "/nix/store/sm5iic229k2p86hh4fp4difd681vhwaw-aos-bazel-boot-pilot-inventory-1",
-    "build-services": "/nix/store/27qwc5jdmsfip2ipjw3w29hzhl3viyfg-aos-bazel-build-services-inventory-1",
-    "cli-support": "/nix/store/8z9j2sbr0i54k1xw3yn2qjcwxdpl0m2m-aos-bazel-cli-support-inventory-1",
-    "contracts": "/nix/store/nbwhizkwlkyn0gnr967m861ppzx6d79a-aos-bazel-contracts-inventory-1",
-    "control": "/nix/store/fkznclavaay5xzqzsmd4vjyzm0rymp27-aos-bazel-control-inventory-1",
-    "crucible-cli": "/nix/store/dm8xsgb5wcmj8gih21dzpbl5f8lf8fjh-aos-bazel-crucible-cli-inventory-1",
-    "daemon": "/nix/store/aby9lc92q2ck5vfimav94kxkwc19kasn-aos-bazel-daemon-inventory-1",
-    "deployment": "/nix/store/flwx1x0jrq4v2prv3f4kxbra51pjnc3d-aos-bazel-deployment-inventory-1",
-    "device": "/nix/store/vrzsxg1q0h0778hz7hsdb1d6bypfcx3b-aos-bazel-device-inventory-1",
-    "engine": "/nix/store/6mbgvrw8r648cy92wi1bi6sa7lkryzbn-aos-bazel-engine-inventory-1",
-    "fixture": "/nix/store/x3lryhhg7k1zr0kz5zkdzlizz2yqh5cg-aos-bazel-fixture-inventory-1",
-    "formats": "/nix/store/156nxah8r9rjj3fwda0gblsml47ihnlm-aos-bazel-formats-inventory-1",
-    "guest": "/nix/store/aanz6x5mvazf7zlxwmzl2b4k0ygqb9nb-aos-bazel-guest-inventory-1",
-    "hub-client": "/nix/store/xss3sg6hp91mg9cc3zx0d5lxsjc3r5fl-aos-bazel-hub-client-inventory-1",
-    "hub-model": "/nix/store/9imh9pdk6a71v4576zs3zbivs0li4via-aos-bazel-hub-model-inventory-1",
-    "hub-model-production": "/nix/store/4mlqr6igxzcswhkfw5fw46h0s08v6w2n-aos-bazel-hub-model-production-inventory-1",
-    "hub-portable": "/nix/store/12qf6rr6gbfhvgry4b5nxirg20c8aa90-aos-bazel-hub-portable-inventory-1",
-    "native-foundation": "/nix/store/1nx9z7m3kc5y454a5cpgxm2b21fwm2ds-aos-bazel-native-foundation-inventory-1",
-    "native-foundation-integration": "/nix/store/y5h9ykanq9g7sj8zxgsci0axj222qddf-aos-bazel-native-foundation-integration-inventory-1",
-    "native-foundation-minimal": "/nix/store/spfwaip38k83amjfw31fdf79h41db2gv-aos-bazel-native-foundation-minimal-inventory-1",
-    "native-foundation-production": "/nix/store/cvwb7j1n83bxjfwrr9bddh1smyqv9wqw-aos-bazel-native-foundation-production-inventory-1",
-    "protocol": "/nix/store/z53q2xg4z2q1gdz1cmppy8fmkrbvn7lc-aos-bazel-protocol-inventory-1",
-    "qemu-host": "/nix/store/2mcy7x5crqj18vxyfskcng09iy68jvby-aos-bazel-qemu-host-inventory-1",
-    "quota": "/nix/store/y402j7ivcbps71sx0z1whn5ysxcywg9k-aos-bazel-quota-inventory-1",
-    "registry-native": "/nix/store/jcmp3s6g80c9svnnw2nwz0cd98sr6zxd-aos-bazel-registry-native-inventory-1",
-    "registry-native-production": "/nix/store/a2fv80kcxj2k1b8c4bni45ywvvwjc85q-aos-bazel-registry-native-production-inventory-1",
-    "release-coordination": "/nix/store/4n65q37y3489rv0z1qx0xs2hgjng33dq-aos-bazel-release-coordination-inventory-1",
-    "release-coordination-production": "/nix/store/apm2mz2482vsywyy81ihh01bh3qchp8w-aos-bazel-release-coordination-production-inventory-1",
-    "release-preparation": "/nix/store/55hfb5fggvfhf2znmcjssma6vfqg6sr2-aos-bazel-release-preparation-inventory-1",
-    "session": "/nix/store/wl0c6g5klzjb1kl9zxxakmc3wk39xsry-aos-bazel-session-inventory-1",
-    "shared": "/nix/store/zg9sl890df3h60prwfw9pi1y4h5j8dfc-aos-bazel-shared-inventory-1",
-    "source-catalog": "/nix/store/4x2q5ns2x0bfw7886fj2xrximn2czsni-aos-bazel-source-catalog-checks",
-    "store": "/nix/store/2blhx0jk5jjq9gl6hqicnrvazaq09f74-aos-bazel-store-inventory-1",
-    "store-s3": "/nix/store/x1i1a0kz76bb9czhj3qgkvbp0fb05p8x-aos-bazel-store-s3-inventory-1"
+    "activation-core": "/nix/store/fw720pi4ssn9j08ix87qjrkrkk56zm5l-aos-bazel-activation-core-inventory-1",
+    "activation-core-production": "/nix/store/xrz0r5pf83v0mw1gfa1x6qqq9y3m8xnr-aos-bazel-activation-core-production-inventory-1",
+    "activation-crucible": "/nix/store/grs4pvssfw1769kqs7s78lkhdc0rm5cb-aos-bazel-activation-crucible-inventory-1",
+    "activation-crucible-production": "/nix/store/vx2ak3jcl7pqzl5j2ggnlj09g7akhrd8-aos-bazel-activation-crucible-production-inventory-1",
+    "activation-storage": "/nix/store/x05a7w5i9qds8skmsw8adaq3xsg4071q-aos-bazel-activation-storage-inventory-1",
+    "activation-storage-production": "/nix/store/rn9mjihxa87q7qi0klhwb106l8c7cd1h-aos-bazel-activation-storage-production-inventory-1",
+    "activation-systemd": "/nix/store/0y0vc5sj0bwy2pqz2ffavjqhzgaghhh5-aos-bazel-activation-systemd-inventory-1",
+    "activation-systemd-parser": "/nix/store/dvc0qpn6jlkmq32xmkf1kq52rphradd8-aos-bazel-activation-systemd-parser-inventory-1",
+    "activation-systemd-production": "/nix/store/hd6pl5d6slhc49pxz6802ky1xczmcvyk-aos-bazel-activation-systemd-production-inventory-1",
+    "boot-pilot": "/nix/store/qz41dpjhag6aqr8l9sl3fdnnqqzhh15s-aos-bazel-boot-pilot-inventory-1",
+    "build-services": "/nix/store/zkxp27w3f5n673993kl957cy6sc1f18c-aos-bazel-build-services-inventory-1",
+    "cli-support": "/nix/store/sj8710jq0dga7xv1333zbaqg0jssj5xw-aos-bazel-cli-support-inventory-1",
+    "contracts": "/nix/store/zk3g5flz24i5aidmx1sif3vlf9471jg9-aos-bazel-contracts-inventory-1",
+    "control": "/nix/store/5irby810px94qg3hybjxkiccisgjm94g-aos-bazel-control-inventory-1",
+    "crucible-cli": "/nix/store/qjy71ljsk1vpjjrjsixdbk2bsnx7c08z-aos-bazel-crucible-cli-inventory-1",
+    "daemon": "/nix/store/k6fwh60ipr3an7nwxzd11kzmsky9pq75-aos-bazel-daemon-inventory-1",
+    "deployment": "/nix/store/15ibjnhn46irgdfpwsxxgzaqm4dqsjwv-aos-bazel-deployment-inventory-1",
+    "device": "/nix/store/5l86hihvsdklmbh2vdpqbq3fa2jjyp9m-aos-bazel-device-inventory-1",
+    "engine": "/nix/store/ywqyngm9iv6yayrg7jcgf7j7n603q1rr-aos-bazel-engine-inventory-1",
+    "fixture": "/nix/store/y5cg6jkdmhqpp7ssb07f6h9z0pbbqnck-aos-bazel-fixture-inventory-1",
+    "formats": "/nix/store/jjmiy7gdbyjcz1hpggi5vn78yfwwjd5j-aos-bazel-formats-inventory-1",
+    "guest": "/nix/store/4az1kfzrbzf22avlsmlfi597va943mri-aos-bazel-guest-inventory-1",
+    "hub-client": "/nix/store/xjhxgpkik68qsl22s06fl2ps7pr243kn-aos-bazel-hub-client-inventory-1",
+    "hub-model": "/nix/store/cjzijjjaf3bv4gc57fz550rhvsz2ay96-aos-bazel-hub-model-inventory-1",
+    "hub-model-production": "/nix/store/h42diq073rixckx27y7i1x6phl4grxl7-aos-bazel-hub-model-production-inventory-1",
+    "hub-portable": "/nix/store/7kis8hvli9k360xxw5439zj75cwqb6dx-aos-bazel-hub-portable-inventory-1",
+    "native-foundation": "/nix/store/w0q2aa6mkqfcrnxypnbx7wysdpyfavbf-aos-bazel-native-foundation-inventory-1",
+    "native-foundation-integration": "/nix/store/bp1m3ih726274lc1m2p8jrnkcl9jx26w-aos-bazel-native-foundation-integration-inventory-1",
+    "native-foundation-minimal": "/nix/store/q3351q6p1y5d99ac3p3gy65004zr03ln-aos-bazel-native-foundation-minimal-inventory-1",
+    "native-foundation-production": "/nix/store/y77adh11q20fglb6r3shcnp0fyx25vm1-aos-bazel-native-foundation-production-inventory-1",
+    "protocol": "/nix/store/dyxwxqds2w3dcbhhrlaajjn3x86d0f2m-aos-bazel-protocol-inventory-1",
+    "qemu-host": "/nix/store/cfpnmagar5vb948spi0pgab61ch1psfv-aos-bazel-qemu-host-inventory-1",
+    "quota": "/nix/store/s9s03bggwm5igkirpymhxaymf00fj36d-aos-bazel-quota-inventory-1",
+    "registry-native": "/nix/store/2zw06sr1wqfbz3rx0383yjlgvdqkrakr-aos-bazel-registry-native-inventory-1",
+    "registry-native-production": "/nix/store/cicnlrcwyghy93ksi97rlnsqklwq5i4r-aos-bazel-registry-native-production-inventory-1",
+    "release-coordination": "/nix/store/c2qb34dd9npv3lvifxbfpwl8gapfdsbs-aos-bazel-release-coordination-inventory-1",
+    "release-coordination-production": "/nix/store/h832pwn8by9a3wvc1akybcahmd262nfg-aos-bazel-release-coordination-production-inventory-1",
+    "release-preparation": "/nix/store/61jphbrqdrm16i79xapk5l7hrfvfmk0q-aos-bazel-release-preparation-inventory-1",
+    "session": "/nix/store/qgidfnh5smabppgk9mr67cr4zhxjvla2-aos-bazel-session-inventory-1",
+    "shared": "/nix/store/70h7g7m4qyzw04w0d8hfvagpr0358j9r-aos-bazel-shared-inventory-1",
+    "source-catalog": "/nix/store/p5wyzb4hbd6z8hkls4vd6xq0i4pa9h5i-aos-bazel-source-catalog-checks",
+    "store": "/nix/store/sin70zq3xipv5qyswnrdnfssrj1ibd1r-aos-bazel-store-inventory-1",
+    "store-s3": "/nix/store/jcmw3p3w5h3r5n78yncn4qid098c5n2m-aos-bazel-store-s3-inventory-1"
   },
   "families": {
     "activation-core": {
       "configured_reports": 237,
       "requested_roots": 68,
-      "sha256": "016c510b7f48a8558c65653a40f3377e5cd7e21122d3a1283cea6419f4b16c7f",
+      "sha256": "67dc693ef4b96cfccaf5283a9b7f131040362e8d5ffe5f2182fbdb441fa2ab45",
       "source_files": 62
     },
     "activation-crucible": {
       "configured_reports": 255,
       "requested_roots": 9,
-      "sha256": "2af46a8a7f82d42f97101137aa878bea535e5263521e91ea777477afc7c03ca0",
+      "sha256": "d333a44c4bd4839835b9692fe7db4aa446a21e0edca250ad757153d1a97b73fa",
       "source_files": 840
     },
     "activation-storage": {
       "configured_reports": 144,
       "requested_roots": 46,
-      "sha256": "2bd09f1d955f68910bbab508b4605c53c264279ff933a1d5c5615aa17ae3bbe0",
+      "sha256": "5a4b56f789e953d17cde9ba023691681c4764289b09f87f2ff2c553e50616f28",
       "source_files": 79
     },
     "activation-systemd": {
       "configured_reports": 175,
       "requested_roots": 12,
-      "sha256": "2d9eb18f5d63c8ca7a1e7c47712a9801d2706a339fe9062a0e25317ca4cf50a1",
+      "sha256": "d47123d4c73998b34ed96a88631d7648532652ccb97c73f75978a33ba0bb952d",
       "source_files": 79
     },
     "boot-pilot": {
       "configured_reports": 41,
       "requested_roots": 14,
-      "sha256": "215c8ac1378b326ecb23c4b3fd96a1a25c7cc75f291bb2ca2bb2b2d5fcf436da",
+      "sha256": "2a3b862eef480313c6ef35fdb9046b6e62057eb6b2be2d527d5e340cfbda688c",
       "source_files": 15
     },
     "boot-preparation": {
       "configured_reports": 712,
       "requested_roots": 52,
-      "sha256": "03fee5f864e65afbd0cb8c754a8466abb7555e14fe150e38d4bab952b9f2f7af",
+      "sha256": "ec4b798d1f870bb7ef785dc73a14b884dc8ae44fc28a770ddd8eb21b34fa40c3",
       "source_files": 232
     },
     "build-services": {
       "configured_reports": 308,
       "requested_roots": 28,
-      "sha256": "c27af28448d2f22ba625040080a221d265886de7fade6e5637f05b9a69007f72",
+      "sha256": "8342e6ce0dd7d32c1b7554061d95741ad9e15d98c3af441e4ffa10a2edabcd3c",
       "source_files": 57
     },
     "cli-support": {
       "configured_reports": 184,
       "requested_roots": 18,
-      "sha256": "f2acbcf8ada11f99ac017da1754ec46887ee6deb8e1f3bcdc17fd7bc5af5b855",
+      "sha256": "de869ba8ab2ca60c84be8dbd45e8e7a104b8ed2478d6094ed01ad66ac69ca315",
       "source_files": 64
     },
     "contracts": {
       "configured_reports": 152,
       "requested_roots": 26,
-      "sha256": "b8f35dc3c115719d7be0814854e7b86e5ab1d559e982a8b143fb1a7fae2b93b0",
+      "sha256": "ebc1f8f03b94d1abdb26af4211ff17171ecfad68d4346eddd601e729aea3009a",
       "source_files": 140
     },
     "control": {
       "configured_reports": 306,
       "requested_roots": 32,
-      "sha256": "9a0c9f7c4da0e0790cafb50372e176fbd5ff6618c87de594a04379624de4de1a",
+      "sha256": "5a90be240ec307de6bfadcfbdf1ade61e6a390c5e1f7bd323535220de1b630eb",
       "source_files": 883
     },
     "crucible-cli": {
       "configured_reports": 578,
       "requested_roots": 83,
-      "sha256": "9afb06ea84571d832284bbfeb84d86e168bc2e9ef436520d51fcf13b42425841",
+      "sha256": "8c5fa37fc57faecffa2fa6841c4ccae83616ffc7e4d355acf47b610f2c392403",
       "source_files": 1737
     },
     "daemon": {
       "configured_reports": 447,
       "requested_roots": 35,
-      "sha256": "573c00455420e51b81bf69937b9eb7ddaf3aec18d6478af3ea3dcc326ecfc02d",
+      "sha256": "95730c18a7560ab5c5972ef5de890cd366aada31ad978ac2a21e67a5f0c240f4",
       "source_files": 1546
     },
     "deployment": {
       "configured_reports": 135,
       "requested_roots": 10,
-      "sha256": "33989e2a39506c80d67c33cc3ac322bf3e87cd19e706a0e9eef0b9fedaae62d1",
+      "sha256": "e381dd1c123dc6a6da42a2462c798521a6b545912dd177b622e562bd782b0cb2",
       "source_files": 183
     },
     "device": {
       "configured_reports": 166,
       "requested_roots": 54,
-      "sha256": "b9cea84bcdbac338c5918f9b0364fd5c5aa5e097a971fecdf8b0efbd3e6d03a1",
+      "sha256": "41bce2bd939f26cdca58258e21e416bb46600401ad5f8f3e91dc2e94b13894f0",
       "source_files": 280
     },
     "engine": {
       "configured_reports": 1265,
       "requested_roots": 523,
-      "sha256": "67e87fd1f507ce7e203c49d1cfd8c205f324aed9e4cdae45389d0060abb83f84",
-      "source_files": 3754
+      "sha256": "b52365cd49973106a3ea4910f7f22e558974f734f36066bafb08044b22a2622a",
+      "source_files": 3757
     },
     "fixture": {
       "configured_reports": 21,
       "requested_roots": 1,
-      "sha256": "b49b995fa7f90b407c526b750568fc9e48036ce052758af2b43340489f2ff630",
+      "sha256": "cdf9e62c95143e77f7c31db1b2c10a68070b2ab5ae839977abe68f9111c9aa38",
       "source_files": 9
     },
     "formats": {
       "configured_reports": 162,
       "requested_roots": 27,
-      "sha256": "d7a57a8474b016bbc12dfc37b370a3bcff95e3fff979f606a65fc6b74b012443",
+      "sha256": "b89805664006b281bb958ab266e0a9e1a8ffa21fd1d39ec1b2ba9a2163863861",
       "source_files": 73
     },
     "guest": {
       "configured_reports": 138,
       "requested_roots": 16,
-      "sha256": "77cb96a4d07b686522c1866c2e7994a34d4bd7e36cb40315eb37b1f5abfba1b5",
+      "sha256": "3b68ad4809371846d11b0f23642356e2a68e0cc4e9cfc75fe57faefdafae0537",
       "source_files": 294
     },
     "hub-client": {
       "configured_reports": 189,
       "requested_roots": 10,
-      "sha256": "53d8034cb7c00a15d21c10660b20178c674ae40a2b8d509022e064dc6eb884b6",
+      "sha256": "205ac3a4b12c6352da05ac4e8f19570a022873c1683025fa077160c0b22ec451",
       "source_files": 10
     },
     "hub-model": {
       "configured_reports": 351,
       "requested_roots": 11,
-      "sha256": "0f487f9aa0ffbdf9b0abc4b8996b13dfd455e376d081adf001addf4b2e539b0e",
+      "sha256": "619f05302ea2e4450a23fcbb675a1607f01e5e3e502df23d0b093d9268a0e669",
       "source_files": 91
     },
     "hub-portable": {
       "configured_reports": 114,
       "requested_roots": 19,
-      "sha256": "64b337adc1702f368765b9363d1a2c907c8aaef41a005ec153f2a4642fcc0e14",
+      "sha256": "601e3acce11cc9a5d04df7bcdaf54911358ac5fb459fcbd365d42e33852ef63a",
       "source_files": 67
     },
     "native-foundation": {
       "configured_reports": 957,
       "requested_roots": 40,
-      "sha256": "55e6b438bfc87a2529081ca2c16dd418f65c44f8311a302f3939cb92e935eff4",
+      "sha256": "dd840fe0223d17dc39eb729aded3058492a0acc4840916eb1b93180cf059bb28",
       "source_files": 102
     },
     "protocol": {
       "configured_reports": 129,
       "requested_roots": 35,
-      "sha256": "93949b0ff9ad42104d3f12bdc771a3b8094cf6f3d1e36d751ad283e6c320cef7",
+      "sha256": "6627d7de4472e5d2ddaf280060c91950829b554e0ef7b1154e8321061ff1020d",
       "source_files": 159
     },
     "qemu-host": {
       "configured_reports": 249,
       "requested_roots": 37,
-      "sha256": "faed4a17b07c4dfa4b1b5b8700fe527944acf80f3709f74e2ad66982e7f32ef6",
+      "sha256": "32de62dc7e9c906f9158ab61396a12ceef292ae0621fa6a0c63b6012f3338a6b",
       "source_files": 1126
     },
     "quota": {
       "configured_reports": 49,
       "requested_roots": 10,
-      "sha256": "297fa8c2ea40beecab9411b7887a3cafd086c1324fb236e8d9f4230f7bc788f7",
+      "sha256": "b1b13794b3236df70b2791378607d3e216e67bdf0cca6e08f1d3963180728dc3",
       "source_files": 6
     },
     "registry-native": {
       "configured_reports": 831,
       "requested_roots": 35,
-      "sha256": "a4cfadd61140c80441e025b03079ab6ad88809c99e30cd7ee8fa7234d04eed74",
+      "sha256": "99f1ee00576fa9d5c10a784b7035fe484a63e88d10aa6328700c4219e22cd77d",
       "source_files": 372
     },
     "release-coordination": {
       "configured_reports": 399,
       "requested_roots": 12,
-      "sha256": "f816a90118d27602922eef1b213573b2d1fdff57f1974d58158d1f8d348bc4b8",
+      "sha256": "6b271be9d8af5b99a6cbba0ca497725de728697a7309e66825945eeb192ec11d",
       "source_files": 269
     },
     "release-preparation": {
       "configured_reports": 229,
       "requested_roots": 26,
-      "sha256": "44ddb29aa92a39a61504e637b2fe0abc71ca27bdb218f2482e2d2d09f6506ea9",
+      "sha256": "9028a4e09e5dc43593ec636868170db54110a31a000a9f06c6da9d9fb37658ff",
       "source_files": 182
     },
     "session": {
       "configured_reports": 262,
       "requested_roots": 58,
-      "sha256": "476bce27128eae9fb87f4975bc1f923bb9bbcd7729194da030516bd08fb91347",
+      "sha256": "ff1097ce2afbb1aa248614ad6992bc43f4c51f0e84bd93a4a540cc6f1189997d",
       "source_files": 840
     },
     "shared": {
       "configured_reports": 85,
       "requested_roots": 20,
-      "sha256": "9e2222dc90184aca83684719fef70248cf1a3284ef7568993162a8abfc6f7041",
+      "sha256": "b70c16523a2c7438a76bcf801e5f12c591bffd65738ee86cae295d7feb2049f2",
       "source_files": 32
     },
     "store": {
       "configured_reports": 277,
       "requested_roots": 79,
-      "sha256": "00be47df7563a8c0a0c8e13dbb207a1fefd8180f83d5b1e6940354644184d8f9",
+      "sha256": "d0e2da7151c3167514e8562e2e36b29730687e557ca7d8ef6d5650030bb51f6a",
       "source_files": 272
     },
     "store-s3": {
       "configured_reports": 282,
       "requested_roots": 8,
-      "sha256": "5f1bcdf2ef0cff22ae1030c16c4f1ce722dd73f2efbe206c3ed107ae928fa0ce",
+      "sha256": "7de03d8d812f45afd9303cb4b01a67e53a40aaf5d086a3649ca5bebe106bf213",
       "source_files": 54
     }
   },
@@ -1005,10 +1005,10 @@
     "External-provider and installed-service gates, foreign/Wasm variants, full compiler invocation equivalence, performance acceptance, production cutover and Cargo removal remain pending."
   ],
   "policy_and_cli_outputs": [
-    "/nix/store/hf7maiad9kkzf9icm7vfxgvcl1s9xv3k-aos-bazel-policy-checks",
+    "/nix/store/x9l3g09j2nzkjs046y636sm0mqrg10za-aos-bazel-policy-checks",
     "/nix/store/wgj3r06hj2wa6zk8ja7s2jb2s6dzh688-aos-dev-cli-check-0"
   ],
-  "policy_tests": 182,
+  "policy_tests": 184,
   "previous_generated_build_files": {
     "count": 5909,
     "sha256_of_sorted_json_path_to_sha256_mapping": "5ce53214e52559b84f49246b20518b8483b74d78b032f6a535fcf65982710648",
@@ -1054,7 +1054,7 @@
   },
   "schema_version": 1,
   "source_catalog": {
-    "output": "/nix/store/4x2q5ns2x0bfw7886fj2xrximn2czsni-aos-bazel-source-catalog-checks",
+    "output": "/nix/store/p5wyzb4hbd6z8hkls4vd6xq0i4pa9h5i-aos-bazel-source-catalog-checks",
     "report": {
       "crates": {
         "packages": 77,
@@ -1069,5 +1069,11 @@
     },
     "report_sha256": "6b586aaaf5100af1b783fe9066a02bdcd6284483951301d4652717ae1f403826"
   },
+  "source_catalog_loading_data_sha256": {
+    "crates/aos/boot/aos-platform-metadata/tests/fixtures/metadata/nocloud/meta-data.yaml": "8d369768c7c5f9129a0afab903c40cfb929bfd1db29a324fe547bde42fcd2adf",
+    "crates/aos/boot/aos-platform-metadata/tests/fixtures/metadata/nocloud/network-config-flow.yaml": "51a75ce19eebbdbae05da837c9de02a86257be352a9404bb56efe7402bb696db",
+    "crates/aos/boot/aos-platform-metadata/tests/fixtures/metadata/nocloud/network-config-malformed-flow.yaml": "1ca0aaa0e51085749f64984c2371c7bd5d848f70c7fb31c7281ba61f6dba0bf8"
+  },
+  "source_catalog_rust_ownership_unchanged": true,
   "status": "Boot default/minimal profiles and all thirty-two configured family inventories validated"
 }

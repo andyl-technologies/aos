@@ -16,8 +16,10 @@ RUST_PACKAGE = aos_rust_package(
     license_domain = "apache-host",
 )
 
-# Registry consumers explicitly opt in without enabling the Cargo default flag.
+# These consumers explicitly opt in without enabling the Cargo default flag.
 TRANSFER_FEATURES = select({
+    "//tools/bazel/rules:boot_preparation_dependencies": ["transfer"],
+    "//tools/bazel/rules:boot_preparation_minimal_dependencies": ["transfer"],
     "//tools/bazel/rules:release_coordination_dependencies": ["transfer"],
     "//tools/bazel/rules:registry_native_dependencies": ["transfer"],
     "//tools/bazel/rules:registry_native_tests_dependencies": ["transfer"],

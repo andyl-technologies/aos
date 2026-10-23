@@ -11,8 +11,11 @@
     })
     packages,
   dependencyPackages ? {},
+  editorDependencyPackages ? dependencyPackages,
   editorComparisonScope ? "whole-model",
   editorRustcFlags ? [],
+  editorCargoFlags ? [],
+  excludedEditorBins ? [],
   editorDiagnosticContext ? false,
   editorLibraryTargets ? {},
   sourceInventory ? null,
@@ -136,7 +139,7 @@ in rec {
       chmod -R u+w source
       export CARGO_HOME="$TMPDIR/cargo" CARGO_TARGET_DIR="$TMPDIR/target" CARGO_NET_OFFLINE=true
       mkdir -p "$CARGO_HOME" source/.cargo "$out"
-      ${pkgs.python3}/bin/python3 - source ${builtins.toFile "${pname}-packages.json" (builtins.toJSON packages)} ${pkgs.aos.passthru.cargoDeps} ${builtins.toFile "${pname}-dependencies.json" (builtins.toJSON dependencyPackages)} <<'PYTHON'
+      ${pkgs.python3}/bin/python3 - source ${builtins.toFile "${pname}-packages.json" (builtins.toJSON packages)} ${pkgs.aos.passthru.cargoDeps} ${builtins.toFile "${pname}-editor-dependencies.json" (builtins.toJSON editorDependencyPackages)} <<'PYTHON'
       import json
       import os
       from pathlib import Path
@@ -178,6 +181,7 @@ in rec {
           metadata = json.loads(subprocess.check_output([
               "${pkgs.rust}/bin/cargo", "metadata", "--offline", "--format-version=1",
               "--manifest-path", str((root / "crates/Cargo.toml").resolve()),
+              *json.loads(${builtins.toJSON (builtins.toJSON editorCargoFlags)}),
           ], cwd=root, text=True))
           selected = {package["id"] for package in metadata["packages"]
                       if Path(package["manifest_path"]).parent.resolve() in
@@ -185,19 +189,37 @@ in rec {
           if set(metadata["workspace_members"]) != selected or len(selected) != len(members):
               raise ValueError("Cargo editor workspace membership differs from selected family")
       PYTHON
-      ${pkgs.lib.optionalString (excludedTests != []) ''
+      ${pkgs.lib.optionalString (excludedTests != [] || excludedEditorBins != []) ''
         ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/select_cargo_editor.py} \
           --source source --packages ${builtins.toFile "${pname}-packages.json" (builtins.toJSON packages)} \
           --cargo ${pkgs.rust}/bin/cargo --rustc ${workspace.toolchains}/bin/rustc \
           ${pkgs.lib.escapeShellArgs (pkgs.lib.concatMap (name: ["--exclude" name]) excludedTests)} \
+          ${pkgs.lib.escapeShellArgs (pkgs.lib.concatMap (name: ["--exclude-bin" name]) excludedEditorBins)} \
+          ${pkgs.lib.optionalString (builtins.elem "--no-default-features" editorCargoFlags) "--no-default-features"} \
           --output "$out/target-selection.json"
       ''}
       cp source/.cargo/config.toml "$CARGO_HOME/config.toml"
+      ${pkgs.lib.optionalString (editorCargoFlags != []) ''
+        # analysis-stats has no Cargo feature flags. Forward the selected
+        # profile to its metadata and build-script checks through CARGO.
+        cat > "$TMPDIR/editor-cargo" <<'CARGO_WRAPPER'
+        #!${pkgs.bash}/bin/bash
+        case "$1" in
+          metadata|check) exec ${pkgs.rust}/bin/cargo "$@" ${pkgs.lib.escapeShellArgs editorCargoFlags} ;;
+          *) exec ${pkgs.rust}/bin/cargo "$@" ;;
+        esac
+        CARGO_WRAPPER
+        chmod +x "$TMPDIR/editor-cargo"
+      ''}
       ${cargoSetup}${pkgs.lib.optionalString (editorRustcFlags != []) ''
         # rust-analyzer queries Cargo with -O, so make semantic profile settings
         # explicit instead of hiding debug-assertion-gated first-party APIs.
         export RUSTFLAGS=${pkgs.lib.escapeShellArg (pkgs.lib.concatStringsSep " " editorRustcFlags)}
-      ''}CARGO=${pkgs.rust}/bin/cargo RUSTC=${workspace.toolchains}/bin/rustc \
+      ''}CARGO=${
+        if editorCargoFlags == []
+        then "${pkgs.rust}/bin/cargo"
+        else ''"$TMPDIR/editor-cargo"''
+      } RUSTC=${workspace.toolchains}/bin/rustc \
         RUST_SRC_PATH=${workspace.toolchains}/developer/rust-src/library RAYON_NUM_THREADS=4 \
         ${workspace.toolchains}/developer/bin/rust-analyzer${pkgs.lib.optionalString editorDiagnosticContext " -v -v"} analysis-stats "$PWD/source/crates" --output csv \
           --proc-macro-srv ${workspace.toolchains}/developer/bin/proc-macro-srv \

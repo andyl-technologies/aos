@@ -138,5 +138,6 @@ aos_source_package(
     name = "source_package",
     package = RUST_PACKAGE,
     srcs = glob(["**/*.rs"]),
+    data = glob(["tests/fixtures/**/*.yaml"]),
     visibility = ["//visibility:public"],
 )

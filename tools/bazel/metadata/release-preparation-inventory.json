@@ -20748,7 +20748,7 @@
     "tools/bazel/rules/package.bzl": "8570e95108db7958ff8995206ba477dfa32c5860ba3bf0f9fe1eea809e4180e9",
     "tools/bazel/rules/profiles.bzl": "4bdbc2df78bcbffc2290a4c1b87faecc24d9561d6443202329dee8f5a5446d46",
     "tools/bazel/rules/rust_package.bzl": "359a73e158860b03c0aeabf3aba586206034d2a0c830cfc6709682b18703abe5",
-    "tools/bazel/rules/source_package.bzl": "ce4bf20ca33d1db1da524fdbd9010dc3624082da44511811c132bdd3a6f4f3f4",
+    "tools/bazel/rules/source_package.bzl": "0b9e0d18bab8c135570f4d0f9943f204d196fd8e335f4b599c98a14a3a5d2260",
     "tools/bazel/rules/test.bzl": "eaf7135ae6e6ab029e2cc2500ea16579d53fbd733a85ded2a9205dd90fd68383",
     "tools/bazel/rules/test_sources.bzl": "ba4277bca5288675cfb5f443afd6f06c76747441f2cc266cf8ad7f8f2e500283",
     "tools/bazel/testing/BUILD.bazel": "07d3ea2b5f8d5eb65646d8b6ddd2480dfd88440b2288467be5ba66b2c534e6bc",

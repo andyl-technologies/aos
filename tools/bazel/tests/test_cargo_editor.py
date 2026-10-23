@@ -78,6 +78,58 @@ path = "tests/custom.rs"
         self.assertEqual(set(selected), {"explicit"})
         self.assertEqual(omitted, {"gated"})
 
+    def bin_fixture(self):
+        source = self.source.replace('default = []', 'default = ["test-support"]') + '''
+[[bin]]
+name = "boot-command"
+path = "src/bin/boot-command.rs"
+required-features = ["test-support"]
+
+[[bin]]
+name = "custom"
+path = "src/custom.rs"
+'''
+        self.manifest.write_text(source)
+        targets = list(self.targets)
+        for name, path in [("boot-command", "src/bin/boot-command.rs"),
+                           ("custom", "src/custom.rs"), ("auto", "src/bin/auto.rs")]:
+            file = self.root / path
+            file.parent.mkdir(parents=True, exist_ok=True)
+            file.write_text("fn main() {}\n")
+            targets.append({"name": name, "src_path": str(file), "kind": ["bin"]})
+        return source, targets
+
+    def test_minimal_profile_omits_gated_bins_and_preserves_tests_and_sources(self):
+        source, targets = self.bin_fixture()
+        before = {path: path.read_bytes() for path in self.root.rglob("*.rs")}
+
+        selected, omitted = select(
+            self.manifest, {"boot-command"}, targets, kind="bin", default_features=False,
+        )
+
+        self.assertEqual(omitted, {"boot-command"})
+        self.assertEqual(set(selected), {"custom", "auto"})
+        actual = tomllib.loads(self.manifest.read_text())
+        original = tomllib.loads(source)
+        self.assertFalse(actual["package"]["autobins"])
+        for field in ["test", "features", "dependencies"]:
+            self.assertEqual(actual[field], original[field])
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+
+    def test_enabled_or_unconditional_bins_cannot_be_omitted(self):
+        source, targets = self.bin_fixture()
+        for candidate, defaults in [
+            (source, True),
+            (source.replace('required-features = ["test-support"]', ''), False),
+        ]:
+            with self.subTest(defaults=defaults):
+                self.manifest.write_text(candidate)
+
+                with self.assertRaisesRegex(ValueError, "default-enabled"):
+                    select(self.manifest, {"boot-command"}, targets, kind="bin", default_features=defaults)
+
+                self.assertEqual(self.manifest.read_text(), candidate)
+
 
 if __name__ == "__main__":
     unittest.main()
