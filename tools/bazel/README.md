@@ -2182,7 +2182,10 @@ across 30 analysis-only selections, with no external actions; core evaluation
 passes. Frozen outputs are retained in
 `tests/evidence/hub-client-metadata-evaluation.json`.
 
-Required workspace Rust compilation runs separately. Live Hub services,
+`tests/evidence/hub-client-required-rust-targets.json` retains passing required
+workspace unit and integration target compilation for both test-only client
+lint annotations. Its frozen source predates the release preparation changes.
+Live Hub services,
 foreign/Wasm execution, complete compiler invocation equivalence, numeric
 performance acceptance, production migration, and Cargo removal remain
 separate qualification work.
