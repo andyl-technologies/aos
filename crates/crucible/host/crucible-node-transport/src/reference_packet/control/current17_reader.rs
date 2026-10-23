@@ -289,9 +289,9 @@ impl Serialize for CurrentEvidence17Data {
     }
 }
 
-enum CurrentProgram17Data {
-    Model(PacketSettledModel17Data),
-    RestorationInProgress,
+/// Retains an inline model, absent only for the exact unfinished-restoration tag.
+struct CurrentProgram17Data {
+    model: Option<PacketSettledModel17Data>,
 }
 
 impl HistoricalType for CurrentProgram17Data {
@@ -308,19 +308,18 @@ impl HistoricalType for CurrentProgram17Data {
             if data != b"null" {
                 return Err(invalid());
             }
-            return Ok(build.then_some(Self::RestorationInProgress));
+            return Ok(build.then_some(Self { model: None }));
         }
-        Ok(read_settled_model17_data(input, ledger, build)?.map(Self::Model))
+        Ok(read_settled_model17_data(input, ledger, build)?
+            .map(|model| Self { model: Some(model) }))
     }
 }
 
 impl Serialize for CurrentProgram17Data {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        match self {
-            Self::Model(model) => model.borrowed_program17_data().serialize(serializer),
-            Self::RestorationInProgress => {
-                ("restoration-in-progress", None::<()>).serialize(serializer)
-            }
+        match self.model.as_ref() {
+            Some(model) => model.borrowed_program17_data().serialize(serializer),
+            None => ("restoration-in-progress", None::<()>).serialize(serializer),
         }
     }
 }
@@ -430,10 +429,7 @@ impl CurrentControl17Data {
 impl CurrentControl17Data {
     /// Borrows complete current model DATA; unfinished restoration stays absent.
     pub(crate) fn model_data(&self) -> Option<&PacketSettledModel17Data> {
-        match &self.program {
-            CurrentProgram17Data::Model(model) => Some(model),
-            CurrentProgram17Data::RestorationInProgress => None,
-        }
+        self.program.model.as_ref()
     }
 
     /// Returns the independently checked original Control identity ordinal.
@@ -645,6 +641,9 @@ pub(crate) fn current_control17_counter_scratch_data() -> usize {
         size_of::<CurrentControlHold17Data>(),
         size_of::<CurrentEvidence17Data>(),
         size_of::<CurrentProgram17Data>(),
+        // Actual shared views used by the inline model's writer and census.
+        size_of::<&Option<PacketSettledModel17Data>>() * 3,
+        size_of::<Option<&PacketSettledModel17Data>>() * 3,
         size_of::<ControlIdentity17Data>(),
         size_of::<ControlEncoding17<'static>>(),
         size_of::<Option<&'static [u8]>>(),

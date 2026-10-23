@@ -1,4 +1,4 @@
-//! Keeps the concrete model builder beneath the actual current-program variant.
+//! Keeps the concrete model builder beneath the actual optional current model.
 
 use super::*;
 
@@ -24,13 +24,15 @@ impl Native17Build for CurrentProgram17Data {
         }
         attempt.started = true;
         if restoration_only(input)? {
-            attempt.completed = Some(Self::RestorationInProgress);
+            attempt.completed = Some(Self { model: None });
         } else {
             PacketSettledModel17Data::read_into_data(input, ledger, &mut attempt.model)?;
-            attempt.completed = Some(Self::Model(
-                PacketSettledModel17Data::take_output_data(&mut attempt.model)
-                    .ok_or_else(invalid)?,
-            ));
+            attempt.completed = Some(Self {
+                model: Some(
+                    PacketSettledModel17Data::take_output_data(&mut attempt.model)
+                        .ok_or_else(invalid)?,
+                ),
+            });
         }
         Ok(())
     }
@@ -57,9 +59,9 @@ impl Native17Build for CurrentProgram17Data {
         value: &Self,
         observer: &mut MetadataObserver<'_>,
     ) -> Result<(), ProviderError> {
-        match value {
-            Self::Model(model) => model.observe_settled_history_metadata_data(observer),
-            Self::RestorationInProgress => Ok(()),
+        match value.model.as_ref() {
+            Some(model) => model.observe_settled_history_metadata_data(observer),
+            None => Ok(()),
         }
     }
 
