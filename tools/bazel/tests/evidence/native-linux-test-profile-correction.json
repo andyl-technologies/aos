@@ -1,4 +1,9 @@
 {
+  "compiler_command_checks": {
+    "path": "/nix/store/l7924pcg6v74hgibkpyyfynxjgzxz0h4-aos-bazel-measurement-checks",
+    "status": "passed",
+    "tests": 24
+  },
   "aborted_measurement": {
     "derivation": "/nix/store/jypqs2s7h0pxw0md6lj3bx6s6j1ljbz0-aos-bazel-store-performance.drv",
     "reason": "Mismatched assertion settings discovered before accepting the measurement.",
@@ -254,7 +259,7 @@
     }
   },
   "limits": [
-    "Prior storage case/feature and runtime checks retain their recorded scope; compiler-profile equivalence uses the corrected qualification recorded here.",
+    "Prior storage case/feature and runtime checks retain their recorded scope; the corrected qualification matches optimization, debug information, assertions, and overflow checks for selected test artifacts. Other code-generation and execution-tool settings are not equated.",
     "Engine qualification and performance acceptance remain separate requirements before production cutover.",
     "This storage checkpoint preceded the later engine empty-artifact declaration changes; its compiled storage/campaign sources and compiler flags retain the scope recorded here."
   ],

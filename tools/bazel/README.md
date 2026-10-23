@@ -891,23 +891,29 @@ worktree, and a fresh build directory. The source configuration and caches
 remain private to the series. Cargo profiles come from its actual artifact
 events; the ordinary workspace test profile and selected Bazel flags both use
 optimization `s`, debug 0, and enabled debug assertions and overflow checks.
-Matched workloads require explicit launcher flags before starting and reject
-artifact-profile drift. Nix evaluation, dependency preparation, test
+These four settings are matched for selected first-party test artifacts.
+Dependencies, execution tools, and incremental code generation retain their
+baseline settings; this does not establish identical compiler invocations.
+Each Cargo sample retains verbose compiler commands, including wrappers and
+code-generation arguments; warm samples can contain no compiler calls. Bazel
+execution events retain its action arguments. Cold Cargo samples with missing
+compiler commands fail. Matched workloads require explicit launcher flags before
+starting and reject artifact-profile drift. Nix evaluation, dependency preparation, test
 execution, and installation are excluded. In particular, Cargo builds its
 pinned bundled zstd C source, while Bazel imports the prepared AOS threaded
 zstd archive. These are compile-loop measurements, not end-to-end acceptance.
 
 The `configuration` attribute exposes the immutable workload inputs without
-running measurements. `bench/check.nix` runs 22 measurement regression tests
+running measurements. `bench/check.nix` runs 24 measurement regression tests
 with AOS Python in the Nix sandbox. Feature/target-change timing and family
 regression budgets remain separate qualification work.
 
 The engine conversion exposed missing assertion/overflow flags in the earlier
 optimized Bazel test configuration. `tests/evidence/native-linux-test-profile-correction.json`
 retains the Cargo artifact profiles and the engine compile failure that exposed
-the mismatch. The initial storage timing run was interrupted; no result from
-that run is accepted. Earlier storage case/feature and runtime checks retain
-their recorded scope and do not establish compiler-profile equivalence.
+the mismatch. Timing trials without the corrected settings and complete compiler
+command records are excluded. Earlier storage case/feature and runtime checks retain
+their recorded scope and do not establish equality of compiler invocations.
 The corrected storage qualification passes all four feature configurations,
 native and installed runtime checks, and whole-model editor parity. The same
 evidence file records its immutable configuration, report hashes, and case

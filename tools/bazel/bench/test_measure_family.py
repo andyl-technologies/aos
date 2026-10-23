@@ -10,10 +10,36 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "metadata"))
-from measure_family import apply_edit, bazel_binaries, cargo_binaries, compilation_profile, validate, validate_bazel_profile, validate_profile
+from measure_family import apply_edit, bazel_binaries, cargo_binaries, compilation_profile, record_cargo_commands, validate, validate_bazel_profile, validate_profile
 
 
 class FamilyMeasurementTests(unittest.TestCase):
+    def test_compiler_commands_preserve_wrappers_flags_and_literal_shell_characters(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "command.log"
+            output = Path(temporary) / "cargo-compiler-commands.txt"
+            command = '/tools/accache /tools/rustc --crate-name library -C codegen-units=256 -C incremental=/target "literal$(value)"'
+            log.write_text('   Compiling library v1.0.0\n     Running `' + command + '`\n'
+                           '     Running `/target/build-script-build`\n'
+                           '{"reason":"compiler-artifact"}\n')
+
+            self.assertEqual(record_cargo_commands(log, output, require_commands=True), 1)
+            self.assertEqual(output.read_text(), command + "\n")
+
+    def test_cold_compilation_requires_commands_and_warm_noop_allows_none(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "command.log"
+            output = Path(temporary) / "cargo-compiler-commands.txt"
+            log.write_text('       Fresh library v1.0.0\n')
+
+            self.assertEqual(record_cargo_commands(log, output), 0)
+            self.assertEqual(output.read_text(), "")
+            with self.assertRaisesRegex(ValueError, "no compiler commands"):
+                record_cargo_commands(log, output, require_commands=True)
+            log.write_text('Running `/tools/rustc --crate-name library\n')
+            with self.assertRaisesRegex(ValueError, "unterminated"):
+                record_cargo_commands(log, output)
+
     def events(self):
         return [
             {"id": {"namedSet": {"id": "current"}}, "namedSetOfFiles": {"files": [

@@ -84,6 +84,23 @@ def validate_bazel_profile(configuration):
             raise ValueError(f"Bazel launcher profile must declare {prefix + value}: {actual!r}")
 
 
+def record_cargo_commands(log, output, require_commands=False):
+    """Retains Cargo's verbose compiler calls without interpreting shell text."""
+    commands = []
+    for line in log.read_text().splitlines():
+        value = line.strip()
+        if not value.startswith("Running `") or " --crate-name " not in value:
+            continue
+        if not value.endswith("`"):
+            raise ValueError("unterminated Cargo compiler command")
+        commands.append(value.removeprefix("Running `").removesuffix("`"))
+
+    if require_commands and not commands:
+        raise ValueError("cold Cargo measurement retained no compiler commands")
+    output.write_text("".join(command + "\n" for command in commands))
+    return len(commands)
+
+
 def apply_edit(workspace, configuration, scenario):
     """Changes a declared first-party input without allowing paths outside it."""
     defaults = {
@@ -164,7 +181,7 @@ def series(configuration, mode, repetition, scratch, output):
                                         "--execution_log_json_file=" + str(directory / "execution.json")]
             else:
                 command = [configuration["cargo"], "test", "--manifest-path", "crates/Cargo.toml", "--frozen", "--offline",
-                           "--jobs", str(configuration["jobs"]), "--lib", "--tests", "--no-run", "--message-format=json"]
+                           "--jobs", str(configuration["jobs"]), "--lib", "--tests", "--no-run", "--message-format=json", "--verbose"]
                 for package in sorted(configuration["packages"]):
                     command.extend(["-p", package])
                 command.extend(configuration.get("cargo_flags", []))
@@ -183,6 +200,8 @@ def series(configuration, mode, repetition, scratch, output):
                     "opt_level": "0", "debug": 0, "debug_assertions": True, "overflow_checks": True,
                 }), incremental=False)
             else:
+                sample["compiler_invocation_count"] = record_cargo_commands(
+                    directory / "command.log", directory / "cargo-compiler-commands.txt", require_commands=scenario == "cold")
                 events = [json.loads(line) for line in (directory / "command.log").read_text().splitlines() if line.startswith("{")]
                 binaries = cargo_binaries(events, configuration["packages"])
                 sample["compilation_profile"] = compilation_profile(events, binaries, "accache" not in mode)

@@ -31,6 +31,7 @@
       inherit trial packages targets modes;
       jobs = 4;
       scope = "connected storage/campaign default-feature libtest compilation";
+      compiler_profile_scope = "Four selected test-artifact settings are matched; dependency, execution-tool, and incremental code-generation defaults may differ. Cargo compiler commands and Bazel execution events retain actual arguments.";
       require_matched_profiles = true;
       edits = {
         implementation-edit = "${packages.crucible-campaign}/src/lib.rs";
