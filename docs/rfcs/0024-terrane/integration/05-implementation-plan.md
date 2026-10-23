@@ -15919,3 +15919,41 @@ runtime qualification. Strict Linux all-feature/all-target Clippy, actual
 fixture compilation, Rust formatting, supervisor syntax and diff checks pass.
 No fixture executes on the host. Fresh native surface-owner, complete cache
 and mandatory application qualification will run from the next frozen commit.
+
+
+#### Retaining already-unlinked file custody through recovery
+
+Explicit draining recovery now distinguishes reusable content promises from
+original physical file obligations. A pin qualifies for retention without
+adoption only when its exact exposure owner and digest match a non-index backing
+of a draining exposure. Native capture still validates the full snapshot, original
+partition and bounded authenticated census before funding. Every qualifying pin,
+lease and backing binding remains durable; no source or serving authority is
+reconstructed from the record. Ordinary pins, active exposures, index-only pins,
+unbound hashes and all old residences still require independent native proof.
+Default strict recovery continues refusing unresolved original custody.
+
+The policy regression requires active pins to fail without content proof and
+draining file pins to retain their complete immutable policy. It independently
+rejects an ordinary owner with the same digest, an index hash, an unbound digest
+and a missing original residence. All five pure cold-policy regressions pass,
+along with strict Linux all-feature/all-target lint, a non-FUSE build check,
+actual fixture compilation, Rust formatting, Python syntax and diff checks.
+These synthetic policy candidates provide no native receipt or backing proof.
+
+A new separate native selector performs genuine publisher retirement and actual
+consumer/producer grace before dropping the old owner. The original sealed file
+is already unlinked but its actual descriptor survives. Strict recovery must
+refuse without effects; explicit recovery and new Resume must retain all original
+obligations. The new Running owner must refuse a fresh consumer pin for that
+identity with byte-identical policy, proving the physical row supplied no
+adopted source. The original descriptor remains readable; final index unmap and
+file close must independently release exactly their original blocks and one
+inode before authenticated reconciliation discharges exposure policy. All prior
+actors and assertions remain, and no stack or time limit is enlarged. Fresh
+native and mandatory application qualification remain required.
+
+Mandatory application compilation at `fe105ddf1f` passes in 1,404.035 seconds.
+Complete source and compiler-record review matches 8,081 immutable files and
+all 185 test targets across 59 packages. This is compilation only; its separately
+retained surface-owner stack failure remains a failed runtime qualification.

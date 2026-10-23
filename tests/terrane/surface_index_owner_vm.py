@@ -212,6 +212,11 @@ def main():
             "PASS surface admission requires actual recovery and acknowledged Resume",
             "PASS funded cold recovery re-verifies original sealed file and retains descriptor through new Resume and publisher retirement; exact inode charges release only on final closure before exposure reconciliation"],
             "actual retained cold file recovery actor failed")
+        result = actor("pin", "cold-retired-file", timeout=120)
+        require(result.returncode == 0 and result.stdout.splitlines() == [
+            "PASS surface admission requires actual recovery and acknowledged Resume",
+            "PASS funded recovery retains already-unlinked original file as draining custody without adoption; new Resume preserves readable descriptor and exact charges until authenticated final closure"],
+            "actual unlinked cold file recovery actor failed")
         objects = support.root("empty") / "objects"
         originals = list(objects.glob(".terrane-surface:2:*"))
         require(len(originals) == 1, "cold refusal has no unique real admitted index")

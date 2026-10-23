@@ -88,13 +88,13 @@ impl RetainedFile {
         Ok(())
     }
 
-    /// Retires through the new Running owner and observes exact final-close charge.
+    /// Retires the actual body while retaining its disclosed descriptor.
     ///
     /// # Errors
     /// Refuses premature release, missed grace, lost backing, failed native
-    /// retirement, changed obligations or inexact block and inode release.
-    pub(super) async fn retire(
-        self,
+    /// retirement or changed exposure obligations.
+    pub(super) async fn retire_backing(
+        &self,
         owner: &NativeMetadataOwner,
         inputs: &config::Inputs,
         id: &str,
@@ -120,7 +120,7 @@ impl RetainedFile {
         .await??;
         let protected = snapshot(inputs).await?.exposures;
         if file_closure::pressure(owner, inputs).await? != 1 {
-            return Err("new Running owner failed actual recovered body retirement".into());
+            return Err("Running owner failed actual original body retirement".into());
         }
         tokio::time::timeout(Duration::from_secs(40), async {
             while self.file.metadata()?.nlink() != 0 {
@@ -135,14 +135,61 @@ impl RetainedFile {
         {
             return Err("recovered publisher retirement released a surviving descriptor".into());
         }
+        Ok(())
+    }
+
+    /// Requires the new owner to refuse adoption from a retained physical pin.
+    ///
+    /// # Errors
+    /// Refuses a named or changed original file, a successful new consumer grant
+    /// or any policy mutation while that grant is refused.
+    pub(super) async fn check_unadopted(
+        &self,
+        owner: &NativeMetadataOwner,
+        inputs: &config::Inputs,
+    ) -> Result<()> {
+        self.check_readable()?;
+        if self.file.metadata()?.nlink() != 0 {
+            return Err("original orphan file unexpectedly retains a name".into());
+        }
+        let policy = inputs.root.join("state/cache/records.toml");
+        let before = std::fs::read(&policy)?;
+        let identity = TERRANE_V1.calculate(IdentityKind::Chunk, BODY)?;
+        if owner.pin_sealed_object(identity, now()? + 30).await.is_ok()
+            || std::fs::read(&policy)? != before
+        {
+            return Err("cold physical obligation became a new native content source".into());
+        }
+        Ok(())
+    }
+
+    /// Closes the original retired file and observes its exact physical release.
+    ///
+    /// # Errors
+    /// Refuses a named file, premature reconciliation, lost original bytes,
+    /// changed policy or inexact native block and inode release.
+    pub(super) async fn close(
+        self,
+        owner: &NativeMetadataOwner,
+        inputs: &config::Inputs,
+        id: &str,
+        generation: u64,
+    ) -> Result<()> {
+        self.check_readable()?;
+        let policy = inputs.root.join("state/cache/records.toml");
+        let durable = std::fs::read(&policy)?;
+        if self.file.metadata()?.nlink() != 0
+            || owner.reconcile_surface_exposure(id, generation).await?
+            || std::fs::read(&policy)? != durable
+        {
+            return Err("retired original descriptor lost its durable exposure protection".into());
+        }
 
         // Sample before final close and before the separate closure snapshot so
         // metadata allocation cannot mask the original physical release.
         let mut quota = HostQuotaClient::connect(&inputs.quota, 0, config::EPOCH)?;
         let before = crate::quota_sample(&mut quota, inputs)?;
         let allocated = self.original.blocks() * 512;
-        let policy = inputs.root.join("state/cache/records.toml");
-        let durable = std::fs::read(&policy)?;
         drop(self);
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {

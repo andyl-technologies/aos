@@ -6,8 +6,14 @@
 //! native retirement can release disposable derived-index copy allowances.
 
 use super::{NativeCacheOwnerConfig, recovery_manifest_state::require_same};
-use std::{collections::BTreeSet, io, sync::Arc};
-use terrane_sdk::host::cache::{CacheState, ReservationRecord, ResidenceRecord};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    io,
+    sync::Arc,
+};
+use terrane_sdk::host::cache::{
+    CacheState, ExposureBackingKind, ExposurePhase, PinRecord, ReservationRecord, ResidenceRecord,
+};
 
 /// Retains the original bounded policy as comparison data throughout recovery.
 #[derive(Clone)]
@@ -16,9 +22,18 @@ pub(super) struct ColdPolicy {
 }
 
 impl ColdPolicy {
-    /// Reports remaining promises needing independent native backing recovery.
+    /// Reports content promises needing independent native backing recovery.
+    ///
+    /// Draining pins bound to an original file retain physical obligations only.
+    /// They provide no reusable source, and remain until authenticated closure.
     pub(super) fn requires_backing(&self) -> bool {
-        !self.state.pins.is_empty() || !self.state.residences.is_empty()
+        let draining = self.draining_backing_pins();
+        !self.state.residences.is_empty()
+            || self
+                .state
+                .pins
+                .iter()
+                .any(|pin| !retains_draining_backing(&draining, pin))
     }
 
     /// Removes only disposable surface-copy holds after native namespace retirement.
@@ -216,14 +231,16 @@ impl ColdPolicy {
         Ok(state)
     }
 
-    /// Checks every original residence and pin against verified recovery outputs.
+    /// Checks reusable content promises against verified recovery outputs.
     ///
     /// Additional hashes must come from actual retained verified packs or chunks.
     /// A filename, old row or digest alone is insufficient input at the caller.
-    /// This comparison issues no native completion or read capability.
+    /// Original draining file pins retain their obligations without adoption;
+    /// neither this exception nor the comparison issues any read capability.
     ///
     /// # Errors
-    /// Refuses changed or missing residences and pins outside the verified closure.
+    /// Refuses changed or missing residences and unverified pins other than the
+    /// original draining file obligations, which remain durable and protected.
     pub(super) fn reconcile(
         &self,
         residences: &[ResidenceRecord],
@@ -246,15 +263,31 @@ impl ColdPolicy {
             .flat_map(|row| [row.chunk.as_str(), row.object.as_str()])
             .chain(verified_hashes.iter().map(String::as_str))
             .collect();
-        if self
-            .state
-            .pins
-            .iter()
-            .any(|pin| !hashes.contains(pin.hash.as_str()))
-        {
+        let draining = self.draining_backing_pins();
+        if self.state.pins.iter().any(|pin| {
+            !hashes.contains(pin.hash.as_str()) && !retains_draining_backing(&draining, pin)
+        }) {
             return Err(invalid("cold pin lacks verified native backing"));
         }
         Ok(())
+    }
+
+    /// Selects policy obligations only, never native backing or closure proof.
+    fn draining_backing_pins(&self) -> BTreeMap<&str, BTreeSet<&str>> {
+        self.state
+            .exposures
+            .iter()
+            .filter(|row| row.phase == ExposurePhase::Draining)
+            .map(|row| {
+                let files = row
+                    .backings
+                    .iter()
+                    .filter(|backing| backing.kind != ExposureBackingKind::Index)
+                    .map(|backing| backing.hash.as_str())
+                    .collect();
+                (row.id.as_str(), files)
+            })
+            .collect()
     }
 
     /// Compares a current snapshot with the exact original records and bootstrap.
@@ -269,6 +302,13 @@ impl ColdPolicy {
     ) -> io::Result<()> {
         require_same(state, &self.bootstrap(config, id)?)
     }
+}
+
+fn retains_draining_backing(draining: &BTreeMap<&str, BTreeSet<&str>>, pin: &PinRecord) -> bool {
+    pin.owner
+        .strip_prefix("exposure:")
+        .and_then(|id| draining.get(id))
+        .is_some_and(|hashes| hashes.contains(pin.hash.as_str()))
 }
 
 /// Recognizes only the complete two-pin metadata promise, with no extra dependents.

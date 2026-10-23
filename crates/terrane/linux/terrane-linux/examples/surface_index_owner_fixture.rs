@@ -156,6 +156,7 @@ fn main() -> Result<()> {
             | "cold-active-closure"
             | "cold-retained"
             | "cold-retained-file"
+            | "cold-retired-file"
             | "index-closure"
             | "worker-send"
             | "worker-network"
@@ -208,14 +209,23 @@ fn main() -> Result<()> {
         }
         return scoped_worker::run(launched, &runtime, &owner, &inputs);
     }
-    if matches!(mode.as_str(), "cold-retained" | "cold-retained-file") {
+    if matches!(
+        mode.as_str(),
+        "cold-retained" | "cold-retained-file" | "cold-retired-file"
+    ) {
+        use exposure::retained_cold::Scenario;
+        let scenario = match mode.as_str() {
+            "cold-retained-file" => Scenario::NamedFile,
+            "cold-retired-file" => Scenario::RetiredFile,
+            _ => Scenario::Index,
+        };
         return exposure::retained_cold::verify(
             owner,
             &runtime,
             &inputs,
             policy,
             confinement,
-            mode == "cold-retained-file",
+            scenario,
         );
     }
     if matches!(mode.as_str(), "cold-closure" | "cold-active-closure") {

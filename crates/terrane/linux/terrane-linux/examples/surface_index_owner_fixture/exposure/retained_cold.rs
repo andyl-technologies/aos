@@ -15,14 +15,26 @@ use terrane_linux::{
 };
 use terrane_sdk::host::cache::ExposurePhase;
 
+/// Selects the actual original kernel backing retained across recovery.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum Scenario {
+    /// Retains only the actual index mapping.
+    Index,
+    /// Retains a sealed file whose original name survives until new Resume.
+    NamedFile,
+    /// Retains a file unlinked through genuine publisher retirement before restart.
+    RetiredFile,
+}
+
 pub(crate) fn verify(
     owner: NativeMetadataOwner,
     runtime: &tokio::runtime::Runtime,
     inputs: &config::Inputs,
     policy: SurfaceIndexPolicy,
     confinement: Arc<Installed>,
-    retain_file: bool,
+    scenario: Scenario,
 ) -> Result<()> {
+    let retain_file = scenario != Scenario::Index;
     let fixture = runtime.block_on(RepositoryFixture::new(&inputs.domain))?;
     let body = if retain_file {
         retained_file::BODY
@@ -61,6 +73,13 @@ pub(crate) fn verify(
     } else {
         None
     };
+    if scenario == Scenario::RetiredFile {
+        runtime.block_on(owner.drain_surface_exposure(&lease))?;
+        let file = retained
+            .as_ref()
+            .ok_or("retired scenario has no original file")?;
+        runtime.block_on(file.retire_backing(&owner, inputs, &id, generation))?;
+    }
     let original = runtime.block_on(snapshot(inputs))?;
     let mut expected = original
         .exposures
@@ -68,14 +87,19 @@ pub(crate) fn verify(
         .find(|row| row.id == id)
         .cloned()
         .ok_or("original retained exposure is absent")?;
-    if expected.phase != ExposurePhase::Active
+    let original_phase = if scenario == Scenario::RetiredFile {
+        ExposurePhase::Draining
+    } else {
+        ExposurePhase::Active
+    };
+    if expected.phase != original_phase
         || expected.backings.len() != if retain_file { 2 } else { 1 }
         || !expected
             .backings
             .iter()
             .any(|row| row.device == original_inode.dev() && row.inode == original_inode.ino())
     {
-        return Err("retained recovery did not start with an actual active original index".into());
+        return Err("retained recovery lost the expected original exposure and index".into());
     }
     expected.phase = ExposurePhase::Draining;
     drop(grant);
@@ -126,6 +150,9 @@ pub(crate) fn verify(
     runtime.block_on(restarted.resume_recovered(completed))?;
     if let Some(file) = &retained {
         file.check_readable()?;
+        if scenario == Scenario::RetiredFile {
+            runtime.block_on(file.check_unadopted(&restarted, inputs))?;
+        }
     }
     let running = runtime.block_on(restarted.status())?;
     if running.active_exposures != 0 || running.draining_exposures != 1 {
@@ -161,7 +188,10 @@ pub(crate) fn verify(
         return Err("physical unmap discharged policy without authenticated reconciliation".into());
     }
     if let Some(file) = retained {
-        runtime.block_on(file.retire(&restarted, inputs, &id, generation))?;
+        if scenario != Scenario::RetiredFile {
+            runtime.block_on(file.retire_backing(&restarted, inputs, &id, generation))?;
+        }
+        runtime.block_on(file.close(&restarted, inputs, &id, generation))?;
     }
     runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(5), async {
@@ -186,7 +216,11 @@ pub(crate) fn verify(
     {
         return Err("final native closure retained an already discharged exposure".into());
     }
-    if retain_file {
+    if scenario == Scenario::RetiredFile {
+        println!(
+            "PASS funded recovery retains already-unlinked original file as draining custody without adoption; new Resume preserves readable descriptor and exact charges until authenticated final closure"
+        );
+    } else if retain_file {
         println!(
             "PASS funded cold recovery re-verifies original sealed file and retains descriptor through new Resume and publisher retirement; exact inode charges release only on final closure before exposure reconciliation"
         );

@@ -314,9 +314,11 @@ impl NativeMetadataOwner {
     /// The authenticated census may prove an exposure already closed. Otherwise
     /// every original backing binding, pin and lease survives the funded recovery
     /// snapshot. Recovery retires disposable index names, while actual kernel
-    /// charges retain unlinked descriptors and mappings. Existing content pins
-    /// still require independently verified native recovery. No old exposure is
-    /// resumed or authorized to accept another backing request.
+    /// charges retain unlinked descriptors and mappings. Pins bound to original
+    /// draining files remain physical obligations even when their names are gone;
+    /// they grant no reusable source. Every other content promise still requires
+    /// independently verified native recovery. No old exposure is resumed or
+    /// authorized to accept another backing request.
     ///
     /// After acknowledged Resume, the original owner can reconcile draining
     /// exposures through its authenticated census. Until closure succeeds their
@@ -324,7 +326,7 @@ impl NativeMetadataOwner {
     ///
     /// # Errors
     /// Refuses invalid or foreign bindings, unavailable census, unresolved content
-    /// pins, exhausted bounds, failed durability, unknown or excessive quota,
+    /// promises, exhausted bounds, failed durability, unknown or excessive quota,
     /// uncertain publisher custody and every ordinary [`Self::recover`] failure.
     #[cfg(feature = "surface-fuse")]
     pub async fn recover_retaining_surface_exposures(&self) -> io::Result<CompletedRecovery> {
