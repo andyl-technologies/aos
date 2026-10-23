@@ -2551,3 +2551,11 @@ production build and Cargo artifact capture produce identical JavaScript, CSS,
 and WebAssembly bytes, with 232 compiled packages and 147 unchanged first-party
 inputs. Linker staging uses the sandbox's disk-backed temporary directory and
 cleans up on exit. Browser execution and browser-only tests remain separate gates.
+
+`tests/evidence/hub-service-cargo-baseline.json` and the matching production
+baseline retain the unchanged native service before its Bazel conversion. The
+service passes 506 unit cases, two integration cases and five doctests with the
+real frozen console assets. The test closure has 370 external and 24 first-party
+packages; production has 256 external and twelve first-party packages. Every
+retained first-party input matches the comparison commit. All-feature builds,
+live service/VM tests and production migration require separate qualification.
