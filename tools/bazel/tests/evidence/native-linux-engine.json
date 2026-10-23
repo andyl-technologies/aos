@@ -1,4 +1,15 @@
 {
+  "aggregate_regression_checks": {
+    "checkpoint_commit": "ae2ef5ae9e985944038e5756d4d96aa334d0fd6a",
+    "command": "nix-build -A checks.build.bazel.all -A checks.eval -A checks.build.aos-dev-cli --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+    "outputs": [
+      "/nix/store/8cqlvi48nz56wjcgpy3r90b0s732pwy9-aos-bazel-checks",
+      "/nix/store/aah8g2szam8h4ccl8dlj6fz67g2y2i8q-aos-native-evaluation-checks-0",
+      "/nix/store/v6c5hd3j30axmcl0v3iff8gnr77wgck9-aos-dev-cli-check-0"
+    ],
+    "scope": "All configured Bazel qualification families, infrastructure and cross checks, core evaluation checks, and the development CLI regression checks. Performance budgets and production cutovers remain open.",
+    "status": "passed"
+  },
   "checkpoint_commit": "3b1ced10b97c44eed73bc7307afdb71658a901b3",
   "command": "nix-build tools/bazel/tests/engine.nix -A all --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
   "configuration_sha256": {
