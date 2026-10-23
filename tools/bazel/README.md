@@ -2140,7 +2140,9 @@ BUILD files remain unchanged. Metadata parity covers 415 Rust targets across
 passes; the frozen outputs are retained in
 `tests/evidence/hub-model-metadata-evaluation.json`.
 
-Required workspace Rust compilation runs separately. The `test-fixtures` and
-Wasm variants, installed Hub services, complete compiler invocation equivalence,
+`tests/evidence/hub-model-required-rust-targets.json` retains passing required
+workspace unit and integration target compilation for all thirteen Hub model
+Rust changes, including the separate ETag helper move. Its frozen source
+predates the later Hub client changes. The `test-fixtures` and Wasm variants, installed Hub services, complete compiler invocation equivalence,
 numeric performance acceptance, production migration, and Cargo removal remain
 separate qualification work.
