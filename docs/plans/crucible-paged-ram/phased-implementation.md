@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 602 bindings: 583 component and nineteen native, across 243 requirements. | 146 requirements remain uncovered and none fully qualified. |
+| Requirements | 604 bindings: 585 component and nineteen native, across 243 requirements. | 146 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2521,7 +2521,7 @@ independently checked. All 95 policy controls and storage/portable-RAM Clippy pa
 Kernel quotas, physical OOM, native custody and performance remain unqualified.
 
 Signed catalog-decoding commit `97bc8ac04c` is pushed. Required application-target
-compilation is running from immutable source
+compilation passes at `warddk1jjmkx81qx73r82rvmav85lg5v` from immutable source
 `jijgdajw1kbbn3rzc5yg0nd6ffpqv3lg`; all 5,410 committed Rust/TOML files and
 six required fixtures match before subsequent repeated-descriptor edits.
 The earlier logical-terminal application-target build now passes at
@@ -2628,8 +2628,41 @@ Inventory `hy45vbn0plgv7h8fkq6n6slmaax0rl59` validates 602 bindings across
 243 requirements, with 146 uncovered and zero qualified. INV-6 and INV-10 gain
 their first adversarial component binding; that narrow refusal observation does
 not establish either invariant for an enabled native profile. All 742 ordinary
-storage tests pass. Engine, policy, Clippy, hermetic storage and required
-application-target checks are in progress for this increment.
+storage tests, 686 engine tests, 95 policy controls and storage/portable-RAM
+Clippy pass. Hermetic store output `xhxi31ijr130wa79jv9z10qbn5kaw9qv` passes
+all 82 selected cases and 103 independently checked successful nested summaries.
+Signed admission commit `cc3f8b2048` is pushed. Required application-target
+compilation is running from immutable source
+`yinmpvln8iizq1j3hflbc3qjlmnnjj1w`; all 5,413 committed Rust/TOML files and
+six required fixtures match.
+
+
+Both successor metadata vectors now reserve their existing caller-funded copies
+fallibly. A failed reservation retains the actual standard-library allocator
+cause in the existing inline storage error, together with that caller's original
+custody. This changes neither the output funding contract nor the logical or
+physical format, and issues no new resource account or native authority.
+
+Two controls inject only the new fallible paths. Before injection, each observes
+the actual successful admission prefix and requires that no earlier allocation
+has the selected extent. Distinct thirteen-region catalog and digest layouts
+separate the two copies. The second refusal permits exactly the first successful
+catalog allocation; neither diagnostic requests an additional loan, reads the
+change stream or invokes its callback. After the caller closes, its actual finite
+account stays charged until the returned error closes, then returns to zero.
+The predecessor's infallible copies are never fault-injected. A preliminary
+private-helper visibility compile refusal is retained separately from the six
+passing focused controls and supplies no causal predecessor-failure evidence.
+Existing campaign and checkpoint classifiers were reviewed unchanged: these
+storage allocator failures remain host operational unavailability. No new runtime
+classifier observation or physical OOM qualification is claimed.
+
+Inventory `ba8kv32lpplvw6z4j44niz67qg3wyjwd` validates 604 bindings across
+243 requirements: 563 model, 22 format and nineteen native bindings. The same
+146 requirements remain uncovered and none is fully qualified. All 744 ordinary
+storage tests, 686 engine tests, 95 policy controls and storage/portable-RAM
+Clippy pass. Hermetic storage and required application-target checks for this
+fallible-copy increment remain in progress.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`

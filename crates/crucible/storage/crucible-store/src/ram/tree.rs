@@ -243,8 +243,8 @@ impl RamStore {
         let mut work = Work::new(self.limits, original, boundary)?;
         self.admit_ram_publication(root.record.topology(), root.record.scope())?;
 
-        let mut regions = root.regions.to_vec();
-        let mut roots = root.record.region_roots().to_vec();
+        let mut regions = try_copy_root_vector(root.regions.as_ref(), original)?;
+        let mut roots = try_copy_root_vector(root.record.region_roots(), original)?;
         let mut previous: Option<(String, u64)> = None;
 
         loop {
@@ -497,6 +497,22 @@ impl RamStore {
             }
         }
     }
+}
+
+/// Copies caller-funded successor metadata with the original refusal custody.
+fn try_copy_root_vector<T: Copy>(
+    values: &[T],
+    original: &crate::owned_decode::DecodeBudget,
+) -> Result<Vec<T>, RamStoreError> {
+    let mut output = Vec::new();
+    output.try_reserve_exact(values.len()).map_err(|source| {
+        crate::content_store::StoreError::Allocation {
+            source,
+            custody: Some(original.custody()),
+        }
+    })?;
+    output.extend_from_slice(values);
+    Ok(output)
 }
 
 pub(super) fn selected_region<'a>(
