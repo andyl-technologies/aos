@@ -129,7 +129,9 @@ impl QemuRamWorkerFailure {
             .checked_add(lease_control)
             .and_then(|bytes| bytes.checked_add(shared_allocation_bytes::<AtomicBool>().ok()?))
             .and_then(|bytes| {
-                bytes.checked_add(super::worker_outcome::WorkerOutcome::allocation_bytes().ok()?)
+                bytes.checked_add(
+                    super::worker_outcome::WorkerOutcome::allocation_peak_bytes().ok()?,
+                )
             })
             .ok_or(QemuRamSourceError::Ownership)
     }

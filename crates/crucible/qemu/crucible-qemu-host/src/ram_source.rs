@@ -560,6 +560,16 @@ impl QemuRamSourceService {
         Ok(Arc::clone(&self.backing))
     }
 
+    /// Retains this entire service while a receiver's physical reap is unknown.
+    ///
+    /// The recipient is part of the original funded outcome allocation, born
+    /// before the worker. This consuming transfer neither cancels page service
+    /// nor queries or joins its native task, and allocates no new storage.
+    pub(crate) fn retain_for_unreaped_receiver(self) {
+        let recipient = self.failure.clone();
+        recipient.retain_live_receiver(self);
+    }
+
     /// Closes request admission while preserving the owned backing claim.
     pub fn cancel(&self) {
         if self

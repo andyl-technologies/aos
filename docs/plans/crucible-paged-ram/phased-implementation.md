@@ -1030,6 +1030,9 @@ containing launch remain retained, with neither retirement nor a quarantine
 callback. Omitting only the actual containing-join transfer makes this control
 observe an erroneous quarantine callback; restoring it passes. All thirteen
 cleanup controls pass, including the independent normal join/discharge case.
+Mandatory application-target compilation passes at
+`8jkrh6iryn7c84j60pmpxkm95lkg7r30` against commit `bac7b40048`; all 5,364
+Rust/TOML inputs and six fixture/license files match its immutable build source.
 No missing helper issuer or Main authority is synthesized.
 
 Pre-exec abandonment now retains its complete handover history in a linear
@@ -1058,6 +1061,33 @@ source-shape integration check pass. The
 matching strict Host lint result remains 690 library errors and fourteen warnings,
 with 757 test errors and five warnings; no exemption is added. Mandatory
 application-target compilation remains required for this change.
+
+The unreaped-child fallback now retains the complete live RAM Source facade
+in another single-publication slot inside its original outcome allocation.
+This preserves the actual wake and startup sockets, immutable backing,
+unqueried native owner, birth and stop history, journals and original service
+loan. The transfer neither cancels page service nor joins, polls or allocates.
+The full allocation and overlapping construction/retention frames are admitted
+before preparation and worker birth. The separate ordinary-abandonment recipient
+continues to preserve a canceled worker's unresolved native join debt.
+
+All thirty Source controls pass. Two new controls retain an actual prepared
+service before worker birth and an actual running service that subsequently
+serves a real authenticated page request. The native identity remains unchanged
+and unqueried; Rust delivery and closing the diagnostic alias do not refund the
+same account. Both transfers allocate and reallocate zero times. Omitting only
+whole-facade publication makes the live-worker control fail at its retained-owner
+assertion; restoring it passes, along with thirteen cleanup and nine pre-exec
+controls. The existing abandoned-worker TLS fixture now installs its destructor
+on the actual serving worker during a real request and holds that callback
+through facade destruction. It no longer assumes that the final shared backing
+destructor runs on the worker. These component checks do not establish Main or
+Source issuance, complete unreaped-child retention, or native-profile activation.
+All four child-exit and two stopped-child controls also pass. The source-shape
+integration check and Nix engineering hygiene pass. The matching strict Host
+lint result remains 690 library errors and fourteen warnings, with 757 test
+errors and five warnings; no exemption is added. Mandatory application-target
+compilation remains required for this change.
 
 #### Cumulative construction and request ownership source
 

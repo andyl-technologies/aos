@@ -365,7 +365,7 @@ impl Drop for QemuNodeChild {
             // immutable backing alive rather than revoke pages from an
             // indeterminate process after the bounded fallback expires.
             if let Some(source) = self.ram_source.take() {
-                std::mem::forget(source);
+                source.retain_for_unreaped_receiver();
             }
             if let Some(owner) = self.preexec_setup.take() {
                 // Close local aliases while the preborn recipient retains the

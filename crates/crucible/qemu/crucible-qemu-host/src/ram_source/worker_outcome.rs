@@ -30,6 +30,7 @@ struct OutcomeBody {
 struct OutcomeAllocation {
     body: Mutex<OutcomeBody>,
     abandoned: OnceLock<AbandonedWorker>,
+    live_receiver: OnceLock<QemuRamSourceService>,
 }
 
 struct AbandonedWorker {
@@ -114,6 +115,7 @@ impl WorkerOutcome {
                     _lease: lease,
                 }),
                 abandoned: OnceLock::new(),
+                live_receiver: OnceLock::new(),
             })),
         }
     }
@@ -123,6 +125,42 @@ impl WorkerOutcome {
             .extend(std::alloc::Layout::new::<OutcomeAllocation>())
             .map_err(|_| QemuRamSourceError::Ownership)?;
         u64::try_from(layout.pad_to_align().size()).map_err(|_| QemuRamSourceError::Ownership)
+    }
+
+    /// Covers the real allocation and overlapping construction/retention frames.
+    ///
+    /// # Errors
+    /// Refuses an unrepresentable complete control peak.
+    pub(super) fn allocation_peak_bytes() -> Result<u64, QemuRamSourceError> {
+        Self::allocation_bytes()?
+            .checked_add(std::mem::size_of::<OutcomeAllocation>() as u64)
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<QemuRamSourceService>() as u64))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Self>() as u64))
+            .ok_or(QemuRamSourceError::Ownership)
+    }
+
+    /// Keeps the complete active service for a receiver whose reap is unknown.
+    ///
+    /// # Panics
+    /// Panics if the private preparation invariant is violated and the live
+    /// service has no original outcome allocation.
+    pub(super) fn retain_live_receiver(self, source: QemuRamSourceService) {
+        // Preparation installs this same allocation before publishing the
+        // uncloneable service. Only this consuming path initializes this cell;
+        // delivery and ordinary abandonment use separate recipients.
+        let Some(shared) = self.shared.as_ref() else {
+            unreachable!("a live Source owns its original outcome allocation");
+        };
+        shared.live_receiver.get_or_init(|| source);
+        // Retain the actual recipient without canceling the service, dropping
+        // its wake socket, or discarding the unique native join owner.
+        std::mem::forget(self);
+    }
+
+    /// Borrows the actual retained facade without querying its native owner.
+    #[cfg(test)]
+    pub(super) fn retained_live_receiver(&self) -> Option<&QemuRamSourceService> {
+        self.shared.as_ref()?.live_receiver.get()
     }
 
     /// Retains the same native owner and containing join debt until Main exits.
