@@ -1,11 +1,20 @@
-From 4edc47cba642b59e1af833cb2ffb0eb9c84ae3d9 Mon Sep 17 00:00:00 2001
+From bbac33ec36066fefdf67b27c012955f0d7ff3d6f Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: preserve opaque boundary acquire ordering
+Subject: [PATCH] crucible: preserve genuine provider companion and dictionary
+ selection
 
-Retain the complete reviewed source integration and load the opaque boundary
-frame pointer through an explicitly typed acquire result. Preserve the
-pointer-width assertion, null decision and all subsequent ownership proofs.
+Retain the complete reviewed provider ownership and source integration. Add
+an independent TAP companion using the actual system target objects and
+production state owners, with main renamed only for its own system/main.c
+compilation. Preserve the legacy fixture, scenarios and recorded link failure.
+
+Select the companion through the genuine dictionary objects key, using the
+supported Meson has_key operation. Preserve all provider bodies and cases.
+
+This cumulative atomic source commit has the exact conventional source tree.
+Its source/provenance artifact does not establish configure, link or TAP
+qualification for the new companion.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -32188,6 +32197,225 @@ index 0000000000000000000000000000000000000000..a142ac4de63a2993092c932456d2c7ef
 +
 +This is source-only implementation. It does not establish an installed complete
 +profile, funded class13 child, layout, provider link or runtime admission.
+diff --git a/docs/devel/crucible-startup-source-providers.rst b/docs/devel/crucible-startup-source-providers.rst
+new file mode 100644
+index 0000000000000000000000000000000000000000..f55aaf79022e4436f4cbd7a94f1eabdcd7083261
+--- /dev/null
++++ b/docs/devel/crucible-startup-source-providers.rst
+@@ -0,0 +1,213 @@
++.. SPDX-License-Identifier: GPL-2.0-or-later
++.. Copyright (c) 2026 ANDYL Technologies, Inc.
++
++Startup Source production-provider companion
++===========================================
++
++``test-crucible-startup-source-providers`` is a separately registered GLib/TAP
++companion. It uses actual system owners and ordinary, unissued-state checks.
++It does not include the startup Source fixture, extracted Source bodies or
++modeled provider definitions. The existing ``test-crucible-startup-source``
++unit, its 179 extraction roots and 187 scenarios remain unchanged. Its recorded
++eighteen-provider link failure is not repaired by this target. The current
++fixture also has newer external references; eighteen is the historical failure
++inventory, not a newly measured current undefined-symbol count.
++
++Production ownership
++--------------------
++
++The companion exists only for the configured Linux x86-64 system target with
++TCG and plugins. Root Meson retains the exact selected target objects, compile
++flags, target includes, architecture dependencies, symbol prerequisites and
++link arguments from the existing ``x86_64-softmmu`` target loop. It does not
++reconstruct the VM dependency set from a handwritten list.
++
++The executable also contains the actual executable-only preexec translation
++unit, including its ``.preinit_array`` hook. The registered test environment
++removes ``QEMU_CRUCIBLE_PREEXEC_SETUP``; the actual preinit hook consequently
++takes its ordinary unselected return. No accepting issuer or preexec receipt is
++installed by the test.
++
++Only the companion compilation of actual ``system/main.c`` receives
++``-Dmain=crucible_startup_source_companion_system_main``. Its genuine argv owner,
++attestation function, ``qemu_main`` variable and ordinary main implementation
++remain in that object. The test never calls the renamed entrypoint. This flag
++does not affect provider, preexec, harness or ordinary emulator compilation.
++There is no replacement argv implementation, symbol weakening or post-link
++symbol rewriting. The original file's license notice remains unchanged.
++
++Initialization and lifetime
++---------------------------
++
++The real linked objects run their normal ELF constructors. In particular,
++``plugins/core.c:plugin_init`` initializes plugin lists, locks, hashes and the
++Source process/thread owner. The early POSIX thread constructor records the main thread's TLS name. The
++actual RCU constructor queries the Linux membarrier capability (when enabled),
++registers atfork callbacks, initializes three mutexes and three events, starts
++the detached ``call_rcu`` worker and registers the main RCU reader. That worker
++registers its own reader and waits on the real event; it is not joined by the
++harness. Thread creation includes the ordinary allocator and pthread effects.
++The companion does not disable or replace this worker.
++
++The real log, yank, Aio-handler and dirty-limit constructors initialize their
++ordinary mutexes. The async constructor initializes two mutexes and its worker
++barrier event. The API-system inventory constructor initializes four mutexes
++and installs the two real virtual-timer witness function pointers; it does not
++construct a virtual timer. Production module-registration constructors allocate
++``ModuleEntry`` records and append their initializer functions to actual module
++lists. The harness never calls ``module_call_init``, so registration is distinct
++from invoking those machine/device initializers. The base QOM constructor creates the actual type hash and registers the base
++Object and Interface types. Monitor constructors create hashes and QMP command
++records, initialize FD-set locks and callbacks, and sort the actual HMP command
++tables. Job, block-backend, graph and COLO constructors initialize their locks
++and queue/list state. The coroutine constructor reads
++``/proc/sys/vm/max_map_count`` into an allocated buffer to establish its normal
++pool limit. CPU/cache/zero-buffer/XBZRLE constructors inspect host capabilities
++and choose actual implementations; softfloat checks host FMA. The clock
++constructor samples host time. The 9P constructor reads ``RLIMIT_NOFILE`` and
++can terminate the process if that query fails. The DMG BZ2 constructor installs
++its real decoder pointer. These effects occur before the test cases and are
++not silently reclassified as unissued queries. No constructor ordering beyond
++the existing early priorities is introduced. These are genuine production startup
++effects, not a fixture environment or a claim of allocation-free execution.
++The harness calls no VM, CPU, guest, event-loop or lifecycle initializer and
++does not reset any production journal.
++
++No entered Source construction initializes its commands mutex. Consequently
++the three matched-recipient cases below reach the actual
++``advance_outcome_lock`` process check and then the actual
++``qemu_mutex_metadata_trybegin`` rejection of an uninitialized mutex. This
++returns ``-EINVAL`` before using its pthread lock. The raw providers preserve
++their genuine once-only negative journals, Source first/post observations and
++actual access-cursor returns. Each provider is invoked once; tests never erase
++or retry those records. They use different access kinds and histories.
++
++The real plugin constructor also allocates its two GLib hashes and initial QHT
++map, initializes the scoreboard queues and registers ``qemu_plugin_atexit_cb``.
++GLib's test registration and runner allocate their ordinary test records. Thus
++neither process startup nor the TAP harness is allocation-free. These effects
++remain in the genuine library/tool runtime closure and must be accounted for
++in an eventual separately authorized execution.
++
++On ordinary process exit, the real plugin atexit callback runs. Its hardware
++terminal branch requires a retained Source owner; the unselected test has no
++such owner, so that branch does not acquire the uninitialized BQL. Its ATEXIT callback
++list is genuinely empty because no plugin is loaded or registered, so the
++callback traversal invokes no guest/plugin callbacks. Process
++cleanup and actual thread observations still belong in any future runtime
++qualification; source inspection is not evidence of worker collection.
++
++Exact checks
++------------
++
++Each test calls the named production provider directly. No cases require an
++accepting frame, operation, Target, recipient, clock or profile.
++
++.. list-table:: Nineteen registered cases and their validation boundary
++   :header-rows: 1
++   :widths: 24 39 37
++
++   * - Case suffix
++     - Actual provider
++     - First decisive validation and expected result
++   * - ``rr/loan-current``
++     - ``boundary_loan_current_v1``
++     - Loan identity rejects NULL before frame/thread/BQL reads: ``-EPERM``.
++   * - ``rr/loan-returned``
++     - ``boundary_loan_returned_v1``
++     - Same canonical NULL-frame rejection: ``-EPERM``.
++   * - ``rr/loan-unentered``
++     - ``boundary_loan_unentered_v1``
++     - Same canonical NULL-frame rejection: ``-EPERM``; no absence proof.
++   * - ``rr/outcome-current``
++     - ``boundary_outcome_current_v1``
++     - Parent identity rejects NULL before live frame access: ``-EPERM``.
++   * - ``rr/release``
++     - ``boundary_release_v1``
++     - Same initial identity refusal; whole result has first ``-EPERM``,
++       post zero, retained false and consumed false. No release is attempted.
++   * - ``rr/returned``
++     - ``boundary_returned_v1``
++     - Canonical NULL-frame comparison returns ``-EPERM`` before payload reads.
++   * - ``rr/dispatch-identity``
++     - ``outcome_dispatch_identity_v1``
++     - NULL equals its zero frame key, but unattempted permanent record rejects
++       before RR identity or clocks: ``-ESTALE``.
++   * - ``rr/dispatch-storage``
++     - ``outcome_dispatch_storage_bytes_v1``
++     - Returns ``sizeof`` the actual static dispatch record; greater than zero.
++   * - ``request/identity``
++     - ``outcome_request_identity_v1``
++     - NULL differs from the actual inline capsule: ``-ESTALE`` before atomics
++       on its publication state or any Target/CPU use.
++   * - ``request/storage``
++     - ``outcome_request_storage_bytes_v1``
++     - Returns ``sizeof`` the actual static request capsule; greater than zero.
++   * - ``time/negative-target``
++     - ``qemu_plugin_advance_time_ticks``
++     - Negative target returns ``-EINVAL`` before accelerator lookup, request
++       publication, CPU, BH or AioContext access.
++   * - ``time/disabled-icount``
++     - ``qemu_plugin_icount_raw``
++     - Actual ``use_icount`` is statically ``ICOUNT_DISABLED``; assert that
++       state, then the provider returns zero before the timer/CPU helper.
++   * - ``preexec/work-end-pass``
++     - ``matched_deferred_work_end_identity_v1``
++     - Pass two returns ``-EINVAL`` before access acquisition or indexing.
++   * - ``preexec/outcome-unissued``
++     - ``matched_outcome_recipient_identity_v1``
++     - Real raw access and first/post Source actor cuts; uninitialized Source
++       commands metadata refuses before pthread access. First ``-EINVAL``
++       survives raw identity/capture negatives and actual access finish.
++   * - ``preexec/prepare-unissued``
++     - ``matched_prepare_recipient_identity_v1``
++     - Real prepare actor getter reaches the same metadata rejection;
++       independent raw post and finish retain ``-EINVAL``.
++   * - ``preexec/request-unissued``
++     - ``matched_request_recipient_identity_v1``
++     - Prospective request actor getter reaches the same metadata rejection;
++       independent raw post and finish retain ``-EINVAL``.
++   * - ``preexec/history-kind``
++     - ``outcome_history_post_v1``
++     - Kind zero returns ``-EINVAL`` before history indexing or access begin.
++   * - ``tcg/storage``
++     - ``qemu_crucible_tcg_application_storage_bytes_v1``
++     - Returns ``sizeof`` the actual statically contained producer; greater
++       than zero. No TCG context or map is constructed.
++   * - ``process/uncaptured-argv``
++     - ``qemu_crucible_process_argv_attestation``
++     - Genuine argv capture has not run through renamed main. Valid outputs
++       are cleared and the actual zero validity flag yields ``-ENODATA``.
++
++The boundary providers have the full prefix
++``qemu_crucible_core_quantum_``; dispatch/request providers use
++``qemu_crucible_``; preexec providers use ``qemu_crucible_preexec_``.
++
++Qualification boundaries
++------------------------
++
++Configuration and graph discovery must first establish the actual companion
++target closure and compile database. They must confirm that only its main
++object receives the rename, actual preexec is an executable source, and no
++fixture, extracted utility body or negative utility-provider archive supplies
++the intended providers. A later link review must establish one real definition
++per exercised provider. A later separately authorized TAP run must record all
++nineteen results and actual process cleanup.
++
++No configure, compiler, link or TAP result follows from this source increment.
++A companion pass is neither an original-unit pass nor an accepting lifecycle,
++profile, funding or activation qualification. A genuine system-binary link is
++also distinct from executing this companion.
++
++New-file license ledger
++-----------------------
++
++.. list-table:: Files introduced by this increment
++   :header-rows: 1
++
++   * - Path
++     - License
++   * - ``tests/unit/test-crucible-startup-source-providers.c``
++     - GPL-2.0-or-later, explicit SPDX and copyright notice
++   * - ``docs/devel/crucible-startup-source-providers.rst``
++     - GPL-2.0-or-later, explicit SPDX and copyright notice
 diff --git a/docs/devel/crucible-successful-installed-returned.rst b/docs/devel/crucible-successful-installed-returned.rst
 new file mode 100644
 index 0000000000000000000000000000000000000000..442573b43ee6aa27a3f52c382b90c56cecab48b3
@@ -106269,7 +106497,7 @@ index e7479084726c661e75447fd1330ee7cdba888e88..db6fbd5c8a924de2dfe36f8033694076
  }
  
 diff --git a/meson.build b/meson.build
-index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..0bc55d624307eb677cb329f5accfd67fd9d00db7 100644
+index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..6b469f2d0321ca2a00a077720a3dab7230c95103 100644
 --- a/meson.build
 +++ b/meson.build
 @@ -2814,6 +2814,65 @@ if host_os != 'darwin'
@@ -106391,7 +106619,15 @@ index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..0bc55d624307eb677cb329f5accfd67f
  genh += custom_target('config-poison.h',
                        input: [target_configs_h],
                        output: 'config-poison.h',
-@@ -4410,10 +4515,14 @@ foreach target : target_dirs
+@@ -4256,6 +4361,7 @@ endif
+ 
+ traceable = []
+ emulators = {}
++startup_source_provider_config = {}
+ foreach target : target_dirs
+   config_target = config_target_mak[target]
+   target_name = config_target['TARGET_NAME']
+@@ -4410,10 +4516,14 @@ foreach target : target_dirs
                   build_by_default: false)
  
    if target.endswith('-softmmu')
@@ -106407,6 +106643,36 @@ index 40e3f4ec44c8d36c44ec505bc4f54cbe5724ea73..0bc55d624307eb677cb329f5accfd67f
        'dependencies': [sdl, target_stubs],
      }]
      if host_os == 'windows' and (sdl.found() or gtk.found())
+@@ -4456,6 +4566,29 @@ foreach target : target_dirs
+                link_args: link_args,
+                win_subsystem: exe['win_subsystem'])
+ 
++    # Preserve the actual target closure for an independently executed TAP
++    # companion. The modeled Source utility unit does not supply these owners.
++    if target == 'x86_64-softmmu' and \
++       exe['name'] == 'qemu-system-x86_64' and host_os == 'linux' and \
++       host_arch == 'x86_64' and get_option('plugins') and \
++       'CONFIG_TCG' in config_target
++      provider_compile_deps = []
++      foreach dep : arch_deps + exe['dependencies']
++        provider_compile_deps += dep.partial_dependency(compile_args: true,
++                                                        includes: true)
++      endforeach
++      startup_source_provider_config = {
++        'objects': [lib.extract_all_objects(recursive: true)],
++        'dependencies': arch_deps + exe['dependencies'],
++        'compile_dependencies': provider_compile_deps,
++        'include_directories': target_inc,
++        'c_args': c_args,
++        'sources': [main_rs] + preexec_setup_sources,
++        'link_depends': [block_syms, qemu_syms],
++        'link_args': link_args,
++      }
++    endif
++
+     if host_os == 'darwin'
+       icon = 'pc-bios/qemu.rsrc'
+       build_input = [emulator, files(icon)]
 diff --git a/migration/migration.c b/migration/migration.c
 index 9df6da131cec8a6e885c87e74e8dd1f9db4edcfd..618d0b4f3a171d09ed6fde5da37215c66178dfca 100644
 --- a/migration/migration.c
@@ -307811,7 +308077,7 @@ index f8e17dcf1ce91d8aefb8d82cafd3196a4fd9edf6..f24121d2d3c66f1436ba73c976a7bd76
      return true;
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..7abf43bad54ada8405bd180f06c88a10682f7f14
+index 0000000000000000000000000000000000000000..1e760a3ae503291d1921fddd6404baf4e19b2cd5
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,184 @@
@@ -307883,7 +308149,7 @@ index 0000000000000000000000000000000000000000..7abf43bad54ada8405bd180f06c88a10
 +    'include/plugins/qemu-plugin.h':
 +        '98dffedb987540b27b5725b202fb65deaec3c9b1bedf0f80c7fcf6fcda499fe4',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f1855a655ebea2799c157fa4cbcdd424a67b48c3438c0a9f7fd4d78cafb2f648',
++        '5d521afd17e5870212deec1d53f21148064df73e25dc212459931487fd1542c9',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '6a7d82751791bdf81a1ccf64d81ed12c28680068b507b220199b245c760748e5',
 +}
@@ -371617,7 +371883,7 @@ index 0000000000000000000000000000000000000000..267e313f943977d178885522eee43768
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..c8c2ef7f9f33cc28c455f557761cf498785efa4b
+index 0000000000000000000000000000000000000000..81efc856f01fa5f2560c79ce40ed8d108c8cc50f
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -371635,7 +371901,7 @@ index 0000000000000000000000000000000000000000..c8c2ef7f9f33cc28c455f557761cf498
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f1855a655ebea2799c157fa4cbcdd424a67b48c3438c0a9f7fd4d78cafb2f648',
++        '5d521afd17e5870212deec1d53f21148064df73e25dc212459931487fd1542c9',
 +}
 +
 +FUNCTIONS = (
@@ -371723,7 +371989,7 @@ index 0000000000000000000000000000000000000000..c8c2ef7f9f33cc28c455f557761cf498
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..9aa9343f244bf9f5c3dd1b792ada35525b77a40c
+index 0000000000000000000000000000000000000000..ef7607d2523bac5ff28a93ffb3581bee9d1822f9
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -371754,7 +372020,7 @@ index 0000000000000000000000000000000000000000..9aa9343f244bf9f5c3dd1b792ada3552
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f1855a655ebea2799c157fa4cbcdd424a67b48c3438c0a9f7fd4d78cafb2f648',
++        '5d521afd17e5870212deec1d53f21148064df73e25dc212459931487fd1542c9',
 +}
 +
 +FUNCTIONS = (
@@ -371970,7 +372236,7 @@ index 0000000000000000000000000000000000000000..9aa9343f244bf9f5c3dd1b792ada3552
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d87a15aaa9641c9d88251f338c57ab3391a9f7b7
+index 0000000000000000000000000000000000000000..f0bf8563a0b7b8ecb1d1f8b9a9f7d8ad89b8c136
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -371994,7 +372260,7 @@ index 0000000000000000000000000000000000000000..d87a15aaa9641c9d88251f338c57ab33
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f1855a655ebea2799c157fa4cbcdd424a67b48c3438c0a9f7fd4d78cafb2f648',
++        '5d521afd17e5870212deec1d53f21148064df73e25dc212459931487fd1542c9',
 +}
 +
 +FUNCTIONS = (
@@ -372088,7 +372354,7 @@ index 0000000000000000000000000000000000000000..d87a15aaa9641c9d88251f338c57ab33
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..662c11ac7515fd2e3763966c8ec9dddbe61477a5
+index 0000000000000000000000000000000000000000..c0ef3ee7e891fb6e86008438ddd6828883ca0516
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,795 @@
@@ -372174,15 +372440,15 @@ index 0000000000000000000000000000000000000000..662c11ac7515fd2e3763966c8ec9dddb
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        'f1855a655ebea2799c157fa4cbcdd424a67b48c3438c0a9f7fd4d78cafb2f648',
++        '5d521afd17e5870212deec1d53f21148064df73e25dc212459931487fd1542c9',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '7723b927daea099fe5ae18921fb60f88a7114799f1b0b51a33d3af8e48ff5baa',
++        '49a86bfc87d4814bf42863f9be7c790473d2e6aa7e03139f01aece34ffe66544',
 +    'meson.build':
-+        '4956f0f67df2d9676e331d14e06fe1d7e9c9f93abac451ead7487f14bd5200ef',
++        '5d9c9c612301a4ef7cc6480ed8e953cde26eef7d8a6ded6c2826b82c6e9cfaa7',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        '153138370240e25a5a429685f6557dfa76e0309ff6fe3700530215ae61158269',
 +    'tests/unit/meson.build':
-+        '52642b9244b9f18761c3fdbdd0792e9e0ad7ab8c0dd314f192dfbd693ca502e3',
++        'f542d93863aad75cbb1b3ce969200bf5dbe5c538ef2f80fe89d3e1bc1f709e1a',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '6a7d82751791bdf81a1ccf64d81ed12c28680068b507b220199b245c760748e5',
 +    'system/crucible-preexec-publisher-offer.inc.h':
@@ -372889,7 +373155,7 @@ index 0000000000000000000000000000000000000000..662c11ac7515fd2e3763966c8ec9dddb
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d26ea6b192ab852ae2ffd690a9a6acfba4323140
+index 0000000000000000000000000000000000000000..8ce46af40e499e0d22b8231f18e3f124e7b548cb
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,2029 @@
@@ -373367,7 +373633,7 @@ index 0000000000000000000000000000000000000000..d26ea6b192ab852ae2ffd690a9a6acfb
 +    'include/qobject/qobject-lifetime.h':
 +        'f590ea63b6b7cb11069922f0fad9169652d1970d13c36e39076e0e0ebb1bb846',
 +    'meson.build':
-+        '4956f0f67df2d9676e331d14e06fe1d7e9c9f93abac451ead7487f14bd5200ef',
++        '5d9c9c612301a4ef7cc6480ed8e953cde26eef7d8a6ded6c2826b82c6e9cfaa7',
 +    'plugins/crucible-apic-getter.inc.h':
 +        '3f37a0e86d175b719f4cfc7bdc87fbf0db1061f5b7fc805e103a26114dda6ab6',
 +    'plugins/crucible-clock-custody.inc.h':
@@ -373429,7 +373695,7 @@ index 0000000000000000000000000000000000000000..d26ea6b192ab852ae2ffd690a9a6acfb
 +    'tests/unit/crucible-fault-node-restore-fixture.inc.h':
 +        '3daaa09d9d1fa487a29e49d63c568798fc3c3a3420387b40aa36758e4b49632e',
 +    'tests/unit/meson.build':
-+        '52642b9244b9f18761c3fdbdd0792e9e0ad7ab8c0dd314f192dfbd693ca502e3',
++        'f542d93863aad75cbb1b3ce969200bf5dbe5c538ef2f80fe89d3e1bc1f709e1a',
 +    'tests/unit/test-crucible-action-edge-post.py':
 +        '5f2722de0b58309235281639b41072c1b6f94139170afe8c0de1d2b7fa713b42',
 +    'tests/unit/test-crucible-apic-getter-custody.py':
@@ -375021,7 +375287,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8fb29aabb84c8d548eb4a918af61533d9fbff9ca 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..d7cb269241ff16b04c7f62a36727074a77d58c67 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -375096,7 +375362,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8fb29aabb84c8d548eb4a918af61533d
  foreach test_name, extra: tests
    src = [test_name + '.c']
    deps = [qemuutil]
-@@ -207,3 +251,1753 @@ foreach test_name, extra: tests
+@@ -207,3 +251,1790 @@ foreach test_name, extra: tests
         priority: slow_tests.get(test_name, 30),
         suite: ['unit'])
  endforeach
@@ -376375,6 +376641,43 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..8fb29aabb84c8d548eb4a918af61533d
 +  )
 +endif
 +
++
++# This companion owns no fixture symbols or extracted production journals.
++if startup_source_provider_config.has_key('objects')
++  provider_config = startup_source_provider_config
++  provider_main = static_library(
++    'crucible-startup-source-provider-main',
++    '../../system/main.c', genh,
++    dependencies: provider_config['compile_dependencies'],
++    include_directories: provider_config['include_directories'],
++    c_args: provider_config['c_args'] +
++            ['-Dmain=crucible_startup_source_companion_system_main'],
++    build_by_default: false,
++  )
++  startup_source_providers = executable(
++    'test-crucible-startup-source-providers',
++    'test-crucible-startup-source-providers.c',
++    provider_config['sources'], genh,
++    objects: provider_config['objects'] +
++             [provider_main.extract_all_objects(recursive: false)],
++    dependencies: provider_config['dependencies'],
++    include_directories: provider_config['include_directories'],
++    c_args: provider_config['c_args'],
++    link_depends: provider_config['link_depends'],
++    link_args: provider_config['link_args'],
++    build_by_default: false,
++  )
++  provider_test_env = environment()
++  provider_test_env.unset('QEMU_CRUCIBLE_PREEXEC_SETUP')
++  test(
++    'test-crucible-startup-source-providers', startup_source_providers,
++    env: provider_test_env,
++    args: ['--tap', '-k'],
++    protocol: 'tap',
++    timeout: 60,
++    suite: ['unit'],
++  )
++endif
 +
 +# This is an explicit preparation target, outside the delivery body's deadline.
 +# Its manifest authenticates the complete configured component closure on use.
@@ -453974,6 +454277,210 @@ index 0000000000000000000000000000000000000000..51c9a70a2ca0e5f30fbc154b52423b7c
 +
 +    printf("  ]\n}\n");
 +    return ferror(stdout) ? 1 : 0;
++}
+diff --git a/tests/unit/test-crucible-startup-source-providers.c b/tests/unit/test-crucible-startup-source-providers.c
+new file mode 100644
+index 0000000000000000000000000000000000000000..0a1b6bc29c1ac1b15a7a07331b189f0a11b9c415
+--- /dev/null
++++ b/tests/unit/test-crucible-startup-source-providers.c
+@@ -0,0 +1,198 @@
++/*
++ * Ordinary, unissued-state checks against genuine system provider owners.
++ *
++ * Copyright (c) 2026 ANDYL Technologies, Inc.
++ * SPDX-License-Identifier: GPL-2.0-or-later
++ */
++
++#include "qemu/osdep.h"
++#include "exec/icount.h"
++#include "qemu/crucible-preexec-setup.h"
++#include "qemu/crucible-process.h"
++#include "qemu/crucible-process-purpose.h"
++#include "system/crucible-advance-outcome.h"
++#include "system/crucible-application.h"
++#include "system/crucible-quantum-execution.h"
++
++static void test_boundary_loan_current(void)
++{
++    g_assert_cmpint(qemu_crucible_core_quantum_boundary_loan_current_v1(
++        NULL, 0, 1, NULL, NULL, 0), ==, -EPERM);
++}
++
++static void test_boundary_loan_returned(void)
++{
++    g_assert_cmpint(qemu_crucible_core_quantum_boundary_loan_returned_v1(
++        NULL, 0, 1, NULL, NULL, 0), ==, -EPERM);
++}
++
++static void test_boundary_loan_unentered(void)
++{
++    g_assert_cmpint(qemu_crucible_core_quantum_boundary_loan_unentered_v1(
++        NULL, 0, 1, NULL, NULL, 0), ==, -EPERM);
++}
++
++static void test_boundary_outcome_current(void)
++{
++    g_assert_cmpint(qemu_crucible_core_quantum_boundary_outcome_current_v1(
++        NULL, 0, 1), ==, -EPERM);
++}
++
++static void test_boundary_release(void)
++{
++    QemuCrucibleCoreQuantumBoundaryLoanResult result =
++        qemu_crucible_core_quantum_boundary_release_v1(
++            NULL, 0, 1, NULL, NULL, 0);
++
++    g_assert_cmpint(result.first_status, ==, -EPERM);
++    g_assert_cmpint(result.post_status, ==, 0);
++    g_assert_false(result.retained);
++    g_assert_false(result.consumed);
++}
++
++static void test_boundary_returned(void)
++{
++    g_assert_cmpint(qemu_crucible_core_quantum_boundary_returned_v1(
++        NULL, 0, 1), ==, -EPERM);
++}
++
++static void test_dispatch_identity(void)
++{
++    g_assert_cmpint(qemu_crucible_outcome_dispatch_identity_v1(
++        NULL, 0, 0, 0), ==, -ESTALE);
++}
++
++static void test_dispatch_storage(void)
++{
++    g_assert_cmpuint(qemu_crucible_outcome_dispatch_storage_bytes_v1(), >, 0);
++}
++
++static void test_request_identity(void)
++{
++    g_assert_cmpint(qemu_crucible_outcome_request_identity_v1(
++        NULL, 0, NULL, 0, 0, false), ==, -ESTALE);
++}
++
++static void test_request_storage(void)
++{
++    g_assert_cmpuint(qemu_crucible_outcome_request_storage_bytes_v1(), >, 0);
++}
++
++static void test_negative_time_target(void)
++{
++    g_assert_cmpint(qemu_plugin_advance_time_ticks(-1), ==, -EINVAL);
++}
++
++static void test_disabled_icount(void)
++{
++    g_assert_cmpint(icount_enabled(), ==, ICOUNT_DISABLED);
++    g_assert_cmpuint(qemu_plugin_icount_raw(), ==, 0);
++}
++
++static void test_work_end_invalid_pass(void)
++{
++    g_assert_cmpint(
++        qemu_crucible_preexec_matched_deferred_work_end_identity_v1(
++            NULL, NULL, 0, NULL, 0, 2), ==, -EINVAL);
++}
++
++/* Each real raw provider retains its own failed invocation. With no entered
++ * construction, its Source reciprocal rejects the uninitialized commands
++ * mutex before using pthread state. Never reset those permanent journals. */
++static void test_matched_outcome_unissued(void)
++{
++    g_assert_cmpint(
++        qemu_crucible_preexec_matched_outcome_recipient_identity_v1(
++            NULL, NULL, 0, NULL, NULL, 0, NULL, NULL, 0, NULL, 0),
++        ==, -EINVAL);
++}
++
++static void test_matched_prepare_unissued(void)
++{
++    g_assert_cmpint(
++        qemu_crucible_preexec_matched_prepare_recipient_identity_v1(
++            NULL, NULL, 0, NULL, NULL, 0, NULL, 0), ==, -EINVAL);
++}
++
++static void test_matched_request_unissued(void)
++{
++    g_assert_cmpint(
++        qemu_crucible_preexec_matched_request_recipient_identity_v1(
++            NULL, NULL, 0, NULL, NULL, 0, NULL, 0, false), ==, -EINVAL);
++}
++
++static void test_history_invalid_kind(void)
++{
++    g_assert_cmpint(qemu_crucible_preexec_outcome_history_post_v1(
++        NULL, 0, NULL, 0, NULL, 0, 0), ==, -EINVAL);
++}
++
++static void test_tcg_storage(void)
++{
++    g_assert_cmpuint(qemu_crucible_tcg_application_storage_bytes_v1(), >, 0);
++}
++
++static void test_uncaptured_process_argv(void)
++{
++    uint32_t version = UINT32_MAX;
++    uint64_t argc = UINT64_MAX;
++    uint64_t bytes = UINT64_MAX;
++    uint8_t digest[32];
++
++    memset(digest, 0xff, sizeof(digest));
++    g_assert_cmpint(qemu_crucible_process_argv_attestation(
++        &version, &argc, &bytes, digest), ==, -ENODATA);
++    g_assert_cmpuint(version, ==, 0);
++    g_assert_cmpuint(argc, ==, 0);
++    g_assert_cmpuint(bytes, ==, 0);
++    for (size_t i = 0; i < sizeof(digest); i++) {
++        g_assert_cmpuint(digest[i], ==, 0);
++    }
++}
++
++int main(int argc, char **argv)
++{
++    g_test_init(&argc, &argv, NULL);
++    g_assert_null(g_getenv(QEMU_CRUCIBLE_PREEXEC_SETUP_SELECTOR));
++
++    g_test_add_func("/startup-source-providers/rr/loan-current",
++                    test_boundary_loan_current);
++    g_test_add_func("/startup-source-providers/rr/loan-returned",
++                    test_boundary_loan_returned);
++    g_test_add_func("/startup-source-providers/rr/loan-unentered",
++                    test_boundary_loan_unentered);
++    g_test_add_func("/startup-source-providers/rr/outcome-current",
++                    test_boundary_outcome_current);
++    g_test_add_func("/startup-source-providers/rr/release",
++                    test_boundary_release);
++    g_test_add_func("/startup-source-providers/rr/returned",
++                    test_boundary_returned);
++    g_test_add_func("/startup-source-providers/rr/dispatch-identity",
++                    test_dispatch_identity);
++    g_test_add_func("/startup-source-providers/rr/dispatch-storage",
++                    test_dispatch_storage);
++    g_test_add_func("/startup-source-providers/request/identity",
++                    test_request_identity);
++    g_test_add_func("/startup-source-providers/request/storage",
++                    test_request_storage);
++    g_test_add_func("/startup-source-providers/time/negative-target",
++                    test_negative_time_target);
++    g_test_add_func("/startup-source-providers/time/disabled-icount",
++                    test_disabled_icount);
++    g_test_add_func("/startup-source-providers/preexec/work-end-pass",
++                    test_work_end_invalid_pass);
++    g_test_add_func("/startup-source-providers/preexec/outcome-unissued",
++                    test_matched_outcome_unissued);
++    g_test_add_func("/startup-source-providers/preexec/prepare-unissued",
++                    test_matched_prepare_unissued);
++    g_test_add_func("/startup-source-providers/preexec/request-unissued",
++                    test_matched_request_unissued);
++    g_test_add_func("/startup-source-providers/preexec/history-kind",
++                    test_history_invalid_kind);
++    g_test_add_func("/startup-source-providers/tcg/storage",
++                    test_tcg_storage);
++    g_test_add_func("/startup-source-providers/process/uncaptured-argv",
++                    test_uncaptured_process_argv);
++
++    return g_test_run();
 +}
 diff --git a/tests/unit/test-crucible-startup-source.c b/tests/unit/test-crucible-startup-source.c
 new file mode 100644

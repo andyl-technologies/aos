@@ -679,3 +679,5 @@ directory.
 | `plugins/crucible-outcome-constructor-retirement.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `system/crucible-preexec-publisher-constructor-recipient.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `plugins/crucible-advance-outcome-no-target.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-startup-source-providers.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-startup-source-providers.c` | GPL-2.0-or-later | Explicit SPDX identifier |
