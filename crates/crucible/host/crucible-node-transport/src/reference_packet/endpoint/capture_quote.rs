@@ -72,9 +72,15 @@ impl PacketEndpoint<DeadlineStream> {
         startup: &crate::reference_packet::service::ack_emitter::OriginalNativeReportStartupAllocation,
     ) -> Result<NativeEndpointCaptureStateData<'a>, ProviderError> {
         self.ensure_complete_origin()?;
-        if startup.purpose_data() != crate::reference_packet::service::report_startup::PacketNativeReportStartupPurpose::OriginalObserve12 { return Err(refused()); }
+        if startup.purpose_data()
+            != crate::reference_packet::service::report_startup::PacketNativeReportStartupPurpose::OriginalObserve12
+        {
+            return Err(refused());
+        }
+
         let maximum_serialization_requested_bytes = startup.maximum_requested_bytes()?;
-        let compact_serializer_scratch_bytes = crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::requested_serialization_scratch_bytes();
+        let compact_serializer_scratch_bytes =
+            crate::protocol_snapshot::compact_bytes::BorrowedCompactBytes::requested_serialization_scratch_bytes();
         if compact_serializer_scratch_bytes > maximum_serialization_requested_bytes {
             return Err(exhausted());
         }
@@ -583,7 +589,10 @@ pub(crate) fn original_capture_report_quote_layout_data() -> usize {
         super::capture_startup::original_startup_capture_endpoint_counter_scratch_data(),
         crate::reference_packet::control::original_startup_capture_counter_scratch_data(),
         crate::reference_packet::service::native_snapshot::native_owned13_snapshot_schema_counter_scratch_data(),
-    ].into_iter().try_fold(0usize, usize::checked_add).unwrap_or(usize::MAX)
+    ]
+    .into_iter()
+    .try_fold(0usize, usize::checked_add)
+    .unwrap_or(usize::MAX)
 }
 
 /// Names only the new original-purpose writer views before the selected quote.
@@ -595,5 +604,8 @@ pub(crate) fn original_invocation_capture_report_additional_scratch_data() -> us
         crate::reference_packet::service::native_snapshot::native_owned14_snapshot_schema_counter_scratch_data(),
         std::mem::size_of::<Result<bool, ProviderError>>(),
         std::mem::size_of::<std::cell::Ref<'static, crate::reference_packet::service::ack_emitter::NativeAckBoot>>(),
-    ].into_iter().try_fold(0usize, usize::checked_add).unwrap_or(usize::MAX)
+    ]
+    .into_iter()
+    .try_fold(0usize, usize::checked_add)
+    .unwrap_or(usize::MAX)
 }
