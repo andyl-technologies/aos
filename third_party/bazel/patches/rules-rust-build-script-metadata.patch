@@ -1,0 +1,52 @@
+--- a/cargo/private/cargo_build_script_runner/lib.rs
++++ b/cargo/private/cargo_build_script_runner/lib.rs
+@@ -181,7 +181,7 @@
+         outputs: &[BuildScriptOutput],
+         crate_links: &str,
+         exec_root: &str,
+-        out_dir: &str,
++        _out_dir: &str,
+     ) -> String {
+         let prefix = format!("DEP_{}_", crate_links.replace('-', "_").to_uppercase());
+         outputs
+@@ -191,7 +191,9 @@
+                     Some(format!(
+                         "{}{}",
+                         prefix,
+-                        Self::escape_for_serializing(Self::redact_paths(env, exec_root, out_dir))
++                        // Dependency metadata belongs to its producer. Consumers only
++                        // expand ${pwd}; retain the producer's output path.
++                        Self::escape_for_serializing(Self::redact_exec_root(env, exec_root))
+                     ))
+                 } else {
+                     None
+@@ -507,3 +509,29 @@
+         );
+     }
+ }
++
++#[cfg(test)]
++mod dependency_output_directory_tests {
++    use super::BuildScriptOutput;
++
++    #[test]
++    fn dependent_build_script_retains_producer_include_directory() {
++        let producer_output = "bazel-out/cfg/bin/libssh2/_bs.out_dir";
++        let metadata = [BuildScriptOutput::DepEnv(format!(
++            "INCLUDE=/producer/execroot/{producer_output}/include"
++        ))];
++
++        let serialized = BuildScriptOutput::outputs_to_dep_env(
++            &metadata,
++            "ssh2",
++            "/producer/execroot",
++            producer_output,
++        );
++        let consumed = serialized.replace("${pwd}", "/consumer/execroot");
++
++        assert_eq!(
++            consumed,
++            "DEP_SSH2_INCLUDE=/consumer/execroot/bazel-out/cfg/bin/libssh2/_bs.out_dir/include"
++        );
++    }
++}
