@@ -6,20 +6,20 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "d6ff4e47f26a078404e943e89f554b686766985369f579d5b773d16c8870d0ee";
-  subject = "crucible: retain production providers and isolate legacy fixture symbols";
-  body = "Preserve the complete current provider and source ownership. Isolate the\nunchanged legacy Source fixture and its reviewed real utility support in a\nprivate object namespace, with genuine system providers left unchanged.\n\nRetain all scenario assertions, extracted roots, compile variants and worker\nlookups. Require exact coordinate, ELF, relocation and final visibility/map\nchecks instead of accepting modeled production definitions or weak fallbacks.\n\nThis cumulative atomic source commit has the exact conventional source tree.\nIts corresponding source and pure controls do not establish configuration,\ntransformed objects, linking, TAP or an accepting lifecycle/profile.";
-  commit = "cf897fddea21e1dafdeec4ec87b3e4517ad92305";
-  tree = "d81308a943d3e1cae29b55e730b1f1ab3ec85515";
+  sha256 = "820156fd738e0a4cf6ed0a4edfa96cac871dbf07b165b5b1ace2b00ed7fb3e82";
+  subject = "crucible: preserve startup Source fixture provider ownership";
+  body = "Add the startup Source lifecycle owners, bounded physical histories and\nproduction-provider companion while preserving the registered fixture's\nscenarios and assertions. Keep ordinary and unissued-state companion\nobservations distinct from accepting lifecycle or profile qualification.\n\nGive the legacy fixture and its exact selected utility closure explicit\nprivate namespaces. Preserve genuine system providers and renamed real\nmain ownership, verify transformation metadata and relocation identities,\nand restrict private dynamic visibility to the existing worker lookups.\n\nLet Meson derive the private static fixture's PIE compilation from b_pie\ninstead of forcing and duplicating its compiler flag. Preserve pic:false,\nselected sources, dependencies, registrations, roots and assertions.";
+  commit = "de079e19836c67483cb082eea7257b569b9142cd";
+  tree = "134ade121be2a24d4a24d8c9422d81d337b79e8d";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/legacy-fixture-isolation-atomic-dates";
+  branchRef = "dplecki/legacy-fixture-pie-owner-atomic";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "3276b76e3e0111eb9e130d97fa676d1bcb84b52c655f42bc9f51a7ebcdc85495";
+  bundleSha256 = "1216032c4f17d33cd95f4d1287df217ad26f1a053d424ce5d59a4816bc56236c";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

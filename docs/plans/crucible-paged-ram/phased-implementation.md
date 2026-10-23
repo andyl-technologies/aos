@@ -63,7 +63,7 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | `8f515a3227` imports signed atomic `cf897fddea`, conventional `bff53307ef`, tree `d81308a9`, isolating 87 legacy fixture objects while retaining genuine production providers. Independent review verifies all 66 source payloads and 78,470 Git/disk/archive paths; all 236 pure controls pass. Canonical patch reconstruction and the 663-created-file license ledger pass. | The earlier genuine-provider companion passes its complete build and all nineteen ordinary/unissued-state TAP cases. The new legacy isolation still needs configuration, actual object transformation, final provider-binding proof and its 187-case TAP run. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
+| Native integration | Signed atomic `de079e1983`, conventional `8fbd44a043`, tree `134ade12` removes the redundant fixture PIE flag from the imported legacy namespace isolation. Independent review verifies all 45 correction payloads and 78,470 Git/disk/archive paths; all 251 pure controls pass. Canonical patch reconstruction and the 663-created-file license ledger pass. | The earlier genuine-provider companion passes its complete build and all nineteen ordinary/unissued-state TAP cases. The new legacy isolation still needs configuration, actual object transformation, final provider-binding proof and its 187-case TAP run. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
@@ -1441,6 +1441,27 @@ actual producer files. The pinned Meson option-selection method independently
 confirms that the manual target flag requests PIE and is then appended after
 Meson has already emitted its own PIE flag. Removing that redundant authored
 flag remains a source correction to validate; the strict classifier is unchanged.
+
+The subsequent source correction is imported as signed atomic
+`de079e19836c67483cb082eea7257b569b9142cd`, tree
+`134ade121be2a24d4a24d8c9422d81d337b79e8d`, from sealed source manifest
+`edecaec901b5492e17894c10b4db2f7dffc784eb363e639ee7bca8930af9a36b`.
+Independent review verifies all 45 payloads, both signed commits, deterministic
+atomic dates, the sole upstream prerequisite, exact raw message/patch/bundle and
+all 78,470 Git/disk/archive identities. The only functional edit deletes the
+manual fixture PIE argument. Eight digest tokens across six extractors account
+for the other changes; reversing them recovers every prior byte. All 236
+isolation controls and fifteen actual pinned-Meson owner controls pass. Actual
+extraction reproduces the same three outputs with 179 roots and 1,299 functions.
+Hermetic reconstruction passes at `a3971r7r21m3f7x3dc160bzk9pckmjh6`; the
+unchanged 663-file license ledger passes at `3b7agqxfxsprqfzi5dn8bc1r5rw3iyds`.
+The strict command classifier remains unchanged. The fresh configured-graph plan
+is separate; no target transformation, link or legacy TAP result is claimed.
+
+The typed Source cleanup-status increment also passes mandatory application
+target compilation at `k6xqwqda0r9pa1kalk2yll311lfbwl6w`. Its complete immutable
+source matched all 5,382 committed Rust/TOML files and six required fixtures
+before later edits.
 
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's

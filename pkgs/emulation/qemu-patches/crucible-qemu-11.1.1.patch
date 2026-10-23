@@ -1,20 +1,21 @@
-From cf897fddea21e1dafdeec4ec87b3e4517ad92305 Mon Sep 17 00:00:00 2001
+From de079e19836c67483cb082eea7257b569b9142cd Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
-Subject: [PATCH] crucible: retain production providers and isolate legacy
- fixture symbols
+Subject: [PATCH] crucible: preserve startup Source fixture provider ownership
 
-Preserve the complete current provider and source ownership. Isolate the
-unchanged legacy Source fixture and its reviewed real utility support in a
-private object namespace, with genuine system providers left unchanged.
+Add the startup Source lifecycle owners, bounded physical histories and
+production-provider companion while preserving the registered fixture's
+scenarios and assertions. Keep ordinary and unissued-state companion
+observations distinct from accepting lifecycle or profile qualification.
 
-Retain all scenario assertions, extracted roots, compile variants and worker
-lookups. Require exact coordinate, ELF, relocation and final visibility/map
-checks instead of accepting modeled production definitions or weak fallbacks.
+Give the legacy fixture and its exact selected utility closure explicit
+private namespaces. Preserve genuine system providers and renamed real
+main ownership, verify transformation metadata and relocation identities,
+and restrict private dynamic visibility to the existing worker lookups.
 
-This cumulative atomic source commit has the exact conventional source tree.
-Its corresponding source and pure controls do not establish configuration,
-transformed objects, linking, TAP or an accepting lifecycle/profile.
+Let Meson derive the private static fixture's PIE compilation from b_pie
+instead of forcing and duplicating its compiler flag. Preserve pic:false,
+selected sources, dependencies, registrations, roots and assertions.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -308700,7 +308701,7 @@ index 0000000000000000000000000000000000000000..f14a9fb2d7551812369fd1d011315f22
 +    main()
 diff --git a/scripts/extract-crucible-preexec-purpose.py b/scripts/extract-crucible-preexec-purpose.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..73a942f285d887729e7934a8cd9f722833ca4edf
+index 0000000000000000000000000000000000000000..6c0e6baba6373f781da5d537079a73ea7a16a55e
 --- /dev/null
 +++ b/scripts/extract-crucible-preexec-purpose.py
 @@ -0,0 +1,184 @@
@@ -308772,7 +308773,7 @@ index 0000000000000000000000000000000000000000..73a942f285d887729e7934a8cd9f7228
 +    'include/plugins/qemu-plugin.h':
 +        '98dffedb987540b27b5725b202fb65deaec3c9b1bedf0f80c7fcf6fcda499fe4',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '969c65c3c5b7ccba8c55b839570c9dbe489d493685dda46e437104423ca34e76',
++        '38e8d9bf388d6caf6ae1b1b512a21add956d4333ea45ec7ae844e058be95385f',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '6a7d82751791bdf81a1ccf64d81ed12c28680068b507b220199b245c760748e5',
 +}
@@ -397524,7 +397525,7 @@ index 0000000000000000000000000000000000000000..267e313f943977d178885522eee43768
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-placement.py b/tests/unit/extract-crucible-checkpoint-placement.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..a1b664f8271c6f464b37bd100091443e8bc3eef8
+index 0000000000000000000000000000000000000000..76bf8f9e1cd3d6680f3e0733071f2fac64ef08f8
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-placement.py
 @@ -0,0 +1,100 @@
@@ -397542,7 +397543,7 @@ index 0000000000000000000000000000000000000000..a1b664f8271c6f464b37bd100091443e
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '969c65c3c5b7ccba8c55b839570c9dbe489d493685dda46e437104423ca34e76',
++        '38e8d9bf388d6caf6ae1b1b512a21add956d4333ea45ec7ae844e058be95385f',
 +}
 +
 +FUNCTIONS = (
@@ -397630,7 +397631,7 @@ index 0000000000000000000000000000000000000000..a1b664f8271c6f464b37bd100091443e
 +    main()
 diff --git a/tests/unit/extract-crucible-checkpoint-receiving.py b/tests/unit/extract-crucible-checkpoint-receiving.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..d6dc046f02a2cbf6180923482fa85cc241174290
+index 0000000000000000000000000000000000000000..cfb45a93d371b2715b7e1f2dc7ac31433fd8d74c
 --- /dev/null
 +++ b/tests/unit/extract-crucible-checkpoint-receiving.py
 @@ -0,0 +1,241 @@
@@ -397661,7 +397662,7 @@ index 0000000000000000000000000000000000000000..d6dc046f02a2cbf6180923482fa85cc2
 +    'include/system/crucible-ram-quiescence.h':
 +        '5f82526f5cf8a8e7a26412b3127c65cff8fc2aa0442065451cd5fa3c4bc9d410',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '969c65c3c5b7ccba8c55b839570c9dbe489d493685dda46e437104423ca34e76',
++        '38e8d9bf388d6caf6ae1b1b512a21add956d4333ea45ec7ae844e058be95385f',
 +}
 +
 +FUNCTIONS = (
@@ -397877,7 +397878,7 @@ index 0000000000000000000000000000000000000000..d6dc046f02a2cbf6180923482fa85cc2
 +    main()
 diff --git a/tests/unit/extract-crucible-monitor-fd-loans.py b/tests/unit/extract-crucible-monitor-fd-loans.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..8e1e57a0d4c7fa4973600a89da34cdf8d2ed902a
+index 0000000000000000000000000000000000000000..cee0d5d690b379d36027b65096d9b0b6e8ae6c85
 --- /dev/null
 +++ b/tests/unit/extract-crucible-monitor-fd-loans.py
 @@ -0,0 +1,112 @@
@@ -397901,7 +397902,7 @@ index 0000000000000000000000000000000000000000..8e1e57a0d4c7fa4973600a89da34cdf8
 +    'monitor/monitor.c':
 +        '6773b71937e9c0058143070560f3ce3bb114a966d6d4224c7a60d8862fb8d05b',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '969c65c3c5b7ccba8c55b839570c9dbe489d493685dda46e437104423ca34e76',
++        '38e8d9bf388d6caf6ae1b1b512a21add956d4333ea45ec7ae844e058be95385f',
 +}
 +
 +FUNCTIONS = (
@@ -397995,7 +397996,7 @@ index 0000000000000000000000000000000000000000..8e1e57a0d4c7fa4973600a89da34cdf8
 +    main()
 diff --git a/tests/unit/extract-crucible-preexec-setup.py b/tests/unit/extract-crucible-preexec-setup.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..0baa59cbe7e0a117c108817b4eb19f3f2d492e56
+index 0000000000000000000000000000000000000000..0a536daf6996c1cd47b3c0ca9b5b92443f08c0d1
 --- /dev/null
 +++ b/tests/unit/extract-crucible-preexec-setup.py
 @@ -0,0 +1,795 @@
@@ -398081,15 +398082,15 @@ index 0000000000000000000000000000000000000000..0baa59cbe7e0a117c108817b4eb19f3f
 +    'plugins/crucible-device-workspace.c':
 +        '3dd77a2ad8d4688fb57ccc94618763485d36b9460e3461ac5ff4bc6fa25c558d',
 +    'tests/unit/extract-crucible-startup-source-controls.py':
-+        '969c65c3c5b7ccba8c55b839570c9dbe489d493685dda46e437104423ca34e76',
++        '38e8d9bf388d6caf6ae1b1b512a21add956d4333ea45ec7ae844e058be95385f',
 +    'scripts/extract-crucible-preexec-purpose.py':
-+        '84dfb429e1c2d3c0f2a05a6b815f03a6f217e9908ba71b11a0741cc49e795666',
++        '01493ce3f8e16edb721e01304a11cabb6f93a3422c9f6ec85487be8f1dfed9ec',
 +    'meson.build':
 +        'd60f3d0a573e006c42c93c08720d825da552ccd45b6a9d276a68839968d59be7',
 +    'tests/unit/test-crucible-preexec-setup.c':
 +        '153138370240e25a5a429685f6557dfa76e0309ff6fe3700530215ae61158269',
 +    'tests/unit/meson.build':
-+        '53a6ad1ac15442838d9d97a057a2d1b6d56a6dd33b7a9a0b6d0f07a7b035e7fb',
++        '8e7432d3bd863afd41d7463d0ea4a2644a1ebe7caf89621839966e8a46e9c640',
 +    'system/crucible-preexec-publisher-recipient.inc.h':
 +        '6a7d82751791bdf81a1ccf64d81ed12c28680068b507b220199b245c760748e5',
 +    'system/crucible-preexec-publisher-offer.inc.h':
@@ -398796,7 +398797,7 @@ index 0000000000000000000000000000000000000000..0baa59cbe7e0a117c108817b4eb19f3f
 +        main()
 diff --git a/tests/unit/extract-crucible-startup-source-controls.py b/tests/unit/extract-crucible-startup-source-controls.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..61390f5d78db65067d8082b65d6f99e911660c9b
+index 0000000000000000000000000000000000000000..eba80c39b44baecccaa5154364e6fc63a97b1ebc
 --- /dev/null
 +++ b/tests/unit/extract-crucible-startup-source-controls.py
 @@ -0,0 +1,2029 @@
@@ -399336,7 +399337,7 @@ index 0000000000000000000000000000000000000000..61390f5d78db65067d8082b65d6f99e9
 +    'tests/unit/crucible-fault-node-restore-fixture.inc.h':
 +        '3daaa09d9d1fa487a29e49d63c568798fc3c3a3420387b40aa36758e4b49632e',
 +    'tests/unit/meson.build':
-+        '53a6ad1ac15442838d9d97a057a2d1b6d56a6dd33b7a9a0b6d0f07a7b035e7fb',
++        '8e7432d3bd863afd41d7463d0ea4a2644a1ebe7caf89621839966e8a46e9c640',
 +    'tests/unit/test-crucible-action-edge-post.py':
 +        '5f2722de0b58309235281639b41072c1b6f94139170afe8c0de1d2b7fa713b42',
 +    'tests/unit/test-crucible-apic-getter-custody.py':
@@ -400928,7 +400929,7 @@ index 0000000000000000000000000000000000000000..228f5bfb67fb64768c9806c3617cc308
 +if __name__ == "__main__":
 +    main()
 diff --git a/tests/unit/meson.build b/tests/unit/meson.build
-index dc3fb954c03a02a82f09b38521e2d85ede2549f5..a58a6a58fae9ca7cda07c0c4c7092bd18219676f 100644
+index dc3fb954c03a02a82f09b38521e2d85ede2549f5..a49d62ae75983e4a934ced15ce03c3c7d35ac71e 100644
 --- a/tests/unit/meson.build
 +++ b/tests/unit/meson.build
 @@ -21,6 +21,8 @@ tests = {
@@ -402270,7 +402271,7 @@ index dc3fb954c03a02a82f09b38521e2d85ede2549f5..a58a6a58fae9ca7cda07c0c4c7092bd1
 +      '../../plugins/crucible-device-workspace.c',
 +      startup_source_control_slices, genh,
 +      dependencies: qemuutil.partial_dependency(compile_args: true, includes: true),
-+      c_args: ['-fPIE', '-DCOMPILING_SYSTEM_VS_USER'],
++      c_args: ['-DCOMPILING_SYSTEM_VS_USER'],
 +      pic: false,
 +      build_by_default: false,
 +    )
