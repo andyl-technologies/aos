@@ -1,0 +1,65 @@
+{
+  "schema": "aos.native-advisory-inventory/v1",
+  "components": [
+    {
+      "name": "openssl",
+      "version": "4.0.2",
+      "kind": "nix-literal",
+      "path": "pkgs/security/openssl.nix",
+      "field": "version"
+    },
+    {
+      "name": "sqlite",
+      "version": "3.53.4",
+      "kind": "nix-literal",
+      "path": "pkgs/db/sqlite.nix",
+      "field": "version"
+    },
+    {
+      "name": "libssh2",
+      "version": "1.11.1",
+      "kind": "nix-literal",
+      "path": "pkgs/networking/libssh2.nix",
+      "field": "version"
+    },
+    {
+      "name": "zlib",
+      "version": "1.3.2",
+      "kind": "nix-literal",
+      "path": "pkgs/compression/zlib.nix",
+      "field": "currentVersion"
+    },
+    {
+      "name": "libgit2",
+      "version": "1.9.6",
+      "kind": "cargo-package",
+      "lock": "crates/Cargo.lock",
+      "package": "libgit2-sys",
+      "package_version": "0.18.7+1.9.6"
+    },
+    {
+      "name": "zstd",
+      "version": "1.5.7",
+      "kind": "cargo-package",
+      "lock": "crates/Cargo.lock",
+      "package": "zstd-sys",
+      "package_version": "2.0.16+zstd.1.5.7"
+    },
+    {
+      "name": "aws-lc-sys",
+      "version": "0.46.0",
+      "kind": "cargo-package",
+      "lock": "crates/Cargo.lock",
+      "package": "aws-lc-sys",
+      "package_version": "0.46.0"
+    },
+    {
+      "name": "libmimalloc-sys",
+      "version": "0.1.49",
+      "kind": "cargo-package",
+      "lock": "crates/Cargo.lock",
+      "package": "libmimalloc-sys",
+      "package_version": "0.1.49"
+    }
+  ]
+}

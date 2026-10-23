@@ -13,6 +13,10 @@
       !(builtins.elem (baseNameOf path) ["target" "__pycache__" "README.md" "UPSTREAM.md"])
       && !(lib.hasPrefix (toString ../../crates/accache/accache + "/tests/") path);
   };
+  cargoDeps = fetchCargoDeps {
+    inherit src;
+    hash = "sha256-Z6Aeg4JVtgcBX2pC3vGMYMYn6OJA8irBBpRz/isDFuQ=";
+  };
 in
   mkCargoPackage {
     platformSupport = {
@@ -37,12 +41,10 @@ in
     inherit src;
     # The wrapper must never depend on its own configured package set.
     sharedBuildCache = false;
-    cargoDeps = fetchCargoDeps {
-      inherit src;
-      hash = "sha256-Z6Aeg4JVtgcBX2pC3vGMYMYn6OJA8irBBpRz/isDFuQ=";
-    };
+    inherit cargoDeps;
     doCheck = true;
     cargoTestFlags = "--workspace";
+    passthru = {inherit cargoDeps;};
     meta = {
       description = "Daemonless compiler action cache for Nix build contracts";
       license = "Apache-2.0";

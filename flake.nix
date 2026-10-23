@@ -469,6 +469,7 @@
           rust-crucible-controller = aos.checks.rust.crucible-controller;
           rust-crucible-qemu-plugin = aos.checks.rust.crucible-qemu-plugin;
           rust-crucible-guest = aos.checks.rust.crucible-guest;
+          advisories = aos.checks.advisories;
         }
         // flattenAttrs "eval" (builtins.removeAttrs aos.checks.eval-suites ["core"])
         // flattenAttrs "build" aos.checks.build
