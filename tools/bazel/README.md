@@ -1871,7 +1871,14 @@ analysis-only selections with no external actions, and core Nix evaluation passe
 The frozen checkpoint is in
 `tests/evidence/activation-crucible-metadata-evaluation.json`.
 
-Dedicated ABI, license, provider and assembled-system gates, foreign and Wasm
+The dedicated native `checks.crucible.phase2.abiConformance` gate also passes.
+`tests/evidence/activation-crucible-abi-conformance.json` records the frozen
+result, generated-header and golden-vector checks, exact-version rejection,
+and guest/engine doorbell coverage. Its source filter explicitly includes the
+Bazel repository marker and guest Nix qualification contract; the assertions
+and ABI versions are unchanged.
+
+Dedicated license, provider and assembled-system gates, foreign and Wasm
 execution, compiler invocation equivalence, numeric performance acceptance,
 production migration, and Cargo removal remain separate qualification.
 
