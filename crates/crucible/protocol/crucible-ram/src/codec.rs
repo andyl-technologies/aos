@@ -264,7 +264,7 @@ impl RootRecord {
         let mut roots = Vec::new();
         roots
             .try_reserve_exact(count)
-            .map_err(|_| RamError::Allocation)?;
+            .map_err(RamError::Allocation)?;
         for region in topology
             .regions()
             .iter()
@@ -304,7 +304,7 @@ fn read_inventory(reader: &mut Reader<'_>, limits: Limits) -> Result<Topology, R
     let mut regions = Vec::new();
     regions
         .try_reserve_exact(count)
-        .map_err(|_| RamError::Allocation)?;
+        .map_err(RamError::Allocation)?;
     for _ in 0..count {
         let region = read_descriptor(reader)?;
         if regions.last().is_some_and(|previous: &RegionDescriptor| {
@@ -318,7 +318,12 @@ fn read_inventory(reader: &mut Reader<'_>, limits: Limits) -> Result<Topology, R
 }
 
 fn read_descriptor(reader: &mut Reader<'_>) -> Result<RegionDescriptor, RamError> {
-    let id = reader.string(255)?.to_owned();
+    let encoded_id = reader.string(255)?;
+    let mut id = String::new();
+    id.try_reserve_exact(encoded_id.len())
+        .map_err(RamError::Allocation)?;
+    id.push_str(encoded_id);
+
     let class = RegionClass::decode(reader.u8()?)?;
     if reader.u8()? != class.coverage_mask() {
         return Err(RamError::InvalidEncoding);
@@ -520,7 +525,7 @@ impl PageProof {
         let encoded_id = reader.string(255)?;
         let mut id = String::new();
         id.try_reserve_exact(encoded_id.len())
-            .map_err(|_| RamError::Allocation)?;
+            .map_err(RamError::Allocation)?;
         id.push_str(encoded_id);
         let index = reader.u64()?;
         let length = reader.u32()?;
@@ -533,7 +538,7 @@ impl PageProof {
         let mut siblings = Vec::new();
         siblings
             .try_reserve_exact(depth)
-            .map_err(|_| RamError::Allocation)?;
+            .map_err(RamError::Allocation)?;
         for _ in 0..depth {
             siblings.push(NodeDigest::from_bytes(reader.digest()?));
         }

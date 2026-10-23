@@ -25,6 +25,15 @@
         (case "canonical_codec_adversarial" "adversarial" ["RAM-1" "RAM-2" "RAM-6" "RAM-9"] "Canonical structural records and decoding bounds.")
         (case "proof_rejects_position_length_padding_and_root" "adversarial" ["RAM-6" "RAM-7" "RAM-8" "RAM-9"] "Proof position, valid length, padding and selected root binding.")
       ])
+      (group "protocol/crucible-ram" "allocation_causes" [] [
+        (case "root_inventory_vector_refusal_preserves_actual_allocator_source" "adversarial" ["RAM-9" "RAM-12"] "Actual root inventory vector allocation refusal retains its typed allocator cause in bounded inline result storage; cloning needs no allocation or second admission. The finite caller credit grants no native authority.")
+        (case "topology_inventory_vector_refusal_preserves_actual_allocator_source" "adversarial" ["RAM-9" "RAM-12"] "Actual standalone inventory vector allocation refusal retains its typed allocator cause and the original finite caller credit; no physical memory pressure or native resource qualification.")
+        (case "selected_root_vector_refusal_preserves_actual_allocator_source" "adversarial" ["RAM-9" "RAM-12"] "Actual selected-root vector allocation refusal retains its typed allocator cause after successful inventory decoding; no native admission.")
+        (case "proof_identifier_refusal_preserves_actual_allocator_source" "adversarial" ["RAM-9" "RAM-12"] "Actual proof identifier allocation refusal preserves the original allocator source through allocation-free error cloning; caller credit remains finite and separate from native authority.")
+        (case "proof_sibling_vector_refusal_preserves_actual_allocator_source" "adversarial" ["RAM-9" "RAM-12"] "Actual bounded proof sibling-vector allocation refusal preserves its typed source after the successful identifier prefix; no native resource qualification.")
+        (case "root_identifier_refusal_preserves_actual_allocator_source" "adversarial" ["RAM-9" "RAM-12"] "The fallible root descriptor identifier copy returns the actual injected allocator cause without aborting. This exercises the fixed path only; the predecessor's infallible allocation is not fault-injected.")
+        (case "topology_identifier_refusal_preserves_actual_allocator_source" "adversarial" ["RAM-9" "RAM-12"] "The fallible standalone inventory identifier copy retains the actual injected allocator source and original finite caller admission. No predecessor abort or native capacity qualification is claimed.")
+      ])
     ];
     merkle = component "gate:ram-merkle-oracle" "model" [
       (group "protocol/crucible-ram" "conformance" [] [

@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 583 bindings: 564 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 590 bindings: 571 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2319,8 +2319,8 @@ controls and Store Clippy pass. The full license-boundary run fails on 639
 controller library Clippy errors; its boundary assertions did not run.
 
 Signed descriptor-hashing commit `8404a4e703` is pushed. Required
-application-target compilation is running from
-`rasi23lk4xzdmr9ir6ch4dkicpb5qxg1`; all 5,404 committed Rust/TOML files and
+application-target compilation passes at `hv9xgrskj1j81bigkszmgaqjvksna3s4`
+from immutable source `rasi23lk4xzdmr9ir6ch4dkicpb5qxg1`; all 5,404 committed Rust/TOML files and
 six required fixtures match before subsequent updated-inventory custody edits.
 
 Updated RAM roots now retain the admitted input's existing financial loan for
@@ -2341,8 +2341,8 @@ Clippy. Hermetic storage output `gmc823grd2sfdr8hpn13ragsmi64nqq5` passes
 all 68 selected cases and 86 successful nested test summaries.
 
 Signed updated-inventory commit `3973923582` is pushed. Required
-application-target compilation is running from
-`1i446qwhn988hg7y1y8gpigshzabbhgp`; all 5,404 committed Rust/TOML files and
+application-target compilation passes at `q2g5apj614dhasf3qkrd8xxpyv4anr2r`
+from immutable source `1i446qwhn988hg7y1y8gpigshzabbhgp`; all 5,404 committed Rust/TOML files and
 six required fixtures match before subsequent detached-inventory custody edits.
 
 Public logical-record and topology clones now retain the admitted inventory's
@@ -2411,6 +2411,47 @@ thread-ID normalization only. All 686 engine tests and 95 policy controls pass.
 ABI conformance passes at `v7g90arrx4hps436llv75s2d0bqm20sh`. Storage and
 portable-RAM Clippy pass. The preceding full license-boundary attempt retains
 its 639 controller errors and supplies no passing boundary qualification.
+
+Signed logical-control commit `0777f56375` is pushed. Required application-target
+compilation is running from immutable source
+`mryv8hdzwxgn3bf1dpn66yay244i752q`; all 5,407 committed Rust/TOML files and
+six required fixtures match before subsequent allocator-cause edits.
+
+Portable RAM allocation refusals now retain their actual `TryReserveError`
+inline instead of discarding it. Existing error display, clone and equality
+contracts remain unchanged, and the error stays within its prior inline extent.
+Cloning a returned refusal allocates nothing and requests no additional credit.
+The root/inventory descriptor identifier copy is also fallible; the proof
+identifier copy was already fallible and now preserves its actual cause.
+Caller-funded construction, result storage and shared inventory conversion keep
+their existing contract; this change issues no native authority.
+
+All five original injected vector/string controls fail because the allocator
+source is missing. All five pass after retaining the actual source. Two further
+controls pass on the new fallible root/inventory identifier path; the
+predecessor's infallible allocation is deliberately not fault-injected because
+that would abort. Each control constructs canonical input and verifies ordinary
+successful decoding before admission and exact-layout injection. The genuine
+finite caller credit remains live through both returned error aliases, then
+returns to zero. Hermetic format output
+`g8wahsanlmpdplb4i08nrga7cah0xlm9` passes all eleven selected cases. Merkle
+output `xchwmqzd8cjpvvd3yg7x5il5dz67mjfk` passes thirteen cases and dirty
+output `yjmbhpghf9w2qjzf69x3b1nsq4wk0rmz` passes six, with every exact test
+name and all thirty successful summaries independently checked. Inventory
+`5v75lmbvqqifgsa69irkmsng05nykqym` validates 590 bindings across 243
+requirements, with 148 uncovered and zero qualified. Hermetic storage output
+`i5k69a5jsazcq3lvzj88hdh0vvwygjvm` passes all 72 selected cases and 93
+independently checked successful nested summaries. Broad validation passes
+732 storage tests, 36 portable RAM tests and 1,179 plugin tests. Host validation
+passes 1,385 tests with four ignored cases and the same eight missing-helper-
+custody failures; complete failure details match the preceding baseline after
+thread-ID normalization only. All 686 engine tests pass, and ABI conformance
+passes at `8n9jiz1wcq6js3z42c999yfv7wgm46vn`. All 95 policy controls and
+storage/portable-RAM Clippy pass. The current full license-boundary attempt is
+still running. The preceding
+license attempt retains its 639 controller errors and supplies no passing
+boundary qualification. The storage logical-error formatting bridge still
+erases typed causes and requires a separate correction.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`

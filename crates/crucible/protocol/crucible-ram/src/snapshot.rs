@@ -145,7 +145,7 @@ impl RamSnapshot {
         let mut trees = Vec::new();
         trees
             .try_reserve_exact(record.topology().regions().len())
-            .map_err(|_| RamError::Allocation)?;
+            .map_err(RamError::Allocation)?;
         for region in record.topology().regions() {
             let digest = record
                 .region_root(region.id())
@@ -222,7 +222,7 @@ impl RamSnapshot {
         let mut roots = Vec::new();
         roots
             .try_reserve_exact(self.inner.trees.len())
-            .map_err(|_| RamError::Allocation)?;
+            .map_err(RamError::Allocation)?;
         for (region, tree) in self.inner.topology.regions().iter().zip(&self.inner.trees) {
             if scope.includes(region.class()) {
                 roots.push(tree.digest());
@@ -275,7 +275,7 @@ impl RamSnapshot {
         let mut trees = Vec::new();
         trees
             .try_reserve_exact(self.inner.trees.len())
-            .map_err(|_| RamError::Allocation)?;
+            .map_err(RamError::Allocation)?;
         trees.extend(self.inner.trees.iter().cloned());
         trees[index] = tree;
         Self::new(self.inner.topology.clone(), trees, &self.inner.budget)

@@ -263,7 +263,7 @@ impl DirtyTracker {
         let _work = self.budget.reserve(work_bytes as u64)?;
         let mut next = Vec::new();
         next.try_reserve_exact(coordinates.len())
-            .map_err(|_| RamError::Allocation)?;
+            .map_err(RamError::Allocation)?;
         for coordinate in coordinates {
             self.validate_coordinate(*coordinate, true)?;
             let state = self.state(*coordinate);
@@ -374,7 +374,7 @@ impl DirtyTracker {
         let mut coordinates = Vec::new();
         coordinates
             .try_reserve_exact(count)
-            .map_err(|_| RamError::Allocation)?;
+            .map_err(RamError::Allocation)?;
         for page_index in first..=last {
             coordinates.push(PageCoordinate {
                 region_index: region_index as u32,
@@ -407,7 +407,7 @@ impl DirtyTracker {
         let mut entries = Vec::new();
         entries
             .try_reserve_exact(count)
-            .map_err(|_| RamError::Allocation)?;
+            .map_err(RamError::Allocation)?;
         for (key, chunk) in &self.chunks {
             if chunk.pending[index] == 0 {
                 continue;

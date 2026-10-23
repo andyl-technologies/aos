@@ -37,9 +37,9 @@ pub enum RamError {
     /// An admitted resource ceiling would be exceeded.
     #[error("logical RAM resource limit exceeded")]
     ResourceLimit,
-    /// A bounded allocation could not be satisfied.
+    /// A bounded allocation could not be satisfied, retaining its allocator cause.
     #[error("logical RAM allocation failed")]
-    Allocation,
+    Allocation(#[source] std::collections::TryReserveError),
     /// A dirty receipt belongs to another incarnation or an older baseline.
     #[error("stale logical RAM dirty receipt")]
     StaleReceipt,

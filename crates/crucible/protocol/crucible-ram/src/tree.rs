@@ -311,7 +311,7 @@ impl RegionTree {
         let mut sorted = Vec::new();
         sorted
             .try_reserve_exact(updates.len())
-            .map_err(|_| RamError::Allocation)?;
+            .map_err(RamError::Allocation)?;
         sorted.extend_from_slice(updates);
         sorted.sort_unstable_by_key(|(index, _)| *index);
         let mut previous = None;
@@ -343,7 +343,7 @@ impl RegionTree {
         let mut siblings = Vec::new();
         siblings
             .try_reserve_exact(self.geometry.height() as usize)
-            .map_err(|_| RamError::Allocation)?;
+            .map_err(RamError::Allocation)?;
         let mut node = self.root.as_ref().ok_or(RamError::MissingProof)?;
         let mut height = self.geometry.height();
         while height != 0 {
