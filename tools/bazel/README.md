@@ -2353,8 +2353,9 @@ and 5,549 generated crate BUILD files remain unchanged. Metadata parity covers
 and core evaluation passes. Frozen outputs are retained in
 `tests/evidence/release-coordination-metadata-evaluation.json`.
 
-Required workspace Rust compilation for the two source corrections runs
-separately from these native execution checks. External-provider and
-installed-workflow gates, foreign/Wasm
+`tests/evidence/release-coordination-required-rust-targets.json` retains passing
+required workspace unit and integration target compilation for both changed
+Rust inputs. Its frozen source predates the boot conversion. External-provider
+and installed-workflow gates, foreign/Wasm
 execution, complete compiler invocation equivalence, numeric performance
 acceptance, production migration, and Cargo removal remain separate work.
