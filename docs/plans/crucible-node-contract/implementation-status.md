@@ -113,6 +113,30 @@ also pass. This qualifies the preboot initial Source census, not post-Hello
 Source/Controller funding, opaque five-phase Recipe/Initial production, native
 Ready, Capture, performance or full RFC-0025 completion.
 
+## Historical Control model and Controller layout qualification
+
+Commits `e7bf876227` and `5af66c7f3b` separate the closed Controller17 layout
+catalogue and retain the current Control model inline as an optional value.
+Only the exact unfinished-restoration tag has no model. Actual model, writer,
+retained-builder and census views keep their existing wire grammar and failed
+prefixes; the defining counter additionally prices the borrowed optional views.
+The catalogue retains every typed child and all three decoder Result layouts.
+The retained endpoint and suffix guard simplifications preserve their real
+RefMut lifetimes, interruption flags and terminal checks.
+
+Both standard and raw-JSON modes pass the historical snapshot (322 tests),
+current Control reader (11), restored suffix (38) and endpoint (27) groups,
+with zero failures or ignores in each group. These groups can overlap and are
+not a new full-library run. Formatting, all-feature/all-target
+Transport/Engine/Daemon checking and all six architecture gates pass.
+The required application gate compiles 180 test executables across 58 packages,
+including 71 integration targets. All 448 frozen Rust/Cargo inputs match the
+committed revision and captured application source, including the new module.
+
+Production-library Clippy falls from 61 to 54 errors with 1,733 warnings under
+the unchanged workspace policy. This qualification adds no VM result, native
+phase admission, opaque Recipe/Initial production or full RFC acceptance.
+
 ## Original Bootstrap predecessor and admission grouping
 
 Commit `b13804f4f6` groups the four actual borrowed Bootstrap predecessors and
