@@ -125,6 +125,34 @@ class RustProjectTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "dependencies contain a cycle"):
             self.assemble([spec("client", deps=["server"]), spec("server", deps=["client"])])
 
+    def test_separate_libtest_inherits_library_dependencies_and_aliases(self):
+        sources = [
+            spec("client", deps=["common"], aliases={"common": "renamed"}),
+            spec("server", deps=["client"]),
+            spec("client", is_test=True, crate_type="bin", deps=["server"]),
+            spec("common"),
+        ]
+        original = copy.deepcopy(sources)
+
+        for order in [sources, list(reversed(sources))]:
+            crates = self.assemble(order)["crates"]
+            test = next(crate for crate in crates if crate["display_name"] == "client" and crate["is_workspace_member"])
+            self.assertEqual({dep["name"] for dep in test["deps"]}, {"renamed", "server"})
+            renamed = next(dep for dep in test["deps"] if dep["name"] == "renamed")
+            self.assertEqual(crates[renamed["crate"]]["display_name"], "common")
+
+        self.assertEqual(sources, original)
+
+    def test_separate_libtest_rejects_conflicting_inherited_aliases(self):
+        sources = [
+            spec("client", deps=["common"], aliases={"common": "renamed"}),
+            spec("server", deps=["client"]),
+            spec("client", is_test=True, deps=["server", "common"], aliases={"common": "other"}),
+            spec("common"),
+        ]
+        with self.assertRaisesRegex(ValueError, "ambiguous configured Rust alias"):
+            self.assemble(sources)
+
     def test_compiler_environment_paths_use_the_declared_execution_root(self):
         project = self.assemble([spec("lib", env={"CARGO_MANIFEST_DIR": "${pwd}/package"})])
         self.assertEqual(project["crates"][0]["env"]["CARGO_MANIFEST_DIR"], "/exec/package")

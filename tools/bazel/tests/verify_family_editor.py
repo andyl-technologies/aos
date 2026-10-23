@@ -86,12 +86,19 @@ def verify(project, inventory, packages, workspace):
         relative = root.relative_to(workspace).as_posix()
         if not any(relative.startswith(directory + "/") for directory in packages.values()):
             continue
-        if relative in actual:
-            raise ValueError(f"duplicate editor root: {relative}")
-        actual[relative] = sorted(
+        features = sorted(
             cfg[len('feature="'):-1]
             for cfg in crate["cfg"] if cfg.startswith('feature="') and cfg.endswith('"')
         )
+        if expected.get(relative) != features:
+            raise ValueError(f"editor/compiled root or feature mismatch: {relative}: {features!r}")
+        # A library can remain a dependency beside its separate libtest view.
+        # Validate both configurations, then count only the workspace root.
+        if not crate.get("is_workspace_member", True):
+            continue
+        if relative in actual:
+            raise ValueError(f"duplicate editor root: {relative}")
+        actual[relative] = features
     if actual != expected:
         raise ValueError(f"editor/compiled root or feature mismatch: {actual!r} != {expected!r}")
     if not expected:

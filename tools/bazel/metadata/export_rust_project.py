@@ -149,11 +149,25 @@ def separate_cyclic_libtests(specs):
     tests = {spec["crate_id"] for spec in specs if spec.get("is_test")}
     shared = libraries & tests
     identifiers = libraries | tests
+    library_specs = {}
+    for spec in specs:
+        if not spec.get("is_test"):
+            library_specs.setdefault(spec["crate_id"], []).append(spec)
+
     result = []
     for original in specs:
         spec = copy.deepcopy(original)
         if spec["crate_id"] in shared:
             if spec.get("is_test"):
+                # The aspect records only additional dev dependencies on a
+                # libtest. Its inherited library inputs still belong to this
+                # standalone editor view, including dependency renames.
+                for library in library_specs[spec["crate_id"]]:
+                    spec["deps"] = sorted(set(spec["deps"]) | set(library["deps"]))
+                    for dependency, alias in library.get("aliases", {}).items():
+                        if dependency in spec["aliases"] and spec["aliases"][dependency] != alias:
+                            raise ValueError(f"ambiguous configured Rust alias: {spec['crate_id']}: {dependency}")
+                        spec["aliases"][dependency] = alias
                 identifier = spec["crate_id"] + "#aos-libtest"
                 if identifier in identifiers:
                     raise ValueError("configured libtest identity collides with a Rust crate")

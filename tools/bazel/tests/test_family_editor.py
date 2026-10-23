@@ -117,6 +117,23 @@ class FamilyEditorTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate editor root"):
             verify(self.project, self.inventory, self.packages, self.root)
 
+    def test_dependency_library_can_share_its_separate_libtest_root(self):
+        library = copy.deepcopy(self.project["crates"][0])
+        library["is_workspace_member"] = False
+        self.project["crates"].insert(0, library)
+
+        report = verify(self.project, self.inventory, self.packages, self.root)
+
+        self.assertEqual(len(report["roots"]), 2)
+
+    def test_dependency_library_still_requires_matching_compiled_features(self):
+        library = copy.deepcopy(self.project["crates"][0])
+        library.update(is_workspace_member=False, cfg=[])
+        self.project["crates"].append(library)
+
+        with self.assertRaisesRegex(ValueError, "root or feature mismatch"):
+            verify(self.project, self.inventory, self.packages, self.root)
+
     def test_missing_proc_macro_fails(self):
         self.project["crates"].append({
             "root_module": str(self.root / "core/src/lib.rs"), "display_name": "derive",
