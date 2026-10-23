@@ -1656,6 +1656,57 @@ inference statistics and diagnostic multiplicities; selected-package comparisons
 preserve distinct locations and types while retaining raw diagnostic counts.
 The guest comparison retains its 84 unattributed Cargo diagnostics.
 
-Dedicated D-Bus integration gates and workspace Rust compilation run separately.
-Foreign and Wasm qualification, compiler invocation equivalence, performance
-acceptance, production migration, and Cargo removal remain pending.
+`tests/evidence/native-foundation-required-rust-targets.json` records passing
+workspace application unit and integration target compilation with hashes
+matching all eight native integration Rust changes at its frozen checkpoint.
+Dedicated D-Bus integration gates remain required. Foreign and Wasm qualification,
+compiler invocation equivalence, performance acceptance, production migration,
+and Cargo removal remain pending.
+
+## Core activation providers
+
+`aos-dev bazel --family activation-core` selects the activation controller,
+configuration files, kernel tunables, BPF LSM, BPF network policy, Kubernetes,
+and nftables packages. Their six installed command names remain independent
+of their Cargo package names. The `module_graph_check` example remains part
+of the test, developer, editor, and license selections.
+
+Production libraries and commands use `activation-core`; tests and developer
+tools use `activation-core-tests`. Explicit dependency updates accept both
+names. Production keeps test-only tempfile and TOML dependencies out of the
+provider closure. The test profile preserves Cargo's IndexMap features and
+the separate Syn versions used by derives, without enabling unrelated serde
+or full-syntax features.
+
+The Cargo baseline is retained in
+`tests/evidence/activation-core-cargo-baseline.json`: 97 executed cases, no
+ignored cases, 13 library and command test artifacts, and 51 external crate
+identities across ten first-party packages. Seven doctest targets contain no
+cases. Tests that require configured native executables retain their existing
+conditional behavior; dedicated provider and assembled-system gates remain
+required before production migration.
+
+Provider lint corrections preserve those cases and existing deadline behavior.
+Test modules allow panic-on-failure helpers, matching the workspace policy for
+tests. Native BPF subprocess deadlines use narrowly scoped allowances for the
+host monotonic clock. Production helpers precede test modules, and equivalent
+conditional checks use Rust let chains.
+
+`tests/evidence/native-linux-activation-core.json` retains passing qualification
+with the checked-in configured source inventory: 68 requested roots, 237
+configured reports, and 62 source files. Fresh Cargo comparisons retain all
+97 cases, the empty command and doctest targets, and the test dependency graph.
+Production matches a separate graph of 37 external and ten first-party crate
+identities. Clippy, formatting, documentation, license closures, and selected
+editor analysis pass. Both editor models report complete inference and zero
+diagnostics for this selection; their aggregate sizes differ and are retained.
+Foreign and Wasm execution, compiler invocation equivalence, numeric performance
+acceptance, production migration, and Cargo removal remain separate work.
+
+`tests/evidence/activation-core-configured-graph.json` retains the two source
+profiles, all 18 dependency specification checks, and validation of all 19
+family inventories. The previous 16 dependency locks, source pins, features,
+and 2,996 generated crate build files remain unchanged; their metadata records
+the new declaration digest. The native family refresh retains all 957 reports
+across its production, default, transfer-disabled, and integration selections.
+The 164 policy tests and CLI checks pass with all 14 launchers exported.

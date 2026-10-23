@@ -27,6 +27,13 @@
         "crates/aos/modules/aos-module-docs/Cargo.toml"
         "crates/aos/packages/aos-deployment-format/Cargo.toml"
         "crates/aos/boot/aos-storage-layout/Cargo.toml"
+        "crates/aos/activation/aos-activation/Cargo.toml"
+        "crates/aos/activation/aos-activation-config-files/Cargo.toml"
+        "crates/aos/activation/aos-activation-sysctl/Cargo.toml"
+        "crates/aos/activation/aos-activation-bpf-lsm/Cargo.toml"
+        "crates/aos/activation/aos-activation-bpf-network/Cargo.toml"
+        "crates/aos/activation/aos-activation-kubernetes/Cargo.toml"
+        "crates/aos/activation/aos-activation-nftables/Cargo.toml"
         "crates/aos/boot/aos-boot-identity/Cargo.toml"
         "crates/aos/boot/aos-recovery/Cargo.toml"
         "crates/shared/aos-core/Cargo.toml"
@@ -95,6 +102,7 @@ in
     formats = import ./_bazel-formats.nix {inherit pkgs;};
     contracts = import ./_bazel-contracts.nix {inherit pkgs;};
     native-foundation = import ./_bazel-native-foundation.nix {inherit pkgs;};
+    activation-core = import ./_bazel-activation-core.nix {inherit pkgs;};
     wasm = import ./_bazel-wasm.nix {inherit pkgs;};
     recovery = import ./_bazel-recovery.nix {inherit pkgs;};
     license-boundary = import ./_bazel-license.nix {inherit pkgs workspace;};
@@ -292,6 +300,7 @@ in
         --inventory ${formats.tests}/inventory.json \
         --inventory ${contracts.tests}/inventory.json \
         --inventory ${native-foundation.tests}/inventory.json \
+        --inventory ${activation-core.tests}/inventory.json \
         --output "$out/parity.json"
     '';
     runner = pkgs.runCommand "aos-bazel-runner-evidence" {buildDeps = [pkgs.python3];} ''
@@ -335,7 +344,7 @@ in
     all =
       pkgs.runCommand "aos-bazel-checks" {
         buildDeps =
-          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection source-catalog.all sysroot-metadata manifest-extractor native-libraries static-runtime.all precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all store.all guest.all engine.all quota.all session.all control.all qemu-host.all store-s3.all daemon.all crucible-cli.all formats.all contracts.all native-foundation.all wasm.all recovery]
+          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection source-catalog.all sysroot-metadata manifest-extractor native-libraries static-runtime.all precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all store.all guest.all engine.all quota.all session.all control.all qemu-host.all store-s3.all daemon.all crucible-cli.all formats.all contracts.all native-foundation.all activation-core.all wasm.all recovery]
           ++ pkgs.lib.optionals (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) [
             (import ./_bazel-cross-linux.nix {inherit pkgs;}).all
             (import ./_bazel-device-cross.nix {inherit pkgs;})

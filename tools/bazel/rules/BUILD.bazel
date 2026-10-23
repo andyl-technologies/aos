@@ -184,3 +184,15 @@ config_setting(
     flag_values = {":dependency_profile": "native-foundation-minimal"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "activation_core_dependencies",
+    flag_values = {":dependency_profile": "activation-core"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "activation_core_tests_dependencies",
+    flag_values = {":dependency_profile": "activation-core-tests"},
+    visibility = ["//visibility:public"],
+)

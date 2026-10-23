@@ -1,6 +1,8 @@
 load("@rules_rust//crate_universe:defs.bzl", "crate")
 load("//tools/bazel/rules:crates.bzl", "aos_crate_specifications")
 load("//tools/bazel/rules:package.bzl", "aos_package")
+load(":activation-core/aliases.bzl", ACTIVATION_CORE_CRATES = "CRATES")
+load(":activation-core-tests/aliases.bzl", ACTIVATION_CORE_TESTS_CRATES = "CRATES")
 load(":core/aliases.bzl", CORE_CRATES = "CRATES")
 load(":device/aliases.bzl", DEVICE_CRATES = "CRATES")
 load(":store/aliases.bzl", STORE_CRATES = "CRATES")
@@ -27,6 +29,8 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:activation_core_dependencies": ACTIVATION_CORE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:activation_core_tests_dependencies": ACTIVATION_CORE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:native_foundation_minimal_dependencies": NATIVE_FOUNDATION_MINIMAL_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:native_foundation_tests_dependencies": NATIVE_FOUNDATION_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:native_foundation_dependencies": NATIVE_FOUNDATION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -46,7 +50,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items() + CRUCIBLE_CLI_CRATES.items() + NATIVE_FOUNDATION_CRATES.items() + NATIVE_FOUNDATION_TESTS_CRATES.items() + NATIVE_FOUNDATION_MINIMAL_CRATES.items() + FORMATS_CRATES.items()))
+    for name in sorted(dict(ACTIVATION_CORE_CRATES.items() + ACTIVATION_CORE_TESTS_CRATES.items() + CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items() + CRUCIBLE_CLI_CRATES.items() + NATIVE_FOUNDATION_CRATES.items() + NATIVE_FOUNDATION_TESTS_CRATES.items() + NATIVE_FOUNDATION_MINIMAL_CRATES.items() + FORMATS_CRATES.items()))
 ]
 
 CORE_PACKAGES = {
@@ -206,6 +210,25 @@ FORMATS_PACKAGES = {
     "toml": crate.spec(version = "=0.8.23"),
     "zstd": STORE_PACKAGES["zstd"],
 }
+
+# Activation command tests add temporary-file and TOML fixtures without widening
+# the installed providers' production dependency graph.
+ACTIVATION_CORE_PACKAGES = {
+    "anyhow": CORE_PACKAGES["anyhow"],
+    "regex": crate.spec(version = "=1.12.4"),
+    "rustix": crate.spec(version = "=1.1.4", features = ["event", "fs", "net", "process"]),
+    "schemars": crate.spec(version = "=1.2.2"),
+    "serde": CORE_PACKAGES["serde"],
+    "serde_json": CORE_PACKAGES["serde_json"],
+    "sha2": CORE_PACKAGES["sha2"],
+    "thiserror": CORE_PACKAGES["thiserror"],
+}
+
+ACTIVATION_CORE_TESTS_PACKAGES = dict(
+    ACTIVATION_CORE_PACKAGES,
+    tempfile = STORE_PACKAGES["tempfile"],
+    toml = crate.spec(version = "=0.8.23"),
+)
 
 # Native integrations retain separate production, test, and optional-transport
 # graphs. D-Bus test features never enter the production specification.
@@ -572,6 +595,20 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    "activation-core-tests": {
+        "indexmap": json.encode({
+            "version": "2.14.0",
+            "resolved_features": ["default", "serde", "std"],
+            "features": ["default", "std"],
+        }),
+        # Cargo's selected tests do not enable Syn 2's full syntax tree.
+        # The separate Syn 3 instance used by schema derives is unchanged.
+        "syn": json.encode({
+            "version": "2.0.118",
+            "resolved_features": ["clone-impls", "default", "derive", "full", "parsing", "printing", "proc-macro"],
+            "features": ["clone-impls", "default", "derive", "parsing", "printing", "proc-macro"],
+        }),
+    },
     "native-foundation": dict(NATIVE_FOUNDATION_FEATURE_VARIANTS, serde_core = json.encode({
         "version": "1.0.228",
         "resolved_features": ["alloc", "rc", "result", "std"],
@@ -685,6 +722,8 @@ APPROVED_LICENSES = [
         host_only_licenses = ["Apache-2.0"],
     )
     for family, packages, annotations, license_domain in [
+        ("activation-core", ACTIVATION_CORE_PACKAGES, {}, "apache-host"),
+        ("activation-core-tests", ACTIVATION_CORE_TESTS_PACKAGES, {}, "apache-host"),
         ("core", CORE_PACKAGES, {}, "permissive-protocol"),
         ("device", dict(CORE_PACKAGES, ciborium = crate.spec(version = "=0.2.2")), {}, "permissive-protocol"),
         ("store", STORE_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
@@ -713,5 +752,5 @@ APPROVED_LICENSES = [
         license_domain = "apache-host",
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
-    for family in ["core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "native-foundation", "native-foundation-tests", "native-foundation-minimal", "formats"]
+    for family in ["activation-core", "activation-core-tests", "core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "native-foundation", "native-foundation-tests", "native-foundation-minimal", "formats"]
 ]

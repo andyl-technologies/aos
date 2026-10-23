@@ -92,6 +92,16 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    activation-core = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "activation-core";
+    };
+    activation-core-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "activation-core-tests";
+    };
     native-foundation = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -227,6 +237,22 @@
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
   };
+  aosBazelActivationCoreWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = ["crates/aos/activation" "crates/aos/modules/aos-module-format" "crates/shared/aos-core" "crates/shared/aos-artifact-evidence" "tools/bazel" "third_party/rust"];
+    repositories = aosBazelRepositories // aosBazelRustRepositories.activation-core-tests;
+    dependencyProfile = "activation-core-tests";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = map (name: "//crates/aos/activation/${name}:unit") [
+      "aos-activation"
+      "aos-activation-config-files"
+      "aos-activation-sysctl"
+      "aos-activation-bpf-lsm"
+      "aos-activation-bpf-network"
+      "aos-activation-kubernetes"
+      "aos-activation-nftables"
+    ];
+  };
   aosBazelNativeFoundationWorkspace = mkAosBazelWorkspace {
     root = ../../..;
     sourceDirectories = ["crates/shared" "crates/aos/registry/aos-registry-format" "tools/bazel" "third_party/rust"];
@@ -337,6 +363,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelActivationCoreLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelActivationCoreWorkspace;
     }).launcher;
   aosBazelNativeFoundationLauncher =
     (import ./development.nix {
