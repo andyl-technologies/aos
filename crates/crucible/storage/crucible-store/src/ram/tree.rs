@@ -504,6 +504,12 @@ fn try_copy_root_vector<T: Copy>(
     values: &[T],
     original: &crate::owned_decode::DecodeBudget,
 ) -> Result<Vec<T>, RamStoreError> {
+    // Backend headroom checks may run external code after entry admission.
+    // Revalidate the same caller before allocating each successor copy.
+    original
+        .verify_live()
+        .map_err(|source| RamStoreError::from_admission(original, source))?;
+
     let mut output = Vec::new();
     output.try_reserve_exact(values.len()).map_err(|source| {
         crate::content_store::StoreError::Allocation {

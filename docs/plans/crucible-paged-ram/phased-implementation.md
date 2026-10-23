@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 607 bindings: 588 component and nineteen native, across 243 requirements. | 146 requirements remain uncovered and none fully qualified. |
+| Requirements | 608 bindings: 589 component and nineteen native, across 243 requirements. | 146 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2604,9 +2604,11 @@ Its 512 MiB depth-first read-cost case passes in 314.42 seconds, with actual
 child reap/ECHILD and removal of its own scratch confirmed. The incompressible
 archive/restore/repack control also passes in 2,320.58 seconds, with actual
 terminal reap/ECHILD and its scratch removal independently verified. The shared
-control is running under the same limits; earlier volume passes are not
-substituted for this frozen revision. No native, physical-memory floor or
-performance parity qualification is established.
+control passes in 931.04 seconds under the same limits. All three final receipts
+confirm zero exit, no timeout, terminal reap/ECHILD and removal of their own
+scratch; the separately frozen binary is removed after completion. Earlier
+volume passes are not substituted for this frozen revision. No native, physical
+memory floor or performance parity qualification is established.
 
 Update entry now admits the actual caller account before backend headroom
 checks and successor-vector copies. A retained input root grants no permission
@@ -2705,11 +2707,41 @@ including actual wire-fuzz, doorbell, guest and aggregate owners. All 47 canonic
 owners and 268 registered tests are independently checked with the exact-count
 guards intact. All 686 engine tests, 95 policy controls and storage/portable-RAM
 Clippy pass. Full license and required application-target checks remain in
-progress. Application compilation uses immutable source
-`y0w8a5yif7q92rk2mz5s7ghksv5hflqk`; all 5,415 committed Rust/TOML files and
+progress. Signed topology-sort commit `6d6ed0a2e4` is pushed. Application
+compilation uses immutable source `y0w8a5yif7q92rk2mz5s7ghksv5hflqk`; all 5,415 committed Rust/TOML files and
 six required fixtures match before subsequent source edits. These component
 observations establish no physical memory, native custody or performance parity
 qualification.
+
+Successor copying now revalidates the same original caller immediately before
+each fallible vector reservation. Backend headroom admission can invoke external
+code after the entry check, so its successful return does not preserve the
+caller's liveness. Existing typed admission conversion retains original custody;
+there is no new account, entitlement, reservation, operation clock or boundary
+callback. Valid-call callback order and the caller-funded output contract stay
+unchanged.
+
+A forwarding control first delegates admission to the genuinely captured root's
+actual backend, then irreversibly revokes the same finite caller. Its original
+update path fails at five allocations versus three in the independently measured
+successful-admission and genuine-refusal prefixes. The corrected path matches
+those actual prefixes, reads no change stream, invokes no boundary callback and
+requests no additional loan. Its typed original revocation retains the actual
+caller charge after caller close until final returned-error close. The caller
+is never reactivated or replaced to measure its diagnostic. All seven focused
+admission, vector-allocation and ordered-update controls pass. This is a
+component revalidation cut after external admission, not a native race-freedom
+or physical OOM qualification.
+
+Inventory `qzcgpwnjyhj9b168acs7qvqm86bv2y20` validates 608 bindings across
+243 requirements: 564 model, 25 format and nineteen native bindings. The same
+146 requirements remain uncovered and none is fully qualified. All 745 ordinary
+storage tests, 686 engine tests, 95 policy controls and storage/portable-RAM
+Clippy pass. Hermetic storage output `phyi4n3wb8535pd7ijf4c03g3440fdpn` passes
+all 85 selected cases and 106 independently checked successful nested summaries.
+Required application-target compilation is running from immutable source
+`2ibv3vfapr9x1yydmy87l2vl6lp1x5kb`; all 5,415 committed Rust/TOML files and
+six required fixtures match before subsequent source edits.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`
