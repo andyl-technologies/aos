@@ -551,20 +551,24 @@ where
             return None;
         };
         Some(backends.nodes.with_prepared_hot_fork_sources_concurrent(
-            &backends.prepared,
-            rows,
-            panic_rows,
-            geometry,
-            |row| &row.node,
-            |source, row| {
-                #[cfg(test)]
-                row.launch_measured(source, |source| source.publish_child_ram());
-                #[cfg(not(test))]
-                row.launch(source, |source| source.publish_child_ram());
+            crucible_qemu_host::QemuHotForkWorkerRows {
+                prepared: &backends.prepared,
+                rows,
+                panic_rows,
             },
-            TargetNodeConstruction::record_worker_panic,
-            TargetNodeConstruction::take_worker_panic,
-            TargetNodeConstruction::is_vacant,
+            geometry,
+            crucible_qemu_host::QemuHotForkWorkerOperations {
+                node_for: |row| &row.node,
+                operation: |source, row| {
+                    #[cfg(test)]
+                    row.launch_measured(source, |source| source.publish_child_ram());
+                    #[cfg(not(test))]
+                    row.launch(source, |source| source.publish_child_ram());
+                },
+                record_panic: TargetNodeConstruction::record_worker_panic,
+                take_panic: TargetNodeConstruction::take_worker_panic,
+                panic_is_vacant: TargetNodeConstruction::is_vacant,
+            },
         ))
     }
 }

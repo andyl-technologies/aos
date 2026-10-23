@@ -1572,19 +1572,19 @@ fn prepare_paused_live_node<'a>(
         })?
         .reserve_source_child_owner(operation_supervisor.clone())
         .map_err(|source| QemuLiveNodeStepGateError::OriginalNativeAccount { source })?;
-    let spawned = spawn_prepared_qemu_child_with_preexec(
-        &command,
+    let spawned = spawn_prepared_qemu_child_with_preexec(crate::spawn::PreparedQemuChildLaunch {
+        command: &command,
         run_directory,
-        layout.region_size,
-        process_contract,
-        config
+        region_len: layout.region_size,
+        contract: process_contract,
+        host_services: config
             .ram_control_registration
             .as_ref()
             .map(|registration| &registration.host_services),
-        launch_cleanup.clone(),
+        launch_cleanup: launch_cleanup.clone(),
         preexec,
-        Some(&mut child_return),
-    )
+        child_return: Some(&mut child_return),
+    })
     .map_err(|source| QemuLiveNodeStepGateError::Spawn { source })?;
     let (child, mut resources) = spawned.into_parts();
     let mut child = child_return.born(child);

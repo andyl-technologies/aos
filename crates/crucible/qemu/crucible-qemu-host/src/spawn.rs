@@ -1422,28 +1422,62 @@ pub(crate) fn spawn_prepared_qemu_child_with_fds_in_directory_guarded(
     host_services: Option<&crucible_host_resources::host_services::HostServiceAllocator>,
     launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
 ) -> Result<QemuSpawnedChild, QemuSpawnError> {
-    spawn_prepared_qemu_child_with_preexec(
+    spawn_prepared_qemu_child_with_preexec(PreparedQemuChildLaunch {
         command,
         run_directory,
         region_len,
         contract,
         host_services,
         launch_cleanup,
-        None,
-        None,
-    )
+        preexec: None,
+        child_return: None,
+    })
 }
 
+/// Retains the inputs to one guarded child birth and its existing return slot.
+///
+/// Constructing this record borrows the already-admitted launch basis and
+/// transfers the same cleanup alias; it does not reserve or issue resources.
+pub(crate) struct PreparedQemuChildLaunch<'a> {
+    /// Command whose fixed resource baseline must match the process contract.
+    pub(crate) command: &'a QemuLaunchCommand,
+    /// Existing pinned run directory revalidated before descriptor creation.
+    pub(crate) run_directory: &'a QemuPreparedRunDirectory,
+    /// Admitted shared-region extent checked against pre-exec requirements.
+    pub(crate) region_len: u64,
+    /// Sealed process resource and containment contract.
+    pub(crate) contract: &'a QemuChildProcessContract,
+    /// Existing service allocator used for the fixed launch descriptor lease.
+    pub(crate) host_services:
+        Option<&'a crucible_host_resources::host_services::HostServiceAllocator>,
+    /// Same-original cleanup control retained across birth and failure.
+    pub(crate) launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
+    /// Borrowed native startup and descriptor handover inputs, when selected.
+    pub(crate) preexec: Option<preexec_setup::BorrowedPreexecSetup<'a>>,
+    /// Existing reservation that receives the child immediately after birth.
+    pub(crate) child_return: Option<&'a mut crate::node::SourceLaunchReservation>,
+}
+
+/// Spawns one prepared child through its retained pre-exec and return inputs.
+///
+/// # Errors
+///
+/// Returns the original launch, resource, descriptor or containment refusal.
+/// Missing child-return custody is rejected before resource construction.
 pub(crate) fn spawn_prepared_qemu_child_with_preexec(
-    command: &QemuLaunchCommand,
-    run_directory: &QemuPreparedRunDirectory,
-    region_len: u64,
-    contract: &QemuChildProcessContract,
-    host_services: Option<&crucible_host_resources::host_services::HostServiceAllocator>,
-    launch_cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
-    preexec: Option<preexec_setup::BorrowedPreexecSetup<'_>>,
-    child_return: Option<&mut crate::node::SourceLaunchReservation>,
+    launch: PreparedQemuChildLaunch<'_>,
 ) -> Result<QemuSpawnedChild, QemuSpawnError> {
+    let PreparedQemuChildLaunch {
+        command,
+        run_directory,
+        region_len,
+        contract,
+        host_services,
+        launch_cleanup,
+        preexec,
+        child_return,
+    } = launch;
+
     GuardedWorkerStackProfile::for_environment(command.diagnostic_envs())
         .ok_or(QemuSpawnError::UnsupportedWorkerStackProfile)?;
 

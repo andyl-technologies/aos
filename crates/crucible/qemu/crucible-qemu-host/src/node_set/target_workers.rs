@@ -133,6 +133,33 @@ pub enum QemuHotForkWorkerFailure {
     Spawn(#[source] std::io::Error),
 }
 
+/// Borrows the prepared Source roster and its existing Target result rows.
+pub struct QemuHotForkWorkerRows<'a, D> {
+    /// Exact prepared tokens retained by the containing Target Pending.
+    pub prepared: &'a [QemuNodeSetPreparedHotForkTemplate],
+    /// Existing per-node rows borrowed by the selected workers.
+    pub rows: &'a mut [D],
+    /// Vacant companion rows retaining unexpected join failures.
+    pub panic_rows: &'a mut [D],
+}
+
+/// Defines row access and result handling for the scoped fork workers.
+///
+/// Panic callbacks move existing payloads between vacant slots. They must not
+/// allocate, issue work or panic; the containing Target retains every row.
+pub struct QemuHotForkWorkerOperations<D> {
+    /// Borrows a row's stable node identity for roster validation.
+    pub node_for: fn(&D) -> &NodeId,
+    /// Runs one prepared Source operation against its existing Target row.
+    pub operation: for<'a> fn(QemuNodeSetPreparedHotForkSource<'a>, &mut D),
+    /// Moves the actual panic payload into the row's vacant first-panic slot.
+    pub record_panic: fn(&mut D, Box<dyn std::any::Any + Send>),
+    /// Takes the retained panic payload after physical worker joining.
+    pub take_panic: fn(&mut D) -> Option<Box<dyn std::any::Any + Send>>,
+    /// Checks that a companion row can retain an unexpected join failure.
+    pub panic_is_vacant: fn(&D) -> bool,
+}
+
 impl QemuNodeSet {
     /// Runs the same selected concurrency with no per-node ownership transfer.
     ///
@@ -148,19 +175,26 @@ impl QemuNodeSet {
     /// actual Target Pending on either outcome.
     pub fn with_prepared_hot_fork_sources_concurrent<D>(
         &mut self,
-        prepared: &[QemuNodeSetPreparedHotForkTemplate],
-        rows: &mut [D],
-        panic_rows: &mut [D],
+        retained: QemuHotForkWorkerRows<'_, D>,
         geometry: QemuHotForkWorkerGeometry,
-        node_for: fn(&D) -> &NodeId,
-        operation: for<'a> fn(QemuNodeSetPreparedHotForkSource<'a>, &mut D),
-        record_panic: fn(&mut D, Box<dyn std::any::Any + Send>),
-        take_panic: fn(&mut D) -> Option<Box<dyn std::any::Any + Send>>,
-        panic_is_vacant: fn(&D) -> bool,
+        operations: QemuHotForkWorkerOperations<D>,
     ) -> Result<(), QemuHotForkWorkerFailure>
     where
         D: Send,
     {
+        let QemuHotForkWorkerRows {
+            prepared,
+            rows,
+            panic_rows,
+        } = retained;
+        let QemuHotForkWorkerOperations {
+            node_for,
+            operation,
+            record_panic,
+            take_panic,
+            panic_is_vacant,
+        } = operations;
+
         if prepared.is_empty()
             || rows.len() != panic_rows.len()
             || !rows

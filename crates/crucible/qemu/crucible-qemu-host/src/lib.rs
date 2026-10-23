@@ -324,7 +324,10 @@ pub use node_set::{
     QemuParkedCampaignMarker,
 };
 #[cfg(target_os = "linux")]
-pub use node_set::{QemuHotForkWorkerFailure, QemuHotForkWorkerGeometry};
+pub use node_set::{
+    QemuHotForkWorkerFailure, QemuHotForkWorkerGeometry, QemuHotForkWorkerOperations,
+    QemuHotForkWorkerRows,
+};
 #[cfg(target_os = "linux")]
 pub use node_set::{QemuNodeSetBlockBoundaryCheckpoint, QemuNodeSetPreparedHotForkTemplate};
 pub use production_fault_runtime::{
