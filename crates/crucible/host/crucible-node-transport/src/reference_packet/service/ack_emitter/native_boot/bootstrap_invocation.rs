@@ -294,8 +294,13 @@ impl OriginalNativeStartupBootstrap {
                 "native invocation allocation differs",
             ));
         }
-        self.ensure_claim_cut()?;
-        self.failed = false;
+        super::finish_claim(
+            &mut self.failed,
+            self.creator,
+            &self.thread,
+            &self.original_cut,
+            "native invocation claim expired",
+        )?;
         Ok(
             super::super::super::boot::native_startup::OriginalNativeStartupBoot {
                 restored_suffix: None,
@@ -308,20 +313,6 @@ impl OriginalNativeStartupBootstrap {
                 prepare_startup_issued: false,
             },
         )
-    }
-
-    // Unlike ensure_original this runs while the scope is deliberately marked
-    // failed/spent. Only a fully successful claim may clear that sticky state.
-    fn ensure_claim_cut(&self) -> Result<(), ProviderError> {
-        if self.creator != std::process::id()
-            || self.thread != std::thread::current().id()
-            || self.original_cut.is_expired()
-        {
-            return Err(ProviderError::Correlation(
-                "native invocation claim expired",
-            ));
-        }
-        Ok(())
     }
 }
 

@@ -139,6 +139,16 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
         + crate::reference_packet::control::PacketControl::original_native_birth_selection_counter_scratch_data()
         + super::data_equality::counter_scratch_data()
         + invocation_ingress_counter_scratch_data()
+        // Both claim paths retain these terminal-check origin views and helper
+        // operands until the sticky failure flag is cleared.
+        + size_of::<&mut bool>()
+        + size_of::<&std::thread::ThreadId>()
+        + size_of::<&crate::operational_time::OperationalDeadline>()
+        + 2 * size_of::<&str>()
+        + size_of::<std::thread::Thread>()
+        + size_of::<std::thread::ThreadId>()
+        + size_of::<u32>()
+        + 2 * size_of::<Result<(), ProviderError>>()
         + retained_overlap::counter_scratch_data()
         + schemas::counter_scratch_data()
         + admit::adapter_counter_scratch_data()

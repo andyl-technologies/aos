@@ -274,7 +274,13 @@ impl OriginalNativeStartupBootstrap {
                 "native startup allocation body differs",
             ));
         }
-        self.failed = false;
+        finish_claim(
+            &mut self.failed,
+            self.creator,
+            &self.thread,
+            &self.original_cut,
+            "native startup claim expired",
+        )?;
         Ok(
             super::super::boot::native_startup::OriginalNativeStartupBoot {
                 restored_suffix: None,
@@ -288,6 +294,26 @@ impl OriginalNativeStartupBootstrap {
             },
         )
     }
+}
+
+// The claim remains failed throughout the recount. Check the original cut
+// immediately before clearing that sticky state on either startup path.
+fn finish_claim(
+    failed: &mut bool,
+    creator: u32,
+    thread: &std::thread::ThreadId,
+    original_cut: &crate::operational_time::OperationalDeadline,
+    reason: &'static str,
+) -> Result<(), ProviderError> {
+    if creator != std::process::id()
+        || *thread != std::thread::current().id()
+        || original_cut.is_expired()
+    {
+        return Err(ProviderError::Correlation(reason));
+    }
+
+    *failed = false;
+    Ok(())
 }
 
 // The fixed path is borrowed through the streamed executable helper. No
@@ -334,6 +360,53 @@ mod requote_tests {
     use super::*;
     use crucible_node_format::U64;
     type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[test]
+    fn terminal_claim_refusals_preserve_the_spent_failure_state() {
+        let expired = crate::operational_time::OperationalDeadline::expired_fixture();
+        let live =
+            crate::operational_time::OperationalDeadline::after(Duration::from_secs(5)).unwrap();
+        let current_thread = std::thread::current().id();
+        let other_thread = std::thread::spawn(|| std::thread::current().id())
+            .join()
+            .unwrap();
+        let creator = std::process::id();
+
+        // These are only terminal-check operands, with no private birth scope,
+        // preamble or successful Source constructed by the test.
+        for (process, thread, cut) in [
+            (creator, current_thread, expired),
+            (creator, other_thread, live),
+            (creator.wrapping_add(1), current_thread, live),
+        ] {
+            let mut failed = true;
+            let result = finish_claim(&mut failed, process, &thread, &cut, "claim expired");
+
+            assert!(matches!(
+                result,
+                Err(ProviderError::Correlation("claim expired"))
+            ));
+            assert!(failed);
+        }
+    }
+
+    #[test]
+    fn terminal_claim_clears_failure_only_under_the_original_live_cut() {
+        let cut =
+            crate::operational_time::OperationalDeadline::after(Duration::from_secs(5)).unwrap();
+        let mut failed = true;
+
+        finish_claim(
+            &mut failed,
+            std::process::id(),
+            &std::thread::current().id(),
+            &cut,
+            "claim expired",
+        )
+        .unwrap();
+
+        assert!(!failed);
+    }
 
     #[test]
     fn asymmetric_private_parser_requote_does_not_redistribute_native_or_private_grants()
