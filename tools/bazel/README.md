@@ -2704,8 +2704,8 @@ graphs, matching the observed Cargo selections.
 
 ## Native Hub conversion
 
-`aos-dev bazel hub-native build` selects the default native test graph;
-`aos-dev bazel hub-native rust-project` exports its editor graph. Dependency
+`aos-dev bazel --family hub-native build` selects the default native test graph;
+`aos-dev bazel --family hub-native rust-project` exports its editor graph. Dependency
 updates expose separate `hub-native-tests` and `hub-native-postgres` profiles.
 The latter compiles the library and both installed binaries with PostgreSQL,
 preserving the observed Cargo feature selections described above.
@@ -2730,8 +2730,14 @@ narrow exceptions where those operations are intentional. All 310 test
 declarations remain, with no ignored declarations. Documentation links were
 repaired, including a stale description of the placement-specific writer;
 that documentation correction does not change the writer implementation.
-Final uncached runtime, developer, generated-asset and selected editor results
-are retained in a separate qualification report when complete. Live
+`tests/evidence/hub-native-qualified.json` retains the final uncached
+qualification: all original 308 cases and one compile doctest pass, resolved
+features match Cargo, 29 Clippy actions run in the Linux sandbox, and all three
+generated assets match the fresh Cargo generator and declared Console inputs.
+All 29 selected editor diagnostics match Cargo; 1,808 unselected rows and
+incomplete inference remain visible. The required workspace Rust compilation
+also passes for all 29 Native source edits, recorded separately in
+`tests/evidence/hub-native-required-rust-targets.json`. Live
 PostgreSQL/MariaDB, the native operator VM, Worker execution, full compiler
 argument equivalence, performance acceptance and production migration remain
 separate gates.
