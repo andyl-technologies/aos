@@ -1274,6 +1274,7 @@ fn require_not_expired(value: &str, now: std::time::SystemTime) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::registry::{EXPERIMENTAL_REGISTRY, MAIN_REGISTRY};

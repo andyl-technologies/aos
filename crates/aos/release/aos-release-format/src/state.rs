@@ -389,5 +389,6 @@ where
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 #[path = "state_tests.rs"]
 mod tests;

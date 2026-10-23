@@ -287,5 +287,6 @@ pub fn verify_overrides(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 #[path = "profile_override_tests.rs"]
 mod tests;

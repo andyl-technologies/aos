@@ -323,7 +323,7 @@ fn optional_assessments_preserve_missing_and_failed_results_without_awarding_exe
             &manifest,
             Some(STABLE),
             QualificationPhase::Staging,
-            &records,
+            records,
             NOW,
             None,
         )?;
@@ -332,7 +332,7 @@ fn optional_assessments_preserve_missing_and_failed_results_without_awarding_exe
             &manifest,
             Some(STABLE),
             QualificationPhase::Staging,
-            &records,
+            records,
             NOW,
             None,
         )?

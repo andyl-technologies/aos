@@ -3,6 +3,8 @@
 //! The fixture is the contract exported by the Nix side; its destination
 //! table is sorted by `<surface>/<tier>/<channel>`.
 
+#![allow(clippy::expect_used, clippy::unwrap_used)]
+
 use aos_release_format::{
     canonical,
     plan::{ReleaseClass, SurfaceRole},

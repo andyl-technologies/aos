@@ -42,8 +42,10 @@ pub mod limits;
 pub mod profiles;
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod deferral_tests;
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod plan_tests;
 
 pub use change_scope::ChangeScope;

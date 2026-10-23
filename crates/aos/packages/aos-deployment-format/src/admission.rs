@@ -101,7 +101,17 @@ impl AdmissionCatalog {
     }
 }
 
+fn check_root(root: &str) -> Result<()> {
+    let (canonical, suffix) = crate::locator::store_root_and_suffix(std::path::Path::new(root))?;
+    ensure!(
+        suffix.as_os_str().is_empty() && canonical == std::path::Path::new(root),
+        "admitted artifact must be a canonical store root"
+    );
+    Ok(())
+}
+
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use serde_json::json;
@@ -141,13 +151,4 @@ mod tests {
         );
         assert!(AdmissionCatalog::decode(b"{}", Sha256Digest::of_bytes(b"different")).is_err());
     }
-}
-
-fn check_root(root: &str) -> Result<()> {
-    let (canonical, suffix) = crate::locator::store_root_and_suffix(std::path::Path::new(root))?;
-    ensure!(
-        suffix.as_os_str().is_empty() && canonical == std::path::Path::new(root),
-        "admitted artifact must be a canonical store root"
-    );
-    Ok(())
 }

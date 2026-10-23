@@ -658,7 +658,7 @@ fn parse_public_key(encoded: &[u8]) -> Result<[u8; 32]> {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
         let mut bytes = [0_u8; 32];
-        for (index, chunk) in text.as_bytes().chunks_exact(2).enumerate() {
+        for (index, chunk) in text.as_bytes().as_chunks::<2>().0.iter().enumerate() {
             let pair = std::str::from_utf8(chunk).context("decoding public-key hex")?;
             bytes[index] = u8::from_str_radix(pair, 16).context("decoding public-key hex")?;
         }
@@ -746,6 +746,7 @@ pub fn verify_response_binding(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

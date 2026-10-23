@@ -494,11 +494,22 @@ fn resolve_encryption(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use tempfile::tempdir;
+
+    type PartitionFixture<'a> = (&'a str, Option<&'a str>, Option<&'a str>, Option<&'a str>);
+    type ArrayFixture<'a> = (
+        &'a str,
+        &'a str,
+        &'a [&'a str],
+        Option<&'a str>,
+        Option<&'a str>,
+    );
+
     fn topology_plan(
-        partitions: &[(&str, Option<&str>, Option<&str>, Option<&str>)],
-        arrays: &[(&str, &str, &[&str], Option<&str>, Option<&str>)],
+        partitions: &[PartitionFixture<'_>],
+        arrays: &[ArrayFixture<'_>],
     ) -> crate::ProvisioningPlan {
         use std::collections::BTreeMap;
 
