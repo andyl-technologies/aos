@@ -2539,3 +2539,10 @@ SQLite's writer-lock timeout and remains recorded in the default baseline.
 Live PostgreSQL/MySQL services, foreign/Wasm execution, compiler invocation
 equivalence, performance acceptance, production cutover, and Cargo removal
 remain separate gates.
+
+`tests/evidence/hub-console-wasm-cargo-baseline.json` retains the unchanged
+console's production browser distribution before Bazel conversion. The ordinary
+production build and Cargo artifact capture produce identical JavaScript, CSS,
+and WebAssembly bytes, with 232 compiled packages and 147 unchanged first-party
+inputs. Linker staging uses the sandbox's disk-backed temporary directory and
+cleans up on exit. Browser execution and browser-only tests remain separate gates.
