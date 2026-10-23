@@ -311,7 +311,7 @@ impl DecodeBudget {
     pub fn charge_array<T>(&self, count: usize) -> Result<(), DecodeAdmissionError> {
         let bytes = (std::mem::size_of::<T>() as u64)
             .checked_mul(count as u64)
-            .ok_or_else(|| refusal("decoded array size overflow"))?;
+            .ok_or_else(|| self.0.refusals.error(AccountRefusal::ArrayOverflow))?;
         self.charge_bytes(bytes)
     }
 
@@ -530,7 +530,7 @@ impl DecodeBudget {
     ) -> Result<DecodeScratch, DecodeAdmissionError> {
         let bytes = (std::mem::size_of::<T>() as u64)
             .checked_mul(count as u64)
-            .ok_or_else(|| refusal("decoded scratch array size overflow"))?;
+            .ok_or_else(|| self.0.refusals.error(AccountRefusal::ScratchArrayOverflow))?;
         self.reserve_scratch_bytes(bytes)
     }
 }
@@ -605,6 +605,13 @@ pub fn charge_array<T>(count: usize) -> Result<(), DecodeAdmissionError> {
 
 fn refusal(message: &'static str) -> DecodeAdmissionError {
     DecodeAdmissionError::new(AccountingRefusal(message))
+}
+
+fn scoped_refusal(refusal: AccountRefusal) -> DecodeAdmissionError {
+    current_budget().map_or_else(
+        || DecodeAdmissionError::new(refusal.diagnostic()),
+        |budget| budget.0.refusals.error(refusal),
+    )
 }
 
 /// Returns the explicitly installed account for the current decoder thread.
@@ -811,7 +818,7 @@ pub fn reserve_vec<T>(values: &mut Vec<T>, additional: usize) -> Result<(), Deco
     let required = values
         .len()
         .checked_add(additional)
-        .ok_or_else(|| refusal("decoded vector size overflow"))?;
+        .ok_or_else(|| scoped_refusal(AccountRefusal::VectorOverflow))?;
     if required > values.capacity() {
         charge_array::<T>(required)?;
         values

@@ -11,12 +11,31 @@ pub(super) enum AccountRefusal {
     Poisoned,
     Exhausted,
     ScratchInvariant,
+    ArrayOverflow,
+    ScratchArrayOverflow,
+    VectorOverflow,
+}
+
+impl AccountRefusal {
+    pub(super) fn diagnostic(self) -> AccountingRefusal {
+        AccountingRefusal(match self {
+            Self::Poisoned => "decoded metadata account is poisoned",
+            Self::Exhausted => "decoded metadata allowance exhausted",
+            Self::ScratchInvariant => "decoded scratch accounting invariant failed",
+            Self::ArrayOverflow => "decoded array size overflow",
+            Self::ScratchArrayOverflow => "decoded scratch array size overflow",
+            Self::VectorOverflow => "decoded vector size overflow",
+        })
+    }
 }
 
 struct RefusalStorage {
     poisoned: AccountingRefusal,
     exhausted: AccountingRefusal,
     scratch_invariant: AccountingRefusal,
+    array_overflow: AccountingRefusal,
+    scratch_array_overflow: AccountingRefusal,
+    vector_overflow: AccountingRefusal,
     // TerminalOwner frees this storage's shared header before returning credit.
     _credit: ResourceLoan,
 }
@@ -39,9 +58,12 @@ impl PrepaidRefusals {
     pub(super) fn new(credit: ResourceLoan) -> Self {
         Self {
             storage: TerminalOwner::new(RefusalStorage {
-                poisoned: AccountingRefusal("decoded metadata account is poisoned"),
-                exhausted: AccountingRefusal("decoded metadata allowance exhausted"),
-                scratch_invariant: AccountingRefusal("decoded scratch accounting invariant failed"),
+                poisoned: AccountRefusal::Poisoned.diagnostic(),
+                exhausted: AccountRefusal::Exhausted.diagnostic(),
+                scratch_invariant: AccountRefusal::ScratchInvariant.diagnostic(),
+                array_overflow: AccountRefusal::ArrayOverflow.diagnostic(),
+                scratch_array_overflow: AccountRefusal::ScratchArrayOverflow.diagnostic(),
+                vector_overflow: AccountRefusal::VectorOverflow.diagnostic(),
                 _credit: credit,
             }),
         }
@@ -61,6 +83,9 @@ impl PrepaidRefusals {
             AccountRefusal::Poisoned => &self.storage.poisoned,
             AccountRefusal::Exhausted => &self.storage.exhausted,
             AccountRefusal::ScratchInvariant => &self.storage.scratch_invariant,
+            AccountRefusal::ArrayOverflow => &self.storage.array_overflow,
+            AccountRefusal::ScratchArrayOverflow => &self.storage.scratch_array_overflow,
+            AccountRefusal::VectorOverflow => &self.storage.vector_overflow,
         }
     }
 

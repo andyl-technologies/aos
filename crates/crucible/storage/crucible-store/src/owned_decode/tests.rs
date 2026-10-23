@@ -420,3 +420,109 @@ fn refusal_storage_is_not_born_when_its_original_credit_refuses() {
     assert_eq!(authority.calls.load(Ordering::SeqCst), 2);
     assert_eq!(authority.used.load(Ordering::SeqCst), 0);
 }
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn array_size_overflow_reports_a_prepaid_cause_without_poisoning()
+-> Result<(), DecodeAdmissionError> {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    for scratch in [false, true] {
+        let authority = authority();
+        let budget = DecodeBudget::new(authority.clone(), authority.maximum)?;
+        let reservations = authority.calls.load(Ordering::SeqCst);
+
+        let (error, counts) = TestAllocationObserver::count(|| {
+            if scratch {
+                budget.reserve_scratch_array::<u64>(usize::MAX).err()
+            } else {
+                budget.charge_array::<u64>(usize::MAX).err()
+            }
+        });
+        let error = error.unwrap_or_else(|| panic!("the array extent must overflow"));
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert_eq!(authority.calls.load(Ordering::SeqCst), reservations);
+        assert_eq!(
+            error.to_string(),
+            if scratch {
+                "decoded scratch array size overflow"
+            } else {
+                "decoded array size overflow"
+            }
+        );
+        assert!(
+            error
+                .source()
+                .and_then(|source| source.downcast_ref::<AccountingRefusal>())
+                .is_some()
+        );
+        assert_eq!(budget.failure()?, None);
+        budget.charge_bytes(1)?;
+        drop(budget);
+        assert_eq!(
+            authority.used.load(Ordering::SeqCst),
+            PrepaidRefusals::peak_bytes()
+        );
+        drop(error);
+        assert_eq!(authority.used.load(Ordering::SeqCst), 0);
+    }
+    Ok(())
+}
+
+#[test]
+fn vector_size_overflow_retains_the_innermost_prepaid_cause_without_allocating()
+-> Result<(), DecodeAdmissionError> {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+
+    let mut values = vec![7_u8];
+    let authority = authority();
+    let outer = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let outer_scope = outer.enter();
+    let inner = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let inner_scope = inner.enter();
+    let reservations = authority.calls.load(Ordering::SeqCst);
+
+    let (inner_error, inner_counts) =
+        TestAllocationObserver::count(|| reserve_vec(&mut values, usize::MAX).unwrap_err());
+    drop(inner_scope);
+    let (outer_error, outer_counts) =
+        TestAllocationObserver::count(|| reserve_vec(&mut values, usize::MAX).unwrap_err());
+
+    for counts in [inner_counts, outer_counts] {
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+    }
+    assert_eq!(authority.calls.load(Ordering::SeqCst), reservations);
+    assert_eq!(values, [7]);
+    assert_eq!(inner_error.to_string(), "decoded vector size overflow");
+    assert_eq!(outer_error.to_string(), "decoded vector size overflow");
+    assert_ne!(inner_error, outer_error);
+    assert!(
+        inner_error
+            .source()
+            .and_then(|source| source.downcast_ref::<AccountingRefusal>())
+            .is_some()
+    );
+    assert_eq!(inner.failure()?, None);
+    assert_eq!(outer.failure()?, None);
+
+    drop(outer_scope);
+    drop(inner);
+    drop(outer);
+    assert_eq!(
+        authority.used.load(Ordering::SeqCst),
+        2 * PrepaidRefusals::peak_bytes()
+    );
+    drop(inner_error);
+    assert_eq!(
+        authority.used.load(Ordering::SeqCst),
+        PrepaidRefusals::peak_bytes()
+    );
+    drop(outer_error);
+    assert_eq!(authority.used.load(Ordering::SeqCst), 0);
+    Ok(())
+}
