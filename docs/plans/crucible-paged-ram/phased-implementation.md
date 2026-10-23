@@ -1316,6 +1316,22 @@ required fixtures independently matched each build's complete immutable source
 before subsequent edits.
 
 
+
+The debugger-candidate runtime and shutdown callers now share the existing exact
+handback, terminal custody and containing-history contracts. Classification
+requires the same retained candidate, propagated cleanup refusal, completed
+history transfer and whole-shutdown gates. Discarding a refusal, dropping history
+before transfer or returning the launcher while candidate cleanup is refused is
+rejected. All 89 focused/source-policy controls pass; the remaining broad retry
+finding covers nine other daemon paths. The unchanged generic mutation controls
+continue to reject extra attempts and foreign receivers. This is source evidence,
+not native execution qualification.
+
+The earlier compact controller-receipt application-target build passes at
+`6zh9wnycc2hz2hbdhs21vqpjic84v8gq`. Its 5,379 committed Rust/TOML inputs and six
+required fixtures independently matched the immutable build source before later
+edits.
+
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's
 journal exactly once before any target effect. Four attempt cells and six error

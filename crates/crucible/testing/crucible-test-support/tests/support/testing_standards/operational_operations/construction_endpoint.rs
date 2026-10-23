@@ -64,6 +64,28 @@ const COMPANIONS: &[Companion] = &[
 pub(super) const CONTRACTS: &[Contract] = &[
     Contract {
         package: "crucible-daemon",
+        target: "src/vm_lifecycle/runtime",
+        required: facts::RUNTIME.required,
+        expressions: &[(facts::RUNTIME.required[0].0, 1)],
+        identifiers: &[("retry_retained_debug_construction", 1), ("retry", 1)],
+        companions: COMPANIONS,
+    },
+    Contract {
+        package: "crucible-daemon",
+        target: "src/vm_lifecycle/quantum_loop",
+        required: &[
+            (facts::SHUTDOWN.required[1].0, 1),
+            (
+                "if let Err(error) = construction_shutdown { failures.push(self.retain_cleanup_failure(error)); }",
+                1,
+            ),
+        ],
+        expressions: &[("self.retry_retained_debug_construction()", 1)],
+        identifiers: &[("retry_retained_debug_construction", 1)],
+        companions: COMPANIONS,
+    },
+    Contract {
+        package: "crucible-daemon",
         target: "src/vm_lifecycle/construction/retained_debug",
         required: &[
             (
@@ -130,6 +152,10 @@ pub(super) fn altered_expression(expression: &str) -> String {
     expression
         .replace("&mut self,", "&mut other,")
         .replace("custody.retry_cleanup()", "other_custody.retry_cleanup()")
+        .replace(
+            "self.retry_retained_debug_construction()",
+            "other_lifecycle.retry_retained_debug_construction()",
+        )
         .replace(
             "lifecycle.retry_retained_debug_construction()",
             "other_lifecycle.retry_retained_debug_construction()",

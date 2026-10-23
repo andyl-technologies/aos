@@ -7,6 +7,24 @@ use super::super::{
 
 const MUTATIONS: &[(&str, &str, &str, &str)] = &[
     (
+        "crates/crucible/control/crucible-daemon/src/vm_lifecycle/runtime.rs",
+        "construction.retry()?;",
+        "let _ = construction.retry();",
+        "retained candidate cleanup refusal discarded by its caller",
+    ),
+    (
+        "crates/crucible/control/crucible-daemon/src/vm_lifecycle/runtime.rs",
+        "construction.transfer_history(destination)?; *retained = None;",
+        "*retained = None;",
+        "retained history dropped before containing handback",
+    ),
+    (
+        "crates/crucible/control/crucible-daemon/src/vm_lifecycle/quantum_loop.rs",
+        "&& construction_shutdown.is_ok()",
+        "",
+        "launcher returned while candidate cleanup remains refused",
+    ),
+    (
         r#"crates/crucible/control/crucible-daemon/src/vm_lifecycle/construction/retained_debug.rs"#,
         r#"self.publish()?;"#,
         r#"self.publish()?; self.publish()?;"#,
@@ -576,11 +594,10 @@ fn candidate_handback_requires_original_terminal_custody_and_all_seven_controls(
 #[test]
 fn every_actual_candidate_refusal_keeps_its_negative_result()
 -> Result<(), Box<dyn std::error::Error>> {
-    let contract = &CONTRACTS[1];
-    assert_eq!(
-        contract.target,
-        "src/vm_lifecycle/construction/retained_debug/tests"
-    );
+    let contract = CONTRACTS
+        .iter()
+        .find(|contract| contract.target == "src/vm_lifecycle/construction/retained_debug/tests")
+        .ok_or("the original candidate refusal contract is missing")?;
     let source = std::fs::read_to_string(
         crate::workspace_root()
             .join("crates/crucible/control/crucible-daemon")

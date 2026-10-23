@@ -684,9 +684,13 @@ pub(super) const TERMINAL: Companion = Companion {
 
 pub(super) const SHUTDOWN: Companion = Companion {
     path: "crates/crucible/control/crucible-daemon/src/vm_lifecycle/quantum_loop.rs",
-    required: &[(
-        r#"let construction_shutdown = self.retry_retained_debug_construction();
-        let prior_node_lease_cleanup_failure = self.node_lease_cleanup_failed;
+    required: &[
+        (
+            "let construction_shutdown = self.retry_retained_debug_construction();",
+            1,
+        ),
+        (
+            r#"let prior_node_lease_cleanup_failure = self.node_lease_cleanup_failed;
         let lease_binding = self.prepare_whole_node_shutdown();
         let staged_shutdown = self.retire_terminal_replacement_transaction();
         let shutdown = self.inner.shutdown();
@@ -701,8 +705,9 @@ pub(super) const SHUTDOWN: Companion = Companion {
             && self.terminal_replacement_values.is_empty()
             && self.terminal_replacement_leases.is_empty()
             && !self.node_lease_cleanup_failed"#,
-        1,
-    )],
+            1,
+        ),
+    ],
 };
 
 pub(super) const PAYER_0: Companion = Companion {
