@@ -1515,10 +1515,11 @@ locations and inferred types; complete inference is not claimed.
 `tests/evidence/formats-configured-graph.json` retains 162 distinct configured
 reports, 73 declared source files, all 16 refreshed family inventories, 13
 dependency specifications, and passing policy and CLI checks. All 12 existing
-dependency locks and their source and feature pins remain unchanged. Updated
-workspace Rust compilation and metadata/evaluation checks run separately.
-Wasm qualification, performance acceptance, and production migration remain
-pending.
+dependency locks and their source and feature pins remain unchanged.
+`tests/evidence/formats-metadata-evaluation.json` records passing metadata
+parity for 297 compiled first-party targets and core Nix evaluation checks
+at the frozen format checkpoint. Workspace Rust compilation runs separately.
+Wasm qualification, performance acceptance, and production migration remain pending.
 
 ## Release format baseline
 
