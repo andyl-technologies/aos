@@ -2675,3 +2675,12 @@ and all dependency features. Each production graph has twelve first-party
 packages, with 256 default or 267 all-feature external packages; all three
 staged assets match Cargo and the declared browser distribution byte for byte.
 Editor parity remains a separate checkpoint.
+
+`tests/evidence/hub-service-qualified.json` completes the uncached qualification
+of the frozen Service conversion at `2adbe97bb0`, including editor parity for
+both configurations. All 33 selected diagnostics match Cargo, with no
+unattributed rows; the 1,587 unselected Cargo rows remain visible. Both analyses
+retain incomplete inference, so this does not claim complete editor graph
+equivalence. Live database/service/VM and workerd tests, full compiler argument
+parity, performance acceptance, production cutovers and Cargo removal remain
+separate gates.
