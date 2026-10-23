@@ -98,11 +98,14 @@
       boot.initrd.systemd.services."aos-selinux-admission-proof" = {
         description = "Prove enforcing init_t admission without real-root access";
         requiredBy = [admissionTarget];
+        before = [admissionTarget];
         unitConfig.DefaultDependencies = "no";
         serviceConfig = {
           Type = "oneshot";
-          StandardOutput = "journal+console";
-          StandardError = "journal+console";
+          # Admission terminates before the journal socket is available.
+          StandardOutput = "tty";
+          StandardError = "inherit";
+          TTYPath = "/dev/console";
         };
         script = ''
           set -eu

@@ -10920,3 +10920,14 @@ in the authenticated closure and explicitly requires the fallback to be absent.
 It retains exact compiled-name equality and per-caller runtime search checks;
 no wildcard loader names or mutable paths are admitted. All 22 runtime-manifest
 unit tests pass. The rebuilt stage-0 and installed Host checks remain pending.
+
+### Early admission proof output (installed receipt pending)
+
+The three-machine admission matrix boots the valid signed initrd and its proof
+service exits successfully. The assertion still fails because journal+console
+cannot connect to the journal socket in this deliberately early target and
+silently discards the proof text. The fixture now sends output directly to
+/dev/console with inherited stderr and orders the required proof before the
+admission target. Its enforcing, Secure Boot, unshare and real-root isolation
+assertions remain unchanged. The rerun remains pending; this service exit alone
+is not an installed qualification receipt.
