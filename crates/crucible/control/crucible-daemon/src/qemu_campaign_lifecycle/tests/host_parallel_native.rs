@@ -580,8 +580,15 @@ fn host_parallel_source_binds_selected_guest_asset_bytes() {
     let root_image = temporary.path().join("root.ext4");
     fs::write(&kernel, b"current production kernel").expect("write kernel fixture");
     fs::write(&root_image, b"current production root image").expect("write root fixture");
-    let fixture = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../../../tests/crucible/fixtures/e2e-determinism.scenario.toml");
+    // Bazel tests read declared runfiles; Cargo tests retain their source root.
+    let workspace = match (
+        std::env::var_os("TEST_SRCDIR"),
+        std::env::var_os("TEST_WORKSPACE"),
+    ) {
+        (Some(runfiles), Some(name)) => PathBuf::from(runfiles).join(name),
+        _ => Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../.."),
+    };
+    let fixture = workspace.join("tests/crucible/fixtures/e2e-determinism.scenario.toml");
 
     let source = two_node_source(&fixture, &kernel, &root_image);
     let expected_kernel =
