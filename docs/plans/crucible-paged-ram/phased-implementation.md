@@ -63,9 +63,9 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | Signed atomic `4edc47cba6`, conventional `ce0d15fb5d`, tree `10c75e16` corrects the no-Target opaque frame acquire load. Independent review verifies all 672 sealed artifacts and 78,462 source paths; the license ledger covers 655 created files. | The preceding `ee8eebc886` tuple passes genuine configure, all 35 owning variants, both passive units and all 39 getter readbacks, with an independently reproduced 478,294-byte fixed passive floor. Those values do not price the larger current tree; fresh compilation and geometry remain required. The registered Source unit still has eighteen unresolved link providers. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
+| Native integration | Signed atomic `4edc47cba6`, conventional `ce0d15fb5d`, tree `10c75e16` corrects the no-Target opaque frame acquire load. Independent review verifies all 672 sealed artifacts and 78,462 source paths; the license ledger covers 655 created files. | The current tuple passes genuine configure, all 35 owning variants, both passive units and all 39 direct getter readbacks. Independent object readback reproduces its 557,830-byte fixed passive floor; the separate preexec root is 230,856 bytes. These are declaration and getter extents, without paid native-profile qualification. The registered Source unit still has eighteen unresolved link providers. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
-| Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The latest completed canonical license-boundary check stops at strict controller Clippy with 660 host-library errors; its boundary assertions did not run. Earlier attempts and their larger finding counts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
+| Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The latest completed canonical license-boundary check stops at strict controller Clippy with 653 host-library errors; its boundary assertions did not run. Earlier attempts and their larger finding counts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 525 bindings: 506 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
@@ -989,9 +989,9 @@ survive transfer and subsequently observe actual return. The source-shape
 integration check and Nix engineering hygiene pass. The matching strict Host
 lint command reports 690 library errors and fourteen warnings, with 757 test
 errors and five warnings; both previous non-Drop ownership diagnostics are
-removed without exemptions. Mandatory application-target compilation is running
-against commit `30ab2c5cc4`; all 5,364 Rust/TOML inputs and six fixture/license
-files match its immutable build source. These component results do not issue Main custody
+removed without exemptions. Mandatory application-target compilation passes at
+`073mk0sg2vj3zx04d92c31hrang5c3mz` against commit `30ab2c5cc4`; all 5,364
+Rust/TOML inputs and six fixture/license files match its immutable build source. These component results do not issue Main custody
 or qualify complete native retirement.
 
 Source-service abandonment now retains its unique native join owner in the
@@ -1307,8 +1307,27 @@ symlink targets. Its record has SHA-256
 `861dd9c81d1dda0021809c146e24070777cf7bd10f967663978b8b65a40d96bd`.
 Hermetic patch and bundle reconstruction passes at
 `jnbcjmzl52sknvz3mlb3hin43316gjqd`; the unchanged 655-file license ledger passes
-at `7if63n9kpjqcskrypc75k3zqa567zjc3`. Fresh configure, owning compilation and
-geometry remain required for this correction; no earlier measured floor is reused.
+at `7if63n9kpjqcskrypc75k3zqa567zjc3`.
+
+The correction now passes its original bounded configure and layout cohort.
+Genuine configure returns zero in 34.861 seconds; all 35 owning variants, both
+passive units and all 118 child commands return zero. Independent review verifies
+all 29 signed payloads, all 4,319 execution archive paths, 35 actual object hashes,
+1,622 dependency hashes and both complete 86,104-row configured-source inventories.
+It independently disassembles and evaluates the 46 compiled bodies reached by
+39 direct getters and reads back both passive layout binaries. The actual Source
+root is 475,728 bytes and the direct getter extents total 82,102 bytes, giving a
+557,830-byte fixed declaration floor. The separate preexec root is 230,856 bytes.
+These measurements apply to this exact tree and selected libc; earlier floors
+are not reused. The independent result record has SHA-256
+`6e3ee2ffa0a92c25144517211fe6a5aac1dafb8be93e20362a189a58f075837d`.
+No application link, runtime, paid-profile, activation or physical-return result
+is inferred from compilation and passive geometry.
+
+The subsequent canonical license-boundary attempt stops before its boundary
+assertions: strict controller compilation reports 653 Host-library errors. This
+packaged result has a different feature selection from the standalone Host lint
+command recorded above; their finding counts are not interchangeable.
 
 #### Initial loader storage component
 
