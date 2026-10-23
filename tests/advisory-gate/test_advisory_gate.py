@@ -182,6 +182,46 @@ class AdvisoryGateTests(unittest.TestCase):
         ):
             advisory_gate.validate(self._arguments())
 
+    def test_disposition_is_bound_to_exact_component_version(self) -> None:
+        (self.repository / "cargo-report.jsonl").write_text(
+            json.dumps(
+                {
+                    "type": "diagnostic",
+                    "fields": {
+                        "code": "vulnerability",
+                        "advisory": {"id": "RUSTSEC-FIXTURE"},
+                        "graphs": [
+                            {"Krate": {"name": "clean", "version": "2.0.0"}}
+                        ],
+                    },
+                }
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        self._write_json(
+            "exceptions.json",
+            {
+                "schema": "aos.advisory-exceptions/v1",
+                "exceptions": [
+                    {
+                        "id": "RUSTSEC-FIXTURE",
+                        "component": "clean@1.9.0",
+                        "owner": "fixture",
+                        "reason": "fixture",
+                        "remediation": "fixture",
+                        "expires_on": "2026-10-23",
+                    }
+                ],
+            },
+        )
+
+        with self.assertRaisesRegex(
+            advisory_gate.GateError,
+            "findings lack active dispositions: RUSTSEC-FIXTURE for clean@2.0.0",
+        ):
+            advisory_gate.validate(self._arguments())
+
     def test_stale_snapshot_fails(self) -> None:
         with self.assertRaisesRegex(advisory_gate.GateError, "days old"):
             advisory_gate.validate(self._arguments(today="2026-11-23"))
