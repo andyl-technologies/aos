@@ -10931,3 +10931,32 @@ silently discards the proof text. The fixture now sends output directly to
 admission target. Its enforcing, Secure Boot, unshare and real-root isolation
 assertions remain unchanged. The rerun remains pending; this service exit alone
 is not an installed qualification receipt.
+
+### Initial runtime parent labeling (installed Root retry pending)
+
+The installed Root startup image fails in the fixed view-root provisioner.
+A second run of that exact image collected kernel audit records over netlink
+without changing the production policy. It confirms the provisioner reached
+its own domain, then was denied read of the existing tmpfs_t aos directory.
+The bootstrap handoff creates /run/aos before systemd's normal labeling pass;
+the view walker correctly requires var_run_t instead.
+
+The initial kernel-domain loader now labels /run and its fixed aos parent after
+loading and verifying the exact policy, before the first init_t handoff. It
+opens the directories without following symlinks and requires root ownership,
+mode 0755, tmpfs, and either the initial tmpfs_t or canonical var_run_t context.
+It verifies the label after writing. Later root handoffs and view provisioning
+retain their existing refusal of mismatched labels; this is not runtime repair
+or a grant to read generic tmpfs directories. No service or capability is added.
+
+The actual production label helper passes strict C17 controlled-kernel tests at
+`/nix/store/r8ajzcx9bcsy59jwcinrqg3jiwzqsnd5-aos-rfc21-runtime-parent-unit-0`.
+They cover the existing canonical label, initial label, foreign label, wrong
+owner/group/mode/type/filesystem, failed label reads/writes, and substituted
+readback. The stage-0 package compiles these tests on every target and runs them
+on native builds. Installed Root and admission retries remain pending.
+The complete stage-0 C translation unit also passes strict native compilation
+against the prior authenticated manifest header, together with those helper
+tests, at
+`/nix/store/8gg6mzsjrcrscdzksilm66pl4xr7ax6f-aos-rfc21-runtime-parent-unit-0`.
+This checks source integration, not a boot or a newly authenticated manifest.

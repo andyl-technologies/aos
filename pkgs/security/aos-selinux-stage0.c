@@ -192,6 +192,33 @@ static void ensure_directory(const char *path, mode_t mode) {
     }
 }
 
+#include "_aos-selinux-stage0-runtime-parent.inc"
+
+static void prepare_initial_runtime_parent(void) {
+    int run_descriptor;
+    int aos_descriptor;
+
+    /* Only the initial kernel-domain loader labels these bootstrap parents.
+     * Later handoffs and the confined view walker validate them without repair.
+     * A carrier may already have created /run/aos before policy was loaded. */
+    run_descriptor = open("/run", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (run_descriptor < 0) {
+        fail_closed("open initial runtime root: %s", strerror(errno));
+    }
+    label_initial_runtime_directory(run_descriptor, "/run");
+    if (mkdirat(run_descriptor, "aos", 0755) < 0 && errno != EEXIST) {
+        fail_closed("create initial runtime parent: %s", strerror(errno));
+    }
+    aos_descriptor = openat(
+        run_descriptor, "aos", O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (aos_descriptor < 0) {
+        fail_closed("open initial runtime parent: %s", strerror(errno));
+    }
+    label_initial_runtime_directory(aos_descriptor, "/run/aos");
+    close(aos_descriptor);
+    close(run_descriptor);
+}
+
 static void require_filesystem(
     const char *path,
     long expected_magic,
@@ -2069,6 +2096,7 @@ static void run_outer_loader(void) {
     load_policy();
     validate_loaded_policy();
     require_current_context(EXPECTED_KERNEL_CONTEXT);
+    prepare_initial_runtime_parent();
     verify_physical_target(
         "/sbin/init",
         AOS_GUARD_PATH,

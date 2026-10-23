@@ -194,6 +194,15 @@ in
           }
 
           cp ${./_aos-selinux-stage0-initrd-store.inc} ./_aos-selinux-stage0-initrd-store.inc
+          cp ${./_aos-selinux-stage0-runtime-parent.inc} ./_aos-selinux-stage0-runtime-parent.inc
+
+          $CC -std=c17 -D_GNU_SOURCE -Wall -Wextra -Werror -I. \
+            ${./aos-selinux-stage0-runtime-parent_test.c} -o test-runtime-parent
+          ${
+            if stdenv.isCross
+            then ""
+            else "./test-runtime-parent"
+          }
 
           $CC \
             -std=c17 \
