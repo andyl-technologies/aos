@@ -1,6 +1,7 @@
 load("@rules_rust//crate_universe:defs.bzl", "crate")
 load("//tools/bazel/rules:crates.bzl", "aos_crate_specifications")
 load("//tools/bazel/rules:package.bzl", "aos_package")
+load(":hub-client/aliases.bzl", HUB_CLIENT_CRATES = "CRATES")
 load(":hub-model/aliases.bzl", HUB_MODEL_CRATES = "CRATES")
 load(":hub-model-tests/aliases.bzl", HUB_MODEL_TESTS_CRATES = "CRATES")
 load(":hub-portable/aliases.bzl", HUB_PORTABLE_CRATES = "CRATES")
@@ -39,6 +40,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:hub_client_dependencies": HUB_CLIENT_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_model_tests_dependencies": HUB_MODEL_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_model_dependencies": HUB_MODEL_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_portable_dependencies": HUB_PORTABLE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -71,7 +73,8 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         visibility = ["//visibility:public"],
     )
     for name in sorted(dict(
-        HUB_MODEL_TESTS_CRATES.items()
+        HUB_CLIENT_CRATES.items()
+        + HUB_MODEL_TESTS_CRATES.items()
         + HUB_MODEL_CRATES.items()
         + HUB_PORTABLE_CRATES.items()
         + DEPLOYMENT_CRATES.items()
@@ -353,6 +356,23 @@ ACTIVATION_SYSTEMD_PACKAGES = dict(ACTIVATION_CORE_PACKAGES.items() + {
         "zbus",
     ]
 }.items())
+
+# Typed Hub clients preserve their own HTTP/TLS feature selection.
+HUB_CLIENT_PACKAGES = {
+    "anyhow": crate.spec(version = "=1.0.102"),
+    "http": crate.spec(version = "=1.4.1"),
+    "pbjson": crate.spec(version = "=0.7.0"),
+    "pbjson-build": crate.spec(version = "=0.7.0"),
+    "prost": crate.spec(version = "=0.13.5"),
+    "prost-build": crate.spec(version = "=0.13.5"),
+    "prost-types": crate.spec(version = "=0.13.5"),
+    "reqwest": crate.spec(version = "=0.12.28", default_features = False, features = ["json", "rustls-tls-native-roots", "stream"]),
+    "serde": crate.spec(version = "=1.0.228", features = ["derive", "rc"]),
+    "serde_json": crate.spec(version = "=1.0.150"),
+    "tokio": crate.spec(version = "=1.52.3", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"]),
+    "tokio-util": crate.spec(version = "=0.7.18", features = ["io"]),
+    "url": crate.spec(version = "=2.5.8"),
+}
 
 # Domain production and test roots stay separate to preserve Tokio feature units.
 HUB_MODEL_PACKAGES = {
@@ -840,6 +860,135 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    # Preserve the client baseline target and generator feature units.
+    "hub-client": {
+        "bitflags": json.encode({
+            "version": "2.13.0",
+            "resolved_features": [
+                "std"
+            ],
+            "features": [],
+            "exec_features": [
+                "std"
+            ]
+        }),
+        "bytes": json.encode({
+            "exec_features": [],
+            "features": [
+                "default",
+                "std"
+            ],
+            "resolved_features": [
+                "default",
+                "std"
+            ],
+            "version": "1.11.1"
+        }),
+        "indexmap": json.encode({
+            "features": [
+                "default",
+                "std"
+            ],
+            "resolved_features": [
+                "default",
+                "serde",
+                "std"
+            ],
+            "version": "2.14.0"
+        }),
+        "libc": json.encode({
+            "exec_features": [],
+            "features": [
+                "default",
+                "std"
+            ],
+            "resolved_features": [
+                "default",
+                "std"
+            ],
+            "version": "0.2.186"
+        }),
+        "prost": json.encode({
+            "exec_features": [
+                "default",
+                "derive",
+                "prost-derive",
+                "std"
+            ],
+            "features": [
+                "default",
+                "derive",
+                "std"
+            ],
+            "resolved_features": [
+                "default",
+                "derive",
+                "prost-derive",
+                "std"
+            ],
+            "version": "0.13.5"
+        }),
+        "serde": json.encode({
+            "features": [
+                "default",
+                "derive",
+                "rc",
+                "serde_derive",
+                "std"
+            ],
+            "resolved_features": [
+                "alloc",
+                "default",
+                "derive",
+                "rc",
+                "serde_derive",
+                "std"
+            ],
+            "version": "1.0.228"
+        }),
+        "serde_core": json.encode({
+            "features": [
+                "rc",
+                "result",
+                "std"
+            ],
+            "resolved_features": [
+                "alloc",
+                "rc",
+                "result",
+                "std"
+            ],
+            "version": "1.0.228"
+        }),
+        "syn": json.encode({
+            "features": [
+                "clone-impls",
+                "default",
+                "derive",
+                "extra-traits",
+                "fold",
+                "full",
+                "parsing",
+                "printing",
+                "proc-macro",
+                "visit"
+            ],
+            "resolved_features": [
+                "clone-impls",
+                "default",
+                "derive",
+                "extra-traits",
+                "fold",
+                "full",
+                "parsing",
+                "printing",
+                "proc-macro",
+                "visit",
+                "visit-mut"
+            ],
+            "version": "2.0.118"
+        }),
+    },
     # Keep domain tests coherent with their native Cargo target and generator units.
     "hub-model-tests": {
         "bytes": json.encode({
@@ -1478,6 +1627,7 @@ APPROVED_LICENSES = [
         host_only_licenses = ["Apache-2.0"],
     )
     for family, packages, annotations, license_domain in [
+        ("hub-client", HUB_CLIENT_PACKAGES, {}, "apache-host"),
         ("hub-model", HUB_MODEL_PACKAGES, {}, "apache-host"),
         ("hub-model-tests", HUB_MODEL_TESTS_PACKAGES, {}, "apache-host"),
         ("hub-portable", HUB_PORTABLE_PACKAGES, {}, "apache-host"),
@@ -1519,6 +1669,7 @@ APPROVED_LICENSES = [
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
     for family in [
+        "hub-client",
         "hub-model-tests",
         "hub-model",
         "hub-portable",

@@ -2,6 +2,7 @@
 
 def _dependency_profile_impl(ctx):
     if ctx.build_setting_value not in [
+        "hub-client",
         "hub-model",
         "hub-model-tests",
         "hub-portable",

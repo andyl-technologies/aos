@@ -95,6 +95,11 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    hub-client = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-client";
+    };
     hub-model-tests = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -289,6 +294,25 @@
     dependencyProfile = "control";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
+  };
+  aosBazelHubClientWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = [
+      "tools/bazel"
+      "third_party/rust"
+      "api/proto"
+      "crates/hub/aos-hub-api"
+      "crates/hub/aos-hub-client"
+    ];
+    repositories =
+      aosBazelRepositories
+      // aosBazelRustRepositories.hub-client
+      // {
+        aos_codegen = aosBazelCodegenTools;
+      };
+    dependencyProfile = "hub-client";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = ["//crates/hub/aos-hub-client:unit"];
   };
   aosBazelHubModelWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -540,6 +564,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelHubClientLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelHubClientWorkspace;
     }).launcher;
   aosBazelHubModelLauncher =
     (import ./development.nix {

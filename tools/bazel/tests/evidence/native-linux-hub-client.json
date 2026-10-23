@@ -1,0 +1,1828 @@
+{
+  "command": "nix-build tools/bazel/tests/hub-client.nix -A all -A inventory --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "configured_inventory": {
+    "configured_reports": 189,
+    "generation_output": "/nix/store/a2cz3rlf3vcwzxfpwq29rsann3zpphgy-aos-bazel-hub-client-inventory-1",
+    "requested_targets": 10,
+    "rust_source_files": 5,
+    "sha256": "8e5bded4b2e26e200052d12bc64b06d29f53df3e9ced23d8a774427b05d75f4d",
+    "source_files": 10
+  },
+  "declared_first_party_source_inputs_sha256": {
+    "api/proto/aos/hub/v1/hub.proto": "77005b93fb1df0a6830325e9b30a1b8bd83db2d1008a6bcee88a0a36f51adec5",
+    "crates/hub/aos-hub-api/build.rs": "f33e462a0e1a690a7fbecf612cc310543a932c81837f6074ac8e13f57ee2e9ca",
+    "crates/hub/aos-hub-api/src/lib.rs": "cf03f7a9fa1c04210498a0a69c05c89ccb5e3db6d48aae74380d85982a5333ea",
+    "crates/hub/aos-hub-client/src/hub.rs": "cea6b7e94eeaea55748ed62824522925414e95b8f8a3dd36f384dc99dac10c29",
+    "crates/hub/aos-hub-client/src/lib.rs": "e4f73d581e73b4d87b113c40f7f21359acd1a6e8d1b533dc469b8338486960bf",
+    "crates/hub/aos-hub-client/src/login.rs": "0c1b6c581704f2653198f719c41b4deb39c75610cbde1f4999ef563a5327c70f",
+    "tools/bazel/metadata/snapshot_generated_sources.py": "8db49e70e62687c849f693d6873384642096817b88388b52aea7070ad50585e6",
+    "tools/bazel/rules/rustfmt.toml": "a2efcdd8d36fc4614041b7b02bb744c5143caeb5f3b5e286c2b6064c1483e140",
+    "tools/bazel/testing/policy.json": "7c7ba1fd3117df593823d0d89767190df96d9eb4e02335dd18852bcda29cd757",
+    "tools/bazel/testing/runner.py": "8a18b6fb0dca658cc3f699b1e5cc1ec8b20fbcfa8e2e60fa8fa9e6f099a02adc"
+  },
+  "derivation_sha256": "01c8d53db8c30f183b19dc8d5da3d4765843023a4b7c56d602c6410b63b8f3cb",
+  "editor_parity": {
+    "aggregate_statistics_comparable": false,
+    "analysis": {
+      "complete_inference": true,
+      "exprs": {
+        "partial": 0,
+        "total": 6022,
+        "unknown": 0
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 1033,
+        "unknown": 0
+      }
+    },
+    "bazel_diagnostics": [],
+    "cargo_analysis": {
+      "complete_inference": true,
+      "exprs": {
+        "partial": 0,
+        "total": 313398,
+        "unknown": 0
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 42736,
+        "unknown": 0
+      }
+    },
+    "cargo_selected_diagnostics": [],
+    "comparison_scope": [
+      "crates/hub/aos-hub-client"
+    ],
+    "diagnostic_multiplicity_comparable": false,
+    "diagnostics": [],
+    "roots": {
+      "crates/hub/aos-hub-client/src/lib.rs": []
+    },
+    "unattributed_cargo_diagnostics": [],
+    "unselected_cargo_diagnostics": []
+  },
+  "execution_sha256": {
+    "evidence/execution.json": "bf3b3df0f207e3a6be9c05b70e6eeeb18cb6c0ece7a7a709526d7cb9f593625d",
+    "evidence/tests/index.json": "3e1fdec61532f02f65e38f8fa8caacf70c89e33eb94e06e06f9b97dfab2e024e"
+  },
+  "generated_source_parity": {
+    "count": 4,
+    "files": {
+      "aos.hub.v1.descriptor.bin": {
+        "sha256": "40e193e5a1e999dcb2f4fe0b1daad9bc9d11f54890f35c530ff3a2b7deb6e881",
+        "size": 455195
+      },
+      "aos.hub.v1.rs": {
+        "sha256": "127c514e16d9b94b6608456676d167a2d8390fb8ba0b65c24dc74bdca21f28de",
+        "size": 353859
+      },
+      "aos.hub.v1.serde.rs": {
+        "sha256": "4e2a1dd5c1fbca087eb224de84f9ef248e2a467d89e77205a22debda8bc3dba8",
+        "size": 4387910
+      },
+      "connect_paths.rs": {
+        "sha256": "144464fc6e2748bb6802fdb1f7b99ed7ddcbcc2a08d641e149797d6b24863f2c",
+        "size": 259532
+      }
+    },
+    "status": "PASS"
+  },
+  "generator": {
+    "actions": [
+      {
+        "cacheHit": false,
+        "commandArgs": [
+          "bazel-out/k8-opt-exec/bin/external/rules_rust+/util/process_wrapper/process_wrapper",
+          "--arg-file",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__serde_core-1.0.228/_bs.linksearchpaths",
+          "--arg-file",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__proc-macro2-1.0.106/_bs.linksearchpaths",
+          "--arg-file",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__quote-1.0.46/_bs.linksearchpaths",
+          "--arg-file",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__prettyplease-0.2.37/_bs.linksearchpaths",
+          "--arg-file",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__libc-0.2.186/_bs__aos_exec.linksearchpaths",
+          "--arg-file",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__getrandom-0.4.2/_bs.linksearchpaths",
+          "--arg-file",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__rustix-1.1.4/_bs.linksearchpaths",
+          "--subst",
+          "pwd=${pwd}",
+          "--subst",
+          "exec_root=${exec_root}",
+          "--subst",
+          "output_base=${output_base}",
+          "--subst",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__anyhow-1.0.102/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__anyhow-1.0.102/_bs.out_dir",
+          "--subst",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__proc-macro2-1.0.106/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__proc-macro2-1.0.106/_bs.out_dir",
+          "--subst",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__quote-1.0.46/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__quote-1.0.46/_bs.out_dir",
+          "--subst",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__serde_core-1.0.228/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__serde_core-1.0.228/_bs.out_dir",
+          "--subst",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__prettyplease-0.2.37/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__prettyplease-0.2.37/_bs.out_dir",
+          "--subst",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__libc-0.2.186/_bs__aos_exec.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__libc-0.2.186/_bs__aos_exec.out_dir",
+          "--subst",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__getrandom-0.4.2/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__getrandom-0.4.2/_bs.out_dir",
+          "--subst",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__rustix-1.1.4/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_hub_client_crates__rustix-1.1.4/_bs.out_dir",
+          "--",
+          "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_tools/rust/bin/rustc",
+          "@bazel-out/k8-opt-exec/bin/crates/hub/aos-hub-api/build_script_program-0.params"
+        ],
+        "environmentVariables": [
+          {
+            "name": "CARGO_CFG_TARGET_ARCH",
+            "value": "x86_64"
+          },
+          {
+            "name": "CARGO_CFG_TARGET_OS",
+            "value": "linux"
+          },
+          {
+            "name": "CARGO_CRATE_NAME",
+            "value": "build_script_program"
+          },
+          {
+            "name": "CARGO_MANIFEST_DIR",
+            "value": "${pwd}/crates/hub/aos-hub-api"
+          },
+          {
+            "name": "CARGO_PKG_AUTHORS",
+            "value": ""
+          },
+          {
+            "name": "CARGO_PKG_DESCRIPTION",
+            "value": "Portable Hub API messages, ProtoJSON codecs, and Connect descriptors"
+          },
+          {
+            "name": "CARGO_PKG_HOMEPAGE",
+            "value": ""
+          },
+          {
+            "name": "CARGO_PKG_LICENSE",
+            "value": "Apache-2.0"
+          },
+          {
+            "name": "CARGO_PKG_LICENSE_FILE",
+            "value": ""
+          },
+          {
+            "name": "CARGO_PKG_NAME",
+            "value": "aos-hub-api"
+          },
+          {
+            "name": "CARGO_PKG_README",
+            "value": ""
+          },
+          {
+            "name": "CARGO_PKG_REPOSITORY",
+            "value": ""
+          },
+          {
+            "name": "CARGO_PKG_RUST_VERSION",
+            "value": ""
+          },
+          {
+            "name": "CARGO_PKG_VERSION",
+            "value": "0.1.0"
+          },
+          {
+            "name": "CARGO_PKG_VERSION_MAJOR",
+            "value": "0"
+          },
+          {
+            "name": "CARGO_PKG_VERSION_MINOR",
+            "value": "1"
+          },
+          {
+            "name": "CARGO_PKG_VERSION_PATCH",
+            "value": "0"
+          },
+          {
+            "name": "CARGO_PKG_VERSION_PRE",
+            "value": ""
+          },
+          {
+            "name": "PATH",
+            "value": "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15/bin:/nix/store/6i9yb0a1q1k9qx8l3xb4xr25kf8cg4p5-coreutils-9.11/bin:/nix/store/6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41/bin:/nix/store/532aaff6i0bbc5rqp8nqmf99rabn91xv-findutils-4.11.0/bin:/nix/store/qwq9gmv4h5k991h1wra4ydkwl07977cd-grep-3.12/bin:/nix/store/km452j597r6swyr897sckswcyp5sr7kq-sed-4.10/bin:/nix/store/6im61c9yypa7ba1wdgjyk3lzx8ixj997-procps-ng-4.0.5/bin"
+          },
+          {
+            "name": "REPOSITORY_NAME",
+            "value": ""
+          },
+          {
+            "name": "ZERO_AR_DATE",
+            "value": "1"
+          }
+        ],
+        "exitCode": 0,
+        "mnemonic": "Rustc",
+        "runner": "linux-sandbox",
+        "targetLabel": "//crates/hub/aos-hub-api:build_script_program"
+      },
+      {
+        "cacheHit": false,
+        "commandArgs": [
+          "bazel-out/k8-opt-exec/bin/external/rules_rust+/cargo/private/cargo_build_script_runner/runner",
+          "--script=bazel-out/k8-opt-exec/bin/crates/hub/aos-hub-api/build_script_program",
+          "--links=",
+          "--out_dir=bazel-out/k8-fastbuild/bin/crates/hub/aos-hub-api/build_script.out_dir",
+          "--env_out=bazel-out/k8-fastbuild/bin/crates/hub/aos-hub-api/build_script.env",
+          "--flags_out=bazel-out/k8-fastbuild/bin/crates/hub/aos-hub-api/build_script.flags",
+          "--link_flags=bazel-out/k8-fastbuild/bin/crates/hub/aos-hub-api/build_script.linkflags",
+          "--link_search_paths=bazel-out/k8-fastbuild/bin/crates/hub/aos-hub-api/build_script.linksearchpaths",
+          "--dep_env_out=bazel-out/k8-fastbuild/bin/crates/hub/aos-hub-api/build_script.depenv",
+          "--rundir=",
+          "--cargo_manifest_args=@bazel-out/k8-fastbuild/bin/crates/hub/aos-hub-api/build_script.out_dir-0.params"
+        ],
+        "environmentVariables": [
+          {
+            "name": "AR",
+            "value": "/nix/store/6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41/bin/ar"
+          },
+          {
+            "name": "ARFLAGS",
+            "value": ""
+          },
+          {
+            "name": "CARGO",
+            "value": "${pwd}/bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/bin/cargo"
+          },
+          {
+            "name": "CARGO_CRATE_NAME",
+            "value": "aos_hub_api"
+          },
+          {
+            "name": "CARGO_ENCODED_RUSTFLAGS",
+            "value": "--sysroot=${pwd}/bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust"
+          },
+          {
+            "name": "CARGO_MANIFEST_DIR",
+            "value": "bazel-out/k8-fastbuild/bin/crates/hub/aos-hub-api/build_script.cargo_runfiles/_main/crates/hub/aos-hub-api"
+          },
+          {
+            "name": "CARGO_PKG_NAME",
+            "value": "aos-hub-api"
+          },
+          {
+            "name": "CARGO_PKG_VERSION",
+            "value": "0.1.0"
+          },
+          {
+            "name": "CARGO_PKG_VERSION_MAJOR",
+            "value": "0"
+          },
+          {
+            "name": "CARGO_PKG_VERSION_MINOR",
+            "value": "1"
+          },
+          {
+            "name": "CARGO_PKG_VERSION_PATCH",
+            "value": "0"
+          },
+          {
+            "name": "CARGO_PKG_VERSION_PRE",
+            "value": ""
+          },
+          {
+            "name": "CC",
+            "value": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc"
+          },
+          {
+            "name": "CFLAGS",
+            "value": "-U_FORTIFY_SOURCE"
+          },
+          {
+            "name": "CXX",
+            "value": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc"
+          },
+          {
+            "name": "CXXFLAGS",
+            "value": "-U_FORTIFY_SOURCE"
+          },
+          {
+            "name": "DEBUG",
+            "value": "true"
+          },
+          {
+            "name": "HOST",
+            "value": "x86_64-unknown-linux-gnu"
+          },
+          {
+            "name": "LD",
+            "value": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc"
+          },
+          {
+            "name": "LDFLAGS",
+            "value": "-L/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib -Wl,-rpath,/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib -lstdc++ -lm"
+          },
+          {
+            "name": "NUM_JOBS",
+            "value": "1"
+          },
+          {
+            "name": "OPT_LEVEL",
+            "value": "0"
+          },
+          {
+            "name": "PROFILE",
+            "value": "debug"
+          },
+          {
+            "name": "PROTOC",
+            "value": "${pwd}/external/+aos_tools_repository+aos_codegen/bin/protoc"
+          },
+          {
+            "name": "RULES_RUST_OUT_DIR_VOLATILE_BASENAMES",
+            "value": "config.log:config.log.old:config.status:Makefile:Makefile.config:config.cache:commit_hash"
+          },
+          {
+            "name": "RUSTC",
+            "value": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/bin/rustc"
+          },
+          {
+            "name": "RUSTDOC",
+            "value": "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/bin/rustdoc"
+          },
+          {
+            "name": "TARGET",
+            "value": "x86_64-unknown-linux-gnu"
+          },
+          {
+            "name": "ZERO_AR_DATE",
+            "value": "1"
+          }
+        ],
+        "exitCode": 0,
+        "mnemonic": "CargoBuildScriptRun",
+        "runner": "linux-sandbox",
+        "targetLabel": "//crates/hub/aos-hub-api:build_script"
+      }
+    ],
+    "cargo_executable_arguments": [],
+    "first_party_cargo_manifests_in_source": [],
+    "schema_inputs": [
+      {
+        "digest": {
+          "hash": "77005b93fb1df0a6830325e9b30a1b8bd83db2d1008a6bcee88a0a36f51adec5",
+          "hashFunctionName": "SHA-256",
+          "sizeBytes": "196429"
+        },
+        "isTool": true,
+        "path": "api/proto/aos/hub/v1/hub.proto",
+        "symlinkTargetPath": ""
+      }
+    ],
+    "tool_closure": {
+      "closure": [
+        {
+          "narHash": "sha256:0awki9wjhiz48hk1p9mr1b2kfrsv0hn85k2mm4ic6nwd08b7bxpd",
+          "path": "/nix/store/49br0y2s9c52ln7bxph87faa3kdkiyfz-abseil-cpp-20260817.0"
+        },
+        {
+          "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+          "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+        },
+        {
+          "narHash": "sha256:1d6ljajp4ih85ra4xahg006r5gs0hi2z3wj8ix8dcjll7z2wpm87",
+          "path": "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2"
+        },
+        {
+          "narHash": "sha256:1vkl71psjdkrdznynq2gahh3f3nc9w54dviw0f9jyfxyaq4p61sz",
+          "path": "/nix/store/iv7fg5j9zla8ia34l6gs8q1g70yxcm29-protobuf-36.1"
+        }
+      ],
+      "schema": 1
+    },
+    "tool_closure_sha256": "76553f93ad3ac90566fadc84d61954cc47a60e4b95822b2cb867d931a8c1c919"
+  },
+  "limits": [
+    "All ten client cases match Cargo, with no ignored cases and one empty doctest inventory. They validate request construction, typed references, error handling and URL syntax; live Hub authentication and service operations are not exercised.",
+    "The generated API inventory and file digests match fresh Cargo and the pre-conversion production baseline. Compiled binaries are not claimed byte-identical across build systems.",
+    "Selected-package editor comparison has no selected, unattributed or unselected diagnostics. Both complete inference reports remain explicit; aggregate statistics and diagnostic multiplicities are not claimed equivalent.",
+    "Feature comparisons preserve compiled feature-unit sets rather than establishing complete compiler invocation, codegen-unit or incremental compilation equivalence.",
+    "The existing Rust generator and pinned runner execute directly with declared AOS protoc and schema inputs; no Cargo executable or first-party manifest participates in these Bazel actions.",
+    "Installed Hub services, live authentication, foreign/Wasm execution, numeric performance acceptance, production migration and Cargo removal remain separate work."
+  ],
+  "production_features": {
+    "features": {
+      "anyhow@1.0.102": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "atomic-waker@1.1.2": [
+        []
+      ],
+      "base64@0.21.7": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "base64@0.22.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "bitflags@2.13.0": [
+        [],
+        [
+          "std"
+        ]
+      ],
+      "bytes@1.11.1": [
+        [],
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "cc@1.2.65": [
+        []
+      ],
+      "cfg-if@1.0.4": [
+        []
+      ],
+      "displaydoc@0.2.6": [
+        []
+      ],
+      "either@1.16.0": [
+        [
+          "std",
+          "use_std"
+        ]
+      ],
+      "equivalent@1.0.2": [
+        []
+      ],
+      "errno@0.3.14": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "fastrand@2.4.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "find-msvc-tools@0.1.9": [
+        []
+      ],
+      "fixedbitset@0.5.7": [
+        []
+      ],
+      "form_urlencoded@1.2.2": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "futures-channel@0.3.32": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "futures-core@0.3.32": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "futures-sink@0.3.32": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "futures-task@0.3.32": [
+        [
+          "alloc"
+        ]
+      ],
+      "futures-util@0.3.32": [
+        [
+          "alloc",
+          "slab"
+        ]
+      ],
+      "getrandom@0.2.17": [
+        []
+      ],
+      "getrandom@0.4.2": [
+        []
+      ],
+      "hashbrown@0.17.1": [
+        []
+      ],
+      "heck@0.5.0": [
+        []
+      ],
+      "http-body-util@0.1.3": [
+        [
+          "default"
+        ]
+      ],
+      "http-body@1.0.1": [
+        []
+      ],
+      "http@1.4.1": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "httparse@1.10.1": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "hyper-rustls@0.27.9": [
+        [
+          "http1",
+          "native-tokio",
+          "ring",
+          "rustls-native-certs",
+          "tls12"
+        ]
+      ],
+      "hyper-util@0.1.20": [
+        [
+          "client",
+          "client-legacy",
+          "client-proxy",
+          "default",
+          "http1",
+          "tokio"
+        ]
+      ],
+      "hyper@1.10.0": [
+        [
+          "client",
+          "default",
+          "http1"
+        ]
+      ],
+      "icu_collections@2.2.0": [
+        []
+      ],
+      "icu_locale_core@2.2.0": [
+        [
+          "zerovec"
+        ]
+      ],
+      "icu_normalizer@2.2.0": [
+        [
+          "compiled_data"
+        ]
+      ],
+      "icu_normalizer_data@2.2.0": [
+        []
+      ],
+      "icu_properties@2.2.0": [
+        [
+          "compiled_data"
+        ]
+      ],
+      "icu_properties_data@2.2.0": [
+        []
+      ],
+      "icu_provider@2.2.0": [
+        [
+          "baked"
+        ]
+      ],
+      "idna@1.1.0": [
+        [
+          "alloc",
+          "compiled_data",
+          "std"
+        ]
+      ],
+      "idna_adapter@1.2.2": [
+        [
+          "compiled_data"
+        ]
+      ],
+      "indexmap@2.14.0": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "ipnet@2.12.0": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "itertools@0.13.0": [
+        [
+          "default",
+          "use_alloc",
+          "use_std"
+        ]
+      ],
+      "itertools@0.14.0": [
+        [
+          "default",
+          "use_alloc",
+          "use_std"
+        ]
+      ],
+      "itoa@1.0.18": [
+        []
+      ],
+      "libc@0.2.186": [
+        [],
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "linux-raw-sys@0.12.1": [
+        [
+          "auxvec",
+          "elf",
+          "errno",
+          "general",
+          "ioctl",
+          "no_std"
+        ]
+      ],
+      "litemap@0.8.2": [
+        []
+      ],
+      "log@0.4.30": [
+        []
+      ],
+      "memchr@2.8.2": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "mio@1.2.1": [
+        [
+          "net",
+          "os-ext",
+          "os-poll"
+        ]
+      ],
+      "multimap@0.10.1": [
+        []
+      ],
+      "once_cell@1.21.4": [
+        [
+          "alloc",
+          "default",
+          "race",
+          "std"
+        ]
+      ],
+      "openssl-probe@0.2.1": [
+        []
+      ],
+      "pbjson-build@0.7.0": [
+        []
+      ],
+      "pbjson@0.7.0": [
+        []
+      ],
+      "percent-encoding@2.3.2": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "petgraph@0.7.1": [
+        []
+      ],
+      "pin-project-lite@0.2.17": [
+        []
+      ],
+      "potential_utf@0.1.5": [
+        [
+          "zerovec"
+        ]
+      ],
+      "prettyplease@0.2.37": [
+        []
+      ],
+      "proc-macro2@1.0.106": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "prost-build@0.13.5": [
+        [
+          "default",
+          "format"
+        ]
+      ],
+      "prost-derive@0.13.5": [
+        []
+      ],
+      "prost-types@0.13.5": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "prost@0.13.5": [
+        [
+          "default",
+          "derive",
+          "prost-derive",
+          "std"
+        ],
+        [
+          "default",
+          "derive",
+          "std"
+        ]
+      ],
+      "quote@1.0.46": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "regex-automata@0.4.14": [
+        [
+          "alloc",
+          "meta",
+          "nfa-pikevm",
+          "nfa-thompson",
+          "std",
+          "syntax",
+          "unicode-bool"
+        ]
+      ],
+      "regex-syntax@0.8.11": [
+        [
+          "std",
+          "unicode-bool"
+        ]
+      ],
+      "regex@1.12.4": [
+        [
+          "std",
+          "unicode-bool"
+        ]
+      ],
+      "reqwest@0.12.28": [
+        [
+          "__rustls",
+          "__rustls-ring",
+          "__tls",
+          "json",
+          "rustls-tls-native-roots",
+          "rustls-tls-native-roots-no-provider",
+          "stream"
+        ]
+      ],
+      "ring@0.17.14": [
+        [
+          "alloc",
+          "default",
+          "dev_urandom_fallback"
+        ]
+      ],
+      "rustix@1.1.4": [
+        [
+          "alloc",
+          "default",
+          "fs",
+          "std"
+        ]
+      ],
+      "rustls-native-certs@0.8.3": [
+        []
+      ],
+      "rustls-pki-types@1.14.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "rustls-webpki@0.103.13": [
+        [
+          "alloc",
+          "ring",
+          "std"
+        ]
+      ],
+      "rustls@0.23.40": [
+        [
+          "ring",
+          "std",
+          "tls12"
+        ]
+      ],
+      "ryu@1.0.23": [
+        []
+      ],
+      "serde@1.0.228": [
+        [
+          "default",
+          "derive",
+          "rc",
+          "serde_derive",
+          "std"
+        ]
+      ],
+      "serde_core@1.0.228": [
+        [
+          "rc",
+          "result",
+          "std"
+        ]
+      ],
+      "serde_derive@1.0.228": [
+        [
+          "default"
+        ]
+      ],
+      "serde_json@1.0.150": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "serde_urlencoded@0.7.1": [
+        []
+      ],
+      "shlex@2.0.1": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "signal-hook-registry@1.4.8": [
+        []
+      ],
+      "slab@0.4.12": [
+        []
+      ],
+      "smallvec@1.15.2": [
+        [
+          "const_generics",
+          "const_new"
+        ]
+      ],
+      "socket2@0.6.4": [
+        [
+          "all"
+        ]
+      ],
+      "stable_deref_trait@1.2.1": [
+        []
+      ],
+      "subtle@2.6.1": [
+        []
+      ],
+      "syn@2.0.118": [
+        [
+          "clone-impls",
+          "default",
+          "derive",
+          "extra-traits",
+          "fold",
+          "full",
+          "parsing",
+          "printing",
+          "proc-macro",
+          "visit"
+        ]
+      ],
+      "sync_wrapper@1.0.2": [
+        [
+          "futures",
+          "futures-core"
+        ]
+      ],
+      "synstructure@0.13.2": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "tempfile@3.27.0": [
+        [
+          "default",
+          "getrandom"
+        ]
+      ],
+      "tinystr@0.8.3": [
+        [
+          "zerovec"
+        ]
+      ],
+      "tokio-macros@2.7.0": [
+        []
+      ],
+      "tokio-rustls@0.26.4": [
+        [
+          "ring",
+          "tls12"
+        ]
+      ],
+      "tokio-util@0.7.18": [
+        [
+          "default",
+          "io"
+        ]
+      ],
+      "tokio@1.52.3": [
+        [
+          "bytes",
+          "default",
+          "fs",
+          "io-std",
+          "io-util",
+          "libc",
+          "macros",
+          "mio",
+          "net",
+          "process",
+          "rt",
+          "rt-multi-thread",
+          "signal",
+          "signal-hook-registry",
+          "socket2",
+          "sync",
+          "time",
+          "tokio-macros"
+        ]
+      ],
+      "tower-http@0.6.11": [
+        [
+          "follow-redirect",
+          "futures-util",
+          "tower"
+        ]
+      ],
+      "tower-layer@0.3.3": [
+        []
+      ],
+      "tower-service@0.3.3": [
+        []
+      ],
+      "tower@0.5.3": [
+        [
+          "futures-core",
+          "futures-util",
+          "pin-project-lite",
+          "retry",
+          "sync_wrapper",
+          "timeout",
+          "tokio",
+          "util"
+        ]
+      ],
+      "tracing-core@0.1.36": [
+        [
+          "once_cell",
+          "std"
+        ]
+      ],
+      "tracing@0.1.44": [
+        [
+          "std"
+        ]
+      ],
+      "try-lock@0.2.5": [
+        []
+      ],
+      "unicode-ident@1.0.24": [
+        []
+      ],
+      "untrusted@0.9.0": [
+        []
+      ],
+      "url@2.5.8": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "utf8_iter@1.0.4": [
+        []
+      ],
+      "want@0.3.1": [
+        []
+      ],
+      "writeable@0.6.3": [
+        []
+      ],
+      "yoke-derive@0.8.2": [
+        []
+      ],
+      "yoke@0.8.3": [
+        [
+          "derive",
+          "zerofrom"
+        ]
+      ],
+      "zerofrom-derive@0.1.7": [
+        []
+      ],
+      "zerofrom@0.1.8": [
+        [
+          "derive"
+        ]
+      ],
+      "zeroize@1.9.0": [
+        [
+          "alloc",
+          "default"
+        ]
+      ],
+      "zerotrie@0.2.4": [
+        [
+          "yoke",
+          "zerofrom"
+        ]
+      ],
+      "zerovec-derive@0.11.3": [
+        []
+      ],
+      "zerovec@0.11.6": [
+        [
+          "derive",
+          "yoke"
+        ]
+      ],
+      "zmij@1.0.21": [
+        []
+      ]
+    },
+    "first_party_features": {
+      "aos-hub-api": [
+        []
+      ],
+      "aos-hub-client": [
+        []
+      ]
+    }
+  },
+  "report_sha256": {
+    "editor-parity.json": "a0556f99249b50f92ed602f2000d7e919707ee58fdbe8fa1247c8a29e98a7eb6",
+    "generated-source-parity.json": "7d156d8bd56d4f9bd5290375ba052924ee8fe5f3492a02d973d4e6b43d1bd582",
+    "parity.json": "64657977efb34ff970af6b7820b2090074fce11afde7059b741151149c4c943e",
+    "production-parity.json": "9de8819c99b0534f7637942820f3eadb8e8f5606e1e5612292a9080ae7f3da78"
+  },
+  "schema_version": 1,
+  "scope": {
+    "all": "/nix/store/13jndshq6hk9zy1m5rlayhhaqpjm82j1-aos-bazel-hub-client-qualified-checks",
+    "cargo": "/nix/store/nbsfp1pg52g4l1488xqij44az4hb3a2v-aos-bazel-hub-client-cargo-oracle-1",
+    "configuration": "/nix/store/dyhxbqcrmlmsrgmn91aglkf4r0kf750q-aos-bazel-configuration.json",
+    "derivation": "/nix/store/y09jvh1nj6l0595bzw4nnpgl42d6v7i0-aos-bazel-hub-client-qualified-checks.drv",
+    "developer": "/nix/store/rgcgp7pxfcxjfh4h9lw692f1r9cm2pji-aos-bazel-hub-client-developer-tools-1",
+    "editor": "/nix/store/mr3j6g18zr7ns879qnc22nbsmh8bh59z-aos-bazel-hub-client-editor",
+    "editorCargo": "/nix/store/lynxwcsxr0k49zvm4q8q4jkyk4khsm0g-aos-bazel-hub-client-editor-cargo-oracle",
+    "editorParity": "/nix/store/25ybg7yji840ibxajcv2jf6w10s94kf2-aos-bazel-hub-client-editor-parity",
+    "formatting": "/nix/store/vxnppkbrb6l94mv1lhcqmrl5ydmgfkvs-aos-bazel-hub-client-format-1",
+    "inventory": "/nix/store/508vqx2z8rrb96dr2cpqnxwgr7fh8wdq-aos-bazel-hub-client-inventory-1",
+    "oracle": "/nix/store/xsb5myahzaqgmkvywx8lqcgk2115d6qc-aos-bazel-hub-client-cargo-parity",
+    "production": "/nix/store/bjl76nyzxf84rx7a2i2lvr33wrlqm1nd-aos-bazel-hub-client-production-1",
+    "productionCargo": "/nix/store/cb2rhhhcc2mlyx89x3bcv9b4kycmf850-aos-bazel-hub-client-production-cargo-1",
+    "productionConfiguration": "/nix/store/dyhxbqcrmlmsrgmn91aglkf4r0kf750q-aos-bazel-configuration.json",
+    "productionParity": "/nix/store/ahai104gz3a25x25prc48ai5kykq4xa3-aos-bazel-hub-client-production-features",
+    "productionSource": "/nix/store/8l06a43lq7ln4kf3xbfkrjqbxqh1fak0-aos-bazel-workspace",
+    "source": "/nix/store/8l06a43lq7ln4kf3xbfkrjqbxqh1fak0-aos-bazel-workspace",
+    "tests": "/nix/store/8psxjrikb232iq7xvmrbsqv0b1iqpdq9-aos-bazel-hub-client-tests-1"
+  },
+  "semantic_rustc_flags": [
+    "-Copt-level=s",
+    "-Cdebuginfo=0",
+    "-Cdebug-assertions=yes",
+    "-Coverflow-checks=yes"
+  ],
+  "status": "Strict typed Hub client tests, Cargo parity, generated API sources, production features, developer, license and editor checks passed",
+  "tests": {
+    "doctests": {
+      "//crates/hub/aos-hub-client:doc": {}
+    },
+    "examples": [],
+    "features": {
+      "anyhow@1.0.102": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "atomic-waker@1.1.2": [
+        []
+      ],
+      "base64@0.21.7": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "base64@0.22.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "bitflags@2.13.0": [
+        [],
+        [
+          "std"
+        ]
+      ],
+      "bytes@1.11.1": [
+        [],
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "cc@1.2.65": [
+        []
+      ],
+      "cfg-if@1.0.4": [
+        []
+      ],
+      "displaydoc@0.2.6": [
+        []
+      ],
+      "either@1.16.0": [
+        [
+          "std",
+          "use_std"
+        ]
+      ],
+      "equivalent@1.0.2": [
+        []
+      ],
+      "errno@0.3.14": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "fastrand@2.4.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "find-msvc-tools@0.1.9": [
+        []
+      ],
+      "fixedbitset@0.5.7": [
+        []
+      ],
+      "form_urlencoded@1.2.2": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "futures-channel@0.3.32": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "futures-core@0.3.32": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "futures-sink@0.3.32": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "futures-task@0.3.32": [
+        [
+          "alloc"
+        ]
+      ],
+      "futures-util@0.3.32": [
+        [
+          "alloc",
+          "slab"
+        ]
+      ],
+      "getrandom@0.2.17": [
+        []
+      ],
+      "getrandom@0.4.2": [
+        []
+      ],
+      "hashbrown@0.17.1": [
+        []
+      ],
+      "heck@0.5.0": [
+        []
+      ],
+      "http-body-util@0.1.3": [
+        [
+          "default"
+        ]
+      ],
+      "http-body@1.0.1": [
+        []
+      ],
+      "http@1.4.1": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "httparse@1.10.1": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "hyper-rustls@0.27.9": [
+        [
+          "http1",
+          "native-tokio",
+          "ring",
+          "rustls-native-certs",
+          "tls12"
+        ]
+      ],
+      "hyper-util@0.1.20": [
+        [
+          "client",
+          "client-legacy",
+          "client-proxy",
+          "default",
+          "http1",
+          "tokio"
+        ]
+      ],
+      "hyper@1.10.0": [
+        [
+          "client",
+          "default",
+          "http1"
+        ]
+      ],
+      "icu_collections@2.2.0": [
+        []
+      ],
+      "icu_locale_core@2.2.0": [
+        [
+          "zerovec"
+        ]
+      ],
+      "icu_normalizer@2.2.0": [
+        [
+          "compiled_data"
+        ]
+      ],
+      "icu_normalizer_data@2.2.0": [
+        []
+      ],
+      "icu_properties@2.2.0": [
+        [
+          "compiled_data"
+        ]
+      ],
+      "icu_properties_data@2.2.0": [
+        []
+      ],
+      "icu_provider@2.2.0": [
+        [
+          "baked"
+        ]
+      ],
+      "idna@1.1.0": [
+        [
+          "alloc",
+          "compiled_data",
+          "std"
+        ]
+      ],
+      "idna_adapter@1.2.2": [
+        [
+          "compiled_data"
+        ]
+      ],
+      "indexmap@2.14.0": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "ipnet@2.12.0": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "itertools@0.13.0": [
+        [
+          "default",
+          "use_alloc",
+          "use_std"
+        ]
+      ],
+      "itertools@0.14.0": [
+        [
+          "default",
+          "use_alloc",
+          "use_std"
+        ]
+      ],
+      "itoa@1.0.18": [
+        []
+      ],
+      "libc@0.2.186": [
+        [],
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "linux-raw-sys@0.12.1": [
+        [
+          "auxvec",
+          "elf",
+          "errno",
+          "general",
+          "ioctl",
+          "no_std"
+        ]
+      ],
+      "litemap@0.8.2": [
+        []
+      ],
+      "log@0.4.30": [
+        []
+      ],
+      "memchr@2.8.2": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "mio@1.2.1": [
+        [
+          "net",
+          "os-ext",
+          "os-poll"
+        ]
+      ],
+      "multimap@0.10.1": [
+        []
+      ],
+      "once_cell@1.21.4": [
+        [
+          "alloc",
+          "default",
+          "race",
+          "std"
+        ]
+      ],
+      "openssl-probe@0.2.1": [
+        []
+      ],
+      "pbjson-build@0.7.0": [
+        []
+      ],
+      "pbjson@0.7.0": [
+        []
+      ],
+      "percent-encoding@2.3.2": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "petgraph@0.7.1": [
+        []
+      ],
+      "pin-project-lite@0.2.17": [
+        []
+      ],
+      "potential_utf@0.1.5": [
+        [
+          "zerovec"
+        ]
+      ],
+      "prettyplease@0.2.37": [
+        []
+      ],
+      "proc-macro2@1.0.106": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "prost-build@0.13.5": [
+        [
+          "default",
+          "format"
+        ]
+      ],
+      "prost-derive@0.13.5": [
+        []
+      ],
+      "prost-types@0.13.5": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "prost@0.13.5": [
+        [
+          "default",
+          "derive",
+          "prost-derive",
+          "std"
+        ],
+        [
+          "default",
+          "derive",
+          "std"
+        ]
+      ],
+      "quote@1.0.46": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "regex-automata@0.4.14": [
+        [
+          "alloc",
+          "meta",
+          "nfa-pikevm",
+          "nfa-thompson",
+          "std",
+          "syntax",
+          "unicode-bool"
+        ]
+      ],
+      "regex-syntax@0.8.11": [
+        [
+          "std",
+          "unicode-bool"
+        ]
+      ],
+      "regex@1.12.4": [
+        [
+          "std",
+          "unicode-bool"
+        ]
+      ],
+      "reqwest@0.12.28": [
+        [
+          "__rustls",
+          "__rustls-ring",
+          "__tls",
+          "json",
+          "rustls-tls-native-roots",
+          "rustls-tls-native-roots-no-provider",
+          "stream"
+        ]
+      ],
+      "ring@0.17.14": [
+        [
+          "alloc",
+          "default",
+          "dev_urandom_fallback"
+        ]
+      ],
+      "rustix@1.1.4": [
+        [
+          "alloc",
+          "default",
+          "fs",
+          "std"
+        ]
+      ],
+      "rustls-native-certs@0.8.3": [
+        []
+      ],
+      "rustls-pki-types@1.14.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "rustls-webpki@0.103.13": [
+        [
+          "alloc",
+          "ring",
+          "std"
+        ]
+      ],
+      "rustls@0.23.40": [
+        [
+          "ring",
+          "std",
+          "tls12"
+        ]
+      ],
+      "ryu@1.0.23": [
+        []
+      ],
+      "serde@1.0.228": [
+        [
+          "default",
+          "derive",
+          "rc",
+          "serde_derive",
+          "std"
+        ]
+      ],
+      "serde_core@1.0.228": [
+        [
+          "rc",
+          "result",
+          "std"
+        ]
+      ],
+      "serde_derive@1.0.228": [
+        [
+          "default"
+        ]
+      ],
+      "serde_json@1.0.150": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "serde_urlencoded@0.7.1": [
+        []
+      ],
+      "shlex@2.0.1": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "signal-hook-registry@1.4.8": [
+        []
+      ],
+      "slab@0.4.12": [
+        []
+      ],
+      "smallvec@1.15.2": [
+        [
+          "const_generics",
+          "const_new"
+        ]
+      ],
+      "socket2@0.6.4": [
+        [
+          "all"
+        ]
+      ],
+      "stable_deref_trait@1.2.1": [
+        []
+      ],
+      "subtle@2.6.1": [
+        []
+      ],
+      "syn@2.0.118": [
+        [
+          "clone-impls",
+          "default",
+          "derive",
+          "extra-traits",
+          "fold",
+          "full",
+          "parsing",
+          "printing",
+          "proc-macro",
+          "visit"
+        ]
+      ],
+      "sync_wrapper@1.0.2": [
+        [
+          "futures",
+          "futures-core"
+        ]
+      ],
+      "synstructure@0.13.2": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "tempfile@3.27.0": [
+        [
+          "default",
+          "getrandom"
+        ]
+      ],
+      "tinystr@0.8.3": [
+        [
+          "zerovec"
+        ]
+      ],
+      "tokio-macros@2.7.0": [
+        []
+      ],
+      "tokio-rustls@0.26.4": [
+        [
+          "ring",
+          "tls12"
+        ]
+      ],
+      "tokio-util@0.7.18": [
+        [
+          "default",
+          "io"
+        ]
+      ],
+      "tokio@1.52.3": [
+        [
+          "bytes",
+          "default",
+          "fs",
+          "io-std",
+          "io-util",
+          "libc",
+          "macros",
+          "mio",
+          "net",
+          "process",
+          "rt",
+          "rt-multi-thread",
+          "signal",
+          "signal-hook-registry",
+          "socket2",
+          "sync",
+          "time",
+          "tokio-macros"
+        ]
+      ],
+      "tower-http@0.6.11": [
+        [
+          "follow-redirect",
+          "futures-util",
+          "tower"
+        ]
+      ],
+      "tower-layer@0.3.3": [
+        []
+      ],
+      "tower-service@0.3.3": [
+        []
+      ],
+      "tower@0.5.3": [
+        [
+          "futures-core",
+          "futures-util",
+          "pin-project-lite",
+          "retry",
+          "sync_wrapper",
+          "timeout",
+          "tokio",
+          "util"
+        ]
+      ],
+      "tracing-core@0.1.36": [
+        [
+          "once_cell",
+          "std"
+        ]
+      ],
+      "tracing@0.1.44": [
+        [
+          "std"
+        ]
+      ],
+      "try-lock@0.2.5": [
+        []
+      ],
+      "unicode-ident@1.0.24": [
+        []
+      ],
+      "untrusted@0.9.0": [
+        []
+      ],
+      "url@2.5.8": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "utf8_iter@1.0.4": [
+        []
+      ],
+      "want@0.3.1": [
+        []
+      ],
+      "writeable@0.6.3": [
+        []
+      ],
+      "yoke-derive@0.8.2": [
+        []
+      ],
+      "yoke@0.8.3": [
+        [
+          "derive",
+          "zerofrom"
+        ]
+      ],
+      "zerofrom-derive@0.1.7": [
+        []
+      ],
+      "zerofrom@0.1.8": [
+        [
+          "derive"
+        ]
+      ],
+      "zeroize@1.9.0": [
+        [
+          "alloc",
+          "default"
+        ]
+      ],
+      "zerotrie@0.2.4": [
+        [
+          "yoke",
+          "zerofrom"
+        ]
+      ],
+      "zerovec-derive@0.11.3": [
+        []
+      ],
+      "zerovec@0.11.6": [
+        [
+          "derive",
+          "yoke"
+        ]
+      ],
+      "zmij@1.0.21": [
+        []
+      ]
+    },
+    "first_party_features": {
+      "aos-hub-api": [
+        []
+      ],
+      "aos-hub-client": [
+        []
+      ]
+    },
+    "schema_version": 1,
+    "targets": {
+      "//crates/hub/aos-hub-client:unit": {
+        "executed": [
+          "hub::tests::cache_and_operation_methods_use_only_the_cutover_package",
+          "hub::tests::container_methods_use_the_distinct_service",
+          "hub::tests::optional_reads_only_suppress_exact_not_found_envelopes",
+          "hub::tests::placement_mutations_serialize_normalized_specs_and_camel_case_fields",
+          "hub::tests::requests_include_connect_protocol_and_json_headers",
+          "hub::tests::surface_ref_parser_preserves_kind_and_nested_slug",
+          "hub::tests::surface_ref_parser_rejects_ambiguous_or_empty_values",
+          "hub::tests::surface_refs_round_trip_as_canonical_oneofs",
+          "tests::preserves_http_base_paths",
+          "tests::rejects_non_http_and_malformed_urls"
+        ],
+        "ignored": []
+      }
+    }
+  }
+}

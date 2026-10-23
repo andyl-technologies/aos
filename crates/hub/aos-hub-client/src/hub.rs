@@ -2404,6 +2404,10 @@ fn ensure_trailing_slash(s: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Fixture decoding and construction failures must fail these tests"
+)]
 mod tests {
     use super::{HubClient, HubSurfaceRef, HubTopologyMethod, decode_optional_response};
     use aos_hub_api::surface_ref::Target;

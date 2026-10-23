@@ -2146,3 +2146,43 @@ Rust changes, including the separate ETag helper move. Its frozen source
 predates the later Hub client changes. The `test-fixtures` and Wasm variants, installed Hub services, complete compiler invocation equivalence,
 numeric performance acceptance, production migration, and Cargo removal remain
 separate qualification work.
+
+
+## Typed Hub client
+
+`aos-dev bazel --family hub-client` selects `aos-hub-client` and its generated
+Hub API dependency. The pinned profile contains 192 source crates. Production
+and tests match Cargo's 122 compiled external packages and two first-party
+packages, with identical compiled feature-unit sets. Eight guarded feature
+policies preserve Cargo's target and generator roles, including Bitflags'
+empty target feature set and the generator's `std` feature.
+
+`tests/evidence/native-linux-hub-client.json` retains passing strict source
+selection, runtime and production feature parity against the unchanged Cargo
+baselines, Clippy, formatting, documentation, license closure, and editor checks.
+All ten unit cases execute with no ignored cases; the doctest inventory is
+empty. The cases cover typed requests, headers, errors, references, and URL
+syntax. Test-only `unwrap()` exceptions are scoped to the two fixture modules.
+They do not qualify live Hub authentication or network operations.
+
+The strict inventory contains ten requested roots, 189 configured reports, and
+ten declared files, including five Rust files. The API generator runs directly
+with source-built protoc; all four generated outputs match fresh Cargo and the
+unchanged portable Hub API baseline. The recorded generation and test actions
+run uncached in the Linux sandbox, invoke no Cargo executable, and compile from
+a workspace without first-party Cargo manifests. Both editor reports have
+complete inference and no selected, unselected, or unattributed diagnostics.
+Aggregate statistics and diagnostic multiplicities are not claimed equivalent.
+
+`tests/evidence/hub-client-configured-graph.json` records all 28 configured
+family inventories, 29 dependency specifications, 176 policy tests, and CLI
+checks for 23 launchers. The previous 28 dependency locks and 4,408 generated
+crate BUILD files remain unchanged. Metadata parity covers 417 Rust targets
+across 30 analysis-only selections, with no external actions; core evaluation
+passes. Frozen outputs are retained in
+`tests/evidence/hub-client-metadata-evaluation.json`.
+
+Required workspace Rust compilation runs separately. Live Hub services,
+foreign/Wasm execution, complete compiler invocation equivalence, numeric
+performance acceptance, production migration, and Cargo removal remain
+separate qualification work.

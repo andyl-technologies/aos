@@ -32,6 +32,10 @@ fn validate_base_url(base_url: &str) -> anyhow::Result<http::Uri> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Fixture decoding and construction failures must fail these tests"
+)]
 mod tests {
     use super::validate_base_url;
 
