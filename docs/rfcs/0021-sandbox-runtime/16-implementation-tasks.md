@@ -10863,3 +10863,21 @@ is not publication qualification or installed managed-namespace execution.
 The earlier retained-resource combined Nix/method-46 composition check passes at
 `/nix/store/c3s663g0a9vkknrxskh72lzrqp88x37g-sandbox-nix-method46-profile-check`.
 It does not establish an installed TPM floor or public lifecycle readiness.
+
+### Installed enforcing handoff matrix
+
+The complete five-guest enforcing root-handoff test passes at
+`/nix/store/m98ylsg0zm858jhjmvks09i5h8rp00bn-aos-fleet-test-selinux-enforcing-root-handoff-0`.
+The clean, missing-runtime-root, post-pin, shadow and substituted-guard fixtures
+complete their existing positive and refusal assertions. The post-pin case
+observes the replacement agent in PID1's authenticated namespace before checking
+the retained manager and parent-enclosure attacks. This is the installed receipt
+for the observer-refresh correction; it does not qualify Host allocation, Root
+history, the TPM floor or public Create.
+
+The full production policy including the fixed public journal-output object
+passes at
+`/nix/store/skpjglf4fbpdcpbiigcsy2x8jiq1mfkh-aos-selinux-production-policy-1`,
+including its compiled negative fixtures. The installed offline preparation
+test remains pending. Core Nix evaluation also passes at
+`/nix/store/p0dcd4r7i1xmwbd0byjs53q3kybpd8s2-aos-eval-core-checks-0`.
