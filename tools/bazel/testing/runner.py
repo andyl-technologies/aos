@@ -264,6 +264,10 @@ def write_junit(path, package, results):
         case = ET.SubElement(suite, "testcase", name=result.case.name, classname=package, time=f"{result.elapsed:.6f}")
         if result.status != "passed":
             ET.SubElement(case, "failure", type=result.status, message=f"exit status {result.returncode}").text = result.output
+        elif result.output:
+            # Passing libtest cases can return early for unavailable fixtures.
+            # Keep their bounded output so qualification can audit skip markers.
+            ET.SubElement(case, "system-out").text = result.output
     path.parent.mkdir(parents=True, exist_ok=True)
     ET.ElementTree(suite).write(path, encoding="utf-8", xml_declaration=True)
 

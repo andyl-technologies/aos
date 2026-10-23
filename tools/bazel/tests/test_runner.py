@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import unittest
+import xml.etree.ElementTree as ET
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -166,6 +167,23 @@ raise SystemExit(case.get('status', 0))
         junit = self.root / "junit.xml"
         runner.write_junit(junit, "fixture", list(results.values()))
         self.assertEqual(len(runner.ET.parse(junit).findall("testcase/failure")), 4)
+
+    def test_junit_preserves_passing_fixture_skip_output_and_failure_details(self):
+        self.configure({
+            "conditional_fixture": {"output": "fixture unavailable; skipping", "status": 0},
+            "failure": {"output": "assertion failed", "status": 1},
+        })
+
+        results = runner.execute(self.binary, self.select(), jobs=2)
+        output = self.root / "results.xml"
+        runner.write_junit(output, "fixture", results)
+
+        suite = ET.parse(output).getroot()
+        cases = {case.attrib["name"]: case for case in suite.findall("testcase")}
+        self.assertEqual(suite.attrib["failures"], "1")
+        self.assertIsNone(cases["conditional_fixture"].find("failure"))
+        self.assertIn("fixture unavailable; skipping", cases["conditional_fixture"].findtext("system-out"))
+        self.assertIn("assertion failed", cases["failure"].findtext("failure"))
 
     def test_sigterm_cancels_active_cases(self):
         self.configure({"slow": {"sleep": 10}})
