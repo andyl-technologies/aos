@@ -16111,3 +16111,24 @@ discharge. Its actor finishes in 11.675 seconds within its original bound.
 Application compilation passes in 719.397 seconds with complete 8,083-file and
 185-test-executable review across 59 packages. No full worker or additional
 trunk-task acceptance follows from these scoped results.
+
+
+#### Final retained-file accounting diagnostics
+
+The independent aggregate at `a2faeb2547` fails in 912.727 seconds. Its
+named-file actor reports completed ordinary grace, accepted publisher retirement
+and observed final unlink before an elapsed bound. No background retirement
+completion error is reported. The exact unfinished operation remains either
+final file-charge observation or final authenticated reconciliation; the log
+does not establish hidden descriptors or any other retention cause.
+
+The fixture now reports its original inode, allocated blocks, fresh before/after
+quota values and local descriptor-reference count when exact final-close release
+fails. A distinct error identifies final authenticated reconciliation timeout.
+The descriptor observation follows only this actor's existing procfs links and
+opens no additional backing descriptor. All original exact block/inode checks,
+five-second bounds and policy-equality assertions remain. Strict all-feature/
+all-target lint, actual fixture compilation, formatting and diff checks pass.
+Fresh qualification remains required. An additional request with keep-going
+allows the original owner and already-unlinked-file VM siblings to finish
+independently of the known named-file failure, using the same frozen images.

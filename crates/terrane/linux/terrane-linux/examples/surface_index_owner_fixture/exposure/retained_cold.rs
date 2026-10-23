@@ -194,20 +194,22 @@ pub(crate) fn verify(
         }
         runtime.block_on(file.close(&restarted, inputs, &id, generation))?;
     }
-    runtime.block_on(async {
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                if restarted
-                    .reconcile_surface_exposure(&id, generation)
-                    .await?
-                {
-                    return Ok::<_, io::Error>(());
+    runtime
+        .block_on(async {
+            tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if restarted
+                        .reconcile_surface_exposure(&id, generation)
+                        .await?
+                    {
+                        return Ok::<_, io::Error>(());
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
                 }
-                tokio::time::sleep(Duration::from_millis(10)).await;
-            }
+            })
+            .await
         })
-        .await
-    })??;
+        .map_err(|_| "final authenticated exposure reconciliation exceeded its original bound")??;
     let after = runtime.block_on(snapshot(inputs))?;
     let pin_owner = format!("exposure:{id}");
     if after.exposures.iter().any(|row| row.id == id)

@@ -198,10 +198,17 @@ impl RetainedFile {
         let mut quota = HostQuotaClient::connect(&inputs.quota, 0, config::EPOCH)?;
         let before = crate::quota_sample(&mut quota, inputs)?;
         let allocated = self.original.blocks() * 512;
+        let inode = (self.original.dev(), self.original.ino());
+        let local_references = matching_local_references(inode)?;
+        eprintln!(
+            "RETAINED_FILE_STAGE phase=before-final-close local_references={local_references} charge={before:?} allocated={allocated} inode={inode:?}"
+        );
         drop(self);
+        let mut observed = before;
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 let after = crate::quota_sample(&mut quota, inputs)?;
+                observed = after;
                 if before.0.checked_sub(after.0) == Some(allocated)
                     && before.1.checked_sub(after.1) == Some(1)
                 {
@@ -210,7 +217,13 @@ impl RetainedFile {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
-        .await??;
+        .await
+        .map_err(|_| {
+            format!(
+                "final original file close missed exact physical release: before={before:?} after={observed:?} allocated={allocated} inode={inode:?} local_references={local_references}"
+            )
+        })??;
+        eprintln!("RETAINED_FILE_STAGE phase=exact-final-close-charge-observed");
         if std::fs::read(&policy)? != durable {
             return Err(
                 "final recovered file close discharged policy without reconciliation".into(),
@@ -218,4 +231,18 @@ impl RetainedFile {
         }
         Ok(())
     }
+}
+
+/// Counts original inode aliases without opening or retaining those files.
+fn matching_local_references(inode: (u64, u64)) -> Result<usize> {
+    let mut references = 0;
+    for entry in std::fs::read_dir("/proc/self/fd")? {
+        let metadata = match std::fs::metadata(entry?.path()) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        references += usize::from((metadata.dev(), metadata.ino()) == inode);
+    }
+    Ok(references)
 }
