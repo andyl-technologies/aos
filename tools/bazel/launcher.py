@@ -86,8 +86,11 @@ def main():
     parser.add_argument("--lock", type=Path)
     parser.add_argument("--metrics", type=Path)
     parser.add_argument("--rust-project-output", type=Path)
+    parser.add_argument("--rust-project-package", action="append", default=[])
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     options = parser.parse_args()
+    if options.rust_project_package and not options.rust_project_output:
+        parser.error("rust-project packages require an editor output")
     config = json.loads(options.config.read_text())
     arguments = options.arguments
     if arguments and arguments[0] == "--":
@@ -231,7 +234,7 @@ def main():
     try:
         status = subprocess.call(command, cwd=workspace, env=environment)
         if status == 0 and options.rust_project_output:
-            status = subprocess.call([
+            exporter = [
                 sys.executable, config["rust_project_exporter"],
                 "--events", str(output_base / "rust-project-events.json"),
                 "--workspace", str(options.workspace.resolve()),
@@ -239,7 +242,10 @@ def main():
                 "--output-base", str(output_base),
                 "--toolchain", config["repositories"]["aos_tools"],
                 "--output", str(options.rust_project_output.resolve()),
-            ], cwd=workspace, env=environment)
+            ]
+            for package in options.rust_project_package:
+                exporter.extend(["--workspace-package", package])
+            status = subprocess.call(exporter, cwd=workspace, env=environment)
     finally:
         after = resource.getrusage(resource.RUSAGE_CHILDREN)
         if options.metrics:

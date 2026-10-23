@@ -10,6 +10,7 @@ bazel_dep(name = "platforms", version = "1.1.0")
 include("//third_party/rust:core/repositories.MODULE.bazel")
 include("//third_party/rust:device/repositories.MODULE.bazel")
 include("//third_party/rust:store/repositories.MODULE.bazel")
+include("//third_party/rust:guest/repositories.MODULE.bazel")
 
 # Register only source-built AOS Rust tools, never upstream binary toolchains.
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")

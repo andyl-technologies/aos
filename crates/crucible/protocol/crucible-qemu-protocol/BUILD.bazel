@@ -14,6 +14,8 @@ RUST_PACKAGE = aos_rust_package(
 
 package(default_visibility = ["//crates/crucible:__subpackages__"])
 
+exports_files(["src/doorbell_abi.rs"])
+
 DEPENDENCIES = [
     "//third_party/rust:core_blake3",
     "//third_party/rust:core_libc",
@@ -42,6 +44,7 @@ aos_rust_test(
 
 # Each Cargo integration root remains a separate libtest artifact; its support
 # modules and compile-time fixtures are declared without an ambient manifest.
+# Library-only source selections may omit this package's integration tree.
 [
     aos_rust_test(
         name = source.removeprefix("tests/").removesuffix(".rs"),
@@ -52,7 +55,7 @@ aos_rust_test(
         deps = [":lib"] + DEPENDENCIES,
         compile_data = ["//docs/rfcs/0020-crucible-campaigns:schema-registry.tsv"] if source == "tests/gate_abi_conformance.rs" else [],
     )
-    for source in glob(["tests/*.rs"])
+    for source in glob(["tests/*.rs"], allow_empty = True)
 ]
 
 rust_doc_test(
@@ -66,7 +69,7 @@ aos_license_check(
     testonly = True,
     roots = [":lib", ":unit_binary"] + [
         ":" + source.removeprefix("tests/").removesuffix(".rs") + "_binary"
-        for source in glob(["tests/*.rs"])
+        for source in glob(["tests/*.rs"], allow_empty = True)
     ],
     license_domain = "permissive-protocol",
 )
@@ -76,7 +79,7 @@ rust_clippy(
     testonly = True,
     deps = [":lib", ":unit_binary"] + [
         ":" + source.removeprefix("tests/").removesuffix(".rs") + "_binary"
-        for source in glob(["tests/*.rs"])
+        for source in glob(["tests/*.rs"], allow_empty = True)
     ],
 )
 
@@ -84,7 +87,7 @@ rustfmt_test(
     name = "format",
     targets = [":lib", ":unit_binary"] + [
         ":" + source.removeprefix("tests/").removesuffix(".rs") + "_binary"
-        for source in glob(["tests/*.rs"])
+        for source in glob(["tests/*.rs"], allow_empty = True)
     ],
 )
 

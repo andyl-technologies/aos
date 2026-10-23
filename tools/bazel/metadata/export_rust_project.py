@@ -115,7 +115,7 @@ def current_specs(events):
     return sorted(paths)
 
 
-def assemble(specs, replacements, toolchain):
+def assemble(specs, replacements, toolchain, workspace_packages=()):
     """Resolves configured crate specs, rejecting ambiguous feature variants."""
     crates = {}
     for original in specs:
@@ -185,6 +185,13 @@ def assemble(specs, replacements, toolchain):
             return {key: expand(item) for key, item in value.items()}
         return value
 
+    workspace = replacements["__WORKSPACE__/"]
+    members = {}
+    for package in workspace_packages:
+        relative = Path(package)
+        if relative.is_absolute() or any(part in {"", ".", ".."} for part in package.split("/")):
+            raise ValueError("editor workspace packages must be relative package directories")
+        members[workspace / relative] = False
     result = []
     for identifier in identifiers:
         spec = crates[identifier]
@@ -206,12 +213,23 @@ def assemble(specs, replacements, toolchain):
         # Editor runnables are deliberately omitted: builds and tests must go
         # through aos-dev, whose launcher enforces the offline toolchain policy.
         crate = expand(crate)
+        if members:
+            selected = [directory for directory in members if Path(crate["root_module"]).is_relative_to(directory)]
+            crate["is_workspace_member"] = crate["is_workspace_member"] and bool(selected)
+            for directory in selected:
+                members[directory] = True
+            if not crate["is_workspace_member"] or not spec.get("is_test"):
+                # The pinned aspect adds test cfg to every dependency. A
+                # library-only root has no libtest's development inputs.
+                crate["cfg"] = [cfg for cfg in crate["cfg"] if cfg != "test"]
         # An explicit empty source list disables child-module discovery in
         # rust-analyzer. The pinned aspect emits that list for ordinary roots;
         # preserve rust-analyzer's default root-directory discovery instead.
         if not crate["source"]["include_dirs"]:
             crate["source"]["include_dirs"] = [str(Path(crate["root_module"]).parent)]
         result.append(crate)
+    if not all(members.values()):
+        raise ValueError("editor workspace package has no configured Rust root")
     return {
         "sysroot": str(toolchain),
         "sysroot_src": str(toolchain / "developer/rust-src/library"),
@@ -227,6 +245,7 @@ def main():
     parser.add_argument("--output-base", type=Path, required=True)
     parser.add_argument("--toolchain", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--workspace-package", action="append", default=[])
     options = parser.parse_args()
     events = [json.loads(line) for line in options.events.read_text().splitlines() if line]
     specs = [json.loads(path.read_text()) for path in current_specs(events)]
@@ -235,7 +254,7 @@ def main():
         "__EXEC_ROOT__/": options.execution_root.resolve(),
         "__OUTPUT_BASE__/": options.output_base.resolve(),
     }
-    project = assemble(specs, replacements, options.toolchain)
+    project = assemble(specs, replacements, options.toolchain, options.workspace_package)
     # Replace only after all metadata validates; a failed refresh leaves the
     # previous working editor project intact.
     # Different configurations can refresh one worktree concurrently. Each

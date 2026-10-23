@@ -46,11 +46,26 @@ class ProtocolParityTests(unittest.TestCase):
         self.verify = verification.start()
         self.addCleanup(verification.stop)
 
-    def compare(self):
+    def compare(self, dependency_paths=None):
         self.messages.write_text("".join(json.dumps(event) + "\n" for event in self.events))
         self.inventory.write_text(json.dumps({"configured_targets": self.reports}))
         (self.root / "index.json").write_text(json.dumps({"results": self.results}))
-        return verify_protocol.compare(self.root, self.inventory, self.messages)
+        return verify_protocol.compare(self.root, self.inventory, self.messages, dependency_paths=dependency_paths)
+
+    def test_first_party_dependencies_require_features_without_unselected_tests(self):
+        self.events.append({
+            **self.events[0], "package_id": "path+file:///source/shared#0.1.0",
+            "manifest_path": "/source/shared/Cargo.toml", "profile": {"test": False},
+            "executable": None, "features": ["checked"],
+        })
+        self.reports.append({"label": "//crates/shared:lib", "kind": "rust_library", "features": ["checked"]})
+
+        result = self.compare({"shared": "crates/shared"})
+
+        self.assertEqual(result["first_party_features"]["shared"], [("checked",)])
+        self.reports[-1]["features"] = []
+        with self.assertRaisesRegex(ValueError, "first-party Rust feature inventories differ"):
+            self.compare({"shared": "crates/shared"})
 
     def test_empty_test_artifacts_require_an_explicit_parity_exception(self):
         binary = Path("/declared/bin-tests")
@@ -106,13 +121,18 @@ class ProtocolParityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "resolved Rust feature inventories differ"):
             self.compare()
 
-    def test_device_profile_dependencies_keep_exact_feature_parity(self):
-        self.reports[0]["label"] = self.reports[0]["label"].replace("aos_core_crates__", "aos_device_crates__")
-        self.assertEqual(self.compare()["features"], {"serde@1.0.228": [("default", "derive")]})
+    def test_family_dependencies_keep_exact_feature_parity(self):
+        label = self.reports[0]["label"]
+        features = list(self.reports[0]["features"])
+        for family in ["device", "store", "guest"]:
+            with self.subTest(family=family):
+                self.reports[0]["label"] = label.replace("aos_core_crates__", f"aos_{family}_crates__")
+                self.reports[0]["features"] = list(features)
+                self.assertEqual(self.compare()["features"], {"serde@1.0.228": [("default", "derive")]})
 
-        self.reports[0]["features"].append("alloc")
-        with self.assertRaisesRegex(ValueError, "resolved Rust feature inventories differ"):
-            self.compare()
+                self.reports[0]["features"].append("alloc")
+                with self.assertRaisesRegex(ValueError, "resolved Rust feature inventories differ"):
+                    self.compare()
 
     def test_store_dependency_build_metadata_retains_original_version(self):
         self.events[1]["package_id"] = "registry+https://example.invalid#zstd-sys@2.0.16+zstd.1.5.7"

@@ -1,7 +1,7 @@
 """Selects a coherent third-party feature graph for a Rust compilation family."""
 
 def _dependency_profile_impl(ctx):
-    if ctx.build_setting_value not in ["core", "device", "store"]:
+    if ctx.build_setting_value not in ["core", "device", "store", "guest"]:
         fail("unknown Rust dependency profile: " + ctx.build_setting_value)
     return []
 
@@ -19,3 +19,8 @@ def _store_profile_required_impl(_ctx):
     fail("this dependency requires --//tools/bazel/rules:dependency_profile=store")
 
 store_profile_required = rule(implementation = _store_profile_required_impl)
+
+def _guest_profile_required_impl(_ctx):
+    fail("dependency is unavailable in the selected family; guest dependencies require --//tools/bazel/rules:dependency_profile=guest")
+
+guest_profile_required = rule(implementation = _guest_profile_required_impl)

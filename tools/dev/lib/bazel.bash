@@ -5,7 +5,7 @@ aos_dev_bazel() (
   (( $# > 0 )) || aos_dev_error 'bazel requires a command and optional labels'
   if [[ $1 == update-deps ]]; then
     shift
-    [[ $# == 1 && ( $1 == core || $1 == device || $1 == store ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device|store>'
+    [[ $# == 1 && ( $1 == core || $1 == device || $1 == store || $1 == guest ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device|store|guest>'
     local updater specifications family=$1
     updater=$(aos_dev_nix_build_ordinary -A pkgs.aosBazelDependencyUpdater --no-out-link)
     specifications=$(aos_dev_nix_build_ordinary -A "checks.build.bazel.dependencies.specification-packages.$family" --no-out-link)
@@ -15,17 +15,27 @@ aos_dev_bazel() (
     return
   fi
 
+  local launcher_attribute=pkgs.aosBazelLauncher
+  if [[ $1 == --family ]]; then
+    [[ $# -ge 3 && $2 == guest ]] || aos_dev_error 'usage: aos-dev bazel --family guest <command> [labels]'
+    launcher_attribute=pkgs.aosBazelGuestLauncher
+    shift 2
+  fi
+
   local -a project_options=()
   if [[ $1 == rust-project ]]; then
     [[ $aos_dev_mode == development ]] || aos_dev_error 'rust-project requires development mode for persistent editor paths'
     shift
     (( $# > 0 )) || aos_dev_error 'usage: aos-dev bazel rust-project <Rust labels>'
     project_options=(--rust-project-output "$aos_dev_root/rust-project.json")
+    if [[ $launcher_attribute == pkgs.aosBazelGuestLauncher ]]; then
+      project_options+=(--rust-project-package crates/crucible/guest/crucible-guest)
+    fi
     set -- build "$@"
   fi
 
   local launcher identity output_parent output_base status
-  launcher=$(aos_dev_nix_build_ordinary -A pkgs.aosBazelLauncher --no-out-link)
+  launcher=$(aos_dev_nix_build_ordinary -A "$launcher_attribute" --no-out-link)
   identity=$(printf '%s\n%s\n' "$aos_dev_root" "$launcher" | sha256sum)
   identity=${identity%% *}
   output_parent="$aos_dev_cache_dir/bazel-output-bases"

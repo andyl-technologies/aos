@@ -529,6 +529,62 @@ qualification does both independently. Validate and publish that output's
 qualification. The inventory includes all feature variants and developer and
 package roots, so source selection remains a pure Nix evaluation input.
 
+## Static guest qualification
+
+`checks.build.bazel.guest.all` builds the guest library and executable, both
+libtest artifacts, both integration tests, doctests, Clippy, formatting,
+documentation, and editor parity. Its separate `guest` dependency profile
+preserves the guest's resolved libc and SHA-2 features alongside the
+campaign/store test dependencies. A version-guarded override removes the
+generator's extra `once_cell/std` feature. Exact third-party feature units and
+the protocol, store, campaign, and guest's first-party features are compared
+with an offline Cargo release build.
+
+The installed package includes explicit instruction-ABI build metadata from
+the shared protocol source. Runtime qualification checks that metadata,
+classic static ELF linkage, the selected libc/archive/closure input hashes in
+an uncached sandboxed link, and six CLI cases against the Cargo binary. Static
+libc's optional runtime-data reference remains visible in the Nix closure.
+The ABI and fingerprint integration tests read declared repository inputs;
+they do not discover a Cargo manifest or an old package-builder implementation.
+
+```sh
+aos-dev bazel --family guest build //crates/crucible/guest/crucible-guest:package
+aos-dev bazel --family guest rust-project //crates/crucible/guest/crucible-guest:lib
+aos-dev bazel update-deps guest
+nix-build tools/bazel/tests/guest.nix -A conservative.inventory --no-out-link
+```
+
+The family option selects the guest's static target flags and Nix library
+repository. Execution tools retain their ordinary dynamic configuration.
+The ordinary development launcher continues to serve the host families.
+The guest editor configuration keeps the guest's selected roots as workspace
+members and retains protocol/store/campaign as library dependencies. Cargo
+metadata verifies the same membership in its temporary oracle. The exporter
+removes the pinned aspect's unconditional test cfg from library-only roots,
+preserving their real features, aliases, and generated inputs.
+Guest editor parity compares guest-owned diagnostic locations and types.
+Cargo's analyzer still visits test bodies in local path dependencies without
+their libtest dependencies, so aggregate inference counts have different
+scopes. The evidence retains both sets of counts and every Cargo diagnostic
+outside the guest scope. Diagnostics without source locations are retained
+separately as unattributed Cargo diagnostics; any unattributed Bazel diagnostic
+fails this scoped check. Other qualified families keep whole-model comparison.
+The inventory refresh exports configured metadata without compilation; validate
+its contracts with `metadata/merge_inventory.py` before adopting the checked-in
+inventory. Library-only selections can omit dependency integration trees;
+the owning family's parity check still requires its complete selected tests.
+
+Production guest consumers continue to use their existing builder. Foreign
+static targets, guest VM behavior, and performance acceptance remain separate
+requirements before cutover.
+
+`tests/evidence/native-linux-guest.json` retains the native qualification:
+33 executed cases and one ignored case, exact features for 78 external crate
+identities and four first-party packages, six installed CLI comparisons,
+static runtime inputs and closure, and the scoped editor comparison. The
+117 policy tests and direct `aos-dev` command regression check also pass.
+
 ## Shared Crucible protocol graph
 
 `checks.build.bazel.protocol.all` builds `crucible-qemu-protocol` and

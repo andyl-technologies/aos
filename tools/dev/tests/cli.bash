@@ -50,6 +50,7 @@ case " $* " in
   *' -A pkgs.aos '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aos.apm '*|*' -A pkgs.aos.apr '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.aosBazelGuestLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelDependencyUpdater '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A checks.build.bazel.dependencies.specification-packages.'*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *) printf '%s\n' /tmp/aos-dev-test-output ;;
@@ -145,8 +146,19 @@ bash "$root/tools/dev/aos-dev" bazel update-deps device
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--output><$root/third_party/rust/device>"
 bash "$root/tools/dev/aos-dev" bazel update-deps store
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--output><$root/third_party/rust/store>"
+bash "$root/tools/dev/aos-dev" bazel update-deps guest
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--output><$root/third_party/rust/guest>"
 if bash "$root/tools/dev/aos-dev" bazel update-deps unknown 2>/dev/null; then
   echo 'Bazel dependency update accepted an unknown family' >&2
+  exit 1
+fi
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family guest build //example:guest
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:guest>"
+grep -Fq -- '-A pkgs.aosBazelGuestLauncher ' "$AOS_DEV_TEST_LOG"
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family guest rust-project //example:guest
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/guest/crucible-guest><--><build><//example:guest>"
+if bash "$root/tools/dev/aos-dev" bazel --family unknown build //example:guest 2>/dev/null; then
+  echo 'Bazel accepted an unknown target configuration' >&2
   exit 1
 fi
 bash "$root/tools/dev/aos-dev" completion bash | grep -Fq '_aos_dev_complete()'

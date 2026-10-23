@@ -43,6 +43,35 @@ class RustProjectTests(unittest.TestCase):
         self.assertTrue(by_name["macro"]["is_proc_macro"])
         self.assertNotIn("runnables", by_name["app"])
 
+    def test_selected_workspace_members_keep_dependency_graph_without_test_cfg(self):
+        sources = [spec("guest", is_test=True, deps=["dependency"]),
+                   spec("dependency", cfg=["test", "debug_assertions", 'feature="checked"'])]
+        original = copy.deepcopy(sources)
+
+        project = assemble(sources, {"__WORKSPACE__/": Path("/checkout"),
+                                    "__EXEC_ROOT__/": Path("/exec")}, Path("/toolchain"), ["guest"])
+        by_name = {crate["display_name"]: crate for crate in project["crates"]}
+
+        self.assertTrue(by_name["guest"]["is_workspace_member"])
+        self.assertIn("test", by_name["guest"]["cfg"])
+        self.assertFalse(by_name["dependency"]["is_workspace_member"])
+        self.assertEqual(by_name["dependency"]["cfg"], ["debug_assertions", 'feature="checked"'])
+        self.assertEqual(by_name["guest"]["deps"][0]["name"], "dependency")
+        self.assertEqual(sources, original)
+
+    def test_missing_or_foreign_workspace_package_fails_closed(self):
+        for package in ["missing", "../guest", "/guest", "guest//nested", ""]:
+            with self.subTest(package=package):
+                with self.assertRaisesRegex(ValueError, "workspace package"):
+                    assemble([spec("guest")], {"__WORKSPACE__/": Path("/checkout"), "__EXEC_ROOT__/": Path("/exec")},
+                             Path("/toolchain"), [package])
+
+    def test_a_library_only_editor_root_does_not_invent_a_libtest(self):
+        project = assemble([spec("guest")], {"__WORKSPACE__/": Path("/checkout"),
+                                            "__EXEC_ROOT__/": Path("/exec")}, Path("/toolchain"), ["guest"])
+        self.assertTrue(project["crates"][0]["is_workspace_member"])
+        self.assertNotIn("test", project["crates"][0]["cfg"])
+
     def test_libtest_additional_dependencies_merge_without_duplicate_roots(self):
         library = spec("library", env={"ZERO_AR_DATE": "1"})
         test = spec("library", is_test=True, crate_type="bin", deps=["dev"])

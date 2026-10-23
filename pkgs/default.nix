@@ -1843,7 +1843,9 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit (bazelSupport) mkAosBazelPackage mkAosBazelCheck;
       inherit (bazelSupport) mkAosBazelNativeLibraries;
       inherit (bazelSupport) aosBazelStoreLibraries mkAosBazelStaticLibraries;
+      inherit (bazelSupport) aosBazelGuestLibraries;
       inherit (bazelSupport) aosBazelWorkspace mkAosBazelShell aosBazelLauncher;
+      inherit (bazelSupport) aosBazelGuestWorkspace aosBazelGuestLauncher;
       inherit (bazelSupport) aosBazelDependencyGenerator aosBazelDependencyUpdater;
       inherit (bazelSupport) aosBazelRepositories aosBazelRustRepositories;
       inherit mkCargoPackage mkAosCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;

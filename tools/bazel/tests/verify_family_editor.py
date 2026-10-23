@@ -101,6 +101,46 @@ def verify(project, inventory, packages, workspace):
     return {"roots": actual, "proc_macros": sorted(macros), "crate_count": len(project["crates"])}
 
 
+def compare_analysis(bazel, cargo, packages, scope="whole-model"):
+    """Compares diagnostics in the declared scope and retains inference counts."""
+    if scope not in {"whole-model", "selected-packages"}:
+        raise ValueError("unknown editor comparison scope")
+    expected = cargo["diagnostics"]
+    cargo_statistics = {key: value for key, value in cargo.items() if key != "diagnostics"}
+    if bazel["analysis"].get("panics") != 0 or cargo_statistics.get("panics") != 0:
+        raise ValueError("editor comparison requires both analyzers to finish without panics")
+    report = {"analysis": bazel["analysis"], "roots": bazel["roots"]}
+    if scope == "whole-model":
+        if bazel["analysis"] != cargo_statistics:
+            raise ValueError(f"Bazel/Cargo editor inference differs: {bazel['analysis']} != {cargo_statistics}")
+    else:
+        if not packages or not bazel["roots"]:
+            raise ValueError("selected editor comparison requires configured package roots")
+        # Cargo's analyzer also checks test bodies in local path dependencies,
+        # even when they are excluded from workspace membership. Those bodies
+        # have no corresponding libtest in this configured Bazel family.
+        def selected(row):
+            return any(row[0].startswith(path + "/") for path in packages.values())
+
+        if any(not selected(row) for row in bazel["diagnostics"]):
+            raise ValueError("Bazel editor analyzed diagnostics outside the selected family")
+        report.update({
+            "comparison_scope": sorted(packages.values()),
+            "aggregate_statistics_comparable": False,
+            "cargo_analysis": cargo_statistics,
+            "unselected_cargo_diagnostics": [row for row in expected if row[0] != "synthetic" and not selected(row)],
+            # Synthetic diagnostics have no source location, so they cannot be
+            # assigned to the guest or its unselected path dependencies. Retain
+            # them explicitly; any such Bazel diagnostic fails the scope check.
+            "unattributed_cargo_diagnostics": [row for row in expected if row[0] == "synthetic"],
+        })
+        expected = [row for row in expected if selected(row)]
+    if bazel["diagnostics"] != expected:
+        raise ValueError("Bazel/Cargo editor diagnostic locations or types differ")
+    report["diagnostics"] = expected
+    return report
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ["project", "inventory", "packages", "workspace", "output"]:

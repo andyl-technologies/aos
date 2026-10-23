@@ -5,7 +5,54 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from verify_family_editor import analysis_statistics, diagnostics, verify
+from verify_family_editor import analysis_statistics, compare_analysis, diagnostics, verify
+
+
+class EditorComparisonTests(unittest.TestCase):
+    def setUp(self):
+        self.packages = {"guest": "crates/guest"}
+        self.row = ["crates/guest/src/lib.rs", "1:0", "1:2", "type", "{unknown}"]
+        self.bazel = {"analysis": {"panics": 0, "exprs": {"total": 10}},
+                      "diagnostics": [self.row], "roots": {"crates/guest/src/lib.rs": []}}
+        self.cargo = {"panics": 0, "exprs": {"total": 20}, "diagnostics": [self.row, [
+            "crates/dependency/src/lib.rs", "2:0", "2:2", "type", "{unknown}",
+        ]]}
+
+    def test_scoped_comparison_retains_both_statistics_and_unselected_diagnostics(self):
+        report = compare_analysis(self.bazel, self.cargo, self.packages, "selected-packages")
+        self.assertFalse(report["aggregate_statistics_comparable"])
+        self.assertEqual(report["analysis"]["exprs"]["total"], 10)
+        self.assertEqual(report["cargo_analysis"]["exprs"]["total"], 20)
+        self.assertEqual(report["diagnostics"], [self.row])
+        self.assertEqual(report["unselected_cargo_diagnostics"], self.cargo["diagnostics"][1:])
+
+    def test_owned_diagnostic_regressions_and_unexpected_bazel_scope_fail(self):
+        self.bazel["diagnostics"] = []
+        with self.assertRaisesRegex(ValueError, "diagnostic locations or types differ"):
+            compare_analysis(self.bazel, self.cargo, self.packages, "selected-packages")
+        self.bazel["diagnostics"] = self.cargo["diagnostics"]
+        with self.assertRaisesRegex(ValueError, "outside the selected family"):
+            compare_analysis(self.bazel, self.cargo, self.packages, "selected-packages")
+
+    def test_unattributed_cargo_diagnostics_are_retained_and_bazel_ones_fail(self):
+        synthetic = ["synthetic", "", "", "type", "{unknown}"]
+        self.cargo["diagnostics"].extend([synthetic, synthetic])
+
+        report = compare_analysis(self.bazel, self.cargo, self.packages, "selected-packages")
+
+        self.assertEqual(report["diagnostics"], [self.row])
+        self.assertEqual(report["unattributed_cargo_diagnostics"], [synthetic, synthetic])
+        self.assertEqual(len(report["unselected_cargo_diagnostics"]), 1)
+        self.bazel["diagnostics"].append(synthetic)
+        with self.assertRaisesRegex(ValueError, "outside the selected family"):
+            compare_analysis(self.bazel, self.cargo, self.packages, "selected-packages")
+
+    def test_whole_model_comparison_still_requires_equal_statistics(self):
+        with self.assertRaisesRegex(ValueError, "editor inference differs"):
+            compare_analysis(self.bazel, self.cargo, self.packages)
+        self.cargo["panics"] = 1
+        with self.assertRaisesRegex(ValueError, "without panics"):
+            compare_analysis(self.bazel, self.cargo, self.packages, "selected-packages")
 
 
 class FamilyEditorTests(unittest.TestCase):

@@ -84,6 +84,31 @@ class RustUpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unreviewed protocol dependency"):
             updater.validate_license(specification, crate)
 
+    def test_host_family_preserves_only_version_pinned_reviewed_protocol_crates(self):
+        specification = {"license_domain": "apache-host", "permissive_crates": ["example@1.0.0"],
+                         "approved_licenses": ["MIT"], "host_only_licenses": ["Apache-2.0"]}
+        crate = {"name": "example", "version": "1.0.0", "license": "MIT"}
+        self.assertEqual(updater.validate_license(specification, crate), "permissive-protocol")
+
+        crate["version"] = "1.0.1"
+        self.assertEqual(updater.validate_license(specification, crate), "apache-host")
+
+        crate.update(version="1.0.0", license="unreviewed")
+        with self.assertRaisesRegex(ValueError, "unreviewed protocol dependency"):
+            updater.validate_license(specification, crate)
+
+        crate["license"] = "Apache-2.0"
+        specification["approved_licenses"].append("Apache-2.0")
+        self.assertEqual(updater.validate_license(specification, crate), "apache-host")
+
+    def test_unknown_permissive_crate_version_fails_before_publication(self):
+        self.prepare_example("1.0.0")
+        before = {path.name: path.read_bytes() for path in self.staged.iterdir()}
+        with self.assertRaisesRegex(ValueError, "present in the resolved graph"):
+            updater.prepare_sources({"license_domain": "apache-host", "permissive_crates": ["example@2.0.0"]},
+                                    self.root, "example", self.staged)
+        self.assertEqual({path.name: path.read_bytes() for path in self.staged.iterdir()}, before)
+
     def test_archive_must_match_both_resolved_locks(self):
         archive = self.root / "cargo-home/registry/cache/example/example-1.0.0.crate"
         archive.parent.mkdir(parents=True)

@@ -65,6 +65,7 @@ VARIANTS = {
     for suffix, features in VARIANTS.items()
 ]
 
+# Library-only source selections may omit this package's integration tree.
 [
     aos_rust_test(
         name = source.removeprefix("tests/").removesuffix(".rs") + suffix,
@@ -76,7 +77,7 @@ VARIANTS = {
         deps = [":lib" + suffix] + DEPENDENCIES + DEVELOPMENT_DEPENDENCIES + ["//crates/crucible/storage/crucible-store:lib" + suffix],
     )
     for suffix, features in VARIANTS.items()
-    for source in glob(["tests/*.rs"])
+    for source in glob(["tests/*.rs"], allow_empty = True)
     if source != "tests/gate_campaign_mutation_scaling.rs" or "test-support" in features
 ]
 
@@ -91,7 +92,7 @@ VARIANTS = {
 TEST_ARTIFACTS = [":unit" + suffix + "_binary" for suffix in VARIANTS] + [
     ":" + source.removeprefix("tests/").removesuffix(".rs") + suffix + "_binary"
     for suffix, features in VARIANTS.items()
-    for source in glob(["tests/*.rs"])
+    for source in glob(["tests/*.rs"], allow_empty = True)
     if source != "tests/gate_campaign_mutation_scaling.rs" or "test-support" in features
 ]
 
@@ -100,7 +101,7 @@ TEST_ARTIFACTS = [":unit" + suffix + "_binary" for suffix in VARIANTS] + [
         name = "tests" + suffix,
         tests = [":unit" + suffix, ":doc" + suffix] + [
             ":" + source.removeprefix("tests/").removesuffix(".rs") + suffix
-            for source in glob(["tests/*.rs"])
+            for source in glob(["tests/*.rs"], allow_empty = True)
             if source != "tests/gate_campaign_mutation_scaling.rs" or "test-support" in features
         ],
     )
@@ -129,7 +130,7 @@ rust_doc(
         testonly = True,
         roots = [":lib" + suffix, ":unit" + suffix + "_binary"] + [
             ":" + source.removeprefix("tests/").removesuffix(".rs") + suffix + "_binary"
-            for source in glob(["tests/*.rs"])
+            for source in glob(["tests/*.rs"], allow_empty = True)
             if source != "tests/gate_campaign_mutation_scaling.rs" or "test-support" in features
         ],
         license_domain = RUST_PACKAGE.license_domain,

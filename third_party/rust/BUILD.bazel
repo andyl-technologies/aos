@@ -4,6 +4,7 @@ load("//tools/bazel/rules:package.bzl", "aos_package")
 load(":core/aliases.bzl", CORE_CRATES = "CRATES")
 load(":device/aliases.bzl", DEVICE_CRATES = "CRATES")
 load(":store/aliases.bzl", STORE_CRATES = "CRATES")
+load(":guest/aliases.bzl", GUEST_CRATES = "CRATES")
 
 # Every first-party dependency in one configuration selects the same resolved
 # family. This preserves Rust type identity without globally unioning features.
@@ -11,13 +12,14 @@ load(":store/aliases.bzl", STORE_CRATES = "CRATES")
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:guest_dependencies": GUEST_CRATES.get(name, "//tools/bazel/rules:guest_profile_required"),
             "//tools/bazel/rules:device_dependencies": DEVICE_CRATES.get(name, "//tools/bazel/rules:store_profile_required"),
             "//tools/bazel/rules:store_dependencies": STORE_CRATES.get(name, "//tools/bazel/rules:device_profile_required"),
             "//conditions:default": CORE_CRATES.get(name, "//tools/bazel/rules:store_profile_required" if name in STORE_CRATES else "//tools/bazel/rules:device_profile_required"),
         }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items()))
+    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items()))
 ]
 
 CORE_PACKAGES = {
@@ -75,6 +77,47 @@ STORE_ANNOTATIONS = {
     ),
 }
 
+# Guest tests add campaign/store to the protocol and emitter closure. The
+# emitter/protocol directly enable libc's default features and SHA-2 compress;
+# keep that resolution separate from the storage-only host family.
+GUEST_PACKAGES = dict(STORE_PACKAGES, libc = CORE_PACKAGES["libc"], sha2 = CORE_PACKAGES["sha2"])
+
+# Preserve the protocol library and its compiled build dependencies' domain
+# inside the larger host family. Exact versions and original licenses are checked
+# during updates; native bindings and other host dependencies keep host scope.
+GUEST_PERMISSIVE_CRATES = [
+    "arrayref@0.3.9",
+    "arrayvec@0.7.7",
+    "blake3@1.8.5",
+    "block-buffer@0.10.4",
+    "cc@1.2.65",
+    "cfg-if@1.0.4",
+    "constant_time_eq@0.4.2",
+    "cpufeatures@0.2.17",
+    "cpufeatures@0.3.0",
+    "crypto-common@0.1.7",
+    "digest@0.10.7",
+    "find-msvc-tools@0.1.9",
+    "generic-array@0.14.7",
+    "getrandom@0.2.17",
+    "jobserver@0.1.34",
+    "libc@0.2.186",
+    "proc-macro2@1.0.106",
+    "quote@1.0.46",
+    "rand_core@0.6.4",
+    "sha2@0.10.9",
+    "shlex@2.0.1",
+    "syn@2.0.118",
+    "thiserror-impl@2.0.18",
+    "thiserror@2.0.18",
+    "tinyvec@1.11.0",
+    "tinyvec_macros@0.1.1",
+    "typenum@1.20.1",
+    "unicode-ident@1.0.24",
+    "unicode-normalization@0.1.25",
+    "version_check@0.9.5",
+]
+
 # crate_universe merges build/target features and includes proc macros from
 # unsupported platform dependencies. Preserve Cargo resolver-v2's actual Linux
 # units. Version and resolved-feature guards require review when the lock moves.
@@ -102,6 +145,19 @@ STORE_FEATURE_VARIANTS = {
     }),
 }
 
+FAMILY_FEATURE_VARIANTS = {
+    "store": STORE_FEATURE_VARIANTS,
+    # Target and build libc units now enable the same default/std features.
+    "guest": dict(
+        {name: value for name, value in STORE_FEATURE_VARIANTS.items() if name != "libc"},
+        once_cell = json.encode({
+            "version": "1.21.4",
+            "resolved_features": ["alloc", "race", "std"],
+            "features": ["alloc", "race"],
+        }),
+    ),
+}
+
 APPROVED_LICENSES = [
     # Each expression offers a permissive alternative suitable for both sides
     # of the process boundary. Keep upstream spellings; new expressions fail
@@ -126,7 +182,8 @@ APPROVED_LICENSES = [
         definition = "BUILD.bazel",
         packages = packages,
         annotations = annotations,
-        feature_variants = STORE_FEATURE_VARIANTS if family == "store" else {},
+        feature_variants = FAMILY_FEATURE_VARIANTS.get(family, {}),
+        permissive_crates = GUEST_PERMISSIVE_CRATES if family == "guest" else [],
         platforms = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
         license_domain = license_domain,
         approved_licenses = APPROVED_LICENSES,
@@ -138,6 +195,7 @@ APPROVED_LICENSES = [
         ("core", CORE_PACKAGES, {}, "permissive-protocol"),
         ("device", dict(CORE_PACKAGES, ciborium = crate.spec(version = "=0.2.2")), {}, "permissive-protocol"),
         ("store", STORE_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
+        ("guest", GUEST_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
     ]
 ]
 
@@ -150,5 +208,5 @@ APPROVED_LICENSES = [
         license_domain = "apache-host",
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
-    for family in ["core", "device", "store"]
+    for family in ["core", "device", "store", "guest"]
 ]

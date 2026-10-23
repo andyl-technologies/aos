@@ -7,6 +7,8 @@
   nativeLibraries ? [],
   nativeTools ? [],
   cargoFlags ? [],
+  cargoSource ? import ../../pkgs/tools/crucible/_cargo-source.nix {inherit (pkgs) lib;},
+  cargoSetup ? "",
 }: let
   packageFlags = pkgs.lib.escapeShellArgs (
     pkgs.lib.concatMap (name: ["-p" name]) packages
@@ -16,7 +18,7 @@ in
   pkgs.mkDerivation {
     inherit pname;
     version = "1";
-    src = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit (pkgs) lib;};
+    src = cargoSource;
     buildDeps = [pkgs.rust pkgs.python3 pkgs.sed] ++ nativeTools;
     runtimeDeps = nativeLibraries;
     sharedBuildCache = false;
@@ -34,7 +36,7 @@ in
           mkdir -p "$CARGO_HOME" .cargo "$out"
           sed 's|@vendor@|${pkgs.aos.passthru.cargoDeps}|g' \
             ${pkgs.aos.passthru.cargoDeps}/.cargo/config.toml > .cargo/config.toml
-          cargo test --frozen --offline --manifest-path crates/Cargo.toml \
+          ${cargoSetup}cargo test --frozen --offline --manifest-path crates/Cargo.toml \
             ${packageFlags} \
             --jobs "$NIX_BUILD_CORES" --no-run --message-format=json > "$out/cargo-messages.jsonl" || {
             ${pkgs.python3}/bin/python3 - "$out/cargo-messages.jsonl" <<'PY'

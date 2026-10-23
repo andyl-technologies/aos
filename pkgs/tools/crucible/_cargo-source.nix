@@ -1,5 +1,8 @@
 ##! Cargo-only Crucible workspace source.
-{lib}: let
+{
+  lib,
+  extraPaths ? [],
+}: let
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
   daemonRunState = "${repoRootString}/crates/crucible/control/crucible-daemon/run-state";
@@ -23,6 +26,11 @@ in
         == repoRootString
         || pathString == "${repoRootString}/crates"
         || lib.hasPrefix "${repoRootString}/crates" pathString
+        || builtins.any (relative: let
+          selected = "${repoRootString}/${relative}";
+        in
+          pathString == selected || lib.hasPrefix "${pathString}/" selected)
+        extraPaths
         || builtins.elem pathString [
           "${repoRootString}/tests"
           "${repoRootString}/tests/crucible"

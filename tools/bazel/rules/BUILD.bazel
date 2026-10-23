@@ -1,5 +1,16 @@
 load("@rules_rust//rust:defs.bzl", "rust_lint_config")
-load(":profiles.bzl", "dependency_profile", "device_profile_required", "store_profile_required")
+load(":profiles.bzl", "dependency_profile", "device_profile_required", "guest_profile_required", "store_profile_required")
+
+guest_profile_required(
+    name = "guest_profile_required",
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "guest_dependencies",
+    flag_values = {":dependency_profile": "guest"},
+    visibility = ["//visibility:public"],
+)
 
 device_profile_required(
     name = "device_profile_required",

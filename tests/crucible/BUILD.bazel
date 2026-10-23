@@ -1,0 +1,4 @@
+exports_files([
+    "phase1-production-fingerprint-sample.nix",
+    "phase7-production-rust-plugin-flight.nix",
+])

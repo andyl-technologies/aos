@@ -64,8 +64,9 @@ def compare_doctests(tests, cargo_log, package_paths, target_suffix=""):
     return compared
 
 
-def compare(tests, inventory, messages, package_paths=None, cargo_log=None, target_suffix=""):
+def compare(tests, inventory, messages, package_paths=None, cargo_log=None, target_suffix="", dependency_paths=None):
     package_paths = PACKAGE_PATHS if package_paths is None else package_paths
+    first_party_paths = {**(dependency_paths or {}), **package_paths}
     oracles = {}
     empty_allowed = set()
     cargo_features = {}
@@ -80,7 +81,7 @@ def compare(tests, inventory, messages, package_paths=None, cargo_log=None, targ
         if not separator:
             name = Path(event["manifest_path"]).parent.name
             version = identifier
-        if name in package_paths:
+        if name in first_party_paths:
             cargo_first_party_features.setdefault(name, set()).add(tuple(sorted(event["features"])))
         if name in package_paths and "example" in event["target"]["kind"]:
             cargo_examples.add(f"//{package_paths[name]}:" + event["target"]["name"])
@@ -99,7 +100,7 @@ def compare(tests, inventory, messages, package_paths=None, cargo_log=None, targ
             oracles[label] = Path(event["executable"])
             if "bin" in target["kind"]:
                 empty_allowed.add(label)
-        elif name not in package_paths:
+        elif name not in first_party_paths:
             cargo_features.setdefault((name, version), set()).add(tuple(sorted(event["features"])))
 
     # Listing the Cargo binaries checks ignored cases as well as executed cases.
@@ -114,7 +115,7 @@ def compare(tests, inventory, messages, package_paths=None, cargo_log=None, targ
 
     reports = json.loads(inventory.read_text())["configured_targets"]
     bazel_first_party_features = {}
-    package_labels = {"//" + path: name for name, path in package_paths.items()}
+    package_labels = {"//" + path: name for name, path in first_party_paths.items()}
     for report in reports:
         name = package_labels.get(report["label"].split(":", 1)[0])
         if name and report["kind"] in {"rust_library", "rust_binary", "rust_test", "rust_proc_macro"}:
@@ -136,7 +137,7 @@ def compare(tests, inventory, messages, package_paths=None, cargo_log=None, targ
 
     bazel_features = {}
     for report in reports:
-        match = re.search(r"aos_(?:core|device|store)_crates__([^/]+)//", report["label"])
+        match = re.search(r"aos_(?:core|device|store|guest)_crates__([^/]+)//", report["label"])
         if match and report["kind"] in {"rust_library", "rust_proc_macro"}:
             # Repository names normalize SemVer build metadata. Compare the
             # declared package identity instead of trying to reverse that loss.
@@ -171,8 +172,10 @@ if __name__ == "__main__":
     parser.add_argument("--messages", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--package-path", action="append", default=[], metavar="NAME=PATH")
+    parser.add_argument("--dependency-package-path", action="append", default=[], metavar="NAME=PATH")
     parser.add_argument("--cargo-log", type=Path)
     parser.add_argument("--target-suffix", default="")
     options = parser.parse_args()
     package_paths = dict(value.split("=", 1) for value in options.package_path) if options.package_path else None
-    options.output.write_text(json.dumps(compare(options.tests, options.inventory, options.messages, package_paths, options.cargo_log, options.target_suffix), indent=2, sort_keys=True) + "\n")
+    dependencies = dict(value.split("=", 1) for value in options.dependency_package_path)
+    options.output.write_text(json.dumps(compare(options.tests, options.inventory, options.messages, package_paths, options.cargo_log, options.target_suffix, dependencies), indent=2, sort_keys=True) + "\n")

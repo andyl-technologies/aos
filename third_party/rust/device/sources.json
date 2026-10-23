@@ -1,9 +1,9 @@
 {
   "contracts": {
-    "third_party/rust/BUILD.bazel": "cbac4a86b4f95cbd61173b40fa8a5bf05ccafdeb9289c82398e6799ba9634f95",
+    "third_party/rust/BUILD.bazel": "9efb0e43b203ced1ce37594ab559138bbeeedfdcb1d783ba135ed9db5ff8fee5",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
-    "tools/bazel/metadata/update_rust.py": "2393cd6e9f9cee2fbeee0105f90805d44330769c629ea446bae8e8191b98b5f7",
-    "tools/bazel/rules/crates.bzl": "1085165e9e8f1adbd3b96b007f8de5ae1f1ab31ee45722d166cbafb87ef72968"
+    "tools/bazel/metadata/update_rust.py": "b8c9643aa163440eb9029803f20474e7b05077a39cd5fc56d25493a55b9f7837",
+    "tools/bazel/rules/crates.bzl": "f8c14b49f3349864021d7acc1995c3a89c40025905bd3216f277f164786df56a"
   },
   "family": "device",
   "generated_files": {
@@ -505,9 +505,9 @@
       "Zlib OR Apache-2.0 OR MIT"
     ],
     "contracts": {
-      "third_party/rust/BUILD.bazel": "cbac4a86b4f95cbd61173b40fa8a5bf05ccafdeb9289c82398e6799ba9634f95",
+      "third_party/rust/BUILD.bazel": "9efb0e43b203ced1ce37594ab559138bbeeedfdcb1d783ba135ed9db5ff8fee5",
       "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
-      "tools/bazel/rules/crates.bzl": "1085165e9e8f1adbd3b96b007f8de5ae1f1ab31ee45722d166cbafb87ef72968"
+      "tools/bazel/rules/crates.bzl": "f8c14b49f3349864021d7acc1995c3a89c40025905bd3216f277f164786df56a"
     },
     "family": "device",
     "feature_variants": {},
@@ -575,6 +575,7 @@
         "version": "=0.1.25"
       }
     },
+    "permissive_crates": [],
     "platforms": [
       "x86_64-unknown-linux-gnu",
       "aarch64-unknown-linux-gnu"

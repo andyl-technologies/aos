@@ -98,13 +98,16 @@ def validate_license(specification, crate):
     """Requires an explicit license review before admitting shared boundary inputs."""
     if crate["license"] in specification.get("host_only_licenses", []):
         return "apache-host"
-    if (specification["license_domain"] == "permissive-protocol"
+    identity = f"{crate['name']}@{crate['version']}"
+    domain = ("permissive-protocol" if identity in specification.get("permissive_crates", [])
+              else specification["license_domain"])
+    if (domain == "permissive-protocol"
             and crate["license"] not in specification.get("approved_licenses", [])):
         raise ValueError(
             f"unreviewed protocol dependency license: {crate['name']}-{crate['version']}: "
             + crate["license"]
         )
-    return specification["license_domain"]
+    return domain
 
 
 def rewrite_features(rendered, expected, features, suffix="", repository=""):
@@ -202,6 +205,10 @@ def specialize_feature_graph(specification, context, builds, repository):
 def prepare_sources(specification, scratch, repository, staged):
     """Checks registry archive hashes and annotates rendered integration scope."""
     context = json.loads((scratch / "context.json").read_text())
+    available = {f"{crate['name']}@{crate['version']}" for crate in context["crates"].values()}
+    requested = specification.get("permissive_crates", [])
+    if len(requested) != len(set(requested)) or set(requested) - available:
+        raise ValueError("permissive crate identities must be unique and present in the resolved graph")
     lock = tomllib.loads((scratch / "spliced/Cargo.lock").read_text())
     checksums = {(package["name"], package["version"]): package["checksum"]
                  for package in lock["package"] if "source" in package}
