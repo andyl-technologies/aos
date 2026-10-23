@@ -98,11 +98,11 @@ pub struct SignerConfigV1 {
     pub keys: Vec<KeyEntry>,
 }
 
-/// Executables used for PE/COFF and kernel-module transformations.
+/// Executables used for signing and image transformations.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct ToolPaths {
-    /// OpenSSL command-line tool used for CMS module signatures.
+    /// OpenSSL command-line tool used for RSA and CMS signatures.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openssl: Option<PathBuf>,
     /// `sbsign` from sbsigntools used for Authenticode signatures.

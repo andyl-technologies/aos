@@ -17,7 +17,6 @@ base64 = { workspace = true }
 clap = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex = { workspace = true }
-rsa = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
