@@ -110,6 +110,27 @@ def validate_license(specification, crate):
     return domain
 
 
+def rendered_features(node):
+    """Reads the pinned renderer's literal or platform-selected feature form."""
+    if isinstance(node, ast.List):
+        return {"common": ast.literal_eval(node), "selects": {}}
+    if (not isinstance(node, ast.BinOp) or not isinstance(node.op, ast.Add)
+            or not isinstance(node.left, ast.List) or not isinstance(node.right, ast.Call)
+            or not isinstance(node.right.func, ast.Name) or node.right.func.id != "select"
+            or len(node.right.args) != 1 or node.right.keywords):
+        raise ValueError("unsupported reviewed feature expression")
+    selections = ast.literal_eval(node.right.args[0])
+    if selections.pop("//conditions:default", None) != []:
+        raise ValueError("reviewed feature select requires an empty default")
+    prefix = "@rules_rust//rust/platform:"
+    if any(not label.startswith(prefix) for label in selections):
+        raise ValueError("reviewed feature select contains an unknown platform")
+    return {
+        "common": ast.literal_eval(node.left),
+        "selects": {label.removeprefix(prefix): features for label, features in selections.items()},
+    }
+
+
 def rewrite_features(rendered, expected, features, suffix="", repository=""):
     """Specializes literal generated rules without changing their source inputs.
 
@@ -139,7 +160,8 @@ def rewrite_features(rendered, expected, features, suffix="", repository=""):
         keywords = {keyword.arg: keyword.value for keyword in call.keywords}
         if "crate_features" in keywords:
             value = keywords["crate_features"]
-            if ast.literal_eval(value) != expected:
+            resolution = expected if isinstance(expected, dict) else {"common": expected, "selects": {}}
+            if rendered_features(value) != resolution:
                 raise ValueError("rendered crate features disagree with reviewed resolution")
             edits.append((*span(value), json.dumps(features)))
             feature_rules += 1
@@ -219,8 +241,8 @@ def specialize_feature_graph(specification, context, builds, repository):
         if len(crates) != 1 or identifier not in builds:
             raise ValueError(f"reviewed feature crate version is absent: {identifier}")
         crate = crates[0]
-        expected = policy["resolved_features"]
-        if crate["common_attrs"]["crate_features"] != {"common": expected, "selects": {}}:
+        expected = {"common": policy["resolved_features"], "selects": policy.get("resolved_selects", {})}
+        if crate["common_attrs"]["crate_features"] != expected:
             raise ValueError(f"reviewed feature resolution changed: {identifier}")
         original = builds[identifier]
         own_repository = crate_repository(repository, *identifier)

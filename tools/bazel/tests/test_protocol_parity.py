@@ -78,6 +78,21 @@ class ProtocolParityTests(unittest.TestCase):
         self.assertEqual(result["features"], {"serde@1.0.228": [("default", "derive")]})
         self.verify.assert_not_called()
 
+    def test_mixed_library_crate_types_retain_the_unit_test_oracle(self):
+        self.events[0]["target"]["kind"] = ["cdylib", "rlib"]
+
+        self.compare()
+
+        self.assertEqual(self.verify.call_args.args[1], {self.label: Path("/source/unit-tests")})
+
+    def test_shared_library_features_are_compared(self):
+        self.reports[1]["kind"] = "rust_shared_library"
+        self.production_features()
+
+        self.reports[1]["features"] = ["unexpected"]
+        with self.assertRaisesRegex(ValueError, "first-party Rust feature inventories differ"):
+            self.production_features()
+
     def test_production_features_reject_test_feature_leakage(self):
         self.reports[0]["features"].append("rc")
 
@@ -175,6 +190,18 @@ class ProtocolParityTests(unittest.TestCase):
         self.reports[0]["features"] = ["default"]
         with self.assertRaisesRegex(ValueError, "feature inventories differ"):
             self.compare()
+
+    def test_hub_console_repositories_preserve_exact_feature_checks(self):
+        for profile in ["hub_console", "hub_console_wasm"]:
+            with self.subTest(profile=profile):
+                self.reports[0]["label"] = "@@+aos_tools_repository+aos_" + profile + "_crates__serde-1.0.228//:serde"
+                self.reports[0]["features"] = ["derive", "default"]
+
+                self.compare()
+
+                self.reports[0]["features"] = ["default"]
+                with self.assertRaisesRegex(ValueError, "feature inventories differ"):
+                    self.compare()
 
     def test_hub_db_repositories_preserve_exact_feature_checks(self):
         for profile in ["hub_db", "hub_db_tests", "hub_db_all_features", "hub_db_all_features_tests"]:

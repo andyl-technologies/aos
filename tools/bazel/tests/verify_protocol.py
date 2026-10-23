@@ -13,6 +13,8 @@ PACKAGE_PATHS = {
     for name in ["crucible-qemu-protocol", "crucible-qemu-shmem"]
 }
 
+RUST_LIBRARY_KINDS = {"lib", "rlib", "cdylib", "dylib", "staticlib", "proc-macro"}
+
 
 def doctest_cases(log, package_path, generated_sources=None):
     """Normalizes rustdoc's source-relative case names without losing status."""
@@ -142,7 +144,7 @@ def compare_features(inventory, messages, first_party_paths, required_packages=(
     package_labels = {"//" + path: name for name, path in first_party_paths.items()}
     for report in reports:
         name = package_labels.get(report["label"].split(":", 1)[0])
-        if name and report["kind"] in {"rust_library", "rust_binary", "rust_test", "rust_proc_macro"}:
+        if name and report["kind"] in {"rust_library", "rust_binary", "rust_test", "rust_proc_macro", "rust_shared_library"}:
             bazel_first_party_features.setdefault(name, set()).add(tuple(sorted(report["features"])))
     if bazel_first_party_features != cargo_first_party_features:
         raise ValueError(f"first-party Rust feature inventories differ: {bazel_first_party_features!r} != {cargo_first_party_features!r}")
@@ -152,7 +154,7 @@ def compare_features(inventory, messages, first_party_paths, required_packages=(
     }
     bazel_features = {}
     for report in reports:
-        match = re.search(r"aos_(?:core|device|store|guest|engine|quota|session|control|qemu_host|store_s3|daemon|crucible_cli|cli_support|build_services|deployment|hub_portable|hub_db(?:_all_features)?(?:_tests)?|package_manager(?:_tests)?|boot_preparation(?:_minimal)?|release_coordination|registry_native(?:_tests)?|release_preparation|hub_client|hub_model(?:_tests)?|formats|native_foundation(?:_tests|_minimal)?|activation_(?:core(?:_tests)?|crucible(?:_tests)?|storage|systemd))_crates__([^/]+)//", report["label"])
+        match = re.search(r"aos_(?:core|device|store|guest|engine|quota|session|control|qemu_host|store_s3|daemon|crucible_cli|cli_support|build_services|deployment|hub_portable|hub_console(?:_wasm)?|hub_db(?:_all_features)?(?:_tests)?|package_manager(?:_tests)?|boot_preparation(?:_minimal)?|release_coordination|registry_native(?:_tests)?|release_preparation|hub_client|hub_model(?:_tests)?|formats|native_foundation(?:_tests|_minimal)?|activation_(?:core(?:_tests)?|crucible(?:_tests)?|storage|systemd))_crates__([^/]+)//", report["label"])
         if match and report["kind"] in {"rust_library", "rust_proc_macro"}:
             # Repository names normalize SemVer build metadata. Compare the
             # declared package identity instead of trying to reverse that loss.
@@ -212,12 +214,13 @@ def compare(
             version = identifier
         if name in package_paths and "example" in event["target"]["kind"]:
             cargo_examples.add(f"//{package_paths[name]}:" + event["target"]["name"] + suffixes.get(name, target_suffix))
-        if name in package_paths and "lib" in event["target"]["kind"]:
+        library = bool(set(event["target"]["kind"]) & RUST_LIBRARY_KINDS)
+        if name in package_paths and library:
             cargo_libraries.add(name)
         if (name in package_paths and event["profile"]["test"] and event.get("executable")
-                and set(event["target"]["kind"]) & {"lib", "test", "bin"}):
+                and set(event["target"]["kind"]) & (RUST_LIBRARY_KINDS | {"test", "bin"})):
             target = event["target"]
-            if "lib" in target["kind"]:
+            if library:
                 suffix = "unit"
             elif "bin" in target["kind"]:
                 suffix = "bin_" + target["name"]

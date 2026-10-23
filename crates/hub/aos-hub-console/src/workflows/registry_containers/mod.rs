@@ -280,6 +280,10 @@ pub(super) fn display_or(value: &str, fallback: &str) -> String {
     }
 }
 
+#[allow(
+    clippy::float_arithmetic,
+    reason = "Browser display units round byte counts for presentation without changing stored quantities."
+)]
 pub(super) fn format_bytes(value: u64) -> String {
     const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
     const MIB: f64 = 1024.0 * 1024.0;

@@ -6,7 +6,7 @@
 //! management request then uses a generated canonical Connect path and a
 //! ProtoJSON request/response type.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use gloo_net::http::Request;
@@ -133,7 +133,7 @@ impl ApiClient {
         Split: Fn(ResponseMessage) -> (Vec<Item>, String),
     {
         let mut token = String::new();
-        let mut seen = HashSet::new();
+        let mut seen = BTreeSet::new();
         let mut items = Vec::new();
         loop {
             let response = self

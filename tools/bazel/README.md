@@ -2559,3 +2559,56 @@ real frozen console assets. The test closure has 370 external and 24 first-party
 packages; production has 256 external and twelve first-party packages. Every
 retained first-party input matches the comparison commit. All-feature builds,
 live service/VM tests and production migration require separate qualification.
+
+## Hub console families
+
+The `hub-console` and `hub-console-wasm` profiles build the console's native
+rlib, cdylib and command, and its browser application with Bzlmod dependencies.
+The browser pipeline uses the AOS-built Wasm sysroot, linker and wasm-bindgen;
+its package retains JavaScript, WebAssembly and the unchanged stylesheet. No
+repository or action downloads a tool. The browser workspace permits foreign
+compilation and rejects target execution.
+
+`tests/evidence/hub-console-source-graph.json` retains the 43 validated SDK
+exports and 36 configured family source inventories. The previous 41 SDKs keep
+their exact lockfiles and generated files. Console staging includes its CSS and
+the generated API's protobuf input; source ownership remains explicit.
+
+The native developer checkpoint retains 17 unit cases, the empty command test
+and empty doctest selection, strict Clippy/formatting, exact 88 external and
+nine first-party feature sets, and four identical generated API files. The first
+browser compilation checkpoint retains exact 223 external and nine first-party
+feature sets, valid mount exports and a source-built binding action. These
+checkpoints identify their frozen sources and predate later browser lint repairs.
+
+`tests/evidence/hub-console-browser-developer-checkpoint.json` qualifies those
+fifteen Rust repairs with uncapped Clippy on all three browser production targets
+and both retained Wasm test binaries. All 39 source test names remain in the unit
+artifact; compilation does not establish browser test execution. The repairs
+preserve test declarations and assertion counts. Ordered local collections,
+Copy callback cleanup and scoped browser arithmetic/form exceptions retain the
+existing behavior and generated protobuf map representation.
+
+`tests/evidence/hub-console-metadata-evaluation.json` retains 492 package targets,
+41 analysis selections, zero external analysis actions and passing core
+evaluation. Strict source staging, native editor parity, full compiler argument
+parity, browser execution, performance acceptance and production migration have
+separate gates. Cargo remains the production build path.
+
+`tests/evidence/hub-console-qualified.json` retains the strict native selection:
+17 unit cases, two empty command/doc selections, matching 88/9 feature sets,
+four identical API outputs and all fifteen frozen Rust edits. One selected
+editor diagnostic matches Cargo; 66 unselected rows and incomplete inference
+remain explicit. Neither first-party compilation source contains Cargo manifests.
+
+`tests/evidence/hub-console-browser-qualified.json` retains strict browser
+production and test compilation, the 223/9 feature sets, identical generated API
+outputs and eight explicit code-generation options for the rlib, cdylib,
+command and two test artifacts. The CSS remains byte-identical; JS/Wasm byte
+identity and browser execution are not claimed. Source-built Rust/Wasm tools
+run in the Linux sandbox, with no Cargo or C/C++ fallback action.
+
+`tests/evidence/hub-console-required-rust-targets.json` retains the passing
+required workspace application unit/integration compilation gate. All fifteen
+frozen console Rust edits match both its source and the strict native/browser
+qualifications. This gate compiles test targets without executing them.

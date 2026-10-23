@@ -40,7 +40,7 @@ def verify(root, inventories):
         for target in inventory["configured_targets"]:
             label = target["label"]
             if not label.startswith("//crates/") or target["kind"] not in {
-                "rust_library", "rust_binary", "rust_proc_macro", "rust_test",
+                "rust_library", "rust_binary", "rust_proc_macro", "rust_shared_library", "rust_test",
             }:
                 continue
             directory = root / label[2:].split(":", 1)[0]

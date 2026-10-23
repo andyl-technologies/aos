@@ -99,6 +99,14 @@ class FamilyEditorTests(unittest.TestCase):
         report = verify(self.project, self.inventory, self.packages, self.root)
         self.assertEqual(len(report["roots"]), 2)
 
+    def test_shared_library_root_and_features_are_checked(self):
+        self.inventory["configured_targets"][0]["kind"] = "rust_shared_library"
+        verify(self.project, self.inventory, self.packages, self.root)
+
+        self.inventory["configured_targets"][0]["features"] = ["unexpected"]
+        with self.assertRaisesRegex(ValueError, "feature mismatch"):
+            verify(self.project, self.inventory, self.packages, self.root)
+
     def test_binary_and_libtest_share_the_declared_source_root(self):
         root = "crates/device/src/bin/tool.rs"
         (self.root / root).parent.mkdir(parents=True)

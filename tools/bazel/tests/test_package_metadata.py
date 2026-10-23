@@ -39,9 +39,9 @@ class PackageMetadataTests(unittest.TestCase):
         }
 
     def test_inherited_fields_and_semver_match_all_compiled_target_kinds(self):
-        targets = [self.target(kind) for kind in ["rust_library", "rust_binary", "rust_test", "rust_proc_macro"]]
+        targets = [self.target(kind) for kind in ["rust_library", "rust_binary", "rust_test", "rust_proc_macro", "rust_shared_library"]]
         result = verify(self.root, [{"configured_targets": targets}])
-        self.assertEqual(len(result["targets"]), 4)
+        self.assertEqual(len(result["targets"]), 5)
         self.assertEqual(
             result["targets"][targets[0]["label"]]["environment"], self.environment,
         )
@@ -61,6 +61,13 @@ class PackageMetadataTests(unittest.TestCase):
         target = self.target()
         target["label"] = "@@third_party//:library"
         with self.assertRaisesRegex(ValueError, "did not compare any Rust targets"):
+            verify(self.root, [{"configured_targets": [target]}])
+
+    def test_shared_library_metadata_is_checked(self):
+        target = self.target("rust_shared_library")
+        target["rustc_env"]["CARGO_PKG_NAME"] = "incorrect-library"
+
+        with self.assertRaisesRegex(ValueError, "identity differs"):
             verify(self.root, [{"configured_targets": [target]}])
 
 

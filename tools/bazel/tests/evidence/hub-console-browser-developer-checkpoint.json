@@ -1,0 +1,188 @@
+{
+  "changed_rust_inputs_sha256": {
+    "crates/hub/aos-hub-console/src/components.rs": "83da53e7e3ff1e026dc4584a62d985ecfc319554795cd2a6aa2ad2799d07e766",
+    "crates/hub/aos-hub-console/src/mutation.rs": "bc5cc614518a0c241e0368019953e0eb920e944e9d0e4a43075450743ce0a163",
+    "crates/hub/aos-hub-console/src/staging.rs": "86734b731175a99fd9fb53b8d51504f363e6b4d9054b1bc077fefe1de9c8835e",
+    "crates/hub/aos-hub-console/src/transport.rs": "ce2542fb79e15935a8d2154beb2db14ba7b726cbc0f1e21898afb80aea6a33a1",
+    "crates/hub/aos-hub-console/src/workflows/access_policy.rs": "48b63de59da9852fd88c1043a19a665b3e92003cf61708d35b4a6a9359cede8c",
+    "crates/hub/aos-hub-console/src/workflows/cache_retention.rs": "1c612bf3fd9803064142ffe6369c41005f3d80e527983e30d0a478ea4c83ab80",
+    "crates/hub/aos-hub-console/src/workflows/cache_stack.rs": "66b4f8b3e6846036631efd2d76fe1e9d8630f11a43d80f79cfa1edfcc80c8c4b",
+    "crates/hub/aos-hub-console/src/workflows/delivery_workflow.rs": "8dee8ddac78b5021edabbb3bd58bcd7fdcbb7ea78e2877525d062c726d7d260d",
+    "crates/hub/aos-hub-console/src/workflows/endpoints.rs": "83bab6e0f678a97423639f4bdf80912caeba253915f6a494598b2945dd2618c7",
+    "crates/hub/aos-hub-console/src/workflows/infrastructure.rs": "5f7a43a9a2b9ffc06e0d8f9f158ebbbbf8661d67201b988365d1de279ddc8bc0",
+    "crates/hub/aos-hub-console/src/workflows/instance_settings.rs": "788722319fcba529dc1495c8a1428a28fa33bd435ae376ee73fed423602dadaf",
+    "crates/hub/aos-hub-console/src/workflows/placements.rs": "8680eaf54e232601dc599313ea517d92501b560724a1d57b8934cadb2cac21e7",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/mod.rs": "87a8832056620c4f569f065cff8caae488a6caf3b35d9b7f762643e3ae68f0bc",
+    "crates/hub/aos-hub-console/src/workflows/resources.rs": "190165589110a77393898962103df2d86a2a7c2e568d874550c971cfc4f07132",
+    "crates/hub/aos-hub-console/src/workflows/routes.rs": "a51f4ec9de62cc91f8df9be1045ca4f6cfde3f407bda147d95d3ad9cf69c4f7a"
+  },
+  "checks": {
+    "clippy": {
+      "action_counts": {
+        "CargoBuildScriptRun": 39,
+        "Clippy": 3,
+        "CopyFile": 3,
+        "ExtractCargoTomlEnvVars": 278,
+        "Rustc": 311
+      },
+      "derivation": "/nix/store/vaqlsh601mw7jvms358g8gzgcfw9ll59-aos-bazel-hub-console-browser-developer-1.drv",
+      "execution_sha256": "87c31bc770260a3f1f51fe5a7da01a423035b98484a5a64dcd3d623c229b9e40",
+      "output": "/nix/store/r118cmfy4jm864cc88wbq1n5gmq6xa7l-aos-bazel-hub-console-browser-developer-1",
+      "selected_actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:lib"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:aos-hub-console"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:shared"
+        }
+      ],
+      "source": "/nix/store/i4b5mqr7wwpkwra817w5l2f1j92ilwim-aos-bazel-workspace"
+    },
+    "test-compilation": {
+      "action_counts": {
+        "CargoBuildScriptRun": 39,
+        "CopyFile": 3,
+        "ExtractCargoTomlEnvVars": 278,
+        "Rustc": 313
+      },
+      "action_graph_sha256": "f90e6956b635c44196c7e9bb96ef4e0a1feaf69860d834668ffd84817b714da1",
+      "artifacts": {
+        "bin.wasm": {
+          "sha256": "c8344f9ab66a6af5e98a4749264e1e786a6ebf938c09f87892f9ee50ec03c50f",
+          "size_bytes": 10996955
+        },
+        "unit.wasm": {
+          "sha256": "de058becd93ca966055856a5f77b217c6b8c3c9f696d5ad03a4eb5f8af87c5dd",
+          "size_bytes": 10568845
+        }
+      },
+      "compiler_code_generation_arguments": {
+        "//crates/hub/aos-hub-console:bin_aos-hub-console_binary": [
+          "-Cembed-bitcode=no",
+          "-Copt-level=s",
+          "-Cdebuginfo=0",
+          "-Clto=thin",
+          "-Cembed-bitcode=yes",
+          "-Ccodegen-units=1",
+          "-Cstrip=symbols",
+          "-Cdebug-assertions=no",
+          "-Coverflow-checks=no"
+        ],
+        "//crates/hub/aos-hub-console:unit_binary": [
+          "-Cembed-bitcode=no",
+          "-Copt-level=s",
+          "-Cdebuginfo=0",
+          "-Clto=thin",
+          "-Cembed-bitcode=yes",
+          "-Ccodegen-units=1",
+          "-Cstrip=symbols",
+          "-Cdebug-assertions=no",
+          "-Coverflow-checks=no"
+        ]
+      },
+      "derivation": "/nix/store/8y52whpqcaiqvj073gvd8d5yvxzpxdq9-aos-bazel-hub-console-browser-test-compilation-1.drv",
+      "execution_sha256": "9980044c667c1fda036661f96fd5b2e038fda472e0ecc20511761bf6a0d255f1",
+      "output": "/nix/store/xx4612yv3sfzg103zph0f1xk990ivjqm-aos-bazel-hub-console-browser-test-compilation-1",
+      "retained_source_test_names": [
+        "admin_configure_only_does_not_expose_tag_mutation_controls",
+        "blocker_rows_list_only_present_conditions_with_their_resolver",
+        "blockers_and_non_planned_states_hide_apply_controls",
+        "browser_connect_requests_use_the_required_protocol_version",
+        "cache_routes_preserve_ownership_scope",
+        "connect_paths_are_closed_and_error_details_are_bounded",
+        "container_apply_preserves_the_reviewed_plan_and_idempotency_key",
+        "default_retention_policy_binds_gc_to_version_zero",
+        "deployment_binding_displays_runtime_attachment",
+        "external_cache_urls_reject_credentials_and_varying_suffixes",
+        "external_domain_supplies_endpoint_tls_defaults",
+        "http_endpoint_revision_clears_tls_fields",
+        "https_endpoint_revision_requires_tls_identity",
+        "intervals_reject_negative_and_non_numeric_values",
+        "large_inventory_reviews_render_a_bounded_filtered_window",
+        "llms_mode_projects_automatic_and_custom_updates",
+        "maintainer_publish_exposes_tag_mutation_controls",
+        "managed_domain_identity_is_not_rendered_as_a_hostname",
+        "masthead_exposes_instance_settings",
+        "navigation_preserves_first_page_and_group_boundaries",
+        "operation_detail_parses_protojson_readiness",
+        "optional_counts_are_positive",
+        "optional_lease_timestamp_is_positive",
+        "pending_plan_rejects_missing_confirmation_material",
+        "permission_editor_canonicalizes_repeated_separators",
+        "progress_avoids_rounding_overflow_and_bounds_stale_counters",
+        "provider_objects_block_only_when_a_current_inventory_lists_them",
+        "publication_actions_fail_closed_for_incomplete_or_terminal_stages",
+        "related_settings_use_canonical_links_without_claiming_resource_relationships",
+        "resume_commands_require_a_local_selector_and_quote_shell_syntax",
+        "retention_numbers_reject_negative_or_non_numeric_values",
+        "review_rejects_wrong_identity_stale_revision_and_changed_inventory",
+        "scope_header_names_resource_kind_and_exact_identity",
+        "selectors_trim_lists_and_require_positive_numbers",
+        "signed_container_tags_never_enable_manual_controls",
+        "stage_review_binds_actions_to_the_exact_response_identity",
+        "stylesheet_extends_the_shared_paper_design_without_replacing_it",
+        "target_labels_cover_the_closed_target_set",
+        "untracked_repair_apply_requires_the_exact_positive_plan_version"
+      ],
+      "selected_actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Rustc",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:bin_aos-hub-console_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Rustc",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:unit_binary"
+        }
+      ],
+      "source": "/nix/store/i4b5mqr7wwpkwra817w5l2f1j92ilwim-aos-bazel-workspace"
+    }
+  },
+  "comparison_base_commit": "648cd0ad63",
+  "limits": [
+    "The current fifteen Rust edits preserve all 39 test declarations and assertion counts. Thirty-nine source test names remain in the compiled unit Wasm artifact; they have not executed in a browser.",
+    "The two libtest binaries compile with the declared Wasm code-generation flags. This does not establish full Cargo/Bazel compiler-argument equivalence or browser runtime parity.",
+    "These conservative source workspaces precede strict source qualification. Native runtime/editor qualification, performance acceptance, production cutover and Cargo removal remain separate gates."
+  ],
+  "schema_version": 1,
+  "source_test_audit": {
+    "comparison_base_commit": "648cd0ad63",
+    "reviewed_changes": [
+      "Two test-module exceptions preserve intentional panics.",
+      "Browser pagination membership and local settings maps use ordered collections; generated protobuf maps retain their representation.",
+      "Four browser display/request helpers retain JavaScript arithmetic with scoped explanations.",
+      "Four existing form helper signatures retain independent fields/signals with scoped argument-count exceptions.",
+      "Copy callbacks/values, conditionals and an optional epoch predicate have equivalent lint repairs."
+    ],
+    "rust_files": 55,
+    "unchanged_counts": {
+      "#\\[ignore(?:\\([^\\n]*\\))?\\]": 0,
+      "#\\[test\\]": 39,
+      "\\bassert!\\s*\\(": 63,
+      "\\bassert_eq!\\s*\\(": 60,
+      "\\bassert_ne!\\s*\\(": 0,
+      "\\bpanic!\\s*\\(": 1
+    }
+  },
+  "status": "Browser production Clippy and both Wasm test artifacts passed for the frozen lint repairs"
+}

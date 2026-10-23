@@ -248,6 +248,34 @@ alias(name = "build_script_build", actual = ":_bs")
         with self.assertRaisesRegex(ValueError, "cannot also redirect"):
             updater.specialize_feature_graph(policy, context, builds, "example")
 
+    def test_platform_feature_resolution_is_verified_before_specializing(self):
+        policy, context, builds = self.feature_graph()
+        settings = policy["feature_variants"]["libc"]
+        settings.pop("variants")
+        settings["resolved_selects"] = {"x86_64-unknown-linux-gnu": ["extra"]}
+        settings["exec_features"] = ["default", "std", "extra"]
+        context["crates"]["libc"]["common_attrs"]["crate_features"]["selects"] = settings["resolved_selects"]
+        expression = '["default", "std"] + select({"@rules_rust//rust/platform:x86_64-unknown-linux-gnu": ["extra"], "//conditions:default": []})'
+        builds["libc", "0.2.186"] = builds["libc", "0.2.186"].replace('["default", "std"]', expression)
+
+        result = updater.specialize_feature_graph(policy, context, builds, "example")
+
+        self.assertEqual(result["libc", "0.2.186"].count("crate_features = []"), 2)
+        self.assertEqual(result["libc", "0.2.186"].count('crate_features = ["default", "std", "extra"]'), 2)
+        changed = builds["libc", "0.2.186"].replace(': ["extra"]', ': ["unexpected"]')
+        with self.assertRaisesRegex(ValueError, "reviewed resolution"):
+            updater.specialize_feature_graph(policy, context, {**builds, ("libc", "0.2.186"): changed}, "example")
+
+    def test_platform_feature_expressions_fail_closed(self):
+        expressions = [
+            '["std"] + select({"//conditions:default": ["extra"]})',
+            '["std"] + select({"//unknown:platform": [], "//conditions:default": []})',
+            '["std"] + discover_features()',
+        ]
+        for expression in expressions:
+            with self.subTest(expression=expression), self.assertRaisesRegex(ValueError, "feature"):
+                updater.rendered_features(__import__("ast").parse(expression, mode="eval").body)
+
     def test_feature_policy_rejects_changed_versions_features_and_edges(self):
         for mutation in ["version", "features", "selects", "rendered", "consumer", "edge"]:
             with self.subTest(mutation=mutation):

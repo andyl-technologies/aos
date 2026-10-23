@@ -461,11 +461,11 @@ fn PlacementActions(
             busy.set(false);
         });
     });
-    let promote_action = on_action.clone();
+    let promote_action = on_action;
     let promote = move |_| promote_action.run("promote");
-    let drain_action = on_action.clone();
+    let drain_action = on_action;
     let drain = move |_| drain_action.run("drain");
-    let cancel_drain_action = on_action.clone();
+    let cancel_drain_action = on_action;
     let cancel_drain = move |_| cancel_drain_action.run("cancel-drain");
     let delete = move |_| on_action.run("delete");
     let draining = placement
@@ -670,7 +670,7 @@ fn WriteAuthorityState(
             busy.set(false);
         });
     });
-    let cancel_action = on_action.clone();
+    let cancel_action = on_action;
     let cancel = move |_| cancel_action.run("cancel");
     let remove = move |_| on_action.run("remove");
     let exists = authority.is_some();
@@ -873,6 +873,10 @@ fn PlanReview(
     view! { {move || error.get().map(|detail| view! { <InlineError detail=detail/> })}{move || pending.get().map(|reviewed| view! { <ReviewedPlanCard plan=reviewed.plan applying=busy.get() on_apply=on_apply on_cancel=Callback::new(move |()| pending.set(None))/> })} }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The existing form operation carries separate review, error, busy and draft-epoch signals."
+)]
 fn plan<Req: serde::Serialize + 'static>(
     client: ApiClient,
     path: &'static str,

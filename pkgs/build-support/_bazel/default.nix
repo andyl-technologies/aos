@@ -83,6 +83,7 @@
   aosBazelRegistryTestTools = import ./registry-test-tools.nix {inherit pkgs lib;};
   aosBazelNixTestTools = import ./nix-test-tools.nix {inherit pkgs;};
   aosBazelCodegenTools = import ./codegen-tools.nix {inherit pkgs;};
+  aosBazelWasmTools = import ./wasm-tools.nix {inherit pkgs;};
   aosBazelDependencyGenerator = pkgs.callPackage ../../tools/workerd/_cargo-bazel.nix {};
   aosBazelDependencyUpdater = import ./updater.nix {
     inherit pkgs lib;
@@ -97,6 +98,16 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    hub-console = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-console";
+    };
+    hub-console-wasm = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-console-wasm";
+    };
     hub-db = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -356,6 +367,35 @@
     dependencyProfile = "control";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
+  };
+  aosBazelHubConsoleWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = ["tools/bazel" "third_party/rust" "api/proto" "crates/shared/aos-artifact-evidence" "crates/shared/aos-core" "crates/hub/aos-hub-api" "crates/hub/aos-hub-console" "crates/hub/aos-hub-ui" "crates/aos/modules/aos-module-docs" "crates/aos/modules/aos-module-format" "crates/shared/aos-oci-types" "crates/aos/registry/aos-registry-format"];
+    repositories =
+      aosBazelRepositories
+      // aosBazelRustRepositories.hub-console
+      // {
+        aos_codegen = aosBazelCodegenTools;
+      };
+    dependencyProfile = "hub-console";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = ["//crates/hub/aos-hub-console:unit"];
+  };
+  aosBazelHubConsoleWasmWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = ["tools/bazel" "third_party/rust" "api/proto" "crates/shared/aos-artifact-evidence" "crates/shared/aos-core" "crates/hub/aos-hub-api" "crates/hub/aos-hub-console" "crates/hub/aos-hub-ui" "crates/aos/modules/aos-module-docs" "crates/aos/modules/aos-module-format" "crates/shared/aos-oci-types" "crates/aos/registry/aos-registry-format"];
+    repositories =
+      aosBazelRepositories
+      // aosBazelRustRepositories.hub-console-wasm
+      // {
+        aos_codegen = aosBazelCodegenTools;
+        aos_wasm_tools = aosBazelWasmTools;
+      };
+    dependencyProfile = "hub-console-wasm";
+    targetPlatform = "//tools/bazel/toolchains:wasm32";
+    compileOnly = true;
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Clto=thin" "-Cembed-bitcode=yes" "-Ccodegen-units=1" "-Cstrip=symbols" "-Cdebug-assertions=no" "-Coverflow-checks=no"];
+    analysisTargets = ["//crates/hub/aos-hub-console:browser_dist"];
   };
   aosBazelHubDbWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -852,6 +892,16 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelHubConsoleLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelHubConsoleWorkspace;
+    }).launcher;
+  aosBazelHubConsoleWasmLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelHubConsoleWasmWorkspace;
     }).launcher;
   aosBazelHubDbLauncher =
     (import ./development.nix {

@@ -1,19 +1,176 @@
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
+load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library", "rust_shared_library")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+load("//tools/bazel/rules:wasm.bzl", "aos_wasm_bindgen")
 
-# Source ownership is declared before this package's compilation migrates.
+package(default_visibility = ["//crates:__subpackages__"])
+
 RUST_PACKAGE = aos_rust_package(
     name = "aos-hub-console",
     version = "0.1.0",
     edition = "2021",
+    description = "Typed Leptos management application for the AOS Hub control plane",
     license_expression = "Apache-2.0",
     license_domain = "apache-host",
+)
+
+config_setting(
+    name = "wasm32",
+    constraint_values = ["@platforms//cpu:wasm32", "@platforms//os:none"],
+)
+
+DEPENDENCIES = [
+    "//crates/hub/aos-hub-api:lib",
+    "//crates/hub/aos-hub-ui:lib",
+    "//crates/aos/modules/aos-module-docs:lib",
+    "//crates/aos/registry/aos-registry-format:lib",
+    "//third_party/rust:core_serde",
+    "//third_party/rust:core_serde_json",
+    "//third_party/rust:core_thiserror",
+] + select({
+    ":wasm32": [
+        "//third_party/rust:core_futures",
+        "//third_party/rust:core_gloo_net",
+        "//third_party/rust:core_js_sys",
+        "//third_party/rust:core_leptos",
+        "//third_party/rust:core_wasm_bindgen",
+        "//third_party/rust:core_wasm_bindgen_futures",
+        "//third_party/rust:core_web_sys",
+    ],
+    "//conditions:default": [],
+})
+
+rust_library(
+    name = "lib",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_hub_console",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = ["assets/app.css"],
+    deps = DEPENDENCIES,
+)
+
+# Cargo declares both rlib and cdylib. The browser exports come from the latter.
+rust_shared_library(
+    name = "shared",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_hub_console",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = ["assets/app.css"],
+    deps = DEPENDENCIES,
+)
+
+rust_binary(
+    name = "aos-hub-console",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_hub_console",
+    crate_root = "src/main.rs",
+    srcs = ["src/main.rs"],
+    deps = [":lib"],
+)
+
+aos_rust_test(
+    name = "unit",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":lib",
+)
+
+aos_rust_test(
+    name = "bin_aos-hub-console",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":aos-hub-console",
+    allow_empty = True,
+)
+
+rust_doc_test(name = "doc", crate = ":lib")
+rust_clippy(name = "clippy", testonly = True, deps = [":lib", ":shared", ":unit_binary", ":bin_aos-hub-console_binary"])
+rustfmt_test(name = "format", targets = [":lib", ":unit_binary", ":bin_aos-hub-console_binary"])
+rust_doc(name = "documentation", crate = ":lib")
+
+# Browser production lints and test compilation have no native execution claim.
+rust_clippy(
+    name = "browser_clippy",
+    deps = [":lib", ":shared", ":aos-hub-console"],
+    target_compatible_with = ["@platforms//cpu:wasm32", "@platforms//os:none"],
+)
+
+
+aos_license_check(
+    name = "license_closure",
+    testonly = True,
+    roots = [":lib", ":shared", ":unit_binary", ":bin_aos-hub-console_binary"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_license_check(
+    name = "production_license_closure",
+    roots = [":lib", ":shared", ":aos-hub-console"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_wasm_bindgen(
+    name = "browser_bindings",
+    wasm = ":shared",
+    output_name = "hub-console",
+    target_compatible_with = ["@platforms//cpu:wasm32", "@platforms//os:none"],
+)
+
+filegroup(
+    name = "browser_javascript",
+    srcs = [":browser_bindings"],
+    output_group = "browser_javascript",
+)
+
+filegroup(
+    name = "browser_wasm",
+    srcs = [":browser_bindings"],
+    output_group = "browser_wasm",
+)
+
+filegroup(
+    name = "browser_stylesheet",
+    srcs = ["assets/app.css"],
+    tags = ["aos-license:apache-host"],
+)
+
+aos_package(
+    name = "browser_dist",
+    package = RUST_PACKAGE,
+    artifacts = {
+        ":browser_javascript": "hub-console.js",
+        ":browser_wasm": "hub-console_bg.wasm",
+        ":browser_stylesheet": "hub-console.css",
+    },
+    target_compatible_with = ["@platforms//cpu:wasm32", "@platforms//os:none"],
+)
+
+# Retain real foreign test binaries for subsequent browser qualification.
+aos_package(
+    name = "browser_test_artifacts",
+    package = RUST_PACKAGE,
+    testonly = True,
+    artifacts = {
+        ":unit_binary": "unit.wasm",
+        ":bin_aos-hub-console_binary": "bin.wasm",
+    },
+    target_compatible_with = ["@platforms//cpu:wasm32", "@platforms//os:none"],
 )
 
 aos_source_package(
     name = "source_package",
     package = RUST_PACKAGE,
     srcs = glob(["**/*.rs"]),
+    data = ["assets/app.css"],
     visibility = ["//visibility:public"],
 )
 

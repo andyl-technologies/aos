@@ -55,7 +55,7 @@ def verify(project, inventory, packages, workspace):
         for target in inventory["configured_targets"]:
             if not target["label"].startswith(prefix):
                 continue
-            if target["kind"] not in {"rust_library", "rust_binary", "rust_test", "rust_proc_macro"}:
+            if target["kind"] not in {"rust_library", "rust_binary", "rust_test", "rust_proc_macro", "rust_shared_library"}:
                 continue
             root = target["crate_root"]
             # Unit tests may inherit their library's crate instead of declaring

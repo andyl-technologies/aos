@@ -17,6 +17,9 @@ CASES = {
     "compile-edition": ("", 'edition = "2021",', "conflicts with package edition"),
     "compile-environment": ("", 'rustc_env = {"CARGO_PKG_NAME": "wrong"},', "overrides package metadata CARGO_PKG_NAME"),
     "compile-license": ("", 'license_domain = "gpl-qemu",', "conflicts with package license domain"),
+    "shared-version": ("", 'version = "9.0.0",', "conflicts with package version"),
+    "shared-environment": ("", 'rustc_env = {"CARGO_PKG_NAME": "wrong"},', "overrides package metadata CARGO_PKG_NAME"),
+    "shared-license": ("", 'license_domain = "gpl-qemu",', "conflicts with package license domain"),
     "test-name": ("", 'package_name = "wrong",', "Rust test conflicts with package name"),
     "install-version": ("", 'version = "9.0.0",', "installed package conflicts with Rust package version"),
 }
@@ -38,11 +41,13 @@ def verify(arguments):
             rule = 'aos_rust_test(name = "probe", package = META, srcs = ["lib.rs"], ' + override + ')'
         elif name.startswith("install-"):
             rule = 'aos_package(name = "probe", package = META, artifacts = {}, ' + override + ')'
+        elif name.startswith("shared-"):
+            rule = 'rust_shared_library(name = "probe", package = META, srcs = ["lib.rs"], ' + override + ')'
         else:
             rule = 'rust_library(name = "probe", package = META, srcs = ["lib.rs"], ' + override + ')'
         build.write_text(
             'load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")\n'
-            'load("//tools/bazel/rules:compile.bzl", "rust_library")\n'
+            'load("//tools/bazel/rules:compile.bzl", "rust_library", "rust_shared_library")\n'
             'load("//tools/bazel/rules:test.bzl", "aos_rust_test")\n'
             'load("//tools/bazel/rules:package.bzl", "aos_package")\n'
             + "META = aos_rust_package(" + ", ".join(fields.values()) + ")\n" + rule + "\n"

@@ -1859,6 +1859,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit (bazelSupport) aosBazelActivationCoreWorkspace aosBazelActivationCoreLauncher;
       inherit (bazelSupport) aosBazelActivationStorageWorkspace aosBazelActivationStorageLauncher;
       inherit (bazelSupport) aosBazelRepositoryTestSources;
+      inherit (bazelSupport) aosBazelHubConsoleWorkspace aosBazelHubConsoleLauncher;
+      inherit (bazelSupport) aosBazelHubConsoleWasmWorkspace aosBazelHubConsoleWasmLauncher;
       inherit (bazelSupport) aosBazelHubDbWorkspace aosBazelHubDbLauncher;
       inherit (bazelSupport) aosBazelHubDbAllFeaturesWorkspace aosBazelHubDbAllFeaturesLauncher;
       inherit (bazelSupport) aosBazelPackageManagerWorkspace aosBazelPackageManagerLauncher;
@@ -1877,6 +1879,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit (bazelSupport) aosBazelActivationSystemdWorkspace aosBazelActivationSystemdLauncher;
       inherit (bazelSupport) aosBazelCrucibleCliRuntime aosBazelCrucibleCliWorkspace aosBazelCrucibleCliLauncher;
       inherit (bazelSupport) aosBazelDependencyGenerator aosBazelDependencyUpdater aosBazelCodegenTools;
+      inherit (bazelSupport) aosBazelWasmTools;
       inherit (bazelSupport) aosBazelRepositories aosBazelRustRepositories;
       inherit mkCargoPackage mkAosCargoPackage mkCargoArtifacts mkCargoNextestCheck mkGoPackage mkBazelPackage;
       inherit mkOciTools ociTools mkOciMultiPlatformContainer mkOciPackageEvidence;

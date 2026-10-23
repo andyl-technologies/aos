@@ -39,7 +39,7 @@ def _license_impl(target, ctx):
         # These pinned Apache-licensed rule support targets are not first-party
         # application code. Other compiled dependencies require declarations.
         domains = ["permissive-protocol"]
-    compiled = ctx.rule.kind in ["rust_library", "rust_binary", "rust_proc_macro", "rust_test", "cc_library", "cc_binary", "cc_shared_library", "cc_import"]
+    compiled = ctx.rule.kind in ["rust_library", "rust_binary", "rust_proc_macro", "rust_shared_library", "rust_test", "cc_library", "cc_binary", "cc_shared_library", "cc_import"]
     if compiled and len(domains) != 1:
         fail("AOS license boundary: compiled target requires one license_domain: " + str(target.label))
     if len(domains) > 1 or any([domain not in DOMAINS for domain in domains]):

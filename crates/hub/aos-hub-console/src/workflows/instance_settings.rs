@@ -4,7 +4,7 @@
 //! submits only its owned keys while preserving the server's immutable
 //! plan/review/apply boundary.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use crate::mutation::spawn_workflow_task as spawn_local;
 use leptos::ev::SubmitEvent;
@@ -141,7 +141,7 @@ fn IdentitySettings(
                 return;
             }
         };
-        let values = HashMap::from([
+        let values = BTreeMap::from([
             ("signup_policy".to_string(), signup_policy.get_untracked()),
             ("signup_domains".to_string(), domains),
             (
@@ -208,7 +208,7 @@ fn ResourceDefaults(
                 return;
             }
         };
-        let values = HashMap::from([
+        let values = BTreeMap::from([
             (
                 "default_crawl_policy".to_string(),
                 crawl_policy.get_untracked(),
@@ -279,7 +279,7 @@ fn BrandingSettings(
     let on_plan = move |event: SubmitEvent| {
         event.prevent_default();
         pending.set(None);
-        let values = HashMap::from([
+        let values = BTreeMap::from([
             ("site_title".to_string(), site_title.get_untracked()),
             ("tagline".to_string(), tagline.get_untracked()),
             ("announcement".to_string(), announcement.get_untracked()),
@@ -330,10 +330,14 @@ fn SettingsReview(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The existing form operation carries separate review, error, busy and draft-epoch signals."
+)]
 fn plan_settings(
     client: ApiClient,
     action: &'static str,
-    values: HashMap<String, String>,
+    values: BTreeMap<String, String>,
     expected_resource_version: String,
     pending: RwSignal<Option<PendingPlan>>,
     error: RwSignal<Option<String>>,
@@ -344,7 +348,8 @@ fn plan_settings(
     pending.set(None);
     let idempotency_key = idempotency_key(action);
     let request = aos_hub_api::PlanSetInstanceSettingsRequest {
-        values,
+        // The generated protobuf request owns its wire map representation.
+        values: values.into_iter().collect(),
         clear: Vec::new(),
         expected_resource_version,
         idempotency_key: idempotency_key.clone(),

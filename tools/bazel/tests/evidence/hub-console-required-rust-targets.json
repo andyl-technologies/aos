@@ -1,0 +1,32 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "648cd0ad63",
+  "compiled_changed_rust_inputs_sha256": {
+    "crates/hub/aos-hub-console/src/components.rs": "83da53e7e3ff1e026dc4584a62d985ecfc319554795cd2a6aa2ad2799d07e766",
+    "crates/hub/aos-hub-console/src/mutation.rs": "bc5cc614518a0c241e0368019953e0eb920e944e9d0e4a43075450743ce0a163",
+    "crates/hub/aos-hub-console/src/staging.rs": "86734b731175a99fd9fb53b8d51504f363e6b4d9054b1bc077fefe1de9c8835e",
+    "crates/hub/aos-hub-console/src/transport.rs": "ce2542fb79e15935a8d2154beb2db14ba7b726cbc0f1e21898afb80aea6a33a1",
+    "crates/hub/aos-hub-console/src/workflows/access_policy.rs": "48b63de59da9852fd88c1043a19a665b3e92003cf61708d35b4a6a9359cede8c",
+    "crates/hub/aos-hub-console/src/workflows/cache_retention.rs": "1c612bf3fd9803064142ffe6369c41005f3d80e527983e30d0a478ea4c83ab80",
+    "crates/hub/aos-hub-console/src/workflows/cache_stack.rs": "66b4f8b3e6846036631efd2d76fe1e9d8630f11a43d80f79cfa1edfcc80c8c4b",
+    "crates/hub/aos-hub-console/src/workflows/delivery_workflow.rs": "8dee8ddac78b5021edabbb3bd58bcd7fdcbb7ea78e2877525d062c726d7d260d",
+    "crates/hub/aos-hub-console/src/workflows/endpoints.rs": "83bab6e0f678a97423639f4bdf80912caeba253915f6a494598b2945dd2618c7",
+    "crates/hub/aos-hub-console/src/workflows/infrastructure.rs": "5f7a43a9a2b9ffc06e0d8f9f158ebbbbf8661d67201b988365d1de279ddc8bc0",
+    "crates/hub/aos-hub-console/src/workflows/instance_settings.rs": "788722319fcba529dc1495c8a1428a28fa33bd435ae376ee73fed423602dadaf",
+    "crates/hub/aos-hub-console/src/workflows/placements.rs": "8680eaf54e232601dc599313ea517d92501b560724a1d57b8934cadb2cac21e7",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/mod.rs": "87a8832056620c4f569f065cff8caae488a6caf3b35d9b7f762643e3ae68f0bc",
+    "crates/hub/aos-hub-console/src/workflows/resources.rs": "190165589110a77393898962103df2d86a2a7c2e568d874550c971cfc4f07132",
+    "crates/hub/aos-hub-console/src/workflows/routes.rs": "a51f4ec9de62cc91f8df9be1045ca4f6cfde3f407bda147d95d3ad9cf69c4f7a"
+  },
+  "derivation": "/nix/store/0yihaibj5ll8pp42wiwcpsrw0b06bq3q-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "6b29bde9225c3e80e30dcecc1b28b45364104c7350b8776d9102b619887f7126",
+  "limits": [
+    "This gate compiles application unit and integration targets without executing them. Native Bazel/Cargo execution is retained separately.",
+    "The frozen source contains all fifteen console Rust edits, including ordered local collections, scoped fixture/browser arithmetic/form exceptions and equivalent lint repairs. Later conversion work is not qualified by this checkpoint."
+  ],
+  "log_sha256": "5b5a612a680b6e2dd9fded4a2825f369d234ad8f75c9b3b2dfbcb30d37cc0e5e",
+  "output": "/nix/store/mc69x0r3759fs0lmqpxr5wx4z9b8k9km-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/nhmzyndaj4430lzmdp09h2arihcpv4ik-aos-workspace-src",
+  "status": "Required workspace Rust application unit and integration targets compiled successfully"
+}
