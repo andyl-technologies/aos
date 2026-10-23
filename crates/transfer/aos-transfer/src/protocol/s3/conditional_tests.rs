@@ -76,6 +76,39 @@ async fn respond_once(response: String) -> (String, JoinHandle<String>) {
     (endpoint, server)
 }
 
+/// Accepts `count` requests and returns each lowercased request head.
+async fn respond_many(response: String, count: usize) -> (String, JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("http://{}", listener.local_addr().unwrap());
+
+    let server = tokio::spawn(async move {
+        let mut heads = Vec::with_capacity(count);
+
+        for _ in 0..count {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+
+            loop {
+                let bytes_read = stream.read(&mut buffer).await.unwrap();
+                assert_ne!(bytes_read, 0, "client closed before sending a request head");
+                request.extend_from_slice(&buffer[..bytes_read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+
+            heads.push(String::from_utf8_lossy(&request).to_ascii_lowercase());
+            stream.write_all(response.as_bytes()).await.unwrap();
+            stream.shutdown().await.unwrap();
+        }
+
+        heads
+    });
+
+    (endpoint, server)
+}
+
 fn http_response(status: &str, extra_headers: &str, body: &str) -> String {
     format!(
         "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{extra_headers}\r\n{body}",
@@ -164,6 +197,36 @@ async fn conditional_put_sends_if_none_match_and_returns_the_etag() {
     assert!(head.contains("\r\nif-none-match: *\r\n"), "{head}");
     assert_eq!(result.status, 200);
     assert_eq!(result.header("ETag"), Some("\"etag-2\""));
+}
+
+#[tokio::test]
+async fn sdk_client_preserves_requests_across_endpoint_cache_churn() {
+    const REQUEST_COUNT: usize = 80;
+
+    let response = http_response("200 OK", "ETag: \"stable\"\r\n", "");
+    let (endpoint, server) = respond_many(response, REQUEST_COUNT).await;
+    let client = test_client(&endpoint);
+
+    for index in 0..REQUEST_COUNT {
+        let bucket = format!("bucket-{index}");
+        let response = client
+            .head_object()
+            .bucket(&bucket)
+            .key("object")
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(response.e_tag(), Some("\"stable\""));
+    }
+
+    let heads = server.await.unwrap();
+    for (index, head) in heads.iter().enumerate() {
+        assert!(
+            head.starts_with(&format!("head /bucket-{index}/object ")),
+            "{head}"
+        );
+    }
 }
 
 #[tokio::test]
