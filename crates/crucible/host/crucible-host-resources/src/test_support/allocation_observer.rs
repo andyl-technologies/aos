@@ -15,6 +15,7 @@ use std::sync::{Mutex, MutexGuard};
 mod events;
 mod markers;
 mod nodes;
+mod refusal;
 mod roster;
 mod trace;
 
@@ -26,6 +27,7 @@ pub use markers::{
     ThroughFreeMarkerOutcome,
 };
 pub use nodes::{MemoryNodeCounters, MemoryNodeReport};
+pub use refusal::AllocationRefusalSetupError;
 pub use trace::{AllocationTrace, AllocationTraceEntry, AllocationTraceSetupError};
 
 pub use roster::{
@@ -649,7 +651,9 @@ fn sample_controls(state: &Watch) -> ControlSample {
     }
 }
 
-// SAFETY: Original pointers/layouts are delegated unchanged to System. TLS
+// SAFETY: Requests are delegated unchanged to System or refused with null.
+// Refusal owns no allocation; successful allocations retain the original System
+// pointers/layouts and deallocation contract. TLS
 // stores scalar identities and synchronous borrows established by observe.
 // A fixed resident claim disarms under its nonblocking owned guard before free.
 // Its same-account reservation stores the real grant until outer teardown;
@@ -657,8 +661,13 @@ fn sample_controls(state: &Watch) -> ControlSample {
 unsafe impl GlobalAlloc for TestAllocationObserver {
     /// # Safety
     /// The caller supplies a nonzero valid allocation layout under GlobalAlloc.
-    /// System receives it unchanged; observation never accesses allocation data.
+    /// A scoped injection may refuse it; otherwise System receives it unchanged.
+    /// Observation never accesses allocation data.
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        if refusal::refuse(layout) {
+            return std::ptr::null_mut();
+        }
+
         // SAFETY: The original allocation layout is passed unchanged to System.
         let pointer = unsafe { System.alloc(layout) };
         record_allocation(pointer, layout, false);
@@ -667,8 +676,13 @@ unsafe impl GlobalAlloc for TestAllocationObserver {
 
     /// # Safety
     /// The caller supplies a nonzero valid allocation layout under GlobalAlloc.
-    /// System receives the original zeroed request and retains allocation ownership.
+    /// A scoped injection may refuse it; otherwise System receives the original
+    /// zeroed request and retains allocation ownership.
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        if refusal::refuse(layout) {
+            return std::ptr::null_mut();
+        }
+
         // SAFETY: The caller's exact zeroed allocation request is delegated.
         let pointer = unsafe { System.alloc_zeroed(layout) };
         record_allocation(pointer, layout, false);

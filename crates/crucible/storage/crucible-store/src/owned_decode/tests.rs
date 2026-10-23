@@ -802,3 +802,102 @@ fn unscoped_vector_capacity_refusal_preserves_the_actual_source() {
     );
     assert_eq!(error.to_string(), expected.to_string());
 }
+
+#[test]
+fn receipt_vector_allocator_refusal_is_prepaid_sticky_and_returns_unused_credit()
+-> Result<(), DecodeAdmissionError> {
+    use crucible_host_resources::test_support::TestAllocationObserver;
+    use std::alloc::Layout;
+
+    let layout = Layout::array::<ResourceLoan>(4).unwrap();
+    let receipt_growth = layout.size() as u64;
+    let control_bytes = ResourceLoan::allocation_bytes::<Credit>();
+    let requests = [
+        DecodeBudget::account_bytes(),
+        PrepaidRefusals::peak_bytes(),
+        receipt_growth,
+    ];
+    let used = Arc::new(AtomicU64::new(0));
+    let mut loans = std::collections::VecDeque::new();
+    let maximum = requests
+        .iter()
+        .try_fold(0u64, |total, bytes| {
+            total.checked_add(bytes.checked_add(control_bytes)?)
+        })
+        .unwrap();
+    for bytes in requests {
+        let charged = bytes.checked_add(control_bytes).unwrap();
+        used.fetch_add(charged, Ordering::SeqCst);
+        loans.push_back((
+            bytes,
+            ResourceLoan::new(Credit {
+                used: used.clone(),
+                bytes: charged,
+            }),
+        ));
+    }
+    let provider = Arc::new(PrebornAuthority {
+        loans: Mutex::new(loans),
+        calls: AtomicU64::new(0),
+    });
+    let budget = DecodeBudget::new(provider.clone(), maximum)?;
+    let initial = used_bytes(&budget)?;
+    let before = used.load(Ordering::SeqCst);
+    let (expected, reference_reached) =
+        TestAllocationObserver::refuse_one_allocation(layout, || {
+            Vec::<ResourceLoan>::new().try_reserve(1).unwrap_err()
+        })
+        .unwrap();
+    assert!(reference_reached);
+
+    let ((error, counts), reached) = TestAllocationObserver::refuse_one_allocation(layout, || {
+        TestAllocationObserver::count(|| budget.charge_bytes(0).unwrap_err())
+    })
+    .unwrap();
+
+    assert!(reached);
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
+    assert!(provider.loans.lock().unwrap().is_empty());
+    assert_eq!(
+        used.load(Ordering::SeqCst),
+        before - receipt_growth - control_bytes
+    );
+    assert_eq!(used_bytes(&budget)?, initial);
+    {
+        let state = budget.0.state.lock().unwrap();
+        assert!(state.receipts.is_empty());
+        assert_eq!(state.receipts.capacity(), 0);
+    }
+    assert_eq!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<std::collections::TryReserveError>()),
+        Some(&expected)
+    );
+    assert_eq!(error.to_string(), expected.to_string());
+    assert_eq!(
+        format!("{error:?}"),
+        format!("{:?}", DecodeAdmissionError::new(expected.clone()))
+    );
+    assert_eq!(budget.failure()?, Some(error.clone()));
+    let (repeated, counts) = TestAllocationObserver::count(|| budget.charge_bytes(1));
+    assert_eq!(repeated, Err(error.clone()));
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 3);
+    drop(repeated);
+
+    let alias = error.clone();
+    drop(budget);
+    let retained = PrepaidRefusals::peak_bytes() + control_bytes;
+    assert_eq!(used.load(Ordering::SeqCst), retained);
+    drop(error);
+    assert_eq!(used.load(Ordering::SeqCst), retained);
+    drop(alias);
+    assert_eq!(used.load(Ordering::SeqCst), 0);
+    Ok(())
+}

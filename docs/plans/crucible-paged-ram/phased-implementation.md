@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 543 bindings: 524 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 544 bindings: 525 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -1663,9 +1663,45 @@ worker authenticates the actual generated editable `.pth` and `direct_url.json`
 bytes and their exact RECORD hashes, in addition to all 115 launcher/history
 artifacts. Approved launcher preparation and all critical graph, ownership,
 process and cleanup predicates remain intact. The intermediate unexecuted plan
-is preserved. One original build attempt is authorized with the exact sealed
-environment and unchanged original deadlines; execution is in progress. No
-successful build, runtime, TAP, installation, profile or activation is claimed.
+is preserved. The one original build attempt returns failure in 419.920 seconds,
+with all 222 completed operations returning zero and 208 scheduled edges accepted.
+The next C edge refuses `PID/start reuse in original request` after the selected
+compiler's previously authenticated stat, executable and argv cuts become
+unavailable. Its direct child returns zero and Ninja records both the repeated
+version header and lexer object; these physical outputs do not accept the edge.
+
+Independent review of signed result
+`e695451ec840afb01b11e5deb1869070a1efa90a8a6474edc683729f4f346f2f`
+verifies all 54 payloads, complete 8,028-path execution and 86,118-path
+reconstruction archives, all six unchanged baselines and 72 complete tool roots.
+It replays every accepted edge's actual repeated/requested effect proof and
+checks all 35 partial ELF inventories. All 224 independent cleanup cuts observe
+empty children and ECHILD; the separate exception path records one successful
+signal and four ESRCH signal attempts. All 2,155 raw aggregate and 3,755 worker
+samples remain below the original six-GiB limit. The reviewer's obsolete result
+key, unprefixed command expectation and assumption that a refused edge produced
+no output are preserved before the corrected complete review passes.
+
+The independently reviewed diagnosis
+`9470f4d8c760958ed54d90083262fa5a48393ef41e4719eebe88b7047ad25daf`
+authenticates all 28 payloads and 23 input identities. Its actual eight samples
+show no contradictory available start times: the final numeric directory cuts
+return ENOENT. The genuinely bound descriptor's recorded polls are all nonready,
+so the failed invocation gains no retrospective exit permission.
+
+A separate source-only proposal
+`0f0ce108358389ad3d20aff1b82a96aad27ec020f9b2160e6be54cfb2a8287b4`
+passes independent authentication of all 25 payloads and 25 actual inputs,
+all 81 actual-adapter controls, and four additional worker-accounting refusals.
+It preserves raw missing coordinates and requires new positive kernel exit
+evidence from the original authenticated descriptor, or its genuinely closed
+ready history, before omitting that old liability's unavailable metrics. Partial,
+contradictory, unknown, first-seen and unowned cuts refuse. No timer is extended;
+raw aggregate defaults explicitly grant no accounting permission. Original
+ownership, poll parsing, physical return and cleanup methods remain unchanged.
+A complete sealed successor plan remains required before another native run.
+No successful target build, runtime, TAP, installation, profile or activation
+is claimed.
 
 The service-client ownership contracts pass mandatory application-target
 compilation at `wx20fkrpphs9zk5lrwlg7kx10d84x8b9`. Before later edits, all
@@ -1850,10 +1886,11 @@ tests with three costly 512 MiB cases explicitly excluded, and all 686 engine
 tests pass. The host retains 1,385 passes, the exact same eight helper-custody
 failures and four ignored tests. All ninety testing-standard and five hygiene
 controls pass. Strict Clippy retains 674 library and 723 test-target errors,
-with fourteen and five warnings. Mandatory application-target compilation is
-running for `dd72fff4ee`; all 5,393 committed Rust/TOML files and six required
-fixtures independently match frozen source `qzrpvfwx9si6dhyh3mrwxhmdk3l8ljn8`
-before further implementation changes. This increment issues no native authority.
+with fourteen and five warnings. Mandatory application-target compilation passes
+at `xa38mvq259j29q7gx3mrpspwvfqxv9f8` for `dd72fff4ee`; all 5,393 committed
+Rust/TOML files and six required fixtures independently match frozen source
+`qzrpvfwx9si6dhyh3mrwxhmdk3l8ljn8` before further implementation changes.
+This increment issues no native authority.
 
 Typed vector-allocation refusals now retain their actual standard-library cause
 inside the charged error handle. Receipt-vector failures use the explicit
@@ -1880,10 +1917,10 @@ complete engine suite passes all 686 tests. All five final hygiene controls
 pass. The host retains 1,385 passes, the exact same eight genuine helper-custody
 failures and four ignored tests. All ninety testing-standard and five hygiene
 controls pass. Strict Clippy retains 674 library and 723 test-target errors,
-with fourteen and five warnings. Mandatory application compilation is running
-for `df060fe997`; all 5,393 committed Rust/TOML files and six required fixtures
-independently match frozen source `rfykbsjd3cj1l366xkridk6f573p9h7h` before
-further implementation changes. Actual receipt-vector allocator failure is not
+with fourteen and five warnings. Mandatory application compilation passes at
+`3i70012xzfwhb0y3dnn14zg26v9lkh54` for `df060fe997`; all 5,393 committed
+Rust/TOML files and six required fixtures independently match frozen source
+`rfykbsjd3cj1l366xkridk6f573p9h7h` before further implementation changes. Actual receipt-vector allocator failure is not
 injected by the capacity control. No Main, Source or native authority is issued.
 
 The vector-refusal fixture now independently prepays each provider-owned loan's
@@ -1893,7 +1930,42 @@ original diagnostic payload and that loan's control charge until final close.
 This corrects component accounting without changing production allocation or
 claiming native physical funding. All nineteen focused controls pass; restoring
 the allocating wrapper makes exactly the allocation control fail, and exact
-production-source restoration passes all nineteen controls again.
+production-source restoration passes all nineteen controls again. Hermetic
+storage passes all 35 exact cases at `j35lp0j3rgxbq7jjqcbqi4bywy072hq0`;
+all 47 successful summaries, including nested child results, are independently
+checked. Mandatory application compilation is running for `ceb341b17f`, with
+all 5,393 committed Rust/TOML files and six required fixtures independently
+matching frozen source `433kw667wm3yj9sayv8wdj00g8iyc1sk` before later edits.
+
+A scoped exact-layout test injection now reaches actual receipt-vector
+allocation failure. It returns null for one selected fallible allocation before
+System owns any storage; it changes neither normal allocations nor production
+builds without test support. The actual standard-library allocation error stays
+inline in the charged handle, becomes the account's first sticky failure, and
+survives final account close without another allocation. The unused receipt's
+payload and separate loan control refund immediately; final error aliases retain
+the original diagnostic payload and loan control until final close.
+
+All twenty focused decode controls and nineteen allocator-observer controls
+pass. Restoring the former allocating receipt-error wrapper makes exactly the
+new zero-allocation control fail; exact production-source restoration passes all
+twenty decode controls. Exact-layout, once-only, thread isolation, nested refusal
+and unwind controls verify the injection's scope. The first thread-isolation
+fixture accidentally armed before thread construction, whose infallible 64-byte
+allocation reached the selected refusal and aborted that test binary. That
+failure is retained; creating the thread before arming and exchanging only fixed
+atomic observations passes. This injection proves a reached controlled failure,
+not physical OOM or native memory funding. The inventory passes at
+`6j2y9k2fxwk8n1i3x19w6c52f98d2y5b`: 544 bindings, 243 requirements,
+148 uncovered and zero fully qualified. The complete store regression suite
+passes 697 tests, with the three costly 512 MiB cases separately bounded. All
+686 engine tests, ninety testing-standard controls and five hygiene controls
+pass. Host retains 1,385 passes, the same eight actual helper-custody failures
+and four ignored cases. Strict Clippy retains 674 library and 723 test-target
+errors, with fourteen and five warnings. Hermetic storage passes all 36 exact
+cases at `j4nbb0i8d527709gfvkcr1gz384rkarh`; all 48 successful summaries,
+including nested child results, are independently checked. Mandatory application
+compilation remains pending for this increment.
 
 The previously excluded 512 MiB packed traversal/repack cost case passes at
 `df060fe997`, under a fixed 3,600-second wall/CPU limit, 2 GiB address-space
