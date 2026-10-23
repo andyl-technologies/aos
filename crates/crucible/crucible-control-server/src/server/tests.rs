@@ -5,12 +5,19 @@
 
 use std::error::Error;
 use std::os::unix::fs::PermissionsExt;
+use std::time::Duration;
 
 use axum::body::to_bytes;
 use axum::extract::State;
 use axum::http::Version;
 use bytes::Bytes;
+use crucible_control_client::{ControlClient, RpcControlClient, RpcEndpoint, RpcMutualTlsConfig};
 use futures_util::stream;
+use rcgen::{
+    BasicConstraints, CertificateParams, CertifiedIssuer, ExtendedKeyUsagePurpose, IsCa, KeyPair,
+    KeyUsagePurpose,
+};
+use tokio::io::AsyncReadExt;
 
 use crate::lifecycle::QuiescentLifecycleLoop;
 use crucible_engine::{
@@ -75,6 +82,199 @@ fn rpc_request(body: impl Into<String>) -> Request<Body> {
         .version(Version::HTTP_2)
         .body(Body::from(body.into()))
         .expect("test request must be well-formed")
+}
+
+struct TestMutualTlsMaterial {
+    acceptor: TlsAcceptor,
+    ca_pem: String,
+    client_identity_pem: String,
+}
+
+fn test_mutual_tls_material() -> Result<TestMutualTlsMaterial, Box<dyn Error>> {
+    let mut ca_params = CertificateParams::new(Vec::<String>::new())?;
+    ca_params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca_params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
+    let ca = CertifiedIssuer::self_signed(ca_params, KeyPair::generate()?)?;
+
+    let mut server_params = CertificateParams::new(vec![String::from("127.0.0.1")])?;
+    server_params.is_ca = IsCa::ExplicitNoCa;
+    server_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    server_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+    let server_key = KeyPair::generate()?;
+    let server_certificate = server_params.signed_by(&server_key, &ca)?;
+
+    let mut client_params = CertificateParams::new(vec![String::from("test-client")])?;
+    client_params.is_ca = IsCa::ExplicitNoCa;
+    client_params.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+    client_params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+    let client_key = KeyPair::generate()?;
+    let client_certificate = client_params.signed_by(&client_key, &ca)?;
+
+    let directory = tempfile::tempdir()?;
+    let ca_path = directory.path().join("ca.pem");
+    let server_certificate_path = directory.path().join("server.pem");
+    let server_key_path = directory.path().join("server-key.pem");
+    std::fs::write(&ca_path, ca.pem())?;
+    std::fs::write(&server_certificate_path, server_certificate.pem())?;
+    std::fs::write(&server_key_path, server_key.serialize_pem())?;
+
+    let acceptor = crate::transport_security::mutual_tls_acceptor_from_pem(
+        &server_certificate_path,
+        &server_key_path,
+        &ca_path,
+    )?;
+    Ok(TestMutualTlsMaterial {
+        acceptor,
+        ca_pem: ca.pem(),
+        client_identity_pem: format!("{}{}", client_certificate.pem(), client_key.serialize_pem()),
+    })
+}
+
+fn short_test_tls_limits(maximum_connections: usize) -> TlsTransportLimits {
+    TlsTransportLimits {
+        maximum_connections,
+        handshake_timeout: Duration::from_millis(100),
+        shutdown_grace_period: Duration::from_millis(100),
+    }
+}
+
+#[tokio::test]
+async fn idle_tls_handshake_observes_shutdown() -> Result<(), Box<dyn Error>> {
+    let tls = test_mutual_tls_material()?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (accepted_sender, accepted_receiver) = tokio::sync::oneshot::channel();
+    let (shutdown_sender, shutdown_receiver) = watch::channel(false);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let _ = accepted_sender.send(());
+        serve_authenticated_connection(
+            stream,
+            tls.acceptor,
+            Router::new(),
+            shutdown_receiver,
+            TlsTransportLimits {
+                handshake_timeout: Duration::from_secs(60),
+                ..short_test_tls_limits(1)
+            },
+        )
+        .await;
+        Ok::<(), std::io::Error>(())
+    });
+
+    let _idle_client = tokio::net::TcpStream::connect(address).await?;
+    accepted_receiver.await?;
+    shutdown_sender.send(true)?;
+
+    tokio::time::timeout(Duration::from_secs(1), server).await???;
+    Ok(())
+}
+
+#[tokio::test]
+async fn partial_tls_handshake_expires_at_its_deadline() -> Result<(), Box<dyn Error>> {
+    let tls = test_mutual_tls_material()?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let (_shutdown_sender, shutdown_receiver) = watch::channel(false);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        serve_authenticated_connection(
+            stream,
+            tls.acceptor,
+            Router::new(),
+            shutdown_receiver,
+            TlsTransportLimits {
+                handshake_timeout: Duration::from_millis(25),
+                ..short_test_tls_limits(1)
+            },
+        )
+        .await;
+        Ok::<(), std::io::Error>(())
+    });
+
+    let mut partial_client = tokio::net::TcpStream::connect(address).await?;
+    tokio::io::AsyncWriteExt::write_all(&mut partial_client, &[0x16, 0x03, 0x03]).await?;
+
+    tokio::time::timeout(Duration::from_secs(1), server).await???;
+    Ok(())
+}
+
+#[tokio::test]
+async fn tls_connection_limit_rejects_excess_idle_peers() -> Result<(), Box<dyn Error>> {
+    let tls = test_mutual_tls_material()?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let state = test_state(LifecycleServerMode::read_write());
+    let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(
+        serve_shared_lifecycle_http2_mtls_with_limits_until_shutdown(
+            listener,
+            state.control_plane,
+            LifecycleServerMode::read_write(),
+            tls.acceptor,
+            DebugAuthorizationPolicy::deny_all(),
+            TlsTransportLimits {
+                handshake_timeout: Duration::from_secs(60),
+                ..short_test_tls_limits(1)
+            },
+            async move {
+                let _ = shutdown_receiver.await;
+            },
+        ),
+    );
+
+    let _admitted_client = tokio::net::TcpStream::connect(address).await?;
+    tokio::task::yield_now().await;
+    let mut excess_client = tokio::net::TcpStream::connect(address).await?;
+    let mut byte = [0_u8; 1];
+    let read_result =
+        tokio::time::timeout(Duration::from_secs(1), excess_client.read(&mut byte)).await?;
+    assert!(matches!(read_result, Ok(0) | Err(_)));
+
+    let _ = shutdown_sender.send(());
+    tokio::time::timeout(Duration::from_secs(1), server).await???;
+    Ok(())
+}
+
+#[tokio::test]
+async fn rejected_tls_handshakes_release_admission_for_authenticated_rpc()
+-> Result<(), Box<dyn Error>> {
+    let tls = test_mutual_tls_material()?;
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let address = listener.local_addr()?;
+    let state = test_state(LifecycleServerMode::read_write());
+    let (shutdown_sender, shutdown_receiver) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(
+        serve_shared_lifecycle_http2_mtls_with_limits_until_shutdown(
+            listener,
+            state.control_plane,
+            LifecycleServerMode::read_write(),
+            tls.acceptor,
+            DebugAuthorizationPolicy::deny_all(),
+            short_test_tls_limits(2),
+            async move {
+                let _ = shutdown_receiver.await;
+            },
+        ),
+    );
+
+    for _ in 0..8 {
+        let mut rejected = tokio::net::TcpStream::connect(address).await?;
+        tokio::io::AsyncWriteExt::write_all(&mut rejected, b"not a TLS handshake").await?;
+        let mut byte = [0_u8; 1];
+        let _ = tokio::time::timeout(Duration::from_secs(1), rejected.read(&mut byte)).await?;
+    }
+
+    let client = RpcControlClient::new_mtls(
+        RpcEndpoint::http2(format!("https://{address}")),
+        RpcMutualTlsConfig::from_pem(tls.ca_pem, tls.client_identity_pem),
+    )?;
+    let sessions = tokio::time::timeout(Duration::from_secs(2), client.list_sessions()).await??;
+    assert!(sessions.sessions.is_empty());
+
+    let _ = shutdown_sender.send(());
+    tokio::time::timeout(Duration::from_secs(1), server).await???;
+    Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
