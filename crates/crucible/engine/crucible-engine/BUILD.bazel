@@ -54,8 +54,10 @@ EMPTY_WITHOUT_TEST_DOUBLE = [
 ]
 
 SOURCES = glob(["src/**/*.rs"])
-INTEGRATIONS = glob(["tests/*.rs"])
-EXAMPLES = glob(["examples/*.rs"])
+# Dependency-only workspaces omit this package's tests. Selected test labels and
+# Cargo parity still require every test in the family under qualification.
+INTEGRATIONS = glob(["tests/*.rs"], allow_empty = True)
+EXAMPLES = glob(["examples/*.rs"], allow_empty = True)
 
 [
     rust_library(

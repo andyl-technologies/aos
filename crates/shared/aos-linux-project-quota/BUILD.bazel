@@ -10,6 +10,7 @@ package(default_visibility = ["//visibility:public"])
 
 RUST_PACKAGE = aos_rust_package(
     name = "aos-linux-project-quota",
+    description = "Pinned ext4 project-quota installation, verification, and release",
     version = "0.1.0",
     edition = "2024",
     license_expression = "Apache-2.0",

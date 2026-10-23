@@ -7,6 +7,7 @@ load(":store/aliases.bzl", STORE_CRATES = "CRATES")
 load(":guest/aliases.bzl", GUEST_CRATES = "CRATES")
 load(":engine/aliases.bzl", ENGINE_CRATES = "CRATES")
 load(":quota/aliases.bzl", QUOTA_CRATES = "CRATES")
+load(":session/aliases.bzl", SESSION_CRATES = "CRATES")
 
 # Every first-party dependency in one configuration selects the same resolved
 # family. This preserves Rust type identity without globally unioning features.
@@ -14,6 +15,7 @@ load(":quota/aliases.bzl", QUOTA_CRATES = "CRATES")
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:session_dependencies": SESSION_CRATES.get(name, "//tools/bazel/rules:session_profile_required"),
             "//tools/bazel/rules:quota_dependencies": QUOTA_CRATES.get(name, "//tools/bazel/rules:quota_profile_required"),
             "//tools/bazel/rules:engine_dependencies": ENGINE_CRATES.get(name, "//tools/bazel/rules:engine_profile_required"),
             "//tools/bazel/rules:guest_dependencies": GUEST_CRATES.get(name, "//tools/bazel/rules:guest_profile_required"),
@@ -23,7 +25,7 @@ load(":quota/aliases.bzl", QUOTA_CRATES = "CRATES")
         }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items()))
+    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items()))
 ]
 
 CORE_PACKAGES = {
@@ -99,6 +101,12 @@ ENGINE_PACKAGES = dict(
     regex = crate.spec(version = "=1.12.4"),
     toml = crate.spec(version = "=0.8.23"),
     tracing = crate.spec(version = "=0.1.44"),
+)
+
+# Session actors add only the workspace's reviewed Tokio feature set.
+SESSION_PACKAGES = dict(
+    ENGINE_PACKAGES,
+    tokio = crate.spec(version = "=1.52.3", features = ["rt-multi-thread", "sync", "process", "signal", "macros", "net", "io-util", "io-std", "fs", "time"]),
 )
 
 # Preserve the protocol library and its compiled build dependencies' domain
@@ -187,6 +195,14 @@ FAMILY_FEATURE_VARIANTS = {
             "features": ["default", "std"],
         }),
     },
+    # Tokio leaves the engine closure unchanged in this selected host family.
+    "session": {
+        "indexmap": json.encode({
+            "version": "2.14.0",
+            "resolved_features": ["default", "serde", "std"],
+            "features": ["default", "std"],
+        }),
+    },
     # Target and build libc units now enable the same default/std features.
     "guest": dict(
         {name: value for name, value in STORE_FEATURE_VARIANTS.items() if name != "libc"},
@@ -223,7 +239,7 @@ APPROVED_LICENSES = [
         packages = packages,
         annotations = annotations,
         feature_variants = FAMILY_FEATURE_VARIANTS.get(family, {}),
-        permissive_crates = ENGINE_PERMISSIVE_CRATES if family == "engine" else GUEST_PERMISSIVE_CRATES if family == "guest" else [],
+        permissive_crates = ENGINE_PERMISSIVE_CRATES if family in ["engine", "session"] else GUEST_PERMISSIVE_CRATES if family == "guest" else [],
         platforms = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
         license_domain = license_domain,
         approved_licenses = APPROVED_LICENSES,
@@ -238,6 +254,7 @@ APPROVED_LICENSES = [
         ("guest", GUEST_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("engine", ENGINE_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("quota", QUOTA_PACKAGES, {}, "apache-host"),
+        ("session", SESSION_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
     ]
 ]
 
@@ -250,5 +267,5 @@ APPROVED_LICENSES = [
         license_domain = "apache-host",
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
-    for family in ["core", "device", "store", "guest", "engine", "quota"]
+    for family in ["core", "device", "store", "guest", "engine", "quota", "session"]
 ]

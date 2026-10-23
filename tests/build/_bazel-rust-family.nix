@@ -7,6 +7,7 @@
   editorComparisonScope ? "whole-model",
   editorRustcFlags ? [],
   editorDiagnosticContext ? false,
+  editorLibraryTargets ? {},
   sourceInventory ? null,
   extraSourceDirectories ? [],
   dependencyProfile ? null,
@@ -79,7 +80,7 @@ in rec {
   editor = let
     targets =
       pkgs.lib.concatMap (name:
-        ["${label name}:lib" "${label name}:unit_binary"]
+        ["${label name}:${editorLibraryTargets.${name} or "lib"}" "${label name}:unit_binary"]
         ++ map (target: target + "_binary") (directoryTargets name "tests")
         ++ directoryTargets name "examples")
       names

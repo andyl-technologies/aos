@@ -53,6 +53,7 @@ case " $* " in
   *' -A pkgs.aosBazelEngineLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelGuestLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelQuotaLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
+  *' -A pkgs.aosBazelSessionLauncher '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A pkgs.aosBazelDependencyUpdater '*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *' -A checks.build.bazel.dependencies.specification-packages.'*) printf '%s\n' "$AOS_DEV_TEST_CLI" ;;
   *) printf '%s\n' /tmp/aos-dev-test-output ;;
@@ -154,6 +155,8 @@ bash "$root/tools/dev/aos-dev" bazel update-deps engine
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/engine/Cargo.lock><--output><$root/third_party/rust/engine>"
 bash "$root/tools/dev/aos-dev" bazel update-deps quota
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/quota/Cargo.lock><--output><$root/third_party/rust/quota>"
+bash "$root/tools/dev/aos-dev" bazel update-deps session
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--root><$root><--specifications><$scratch/cli/specifications.json><--seed-lock><$root/third_party/rust/session/Cargo.lock><--output><$root/third_party/rust/session>"
 if bash "$root/tools/dev/aos-dev" bazel update-deps unknown 2>/dev/null; then
   echo 'Bazel dependency update accepted an unknown family' >&2
   exit 1
@@ -173,6 +176,11 @@ test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:quota>"
 grep -Fq -- '-A pkgs.aosBazelQuotaLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family quota rust-project //example:quota
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/shared/aos-linux-project-quota><--><build><//example:quota>"
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family session build //example:session
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:session>"
+grep -Fq -- '-A pkgs.aosBazelSessionLauncher ' "$AOS_DEV_TEST_LOG"
+bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family session rust-project //example:session
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/control/crucible-session><--rust-project-package><crates/crucible/control/crucible-control-api><--><build><//example:session>"
 if bash "$root/tools/dev/aos-dev" bazel --family unknown build //example:guest 2>/dev/null; then
   echo 'Bazel accepted an unknown target configuration' >&2
   exit 1

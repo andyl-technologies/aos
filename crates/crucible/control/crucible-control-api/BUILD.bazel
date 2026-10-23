@@ -1,13 +1,145 @@
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
+load("//tools/bazel/rules:compile.bzl", "rust_library")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
 
-# Source ownership is declared before this package's compilation migrates.
+package(default_visibility = ["//crates/crucible:__subpackages__"])
+
 RUST_PACKAGE = aos_rust_package(
     name = "crucible-control-api",
+    description = "Native transport-independent Crucible control contracts and canonical codecs",
     version = "0.1.0",
     edition = "2024",
     license_expression = "Apache-2.0",
     license_domain = "apache-host",
+)
+
+ENGINE = "//crates/crucible/engine/crucible-engine"
+SESSION = "//crates/crucible/control/crucible-session"
+
+COMMON_DEPENDENCIES = [
+    "//crates/crucible/protocol/crucible-qemu-protocol:lib",
+    "//third_party/rust:core_thiserror",
+    "//third_party/rust:core_blake3",
+    "//third_party/rust:core_ciborium",
+    "//third_party/rust:core_serde",
+    "//third_party/rust:core_serde_json",
+]
+
+# Cargo's selected test graph enables both engine test features. Keep that
+# graph in test-only libraries so production libraries retain default features.
+VARIANTS = {
+    "": ["default"],
+    "_test_support": ["default", "test-support"],
+    "_test_double": ["default", "test-double"],
+    "_all_features": ["default", "test-double", "test-support"],
+}
+
+SOURCES = glob(["src/**/*.rs"])
+# Dependency-only workspaces omit this package's tests. Selected test labels and
+# Cargo parity still require every test in the family under qualification.
+INTEGRATIONS = glob(["tests/*.rs"], allow_empty = True)
+
+rust_library(
+    name = "lib",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible_control_api",
+    crate_root = "src/lib.rs",
+    srcs = SOURCES,
+    crate_features = [],
+    deps = COMMON_DEPENDENCIES + [ENGINE + ":lib", SESSION + ":lib"],
+)
+
+[
+    rust_library(
+        name = "lib_for_tests" + suffix,
+        testonly = True,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_name = "crucible_control_api",
+        crate_root = "src/lib.rs",
+        srcs = SOURCES,
+        crate_features = [],
+        deps = COMMON_DEPENDENCIES + [ENGINE + ":lib_all_features", SESSION + ":lib_for_tests" + suffix],
+    )
+    for suffix, features in VARIANTS.items()
+]
+
+[
+    aos_rust_test(
+        name = "unit" + suffix,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate = ":lib_for_tests" + suffix,
+        crate_features = [],
+    )
+    for suffix, features in VARIANTS.items()
+]
+
+[
+    aos_rust_test(
+        name = source.removeprefix("tests/").removesuffix(".rs") + suffix,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_root = source,
+        srcs = [source],
+        crate_features = [],
+        deps = [":lib_for_tests" + suffix] + COMMON_DEPENDENCIES + [ENGINE + ":lib_all_features", SESSION + ":lib_for_tests" + suffix],
+    )
+    for source in INTEGRATIONS
+    for suffix, features in VARIANTS.items()
+]
+
+[
+    rust_doc_test(
+        name = "doc" + suffix,
+        crate = ":lib_for_tests" + suffix,
+    )
+    for suffix in VARIANTS
+]
+
+TEST_ARTIFACTS = [":unit_binary"] + [
+    ":" + source.removeprefix("tests/").removesuffix(".rs") + "_binary"
+    for source in INTEGRATIONS
+]
+
+rust_clippy(
+    name = "clippy",
+    testonly = True,
+    deps = [":lib_for_tests"] + TEST_ARTIFACTS,
+)
+
+rustfmt_test(
+    name = "format",
+    targets = [":lib_for_tests"] + TEST_ARTIFACTS,
+)
+
+rust_doc(
+    name = "documentation",
+    testonly = True,
+    crate = ":lib_for_tests",
+)
+
+[
+    aos_license_check(
+        name = "license_closure" + suffix,
+        testonly = True,
+        roots = [":lib_for_tests" + suffix, ":unit" + suffix + "_binary"] + [
+            ":" + source.removeprefix("tests/").removesuffix(".rs") + suffix + "_binary"
+            for source in INTEGRATIONS
+        ],
+        license_domain = RUST_PACKAGE.license_domain,
+    )
+    for suffix in VARIANTS
+]
+
+aos_license_check(
+    name = "production_license_closure",
+    roots = [":lib"],
+    license_domain = RUST_PACKAGE.license_domain,
 )
 
 aos_source_package(

@@ -381,7 +381,7 @@ must never become global inputs to every compilation action.
 
 `third_party/rust/BUILD.bazel` declares crate_universe specifications without a
 first-party Cargo manifest. Build the specification package normally, then run
-`aos-dev bazel update-deps <core|device|store|guest|engine|quota>` to resolve the selected
+`aos-dev bazel update-deps <core|device|store|guest|engine|quota|session>` to resolve the selected
 third-party dependency profile explicitly.
 This command uses source-built Cargo and cargo-bazel in a private temporary
 Cargo home. It is the network-enabled update boundary; ordinary build and test
@@ -1185,3 +1185,35 @@ initial guest run caught the missing unwinder dependency before enforcement;
 the native evidence retains that failure and the successful corrected flight.
 Privileged ext4 enforcement is currently qualified only on x86_64. Production
 package builders remain on Cargo during this qualification.
+
+## Session and control API family
+
+The `session` family selects `crucible-session` and `crucible-control-api`
+together. Its dependency profile adds the reviewed Tokio feature set to the
+engine dependency closure. The temporary Cargo oracle compares each external
+crate's exact version and features, every selected test artifact and case, and
+both crates' doctest results.
+
+```sh
+aos-dev bazel update-deps session
+aos-dev bazel --family session test //crates/crucible/control/crucible-session:unit
+aos-dev bazel --family session rust-project //crates/crucible/control/crucible-session:lib_for_tests //crates/crucible/control/crucible-session:unit_binary //crates/crucible/control/crucible-control-api:lib_for_tests //crates/crucible/control/crucible-control-api:unit_binary
+nix-build tools/bazel/tests/session.nix -A all --no-out-link --max-jobs 4 --cores 4
+```
+
+Each crate's `:lib` retains its production dependency graph. Test-only
+`:lib_for_tests` targets enable the engine test double and support APIs that
+Cargo selects through development dependencies. The session feature variants
+have matching test libraries in both packages, so a control API test uses the
+same session features as the selected session test. Qualification covers the
+default, test-support, test-double, and combined variants separately.
+
+`tests/evidence/session-cargo-baseline.json` records the 132-case Cargo baseline
+and the configured graph matching all 111 external crate identities and feature
+sets. Native Bazel execution qualification is in progress.
+
+The editor check selects those test libraries explicitly and compares
+diagnostics for the two selected packages. It retains aggregate inference
+statistics from both analyzers without claiming that the wider dependency
+models are identical. Production consumer migration, platform qualification,
+and performance acceptance remain separate requirements.
