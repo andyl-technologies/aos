@@ -14,11 +14,16 @@ def execution_events(build):
     text = (build / "evidence/execution.json").read_text()
     decoder = json.JSONDecoder()
     events = []
-    while text.strip():
-        text = text.lstrip()
-        event, length = decoder.raw_decode(text)
+    position = 0
+    # Execution logs can exceed hundreds of megabytes. Advance within the
+    # original string instead of repeatedly copying its unconsumed suffix.
+    while position < len(text):
+        while position < len(text) and text[position].isspace():
+            position += 1
+        if position == len(text):
+            break
+        event, position = decoder.raw_decode(text, position)
         events.append(event)
-        text = text[length:]
     return events
 
 
