@@ -2512,6 +2512,10 @@ configured reports, and 343 declared files: 332 Rust files, eight SQL files,
 and three Bazel support files. Engine loading inputs grow by the eight SQL
 files while Rust source ownership remains unchanged.
 
+`tests/evidence/hub-db-metadata-evaluation.json` retains passing metadata parity
+for 487 Rust targets across 39 analysis-only selections, with no external
+actions. Core evaluation passes for the same checkpoint.
+
 The unchanged Cargo baselines retain 272 default unit cases and 281 all-feature
 unit cases, with two passing and one ignored doctest in each configuration. Both Cargo
 and Bazel use four outer workers; the concurrent-installation case retains its
