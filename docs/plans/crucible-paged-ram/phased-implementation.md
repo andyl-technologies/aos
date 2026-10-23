@@ -904,13 +904,23 @@ all-target resource linting pass; engineering hygiene passes. The strict Host
 run reports 711 remaining findings after removing the former eight-argument
 admission constructor. Inventory `l5fm3sidhm682fx9k9rlv310ncq1rcaw` verifies
 525 bindings: 493 model, thirteen format and nineteen native. The same 148
-requirements remain uncovered and none qualified. Fresh application-target
-compilation and counted supervision remain in progress.
+requirements remain uncovered and none qualified. All 408 counted supervision cases subsequently pass at
+`aj5wl3sj39bqbilagff5mh40vahdcbdi`, including the constructor-refusal control.
+Fresh application-target compilation remains in progress.
 
 The ordered cleanup/publication revision also passes mandatory application-target
 compilation at `c95k373n7dr23iq2k8rdgks1z9awcxj6`. Its previously recorded
 5,362 committed Rust/TOML inputs and six fixture/license files remain exact;
 this does not qualify the later revisions or a native launch.
+
+The fork Target geometry now names each checked envelope limit instead of
+returning a five-value tuple. Generation reservation, descriptor accounting,
+credential identity and failure custody retain their existing order and values.
+All 26 focused envelope, construction and missing-Source controls pass; focused
+formatting and engineering hygiene also pass. Strict Host linting reports
+696 errors and fourteen warnings, with the geometry type-complexity finding
+removed. Mandatory application-target compilation is running; this cleanup
+does not supply the missing native issuer.
 
 #### Cumulative construction and request ownership source
 

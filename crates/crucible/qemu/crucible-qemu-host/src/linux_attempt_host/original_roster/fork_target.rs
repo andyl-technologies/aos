@@ -541,13 +541,14 @@ impl NativeAccountAttempt {
             .get_mut(self.index)
             .filter(|slot| slot.active == Some(self.generation) && !slot.fork_target.is_owned())
             .ok_or(OriginalActorAccountError::Unavailable)?;
-        let (vcpus, resident, writable, descriptors, credentials) = slot
+        let geometry = slot
             .installed_process
             .as_ref()
             .ok_or(OriginalActorAccountError::Unavailable)?
             .fork_target_geometry(source)
             .map_err(|_| OriginalActorAccountError::Unavailable)?;
-        descriptors
+        geometry
+            .maximum_file_descriptors
             .checked_mul(u64::from(MAX_ORIGINAL_NATIVE_NODE_GENERATIONS))
             .filter(|sum| {
                 slot.credit
@@ -605,9 +606,13 @@ impl NativeAccountAttempt {
                     generation: self.generation,
                 },
                 epoch,
-                ceilings: (vcpus, resident, writable),
-                descriptors,
-                credentials,
+                ceilings: (
+                    geometry.maximum_vcpus,
+                    geometry.maximum_resident_bytes,
+                    geometry.maximum_writable_bytes,
+                ),
+                descriptors: geometry.maximum_file_descriptors,
+                credentials: geometry.credential_ids,
                 consumed: false,
             },
             cleanup,

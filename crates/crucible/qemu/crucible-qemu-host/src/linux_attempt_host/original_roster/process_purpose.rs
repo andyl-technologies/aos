@@ -64,6 +64,23 @@ pub(super) enum ForkTargetEnvelopeError {
     Capacity,
 }
 
+/// Describes the checked Source envelope available to its one fork Target.
+///
+/// These copied limits describe existing containment; the caller still reserves
+/// the Target's actual generation, operation and physical controls separately.
+pub(super) struct ForkTargetGeometry {
+    /// The Source envelope's existing vCPU ceiling.
+    pub(super) maximum_vcpus: u32,
+    /// The checked per-process resident share within the containing family.
+    pub(super) maximum_resident_bytes: u64,
+    /// The Source envelope's enforced per-file writable extent.
+    pub(super) maximum_writable_bytes: u64,
+    /// The Source envelope's existing descriptor ceiling.
+    pub(super) maximum_file_descriptors: u64,
+    /// The actual child user and group IDs assigned by the Source contract.
+    pub(super) credential_ids: (u32, u32),
+}
+
 pub(super) struct InstalledProcessState {
     envelope: ConfiguredProcessEnvelope,
     family: Option<InstalledProcessFamily>,
@@ -168,7 +185,7 @@ impl InstalledProcessState {
     pub(super) fn fork_target_geometry(
         &self,
         contract: &QemuChildProcessContract,
-    ) -> Result<(u32, u64, u64, u64, (u32, u32)), InstalledProcessPurposeError> {
+    ) -> Result<ForkTargetGeometry, InstalledProcessPurposeError> {
         if !self.ready || !self.sound || !self.envelope.matches_contract(contract) {
             return Err(InstalledProcessPurposeError::Identity);
         }
@@ -195,13 +212,13 @@ impl InstalledProcessState {
             return Err(InstalledProcessPurposeError::Capacity);
         }
         family_extent_from_local_cap(local, self.process_bytes)?;
-        Ok((
-            self.envelope.maximum_vcpus(),
-            local,
-            self.envelope.maximum_writable_bytes(),
-            self.envelope.maximum_file_descriptors(),
-            self.envelope.child_credential_ids(),
-        ))
+        Ok(ForkTargetGeometry {
+            maximum_vcpus: self.envelope.maximum_vcpus(),
+            maximum_resident_bytes: local,
+            maximum_writable_bytes: self.envelope.maximum_writable_bytes(),
+            maximum_file_descriptors: self.envelope.maximum_file_descriptors(),
+            credential_ids: self.envelope.child_credential_ids(),
+        })
     }
 
     pub(super) fn verify_fork_target_envelope(
