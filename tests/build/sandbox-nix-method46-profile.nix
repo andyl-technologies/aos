@@ -25,6 +25,18 @@
     ];
   };
   cfg = system.config;
+  hostDescriptor = cfg.system.build.hostDeploymentBundle.nativeEvaluationDescriptor;
+  hostInputs = hostDescriptor.nativeEvaluationInputs;
+  hostReplay = lib.evalPackageModules {
+    inherit (hostInputs) packages scope;
+    operatorModules = hostInputs.configuration;
+    runtimeModules = hostInputs.runtimeConfiguration;
+    evaluationInput = hostDescriptor;
+  };
+  replayedServices = import ../../pkgs/system/_systemd-abilities/bootstrap-services.nix {
+    inherit lib pkgs;
+    inherit (hostReplay) config;
+  };
   sandbox = cfg.aos.sandbox;
   controller = cfg.systemd.services.aos-sandboxd.serviceConfig;
   profile = sandbox.nixBroker._controllerProfile;
@@ -50,6 +62,10 @@
   rejectedBy = message: selected:
     builtins.any (check: check.message == message && !check.assertion) selected.config.assertions;
   validation = assert builtins.all (check: check.assertion) cfg.assertions;
+  # Compare the actual independently replayed input, including its owner and
+  # deferred unit addresses, with the image that native activation must adopt.
+  assert hostReplay.config.aos.servicesRetainImageDefinitions;
+  assert replayedServices."ssh.aos-ssh-ready" == cfg.system.build.systemdBootstrapServices."ssh.aos-ssh-ready";
   assert viewRoots.ExecStart == "/usr/lib/systemd/aos-selinux-root-handoff --launch-runtime-roots ${cfg.aos.security.selinux._runtimeRootsProvisioner}/bin/aos-selinux-runtime-roots --root / --prepare-sandbox-view-roots";
   assert viewRoots.Slice == "aoscomponents.slice";
   assert viewRoots.LimitNOFILE == parent.fixedOpenFilesPerProcess;

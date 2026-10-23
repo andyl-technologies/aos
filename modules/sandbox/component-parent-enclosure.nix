@@ -16,6 +16,10 @@
 }: let
   bank = config.aos.sandbox.resourceBank;
   cfg = bank.parentEnclosure;
+  retainedServiceDefinitions = builtins.path {
+    path = ./_retained-service-definitions.nix;
+    name = "aos-retained-service-definitions.nix";
+  };
   # Provenance traversal inspects inactive payloads; the outer mkIf still
   # discards these definitions. Selected profiles retain their exact values.
   selectedValue = value:
@@ -502,6 +506,9 @@ in {
     # Project every enabled native service into that image; activation may
     # reconcile lifecycle but cannot replace definitions or reload PID 1.
     aos.servicesRetainImageDefinitions = true;
+    # Host-stage replay evaluates the retained sources independently of this
+    # image module. Keep the same definition owner in that authenticated input.
+    aos.activation.stages.host.configuration = [retainedServiceDefinitions];
     environment.etc."aos/resource-parent-enclosure-v5" = {
       source = "${manifest}/enclosure.bin";
       mode = "0444";

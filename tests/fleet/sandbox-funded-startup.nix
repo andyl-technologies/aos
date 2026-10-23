@@ -31,6 +31,7 @@ in {
     ''
       def check_startup_enclosure():
           vm.wait_for_unit("multi-user.target", timeout=300)
+          vm.wait_for_unit("aos-activate.service", timeout=60)
           vm.succeed("test -c /dev/tpmrm0; test $(cat /sys/fs/selinux/enforce) = 1")
           assert int(vm.succeed("nproc --all").strip()) == 16
           memory = dict(line.split(":", 1) for line in vm.succeed("cat /proc/meminfo").splitlines())

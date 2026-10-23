@@ -10994,3 +10994,20 @@ The admission fixture independently stops at the same bound: its initrd is
 enforcing handoff fixture's matching BPF boot profile now permit 240 MiB.
 Their 256 MiB UKI and 736 MiB ESP bounds remain unchanged. The admission proof
 and handoff assertions still require actual VM execution.
+
+### Retained host-stage unit ownership (installed retry pending)
+
+The earlier installed Root image also fails native host activation before any
+retry ambiguity: realizing ssh.aos-ssh-ready reports that the service definition
+has no authenticated image projection. Parent enclosure selected immutable
+definitions in image evaluation, but its independent retained host evaluation
+did not receive that selection. A fixed immutable configuration source now
+retains the same unit owner in the authenticated host-stage inputs. The native
+handler still verifies the exact selected immutable bytes and refuses foreign
+aliases; no adoption bypass, unit replacement or manager reload is introduced.
+The funded startup test explicitly requires successful native activation on
+both boots. Its installed retry remains pending.
+The combined Nix/method-46 profile evaluates successfully with a regression
+comparing the complete independently replayed SSH readiness input against its
+actual image projection. This checks retained configuration, ownership and
+dependency addresses; it does not substitute for installed activation.
