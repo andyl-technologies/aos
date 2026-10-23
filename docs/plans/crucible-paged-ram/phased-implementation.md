@@ -63,7 +63,7 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | Signed atomic `4edc47cba6`, conventional `ce0d15fb5d`, tree `10c75e16` corrects the no-Target opaque frame acquire load. Independent review verifies all 672 sealed artifacts and 78,462 source paths; the license ledger covers 655 created files. | The current tuple passes genuine configure, all 35 owning variants, both passive units and all 39 direct getter readbacks. Independent object readback reproduces its 557,830-byte fixed passive floor; the separate preexec root is 230,856 bytes. These are declaration and getter extents, without paid native-profile qualification. The registered Source unit still has eighteen unresolved link providers. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
+| Native integration | Signed atomic `4edc47cba6`, conventional `ce0d15fb5d`, tree `10c75e16` corrects the no-Target opaque frame acquire load. Independent review verifies all 672 sealed artifacts and 78,462 source paths; the license ledger covers 655 created files. | The current tuple passes genuine configure, all 35 owning variants, both passive units and all 39 direct getter readbacks. Independent object readback reproduces its 557,830-byte fixed passive floor; the separate preexec root is 230,856 bytes. Its genuine full-system graph now compiles all 1,621 C objects and links, with eighteen provider definitions independently verified in the final ELF. The registered Source unit's separate link remains unresolved and has no TAP result. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The latest completed canonical license-boundary check stops at strict controller Clippy with 653 host-library errors; its boundary assertions did not run. Earlier attempts and their larger finding counts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
@@ -1152,6 +1152,9 @@ falling from 744 to 731 and five warnings; no lint exemption is added. These are
 fixture changes and establish no additional native authority or RFC capability.
 Mandatory application-target compilation remains required for this change.
 
+The fixture changes also pass Nix engineering hygiene at
+`zcvijji792yblcv5r97p578pnwrl3izi`.
+
 #### Cumulative construction and request ownership source
 
 Signed atomic `e82bb4c78da7af3351ef6473935a2be2feb01a2d` imports conventional
@@ -1450,6 +1453,39 @@ The subsequent canonical license-boundary attempt stops before its boundary
 assertions: strict controller compilation reports 653 Host-library errors. This
 packaged result has a different feature selection from the standalone Host lint
 command recorded above; their finding counts are not interchangeable.
+
+#### Genuine full-system provider linkage
+
+The current signed QEMU tuple also passes one original bounded build of its
+existing `qemu-system-x86_64` target. The preceding attempt stopped after
+configure because its raw header identity still used a different install
+prefix; it executed no target edges. Its signed original failure remains
+unchanged. The corrected plan derives exactly twelve install-prefix macros and
+ten unselected compile-database object coordinates, preserving the complete
+graph and database without broad normalization.
+
+The original corrected invocation returns zero in 1,479.088 seconds. Genuine
+configure takes 36.649 seconds; the 1,953-edge graph produces all 1,621 C objects,
+and final link returns zero in 2.190 seconds. The sealed result manifest has
+SHA-256 `acdd834fe0be0410ae734058150b6fc953d053f7cd363604f979e27a11d592a7`.
+Independent review verifies its signature, all 34 payloads, all 30,022 original
+execution archive entries, four complete filesystem inventories, all 3,301
+compile-database rows, every actual object, and 622,048 dependency observations
+across 4,423 literal paths. All 1,956 monitored operations return zero. The
+21,599 process samples peak at 528,400,384 resident bytes, 650,178,560 virtual
+bytes and five processes; these are sampled observations, not unsampled maxima.
+
+Independent bounded AOS `nm` and `readelf` readbacks exactly reproduce the
+original logs. The final 105,802,048-byte ELF has SHA-256
+`c3539b7aadb1f48ae7c4988e21d689f3c08664397634798727a045538f962c00`,
+the selected interpreter, and all eighteen genuine provider definitions. The
+independent review record has SHA-256
+`c89b3cf2dae1df7e2c7c16fbc7b00036fa63ec23b7045b592826e0457d946fee`.
+Cleanup observes empty actual child inventories and ECHILD; it exercises no
+adopted-child signaling or reaping branch. This result qualifies compilation,
+linkage and static ELF identity only. It executes no registered unit, TAP,
+emulator runtime, native profile, activation or installation. The registered
+Source unit's earlier eighteen-provider link failure remains unresolved.
 
 #### Initial loader storage component
 
