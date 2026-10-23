@@ -1,0 +1,22 @@
+{
+  "schema": "aos.advisory-snapshot/v1",
+  "generated_on": "2026-10-22",
+  "maximum_age_days": 31,
+  "rustsec_revision": "640bf5a9f06e66d8721e8772766531fe77c8630d",
+  "native_findings": [
+    { "id": "CVE-2026-84782", "component": "openssl@4.0.2", "fixed_version": "4.0.3", "source": "https://github.com/openssl/openssl/releases/tag/openssl-4.0.3" },
+    { "id": "CVE-2026-84783", "component": "openssl@4.0.2", "fixed_version": "4.0.3", "source": "https://github.com/openssl/openssl/releases/tag/openssl-4.0.3" },
+    { "id": "CVE-2026-35189", "component": "openssl@4.0.2", "fixed_version": "4.0.3", "source": "https://github.com/openssl/openssl/releases/tag/openssl-4.0.3" },
+    { "id": "CVE-2026-35191", "component": "openssl@4.0.2", "fixed_version": "4.0.3", "source": "https://github.com/openssl/openssl/releases/tag/openssl-4.0.3" },
+    { "id": "CVE-2026-42772", "component": "openssl@4.0.2", "fixed_version": "4.0.3", "source": "https://github.com/openssl/openssl/releases/tag/openssl-4.0.3" },
+    { "id": "CVE-2026-54872", "component": "openssl@4.0.2", "fixed_version": "4.0.3", "source": "https://github.com/openssl/openssl/releases/tag/openssl-4.0.3" },
+    { "id": "CVE-2026-54873", "component": "openssl@4.0.2", "fixed_version": "4.0.3", "source": "https://github.com/openssl/openssl/releases/tag/openssl-4.0.3" },
+    { "id": "CVE-2026-54875", "component": "openssl@4.0.2", "fixed_version": "4.0.3", "source": "https://github.com/openssl/openssl/releases/tag/openssl-4.0.3" },
+    { "id": "CVE-2026-72897", "component": "openssl@4.0.2", "fixed_version": "4.0.3", "source": "https://github.com/openssl/openssl/releases/tag/openssl-4.0.3" },
+    { "id": "CVE-2026-75804", "component": "openssl@4.0.2", "fixed_version": "4.0.3", "source": "https://github.com/openssl/openssl/releases/tag/openssl-4.0.3" },
+    { "id": "CVE-2026-75805", "component": "openssl@4.0.2", "fixed_version": "4.0.3", "source": "https://github.com/openssl/openssl/releases/tag/openssl-4.0.3" },
+    { "id": "CVE-2026-75806", "component": "openssl@4.0.2", "fixed_version": "4.0.3", "source": "https://github.com/openssl/openssl/releases/tag/openssl-4.0.3" },
+    { "id": "CVE-2026-77696", "component": "openssl@4.0.2", "fixed_version": "4.0.3", "source": "https://github.com/openssl/openssl/releases/tag/openssl-4.0.3" },
+    { "id": "CVE-2026-84784", "component": "openssl@4.0.2", "fixed_version": "4.0.3", "source": "https://github.com/openssl/openssl/releases/tag/openssl-4.0.3" }
+  ]
+}
