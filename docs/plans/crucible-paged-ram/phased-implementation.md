@@ -63,7 +63,7 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | Signed atomic `de079e1983`, conventional `8fbd44a043`, tree `134ade12` removes the redundant fixture PIE flag from the imported legacy namespace isolation. Independent review verifies all 45 correction payloads and 78,470 Git/disk/archive paths; all 251 pure controls pass. Canonical patch reconstruction and the 663-created-file license ledger pass. | The earlier genuine-provider companion passes its complete build and all nineteen ordinary/unissued-state TAP cases. The new legacy isolation still needs configuration, actual object transformation, final provider-binding proof and its 187-case TAP run. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
+| Native integration | Signed atomic `7b817c94ba`, conventional `060716ff3d`, tree `b26b7645` verifies the eleven function exports and two immutable layout objects using their genuine recorded attributes. Independent review verifies all 36 correction payloads, 78,470 Git/disk/archive paths and four byte-exact generated outputs; all 359 pure controls pass. | The earlier genuine-provider companion passes its complete build and all nineteen ordinary/unissued-state TAP cases. Fresh legacy graph discovery follows the preserved export-spelling refusal. Actual object transformation, final provider-binding proof and its 187-case TAP run remain unqualified. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
@@ -1458,10 +1458,67 @@ unchanged 663-file license ledger passes at `3b7agqxfxsprqfzi5dn8bc1r5rw3iyds`.
 The strict command classifier remains unchanged. The fresh configured-graph plan
 is separate; no target transformation, link or legacy TAP result is claimed.
 
+That fresh configure returns zero in 31.125 seconds. Its original worker stops
+at the literal export-flag check and returns one; final evidence completes in
+150.905 seconds, with no Ninja query or target effect. All three cleanup cuts
+observe empty children and ECHILD. Independent review verifies all 51 signed
+result payloads, 2,921 execution and 86,117 reconstruction disk/archive paths,
+and both immutable baselines. The metadata-only signing failure is preserved
+separately; no original worker was replayed. The sealed result is
+`528f60ec834bd9f5074b863b0ec4224b95e824d59974546059c08162504f9f46`.
+
+The actual declaration contains `-Wl,-export-dynamic`, while the frozen worker
+requires the substring `--export-dynamic`. Independent review of the pinned
+Meson producer and selected GNU linker manual confirms the emitted spelling;
+ten negative declaration controls reject absent, disabled, duplicate and foreign
+arguments. Fixture compilation, private staging, production rows, registration
+and absence of target outputs independently pass. A separate final-verifier
+defect remains: two of the thirteen required exports are recorded data objects,
+while its current predicate requires functions for all thirteen. The actual
+specification and retained symbol index agree on eleven functions and two
+32-byte layout objects. Review reproduces that pure metadata refusal without
+linking or loading an ELF. The signed diagnosis is
+`0db1ea10a03e97a215dde6e2731b55aa6d036b06bf628cb8ee342bc69157cd54`;
+all 67 payloads, five signatures and actual producer identities match. These
+findings do not qualify the future transformed objects, link map or legacy TAP.
+ABI conformance passes at `0b10yln9nglnv559myr2c20nm03njxsy`.
+
+The export-verifier correction is imported as signed atomic
+`7b817c94baa67cd2537d4ca01643c604be4caf86`, tree
+`b26b7645af433ea531a7f341fa10baf072ccdf63`. Its sealed source manifest is
+`bcebc6e59a1c015f6dae0bb7fd8cb47ef6d3cb4594d55139261e468957e22986`.
+Independent review verifies all 36 payloads, both signed commits, all 78,470
+Git/disk/archive identities, deterministic atomic dates and exact raw message.
+Only the verifier and its pure controls change. Each export uses its unique
+recorded kind, strong binding and default visibility. Both data exports must
+retain 32 bytes in allocated, read-only, non-executable PROGBITS storage, within
+their recorded section bounds. Missing, undefined, duplicate, weak, hidden,
+protected, swapped or changed-extent exports refuse. Private namespace checks
+remain intact. All 359 pure controls pass; actual extraction reproduces all four
+prior outputs, including the separate literal preexec-purpose unit. No guard,
+fixture, provider, registration, timeout or license path changes. Fresh graph
+discovery separately checks the exact pinned-Meson forwarding declaration and
+its negative controls; actual transformed ELF, provider binding and TAP remain
+unqualified.
+
+Hermetic reconstruction of this exact atomic source passes at
+`6m9s4h1j952w1pmd9pif32mzsqxvbmys`; its unchanged 663-file license ledger passes
+at `3b7agqxfxsprqfzi5dn8bc1r5rw3iyds`.
+
 The typed Source cleanup-status increment also passes mandatory application
 target compilation at `k6xqwqda0r9pa1kalk2yll311lfbwl6w`. Its complete immutable
 source matched all 5,382 committed Rust/TOML files and six required fixtures
 before later edits.
+
+The prepaid shutdown-report increment passes mandatory application-target
+compilation at `y586j0zmrxb1qnbwlph7bkhypgcnqsj8`; the debug-caller contracts
+pass at `v3dr8v5gsglh1brcgl31zafy2ycdyfyc`. Each frozen source independently
+matches all 5,387 Rust/TOML files and its six required fixtures. These results
+cover their respective committed inputs before later changes.
+
+The Source-caller contract increment passes mandatory application-target
+compilation at `v4sf66zhav7aqw1jpwj4pmibp8yb1dxi`, with all 5,388 committed
+Rust/TOML files and six fixtures matching its frozen source before later edits.
 
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's

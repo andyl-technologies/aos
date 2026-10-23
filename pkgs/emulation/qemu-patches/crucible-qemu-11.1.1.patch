@@ -1,4 +1,4 @@
-From de079e19836c67483cb082eea7257b569b9142cd Mon Sep 17 00:00:00 2001
+From 7b817c94baa67cd2537d4ca01643c604be4caf86 Mon Sep 17 00:00:00 2001
 From: Dylan Plecki <dylan@andyl.com>
 Date: Mon, 1 Jan 2001 00:00:00 +0000
 Subject: [PATCH] crucible: preserve startup Source fixture provider ownership
@@ -16,6 +16,11 @@ and restrict private dynamic visibility to the existing worker lookups.
 Let Meson derive the private static fixture's PIE compilation from b_pie
 instead of forcing and duplicating its compiler flag. Preserve pic:false,
 selected sources, dependencies, registrations, roots and assertions.
+
+Verify each dynamic fixture export against its canonical recorded type,
+binding and visibility, preserving the two layout data objects and eleven
+callback functions. Reject missing, duplicate, undefined or changed exports
+and retain the private-prefix locality and visibility requirements.
 
 Signed-off-by: Dylan Plecki <dylan@andyl.com>
 
@@ -308338,10 +308343,10 @@ index 0000000000000000000000000000000000000000..552a5837cc31d77a61b4efa8199c0c7f
 +                scope='Every ELF section/symbol/REL/RELA entry, including debug/local/TLS/data/undefined/weak; no owner isolation inferred')
 diff --git a/scripts/crucible-legacy-fixture-isolation.py b/scripts/crucible-legacy-fixture-isolation.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..f14a9fb2d7551812369fd1d011315f227b7fa1e6
+index 0000000000000000000000000000000000000000..82bfae83900383ac30006bc4ca9201f946c9091e
 --- /dev/null
 +++ b/scripts/crucible-legacy-fixture-isolation.py
-@@ -0,0 +1,357 @@
+@@ -0,0 +1,386 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +# Copyright (c) 2026 ANDYL Technologies, Inc.
 +"""Stage a reviewed private fixture namespace without replacing real providers.
@@ -308596,12 +308601,41 @@ index 0000000000000000000000000000000000000000..f14a9fb2d7551812369fd1d011315f22
 +    symbols = [symbol for table in elf['symbol_tables']
 +               for symbol in table['symbols'] if symbol['defined']]
 +    dynamic = [symbol for table in elf['symbol_tables'] if table['name'] == '.dynsym'
-+               for symbol in table['symbols'] if symbol['defined']]
++               for symbol in table['symbols']]
++    require(len(spec['exports']) == len(set(spec['exports'])),
++            'Duplicate fixture dynamic export name')
 +    for name in spec['exports']:
-+        require(any(symbol['name'] == name and symbol['binding'] == 1 and
-+                    symbol['type'] == 2 and symbol['visibility'] == 0
-+                    for symbol in dynamic),
-+                'Missing genuine fixture dynamic worker ' + name)
++        recorded = [row for obj in spec['objects'] for row in obj['definitions']
++                    if row['name'] == name]
++        require(len(recorded) == 1, 'Ambiguous fixture export definition ' + name)
++        expected = recorded[0]
++        require(expected['binding'] == 1 and expected['visibility'] == 0 and
++                expected['type'] in (1, 2),
++                'Unsupported recorded fixture export attributes ' + name)
++
++        # Layout exports are data; callbacks are functions. Preserve each
++        # original definition's attributes rather than assigning a shared type.
++        actual = [symbol for symbol in dynamic if symbol['name'] == name]
++        require(len(actual) == 1 and actual[0]['defined'] and
++                all(actual[0][key] == expected[key]
++                    for key in ('binding', 'type', 'visibility')),
++                'Missing or changed genuine fixture dynamic export ' + name)
++        if expected['type'] == 1:
++            # Both recorded layout definitions occupy 32 immutable bytes.
++            # Check the final storage instead of assuming OBJECT implies rodata.
++            symbol = actual[0]
++            sections = [section for section in elf['sections']
++                        if section['index'] == symbol['resolved_section_index']]
++            require(len(sections) == 1, 'Missing layout export storage ' + name)
++            section = sections[0]
++            require(symbol['bytes'] == 32 and
++                    section['name'] == expected['section_name'] and
++                    section['type'] == 1 and section['flags'] & 2 and
++                    not section['flags'] & (1 | 4) and
++                    section['address'] <= symbol['value'] and
++                    symbol['value'] + symbol['bytes'] <=
++                    section['address'] + section['bytes'],
++                    'Changed layout export extent or immutable storage ' + name)
 +    require(not any(symbol['name'].startswith(PREFIX) for symbol in dynamic),
 +            'Private fixture namespace leaked into dynamic exports')
 +    require(all(symbol['binding'] == 0 for symbol in symbols
@@ -442429,10 +442463,10 @@ index 0000000000000000000000000000000000000000..43fc2e788019da47087362648c66db0a
 +    main()
 diff --git a/tests/unit/test-crucible-legacy-fixture-isolation.py b/tests/unit/test-crucible-legacy-fixture-isolation.py
 new file mode 100644
-index 0000000000000000000000000000000000000000..da31b0485a60b8bd3daea1682e062a59d0e66047
+index 0000000000000000000000000000000000000000..0fc8d543db2492617adeb7fc3985063d89e0227f
 --- /dev/null
 +++ b/tests/unit/test-crucible-legacy-fixture-isolation.py
-@@ -0,0 +1,209 @@
+@@ -0,0 +1,279 @@
 +# SPDX-License-Identifier: GPL-2.0-or-later
 +# Copyright (c) 2026 ANDYL Technologies, Inc.
 +"""Pure classifier controls, without objcopy, compiler, linker or target calls.
@@ -442521,11 +442555,18 @@ index 0000000000000000000000000000000000000000..da31b0485a60b8bd3daea1682e062a59
 +    # Classifier metadata is deliberately not emitted as an executable ELF.
 +    private_symbols = [dict(name=name, defined=True, binding=0, type=2, visibility=0)
 +                       for name in specification['renames'].values()]
-+    workers = [dict(name=name, defined=True, binding=1, type=2, visibility=0)
++    worker_definitions = {row['name']: row for obj in specification['objects']
++                          for row in obj['definitions']
++                          if row['name'] in specification['exports']}
++    workers = [dict(worker_definitions[name], defined=True)
 +               for name in specification['exports']]
++    for worker in workers:
++        if worker['type'] == 1:
++            worker.update(bytes=32, resolved_section_index=1, value=4096)
 +    providers = [dict(name=row['name'], defined=True, binding=1, type=2, visibility=0)
 +                 for row in specification['genuine_providers']]
-+    metadata = {'symbol_tables': [
++    metadata = {'sections': [dict(index=1, name='.rodata', type=1, flags=2,
++                                  address=4096, bytes=32)], 'symbol_tables': [
 +        {'name': '.symtab', 'symbols': private_symbols + workers + providers},
 +        {'name': '.dynsym', 'symbols': copy.deepcopy(workers)}]}
 +    symbols = isolation.verify_final_symbols(metadata, specification)
@@ -442540,6 +442581,69 @@ index 0000000000000000000000000000000000000000..da31b0485a60b8bd3daea1682e062a59
 +        changed = copy.deepcopy(metadata)
 +        mutate(changed)
 +        rejects(label, lambda: isolation.verify_final_symbols(changed, specification))
++
++    for index, worker in enumerate(workers):
++        for label, replacement in [
++                ('type', {'type': 1 if worker['type'] == 2 else 2}),
++                ('weak binding', {'binding': 2}),
++                ('local binding', {'binding': 0}),
++                ('hidden visibility', {'visibility': 2}),
++                ('protected visibility', {'visibility': 3}),
++                ('undefined', {'defined': False})]:
++            changed = copy.deepcopy(metadata)
++            changed['symbol_tables'][1]['symbols'][index].update(replacement)
++            rejects('changed export ' + label + ': ' + worker['name'],
++                    lambda: isolation.verify_final_symbols(changed, specification))
++        for label, mutate in [
++                ('duplicate', lambda rows: rows.append(copy.deepcopy(worker))),
++                ('missing', lambda rows: rows.pop(index))]:
++            changed = copy.deepcopy(metadata)
++            mutate(changed['symbol_tables'][1]['symbols'])
++            rejects(label + ' export: ' + worker['name'],
++                    lambda: isolation.verify_final_symbols(changed, specification))
++
++    for index, worker in enumerate(workers):
++        if worker['type'] != 1:
++            continue
++        for label, replacement in [
++                ('short extent', {'bytes': 31}), ('long extent', {'bytes': 33}),
++                ('missing section', {'resolved_section_index': 2}),
++                ('before section', {'value': 4095}),
++                ('past section', {'value': 4097})]:
++            changed = copy.deepcopy(metadata)
++            changed['symbol_tables'][1]['symbols'][index].update(replacement)
++            rejects(label + ': ' + worker['name'],
++                    lambda: isolation.verify_final_symbols(changed, specification))
++    for label, replacement in [
++            ('writable storage', {'flags': 3}),
++            ('executable storage', {'flags': 6}),
++            ('unallocated storage', {'flags': 0}),
++            ('NOBITS storage', {'type': 8}),
++            ('different storage name', {'name': '.data'}),
++            ('insufficient storage', {'bytes': 31})]:
++        changed = copy.deepcopy(metadata)
++        changed['sections'][0].update(replacement)
++        rejects(label, lambda: isolation.verify_final_symbols(changed, specification))
++
++    layout = next(i for i, row in enumerate(workers) if row['type'] == 1)
++    callback = next(i for i, row in enumerate(workers) if row['type'] == 2)
++    changed = copy.deepcopy(metadata)
++    dynamic = changed['symbol_tables'][1]['symbols']
++    dynamic[layout]['type'], dynamic[callback]['type'] = (
++        dynamic[callback]['type'], dynamic[layout]['type'])
++    rejects('layout and callback attribute swap',
++            lambda: isolation.verify_final_symbols(changed, specification))
++    changed = copy.deepcopy(specification)
++    changed['exports'].append(changed['exports'][0])
++    rejects('duplicate expected export name',
++            lambda: isolation.verify_final_symbols(metadata, changed))
++    changed = copy.deepcopy(specification)
++    owner = next(obj for obj in changed['objects']
++                 if any(row['name'] == workers[0]['name'] for row in obj['definitions']))
++    owner['definitions'].append(copy.deepcopy(worker_definitions[workers[0]['name']]))
++    rejects('duplicate recorded export definition',
++            lambda: isolation.verify_final_symbols(metadata, changed))
++
 +    foreign_inputs = list(inputs)
 +    foreign_inputs[0] = 'foreign/' + Path(inputs[0]).name
 +    rejects('same-basename input from foreign directory',
