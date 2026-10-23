@@ -956,6 +956,10 @@ async fn multi_platform_push_publishes_only_the_selected_closed_graph() {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the registry retry test measures host transport delays"
+)]
 async fn digest_delete_and_upload_cancellation_retries_transient_unavailability() {
     let fixture = support::fixture();
     let registry = spawn_registry(None, false, true, false).await;
@@ -1124,6 +1128,10 @@ async fn upload_cancellation_retries_when_a_committed_response_stalls() {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "the registry retry test measures host transport delays"
+)]
 async fn upload_cancellation_stops_at_the_retry_deadline_and_preserves_its_checkpoint() {
     let fixture = support::fixture();
     let registry = spawn_registry(None, false, true, false).await;

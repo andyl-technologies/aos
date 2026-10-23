@@ -44,20 +44,22 @@ def doctest_cases(log, package_path):
     return dict(sorted(cases.items()))
 
 
-def compare_doctests(tests, cargo_log, package_paths, target_suffix=""):
+def compare_doctests(tests, cargo_log, package_paths, target_suffix="", package_target_suffixes=None):
     """Compares actual doctest names, locations, and ignored cases per package."""
     log = cargo_log.read_text()
     sections = re.split(r"^\s*Doc-tests ([a-zA-Z0-9_]+)\s*$", log, flags=re.MULTILINE)
     cargo = dict(zip(sections[1::2], sections[2::2]))
     results = json.loads((tests / "index.json").read_text())["results"]
-    expected_labels = {"//" + path + ":doc" + target_suffix for path in package_paths.values()}
+    suffixes = package_target_suffixes or {}
+    expected_labels = {"//" + path + ":doc" + suffixes.get(name, target_suffix)
+                       for name, path in package_paths.items()}
     actual_labels = {result["identity"]["label"] for result in results
-                     if result["identity"]["label"].endswith(":doc" + target_suffix)}
+                     if re.search(r":doc(?:_|$)", result["identity"]["label"])}
     if actual_labels != expected_labels:
         raise ValueError(f"Bazel/Cargo doctest target inventories differ: {actual_labels ^ expected_labels}")
     compared = {}
     for name, path in package_paths.items():
-        label = "//" + path + ":doc" + target_suffix
+        label = "//" + path + ":doc" + suffixes.get(name, target_suffix)
         selected = [result for result in results if result["identity"]["label"] == label]
         if len(selected) != 1 or selected[0]["status"] != "PASSED" or name.replace("-", "_") not in cargo:
             raise ValueError(f"missing successful Cargo/Bazel doctest target: {label}")
@@ -69,24 +71,10 @@ def compare_doctests(tests, cargo_log, package_paths, target_suffix=""):
     return compared
 
 
-def compare(
-    tests,
-    inventory,
-    messages,
-    package_paths=None,
-    cargo_log=None,
-    target_suffix="",
-    dependency_paths=None,
-    allow_empty_tests=(),
-):
-    package_paths = PACKAGE_PATHS if package_paths is None else package_paths
-    first_party_paths = {**(dependency_paths or {}), **package_paths}
-    oracles = {}
-    empty_allowed = set()
+def compare_features(inventory, messages, first_party_paths, required_packages=()):
+    """Compares compiled library feature units without requiring libtest targets."""
     cargo_features = {}
     cargo_first_party_features = {}
-    cargo_examples = set()
-    cargo_libraries = set()
     for line in messages.read_text().splitlines():
         event = json.loads(line)
         if event.get("reason") != "compiler-artifact":
@@ -98,43 +86,8 @@ def compare(
             version = identifier
         if name in first_party_paths:
             cargo_first_party_features.setdefault(name, set()).add(tuple(sorted(event["features"])))
-        if name in package_paths and "example" in event["target"]["kind"]:
-            cargo_examples.add(f"//{package_paths[name]}:" + event["target"]["name"] + target_suffix)
-        if name in package_paths and "lib" in event["target"]["kind"]:
-            cargo_libraries.add(name)
-        if (name in package_paths and event["profile"]["test"] and event.get("executable")
-                and set(event["target"]["kind"]) & {"lib", "test", "bin"}):
-            target = event["target"]
-            if "lib" in target["kind"]:
-                suffix = "unit"
-            elif "bin" in target["kind"]:
-                suffix = "bin_" + target["name"]
-            else:
-                suffix = target["name"]
-            label = f"//{package_paths[name]}:{suffix}{target_suffix}"
-            if label in oracles:
-                raise ValueError(f"duplicate Cargo test artifact: {label}")
-            oracles[label] = Path(event["executable"])
-            if "bin" in target["kind"]:
-                empty_allowed.add(label)
-        elif name not in first_party_paths:
+        else:
             cargo_features.setdefault((name, version), set()).add(tuple(sorted(event["features"])))
-
-    # Listing the Cargo binaries checks ignored cases as well as executed cases.
-    for label in allow_empty_tests:
-        if label not in oracles:
-            raise ValueError(f"empty-test exception has no Cargo artifact: {label}")
-        if cases(oracles[label]):
-            raise ValueError(f"empty-test exception has nonempty Cargo cases: {label}")
-        empty_allowed.add(label)
-    result = verify(tests, oracles, allow_empty=empty_allowed)
-    executed_labels = {
-        event["identity"]["label"]
-        for event in json.loads((tests / "index.json").read_text())["results"]
-        if not event["identity"]["label"].endswith(":doc" + target_suffix)
-    }
-    if not oracles or executed_labels != set(oracles):
-        raise ValueError(f"Bazel/Cargo integration target inventories differ: {executed_labels ^ set(oracles)}")
 
     reports = json.loads(inventory.read_text())["configured_targets"]
     bazel_first_party_features = {}
@@ -145,22 +98,13 @@ def compare(
             bazel_first_party_features.setdefault(name, set()).add(tuple(sorted(report["features"])))
     if bazel_first_party_features != cargo_first_party_features:
         raise ValueError(f"first-party Rust feature inventories differ: {bazel_first_party_features!r} != {cargo_first_party_features!r}")
+    result = {}
     result["first_party_features"] = {
         name: sorted(features) for name, features in sorted(cargo_first_party_features.items())
     }
-    bazel_examples = {
-        report["label"] for report in reports
-        if report["kind"] == "rust_binary"
-        and report["label"].split(":", 1)[0] in {"//" + path for path in package_paths.values()}
-        and any("/examples/" in source for source in report["sources"])
-    }
-    if cargo_examples != bazel_examples:
-        raise ValueError(f"Bazel/Cargo example inventories differ: {cargo_examples ^ bazel_examples}")
-    result["examples"] = sorted(cargo_examples)
-
     bazel_features = {}
     for report in reports:
-        match = re.search(r"aos_(?:core|device|store|guest|engine|quota|session|control|qemu_host|store_s3|daemon|crucible_cli|formats)_crates__([^/]+)//", report["label"])
+        match = re.search(r"aos_(?:core|device|store|guest|engine|quota|session|control|qemu_host|store_s3|daemon|crucible_cli|formats|native_foundation(?:_tests|_minimal)?)_crates__([^/]+)//", report["label"])
         if match and report["kind"] in {"rust_library", "rust_proc_macro"}:
             # Repository names normalize SemVer build metadata. Compare the
             # declared package identity instead of trying to reverse that loss.
@@ -183,18 +127,102 @@ def compare(
         f"{name}@{version}": sorted(features)
         for (name, version), features in sorted(cargo_features.items())
     }
+    if set(required_packages) - cargo_first_party_features.keys():
+        raise ValueError("Cargo omitted first-party packages from its compiler messages")
+    return result
+
+
+def compare(
+    tests,
+    inventory,
+    messages,
+    package_paths=None,
+    cargo_log=None,
+    target_suffix="",
+    dependency_paths=None,
+    allow_empty_tests=(),
+    package_target_suffixes=None,
+):
+    package_paths = PACKAGE_PATHS if package_paths is None else package_paths
+    suffixes = package_target_suffixes or {}
+    if set(suffixes) - package_paths.keys():
+        raise ValueError("target suffix names an unselected package")
+    first_party_paths = {**(dependency_paths or {}), **package_paths}
+    oracles = {}
+    empty_allowed = set()
+    cargo_examples = set()
+    cargo_libraries = set()
+    for line in messages.read_text().splitlines():
+        event = json.loads(line)
+        if event.get("reason") != "compiler-artifact":
+            continue
+        identifier = event["package_id"].rsplit("#", 1)[-1]
+        name, separator, version = identifier.rpartition("@")
+        if not separator:
+            name = Path(event["manifest_path"]).parent.name
+            version = identifier
+        if name in package_paths and "example" in event["target"]["kind"]:
+            cargo_examples.add(f"//{package_paths[name]}:" + event["target"]["name"] + suffixes.get(name, target_suffix))
+        if name in package_paths and "lib" in event["target"]["kind"]:
+            cargo_libraries.add(name)
+        if (name in package_paths and event["profile"]["test"] and event.get("executable")
+                and set(event["target"]["kind"]) & {"lib", "test", "bin"}):
+            target = event["target"]
+            if "lib" in target["kind"]:
+                suffix = "unit"
+            elif "bin" in target["kind"]:
+                suffix = "bin_" + target["name"]
+            else:
+                suffix = target["name"]
+            label = f"//{package_paths[name]}:{suffix}{suffixes.get(name, target_suffix)}"
+            if label in oracles:
+                raise ValueError(f"duplicate Cargo test artifact: {label}")
+            oracles[label] = Path(event["executable"])
+            if "bin" in target["kind"]:
+                empty_allowed.add(label)
+
+    # Listing the Cargo binaries checks ignored cases as well as executed cases.
+    for label in allow_empty_tests:
+        if label not in oracles:
+            raise ValueError(f"empty-test exception has no Cargo artifact: {label}")
+        if cases(oracles[label]):
+            raise ValueError(f"empty-test exception has nonempty Cargo cases: {label}")
+        empty_allowed.add(label)
+    result = verify(tests, oracles, allow_empty=empty_allowed)
+    executed_labels = {
+        event["identity"]["label"]
+        for event in json.loads((tests / "index.json").read_text())["results"]
+        if not re.search(r":doc(?:_|$)", event["identity"]["label"])
+    }
+    if not oracles or executed_labels != set(oracles):
+        raise ValueError(f"Bazel/Cargo integration target inventories differ: {executed_labels ^ set(oracles)}")
+
+    result.update(compare_features(
+        inventory, messages, first_party_paths,
+        required_packages=package_paths if cargo_log is not None else (),
+    ))
+    reports = json.loads(inventory.read_text())["configured_targets"]
+    bazel_examples = {
+        report["label"] for report in reports
+        if report["kind"] == "rust_binary"
+        and report["label"].split(":", 1)[0] in {"//" + path for path in package_paths.values()}
+        and any("/examples/" in source for source in report["sources"])
+    }
+    if cargo_examples != bazel_examples:
+        raise ValueError(f"Bazel/Cargo example inventories differ: {cargo_examples ^ bazel_examples}")
+    result["examples"] = sorted(cargo_examples)
+
     if cargo_log is not None:
-        if set(package_paths) - cargo_first_party_features.keys():
-            raise ValueError("Cargo omitted selected packages from its compiler messages")
         # Binary-only packages have libtests but no Cargo library doctest target.
         libraries = {name: path for name, path in package_paths.items() if name in cargo_libraries}
-        result["doctests"] = compare_doctests(tests, cargo_log, libraries, target_suffix)
+        result["doctests"] = compare_doctests(tests, cargo_log, libraries, target_suffix, suffixes)
     return result
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--tests", type=Path, required=True)
+    parser.add_argument("--tests", type=Path)
+    parser.add_argument("--features-only", action="store_true")
     parser.add_argument("--inventory", type=Path, required=True)
     parser.add_argument("--messages", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
@@ -202,18 +230,30 @@ if __name__ == "__main__":
     parser.add_argument("--dependency-package-path", action="append", default=[], metavar="NAME=PATH")
     parser.add_argument("--cargo-log", type=Path)
     parser.add_argument("--target-suffix", default="")
+    parser.add_argument("--package-target-suffix", action="append", default=[], metavar="NAME=SUFFIX")
     parser.add_argument("--allow-empty-test", action="append", default=[], metavar="LABEL")
     options = parser.parse_args()
     package_paths = dict(value.split("=", 1) for value in options.package_path) if options.package_path else None
     dependencies = dict(value.split("=", 1) for value in options.dependency_package_path)
-    result = compare(
-        options.tests,
-        options.inventory,
-        options.messages,
-        package_paths=package_paths,
-        cargo_log=options.cargo_log,
-        target_suffix=options.target_suffix,
-        dependency_paths=dependencies,
-        allow_empty_tests=options.allow_empty_test,
-    )
+    if options.features_only:
+        if options.tests or options.cargo_log or not package_paths:
+            parser.error("feature-only comparison requires package paths and no test inputs")
+        result = compare_features(
+            options.inventory, options.messages, {**dependencies, **package_paths},
+            required_packages=package_paths,
+        )
+    else:
+        if options.tests is None:
+            parser.error("test comparison requires --tests")
+        result = compare(
+            options.tests,
+            options.inventory,
+            options.messages,
+            package_paths=package_paths,
+            cargo_log=options.cargo_log,
+            target_suffix=options.target_suffix,
+            package_target_suffixes=dict(value.split("=", 1) for value in options.package_target_suffix),
+            dependency_paths=dependencies,
+            allow_empty_tests=options.allow_empty_test,
+        )
     options.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")

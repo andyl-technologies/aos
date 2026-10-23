@@ -1,8 +1,8 @@
 {
   "contracts": {
-    "third_party/rust/BUILD.bazel": "ade40873555ac4a548901154eddf7ae943bcbac37bc71c9acfcfc1721daec519",
+    "third_party/rust/BUILD.bazel": "4c4946892f3db2405941a59fb17b1362132ded23439d47b60f1627b8f54c7da6",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
-    "tools/bazel/metadata/update_rust.py": "b8c9643aa163440eb9029803f20474e7b05077a39cd5fc56d25493a55b9f7837",
+    "tools/bazel/metadata/update_rust.py": "607e77fd6eddffe68d22c7647389c90966eb4cda453cc672b09ec634bfbb7286",
     "tools/bazel/rules/crates.bzl": "f8c14b49f3349864021d7acc1995c3a89c40025905bd3216f277f164786df56a"
   },
   "family": "formats",
@@ -1307,7 +1307,7 @@
       "Zlib OR Apache-2.0 OR MIT"
     ],
     "contracts": {
-      "third_party/rust/BUILD.bazel": "ade40873555ac4a548901154eddf7ae943bcbac37bc71c9acfcfc1721daec519",
+      "third_party/rust/BUILD.bazel": "4c4946892f3db2405941a59fb17b1362132ded23439d47b60f1627b8f54c7da6",
       "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
       "tools/bazel/rules/crates.bzl": "f8c14b49f3349864021d7acc1995c3a89c40025905bd3216f277f164786df56a"
     },

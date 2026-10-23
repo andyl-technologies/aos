@@ -55,13 +55,12 @@ fn external_signing_verifies_and_atomically_assembles_complete_bundle() {
     input
         .validate_final_release(&finalized.declaration)
         .expect("final release binding");
-    assert_eq!(
+    assert!(
         prepare_layout(&finalized.archive)
             .expect("extract finalized archive")
             .root()
             .join("index.json")
-            .is_file(),
-        true
+            .is_file()
     );
     assert!(
         finalize_container_publication(&inputs, &signer, &signature_path, &output).is_err(),

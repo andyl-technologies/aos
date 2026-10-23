@@ -20,6 +20,7 @@
   dependencyProfile ? null,
   repositories ? pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.core // pkgs.aosBazelRustRepositories.device,
   targetSuffix ? "",
+  packageTargetSuffixes ? {},
   excludedTests ? [],
   emptyTests ? [],
   extraTests ? [],
@@ -251,6 +252,7 @@ in rec {
     packageOptions =
       pkgs.lib.concatMap (name: ["--package-path" "${name}=${packages.${name}}"]) names
       ++ pkgs.lib.optionals (targetSuffix != "") ["--target-suffix" targetSuffix]
+      ++ pkgs.lib.concatMap (name: ["--package-target-suffix" "${name}=${packageTargetSuffixes.${name}}"]) (builtins.attrNames packageTargetSuffixes)
       ++ pkgs.lib.concatMap (name: ["--dependency-package-path" "${name}=${dependencyPackages.${name}}"])
       (builtins.attrNames dependencyPackages)
       ++ pkgs.lib.concatMap (label: ["--allow-empty-test" label]) emptyTests;

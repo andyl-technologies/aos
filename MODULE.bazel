@@ -21,6 +21,12 @@ include("//third_party/rust:daemon/repositories.MODULE.bazel")
 include("//third_party/rust:crucible-cli/repositories.MODULE.bazel")
 include("//third_party/rust:formats/repositories.MODULE.bazel")
 
+include("//third_party/rust:native-foundation/repositories.MODULE.bazel")
+
+include("//third_party/rust:native-foundation-tests/repositories.MODULE.bazel")
+
+include("//third_party/rust:native-foundation-minimal/repositories.MODULE.bazel")
+
 # Register only source-built AOS Rust tools, never upstream binary toolchains.
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
 rust.toolchain(versions = [])

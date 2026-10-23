@@ -1597,10 +1597,59 @@ Default features execute 210 cases and four doctests; disabling transfer execute
 cases, and the default transfer doctests retain one ignored case. The graphs
 contain 281 and 181 external crate identities respectively, and eight first-party
 libraries. Native inputs are source-built AOS OpenSSL, libssh2, zlib, and Zstandard.
+The Rust SSH binding compiles the libssh2 sources bundled in its pinned crate;
+the AOS libssh2 package remains a declared runtime input. Its crypto and
+compression inputs come from AOS OpenSSL and zlib.
 
 `tests/evidence/native-foundation-initial-cargo-failure.json` retains the initial
 OCI test failure. Two assertions expected 18 objects although their shared signed
 release fixture contains 20. Those assertions and the existing 20-object assertion
 now share a documented fixture count. The object inventory, upload checks, and
-failure assertions remain intact. These are Cargo baselines; native integration
-library Bazel qualification remains pending.
+failure assertions remain intact. The matching Bazel qualification is retained
+in `tests/evidence/native-linux-native-foundation.json`.
+
+The Bazel definitions separate three source-only dependency profiles:
+`native-foundation` for production libraries, `native-foundation-tests` for
+default test targets, and `native-foundation-minimal` for tests with transfer
+disabled. Production keeps D-Bus broker test features and Tokio's `test-util`
+feature out of its graph. Serde, Serde Core, and Syn retain separate feature
+units for target compilation and compiler plugins. Each unit also selects its
+own constant build-script features.
+
+`aos-dev bazel --family native-foundation` selects the default test graph;
+`rust-project` selects all four native integration packages for editor coverage.
+Explicit `aos-dev bazel update-deps` commands accept each of the three profile
+names. These updates resolve source dependencies; ordinary builds use the
+checked-in source inventories without running Cargo or downloading tools.
+
+Native C probes read a declared compiler response file for AOS zlib include
+and library search paths. A sandboxed probe compiles and links with ambient
+search paths cleared and checks the linker trace for the declared AOS library.
+This keeps `libz-sys` on the same system-library path as the Cargo baseline,
+without relying on ambient include paths. Native pkg-config wrappers expose
+only declared metadata directories, including explicitly named dependencies
+needed by OpenSSL and libssh2 queries. Both interfaces retain their native
+package identities in the imported closure.
+
+The strict native qualification passes default and transfer-disabled case,
+doctest, feature, and license comparisons against fresh Cargo builds. Default
+Clippy, formatting, documentation, and selected-package editor checks also
+pass. The production comparison contains 274 external and eight first-party
+crate identities, without D-Bus test features or Tokio `test-util`. Editor
+comparison retains the same two selected unknown-type diagnostics and no
+unattributed Cargo diagnostics; complete inference is not claimed.
+
+`tests/evidence/native-foundation-configured-graph.json` retains 957 configured
+reports and 102 source files across production and both test profiles. All 18
+family inventories validate, all 16 dependency specifications pass, and all
+164 policy tests and the CLI checks pass. The previous 13 dependency locks,
+source pins, and 2,060 generated crate build files are unchanged.
+`tests/evidence/native-foundation-metadata-evaluation.json` records metadata
+parity for 320 compiled targets and core Nix evaluation at its frozen checkpoint.
+The configured external editor identity correction is documented separately
+in `tests/evidence/editor-external-configurations.json`.
+
+Dedicated D-Bus integration gates, workspace Rust compilation, and the broader
+editor regression run separately. Foreign and Wasm qualification, compiler
+invocation equivalence, performance acceptance, production migration, and
+Cargo removal remain pending.

@@ -22,15 +22,26 @@
         linkopts = [];
         licenseDomain = "apache-host";
         pkgConfigFiles = [];
+        # Shared-library queries can still need private dependencies' headers.
+        pkgConfigDependencies = [];
+        compilerResponseFile = false;
       }
       // specification;
   in
     assert builtins.match "[a-z][a-z0-9_]*" name != null;
     assert builtins.elem variant.linkage ["shared" "static"];
+    assert builtins.isBool variant.compilerResponseFile;
     assert builtins.elem variant.licenseDomain ["apache-host" "permissive-protocol" "gpl-qemu"];
     assert variant.package.targetSystem == platform.system;
     assert variant.headerPackage.targetSystem == platform.system;
     assert builtins.all (path: validRelativePath path && lib.hasSuffix ".pc" path) variant.pkgConfigFiles;
+    assert variant.pkgConfigDependencies == [] || variant.pkgConfigFiles != [];
+    assert builtins.all (dependency:
+      builtins.hasAttr dependency libraries
+      && dependency != name
+      && (libraries.${dependency}.pkgConfigFiles or []) != [])
+    variant.pkgConfigDependencies;
+    assert builtins.length variant.pkgConfigDependencies == builtins.length (lib.unique variant.pkgConfigDependencies);
     assert builtins.length variant.pkgConfigFiles == builtins.length (lib.unique (map baseNameOf variant.pkgConfigFiles));
     assert validRelativePath variant.headerDirectory && validRelativePath variant.libraryFile; variant)
   libraries;
@@ -83,6 +94,9 @@
             target_compatible_with = ${builtins.toJSON constraints},
         )
       ''
+      + lib.optionalString variant.compilerResponseFile ''
+        exports_files(["${name}/cflags"], visibility = ["//visibility:public"])
+      ''
       + lib.optionalString (variant.pkgConfigFiles != []) ''
         exports_files(["${name}/pkg-config"])
 
@@ -96,14 +110,16 @@
     variants);
   needsPkgConfig = builtins.any (variant: variant.pkgConfigFiles != []) (builtins.attrValues variants);
   toolRoots = lib.optionals needsPkgConfig [buildPkgs.pkg-config buildPkgs.bash];
-  identities =
-    lib.mapAttrs (_: variant: {
+  identities = lib.mapAttrs (_: variant:
+    {
       inherit (variant) linkage libraryFile headerDirectory linkopts licenseDomain pkgConfigFiles;
       package = toString variant.package;
       headerPackage = toString variant.headerPackage;
       target = platform.config;
-    })
-    variants;
+    }
+    // lib.optionalAttrs variant.compilerResponseFile {inherit (variant) compilerResponseFile;}
+    // lib.optionalAttrs (variant.pkgConfigDependencies != []) {inherit (variant) pkgConfigDependencies;})
+  variants;
 in
   assert platform.isLinux && (platform.isx86_64 || platform.isAarch64);
     pkgs.mkDerivation {
@@ -132,6 +148,13 @@ in
                 ln -s ${lib.escapeShellArg "${variant.headerPackage}/${variant.headerDirectory}"} "$out/${name}/include"
                 ln -s ${lib.escapeShellArg "${variant.package}/${variant.libraryFile}"} "$out/${name}/lib/${baseNameOf variant.libraryFile}"
               ''
+              + lib.optionalString variant.compilerResponseFile ''
+                # C probes also link before deciding whether to use a bundled
+                # fallback. Supply both searches through declared response data.
+                printf '%s\n' \
+                  ${lib.escapeShellArg "-I${variant.headerPackage}/${variant.headerDirectory}"} \
+                  ${lib.escapeShellArg "-L${variant.package}/${dirOf variant.libraryFile}"} > "$out/${name}/cflags"
+              ''
               + lib.optionalString (variant.pkgConfigFiles != []) ''
                 mkdir -p "$out/${name}/pkgconfig"
                 ${lib.concatMapStringsSep "\n" (file: ''
@@ -143,7 +166,7 @@ in
                 #!${buildPkgs.bash}/bin/bash
                 set -euo pipefail
                 unset PKG_CONFIG_PATH PKG_CONFIG_TOP_BUILD_DIR PKG_CONFIG_SYSROOT_DIR
-                export PKG_CONFIG_LIBDIR="$out/${name}/pkgconfig"
+                export PKG_CONFIG_LIBDIR="${lib.concatStringsSep ":" (map (dependency: "$out/${dependency}/pkgconfig") ([name] ++ variant.pkgConfigDependencies))}"
                 export PKG_CONFIG_SYSTEM_INCLUDE_PATH= PKG_CONFIG_SYSTEM_LIBRARY_PATH=
                 exec ${buildPkgs.pkg-config}/bin/pkg-config "\$@"
                 PKG_CONFIG

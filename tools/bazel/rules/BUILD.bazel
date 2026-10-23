@@ -1,6 +1,14 @@
 load("@rules_rust//rust:defs.bzl", "rust_lint_config")
-load(":profiles.bzl", "crucible_cli_profile_required", "formats_profile_required")
+load(":profiles.bzl", "compilation_role", "crucible_cli_profile_required", "formats_profile_required")
 load(":profiles.bzl", "dependency_profile", "device_profile_required", "engine_profile_required", "guest_profile_required", "quota_profile_required", "session_profile_required", "control_profile_required", "qemu_host_profile_required", "store_s3_profile_required", "daemon_profile_required", "store_profile_required")
+
+compilation_role(name = "compilation_role")
+
+config_setting(
+    name = "exec_compilation",
+    flag_values = {":compilation_role": "exec"},
+    visibility = ["//visibility:public"],
+)
 
 crucible_cli_profile_required(
     name = "crucible_cli_profile_required",
@@ -156,5 +164,23 @@ formats_profile_required(
 config_setting(
     name = "formats_dependencies",
     flag_values = {":dependency_profile": "formats"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "native_foundation_dependencies",
+    flag_values = {":dependency_profile": "native-foundation"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "native_foundation_tests_dependencies",
+    flag_values = {":dependency_profile": "native-foundation-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "native_foundation_minimal_dependencies",
+    flag_values = {":dependency_profile": "native-foundation-minimal"},
     visibility = ["//visibility:public"],
 )

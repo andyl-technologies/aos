@@ -1,7 +1,7 @@
 """Selects a coherent third-party feature graph for a Rust compilation family."""
 
 def _dependency_profile_impl(ctx):
-    if ctx.build_setting_value not in ["core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "formats"]:
+    if ctx.build_setting_value not in ["core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "native-foundation", "native-foundation-tests", "native-foundation-minimal", "formats"]:
         fail("unknown Rust dependency profile: " + ctx.build_setting_value)
     return []
 
@@ -9,6 +9,13 @@ dependency_profile = rule(
     implementation = _dependency_profile_impl,
     build_setting = config.string(flag = True),
 )
+
+def _compilation_role_impl(ctx):
+    return [config_common.FeatureFlagInfo(
+        value = "exec" if ctx.configuration.is_tool_configuration() else "target",
+    )]
+
+compilation_role = rule(implementation = _compilation_role_impl)
 
 def _device_profile_required_impl(_ctx):
     fail("this dependency requires --//tools/bazel/rules:dependency_profile=device")

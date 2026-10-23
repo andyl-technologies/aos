@@ -221,6 +221,33 @@ alias(name = "build_script_build", actual = ":_bs")
         self.assertIn('//:libc__aos_build"', result["jobserver", "0.1.34"])
         self.assertNotIn("__aos_build", result["getrandom", "0.4.2"])
 
+    def test_execution_units_select_complete_libraries_and_constant_script_features(self):
+        policy, context, builds = self.feature_graph()
+        settings = policy["feature_variants"]["libc"]
+        settings.pop("variants")
+        settings["exec_features"] = ["default", "std"]
+
+        result = updater.specialize_feature_graph(policy, context, builds, "example")
+
+        rendered = result["libc", "0.2.186"]
+        self.assertEqual(rendered.count('cargo_toml_env_vars(name = "env"'), 1)
+        self.assertEqual(rendered.count("crate_features = []"), 2)
+        self.assertEqual(rendered.count('crate_features = ["default", "std"]'), 2)
+        self.assertEqual(rendered.count('crate_name = "libc"'), 2)
+        self.assertIn('"@example__libc-0.2.186//:build_script_build__aos_target"', rendered)
+        self.assertIn('"@example__libc-0.2.186//:build_script_build__aos_exec"', rendered)
+        self.assertIn('"@//tools/bazel/rules:exec_compilation": ":libc__aos_exec"', rendered)
+        self.assertIn('"//conditions:default": ":libc__aos_target"', rendered)
+        self.assertNotIn("crate_features = select", rendered)
+        self.assertEqual(result["jobserver", "0.1.34"], builds["jobserver", "0.1.34"])
+
+    def test_execution_units_reject_ambiguous_consumer_redirection(self):
+        policy, context, builds = self.feature_graph()
+        policy["feature_variants"]["libc"]["exec_features"] = ["default", "std"]
+
+        with self.assertRaisesRegex(ValueError, "cannot also redirect"):
+            updater.specialize_feature_graph(policy, context, builds, "example")
+
     def test_feature_policy_rejects_changed_versions_features_and_edges(self):
         for mutation in ["version", "features", "selects", "rendered", "consumer", "edge"]:
             with self.subTest(mutation=mutation):

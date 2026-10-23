@@ -172,6 +172,44 @@ def rewrite_features(rendered, expected, features, suffix="", repository=""):
     return rendered
 
 
+def execution_feature_graph(rendered, expected, target_features, exec_features, repository):
+    """Selects complete feature units while keeping each build script constant.
+
+    Selecting features on a build-script executable would observe its exec
+    configuration instead of the library configuration it describes. Select
+    the complete library/script unit first, then compile its script normally.
+    """
+    lines = rendered.splitlines(keepends=True)
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line))
+
+    calls = [node.value for node in ast.parse(rendered).body
+             if isinstance(node, ast.Expr) and isinstance(node.value, ast.Call)
+             and isinstance(node.value.func, ast.Name)
+             and node.value.func.id in {"rust_library", "rust_proc_macro", "cargo_build_script", "alias"}]
+    names = [ast.literal_eval(keyword.value) for call in calls
+             for keyword in call.keywords if keyword.arg == "name"]
+    if len(names) != len(calls) or len(set(names)) != len(names):
+        raise ValueError("execution feature units require unique literal rule names")
+
+    prelude = rendered
+    for call in reversed(calls):
+        start = offsets[call.lineno - 1] + call.col_offset
+        end = offsets[call.end_lineno - 1] + call.end_col_offset
+        prelude = prelude[:start] + prelude[end:]
+    variants = [rewrite_features(rendered, expected, features, "__aos_" + role, repository)
+                for role, features in [("target", target_features), ("exec", exec_features)]]
+    aliases = [
+        "alias(\n    name = " + json.dumps(name) + ",\n    actual = select({\n"
+        '        "@//tools/bazel/rules:exec_compilation": ' + json.dumps(":" + name + "__aos_exec") + ",\n"
+        '        "//conditions:default": ' + json.dumps(":" + name + "__aos_target") + ",\n"
+        "    }),\n)\n"
+        for name in names
+    ]
+    return prelude.rstrip() + "\n\n" + "\n".join(variants + aliases)
+
+
 def specialize_feature_graph(specification, context, builds, repository):
     """Applies version-checked feature units and redirects explicit consumer edges."""
     for name, policy in specification.get("feature_variants", {}).items():
@@ -186,6 +224,12 @@ def specialize_feature_graph(specification, context, builds, repository):
             raise ValueError(f"reviewed feature resolution changed: {identifier}")
         original = builds[identifier]
         own_repository = crate_repository(repository, *identifier)
+        if "exec_features" in policy:
+            if policy.get("variants"):
+                raise ValueError("execution feature units cannot also redirect explicit consumers")
+            builds[identifier] = execution_feature_graph(
+                original, expected, policy["features"], policy["exec_features"], own_repository)
+            continue
         builds[identifier] = rewrite_features(original, expected, policy["features"])
         for variant, settings in policy.get("variants", {}).items():
             if not re.fullmatch(r"[a-z][a-z0-9_]*", variant) or not settings["dependents"]:

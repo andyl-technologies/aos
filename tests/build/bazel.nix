@@ -17,6 +17,10 @@
       manifests = [
         "crates/Cargo.toml"
         "crates/shared/aos-nar/Cargo.toml"
+        "crates/shared/aos-nix/Cargo.toml"
+        "crates/shared/aos-transfer/Cargo.toml"
+        "crates/shared/aos-oci/Cargo.toml"
+        "crates/shared/aos-systemd-client/Cargo.toml"
         "crates/aos/modules/aos-module-format/Cargo.toml"
         "crates/aos/registry/aos-registry-format/Cargo.toml"
         "crates/aos/release/aos-release-format/Cargo.toml"
@@ -90,6 +94,7 @@ in
     crucible-cli = import ./_bazel-crucible-cli.nix {inherit pkgs;};
     formats = import ./_bazel-formats.nix {inherit pkgs;};
     contracts = import ./_bazel-contracts.nix {inherit pkgs;};
+    native-foundation = import ./_bazel-native-foundation.nix {inherit pkgs;};
     wasm = import ./_bazel-wasm.nix {inherit pkgs;};
     recovery = import ./_bazel-recovery.nix {inherit pkgs;};
     license-boundary = import ./_bazel-license.nix {inherit pkgs workspace;};
@@ -286,6 +291,7 @@ in
         --inventory ${crucible-cli.tests}/inventory.json \
         --inventory ${formats.tests}/inventory.json \
         --inventory ${contracts.tests}/inventory.json \
+        --inventory ${native-foundation.tests}/inventory.json \
         --output "$out/parity.json"
     '';
     runner = pkgs.runCommand "aos-bazel-runner-evidence" {buildDeps = [pkgs.python3];} ''
@@ -329,7 +335,7 @@ in
     all =
       pkgs.runCommand "aos-bazel-checks" {
         buildDeps =
-          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection source-catalog.all sysroot-metadata manifest-extractor native-libraries static-runtime.all precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all store.all guest.all engine.all quota.all session.all control.all qemu-host.all store-s3.all daemon.all crucible-cli.all formats.all contracts.all wasm.all recovery]
+          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection source-catalog.all sysroot-metadata manifest-extractor native-libraries static-runtime.all precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all store.all guest.all engine.all quota.all session.all control.all qemu-host.all store-s3.all daemon.all crucible-cli.all formats.all contracts.all native-foundation.all wasm.all recovery]
           ++ pkgs.lib.optionals (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) [
             (import ./_bazel-cross-linux.nix {inherit pkgs;}).all
             (import ./_bazel-device-cross.nix {inherit pkgs;})

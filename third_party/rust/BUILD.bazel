@@ -15,12 +15,21 @@ load(":daemon/aliases.bzl", DAEMON_CRATES = "CRATES")
 load(":crucible-cli/aliases.bzl", CRUCIBLE_CLI_CRATES = "CRATES")
 load(":formats/aliases.bzl", FORMATS_CRATES = "CRATES")
 
+load(":native-foundation/aliases.bzl", NATIVE_FOUNDATION_CRATES = "CRATES")
+
+load(":native-foundation-tests/aliases.bzl", NATIVE_FOUNDATION_TESTS_CRATES = "CRATES")
+
+load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES = "CRATES")
+
 # Every first-party dependency in one configuration selects the same resolved
 # family. This preserves Rust type identity without globally unioning features.
 [
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:native_foundation_minimal_dependencies": NATIVE_FOUNDATION_MINIMAL_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:native_foundation_tests_dependencies": NATIVE_FOUNDATION_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:native_foundation_dependencies": NATIVE_FOUNDATION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:formats_dependencies": FORMATS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:crucible_cli_dependencies": CRUCIBLE_CLI_CRATES.get(name, "//tools/bazel/rules:crucible_cli_profile_required"),
             "//tools/bazel/rules:daemon_dependencies": DAEMON_CRATES.get(name, "//tools/bazel/rules:daemon_profile_required"),
@@ -37,7 +46,7 @@ load(":formats/aliases.bzl", FORMATS_CRATES = "CRATES")
         }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items() + CRUCIBLE_CLI_CRATES.items() + FORMATS_CRATES.items()))
+    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items() + CRUCIBLE_CLI_CRATES.items() + NATIVE_FOUNDATION_CRATES.items() + NATIVE_FOUNDATION_TESTS_CRATES.items() + NATIVE_FOUNDATION_MINIMAL_CRATES.items() + FORMATS_CRATES.items()))
 ]
 
 CORE_PACKAGES = {
@@ -198,6 +207,144 @@ FORMATS_PACKAGES = {
     "zstd": STORE_PACKAGES["zstd"],
 }
 
+# Native integrations retain separate production, test, and optional-transport
+# graphs. D-Bus test features never enter the production specification.
+
+NATIVE_FOUNDATION_PACKAGES = {
+    "anyhow": crate.spec(version = "=1.0.102"),
+    "async-trait": crate.spec(version = "=0.1.89"),
+    "aws-config": crate.spec(version = "=1.8.17"),
+    "aws-sdk-s3": crate.spec(version = "=1.134.0", default_features = False, features = ["default-https-client", "http-1x", "rt-tokio", "sigv4a"]),
+    "aws-types": crate.spec(version = "=1.3.16"),
+    "base64": crate.spec(version = "=0.22.1"),
+    "bytes": crate.spec(version = "=1.11.1"),
+    "crc32fast": crate.spec(version = "=1.5.0"),
+    "digest": crate.spec(version = "=0.10.7"),
+    "ed25519-dalek": crate.spec(version = "=2.2.0", features = ["pkcs8"]),
+    "flate2": crate.spec(version = "=1.1.9", default_features = False, features = ["rust_backend"]),
+    "futures-util": crate.spec(version = "=0.3.32"),
+    "hex": crate.spec(version = "=0.4.3"),
+    "rand": crate.spec(version = "=0.9.4"),
+    "reqwest": crate.spec(version = "=0.12.28", default_features = False, features = ["json", "rustls-tls-native-roots", "stream"]),
+    "rustix": crate.spec(version = "=1.1.4", features = ["event", "fs", "process"]),
+    "rustls-native-certs": crate.spec(version = "=0.8.3"),
+    "semver": crate.spec(version = "=1.0.28"),
+    "serde": crate.spec(version = "=1.0.228", features = ["derive", "rc"]),
+    "serde_json": crate.spec(version = "=1.0.150"),
+    "sha2": crate.spec(version = "=0.10.9", features = ["compress"]),
+    "ssh2": crate.spec(version = "=0.9.5", features = ["vendored-openssl"]),
+    "tar": crate.spec(version = "=0.4.46"),
+    "tempfile": crate.spec(version = "=3.27.0"),
+    "thiserror": crate.spec(version = "=2.0.18"),
+    "tokio": crate.spec(version = "=1.52.3", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "signal", "sync", "time"]),
+    "tokio-util": crate.spec(version = "=0.7.18", features = ["io"]),
+    "toml": crate.spec(version = "=0.8.23"),
+    "tracing": crate.spec(version = "=0.1.44"),
+    "url": crate.spec(version = "=2.5.8"),
+    "zbus": crate.spec(version = "=5.15.0", default_features = False, features = ["tokio"]),
+    "zeroize": crate.spec(version = "=1.9.0"),
+    "zstd": crate.spec(version = "=0.13.3", features = ["zstdmt"]),
+}
+
+NATIVE_FOUNDATION_TESTS_PACKAGES = {
+    "anyhow": crate.spec(version = "=1.0.102"),
+    "async-trait": crate.spec(version = "=0.1.89"),
+    "aws-config": crate.spec(version = "=1.8.17"),
+    "aws-sdk-s3": crate.spec(version = "=1.134.0", default_features = False, features = ["default-https-client", "http-1x", "rt-tokio", "sigv4a"]),
+    "aws-types": crate.spec(version = "=1.3.16"),
+    "axum": crate.spec(version = "=0.8.9", features = ["macros"]),
+    "base64": crate.spec(version = "=0.22.1"),
+    "bytes": crate.spec(version = "=1.11.1"),
+    "crc32fast": crate.spec(version = "=1.5.0"),
+    "digest": crate.spec(version = "=0.10.7"),
+    "ed25519-dalek": crate.spec(version = "=2.2.0", features = ["pkcs8"]),
+    "flate2": crate.spec(version = "=1.1.9", default_features = False, features = ["rust_backend"]),
+    "futures-util": crate.spec(version = "=0.3.32"),
+    "hex": crate.spec(version = "=0.4.3"),
+    "rand": crate.spec(version = "=0.9.4"),
+    "reqwest": crate.spec(version = "=0.12.28", default_features = False, features = ["json", "rustls-tls-native-roots", "stream"]),
+    "rustix": crate.spec(version = "=1.1.4", features = ["event", "fs", "process"]),
+    "rustls-native-certs": crate.spec(version = "=0.8.3"),
+    "semver": crate.spec(version = "=1.0.28"),
+    "serde": crate.spec(version = "=1.0.228", features = ["derive", "rc"]),
+    "serde_json": crate.spec(version = "=1.0.150"),
+    "sha2": crate.spec(version = "=0.10.9", features = ["compress"]),
+    "ssh2": crate.spec(version = "=0.9.5", features = ["vendored-openssl"]),
+    "tar": crate.spec(version = "=0.4.46"),
+    "tempfile": crate.spec(version = "=3.27.0"),
+    "thiserror": crate.spec(version = "=2.0.18"),
+    "tokio": crate.spec(version = "=1.52.3", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt", "rt-multi-thread", "signal", "sync", "test-util", "time"]),
+    "tokio-util": crate.spec(version = "=0.7.18", features = ["io"]),
+    "toml": crate.spec(version = "=0.8.23"),
+    "tracing": crate.spec(version = "=0.1.44"),
+    "url": crate.spec(version = "=2.5.8"),
+    "zbus": crate.spec(version = "=5.15.0", default_features = False, features = ["bus-impl", "p2p", "tokio"]),
+    "zeroize": crate.spec(version = "=1.9.0"),
+    "zstd": crate.spec(version = "=0.13.3", features = ["zstdmt"]),
+}
+
+NATIVE_FOUNDATION_MINIMAL_PACKAGES = {
+    "anyhow": crate.spec(version = "=1.0.102"),
+    "axum": crate.spec(version = "=0.8.9", features = ["macros"]),
+    "base64": crate.spec(version = "=0.22.1"),
+    "bytes": crate.spec(version = "=1.11.1"),
+    "crc32fast": crate.spec(version = "=1.5.0"),
+    "ed25519-dalek": crate.spec(version = "=2.2.0", features = ["pkcs8"]),
+    "flate2": crate.spec(version = "=1.1.9", default_features = False, features = ["rust_backend"]),
+    "futures-util": crate.spec(version = "=0.3.32"),
+    "hex": crate.spec(version = "=0.4.3"),
+    "reqwest": crate.spec(version = "=0.12.28", default_features = False, features = ["json", "rustls-tls-native-roots", "stream"]),
+    "rustix": crate.spec(version = "=1.1.4", features = ["event", "fs", "process"]),
+    "rustls-native-certs": crate.spec(version = "=0.8.3"),
+    "semver": crate.spec(version = "=1.0.28"),
+    "serde": crate.spec(version = "=1.0.228", features = ["derive", "rc"]),
+    "serde_json": crate.spec(version = "=1.0.150"),
+    "sha2": crate.spec(version = "=0.10.9", features = ["compress"]),
+    "tar": crate.spec(version = "=0.4.46"),
+    "tempfile": crate.spec(version = "=3.27.0"),
+    "thiserror": crate.spec(version = "=2.0.18"),
+    "tokio": crate.spec(version = "=1.52.3", features = ["fs", "io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "test-util", "time"]),
+    "tokio-util": crate.spec(version = "=0.7.18", features = ["io"]),
+    "toml": crate.spec(version = "=0.8.23"),
+    "tracing": crate.spec(version = "=0.1.44"),
+    "url": crate.spec(version = "=2.5.8"),
+    "zbus": crate.spec(version = "=5.15.0", default_features = False, features = ["bus-impl", "p2p", "tokio"]),
+    "zeroize": crate.spec(version = "=1.9.0"),
+    "zstd": crate.spec(version = "=0.13.3", features = ["zstdmt"]),
+}
+
+NATIVE_FOUNDATION_ANNOTATIONS = dict({"zstd-sys": STORE_ANNOTATIONS["zstd-sys"]}.items() + {
+    "openssl-sys": crate.annotation(
+        link_deps = ["@aos_native//:openssl", "@aos_native//:crypto"],
+        build_script_data = ["@aos_native//:openssl_files", "@aos_native//:crypto_files"],
+        build_script_tools = ["@aos_native//:openssl/pkg-config", "@aos_native//:openssl_pkg_config_tools"],
+        build_script_env = {
+            "OPENSSL_NO_VENDOR": "1",
+            "OPENSSL_STATIC": "0",
+            "PKG_CONFIG": "$(execpath @aos_native//:openssl/pkg-config)",
+            "PKG_CONFIG_ALLOW_CROSS": "1",
+        },
+    ),
+    # Cargo compiles the crate's pinned libssh2 sources. Keep that selection
+    # while importing the same AOS crypto and compression dependencies.
+    "libssh2-sys": crate.annotation(
+        link_deps = ["@aos_native//:openssl", "@aos_native//:crypto", "@aos_native//:zlib"],
+        build_script_data = ["@aos_native//:openssl_files", "@aos_native//:crypto_files", "@aos_native//:zlib_files", "@aos_native//:zlib/cflags"],
+        build_script_env = {"CFLAGS": "@$(execpath @aos_native//:zlib/cflags)"},
+    ),
+    "libz-sys": crate.annotation(
+        link_deps = ["@aos_native//:zlib"],
+        build_script_data = ["@aos_native//:zlib_files", "@aos_native//:zlib/cflags"],
+        build_script_tools = ["@aos_native//:zlib/pkg-config", "@aos_native//:zlib_pkg_config_tools"],
+        build_script_env = {
+            "LIBZ_SYS_STATIC": "0",
+            "CFLAGS": "@$(execpath @aos_native//:zlib/cflags)",
+            "PKG_CONFIG": "$(execpath @aos_native//:zlib/pkg-config)",
+            "PKG_CONFIG_ALLOW_CROSS": "1",
+        },
+    ),
+}.items())
+
 # Preserve the protocol library and its compiled build dependencies' domain
 # inside the larger host family. Exact versions and original licenses are checked
 # during updates; native bindings and other host dependencies keep host scope.
@@ -316,7 +463,124 @@ FORMATS_PERMISSIVE_CRATES = [
     "zmij@1.0.21",
 ]
 
+# Crypto features extend the shared format closure with permissive sources.
+NATIVE_FOUNDATION_PERMISSIVE_CRATES = FORMATS_PERMISSIVE_CRATES + [
+    "const-oid@0.9.6",
+    "subtle@2.6.1",
+    "zeroize@1.9.0",
+]
+
+# Native D-Bus macros use the same crates in both compilation roles.
+# Each role keeps Cargo's distinct feature unit, including its build script.
+NATIVE_FOUNDATION_FEATURE_VARIANTS = {
+    "indexmap": json.encode({
+        "version": "2.14.0",
+        "resolved_features": [
+                "default",
+                "serde",
+                "std"
+        ],
+        "features": [
+                "default",
+                "std"
+        ]
+}),
+    "serde": json.encode({
+        "version": "1.0.228",
+        "resolved_features": [
+                "alloc",
+                "default",
+                "derive",
+                "rc",
+                "serde_derive",
+                "std"
+        ],
+        "features": [
+                "default",
+                "derive",
+                "rc",
+                "serde_derive",
+                "std"
+        ],
+        "exec_features": [
+                "default",
+                "derive",
+                "serde_derive",
+                "std"
+        ]
+}),
+    "serde_core": json.encode({
+        "version": "1.0.228",
+        "resolved_features": [
+                "alloc",
+                "default",
+                "rc",
+                "result",
+                "std"
+        ],
+        "features": [
+                "alloc",
+                "default",
+                "rc",
+                "result",
+                "std"
+        ],
+        "exec_features": [
+                "result",
+                "std"
+        ]
+}),
+    "syn": json.encode({
+        "version": "2.0.118",
+        "resolved_features": [
+                "clone-impls",
+                "default",
+                "derive",
+                "extra-traits",
+                "fold",
+                "full",
+                "parsing",
+                "printing",
+                "proc-macro",
+                "visit",
+                "visit-mut"
+        ],
+        "features": [
+                "clone-impls",
+                "default",
+                "derive",
+                "extra-traits",
+                "full",
+                "parsing",
+                "printing",
+                "proc-macro"
+        ],
+        "exec_features": [
+                "clone-impls",
+                "default",
+                "derive",
+                "extra-traits",
+                "fold",
+                "full",
+                "parsing",
+                "printing",
+                "proc-macro",
+                "visit",
+                "visit-mut"
+        ]
+}),
+}
+
 FAMILY_FEATURE_VARIANTS = {
+    "native-foundation": dict(NATIVE_FOUNDATION_FEATURE_VARIANTS, serde_core = json.encode({
+        "version": "1.0.228",
+        "resolved_features": ["alloc", "rc", "result", "std"],
+        "features": ["rc", "result", "std"],
+        "exec_features": ["result", "std"],
+    })),
+    "native-foundation-tests": NATIVE_FOUNDATION_FEATURE_VARIANTS,
+    "native-foundation-minimal": NATIVE_FOUNDATION_FEATURE_VARIANTS,
+
     "formats": {
         "libc": STORE_FEATURE_VARIANTS["libc"],
         "indexmap": json.encode({
@@ -412,7 +676,7 @@ APPROVED_LICENSES = [
         packages = packages,
         annotations = annotations,
         feature_variants = FAMILY_FEATURE_VARIANTS.get(family, {}),
-        permissive_crates = FORMATS_PERMISSIVE_CRATES if family == "formats" else DAEMON_PERMISSIVE_CRATES if family in ["daemon", "crucible-cli"] else ENGINE_PERMISSIVE_CRATES if family in ["engine", "session", "control", "qemu-host"] else GUEST_PERMISSIVE_CRATES if family == "guest" else [],
+        permissive_crates = NATIVE_FOUNDATION_PERMISSIVE_CRATES if family in ["native-foundation", "native-foundation-tests", "native-foundation-minimal"] else FORMATS_PERMISSIVE_CRATES if family == "formats" else DAEMON_PERMISSIVE_CRATES if family in ["daemon", "crucible-cli"] else ENGINE_PERMISSIVE_CRATES if family in ["engine", "session", "control", "qemu-host"] else GUEST_PERMISSIVE_CRATES if family == "guest" else [],
         platforms = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
         license_domain = license_domain,
         approved_licenses = APPROVED_LICENSES,
@@ -433,6 +697,9 @@ APPROVED_LICENSES = [
         ("store-s3", STORE_S3_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("daemon", DAEMON_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("crucible-cli", CRUCIBLE_CLI_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
+        ("native-foundation", NATIVE_FOUNDATION_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
+        ("native-foundation-tests", NATIVE_FOUNDATION_TESTS_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
+        ("native-foundation-minimal", NATIVE_FOUNDATION_MINIMAL_PACKAGES, {"zstd-sys": STORE_ANNOTATIONS["zstd-sys"]}, "apache-host"),
         ("formats", FORMATS_PACKAGES, {"zstd-sys": STORE_ANNOTATIONS["zstd-sys"]}, "apache-host"),
     ]
 ]
@@ -446,5 +713,5 @@ APPROVED_LICENSES = [
         license_domain = "apache-host",
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
-    for family in ["core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "formats"]
+    for family in ["core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "native-foundation", "native-foundation-tests", "native-foundation-minimal", "formats"]
 ]

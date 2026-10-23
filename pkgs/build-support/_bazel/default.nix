@@ -29,6 +29,39 @@
     inherit pkgs lib;
     modules = aosBazelModules;
   };
+  aosBazelNativeFoundationLibraries = mkAosBazelNativeLibraries {
+    libraries = {
+      openssl = {
+        package = pkgs.openssl;
+        libraryFile = "lib/libssl.so";
+        pkgConfigFiles = ["lib/pkgconfig/openssl.pc" "lib/pkgconfig/libssl.pc"];
+        pkgConfigDependencies = ["crypto"];
+      };
+      crypto = {
+        package = pkgs.openssl;
+        libraryFile = "lib/libcrypto.so";
+        pkgConfigFiles = ["lib/pkgconfig/libcrypto.pc"];
+      };
+      ssh = {
+        package = pkgs.libssh2;
+        libraryFile = "lib/libssh2.so";
+        pkgConfigFiles = ["lib/pkgconfig/libssh2.pc"];
+        pkgConfigDependencies = ["crypto" "zlib"];
+      };
+      zlib = {
+        package = pkgs.zlib;
+        libraryFile = "lib/libz.so";
+        compilerResponseFile = true;
+        pkgConfigFiles = ["lib/pkgconfig/zlib.pc"];
+      };
+      zstd = {
+        package = pkgs.zstdStaticMultithread;
+        libraryFile = "lib/libzstd.a";
+        linkage = "static";
+        pkgConfigFiles = ["lib/pkgconfig/libzstd.pc"];
+      };
+    };
+  };
   aosBazelGuestLibraries = mkAosBazelStaticLibraries {
     libraries = {
       sqlite = {
@@ -59,6 +92,21 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    native-foundation = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "native-foundation";
+    };
+    native-foundation-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "native-foundation-tests";
+    };
+    native-foundation-minimal = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "native-foundation-minimal";
+    };
     core = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -179,6 +227,20 @@
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
   };
+  aosBazelNativeFoundationWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = ["crates/shared" "crates/aos/registry/aos-registry-format" "tools/bazel" "third_party/rust"];
+    repositories =
+      aosBazelRepositories
+      // aosBazelRustRepositories.native-foundation-tests
+      // {
+        aos_native = aosBazelNativeFoundationLibraries;
+        aos_cli_runtime = aosBazelCrucibleCliRuntime;
+      };
+    dependencyProfile = "native-foundation-tests";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = map (name: "//crates/shared/${name}:unit") ["aos-nix" "aos-transfer" "aos-oci" "aos-systemd-client"];
+  };
   aosBazelContractsWorkspace = mkAosBazelWorkspace {
     root = ../../..;
     sourceDirectories = ["crates/shared" "crates/aos/modules" "crates/aos/registry/aos-registry-format" "crates/aos/release/aos-release-format" "crates/aos/packages/aos-deployment-format" "crates/aos/boot/aos-storage-layout" "tools/bazel" "third_party/rust"];
@@ -275,6 +337,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelNativeFoundationLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelNativeFoundationWorkspace;
     }).launcher;
   aosBazelContractsLauncher =
     (import ./development.nix {

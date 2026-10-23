@@ -46,7 +46,7 @@ class ProtocolParityTests(unittest.TestCase):
         self.verify = verification.start()
         self.addCleanup(verification.stop)
 
-    def compare(self, dependency_paths=None, allow_empty_tests=()):
+    def compare(self, dependency_paths=None, allow_empty_tests=(), package_target_suffixes=None):
         self.messages.write_text("".join(json.dumps(event) + "\n" for event in self.events))
         self.inventory.write_text(json.dumps({"configured_targets": self.reports}))
         (self.root / "index.json").write_text(json.dumps({"results": self.results}))
@@ -56,7 +56,80 @@ class ProtocolParityTests(unittest.TestCase):
             self.messages,
             dependency_paths=dependency_paths,
             allow_empty_tests=allow_empty_tests,
+            package_target_suffixes=package_target_suffixes,
         )
+
+    def production_features(self, required_packages=()):
+        self.messages.write_text("".join(json.dumps(event) + "\n" for event in self.events))
+        self.inventory.write_text(json.dumps({"configured_targets": self.reports}))
+        return verify_protocol.compare_features(
+            self.inventory, self.messages,
+            {"crucible-qemu-protocol": "crates/crucible/protocol/crucible-qemu-protocol"},
+            required_packages=required_packages,
+        )
+
+    def test_production_features_need_no_test_artifact_or_case_execution(self):
+        self.events[0].pop("profile")
+        self.events[0].pop("target")
+        self.events[0].pop("executable")
+
+        result = self.production_features(required_packages=["crucible-qemu-protocol"])
+
+        self.assertEqual(result["features"], {"serde@1.0.228": [("default", "derive")]})
+        self.verify.assert_not_called()
+
+    def test_production_features_reject_test_feature_leakage(self):
+        self.reports[0]["features"].append("rc")
+
+        with self.assertRaisesRegex(ValueError, "resolved Rust feature inventories differ"):
+            self.production_features()
+
+    def test_production_features_preserve_both_compilation_units(self):
+        self.events.append(dict(self.events[1], features=["default"]))
+        self.reports.append(dict(self.reports[0], label=self.reports[0]["label"] + "__exec", features=["default"]))
+
+        result = self.production_features()
+
+        self.assertEqual(result["features"]["serde@1.0.228"], [("default",), ("default", "derive")])
+
+    def test_production_features_require_selected_compiler_artifacts(self):
+        with self.assertRaisesRegex(ValueError, "Cargo omitted first-party packages"):
+            self.production_features(required_packages=["missing-library"])
+
+    def test_one_package_variant_preserves_other_package_target_names(self):
+        suffix = "_without_transfer"
+        self.results[0]["identity"]["label"] += suffix
+        second = dict(self.events[0])
+        second.update({
+            "package_id": "path+file:///source/crucible-qemu-shmem#0.1.0",
+            "manifest_path": "/source/crucible-qemu-shmem/Cargo.toml",
+        })
+        self.events.append(second)
+        other_label = "//crates/crucible/protocol/crucible-qemu-shmem:unit"
+        self.results.append({"identity": {"label": other_label}})
+        self.reports.append({
+            "label": other_label.removesuffix(":unit") + ":lib",
+            "kind": "rust_library", "features": [],
+        })
+
+        self.compare(package_target_suffixes={"crucible-qemu-protocol": suffix})
+
+        self.assertEqual(set(self.verify.call_args.args[1]), {self.label + suffix, other_label})
+
+    def test_package_variant_cannot_name_an_unselected_package(self):
+        with self.assertRaisesRegex(ValueError, "unselected package"):
+            self.compare(package_target_suffixes={"unknown": "_variant"})
+
+    def test_native_foundation_repositories_preserve_exact_feature_checks(self):
+        for family in ["native_foundation", "native_foundation_tests", "native_foundation_minimal"]:
+            with self.subTest(family=family):
+                self.reports[0]["label"] = f"@@+aos_tools_repository+aos_{family}_crates__serde-1.0.228//:serde"
+                self.compare()
+
+                self.reports[0]["features"] = ["default"]
+                with self.assertRaisesRegex(ValueError, "feature inventories differ"):
+                    self.compare()
+                self.reports[0]["features"] = ["derive", "default"]
 
     def test_explicit_empty_test_requires_an_empty_cargo_artifact(self):
         with patch.object(verify_protocol, "cases", return_value=[]):
@@ -248,6 +321,30 @@ class ProtocolParityTests(unittest.TestCase):
 
 
 class DoctestParityTests(unittest.TestCase):
+    def test_package_variants_preserve_exact_doctest_target_inventory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            packages = {"first": "crates/shared/first", "second": "crates/shared/second"}
+            summary = "test result: ok. 0 passed; 0 failed; 0 ignored;\n"
+            (root / "cargo.log").write_text("Doc-tests first\n" + summary + "Doc-tests second\n" + summary)
+            (root / "test.log").write_text(summary)
+            labels = ["//crates/shared/first:doc_variant", "//crates/shared/second:doc"]
+            results = [{"identity": {"label": label}, "status": "PASSED", "outputs": {"test.log": "test.log"}}
+                       for label in labels]
+            (root / "index.json").write_text(json.dumps({"results": results}))
+
+            compared = verify_protocol.compare_doctests(
+                root, root / "cargo.log", packages, package_target_suffixes={"first": "_variant"},
+            )
+
+            self.assertEqual(compared, dict.fromkeys(labels, {}))
+            results[1]["identity"]["label"] += "_variant"
+            (root / "index.json").write_text(json.dumps({"results": results}))
+            with self.assertRaisesRegex(ValueError, "target inventories differ"):
+                verify_protocol.compare_doctests(
+                    root, root / "cargo.log", packages, package_target_suffixes={"first": "_variant"},
+                )
+
     def test_item_qualified_doctests_preserve_the_item_and_compile_status(self):
         cargo = "test crucible/engine/crucible-device/src/ninep/tree.rs - ninep::tree::qid_path (line 398) - compile ... ok\n"
         bazel = "test /build/workspace/crates/crucible/engine/crucible-device/src/ninep/tree.rs - ninep::tree::qid_path (line 398) - compile ... ok\n"

@@ -5,6 +5,8 @@
 //! replacement. The hermetic Nix check starts the AOS-built D-Bus broker and
 //! supplies its address through `AOS_TEST_DBUS_ADDRESS`.
 
+// This suite shares the fake manager but does not use the peer-to-peer harness.
+#[allow(dead_code)]
 mod common;
 
 use std::sync::Arc;
@@ -15,22 +17,33 @@ use common::{MANAGER_PATH, fake_systemd};
 
 const SYSTEMD_NAME: &str = "org.freedesktop.systemd1";
 
-struct FakeUnit {
-    needs_reload: Arc<std::sync::atomic::AtomicBool>,
-}
+#[allow(
+    clippy::disallowed_types,
+    reason = "the D-Bus interface macro generates its property maps"
+)]
+mod unit_interface {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
-#[zbus::interface(name = "org.freedesktop.systemd1.Unit")]
-impl FakeUnit {
-    #[zbus(property)]
-    fn id(&self) -> &str {
-        "example.service"
+    pub(super) struct FakeUnit {
+        pub(super) needs_reload: Arc<AtomicBool>,
     }
 
-    #[zbus(property)]
-    fn need_daemon_reload(&self) -> bool {
-        self.needs_reload.load(std::sync::atomic::Ordering::SeqCst)
+    #[zbus::interface(name = "org.freedesktop.systemd1.Unit")]
+    impl FakeUnit {
+        #[zbus(property)]
+        fn id(&self) -> &str {
+            "example.service"
+        }
+
+        #[zbus(property)]
+        fn need_daemon_reload(&self) -> bool {
+            self.needs_reload.load(Ordering::SeqCst)
+        }
     }
 }
+
+use unit_interface::FakeUnit;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires the hermetic AOS D-Bus broker"]
