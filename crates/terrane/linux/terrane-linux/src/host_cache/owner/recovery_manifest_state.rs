@@ -109,7 +109,7 @@ pub(super) fn require_same(actual: &CacheState, expected: &CacheState) -> io::Re
                     && a.offset == b.offset
                     && a.length == b.length
             });
-    if !pins || !reservations || !leases || !residences {
+    if actual.exposures != expected.exposures || !pins || !reservations || !leases || !residences {
         return Err(invalid(
             "actual recovery policy contains changed or unresolved records",
         ));
@@ -128,6 +128,56 @@ fn invalid(message: &'static str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use terrane_sdk::host::cache::{ExposurePhase, ExposureRecord};
+
+    #[test]
+    fn changed_exposure_cannot_pass_a_policy_snapshot_comparison()
+    -> Result<(), Box<dyn std::error::Error>> {
+        // Comparison data only: this legacy unbound record grants no native
+        // backing or closure proof. Every field must survive the funded snapshot.
+        let mut expected = CacheState::default();
+        let exposure = ExposureRecord {
+            id: "ab".repeat(16),
+            generation: 1,
+            commit: "cd".repeat(32),
+            root: "ef".repeat(32),
+            index_version: 2,
+            deadline: 100,
+            phase: ExposurePhase::Active,
+            backings: Vec::new(),
+        };
+        expected.retain_exposure(
+            exposure,
+            &[],
+            99,
+            terrane_sdk::host::cache::StateLimits {
+                bytes: 8192,
+                records: 16,
+            },
+        )?;
+        assert_eq!(expected.drain_expired_exposures(100), 1);
+        assert!(require_same(&expected, &expected).is_ok());
+
+        let mut changed = expected.clone();
+        changed.exposures[0].phase = ExposurePhase::Active;
+        assert!(require_same(&changed, &expected).is_err());
+
+        let mut changed = expected.clone();
+        changed.exposures[0].generation += 1;
+        assert!(require_same(&changed, &expected).is_err());
+
+        let mut changed = expected.clone();
+        changed.exposures[0].deadline -= 1;
+        assert!(require_same(&changed, &expected).is_err());
+
+        let mut changed = expected.clone();
+        changed.exposures.clear();
+        assert!(require_same(&changed, &expected).is_err());
+
+        assert_eq!(expected.exposures.len(), 1);
+        assert_eq!(expected.exposures[0].phase, ExposurePhase::Draining);
+        Ok(())
+    }
 
     #[test]
     fn extra_cold_rows_are_refused_and_preserved() {

@@ -87,6 +87,7 @@ UNIT_TESTS = (
     'host_cache::owner::recovery_encoded::tests::before_canonical_publish_the_verified_original_range_remains_selected',
     'host_cache::owner::recovery_encoded::tests::extraction_crash_selection_keeps_one_residence_and_checks_both_lengths',
     'host_cache::owner::recovery_inline::tests::inline_reconstruction_keeps_each_exact_whole_chunk_range',
+    'host_cache::owner::recovery_manifest_state::tests::changed_exposure_cannot_pass_a_policy_snapshot_comparison',
     'host_cache::owner::recovery_manifest_state::tests::changed_residence_cannot_pass_a_policy_snapshot_comparison',
     'host_cache::owner::recovery_manifest_state::tests::extra_cold_rows_are_refused_and_preserved',
     'host_cache::owner::recovery_namespace::tests::actual_directory_reopen_retains_classified_inode_across_name_replacement',

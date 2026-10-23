@@ -15861,3 +15861,42 @@ prior actor, assertion and timeout. The new file actor uses the existing
 Linux all-feature/all-target Clippy, actual fixture compilation, Rust formatting,
 supervisor syntax and diff checks pass. Fresh runtime and mandatory application
 qualification remain required; no complete task or mounted worker is accepted.
+
+
+#### Complete exposure comparison in funded recovery
+
+Review of retained-exposure recovery found the common bootstrap comparison
+checked pins, reservations, leases and residences but omitted exposure records.
+It now compares the complete original exposure array, including native backing
+bindings, before recovery completion. No record or phase may silently change
+between the funded bootstrap and its final policy comparison.
+
+A pure regression constructs and expires a legacy unbound exposure using the
+public policy API, then checks refusal of changed phase, generation, deadline
+and removed exposure. These are comparison candidates, not native capabilities.
+The case is added explicitly to the native feature inventory: 130 total, with
+125 ordinary-user cases and the same five administrator-only creator cases.
+Existing selected tests and timeouts remain unchanged.
+
+At the preceding corrected status checkpoint `af90462e20`, the full native
+host-cache component passes in 1,542.715 seconds. Complete review matches all
+8,080 immutable source files, 5,370 bound inputs, four original Cargo/installed
+ELFs, all 92 fixture selectors, the actual 129-case native unit execution and
+twenty-seven required regression witnesses. The pre-Resume status refusal
+witness is present and the existing exact actor-output protocols pass. This
+qualifies that component source; it does not qualify the newer retained-file
+or snapshot-comparison increments or accept another full trunk task.
+
+The complete exposure comparison passes strict Linux all-feature/all-target
+Clippy, all three pure recovery snapshot regressions, actual native fixture
+compilation, Rust formatting, supervisor syntax and diff checks. No native
+lifecycle test executes on the host. Fresh application and VM qualification
+will include the retained-file control and this comparison fix.
+
+The first retained-index VM at `fe105ddf1f` fails in 647.126 seconds. Its
+original basic index admission, cold retirement, exact charge release and warm
+eviction controls pass. The existing signed-root scenario then overflows its
+main-thread stack during genuine source initialization, before the new retained
+recovery selector runs. The immutable failed receipt remains retained. No new
+retained-recovery runtime claim is made; fixture stack layout requires correction
+with unchanged assertions, process limits and actor/guest timeouts.
