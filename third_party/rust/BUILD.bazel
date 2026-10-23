@@ -64,7 +64,33 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(dict(DEPLOYMENT_CRATES.items() + BUILD_SERVICES_CRATES.items() + CLI_SUPPORT_CRATES.items() + ACTIVATION_CRUCIBLE_CRATES.items() + ACTIVATION_CRUCIBLE_TESTS_CRATES.items() + ACTIVATION_SYSTEMD_CRATES.items() + ACTIVATION_STORAGE_CRATES.items() + ACTIVATION_CORE_CRATES.items() + ACTIVATION_CORE_TESTS_CRATES.items() + CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items() + DAEMON_CRATES.items() + CRUCIBLE_CLI_CRATES.items() + NATIVE_FOUNDATION_CRATES.items() + NATIVE_FOUNDATION_TESTS_CRATES.items() + NATIVE_FOUNDATION_MINIMAL_CRATES.items() + FORMATS_CRATES.items()))
+    for name in sorted(dict(
+        DEPLOYMENT_CRATES.items()
+        + BUILD_SERVICES_CRATES.items()
+        + CLI_SUPPORT_CRATES.items()
+        + ACTIVATION_CRUCIBLE_CRATES.items()
+        + ACTIVATION_CRUCIBLE_TESTS_CRATES.items()
+        + ACTIVATION_SYSTEMD_CRATES.items()
+        + ACTIVATION_STORAGE_CRATES.items()
+        + ACTIVATION_CORE_CRATES.items()
+        + ACTIVATION_CORE_TESTS_CRATES.items()
+        + CORE_CRATES.items()
+        + DEVICE_CRATES.items()
+        + STORE_CRATES.items()
+        + GUEST_CRATES.items()
+        + ENGINE_CRATES.items()
+        + QUOTA_CRATES.items()
+        + SESSION_CRATES.items()
+        + CONTROL_CRATES.items()
+        + QEMU_HOST_CRATES.items()
+        + STORE_S3_CRATES.items()
+        + DAEMON_CRATES.items()
+        + CRUCIBLE_CLI_CRATES.items()
+        + NATIVE_FOUNDATION_CRATES.items()
+        + NATIVE_FOUNDATION_TESTS_CRATES.items()
+        + NATIVE_FOUNDATION_MINIMAL_CRATES.items()
+        + FORMATS_CRATES.items()
+    ))
 ]
 
 CORE_PACKAGES = {
@@ -1201,7 +1227,15 @@ APPROVED_LICENSES = [
         packages = packages,
         annotations = annotations,
         feature_variants = FAMILY_FEATURE_VARIANTS.get(family, {}),
-        permissive_crates = NATIVE_FOUNDATION_PERMISSIVE_CRATES if family in ["native-foundation", "native-foundation-tests", "native-foundation-minimal"] else FORMATS_PERMISSIVE_CRATES if family == "formats" else DAEMON_PERMISSIVE_CRATES if family in ["daemon", "crucible-cli"] else ACTIVATION_CRUCIBLE_PERMISSIVE_CRATES if family == "activation-crucible" else ENGINE_PERMISSIVE_CRATES if family in ["activation-crucible-tests", "engine", "session", "control", "qemu-host"] else GUEST_PERMISSIVE_CRATES if family == "guest" else [],
+        permissive_crates = (
+            NATIVE_FOUNDATION_PERMISSIVE_CRATES if family in ["native-foundation", "native-foundation-tests", "native-foundation-minimal"]
+            else FORMATS_PERMISSIVE_CRATES if family == "formats"
+            else DAEMON_PERMISSIVE_CRATES if family in ["daemon", "crucible-cli"]
+            else ACTIVATION_CRUCIBLE_PERMISSIVE_CRATES if family == "activation-crucible"
+            else ENGINE_PERMISSIVE_CRATES if family in ["activation-crucible-tests", "engine", "session", "control", "qemu-host"]
+            else GUEST_PERMISSIVE_CRATES if family == "guest"
+            else []
+        ),
         platforms = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
         license_domain = license_domain,
         approved_licenses = APPROVED_LICENSES,
@@ -1247,5 +1281,31 @@ APPROVED_LICENSES = [
         license_domain = "apache-host",
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
-    for family in ["deployment", "build-services", "cli-support", "activation-crucible", "activation-crucible-tests", "activation-systemd", "activation-storage", "activation-core", "activation-core-tests", "core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3", "daemon", "crucible-cli", "native-foundation", "native-foundation-tests", "native-foundation-minimal", "formats"]
+    for family in [
+        "deployment",
+        "build-services",
+        "cli-support",
+        "activation-crucible",
+        "activation-crucible-tests",
+        "activation-systemd",
+        "activation-storage",
+        "activation-core",
+        "activation-core-tests",
+        "core",
+        "device",
+        "store",
+        "guest",
+        "engine",
+        "quota",
+        "session",
+        "control",
+        "qemu-host",
+        "store-s3",
+        "daemon",
+        "crucible-cli",
+        "native-foundation",
+        "native-foundation-tests",
+        "native-foundation-minimal",
+        "formats",
+    ]
 ]

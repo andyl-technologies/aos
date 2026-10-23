@@ -392,7 +392,52 @@ in
     all =
       pkgs.runCommand "aos-bazel-checks" {
         buildDeps =
-          [runtime runner editor developer-evidence developer-policy metadata-policy metadata-parity policy shell-bootstrap source-selection source-catalog.all sysroot-metadata manifest-extractor native-libraries static-runtime.all precision-parity license-boundary pilot.all dependencies.all protocol.all shared.all device.all store.all guest.all engine.all quota.all session.all control.all qemu-host.all store-s3.all daemon.all crucible-cli.all formats.all contracts.all native-foundation.all activation-core.all activation-storage.all activation-systemd.all activation-crucible.all cli-support.all build-services.all deployment.all wasm.all recovery]
+          [
+            runtime
+            runner
+            editor
+            developer-evidence
+            developer-policy
+            metadata-policy
+            metadata-parity
+            policy
+            shell-bootstrap
+            source-selection
+            source-catalog.all
+            sysroot-metadata
+            manifest-extractor
+            native-libraries
+            static-runtime.all
+            precision-parity
+            license-boundary
+            pilot.all
+            dependencies.all
+            protocol.all
+            shared.all
+            device.all
+            store.all
+            guest.all
+            engine.all
+            quota.all
+            session.all
+            control.all
+            qemu-host.all
+            store-s3.all
+            daemon.all
+            crucible-cli.all
+            formats.all
+            contracts.all
+            native-foundation.all
+            activation-core.all
+            activation-storage.all
+            activation-systemd.all
+            activation-crucible.all
+            cli-support.all
+            build-services.all
+            deployment.all
+            wasm.all
+            recovery
+          ]
           ++ pkgs.lib.optionals (pkgs.stdenv.hostPlatform.isLinux && pkgs.stdenv.hostPlatform.isx86_64) [
             (import ./_bazel-cross-linux.nix {inherit pkgs;}).all
             (import ./_bazel-device-cross.nix {inherit pkgs;})
