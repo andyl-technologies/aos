@@ -1,0 +1,1413 @@
+{
+  "command": "nix-build /tmp/aos-bazel-722/hub-db-baselines.nix -A builds --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "df2acf6f28",
+  "derivation": "/nix/store/8wywd396l3v7226fpch9mljs5dkyzyba-aos-bazel-hub-db-production-cargo-baseline-1.drv",
+  "derivation_sha256": "1c0c73fcef6ff87cf2880f044b30337d76253349e1d1b86136625115131d798d",
+  "external_features": {
+    "adler2@2.0.1": [
+      []
+    ],
+    "aead@0.5.2": [
+      [
+        "alloc",
+        "getrandom",
+        "rand_core"
+      ]
+    ],
+    "aes-gcm@0.10.3": [
+      [
+        "aes",
+        "alloc",
+        "default",
+        "getrandom",
+        "rand_core"
+      ]
+    ],
+    "aes@0.8.4": [
+      []
+    ],
+    "aho-corasick@1.1.4": [
+      [
+        "perf-literal",
+        "std"
+      ]
+    ],
+    "allocator-api2@0.2.21": [
+      [
+        "alloc"
+      ]
+    ],
+    "anyhow@1.0.102": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "argon2@0.5.3": [
+      [
+        "alloc",
+        "default",
+        "password-hash",
+        "rand"
+      ]
+    ],
+    "async-trait@0.1.89": [
+      []
+    ],
+    "atoi@2.0.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "autocfg@1.5.1": [
+      []
+    ],
+    "base64@0.22.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "base64ct@1.8.3": [
+      [
+        "alloc"
+      ]
+    ],
+    "blake2@0.10.6": [
+      []
+    ],
+    "block-buffer@0.10.4": [
+      []
+    ],
+    "bytes@1.11.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "cc@1.2.65": [
+      []
+    ],
+    "cfg-if@1.0.4": [
+      []
+    ],
+    "cipher@0.4.4": [
+      []
+    ],
+    "concurrent-queue@2.5.0": [
+      [
+        "std"
+      ]
+    ],
+    "const-oid@0.9.6": [
+      []
+    ],
+    "cpufeatures@0.2.17": [
+      []
+    ],
+    "crc-catalog@2.5.0": [
+      []
+    ],
+    "crc32fast@1.5.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "crc@3.4.0": [
+      []
+    ],
+    "crossbeam-queue@0.3.13": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "crossbeam-utils@0.8.21": [
+      [
+        "std"
+      ]
+    ],
+    "crypto-common@0.1.7": [
+      [
+        "getrandom",
+        "rand_core",
+        "std"
+      ]
+    ],
+    "ctr@0.9.2": [
+      []
+    ],
+    "curve25519-dalek-derive@0.1.1": [
+      []
+    ],
+    "curve25519-dalek@4.1.3": [
+      [
+        "alloc",
+        "digest",
+        "precomputed-tables",
+        "zeroize"
+      ]
+    ],
+    "der@0.7.10": [
+      [
+        "alloc",
+        "oid",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "digest@0.10.7": [
+      [
+        "alloc",
+        "block-buffer",
+        "core-api",
+        "default",
+        "mac",
+        "std",
+        "subtle"
+      ]
+    ],
+    "displaydoc@0.2.6": [
+      []
+    ],
+    "dyn-clone@1.0.20": [
+      []
+    ],
+    "ed25519-dalek@2.2.0": [
+      [
+        "alloc",
+        "default",
+        "fast",
+        "pkcs8",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "ed25519@2.2.3": [
+      [
+        "alloc",
+        "pkcs8",
+        "std"
+      ]
+    ],
+    "either@1.16.0": [
+      [
+        "default",
+        "serde",
+        "std"
+      ]
+    ],
+    "equivalent@1.0.2": [
+      []
+    ],
+    "errno@0.3.14": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "event-listener@5.4.1": [
+      [
+        "default",
+        "parking",
+        "std"
+      ]
+    ],
+    "find-msvc-tools@0.1.9": [
+      []
+    ],
+    "flate2@1.1.9": [
+      [
+        "any_impl",
+        "miniz_oxide",
+        "rust_backend"
+      ]
+    ],
+    "flume@0.11.1": [
+      [
+        "async",
+        "futures-core",
+        "futures-sink"
+      ]
+    ],
+    "foldhash@0.1.5": [
+      []
+    ],
+    "form_urlencoded@1.2.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-channel@0.3.32": [
+      [
+        "alloc",
+        "futures-sink",
+        "sink",
+        "std"
+      ]
+    ],
+    "futures-core@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-executor@0.3.32": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "futures-intrusive@0.5.0": [
+      [
+        "alloc",
+        "default",
+        "parking_lot",
+        "std"
+      ]
+    ],
+    "futures-io@0.3.32": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "futures-sink@0.3.32": [
+      []
+    ],
+    "futures-task@0.3.32": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "futures-util@0.3.32": [
+      [
+        "alloc",
+        "futures-io",
+        "futures-sink",
+        "io",
+        "memchr",
+        "sink",
+        "slab",
+        "std"
+      ]
+    ],
+    "generic-array@0.14.7": [
+      [
+        "more_lengths"
+      ]
+    ],
+    "getrandom@0.2.17": [
+      []
+    ],
+    "getrandom@0.3.4": [
+      [
+        "std"
+      ]
+    ],
+    "getrandom@0.4.2": [
+      []
+    ],
+    "ghash@0.5.1": [
+      []
+    ],
+    "hashbrown@0.15.5": [
+      [
+        "allocator-api2",
+        "default",
+        "default-hasher",
+        "equivalent",
+        "inline-more",
+        "raw-entry"
+      ]
+    ],
+    "hashbrown@0.17.1": [
+      []
+    ],
+    "hashlink@0.10.0": [
+      []
+    ],
+    "hex@0.4.3": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "hmac@0.12.1": [
+      []
+    ],
+    "humantime@2.3.0": [
+      []
+    ],
+    "icu_collections@2.2.0": [
+      []
+    ],
+    "icu_locale_core@2.2.0": [
+      [
+        "zerovec"
+      ]
+    ],
+    "icu_normalizer@2.2.0": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "icu_normalizer_data@2.2.0": [
+      []
+    ],
+    "icu_properties@2.2.0": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "icu_properties_data@2.2.0": [
+      []
+    ],
+    "icu_provider@2.2.0": [
+      [
+        "baked"
+      ]
+    ],
+    "idna@1.1.0": [
+      [
+        "alloc",
+        "compiled_data",
+        "std"
+      ]
+    ],
+    "idna_adapter@1.2.2": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "indexmap@2.14.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "inout@0.1.4": [
+      []
+    ],
+    "itoa@1.0.18": [
+      []
+    ],
+    "libc@0.2.186": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "libsqlite3-sys@0.30.1": [
+      [
+        "bundled",
+        "bundled_bindings",
+        "cc",
+        "pkg-config",
+        "unlock_notify",
+        "vcpkg"
+      ]
+    ],
+    "litemap@0.8.2": [
+      []
+    ],
+    "lock_api@0.4.14": [
+      [
+        "atomic_usize",
+        "default"
+      ]
+    ],
+    "log@0.4.30": [
+      []
+    ],
+    "memchr@2.8.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "miniz_oxide@0.8.9": [
+      [
+        "simd",
+        "simd-adler32",
+        "with-alloc"
+      ]
+    ],
+    "mio@1.2.1": [
+      [
+        "net",
+        "os-ext",
+        "os-poll"
+      ]
+    ],
+    "num-traits@0.2.19": [
+      [
+        "std"
+      ]
+    ],
+    "once_cell@1.21.4": [
+      [
+        "alloc",
+        "default",
+        "race",
+        "std"
+      ]
+    ],
+    "opaque-debug@0.3.1": [
+      []
+    ],
+    "parking@2.2.1": [
+      []
+    ],
+    "parking_lot@0.12.5": [
+      [
+        "default"
+      ]
+    ],
+    "parking_lot_core@0.9.12": [
+      []
+    ],
+    "password-hash@0.5.0": [
+      [
+        "alloc",
+        "default",
+        "getrandom",
+        "rand_core"
+      ]
+    ],
+    "percent-encoding@2.3.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "pin-project-lite@0.2.17": [
+      []
+    ],
+    "pkcs8@0.10.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "pkg-config@0.3.33": [
+      []
+    ],
+    "polyval@0.6.2": [
+      []
+    ],
+    "potential_utf@0.1.5": [
+      [
+        "zerovec"
+      ]
+    ],
+    "ppv-lite86@0.2.21": [
+      [
+        "simd",
+        "std"
+      ]
+    ],
+    "proc-macro2@1.0.106": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "quote@1.0.46": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "rand@0.9.4": [
+      [
+        "alloc",
+        "default",
+        "os_rng",
+        "small_rng",
+        "std",
+        "std_rng",
+        "thread_rng"
+      ]
+    ],
+    "rand_chacha@0.9.0": [
+      [
+        "std"
+      ]
+    ],
+    "rand_core@0.6.4": [
+      [
+        "getrandom"
+      ]
+    ],
+    "rand_core@0.9.5": [
+      [
+        "os_rng",
+        "std"
+      ]
+    ],
+    "ref-cast-impl@1.0.27": [
+      []
+    ],
+    "ref-cast@1.0.27": [
+      []
+    ],
+    "regex-automata@0.4.14": [
+      [
+        "alloc",
+        "dfa-onepass",
+        "hybrid",
+        "meta",
+        "nfa-backtrack",
+        "nfa-pikevm",
+        "nfa-thompson",
+        "perf-inline",
+        "perf-literal",
+        "perf-literal-multisubstring",
+        "perf-literal-substring",
+        "std",
+        "syntax",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment",
+        "unicode-word-boundary"
+      ]
+    ],
+    "regex-syntax@0.8.11": [
+      [
+        "default",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "regex@1.12.4": [
+      [
+        "default",
+        "perf",
+        "perf-backtrack",
+        "perf-cache",
+        "perf-dfa",
+        "perf-inline",
+        "perf-literal",
+        "perf-onepass",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "rustc_version@0.4.1": [
+      []
+    ],
+    "ryu@1.0.23": [
+      []
+    ],
+    "schemars@1.2.2": [
+      [
+        "default",
+        "derive",
+        "schemars_derive",
+        "std"
+      ]
+    ],
+    "schemars_derive@1.2.2": [
+      []
+    ],
+    "scopeguard@1.2.0": [
+      []
+    ],
+    "semver@1.0.28": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "serde@1.0.228": [
+      [
+        "alloc",
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std"
+      ]
+    ],
+    "serde_core@1.0.228": [
+      [
+        "alloc",
+        "rc",
+        "result",
+        "std"
+      ]
+    ],
+    "serde_derive@1.0.228": [
+      [
+        "default"
+      ]
+    ],
+    "serde_derive_internals@0.30.0": [
+      []
+    ],
+    "serde_json@1.0.150": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "serde_spanned@0.6.9": [
+      [
+        "serde"
+      ]
+    ],
+    "serde_urlencoded@0.7.1": [
+      []
+    ],
+    "sha2@0.10.9": [
+      [
+        "compress",
+        "default",
+        "std"
+      ]
+    ],
+    "shlex@2.0.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "signal-hook-registry@1.4.8": [
+      []
+    ],
+    "signature@2.2.0": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "simd-adler32@0.3.9": [
+      []
+    ],
+    "slab@0.4.12": [
+      [
+        "std"
+      ]
+    ],
+    "smallvec@1.15.2": [
+      [
+        "const_generics"
+      ]
+    ],
+    "socket2@0.6.4": [
+      [
+        "all"
+      ]
+    ],
+    "spin@0.9.8": [
+      [
+        "barrier",
+        "default",
+        "lazy",
+        "lock_api",
+        "lock_api_crate",
+        "mutex",
+        "once",
+        "rwlock",
+        "spin_mutex"
+      ]
+    ],
+    "spki@0.7.3": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "sqlx-core@0.8.6": [
+      [
+        "_rt-tokio",
+        "crc",
+        "default",
+        "migrate",
+        "offline",
+        "serde",
+        "sha2",
+        "tokio",
+        "tokio-stream"
+      ]
+    ],
+    "sqlx-sqlite@0.8.6": [
+      [
+        "bundled"
+      ]
+    ],
+    "sqlx@0.8.6": [
+      [
+        "_rt-tokio",
+        "_sqlite",
+        "runtime-tokio",
+        "sqlite",
+        "sqlx-sqlite"
+      ]
+    ],
+    "stable_deref_trait@1.2.1": [
+      []
+    ],
+    "subtle@2.6.1": [
+      []
+    ],
+    "syn@2.0.118": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "fold",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit",
+        "visit-mut"
+      ]
+    ],
+    "syn@3.0.5": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "parsing",
+        "printing",
+        "proc-macro"
+      ]
+    ],
+    "synstructure@0.13.2": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "thiserror-impl@2.0.18": [
+      []
+    ],
+    "thiserror@2.0.18": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "tinystr@0.8.3": [
+      [
+        "zerovec"
+      ]
+    ],
+    "tinyvec@1.11.0": [
+      [
+        "alloc",
+        "default",
+        "tinyvec_macros"
+      ]
+    ],
+    "tinyvec_macros@0.1.1": [
+      []
+    ],
+    "tokio-macros@2.7.0": [
+      []
+    ],
+    "tokio-stream@0.1.18": [
+      [
+        "default",
+        "fs",
+        "time"
+      ]
+    ],
+    "tokio@1.52.3": [
+      [
+        "bytes",
+        "default",
+        "fs",
+        "io-std",
+        "io-util",
+        "libc",
+        "macros",
+        "mio",
+        "net",
+        "process",
+        "rt",
+        "rt-multi-thread",
+        "signal",
+        "signal-hook-registry",
+        "socket2",
+        "sync",
+        "time",
+        "tokio-macros"
+      ]
+    ],
+    "toml@0.8.23": [
+      [
+        "default",
+        "display",
+        "parse"
+      ]
+    ],
+    "toml_datetime@0.6.11": [
+      [
+        "serde"
+      ]
+    ],
+    "toml_edit@0.22.27": [
+      [
+        "display",
+        "parse",
+        "serde"
+      ]
+    ],
+    "toml_write@0.1.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "tracing-attributes@0.1.31": [
+      []
+    ],
+    "tracing-core@0.1.36": [
+      [
+        "once_cell",
+        "std"
+      ]
+    ],
+    "tracing@0.1.44": [
+      [
+        "attributes",
+        "default",
+        "log",
+        "std",
+        "tracing-attributes"
+      ]
+    ],
+    "typenum@1.20.1": [
+      []
+    ],
+    "unicode-ident@1.0.24": [
+      []
+    ],
+    "unicode-normalization@0.1.25": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "universal-hash@0.5.1": [
+      []
+    ],
+    "url@2.5.8": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "utf8_iter@1.0.4": [
+      []
+    ],
+    "uuid@1.23.1": [
+      [
+        "default",
+        "rng",
+        "serde",
+        "std",
+        "v4"
+      ]
+    ],
+    "vcpkg@0.2.15": [
+      []
+    ],
+    "version_check@0.9.5": [
+      []
+    ],
+    "winnow@0.7.15": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "writeable@0.6.3": [
+      []
+    ],
+    "yoke-derive@0.8.2": [
+      []
+    ],
+    "yoke@0.8.3": [
+      [
+        "derive",
+        "zerofrom"
+      ]
+    ],
+    "zerocopy@0.8.49": [
+      [
+        "simd"
+      ]
+    ],
+    "zerofrom-derive@0.1.7": [
+      []
+    ],
+    "zerofrom@0.1.8": [
+      [
+        "derive"
+      ]
+    ],
+    "zeroize@1.9.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "zerotrie@0.2.4": [
+      [
+        "yoke",
+        "zerofrom"
+      ]
+    ],
+    "zerovec-derive@0.11.3": [
+      []
+    ],
+    "zerovec@0.11.6": [
+      [
+        "derive",
+        "yoke"
+      ]
+    ],
+    "zmij@1.0.21": [
+      []
+    ]
+  },
+  "first_party_features": {
+    "aos-artifact-evidence": [
+      []
+    ],
+    "aos-core": [
+      []
+    ],
+    "aos-hub-db": [
+      [
+        "default"
+      ]
+    ],
+    "aos-hub-model": [
+      [
+        "default"
+      ]
+    ],
+    "aos-module-docs": [
+      []
+    ],
+    "aos-module-format": [
+      []
+    ],
+    "aos-oci-types": [
+      []
+    ],
+    "aos-registry-format": [
+      []
+    ],
+    "aos-release-format": [
+      []
+    ]
+  },
+  "first_party_source_sha256": {
+    "crates/Cargo.lock": "033bfad7de38812960028c5c2f69c2737eaa5a73dba2a810dfcf2f992268e6fd",
+    "crates/Cargo.toml": "8761ede65c4d2a37b93a130f16436aba18112776494133f86e026d2a9acb6aee",
+    "crates/aos/modules/aos-module-docs/Cargo.toml": "392f7ebb83b8d86c1cdff5fc868536e4dc20046c8ccb20dd923321736bf4c823",
+    "crates/aos/modules/aos-module-docs/src/lib.rs": "15c9f7fbc575affe9db3e52036c2f4e2e5503800499403c757d0e8716f43b5d6",
+    "crates/aos/modules/aos-module-docs/src/nar.rs": "7632b43b558348813bef44f8b47e97bbd6cd18091416b44354e0b3250c77ef83",
+    "crates/aos/modules/aos-module-docs/src/runtime/comparison.rs": "0618a30afd1052ddc5bec547beab718b42a9b86715dfcd1cf943c0df7e93a3bf",
+    "crates/aos/modules/aos-module-docs/src/runtime/compatibility.rs": "2bd6a0c55a15f4d67a7405133b5a4ae9b3f0d0905a2eb99c17f0b0cd2d896e5b",
+    "crates/aos/modules/aos-module-docs/src/runtime/compatibility/tests.rs": "d81539a818d489556b8833fbba5705e57df9819bec00bb3f68f9545d0db3efa0",
+    "crates/aos/modules/aos-module-docs/src/runtime/contracts.rs": "3510891a1cc5e14cf36ec603f68618ee2c4b548a239ab8cfce6afd264d3f9b24",
+    "crates/aos/modules/aos-module-docs/src/runtime/deployment.rs": "51890e82adab16112b8a16148af8e2c21411fcb5f99c77ec9a4701ef41c6bc0f",
+    "crates/aos/modules/aos-module-docs/src/runtime/mod.rs": "62e3eff21673e6061bb621117cfc28b52677402aba53f2cc081d196ec05993b2",
+    "crates/aos/modules/aos-module-docs/src/runtime/render.rs": "7eb764275fdff717f773ae89838c7fcf4521ed930d11f2994d02ee13b92ae127",
+    "crates/aos/modules/aos-module-format/Cargo.toml": "865d3d1c001bd2e9316817361235bdb5bdf992514eec0e707fbcbfa093a59fda",
+    "crates/aos/modules/aos-module-format/src/diagnostic.rs": "16ce106d58218b8ba8431f8aa1baa693edf4a62500fc6309a969fdd56496069c",
+    "crates/aos/modules/aos-module-format/src/graph/mod.rs": "b2b11a93cbaed57681fbf9de632f0a1169a3d47aeb1d3cb1492b48a33b6f4468",
+    "crates/aos/modules/aos-module-format/src/graph/resolution.rs": "cc30d49ae23e651a8070fd79fae6ff9bbdb9826e7622897fba10b8269ef92d91",
+    "crates/aos/modules/aos-module-format/src/graph/tests.rs": "74b68a9bf925cf38a24ed4220804171651a28791e4ec22b0420ba3e02801a36f",
+    "crates/aos/modules/aos-module-format/src/graph/validation.rs": "fdcb8d545b0af2f001e9d19727798f2d2c531f8ccf63da161e432256b81761e4",
+    "crates/aos/modules/aos-module-format/src/graph/validation/tests.rs": "f5f1ad44802802fe675d7c278b677edb52e7d5bbc38240d2dc97a3a181a16543",
+    "crates/aos/modules/aos-module-format/src/identity.rs": "87a4198a21260e2de56626cc8300d52910470795a124dd5a62eab1f5f29da5cd",
+    "crates/aos/modules/aos-module-format/src/lib.rs": "8cd0b38729c0ea2a35cbbc283480932f7d294512d2608dd620d9b759943f4520",
+    "crates/aos/modules/aos-module-format/src/limits.rs": "6a5110b4981e4d0115910d826fe4b46f6c491e0fa8ef2babdab8032dfdbc2419",
+    "crates/aos/modules/aos-module-format/src/option.rs": "ae9b246770b273b25646c41efe661412622cbafdb6875405bf6f747b8dbe2cc4",
+    "crates/aos/modules/aos-module-format/src/schema.rs": "da5a2a78219883f2444de109e425d096253b2e7e4db6603c650fb22a5eacd60b",
+    "crates/aos/modules/aos-module-format/src/transaction_blob.rs": "c677b49f46370a4b1986d1232f939784b352e37382bbde507832fd2bb267a069",
+    "crates/aos/modules/aos-module-format/src/value.rs": "7fe4d3c24684ef8b95009b3e6cfa0efbb13da1cf9f7ae3aadae7fd7648382259",
+    "crates/aos/registry/aos-registry-format/Cargo.toml": "8a1ef97fc3554e204e0761f353cfd9e426cbd6bb8a77ffca902274c5b58e1c5d",
+    "crates/aos/registry/aos-registry-format/src/channel.rs": "cc5910fdc165492db13c7b5fd4347fa2231a48b769fb5a654c001363b7ca5daa",
+    "crates/aos/registry/aos-registry-format/src/consumer.rs": "789f23b567554c3037d64f695f8c6dd3401944378407d236b6aabe15da285bba",
+    "crates/aos/registry/aos-registry-format/src/keymap.rs": "507fd2217c879727aa91b822db1f227c0f1fe613308dc64a669457564dcfb949",
+    "crates/aos/registry/aos-registry-format/src/lib.rs": "047c5a1a40b30c0c42ce6258ef09de2eb6e7b8b5caa07cb85ee48d6632550121",
+    "crates/aos/registry/aos-registry-format/src/manifest.rs": "0037996fb54b66ccb3a17c38f712d347c4ccfe94a385ead9e653820b9be2bb59",
+    "crates/aos/registry/aos-registry-format/src/measurement.rs": "d338bb3cfe832c571ed7ecebfa3607036f91f38ef775549b02e499a750700988",
+    "crates/aos/registry/aos-registry-format/src/native_dependencies.rs": "7e78f3838beb5e55104f6636938239bda3f121280cfd5f507ea80e07a8db8461",
+    "crates/aos/registry/aos-registry-format/src/object.rs": "05fc9bbca2b089acb3a59a94cdc6a53d6ff5f0fb22684465e2a36eef340f5f27",
+    "crates/aos/registry/aos-registry-format/src/object_bundle.rs": "cc5ab3da23c0736be233b04c840b622272e247aa72da93cf621fc3076dc643be",
+    "crates/aos/registry/aos-registry-format/src/pack_index.rs": "571720741f9deb65868b1454fd20de63a59a17249cba64bfc6db349d92e7c18c",
+    "crates/aos/registry/aos-registry-format/src/package_version.rs": "64560588275250b186ba8ba1279afe575d9df8323d6ac2dcd52bfe2bc455d569",
+    "crates/aos/registry/aos-registry-format/src/platform.rs": "ea44e82d4cb59f33691a65be7da49b6c5862ad4e986a448b5a00ac000f4aae6a",
+    "crates/aos/registry/aos-registry-format/src/provenance.rs": "2a303aff22a0e8b0826014a79b1d4d989369aee08fdc6c518120828edef1c314",
+    "crates/aos/registry/aos-registry-format/src/publication.rs": "1b16a11079487c2e44813c29824cb417c7e8b67dc8df28d1892d522963b1ad8b",
+    "crates/aos/registry/aos-registry-format/src/refs.rs": "d4479a411ffe3aa329dbbbf96c9e569c2e287ed691ea7ac623b95d42967a26dc",
+    "crates/aos/registry/aos-registry-format/src/release.rs": "66e65b115bedb728dc39e86b6960924e49e48f2a6796590a236c402cfa5a0ccf",
+    "crates/aos/registry/aos-registry-format/src/sshsig.rs": "1f8ee1e609e6538fa9d880d1d0f9a0513380cc8e013587042d2cb938c6f69900",
+    "crates/aos/registry/aos-registry-format/src/stack.rs": "eead1178dc05cc4f51d9e890c3c5f15c9ef61a907764c2f8a6cd6403b852e8b4",
+    "crates/aos/registry/aos-registry-format/src/staging.rs": "29fc653f84e972c00688b2967c9bc99bd558f42310553ea59e785c6bad1fdc71",
+    "crates/aos/registry/aos-registry-format/src/staging/wire.rs": "7e97f397bca4c4ec3dde6e3a73f9b6e9404679d52fae0d4a6df67edaf6c278ca",
+    "crates/aos/registry/aos-registry-format/src/store.rs": "31373730fee65bfdc12142b551980c6f03dd75bf57a1576b6ddfe7f9e636c1fa",
+    "crates/aos/registry/aos-registry-format/src/support.rs": "53d5cfecc6b6e6027f073f36147f23d307de33407baf753ee25bf0aab28ba2a6",
+    "crates/aos/registry/aos-registry-format/src/tag.rs": "6b709336e37425456e8b50b4de5f7aebc5982530e0e32320e2ca8fcef8a7aedb",
+    "crates/aos/registry/aos-registry-format/src/tagobject.rs": "907de7750b0d313a291029182e4d86527b2930b2145b72a05543a64678f60fdf",
+    "crates/aos/registry/aos-registry-format/src/tuf.rs": "75af0d5b193d7ded61c0c17646a2a0086676c1f9eebe5db9c9be27fe64f4140d",
+    "crates/aos/release/aos-release-format/Cargo.toml": "9273ebb684ca6c1370b43a5e15153945be7554dae9d0b68938341e7862565ff8",
+    "crates/aos/release/aos-release-format/src/artifact.rs": "7c99b051efc56672c5cd7de504ae302a0554381ce112260696681e361e2c6ece",
+    "crates/aos/release/aos-release-format/src/artifact_profile.rs": "6e7e84b392d32e95f87182bc9f837ec917bd1f005c6c4deccb3c9452d030c235",
+    "crates/aos/release/aos-release-format/src/assurance_tests.rs": "44ff5c1196af33756e27a0c4978a0bd337c880a0cd0d47afe55a52f3f1518660",
+    "crates/aos/release/aos-release-format/src/build.rs": "9bea95a4093c418cabf74961121bb2b490bb615a31a68e0b85ffc5b6920a65fd",
+    "crates/aos/release/aos-release-format/src/canonical.rs": "2ac3bb467a7bac2da3338421138603d21cdce0918249964a1ece8676edc12fa4",
+    "crates/aos/release/aos-release-format/src/digest.rs": "cdc8eeddb181c74201410474a82dd0533c9c78488214394c49a60a428f355509",
+    "crates/aos/release/aos-release-format/src/evidence.rs": "6692c090b3273fb9e82017073bf416655b567eb3ee10a89ad0dce4d731d0c5b9",
+    "crates/aos/release/aos-release-format/src/fitness.rs": "1ca439ceb046586b133e8cc73b27eea11b9f85a31ace99dce6b84ca58ba8b7c1",
+    "crates/aos/release/aos-release-format/src/fitness_tests.rs": "74405f878e5397705e7810e1b5857a86e1f28df3c0bb8d7a318b0ce14957f49d",
+    "crates/aos/release/aos-release-format/src/inventory.rs": "5d3772499f18a940d2b31149e744aa2d62016be711d98b6520834e9480d6d793",
+    "crates/aos/release/aos-release-format/src/lib.rs": "8848b567b1e4ed1fc1a48bd58ecc7f816773b947333dd9ad3d87807bab36ffe1",
+    "crates/aos/release/aos-release-format/src/manifest.rs": "c1c6ead871157a421dd3df7db3391437d13518e95c627f65959c621a2eddfbd9",
+    "crates/aos/release/aos-release-format/src/native_adapter_matrix_tests.rs": "762ac9b33901657288a9e444dffd60a9c6c0ce10cd1824a78fc1b90b48a7bc3f",
+    "crates/aos/release/aos-release-format/src/plan.rs": "6eac73b1923c1cd3fb668c211c4e35ff59366d548682e40a11397bbfc13a415c",
+    "crates/aos/release/aos-release-format/src/plan/destinations.rs": "f9b6a2894db163f5612056e97abb0b02f95dc56822f1728790091831ee23f44d",
+    "crates/aos/release/aos-release-format/src/plan/destinations_tests.rs": "9320fec8050147079c1b2295110f3f0cdcd00d93fb5e75118507ac918fca3554",
+    "crates/aos/release/aos-release-format/src/plan/request.rs": "a25dfb8430ac5e0b1ae7948d58090348012d2b2af8baf372675657940ec37c68",
+    "crates/aos/release/aos-release-format/src/platform.rs": "1c9291f65f725fee8d4ffdd865e19bd5843c788474a051b5275d722b74e64fab",
+    "crates/aos/release/aos-release-format/src/profile_override.rs": "853cefe7a181a51cabddbc3963a2a17269cc119adab2e6a11246eb2aa9de5024",
+    "crates/aos/release/aos-release-format/src/profile_override_tests.rs": "0247c55235820be370a1cdf3e6a1542a3b063f4d7bc7d6ca9943c7c8a73e5d1c",
+    "crates/aos/release/aos-release-format/src/qualification.rs": "dcee02aec7110d95b88d3ebdb75a49e655027c12b3f35cc7e41a69d295e94e52",
+    "crates/aos/release/aos-release-format/src/qualification/capabilities.rs": "389355d512b7bc1635a7286d3589e0d619df22038b6034cb0b556072ec21ca26",
+    "crates/aos/release/aos-release-format/src/qualification/change_scope.rs": "f053b99d31665ac40114db1468fee5351d03e8acea11cead2b57acc199c71e62",
+    "crates/aos/release/aos-release-format/src/qualification/claims.rs": "83706d1763f571aaf4f0227ffb4aa51df3f7e5b2cfb563135411e3cb899b99c1",
+    "crates/aos/release/aos-release-format/src/qualification/deferral_tests.rs": "3f1335d8372f1ebbefaadc928e488f579b9c62c7bbf5aa6c64b20b8ef44c6bcb",
+    "crates/aos/release/aos-release-format/src/qualification/environment.rs": "4c85e18ff7b93157b424b95f0aa1a14dd7debc0c5a2301ed2f5cba59e4e4cd9e",
+    "crates/aos/release/aos-release-format/src/qualification/floors.rs": "06038dc5f71627165ec3f2e83b0ca30a406b08d3dc0b8c6ef414e8f211507f9f",
+    "crates/aos/release/aos-release-format/src/qualification/limits.rs": "1a23d44687795732f500eefef3071cd9d28e03e08f087771ddf4ed74d2f06c7d",
+    "crates/aos/release/aos-release-format/src/qualification/plan_tests.rs": "8aa0c1890aff4e7fa9de445a6ec05fbc9237cf31f84c553bf26a46c5a182fe37",
+    "crates/aos/release/aos-release-format/src/qualification/profiles.rs": "746e68d77059b0fde2370f33e881c76b0ee202a7db06d8bb546995f25e424d9c",
+    "crates/aos/release/aos-release-format/src/qualification_admission.rs": "ea6e247ad2bcb30fb6204ab005ccdcba9e7ee3ae56f9692681b25a049ba580fd",
+    "crates/aos/release/aos-release-format/src/qualification_document.rs": "b0da95bfb13a6fa3a5d26512b8f09997bf58462d56eb2c357bb7950bb3b6250d",
+    "crates/aos/release/aos-release-format/src/qualification_evidence.rs": "672707ebbdee15dfbe1dddc37ded027026978c288e9b8d159d3ed170b7607bdf",
+    "crates/aos/release/aos-release-format/src/qualification_evidence/assessment.rs": "99a1a8d4aeb2376e351cf7a650e9aca74a099c72aaae5a760f5e77a747cabaa1",
+    "crates/aos/release/aos-release-format/src/qualification_evidence/expansion.rs": "afc58fcbd8a6934c85ce03c7284a316da90f9800e09edf49a6a5253a97f72334",
+    "crates/aos/release/aos-release-format/src/qualification_evidence/selection.rs": "5d2906d78c6e0b97f4b279785feee714fc7acff0919dc1fdbbe73ec6a69682ff",
+    "crates/aos/release/aos-release-format/src/qualification_evidence/tests.rs": "9a2968953ab904d85ec5bb4a2fb6ecb02b31eae437714f5387ac6742a98ab2c4",
+    "crates/aos/release/aos-release-format/src/qualification_k3s_tests.rs": "24959b383874d4cfb9f20f0f112d126c2ca09971f53b4b67d95911f79c1405b2",
+    "crates/aos/release/aos-release-format/src/receipt.rs": "9d6c2494838fa219ee29b121807518a9bf7ebc5b67587a9360cd40a4729e33a7",
+    "crates/aos/release/aos-release-format/src/receipt/surface.rs": "fb3788f88d120dbf4f69806811aee125aeee8a1e0e636f2bf91cfa20317b9094",
+    "crates/aos/release/aos-release-format/src/record.rs": "eb3bfda8bbc60e1f688182406b738db70fb1f6ce0842d8ce67b8ff72f67be60e",
+    "crates/aos/release/aos-release-format/src/registry.rs": "262f5fdde6ed07f86ddaad768d6083b1fc9e9fa96868337bd8a4f146e50e2490",
+    "crates/aos/release/aos-release-format/src/sbom.rs": "e20b5c33d63d7e4f5cc0780b1347f69f9b8feb04682c8b1f885c4d5e65d3464b",
+    "crates/aos/release/aos-release-format/src/signing.rs": "dedabff232ef92dbc79215b9a0f974cfc4857f2013d1f5725ed77745d79c9019",
+    "crates/aos/release/aos-release-format/src/state.rs": "c36732979a704d61a6b6c1ea5fca941f23220a69ce941f6e94cee9267a005fa3",
+    "crates/aos/release/aos-release-format/src/state_tests.rs": "62398daf80c435c9d2a4fe8b5edb2be578f2f241a9ffb2f59c36218ecb6f7a7d",
+    "crates/aos/release/aos-release-format/src/test_support/mod.rs": "411370ff137de15a98eeb940ccdb26418db790e3f70da5332769ee4b65fed56c",
+    "crates/aos/release/aos-release-format/src/test_support/qualification/contract.rs": "3b0a65d5a3ef68890de4635d1684ef8879571d2d0812039b5ac71078907ed177",
+    "crates/aos/release/aos-release-format/src/test_support/qualification/mod.rs": "8e71250c009cdafd22b1d0e7d0dfd409d19f815d5a8dc3ffaba121693b6b19ea",
+    "crates/aos/release/aos-release-format/src/tuf.rs": "6c2c103f2045aa8842583c99968795b222b10d91f82ebf7ea26c0a59715c1297",
+    "crates/aos/release/aos-release-format/src/tuf/staging.rs": "387cf56007567d4a47f3fcf8bc696a454406fee7c25bd632d1b379388d878de4",
+    "crates/aos/release/aos-release-format/src/verify.rs": "6db5032e44ba32d2ed0498c112af2b5cbb07d453c43585fa1bc32d6c0b186611",
+    "crates/aos/release/aos-release-format/src/verify_tests.rs": "0c18b3873844a9bc09690e71d7d60e4bece8382ab2722bb4df0eeb3894296cf7",
+    "crates/aos/release/aos-release-format/tests/nix_inventory.rs": "52c4515dc7318179a7e9286ff7fd6bad81d9beff92d6bb4c6f05212b2650d788",
+    "crates/aos/release/aos-release-format/tests/qualification.rs": "6c0e64ef9960c5b591e3d380bba963ef3a6d0860c797e8d9ad8863185014a8f0",
+    "crates/hub/aos-hub-db/Cargo.toml": "8486640cbbc448222065cba01162d71db9fd5c9a51728a55306955d1869efd31",
+    "crates/hub/aos-hub-db/src/backend/mod.rs": "6de4c2f000f2120d346ca4e46be0fb25c9e1d4026c089ad594cf84b8b7f4f98e",
+    "crates/hub/aos-hub-db/src/backend/sqlx.rs": "16f33ef39a650c5208b240208024604fe7376b1755a76225316396df8b31ebdc",
+    "crates/hub/aos-hub-db/src/backend/sqlx/sqlite_tests.rs": "2445ce1a64a46740612a2ea94f4c4c317e1539c341a9ae2510fdd45c36ec020d",
+    "crates/hub/aos-hub-db/src/backend/timing.rs": "0a37965a475ea52a28144a4543d85c22ee5eacfb6b5d08a6fae6d03e6d38eb16",
+    "crates/hub/aos-hub-db/src/db/ability_deployment_overlays.rs": "9b1cfb626a4b7040a601f1e21164880929c0624f9789b34d965f69477e0ecccd",
+    "crates/hub/aos-hub-db/src/db/cache_write_admission.rs": "9dcc79ffdeb82c3cbfbdc7cdb3815764fd2f7047e51574f68163e7fc4c39f0bb",
+    "crates/hub/aos-hub-db/src/db/delivery_identity.rs": "a745314af56e6bf99cd08a16569bb292061e759ca6041b73dcc37d762871c83a",
+    "crates/hub/aos-hub-db/src/db/delivery_workflow.rs": "8b24a07f1fb48c63538155941a81ffcf07b52c33d9b05ab152198256c3678e49",
+    "crates/hub/aos-hub-db/src/db/delivery_workflow_tests.rs": "d4ae584c5768461053a44629618f0074e4f4fa6965075c9ab15e68bb22460b2f",
+    "crates/hub/aos-hub-db/src/db/direct_delivery.rs": "30dfa9b9b0c6ca16c1be9454509d9a182d886436c2e3226f367277a85202f439",
+    "crates/hub/aos-hub-db/src/db/egress_nonce.rs": "45e1fb3c746346f80685372f26aec4610d869605404d05cd636e228d002f3d84",
+    "crates/hub/aos-hub-db/src/db/fixtures.rs": "2e4f7df29503d9a562283dafd0dc68aebb4a1b68ea25f40b53381bedbff4b82e",
+    "crates/hub/aos-hub-db/src/db/gc_topology.rs": "c0b54d2e13d0bfbb5e143c495c168a1495b443e8910bac70b0052fcbaee73af0",
+    "crates/hub/aos-hub-db/src/db/migration-0006-release-ability-graphs.sql": "15df8cc9b1ea3e4546c9c69c9f5f3d030af2adb925af1edba2cfebe86268783a",
+    "crates/hub/aos-hub-db/src/db/migration-0007-native-documentation.sql": "c8685bb51efd8d56adedd391e802495da07c8402410137f791262c5611ee4727",
+    "crates/hub/aos-hub-db/src/db/migration-0008-native-deployment-report.sql": "f0070336db537c31df7fab7da5ba30be7452533c0b704b42ac2e5cf182b24f25",
+    "crates/hub/aos-hub-db/src/db/mod.rs": "a4b0085b129f38872335ccf1b77e157b513b927ff982add14cbd3da671295005",
+    "crates/hub/aos-hub-db/src/db/native_documentation.rs": "f148362df3f59d79301a53fd553278edd62e81172b5f181ec9fe4d95eab570dc",
+    "crates/hub/aos-hub-db/src/db/oci.rs": "6524759e9317b83aae3778908143736498c814720d19aedfe9a8eae66d5430f6",
+    "crates/hub/aos-hub-db/src/db/oci_admin/cursor.rs": "3d0f7052f6f4d08c639906270f7112cc5cafd61e510647f987be96a3c040f5b2",
+    "crates/hub/aos-hub-db/src/db/oci_admin/mod.rs": "d630558638367829af1336dd004a3a4bf9d81e34983f2273d49572903c5e41fc",
+    "crates/hub/aos-hub-db/src/db/oci_admin/mutation.rs": "b75f0983da42a73ba715c1c371460f0d002883d58c462dabb9768a94f27f43c7",
+    "crates/hub/aos-hub-db/src/db/oci_admin/read.rs": "a410705c483c9a98ed18e984063c5861dc9dfb1df468d31628f559827a5a21e7",
+    "crates/hub/aos-hub-db/src/db/oci_admin/tests.rs": "a592a254818316f30b61b5015dc4ea2789ee30d780473da423a0f5602bf7c852",
+    "crates/hub/aos-hub-db/src/db/oci_gc/cancel.rs": "32d91f4dd3c57a64fc0b68f4a17b25bc93bc57bf862c3b58c7c30eddb01829bb",
+    "crates/hub/aos-hub-db/src/db/oci_gc/inventory.rs": "a28d618268f8a7d9229071f9d16893e46c72a6a16d040b18782d258ca2900fe4",
+    "crates/hub/aos-hub-db/src/db/oci_gc/inventory_model.rs": "bf560d8f851beab3d5b08221887345d4a122faadddad2b6ce82f3ea09e4a5559",
+    "crates/hub/aos-hub-db/src/db/oci_gc/mod.rs": "b3d83fbad863a1d830871d6138e739d46cf52fe56cbf3cb6f2d76ee621cf615b",
+    "crates/hub/aos-hub-db/src/db/oci_gc/plan.rs": "fc5b3437c236d3bddc9d45ef2dfa4b5fe1e41b06b6fff731217588c84efe7d84",
+    "crates/hub/aos-hub-db/src/db/oci_gc/plan_frontier.rs": "4cc73700b8dfa1cd2861947a7f45ca123158275f0578f902ead5fa289119e1cd",
+    "crates/hub/aos-hub-db/src/db/oci_gc/plan_model.rs": "d65263c53db8da0879ce09e0fcb13e37bdf0060f5b6102a0040d1fd6857e684f",
+    "crates/hub/aos-hub-db/src/db/oci_gc/purge_plan.rs": "282262f35d0afe6d4872b49272ab4fafa6902792888d058f0699e4b47fc3a905",
+    "crates/hub/aos-hub-db/src/db/oci_gc/read.rs": "34e95e3cada8cc9ce15e3b86b9b43399ebb6d21375a6d3938830c9d4fe3af190",
+    "crates/hub/aos-hub-db/src/db/oci_gc/remediation.rs": "0f9e378ed34b4accbd01a3ef95d97b17a334ec8675ca7186e7f4a00bb3946d95",
+    "crates/hub/aos-hub-db/src/db/oci_gc/repair_worker.rs": "eaf95343653e6173bf0f3d7d658af4006afebf0daea5c57d79d861d378830cc8",
+    "crates/hub/aos-hub-db/src/db/oci_gc/retirement.rs": "f25a332e873ea3035935c9b350545538e26f8ef25d2087a50ea72ef3db438145",
+    "crates/hub/aos-hub-db/src/db/oci_gc/tests.rs": "591bae2ff00cffc0ead8fd437d334cd5a78a2854fc931c3a8225ef89f73a9208",
+    "crates/hub/aos-hub-db/src/db/oci_gc/worker.rs": "104fdb8c42a1837dd25be1290ff764bfe2fb594a6bfc2b2940e96cb8a672f22f",
+    "crates/hub/aos-hub-db/src/db/oci_namespace_routes.sql": "6ae37e95910570c0bb884a2057c9a0cbaffd1414ed72d41f9b380bcbbcab2764",
+    "crates/hub/aos-hub-db/src/db/oci_namespaces.rs": "3b0daebedd27b03a0896df840f6fc2d89e49e97e2665b09d6d8608a1bafdf9b7",
+    "crates/hub/aos-hub-db/src/db/oci_publication.rs": "014d7a5c299c835c62e23f99709bcde7c1d53b8d558eff075ddae61d86d6cf7a",
+    "crates/hub/aos-hub-db/src/db/oci_registry_retirement.sql": "f907ae55914445ad6e5c9a8e50ad0a72e568f36ae3a5d0d3f279bfa517a24aed",
+    "crates/hub/aos-hub-db/src/db/oci_release_projection.rs": "a4600062fa36d1d4bf02d99922f461013ccabb52836de52ec4bce6ec54bcdf9c",
+    "crates/hub/aos-hub-db/src/db/oci_upload.rs": "04891d545f1e41b2420fc76d1996121108bcff21615aeb31e5f1037ffc84aabd",
+    "crates/hub/aos-hub-db/src/db/oci_upload/claim.rs": "0f3c0a4e9382238e546c3014647ba0f326214baed5b6ac3c2724fe16098efbe9",
+    "crates/hub/aos-hub-db/src/db/oci_upload/model.rs": "9724d09ca291e97d21d78810839a4a0954cc271e1646803aca4abb2229033665",
+    "crates/hub/aos-hub-db/src/db/oci_upload/recovery.rs": "07696c0f1f04a0650bb3f8de5759d2da23f973ca9132b1e2ab5bef2a94c2066f",
+    "crates/hub/aos-hub-db/src/db/oci_upload/sha256.rs": "f38ebc13e059d45c878d4ba32193ff0dca2c9cbc688a09647413fa7967747ac5",
+    "crates/hub/aos-hub-db/src/db/placement_policy.rs": "fa68db97a121dec0c6b31e4d26f79fe7c3d2f32ba7b17cab1ca2fc42a4361304",
+    "crates/hub/aos-hub-db/src/db/publication_admission.rs": "be1943ea0f5ad96e9bc3942d29431ab2fa9d339d41fcec1098d6c2d3bc1b5f4b",
+    "crates/hub/aos-hub-db/src/db/publication_delivery.rs": "2d87e73044de9c2d744c028f154c4d9d73cf0d9a32ab391f856f738f1c333009",
+    "crates/hub/aos-hub-db/src/db/queries/administration/audit_mutations.rs": "15f3a2c62633d1e68369e334cc2aaef09964067de27caec120d2eb5b3c309044",
+    "crates/hub/aos-hub-db/src/db/queries/administration/audit_reads.rs": "d76abbfc15d9084b486e48065868afe453b9f10d561ec9221a86fc62751625ee",
+    "crates/hub/aos-hub-db/src/db/queries/administration/configuration_mutations.rs": "ceb012e8109a65e32af39194b3acc4d0cb5c9b49d9b69b0119a8f915fb14fd09",
+    "crates/hub/aos-hub-db/src/db/queries/administration/configuration_reads.rs": "a739c547584a511561fdbe837da8f73ca710bd8f2006bec5b77c41363a9a24d0",
+    "crates/hub/aos-hub-db/src/db/queries/administration/jobs_helpers.rs": "bc18886cfd6bcc9068807aeb55efa752883e21247fae21c627a7ce053274e35c",
+    "crates/hub/aos-hub-db/src/db/queries/administration/mod.rs": "5b823999343becb96bc87071eb26826618e3f7a891ff92b734236930944912b0",
+    "crates/hub/aos-hub-db/src/db/queries/caches/configuration_mutations.rs": "5d363993968bce4d59e632bd1102dbc13587596dafd6ebca4012161bbbef43ff",
+    "crates/hub/aos-hub-db/src/db/queries/caches/configuration_reads.rs": "31fc7e517f5f732d8320156c42ce7469d048e0664205daa155ad83ab8a2b604a",
+    "crates/hub/aos-hub-db/src/db/queries/caches/integration_mutations.rs": "4482c162ca49da4819b0aadbaaa0c40ffeee4f91ddad958f1eae28397255d4dc",
+    "crates/hub/aos-hub-db/src/db/queries/caches/integration_reads.rs": "136cd061edc46321f990675594bbdca2b7d2369f69ad5717fada42d118a2057b",
+    "crates/hub/aos-hub-db/src/db/queries/caches/inventory_mutations.rs": "9bc3965c34bacb055a1727156ae861863da8a19b25a41a9f826136705455f240",
+    "crates/hub/aos-hub-db/src/db/queries/caches/mod.rs": "7158cb3f35402546e9ded4c364c98bd8391426f8d1e433f708ed7f2831b9ea3b",
+    "crates/hub/aos-hub-db/src/db/queries/caches/retention_mutations.rs": "60d3bb7db4da2a23f0c061131667625f245ade0e596d652e5f1cf3658f9d3f0b",
+    "crates/hub/aos-hub-db/src/db/queries/caches/retention_reads.rs": "e1c288a9cf35612922daf1d3885cbfc165f7e71b81d7c498628b28e6f5f82408",
+    "crates/hub/aos-hub-db/src/db/queries/caches/uploads_mutations.rs": "7b65c360d241fbf25dfaf3844a01f7b71b5358da11bb90df8d48ab0346de86e0",
+    "crates/hub/aos-hub-db/src/db/queries/identity/credentials_mutations.rs": "15e365df9d210d9bc3e4be7f4599cc2b2cb1ee0d9d943007f91994dc76d9000b",
+    "crates/hub/aos-hub-db/src/db/queries/identity/membership_helpers.rs": "462e3dc52a8e547b80c641f69ab1d2aacbac8e2b49d52af90d9e6b3125c71e9a",
+    "crates/hub/aos-hub-db/src/db/queries/identity/membership_mutations.rs": "06b617a343e1204e8633cf85c871d1489b4d491b8eee8e9ab786754aea9024b1",
+    "crates/hub/aos-hub-db/src/db/queries/identity/membership_reads.rs": "a0852b363e8436ad2017137f392d0a1cd9793afd231760bc18251900f2d690c1",
+    "crates/hub/aos-hub-db/src/db/queries/identity/mod.rs": "6d4fbc76e2a1e948bad9cde19f7b83da14c4f525baf43381c6459714b4bdfb2b",
+    "crates/hub/aos-hub-db/src/db/queries/identity/principals_helpers.rs": "f4316310e486450259bf80e5e96cbc259cf1a791a764421fce4aca247a3a9034",
+    "crates/hub/aos-hub-db/src/db/queries/identity/principals_mutations.rs": "795ea2b1fc976f3a43b756afdda0a4dfc9c36906e5f3289f70ac902cafd25702",
+    "crates/hub/aos-hub-db/src/db/queries/identity/principals_reads.rs": "7cbefdc2e4cf9355240051569796efa9ba57fef02dadc473f68824275cbbb53b",
+    "crates/hub/aos-hub-db/src/db/queries/identity/sessions_helpers.rs": "ea78a7e73bdca5b2e0418f9db4326ddde5306a7ec0db2644e4f6ca9d685b293d",
+    "crates/hub/aos-hub-db/src/db/queries/identity/sessions_mutations.rs": "aee20753be63f777b4c4ed500071c58598f76e0a30dbe44a43efd0dc2dc93e24",
+    "crates/hub/aos-hub-db/src/db/queries/identity/tokens_helpers.rs": "826737a1bfb31b8beb9a22efdaeee21702a8fddeb4e807b0742541350b8e04ba",
+    "crates/hub/aos-hub-db/src/db/queries/identity/tokens_mutations.rs": "c58b1154657f8196e01f89cfe0992a11a7a924adeceb29d10e2ffa529e742f72",
+    "crates/hub/aos-hub-db/src/db/queries/identity/tokens_reads.rs": "f2f5727ec6119b4fb1e99ce442aaea8432595e9f9105a8db42c8f579e0e658f1",
+    "crates/hub/aos-hub-db/src/db/queries/mod.rs": "b2199dc37c197384f9e96db7dec731483f317bfa1621b7a6f57134aa73666a9c",
+    "crates/hub/aos-hub-db/src/db/queries/registries/configuration_helpers.rs": "8e1e2ef489028878c8cffaac38659710c2db7630292cc380d4a57161acc9ebb2",
+    "crates/hub/aos-hub-db/src/db/queries/registries/configuration_mutations_record_registry_publication_object_presence.rs": "1a61a77adfd00aa3b3eb51d66dc441b58e50acd5d2430e511e6d0c05251c4bb1",
+    "crates/hub/aos-hub-db/src/db/queries/registries/configuration_mutations_registry_publication_class_is_complete.rs": "02ba7c0b5ff6c59e72f8cce84466f10afb16616a00339bc0575cb50cec5ba56b",
+    "crates/hub/aos-hub-db/src/db/queries/registries/configuration_reads.rs": "e746c6609c2ec4d21ed51d765a5b2883409412b3ca1f302d075ae87beadf97cf",
+    "crates/hub/aos-hub-db/src/db/queries/registries/git_mutations.rs": "3e41fdf2586cf0bfcc9de6aa3acddb1c21d2f37e929ecf81f327d5324fc964da",
+    "crates/hub/aos-hub-db/src/db/queries/registries/index_helpers.rs": "b099f1648b0a8848fe49fec1089c539bc8ba418fda9d0d8527f8a2125d731790",
+    "crates/hub/aos-hub-db/src/db/queries/registries/index_mutations.rs": "b791f6ed124676e4cd768ec3726649cc01159de0a4de49f7387d2efcfa06fb3c",
+    "crates/hub/aos-hub-db/src/db/queries/registries/mod.rs": "e6ddbf22baef06ea10773ae6a338bcbc12f0b2b4dcb7d054c45ecc008c2ca19f",
+    "crates/hub/aos-hub-db/src/db/queries/registries/packages_helpers.rs": "9f3359ccadd7b696e5eaef28337dc3d9c23c954c1f2e2e9039721fbd9e64bceb",
+    "crates/hub/aos-hub-db/src/db/queries/registries/packages_mutations.rs": "7c73bcc5663905a3902bd81bbc561b7d9673d24e718e256dc883e0af20b76ce8",
+    "crates/hub/aos-hub-db/src/db/queries/registries/packages_reads.rs": "edc96a41dfbf1cc0ad9541bc1cb718a6333807383eaed1470d4a91e4781573af",
+    "crates/hub/aos-hub-db/src/db/queries/releases/channels_helpers.rs": "ed9d8d2f3a8fcfe6be822a2a400ffc21d8131ebeae3fe401c1100bda389c1d42",
+    "crates/hub/aos-hub-db/src/db/queries/releases/channels_mutations.rs": "4b328bc60a3f933a60611a8514fddbc934c80dbc229540fa6bcac31f59f8cf16",
+    "crates/hub/aos-hub-db/src/db/queries/releases/channels_reads.rs": "8f70b3df28d441bd426d0e8d95878259fde1bbe4ffb71938375fbc4b1548f1e2",
+    "crates/hub/aos-hub-db/src/db/queries/releases/mod.rs": "5b10d6c1529cf3ac6dcb3e3e807bd9affdd8b03f388d4e08ddbf770546fcbc02",
+    "crates/hub/aos-hub-db/src/db/queries/releases/publications_mutations.rs": "c7b9070a26e9d793303ef716294b53d6a9d2612d86442cde0ead678439d49665",
+    "crates/hub/aos-hub-db/src/db/queries/releases/publications_reads.rs": "3b94e64b206969d602c7cbdb52521bfab55870f8bfc3d2ee8a7389e9d6f92249",
+    "crates/hub/aos-hub-db/src/db/queries/releases/signing_reads.rs": "72dd149ec1829488cc1cef6cd7e707b4e4a21ae89e1dad20c31e4549b37f444f",
+    "crates/hub/aos-hub-db/src/db/queries/runtime/coordination_helpers.rs": "f76b4581ab0856495cfa51edf6fadefdceeee73912773e4b2358aecbe3950abd",
+    "crates/hub/aos-hub-db/src/db/queries/runtime/coordination_mutations.rs": "da5ef11d83d99cb7ac298b055b51cc028a4d057b356eb05ebc268447b797e5d6",
+    "crates/hub/aos-hub-db/src/db/queries/runtime/coordination_reads.rs": "baccec8ee31a49d5a288bf967c2fe4dc06bb0dfdf482617a011adb9a87be5562",
+    "crates/hub/aos-hub-db/src/db/queries/runtime/lifecycle_helpers.rs": "21a81169b0c2e2a204b7cff052abe83c30b168ad04eb9d9062d1030a82ad3cb4",
+    "crates/hub/aos-hub-db/src/db/queries/runtime/lifecycle_mutations.rs": "7b04b556e94ac6abe9cc1758a5baa311cf0247b3e75f8f87448a755a9d550387",
+    "crates/hub/aos-hub-db/src/db/queries/runtime/mod.rs": "b669190411cec3144ecb6e06d700ad7a2f76d58cc3b8fa1718837929c5fb7975",
+    "crates/hub/aos-hub-db/src/db/queries/tenancy/mod.rs": "eeee431656e48f6f94b1c77782c7d9c1154cd38753ec191b39e9f5fe22bc44e0",
+    "crates/hub/aos-hub-db/src/db/queries/tenancy/organizations_mutations.rs": "197ff708a1c74dca2f89f945766c6efd6febcf417a7fbe9a4d40f71d860d7c2e",
+    "crates/hub/aos-hub-db/src/db/queries/tenancy/organizations_reads.rs": "8f7f016a094d5eb4cc2ed8dd82e271ef510328c2e3e26651ad509ab5b759f9d8",
+    "crates/hub/aos-hub-db/src/db/queries/tenancy/projects_helpers.rs": "e73188c235fa4aa1fd3b2771ffdd0eb21b8b58c77c1454a93daa162b0a5e08c8",
+    "crates/hub/aos-hub-db/src/db/queries/tenancy/projects_mutations.rs": "d02530164cc8a679d152487e07f35e47d2d034df3d3883835ef688fbf6afd381",
+    "crates/hub/aos-hub-db/src/db/queries/tenancy/projects_reads.rs": "9b2576f4410a89a8072928d210427d8cff52eb8423e37b0d931ac41b6c1eb646",
+    "crates/hub/aos-hub-db/src/db/queries/topology/bindings_helpers.rs": "5c329545a5f1f06b73f4139816c9a4d9f299e6128cdc0f6f6058c7b04dfaa1dd",
+    "crates/hub/aos-hub-db/src/db/queries/topology/bindings_mutations.rs": "fdf6d808dc614576d81c5813bbf0f8ece2a3d146166b2b5ad429411cb7a30158",
+    "crates/hub/aos-hub-db/src/db/queries/topology/bindings_reads.rs": "59d675c0aa34a9b5c53230569a3fd549f9f6ee2d59c5fa82b70b2756e03243c5",
+    "crates/hub/aos-hub-db/src/db/queries/topology/credentials_mutations.rs": "595283b07cea8b436670907dc8027f74ae771afb2d111cbed8c8e34af2950ada",
+    "crates/hub/aos-hub-db/src/db/queries/topology/credentials_reads.rs": "95a4dfb4027c7b13a9d44b6bcfa5696a58ff8a228407a812cecc135e4cf7aced",
+    "crates/hub/aos-hub-db/src/db/queries/topology/domains_helpers.rs": "fc6e241bd8b5c5f8cdfe32d0204749bb7851b8dcdd7ec4374612fd70b23c9554",
+    "crates/hub/aos-hub-db/src/db/queries/topology/domains_mutations.rs": "50593cf25c30d7d5d131801bc751c71cc0f2cb2e2a931b9f84e65ebc311e7470",
+    "crates/hub/aos-hub-db/src/db/queries/topology/domains_reads.rs": "a413844d97eb552d993a644181124788d800bd14a013c00c486d96819d9fa7c2",
+    "crates/hub/aos-hub-db/src/db/queries/topology/grants_mutations.rs": "1b2e0e1c0ab6479420f24b261cd0f37ed2391960625207bbc87548295f2fbbcb",
+    "crates/hub/aos-hub-db/src/db/queries/topology/mod.rs": "21529a545c9eba65d94e84103a60100edda550b7ae87a8edd61e4dd2ea1b5cfe",
+    "crates/hub/aos-hub-db/src/db/queries/topology/networks_mutations.rs": "884e64c81c3195776f2351348e2374a751cb9a55ef86c39cff8db75a06dcd92b",
+    "crates/hub/aos-hub-db/src/db/queries/topology/networks_reads.rs": "0d4da54ec7e68f3c134daf81d021a1018df1c0367fb3100159b3906553ec4f79",
+    "crates/hub/aos-hub-db/src/db/queries/topology/operations_helpers.rs": "fd03fc961581a928409b13cb363118d83dd3c6f3122a6d00c9b5983001e28169",
+    "crates/hub/aos-hub-db/src/db/queries/topology/operations_mutations.rs": "da71990b863a16fc0b7343023bf03d2cf5dc8f2d9ed7aec8bb6a766f642ad853",
+    "crates/hub/aos-hub-db/src/db/queries/topology/operations_reads.rs": "3dec8d18ece05f68fb529f5c6873d6b93920dda164ee48cecb7d7f03fd426134",
+    "crates/hub/aos-hub-db/src/db/queries/topology/placements_helpers.rs": "73b13b3098eb57d6285083556e32ce1c6f89db75eb8d13f36540522d05f900d7",
+    "crates/hub/aos-hub-db/src/db/queries/topology/placements_mutations_apply_snapshot_from_placement.rs": "d27ef0580493a1e010179be65807b98c3e31c333dcffdf41068b799fc545815b",
+    "crates/hub/aos-hub-db/src/db/queries/topology/placements_mutations_create_placement_equivalence.rs": "b5a301ad72b6511b98562882844aa31ebdda379eac45736dd71ed7d555f5cca1",
+    "crates/hub/aos-hub-db/src/db/queries/topology/placements_reads.rs": "c11ea249036100483a7789044f867216fc81f0e19e7d3f4f92dfbd9c5fc503f7",
+    "crates/hub/aos-hub-db/src/db/queries/topology/routes_mutations.rs": "eecdef22fb231d49eb1287e3d2842538b19a135aa924ad6d4de6bd69bdd45b5e",
+    "crates/hub/aos-hub-db/src/db/queries/webhooks/delivery_helpers.rs": "49536c0848ad1ad6493198ea642a4fbdc714fc141f44fb84ba9b3397d8db0d82",
+    "crates/hub/aos-hub-db/src/db/queries/webhooks/delivery_mutations.rs": "b3baccd94988104eb10ed072fa5989708adee15edcd270a82504e4f7cdda6d25",
+    "crates/hub/aos-hub-db/src/db/queries/webhooks/delivery_reads.rs": "d173706088f92bf3ef2b4d3e1da24ae9c06b90caf1eae2466b1715542baf8a01",
+    "crates/hub/aos-hub-db/src/db/queries/webhooks/mod.rs": "39bc3619ded586fe5a0118027d0ed927205cae9b10357428a748f1623232676a",
+    "crates/hub/aos-hub-db/src/db/records/administration.rs": "a3caeecceed2e7c79a0ab63753ede730e5e35c4f0e9628e5a7eea45094ed9fcd",
+    "crates/hub/aos-hub-db/src/db/records/caches.rs": "3e2451b38bda73f4b59622c5319d3c1ecaaac318c58defbea77700c5d2eeb7c5",
+    "crates/hub/aos-hub-db/src/db/records/identity.rs": "42ecb3c23d2786bb3b1861c5cc2c30cbc8ff0017e525a3a2f0c29fbdccd67832",
+    "crates/hub/aos-hub-db/src/db/records/mod.rs": "9cc12591c0bc00c39bc1befe71a31554f6af4a4318e77221fcd805efafe595c1",
+    "crates/hub/aos-hub-db/src/db/records/registries.rs": "c1a13a4ab37eeded78bbd7186ee231ccc36b1741e170b6d05ae03d3633fed0d3",
+    "crates/hub/aos-hub-db/src/db/records/releases.rs": "4f70c2fe4c8aa8a5df8d4a1a796700d24ac513156ae3749cbe842941261ad216",
+    "crates/hub/aos-hub-db/src/db/records/tenancy.rs": "61aa80b9e03b0b9ed07b2d03e548edbacad77b32d0e32c2671f764d8a6d476a4",
+    "crates/hub/aos-hub-db/src/db/records/topology.rs": "5d046295f8c0110d4d51b8600118c3aebf0d88128e23934f4f6ef5192b897ea8",
+    "crates/hub/aos-hub-db/src/db/records/webhooks.rs": "cd2c28089abe955b675af92802f8f40264753b7f931afe3121525e266bd2351d",
+    "crates/hub/aos-hub-db/src/db/registry_delete.rs": "494d9cf42d3dec16e183cc39efb9cf761cb0014d5ed4a42b7f06118d4528e83f",
+    "crates/hub/aos-hub-db/src/db/registry_delete_operation.rs": "151fec3f080d10e1ac996d09f11b8a7285c9a7dd3940c5bf6d6a83a21eb4367c",
+    "crates/hub/aos-hub-db/src/db/registry_delete_readiness.rs": "c4f1de80a0748b3c4d1452418b2e728cbb0801fe6738f05d8a3e1f8867581a9f",
+    "crates/hub/aos-hub-db/src/db/registry_index_build.rs": "3f0c5a738ffa06add4b96266de35dcf5c1714eaa228cc2914146d36eabea311f",
+    "crates/hub/aos-hub-db/src/db/release_browse.rs": "2c8315f402c27f1812f10d46cf45f89fe5488765b2467769c5cc88d9dbb59ed6",
+    "crates/hub/aos-hub-db/src/db/release_channel_advances.sql": "7d9f4b656245f8e533bf497ef1db9854d0371c54e95dd1942d5b615d63fdd7cb",
+    "crates/hub/aos-hub-db/src/db/release_publication.rs": "64e1f0becbf382957fd860bb19bc4b5751d29c17d40355df6961ff90302b0fb3",
+    "crates/hub/aos-hub-db/src/db/schema.sql": "cb87ebb0773c271fa9a98af6b4c9914001726237aa0d3552235e67c392dc9b9d",
+    "crates/hub/aos-hub-db/src/db/settings_reads.rs": "ca72a04710e20cf35bb5b23d886cd5b88d273ce2cc2d8d5791122aae3e8f4f1d",
+    "crates/hub/aos-hub-db/src/db/signing_keys.rs": "eb13da1930e68e237ce4005afa54cb06400400b8cff9a5e7af0093c6a5e6aad3",
+    "crates/hub/aos-hub-db/src/db/staged_releases.rs": "1219fee1af180f7441542a7a4df44fbe8b863f9631452e280ddb7821935fcb12",
+    "crates/hub/aos-hub-db/src/db/staged_releases.sql": "b16424eb544753e1902cbf1c494e9a56b1d7084ae2625b98690f8dcb29daf45c",
+    "crates/hub/aos-hub-db/src/db/staged_retention_tests.rs": "35d414ecc4f47775dbd372dc0e22fb7a5f0ede66bb9390865733ffdf952b947f",
+    "crates/hub/aos-hub-db/src/db/surface_topology.rs": "d0f96f003b2a57578ebad46c8cc5afca935c4a64faaed6c5fc7f2658e14baca8",
+    "crates/hub/aos-hub-db/src/db/tests/administration.rs": "c77d039a47a9c84077ce47eb80983c2da9099ef572421f17edc392fad0b4fe51",
+    "crates/hub/aos-hub-db/src/db/tests/caches.rs": "8f119d3fd220bd1ea25a202558fd8c6ed5631f7b1d40d921ac2208b8cd8b5ebb",
+    "crates/hub/aos-hub-db/src/db/tests/documentation.rs": "08c379dade875752e33b9943ef42f4b1c8e6e0a80ed055ae6a7094d549c6de35",
+    "crates/hub/aos-hub-db/src/db/tests/identity.rs": "5e5807b9211770c6aadb88e9a40e54afdbdd106175d94de28bd6e5c86ddba73a",
+    "crates/hub/aos-hub-db/src/db/tests/mod.rs": "dceb95c7b53dc96b280c9682ff58952d9a356bd8be721afde37a506276326f42",
+    "crates/hub/aos-hub-db/src/db/tests/registries.rs": "e775ea0e776d1e40109db07fc22cf35f70166704f6b31ddf9583ae53142e214d",
+    "crates/hub/aos-hub-db/src/db/tests/releases.rs": "51970941ec44ad182740ca30d9dda0f139b808d2356d17671f049a027b948520",
+    "crates/hub/aos-hub-db/src/db/tests/runtime.rs": "dfced43b0b69402ab83a1c8dac4aeaa386a67a4712005d44c159111c6b591687",
+    "crates/hub/aos-hub-db/src/db/tests/tenancy.rs": "cbe639becb3aa27875cb32d64214d08ee0ed98b50ad305a79a48dc32c21bac8b",
+    "crates/hub/aos-hub-db/src/db/tests/topology_1.rs": "787871aa86ce39a3ed44d044cf3aa5741ac3f60db35afa8d3224e6eb402cf368",
+    "crates/hub/aos-hub-db/src/db/tests/topology_2.rs": "6de6ab158b8f8859964389d4b0ee4047776af48b5ab0ccda4dd8f17df3073502",
+    "crates/hub/aos-hub-db/src/db/tests/webhooks.rs": "681a93ad6d1c373bb66abeefae2fee1f6178e73bbbddea0d25513078267e8e29",
+    "crates/hub/aos-hub-db/src/db/topology.rs": "a0c38d62d88974a1599ebf5ae796420e2f10c02abaeb1319b86b4512e1ee5610",
+    "crates/hub/aos-hub-db/src/db/worker_jobs.rs": "70063d994864020f6b06861b5daf657ddb71b09e39e48c5821f4c3c7555f8e5e",
+    "crates/hub/aos-hub-db/src/dialect.rs": "dd48e2661f98b652c854c3971c107caca75b60044f0b27017b1cb49754e0c5f7",
+    "crates/hub/aos-hub-db/src/lib.rs": "ffef12a520ef8bf4061b968fdad533b879655ed26e9abd0d856aac05b88ea6e7",
+    "crates/hub/aos-hub-db/src/value.rs": "db01896ac8f8dd85dff35dfceef89b1e396da50eb4ee41033c3638ff2685e029",
+    "crates/hub/aos-hub-model/Cargo.toml": "2cc659c7682894500eb9997ae86f039427b7803370bc8760d022fdba49f690a7",
+    "crates/hub/aos-hub-model/src/auth/device.rs": "fda958cf6ca4200f6a8ff4031442b0fb9baf45e3bb3481b9ec1a0d93b428f7bf",
+    "crates/hub/aos-hub-model/src/auth/jwt.rs": "a05650f535cf5a8a6c4c8727962e5c4b269abf5a07af6ba7fffd93f5e16790e5",
+    "crates/hub/aos-hub-model/src/auth/magic.rs": "cad416189d4424eb847887cccb6c9a1206bf308a6f7ee7fc80c5137f9b5c34ca",
+    "crates/hub/aos-hub-model/src/auth/mod.rs": "688313a8416e32a8c6bdb897aba0bef7e9c4d221b3f68cf813dcb78d23fb496d",
+    "crates/hub/aos-hub-model/src/auth/password.rs": "3127470fd31d848958b331bc20455d3bfc6792b0fce5c075a55fa4c97a06df4a",
+    "crates/hub/aos-hub-model/src/auth/seal.rs": "f15c97072d36f7b1e10e559996d8f4ec58523f00abf957c7801ceb7fd7674edb",
+    "crates/hub/aos-hub-model/src/auth/session.rs": "d2355fa8f51bfd6dcf054b9e02c010fcd77490c6e31a0fd956567bd314889159",
+    "crates/hub/aos-hub-model/src/auth/token.rs": "c624da10a5d8946ecd4128651f0f2ceabadd5e2b2ff0721ed2a1fb61abe0916a",
+    "crates/hub/aos-hub-model/src/binding.rs": "9ae5e37b951713b6c131c95014dd3624ea31447cc10a3fe481f7175a65a222e1",
+    "crates/hub/aos-hub-model/src/cache.rs": "59952fa317a261a6becec0926dd7c2ac0f6018f9c2b128434c40ea6400b75d7b",
+    "crates/hub/aos-hub-model/src/clock.rs": "dcb65f87af7181ebd8eb8274d2a1a102d210e36f3a25185dbd05920b9001b2ee",
+    "crates/hub/aos-hub-model/src/crawl.rs": "cd4528a5d5bd031d554392a506398a44475d9da243c28c8a004a46fb57bb1ab8",
+    "crates/hub/aos-hub-model/src/delivery.rs": "b5497ab8db9004608d107cabec70b4c3423812d4fc904f1288c912d315f5d58d",
+    "crates/hub/aos-hub-model/src/delivery_http.rs": "89e5faf215d70126ef5632a4b0754e5ddb0295e2288b6f4feeac6f74b0eebf73",
+    "crates/hub/aos-hub-model/src/domain/iam.rs": "1f5dab05a6ed0c86ee0cb4a71b816ec68cfb346cf1dce20911677a933af16aea",
+    "crates/hub/aos-hub-model/src/domain/mod.rs": "612690c6cebb207a03a845f4ebbb578958e567df7f1582b06008641e8cd89d90",
+    "crates/hub/aos-hub-model/src/endpoint.rs": "38b2fc64f9172db1e00fab5df7a83531d1b1be8d7514d3179d66c0f03cb5be2d",
+    "crates/hub/aos-hub-model/src/identity.rs": "1f54d25de778611d163ad8951794bf2d6cf2256cb4beb47ba87816cef270f97a",
+    "crates/hub/aos-hub-model/src/keymap.rs": "27c4344b7da28021cd5b501eb7255927eeac190ea3cdd91d07126834d0027f01",
+    "crates/hub/aos-hub-model/src/lib.rs": "1ddd149ab045c48914ff5b92a6882fb00ba1424fba0e156eb4c893d4cced6f6d",
+    "crates/hub/aos-hub-model/src/retained_control/canonical.rs": "77cf6333b7738416972b8817e90d535683fbbecf618e9172e0f59d5c1d31a17d",
+    "crates/hub/aos-hub-model/src/retained_control/change_request.rs": "6fdf91dbbcc37b5c75563d2a936adcfbb9de92c7d4e9d3425f71d3403244f5b8",
+    "crates/hub/aos-hub-model/src/retained_control/channel.rs": "8d5b5d9b0599510d66ec6bda81e9d395f642700f16fb6a46aba66e0f257d4458",
+    "crates/hub/aos-hub-model/src/retained_control/classifier.rs": "d4aaf03e7c0589c45e80b6a5039960fb6c5f3397e1e9ed7ce55e209f8bfa937e",
+    "crates/hub/aos-hub-model/src/retained_control/iam.rs": "f4017d82bcb8653f682a6a9ab8a126b0abd5c1d1533a83d45a89ea5e74d827e5",
+    "crates/hub/aos-hub-model/src/retained_control/instance.rs": "916e2535b999b694c3a61244fccab95f906f048364020799ff5000deae388083",
+    "crates/hub/aos-hub-model/src/retained_control/mod.rs": "f68017ef18709d42349ad33f7bb437a61f1a38be5ec1e5457ca77e2282970cbf",
+    "crates/hub/aos-hub-model/src/retained_control/plan.rs": "7ddbc2d2b9ca039a704a930bebd538e7c9076d322e7e1ce8c9114a39f6fb0d71",
+    "crates/hub/aos-hub-model/src/retained_control/primitives.rs": "9bed9280b6287f333e2542054545f009335f8833608536bc91fd0f4ca6e0d8ef",
+    "crates/hub/aos-hub-model/src/retained_control/signing.rs": "45740e20e4c4915edbb83d65e68ecc5ae3fbf7cd6efc8ae0ebe564ad74fb034e",
+    "crates/hub/aos-hub-model/src/retention.rs": "b6925d19256e35ecc41086df09aa8dd030370100345b9dc2e059b6d9a74dcca8",
+    "crates/hub/aos-hub-model/src/runtime.rs": "01292bf21b23d532ea270b2c74be8e2f4d2a0813932c49e91581dfaa4ff2ead5",
+    "crates/hub/aos-hub-model/src/secret_version.rs": "b3989da763f5240122607696655451e1b7c2633142f3e558841ae19688a4e9df",
+    "crates/hub/aos-hub-model/src/url_guard.rs": "7a2809e34ede61eeee8d349ad29be55cb7a95c87b60bb5c218edc55138f188ff",
+    "crates/hub/aos-hub-model/src/webhook.rs": "827285961eaa451976fb00ef9785b79d6865a07efa5c13d6f195ccea47a35a86",
+    "crates/hub/aos-hub-model/tests/retained_control_foundation.rs": "c34a7bcbb35b46fb78160f44ed3d2b94510b48aa72cb24a8e50e9da211e396aa",
+    "crates/shared/aos-artifact-evidence/Cargo.toml": "249f331d2c67207dc3d74d581105284273382b6278fb8186476f1ea353c9c329",
+    "crates/shared/aos-artifact-evidence/src/consumption.rs": "7e38f9f101fde359ad056e70f8ecba06c77137d561c29b609575eb5f8988862c",
+    "crates/shared/aos-artifact-evidence/src/diagnostic.rs": "1ad0a4401d80d32b31afdf0b16bf98e822449ff445a80191e1f827c512dfbf68",
+    "crates/shared/aos-artifact-evidence/src/document.rs": "b3223bef9a7dd87bb72f4afde800217a24317f64a45b2fb3413046c39af76078",
+    "crates/shared/aos-artifact-evidence/src/identity.rs": "a960256438697c76067c85c13c364da507ff8bdcad4fa098bea776a016915f5d",
+    "crates/shared/aos-artifact-evidence/src/lib.rs": "b96037a5a80f0563c3646bfb208cc7f5d44f979fff4cb166ae2dd0f466e15104",
+    "crates/shared/aos-artifact-evidence/src/limits.rs": "07d81f5fd738e4e3fe14613a1947f32beeeb9989b935f74b4242f56fc900950f",
+    "crates/shared/aos-artifact-evidence/src/model.rs": "6536a0109591d899397b86800199b262b8e427c460d3c5b301253850740f084d",
+    "crates/shared/aos-core/Cargo.toml": "a83ae101ada1471e2cf6e3592eff604b932b32bb6b9c08ca78e7f28a84386f0c",
+    "crates/shared/aos-core/src/digest.rs": "f2c3c762eaa35314f95fe60cc1a109083ceb2b4d1149d193243dc370a9f00403",
+    "crates/shared/aos-core/src/identity.rs": "d5b29def050947cd57a09ed3fec6c2e6af4ea3e13a1751fec2e7a4fe351f1686",
+    "crates/shared/aos-core/src/json.rs": "e4c9f02df4321930960b4c6586b8e93f0439c8f1eabe0b1e929ceb277c95fa45",
+    "crates/shared/aos-core/src/lib.rs": "14fadc5d679efeb8f0b7ea696886bbd44d5148f972fd0fedd8c030bae66c1198",
+    "crates/shared/aos-core/src/limits.rs": "d1071f9bbfe39c8cfde4b5bffb4e39e1e3ed935285d9eb7da3261151c9334c1b",
+    "crates/shared/aos-oci-types/Cargo.toml": "bea5fc3bc178b33900c9cee33e898b94a6dfca56c862ea77743b909b865dcc95",
+    "crates/shared/aos-oci-types/src/annotations.rs": "b826cf1eb7722467c279979fe3b3928ada6f6679347c0b55069c5be40eae73b7",
+    "crates/shared/aos-oci-types/src/canonical.rs": "2bf4df9e9605c1bd15795fbb5bf4698a725356c7c92a404c38c7ca7891705bd0",
+    "crates/shared/aos-oci-types/src/digest.rs": "11fd262899ea2e3452432139c51369e548155268e73f3fa85cc68f5fb4975591",
+    "crates/shared/aos-oci-types/src/distribution.rs": "57873d289089296efa2840ff9c3821dec0e641db94a137f957b0aabb95a3d2f4",
+    "crates/shared/aos-oci-types/src/error.rs": "1d4695ae84e0ae9e63f45606b11e24553e481fd75d0dd69e9d3e7f9b42f1d953",
+    "crates/shared/aos-oci-types/src/lib.rs": "756519530da64d7d0b12fa4017c1cafd52e6a18ad2cfadbdf8141d61a1745275",
+    "crates/shared/aos-oci-types/src/limits.rs": "077245bc92f8b997a67a77d271d7d3bfb7796211c0275d954343a03b21105758",
+    "crates/shared/aos-oci-types/src/media_type.rs": "5c0669b979b553907edd2c87b68b235e7b8bd6251f76b2582afab2ef8cd7320c",
+    "crates/shared/aos-oci-types/src/model/config.rs": "e1b656c6035aa48528ff22eb91e7acc679d44fdc39572b5eca14d28e38ba25f0",
+    "crates/shared/aos-oci-types/src/model/descriptor.rs": "eac6b0860dd0853058830bd4bf07dbfdb8fb2f8beb9ba2bca9221cbb7d0e61c1",
+    "crates/shared/aos-oci-types/src/model/manifest.rs": "a1793dc0fd47a58b3e1e4da4d977b64d25a9268de781cc2e381277d24a0de740",
+    "crates/shared/aos-oci-types/src/model/mod.rs": "b96b5f7bdd18ffc98976c75b2378b337529681873b57e071e0b2c4226e7c7444",
+    "crates/shared/aos-oci-types/src/reference.rs": "247a68b43b9ab7e6d4559aae409fd161f42cd11f48d9527ca6a4a5938abc5b54",
+    "crates/shared/aos-oci-types/src/release.rs": "d1292dd31430961a79cbd4617f0b8dff0594f893fa15fa7a66bb0b47a870efc6",
+    "crates/shared/aos-oci-types/tests/golden.rs": "c8ce5eed8bdcddda1e928987d7b6e006081ece4d652e072e1e2e252b7e3795a3",
+    "crates/shared/aos-oci-types/tests/reference_vectors.rs": "9804b99ba92e2fd66b0e8ef82a5ca296c4f41cd88f37981858d3c89f1a8ca8e8"
+  },
+  "limits": [
+    "Native default SQLite profile only. PostgreSQL, MySQL, query-timing, explicit fixture feature combinations and Wasm remain separate qualification.",
+    "Cargo test outer scheduling uses RUST_TEST_THREADS=$NIX_BUILD_CORES (four), matching the isolated Bazel runner budget. The existing concurrent-installation test still joins two database opens concurrently with unchanged assertions and timeout.",
+    "The initial host-default test-thread run failed the migration writer-lock deadline; the unchanged four-worker rerun passed. This is scheduling-sensitive evidence, not a source-level database fix or a claim of unbounded-concurrency qualification.",
+    "No Bazel, editor, performance acceptance or production cutover is claimed by these Cargo baselines."
+  ],
+  "output": "/nix/store/hdsy0x3ap49drdzrm8sg3dlhyl1nsfgm-aos-bazel-hub-db-production-cargo-baseline-1",
+  "recipe": "let\n  root = /home/dylan/src/aos/.worktrees/codex/bazel-integration-722;\n  pkgs = (import root {}).pkgs;\n  nativeLibraries = [pkgs.openssl pkgs.sqlite pkgs.zstdStaticMultithread];\n  nativeTools = [pkgs.pkg-config];\n  cargoSetup = ''\n    export OPENSSL_DIR=${pkgs.openssl} OPENSSL_NO_VENDOR=1\n    export LIBSQLITE3_SYS_USE_PKG_CONFIG=1 ZSTD_SYS_USE_PKG_CONFIG=1\n  '';\n  cargoSource = import (root + \"/pkgs/tools/crucible/_cargo-source.nix\") {inherit (pkgs) lib;};\n  tests = import (root + \"/tests/build/_bazel-cargo-oracle.nix\") {\n    inherit pkgs cargoSource nativeLibraries nativeTools;\n    cargoSetup = cargoSetup + ''\n      export RUST_TEST_THREADS=\"$NIX_BUILD_CORES\"\n    '';\n    pname = \"aos-bazel-hub-db-cargo-baseline\";\n    packages = [\"aos-hub-db\"];\n  };\n  production = pkgs.mkDerivation {\n    pname = \"aos-bazel-hub-db-production-cargo-baseline\";\n    version = \"1\";\n    src = cargoSource;\n    buildDeps = [pkgs.rust pkgs.sed] ++ nativeTools;\n    runtimeDeps = nativeLibraries;\n    sharedBuildCache = false;\n    dontStrip = true;\n    dontPatchELF = true;\n    dontNukeRefs = true;\n    phases = [{\n      name = \"compile\";\n      script = ''\n        cp -R \"$src\" source\n        chmod -R u+w source\n        cd source\n        export CARGO_HOME=\"$TMPDIR/cargo\" CARGO_TARGET_DIR=\"$TMPDIR/target\"\n        mkdir -p \"$CARGO_HOME\" .cargo \"$out\"\n        sed 's|@vendor@|${pkgs.aos.passthru.cargoDeps}|g' \\\n          ${pkgs.aos.passthru.cargoDeps}/.cargo/config.toml > .cargo/config.toml\n        ${cargoSetup}\n        cargo build --frozen --offline --manifest-path crates/Cargo.toml --lib -p aos-hub-db \\\n          --jobs \"$NIX_BUILD_CORES\" --message-format=json > \"$out/cargo-messages.jsonl\"\n      '';\n    }];\n  };\nin { builds = [tests production]; inherit tests production; }\n",
+  "report_sha256": {
+    "cargo-messages.jsonl": "e5f284b3a6fe0481c3750493167aea4621b461f56a8c45015c4914992abf7976"
+  },
+  "schema_version": 1,
+  "source": "/nix/store/z041clc6n6cz524g0647rx1z74qam5dc-crucible-cargo-src",
+  "status": "Unchanged native Hub database production compilation passed before Bazel conversion"
+}
