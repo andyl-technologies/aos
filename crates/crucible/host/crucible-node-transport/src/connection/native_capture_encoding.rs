@@ -27,6 +27,7 @@ pub(crate) struct NativeOwned12CaptureEncodingPlan<'a> {
     pub(crate) original_observe: &'a Envelope,
     pub(crate) first_observe_response: u64,
     pub(crate) maximum_requested_bytes: usize,
+    pub(crate) before_suffix: NativeOwned12CaptureSuffixData,
 }
 
 /// Names closed initialized history through one future semantic cut.
@@ -91,6 +92,42 @@ pub(crate) struct NativeOwned12CaptureEncodingData {
 }
 
 impl Connection<crate::client::DeadlineStream> {
+    /// Names the fixed encoding quote views before borrowing any live root.
+    ///
+    /// The startup producer admits these headers independently of the later
+    /// actual serialization counter and candidate walk. This getter supplies no
+    /// bank reservation, Capture authority or physical compiler stack bound.
+    pub(crate) fn original_native_owned12_capture_encoding_counter_scratch_data() -> usize {
+        use crate::retained_metadata::serialization_storage::OriginalSerializationStorageData;
+
+        let controls = [
+            size_of::<NativeOwned12CapturePhaseEncodingData>(),
+            size_of::<NativeOwned12CaptureBeforeEncodingData>(),
+            size_of::<NativeOwned12CaptureEncodingData>(),
+            size_of::<NativeOwned12CaptureEncodingPlan<'static>>() * 2,
+            size_of::<NativeOwned12CaptureSuffixData>() * 2,
+            size_of::<NativeProtocolMetadataQuote>() * 2,
+            size_of::<OriginalSerializationStorageData>() * 2,
+            size_of::<Option<NativeOwned12CaptureSuffixData>>() * 2,
+            size_of::<Result<NativeOwned12CapturePhaseEncodingData, ProviderError>>(),
+            size_of::<Result<NativeOwned12CaptureBeforeEncodingData, ProviderError>>(),
+            size_of::<Result<NativeOwned12CaptureEncodingData, ProviderError>>(),
+        ];
+        let views = std::mem::size_of_val(&controls)
+            + size_of::<&[usize]>() * 2
+            + size_of::<std::slice::Iter<'static, usize>>()
+            + size_of::<std::iter::Copied<std::slice::Iter<'static, usize>>>()
+            + size_of::<Option<usize>>()
+            + size_of::<Result<usize, ProviderError>>() * 2
+            + size_of::<usize>() * 3;
+
+        controls
+            .iter()
+            .copied()
+            .try_fold(views, usize::checked_add)
+            .unwrap_or(usize::MAX)
+    }
+
     pub(crate) fn quote_original_native_owned12_capture_before_encoding(
         &mut self,
         before: &mut ProtocolSnapshotReservation,
@@ -98,16 +135,9 @@ impl Connection<crate::client::DeadlineStream> {
         blobs: &crate::blob::BlobReceiver,
         context: &OriginalNativeCaptureContext<'_>,
         plan: NativeOwned12CaptureEncodingPlan<'_>,
-        before_suffix: NativeOwned12CaptureSuffixData,
     ) -> Result<NativeOwned12CaptureBeforeEncodingData, ProviderError> {
         let phase = self.quote_original_native_owned12_capture_phase_encoding(
-            before,
-            after,
-            blobs,
-            context,
-            plan,
-            before_suffix,
-            None,
+            before, after, blobs, context, plan, None,
         )?;
         if phase.after.is_some() {
             return Err(refused());
@@ -126,7 +156,6 @@ impl Connection<crate::client::DeadlineStream> {
         blobs: &crate::blob::BlobReceiver,
         context: &OriginalNativeCaptureContext<'_>,
         plan: NativeOwned12CaptureEncodingPlan<'_>,
-        before_suffix: NativeOwned12CaptureSuffixData,
         after_suffix: NativeOwned12CaptureSuffixData,
     ) -> Result<NativeOwned12CaptureEncodingData, ProviderError> {
         let phase = self.quote_original_native_owned12_capture_phase_encoding(
@@ -135,7 +164,6 @@ impl Connection<crate::client::DeadlineStream> {
             blobs,
             context,
             plan,
-            before_suffix,
             Some(after_suffix),
         )?;
         Ok(NativeOwned12CaptureEncodingData {
@@ -153,9 +181,10 @@ impl Connection<crate::client::DeadlineStream> {
         blobs: &crate::blob::BlobReceiver,
         context: &OriginalNativeCaptureContext<'_>,
         plan: NativeOwned12CaptureEncodingPlan<'_>,
-        before_suffix: NativeOwned12CaptureSuffixData,
         after_suffix: Option<NativeOwned12CaptureSuffixData>,
     ) -> Result<NativeOwned12CapturePhaseEncodingData, ProviderError> {
+        let before_suffix = plan.before_suffix;
+
         self.protocol_owner.ensure_current()?;
         self.authenticate_native5_source_codec()?;
         self.check_authority()?;
@@ -347,16 +376,12 @@ impl Connection<crate::client::DeadlineStream> {
             requested_owner_fields_bytes: plan.candidate.requested_owner_fields_bytes,
             declared_counter_scratch_bytes: add(
                 plan.candidate.declared_counter_scratch_bytes,
-                sum(&[
-                    size_of::<NativeOwned12CapturePhaseEncodingData>(),
-                    size_of::<NativeOwned12CaptureBeforeEncodingData>(),
-                    size_of::<NativeOwned12CaptureEncodingData>(),
-                    size_of::<NativeOwned12CaptureEncodingPlan<'static>>(),
-                    2 * size_of::<NativeOwned12CaptureSuffixData>(),
-                    2 * size_of::<NativeProtocolMetadataQuote>(),
-                    2 * size_of::<crate::retained_metadata::serialization_storage::OriginalSerializationStorageData>(),
-                    before_serialization.declared_counter_scratch_bytes.max(after_serialization.declared_counter_scratch_bytes),
-                ])?,
+                add(
+                    Self::original_native_owned12_capture_encoding_counter_scratch_data(),
+                    before_serialization
+                        .declared_counter_scratch_bytes
+                        .max(after_serialization.declared_counter_scratch_bytes),
+                )?,
             )?,
         };
         plan.sdk.authenticate_current(self, blobs, context)?;

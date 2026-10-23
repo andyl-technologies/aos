@@ -373,8 +373,8 @@ impl PacketEndpoint<DeadlineStream> {
                 original_observe: request,
                 first_observe_response: *next_sequence,
                 maximum_requested_bytes: maximum_serialization_requested_bytes,
+                before_suffix,
             },
-            before_suffix,
         )?;
         // The actual live boot selects the new DATA grammar only after the
         // concrete installer authenticates its full outer13 schema.
@@ -468,8 +468,8 @@ impl PacketEndpoint<DeadlineStream> {
                 original_observe: request,
                 first_observe_response: *next_sequence,
                 maximum_requested_bytes: maximum_serialization_requested_bytes,
+                before_suffix,
             },
-            before_suffix,
             after_suffix,
         )?;
         if native12_before.before != native12_encoding.before {
@@ -583,6 +583,7 @@ pub(crate) fn original_capture_report_quote_layout_data() -> usize {
         + std::mem::size_of::<Option<usize>>()
         // Price the defining candidate walk before borrowing its live roots.
         + super::capture_candidate::counter_scratch_data()
+        + Connection::<DeadlineStream>::original_native_owned12_capture_encoding_counter_scratch_data()
         + std::mem::size_of::<usize>()
         + crate::reference_packet::service::ack_emitter::original_native_report_startup_scope_layout_data();
     [
