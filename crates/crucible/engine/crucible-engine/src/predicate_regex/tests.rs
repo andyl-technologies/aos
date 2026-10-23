@@ -156,6 +156,8 @@ fn counted_repetition_refuses_before_thompson_allocation() -> Result<(), Box<dyn
 
     drop(scope);
     drop(budget);
+    assert!(used.load(Ordering::SeqCst) > 0);
+    drop(compiled);
     assert_eq!(used.load(Ordering::SeqCst), 0);
     Ok(())
 }

@@ -115,11 +115,11 @@ mod tests {
 
     #[test]
     fn finite_fixture_preserves_original_refusal() -> Result<(), DecodeAdmissionError> {
-        let scope = fixture_decode_scope(256)?;
+        let scope = fixture_decode_scope(512)?;
 
         assert!(crate::owned_decode::charge_bytes(1024).is_err());
         assert!(scope.check().is_err());
-        assert!(scope.retained_bytes() <= 256);
+        assert!(scope.retained_bytes() <= 512);
         assert!(fixture_decode_scope(0).is_err());
         Ok(())
     }

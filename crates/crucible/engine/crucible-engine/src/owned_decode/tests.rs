@@ -73,8 +73,8 @@ fn json_output_is_admitted_before_the_second_serialization_pass() -> Result<(), 
     }
     let bytes = [0_u8; 1024];
     let calls = AtomicU64::new(0);
-    let authority = authority(256);
-    let budget = DecodeBudget::new(authority.clone(), 256)?;
+    let authority = authority(512);
+    let budget = DecodeBudget::new(authority.clone(), 512)?;
     let _scope = budget.enter();
     let result = to_json_vec(&Borrowed {
         calls: &calls,
@@ -83,7 +83,7 @@ fn json_output_is_admitted_before_the_second_serialization_pass() -> Result<(), 
     assert!(result.is_err());
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(budget.failure()?.is_some());
-    assert!(authority.used.load(Ordering::SeqCst) <= 256);
+    assert!(authority.used.load(Ordering::SeqCst) <= 512);
     Ok(())
 }
 
@@ -117,8 +117,8 @@ fn display_output_refuses_original_credit_before_second_formatting_pass()
     }
     let text = "a".repeat(1024);
     let calls = AtomicU64::new(0);
-    let authority = authority(256);
-    let budget = DecodeBudget::new(authority.clone(), 256)?;
+    let authority = authority(512);
+    let budget = DecodeBudget::new(authority.clone(), 512)?;
     let _scope = budget.enter();
     assert!(
         display_string(&Borrowed {
@@ -129,7 +129,7 @@ fn display_output_refuses_original_credit_before_second_formatting_pass()
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert!(budget.failure()?.is_some());
-    assert!(authority.used.load(Ordering::SeqCst) <= 256);
+    assert!(authority.used.load(Ordering::SeqCst) <= 512);
     Ok(())
 }
 
@@ -155,8 +155,8 @@ fn display_output_preserves_utf8_and_refuses_changing_length() -> Result<(), Dec
 #[test]
 fn empty_fault_plan_keeps_static_identity_without_original_heap_credit()
 -> Result<(), DecodeAdmissionError> {
-    let authority = authority(256);
-    let budget = DecodeBudget::new(authority.clone(), 256)?;
+    let authority = authority(512);
+    let budget = DecodeBudget::new(authority.clone(), 512)?;
     let before = authority.used.load(Ordering::SeqCst);
     let _scope = budget.enter();
     let plan = crate::model::FaultSignalPlan::empty();
@@ -337,7 +337,7 @@ fn canonical_cbor_output_admits_before_the_second_serialization_pass()
     }
     let bytes = [0_u8; 1024];
     let calls = AtomicU64::new(0);
-    let budget = DecodeBudget::new(authority(256), 256)?;
+    let budget = DecodeBudget::new(authority(512), 512)?;
     let _scope = budget.enter();
 
     let result = to_cbor_vec_prefixed(
@@ -470,6 +470,8 @@ fn canonical_display_hash_admits_scratch_before_formatting() -> Result<(), Box<d
     drop(held);
     assert_eq!(authority.used.load(Ordering::SeqCst), initial);
     drop(budget);
+    assert!(authority.used.load(Ordering::SeqCst) > 0);
+    drop(result);
     assert_eq!(authority.used.load(Ordering::SeqCst), 0);
     Ok(())
 }

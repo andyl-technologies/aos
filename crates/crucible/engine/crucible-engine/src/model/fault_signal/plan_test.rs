@@ -1368,7 +1368,12 @@ fn borrowed_selector_checks_match_authoring_projection() {
                 .unwrap_or_else(|error| panic!("fixture node: {error}")),
         }])),
     ];
-    struct NoProjectionCredit(std::sync::atomic::AtomicBool);
+
+    struct NoProjectionCredit {
+        sealed: std::sync::atomic::AtomicBool,
+        reservations: std::sync::atomic::AtomicU64,
+    }
+
     impl crate::owned_decode::DecodeResourceAuthority for NoProjectionCredit {
         fn verify_live(&self) -> Result<(), crate::owned_decode::DecodeAdmissionError> {
             // This component models refusal by allocation count, not revocation.
@@ -1382,21 +1387,30 @@ fn borrowed_selector_checks_match_authoring_projection() {
         ) -> Result<crate::owned_decode::ResourceLoan, crate::owned_decode::DecodeAdmissionError>
         {
             assert!(
-                !self.0.swap(true, std::sync::atomic::Ordering::SeqCst),
+                !self.sealed.load(std::sync::atomic::Ordering::SeqCst),
                 "borrowed selector validation requested owned projection storage",
             );
+            self.reservations
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(crate::owned_decode::ResourceLoan::new(()))
         }
     }
-    let budget = crate::owned_decode::DecodeBudget::new(
-        std::sync::Arc::new(NoProjectionCredit(std::sync::atomic::AtomicBool::new(
-            false,
-        ))),
-        256,
-    )
-    .unwrap_or_else(|error| {
-        panic!("original account with only its initial control credit: {error}")
+
+    let authority = std::sync::Arc::new(NoProjectionCredit {
+        sealed: std::sync::atomic::AtomicBool::new(false),
+        reservations: std::sync::atomic::AtomicU64::new(0),
     });
+    let budget =
+        crate::owned_decode::DecodeBudget::new(authority.clone(), 512).unwrap_or_else(|error| {
+            panic!("original account with only its initial control credit: {error}")
+        });
+    let initial_reservations = authority
+        .reservations
+        .load(std::sync::atomic::Ordering::SeqCst);
+    authority
+        .sealed
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+
     for selector in selectors {
         let expected = authoring::selector_projection_matches_world(&selector, &world);
         let _scope = budget.enter();
@@ -1404,6 +1418,13 @@ fn borrowed_selector_checks_match_authoring_projection() {
             authoring::validate_selector_for_world(&selector, &world).is_ok(),
             expected,
             "{selector:?}",
+        );
+        assert_eq!(
+            authority
+                .reservations
+                .load(std::sync::atomic::Ordering::SeqCst),
+            initial_reservations,
+            "borrowed selector validation requested owned projection storage",
         );
     }
 }

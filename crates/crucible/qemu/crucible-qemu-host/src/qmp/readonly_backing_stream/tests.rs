@@ -288,10 +288,11 @@ fn callback_refusal_and_ambient_account_switch_cannot_accept() {
 fn failure_slot_retains_original_credit_after_parser_drop() {
     let (budget, authority) = original();
     let initial = authority.used.load(Ordering::SeqCst);
+    let initial_reservations = authority.calls.load(Ordering::SeqCst);
     let error = {
         let mut parser =
             QmpReadOnlyBackingParser::prepare(&budget, &binding(), |_| Ok(())).unwrap();
-        assert_eq!(authority.calls.load(Ordering::SeqCst), 3);
+        assert_eq!(authority.calls.load(Ordering::SeqCst), initial_reservations + 2);
         parser.feed(&vec![0; MAX_FEED_BYTES + 1]).unwrap_err()
     };
     assert_eq!(

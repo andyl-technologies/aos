@@ -1556,6 +1556,19 @@ finds unqualified shell interpreters outside the accepted tool roots; explicit
 source preparation and tool provenance remain prerequisites. No accepting
 successor execution has occurred.
 
+The separate source-only shell proposal
+`154d08721641a41a3b6368b0c790836957ec9733b412c88003594327aeab40ce`
+passes independent review of all 72 signed payloads, 44 actual input identities
+and 9,080 pure controls. The actual registered Ninja producer substitutes its
+command shell explicitly; the pinned upstream bytes, exact two substitutions
+and actual binary literal agree. Its complete runtime closure adds one Bash
+root to the accepted tools; all 4,521 directory, file and literal-link entries
+across the three runtime roots match. The proposed version-script change replaces
+only its first-line interpreter with the already accepted Bash. Canonical source
+is unchanged. The pure deadline model arms no timer and qualifies no process
+cleanup; complete live guard wiring and a fresh sealed plan remain unexecuted.
+
+
 The service-client ownership contracts pass mandatory application-target
 compilation at `wx20fkrpphs9zk5lrwlg7kx10d84x8b9`. Before later edits, all
 5,389 committed Rust/TOML inputs and six required fixtures independently matched
@@ -1634,9 +1647,24 @@ explicitly cancelled; the corrected assertion requires credit to remain through
 the first alias drop and return only after the final alias. The revised inventory
 passes at `y67fbiz56y4fl5hv2iapccdc45fdvcrz`: 535 bindings, 243 requirements,
 148 uncovered and zero fully qualified. The revised store suite passes all 689
-executed tests, with the three costly 512 MiB cases explicitly excluded. Engine,
-host, policy, strict Clippy and mandatory application-target checks remain
-pending for this increment.
+executed tests, with the three costly 512 MiB cases explicitly excluded. The first engine run exposes seven fixtures that no longer admit the larger
+initial control extent and four assertions that release diagnostic credit too
+early; all 686 engine tests pass after correcting these fixtures. Finite output
+fixtures still admit less than their 1,024-byte output. Borrowed selector checks
+seal all further credit after admitting the initial controls. The first host run
+has 1,384 passes, one obsolete absolute reservation-count assertion and the
+same eight unissued helper-custody failures; four controls remain ignored. The
+parser assertion now counts its own two reservations relative to the account's
+actual initial count. Engineering hygiene initially refuses the stale reviewed
+record-test digest; reviewing and updating both changed content-bound test
+records restores all five hygiene checks. The first strict Clippy check retains
+674 library and 723 test-target errors, with fourteen and five warnings. The corrected full host rerun restores 1,385 passes with those same eight genuine
+helper-custody failures and four ignored controls. All ninety testing-standard
+and five hygiene controls pass; strict Clippy retains the same error and warning
+counts. Only the changed selector fixture is mechanically formatted; its tokens
+match the passing run, and final source hygiene passes after refreshing its
+content-bound review. Hermetic supervision and mandatory application-target
+checks remain pending for the fixture corrections.
 
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's

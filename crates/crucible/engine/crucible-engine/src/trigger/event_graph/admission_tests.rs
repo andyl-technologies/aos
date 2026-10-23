@@ -128,7 +128,7 @@ fn wide_compound_does_not_allocate_cartesian_dependency_expansion() -> Result<()
 
 #[test]
 fn graph_indexes_refuse_original_credit_before_construction() -> Result<(), Box<dyn Error>> {
-    let decoding = crate::test_support::fixture_decode_scope(256)?;
+    let decoding = crate::test_support::fixture_decode_scope(512)?;
     let events = vec![Event::once(EventId::from_name("entry"), None, Action::Pass)];
     assert!(matches!(
         EventGraph::new(events),

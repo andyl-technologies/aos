@@ -106,6 +106,9 @@ fn late_refusal_rolls_back_lifecycles_once_latches_and_verdict() -> Result<(), B
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_eq!(evaluator.checkpoint()?.canonical_bytes()?, before);
+        // Only the returned cause may retain the rejected staging account.
+        assert!(used.load(Ordering::SeqCst) > baseline);
+        drop(result);
         assert_eq!(used.load(Ordering::SeqCst), baseline);
         drop(prefix);
         drop(before);

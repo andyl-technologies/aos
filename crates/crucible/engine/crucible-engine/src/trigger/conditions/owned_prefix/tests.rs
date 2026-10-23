@@ -106,6 +106,9 @@ fn refused_borrowed_suffix_preserves_prefix_and_refunds_staging() -> Result<(), 
     assert!(prefix.ordering_facts.is_empty());
     assert!(prefix.event_firings.is_empty());
     assert!(prefix.timer_fires.is_empty());
+    // Rejected staging releases its account while the cause keeps its own loan.
+    assert!(fixture.retained_bytes() > baseline);
+    drop(result);
     assert_eq!(fixture.retained_bytes(), baseline);
     fixture.check()?;
     Ok(())
