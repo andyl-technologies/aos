@@ -973,7 +973,9 @@ thirteen cleanup cases. Focused formatting and engineering hygiene pass. The mat
 lint command retains 692 library errors and fourteen warnings; test findings
 fall from 763 to 759 with five warnings. All three tuple-complexity findings
 and the immediate closure-call finding are removed without lint exemptions.
-Mandatory application-target compilation remains required for this test revision.
+Mandatory application-target compilation passes at
+`a9ka61gsqlkzn6jjyvfqpi21kawkiwjh` against commit `4cee718eda`; all 5,364
+Rust/TOML inputs and six fixture/license files match its immutable build source.
 
 The Target dispatcher now retains its actual unresolved native join owner when
 the facade is abandoned. A single-publication slot lives in the containing
@@ -987,9 +989,35 @@ survive transfer and subsequently observe actual return. The source-shape
 integration check and Nix engineering hygiene pass. The matching strict Host
 lint command reports 690 library errors and fourteen warnings, with 757 test
 errors and five warnings; both previous non-Drop ownership diagnostics are
-removed without exemptions. Mandatory application-target compilation remains
-required for this revision. These component results do not issue Main custody
+removed without exemptions. Mandatory application-target compilation is running
+against commit `30ab2c5cc4`; all 5,364 Rust/TOML inputs and six fixture/license
+files match its immutable build source. These component results do not issue Main custody
 or qualify complete native retirement.
+
+Source-service abandonment now retains its unique native join owner in the
+existing outcome allocation, alongside its actual containing join obligation,
+recorded cancellation/return history and independent birth observations. The
+single-publication slot is outside the worker-result mutex, so abandonment
+neither waits for delivery nor allocates a new recipient. Its full actual layout
+is included in the existing startup metadata admission before worker birth.
+The same existing outcome alias keeps the task, controls and original service
+loan charged until containing process exit; a returned Rust body or completed
+TLS destructor cannot replace the missing native join.
+
+All twenty-eight Source controls pass. The new causal control keeps no extra
+worker, outcome alias or service lease and holds the actual Source worker in
+TLS destruction after its Rust body and delivery alias close. The same account
+refuses another byte during and after that teardown, and facade destruction
+performs zero allocations or reallocations. Omitting only the retention
+transfer makes the test fail at the budget-refusal assertion; restoring it
+passes, including the complete recorded-history recipient. The existing real
+success and unwind controls still prove allocation-header closure before
+refund after an explicit native join. Engineering hygiene passes. The matching
+strict Host library lint result remains 690 errors and fourteen warnings; no
+new library finding is introduced. Mandatory application-target compilation
+remains required for this revision. These are
+component custody checks, not authenticated Main issuance or a complete paid
+native-profile result.
 
 #### Cumulative construction and request ownership source
 
@@ -1191,7 +1219,8 @@ record has SHA-256
 The thirteen new files retain explicit GPL-2.0-or-later identifiers; the
 cumulative license ledger has 654 created-file rows and passes at
 `x51jpd55ax7v5bvs6lhq1722fj0hgp6g`. Hermetic patch/bundle reconstruction
-passes at `0bdmfig1b41xya91ysvvpsgvm52kid2v`; core evaluation passes. Fresh owning
+passes at `0bdmfig1b41xya91ysvvpsgvm52kid2v`; core evaluation passes. ABI
+conformance for this postbody tuple passes at `idw170y5d6bm6rnzx3qw92mq8fd9s7qp`. Fresh owning
 compilation, getter readback and geometry for this larger tree remain required;
 the preceding header tuple's measured floor is not reused. The separate
 system-link alias and no-Target successor remain excluded from this import.

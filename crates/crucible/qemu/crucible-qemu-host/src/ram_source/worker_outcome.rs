@@ -6,7 +6,7 @@
 
 use super::*;
 use std::any::Any;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BodyState {
@@ -25,8 +25,22 @@ struct OutcomeBody {
     _lease: crucible_host_resources::host_services::HostServiceLease,
 }
 
+// The join record must remain outside the result mutex: abandonment neither
+// waits for worker delivery nor allocates another recipient.
+struct OutcomeAllocation {
+    body: Mutex<OutcomeBody>,
+    abandoned: OnceLock<AbandonedWorker>,
+}
+
+struct AbandonedWorker {
+    _native: NativeJoinOwner,
+    _launch_join: Option<crate::launch_cleanup::LaunchSourceJoin>,
+    _stop: stop::StopState,
+    _birth: (Option<HostSupervisionError>, Option<HostSupervisionError>),
+}
+
 pub(super) struct WorkerOutcome {
-    shared: Option<Arc<Mutex<OutcomeBody>>>,
+    shared: Option<Arc<OutcomeAllocation>>,
 }
 
 pub(super) struct OutcomeSnapshot {
@@ -91,28 +105,56 @@ impl Drop for WorkerOutcome {
 impl WorkerOutcome {
     pub(super) fn new(lease: crucible_host_resources::host_services::HostServiceLease) -> Self {
         Self {
-            shared: Some(Arc::new(Mutex::new(OutcomeBody {
-                state: BodyState::Running,
-                failure: None,
-                panic: None,
-                uncertain: false,
-                _lease: lease,
-            }))),
+            shared: Some(Arc::new(OutcomeAllocation {
+                body: Mutex::new(OutcomeBody {
+                    state: BodyState::Running,
+                    failure: None,
+                    panic: None,
+                    uncertain: false,
+                    _lease: lease,
+                }),
+                abandoned: OnceLock::new(),
+            })),
         }
     }
 
     pub(super) fn allocation_bytes() -> Result<u64, QemuRamSourceError> {
         let (layout, _) = std::alloc::Layout::new::<[std::sync::atomic::AtomicUsize; 2]>()
-            .extend(std::alloc::Layout::new::<Mutex<OutcomeBody>>())
+            .extend(std::alloc::Layout::new::<OutcomeAllocation>())
             .map_err(|_| QemuRamSourceError::Ownership)?;
         u64::try_from(layout.pad_to_align().size()).map_err(|_| QemuRamSourceError::Ownership)
+    }
+
+    /// Retains the same native owner and containing join debt until Main exits.
+    pub(super) fn retain_abandoned(
+        self,
+        native: NativeJoinOwner,
+        launch_join: Option<crate::launch_cleanup::LaunchSourceJoin>,
+        stop: stop::StopState,
+        birth: (Option<HostSupervisionError>, Option<HostSupervisionError>),
+    ) {
+        // Every live facade has its allocation; only Drop takes shared away.
+        // The service consumes its sole worker once. No delivery/snapshot path
+        // writes abandoned, so this initialization cannot contend or overwrite.
+        if let Some(shared) = self.shared.as_ref() {
+            shared.abandoned.get_or_init(|| AbandonedWorker {
+                _native: native,
+                _launch_join: launch_join,
+                _stop: stop,
+                _birth: birth,
+            });
+        }
+        // This existing strong reference keeps the actual record, result and
+        // prepaid worker loan together. A returned Rust body or TLS destructor
+        // cannot substitute for the unique native join that did not occur.
+        std::mem::forget(self);
     }
 
     pub(super) fn no_birth(&self, failure: Option<QemuRamWorkerFailure>) {
         let Some(shared) = self.shared.as_ref() else {
             return;
         };
-        let (mut body, poisoned) = match shared.lock() {
+        let (mut body, poisoned) = match shared.body.lock() {
             Ok(body) => (body, false),
             Err(poisoned) => (poisoned.into_inner(), true),
         };
@@ -125,7 +167,7 @@ impl WorkerOutcome {
         let Some(shared) = self.shared.as_ref() else {
             return;
         };
-        let (mut body, poisoned) = match shared.lock() {
+        let (mut body, poisoned) = match shared.body.lock() {
             Ok(body) => (body, false),
             Err(poison) => (poison.into_inner(), true),
         };
@@ -153,7 +195,7 @@ impl WorkerOutcome {
         let Some(shared) = self.shared.as_ref() else {
             return uncertain();
         };
-        let (body, poisoned) = match shared.try_lock() {
+        let (body, poisoned) = match shared.body.try_lock() {
             Ok(body) => (body, false),
             Err(std::sync::TryLockError::Poisoned(poison)) => (poison.into_inner(), true),
             Err(std::sync::TryLockError::WouldBlock) => return uncertain(),
@@ -171,7 +213,7 @@ impl WorkerOutcome {
     #[cfg(test)]
     pub(super) fn allocation_header_offset() -> usize {
         std::alloc::Layout::new::<[std::sync::atomic::AtomicUsize; 2]>()
-            .extend(std::alloc::Layout::new::<Mutex<OutcomeBody>>())
+            .extend(std::alloc::Layout::new::<OutcomeAllocation>())
             .unwrap()
             .1
     }

@@ -577,6 +577,14 @@ impl QemuRamSourceService {
 impl Drop for QemuRamSourceService {
     fn drop(&mut self) {
         self.cancel();
+        if let Some(worker) = self.worker.take() {
+            worker.outcome.retain_abandoned(
+                worker.native,
+                self.launch_join.take(),
+                std::mem::replace(&mut self.stop, stop::StopState::new()),
+                (self.birth_before, self.birth_after),
+            );
+        }
     }
 }
 

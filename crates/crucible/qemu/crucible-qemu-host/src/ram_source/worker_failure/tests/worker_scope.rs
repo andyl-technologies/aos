@@ -195,3 +195,122 @@ fn detached_canceled_worker_closes_inventory_before_original_refund() {
 fn detached_unwinding_worker_closes_inventory_before_original_refund() {
     detached_close(true);
 }
+
+struct NativeTlsGate {
+    entered: std::sync::mpsc::SyncSender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+    finished: std::sync::mpsc::SyncSender<bool>,
+}
+
+impl Drop for NativeTlsGate {
+    fn drop(&mut self) {
+        let _entered = self.entered.send(());
+        let released = self.release.recv_timeout(Duration::from_secs(5)).is_ok();
+        let _finished = self.finished.send(released);
+    }
+}
+
+thread_local! {
+    static NATIVE_TLS_GATE: std::cell::RefCell<Option<NativeTlsGate>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+struct TlsGatedBacking {
+    backing: ImmutableBacking,
+    gate: Mutex<Option<NativeTlsGate>>,
+}
+
+impl QemuRamBacking for TlsGatedBacking {
+    fn root_object_id(&self) -> &str {
+        self.backing.root_object_id()
+    }
+
+    fn root_record(&self) -> &RootRecord {
+        self.backing.root_record()
+    }
+
+    fn with_page_response(
+        &self,
+        region: &str,
+        page: u64,
+        boundary: &mut dyn FnMut() -> Result<(), QemuRamReadBoundaryError>,
+        consumer: &mut crate::ram_source::QemuRamResponseConsumer<'_>,
+    ) -> Result<(), QemuRamSourceError> {
+        self.backing
+            .with_page_response(region, page, boundary, consumer)
+    }
+}
+
+impl Drop for TlsGatedBacking {
+    fn drop(&mut self) {
+        assert_eq!(std::thread::current().name(), Some("crucible-ram-source"));
+        // The worker drops its final backing before publishing its Rust result.
+        // TLS runs later, after the closure and its outcome alias have closed.
+        NATIVE_TLS_GATE.with(|cell| *cell.borrow_mut() = self.gate.get_mut().unwrap().take());
+    }
+}
+
+#[test]
+fn abandoned_source_retains_native_join_debt_during_and_after_tls_teardown() {
+    let _serial = TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (entered, observed) = std::sync::mpsc::sync_channel(1);
+    let (release, blocked) = std::sync::mpsc::sync_channel(1);
+    let (finished, returned) = std::sync::mpsc::sync_channel(1);
+    let backing = Arc::new(TlsGatedBacking {
+        backing: ImmutableBacking::new(2).unwrap(),
+        gate: Mutex::new(Some(NativeTlsGate {
+            entered,
+            release: blocked,
+            finished,
+        })),
+    });
+    let binding = RamPageBinding {
+        session: [1; 16],
+        owner_incarnation: [2; 16],
+        source_generation: 1,
+        root_digest: *backing.root_record().digest().as_bytes(),
+    };
+    let peak = crate::ram_source::SOURCE_STACK_BYTES as u64
+        + 3 * crucible_qemu_protocol::ram_page::RAM_PAGE_MAX_RESPONSE_BYTES as u64
+        + QemuRamWorkerFailure::startup_metadata_bytes().unwrap();
+    let account = HostServiceAllocator::new(1, 2, peak).unwrap();
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(5)),
+    )
+    .unwrap();
+    let (socket, _peer) = UnixStream::pair().unwrap();
+    let source = QemuRamSourceService::start_component(
+        socket,
+        backing,
+        binding,
+        supervisor,
+        account.clone(),
+        None,
+    )
+    .unwrap();
+
+    // Keep no worker, outcome alias or extra lease: only production Drop can
+    // preserve the actual join record and its paid task/control inventory.
+    let ((), counts) = TestAllocationObserver::count(|| drop(source));
+    observed.recv_timeout(Duration::from_secs(5)).unwrap();
+    let during_tls = account.reserve_resources(0, 0, 1);
+    release.send(()).unwrap();
+    assert!(returned.recv_timeout(Duration::from_secs(5)).unwrap());
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+
+    assert!(matches!(
+        during_tls,
+        Err(HostServiceError::CapacityExhausted)
+    ));
+    assert!(matches!(
+        account.reserve_resources(0, 0, 1),
+        Err(HostServiceError::CapacityExhausted)
+    ));
+    // No native join occurred. This abandoned component's same account remains
+    // retained until process exit, even after its Rust body and TLS complete.
+}
