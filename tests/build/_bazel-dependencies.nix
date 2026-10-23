@@ -24,7 +24,7 @@ in rec {
       };
       packageLabel = "//third_party/rust:${family}_specification_package";
     };
-  }) ["hub-console" "hub-console-wasm" "hub-db" "hub-db-tests" "hub-db-all-features" "hub-db-all-features-tests" "package-manager" "package-manager-tests" "boot-preparation" "boot-preparation-minimal" "release-coordination" "registry-native" "registry-native-tests" "release-preparation" "hub-client" "hub-model" "hub-model-tests" "hub-portable" "deployment" "build-services" "cli-support" "activation-crucible" "activation-crucible-tests" "activation-systemd" "activation-storage" "activation-core" "activation-core-tests" "core" "device" "store" "guest" "engine" "quota" "session" "control" "qemu-host" "store-s3" "daemon" "crucible-cli" "native-foundation" "native-foundation-tests" "native-foundation-minimal" "formats"]);
+  }) ["hub-service" "hub-service-tests" "hub-service-all-features" "hub-service-all-features-tests" "hub-console" "hub-console-wasm" "hub-db" "hub-db-tests" "hub-db-all-features" "hub-db-all-features-tests" "package-manager" "package-manager-tests" "boot-preparation" "boot-preparation-minimal" "release-coordination" "registry-native" "registry-native-tests" "release-preparation" "hub-client" "hub-model" "hub-model-tests" "hub-portable" "deployment" "build-services" "cli-support" "activation-crucible" "activation-crucible-tests" "activation-systemd" "activation-storage" "activation-core" "activation-core-tests" "core" "device" "store" "guest" "engine" "quota" "session" "control" "qemu-host" "store-s3" "daemon" "crucible-cli" "native-foundation" "native-foundation-tests" "native-foundation-minimal" "formats"]);
   core = pkgs.mkAosBazelCheck {
     pname = "aos-bazel-external-rust-pilot";
     workspace = pkgs.mkAosBazelWorkspace {

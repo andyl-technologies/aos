@@ -346,3 +346,27 @@ config_setting(
     flag_values = {":dependency_profile": "hub-console-wasm"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "hub_service_dependencies",
+    flag_values = {":dependency_profile": "hub-service"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_service_tests_dependencies",
+    flag_values = {":dependency_profile": "hub-service-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_service_all_features_dependencies",
+    flag_values = {":dependency_profile": "hub-service-all-features"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_service_all_features_tests_dependencies",
+    flag_values = {":dependency_profile": "hub-service-all-features-tests"},
+    visibility = ["//visibility:public"],
+)

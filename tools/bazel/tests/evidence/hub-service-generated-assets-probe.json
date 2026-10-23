@@ -1,0 +1,46 @@
+{
+  "declared_console_assets": "/nix/store/20zd0rfiqxvy8w7fsnjiavg3xgahjmxs-aos-bazel-console-assets-1",
+  "derivation": "/nix/store/mg0aygwly33jrr6mi5skvy4jj44m19xi-aos-bazel-hub-service-generated-assets-probe-1.drv",
+  "executed_actions": [
+    {
+      "cacheHit": false,
+      "exitCode": 0,
+      "mnemonic": "CargoBuildScriptRun",
+      "runner": "linux-sandbox",
+      "targetLabel": "//crates/hub/aos-hub-service:build_script"
+    },
+    {
+      "cacheHit": false,
+      "exitCode": 0,
+      "mnemonic": "AosConsoleAssetsSnapshot",
+      "runner": "linux-sandbox",
+      "targetLabel": "//crates/hub/aos-hub-service:generated_assets"
+    }
+  ],
+  "files": {
+    "hub-console.css": {
+      "sha256": "2fd692263cf951ec2c279aa1fb98b02adc2cb108e19cb20f6d9cd4703a4c8164",
+      "size": 16286
+    },
+    "hub-console.js": {
+      "sha256": "aa3472c7de9edc92a5085db6faac4c523f1d21f8b0abe5c878f616b04e7fe1d6",
+      "size": 48504
+    },
+    "hub-console_bg.wasm": {
+      "sha256": "c56aca1f46ab460febe13968a9b539a3e7ebb42d575d5c6ad1170b28b115028f",
+      "size": 8396171
+    }
+  },
+  "limits": [
+    "The service build script and asset snapshot execute uncached in the Linux sandbox. This checkpoint does not qualify native service tests, browser execution, or production migration."
+  ],
+  "output": "/nix/store/x7biy9y14y4kgy2msri0hmrk4raapgnq-aos-bazel-hub-service-generated-assets-probe-1",
+  "schema_version": 1,
+  "source_inputs_sha256": {
+    "api/proto/BUILD.bazel": "ae9a3a469f8098412c4545fa866585414d20d93dbb8e434a427712d29e2171cf",
+    "crates/hub/aos-hub-service/BUILD.bazel": "d7b67e757fb2c202ebd94c0a0290945302ecbbe4568ac0b80e4ea2501bafec40",
+    "crates/hub/aos-hub-service/assets.bzl": "81df5f02d6374ddd173b22f8b24399e6e901b69a3105cd7d22232fe6d7ae4412",
+    "crates/hub/aos-hub-service/build.rs": "037dc12ce85d926615c2088fdb39d21512d7a9864b29bc95f1aff48232ce8563"
+  },
+  "status": "PASS"
+}

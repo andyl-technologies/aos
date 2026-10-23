@@ -234,6 +234,10 @@ impl RpcService {
         Ok((target, owner_scope_key))
     }
 
+    #[allow(
+        clippy::type_complexity,
+        reason = "The tuple preserves the existing normalized persistence field order."
+    )]
     pub(in crate::service) fn route_access_policy_fields(
         policy: pb::DeliveryAccessPolicy,
     ) -> Result<

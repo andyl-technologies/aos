@@ -12,6 +12,7 @@
 //! fails the build if the forbidden call reappears anywhere but `clock.rs`.
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// Source-text needles that panic on `wasm32`. `clock.rs` is the one sanctioned
@@ -22,9 +23,20 @@ const FORBIDDEN: &[&str] = &["SystemTime::now()", "std::time::Instant::now()"];
 fn core_has_no_wasm_unsafe_clock_calls() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut offenders = Vec::new();
-    scan(&src, &mut offenders);
-    scan(&src.join("../../aos-hub-model/src"), &mut offenders);
-    scan(&src.join("../../aos-hub-db/src"), &mut offenders);
+    for directory in [
+        src.clone(),
+        src.join("../../aos-hub-model/src"),
+        src.join("../../aos-hub-db/src"),
+    ] {
+        let files = scan(&directory, &mut offenders)
+            .unwrap_or_else(|error| panic!("cannot scan {}: {error}", directory.display()));
+        assert!(
+            files > 0,
+            "no Rust sources found in {}",
+            directory.display()
+        );
+    }
+
     assert!(
         offenders.is_empty(),
         "wasm-unsafe clock call(s) found — route time through `aos_hub_model::clock` \
@@ -35,15 +47,12 @@ fn core_has_no_wasm_unsafe_clock_calls() {
 
 /// Recursively scan `dir` for `.rs` files containing a [`FORBIDDEN`] needle in
 /// code (line comments stripped), skipping the sanctioned `clock.rs`.
-fn scan(dir: &Path, offenders: &mut Vec<String>) {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
+fn scan(dir: &Path, offenders: &mut Vec<String>) -> io::Result<usize> {
+    let mut files = 0;
+    for entry in fs::read_dir(dir)? {
+        let path = entry?.path();
         if path.is_dir() {
-            scan(&path, offenders);
+            files += scan(&path, offenders)?;
             continue;
         }
         if path.extension().and_then(|e| e.to_str()) != Some("rs") {
@@ -52,9 +61,8 @@ fn scan(dir: &Path, offenders: &mut Vec<String>) {
         if path.file_name().and_then(|n| n.to_str()) == Some("clock.rs") {
             continue;
         }
-        let Ok(text) = fs::read_to_string(&path) else {
-            continue;
-        };
+        let text = fs::read_to_string(&path)?;
+        files += 1;
         for (lineno, line) in text.lines().enumerate() {
             // Strip a `//`-comment tail so the rule's own explanatory comments
             // (which name the forbidden call) do not trip it.
@@ -66,6 +74,7 @@ fn scan(dir: &Path, offenders: &mut Vec<String>) {
             }
         }
     }
+    Ok(files)
 }
 
 /// Render `path` relative to the crate root for a readable failure message.

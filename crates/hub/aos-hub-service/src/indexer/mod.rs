@@ -696,7 +696,7 @@ async fn index_registry_inner(
                     } else {
                         registry.trust_keys.as_slice()
                     };
-                    let signed = verify_signed_tag(&payload, &tag_name, image_trusted)
+                    let signed = verify_signed_tag(&payload, tag_name, image_trusted)
                         .with_context(|| format!("signed image release tag '{tag_name}'"))?;
                     let signer = parse_signed_tag(&payload)
                         .ok()
@@ -717,7 +717,7 @@ async fn index_registry_inner(
                                 fetch,
                                 registry.id,
                                 placement_id,
-                                &tag_name,
+                                tag_name,
                                 signer.as_deref().context(
                                     "signed container release signer identity is unavailable",
                                 )?,
@@ -749,7 +749,7 @@ async fn index_registry_inner(
                         &source_commit,
                         &release_tree.root.registry.name,
                         &release_tree.packages,
-                        &tag_name,
+                        tag_name,
                         &mut release_leases,
                     )
                     .await
@@ -813,8 +813,7 @@ async fn index_registry_inner(
                 db.retain_release_notes(registry.id, &tag_oid.to_hex(), notes)
                     .await?;
                 let record =
-                    fetch_release_record(fetch, &tag_name, &release_tree.root.registry.name)
-                        .await?;
+                    fetch_release_record(fetch, tag_name, &release_tree.root.registry.name).await?;
                 db.retain_release_record(registry.id, &tag_oid.to_hex(), record.as_deref())
                     .await?;
                 let manifest_digest = hex::encode(Sha256::digest(serde_json::to_vec(&artifacts)?));
@@ -832,7 +831,7 @@ async fn index_registry_inner(
                     commit_oid: source_commit,
                     signer,
                     tagged_at: signed.tag.tagger_when,
-                    pack_present: probe_pack_presence(fetch, &tag_name).await?,
+                    pack_present: probe_pack_presence(fetch, tag_name).await?,
                 };
                 Ok::<_, anyhow::Error>((
                     release,
@@ -1259,6 +1258,10 @@ fn release_requires_signature(
     registry_requires_signatures || typed_publication || has_system_images || has_container_release
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 async fn validate_container_release(
     db: &Database,
     fetch: &dyn SurfaceFetch,
@@ -1837,17 +1840,18 @@ fn release_snapshot_artifacts(
                     &entry.deployment,
                     &entry.module_documentation,
                     &entry.qualification,
-                ] {
-                    if let Some(artifact) = artifact {
-                        artifacts.push(ReleaseSnapshotArtifact {
-                            package_name: package.package.name.clone(),
-                            package_version: version.version.clone(),
-                            platform: platform.clone(),
-                            artifact_kind: "output".to_string(),
-                            store_hash: store_hash_component(&artifact.store_path),
-                            store_path: artifact.store_path.clone(),
-                        });
-                    }
+                ]
+                .into_iter()
+                .flatten()
+                {
+                    artifacts.push(ReleaseSnapshotArtifact {
+                        package_name: package.package.name.clone(),
+                        package_version: version.version.clone(),
+                        platform: platform.clone(),
+                        artifact_kind: "output".to_string(),
+                        store_hash: store_hash_component(&artifact.store_path),
+                        store_path: artifact.store_path.clone(),
+                    });
                 }
                 for image in &entry.images {
                     artifacts.push(ReleaseSnapshotArtifact {
@@ -2281,6 +2285,10 @@ async fn fetch_release_record(
 }
 
 /// Proves that every signed direct-delivery object exists with its exact identity.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 async fn verify_system_image_objects(
     db: &Database,
     fetch: &dyn SurfaceFetch,
@@ -3131,6 +3139,10 @@ async fn append_signing_usage_key(
     Ok(true)
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 async fn resolve_channels(
     db: &Database,
     fetch: &dyn SurfaceFetch,

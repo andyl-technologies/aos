@@ -22,6 +22,8 @@
     "aosBazelReleaseCoordinationLauncher"
     "aosBazelRegistryNativeLauncher"
     "aosBazelReleasePreparationLauncher"
+    "aosBazelHubServiceLauncher"
+    "aosBazelHubServiceAllFeaturesLauncher"
     "aosBazelHubDbLauncher"
     "aosBazelHubDbAllFeaturesLauncher"
     "aosBazelHubConsoleLauncher"

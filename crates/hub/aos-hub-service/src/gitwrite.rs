@@ -432,7 +432,9 @@ mod tests {
         }
     }
 
-    struct RecordingWriter(Arc<Mutex<Vec<(String, Vec<u8>)>>>);
+    type RecordedWrites = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
+
+    struct RecordingWriter(RecordedWrites);
 
     #[async_trait::async_trait]
     impl SurfaceWrite for RecordingWriter {

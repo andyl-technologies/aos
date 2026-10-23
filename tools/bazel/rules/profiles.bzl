@@ -2,6 +2,10 @@
 
 def _dependency_profile_impl(ctx):
     if ctx.build_setting_value not in [
+        "hub-service",
+        "hub-service-tests",
+        "hub-service-all-features",
+        "hub-service-all-features-tests",
         "hub-console",
         "hub-console-wasm",
         "hub-db",

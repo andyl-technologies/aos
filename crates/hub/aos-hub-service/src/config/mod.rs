@@ -880,7 +880,7 @@ mod tests {
         );
         // a is unchanged and omitted; b changed; added is new; gone removed.
         assert_eq!(diffs.len(), 3);
-        let by_field: std::collections::HashMap<_, _> =
+        let by_field: std::collections::BTreeMap<_, _> =
             diffs.iter().map(|d| (d.field.clone(), d.clone())).collect();
         assert_eq!(by_field["b"].old.as_deref(), Some("2"));
         assert_eq!(by_field["b"].new.as_deref(), Some("3"));

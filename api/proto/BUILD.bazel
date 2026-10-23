@@ -13,5 +13,8 @@ filegroup(
 filegroup(
     name = "hub_api_definitions",
     srcs = ["aos/hub/v1/hub.proto"],
-    visibility = ["//crates/hub/aos-hub-api:__pkg__"],
+    visibility = [
+        "//crates/hub/aos-hub-api:__pkg__",
+        "//crates/hub/aos-hub-service:__pkg__",
+    ],
 )

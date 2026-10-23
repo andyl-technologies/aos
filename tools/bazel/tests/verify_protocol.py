@@ -154,7 +154,7 @@ def compare_features(inventory, messages, first_party_paths, required_packages=(
     }
     bazel_features = {}
     for report in reports:
-        match = re.search(r"aos_(?:core|device|store|guest|engine|quota|session|control|qemu_host|store_s3|daemon|crucible_cli|cli_support|build_services|deployment|hub_portable|hub_console(?:_wasm)?|hub_db(?:_all_features)?(?:_tests)?|package_manager(?:_tests)?|boot_preparation(?:_minimal)?|release_coordination|registry_native(?:_tests)?|release_preparation|hub_client|hub_model(?:_tests)?|formats|native_foundation(?:_tests|_minimal)?|activation_(?:core(?:_tests)?|crucible(?:_tests)?|storage|systemd))_crates__([^/]+)//", report["label"])
+        match = re.search(r"aos_(?:core|device|store|guest|engine|quota|session|control|qemu_host|store_s3|daemon|crucible_cli|cli_support|build_services|deployment|hub_portable|hub_console(?:_wasm)?|hub_service(?:_all_features)?(?:_tests)?|hub_db(?:_all_features)?(?:_tests)?|package_manager(?:_tests)?|boot_preparation(?:_minimal)?|release_coordination|registry_native(?:_tests)?|release_preparation|hub_client|hub_model(?:_tests)?|formats|native_foundation(?:_tests|_minimal)?|activation_(?:core(?:_tests)?|crucible(?:_tests)?|storage|systemd))_crates__([^/]+)//", report["label"])
         if match and report["kind"] in {"rust_library", "rust_proc_macro"}:
             # Repository names normalize SemVer build metadata. Compare the
             # declared package identity instead of trying to reverse that loss.

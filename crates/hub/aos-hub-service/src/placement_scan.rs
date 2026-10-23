@@ -781,7 +781,7 @@ fn sha256_hash_matches(expected: &str, digest: &[u8; 32]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
 
@@ -815,19 +815,21 @@ mod tests {
         paths: Arc<Vec<String>>,
     }
 
+    type SharedSurfaceObjects = Arc<Mutex<BTreeMap<String, BTreeMap<String, Vec<u8>>>>>;
+
     #[derive(Clone, Default)]
     struct CopySurfaceProvider {
-        objects: Arc<Mutex<HashMap<String, BTreeMap<String, Vec<u8>>>>>,
+        objects: SharedSurfaceObjects,
     }
 
     struct CopySurface {
         placement: String,
-        objects: Arc<Mutex<HashMap<String, BTreeMap<String, Vec<u8>>>>>,
+        objects: SharedSurfaceObjects,
     }
 
     struct CopySurfaceWriter {
         placement: String,
-        objects: Arc<Mutex<HashMap<String, BTreeMap<String, Vec<u8>>>>>,
+        objects: SharedSurfaceObjects,
     }
 
     struct RetryingMultipartWriter {
@@ -1169,7 +1171,7 @@ mod tests {
             .create_surface_placement(&NewSurfacePlacementSpec {
                 surface: SurfaceTarget::Registry(registry_id),
                 name: "primary".into(),
-                binding_id: binding_id,
+                binding_id,
                 prefix: format!("registries/{slug}/system"),
                 kind: "complete".into(),
                 desired_state: "active".into(),
@@ -1245,7 +1247,7 @@ mod tests {
             .create_surface_placement(&NewSurfacePlacementSpec {
                 surface: SurfaceTarget::BinaryCache(cache_id),
                 name: "primary".into(),
-                binding_id: binding_id,
+                binding_id,
                 prefix: "caches/placement-cache".into(),
                 kind: "complete".into(),
                 desired_state: "active".into(),

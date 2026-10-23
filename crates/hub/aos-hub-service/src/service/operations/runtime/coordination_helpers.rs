@@ -262,8 +262,16 @@ impl RpcService {
             rootfs_sha256: String::new(),
             uki: None,
             release_verification: "verified".to_string(),
-            store_path: store_backed.then_some(image.store_path).unwrap_or_default(),
-            nar_hash: store_backed.then_some(image.nar_hash).unwrap_or_default(),
+            store_path: if store_backed {
+                image.store_path
+            } else {
+                String::new()
+            },
+            nar_hash: if store_backed {
+                image.nar_hash
+            } else {
+                String::new()
+            },
             nar_size: if store_backed { image.nar_size } else { 0 },
             cache_urls: cache_urls.to_vec(),
         })
@@ -588,7 +596,7 @@ impl RpcService {
                 self.require_permission(
                     &claims,
                     Permission::RegistryConfigure,
-                    &self.registry_scope(&registry).await?,
+                    &self.registry_scope(registry).await?,
                 )
                 .await?;
                 self.db

@@ -24,6 +24,8 @@ DEPENDENCIES = select({
     "//tools/bazel/rules:release_coordination_dependencies": ["//crates/shared/aos-transfer:lib"],
     "//tools/bazel/rules:registry_native_dependencies": ["//crates/shared/aos-transfer:lib"],
     "//tools/bazel/rules:registry_native_tests_dependencies": ["//crates/shared/aos-transfer:lib"],
+    "//tools/bazel/rules:hub_service_tests_dependencies": ["//crates/shared/aos-transfer:lib"],
+    "//tools/bazel/rules:hub_service_all_features_tests_dependencies": ["//crates/shared/aos-transfer:lib"],
     "//conditions:default": ["//crates/shared/aos-transfer:lib_without_transfer"],
 }) + [
     "//third_party/rust:core_console",

@@ -149,7 +149,7 @@ mod tests {
     fn string(nar: &mut Vec<u8>, bytes: &[u8]) {
         nar.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
         nar.extend_from_slice(bytes);
-        while nar.len() % 8 != 0 {
+        while !nar.len().is_multiple_of(8) {
             nar.push(0);
         }
     }

@@ -83,6 +83,26 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    hub-service = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-service";
+    };
+    hub-service-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-service-tests";
+    };
+    hub-service-all-features = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-service-all-features";
+    };
+    hub-service-all-features-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-service-all-features-tests";
+    };
     hub-console = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -353,6 +373,18 @@
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
   };
+  aosBazelHubServiceWorkspace =
+    (import ../../../tests/build/_bazel-hub-service-configuration.nix {
+      inherit pkgs;
+      sourceInventory = null;
+      allFeatures = false;
+    }).workspace;
+  aosBazelHubServiceAllFeaturesWorkspace =
+    (import ../../../tests/build/_bazel-hub-service-configuration.nix {
+      inherit pkgs;
+      sourceInventory = null;
+      allFeatures = true;
+    }).workspace;
   aosBazelHubConsoleWorkspace = mkAosBazelWorkspace {
     root = ../../..;
     sourceDirectories = ["tools/bazel" "third_party/rust" "api/proto" "crates/shared/aos-artifact-evidence" "crates/shared/aos-core" "crates/hub/aos-hub-api" "crates/hub/aos-hub-console" "crates/hub/aos-hub-ui" "crates/aos/modules/aos-module-docs" "crates/aos/modules/aos-module-format" "crates/shared/aos-oci-types" "crates/aos/registry/aos-registry-format"];
@@ -877,6 +909,16 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelHubServiceLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelHubServiceWorkspace;
+    }).launcher;
+  aosBazelHubServiceAllFeaturesLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelHubServiceAllFeaturesWorkspace;
     }).launcher;
   aosBazelHubConsoleLauncher =
     (import ./development.nix {

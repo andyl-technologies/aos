@@ -62,6 +62,10 @@ pub(crate) struct RequestStart(pub Instant);
 impl<S: Send + Sync> axum::extract::FromRequestParts<S> for RequestStart {
     type Rejection = std::convert::Infallible;
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Uses the portable Hub clock for request timing and runtime budgets."
+    )]
     async fn from_request_parts(
         _parts: &mut axum::http::request::Parts,
         _state: &S,
@@ -782,6 +786,10 @@ fn check_csrf(session: &Session, csrf: &str) -> Result<(), Box<Response>> {
 /// Returns the boxed re-authentication page — HTTP `403` (the action is
 /// forbidden until the caller re-authenticates) carrying the "confirm your
 /// identity" form as its body — when the session is not within the sudo window.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 fn require_sudo(session: &Session, headers: &HeaderMap) -> Result<(), Box<Response>> {
     if session.auth.is_sudo(aos_hub_model::clock::now_unix_secs()) {
         return Ok(());
@@ -1222,7 +1230,7 @@ async fn sso_enforced_for(
     }
     if let Some(user_id) = user_id {
         let principal = Principal::user(user_id);
-        let mut seen_slugs = std::collections::HashSet::new();
+        let mut seen_slugs = std::collections::BTreeSet::new();
         for (scope, _role) in deps
             .db
             .list_memberships_for(principal.kind.as_str(), principal.id)
@@ -1387,7 +1395,7 @@ pub(crate) async fn oidc_callback(
     // Honor the staged redirect only for same-origin relative paths (a leading
     // single `/`), so a forged `next` can never bounce the browser off-site.
     let target = safe_return_path(login.redirect_after.as_deref()).unwrap_or("/");
-    ([(header::SET_COOKIE, cookie)], Redirect::to(&target)).into_response()
+    ([(header::SET_COOKIE, cookie)], Redirect::to(target)).into_response()
 }
 
 /// Render a clean SSO error page (no stack traces).

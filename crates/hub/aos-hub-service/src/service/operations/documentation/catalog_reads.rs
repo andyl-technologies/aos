@@ -102,11 +102,6 @@ impl RpcService {
         })
     }
 
-    /// Fetches and verifies a previously authorized indexed documentation reference.
-    ///
-    /// # Errors
-    /// Returns an error for missing objects, placement failures, or invalid document integrity.
-
     /// `DocumentationService.SearchPackageDocumentation` — ranked index search.
     ///
     /// # Errors

@@ -48,11 +48,19 @@ aos_repository_test_sources(
     sources = "@aos_hub_model_test_sources//:production_sources",
 )
 
+# The service's selected dev dependencies expose direct identity fixtures.
+# Production service selections retain the ordinary model API.
+LIBRARY_FEATURES = select({
+    "//tools/bazel/rules:hub_service_tests_dependencies": ["default", "test-fixtures"],
+    "//tools/bazel/rules:hub_service_all_features_tests_dependencies": ["default", "test-fixtures"],
+    "//conditions:default": ["default"],
+})
+
 rust_library(
     name = "lib",
     package = RUST_PACKAGE,
     crate_name = "aos_hub_model",
-    crate_features = ["default"],
+    crate_features = LIBRARY_FEATURES,
     crate_root = "src/lib.rs",
     srcs = glob(["src/**/*.rs"]),
     deps = DEPENDENCIES,

@@ -15,6 +15,11 @@ load(":hub-db-all-features-tests/aliases.bzl", HUB_DB_ALL_FEATURES_TESTS_CRATES 
 load(":hub-console.bzl", "HUB_CONSOLE_PACKAGES", "HUB_CONSOLE_FEATURE_VARIANTS", "HUB_CONSOLE_WASM_PACKAGES", "HUB_CONSOLE_WASM_FEATURE_VARIANTS")
 load(":hub-console/aliases.bzl", HUB_CONSOLE_CRATES = "CRATES")
 load(":hub-console-wasm/aliases.bzl", HUB_CONSOLE_WASM_CRATES = "CRATES")
+load(":hub-service.bzl", "HUB_SERVICE_PACKAGES", "HUB_SERVICE_FEATURE_VARIANTS", "HUB_SERVICE_TESTS_PACKAGES", "HUB_SERVICE_TESTS_FEATURE_VARIANTS", "HUB_SERVICE_ALL_FEATURES_PACKAGES", "HUB_SERVICE_ALL_FEATURES_FEATURE_VARIANTS", "HUB_SERVICE_ALL_FEATURES_TESTS_PACKAGES", "HUB_SERVICE_ALL_FEATURES_TESTS_FEATURE_VARIANTS")
+load(":hub-service/aliases.bzl", HUB_SERVICE_CRATES = "CRATES")
+load(":hub-service-tests/aliases.bzl", HUB_SERVICE_TESTS_CRATES = "CRATES")
+load(":hub-service-all-features/aliases.bzl", HUB_SERVICE_ALL_FEATURES_CRATES = "CRATES")
+load(":hub-service-all-features-tests/aliases.bzl", HUB_SERVICE_ALL_FEATURES_TESTS_CRATES = "CRATES")
 load(":release-coordination.bzl", "RELEASE_COORDINATION_FEATURE_VARIANTS", "RELEASE_COORDINATION_PACKAGES")
 load(":release-coordination/aliases.bzl", RELEASE_COORDINATION_CRATES = "CRATES")
 load(":registry-native.bzl", "REGISTRY_NATIVE_FEATURE_VARIANTS", "REGISTRY_NATIVE_PACKAGES")
@@ -60,6 +65,10 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:hub_service_dependencies": HUB_SERVICE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:hub_service_tests_dependencies": HUB_SERVICE_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:hub_service_all_features_dependencies": HUB_SERVICE_ALL_FEATURES_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:hub_service_all_features_tests_dependencies": HUB_SERVICE_ALL_FEATURES_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_console_dependencies": HUB_CONSOLE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_console_wasm_dependencies": HUB_CONSOLE_WASM_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_db_dependencies": HUB_DB_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -107,7 +116,11 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         visibility = ["//visibility:public"],
     )
     for name in sorted(dict(
-        HUB_CONSOLE_CRATES.items()
+        HUB_SERVICE_CRATES.items()
+        + HUB_SERVICE_TESTS_CRATES.items()
+        + HUB_SERVICE_ALL_FEATURES_CRATES.items()
+        + HUB_SERVICE_ALL_FEATURES_TESTS_CRATES.items()
+        + HUB_CONSOLE_CRATES.items()
         + HUB_CONSOLE_WASM_CRATES.items()
         + HUB_DB_CRATES.items()
         + HUB_DB_TESTS_CRATES.items()
@@ -704,6 +717,10 @@ NATIVE_FOUNDATION_ANNOTATIONS = dict({"zstd-sys": STORE_ANNOTATIONS["zstd-sys"]}
     ),
 }.items())
 
+# Service tests add the native registry authoring client. Its TLS/compression
+# dependencies use the same source-built libraries as the retained Cargo oracle.
+HUB_SERVICE_TEST_ANNOTATIONS = dict(STORE_ANNOTATIONS.items() + NATIVE_FOUNDATION_ANNOTATIONS.items())
+
 # Preserve the protocol library and its compiled build dependencies' domain
 # inside the larger host family. Exact versions and original licenses are checked
 # during updates; native bindings and other host dependencies keep host scope.
@@ -939,6 +956,10 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    "hub-service": HUB_SERVICE_FEATURE_VARIANTS,
+    "hub-service-tests": HUB_SERVICE_TESTS_FEATURE_VARIANTS,
+    "hub-service-all-features": HUB_SERVICE_ALL_FEATURES_FEATURE_VARIANTS,
+    "hub-service-all-features-tests": HUB_SERVICE_ALL_FEATURES_TESTS_FEATURE_VARIANTS,
     "hub-console": HUB_CONSOLE_FEATURE_VARIANTS,
     "hub-console-wasm": HUB_CONSOLE_WASM_FEATURE_VARIANTS,
     "hub-db": HUB_DB_FEATURE_VARIANTS,
@@ -1708,6 +1729,10 @@ APPROVED_LICENSES = [
         family = family,
         definition = "BUILD.bazel",
         extra_definitions = {
+            "hub-service": ["hub-service.bzl"],
+            "hub-service-tests": ["hub-service.bzl"],
+            "hub-service-all-features": ["hub-service.bzl"],
+            "hub-service-all-features-tests": ["hub-service.bzl"],
             "hub-console": ["hub-console.bzl"],
             "hub-console-wasm": ["hub-console.bzl"],
             "hub-db": ["hub-db.bzl"],
@@ -1752,6 +1777,10 @@ APPROVED_LICENSES = [
         ("hub-db-all-features-tests", HUB_DB_ALL_FEATURES_TESTS_PACKAGES, HUB_DB_ANNOTATIONS, "apache-host"),
         ("hub-console", HUB_CONSOLE_PACKAGES, {}, "apache-host"),
         ("hub-console-wasm", HUB_CONSOLE_WASM_PACKAGES, {}, "apache-host"),
+        ("hub-service", HUB_SERVICE_PACKAGES, HUB_DB_ANNOTATIONS, "apache-host"),
+        ("hub-service-tests", HUB_SERVICE_TESTS_PACKAGES, HUB_SERVICE_TEST_ANNOTATIONS, "apache-host"),
+        ("hub-service-all-features", HUB_SERVICE_ALL_FEATURES_PACKAGES, HUB_DB_ANNOTATIONS, "apache-host"),
+        ("hub-service-all-features-tests", HUB_SERVICE_ALL_FEATURES_TESTS_PACKAGES, HUB_SERVICE_TEST_ANNOTATIONS, "apache-host"),
         ("release-coordination", RELEASE_COORDINATION_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
         ("registry-native", REGISTRY_NATIVE_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
         ("registry-native-tests", REGISTRY_NATIVE_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
@@ -1798,6 +1827,10 @@ APPROVED_LICENSES = [
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
     for family in [
+        "hub-service",
+        "hub-service-tests",
+        "hub-service-all-features",
+        "hub-service-all-features-tests",
         "hub-console",
         "hub-console-wasm",
         "hub-db",

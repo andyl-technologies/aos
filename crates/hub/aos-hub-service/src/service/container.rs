@@ -610,9 +610,11 @@ impl RpcService {
             created_at: publication.created_at,
             committed_at: publication.committed_at.unwrap_or_default(),
             confirmation_hash,
-            verified_release_root: (publication.state == "ready")
-                .then(|| publication.root_digest.to_string())
-                .unwrap_or_default(),
+            verified_release_root: if publication.state == "ready" {
+                publication.root_digest.to_string()
+            } else {
+                String::new()
+            },
             topology_digest: publication.topology_digest.to_string(),
             required_placement_count: publication.required_placement_count,
             source_kind: publication.source_kind.clone(),

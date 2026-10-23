@@ -1,0 +1,88 @@
+{
+  "core_evaluation": {
+    "derivation": "/nix/store/2fd72wbqn7gs55dc38j2j5hf5yc3jgkc-aos-native-evaluation-checks-0.drv",
+    "derivation_sha256": "d83cde141abc7981f15d17400bc2283f48d79d077b54e8f24f6192c6d05d864a",
+    "output": "/nix/store/iibqjj9fi7s68zbhh7psvrp3dbimlvlv-aos-native-evaluation-checks-0"
+  },
+  "developer_cli": {
+    "commands": [
+      "hub-service build",
+      "hub-service rust-project",
+      "hub-service-all-features build",
+      "hub-service-all-features rust-project"
+    ],
+    "dependency_profiles": [
+      "hub-service",
+      "hub-service-tests",
+      "hub-service-all-features",
+      "hub-service-all-features-tests"
+    ],
+    "derivation": "/nix/store/lznb8lqjn6q2hx9fia3hl378aiihz0yl-aos-dev-cli-check-0.drv",
+    "derivation_sha256": "24c8079b401a2caf7711912e55f7cbfa205f575ec6dbf2ff272d7fcf4b233d67",
+    "launchers_checked": 34,
+    "output": "/nix/store/i7l7vj1ig50bg9vc8qfjsm1mcisl2lav-aos-dev-cli-check-0"
+  },
+  "limits": [
+    "Metadata inventories execute no external actions by construction; this gate does not compile or execute their selected Rust targets.",
+    "The CLI check uses its command-routing harness. Runtime, selected editor diagnostics and required workspace compilation are retained separately."
+  ],
+  "metadata": {
+    "configured_targets": 497,
+    "derivation": "/nix/store/nb5vjb380c0wsqqk2fwka49smnvyyr5x-aos-bazel-package-metadata-parity.drv",
+    "derivation_sha256": "915f57ce2f66e6a19d22b26b377c1753a87cff885a6bbe571509ab560f8251ec",
+    "inventory_selections": [
+      "pilot.build",
+      "pilot.unit",
+      "protocol.tests",
+      "dependencies.core",
+      "shared.tests",
+      "device.tests",
+      "store.tests",
+      "guest.tests",
+      "engine.tests",
+      "quota.tests",
+      "session.tests",
+      "control.tests",
+      "qemu-host.tests",
+      "store-s3.tests",
+      "daemon.tests",
+      "crucible-cli.tests",
+      "formats.tests",
+      "contracts.tests",
+      "native-foundation.tests",
+      "activation-core.tests",
+      "activation-storage.tests",
+      "hub-console.tests",
+      "hub-console-wasm.build",
+      "hub-db.default.tests",
+      "hub-db.all-features.tests",
+      "hub-service.default.tests",
+      "hub-service.all-features.tests",
+      "package-manager.tests",
+      "boot-preparation.tests",
+      "boot-preparation.without-boot-tools.tests",
+      "boot-preparation.standalone",
+      "release-coordination.tests",
+      "registry-native.tests",
+      "release-preparation.tests",
+      "hub-client.tests",
+      "hub-model.tests",
+      "hub-portable.tests",
+      "deployment.tests",
+      "build-services.tests",
+      "cli-support.tests",
+      "activation-crucible.tests",
+      "activation-systemd.tests",
+      "activation-systemd.parser-build"
+    ],
+    "output": "/nix/store/q8risi3z0aavg1n2w6blkpzaks2y1414-aos-bazel-package-metadata-parity",
+    "parity_sha256": "53ad028c675b39c4dd2a7da6dcdc33f7114d62d63b6040374a89cffe001449b7",
+    "selection_definition_sha256": "97c599f24c1c9c98bda1991c841eb848af0751007145820180c15e316bab216e"
+  },
+  "python_policy_tests": {
+    "log_sha256": "14ebae38ae7052634403870c27f473ba7827cd4be6cf8a862138eef487a40853",
+    "passed": 197
+  },
+  "schema_version": 1,
+  "status": "Metadata parity, core evaluation, developer CLI and 197 policy tests passed"
+}

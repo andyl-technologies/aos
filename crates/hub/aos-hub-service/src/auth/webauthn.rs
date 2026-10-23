@@ -583,6 +583,10 @@ pub fn relying_party(external_url: &str) -> Result<RelyingParty> {
 
 /// Generate a fresh random ceremony challenge, base64url-encoded (256 bits).
 #[must_use]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Authentication challenges require unpredictable cryptographic entropy."
+)]
 pub fn new_challenge() -> String {
     use rand::Rng as _;
     let bytes: [u8; 32] = rand::rng().random();

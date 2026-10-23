@@ -2619,3 +2619,59 @@ tests and 267 for production, with 24 and twelve first-party packages respective
 Both default and all-feature source records also retain all seven embedded web
 asset/font files, including the font license. Optional database driver compilation
 does not qualify a live PostgreSQL/MySQL service.
+
+## Hub service conversion
+
+`aos-dev bazel --family hub-service` selects the native application service and
+its test dependency graph. `--family hub-service-all-features` also enables the
+optional database drivers, query timing, end-to-end support and test fixtures.
+Each configuration has separate production and test SDK exports so test-only
+TLS, SSH and registry dependencies do not widen the production closure. The
+Model and database fixture features follow the corresponding Cargo selection.
+
+The service generator reads three declared assets from the source-built Bazel
+console distribution. It does not invoke a browser tool or nested Cargo build.
+`tests/evidence/hub-service-native-inputs.json` retains the imported package
+identity, asset hashes and unchanged native foundation library derivation;
+service tests extend that native library repository with AOS SQLite.
+`tests/evidence/hub-service-generated-assets-probe.json` retains an uncached
+Linux sandbox execution of the existing service build script and its asset
+snapshot. All three staged files match their declared inputs exactly.
+
+The clock-safety integration test declares the Service, Model and database
+source trees as runtime inputs. Missing, unreadable or empty trees now fail the
+guard instead of silently skipping its checks. The same test remains available
+to Cargo. Native execution, feature and generated-asset parity, editor checks
+and the strict source inventory remain separate qualification gates. This
+conversion does not switch production packages or remove Cargo manifests.
+
+`tests/evidence/hub-service-cached-native-checkpoint.json` retains both native
+configurations after 58 scoped lint and fixture repairs. Each executes the same
+508 original unit/integration cases and five doctests, with no ignored cases;
+all five selected Clippy actions pass. The first-party feature sets match all
+24 original Cargo packages, alongside 370 default and 380 all-feature external
+packages. Every changed Rust input matches the retained build sources, and all
+247 service Rust files preserve their test and ignore declarations. This local
+disk-cache checkpoint normalizes only historical doctest line numbers after
+source edits. Fresh Cargo comparison, strict uncached qualification, generated
+asset parity, editor checks and workspace compilation remain separate gates.
+
+`tests/evidence/hub-service-source-graph.json` records the refreshed 37 source
+inventories and 47 dependency SDKs. All 43 earlier SDK locks and generated files
+remain unchanged. `tests/evidence/hub-service-development-checks.json` retains
+metadata parity for 497 configured targets across 43 analysis-only selections,
+core evaluation, 34 developer launchers and 197 Python policy tests.
+
+`tests/evidence/hub-service-required-rust-targets.json` retains the repository's
+full application unit/integration target compilation for the same 58 Rust
+edits. This required Cargo gate compiles tests without running them; the native
+Service execution and source audits are retained separately.
+
+`tests/evidence/hub-service-uncached-native-checkpoint.json` retains the strict
+source graph without shared action-cache hits: both configurations pass all
+508 original cases, five doctests, five Clippy actions, documentation and
+formatting. Fresh Cargo comparisons preserve exact current doctest locations
+and all dependency features. Each production graph has twelve first-party
+packages, with 256 default or 267 all-feature external packages; all three
+staged assets match Cargo and the declared browser distribution byte for byte.
+Editor parity remains a separate checkpoint.

@@ -478,7 +478,7 @@ async fn load_registry_tree_inner(
     let root_tree = object::tree_map(&reader.read_kind(commit.tree, ObjectKind::Tree).await?)?;
 
     let root_toml = match root_tree.get("registry.toml") {
-        Some(entry) => read_utf8_blob(&reader, entry.oid, "registry.toml").await?,
+        Some(entry) => read_utf8_blob(reader, entry.oid, "registry.toml").await?,
         None => bail!("committed tree has no registry.toml"),
     };
     let root: RegistryRootConfig =
@@ -486,7 +486,7 @@ async fn load_registry_tree_inner(
 
     let keys = match root_tree.get("keys.toml").filter(|_| include_governance) {
         Some(entry) => {
-            let content = read_utf8_blob(&reader, entry.oid, "keys.toml").await?;
+            let content = read_utf8_blob(reader, entry.oid, "keys.toml").await?;
             Some(toml::from_str::<KeysToml>(&content).context("parsing committed keys.toml")?)
         }
         None => None,
@@ -542,7 +542,7 @@ async fn load_registry_tree_inner(
                 .await?,
         )?;
         for file in files.values().filter(|e| !e.is_tree()) {
-            let content = read_utf8_blob(&reader, file.oid, &file.name).await?;
+            let content = read_utf8_blob(reader, file.oid, &file.name).await?;
             // Adjacency list: every line is "<hash> [<dep-hash>…]"; the file
             // is named after its root hash but carries the whole closure.
             for line in content.lines().filter(|l| !l.trim().is_empty()) {
@@ -560,7 +560,7 @@ async fn load_registry_tree_inner(
         }
     }
 
-    let store = load_package_store_records(&reader, &root_tree, &packages).await?;
+    let store = load_package_store_records(reader, &root_tree, &packages).await?;
     if let Some(store) = &store {
         enrich_packages_from_store(&mut packages, store)?;
     }

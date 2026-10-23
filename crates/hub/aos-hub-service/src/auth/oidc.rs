@@ -198,6 +198,10 @@ pub struct OidcLogin {
 /// RFC 7636 permits 43–128 characters from the unreserved set; 32 random bytes
 /// base64url-encoded yields 43, comfortably inside the range.
 #[must_use]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Authentication challenges require unpredictable cryptographic entropy."
+)]
 pub fn new_code_verifier() -> String {
     let bytes: [u8; 32] = rand::rng().random();
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
@@ -215,6 +219,10 @@ pub fn code_challenge_s256(verifier: &str) -> String {
 
 /// Generates a fresh opaque token (256 bits, base64url) for `state`/`nonce`.
 #[must_use]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Authentication challenges require unpredictable cryptographic entropy."
+)]
 fn new_opaque() -> String {
     let bytes: [u8; 32] = rand::rng().random();
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
@@ -544,11 +552,11 @@ async fn verify_id_token(
             );
         }
         anyhow::ensure!(
-            key.n.as_ref().map_or(true, |value| value.len() <= 1400),
+            key.n.as_ref().is_none_or(|value| value.len() <= 1400),
             "JWK modulus is too large"
         );
         anyhow::ensure!(
-            key.e.as_ref().map_or(true, |value| value.len() <= 16),
+            key.e.as_ref().is_none_or(|value| value.len() <= 16),
             "JWK exponent is too large"
         );
     }

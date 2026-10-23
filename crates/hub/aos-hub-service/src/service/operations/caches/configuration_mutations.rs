@@ -92,7 +92,7 @@ impl RpcService {
     ) -> Result<pb::CacheClosureResponse, RpcError> {
         let cache = self.binary_cache_or_not_found(&req.cache_id).await?;
         self.require_cache_read(auth, &cache).await?;
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         let mut queue: std::collections::VecDeque<String> = std::collections::VecDeque::new();
         queue.push_back(req.store_hash.clone());
         let mut nodes = Vec::new();
@@ -229,9 +229,9 @@ impl RpcService {
         .map_err(RpcError::surface_read)?
         {
             PlacementReadOutcome::Found(read) => {
-                return Ok(Some(Self::streamed_surface_response(path, read.value)?));
+                Ok(Some(Self::streamed_surface_response(path, read.value)?))
             }
-            PlacementReadOutcome::NotFound => return Ok(None),
+            PlacementReadOutcome::NotFound => Ok(None),
         }
     }
 

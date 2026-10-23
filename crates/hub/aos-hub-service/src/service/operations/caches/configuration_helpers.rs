@@ -496,15 +496,13 @@ impl RpcService {
         .await
         .map_err(RpcError::surface_read)?
         {
-            PlacementReadOutcome::Found(read) => {
-                return Ok(Some(SurfaceObjectResponse {
-                    bytes: read.value,
-                    content_type: keymap::content_type(path),
-                    cache_control: keymap::cache_control(path),
-                    redirect: None,
-                }));
-            }
-            PlacementReadOutcome::NotFound => return Ok(None),
+            PlacementReadOutcome::Found(read) => Ok(Some(SurfaceObjectResponse {
+                bytes: read.value,
+                content_type: keymap::content_type(path),
+                cache_control: keymap::cache_control(path),
+                redirect: None,
+            })),
+            PlacementReadOutcome::NotFound => Ok(None),
         }
     }
 
