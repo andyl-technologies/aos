@@ -2027,6 +2027,9 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         if kernelPackages == null
         then callPackage ./kernel/linux.nix {inherit linuxSource;}
         else kernelPackages.linux;
+
+      bpftool = callPackage ./tools/bpftool.nix {inherit linuxSource;};
+
       # Build a kernel variant with extra kconfig appended. Use this — not
       # `linux.override { extraConfig = …; }` — for deployment kernels:
       # `extraConfig` is a linux.nix function arg consumed before

@@ -10831,3 +10831,35 @@ The actual fixed service must fail at executor EXIT_STDOUT=209 before its
 private directory exists and export no candidate. After restoration, the same
 ordinary start must export the real candidate; all prior reboot, replacement
 and private-read refusals remain. These installed assertions are pending.
+
+### Managed namespace BPF dependencies (installed execution pending)
+
+The namespace-root Host VM reached its test body, but its real shifted target
+failed at USER with EOPNOTSUPP. The guest's nsresourced log explicitly reports
+that BPF support was disabled at compile time. The kernel separately reports
+active BPF LSM support. This is a distinct frontier after the prior chroot EPERM;
+the Host-readiness gate remains unqualified.
+
+The systemd build now requires libbpf, the BPF framework and a provided BTF type
+header. AOS bpftool builds from the pinned Linux source with its own bootstrap
+libbpf, using AOS LLVM, signing and capability libraries. Its skeletons use the
+AOS kernel's vmlinux, never the builder's /sys or /boot. Systemd generates its
+own header from its selected kernelCloneLayout and supplies only AOS target
+UAPI/libc headers to the BPF compiler. Configuration checks require all three
+feature defines; dependency absence cannot silently disable managed allocation.
+
+The complete systemd package passes at
+`/nix/store/n4w0n8377hd8pmb820sc7ifrf1gb24fc-systemd-261.2`; its installed
+feature report contains +BPF_FRAMEWORK and +BTF. Bpftool's installed RPATH and
+dynamic-linker VM checks pass at
+`/nix/store/g6fbz1zsz1q723r363g01hsmx69jbqnz-aos-vm-test-bpftool-rpath-0` and
+`/nix/store/p34bz1fr4yck1c4kgmk7y9nbgs5g1kjn-aos-vm-test-bpftool-dynamic-linker-0`.
+The exact package probe passes in the existing runner at
+`/nix/store/dh13abfjhixxffsjdrh30m2lmbvcm58i-aos-bpftool-native-probe-smoke`:
+GCC emits BTF, bpftool decodes the expected structure size and member offsets,
+and malformed input is refused with no type output. This sandboxed probe smoke
+is not publication qualification or installed managed-namespace execution.
+
+The earlier retained-resource combined Nix/method-46 composition check passes at
+`/nix/store/c3s663g0a9vkknrxskh72lzrqp88x37g-sandbox-nix-method46-profile-check`.
+It does not establish an installed TPM floor or public lifecycle readiness.

@@ -8,6 +8,7 @@
   aos-host-policy,
   mkDerivation,
   stdenv,
+  buildPackages,
   fetchurl,
   gnumake,
   pkg-config,
@@ -15,6 +16,8 @@
   linux-headers,
   linux,
   kernelCloneLayout ? linux.dev,
+  bpftool,
+  libbpf,
   util-linux,
   kmod,
   zlib,
@@ -104,6 +107,7 @@
     acl
     cryptsetup
     elfutils
+    libbpf
     linux-pam
     tpm2-tss
   ];
@@ -324,6 +328,8 @@ in
     ];
 
     buildDeps = [
+      bpftool
+      buildPackages.llvm
       binutils
       gnumake
       pkg-config
@@ -478,6 +484,29 @@ in
                     cp "$clone_layout/$clone_header" "src/core/$clone_header"
                   done
 
+                  # Managed user namespaces require the BPF LSM skeleton. Bind
+                  # its CO-RE types to the selected AOS kernel, never host /sys.
+                  kernel_build="$(${findutils}/bin/find ${kernelCloneLayout}/lib/modules \
+                    -mindepth 2 -maxdepth 2 -name build -type d)"
+                  test -n "$kernel_build"
+                  test -s "$kernel_build/vmlinux"
+                  bpftool btf dump file "$kernel_build/vmlinux" format c > vmlinux.h
+                  test -s vmlinux.h
+                  aos_vmlinux_header="$PWD/vmlinux.h"
+
+                  # Clang's BPF target has no libc search path. Supply only the
+                  # target's AOS UAPI/libc headers; leave ordinary C builds on
+                  # the existing compiler wrapper and its header ordering.
+                  mkdir -p .bpf-tools
+                  cat > .bpf-tools/clang <<'BPF_CLANG'
+          #!${buildPackages.bash}/bin/bash
+          exec ${buildPackages.llvm}/bin/clang \
+            -idirafter ${linux-headers}/include \
+            -idirafter ${lib.getDev stdenv.glibc}/include "$@"
+          BPF_CLANG
+                  chmod +x .bpf-tools/clang
+                  export PATH="$PWD/.bpf-tools:$PATH"
+
                   # Explicit RPATH keeps systemd's own shared libs resolvable.
                   export LDFLAGS="''${LDFLAGS:-} -Wl,-rpath,$out/lib -Wl,-rpath,$out/lib/systemd"
 
@@ -504,6 +533,9 @@ in
                     --buildtype=release \
                     '-Dc_link_args=["-Wl,--build-id=sha1"]' \
                     -Dmode=release \
+                    -Dbpf-framework=enabled \
+                    -Dvmlinux-h=provided \
+                    -Dvmlinux-h-path="$aos_vmlinux_header" \
                     -Dsysvinit-path="" \
                     -Dsysvrcnd-path="" \
                     -Dutmp=true \
@@ -602,6 +634,10 @@ in
                     -Ddbussessionservicedir=$out/share/dbus-1/services \
                     -Ddbussystemservicedir=$out/share/dbus-1/system-services \
                     -Ddbus-interfaces-dir=$out/share/dbus-1/interfaces
+
+                  grep -Fxq '#define BPF_FRAMEWORK 1' config.h
+                  grep -Fxq '#define HAVE_LIBBPF 1' config.h
+                  grep -Fxq '#define HAVE_VMLINUX_H 1' config.h
 
                   # systemd's src/include/override/ has replacement headers (sys/syscall.h,
                   # sys/socket.h, sys/mount.h, linux/keyctl.h, etc.) that use
