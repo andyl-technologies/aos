@@ -1,7 +1,7 @@
 """Selects a coherent third-party feature graph for a Rust compilation family."""
 
 def _dependency_profile_impl(ctx):
-    if ctx.build_setting_value not in ["core", "device", "store", "guest", "engine", "quota", "session"]:
+    if ctx.build_setting_value not in ["core", "device", "store", "guest", "engine", "quota", "session", "control"]:
         fail("unknown Rust dependency profile: " + ctx.build_setting_value)
     return []
 
@@ -39,3 +39,8 @@ def _session_profile_required_impl(_ctx):
     fail("dependency is unavailable in the selected family; session dependencies require --//tools/bazel/rules:dependency_profile=session")
 
 session_profile_required = rule(implementation = _session_profile_required_impl)
+
+def _control_profile_required_impl(_ctx):
+    fail("dependency is unavailable in the selected family; transport dependencies require --//tools/bazel/rules:dependency_profile=control")
+
+control_profile_required = rule(implementation = _control_profile_required_impl)

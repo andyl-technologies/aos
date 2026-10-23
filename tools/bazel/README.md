@@ -381,7 +381,7 @@ must never become global inputs to every compilation action.
 
 `third_party/rust/BUILD.bazel` declares crate_universe specifications without a
 first-party Cargo manifest. Build the specification package normally, then run
-`aos-dev bazel update-deps <core|device|store|guest|engine|quota|session>` to resolve the selected
+`aos-dev bazel update-deps <core|device|store|guest|engine|quota|session|control>` to resolve the selected
 third-party dependency profile explicitly.
 This command uses source-built Cargo and cargo-bazel in a private temporary
 Cargo home. It is the network-enabled update boundary; ordinary build and test
@@ -1229,3 +1229,29 @@ retains all 1,510 Cargo diagnostics outside these selected packages and no
 unattributed diagnostics. The foreign run covers the default family; additional
 feature configurations remain qualified natively only. Production consumer
 migration and performance acceptance remain separate requirements.
+
+## Control transport family
+
+The `control` family selects `crucible-control-client` and
+`crucible-control-server`. Its separate dependency profile preserves the
+HTTP/2, TLS, UUID, and asynchronous transport features without widening the
+qualified session-only profile. All dependency archives remain pinned source
+inputs supplied by Nix; repository setup and compilation stay offline.
+
+```sh
+aos-dev bazel update-deps control
+aos-dev bazel --family control test //crates/crucible/control/crucible-control-client:unit //crates/crucible/control/crucible-control-server:unit
+nix-build tools/bazel/tests/control.nix -A all --no-out-link --max-jobs 4 --cores 4
+```
+
+Production `:lib` targets retain default first-party dependencies. Test-only
+`:lib_for_tests` targets select the engine test features and session support
+APIs that Cargo resolves for the two packages together. The client test binary
+can depend on the server test library, which depends on the client library;
+there is no dependency cycle between libraries. The default and server
+`test-support` configurations have separate Cargo comparisons.
+
+`tests/evidence/control-transport-cargo-baseline.json` retains the executed
+107-case, nine-artifact Cargo baseline with no ignored cases and 194 external
+crate identities. Bazel native execution and platform qualification are in
+progress; production consumers remain on Cargo.

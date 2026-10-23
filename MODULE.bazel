@@ -14,6 +14,7 @@ include("//third_party/rust:guest/repositories.MODULE.bazel")
 include("//third_party/rust:engine/repositories.MODULE.bazel")
 include("//third_party/rust:quota/repositories.MODULE.bazel")
 include("//third_party/rust:session/repositories.MODULE.bazel")
+include("//third_party/rust:control/repositories.MODULE.bazel")
 
 # Register only source-built AOS Rust tools, never upstream binary toolchains.
 rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")

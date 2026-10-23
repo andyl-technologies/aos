@@ -1,0 +1,44 @@
+{
+  "baseline": "control-transport-cargo-baseline.json",
+  "cli_checks": "/nix/store/sgadc03pjzy8ryfj3ha9mcaz1lkrvhik-aos-dev-cli-check-0",
+  "configured_targets": 306,
+  "existing_seven_dependency_locks": "unchanged after explicit dependency update",
+  "external_crate_identities": 194,
+  "external_features_match_cargo_baseline": true,
+  "file_sha256": {
+    "MODULE.bazel": "e522bec4858be017de5a4997578d5d795f2f03728daaeaf55308e27086610503",
+    "crates/crucible/control/crucible-control-client/BUILD.bazel": "034a2fa852a063e55a5f92c467b862194098ad645ce5aa45e4fcbbe3ff0776c8",
+    "crates/crucible/control/crucible-control-server/BUILD.bazel": "f4ec52dd18f4d4bc0f16e5f74d44185aa08500f4ac0e71bdc4d555329c614351",
+    "tests/build/_bazel-control.nix": "e6fc48adc535b1a51775bc27ee718d6f3b8b0a23aeb99d44e7ccb9a0971e2232",
+    "third_party/bazel/modules.json": "3d6431df7f5bf67de3e1f3b21096da24da0876a8e076b38873082dd781995de3",
+    "third_party/rust/BUILD.bazel": "5de5ddd12e57ec37ddffd1769fc3143aa6ef6c82be0d7827a074309fbf760978",
+    "third_party/rust/control/sources.json": "3f478fa61278ea5477a8c3f2d216f23104231ce488c8aab0cd331050c2699303",
+    "tools/bazel/metadata/control-inventory.json": "9440a19e06319669bcc62d074cf4c3d080a60c83bebac3c700d048bacfe67d2a",
+    "tools/bazel/tests/verify_protocol.py": "0470d569280d815ec875420a36a284774201196f03cef90a3fa0ac538291807e",
+    "tools/dev/lib/bazel.bash": "b4e6dfaa3e7c45d92499a30fac3c8c04bb9032014abb3fb5436c31da8c31eff4",
+    "tools/dev/tests/cli.bash": "891b232826da53fd138a5e6af663c8104d975abbfbedf5a63a736209b6845805"
+  },
+  "inventory_refresh_outputs": [
+    "/nix/store/7sr0k636q1djj38l4rq5gpclspsnbz83-aos-bazel-boot-pilot-inventory-1",
+    "/nix/store/lyjyg78k5lw4xgbg2baavk0kqri0ad1f-aos-bazel-control-inventory-1",
+    "/nix/store/5ww9frby8n8jj2hs0d2j8rbakbm6xg1i-aos-bazel-device-inventory-1",
+    "/nix/store/xy8l2ch68yrpj5v1h02ipbfflddvw8g4-aos-bazel-engine-inventory-1",
+    "/nix/store/jxas767393zjml6ppzfdmwikw5h2giqc-aos-bazel-fixture-inventory-1",
+    "/nix/store/am79ndl831rg1qjpzgnca37ln8c6k1bd-aos-bazel-guest-inventory-1",
+    "/nix/store/0vpf29yqzjchfjd3j5bwj5nvs0rk7fkp-aos-bazel-protocol-inventory-1",
+    "/nix/store/asixvl4vrhsz1w9f3dg1hasxz3ahqzqj-aos-bazel-quota-inventory-1",
+    "/nix/store/9wy5v9dazc042ph2v5nfjkzsyb9wn81b-aos-bazel-session-inventory-1",
+    "/nix/store/8m795fhq9w47711dslgvf4nnlhyrn81y-aos-bazel-shared-inventory-1",
+    "/nix/store/llc5c2klz95phb04c29wvqjkcj5pr8c9-aos-bazel-source-catalog-checks",
+    "/nix/store/0932ph209gh0zhg1kfpriqjvfhszkbh6-aos-bazel-store-inventory-1"
+  ],
+  "limits": [
+    "Configured graph and semantic Cargo baseline evidence only; no Bazel compilation, test execution, performance, platform or production cutover claim."
+  ],
+  "metadata_compared_rust_targets": 30,
+  "policy_checks": "/nix/store/d0kf2j9dc28kw0qvzv7pav51wnx3rjvl-aos-bazel-policy-checks",
+  "policy_tests": 136,
+  "schema_version": 1,
+  "source_files": 883,
+  "status": "offline configured graph, inventory, metadata, policy and CLI checks passed; native execution pending"
+}

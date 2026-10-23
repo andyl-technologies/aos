@@ -71,6 +71,11 @@
       root = ../../..;
       family = "guest";
     };
+    control = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "control";
+    };
     session = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -133,6 +138,14 @@
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-session:unit" "//crates/crucible/control/crucible-control-api:unit"];
   };
+  aosBazelControlWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = ["BUILD.bazel" "crates" "native" "tools/bazel" "third_party/rust"];
+    repositories = aosBazelRepositories // aosBazelRustRepositories.control // {aos_native = aosBazelStoreLibraries;};
+    dependencyProfile = "control";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
+  };
   mkAosBazelShell = {workspace ? aosBazelWorkspace}:
     (import ./development.nix {inherit pkgs lib workspace;}).shell;
   aosBazelLauncher =
@@ -159,5 +172,10 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelSessionWorkspace;
+    }).launcher;
+  aosBazelControlLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelControlWorkspace;
     }).launcher;
 }

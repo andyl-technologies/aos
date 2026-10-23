@@ -8,6 +8,7 @@ load(":guest/aliases.bzl", GUEST_CRATES = "CRATES")
 load(":engine/aliases.bzl", ENGINE_CRATES = "CRATES")
 load(":quota/aliases.bzl", QUOTA_CRATES = "CRATES")
 load(":session/aliases.bzl", SESSION_CRATES = "CRATES")
+load(":control/aliases.bzl", CONTROL_CRATES = "CRATES")
 
 # Every first-party dependency in one configuration selects the same resolved
 # family. This preserves Rust type identity without globally unioning features.
@@ -15,6 +16,7 @@ load(":session/aliases.bzl", SESSION_CRATES = "CRATES")
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:control_dependencies": CONTROL_CRATES.get(name, "//tools/bazel/rules:control_profile_required"),
             "//tools/bazel/rules:session_dependencies": SESSION_CRATES.get(name, "//tools/bazel/rules:session_profile_required"),
             "//tools/bazel/rules:quota_dependencies": QUOTA_CRATES.get(name, "//tools/bazel/rules:quota_profile_required"),
             "//tools/bazel/rules:engine_dependencies": ENGINE_CRATES.get(name, "//tools/bazel/rules:engine_profile_required"),
@@ -25,7 +27,7 @@ load(":session/aliases.bzl", SESSION_CRATES = "CRATES")
         }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items()))
+    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items()))
 ]
 
 CORE_PACKAGES = {
@@ -108,6 +110,23 @@ SESSION_PACKAGES = dict(
     ENGINE_PACKAGES,
     tokio = crate.spec(version = "=1.52.3", features = ["rt-multi-thread", "sync", "process", "signal", "macros", "net", "io-util", "io-std", "fs", "time"]),
 )
+
+# Resolve the HTTP/TLS transport family separately from session-only actors.
+CONTROL_PACKAGES = dict(SESSION_PACKAGES.items() + {
+    "axum": crate.spec(version = "=0.8.9", features = ["macros"]),
+    "bytes": crate.spec(version = "=1.11.1"),
+    "futures-util": crate.spec(version = "=0.3.32"),
+    "hyper-util": crate.spec(version = "=0.1.20", features = ["tokio", "server-auto", "http1", "http2", "service"]),
+    "reqwest": crate.spec(version = "=0.12.28", default_features = False, features = ["rustls-tls-native-roots", "json", "stream", "http2"]),
+    "rustix": STORE_PACKAGES["rustix"],
+    "rustls": crate.spec(version = "=0.23.40"),
+    "rustls-pemfile": crate.spec(version = "=2.2.0"),
+    "rustls-pki-types": crate.spec(version = "=1.14.1"),
+    "sha2": CORE_PACKAGES["sha2"],
+    "tempfile": STORE_PACKAGES["tempfile"],
+    "tokio-rustls": crate.spec(version = "=0.26.4"),
+    "uuid": crate.spec(version = "=1.23.1", features = ["v4", "serde"]),
+}.items())
 
 # Preserve the protocol library and its compiled build dependencies' domain
 # inside the larger host family. Exact versions and original licenses are checked
@@ -203,6 +222,14 @@ FAMILY_FEATURE_VARIANTS = {
             "features": ["default", "std"],
         }),
     },
+    # Transport dependencies retain the same target-side indexmap selection.
+    "control": {
+        "indexmap": json.encode({
+            "version": "2.14.0",
+            "resolved_features": ["default", "serde", "std"],
+            "features": ["default", "std"],
+        }),
+    },
     # Target and build libc units now enable the same default/std features.
     "guest": dict(
         {name: value for name, value in STORE_FEATURE_VARIANTS.items() if name != "libc"},
@@ -239,7 +266,7 @@ APPROVED_LICENSES = [
         packages = packages,
         annotations = annotations,
         feature_variants = FAMILY_FEATURE_VARIANTS.get(family, {}),
-        permissive_crates = ENGINE_PERMISSIVE_CRATES if family in ["engine", "session"] else GUEST_PERMISSIVE_CRATES if family == "guest" else [],
+        permissive_crates = ENGINE_PERMISSIVE_CRATES if family in ["engine", "session", "control"] else GUEST_PERMISSIVE_CRATES if family == "guest" else [],
         platforms = ["x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu"],
         license_domain = license_domain,
         approved_licenses = APPROVED_LICENSES,
@@ -255,6 +282,7 @@ APPROVED_LICENSES = [
         ("engine", ENGINE_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("quota", QUOTA_PACKAGES, {}, "apache-host"),
         ("session", SESSION_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
+        ("control", CONTROL_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
     ]
 ]
 
@@ -267,5 +295,5 @@ APPROVED_LICENSES = [
         license_domain = "apache-host",
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
-    for family in ["core", "device", "store", "guest", "engine", "quota", "session"]
+    for family in ["core", "device", "store", "guest", "engine", "quota", "session", "control"]
 ]
