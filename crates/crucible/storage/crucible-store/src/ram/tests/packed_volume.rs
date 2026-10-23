@@ -21,6 +21,7 @@ use crate::owned_decode::DecodeBudget;
 
 mod archive_sender;
 mod cost;
+mod lazy_page;
 mod pending_publication;
 mod shared_metadata;
 

@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crucible_ram::{PageDigest, PageProof, RegionDescriptor, RootRecord, Scope, Topology};
+use crucible_ram::{PageDigest, RegionDescriptor, RootRecord, Scope, Topology};
 
 use crate::content_store::ObjectKind;
 
@@ -189,55 +189,7 @@ impl RamStore {
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<super::RamPageRead, RamStoreError> {
         self.admit_topology(root.record.topology())?;
-        let (index, region) = selected_region(&root.record, region_id)?;
-        let expected_length = valid_length(region, page_index)?;
-        let mut reference = root.regions[index];
-        let mut page = page_index;
-        let mut work = Work::new(self.limits, original, boundary)?;
-        let proof_credit =
-            super::page_read::proof_credit(original, region_id, reference.height as usize)?;
-        let mut siblings = Vec::with_capacity(reference.height as usize);
-
-        loop {
-            match self.read_tree(reference, &mut work)? {
-                TreeNode::Padding => {
-                    return Err(RamStoreError::Invalid("real page resolves to padding"));
-                }
-                TreeNode::Leaf {
-                    page: object,
-                    digest,
-                } => {
-                    let bytes = self.read_page_object(object, digest, &mut work)?;
-                    if bytes.len() != expected_length {
-                        return Err(RamStoreError::Invalid("logical page valid length"));
-                    }
-                    siblings.reverse();
-                    let proof = PageProof::new(
-                        region_id,
-                        page_index,
-                        expected_length as u32,
-                        digest,
-                        siblings,
-                    )
-                    .map_err(logical)?;
-                    proof
-                        .verify(&bytes, &root.record, root.logical_digest())
-                        .map_err(logical)?;
-                    return Ok(super::RamPageRead::new(bytes, proof, proof_credit));
-                }
-                TreeNode::Branch { left, right } => {
-                    let width = 1_u64 << (reference.height - 1);
-                    if page < width {
-                        siblings.push(right.digest);
-                        reference = left;
-                    } else {
-                        siblings.push(left.digest);
-                        page -= width;
-                        reference = right;
-                    }
-                }
-            }
-        }
+        super::bounded_read::page::read(self, root, region_id, page_index, original, boundary)
     }
 
     /// Publishes changed pages by replacing only their immutable binary paths.

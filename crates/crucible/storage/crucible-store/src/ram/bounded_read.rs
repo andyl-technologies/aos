@@ -7,6 +7,7 @@ use super::{LeasedRamRoot, RamStoreError, Work};
 use std::cell::Cell;
 
 pub(super) mod canonical_session;
+pub(super) mod page;
 pub(super) mod publication;
 
 #[derive(Clone, Copy)]
@@ -20,6 +21,7 @@ enum ReadPhase {
 
 enum ReadTask<'read> {
     Publication(publication::Readback<'read>),
+    Page(page::Readback<'read>),
     CloseCanonical(crate::content_store::ContentId),
     Tree(TreeRef),
     Inventory {
@@ -46,6 +48,7 @@ impl ReadTask<'_> {
     fn reborrow(&mut self) -> ReadTask<'_> {
         match self {
             Self::Publication(readback) => ReadTask::Publication(*readback),
+            Self::Page(readback) => ReadTask::Page(*readback),
             Self::CloseCanonical(root) => ReadTask::CloseCanonical(*root),
             Self::Tree(expected) => ReadTask::Tree(*expected),
             Self::Inventory {
@@ -87,6 +90,7 @@ impl ReadTask<'_> {
 
 enum ReadValue {
     Publication,
+    Page(super::RamPageRead),
     CanonicalClosed,
     Tree(TreeNode),
     Inventory,
@@ -192,7 +196,10 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
     ) -> Result<(), StoreError> {
         if !matches!(
             self.task,
-            ReadTask::Inventory { .. } | ReadTask::Publication(_) | ReadTask::CloseCanonical(_)
+            ReadTask::Inventory { .. }
+                | ReadTask::Publication(_)
+                | ReadTask::Page(_)
+                | ReadTask::CloseCanonical(_)
         ) && !(self.work.canonical_session_enabled
             && matches!(self.task, ReadTask::Canonical { .. }))
         {
@@ -249,6 +256,7 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
         let result = match &mut self.task {
             ReadTask::CloseCanonical(_) => unreachable!("terminal storage closes before dispatch"),
             ReadTask::Publication(readback) => readback.execute_existing(self.work),
+            ReadTask::Page(readback) => readback.execute_existing(backend, self.work),
             ReadTask::Tree(expected) => read_envelope_from(backend, expected.id, self.work, true)
                 .and_then(|envelope| validate_tree(&envelope, *expected))
                 .map(ReadValue::Tree),
@@ -319,6 +327,9 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
         }
         if self.work.canonical_session_enabled && matches!(self.task, ReadTask::Canonical { .. }) {
             return self.execute_packed_canonical(backend);
+        }
+        if matches!(self.task, ReadTask::Page(_)) {
+            return self.execute_packed_page(backend);
         }
         if matches!(self.task, ReadTask::Publication(_)) {
             return self.execute_packed_publication(backend);
@@ -438,7 +449,7 @@ impl<'operation> BoundedReadRequest<'_, 'operation> {
             ReadTask::Tree(expected) => *expected,
             ReadTask::Canonical { .. } => return self.execute_sqlite_canonical(backend),
             ReadTask::Difference { .. } => return self.execute_sqlite_difference(backend),
-            ReadTask::Inventory { .. } | ReadTask::Publication(_) => {
+            ReadTask::Inventory { .. } | ReadTask::Publication(_) | ReadTask::Page(_) => {
                 return self.execute_existing_checked(backend);
             }
             ReadTask::CloseCanonical(_) => unreachable!("terminal storage closes before decoding"),
@@ -854,7 +865,8 @@ pub(super) fn read_tree(
         | ReadValue::CanonicalClosed
         | ReadValue::Canonical(_)
         | ReadValue::Inventory
-        | ReadValue::Publication => {
+        | ReadValue::Publication
+        | ReadValue::Page(_) => {
             unreachable!("a tree request retains its tree result")
         }
     }
@@ -896,7 +908,8 @@ pub(super) fn read_difference(
         | ReadValue::CanonicalClosed
         | ReadValue::Canonical(_)
         | ReadValue::Inventory
-        | ReadValue::Publication => {
+        | ReadValue::Publication
+        | ReadValue::Page(_) => {
             unreachable!("a comparison retains its changed-page count")
         }
     }
