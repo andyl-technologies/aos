@@ -680,6 +680,7 @@ fn contracts() -> impl Iterator<Item = &'static Contract> {
         .chain(constructor_continuations::CALLER_CONTRACTS)
         .chain(construction_endpoint::CONTRACTS)
         .chain(service_continuations::CONTRACTS)
+        .chain(service_continuations::CLIENT_CONTRACTS)
 }
 
 pub(super) fn mask(package: &str, target: &str, code: &str) -> String {

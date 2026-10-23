@@ -1351,6 +1351,22 @@ and 2,854 names while keeping actual production providers unmodified. This is
 source/design evidence; object transformation, actual archive/version winners,
 final linking and the 187-case legacy fixture remain unqualified.
 
+Replay, native paging-test scopes and completed reproduction now classify only
+their exact saved Service retirement calls. Their source contracts require
+native-body closure, Original completion, alias destruction before receiver
+acknowledgment, and actual pending or terminal custody with independent raw
+refusals. They share the existing Main, receiver and native producer obligations.
+All 89 focused/source-policy controls and source shape pass, including the
+unchanged generic omitted-obligation, foreign-owner and extra-attempt mutations.
+The remaining broad retry-policy finding covers three daemon paths. This source
+evidence issues no native authority. Application-target compilation is pending.
+
+Two earlier application-target builds pass: lifecycle classification at
+`7c2bjza8mvv01bzjigkbyjswq9vql96w` and component launcher adapters at
+`k4dx610p2vmz21nz8v19wbyjqr4vwwaj`. Each build's complete immutable source
+independently matched all committed Rust/TOML inputs and six required fixtures
+before subsequent edits.
+
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's
 journal exactly once before any target effect. Four attempt cells and six error

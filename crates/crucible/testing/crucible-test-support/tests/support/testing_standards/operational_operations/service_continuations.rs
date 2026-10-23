@@ -5,6 +5,11 @@
 
 use super::{Companion, Contract};
 
+#[path = "service_continuations/clients.rs"]
+mod clients;
+
+pub(super) const CLIENT_CONTRACTS: &[Contract] = clients::CONTRACTS;
+
 const DRIVER: &Contract = super::lifecycle_retirement::SERVICE_DRIVER;
 const POST_BODY: &Contract = super::lifecycle_retirement::SERVICE_POST_BODY;
 const RECEIPT: &Contract = super::lifecycle_retirement::SERVICE_RECEIPT;
@@ -546,7 +551,7 @@ retirement_refusal: refusal, terminal: Some(std::sync::Mutex::new(terminal)), })
 // Only mutant construction is extended; production matching stays unchanged.
 #[cfg(test)]
 pub(super) fn altered_expression(expression: &str) -> String {
-    if !CONTRACTS.iter().any(|contract| {
+    if !CONTRACTS.iter().chain(CLIENT_CONTRACTS).any(|contract| {
         contract
             .expressions
             .iter()
