@@ -152,7 +152,7 @@ def compare(
 
     bazel_features = {}
     for report in reports:
-        match = re.search(r"aos_(?:core|device|store|guest|engine|quota|session|control|qemu_host)_crates__([^/]+)//", report["label"])
+        match = re.search(r"aos_(?:core|device|store|guest|engine|quota|session|control|qemu_host|store_s3)_crates__([^/]+)//", report["label"])
         if match and report["kind"] in {"rust_library", "rust_proc_macro"}:
             # Repository names normalize SemVer build metadata. Compare the
             # declared package identity instead of trying to reverse that loss.

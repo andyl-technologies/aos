@@ -1334,11 +1334,32 @@ shared-memory ABI and an unresolved trace-inode assertion. Failure details are
 retained. Foreign runtime parity is not qualified, and the probe is outside the
 passing aggregate. The ABI restriction and test inventory remain intact.
 
-## S3 adapter baseline
+## S3 adapter family
+
+The `store-s3` family selects `crucible-store-s3` with its own source-only AWS
+dependency profile. Production and development libraries keep distinct store
+features; the development graph enables the existing conformance API.
+
+```sh
+aos-dev bazel update-deps store-s3
+aos-dev bazel --family store-s3 test //crates/crucible/storage/crucible-store-s3:unit
+nix-build tools/bazel/tests/store-s3.nix -A all --no-out-link --max-jobs 4 --cores 4
+```
 
 `tests/evidence/store-s3-cargo-baseline.json` records 11 executed cases across
 two artifacts and 222 external crate identities. The existing live-service
 conformance case remains ignored, with its original requirement for an
 exclusive test bucket and credentials. Development dependencies enable the
-store conformance API. The Bazel conversion is pending; this baseline makes no
-live-service qualification claim.
+store conformance API. This baseline makes no live-service qualification claim.
+
+`tests/evidence/store-s3-configured-graph.json` records passing offline source
+inventories, all ten dependency specifications, 147 policy tests, CLI checks,
+and exact agreement with all 222 Cargo dependency feature sets. The existing
+nine dependency locks remain unchanged. Native execution, developer/editor
+qualification, and production migration remain pending.
+
+The live-conformance target explicitly permits a suite containing only ignored
+cases. Its complete ignored inventory remains in parity evidence. Empty and
+filtered zero-match selections still fail, and newly active cases execute
+normally. Running that target without external resources does not qualify the
+live S3 service contract.

@@ -71,6 +71,11 @@
       root = ../../..;
       family = "guest";
     };
+    store-s3 = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "store-s3";
+    };
     qemu-host = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -151,6 +156,14 @@
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
   };
+  aosBazelStoreS3Workspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = ["BUILD.bazel" "crates" "native" "tools/bazel" "third_party/rust"];
+    repositories = aosBazelRepositories // aosBazelRustRepositories.store-s3 // {aos_native = aosBazelStoreLibraries;};
+    dependencyProfile = "store-s3";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = ["//crates/crucible/storage/crucible-store-s3:unit"];
+  };
   aosBazelQemuHostWorkspace = mkAosBazelWorkspace {
     root = ../../..;
     sourceDirectories = [
@@ -201,6 +214,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelStoreS3Launcher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelStoreS3Workspace;
     }).launcher;
   aosBazelQemuHostLauncher =
     (import ./development.nix {

@@ -30,6 +30,8 @@ def _libtest_impl(ctx):
     ]
     if ctx.attr.allow_empty:
         command.append("--allow-empty")
+    if ctx.attr.allow_ignored_only:
+        command.append("--allow-ignored-only")
     ctx.actions.write(script,
         "#!" + AOS_TOOLS.bash + "\nset -euo pipefail\nexec " + " ".join(command) + ' "$@"\n',
         is_executable = True)
@@ -52,6 +54,7 @@ _libtest_test = rule(
         "package_name": attr.string(mandatory = True),
         "jobs": attr.int(default = 4),
         "allow_empty": attr.bool(default = False),
+        "allow_ignored_only": attr.bool(default = False),
         "_runner": attr.label(default = "//tools/bazel/testing:runner.py", allow_single_file = True),
         "_policy": attr.label(default = "//tools/bazel/testing:policy.json", allow_single_file = True),
         "_python": attr.label(default = "@aos_tools//:python", allow_single_file = True),
@@ -60,7 +63,7 @@ _libtest_test = rule(
     },
 )
 
-def aos_rust_test(name, package_name = None, package = None, jobs = 4, allow_empty = False, license_domain = None, tags = [], timeout = "long", size = "medium", args = [], **kwargs):
+def aos_rust_test(name, package_name = None, package = None, jobs = 4, allow_empty = False, allow_ignored_only = False, license_domain = None, tags = [], timeout = "long", size = "medium", args = [], **kwargs):
     """Preserves Rust compilation/runfiles while replacing only test scheduling."""
     if kwargs.get("env_inherit", []):
         fail("declare test environment through env; ambient inheritance is not supported")
@@ -89,6 +92,7 @@ def aos_rust_test(name, package_name = None, package = None, jobs = 4, allow_emp
         package_name = package_name,
         jobs = jobs,
         allow_empty = allow_empty,
+        allow_ignored_only = allow_ignored_only,
         tags = tags,
         timeout = timeout,
         size = size,

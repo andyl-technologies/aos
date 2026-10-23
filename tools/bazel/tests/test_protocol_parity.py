@@ -99,6 +99,18 @@ class ProtocolParityTests(unittest.TestCase):
             result = verify_pilot.verify(self.root, {label: binary}, allow_empty={label})
         self.assertEqual(result["targets"][label], {"executed": [], "ignored": []})
 
+    def test_ignored_suite_retains_cases_without_claiming_execution(self):
+        label = "//fixture:live_service"
+        (self.root / "index.json").write_text(json.dumps({"results": [{
+            "identity": {"label": label}, "status": "PASSED", "outputs": {"test.xml": "ignored.xml"},
+        }]}))
+        (self.root / "ignored.xml").write_text('<testsuite tests="0" failures="0"/>')
+
+        with patch.object(verify_pilot, "cases", return_value=["requires_service"]):
+            result = verify_pilot.verify(self.root, {label: Path("/declared/live-tests")})
+
+        self.assertEqual(result["targets"][label], {"executed": [], "ignored": ["requires_service"]})
+
     def test_cargo_short_path_identifiers_and_unordered_features_match(self):
         self.assertEqual(self.compare()["features"], {"serde@1.0.228": [("default", "derive")]})
         self.assertEqual(self.verify.call_args.args[1], {self.label: Path("/source/unit-tests")})

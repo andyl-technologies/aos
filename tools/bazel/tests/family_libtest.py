@@ -77,6 +77,8 @@ def validate(binaries, expected, workspace, directory, environment, executable_p
                        "--package", cwd.name, "--policy", str(policy), "--jobs", str(jobs)]
             if not expected[label]["executed"] and not expected[label]["ignored"]:
                 command.append("--allow-empty")
+            elif not expected[label]["executed"]:
+                command.append("--allow-ignored-only")
             with log_path.open("w") as log:
                 result = subprocess.run(command, cwd=cwd, env=dict(environment, XML_OUTPUT_FILE=str(junit)),
                                         stdout=log, stderr=subprocess.STDOUT)

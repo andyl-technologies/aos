@@ -101,6 +101,30 @@ raise SystemExit(case.get('status', 0))
         with self.assertRaisesRegex(ValueError, "zero cases"):
             self.select(allow_empty=True)
 
+    def test_declared_ignored_suite_preserves_inventory_and_filter_failures(self):
+        self.configure({"live_service": {"ignored": True}})
+
+        self.assertEqual(self.select(allow_ignored_only=True), [])
+        selected = self.select(allow_ignored_only=True, ignored="only")
+        self.assertEqual([case.name for case in selected], ["live_service"])
+        self.assertEqual(runner.execute(self.binary, selected, 1)[0].status, "passed")
+
+        for filters in [["missing"], ["live_service"]]:
+            with self.assertRaisesRegex(ValueError, "zero cases"):
+                self.select(allow_ignored_only=True, filters=filters)
+
+        self.configure({})
+        with self.assertRaisesRegex(ValueError, "zero cases"):
+            self.select(allow_ignored_only=True)
+
+    def test_declared_ignored_suite_still_executes_new_active_cases(self):
+        self.configure({"live_service": {"ignored": True}, "active": {}})
+
+        selected = self.select(allow_ignored_only=True)
+
+        self.assertEqual([case.name for case in selected], ["active"])
+        self.assertEqual(runner.execute(self.binary, selected, 1)[0].status, "passed")
+
     def test_distinct_processes_bounded_concurrency_and_exclusive_case(self):
         self.configure({name: {"sleep": 0.08} for name in ["a", "b", "exclusive", "z", "zz"]})
         self.policy["overrides"] = [{"conditions": [{"substring": "exclusive"}], "exclusive": True}]

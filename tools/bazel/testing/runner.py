@@ -76,7 +76,8 @@ def matches(condition, package, name):
     return True
 
 
-def select_cases(binary, package, policy, filters=(), exact=False, ignored="skip", shard=(0, 1), allow_empty=False):
+def select_cases(binary, package, policy, filters=(), exact=False, ignored="skip", shard=(0, 1), allow_empty=False,
+                 allow_ignored_only=False):
     """Applies filtering, ignored-case selection, policy, and stable sharding."""
     if policy["schema_version"] != 1:
         raise ValueError("unsupported test policy schema")
@@ -114,9 +115,10 @@ def select_cases(binary, package, policy, filters=(), exact=False, ignored="skip
         if timeout <= 0:
             raise ValueError("test timeout must be positive")
         selected.append(Case(name, is_ignored, timeout, exclusive, slow_period, termination_grace, leak_grace))
-    # Only a declared empty artifact may pass without cases. Filters and
-    # ignored-only selections must still catch typos or omitted coverage.
-    if not selected and not (allow_empty and not names and not filters and ignored == "skip"):
+    # Explicit declarations cover empty artifacts and suites whose entire
+    # inventory needs external resources. Filtered zero matches still fail.
+    declared_skip = (allow_empty and not names) or (allow_ignored_only and names and set(names) == ignored_names)
+    if not selected and not (declared_skip and not filters and ignored == "skip"):
         raise ValueError("test selection matched zero cases")
     index, count = shard
     if count < 1 or not 0 <= index < count:
@@ -275,12 +277,14 @@ def main():
     parser.add_argument("--filter", action="append", default=[])
     parser.add_argument("--exact", action="store_true")
     parser.add_argument("--allow-empty", action="store_true")
+    parser.add_argument("--allow-ignored-only", action="store_true")
     parser.add_argument("--ignored", choices=["skip", "include", "only"], default="skip")
     options = parser.parse_args()
     policy = json.loads(options.policy.read_text())
     filters = options.filter or ([os.environ["TESTBRIDGE_TEST_ONLY"]] if os.environ.get("TESTBRIDGE_TEST_ONLY") else [])
     shard = (int(os.environ.get("TEST_SHARD_INDEX", 0)), int(os.environ.get("TEST_TOTAL_SHARDS", 1)))
-    cases = select_cases(options.binary, options.package, policy, filters, options.exact, options.ignored, shard, options.allow_empty)
+    cases = select_cases(options.binary, options.package, policy, filters, options.exact, options.ignored, shard,
+                         options.allow_empty, options.allow_ignored_only)
     if os.environ.get("TEST_SHARD_STATUS_FILE"):
         Path(os.environ["TEST_SHARD_STATUS_FILE"]).touch()
 

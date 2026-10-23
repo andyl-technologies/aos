@@ -10,6 +10,7 @@ load(":quota/aliases.bzl", QUOTA_CRATES = "CRATES")
 load(":session/aliases.bzl", SESSION_CRATES = "CRATES")
 load(":control/aliases.bzl", CONTROL_CRATES = "CRATES")
 load(":qemu-host/aliases.bzl", QEMU_HOST_CRATES = "CRATES")
+load(":store-s3/aliases.bzl", STORE_S3_CRATES = "CRATES")
 
 # Every first-party dependency in one configuration selects the same resolved
 # family. This preserves Rust type identity without globally unioning features.
@@ -17,6 +18,7 @@ load(":qemu-host/aliases.bzl", QEMU_HOST_CRATES = "CRATES")
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:store_s3_dependencies": STORE_S3_CRATES.get(name, "//tools/bazel/rules:store_s3_profile_required"),
             "//tools/bazel/rules:qemu_host_dependencies": QEMU_HOST_CRATES.get(name, "//tools/bazel/rules:qemu_host_profile_required"),
             "//tools/bazel/rules:control_dependencies": CONTROL_CRATES.get(name, "//tools/bazel/rules:control_profile_required"),
             "//tools/bazel/rules:session_dependencies": SESSION_CRATES.get(name, "//tools/bazel/rules:session_profile_required"),
@@ -29,7 +31,7 @@ load(":qemu-host/aliases.bzl", QEMU_HOST_CRATES = "CRATES")
         }),
         visibility = ["//visibility:public"],
     )
-    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items()))
+    for name in sorted(dict(CORE_CRATES.items() + DEVICE_CRATES.items() + STORE_CRATES.items() + GUEST_CRATES.items() + ENGINE_CRATES.items() + QUOTA_CRATES.items() + SESSION_CRATES.items() + CONTROL_CRATES.items() + QEMU_HOST_CRATES.items() + STORE_S3_CRATES.items()))
 ]
 
 CORE_PACKAGES = {
@@ -63,6 +65,16 @@ STORE_PACKAGES = {
     "zeroize": crate.spec(version = "=1.9.0"),
     "zstd": crate.spec(version = "=0.13.3", features = ["zstdmt"]),
 }
+
+# S3's production SDK and development configuration preserve their own AWS
+# feature closure without widening the campaign or engine profiles.
+STORE_S3_PACKAGES = dict(
+    {name: STORE_PACKAGES[name] for name in ["aes-gcm", "blake3", "rusqlite", "rustix", "thiserror", "zeroize", "zstd"]}.items() + {
+        "aws-sdk-s3": crate.spec(version = "=1.134.0", default_features = False, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"]),
+        "aws-config": crate.spec(version = "=1.8.17"),
+        "tokio": crate.spec(version = "=1.52.3", features = ["rt-multi-thread", "sync", "process", "signal", "macros", "net", "io-util", "io-std", "fs", "time"]),
+    }.items(),
+)
 
 # Keep quota consumers independent of the broader host families' feature unions.
 QUOTA_PACKAGES = {
@@ -300,6 +312,7 @@ APPROVED_LICENSES = [
         ("session", SESSION_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("control", CONTROL_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("qemu-host", QEMU_HOST_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
+        ("store-s3", STORE_S3_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
     ]
 ]
 
@@ -312,5 +325,5 @@ APPROVED_LICENSES = [
         license_domain = "apache-host",
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
-    for family in ["core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host"]
+    for family in ["core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3"]
 ]

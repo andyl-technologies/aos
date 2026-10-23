@@ -1,7 +1,7 @@
 """Selects a coherent third-party feature graph for a Rust compilation family."""
 
 def _dependency_profile_impl(ctx):
-    if ctx.build_setting_value not in ["core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host"]:
+    if ctx.build_setting_value not in ["core", "device", "store", "guest", "engine", "quota", "session", "control", "qemu-host", "store-s3"]:
         fail("unknown Rust dependency profile: " + ctx.build_setting_value)
     return []
 
@@ -49,3 +49,8 @@ def _qemu_host_profile_required_impl(_ctx):
     fail("QEMU host dependencies require --//tools/bazel/rules:dependency_profile=qemu-host")
 
 qemu_host_profile_required = rule(implementation = _qemu_host_profile_required_impl)
+
+def _store_s3_profile_required_impl(_ctx):
+    fail("S3 adapter dependencies require --//tools/bazel/rules:dependency_profile=store-s3")
+
+store_s3_profile_required = rule(implementation = _store_s3_profile_required_impl)
