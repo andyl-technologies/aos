@@ -158,13 +158,16 @@ fn detached_close(panic_after_close: bool) {
             let gated_probe = account.reserve_resources(0, 0, 1);
             gate.released.wait();
 
-            let until = std::time::Instant::now() + Duration::from_secs(5);
-            while worker.native.poll().unwrap()
-                != crate::ram_source::NativeJoinObservation::Returned
-            {
-                assert!(std::time::Instant::now() < until);
-                std::thread::yield_now();
+            for _ in 0..5_000 {
+                if worker.native.poll().unwrap()
+                    == crate::ram_source::NativeJoinObservation::Returned
+                {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(1));
             }
+            assert_eq!(worker.native.last_status(), Some(0));
+
             let snapshot = worker.outcome.snapshot();
             assert!(snapshot.delivered && !snapshot.uncertain);
             let joined = snapshot.panic.map_or(Ok(()), Err);

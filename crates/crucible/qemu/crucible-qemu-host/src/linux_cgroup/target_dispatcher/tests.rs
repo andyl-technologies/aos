@@ -787,15 +787,17 @@ fn failed_worker_startup_keeps_independent_original_post_after_physical_close()
     // Historical failure does not prevent closing these actual component
     // resources. No authenticated Main purpose exists or is invented here.
     let mut worker = dispatcher.worker.take().unwrap();
-    let end = std::time::Instant::now() + Duration::from_secs(5);
-    while worker.poll()? == NativeJoinObservation::Pending {
-        assert!(
-            std::time::Instant::now() < end,
-            "component worker did not physically join"
-        );
-        thread::yield_now();
+    for _ in 0..5_000 {
+        if worker.poll()? == NativeJoinObservation::Returned {
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
     }
-    assert_eq!(worker.last_status(), Some(0));
+    assert_eq!(
+        worker.last_status(),
+        Some(0),
+        "component worker did not physically join"
+    );
     drop(worker);
     drop(dispatcher.state.take());
     assert_descriptor_closed(descriptor, &expected);

@@ -18,7 +18,7 @@ pub(crate) struct Fixture {
 fn allocation_layout() -> Layout {
     Layout::new::<[AtomicUsize; 2]>()
         .extend(Layout::new::<CleanupRecord>())
-        .unwrap()
+        .unwrap_or_else(|cause| panic!("cleanup fixture layout must be representable: {cause}"))
         .0
         .pad_to_align()
 }
@@ -28,14 +28,27 @@ fn allocation_layout() -> Layout {
 /// # Panics
 /// Panics if component funding or the allocation observer cannot be established.
 pub(crate) fn fixture() -> Fixture {
-    let bytes = LaunchCleanup::retained_control_bytes().unwrap();
+    let bytes = LaunchCleanup::retained_control_bytes()
+        .unwrap_or_else(|| panic!("cleanup fixture charge must be representable"));
     let accounts = [
-        HostServiceAllocator::new(1, 1, bytes).unwrap(),
-        HostServiceAllocator::new(1, 1, bytes).unwrap(),
+        HostServiceAllocator::new(1, 1, bytes).unwrap_or_else(|cause| {
+            panic!("cleanup fixture account must admit its charge: {cause}")
+        }),
+        HostServiceAllocator::new(1, 1, bytes).unwrap_or_else(|cause| {
+            panic!("cleanup fixture account must admit its charge: {cause}")
+        }),
     ];
     let funding = HostServiceLeasePair::new(
-        accounts[0].reserve_resources(0, 0, bytes).unwrap(),
-        accounts[1].reserve_resources(0, 0, bytes).unwrap(),
+        accounts[0]
+            .reserve_resources(0, 0, bytes)
+            .unwrap_or_else(|cause| {
+                panic!("cleanup fixture must reserve its first charge: {cause}")
+            }),
+        accounts[1]
+            .reserve_resources(0, 0, bytes)
+            .unwrap_or_else(|cause| {
+                panic!("cleanup fixture must reserve its second charge: {cause}")
+            }),
     );
     let (registration, registrar) = registration_with_funding(false, None, Some(funding));
     let (cleanup, allocation, counts) =
@@ -54,13 +67,18 @@ pub(crate) fn fixture() -> Fixture {
         cleanup,
         accounts,
         bytes,
-        allocation: allocation.unwrap(),
+        allocation: allocation
+            .unwrap_or_else(|| panic!("cleanup fixture must observe its actual allocation")),
     }
 }
 
 fn assert_refunded(accounts: &[HostServiceAllocator; 2], bytes: u64) {
     for account in accounts {
-        let complete = account.reserve_resources(0, 0, bytes).unwrap();
+        let complete = account
+            .reserve_resources(0, 0, bytes)
+            .unwrap_or_else(|cause| {
+                panic!("cleanup credit must return after actual free: {cause}")
+            });
         drop(complete);
     }
 }

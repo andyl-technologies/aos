@@ -151,8 +151,12 @@ mod tests {
             )?;
 
             let observation = self.supervisor.begin(HostOperationClass::Preparation)?;
+            let source = self
+                .retained
+                .as_ref()
+                .ok_or("fixture no longer owns its Source service")?;
             loop {
-                match self.retained.as_ref().unwrap().check_health() {
+                match source.check_health() {
                     Err(QemuRamSourceError::WorkerFailed(_)) => break,
                     Err(source) => return Err(source.into()),
                     Ok(()) => {

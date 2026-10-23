@@ -1141,6 +1141,17 @@ added. Other large retained errors remain, and the strict gate still fails.
 These component controls issue no Main, Source or native-profile authority.
 Mandatory application-target compilation remains required for this change.
 
+Cleanup fixture validation now polls the same retained native owners a finite
+number of times and checks their actual successful return status, without
+reading host clocks. The cleanup allocation fixtures report explicit setup and
+refund failures; the Source-health fixture propagates missing local custody.
+All thirteen dispatcher, fourteen worker-failure, thirteen cleanup and three
+Source-health controls pass, along with the source-shape check. Strict Host lint
+still fails at 678 library errors and fourteen warnings, with test-target errors
+falling from 744 to 731 and five warnings; no lint exemption is added. These are
+fixture changes and establish no additional native authority or RFC capability.
+Mandatory application-target compilation remains required for this change.
+
 #### Cumulative construction and request ownership source
 
 Signed atomic `e82bb4c78da7af3351ef6473935a2be2feb01a2d` imports conventional
