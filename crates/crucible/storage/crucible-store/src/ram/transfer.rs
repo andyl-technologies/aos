@@ -201,6 +201,14 @@ impl RamStore {
         if lease.root() != source.object_id() {
             return Err(RamStoreError::Invalid("destination root retention receipt"));
         }
+
+        // External destination retention may revoke either operation owner.
+        for original in [source_original, destination_original] {
+            original
+                .verify_live()
+                .map_err(|source| RamStoreError::from_admission(original, source))?;
+        }
+
         let root = LeasedRamRoot {
             record: source.record.clone(),
             regions: source.regions.clone(),
