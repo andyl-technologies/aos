@@ -2359,3 +2359,59 @@ Rust inputs. Its frozen source predates the boot conversion. External-provider
 and installed-workflow gates, foreign/Wasm
 execution, complete compiler invocation equivalence, numeric performance
 acceptance, production migration, and Cargo removal remain separate work.
+
+## Boot preparation family
+
+`aos-dev bazel --family boot-preparation` selects `aos-boot-runtime`,
+`aos-configuration-image`, and `aos-platform-metadata`. The default and minimal
+profiles pin 337 and 323 source crates. Their compiled external feature-unit
+sets match Cargo independently: 263 external packages and fifteen first-party
+packages with boot tools, or 249 and eleven without them. Both profiles guard
+the observed IndexMap unit against resolver-only Serde activation.
+
+`tests/evidence/native-linux-boot-preparation.json` retains strict source
+selection, test and production feature parity, Clippy, formatting,
+documentation, license closure, and selected editor checks. All 132 default and
+66 minimal existing Cargo cases match the unchanged baselines. Each profile
+retains one ignored native metadata transaction case and three empty doctest
+inventories. The eleven default command binaries and seven minimal command
+binaries compile, including Cargo's automatically discovered preparation
+provider. Unit, command-test, and documentation targets carry their features
+explicitly.
+
+The standalone initrd preparation source also compiles as an independent Bazel
+binary. Its three existing admission, location, and profile cases match the
+direct-rustc baseline. These cases do not replace installed boot, metadata
+transaction, image, mount, service, or VM qualification gates.
+
+Boot commands embed exact source-built EROFS, mount, package-runtime, and
+configuration command paths through a declared repository. Its manifest
+retains the tool closure's store paths and NAR identities. A separate boundary
+check builds the configuration library without this repository and rejects a
+command build that omits it. No service or remote cache is introduced.
+
+Host deadline and observation timestamp exceptions are function-scoped. Two
+metadata fixture maps use ordered lookup maps; EFI decoding retains its checked
+even-length bound. Conditional and alignment expressions have equivalent
+semantics. Test-only assertion exceptions preserve the existing assertions;
+the retained source audit accounts for one unchanged helper moving before its
+tests and two equivalent CPIO padding predicates. Three declared YAML fixtures
+match the frozen Cargo inputs byte-for-byte. Source catalogs retain those loading
+inputs while keeping their Rust ownership records unchanged.
+
+The configured inventory retains 52 requested roots, 712 configured reports,
+and 232 declared files, including 226 Rust files. Selected editor diagnostics
+are compared separately from inference completeness, unselected diagnostics,
+and diagnostic multiplicities. The minimal Cargo editor oracle retains only
+commands enabled in that profile and excludes optional dependencies from
+automatic workspace membership. The strict compilation sources contain no
+first-party Cargo manifests, and their test actions invoke no Cargo executable.
+
+`tests/evidence/boot-preparation-configured-graph.json` retains all 32 configured
+family inventories, 35 dependency specifications, 184 policy tests, and CLI
+checks for 27 launchers. The previous 33 dependency locks and 5,909 generated
+crate BUILD files remain unchanged. Metadata/core evaluation and required Rust
+unit/integration compilation are retained in their separate boot evidence
+files. Full compiler invocation equivalence, foreign/Wasm execution, numeric
+performance acceptance, production migration, and Cargo removal remain
+separate work.
