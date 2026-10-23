@@ -84,7 +84,8 @@ def scenario(executable, directory, mode):
                 raise RuntimeError("missing fixture path unexpectedly exists")
             unmount(target)
             mounted = False
-            require(supervisor.recv(64) == b"UNMOUNTED", "worker lost actual unmount errno")
+            require(supervisor.send(b"U") == 1, "unmount acknowledgement was truncated")
+            require(supervisor.recv(64) == b"STOPPED", "worker failed explicit post-unmount close")
         else:
             require(supervisor.recv(64) == b"CLOSED", "failed receive did not close its device")
             try:

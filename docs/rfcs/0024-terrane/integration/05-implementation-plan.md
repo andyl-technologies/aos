@@ -8722,9 +8722,10 @@ beneath root-private TMPDIR. All failed receipts remain failed.
 Pushed corrections `87bb2fd34c` and `a2faeb2547` give the configured fixture an
 explicit actor-owned source parent outside native projects, identify separate
 retained-file expiry/unlink stages and report background retirement errors
-without repeated log flooding. Fresh configured, independent recovery and
-mandatory application qualification run from immutable `a2faeb2547` with all
-original time limits and assertions. The first configured request uses a
+without repeated log flooding. Configured native qualification at immutable `a2faeb2547` now passes with
+complete source/artifact review. Its required application compilation also
+passes; independent file recovery remains running with all original time limits
+and assertions. The first configured request uses a
 missing attribute and fails before building; the corrected exact check runs
 in a separate retained packet.
 
@@ -16082,3 +16083,31 @@ refusal. Required application compilation at `b3e271af24` passes in 1,488.056
 seconds with all 8,083 immutable files, 185 test executables and 59 packages
 reviewed. These results qualify their original checkpoints, preserve the later
 recovery failures and do not accept another trunk task.
+
+
+#### Explicit post-unmount transport fixture shutdown
+
+The first actual FUSE transport VM at `eb2f778d7b` fails in 234.506 seconds.
+Actual INIT, root metadata, directory listing and negative lookup complete;
+after normal supervisor unmount, the worker's next read reaches its unchanged
+five-second timeout rather than the fixture's expected immediate ENODEV.
+This observation does not establish the kernel's internal retention cause.
+
+The fixture now uses the existing supervisor socket to acknowledge completed
+unmount explicitly. The worker selects that acknowledgement against the actual
+connection receive and closes its original device before acknowledging stop.
+The separate timeout and cancellation connections retain their original bounds
+and still require actual ENOTCONN after final device close. Production transport
+and deadlines remain unchanged. The original failed native receipt remains
+failed pending fresh actual-kernel qualification.
+
+Configured native recovery at `a2faeb2547` passes in 739.334 seconds. Complete
+review matches 8,083 immutable files, all three source-bound images, nine actual
+Cargo/installed ELFs and four observations of eight original read-only publisher
+roots. The new funded configured opener retains the original mapping, bindings,
+pins and leases through actual recovery and Resume, refuses startup without the
+funded policy, and releases exact final-unmap charge before authenticated policy
+discharge. Its actor finishes in 11.675 seconds within its original bound.
+Application compilation passes in 719.397 seconds with complete 8,083-file and
+185-test-executable review across 59 packages. No full worker or additional
+trunk-task acceptance follows from these scoped results.

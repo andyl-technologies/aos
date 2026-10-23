@@ -54,6 +54,8 @@ fn main() -> Result {
     if rustix::io::read(io::stdout(), &mut ready)? != 1 || ready != *b"M" {
         return Err("supervisor did not mount and close its device alias".into());
     }
+    let flags = rustix::fs::fcntl_getfl(io::stdout())?;
+    rustix::fs::fcntl_setfl(io::stdout(), flags | rustix::fs::OFlags::NONBLOCK)?;
 
     let confinement = Arc::new(quota_confinement::install_worker_network(device.as_fd())?);
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -61,6 +63,7 @@ fn main() -> Result {
         .build()?;
     runtime.block_on(async {
         let mut connection = Connection::new(device.into(), confinement, LIMIT, LIMIT)?;
+        let control = tokio::io::unix::AsyncFd::new(io::stdout())?;
         let mut input = vec![0; LIMIT];
         let mut output = vec![0; LIMIT];
 
@@ -126,9 +129,21 @@ fn main() -> Result {
         }
 
         loop {
-            let request = match connection.receive(&mut input, DEADLINE).await {
+            let received = tokio::select! {
+                result = connection.receive(&mut input, DEADLINE) => result,
+                result = stopped(&control) => {
+                    result?;
+                    drop(connection);
+                    notify(b"STOPPED")?;
+                    return Ok(());
+                }
+            };
+            let request = match received {
                 Ok(request) => request,
-                Err(error) if error.raw_os_error() == Some(libc::ENODEV) => break,
+                Err(error) if error.raw_os_error() == Some(libc::ENODEV) => {
+                    stopped(&control).await?;
+                    break;
+                }
                 Err(error) => return Err(error.into()),
             };
             // FORGET and BATCH_FORGET never receive replies, even for nonzero IDs.
@@ -156,7 +171,7 @@ fn main() -> Result {
             };
             send(&mut connection, &mut output, request, body, errno).await?;
         }
-        notify(b"UNMOUNTED")?;
+        notify(b"STOPPED")?;
         Ok(())
     })
 }
@@ -184,4 +199,21 @@ fn notify(message: &[u8]) -> Result {
         return Err("fixture supervisor message was truncated".into());
     }
     Ok(())
+}
+
+/// Waits for the supervisor's explicit acknowledgement of completed unmount.
+async fn stopped(control: &tokio::io::unix::AsyncFd<io::Stdout>) -> io::Result<()> {
+    let mut message = [0; 1];
+    loop {
+        let mut readiness = control.readable().await?;
+        match readiness.try_io(|control| {
+            rustix::io::read(control.get_ref(), &mut message).map_err(io::Error::from)
+        }) {
+            Ok(Ok(1)) if message == *b"U" => return Ok(()),
+            Ok(Ok(_)) => return Err(io::ErrorKind::InvalidData.into()),
+            Ok(Err(error)) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Ok(Err(error)) => return Err(error),
+            Err(_) => continue,
+        }
+    }
 }
