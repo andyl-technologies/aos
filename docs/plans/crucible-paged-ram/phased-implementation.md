@@ -1392,6 +1392,26 @@ with 179 roots and 1,299 functions unchanged. Meson AST parsing is source eviden
 configuration, object transformations, actual link ownership, the 187-case legacy
 fixture and native execution remain unqualified.
 
+The reviewed legacy namespace source is now imported through signed cumulative
+atomic commit `cf897fddea21e1dafdeec4ec87b3e4517ad92305`, exact tree
+`d81308a943d3e1cae29b55e730b1f1ab3ec85515`. Its additive metadata packet
+`b6541f9ca8d60d08fd01f06868f640d19911c196eba4d025982a2b2c31aab913`
+preserves the original source packet and corrects both atomic dates to the
+existing deterministic convention. All eleven payloads, its signature, exact
+patch, sole bundle prerequisite and unchanged raw commit message were verified.
+A separately signed two-payload erratum
+`000fb628fe8be6d0366bd3439143995d5dfa1eaf1e2057be62a5c660bf39476e`
+distinguishes the pretty-printed message's extra trailing newline from the exact
+795-byte raw commit message; neither original artifact was rewritten.
+
+Hermetic signed-tree reconstruction and patch regeneration pass at
+`wa8ac5k7qxwnv2friivj7jgjafnph9b6`. The complete 663-created-file license
+ledger passes at `3b7agqxfxsprqfzi5dn8bc1r5rw3iyds`, including all six new
+GPL files and the JSON's explicit license field. All five engineering-hygiene
+controls also pass for the cleanup source contracts. These source and provenance
+results do not qualify object transformation, final link ownership or native
+execution; the separately bounded configured-graph plan is still preparation.
+
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's
 journal exactly once before any target effect. Four attempt cells and six error

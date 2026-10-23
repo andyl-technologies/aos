@@ -681,3 +681,9 @@ directory.
 | `plugins/crucible-advance-outcome-no-target.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `docs/devel/crucible-startup-source-providers.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
 | `tests/unit/test-crucible-startup-source-providers.c` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-legacy-fixture-isolation.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `scripts/crucible-legacy-fixture-elf.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `scripts/crucible-legacy-fixture-isolation.py` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/crucible-legacy-fixture-isolation.json` | GPL-2.0-or-later | Explicit license field |
+| `tests/unit/crucible-legacy-fixture.map` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `tests/unit/test-crucible-legacy-fixture-isolation.py` | GPL-2.0-or-later | Explicit SPDX identifier |
