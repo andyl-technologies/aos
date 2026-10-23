@@ -113,6 +113,23 @@ also pass. This qualifies the preboot initial Source census, not post-Hello
 Source/Controller funding, opaque five-phase Recipe/Initial production, native
 Ready, Capture, performance or full RFC-0025 completion.
 
+## Effective JSON key-visitor qualification
+
+Commit `c1c7dd3ae0` visits actual BTreeMap keys directly in the effective text
+census and materialization quote. Both defining counters add the actual Keys
+iterator controls; the materialization quote also names its borrowed key and
+optional iterator result. Existing conservative iterator terms remain charged.
+No input population, retained backing, constructor work or refusal is omitted.
+
+All 125 raw-value reparse tests pass in each standard and raw-JSON feature mode,
+with zero failures or ignores. Changed-file formatting, all-feature/all-target
+Transport/Engine/Daemon checking and all six architecture gates pass. The
+required application gate compiles 180 test executables across 58 packages,
+including 71 integration targets; all 445 frozen Rust/Cargo inputs match this
+commit and its captured source. Production-library Clippy falls from 68 to 66
+errors with 1,731 warnings under the unchanged workspace deny policy. Strict
+acceptance and full RFC implementation remain unfinished.
+
 ## Process-child census and transport lint repairs
 
 The actual VM refusal exposed an absent runtime prerequisite. The pinned Linux
