@@ -1584,6 +1584,9 @@ of the identical 14 derivations: 13 family comparisons and the editor fixture.
 It preserves each comparison's scope and unknown types, including the guest
 model's 84 unattributed Cargo diagnostics. The retry does not establish the
 cause of the runtime fingerprint divergence.
+`tests/evidence/contracts-required-rust-targets.json` records passing workspace
+application unit and integration target compilation with hashes matching all
+40 contract Rust changes. It predates the later OCI and systemd source changes.
 
 ## Native integration library baseline
 
