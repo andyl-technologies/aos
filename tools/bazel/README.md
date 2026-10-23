@@ -1459,9 +1459,17 @@ and full inventory and dependency-feature parity against a fresh Cargo run.
 Integration subprocesses resolve compiler-declared paths through Bazel runfiles;
 trust roots are declared AOS certificate inputs. A test that deliberately
 replaces an executable makes only its private copy writable before mutation.
-Its existing assertions remain unchanged. The full feature, editor, developer,
-and workspace Rust qualification builds are still running at this checkpoint.
-Production migration remains pending.
+Its existing assertions remain unchanged. Production migration remains pending.
+
+`tests/evidence/native-linux-crucible-cli.json` retains the completed native
+qualification. Default and recovery each execute 436 cases with 23 ignored;
+test-double and combined recovery/test-double each execute 493 with 41 ignored.
+All four match fresh Cargo case and feature inventories. Developer checks,
+four packaged compilation graphs, and all eight production license closures
+pass. Editor comparison matches 90 selected diagnostic locations and inferred
+types; both raw selected reports contain 184 occurrences. Aggregate inference
+statistics differ and remain incomplete. Packaged runtime execution still
+requires its dedicated VM gates.
 
 `tests/evidence/crucible-cli-configured-graph.json` retains 578 distinct
 configured reports, 1,737 declared source files, all 12 dependency specification
