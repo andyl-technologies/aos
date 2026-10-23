@@ -2684,3 +2684,24 @@ retain incomplete inference, so this does not claim complete editor graph
 equivalence. Live database/service/VM and workerd tests, full compiler argument
 parity, performance acceptance, production cutovers and Cargo removal remain
 separate gates.
+
+## Native Hub Cargo baselines
+
+`tests/evidence/hub-native-cargo-baseline.json` retains 308 passing native
+unit/integration cases across 26 libtest artifacts, one passing compile doctest
+and no ignored cases. The original console response helper rejected the real
+browser Wasm asset at its 1 MiB test-response limit. The baseline records that
+failure and the exact patch raising only that helper's bound to 16 MiB; request
+limits and all test assertions remain unchanged.
+
+`tests/evidence/hub-native-postgres-production-cargo-baseline.json` retains the
+unchanged PostgreSQL-enabled library and both installed command compilations.
+The test graph has 391 external and 25 first-party packages; production has
+370 external and 17 first-party packages. Native forwards PostgreSQL to the
+database crate, while the service retains its default feature selection.
+Model fixture features and Transfer's default feature stay disabled in both
+graphs, matching the observed Cargo selections.
+
+These frozen Cargo baselines precede Native's Bazel qualification. Live
+PostgreSQL/MariaDB, the native operator VM, Worker execution, full compiler
+argument equivalence and production migration remain separate gates.
