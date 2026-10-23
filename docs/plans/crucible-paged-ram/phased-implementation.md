@@ -63,7 +63,7 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | The header correction imports signed atomic `c55af78276`, conventional `ee8eebc886`, tree `d66b723c`. Independent review verifies all 42 sealed artifacts and 78,448 tracked source paths, including the canonical Core include and six literal guard updates. Patch/bundle reconstruction and the unchanged 641-file license ledger pass. | Fresh genuine configure, all 35 owning variants, both passive units and all 39 getter readbacks pass. Independent object disassembly reproduces 46 compiled bodies and a 478,294-byte fixed passive floor for the exact source/libc tuple. ABI conformance passes. The registered Source unit still fails to link eighteen actual providers; no unit case runs. Original configure and compile failures remain preserved. Successful postbody resource custody, complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
+| Native integration | Signed atomic `b62dc60749`, conventional `b34f6e7097`, tree `4c95a54a` imports the reviewed postbody and returned-recipient composition. Independent review verifies all 342 sealed artifacts and 78,461 source paths; the license ledger covers 654 created files. | The preceding `ee8eebc886` tuple passes genuine configure, all 35 owning variants, both passive units and all 39 getter readbacks, with an independently reproduced 478,294-byte fixed passive floor. Those values do not price the larger current tree; fresh compilation and geometry remain required. The registered Source unit still has eighteen unresolved link providers. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The latest completed canonical license-boundary check stops at strict controller Clippy with 660 host-library errors; its boundary assertions did not run. Earlier attempts and their larger finding counts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
@@ -960,8 +960,8 @@ fails with 639 library and 701 test diagnostics, including warnings promoted
 by that flag; both former argument-count findings are absent. The matching
 private-feature lint comparison reports 692 library errors and fourteen warnings,
 with 763 test errors and five warnings, two fewer errors in each target than
-the preceding comparison. Mandatory application-target compilation is running
-against commit `a2aa1d11bb`; all 5,364 Rust/TOML inputs and six fixture/license
+the preceding comparison. Mandatory application-target compilation passes at
+`60h25h1jjilx241ym9047f4q3hmg3iv7` against commit `a2aa1d11bb`; all 5,364 Rust/TOML inputs and six fixture/license
 files match its immutable build source. These changes do not qualify
 native birth, issued Cleanup, paid profiles or physical retirement.
 
@@ -1152,6 +1152,35 @@ six ordering and 112-field controls. The correspondence record has SHA-256
 `6fe2632700c2ff2ed5c9ca7f97e43294a366468da728dbdd160ae3bc20658c28`.
 These source audits qualify neither the coherent canonical closure nor C,
 layout, runtime, paid-profile or successful physical return.
+
+#### Composed postbody and returned-recipient ownership
+
+Signed atomic `b62dc6074984e9976572cceca6d971e8105735a7` imports conventional
+`b34f6e70973ed3cf31ac9c5ef25c3e21d8e33530`, the sole child of `ee8eebc886`.
+Both have tree `4c95a54a92e688d81ded1a500f6b6515540ea9aa`. The composition
+retains the reviewed physical Core postbody observations, resource disposal,
+raw returned-recipient journals, Source constructor retirement and installed
+Outcome transfer. Whole returned results cross the actual C return before
+postbody observation; independent failure history and unresolved debt remain.
+The canonical Core include is preserved. Eight missing production-purpose
+prerequisite edges now name the actual guarded inputs; all six literal guards
+bind the final source without changing their other bytes or formatting.
+Source, Core and Outcome focused reviews pass.
+
+Independent complete correspondence verifies all 342 sealed payloads, 78,461
+tracked paths, 78,389 regular files totaling 699,703,282 bytes and 72 literal
+symlinks against both signed Git trees and the complete source archive. The
+record has SHA-256
+`e485f274a5abaf3e996ae0c6a81edf4c9bd91beec448bf1ad9be87a87dc137e8`.
+The thirteen new files retain explicit GPL-2.0-or-later identifiers; the
+cumulative license ledger has 654 created-file rows and passes at
+`x51jpd55ax7v5bvs6lhq1722fj0hgp6g`. Hermetic patch/bundle reconstruction
+passes at `0bdmfig1b41xya91ysvvpsgvm52kid2v`; core evaluation passes. Fresh owning
+compilation, getter readback and geometry for this larger tree remain required;
+the preceding header tuple's measured floor is not reused. The separate
+system-link alias and no-Target successor remain excluded from this import.
+No native runtime, paid-profile or successful physical-return qualification is
+claimed.
 
 #### Initial loader storage component
 

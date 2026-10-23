@@ -665,3 +665,16 @@ When the atomic integration patch starts creating or deleting a file, update thi
 same change. Preserve an explicit file notice and use QEMU's upstream `LICENSE`
 to classify an unmarked file; do not infer a blanket license from the artifact
 directory.
+| `accel/tcg/crucible-outcome-postbody.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-outcome-constructor-retirement.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-outcome-postbody.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `docs/devel/crucible-postbody-recipient-history.rst` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/qemu/crucible-outcome-constructor-recipient.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `include/system/crucible-outcome-postbody.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-advance-outcome-postbody.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-advance-outcome-postbody.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-outcome-constructor-recipient.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-outcome-constructor-retirement-owner.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-outcome-constructor-retirement.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `plugins/crucible-outcome-constructor-retirement.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
+| `system/crucible-preexec-publisher-constructor-recipient.inc.h` | GPL-2.0-or-later | Explicit SPDX identifier |
