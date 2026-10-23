@@ -2443,9 +2443,17 @@ contents before acquiring their lock. Other lint repairs preserve conditional,
 borrowing, membership, and map behavior; documentation transport helpers move
 intact before their tests.
 
+`tests/evidence/package-manager-configured-graph.json` retains all 33 configured
+family inventories, 37 dependency specifications, 185 policy tests, and CLI
+checks for 28 launchers. The previous 35 dependency locks and 6,569 generated
+crate BUILD files remain unchanged. Metadata parity covers 485 Rust targets
+across 37 analysis-only selections with no external actions, and core evaluation
+passes. Frozen outputs are retained in
+`tests/evidence/package-manager-metadata-evaluation.json`.
+
 Strict configured staging, fresh Cargo feature and generated-API comparisons,
-selected editor parity, metadata evaluation, and required workspace Rust
-compilation qualify separate checkpoints. Installed boot, provisioning,
+selected editor parity, and required workspace Rust compilation qualify
+separate checkpoints. Installed boot, provisioning,
 metadata transactions, system services, VM workflows, native publication, and
 conditional real-cache fixtures retain their existing dedicated gates. No
 service or remote cache is introduced. Performance of ordered collections, complete
