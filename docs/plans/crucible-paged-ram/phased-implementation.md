@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 539 bindings: 520 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 541 bindings: 522 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -1622,6 +1622,28 @@ also authenticates the original archived process samples. No launcher rewrite,
 replacement owner, additional native run, TAP, ELF loading, profile activation
 or native issuance is established by this diagnosis.
 
+The first source-only launcher preparation proposal is preserved at
+`819bac01a19aac0aef6c70d62f1c0ad5007c84f6b90bff6400048e34058f5742`
+after independent review authenticates its 118 payloads and 82 inputs but
+refuses its actual adapter: the RECORD loop replaces the original RECORD cut
+with script bytes. Its isolated transformer controls had missed that defect.
+No configure or replacement target invocation follows this refusal.
+
+The separately sealed correction
+`eb07e862884605351c4d35e39379f0c7ae595589f8013fca859514cfa061b7ba`
+passes independent review of 215 payloads, 127 input identities and all 118
+unchanged prior payloads. All 92 complete-adapter controls execute only in
+automatically removed temporary scratch; all 76 full raw cuts match. They
+reproduce the original adapter refusal, validate real multi-entry distribution
+records and idempotent second preparation, preserve failed write debt and refuse
+a sixth barrier without mutation. The selected source path bounds five creator
+continuations with paired ATTEMPTED/RETURNED history, replacing the earlier
+unvalidated raw-line counter. The reviewer's initial check-order assumption is
+retained before the corrected comparison of the same 92 controls passes.
+This remains a source-only correction proposal: a staged creator control and
+complete execution-ready reconstruction, ownership, graph and role review are
+still required. No new target run, runtime root or native authority is issued.
+
 
 The service-client ownership contracts pass mandatory application-target
 compilation at `wx20fkrpphs9zk5lrwlg7kx10d84x8b9`. Before later edits, all
@@ -1718,8 +1740,12 @@ and five hygiene controls pass; strict Clippy retains the same error and warning
 counts. Only the changed selector fixture is mechanically formatted; its tokens
 match the passing run, and final source hygiene passes after refreshing its
 content-bound review. Hermetic supervision passes all 412 exact cases at
-`fb4dg9hwy228x7m6jnhpb9l7p24dcvf4`; mandatory application-target checks remain
-pending for the account storage and fixture corrections.
+`fb4dg9hwy228x7m6jnhpb9l7p24dcvf4`. Mandatory application-target compilation
+passes for the account storage at `rjrwiksgm3k21av1l3ybidnaig1nyrxi` and
+fixture corrections at `yvrx2pjlgxyi633frf6zhq6s5x493s57`. All 5,393 committed
+Rust/TOML inputs and six required fixtures independently match each frozen
+source, respectively `ns0kcgm2k1nbn2yq0bci93wmzif438lc` and
+`99c1mk19bky213fcgyk7jizddl6asmnw`, before subsequent implementation edits.
 
 
 Array, scratch-array and scoped vector size overflow now use the same preborn,
@@ -1742,9 +1768,11 @@ suite passes 691 tests with three costly 512 MiB cases explicitly excluded; all
 686 engine tests pass. The host retains 1,385 passes, the same eight genuine
 helper-custody failures and four ignored tests. All ninety testing-standard and
 five hygiene controls pass. Strict Clippy retains 674 library and 723 test-target
-errors, with fourteen and five warnings. Mandatory application-target compilation
-remains pending for this increment. These component diagnostics issue
-no Main, Source or native authority.
+errors, with fourteen and five warnings. Mandatory application-target compilation passes at
+`dmmqpbh4b8dja1ydw4li6kqdz5svkd7q`. All 5,393 committed Rust/TOML files and
+six required fixtures independently match frozen source
+`04kxhcg9fvckr1r95zs4gqmb6amvr9x7` before later changes. These component
+diagnostics issue no Main, Source or native authority.
 
 
 B-tree multiplication and node-overlap overflow now use the explicit admitting
@@ -1774,6 +1802,28 @@ and four ignored tests. All ninety testing-standard and five hygiene controls
 pass. Strict Clippy retains 674 library and 723 test-target errors, with fourteen
 and five warnings. Mandatory application-target compilation remains pending.
 This component increment supplies no Main, Source or native issuance.
+
+Typed B-tree layout errors now preserve the actual standard-library cause inline
+in the already charged error handle. Retaining the separate diagnostic holder
+keeps its original loan alive without allocating another shared source wrapper.
+The complete prebirth peak still derives from the concrete error-handle and
+storage layouts. Explicit account routing, original Debug/Display/source types,
+first sticky failure and distinct account identities remain intact. Unscoped
+geometry queries and integer conversion errors retain their existing paths.
+
+All seventeen focused account controls pass. Separate actual key and value
+layout overflows construct no huge values, run under a foreign codec scope,
+observe zero allocations or extra credit requests, preserve the typed layout
+cause and keep original credit through the final error alias. Restoring the
+three former allocating layout-error paths makes both new allocation controls
+fail; exact source restoration passes all seventeen focused controls. The
+inventory passes at `k9qygrqwm5bka8vi1wpfkk6jbv6bdznz`: 541 bindings,
+243 requirements, 148 uncovered and zero fully qualified. Hermetic storage
+passes all 33 exact cases at `95h5ha0ipyqap6sgjfnbwgvda34wmsrz`; every
+individual result is independently checked. The full store suite passes 694
+tests with three costly 512 MiB cases explicitly excluded, and all 686 engine
+tests pass. Host, policy, strict Clippy and mandatory application-target
+compilation remain pending. This increment issues no native authority.
 
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's

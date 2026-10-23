@@ -608,3 +608,75 @@ fn btree_node_overflow_uses_its_own_prepaid_account_under_a_foreign_scope()
     assert_eq!(authority.used.load(Ordering::SeqCst), 0);
     Ok(())
 }
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn key_layout_overflow_retains_its_actual_cause_without_allocating()
+-> Result<(), DecodeAdmissionError> {
+    assert_prepaid_layout_refusal::<[u8; 1 << 60], u8>()
+}
+
+#[cfg(target_pointer_width = "64")]
+#[test]
+fn value_layout_overflow_retains_its_actual_cause_without_allocating()
+-> Result<(), DecodeAdmissionError> {
+    assert_prepaid_layout_refusal::<u8, [u8; 1 << 60]>()
+}
+
+#[cfg(target_pointer_width = "64")]
+fn assert_prepaid_layout_refusal<K, V>() -> Result<(), DecodeAdmissionError> {
+    let authority = authority();
+    let budget = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let foreign = DecodeBudget::new(authority.clone(), authority.maximum)?;
+    let foreign_initial = used_bytes(&foreign)?;
+    let foreign_scope = foreign.enter();
+    let calls = authority.calls.load(Ordering::SeqCst);
+    let used = authority.used.load(Ordering::SeqCst);
+
+    // An unscoped query preserves the original typed error independently of TLS.
+    // No value of either huge type is constructed by the real layout queries.
+    let expected = DecodeBudget::btree_control_bytes::<K, V>(1).unwrap_err();
+    let (error, counts) =
+        crucible_host_resources::test_support::TestAllocationObserver::count(|| {
+            budget.charge_btree_entry::<K, V>().unwrap_err()
+        });
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(authority.calls.load(Ordering::SeqCst), calls);
+    assert_eq!(authority.used.load(Ordering::SeqCst), used);
+    assert_eq!(error.to_string(), expected.to_string());
+    assert_eq!(format!("{error:?}"), format!("{expected:?}"));
+    assert!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<std::alloc::LayoutError>())
+            .is_some()
+    );
+    assert_eq!(budget.failure()?, Some(error.clone()));
+    assert_eq!(foreign.failure()?, None);
+
+    let alias = error.clone();
+    let foreign_error = foreign.charge_btree_entry::<K, V>().unwrap_err();
+    assert_ne!(error, foreign_error);
+    assert_eq!(foreign.failure()?, Some(foreign_error.clone()));
+    drop(foreign_error);
+    drop(budget);
+    assert_eq!(
+        authority.used.load(Ordering::SeqCst),
+        foreign_initial + PrepaidRefusals::peak_bytes()
+    );
+
+    drop(error);
+    assert_eq!(
+        authority.used.load(Ordering::SeqCst),
+        foreign_initial + PrepaidRefusals::peak_bytes()
+    );
+    drop(alias);
+    assert_eq!(authority.used.load(Ordering::SeqCst), foreign_initial);
+    drop(foreign_scope);
+    drop(foreign);
+    assert_eq!(authority.used.load(Ordering::SeqCst), 0);
+    Ok(())
+}

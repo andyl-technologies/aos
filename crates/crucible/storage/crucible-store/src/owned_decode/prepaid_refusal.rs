@@ -86,6 +86,17 @@ impl PrepaidRefusals {
         }
     }
 
+    // The actual typed layout cause fits in the already charged error handle.
+    // Retaining this holder pays its lifetime without boxing another source.
+    pub(super) fn layout_error(&self, source: std::alloc::LayoutError) -> DecodeAdmissionError {
+        DecodeAdmissionError {
+            source: AdmissionSource::Layout {
+                retained: self.clone(),
+                source,
+            },
+        }
+    }
+
     pub(super) fn source(&self, refusal: AccountRefusal) -> &AccountingRefusal {
         match refusal {
             AccountRefusal::Poisoned => &self.storage.poisoned,

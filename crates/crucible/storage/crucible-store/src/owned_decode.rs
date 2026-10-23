@@ -69,6 +69,8 @@ pub trait DecodeResourceAuthority: Send + Sync {
 /// Fixed failures of an admitted account share its prepaid diagnostic storage.
 /// Clones preserve that account-specific cause; errors from separate accounts
 /// remain distinct. The diagnostic can outlive its account without retaining it.
+/// Layout refusals keep their actual typed value inline in the charged error
+/// handle and retain the same independent holder for their lifetime.
 #[derive(Clone)]
 pub struct DecodeAdmissionError {
     source: AdmissionSource,
@@ -80,6 +82,10 @@ enum AdmissionSource {
     Account {
         retained: PrepaidRefusals,
         refusal: AccountRefusal,
+    },
+    Layout {
+        retained: PrepaidRefusals,
+        source: std::alloc::LayoutError,
     },
 }
 
@@ -95,6 +101,7 @@ impl DecodeAdmissionError {
         match &self.source {
             AdmissionSource::External(source) => source.as_ref(),
             AdmissionSource::Account { retained, refusal } => retained.source(*refusal),
+            AdmissionSource::Layout { source, .. } => source,
         }
     }
 }
@@ -136,6 +143,12 @@ impl PartialEq for DecodeAdmissionError {
                     refusal: right_refusal,
                 },
             ) => left.shares_owner(right) && left_refusal == right_refusal,
+            (
+                AdmissionSource::Layout { retained: left, .. },
+                AdmissionSource::Layout {
+                    retained: right, ..
+                },
+            ) => left.shares_owner(right),
             _ => false,
         }
     }
@@ -738,9 +751,13 @@ fn btree_entry_bytes_with_refusals<K, V>(
     // parent, parent_idx, len, keys[11], vals[11]; InternalNode adds edges[12].
     // Five leaf fields and two internal fields require at most seven padding
     // extents, each smaller than the maximum alignment, independent of order.
-    let keys = Layout::array::<K>(11).map_err(DecodeAdmissionError::new)?;
-    let values = Layout::array::<V>(11).map_err(DecodeAdmissionError::new)?;
-    let pointers = Layout::array::<usize>(13).map_err(DecodeAdmissionError::new)?;
+    let layout_error = |source| match refusals {
+        Some(refusals) => refusals.layout_error(source),
+        None => DecodeAdmissionError::new(source),
+    };
+    let keys = Layout::array::<K>(11).map_err(layout_error)?;
+    let values = Layout::array::<V>(11).map_err(layout_error)?;
+    let pointers = Layout::array::<usize>(13).map_err(layout_error)?;
     let alignment = keys.align().max(values.align()).max(pointers.align());
     let bytes = keys
         .size()
