@@ -1182,6 +1182,26 @@ engineering hygiene pass. Strict Host lint still fails, with findings falling to
 674 library errors and fourteen warnings, and 723 test errors and five warnings;
 no exemption is added. Mandatory application-target compilation remains required.
 
+The complete Host suite against `c169861aa6` passes 1,361 tests, with four
+ignored and eight failures at the existing unissued helper-custody boundaries.
+No additional failure appears from the stop-history change. All 5,368 committed
+Rust/TOML inputs and six protocol fixture/license files match the mandatory
+application build's immutable source; compilation remains in progress.
+
+The journal admission controls now include the stop journal among the other
+funded controls in the existing single-worker-journal refusal. A separate
+one-byte-short complete-peak control refuses before allocating or consuming the
+actual Source socket and backing. It preserves their identities and leaves the
+whole original component allowance available. Omitting only the stop-journal
+charge defeats that actual admission refusal; the exact production source is
+restored afterward. All thirty-two Source controls pass; these checks provide
+no Main or Source issuance.
+
+Both existing cleanup source-contract controls pass with the exact owning
+snapshot publication. Their causal mutations reject a return to inline history
+copies while retaining the actual native-return, saved-Cleanup and independent
+post-observation obligations. The source-shape check also passes.
+
 #### Cumulative construction and request ownership source
 
 Signed atomic `e82bb4c78da7af3351ef6473935a2be2feb01a2d` imports conventional
@@ -1513,6 +1533,35 @@ adopted-child signaling or reaping branch. This result qualifies compilation,
 linkage and static ELF identity only. It executes no registered unit, TAP,
 emulator runtime, native profile, activation or installation. The registered
 Source unit's earlier eighteen-provider link failure remains unresolved.
+
+#### Genuine-provider companion source preparation
+
+A separate, not yet imported signed source increment `0262209aa1`, tree
+`7696c63e50a58f04eea0f559c4098202bfd0ead7`, adds a nineteen-case GLib/TAP
+companion. It selects the genuine configured system-target object/dependency
+closure, actual executable-only preexec source and actual `system/main.c`
+with only that companion object's entrypoint renamed. It changes no provider
+body, canonical state, legacy fixture or scenario. Six source guards receive
+ten exact digest substitutions for the two Meson additions; both new files have
+explicit GPL-2.0-or-later notices.
+
+Independent source review authenticates all 971 sealed payloads, all 78,464
+signed Git/disk paths, all 946 review-archive members and copies, and eighteen
+prior-input references. The whole tree contains 78,392 regular files totaling
+699,772,291 bytes and 72 literal symlinks. The source review record has SHA-256
+`eeeb1aeb58c7da87581dc0f10085214e232a072155fe76d0a074f7cd9ba47baa`.
+The 946-member review archive is not a complete corresponding-source artifact.
+
+The cases query ordinary unissued state and retain genuine raw first/post and
+access-cursor negatives. Real ELF/preinit constructors, allocations, module
+registration, the detached RCU worker and plugin exit callback remain present;
+the harness initializes no VM or guest and resets no production journal.
+Source reasoning establishes no executed case or worker-retirement result.
+Fresh configuration/graph discovery remains unexecuted. Review found that the
+initial declarative proposal reused compiler wrappers with the previous run's
+baked journal directory; a separate frozen executable plan must correct those
+paths before execution. No companion pass, legacy-unit repair, accepting
+lifecycle, profile, activation or installation is claimed.
 
 #### Initial loader storage component
 

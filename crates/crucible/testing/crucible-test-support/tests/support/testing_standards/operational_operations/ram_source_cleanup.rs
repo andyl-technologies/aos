@@ -19,11 +19,11 @@ pub(super) const CONTRACT: Contract = Contract {
     let mut returned = true;
     #[cfg(target_os = "linux")]
     {
-        if let Some(stage) = stage {
-            if let Err(first) = stage.finish_source() {
-                history.retain_stage(first);
-                returned = false;
-            }
+        if let Some(stage) = stage
+            && let Err(first) = stage.finish_source()
+        {
+            history.retain_stage(first);
+            returned = false;
         }
         if let QemuNodeProcessControl::Direct(child) = child {
             drop(child.ram_source_start.take());
@@ -43,7 +43,9 @@ pub(super) const CONTRACT: Contract = Contract {
             1,
         ),
         (
-            r#"let observation = self.supervisor.begin(HostOperationClass::Preparation)?; loop { match self.retained.as_ref().unwrap().check_health()"#,
+            r#"let observation = self.supervisor.begin(HostOperationClass::Preparation)?;
+let source = self.retained.as_ref().ok_or("fixture no longer owns its Source service")?;
+loop { match source.check_health()"#,
             1,
         ),
         (
@@ -192,7 +194,7 @@ if before.is_err() || after.is_err() { return self.stop_observation(); }"#,
         && (!joined || !self.stop.outcome_captured || self.stop.reported != self.stop.version);
     if failure {
         self.stop.reported = self.stop.version;
-        (joined, Err(self.stop.history.clone()))
+        (joined, Err(self.stop.journal.snapshot(&self.stop.history)))
     } else { (joined, Ok(())) }
 }"#,
                     1,
@@ -276,6 +278,11 @@ mod tests {
         assert!(mask_contract(&CONTRACT, &code, &companions) != code);
 
         for (index, before, after) in [
+            (
+                0,
+                "self.stop.journal.snapshot(&self.stop.history)",
+                "self.stop.history.clone()",
+            ),
             (
                 0,
                 "worker.native.poll()",

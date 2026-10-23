@@ -28,7 +28,8 @@ fn incomplete_worker_journal_admission_preserves_actual_input_without_allocation
         + HostServiceLease::metadata_bytes()
         - std::mem::size_of::<HostServiceLease>() as u64
         + shared_allocation_bytes::<AtomicBool>().unwrap()
-        + crate::ram_source::worker_outcome::WorkerOutcome::allocation_peak_bytes().unwrap();
+        + crate::ram_source::worker_outcome::WorkerOutcome::allocation_peak_bytes().unwrap()
+        + crate::ram_source::stop::StopState::journal_peak_bytes().unwrap();
     let peak = crate::ram_source::SOURCE_STACK_BYTES as u64
         + 3 * crucible_qemu_protocol::ram_page::RAM_PAGE_MAX_RESPONSE_BYTES as u64
         + single_journal;
@@ -52,6 +53,59 @@ fn incomplete_worker_journal_admission_preserves_actual_input_without_allocation
     assert!(input.is_some());
     assert_eq!(counts.allocations, 0);
     assert_eq!(counts.reallocations, 0);
+}
+
+#[test]
+fn stop_journal_admission_refuses_before_consuming_actual_source_input() {
+    use std::os::fd::AsRawFd;
+
+    let _serial = TEST_LOCK.lock().unwrap();
+    let backing: Arc<dyn QemuRamBacking> = Arc::new(ImmutableBacking::new(2).unwrap());
+    let binding = RamPageBinding {
+        session: [1; 16],
+        owner_incarnation: [2; 16],
+        source_generation: 1,
+        root_digest: *backing.root_record().digest().as_bytes(),
+    };
+    let (socket, _peer) = UnixStream::pair().unwrap();
+    let descriptor = socket.as_raw_fd();
+    let mut input = Some(crate::ram_source::SourceInput::new(
+        socket,
+        backing.clone(),
+        binding,
+    ));
+
+    // Derive the physical controls independently of the production admission
+    // sum. One missing byte of the stop journal must refuse before any effect.
+    let controls = 2 * QemuRamWorkerFailure::allocation_bytes().unwrap()
+        + HostServiceLease::metadata_bytes()
+        - std::mem::size_of::<HostServiceLease>() as u64
+        + shared_allocation_bytes::<AtomicBool>().unwrap()
+        + crate::ram_source::worker_outcome::WorkerOutcome::allocation_peak_bytes().unwrap()
+        + crate::ram_source::stop::StopState::journal_peak_bytes().unwrap();
+    let peak = crate::ram_source::SOURCE_STACK_BYTES as u64
+        + 3 * crucible_qemu_protocol::ram_page::RAM_PAGE_MAX_RESPONSE_BYTES as u64
+        + controls;
+    let account = HostServiceAllocator::new(1, 2, peak - 1).unwrap();
+    let supervisor = HostOperationSupervisor::new(HostOperationBudgets::default(), None).unwrap();
+
+    let (result, counts) = TestAllocationObserver::count(|| {
+        QemuRamSourceService::prepare(&mut input, supervisor, account.clone())
+    });
+
+    assert!(matches!(
+        result,
+        Err(QemuRamSourceError::Services(
+            HostServiceError::CapacityExhausted
+        ))
+    ));
+    let retained = input.as_ref().unwrap();
+    assert_eq!(retained.socket.as_raw_fd(), descriptor);
+    assert!(Arc::ptr_eq(&retained.backing, &backing));
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    let _whole = account.reserve_resources(1, 2, peak - 1).unwrap();
 }
 
 struct ExitGate {

@@ -24,7 +24,7 @@ pub(super) const CONTRACT: Contract = Contract {
                 .history
                 .native
                 .get_or_insert(NativeJoinError::ForeignProcess);
-            return (false, Err(self.stop.history.clone()));
+            return (false, Err(self.stop.journal.snapshot(&self.stop.history)));
         }
         if self.stop.history.birth != (self.birth_before, self.birth_after) {
             self.stop.history.birth = (self.birth_before, self.birth_after);
@@ -133,17 +133,17 @@ pub(super) const CONTRACT: Contract = Contract {
             Some(worker) => worker.outcome.snapshot(),
             None => self.failure.snapshot(),
         };
-        if let Some(first) = outcome.failure {
-            if self.stop.history.worker.is_none() {
-                self.stop.history.worker = Some(first);
-                self.stop.version += 1;
-            }
+        if let Some(first) = outcome.failure
+            && self.stop.history.worker.is_none()
+        {
+            self.stop.history.worker = Some(first);
+            self.stop.version += 1;
         }
-        if let Some(panic) = outcome.panic {
-            if self.stop.history.panic.is_none() {
-                self.stop.history.panic = Some(panic);
-                self.stop.version += 1;
-            }
+        if let Some(panic) = outcome.panic
+            && self.stop.history.panic.is_none()
+        {
+            self.stop.history.panic = Some(panic);
+            self.stop.version += 1;
         }
         self.stop.outcome_captured = outcome.delivered;
         if (!outcome.delivered || outcome.uncertain) && !self.stop.history.uncertain {
@@ -179,6 +179,10 @@ mod tests {
         assert_ne!(mask_contract(&CONTRACT, &code, &companions), code);
 
         for (before, after) in [
+            (
+                "self.stop.journal.snapshot(&self.stop.history)",
+                "self.stop.history.clone()",
+            ),
             (
                 "self.stop_original_check(original)",
                 "self.stop_original_check(replacement_original)",
