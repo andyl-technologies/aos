@@ -818,7 +818,10 @@ esac
         );
         assert!(std::fs::symlink_metadata(&second_link).is_err());
         assert_eq!(std::fs::read_dir(&store.directory).unwrap().count(), 1);
-        assert_eq!(*store.admission.calls.lock().unwrap(), [old.clone()]);
+        assert_eq!(
+            store.admission.calls.lock().unwrap().as_slice(),
+            std::slice::from_ref(&old)
+        );
 
         std::os::unix::fs::symlink(&new, &second_link).unwrap();
         store.admission.calls.lock().unwrap().clear();
@@ -827,7 +830,10 @@ esac
                 .is_err()
         );
         assert_eq!(std::fs::read_link(&second_link).unwrap(), Path::new(&new));
-        assert_eq!(*store.admission.calls.lock().unwrap(), [old.clone()]);
+        assert_eq!(
+            store.admission.calls.lock().unwrap().as_slice(),
+            std::slice::from_ref(&old)
+        );
         std::fs::remove_file(&second_link).unwrap();
         std::fs::write(&second_link, b"foreign regular file").unwrap();
         assert!(
@@ -876,7 +882,10 @@ esac
                 .contains("artifact changed")
         );
 
-        assert_eq!(*store.admission.calls.lock().unwrap(), [old.clone()]);
+        assert_eq!(
+            store.admission.calls.lock().unwrap().as_slice(),
+            std::slice::from_ref(&old)
+        );
         assert_eq!(
             std::fs::read_link(root_link(&store, &first, &old)).unwrap(),
             Path::new(&old)

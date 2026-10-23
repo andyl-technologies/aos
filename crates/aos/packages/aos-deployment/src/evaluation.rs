@@ -628,6 +628,10 @@ impl aos_activation::adapter::RuntimeControl for EvaluationBudget<'_> {
         0
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "native evaluator subprocess budgets use host monotonic time"
+    )]
     fn attempt_remaining_millis(&self) -> u64 {
         self.budget
             .attempt_remaining_millis()
