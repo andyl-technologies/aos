@@ -97,6 +97,20 @@ impl PrepaidRefusals {
         }
     }
 
+    // The actual allocator refusal is retained inline, including its layout.
+    // The paid holder keeps its credit live through the final diagnostic alias.
+    pub(super) fn allocation_error(
+        &self,
+        source: std::collections::TryReserveError,
+    ) -> DecodeAdmissionError {
+        DecodeAdmissionError {
+            source: AdmissionSource::Allocation {
+                retained: self.clone(),
+                source,
+            },
+        }
+    }
+
     pub(super) fn source(&self, refusal: AccountRefusal) -> &AccountingRefusal {
         match refusal {
             AccountRefusal::Poisoned => &self.storage.poisoned,

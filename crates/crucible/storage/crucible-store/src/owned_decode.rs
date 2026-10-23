@@ -69,7 +69,7 @@ pub trait DecodeResourceAuthority: Send + Sync {
 /// Fixed failures of an admitted account share its prepaid diagnostic storage.
 /// Clones preserve that account-specific cause; errors from separate accounts
 /// remain distinct. The diagnostic can outlive its account without retaining it.
-/// Layout refusals keep their actual typed value inline in the charged error
+/// Layout and allocation refusals keep their actual typed value in the charged error
 /// handle and retain the same independent holder for their lifetime.
 #[derive(Clone)]
 pub struct DecodeAdmissionError {
@@ -87,6 +87,10 @@ enum AdmissionSource {
         retained: PrepaidRefusals,
         source: std::alloc::LayoutError,
     },
+    Allocation {
+        retained: PrepaidRefusals,
+        source: std::collections::TryReserveError,
+    },
 }
 
 impl DecodeAdmissionError {
@@ -102,6 +106,7 @@ impl DecodeAdmissionError {
             AdmissionSource::External(source) => source.as_ref(),
             AdmissionSource::Account { retained, refusal } => retained.source(*refusal),
             AdmissionSource::Layout { source, .. } => source,
+            AdmissionSource::Allocation { source, .. } => source,
         }
     }
 }
@@ -144,11 +149,25 @@ impl PartialEq for DecodeAdmissionError {
                 },
             ) => left.shares_owner(right) && left_refusal == right_refusal,
             (
-                AdmissionSource::Layout { retained: left, .. },
                 AdmissionSource::Layout {
-                    retained: right, ..
+                    retained: left,
+                    source: left_source,
                 },
-            ) => left.shares_owner(right),
+                AdmissionSource::Layout {
+                    retained: right,
+                    source: right_source,
+                },
+            ) => left.shares_owner(right) && left_source == right_source,
+            (
+                AdmissionSource::Allocation {
+                    retained: left,
+                    source: left_source,
+                },
+                AdmissionSource::Allocation {
+                    retained: right,
+                    source: right_source,
+                },
+            ) => left.shares_owner(right) && left_source == right_source,
             _ => false,
         }
     }
@@ -302,7 +321,7 @@ impl DecodeBudget {
                 // At most four pointer slots per appended receipt cover Vec's
                 // minimum capacity and old/new geometric growth overlap.
                 if let Err(error) = state.receipts.try_reserve(1) {
-                    let error = DecodeAdmissionError::new(error);
+                    let error = self.0.refusals.allocation_error(error);
                     state.failure = Some(error.clone());
                     return Err(error);
                 }
@@ -864,10 +883,18 @@ pub fn reserve_vec<T>(values: &mut Vec<T>, additional: usize) -> Result<(), Deco
         .checked_add(additional)
         .ok_or_else(|| scoped_refusal(AccountRefusal::VectorOverflow))?;
     if required > values.capacity() {
-        charge_array::<T>(required)?;
+        // Retain the account that admits the allocation before invoking its
+        // authority; a later TLS lookup must not choose diagnostic ownership.
+        let budget = current_budget();
+        if let Some(budget) = &budget {
+            budget.charge_array::<T>(required)?;
+        }
         values
             .try_reserve_exact(additional)
-            .map_err(DecodeAdmissionError::new)?;
+            .map_err(|source| match &budget {
+                Some(budget) => budget.0.refusals.allocation_error(source),
+                None => DecodeAdmissionError::new(source),
+            })?;
     }
     Ok(())
 }

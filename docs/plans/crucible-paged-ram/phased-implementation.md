@@ -67,7 +67,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 541 bindings: 522 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
+| Requirements | 543 bindings: 524 component and nineteen native, across 243 requirements. | 148 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -1640,9 +1640,19 @@ a sixth barrier without mutation. The selected source path bounds five creator
 continuations with paired ATTEMPTED/RETURNED history, replacing the earlier
 unvalidated raw-line counter. The reviewer's initial check-order assumption is
 retained before the corrected comparison of the same 92 controls passes.
-This remains a source-only correction proposal: a staged creator control and
-complete execution-ready reconstruction, ownership, graph and role review are
-still required. No new target run, runtime root or native authority is issued.
+The separately sealed readable successor
+`826dccefb407db67b5d2ec080fe8aeac4cc3c1761f0c5ecad52e61e9e688334e`
+passes independent review of all 454 readonly payloads and 223 retained actual
+inputs. Its complete helper AST is unchanged; mkvenv and guard bytes remain
+exact. All 557 controls replay independently: the prior 236 pure and 92 actual
+adapter controls, plus 229 staged controls. Genuine creator arrivals grow the
+script inventory through 3, 4, 5, 8 and 15 entries, preserving all five paired
+histories and refusing a sixth without mutation. All 179 raw-cut emissions
+match, normalizing only the staged scratch coordinate; scratch is removed.
+The reviewer's first source-line assertion is retained before its corrected
+complete review passes. Complete execution-ready reconstruction, ownership,
+graph and role review remain required. No new target run, runtime root or
+native authority is issued.
 
 
 The service-client ownership contracts pass mandatory application-target
@@ -1822,8 +1832,39 @@ inventory passes at `k9qygrqwm5bka8vi1wpfkk6jbv6bdznz`: 541 bindings,
 passes all 33 exact cases at `95h5ha0ipyqap6sgjfnbwgvda34wmsrz`; every
 individual result is independently checked. The full store suite passes 694
 tests with three costly 512 MiB cases explicitly excluded, and all 686 engine
-tests pass. Host, policy, strict Clippy and mandatory application-target
-compilation remain pending. This increment issues no native authority.
+tests pass. The host retains 1,385 passes, the exact same eight helper-custody
+failures and four ignored tests. All ninety testing-standard and five hygiene
+controls pass. Strict Clippy retains 674 library and 723 test-target errors,
+with fourteen and five warnings. Mandatory application-target compilation is
+running for `dd72fff4ee`; all 5,393 committed Rust/TOML files and six required
+fixtures independently match frozen source `qzrpvfwx9si6dhyh3mrwxhmdk3l8ljn8`
+before further implementation changes. This increment issues no native authority.
+
+Typed vector-allocation refusals now retain their actual standard-library cause
+inside the charged error handle. Receipt-vector failures use the explicit
+account's independent holder; codec vectors retain the admitting account before
+calling its authority and preserve that same holder on failure. Neither path
+allocates another error wrapper. Complete prebirth credit derives from the
+enlarged concrete error layout. The original typed source, Debug and Display,
+receipt failure's sticky precedence and component fallback remain intact.
+
+All nineteen focused account controls pass. The new actual Vec capacity-refusal
+control consumes a finite roster of preborn component loans, admits logical
+bytes and rejects an unrepresentable backing capacity before allocator entry.
+It observes zero allocations or reallocations while preserving the exact typed
+cause, empty vector and original credit through final diagnostic alias close.
+The independent unscoped control preserves its actual cause without inferring
+production authority. Restoring the former allocating wrapper makes exactly
+the allocation control fail; exact restoration passes all nineteen controls.
+The full store suite passes 696 tests, with three costly 512 MiB cases explicitly
+excluded. The inventory passes at `mzr1axfpl1biq2sxcwnxd9y4vndrayw2`;
+543 bindings cover 243 requirements, with 148 uncovered and zero fully qualified.
+Hermetic storage passes all 35 exact cases at `qa3bm2ysl8k4flkb4p38dmpcfpz2nps0`;
+all case logs, including nested child results, are independently checked. The
+complete engine suite passes all 686 tests. All five final hygiene controls
+pass. Host, policy, strict Clippy and mandatory application compilation remain
+pending. Actual receipt-vector allocator failure is not
+injected by the capacity control. No Main, Source or native authority is issued.
 
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's

@@ -680,3 +680,119 @@ fn assert_prepaid_layout_refusal<K, V>() -> Result<(), DecodeAdmissionError> {
     assert_eq!(authority.used.load(Ordering::SeqCst), 0);
     Ok(())
 }
+
+struct PrebornAuthority {
+    loans: Mutex<std::collections::VecDeque<(u64, ResourceLoan)>>,
+    calls: AtomicU64,
+}
+
+impl DecodeResourceAuthority for PrebornAuthority {
+    fn verify_live(&self) -> Result<(), DecodeAdmissionError> {
+        Ok(())
+    }
+
+    fn reserve(&self, bytes: u64) -> Result<ResourceLoan, DecodeAdmissionError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let (expected, loan) = self.loans.lock().unwrap().pop_front().unwrap();
+        assert_eq!(bytes, expected);
+        Ok(loan)
+    }
+}
+
+#[test]
+fn vector_capacity_refusal_keeps_actual_typed_source_without_allocating()
+-> Result<(), DecodeAdmissionError> {
+    // Vec rejects this real capacity before attempting a backing allocation.
+    // This component authority has a finite logical allowance, not native RAM.
+    let additional = isize::MAX as usize + 1;
+    let receipt_growth = 4 * std::mem::size_of::<ResourceLoan>() as u64;
+    let requests = [
+        DecodeBudget::account_bytes(),
+        PrepaidRefusals::peak_bytes(),
+        receipt_growth,
+        additional as u64 + receipt_growth,
+    ];
+    let used = Arc::new(AtomicU64::new(0));
+    let mut loans = std::collections::VecDeque::new();
+    let maximum = requests
+        .iter()
+        .try_fold(0u64, |total, bytes| total.checked_add(*bytes))
+        .unwrap();
+    for bytes in requests {
+        assert!(bytes >= ResourceLoan::allocation_bytes::<Credit>());
+        used.fetch_add(bytes, Ordering::SeqCst);
+        loans.push_back((
+            bytes,
+            ResourceLoan::new(Credit {
+                used: used.clone(),
+                bytes,
+            }),
+        ));
+    }
+    let provider = Arc::new(PrebornAuthority {
+        loans: Mutex::new(loans),
+        calls: AtomicU64::new(0),
+    });
+    let budget = DecodeBudget::new(provider.clone(), maximum)?;
+    budget.charge_bytes(0)?;
+    let scope = budget.enter();
+    let mut values = Vec::<u8>::new();
+    let expected = Vec::<u8>::new().try_reserve_exact(additional).unwrap_err();
+    let before = used.load(Ordering::SeqCst);
+
+    let (error, counts) =
+        crucible_host_resources::test_support::TestAllocationObserver::count(|| {
+            reserve_vec(&mut values, additional).unwrap_err()
+        });
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(values.capacity(), 0);
+    assert!(values.is_empty());
+    assert_eq!(provider.calls.load(Ordering::SeqCst), 4);
+    assert!(provider.loans.lock().unwrap().is_empty());
+    assert_eq!(used.load(Ordering::SeqCst), before);
+    assert_eq!(error.to_string(), expected.to_string());
+    assert_eq!(
+        format!("{error:?}"),
+        format!("{:?}", DecodeAdmissionError::new(expected.clone()))
+    );
+    assert_eq!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<std::collections::TryReserveError>()),
+        Some(&expected)
+    );
+    assert_eq!(budget.failure()?, None);
+
+    let alias = error.clone();
+    assert_eq!(error, alias);
+    drop(scope);
+    drop(budget);
+    assert_eq!(used.load(Ordering::SeqCst), PrepaidRefusals::peak_bytes());
+    drop(error);
+    assert_eq!(used.load(Ordering::SeqCst), PrepaidRefusals::peak_bytes());
+    drop(alias);
+    assert_eq!(used.load(Ordering::SeqCst), 0);
+    Ok(())
+}
+
+#[test]
+fn unscoped_vector_capacity_refusal_preserves_the_actual_source() {
+    assert!(current_budget().is_none());
+    let additional = isize::MAX as usize + 1;
+    let expected = Vec::<u8>::new().try_reserve_exact(additional).unwrap_err();
+    let mut values = Vec::<u8>::new();
+
+    let error = reserve_vec(&mut values, additional).unwrap_err();
+
+    assert_eq!(values.capacity(), 0);
+    assert_eq!(
+        error
+            .source()
+            .and_then(|source| source.downcast_ref::<std::collections::TryReserveError>()),
+        Some(&expected)
+    );
+    assert_eq!(error.to_string(), expected.to_string());
+}
