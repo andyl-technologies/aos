@@ -167,6 +167,22 @@ class RustProjectTests(unittest.TestCase):
         })])
         self.assertEqual(project["crates"][0]["source"]["include_dirs"], ["/checkout/source", "/exec/generated"])
 
+    def test_integration_source_root_includes_sibling_package_fixtures(self):
+        project = self.assemble([spec(
+            "integration", root_module="__WORKSPACE__/package/tests/integration.rs",
+            env={"CARGO_MANIFEST_DIR": "${pwd}/package"}, is_test=True,
+        )])
+
+        self.assertEqual(project["crates"][0]["source"]["include_dirs"], ["/checkout/package"])
+
+    def test_unrelated_compiler_manifest_does_not_expand_source_discovery(self):
+        project = self.assemble([spec(
+            "integration", root_module="__WORKSPACE__/package/tests/integration.rs",
+            env={"CARGO_MANIFEST_DIR": "${pwd}/unrelated"}, is_test=True,
+        )])
+
+        self.assertEqual(project["crates"][0]["source"]["include_dirs"], ["/checkout/package/tests"])
+
     def test_build_script_cfg_and_environment_match_compiler_inputs(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

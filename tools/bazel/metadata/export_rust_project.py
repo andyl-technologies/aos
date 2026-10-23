@@ -291,11 +291,19 @@ def assemble(specs, replacements, toolchain, workspace_packages=()):
                 # The pinned aspect adds test cfg to every dependency. A
                 # library-only root has no libtest's development inputs.
                 crate["cfg"] = [cfg for cfg in crate["cfg"] if cfg != "test"]
-        # An explicit empty source list disables child-module discovery in
-        # rust-analyzer. The pinned aspect emits that list for ordinary roots;
-        # preserve rust-analyzer's default root-directory discovery instead.
+        # An empty list disables module discovery. Integration tests can import
+        # declared fixtures from a sibling src/ tree, so retain their compiler-
+        # declared package boundary instead of limiting discovery to tests/.
         if not crate["source"]["include_dirs"]:
-            crate["source"]["include_dirs"] = [str(Path(crate["root_module"]).parent)]
+            root = Path(crate["root_module"])
+            source_root = root.parent
+            manifest = crate["env"].get("CARGO_MANIFEST_DIR")
+            execution_root = replacements["__EXEC_ROOT__/"]
+            if manifest and Path(manifest).is_relative_to(execution_root):
+                package = workspace / Path(manifest).relative_to(execution_root)
+                if root.is_relative_to(package):
+                    source_root = package
+            crate["source"]["include_dirs"] = [str(source_root)]
         result.append(crate)
     if not all(members.values()):
         raise ValueError("editor workspace package has no configured Rust root")
