@@ -36,6 +36,7 @@
         "crates/aos/packages/aos-deployment-format/Cargo.toml"
         "crates/aos/packages/aos-nix-cache/Cargo.toml"
         "crates/aos/registry/aos-registry-authoring/Cargo.toml"
+        "crates/aos/release/aos-release-coordinator/Cargo.toml"
         "crates/aos/registry/aos-registry-client/Cargo.toml"
         "crates/aos/release/aos-image-finalizer/Cargo.toml"
         "crates/aos/release/aos-package-maintenance/Cargo.toml"
@@ -134,6 +135,7 @@ in
     native-foundation = import ./_bazel-native-foundation.nix {inherit pkgs;};
     activation-core = import ./_bazel-activation-core.nix {inherit pkgs;};
     activation-storage = import ./_bazel-activation-storage.nix {inherit pkgs;};
+    release-coordination = import ./_bazel-release-coordination.nix {inherit pkgs;};
     registry-native = import ./_bazel-registry-native.nix {inherit pkgs;};
     release-preparation = import ./_bazel-release-preparation.nix {inherit pkgs;};
     hub-client = import ./_bazel-hub-client.nix {inherit pkgs;};
@@ -345,6 +347,7 @@ in
         native-foundation.tests
         activation-core.tests
         activation-storage.tests
+        release-coordination.tests
         registry-native.tests
         release-preparation.tests
         hub-client.tests
@@ -456,6 +459,7 @@ in
             activation-crucible.all
             cli-support.all
             build-services.all
+            release-coordination.all
             registry-native.all
             release-preparation.all
             hub-client.all

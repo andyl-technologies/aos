@@ -280,3 +280,9 @@ config_setting(
     flag_values = {":dependency_profile": "registry-native-tests"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "release_coordination_dependencies",
+    flag_values = {":dependency_profile": "release-coordination"},
+    visibility = ["//visibility:public"],
+)

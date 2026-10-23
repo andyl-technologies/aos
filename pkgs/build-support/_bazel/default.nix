@@ -96,6 +96,11 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    release-coordination = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "release-coordination";
+    };
     registry-native = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -310,6 +315,44 @@
     dependencyProfile = "control";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
+  };
+  aosBazelReleaseCoordinationWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = [
+      "tools/bazel"
+      "third_party/rust"
+      "api/proto"
+      "crates/aos/boot/aos-boot-identity"
+      "crates/aos/cli/aos-cli-ui"
+      "crates/aos/modules/aos-module-docs"
+      "crates/aos/modules/aos-module-format"
+      "crates/aos/packages/aos-deployment-format"
+      "crates/aos/packages/aos-nix-cache"
+      "crates/aos/registry/aos-registry-client"
+      "crates/aos/registry/aos-registry-format"
+      "crates/aos/release/aos-image-finalizer"
+      "crates/aos/release/aos-release-coordinator"
+      "crates/aos/release/aos-release-format"
+      "crates/hub/aos-hub-api"
+      "crates/hub/aos-hub-client"
+      "crates/shared/aos-artifact-evidence"
+      "crates/shared/aos-core"
+      "crates/shared/aos-nar"
+      "crates/shared/aos-nix"
+      "crates/shared/aos-oci-types"
+      "crates/shared/aos-transfer"
+    ];
+    repositories =
+      aosBazelRepositories
+      // aosBazelRustRepositories.release-coordination
+      // {
+        aos_codegen = aosBazelCodegenTools;
+        aos_native = aosBazelNativeFoundationLibraries;
+        aos_cli_runtime = aosBazelCrucibleCliRuntime;
+      };
+    dependencyProfile = "release-coordination";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = ["//crates/aos/release/aos-release-coordinator:unit"];
   };
   aosBazelRegistryNativeWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -652,6 +695,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelReleaseCoordinationLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelReleaseCoordinationWorkspace;
     }).launcher;
   aosBazelRegistryNativeLauncher =
     (import ./development.nix {

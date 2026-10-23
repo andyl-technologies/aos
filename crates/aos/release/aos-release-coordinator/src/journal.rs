@@ -124,6 +124,10 @@ pub fn append(entries: &[JournalEntry], transition: Transition<'_>) -> Result<Ve
 }
 
 /// Returns the current time as RFC 3339 UTC with second precision.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Release journals record host UTC time outside Crucible replayable state"
+)]
 pub fn now_utc() -> String {
     humantime::format_rfc3339_seconds(std::time::SystemTime::now()).to_string()
 }

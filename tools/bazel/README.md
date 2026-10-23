@@ -2308,3 +2308,53 @@ Its frozen source predates the release-coordination conversion.
 External-provider and installed-service gates, foreign/Wasm execution, complete
 compiler invocation equivalence, numeric performance acceptance, production
 migration, and Cargo removal remain separate qualification work.
+
+## Release coordination family
+
+`aos-dev bazel --family release-coordination` selects
+`aos-release-coordinator`. Its pinned profile contains 360 source crates.
+Production and tests match unchanged Cargo's 288 compiled external packages and
+nineteen first-party packages, with identical feature-unit sets. Nine guarded
+policies preserve the distinct target and generator feature units.
+
+`tests/evidence/native-linux-release-coordination.json` retains passing strict
+source selection, test and production feature parity, Clippy, formatting,
+documentation, license closure, generated API parity, and selected editor checks.
+All 41 existing unit cases execute with no ignored cases; the library doctest
+inventory is empty. Both test roots run uncached in the Linux sandbox. Their
+actions invoke no Cargo executable, and the strict compilation workspace
+contains no first-party Cargo manifests. All four generated Hub API outputs
+match Cargo.
+
+A compile-time C string preserves the existing valid dot-directory bytes. A
+function-scoped clock exception documents host UTC timestamps in release
+journals outside Crucible replayable state. Both existing test modules remain
+byte-for-byte unchanged. The cases qualify filesystem capture, publication
+layouts, readback, durable journals, configuration, tooling discovery, and
+signing protocol validation. Signer and executor fixtures are inspected for
+path and permission policy; their shell bodies are not executed by these cases.
+Live external signers, remote publication, and installed release workflows
+remain separate gates.
+
+The strict inventory contains twelve requested roots, 399 configured reports,
+and 269 declared files, including 264 Rust files. Nix-cache and release-format
+source-package roots retain their nonempty integration-test globs without
+claiming those integration cases execute here. Selected editor diagnostics
+match with no diagnostics or unattributed Cargo rows. Bazel reports complete
+inference; the broader Cargo report remains incomplete and retains 42
+unselected diagnostic rows. Aggregate statistics and diagnostic multiplicities
+are not claimed equivalent.
+
+`tests/evidence/release-coordination-configured-graph.json` records all 31
+configured family inventories, 33 source-built dependency specifications, 181
+policy tests, and CLI checks for 26 launchers. The previous 32 dependency locks
+and 5,549 generated crate BUILD files remain unchanged. Metadata parity covers
+440 Rust targets across 33 analysis-only selections with no external actions,
+and core evaluation passes. Frozen outputs are retained in
+`tests/evidence/release-coordination-metadata-evaluation.json`.
+
+Required workspace Rust compilation for the two source corrections runs
+separately from these native execution checks. External-provider and
+installed-workflow gates, foreign/Wasm
+execution, complete compiler invocation equivalence, numeric performance
+acceptance, production migration, and Cargo removal remain separate work.

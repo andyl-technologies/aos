@@ -18,6 +18,7 @@ RUST_PACKAGE = aos_rust_package(
 
 # Registry consumers explicitly opt in without enabling the Cargo default flag.
 TRANSFER_FEATURES = select({
+    "//tools/bazel/rules:release_coordination_dependencies": ["transfer"],
     "//tools/bazel/rules:registry_native_dependencies": ["transfer"],
     "//tools/bazel/rules:registry_native_tests_dependencies": ["transfer"],
     "//conditions:default": ["default", "transfer"],
