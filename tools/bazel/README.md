@@ -1408,3 +1408,14 @@ tests, and CLI checks. Its default test graph matches all 264 external and
 16 first-party Cargo feature identities. The existing ten dependency locks
 remain unchanged. The schema registry has an explicit daemon export, and the
 three newly enabled shared crypto dependencies retain reviewed source licenses.
+
+## Crucible CLI baseline
+
+`tests/evidence/crucible-cli-cargo-baseline.json` retains the default Cargo
+baseline: 436 executed cases, 23 existing ignored cases, eight test artifacts,
+281 external identities, and 18 first-party feature identities. The S3 client
+construction test needs trust roots even without making a network request;
+the sandbox declares `SSL_CERT_FILE` from the AOS certificate package. Its
+bundle digest and the successful Cargo reports are retained. CLI Bazel
+conversion, nondefault feature qualification, and production migration remain
+pending.
