@@ -1311,8 +1311,14 @@ Nix inputs independently of Cargo manifests.
 configured graph, refreshed source inventories, dependency specifications,
 142 policy tests, CLI checks, and workspace Rust target compilation. Its 107
 external crate feature sets exactly match the Cargo baseline, and the existing
-eight dependency locks remain unchanged. Native Bazel execution, editor parity,
-foreign execution, and production migration remain pending.
+eight dependency locks remain unchanged.
+
+`tests/evidence/native-linux-qemu-host.json` records native execution passing
+all 841 cases in both configurations, with four existing ignored cases and
+15 libtest artifacts each. External features match all 107 Cargo identities.
+Developer checks and production license closures pass. Editor parity preserves
+the same 27 selected-package diagnostics as Cargo; it does not claim complete
+inference. Foreign execution and production migration remain pending.
 
 ## S3 adapter baseline
 

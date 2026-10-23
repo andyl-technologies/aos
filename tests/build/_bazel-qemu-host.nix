@@ -111,9 +111,17 @@ in
         ++ pkgs.lib.concatMap (name: map (target: "//${packages.${name}}:${target}") ["clippy" "documentation" "format"]) (builtins.attrNames packages);
     };
     test-support = featureVariant "test_support" ["test-support"];
+    production-license = pkgs.mkAosBazelBuild {
+      pname = "aos-bazel-qemu-host-production-license";
+      workspace = family.workspace;
+      targets = [
+        "//crates/crucible/qemu/crucible-qemu-host:production_license_closure"
+        "//crates/crucible/qemu/crucible-qemu-host:production_license_closure_test_support"
+      ];
+    };
     all =
       pkgs.runCommand "aos-bazel-qemu-host-qualified-checks" {
-        buildDeps = [family.all family.editor-parity test-support];
+        buildDeps = [family.all family.editor-parity test-support production-license];
       } ''
         mkdir -p "$out/variants" "$out/editor"
         cp -r ${family.all}/evidence "$out/evidence"
@@ -123,5 +131,6 @@ in
         cp -r ${family.editor} "$out/editor/bazel"
         cp -r ${family.editor-cargo-oracle} "$out/editor/cargo"
         cp -r ${test-support} "$out/variants/test-support"
+        cp -r ${production-license} "$out/production-license"
       '';
   }
