@@ -23,6 +23,7 @@ mod metadata_custody;
 mod proof_allocation;
 mod record_prepay;
 mod root_decode;
+mod update_admission;
 mod update_coordinates;
 
 const METADATA_BYTES: u64 = 4 * 1024 * 1024;

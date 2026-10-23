@@ -229,8 +229,8 @@ impl RamStore {
     ///
     /// # Errors
     ///
-    /// Returns source errors, ordering/length failures, cancellation, exhausted
-    /// limits, or unsatisfied durable successor publication.
+    /// Returns original caller refusals, source errors, ordering/length failures,
+    /// cancellation, exhausted limits, or unsatisfied durable publication.
     pub fn update_with_reader(
         &self,
         root: &LeasedRamRoot,
@@ -239,11 +239,13 @@ impl RamStore {
         original: &crate::owned_decode::DecodeBudget,
         boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
     ) -> Result<LeasedRamRoot, RamStoreError> {
+        // A retained input root cannot authorize work for a revoked caller.
+        let mut work = Work::new(self.limits, original, boundary)?;
         self.admit_ram_publication(root.record.topology(), root.record.scope())?;
+
         let mut regions = root.regions.to_vec();
         let mut roots = root.record.region_roots().to_vec();
         let mut previous: Option<(String, u64)> = None;
-        let mut work = Work::new(self.limits, original, boundary)?;
 
         loop {
             (work.boundary)()?;
