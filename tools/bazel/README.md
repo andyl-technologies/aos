@@ -2705,3 +2705,26 @@ graphs, matching the observed Cargo selections.
 These frozen Cargo baselines precede Native's Bazel qualification. Live
 PostgreSQL/MariaDB, the native operator VM, Worker execution, full compiler
 argument equivalence and production migration remain separate gates.
+
+## Worker Cargo baselines
+
+`tests/evidence/hub-worker-cargo-baseline.json` and its `all-features` sibling
+retain the unchanged native Worker baseline: 47 passing unit cases, one passing
+doctest and no ignored cases in each configuration. Both resolve 382 external
+and 18 first-party packages. These cases exercise runtime-independent modules;
+they do not execute the Worker runtime.
+
+The three `hub-worker-wasm-*-cargo-baseline.json` reports retain the production,
+`do-e2e`, and combined `do-e2e`/`query-timing` builds. Each compiles 241 external
+and 13 first-party packages and retains hashes and sizes for all 13 deployment
+files, including the Wasm module, bundled shim and static assets. The original
+bindgen, glue rewriting, esbuild and production test-hook leak guard run in the
+Nix sandbox. Release optimization remains size-oriented with fat LTO, one
+codegen unit, aborted panics and stripped symbols.
+
+The linker now stages its complete output under the build's disk-backed
+`TMPDIR`, then copies it to the requested destination and removes the staging
+directory. All three Wasm baselines passed with that change. They precede the
+Worker Bazel conversion; real workerd/Durable Object execution, editor and
+compiler parity, performance acceptance and production migration remain
+separate gates.
