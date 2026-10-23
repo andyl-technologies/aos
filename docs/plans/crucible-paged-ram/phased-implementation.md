@@ -1545,6 +1545,11 @@ The Source-caller contract increment passes mandatory application-target
 compilation at `v4sf66zhav7aqw1jpwj4pmibp8yb1dxi`, with all 5,388 committed
 Rust/TOML files and six fixtures matching its frozen source before later edits.
 
+The final executor and construction-cleanup contracts pass mandatory
+application-target compilation at `cima4dd6mj4ci8z03zqcv5632ry1alia`. All
+5,392 committed Rust/TOML files and six required fixtures independently matched
+its frozen source `7nf08m8dmc9fqpj1nxiwf3q87fcbsyi6` before the parser change.
+
 Closed JSON decoding now reserves and constructs a private diagnostic-credit
 holder before entering Serde. Retaining the actual error moves that existing
 holder without allocating; text, classification and source coordinates remain
@@ -1566,6 +1571,13 @@ unissued helper-custody failures and four ignored controls. Strict Clippy retain
 674 library and 723 test-target errors, with fourteen and five warnings.
 Mandatory application-target compilation for this increment remains pending.
 These parser controls grant no native issuance or execution authority.
+
+Four exact parser-credit controls are now bound into `gate:ram-supervision`.
+The hermetic gate passes all 412 exact cases at
+`5hr2qg3ws7qa5hlw71pkjph6lrpxswl6`. The inventory passes at
+`256dsc60864h4khhnr7lbh4h4v2c7v7d`, retaining 529 case bindings across 243
+requirements, 148 uncovered requirements and zero fully qualified requirements.
+Each new binding explicitly describes its component scope.
 
 Shutdown report storage is now reserved as part of the original complete Source
 control peak before launch. The canonical child continuation takes that launch's
