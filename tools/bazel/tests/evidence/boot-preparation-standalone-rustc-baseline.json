@@ -1,0 +1,30 @@
+{
+  "command": "nix-build /tmp/aos-bazel-722/boot-preparation-standalone-baseline.nix --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "9f51efede4",
+  "derivation": "/nix/store/07yj84y0qvhf4m827sfzi1nbf2xkiqh8-aos-bazel-boot-preparation-standalone-rustc-baseline-1.drv",
+  "derivation_sha256": "d186607e78804f91d846bdf4e6a2ae9613b5123eb79209deae24836c43d6af69",
+  "executed": [
+    "tests::admission_digest_accepts_only_canonical_sha256",
+    "tests::deployment_rejects_mutable_or_unrecognized_bundle_locations",
+    "tests::profile_generation_requires_one_exact_assignment"
+  ],
+  "first_party_source_sha256": {
+    "crates/aos/boot/aos-boot-runtime/standalone/initrd_preparation.rs": "2b80691d80021119ea16aa925743bf7695b0bd902fadc2323961cfb9354ab826"
+  },
+  "ignored": [],
+  "limits": [
+    "The three cases cover argument admission, immutable bundle locations and canonical profile-generation input. They do not invoke the installed deployment or boot workflows.",
+    "Compile-time command paths select actual source-built package-runtime, boot-configuration and configuration-boot artifacts. Bazel compilation and installed boot qualification remain separate."
+  ],
+  "output": "/nix/store/7z7n9jwhhn5h858km17y8qvanl82ny0j-aos-bazel-boot-preparation-standalone-rustc-baseline-1",
+  "output_sha256": {
+    "aos-boot-preparations": "dc451e695877eab71100da32f25ba3efc2398b78fa72275251b7c78abb5376eb",
+    "test-inventory.txt": "eb8485cf68493856ad4652295ffb6d8f646aa347b8d5cfb1a8f3d698d9e51671",
+    "tests": "7c2a6c273be3489fa8266039b4ce98280f8c78fb79a2b740824f4b6137bdf3d6",
+    "tests.log": "918fbd1ec6f707405b5a8f0b1b7797063738165f176e1c846a83aeba44572b7b"
+  },
+  "recipe": "let\n  root = /home/dylan/src/aos/.worktrees/codex/bazel-integration-722;\n  pkgs = (import root {}).pkgs;\n  source = root + \"/crates/aos/boot/aos-boot-runtime/standalone\";\nin pkgs.mkDerivation {\n  pname = \"aos-bazel-boot-preparation-standalone-rustc-baseline\";\n  version = \"1\";\n  src = source;\n  buildDeps = [pkgs.rust];\n  runtimeDeps = [pkgs.aos.packageRuntime pkgs.aos-configuration-lower];\n  sharedBuildCache = false;\n  dontStrip = true;\n  dontPatchELF = true;\n  dontNukeRefs = true;\n  phases = [{\n    name = \"compile-and-test\";\n    script = ''\n      mkdir -p \"$out\"\n      export AOS_PACKAGE_RUNTIME=${pkgs.aos.packageRuntime}/bin/aos-package-runtime\n      export AOS_BOOT_CONFIGURATION=${pkgs.aos.packageRuntime}/bin/aos-boot-configuration\n      export AOS_CONFIGURATION_BOOT=${pkgs.aos-configuration-lower}/bin/aos-configuration-boot\n      rustc --edition=2024 --crate-name aos_initrd_preparation \"$src/initrd_preparation.rs\" -o \"$out/aos-boot-preparations\"\n      rustc --edition=2024 --crate-name aos_initrd_preparation --test \"$src/initrd_preparation.rs\" -o \"$out/tests\"\n      \"$out/tests\" > \"$out/tests.log\"\n      \"$out/tests\" --list > \"$out/test-inventory.txt\"\n    '';\n  }];\n}\n",
+  "schema_version": 1,
+  "source": "/nix/store/hs479920d6n7wzhf6n92bidjfc3adfk0-standalone",
+  "status": "Unchanged standalone initrd preparation compiled with direct rustc and all three existing cases passed"
+}
