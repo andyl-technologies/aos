@@ -134,7 +134,15 @@
       aos.image.erofsCompressionLevel = 1;
       # The materialized runtime measures 810-823 MiB at this compression level.
       # Match the enforcing handoff fixture without changing root partitions.
-      aos.image.budgets.maxRootMiB = 896;
+      aos.image.budgets = {
+        maxRootMiB = 896;
+        # The signed early-boot payload measures 219 MiB; each UKI is 236 MiB.
+        # Retain both boot slots and both 62 MiB recovery artifacts in the ESP.
+        maxInitrdMiB = 224;
+        maxBootExecutableMiB = 256;
+        maxFirmwarePartitionMiB = 736;
+        maxDownloadMiB = 1536;
+      };
     };
 
   productionModule = {
