@@ -16,3 +16,24 @@ aos_source_package(
     srcs = glob(["**/*.rs"]),
     visibility = ["//visibility:public"],
 )
+
+# Contract tests read source text without compiling the browser application.
+filegroup(
+    name = "browser_contract_sources",
+    srcs = glob(["src/**/*.rs"]),
+    visibility = ["//crates/hub/aos-hub-api:__pkg__"],
+)
+
+filegroup(
+    name = "presentation_contract_sources",
+    srcs = [
+        "src/components.rs",
+        "src/workflows/routes.rs",
+        "src/workflows/registry_containers/mod.rs",
+        "src/workflows/registry_containers/tags.rs",
+        "src/workflows/registry_containers/inspection.rs",
+        "src/workflows/registry_containers/publications.rs",
+        "src/workflows/registry_containers/retention.rs",
+    ],
+    visibility = ["//crates/hub/aos-hub-ui:__pkg__"],
+)

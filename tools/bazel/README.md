@@ -2033,3 +2033,50 @@ Required workspace Rust compilation runs separately. Dedicated provider and
 assembled-system gates, external deployment fixtures, foreign/Wasm execution,
 complete compiler invocation equivalence, numeric performance acceptance,
 production migration, and Cargo removal remain separate qualification.
+
+## Portable Hub API and shared UI
+
+`aos-dev bazel --family hub-portable` selects `aos-hub-api` and `aos-hub-ui`.
+The pinned profile contains 67 source crates. Production and tests both match
+Cargo's 44 compiled external identities and two first-party packages, with every
+compiled feature-unit set preserved. Four guarded feature policies remove
+resolver-only features from IndexMap and Serde and retain Prost's distinct
+library and generator units.
+
+The API target compiles and runs the existing Rust generator directly with the
+canonical Hub protobuf, AOS-built `protoc`, protobuf headers, and immutable tool
+closure identity. The generated-source check requires exactly four outputs:
+message types, ProtoJSON codecs, the binary descriptor, and Connect paths. Their
+content digests match fresh Cargo and the pre-conversion production baseline.
+No first-party Cargo manifests or Cargo executable participate in these Bazel
+actions. Generated-source snapshots admit binary descriptor outputs alongside
+Rust sources while retaining exact inventory and path validation.
+
+`tests/evidence/native-linux-hub-portable.json` retains passing precise source
+selection, unit/integration and doctest parity, production features, generated
+API output, Clippy, formatting, documentation, license closure, and editor
+checks. All 52 cases match Cargo across three libtest artifacts, with no ignored
+cases. Both libraries have empty doctest inventories. API integration cases read
+the checked API and capability manifests and the actual console Rust sources.
+UI cases compile the actual stylesheet and route source text as declared data;
+their assertion-only `expect()` exception is scoped to the test module.
+
+The configured inventory contains 19 requested roots, 114 reports, and 67
+declared source files, including 59 Rust files. Browser and service source used
+as test text does not introduce dependencies on their compiled applications.
+The editor comparison has no selected, unselected, or unattributed diagnostics.
+Both inference reports remain explicit; aggregate statistics and diagnostic
+multiplicities are not claimed equivalent.
+
+`tests/evidence/hub-portable-configured-graph.json` records all 26 configured
+family inventories and dependency specifications, 168 policy tests, the source
+catalog, and CLI checks for 21 launchers. The previous 25 dependency locks and
+4,050 generated crate BUILD files remain unchanged. The shared declaration
+formatting is a separate commit with identical Starlark syntax trees. Metadata
+parity covers 412 Rust targets across 28 analysis-only selections, with no
+external actions; core evaluation passes. Its frozen evidence is retained in
+`tests/evidence/hub-portable-metadata-evaluation.json`.
+
+Required workspace Rust compilation, installed Hub services, foreign/Wasm
+execution, complete compiler invocation equivalence, numeric performance
+acceptance, production migration, and Cargo removal remain separate work.

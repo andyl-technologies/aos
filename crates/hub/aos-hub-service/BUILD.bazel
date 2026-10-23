@@ -16,3 +16,9 @@ aos_source_package(
     srcs = glob(["**/*.rs"]),
     visibility = ["//visibility:public"],
 )
+
+filegroup(
+    name = "presentation_stylesheet",
+    srcs = ["src/web/static_assets/style.css"],
+    visibility = ["//crates/hub/aos-hub-ui:__pkg__"],
+)

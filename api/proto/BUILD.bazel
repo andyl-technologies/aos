@@ -9,3 +9,9 @@ filegroup(
     ],
     visibility = ["//crates/aos/packages/aos-build-api:__pkg__"],
 )
+
+filegroup(
+    name = "hub_api_definitions",
+    srcs = ["aos/hub/v1/hub.proto"],
+    visibility = ["//crates/hub/aos-hub-api:__pkg__"],
+)

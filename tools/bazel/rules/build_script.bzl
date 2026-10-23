@@ -51,8 +51,8 @@ def _generated_sources_snapshot_impl(ctx):
     arguments.add("--directory", directory.path)
     arguments.add("--output", output)
     for filename in ctx.attr.files:
-        if not filename.endswith(".rs") or any([part in ["", ".", ".."] for part in filename.split("/")]):
-            fail("generated Rust source must have an unambiguous relative path: " + filename)
+        if not filename.endswith((".rs", ".bin")) or any([part in ["", ".", ".."] for part in filename.split("/")]):
+            fail("generated source or descriptor must have an unambiguous relative path: " + filename)
         arguments.add("--file", filename)
     ctx.actions.run(
         executable = ctx.file._python,

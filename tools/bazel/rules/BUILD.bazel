@@ -238,3 +238,9 @@ config_setting(
     flag_values = {":dependency_profile": "deployment"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "hub_portable_dependencies",
+    flag_values = {":dependency_profile": "hub-portable"},
+    visibility = ["//visibility:public"],
+)

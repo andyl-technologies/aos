@@ -1,0 +1,188 @@
+##! Qualifies portable Hub protocol generation and shared presentation.
+{
+  pkgs,
+  sourceInventory ? ../../tools/bazel/metadata/hub-portable-inventory.json,
+}: let
+  packages = {
+    aos-hub-api = "crates/hub/aos-hub-api";
+    aos-hub-ui = "crates/hub/aos-hub-ui";
+  };
+  dependencyPackages = {};
+  repositories =
+    pkgs.aosBazelRepositories
+    // pkgs.aosBazelRustRepositories.hub-portable
+    // {
+      aos_codegen = pkgs.aosBazelCodegenTools;
+    };
+  contractSourceDirectories = [
+    "api/proto"
+    "crates/hub/aos-hub-console"
+    "crates/hub/aos-hub-service"
+    "docs/rfcs/0012-hub-surface-topology"
+  ];
+  cargoSource = import ../../pkgs/tools/crucible/_cargo-source.nix {
+    inherit (pkgs) lib;
+    extraPaths = [
+      "api/proto/aos/hub/v1/hub.proto"
+      "docs/rfcs/0012-hub-surface-topology/hub-api-manifest-v1.json"
+      "docs/rfcs/0012-hub-surface-topology/hub-control-plane-capabilities-v1.json"
+      "crates/hub/aos-hub-service/src/web/static_assets/style.css"
+    ];
+  };
+  nativeLibraries = [];
+  nativeTools = [pkgs.pkg-config pkgs.protobuf];
+  cargoSetup = ''
+    export PROTOC="${pkgs.protobuf}/bin/protoc"
+    export PROTOC_INCLUDE="${pkgs.protobuf}/include"
+  '';
+  rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+  family = import ./_bazel-rust-family.nix {
+    inherit pkgs packages dependencyPackages sourceInventory rustcFlags repositories cargoSource nativeLibraries nativeTools cargoSetup;
+    pname = "aos-bazel-hub-portable";
+    dependencyProfile = "hub-portable";
+    extraSourceDirectories = contractSourceDirectories;
+    extraEditorTargets = ["//crates/hub/aos-hub-api:build_script_program"];
+    generatedDoctests.aos-hub-api = "build_script.out_dir";
+    editorComparisonScope = "selected-packages";
+    editorRustcFlags = rustcFlags;
+    editorDiagnosticContext = true;
+  };
+  productionTargets =
+    pkgs.lib.concatMap (path:
+      map (target: "//${path}:${target}") ["lib" "production_license_closure"])
+    (builtins.attrValues packages)
+    ++ ["//crates/hub/aos-hub-api:generated_sources_evidence"];
+  productionWorkspace = pkgs.mkAosBazelWorkspace {
+    root = ../..;
+    inherit sourceInventory rustcFlags repositories;
+    dependencyProfile = "hub-portable";
+    sourceDirectories =
+      pkgs.lib.optionals (sourceInventory == null)
+      (["tools/bazel" "third_party/rust"] ++ builtins.attrValues packages ++ contractSourceDirectories);
+    analysisTargets = productionTargets;
+  };
+in
+  family
+  // rec {
+    inherit packages dependencyPackages productionWorkspace;
+    inventory = pkgs.mkAosBazelBuild {
+      pname = "aos-bazel-hub-portable-inventory";
+      workspace = family.workspace;
+      inventoryOnly = true;
+      targets =
+        pkgs.lib.concatMap (path:
+          map (target: "//${path}:${target}") ["license_closure" "unit" "doc" "clippy" "documentation" "format"])
+        (builtins.attrValues packages)
+        ++ [
+          "//crates/hub/aos-hub-api:contract_inventory"
+          "//crates/hub/aos-hub-api:build_script_program"
+          "//crates/hub/aos-hub-api:generated_sources_evidence"
+        ]
+        ++ productionTargets;
+    };
+    production = pkgs.mkAosBazelBuild {
+      pname = "aos-bazel-hub-portable-production";
+      workspace = productionWorkspace;
+      targets = productionTargets;
+    };
+    production-cargo = pkgs.mkDerivation {
+      pname = "aos-bazel-hub-portable-production-cargo";
+      version = "1";
+      src = cargoSource;
+      buildDeps = [pkgs.rust pkgs.sed pkgs.python3] ++ nativeTools;
+      runtimeDeps = nativeLibraries;
+      sharedBuildCache = false;
+      dontStrip = true;
+      dontPatchELF = true;
+      dontNukeRefs = true;
+      phases = [
+        {
+          name = "compile";
+          script = ''
+            cp -R "$src" source
+            chmod -R u+w source
+            cd source
+            export CARGO_HOME="$TMPDIR/cargo" CARGO_TARGET_DIR="$TMPDIR/target"
+            mkdir -p "$CARGO_HOME" .cargo "$out"
+            sed 's|@vendor@|${pkgs.aos.passthru.cargoDeps}|g' \
+              ${pkgs.aos.passthru.cargoDeps}/.cargo/config.toml > .cargo/config.toml
+            ${cargoSetup}
+            cargo build --frozen --offline --manifest-path crates/Cargo.toml --lib \
+              ${pkgs.lib.escapeShellArgs (pkgs.lib.concatMap (name: ["-p" name]) (builtins.attrNames packages))} \
+              --jobs "$NIX_BUILD_CORES" --message-format=json > "$out/cargo-messages.jsonl"
+            ${pkgs.python3}/bin/python3 - "$out" <<'PYTHON'
+            import json
+            from pathlib import Path
+            import shutil
+            import sys
+
+            output = Path(sys.argv[1])
+            events = [json.loads(line) for line in (output / "cargo-messages.jsonl").read_text().splitlines()]
+            identities = {event["package_id"] for event in events
+                          if event.get("reason") == "compiler-artifact"
+                          and event["manifest_path"].endswith("/crates/hub/aos-hub-api/Cargo.toml")}
+            scripts = [event for event in events
+                       if event.get("reason") == "build-script-executed"
+                       and event["package_id"] in identities]
+            if len(identities) != 1 or len(scripts) != 1:
+                raise ValueError("build API must have exactly one Cargo generator output")
+            shutil.copytree(scripts[0]["out_dir"], output / "generated-api")
+            PYTHON
+          '';
+        }
+      ];
+    };
+    production-parity = let
+      verifier = builtins.path {
+        path = ../../tools/bazel/tests;
+        name = "aos-hub-portable-feature-parity-tools";
+        filter = path: type: type == "regular" && builtins.elem (baseNameOf path) ["verify_protocol.py" "verify_pilot.py"];
+      };
+      packageOptions =
+        pkgs.lib.concatMap (name: ["--package-path" "${name}=${packages.${name}}"])
+        (builtins.attrNames packages)
+        ++ pkgs.lib.concatMap (name: ["--dependency-package-path" "${name}=${dependencyPackages.${name}}"])
+        (builtins.attrNames dependencyPackages);
+    in
+      pkgs.runCommand "aos-bazel-hub-portable-production-features" {buildDeps = [pkgs.python3];} ''
+        mkdir -p "$out"
+        ${pkgs.python3}/bin/python3 ${verifier}/verify_protocol.py --features-only \
+          --inventory ${production}/inventory.json --messages ${production-cargo}/cargo-messages.jsonl \
+          --output "$out/parity.json" ${pkgs.lib.escapeShellArgs packageOptions}
+      '';
+    generated-source-parity = pkgs.runCommand "aos-bazel-hub-portable-generated-source-parity" {buildDeps = [pkgs.python3];} ''
+      mkdir -p "$out"
+      cp ${../../tools/bazel/metadata/snapshot_generated_sources.py} snapshot_generated_sources.py
+      ${pkgs.python3}/bin/python3 - ${production}/packages ${production-cargo}/generated-api "$out/parity.json" <<'PYTHON'
+      import json
+      from pathlib import Path
+      import sys
+
+      from snapshot_generated_sources import snapshot
+
+      packages, cargo, output = map(Path, sys.argv[1:])
+      index = json.loads((packages / "index.json").read_text())
+      label = "//crates/hub/aos-hub-api:generated_sources_evidence"
+      bazel = json.loads((packages / index[label] / "files/generated-api.json").read_text())
+      expected = [
+          "aos.hub.v1.rs", "aos.hub.v1.serde.rs",
+          "aos.hub.v1.descriptor.bin", "connect_paths.rs",
+      ]
+      actual = snapshot(cargo, expected)
+      if bazel != actual:
+          raise ValueError("Bazel/Cargo generated API inventories or source bytes differ")
+      output.write_text(json.dumps({"files": actual, "status": "PASS", "count": len(actual)}, indent=2, sort_keys=True) + "\n")
+      PYTHON
+    '';
+    all =
+      pkgs.runCommand "aos-bazel-hub-portable-qualified-checks" {
+        buildDeps = [family.all family.editor-parity production-parity generated-source-parity];
+      } ''
+        mkdir -p "$out"
+        cp -r ${family.all}/evidence "$out/evidence"
+        cp ${family.all}/inventory.json ${family.all}/parity.json "$out/"
+        cp ${family.editor-parity}/parity.json "$out/editor-parity.json"
+        cp ${production-parity}/parity.json "$out/production-parity.json"
+        cp ${generated-source-parity}/parity.json "$out/generated-source-parity.json"
+      '';
+  }

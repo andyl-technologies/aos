@@ -1858,6 +1858,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       inherit (bazelSupport) aosBazelNativeFoundationWorkspace aosBazelNativeFoundationLauncher;
       inherit (bazelSupport) aosBazelActivationCoreWorkspace aosBazelActivationCoreLauncher;
       inherit (bazelSupport) aosBazelActivationStorageWorkspace aosBazelActivationStorageLauncher;
+      inherit (bazelSupport) aosBazelHubPortableWorkspace aosBazelHubPortableLauncher;
       inherit (bazelSupport) aosBazelDeploymentWorkspace aosBazelDeploymentLauncher aosBazelNixTestTools;
       inherit (bazelSupport) aosBazelBuildServicesWorkspace aosBazelBuildServicesLauncher;
       inherit (bazelSupport) aosBazelCliSupportWorkspace aosBazelCliSupportLauncher;

@@ -1,0 +1,451 @@
+{
+  "comparison_base_commit": "8773b1cd13",
+  "current_policy_log_sha256": "b9c3274200cd0da1a73d8badc4445d8d8f228cd5e18adfb47f88d0e69022c631",
+  "dependency_profile": {
+    "crate_sources": 67,
+    "files_sha256": {
+      "third_party/rust/hub-portable/BUILD.aho-corasick-1.1.4.bazel": "50863fab8f10861eae1686e97af49d78ae560dced653627d8fa0527337d0bdfc",
+      "third_party/rust/hub-portable/BUILD.anyhow-1.0.102.bazel": "cd7902ec43c1153ad4f0142e5beb923164146910962e53c1b9d87ae3e6361fdc",
+      "third_party/rust/hub-portable/BUILD.base64-0.21.7.bazel": "f97d7950ac8102ee67e9f198f2d81a4558f040768255ada93a64b90a20d194ee",
+      "third_party/rust/hub-portable/BUILD.bitflags-2.13.0.bazel": "cae33904771a0d352146052a25e040e8cf13fb1ce54d91a63b95286ea531c9dd",
+      "third_party/rust/hub-portable/BUILD.bytes-1.11.1.bazel": "80c29901e1fbcabdc2890180e42f9fee8f758f567f1835088eb96d9a8352fc0a",
+      "third_party/rust/hub-portable/BUILD.cfg-if-1.0.4.bazel": "bb87f846ef165f5eb082574eea728c788752c45532f812e288c790d9a6a07340",
+      "third_party/rust/hub-portable/BUILD.either-1.16.0.bazel": "95b5666f0a1c1dabb5645ca32d6e97b070643f2f6d07aadeb18feda01c90d132",
+      "third_party/rust/hub-portable/BUILD.equivalent-1.0.2.bazel": "e97f22b675d846b7eb4c3b013e88d6f8be46f172c4178b8100d5c98e77284334",
+      "third_party/rust/hub-portable/BUILD.errno-0.3.14.bazel": "56fba22191fe3aa3980b131a4a8cf5a2abaade6b19153f22752b3946c16f8158",
+      "third_party/rust/hub-portable/BUILD.fastrand-2.4.1.bazel": "715289f4229f2a1f28d19684002985e40712dec0039c679530290006da3142b5",
+      "third_party/rust/hub-portable/BUILD.fixedbitset-0.5.7.bazel": "1711c99ab8704f11b6402d7fc4b98322723b54aeb0e5136a4c31c5b09750f447",
+      "third_party/rust/hub-portable/BUILD.foldhash-0.1.5.bazel": "0fe9b20770e894df7d016aeae5d39141ffc52ece2fe60fe360b7eeee992cf355",
+      "third_party/rust/hub-portable/BUILD.getrandom-0.4.2.bazel": "043eeeb93c724ab539847674944a8b6b9aea581ae63733dd06168027dbe946ac",
+      "third_party/rust/hub-portable/BUILD.hashbrown-0.15.5.bazel": "d3b6ae780ad7a7662b0dad5772962978a5fd6c291d87ce4e4d85eb0094d9323f",
+      "third_party/rust/hub-portable/BUILD.hashbrown-0.17.1.bazel": "6a6d0c1ea8e3cdb4a5669a7b6ac61053994d92b64f8eb52f8a1d4303953d7423",
+      "third_party/rust/hub-portable/BUILD.heck-0.5.0.bazel": "95db10455d0711c4c335e2c83adaaee3e1695c48b24b53fe0c9424f866f2d882",
+      "third_party/rust/hub-portable/BUILD.id-arena-2.3.0.bazel": "38e3ab72b4eb12162522479ebc3c0704d9cdf19bc4b22c0d088db470046206af",
+      "third_party/rust/hub-portable/BUILD.indexmap-2.14.0.bazel": "9a4615d106f449118374cf138f433bec64a004c08bfb1f7f3776224cfc11eb35",
+      "third_party/rust/hub-portable/BUILD.itertools-0.13.0.bazel": "7b67ae0554b356184438403f3fd61b88a39051131732ec6b28eb345d88ad0dcd",
+      "third_party/rust/hub-portable/BUILD.itertools-0.14.0.bazel": "d6c927aa4a98a31daf05470452caf2bab76253365e6fc7ff86fbcd0adc7140d8",
+      "third_party/rust/hub-portable/BUILD.itoa-1.0.18.bazel": "3a6fbe9f6f57ffabd86963908d5e312b45b2b9c33f430f1fd3377ab3ae37f314",
+      "third_party/rust/hub-portable/BUILD.leb128fmt-0.1.0.bazel": "2cc70d79777938aa34788b012039b7e7b1ce91dacf60053e4b3773bded60d605",
+      "third_party/rust/hub-portable/BUILD.libc-0.2.186.bazel": "fe41625f39a957d14893dc6dcb2505f0ecf31390ad8322d55bfb5dac7acef11e",
+      "third_party/rust/hub-portable/BUILD.linux-raw-sys-0.12.1.bazel": "755ec95fb73645ef768886f64521c98be794fe858fd6835cb25ff9ff871aa99f",
+      "third_party/rust/hub-portable/BUILD.log-0.4.30.bazel": "e7919499b9d13b0dcd18ab5f8e85bf259cb234564f33e77b8d5b0cbcb9047e1c",
+      "third_party/rust/hub-portable/BUILD.memchr-2.8.2.bazel": "ddb4d4daacd917771ff0858b5892eceb7c5a79ff83f7b679761964b79dba2703",
+      "third_party/rust/hub-portable/BUILD.multimap-0.10.1.bazel": "ca98ec3c6206ca99172b667b1da0db4199116ece888ce0dd49f7597861adc94d",
+      "third_party/rust/hub-portable/BUILD.once_cell-1.21.4.bazel": "a1c472e37db602ec724e8b8cc5039d230162a05c6f1ebffe219efb4fd769adbb",
+      "third_party/rust/hub-portable/BUILD.pbjson-0.7.0.bazel": "c9dc64760e37e2d840624a07a4fef8a5a5de1df1149bdd509741641b16d92dd2",
+      "third_party/rust/hub-portable/BUILD.pbjson-build-0.7.0.bazel": "84cd04692c5e87aa41b7ffc6b099a245a265e496420d21da430af20055fef386",
+      "third_party/rust/hub-portable/BUILD.petgraph-0.7.1.bazel": "74628183238aacd1f9680a421efb172470b49ab96dd2d1dce74fb2c2a3a62eec",
+      "third_party/rust/hub-portable/BUILD.prettyplease-0.2.37.bazel": "156cd86d6392fa92b175e60cdf7a8aa4ab43ad65f4f6554e027bbbedb1ab3881",
+      "third_party/rust/hub-portable/BUILD.proc-macro2-1.0.106.bazel": "23ea6c0714f4c3d166d88db6e6e7b4d902b39e7491bf29bc3559dcb5c8deb795",
+      "third_party/rust/hub-portable/BUILD.prost-0.13.5.bazel": "4759961e93f4e54e1bc5f027206e08f9abccf7a151760c7bdf6067078404b229",
+      "third_party/rust/hub-portable/BUILD.prost-build-0.13.5.bazel": "b2c65e5adbc34ad186c9ad11513aee22032abe55455c2bac7cb1285b369ae8f1",
+      "third_party/rust/hub-portable/BUILD.prost-derive-0.13.5.bazel": "1b76484661fb22569f251adeda9e30105e892d6203bb5990c609b5fbcc22d952",
+      "third_party/rust/hub-portable/BUILD.prost-types-0.13.5.bazel": "c5bb0e42c0951fed83fd4e038edd13eb2ac65bcb6b37b58ce4255686d11a258c",
+      "third_party/rust/hub-portable/BUILD.quote-1.0.46.bazel": "49ad1426662c2a260bc63cd83ecc15628e1d0ec37df4040c83d2e877d42bba59",
+      "third_party/rust/hub-portable/BUILD.r-efi-6.0.0.bazel": "15290d134b85d8b9587cb0293ccb010b86e2a0bca93cca54a893fa531a37cffc",
+      "third_party/rust/hub-portable/BUILD.regex-1.12.4.bazel": "a4929dbb96646d8e92f9e462fed08b929f424e4e883599b170eb3254e07bba92",
+      "third_party/rust/hub-portable/BUILD.regex-automata-0.4.14.bazel": "e4dc7226881428e408db117c185e473ecbd7d78ea32c5bbc43426f593d862af0",
+      "third_party/rust/hub-portable/BUILD.regex-syntax-0.8.11.bazel": "1453d58f3e9c4597def319231d6bd8b01fcfff5ada50396a94cfd7e72897031d",
+      "third_party/rust/hub-portable/BUILD.rustix-1.1.4.bazel": "f2baf2ce6fcb4c6eb67357ff0da61bda337b2bcf48b92922d4062f97ce6dda3f",
+      "third_party/rust/hub-portable/BUILD.semver-1.0.28.bazel": "492daec6743a60158c4b697455606905594bf8a6f23496198d717e80263ede88",
+      "third_party/rust/hub-portable/BUILD.serde-1.0.228.bazel": "deaedbc06b35c6c579bc549f86dba535da64229c9529d8014e8fe085af118434",
+      "third_party/rust/hub-portable/BUILD.serde_core-1.0.228.bazel": "d5dfd8e8bbc2757a92ed7a9b422720132536e44a9dc6ea0d060980b00ef69134",
+      "third_party/rust/hub-portable/BUILD.serde_derive-1.0.228.bazel": "b1a5cf1b7f90e198728cef86daf336ee9265298248ca9771a6acdf7feb73f5cc",
+      "third_party/rust/hub-portable/BUILD.serde_json-1.0.150.bazel": "ff43fd8f5d570bc5dce3e770ae457efb8c4940ba8a9ded14971472364d77666e",
+      "third_party/rust/hub-portable/BUILD.syn-2.0.118.bazel": "156c24509ac5b51711363d8efd2717a3134a3800e61a860a067572d45234d9b3",
+      "third_party/rust/hub-portable/BUILD.tempfile-3.27.0.bazel": "7aac70facb6f6ae41e2017fa1d74920fb0dbadcf72b46fcde0aa99abcc7c7335",
+      "third_party/rust/hub-portable/BUILD.unicode-ident-1.0.24.bazel": "167712ff306844118f1e08c1ab5a38c384fc4259b21d24d062af0780c8478f30",
+      "third_party/rust/hub-portable/BUILD.unicode-xid-0.2.6.bazel": "3bf9a6965b3e7a9494e2db2ca406ff64f43dde7f812839d11256449556bfe586",
+      "third_party/rust/hub-portable/BUILD.wasip2-1.0.4+wasi-0.2.12.bazel": "07de05fcffb2cdb1c992069173a15b0fe218c6223a5d9dde833cc85c717bf5aa",
+      "third_party/rust/hub-portable/BUILD.wasip3-0.4.0+wasi-0.3.0-rc-2026-01-06.bazel": "c3c222195d20cd28e9a2d6041f59520d9574249cd4364c5b245f0946a052aed9",
+      "third_party/rust/hub-portable/BUILD.wasm-encoder-0.244.0.bazel": "170997612b39c3a2fe919723134915343db3d40d0a907e8c644dc802900c8282",
+      "third_party/rust/hub-portable/BUILD.wasm-metadata-0.244.0.bazel": "81eba134c829caafc14eae213b31db5ad738a818a7bc4cf607cc2f5dc49fe62e",
+      "third_party/rust/hub-portable/BUILD.wasmparser-0.244.0.bazel": "6e794a63decbf162cc575b311829068c47aba86a0ac79ea28a1307ef53bbf324",
+      "third_party/rust/hub-portable/BUILD.windows-link-0.2.1.bazel": "40e660d192bbe56ca439a84580d8b9c93e8d2a12155c79bc463c37219afc4711",
+      "third_party/rust/hub-portable/BUILD.windows-sys-0.61.2.bazel": "a380e6cd53ecea7ee25725d6ff12a061043c96ca8201d48a428b1b9e447206f3",
+      "third_party/rust/hub-portable/BUILD.wit-bindgen-0.51.0.bazel": "ebe4078bafca05713394d44558f38049e9e1dc6d5c040779705451319f1448d9",
+      "third_party/rust/hub-portable/BUILD.wit-bindgen-0.57.1.bazel": "089f9e1306faf1f051f9f8ff29dac6ca71bb69362c9499f3b8e29a908a052375",
+      "third_party/rust/hub-portable/BUILD.wit-bindgen-core-0.51.0.bazel": "2189a503f3532eec85216734d6dc66d6489eb123144aee925c753af9fc978cb3",
+      "third_party/rust/hub-portable/BUILD.wit-bindgen-rust-0.51.0.bazel": "c78c128231037c77f534f560f331e19a604de0925d35d55fb004a1029e86ec50",
+      "third_party/rust/hub-portable/BUILD.wit-bindgen-rust-macro-0.51.0.bazel": "33a83a313c62a5e623db4f2b7643e3fdbb97eb80f8a4513ce0b967cd49ce1a0a",
+      "third_party/rust/hub-portable/BUILD.wit-component-0.244.0.bazel": "47b05ba9561ced111dabdcc7bd08c1d5535eb175d7069a449a302beec48bb761",
+      "third_party/rust/hub-portable/BUILD.wit-parser-0.244.0.bazel": "ea2c44ff299f622fb27e486db466d48c7ca7abe6ed5e3118c05a75a0b0b736a8",
+      "third_party/rust/hub-portable/BUILD.zmij-1.0.21.bazel": "194288d58c05923c29dfded37a5cd24ea5b1114924c3509afbebae7a955f6d4f",
+      "third_party/rust/hub-portable/Cargo.lock": "1b5a7b078ac73974ad540c90d45b5524f1e32d5bed38f2906e9cbe442e13a512",
+      "third_party/rust/hub-portable/aliases.bzl": "15ed0971b01b29a77343c750f1a9bbd917cbc03f2d3e02910ba68506295d6563",
+      "third_party/rust/hub-portable/cargo-bazel.json": "bd5067193cba8b135cb09a4840e0c0f673079361fa562f3aefde1afe71f3e5e6",
+      "third_party/rust/hub-portable/generator-config.json": "61bd8b33bda5297f77fdfc4c16c094a5aae4066ede653630a46c8db408729fd9",
+      "third_party/rust/hub-portable/repositories.MODULE.bazel": "56100811b11c0ea0f50d239a6e45249c9369277f1e47231eb520dc6343f8b0a6",
+      "third_party/rust/hub-portable/sources.json": "2d97270bc6f33e0f8eb0a130c27a5a9923ec84bb6946f91728cb4d9c40d0e25e"
+    },
+    "reviewed_feature_roles": {
+      "indexmap": {
+        "features": [
+          "default",
+          "std"
+        ],
+        "resolved_features": [
+          "default",
+          "serde",
+          "std"
+        ],
+        "version": "2.14.0"
+      },
+      "prost": {
+        "exec_features": [
+          "default",
+          "derive",
+          "prost-derive",
+          "std"
+        ],
+        "features": [
+          "default",
+          "derive",
+          "std"
+        ],
+        "resolved_features": [
+          "default",
+          "derive",
+          "prost-derive",
+          "std"
+        ],
+        "version": "0.13.5"
+      },
+      "serde": {
+        "features": [
+          "default",
+          "derive",
+          "rc",
+          "serde_derive",
+          "std"
+        ],
+        "resolved_features": [
+          "alloc",
+          "default",
+          "derive",
+          "rc",
+          "serde_derive",
+          "std"
+        ],
+        "version": "1.0.228"
+      },
+      "serde_core": {
+        "features": [
+          "rc",
+          "result",
+          "std"
+        ],
+        "resolved_features": [
+          "alloc",
+          "rc",
+          "result",
+          "std"
+        ],
+        "version": "1.0.228"
+      }
+    }
+  },
+  "dependency_specification_outputs": [
+    "/nix/store/gc6q7fsjd05fmcvki7mggfrd8p24zigy-aos-rust-activation-core-specifications-1",
+    "/nix/store/ygjgmxdhz5sab9m8rnkrrw5nzinxa9fs-aos-rust-activation-core-tests-specifications-1",
+    "/nix/store/xis6cb9rr6r15q78fa3ysab0a3nxcrzj-aos-rust-activation-crucible-specifications-1",
+    "/nix/store/620bhyvir43i18f3il7kd9wpf4ds4wjh-aos-rust-activation-crucible-tests-specifications-1",
+    "/nix/store/wn4yhr1aw3y9kydr82jkh4mrzsgjf352-aos-rust-activation-storage-specifications-1",
+    "/nix/store/dhdnz9545vsd042jrapxdfacr5bwsild-aos-rust-activation-systemd-specifications-1",
+    "/nix/store/xv9gid35axj5lyg9m7svdyw415y7jvg7-aos-rust-build-services-specifications-1",
+    "/nix/store/vzjlf2qm2dfc2y6x93n6kf22mbn2c4b4-aos-rust-cli-support-specifications-1",
+    "/nix/store/6zcsz68v14ipbc55d67v4s4c9lv3m0id-aos-rust-control-specifications-1",
+    "/nix/store/ljxsjq4dp87sa4zh6g4f85mfvgvwd89j-aos-rust-core-specifications-1",
+    "/nix/store/v0nbnd4847ysfbibj2kmmqj88b5yr48n-aos-rust-crucible-cli-specifications-1",
+    "/nix/store/nfbx6bpfbd3xf0rsxc6d8lgznll23fi9-aos-rust-daemon-specifications-1",
+    "/nix/store/qaws7xzkdzp40ry42gvsxl108gn84f20-aos-rust-deployment-specifications-1",
+    "/nix/store/lzaxi36lr5pdx0sq0hlby29w5i92ii2d-aos-rust-device-specifications-1",
+    "/nix/store/azwg8r550m9qxxy0xnzb1im6gc1zbwgh-aos-rust-engine-specifications-1",
+    "/nix/store/xqibdg6msbxyaivl2rvd27d83mj6ws58-aos-rust-formats-specifications-1",
+    "/nix/store/9fpkhljpy6zvaws68h5mwiqjd4j544sx-aos-rust-guest-specifications-1",
+    "/nix/store/v129vcib5xmpvwg57zxghjdd4gjraz8n-aos-rust-hub-portable-specifications-1",
+    "/nix/store/yh9zz9k0xd4nn5pp844a9pbmn549aq6n-aos-rust-native-foundation-specifications-1",
+    "/nix/store/51n7s2wwc2v2inl7skahr3msc4jnr0xf-aos-rust-native-foundation-minimal-specifications-1",
+    "/nix/store/ixjfdb87ikwfwxryvsfxn1n51sgdrg4p-aos-rust-native-foundation-tests-specifications-1",
+    "/nix/store/50abm1acdkivdnk1jfgpsyjax25bvq49-aos-rust-qemu-host-specifications-1",
+    "/nix/store/6bmpj9mj8q65l4j41w2xs3yr4r087cc9-aos-rust-quota-specifications-1",
+    "/nix/store/qi63njxvkqvhsian3ky5ilwvdqf882fn-aos-rust-session-specifications-1",
+    "/nix/store/s1mzw4wpykh7p3cr0x7q0rsd3gy1x5rv-aos-rust-store-specifications-1",
+    "/nix/store/kdicnpj21hr2wmpkfqzkcl8qsjzziqii-aos-rust-store-s3-specifications-1"
+  ],
+  "developer_launchers": 21,
+  "existing_family_inventory_refresh_outputs": {
+    "activation-core": "/nix/store/cgibz08xn9fj8dj5gyi3fzx9wjcyyas8-aos-bazel-activation-core-inventory-1",
+    "activation-core-production": "/nix/store/blamvvhqw80y59yq2dmam1gix3gw8ics-aos-bazel-activation-core-production-inventory-1",
+    "activation-crucible": "/nix/store/h6i5xp9b3j1y8b57855pvhly7ijs11nc-aos-bazel-activation-crucible-inventory-1",
+    "activation-crucible-production": "/nix/store/gzyv6gg76f6df586ghd56wcqwwssx25x-aos-bazel-activation-crucible-production-inventory-1",
+    "activation-storage": "/nix/store/palfgq52md7ban18dazsyvkwzi5j7gv0-aos-bazel-activation-storage-inventory-1",
+    "activation-storage-production": "/nix/store/ykmnw1maniard2cph37dcmj2743wnq0a-aos-bazel-activation-storage-production-inventory-1",
+    "activation-systemd": "/nix/store/cmf5c5c0syyv3spn4sx9rzsn8q6vkm60-aos-bazel-activation-systemd-inventory-1",
+    "activation-systemd-parser": "/nix/store/qgrnlv9ip2v19azpzmqvqdrv3saspad0-aos-bazel-activation-systemd-parser-inventory-1",
+    "activation-systemd-production": "/nix/store/v3nyqbg8yz7k64bgssjr2yapjrviizh1-aos-bazel-activation-systemd-production-inventory-1",
+    "boot-pilot": "/nix/store/nh1rd4yckr3qbv1aqd3kkc761agp2vcz-aos-bazel-boot-pilot-inventory-1",
+    "build-services": "/nix/store/cb4c58dx5znhhdzhx3vl0vzm6dzd59r7-aos-bazel-build-services-inventory-1",
+    "cli-support": "/nix/store/acjwc9fyjhdjw3bsl860zmb77gw0adx6-aos-bazel-cli-support-inventory-1",
+    "contracts": "/nix/store/7qkkimszs3w4bfxxasddmkmwzh5vyc23-aos-bazel-contracts-inventory-1",
+    "control": "/nix/store/jim3nca74c7ws606ifl7p1i65a8141aa-aos-bazel-control-inventory-1",
+    "crucible-cli": "/nix/store/pffd25sncmpmsa9zr9kf42fkx1qiyil4-aos-bazel-crucible-cli-inventory-1",
+    "daemon": "/nix/store/41l53kzymyhbgvyh4rrkhzsfykb3v42c-aos-bazel-daemon-inventory-1",
+    "deployment": "/nix/store/qig1vyghkjrh7chm3dh7gflc21c20q08-aos-bazel-deployment-inventory-1",
+    "device": "/nix/store/d49si3cvg37dc89z3a4s2mx9qbff5n6p-aos-bazel-device-inventory-1",
+    "engine": "/nix/store/qkw0l4c9pfy1k655f44hd26aa0akg9qq-aos-bazel-engine-inventory-1",
+    "fixture": "/nix/store/lyknxcfk3yqzrxjddnf7drhzm73zh6k2-aos-bazel-fixture-inventory-1",
+    "formats": "/nix/store/hq7dkbm6i0xzl03f2ijscgywqmry6dvy-aos-bazel-formats-inventory-1",
+    "guest": "/nix/store/h32zxndk2i637r33lbiyinl2c2a2wwa7-aos-bazel-guest-inventory-1",
+    "native-foundation": "/nix/store/0d256daszzlpvaav91yn1y49hv838qdk-aos-bazel-native-foundation-inventory-1",
+    "native-foundation-integration": "/nix/store/a9y7lsrdzbqn07kakby7ya4x1vajsdgc-aos-bazel-native-foundation-integration-inventory-1",
+    "native-foundation-minimal": "/nix/store/b50vkmxg5pjr82snzp253j672kjg3ggj-aos-bazel-native-foundation-minimal-inventory-1",
+    "native-foundation-production": "/nix/store/fjcp9cmcnfzsibjm832j2ywrnzj41j09-aos-bazel-native-foundation-production-inventory-1",
+    "protocol": "/nix/store/7w9sp5qp78wiry4ldiyh9a280xmcd7a2-aos-bazel-protocol-inventory-1",
+    "qemu-host": "/nix/store/nwranhh41lqj65fva8pr7bk53mc96xqs-aos-bazel-qemu-host-inventory-1",
+    "quota": "/nix/store/29dkgfac4krs3rv3brni0c4vkg2p2ywd-aos-bazel-quota-inventory-1",
+    "session": "/nix/store/ya6aiysmhgqmlni3rka41zldk3xlxqdg-aos-bazel-session-inventory-1",
+    "shared": "/nix/store/wn9f0hgnfavf2w5fr1wfb74z0kl1zr85-aos-bazel-shared-inventory-1",
+    "source-catalog": "/nix/store/sm93flfqrn00zjzd2z3qz0q7zy2wcfby-aos-bazel-source-catalog-checks",
+    "store": "/nix/store/641lgbxwph26xrszda95v6p52axg5l0g-aos-bazel-store-inventory-1",
+    "store-s3": "/nix/store/a7hz7rnb9sg3kddl63rixcvj74bjymix-aos-bazel-store-s3-inventory-1"
+  },
+  "families": {
+    "activation-core": {
+      "configured_reports": 237,
+      "requested_roots": 68,
+      "sha256": "89e281f8d44819eeff4a136f5255ddb74f27e31b8dc69e166fc0f7d38a929261",
+      "source_files": 62
+    },
+    "activation-crucible": {
+      "configured_reports": 255,
+      "requested_roots": 9,
+      "sha256": "b4c503985aa23286e91f495c586ec47e47328cf7c32786fbf034d2cac0cc1707",
+      "source_files": 840
+    },
+    "activation-storage": {
+      "configured_reports": 144,
+      "requested_roots": 46,
+      "sha256": "185b5e9a27dd9bef1a08c3babdea2ddcaedb25a6527fdff98aa204a489acf135",
+      "source_files": 79
+    },
+    "activation-systemd": {
+      "configured_reports": 175,
+      "requested_roots": 12,
+      "sha256": "4c3cab3876d443e5c4183c5440fe2828d1128b39b025b1a32e049802f45eab33",
+      "source_files": 79
+    },
+    "boot-pilot": {
+      "configured_reports": 41,
+      "requested_roots": 14,
+      "sha256": "2b6fc590034d17cffcb5c99c4ff1db0bf33571112dd2c0e6f5d4daba2ef43259",
+      "source_files": 15
+    },
+    "build-services": {
+      "configured_reports": 308,
+      "requested_roots": 28,
+      "sha256": "13b729b253371ebebb46db981c647e2f6965c878dceca02dd9e6e528707d35fc",
+      "source_files": 57
+    },
+    "cli-support": {
+      "configured_reports": 184,
+      "requested_roots": 18,
+      "sha256": "c76ab73449a4005790b24389b5838ecf6383c5e52ec31ddd4c6c1074a12fedb8",
+      "source_files": 64
+    },
+    "contracts": {
+      "configured_reports": 152,
+      "requested_roots": 26,
+      "sha256": "a9199815c78d9cabe7fb60cf2d98a66e0c98345ea15ab6b6dd7ce5ffa26b80f8",
+      "source_files": 140
+    },
+    "control": {
+      "configured_reports": 306,
+      "requested_roots": 32,
+      "sha256": "e2d281e0866a724be6b843ac233afc66d10bc3d7b79b76a0f24414d993ee6098",
+      "source_files": 883
+    },
+    "crucible-cli": {
+      "configured_reports": 578,
+      "requested_roots": 83,
+      "sha256": "e1fa9b8fa926669c53bd14bdaec2ceb1a7f6c46972371542b4cc399645df6e88",
+      "source_files": 1737
+    },
+    "daemon": {
+      "configured_reports": 447,
+      "requested_roots": 35,
+      "sha256": "ef164d68e66da39863c7f9971a7314928066fb1ed22a30fec2370a9fdf6466af",
+      "source_files": 1546
+    },
+    "deployment": {
+      "configured_reports": 135,
+      "requested_roots": 10,
+      "sha256": "2ccd00eb848a1b9473143ba402466e3e81d9a11719ad80a4a060583f9dde1f31",
+      "source_files": 183
+    },
+    "device": {
+      "configured_reports": 166,
+      "requested_roots": 54,
+      "sha256": "4776399e183e76d5209eec708d82a96a544bfd321fd1e4012893156758cf934f",
+      "source_files": 280
+    },
+    "engine": {
+      "configured_reports": 1265,
+      "requested_roots": 523,
+      "sha256": "d016937bb43216c2ca8523848883e412c9d81b4472a103bdfd4756e09d23678c",
+      "source_files": 3754
+    },
+    "fixture": {
+      "configured_reports": 21,
+      "requested_roots": 1,
+      "sha256": "9ac824279cc661107e4c40d1c4d644876c734351249690a96418cdd96d6bee7d",
+      "source_files": 9
+    },
+    "formats": {
+      "configured_reports": 162,
+      "requested_roots": 27,
+      "sha256": "9bf2ce82741f6552cd5b920490b57e0206112c438f0f7c9775ed195ef7024d55",
+      "source_files": 73
+    },
+    "guest": {
+      "configured_reports": 138,
+      "requested_roots": 16,
+      "sha256": "444232e15b434460b5a1875110aa71d4dc4c5ada496badfcb701940d603604f0",
+      "source_files": 294
+    },
+    "hub-portable": {
+      "configured_reports": 114,
+      "requested_roots": 19,
+      "sha256": "31f5286a130b1ad469a9b5caee40879fb44fee9cebbfbaf29dd848e933d4d95e",
+      "source_files": 67
+    },
+    "native-foundation": {
+      "configured_reports": 957,
+      "requested_roots": 40,
+      "sha256": "23a016b4479dbaadb598127ee5d0cfcebe9d6b4709a7d8506dde2d113577f4c5",
+      "source_files": 102
+    },
+    "protocol": {
+      "configured_reports": 129,
+      "requested_roots": 35,
+      "sha256": "ead78ce3423faa76925cdd0e8c19cb2205d64d23859005e0eb227af1b542c9d5",
+      "source_files": 159
+    },
+    "qemu-host": {
+      "configured_reports": 249,
+      "requested_roots": 37,
+      "sha256": "1cec8ac22a3dbf5207c1986e3a4b56be38dd1ca2321fef64756962569297dd71",
+      "source_files": 1126
+    },
+    "quota": {
+      "configured_reports": 49,
+      "requested_roots": 10,
+      "sha256": "51fcabb451a225a470d0b6cf614307763c4591ad97037b0d4465431a5cb693cb",
+      "source_files": 6
+    },
+    "session": {
+      "configured_reports": 262,
+      "requested_roots": 58,
+      "sha256": "9fd5995c93257a49e11f74689f498e7c46622cd439fed0304ef654407ad5afc5",
+      "source_files": 840
+    },
+    "shared": {
+      "configured_reports": 85,
+      "requested_roots": 20,
+      "sha256": "fedbac6336c5fb163494e247a22e79961d738dafc45cb1af745e8b70ddcae701",
+      "source_files": 32
+    },
+    "store": {
+      "configured_reports": 277,
+      "requested_roots": 79,
+      "sha256": "600b1edfd5dfacf9a06e3d6e701012958180b1b4a36d6f371c3caf5ebbb9b1c1",
+      "source_files": 272
+    },
+    "store-s3": {
+      "configured_reports": 282,
+      "requested_roots": 8,
+      "sha256": "c0f58536bc243a1539b7f982a90058e5c7de4c7dad0aacb41fa76e36b1e41aea",
+      "source_files": 54
+    }
+  },
+  "hub_portable_inventory_generation_output": "/nix/store/gcq7hd1b0fw5b86imp88sbkvinqlc10h-aos-bazel-hub-portable-inventory-1",
+  "limits": [
+    "Explicit dependency updates may access source registries; ordinary repository preparation and builds remain offline.",
+    "Existing family refreshes preserve their independent production, default, feature and integration selections.",
+    "Historical runtime qualification remains bound to its original frozen sources and derivations.",
+    "Runtime qualification is retained separately; compiler invocation equivalence, foreign/Wasm execution, performance acceptance and production cutover remain pending."
+  ],
+  "policy_and_cli_outputs": [
+    "/nix/store/ln3cv93yvq13fqn6vrvsymfqpaignhr1-aos-bazel-policy-checks",
+    "/nix/store/8d93gyksphzajzdjj6jbi2316x4wag03-aos-dev-cli-check-0"
+  ],
+  "policy_tests": 168,
+  "previous_generated_build_files": {
+    "count": 4050,
+    "sha256_of_sorted_json_path_to_sha256_mapping": "418025a337aadd4d11b331a8553f87ae505d4c7361bca2d85e2318ea14b6ab90",
+    "unchanged": true
+  },
+  "previous_sdk_metadata_changes": [
+    "Root specification declaration digest in contracts and specification contracts; source pins, resolved features and generated builds are unchanged."
+  ],
+  "previous_twenty_five_dependency_locks_sha256": {
+    "third_party/rust/activation-core-tests/Cargo.lock": "493f656c4ba54d2fb00c00d8d6b35d921ca26ab419fddc0f87f6c8848a75afe1",
+    "third_party/rust/activation-core/Cargo.lock": "3917500263df5ec4c26625aceef53e94320803ec98441e1f9977d3c26bd4135a",
+    "third_party/rust/activation-crucible-tests/Cargo.lock": "2a497b4e074b073d95cdf42bdfb98877488fa0ee255689dbd7333213aba95d87",
+    "third_party/rust/activation-crucible/Cargo.lock": "4ed486341e6b14c7cde64a350fb2fe2a3558ad5cd0952cd8b9acea8ae4352934",
+    "third_party/rust/activation-storage/Cargo.lock": "32530d93c3fc33e8a43c8053fa7c09ad38949b6091e727307f252924327bbac6",
+    "third_party/rust/activation-systemd/Cargo.lock": "a3ce958f8558baba92f14d4617c4c3a270eb8ac9019f80166ecf650c30519c5b",
+    "third_party/rust/build-services/Cargo.lock": "63da66de1f1e2818dadca26a6b880b3dc392834c2fc383c91d8ccc33d02a75b6",
+    "third_party/rust/cli-support/Cargo.lock": "98fc0c57f75007635b960979b9ca84f58b1ba1ad616b9e21c238b49104a82568",
+    "third_party/rust/control/Cargo.lock": "3f3857940345cf61716d0ea38fcb63f504a41d52ba477f5372f4e5de8fc04d0d",
+    "third_party/rust/core/Cargo.lock": "0b168b602b191e454c706aef89dd82a597842773965ee254f1236851428bd615",
+    "third_party/rust/crucible-cli/Cargo.lock": "ca58d01c86eca1b93451263779117fe55d0a6c475fa24b96c9b50c560684e6c7",
+    "third_party/rust/daemon/Cargo.lock": "33e42d277aaf52eeada4522da629e077fc7781487969615e604c4be967a3a394",
+    "third_party/rust/deployment/Cargo.lock": "96152126a03fb5c5a567e8e5ee62c62dbedfff7b4edcf4ace0a1e9dec04c6259",
+    "third_party/rust/device/Cargo.lock": "74fd85578ed6a2d23b373d12641b34bf5d9ca49de30004ea47dee4b4861885b6",
+    "third_party/rust/engine/Cargo.lock": "0d2a40fb1f2213cb0d753d2764eacea427b4ca02239ff70aafbdce7d272a9fb3",
+    "third_party/rust/formats/Cargo.lock": "94658335c6b5d55c6925838914bdd35cabacbdc5eb0551f30f8ce8eb33420bc7",
+    "third_party/rust/guest/Cargo.lock": "fa9f752ab8c424b1614e06824569f71243b6da005efdb3e0ec286e1df19992ce",
+    "third_party/rust/native-foundation-minimal/Cargo.lock": "1f238dc4f1270e0be31b915d277e66c39b313b147c362ef9a7b76bcfe8e2fe59",
+    "third_party/rust/native-foundation-tests/Cargo.lock": "c6ff33b3a77444a25cc4f284d9756b57c686d933e7fdebcec5e750d1cbb30ff6",
+    "third_party/rust/native-foundation/Cargo.lock": "c2c588c9a3868d7d9a0063823ed1a7c4fba8f0837e09a3ff2309579db525e617",
+    "third_party/rust/qemu-host/Cargo.lock": "0d2a40fb1f2213cb0d753d2764eacea427b4ca02239ff70aafbdce7d272a9fb3",
+    "third_party/rust/quota/Cargo.lock": "1fc90f99bcf9493f278b05f0b9a713f295ccabd7263a5adc6be2434c60a0daf2",
+    "third_party/rust/session/Cargo.lock": "f6123dd7b3a731831eb6d147fe1764980a2335bfe6c58b28a733feaa0ccf5f21",
+    "third_party/rust/store-s3/Cargo.lock": "e153e130a7c55ca6f4013455777ad12b1342640549b4000f02cfb5e1f71ef14d",
+    "third_party/rust/store/Cargo.lock": "933e9281b714ad7bee40fb4c1f3dfc0a89858d2e4ec16ab7067ab3a5b1992d8a"
+  },
+  "schema_version": 1,
+  "shared_declaration_formatting": {
+    "commit": "9bc1e96111",
+    "starlark": {
+      "third_party/rust/BUILD.bazel": {
+        "after_sha256": "48c28f928664b9a215fd4726b3caa5c30d132ea15abd3e98481e4779a31a15fb",
+        "before_sha256": "02c15639924fa20151a503f65297d0424cf01c054b0128517ff2f2a11f0764ef",
+        "identical_syntax_tree": true
+      },
+      "tools/bazel/rules/profiles.bzl": {
+        "after_sha256": "2cfc271c3ac5c8bfd610fa5c1c75ae5728ffa74a746cebfaaac6811aaaa5c8cd",
+        "before_sha256": "92b9a32e8ec08d4ad75ed748e93bd864c9d3e8e06a4d9c103462ecf9f587d61d",
+        "identical_syntax_tree": true
+      }
+    }
+  },
+  "source_catalog": {
+    "output": "/nix/store/sm93flfqrn00zjzd2z3qz0q7zy2wcfby-aos-bazel-source-catalog-checks",
+    "report": {
+      "crates": {
+        "packages": 77,
+        "sources": 3731
+      },
+      "external_build_actions": 0,
+      "repository": {
+        "packages": 79,
+        "sources": 3751
+      },
+      "schema_version": 1
+    },
+    "report_sha256": "6b586aaaf5100af1b783fe9066a02bdcd6284483951301d4652717ae1f403826"
+  },
+  "status": "Portable Hub source profile and all twenty-six configured family inventories validated"
+}

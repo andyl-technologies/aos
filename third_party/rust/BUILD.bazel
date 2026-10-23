@@ -1,6 +1,7 @@
 load("@rules_rust//crate_universe:defs.bzl", "crate")
 load("//tools/bazel/rules:crates.bzl", "aos_crate_specifications")
 load("//tools/bazel/rules:package.bzl", "aos_package")
+load(":hub-portable/aliases.bzl", HUB_PORTABLE_CRATES = "CRATES")
 load(":deployment/aliases.bzl", DEPLOYMENT_CRATES = "CRATES")
 load(":build-services/aliases.bzl", BUILD_SERVICES_CRATES = "CRATES")
 load(":cli-support/aliases.bzl", CLI_SUPPORT_CRATES = "CRATES")
@@ -36,6 +37,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:hub_portable_dependencies": HUB_PORTABLE_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:deployment_dependencies": DEPLOYMENT_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:build_services_dependencies": BUILD_SERVICES_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:cli_support_dependencies": CLI_SUPPORT_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -65,7 +67,8 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         visibility = ["//visibility:public"],
     )
     for name in sorted(dict(
-        DEPLOYMENT_CRATES.items()
+        HUB_PORTABLE_CRATES.items()
+        + DEPLOYMENT_CRATES.items()
         + BUILD_SERVICES_CRATES.items()
         + CLI_SUPPORT_CRATES.items()
         + ACTIVATION_CRUCIBLE_CRATES.items()
@@ -344,6 +347,17 @@ ACTIVATION_SYSTEMD_PACKAGES = dict(ACTIVATION_CORE_PACKAGES.items() + {
         "zbus",
     ]
 }.items())
+
+# Portable Hub protocol generation and shared presentation values.
+HUB_PORTABLE_PACKAGES = {
+    "pbjson": crate.spec(version = "=0.7.0"),
+    "pbjson-build": crate.spec(version = "=0.7.0"),
+    "prost": crate.spec(version = "=0.13.5"),
+    "prost-build": crate.spec(version = "=0.13.5"),
+    "prost-types": crate.spec(version = "=0.13.5"),
+    "serde": crate.spec(version = "=1.0.228", features = ["derive", "rc"]),
+    "serde_json": crate.spec(version = "=1.0.150"),
+}
 
 # Deployment preserves its authenticated format and evaluator dependency closure.
 DEPLOYMENT_PACKAGES = {
@@ -764,6 +778,73 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    # Match the portable Hub generator and target units measured by Cargo.
+    "hub-portable": {
+        "prost": json.encode({
+            "version": "0.13.5",
+            "resolved_features": [
+                "default",
+                "derive",
+                "prost-derive",
+                "std"
+            ],
+            "features": [
+                "default",
+                "derive",
+                "std"
+            ],
+            "exec_features": [
+                "default",
+                "derive",
+                "prost-derive",
+                "std"
+            ]
+        }),
+        "indexmap": json.encode({
+            "version": "2.14.0",
+            "resolved_features": [
+                "default",
+                "serde",
+                "std"
+            ],
+            "features": [
+                "default",
+                "std"
+            ]
+        }),
+        "serde": json.encode({
+            "version": "1.0.228",
+            "resolved_features": [
+                "alloc",
+                "default",
+                "derive",
+                "rc",
+                "serde_derive",
+                "std"
+            ],
+            "features": [
+                "default",
+                "derive",
+                "rc",
+                "serde_derive",
+                "std"
+            ]
+        }),
+        "serde_core": json.encode({
+            "version": "1.0.228",
+            "resolved_features": [
+                "alloc",
+                "rc",
+                "result",
+                "std"
+            ],
+            "features": [
+                "rc",
+                "result",
+                "std"
+            ]
+        }),
+    },
     "deployment": {
         "indexmap": json.encode({
             "version": "2.14.0",
@@ -1244,6 +1325,7 @@ APPROVED_LICENSES = [
         host_only_licenses = ["Apache-2.0"],
     )
     for family, packages, annotations, license_domain in [
+        ("hub-portable", HUB_PORTABLE_PACKAGES, {}, "apache-host"),
         ("deployment", DEPLOYMENT_PACKAGES, {}, "apache-host"),
         ("build-services", BUILD_SERVICES_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("cli-support", CLI_SUPPORT_PACKAGES, {}, "apache-host"),
@@ -1282,6 +1364,7 @@ APPROVED_LICENSES = [
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
     for family in [
+        "hub-portable",
         "deployment",
         "build-services",
         "cli-support",

@@ -1,13 +1,116 @@
+load("//tools/bazel/rules:build_script.bzl", "aos_generated_sources_snapshot", "aos_rust_build_script")
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
+load("//tools/bazel/rules:compile.bzl", "rust_library")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
 
-# Source ownership is declared before this package's compilation migrates.
+package(default_visibility = ["//crates:__subpackages__"])
+
 RUST_PACKAGE = aos_rust_package(
     name = "aos-hub-api",
     version = "0.1.0",
+    description = "Portable Hub API messages, ProtoJSON codecs, and Connect descriptors",
     edition = "2021",
     license_expression = "Apache-2.0",
     license_domain = "apache-host",
+)
+
+DEPENDENCIES = [
+    "//third_party/rust:core_prost",
+    "//third_party/rust:core_pbjson",
+    "//third_party/rust:core_serde",
+    "//third_party/rust:core_serde_json",
+]
+
+aos_rust_build_script(
+    name = "build_script",
+    package = RUST_PACKAGE,
+    src = "build.rs",
+    deps = [
+        "//third_party/rust:core_pbjson_build",
+        "//third_party/rust:core_prost",
+        "//third_party/rust:core_prost_build",
+        "//third_party/rust:core_prost_types",
+    ],
+    data = ["//api/proto:hub_api_definitions"],
+    tools = ["@aos_codegen//:bin/protoc", "@aos_codegen//:protoc_files"],
+    env = {"PROTOC": "$(execpath @aos_codegen//:bin/protoc)"},
+)
+
+aos_generated_sources_snapshot(
+    name = "generated_sources",
+    generator = ":build_script",
+    files = [
+        "aos.hub.v1.rs",
+        "aos.hub.v1.serde.rs",
+        "aos.hub.v1.descriptor.bin",
+        "connect_paths.rs",
+    ],
+    tags = ["aos-license:apache-host"],
+)
+
+aos_package(
+    name = "generated_sources_evidence",
+    package = RUST_PACKAGE,
+    artifacts = {":generated_sources": "generated-api.json"},
+)
+
+rust_library(
+    name = "lib",
+    package = RUST_PACKAGE,
+    crate_name = "aos_hub_api",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    deps = [":build_script"] + DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "unit",
+    package = RUST_PACKAGE,
+    crate = ":lib",
+    # The editor aspect needs the same generator metadata on the libtest root.
+    deps = [":build_script"],
+)
+
+aos_rust_test(
+    name = "contract_inventory",
+    package = RUST_PACKAGE,
+    crate_name = "contract_inventory",
+    crate_root = "tests/contract_inventory.rs",
+    srcs = ["tests/contract_inventory.rs"],
+    data = [
+        "//crates/hub/aos-hub-console:browser_contract_sources",
+        "//docs/rfcs/0012-hub-surface-topology:hub_contract_manifests",
+    ],
+    deps = [":lib"] + DEPENDENCIES,
+)
+
+DEVELOPER_ARTIFACTS = [
+    ":lib",
+    ":unit_binary",
+    ":contract_inventory_binary",
+    ":build_script_program",
+]
+
+rust_doc_test(name = "doc", crate = ":lib")
+rust_clippy(name = "clippy", testonly = True, deps = DEVELOPER_ARTIFACTS)
+rustfmt_test(name = "format", targets = DEVELOPER_ARTIFACTS)
+rust_doc(name = "documentation", crate = ":lib")
+
+aos_license_check(
+    name = "license_closure",
+    testonly = True,
+    roots = DEVELOPER_ARTIFACTS,
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_license_check(
+    name = "production_license_closure",
+    roots = [":lib", ":build_script_program"],
+    license_domain = RUST_PACKAGE.license_domain,
 )
 
 aos_source_package(
