@@ -1378,6 +1378,27 @@ the new fixture layout helper. Source shape passes with updated review records. 
 remains inline; compact prepaid receipt storage, public shutdown collections and
 the complete native issuer path remain unfinished.
 
+Controller-return histories now borrow immutable records from a separate
+prelaunch journal. Optional and present receipts both occupy sixteen bytes on
+64-bit hosts; the two controller slots occupy 32 bytes. Eight bounded slots cover
+all monotonic first-error, precheck, postcheck and uncertainty changes. The root
+transfers both journal and cause storage to its one canonical progress owner
+before any publication observation or provider entry. Records retain the
+independent finalizer rather than the root, so an actual error retaining its
+launch cannot create a custody cycle.
+
+All 44 retirement-filtered controls pass, including every storage slot, repeated
+zero-allocation publication, receipts surviving their launch and actual journal
+header deallocation under paired component funding. The complete host suite
+passes 1,379 tests with the same eight helper-launch failures and four ignored
+tests. Ordinary Arc destruction makes the journal-header control fail after
+prematurely refunding both 7,640-byte charges; exact restoration passes. Source
+shape passes. Testing standards retain 84 passing controls and the same thirteen
+unclassified daemon paths; strict Clippy retains 674 library and 723 test errors.
+These component receipts grant no Main, Source, operation or physical-return
+authority. Other large shutdown variants and public report collections still
+need work. Mandatory application-target compilation remains pending.
+
 #### Cumulative construction and request ownership source
 
 Signed atomic `e82bb4c78da7af3351ef6473935a2be2feb01a2d` imports conventional

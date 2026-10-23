@@ -63,12 +63,10 @@ pub trait QemuHostIoRuntime: Send {
         if self.ram_control_registration().is_none() {
             (true, Ok(()))
         } else {
-            (false, Err(crate::ram_control::RamControlRetirementHistory {
-                first: None,
-                before: Some(crucible_host_resources::host_supervision::HostSupervisionError::Unavailable),
-                after: None,
-                uncertain: false,
-            }))
+            (
+                false,
+                Err(crate::ram_control::RamControlRetirementProgress::unavailable()),
+            )
         }
     }
 

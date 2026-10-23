@@ -22,6 +22,7 @@ fn erased_controller_cause_keeps_paired_credit_through_every_control_free() {
         shared_layout::<CleanupRecord>(),
         shared_layout::<ControllerReturnCause>(),
         shared_layout::<CleanupFinalizer>(),
+        ControllerReturnJournal::allocation_layout().unwrap(),
     ] {
         let allocation::Fixture {
             cleanup,
@@ -152,7 +153,8 @@ fn returned_error_may_retain_the_actual_launch_without_forming_a_custody_cycle()
     assert_eq!(counts.allocations, 0);
     assert_eq!(counts.reallocations, 0);
     assert!(!counts.overflow);
-    let first = status.unwrap_err().first.unwrap();
+    let history = status.unwrap_err();
+    let first = history.first.clone().unwrap();
     drop(progress);
     drop(cleanup);
     assert!(!dropped.load(Ordering::Acquire));
@@ -160,6 +162,8 @@ fn returned_error_may_retain_the_actual_launch_without_forming_a_custody_cycle()
         assert!(account.reserve_resources(0, 0, 1).is_err());
     }
 
+    drop(history);
+    assert!(!dropped.load(Ordering::Acquire));
     drop(first);
 
     assert!(dropped.load(Ordering::Acquire));
@@ -167,4 +171,84 @@ fn returned_error_may_retain_the_actual_launch_without_forming_a_custody_cycle()
         drop(account.reserve_resources(0, 0, bytes).unwrap());
     }
     drop(payload_loan);
+}
+
+#[test]
+fn optional_controller_receipts_fit_their_prepaid_extent() {
+    use crate::ram_control::RamControlRetirementHistory;
+
+    assert_eq!(
+        std::mem::size_of::<Option<RamControlRetirementHistory>>(),
+        std::mem::size_of::<RamControlRetirementHistory>(),
+    );
+    #[cfg(target_pointer_width = "64")]
+    {
+        assert_eq!(std::mem::size_of::<RamControlRetirementHistory>(), 16);
+        assert_eq!(
+            std::mem::size_of::<[Option<RamControlRetirementHistory>; 2]>(),
+            32
+        );
+    }
+}
+
+#[test]
+fn every_prepaid_controller_slot_is_immutable_and_keeps_its_original_funding() {
+    use crate::ram_control::{RamControlRetirementHistory, RamControlRetirementRecord};
+    use crucible_host_resources::host_supervision::HostSupervisionError;
+
+    let allocation::Fixture {
+        cleanup,
+        accounts,
+        bytes,
+        allocation,
+    } = allocation::fixture_observing(ControllerReturnJournal::allocation_layout().unwrap());
+    let storage = cleanup.claim_controller_return().unwrap();
+    let journal = storage.journal;
+    drop(storage.cause);
+
+    // Exercise each finite storage offset with component observations only.
+    // These bit patterns issue no operation or physical-return receipt.
+    let receipts: [RamControlRetirementHistory; 8] = std::array::from_fn(|slot| {
+        let record = RamControlRetirementRecord {
+            first: None,
+            before: (slot & 1 != 0).then_some(HostSupervisionError::Unavailable),
+            after: (slot & 2 != 0).then_some(HostSupervisionError::Unavailable),
+            uncertain: slot & 4 != 0,
+        };
+        let ((receipt, repeated), counts) = TestAllocationObserver::count(|| {
+            (journal.snapshot(&record), journal.snapshot(&record))
+        });
+
+        assert_eq!(counts.allocations, 0);
+        assert_eq!(counts.reallocations, 0);
+        assert!(!counts.overflow);
+        assert_eq!(*receipt, record);
+        assert_eq!(receipt, repeated);
+        receipt
+    });
+
+    drop(journal);
+    drop(cleanup);
+    for (slot, receipt) in receipts.iter().enumerate() {
+        assert_eq!(receipt.before.is_some(), slot & 1 != 0);
+        assert_eq!(receipt.after.is_some(), slot & 2 != 0);
+        assert_eq!(receipt.uncertain, slot & 4 != 0);
+    }
+    for account in &accounts {
+        assert!(account.reserve_resources(0, 0, 1).is_err());
+    }
+
+    let (_, observations) = TestAllocationObserver::observe_controls(
+        [&accounts[0], &accounts[1]],
+        None,
+        [Some(allocation), None, None],
+        || drop(receipts),
+    );
+
+    let observed = observations[0].unwrap();
+    assert_eq!(observed.before.original_bytes, [Some(bytes); 2]);
+    assert_eq!(observed.after.original_bytes, [Some(bytes); 2]);
+    for account in &accounts {
+        drop(account.reserve_resources(0, 0, bytes).unwrap());
+    }
 }

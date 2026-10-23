@@ -951,7 +951,9 @@ mod tests;
 pub(crate) use tests::response as checkpoint_test_response;
 
 mod retirement;
-pub use retirement::{RamControlRetirementHistory, RamControlRetirementProgress};
+pub use retirement::{
+    RamControlRetirementHistory, RamControlRetirementProgress, RamControlRetirementRecord,
+};
 
 mod cleanup_original;
 pub use cleanup_original::RamCleanupOriginal;

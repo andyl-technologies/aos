@@ -9,7 +9,10 @@ use std::ops::Deref;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 
-use super::{CleanupFinalizer, CleanupRecord, ControllerReturnCause, RetainedCleanupFinalizer};
+use super::{
+    CleanupFinalizer, CleanupRecord, ControllerReturnCause, ControllerReturnJournal,
+    ControllerReturnStorage, RetainedCleanupFinalizer,
+};
 use crucible_engine::SharedOperationalCause;
 
 /// Shares the same prepaid record without exposing its reference counters.
@@ -27,13 +30,15 @@ impl RetainedCleanupRecord {
             .and_then(|authority| authority.registrar.as_ref().map(Arc::downgrade));
         let registration_identity = record.target.zip(registrar);
         let finalizer = RetainedCleanupFinalizer::new(record);
-        let retirement_cause =
-            SharedOperationalCause::new(ControllerReturnCause::new(finalizer.clone()));
+        let retirement_storage = ControllerReturnStorage {
+            cause: SharedOperationalCause::new(ControllerReturnCause::new(finalizer.clone())),
+            journal: ControllerReturnJournal::new(finalizer.clone()),
+        };
 
         Self {
             shared: Some(Arc::new(CleanupRecord {
                 finalizer,
-                retirement_cause: Mutex::new(Some(retirement_cause)),
+                retirement_storage: Mutex::new(Some(retirement_storage)),
                 retirement_claimed: AtomicBool::new(false),
                 registration_identity,
             })),
@@ -54,7 +59,8 @@ impl RetainedCleanupRecord {
             .ok()?;
         root_peak
             .checked_add(RetainedCleanupFinalizer::allocation_peak_bytes()?)?
-            .checked_add(ControllerReturnCause::peak_bytes()?)
+            .checked_add(ControllerReturnCause::peak_bytes()?)?
+            .checked_add(ControllerReturnJournal::peak_bytes()?)
     }
 
     /// Compares existing allocation identities without granting cleanup.

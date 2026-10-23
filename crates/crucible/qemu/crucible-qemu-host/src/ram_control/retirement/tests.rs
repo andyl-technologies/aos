@@ -125,7 +125,7 @@ fn actual_controller_return_and_independent_post_failure_do_not_repeat_the_effec
     assert!(returned);
     status?;
     assert_eq!(registrar.calls.load(Ordering::Acquire), 1);
-    assert_eq!(progress.history, first);
+    assert_eq!(progress.history, *first);
     Ok(())
 }
 

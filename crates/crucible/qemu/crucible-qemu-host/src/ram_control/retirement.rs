@@ -6,23 +6,11 @@
 //! launch, including when the actual provider error itself retains the launch.
 
 use super::*;
-use crucible_engine::BackendOperationalCause;
 use crate::launch_cleanup::LaunchCleanup;
 use crucible_host_resources::host_supervision::HostSupervisionError;
 
-/// Preserves controller-return failures separately from actual physical return.
-#[derive(Clone, Debug, thiserror::Error, PartialEq, Eq)]
-#[error("RAM controller return refused: {self:?}")]
-pub struct RamControlRetirementHistory {
-    /// Exact first provider error, retained through later physical closure.
-    pub first: Option<BackendOperationalCause>,
-    /// First saved-original boundary refusal before the return.
-    pub before: Option<HostSupervisionError>,
-    /// Independent saved-original refusal after the returned disposition.
-    pub after: Option<HostSupervisionError>,
-    /// Whether an entered return lacks a physical disposition.
-    pub uncertain: bool,
-}
+pub use crate::launch_cleanup::{RamControlRetirementHistory, RamControlRetirementRecord};
+use crate::launch_cleanup::ControllerReturnJournal;
 
 /// Keeps one controller's bounded physical return and raw history.
 #[derive(Debug)]
@@ -31,9 +19,10 @@ pub struct RamControlRetirementProgress {
     cause: Option<
         crucible_engine::SharedOperationalCause<crate::launch_cleanup::ControllerReturnCause>,
     >,
+    journal: ControllerReturnJournal,
     entered: bool,
     disposition: RamControlRetirementDisposition,
-    history: RamControlRetirementHistory,
+    history: RamControlRetirementRecord,
     version: u8,
     reported: u8,
 }
@@ -53,9 +42,10 @@ impl RamControlRetirementProgress {
         Self {
             cleanup: None,
             cause: None,
+            journal: ControllerReturnJournal::empty(),
             entered: false,
             disposition: RamControlRetirementDisposition::NotReturned,
-            history: RamControlRetirementHistory {
+            history: RamControlRetirementRecord {
                 first: None,
                 before: None,
                 after: None,
@@ -85,21 +75,17 @@ impl RamControlRetirementProgress {
         if let Some(retained) = &self.cleanup {
             return retained.same_return_owner(cleanup);
         }
-        let Some(cause) = cleanup.claim_controller_return() else {
+        let Some(storage) = cleanup.claim_controller_return() else {
             return false;
         };
-        self.cause = Some(cause);
+        self.cause = Some(storage.cause);
+        self.journal = storage.journal;
         self.cleanup = Some(cleanup.clone());
         true
     }
 
     pub(crate) const fn unavailable() -> RamControlRetirementHistory {
-        RamControlRetirementHistory {
-            first: None,
-            before: Some(HostSupervisionError::Unavailable),
-            after: None,
-            uncertain: false,
-        }
+        RamControlRetirementHistory::unavailable()
     }
 
     /// Retains an unavailable publication observation without returning custody.
@@ -119,7 +105,7 @@ impl RamControlRetirementProgress {
             self.history.uncertain = true;
             self.version += 1;
         }
-        (false, Err(self.history.clone()))
+        (false, Err(self.journal.snapshot(&self.history)))
     }
 
     /// Returns the same controller without renewing or completing its Original.
@@ -194,7 +180,7 @@ impl RamControlRetirementProgress {
             || self.history.uncertain;
         if failed && (!returned || self.version != self.reported) {
             self.reported = self.version;
-            (returned, Err(self.history.clone()))
+            (returned, Err(self.journal.snapshot(&self.history)))
         } else {
             (returned, Ok(()))
         }

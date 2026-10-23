@@ -9,9 +9,9 @@
 //! retirement, while final resource destruction still owns capacity discharge.
 //! The final observer frees its shared allocation before the extracted record
 //! retires custody; the original control loan is the finalizer's last field.
-//! Controller progress takes its prepaid first-error allocation before provider
-//! entry. Erased errors share only the independent finalizer, so an actual error
-//! retaining its launch cannot form a root-to-error-to-root ownership cycle.
+//! Controller progress takes its prepaid first-error allocation and journal
+//! before provider entry. Erased errors share only the independent finalizer;
+//! an actual error retaining its launch cannot create an ownership cycle.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -31,10 +31,22 @@ use retained_finalizer::RetainedCleanupFinalizer;
 
 mod retirement_cause;
 pub(crate) use retirement_cause::ControllerReturnCause;
+
+mod retirement_history;
+pub(crate) use retirement_history::ControllerReturnJournal;
+pub use retirement_history::{RamControlRetirementHistory, RamControlRetirementRecord};
+
 #[cfg(target_os = "linux")]
 mod unreaped_child;
 #[cfg(target_os = "linux")]
 pub(crate) use unreaped_child::UnreapedChildRetention;
+
+/// Transfers both prelaunch allocations away from the root before effects.
+#[derive(Debug)]
+pub(crate) struct ControllerReturnStorage {
+    pub(crate) cause: crucible_engine::SharedOperationalCause<ControllerReturnCause>,
+    pub(crate) journal: ControllerReturnJournal,
+}
 
 /// Retains final-close custody for one independently admitted QEMU launch.
 ///
@@ -130,7 +142,7 @@ struct CleanupAuthority {
 struct CleanupRecord {
     // Release this identity alias before the finalizer can discharge accounting.
     registration_identity: Option<(HostRamTarget, std::sync::Weak<dyn RamControlRegistrar>)>,
-    retirement_cause: Mutex<Option<crucible_engine::SharedOperationalCause<ControllerReturnCause>>>,
+    retirement_storage: Mutex<Option<ControllerReturnStorage>>,
     retirement_claimed: AtomicBool,
     finalizer: RetainedCleanupFinalizer,
 }
@@ -207,18 +219,16 @@ impl LaunchCleanup {
         self.inner.same_owner(&other.inner)
     }
 
-    /// Transfers the original prelaunch cause control to one return owner.
+    /// Transfers the original prelaunch cause and journal to one return owner.
     ///
     /// Taking it before provider entry avoids a cycle if that provider's actual
     /// error itself retains this launch. A refused claim never calls a provider.
-    pub(crate) fn claim_controller_return(
-        &self,
-    ) -> Option<crucible_engine::SharedOperationalCause<ControllerReturnCause>> {
+    pub(crate) fn claim_controller_return(&self) -> Option<ControllerReturnStorage> {
         self.inner
             .retirement_claimed
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .ok()?;
-        self.inner.retirement_cause.try_lock().ok()?.take()
+        self.inner.retirement_storage.try_lock().ok()?.take()
     }
 
     pub(crate) fn matches_return_registration(
