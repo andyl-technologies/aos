@@ -12,6 +12,8 @@
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 
 use crucible_host_resources::ram_policy::{HostRamTarget, HostResourceVector};
 
@@ -130,6 +132,10 @@ struct CleanupRecord {
     source_spawn_control: Mutex<
         Option<crucible_host_resources::host_services::process_birth::SourceHostControlLease>,
     >,
+    #[cfg(target_os = "linux")]
+    preexec_claimed: AtomicBool,
+    #[cfg(target_os = "linux")]
+    abandoned_preexec: OnceLock<crate::spawn::preexec_setup::PreexecAbandonment>,
     child_started: AtomicBool,
     child_reaped: AtomicBool,
     pending_joins: AtomicUsize,
@@ -179,6 +185,10 @@ impl LaunchCleanup {
                 target_workspace: Mutex::new(None),
                 #[cfg(target_os = "linux")]
                 source_spawn_control: Mutex::new(None),
+                #[cfg(target_os = "linux")]
+                preexec_claimed: AtomicBool::new(false),
+                #[cfg(target_os = "linux")]
+                abandoned_preexec: OnceLock::new(),
                 child_started: AtomicBool::new(false),
                 child_reaped: AtomicBool::new(false),
                 pending_joins: AtomicUsize::new(0),
@@ -226,6 +236,10 @@ impl LaunchCleanup {
                 target_workspace: Mutex::new(None),
                 #[cfg(target_os = "linux")]
                 source_spawn_control: Mutex::new(None),
+                #[cfg(target_os = "linux")]
+                preexec_claimed: AtomicBool::new(false),
+                #[cfg(target_os = "linux")]
+                abandoned_preexec: OnceLock::new(),
                 child_started: AtomicBool::new(false),
                 child_reaped: AtomicBool::new(false),
                 pending_joins: AtomicUsize::new(0),
@@ -234,6 +248,29 @@ impl LaunchCleanup {
                 source_control: Some(control),
             }),
         })
+    }
+
+    /// Reserves the containing launch's sole pre-exec abandonment recipient.
+    ///
+    /// The linear token is created before handover effects. It cannot be cloned
+    /// or replaced after a failed attempt on the same launch.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn claim_preexec(&self) -> Option<PreexecRetention> {
+        self.inner
+            .preexec_claimed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        Some(PreexecRetention {
+            cleanup: self.clone(),
+        })
+    }
+
+    /// Borrows retained handover history for component regression checks.
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn abandoned_preexec(
+        &self,
+    ) -> Option<&crate::spawn::preexec_setup::PreexecAbandonment> {
+        self.inner.abandoned_preexec.get()
     }
 
     /// Prepays the real spawn descriptor overlap before pair construction.
@@ -571,6 +608,27 @@ impl LaunchCleanup {
     }
 }
 
+/// Publishes at most one abandoned handover into its already allocated launch.
+///
+/// Only `claim_preexec` creates this uncloneable token. Its consuming transfer
+/// is therefore the sole initializer and never waits for another publisher.
+#[cfg(target_os = "linux")]
+#[derive(Debug)]
+pub(crate) struct PreexecRetention {
+    cleanup: LaunchCleanup,
+}
+
+#[cfg(target_os = "linux")]
+impl PreexecRetention {
+    /// Keeps the actual allocation and unresolved history through process exit.
+    pub(crate) fn retain(self, history: crate::spawn::preexec_setup::PreexecAbandonment) {
+        self.cleanup.inner.abandoned_preexec.get_or_init(|| history);
+        // Keep the real shared allocation, containing authority and exact
+        // history through process exit; an inline forgotten record is no owner.
+        std::mem::forget(self.cleanup);
+    }
+}
+
 /// Records only completion of the unique source-worker join authority.
 #[derive(Debug)]
 pub(crate) struct LaunchSourceJoin {
@@ -715,7 +773,7 @@ impl Drop for CleanupRecord {
 }
 
 #[cfg(all(test, target_os = "linux"))]
-mod tests;
+pub(crate) mod tests;
 
 /// Preserves the same Main charge when real final-close evidence is absent.
 #[cfg(target_os = "linux")]

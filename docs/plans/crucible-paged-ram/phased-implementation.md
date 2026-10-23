@@ -1014,9 +1014,10 @@ passes, including the complete recorded-history recipient. The existing real
 success and unwind controls still prove allocation-header closure before
 refund after an explicit native join. Engineering hygiene passes. The matching
 strict Host library lint result remains 690 errors and fourteen warnings; no
-new library finding is introduced. Mandatory application-target compilation is
-running against commit `6473eeaadd`; all 5,364 Rust/TOML inputs and six fixture
-and license files match its immutable build source. These are component custody
+new library finding is introduced. Mandatory application-target compilation
+passes at `9wakr6dqpbmnyyfix390d43xff61s1mz` against commit `6473eeaadd`; all
+5,364 Rust/TOML inputs and six fixture and license files match its immutable
+build source. These are component custody
 checks, not authenticated Main issuance or a complete paid native-profile result.
 
 The broader Host suite passes 1,348 cases with ten failures and four ignored
@@ -1030,6 +1031,33 @@ callback. Omitting only the actual containing-join transfer makes this control
 observe an erroneous quarantine callback; restoring it passes. All thirteen
 cleanup controls pass, including the independent normal join/discharge case.
 No missing helper issuer or Main authority is synthesized.
+
+Pre-exec abandonment now retains its complete handover history in a linear
+recipient inside the containing cleanup allocation. The recipient is claimed
+before control reservation or descriptor effects; its full actual layout is
+included in existing admission, with construction overlap included in the
+pre-exec peak. On uncertain cleanup, Drop moves the frame, actual completed-write
+receipt, every attempted alias close, concrete first cause, independent original
+post-observation and original control loan into that already allocated record.
+It retains a real strong owner without allocating, waiting or joining. The
+unreaped-child fallback now runs this owner destruction instead of forgetting
+an inline record. Closing the parent's aliases cannot close the child's imported
+aliases. Proven cleanup closes the local owners normally, with the pre-exec
+control loan destroyed after its failure and local observer handles.
+
+All nine pre-exec, thirteen cleanup and twenty-eight Source controls pass, as
+do both stopped-child polling controls.
+The new controls use real descriptor queue writes, alias closes and child reap,
+paired component funding and allocation observation. They establish neither
+Main nor Source issuance. Omitting only history publication makes the new
+causal control fail while the containing allocation remains retained; restoring
+it passes. Abandonment, unqueued close and proven receiver-close/reap paths
+perform zero allocations or reallocations during owner destruction. Both normal
+controls refund the complete paired loan. Nix engineering hygiene and the Rust
+source-shape integration check pass. The
+matching strict Host lint result remains 690 library errors and fourteen warnings,
+with 757 test errors and five warnings; no exemption is added. Mandatory
+application-target compilation remains required for this change.
 
 #### Cumulative construction and request ownership source
 
@@ -1307,7 +1335,8 @@ symlink targets. Its record has SHA-256
 `861dd9c81d1dda0021809c146e24070777cf7bd10f967663978b8b65a40d96bd`.
 Hermetic patch and bundle reconstruction passes at
 `jnbcjmzl52sknvz3mlb3hin43316gjqd`; the unchanged 655-file license ledger passes
-at `7if63n9kpjqcskrypc75k3zqa567zjc3`.
+at `7if63n9kpjqcskrypc75k3zqa567zjc3`. ABI conformance for this atomic tuple
+passes at `fpi9p5xz5n4a33qflcc75dg5n3cjcfvv`.
 
 The correction now passes its original bounded configure and layout cohort.
 Genuine configure returns zero in 34.861 seconds; all 35 owning variants, both

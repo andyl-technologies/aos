@@ -62,8 +62,39 @@ pub(crate) struct PreparedPreexecSetup {
     frame: [u8; FRAME_BYTES],
     queued: bool,
     receipt: Option<crucible_qemu_protocol::PreexecSetupHandover>,
-    control: Option<SourceHostControlLease>,
+    failure: Option<PreexecFailureHistory>,
+    retention: Option<crate::launch_cleanup::PreexecRetention>,
     cleanup: Option<crate::launch_cleanup::LaunchCleanup>,
+    // The concrete failure and all local observer handles close before refund.
+    control: Option<SourceHostControlLease>,
+}
+
+/// Retains the actual first cause before its original control can be released.
+#[derive(Debug)]
+struct PreexecFailureHistory {
+    _cause: PreexecSetupCause,
+    _original_after: Option<HostSupervisionError>,
+}
+
+/// Records one actual close attempt without treating its descriptor as authority.
+#[derive(Debug)]
+struct PreexecAliasClose {
+    _descriptor: std::os::fd::RawFd,
+    _result: std::io::Result<()>,
+}
+
+/// Keeps unresolved handover facts inside the launch's preborn cleanup record.
+///
+/// The frame, actual queue receipt, close results, complete first cause and
+/// original loan remain independent of later child-return observations.
+#[derive(Debug)]
+pub(crate) struct PreexecAbandonment {
+    _frame: [u8; FRAME_BYTES],
+    _queued: bool,
+    _receipt: Option<crucible_qemu_protocol::PreexecSetupHandover>,
+    _aliases: [Option<PreexecAliasClose>; 9],
+    _failure: Option<PreexecFailureHistory>,
+    _control: Option<SourceHostControlLease>,
 }
 
 /// Retains prepared physical owners with the first cause and independent postcut.
@@ -74,6 +105,15 @@ pub struct PreexecSetupError {
     cause: PreexecSetupCause,
     original_after: Option<HostSupervisionError>,
     _owner: PreparedPreexecSetup,
+}
+
+impl Drop for PreexecSetupError {
+    fn drop(&mut self) {
+        self._owner.failure = Some(PreexecFailureHistory {
+            _cause: std::mem::replace(&mut self.cause, PreexecSetupCause::Geometry),
+            _original_after: self.original_after.take(),
+        });
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -116,6 +156,7 @@ impl PreparedPreexecSetup {
         let dynamic = PLUGIN_SETUP_PLAN_MAX_BYTES.checked_mul(4)?;
         let fixed = std::mem::size_of::<Self>()
             .checked_add(std::mem::size_of::<PreexecSetupError>())?
+            .checked_add(std::mem::size_of::<PreexecAbandonment>())?
             .checked_add(PURPOSE_BYTES)?
             .checked_add(std::mem::size_of::<
                 super::ram_endpoint_binding::IssuedRamControlEndpoint<'_>,
@@ -157,11 +198,20 @@ impl PreparedPreexecSetup {
             frame: [0; FRAME_BYTES],
             queued: false,
             receipt: None,
-            control: None,
+            failure: None,
+            retention: None,
             cleanup: Some(cleanup),
+            control: None,
         };
         let reserved = (|| {
             startup.check().map_err(PreexecSetupCause::Original)?;
+            owner.retention = Some(
+                owner
+                    .cleanup
+                    .as_ref()
+                    .and_then(crate::launch_cleanup::LaunchCleanup::claim_preexec)
+                    .ok_or(PreexecSetupCause::Geometry)?,
+            );
             let extent = Self::host_allocation_extent().ok_or(PreexecSetupCause::Geometry)?;
             owner.control = Some(
                 startup
@@ -468,9 +518,16 @@ fn retain_standing_aliases(
 impl Drop for PreparedPreexecSetup {
     fn drop(&mut self) {
         let mut uncertain = false;
-        for alias in &mut self.aliases {
+        let mut aliases = std::array::from_fn(|_| None);
+        for (index, alias) in self.aliases.iter_mut().enumerate() {
             if let Some(alias) = alias.take() {
-                uncertain |= super::close_child_source_fd(alias.into_raw_fd()).is_err();
+                let descriptor = alias.into_raw_fd();
+                let result = super::close_child_source_fd(descriptor);
+                uncertain |= result.is_err();
+                aliases[index] = Some(PreexecAliasClose {
+                    _descriptor: descriptor,
+                    _result: result,
+                });
             }
         }
         // Closing a local alias cannot certify that a queued receiver or live
@@ -481,6 +538,19 @@ impl Drop for PreparedPreexecSetup {
                 .as_ref()
                 .is_none_or(|cleanup| !cleanup.cleanup_proven());
         if uncertain {
+            if let Some(retention) = self.retention.take() {
+                retention.retain(PreexecAbandonment {
+                    _frame: self.frame,
+                    _queued: self.queued,
+                    _receipt: self.receipt.take(),
+                    _aliases: aliases,
+                    _failure: self.failure.take(),
+                    _control: self.control.take(),
+                });
+                // The retained recipient now owns the original allocation; the
+                // remaining local cleanup alias can close normally.
+                return;
+            }
             if let Some(control) = self.control.take() {
                 std::mem::forget(control);
             }

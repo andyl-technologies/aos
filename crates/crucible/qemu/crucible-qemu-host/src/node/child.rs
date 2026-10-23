@@ -368,7 +368,9 @@ impl Drop for QemuNodeChild {
                 std::mem::forget(source);
             }
             if let Some(owner) = self.preexec_setup.take() {
-                std::mem::forget(owner);
+                // Close local aliases while the preborn recipient retains the
+                // uncertain receiver's exact handover history and original loan.
+                drop(owner);
             }
             if let Some(startup) = self.original_plugin_startup.take() {
                 // An uncertain child may still borrow the original operation

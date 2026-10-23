@@ -23,7 +23,7 @@ use crucible_ram::{
 use crate::ram_control::RamControlClient;
 use crate::ram_source::{QemuRamBacking, QemuRamSourceError, QemuRamSourceService};
 
-mod allocation;
+pub(crate) mod allocation;
 
 struct Registrar {
     services: HostServiceAllocator,

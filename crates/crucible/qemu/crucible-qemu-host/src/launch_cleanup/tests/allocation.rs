@@ -7,10 +7,11 @@ use super::*;
 use crucible_host_resources::test_support::{AllocationIdentity, TestAllocationObserver};
 use std::alloc::Layout;
 
-struct Fixture {
-    cleanup: LaunchCleanup,
-    accounts: [HostServiceAllocator; 2],
-    bytes: u64,
+/// Owns the actual cleanup allocation and its paired component service accounts.
+pub(crate) struct Fixture {
+    pub(crate) cleanup: LaunchCleanup,
+    pub(crate) accounts: [HostServiceAllocator; 2],
+    pub(crate) bytes: u64,
     allocation: AllocationIdentity,
 }
 
@@ -22,7 +23,11 @@ fn allocation_layout() -> Layout {
         .pad_to_align()
 }
 
-fn fixture() -> Fixture {
+/// Funds one complete cleanup allocation without issuing native launch authority.
+///
+/// # Panics
+/// Panics if component funding or the allocation observer cannot be established.
+pub(crate) fn fixture() -> Fixture {
     let bytes = LaunchCleanup::retained_control_bytes().unwrap();
     let accounts = [
         HostServiceAllocator::new(1, 1, bytes).unwrap(),
