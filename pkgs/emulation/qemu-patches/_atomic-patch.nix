@@ -6,20 +6,20 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "9a5a9142d394a33efe48908df839712ae28e8f2a310071b3fb88da9c40e04c07";
-  subject = "crucible: bind checked source owners and retained Outcome return";
-  body = "Compose checked source and native owners, retained postbody resource return,\nand complete never-issued Outcome inventories with their genuine providers.";
-  commit = "e07752457bbafc69359ac7cc5cbaa3bd950e1c77";
-  tree = "e5c162ba94a949808f0a87cd98a78d488ec41cf9";
+  sha256 = "182d1fca7f3e001809f83e8b8551c9da1563c1e9b258748234936a90bd45a7ef";
+  subject = "crucible: preserve opaque boundary acquire ordering";
+  body = "Retain the complete reviewed source integration and load the opaque boundary\nframe pointer through an explicitly typed acquire result. Preserve the\npointer-width assertion, null decision and all subsequent ownership proofs.";
+  commit = "4edc47cba642b59e1af833cb2ffb0eb9c84ae3d9";
+  tree = "10c75e16bd02c87e57dc25e9657840003c88820d";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/quantum-no-target-owner-successor-atomic";
+  branchRef = "dplecki/quantum-opaque-frame-acquire-atomic";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "143c06f05815eed97e5d69085b5ef81391e1ec99854c411954db5bd4f8f372bd";
+  bundleSha256 = "87d6414c88c5703a8bc63e3c0e6c36210191f39c1cff5913e38dfb3e42c14bf3";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";
