@@ -2234,7 +2234,10 @@ targets across 31 analysis-only selections, with no external actions, and core
 evaluation passes. Frozen outputs are retained in
 `tests/evidence/release-preparation-metadata-evaluation.json`.
 
-Required workspace Rust compilation runs separately. Complete image and signing
-provider gates, foreign/Wasm execution, complete compiler invocation equivalence,
-numeric performance acceptance, production migration, and Cargo removal remain
-separate qualification work.
+`tests/evidence/release-preparation-required-rust-targets.json` retains passing
+required workspace unit and integration target compilation for all ten changed
+Rust inputs, including the separate native helper move and final Clippy fixes.
+Its frozen source predates the registry conversion changes. Complete image and
+signing provider gates, foreign/Wasm execution, complete compiler invocation
+equivalence, numeric performance acceptance, production migration, and Cargo
+removal remain separate qualification work.
