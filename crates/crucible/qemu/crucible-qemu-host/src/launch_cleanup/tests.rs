@@ -7,7 +7,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crucible_host_resources::host_services::{
     HostServiceAllocator, HostServiceLease, HostServiceLeasePair,
@@ -34,7 +34,6 @@ struct Registrar {
     quarantined: AtomicUsize,
     refuse_retirement: bool,
     quarantine_notice: Option<mpsc::Sender<()>>,
-    quarantine_release: Mutex<Option<mpsc::Receiver<()>>>,
     _funding: Option<HostServiceLeasePair>,
 }
 
@@ -100,16 +99,6 @@ impl RamControlRegistrar for Registrar {
         self.quarantined.fetch_add(1, Ordering::AcqRel);
         if let Some(notice) = &self.quarantine_notice {
             let _ = notice.send(());
-        }
-        if let Some(release) = self
-            .quarantine_release
-            .lock()
-            .unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}"))
-            .as_ref()
-        {
-            release
-                .recv_timeout(Duration::from_secs(5))
-                .unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}"));
         }
         Ok(())
     }
@@ -217,7 +206,6 @@ fn registration_with_funding(
         quarantined: AtomicUsize::new(0),
         refuse_retirement,
         quarantine_notice: notice,
-        quarantine_release: Mutex::new(None),
         _funding: funding,
     });
     (
@@ -513,6 +501,32 @@ struct Backing {
     entered: Option<mpsc::Sender<()>>,
     release: Mutex<Option<mpsc::Receiver<()>>>,
     original: crucible_ram::MetadataBudget,
+    finished: Option<mpsc::Sender<()>>,
+}
+
+/// Observes Rust/TLS destruction without claiming a native join receipt.
+struct SourceBodyReturned(mpsc::Sender<()>);
+
+impl Drop for SourceBodyReturned {
+    fn drop(&mut self) {
+        let _ = self.0.send(());
+    }
+}
+
+thread_local! {
+    static SOURCE_BODY_RETURNED: std::cell::RefCell<Option<SourceBodyReturned>> = const {
+        std::cell::RefCell::new(None)
+    };
+}
+
+impl Drop for Backing {
+    fn drop(&mut self) {
+        if let Some(finished) = self.finished.take() {
+            SOURCE_BODY_RETURNED.with(|returned| {
+                *returned.borrow_mut() = Some(SourceBodyReturned(finished));
+            });
+        }
+    }
 }
 
 impl QemuRamBacking for Backing {
@@ -579,6 +593,7 @@ fn backing(entered: Option<mpsc::Sender<()>>, release: Option<mpsc::Receiver<()>
         entered,
         release: Mutex::new(release),
         original,
+        finished: None,
     })
 }
 
@@ -633,19 +648,17 @@ fn actual_source_join_closes_worker_descriptors_and_leases_before_discharge() {
 // crucible-lint: allow clippy-disallowed-method -- this fixture bounds final host cleanup custody only; host time never enters guest or modeled state.
 #[allow(clippy::disallowed_methods)]
 #[test]
-fn detached_blocked_source_keeps_capacity_then_quarantines_without_a_join_proof() {
+fn abandoned_source_retains_cleanup_and_capacity_after_rust_return() {
     let (notice, quarantined) = mpsc::channel();
     let (registration, registrar) = registration(false, Some(notice));
-    let (allow_cleanup_return, cleanup_may_return) = mpsc::channel();
-    *registrar
-        .quarantine_release
-        .lock()
-        .unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}")) =
-        Some(cleanup_may_return);
     let cleanup = LaunchCleanup::new(&registration);
     let (entered, started) = mpsc::channel();
     let (release, blocked) = mpsc::channel();
-    let backing = backing(Some(entered), Some(blocked));
+    let (finished, body_returned) = mpsc::channel();
+    let mut backing = backing(Some(entered), Some(blocked));
+    Arc::get_mut(&mut backing)
+        .expect("unshared cleanup backing")
+        .finished = Some(finished);
     let binding = RamPageBinding {
         session: [4; 16],
         owner_incarnation: [5; 16],
@@ -689,52 +702,28 @@ fn detached_blocked_source_keeps_capacity_then_quarantines_without_a_join_proof(
             .reserve_resources(1, 32, 1024 * 1024)
             .is_err()
     );
-    let completion_deadline = Instant::now() + Duration::from_secs(5);
     release
         .send(())
         .unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}"));
-    quarantined
-        .recv_timeout(completion_deadline.saturating_duration_since(Instant::now()))
+    body_returned
+        .recv_timeout(Duration::from_secs(5))
         .unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}"));
 
-    assert_eq!(registrar.retired.load(Ordering::Acquire), 0);
-    assert_eq!(registrar.quarantined.load(Ordering::Acquire), 1);
-
-    // Cleanup notification precedes destruction of the returned worker failure.
-    // Hold that physical custody here; notification alone cannot refund its loan.
+    // The real worker has destroyed its Rust body and reached TLS teardown.
+    // Its abandoned native join record still retains the containing launch,
+    // pending join obligation and original task loan until process exit.
     assert!(
         registration
             .host_services
             .reserve_resources(1, 32, 1024 * 1024)
             .is_err()
     );
-    allow_cleanup_return
-        .send(())
-        .unwrap_or_else(|error| panic!("cleanup fixture failed: {error:?}"));
-
-    // Observe the original account's final capacity, without a join or retirement
-    // claim. Both quarantine delivery and final destruction share the old bound.
-    let returned_capacity = loop {
-        if let Ok(lease) = registration
-            .host_services
-            .reserve_resources(1, 32, 1024 * 1024)
-        {
-            break lease;
-        }
-        assert!(
-            Instant::now() < completion_deadline,
-            "worker failure custody did not close before the original deadline"
-        );
-        std::thread::yield_now();
-    };
-    assert!(
-        Instant::now() <= completion_deadline,
-        "worker capacity returned after the original deadline"
-    );
-    drop(returned_capacity);
-
     assert_eq!(registrar.retired.load(Ordering::Acquire), 0);
-    assert_eq!(registrar.quarantined.load(Ordering::Acquire), 1);
+    assert_eq!(registrar.quarantined.load(Ordering::Acquire), 0);
+    assert!(matches!(
+        quarantined.try_recv(),
+        Err(mpsc::TryRecvError::Empty)
+    ));
 }
 
 #[test]

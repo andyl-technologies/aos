@@ -1014,10 +1014,22 @@ passes, including the complete recorded-history recipient. The existing real
 success and unwind controls still prove allocation-header closure before
 refund after an explicit native join. Engineering hygiene passes. The matching
 strict Host library lint result remains 690 errors and fourteen warnings; no
-new library finding is introduced. Mandatory application-target compilation
-remains required for this revision. These are
-component custody checks, not authenticated Main issuance or a complete paid
-native-profile result.
+new library finding is introduced. Mandatory application-target compilation is
+running against commit `6473eeaadd`; all 5,364 Rust/TOML inputs and six fixture
+and license files match its immutable build source. These are component custody
+checks, not authenticated Main issuance or a complete paid native-profile result.
+
+The broader Host suite passes 1,348 cases with ten failures and four ignored
+cases. Eight failures involve unavailable helper custody. The selectable idle
+case expires during Setup in the parallel suite and passes independently. The
+remaining cleanup fixture expected abandoned capacity to return after Rust
+completion without a native join; that expectation is corrected. Its real
+worker now reports TLS teardown, after which both original capacity and the
+containing launch remain retained, with neither retirement nor a quarantine
+callback. Omitting only the actual containing-join transfer makes this control
+observe an erroneous quarantine callback; restoring it passes. All thirteen
+cleanup controls pass, including the independent normal join/discharge case.
+No missing helper issuer or Main authority is synthesized.
 
 #### Cumulative construction and request ownership source
 
