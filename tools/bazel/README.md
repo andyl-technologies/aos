@@ -1983,6 +1983,11 @@ Rust targets across 26 analysis-only selections, with no external actions; core
 evaluation passes. Its frozen evidence is retained in
 `tests/evidence/build-services-metadata-evaluation.json`.
 
+`tests/evidence/build-services-required-rust-targets.json` retains passing
+required workspace unit and integration target compilation for the twelve
+build-server Rust corrections. This source is frozen before the deployment
+conversion, whose Rust changes require their own compilation checkpoint.
+
 Dedicated service and assembled-system qualification, foreign/Wasm execution,
 complete compiler invocation equivalence, numeric performance acceptance,
 production migration, and Cargo removal remain separate work.
