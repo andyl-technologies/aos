@@ -349,6 +349,17 @@ impl NativeMetadataOwner {
                 }
                 let mut maintenance: Option<(super::publication::eviction::DueRetirements, usize)> =
                     None;
+                // Repeated due turns retain the same failed custody. Report a
+                // failure once until a successful turn, without flooding logs.
+                let mut retirement_failure_reported = false;
+                let mut report_retirement = |result: io::Result<usize>| match result {
+                    Ok(_) => retirement_failure_reported = false,
+                    Err(error) if !retirement_failure_reported => {
+                        eprintln!("terrane: due cache retirement retained for recovery: {error}");
+                        retirement_failure_reported = true;
+                    }
+                    Err(_) => {}
+                };
                 loop {
                     if let Err(error) = executor.quarantine_failed_encoded_reads() {
                         eprintln!(
@@ -376,11 +387,7 @@ impl NativeMetadataOwner {
                                 let result = runtime.block_on(
                                     super::publication::eviction::finish_due(&mut executor, due),
                                 );
-                                if let Err(error) = result {
-                                    eprintln!(
-                                        "terrane: due cache retirement retained for recovery: {error}"
-                                    );
-                                }
+                                report_retirement(result);
                             }
                             continue;
                         }
@@ -391,14 +398,12 @@ impl NativeMetadataOwner {
                             }
                             Err(mpsc::TryRecvError::Empty) => {
                                 if let Some((due, _)) = maintenance.take() {
-                                    let result = runtime.block_on(
-                                        super::publication::eviction::finish_due(&mut executor, due),
-                                    );
-                                    if let Err(error) = result {
-                                        eprintln!(
-                                            "terrane: due cache retirement retained for recovery: {error}"
-                                        );
-                                    }
+                                    let result =
+                                        runtime.block_on(super::publication::eviction::finish_due(
+                                            &mut executor,
+                                            due,
+                                        ));
+                                    report_retirement(result);
                                 }
                                 continue;
                             }
