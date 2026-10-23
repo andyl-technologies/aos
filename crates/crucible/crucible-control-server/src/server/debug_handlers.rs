@@ -21,7 +21,7 @@ where
         Ok(principal) => principal,
         Err(response) => return *response,
     };
-    let body = match read_debug_rpc_body(request).await {
+    let body = match read_debug_rpc_body(request, &state.rpc_body_budget).await {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -114,7 +114,7 @@ where
         Ok(principal) => principal,
         Err(response) => return *response,
     };
-    let body = match read_debug_rpc_body(request).await {
+    let body = match read_debug_rpc_body(request, &state.rpc_body_budget).await {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -190,7 +190,7 @@ where
         Ok(principal) => principal,
         Err(response) => return *response,
     };
-    let body = match read_debug_rpc_body(request).await {
+    let body = match read_debug_rpc_body(request, &state.rpc_body_budget).await {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -250,7 +250,7 @@ where
         Ok(principal) => principal,
         Err(response) => return *response,
     };
-    let body = match read_debug_rpc_body(request).await {
+    let body = match read_debug_rpc_body(request, &state.rpc_body_budget).await {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -342,7 +342,7 @@ where
         Ok(principal) => principal,
         Err(response) => return *response,
     };
-    let body = match read_debug_rpc_body(request).await {
+    let body = match read_debug_rpc_body(request, &state.rpc_body_budget).await {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -399,7 +399,7 @@ where
         Ok(principal) => principal,
         Err(response) => return *response,
     };
-    let body = match read_debug_rpc_body(request).await {
+    let body = match read_debug_rpc_body(request, &state.rpc_body_budget).await {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -489,7 +489,7 @@ where
         Ok(principal) => principal,
         Err(response) => return *response,
     };
-    let body = match read_debug_rpc_body(request).await {
+    let body = match read_debug_rpc_body(request, &state.rpc_body_budget).await {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -539,7 +539,7 @@ where
         Ok(principal) => principal,
         Err(response) => return *response,
     };
-    let body = match read_debug_rpc_body(request).await {
+    let body = match read_debug_rpc_body(request, &state.rpc_body_budget).await {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -592,7 +592,7 @@ where
         Ok(principal) => principal,
         Err(response) => return *response,
     };
-    let body = match read_debug_rpc_body(request).await {
+    let body = match read_debug_rpc_body(request, &state.rpc_body_budget).await {
         Ok(body) => body,
         Err(response) => return *response,
     };

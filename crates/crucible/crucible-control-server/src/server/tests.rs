@@ -56,6 +56,7 @@ fn test_state(mode: LifecycleServerMode) -> TestState {
         debug_authorization: DebugAuthorizationPolicy::deny_all(),
         debug_holders: Arc::new(Mutex::new(DebugControllerHolderRegistry::default())),
         debug_relays: Arc::new(Mutex::new(DebugRelayRegistry::default())),
+        rpc_body_budget: Arc::new(Semaphore::new(RPC_BODY_IN_FLIGHT_MAX_BYTES)),
     }
 }
 
@@ -74,6 +75,7 @@ fn test_state_with_max_sessions(mode: LifecycleServerMode, max_sessions: usize) 
         debug_authorization: DebugAuthorizationPolicy::deny_all(),
         debug_holders: Arc::new(Mutex::new(DebugControllerHolderRegistry::default())),
         debug_relays: Arc::new(Mutex::new(DebugRelayRegistry::default())),
+        rpc_body_budget: Arc::new(Semaphore::new(RPC_BODY_IN_FLIGHT_MAX_BYTES)),
     }
 }
 
@@ -288,7 +290,8 @@ async fn resume_body_rejects_declared_oversize_before_collection() {
         .body(Body::empty())
         .expect("oversize request fixture must be well-formed");
 
-    let response = read_resume_session_rpc_body(request)
+    let budget = Arc::new(Semaphore::new(RESUME_SESSION_RPC_BODY_MAX_BYTES));
+    let response = read_resume_session_rpc_body(request, &budget)
         .await
         .expect_err("oversize resume body must reject before collection");
 
@@ -312,7 +315,8 @@ async fn resume_body_rejects_oversize_chunked_stream_during_collection() {
         .body(body)
         .expect("chunked oversize request fixture must be well-formed");
 
-    let response = read_bounded_resume_session_rpc_body(request, 8)
+    let budget = Arc::new(Semaphore::new(8));
+    let response = read_bounded_rpc_body(request, 8, &budget, "resume-session-request-too-large")
         .await
         .expect_err("chunked resume body must stop at the collection bound");
 
@@ -322,6 +326,91 @@ async fn resume_body_rejects_oversize_chunked_stream_during_collection() {
             .await
             .expect("oversize response should be text")
             .contains("resume-session-request-too-large")
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bounded_body_accepts_exact_wire_envelope() {
+    let request = Request::builder()
+        .version(Version::HTTP_2)
+        .body(Body::from("12345678"))
+        .expect("bounded request fixture must be well-formed");
+    let budget = Arc::new(Semaphore::new(8));
+
+    let body = read_bounded_rpc_body(request, 8, &budget, "request-too-large")
+        .await
+        .expect("body at the wire envelope must be accepted");
+
+    assert_eq!(body.as_slice(), b"12345678");
+    assert_eq!(budget.available_permits(), 0);
+    drop(body);
+    assert_eq!(budget.available_permits(), 8);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bounded_body_rejects_declared_oversize_before_collection() {
+    let request = Request::builder()
+        .version(Version::HTTP_2)
+        .header(CONTENT_LENGTH, 9)
+        .body(Body::empty())
+        .expect("oversize request fixture must be well-formed");
+    let budget = Arc::new(Semaphore::new(8));
+
+    let response = read_bounded_rpc_body(request, 8, &budget, "request-too-large")
+        .await
+        .expect_err("declared oversize body must reject before collection");
+
+    assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(budget.available_permits(), 8);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bounded_body_times_out_incomplete_stream() {
+    let body = Body::from_stream(stream::pending::<Result<Bytes, std::convert::Infallible>>());
+    let request = Request::builder()
+        .version(Version::HTTP_2)
+        .body(body)
+        .expect("incomplete request fixture must be well-formed");
+    let budget = Arc::new(Semaphore::new(8));
+
+    let response = read_bounded_rpc_body_with_timeout(
+        request,
+        8,
+        &budget,
+        "request-too-large",
+        Duration::from_millis(10),
+    )
+    .await
+    .expect_err("incomplete body must expire at its read deadline");
+
+    assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
+    assert!(
+        response_text(*response)
+            .await
+            .expect("timeout response should be text")
+            .contains("request-body-timeout")
+    );
+    assert_eq!(budget.available_permits(), 8);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bounded_body_rejects_exhausted_shared_budget() {
+    let request = Request::builder()
+        .version(Version::HTTP_2)
+        .body(Body::from("12345678"))
+        .expect("bounded request fixture must be well-formed");
+    let budget = Arc::new(Semaphore::new(7));
+
+    let response = read_bounded_rpc_body(request, 8, &budget, "request-too-large")
+        .await
+        .expect_err("request must reject when its shared budget is unavailable");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        response_text(*response)
+            .await
+            .expect("budget response should be text")
+            .contains("request-budget-exhausted")
     );
 }
 

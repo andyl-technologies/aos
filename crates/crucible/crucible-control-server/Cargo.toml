@@ -24,6 +24,7 @@ axum = { workspace = true }
 bytes = { workspace = true }
 futures-util = { workspace = true }
 hyper-util = { workspace = true }
+http-body-util = { workspace = true }
 rustix = { workspace = true }
 rustls = { workspace = true }
 rustls-pemfile = { workspace = true }

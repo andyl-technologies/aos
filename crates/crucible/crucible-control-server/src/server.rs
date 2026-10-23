@@ -10,7 +10,7 @@ use axum::extract::{Extension, State};
 use axum::http::{Request, StatusCode, Version, header::CONTENT_LENGTH};
 use axum::response::Response;
 use axum::routing::post;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use crucible_engine::{
     Checkpoint, ContentHash, EventLevel, GdbListen, NodeId, QuantumLoop, ScenarioDef,
     ScenarioDefForm, Schedule, Seed,
@@ -22,6 +22,7 @@ use crucible_session::{
     OutcomeKind, PauseReason, QueryKind, QueryResult, SessionCommand, SessionCommandKind, StepMode,
 };
 use futures_util::stream;
+use http_body_util::BodyExt;
 use hyper_util::rt::{TokioExecutor, TokioIo};
 use hyper_util::server::conn::auto;
 use hyper_util::service::TowerToHyperService;
@@ -30,7 +31,7 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::{Mutex, OwnedMutexGuard, Semaphore, watch};
+use tokio::sync::{Mutex, OwnedMutexGuard, OwnedSemaphorePermit, Semaphore, watch};
 use tokio::task::JoinSet;
 use tokio_rustls::TlsAcceptor;
 
@@ -77,6 +78,16 @@ const RESUME_SESSION_RPC_MODEL_ENVELOPE_MAX_BYTES: usize = 512 * 1024 * 1024;
 const RESUME_SESSION_RPC_BODY_MAX_BYTES: usize = RESUME_SESSION_RPC_MODEL_ENVELOPE_MAX_BYTES
     + RESUME_REPLAY_CLOSURE_MAX_BYTES * 2
     + RESUME_OBSERVATION_SOURCE_MAX_BYTES * 2;
+const RPC_BODY_IN_FLIGHT_MAX_BYTES: usize = 1024 * 1024 * 1024;
+const RPC_BODY_READ_TIMEOUT: Duration = Duration::from_secs(15);
+
+// Control-plane frames remain small, while session creation and streaming send
+// accept larger inline inputs. Each category has a fixed wire envelope so one
+// request cannot grow with the available process memory.
+const SMALL_RPC_BODY_MAX_BYTES: usize = 64 * 1024;
+const CREATE_SESSION_RPC_BODY_MAX_BYTES: usize = 64 * 1024 * 1024;
+const SEND_RPC_BODY_MAX_BYTES: usize = 16 * 1024 * 1024;
+const DEBUG_RPC_BODY_MAX_BYTES: usize = DEBUG_RELAY_CHUNK_MAX_BYTES * 2 + 1024;
 
 const TLS_CONNECTION_LIMIT: usize = 256;
 const TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -132,6 +143,7 @@ struct Http2LifecycleState<L, F> {
     debug_authorization: DebugAuthorizationPolicy,
     debug_holders: Arc<Mutex<DebugControllerHolderRegistry>>,
     debug_relays: Arc<Mutex<DebugRelayRegistry>>,
+    rpc_body_budget: Arc<Semaphore>,
 }
 
 impl<L, F> Clone for Http2LifecycleState<L, F> {
@@ -143,6 +155,7 @@ impl<L, F> Clone for Http2LifecycleState<L, F> {
             debug_authorization: self.debug_authorization.clone(),
             debug_holders: Arc::clone(&self.debug_holders),
             debug_relays: Arc::clone(&self.debug_relays),
+            rpc_body_budget: Arc::clone(&self.rpc_body_budget),
         }
     }
 }
@@ -340,6 +353,7 @@ where
         debug_authorization,
         debug_holders: Arc::new(Mutex::new(DebugControllerHolderRegistry::default())),
         debug_relays: Arc::new(Mutex::new(DebugRelayRegistry::default())),
+        rpc_body_budget: Arc::new(Semaphore::new(RPC_BODY_IN_FLIGHT_MAX_BYTES)),
     });
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {
@@ -444,6 +458,7 @@ where
         debug_authorization,
         debug_holders: Arc::new(Mutex::new(DebugControllerHolderRegistry::default())),
         debug_relays: Arc::new(Mutex::new(DebugRelayRegistry::default())),
+        rpc_body_budget: Arc::new(Semaphore::new(RPC_BODY_IN_FLIGHT_MAX_BYTES)),
     });
     tokio::pin!(shutdown);
     let mut connections = JoinSet::new();
@@ -659,7 +674,8 @@ where
         + Sync
         + 'static,
 {
-    let body = match read_rpc_body(request).await {
+    let body = match read_rpc_body(request, SMALL_RPC_BODY_MAX_BYTES, &state.rpc_body_budget).await
+    {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -692,7 +708,8 @@ where
         + Sync
         + 'static,
 {
-    let body = match read_rpc_body(request).await {
+    let body = match read_rpc_body(request, SMALL_RPC_BODY_MAX_BYTES, &state.rpc_body_budget).await
+    {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -714,7 +731,13 @@ where
         + Sync
         + 'static,
 {
-    let body = match read_rpc_body(request).await {
+    let body = match read_rpc_body(
+        request,
+        CREATE_SESSION_RPC_BODY_MAX_BYTES,
+        &state.rpc_body_budget,
+    )
+    .await
+    {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -749,7 +772,7 @@ where
         + Sync
         + 'static,
 {
-    let body = match read_resume_session_rpc_body(request).await {
+    let body = match read_resume_session_rpc_body(request, &state.rpc_body_budget).await {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -844,7 +867,8 @@ where
         + Sync
         + 'static,
 {
-    let body = match read_rpc_body(request).await {
+    let body = match read_rpc_body(request, SMALL_RPC_BODY_MAX_BYTES, &state.rpc_body_budget).await
+    {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -866,7 +890,8 @@ where
         + Sync
         + 'static,
 {
-    let body = match read_rpc_body(request).await {
+    let body = match read_rpc_body(request, SMALL_RPC_BODY_MAX_BYTES, &state.rpc_body_budget).await
+    {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -911,7 +936,8 @@ where
         + Sync
         + 'static,
 {
-    let body = match read_rpc_body(request).await {
+    let body = match read_rpc_body(request, SMALL_RPC_BODY_MAX_BYTES, &state.rpc_body_budget).await
+    {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -942,7 +968,8 @@ where
         + Sync
         + 'static,
 {
-    let body = match read_rpc_body(request).await {
+    let body = match read_rpc_body(request, SMALL_RPC_BODY_MAX_BYTES, &state.rpc_body_budget).await
+    {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -994,7 +1021,8 @@ where
         + Sync
         + 'static,
 {
-    let body = match read_rpc_body(request).await {
+    let body = match read_rpc_body(request, SMALL_RPC_BODY_MAX_BYTES, &state.rpc_body_budget).await
+    {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -1043,7 +1071,7 @@ where
         + Sync
         + 'static,
 {
-    let body = match read_rpc_body(request).await {
+    let body = match read_rpc_body(request, SEND_RPC_BODY_MAX_BYTES, &state.rpc_body_budget).await {
         Ok(body) => body,
         Err(response) => return *response,
     };
@@ -1076,27 +1104,70 @@ where
     http2_response(StatusCode::OK, encode_send_response(&response))
 }
 
-async fn read_rpc_body(request: Request<Body>) -> Result<Vec<u8>, Box<Response>> {
-    if request.version() != Version::HTTP_2 {
-        return Err(Box::new(http2_response(
-            StatusCode::BAD_REQUEST,
-            "Crucible RPC requires HTTP/2",
-        )));
+#[derive(Debug)]
+struct BoundedRpcBody {
+    bytes: Bytes,
+    _reservations: Vec<OwnedSemaphorePermit>,
+}
+
+impl std::ops::Deref for BoundedRpcBody {
+    type Target = [u8];
+
+    fn deref(&self) -> &Self::Target {
+        &self.bytes
     }
-    axum::body::to_bytes(request.into_body(), usize::MAX)
-        .await
-        .map(|body| body.to_vec())
-        .map_err(|error| Box::new(http2_response(StatusCode::BAD_REQUEST, error.to_string())))
 }
 
-async fn read_resume_session_rpc_body(request: Request<Body>) -> Result<Vec<u8>, Box<Response>> {
-    read_bounded_resume_session_rpc_body(request, RESUME_SESSION_RPC_BODY_MAX_BYTES).await
+impl BoundedRpcBody {
+    fn as_slice(&self) -> &[u8] {
+        &self.bytes
+    }
 }
 
-async fn read_bounded_resume_session_rpc_body(
+async fn read_rpc_body(
     request: Request<Body>,
     max_bytes: usize,
-) -> Result<Vec<u8>, Box<Response>> {
+    budget: &Arc<Semaphore>,
+) -> Result<BoundedRpcBody, Box<Response>> {
+    read_bounded_rpc_body(request, max_bytes, budget, "request-too-large").await
+}
+
+async fn read_resume_session_rpc_body(
+    request: Request<Body>,
+    budget: &Arc<Semaphore>,
+) -> Result<BoundedRpcBody, Box<Response>> {
+    read_bounded_rpc_body(
+        request,
+        RESUME_SESSION_RPC_BODY_MAX_BYTES,
+        budget,
+        "resume-session-request-too-large",
+    )
+    .await
+}
+
+async fn read_bounded_rpc_body(
+    request: Request<Body>,
+    max_bytes: usize,
+    budget: &Arc<Semaphore>,
+    too_large_code: &'static str,
+) -> Result<BoundedRpcBody, Box<Response>> {
+    read_bounded_rpc_body_with_timeout(
+        request,
+        max_bytes,
+        budget,
+        too_large_code,
+        RPC_BODY_READ_TIMEOUT,
+    )
+    .await
+}
+
+async fn read_bounded_rpc_body_with_timeout(
+    request: Request<Body>,
+    max_bytes: usize,
+    budget: &Arc<Semaphore>,
+    too_large_code: &'static str,
+    read_timeout: Duration,
+) -> Result<BoundedRpcBody, Box<Response>> {
     if request.version() != Version::HTTP_2 {
         return Err(Box::new(http2_response(
             StatusCode::BAD_REQUEST,
@@ -1113,44 +1184,120 @@ async fn read_bounded_resume_session_rpc_body(
         return Err(Box::new(typed_rpc_status_response(
             StatusCode::PAYLOAD_TOO_LARGE,
             RpcStatusCode::InvalidArgument,
-            "resume-session-request-too-large",
-            "resume-session request exceeds its bounded wire envelope",
+            too_large_code,
+            "RPC request exceeds its bounded wire envelope",
         )));
     }
 
-    axum::body::to_bytes(request.into_body(), max_bytes)
+    let collection =
+        collect_bounded_rpc_body(request.into_body(), max_bytes, budget, too_large_code);
+    let (body, reservations) = tokio::time::timeout(read_timeout, collection)
         .await
-        .map(|body| body.to_vec())
-        .map_err(|error| {
+        .map_err(|_| {
             Box::new(typed_rpc_status_response(
-                StatusCode::PAYLOAD_TOO_LARGE,
+                StatusCode::REQUEST_TIMEOUT,
                 RpcStatusCode::InvalidArgument,
-                "resume-session-request-too-large",
-                &error.to_string(),
+                "request-body-timeout",
+                "RPC request body did not complete before its deadline",
             ))
-        })
+        })??;
+
+    Ok(BoundedRpcBody {
+        bytes: body,
+        _reservations: reservations,
+    })
 }
 
-async fn read_debug_rpc_body(request: Request<Body>) -> Result<Vec<u8>, Box<Response>> {
-    const DEBUG_RPC_BODY_MAX_BYTES: usize = DEBUG_RELAY_CHUNK_MAX_BYTES * 2 + 1024;
+async fn collect_bounded_rpc_body(
+    mut body: Body,
+    max_bytes: usize,
+    budget: &Arc<Semaphore>,
+    too_large_code: &'static str,
+) -> Result<(Bytes, Vec<OwnedSemaphorePermit>), Box<Response>> {
+    let mut chunks = Vec::new();
+    let mut reservations = Vec::new();
+    let mut body_bytes = 0usize;
 
-    if request.version() != Version::HTTP_2 {
-        return Err(Box::new(http2_response(
-            StatusCode::BAD_REQUEST,
-            "Crucible RPC requires HTTP/2",
-        )));
-    }
-    axum::body::to_bytes(request.into_body(), DEBUG_RPC_BODY_MAX_BYTES)
-        .await
-        .map(|body| body.to_vec())
-        .map_err(|error| {
+    while let Some(frame) = body.frame().await {
+        let frame = frame.map_err(|error| {
+            Box::new(typed_rpc_status_response(
+                StatusCode::BAD_REQUEST,
+                RpcStatusCode::InvalidArgument,
+                "request-body-invalid",
+                &error.to_string(),
+            ))
+        })?;
+        let Ok(data) = frame.into_data() else {
+            continue;
+        };
+
+        body_bytes = body_bytes.checked_add(data.len()).ok_or_else(|| {
             Box::new(typed_rpc_status_response(
                 StatusCode::PAYLOAD_TOO_LARGE,
                 RpcStatusCode::InvalidArgument,
-                "debug-request-too-large",
-                &error.to_string(),
+                too_large_code,
+                "RPC request exceeds its bounded wire envelope",
             ))
-        })
+        })?;
+        if body_bytes > max_bytes {
+            return Err(Box::new(typed_rpc_status_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                RpcStatusCode::InvalidArgument,
+                too_large_code,
+                "RPC request exceeds its bounded wire envelope",
+            )));
+        }
+
+        let chunk_bytes = u32::try_from(data.len()).map_err(|_| {
+            Box::new(typed_rpc_status_response(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                RpcStatusCode::InvalidArgument,
+                too_large_code,
+                "RPC request frame exceeds the runtime accounting range",
+            ))
+        })?;
+        let reservation = Arc::clone(budget)
+            .try_acquire_many_owned(chunk_bytes)
+            .map_err(|_| {
+                Box::new(typed_rpc_status_response(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    RpcStatusCode::Internal,
+                    "request-budget-exhausted",
+                    "RPC request body capacity is temporarily unavailable",
+                ))
+            })?;
+
+        reservations.push(reservation);
+        chunks.push(data);
+    }
+
+    let bytes = if chunks.len() == 1 {
+        match chunks.pop() {
+            Some(chunk) => chunk,
+            None => Bytes::new(),
+        }
+    } else {
+        let mut contiguous = BytesMut::with_capacity(body_bytes);
+        for chunk in chunks {
+            contiguous.extend_from_slice(&chunk);
+        }
+        contiguous.freeze()
+    };
+
+    Ok((bytes, reservations))
+}
+
+async fn read_debug_rpc_body(
+    request: Request<Body>,
+    budget: &Arc<Semaphore>,
+) -> Result<BoundedRpcBody, Box<Response>> {
+    read_bounded_rpc_body(
+        request,
+        DEBUG_RPC_BODY_MAX_BYTES,
+        budget,
+        "debug-request-too-large",
+    )
+    .await
 }
 
 fn parse_hello_request(body: &[u8]) -> Result<HelloRequest, String> {

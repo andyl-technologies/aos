@@ -2851,6 +2851,7 @@ dependencies = [
  "crucible-qemu-shmem",
  "crucible-session",
  "futures-util",
+ "http-body-util",
  "hyper-util",
  "rcgen",
  "rustix 1.1.4",
