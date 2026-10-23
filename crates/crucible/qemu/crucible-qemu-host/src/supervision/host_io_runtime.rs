@@ -845,6 +845,12 @@ impl QemuHostIoRuntime for QemuLiveHostIoRuntime {
         Result<(), crate::ram_control::RamControlRetirementHistory>,
     ) {
         if let Some(cleanup) = &self.launch_cleanup {
+            if !progress.bind(cleanup) {
+                return (
+                    false,
+                    Err(crate::ram_control::RamControlRetirementProgress::unavailable()),
+                );
+            }
             match cleanup.publication() {
                 Ok(false) => return (true, Ok(())),
                 Ok(true) => {}

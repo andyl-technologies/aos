@@ -8,7 +8,10 @@
 //! to independent retirement authority; closing the registry's controller prepares
 //! retirement, while final resource destruction still owns capacity discharge.
 //! The final observer frees its shared allocation before the extracted record
-//! retires custody; the original control loan is the record's last field.
+//! retires custody; the original control loan is the finalizer's last field.
+//! Controller progress takes its prepaid first-error allocation before provider
+//! entry. Erased errors share only the independent finalizer, so an actual error
+//! retaining its launch cannot form a root-to-error-to-root ownership cycle.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -22,6 +25,12 @@ use crucible_qemu_protocol::ram_control::RamControlError;
 
 mod retained_record;
 use retained_record::RetainedCleanupRecord;
+
+mod retained_finalizer;
+use retained_finalizer::RetainedCleanupFinalizer;
+
+mod retirement_cause;
+pub(crate) use retirement_cause::ControllerReturnCause;
 #[cfg(target_os = "linux")]
 mod unreaped_child;
 #[cfg(target_os = "linux")]
@@ -117,7 +126,30 @@ struct CleanupAuthority {
     resources: HostResourceVector,
 }
 
+/// Separates immutable cause custody from the last accounting transition.
 struct CleanupRecord {
+    // Release this identity alias before the finalizer can discharge accounting.
+    registration_identity: Option<(HostRamTarget, std::sync::Weak<dyn RamControlRegistrar>)>,
+    retirement_cause: Mutex<Option<crucible_engine::SharedOperationalCause<ControllerReturnCause>>>,
+    retirement_claimed: AtomicBool,
+    finalizer: RetainedCleanupFinalizer,
+}
+
+impl std::ops::Deref for CleanupRecord {
+    type Target = CleanupFinalizer;
+
+    fn deref(&self) -> &Self::Target {
+        &self.finalizer
+    }
+}
+
+impl std::fmt::Debug for CleanupRecord {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.finalizer.fmt(formatter)
+    }
+}
+
+struct CleanupFinalizer {
     target: Option<HostRamTarget>,
     authority: Mutex<CleanupAuthority>,
     #[cfg(target_os = "linux")]
@@ -158,7 +190,7 @@ struct CleanupRecord {
         Option<crucible_host_resources::host_services::process_birth::SourceHostControlLease>,
 }
 
-impl std::fmt::Debug for CleanupRecord {
+impl std::fmt::Debug for CleanupFinalizer {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("CleanupRecord")
@@ -171,13 +203,44 @@ impl std::fmt::Debug for CleanupRecord {
 }
 
 impl LaunchCleanup {
+    pub(crate) fn same_return_owner(&self, other: &Self) -> bool {
+        self.inner.same_owner(&other.inner)
+    }
+
+    /// Transfers the original prelaunch cause control to one return owner.
+    ///
+    /// Taking it before provider entry avoids a cycle if that provider's actual
+    /// error itself retains this launch. A refused claim never calls a provider.
+    pub(crate) fn claim_controller_return(
+        &self,
+    ) -> Option<crucible_engine::SharedOperationalCause<ControllerReturnCause>> {
+        self.inner
+            .retirement_claimed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()?;
+        self.inner.retirement_cause.try_lock().ok()?.take()
+    }
+
+    pub(crate) fn matches_return_registration(
+        &self,
+        registration: &RamControlRegistration,
+    ) -> bool {
+        self.inner
+            .registration_identity
+            .as_ref()
+            .is_some_and(|(target, registrar)| {
+                *target == registration.target
+                    && std::sync::Weak::ptr_eq(registrar, &Arc::downgrade(&registration.registrar))
+            })
+    }
+
     pub(crate) fn retained_control_bytes() -> Option<u64> {
         RetainedCleanupRecord::allocation_peak_bytes()
     }
 
     pub(crate) fn new(registration: &RamControlRegistration) -> Self {
         Self {
-            inner: RetainedCleanupRecord::new(CleanupRecord {
+            inner: RetainedCleanupRecord::new(CleanupFinalizer {
                 target: Some(registration.target),
                 authority: Mutex::new(CleanupAuthority {
                     registrar: Some(Arc::clone(&registration.registrar)),
@@ -237,7 +300,7 @@ impl LaunchCleanup {
             .reserve_controls(0, bytes)
             .map_err(crate::linux_attempt_host::OriginalActorAccountError::from)?;
         Ok(Self {
-            inner: RetainedCleanupRecord::new(CleanupRecord {
+            inner: RetainedCleanupRecord::new(CleanupFinalizer {
                 target: registration.map(|registration| registration.target),
                 authority: Mutex::new(CleanupAuthority {
                     registrar: registration.map(|registration| Arc::clone(&registration.registrar)),
@@ -723,7 +786,7 @@ fn retain_unproven_target_workspace(
     }
 }
 
-impl Drop for CleanupRecord {
+impl Drop for CleanupFinalizer {
     fn drop(&mut self) {
         // Normal refusal has already closed its local owner. Destroy the real
         // cause and its control before registrar retirement can refund the

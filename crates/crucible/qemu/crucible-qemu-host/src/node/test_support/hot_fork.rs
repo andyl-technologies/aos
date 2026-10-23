@@ -784,6 +784,12 @@ impl QemuHostIoRuntime for ScriptedHostIoRuntime {
         let Some(owner) = self.checkpoint.as_ref() else {
             return (true, Ok(()));
         };
+        if !progress.bind(&owner.cleanup.cleanup) {
+            return (
+                false,
+                Err(crate::ram_control::RamControlRetirementProgress::unavailable()),
+            );
+        }
         let (returned, status) = progress.return_controller(&owner.registration, original);
         if returned {
             self.checkpoint = None;

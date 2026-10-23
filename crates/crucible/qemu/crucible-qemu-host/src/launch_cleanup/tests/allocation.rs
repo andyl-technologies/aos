@@ -12,7 +12,7 @@ pub(crate) struct Fixture {
     pub(crate) cleanup: LaunchCleanup,
     pub(crate) accounts: [HostServiceAllocator; 2],
     pub(crate) bytes: u64,
-    allocation: AllocationIdentity,
+    pub(crate) allocation: AllocationIdentity,
 }
 
 fn allocation_layout() -> Layout {
@@ -28,6 +28,14 @@ fn allocation_layout() -> Layout {
 /// # Panics
 /// Panics if component funding or the allocation observer cannot be established.
 pub(crate) fn fixture() -> Fixture {
+    fixture_observing(allocation_layout())
+}
+
+/// Captures one actual control allocation under complete paired funding.
+///
+/// # Panics
+/// Panics if funding, layout observation or the expected allocation count fails.
+pub(crate) fn fixture_observing(layout: Layout) -> Fixture {
     let bytes = LaunchCleanup::retained_control_bytes()
         .unwrap_or_else(|| panic!("cleanup fixture charge must be representable"));
     let accounts = [
@@ -52,11 +60,11 @@ pub(crate) fn fixture() -> Fixture {
     );
     let (registration, registrar) = registration_with_funding(false, None, Some(funding));
     let (cleanup, allocation, counts) =
-        TestAllocationObserver::capture_layout_and_count(allocation_layout(), || {
+        TestAllocationObserver::capture_layout_and_count(layout, || {
             LaunchCleanup::new(&registration)
         });
 
-    assert_eq!(counts.allocations, 1);
+    assert_eq!(counts.allocations, 3);
     assert_eq!(counts.reallocations, 0);
     assert!(!counts.overflow);
     // Only the actual cleanup record keeps this registrar and its real charges.

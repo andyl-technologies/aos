@@ -1,7 +1,13 @@
 //! Records controller return before independent original observations.
+//!
+//! Each canonical progress owner takes the launch's prepaid cause storage before
+//! observing publication or entering its provider. Erased failures retain the
+//! independent accounting finalizer without linking that storage back to the
+//! launch, including when the actual provider error itself retains the launch.
 
 use super::*;
 use crucible_engine::BackendOperationalCause;
+use crate::launch_cleanup::LaunchCleanup;
 use crucible_host_resources::host_supervision::HostSupervisionError;
 
 /// Preserves controller-return failures separately from actual physical return.
@@ -21,6 +27,10 @@ pub struct RamControlRetirementHistory {
 /// Keeps one controller's bounded physical return and raw history.
 #[derive(Debug)]
 pub struct RamControlRetirementProgress {
+    cleanup: Option<LaunchCleanup>,
+    cause: Option<
+        crucible_engine::SharedOperationalCause<crate::launch_cleanup::ControllerReturnCause>,
+    >,
     entered: bool,
     disposition: RamControlRetirementDisposition,
     history: RamControlRetirementHistory,
@@ -35,9 +45,14 @@ impl Default for RamControlRetirementProgress {
 }
 
 impl RamControlRetirementProgress {
-    /// Constructs unentered return custody before the containing body is born.
+    /// Constructs unbound progress without admitting a controller return.
+    ///
+    /// The launch owner must bind its prepaid storage before any publication
+    /// observation or provider entry. [`Self::for_launch`] prepares public callers.
     pub const fn new() -> Self {
         Self {
+            cleanup: None,
+            cause: None,
             entered: false,
             disposition: RamControlRetirementDisposition::NotReturned,
             history: RamControlRetirementHistory {
@@ -51,13 +66,53 @@ impl RamControlRetirementProgress {
         }
     }
 
+    /// Binds one progress owner to an already constructed launch allocation.
+    ///
+    /// Construction allocates nothing and grants no physical return. The launch
+    /// must have admitted its complete control peak before creating its custody.
+    ///
+    /// # Errors
+    /// Refuses a launch whose canonical controller progress was already claimed.
+    pub fn for_launch(custody: &crate::QemuRamLaunchCustody) -> Result<Self, RamControlError> {
+        let mut progress = Self::new();
+        if !progress.bind(&custody.cleanup) {
+            return Err(RamControlError::AuthorityMismatch);
+        }
+        Ok(progress)
+    }
+
+    pub(crate) fn bind(&mut self, cleanup: &LaunchCleanup) -> bool {
+        if let Some(retained) = &self.cleanup {
+            return retained.same_return_owner(cleanup);
+        }
+        let Some(cause) = cleanup.claim_controller_return() else {
+            return false;
+        };
+        self.cause = Some(cause);
+        self.cleanup = Some(cleanup.clone());
+        true
+    }
+
+    pub(crate) const fn unavailable() -> RamControlRetirementHistory {
+        RamControlRetirementHistory {
+            first: None,
+            before: Some(HostSupervisionError::Unavailable),
+            after: None,
+            uncertain: false,
+        }
+    }
+
     /// Retains an unavailable publication observation without returning custody.
     pub(crate) fn refuse_publication(
         &mut self,
         first: RamControlError,
     ) -> (bool, Result<(), RamControlRetirementHistory>) {
+        let Some(cause) = &self.cause else {
+            return (false, Err(Self::unavailable()));
+        };
         if self.history.first.is_none() {
-            self.history.first = Some(BackendOperationalCause::new(first));
+            cause.source_ref().retain(first);
+            self.history.first = Some(cause.backend_cause());
             self.version += 1;
         }
         if !self.history.uncertain {
@@ -76,11 +131,20 @@ impl RamControlRetirementProgress {
     /// # Errors
     /// The status retains provider and independent boundary failures. Unknown
     /// effects are never replayed; a successful return is saved before post.
+    /// Unprepared progress and a registration from another launch fail closed
+    /// before entering the provider.
     pub fn return_controller(
         &mut self,
         registration: &RamControlRegistration,
         original: Option<RamCleanupOriginal<'_>>,
     ) -> (bool, Result<(), RamControlRetirementHistory>) {
+        let prepared = self
+            .cleanup
+            .as_ref()
+            .is_some_and(|cleanup| cleanup.matches_return_registration(registration));
+        let Some(cause) = self.cause.as_ref().filter(|_| prepared) else {
+            return (false, Err(Self::unavailable()));
+        };
         if self.disposition == RamControlRetirementDisposition::Returned {
             return self.observation();
         }
@@ -105,7 +169,8 @@ impl RamControlRetirementProgress {
         if self.history.first.is_none()
             && let Some(first) = returned.failure
         {
-            self.history.first = Some(BackendOperationalCause::new(first));
+            cause.source_ref().retain(first);
+            self.history.first = Some(cause.backend_cause());
             self.version += 1;
         }
         if returned.disposition == RamControlRetirementDisposition::Unknown {

@@ -109,6 +109,7 @@ impl RamControlRegistrar for Registrar {
 pub(crate) struct Ownership {
     pub(crate) supervisor: HostOperationSupervisor,
     pub(crate) registration: RamControlRegistration,
+    pub(crate) cleanup: crate::QemuRamLaunchCustody,
     cancellation: OwnedFd,
     qmp: Mutex<QmpClient<Wire>>,
     observations: Arc<Mutex<Observations>>,
@@ -197,9 +198,11 @@ impl Ownership {
                 observations: observations.clone(),
             }),
         };
+        let cleanup = crate::QemuRamLaunchCustody::new(&registration);
         Ok(Arc::new(Self {
             supervisor,
             registration,
+            cleanup,
             cancellation,
             qmp: Mutex::new(qmp),
             observations,
@@ -867,7 +870,7 @@ mod retirement_tests {
             HostOperationBudget::finite(Duration::from_nanos(1));
         owner.supervisor.update_budgets(revision, budgets)?;
         assert!(original.wait_slice().is_err());
-        let mut progress = RamControlRetirementProgress::new();
+        let mut progress = RamControlRetirementProgress::for_launch(&owner.cleanup)?;
         let same_original = Some(RamCleanupOriginal::direct(&original, &owner.supervisor));
 
         let (returned, status) = progress.return_controller(&owner.registration, same_original);

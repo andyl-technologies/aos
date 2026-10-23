@@ -836,3 +836,6 @@ fn poisoned_publication_keeps_actual_runtime_registration_and_refuses_return()
     assert_eq!(registrar.normal_retired.load(Ordering::Acquire), 0);
     Ok(())
 }
+
+#[path = "tests/retirement.rs"]
+mod retirement;

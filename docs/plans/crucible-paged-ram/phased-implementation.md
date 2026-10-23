@@ -1243,7 +1243,9 @@ All 5,368 committed Rust/TOML files and six fixtures were independently matched
 to each build's complete immutable source. The retained-custody contract build
 at `32cb19e316` also passes at `vw6alzv06iz8zr74fz3ssvmlvblvfwzc`, with the
 same complete source and fixture correspondence. The cancellation-cause
-application build remains in progress.
+application build for `7277cfa58c` now passes at
+`y74i0wid9zab019d4s6acn905yd4l727`, with all 5,369 committed Rust/TOML files
+and six fixtures independently matched to its immutable source.
 
 Source cancellation failure publication now uses a separate immutable cause
 body allocated under the stop journal's original loan before worker birth.
@@ -1350,6 +1352,31 @@ All 22 host publisher controls, seven plugin publisher controls, both new
 classification controls and source shape pass. The complete testing-standards
 suite passes 84 controls and retains one broad failure over thirteen daemon
 paths. Mandatory application-target compilation remains pending.
+
+Controller-return progress now takes the launch's prepaid first-error storage
+before publication inspection or provider entry. Construction admits the root,
+cause and independent accounting finalizer together. Every shared owner closes
+its allocation before the payload can release its original control loan. An
+erased provider error keeps that finalizer alive after the launch closes; taking
+the cause out of the root also prevents a cycle when the actual error retains
+the launch. The exact original target and registrar identity reject foreign
+controllers, and each launch permits one canonical progress claim.
+
+The component controls retain the first typed provider error without publication
+or repeat allocations, preserve paired-account credit through all three actual
+control frees, and close an error that itself retains the launch. These component
+accounts do not issue Main, native Source, operation or physical-return authority.
+The full host suite passes 1,377 tests with the same eight unissued helper-launch
+failures and four ignored tests. All 121 hot-fork and 42 retirement-filtered
+controls pass. Replacing the finalizer's closed shared owner with ordinary Arc
+destruction makes the actual deallocation control fail: both accounts have
+already refunded all 6,336 admitted bytes when the header is freed. Exact source
+restoration passes. The complete testing-standards suite retains its same
+84 passing controls and thirteen-path daemon classification failure. Strict
+Clippy retains the existing 674 library and 723 test errors after correcting
+the new fixture layout helper. Source shape passes with updated review records. Controller history
+remains inline; compact prepaid receipt storage, public shutdown collections and
+the complete native issuer path remain unfinished.
 
 #### Cumulative construction and request ownership source
 

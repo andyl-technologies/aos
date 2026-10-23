@@ -6,10 +6,11 @@
 use std::alloc::Layout;
 use std::fmt;
 use std::ops::Deref;
-use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 
-use super::CleanupRecord;
+use super::{CleanupFinalizer, CleanupRecord, ControllerReturnCause, RetainedCleanupFinalizer};
+use crucible_engine::SharedOperationalCause;
 
 /// Shares the same prepaid record without exposing its reference counters.
 pub(super) struct RetainedCleanupRecord {
@@ -18,9 +19,24 @@ pub(super) struct RetainedCleanupRecord {
 
 impl RetainedCleanupRecord {
     /// Allocates only after the containing caller admits the complete peak.
-    pub(super) fn new(record: CleanupRecord) -> Self {
+    pub(super) fn new(mut record: CleanupFinalizer) -> Self {
+        let registrar = record
+            .authority
+            .get_mut()
+            .ok()
+            .and_then(|authority| authority.registrar.as_ref().map(Arc::downgrade));
+        let registration_identity = record.target.zip(registrar);
+        let finalizer = RetainedCleanupFinalizer::new(record);
+        let retirement_cause =
+            SharedOperationalCause::new(ControllerReturnCause::new(finalizer.clone()));
+
         Self {
-            shared: Some(Arc::new(record)),
+            shared: Some(Arc::new(CleanupRecord {
+                finalizer,
+                retirement_cause: Mutex::new(Some(retirement_cause)),
+                retirement_claimed: AtomicBool::new(false),
+                registration_identity,
+            })),
         }
     }
 
@@ -29,13 +45,16 @@ impl RetainedCleanupRecord {
         let (allocation, _) = Layout::new::<[AtomicUsize; 2]>()
             .extend(Layout::new::<CleanupRecord>())
             .ok()?;
-        allocation
+        let root_peak: u64 = allocation
             .pad_to_align()
             .size()
             .checked_add(std::mem::size_of::<CleanupRecord>())?
             .checked_add(std::mem::size_of::<Self>())?
             .try_into()
-            .ok()
+            .ok()?;
+        root_peak
+            .checked_add(RetainedCleanupFinalizer::allocation_peak_bytes()?)?
+            .checked_add(ControllerReturnCause::peak_bytes()?)
     }
 
     /// Compares existing allocation identities without granting cleanup.

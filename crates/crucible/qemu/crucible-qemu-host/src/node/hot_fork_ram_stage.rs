@@ -523,15 +523,22 @@ impl QemuHotForkRamContinuation {
                 .map(crate::ram_control::RamCleanupOriginal::target),
         );
         if returned {
-            let (closed, status) = match self.cleanup.publication() {
-                Ok(false) => (true, Ok(())),
-                Ok(true) => history.retirement[1].return_controller(
-                    &self.registration,
-                    self.cleanup_original
-                        .as_ref()
-                        .map(crate::ram_control::RamCleanupOriginal::target),
-                ),
-                Err(first) => history.retirement[1].refuse_publication(first),
+            let (closed, status) = if !history.retirement[1].bind(&self.cleanup) {
+                (
+                    false,
+                    Err(crate::ram_control::RamControlRetirementProgress::unavailable()),
+                )
+            } else {
+                match self.cleanup.publication() {
+                    Ok(false) => (true, Ok(())),
+                    Ok(true) => history.retirement[1].return_controller(
+                        &self.registration,
+                        self.cleanup_original
+                            .as_ref()
+                            .map(crate::ram_control::RamCleanupOriginal::target),
+                    ),
+                    Err(first) => history.retirement[1].refuse_publication(first),
+                }
             };
             history.controller(1, status);
             returned &= closed;
@@ -563,6 +570,13 @@ impl QemuHotForkRamContinuation {
             return false;
         }
         if !history.source(2, &mut self.source, original) {
+            return false;
+        }
+        if !history.retirement[1].bind(&self.cleanup) {
+            history.controller(
+                1,
+                Err(crate::ram_control::RamControlRetirementProgress::unavailable()),
+            );
             return false;
         }
         let (returned, status) = match self.cleanup.publication() {
