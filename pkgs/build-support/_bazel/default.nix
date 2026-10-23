@@ -97,6 +97,26 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    hub-db = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-db";
+    };
+    hub-db-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-db-tests";
+    };
+    hub-db-all-features = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-db-all-features";
+    };
+    hub-db-all-features-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "hub-db-all-features-tests";
+    };
     package-manager = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -336,6 +356,46 @@
     dependencyProfile = "control";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
+  };
+  aosBazelHubDbWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = [
+      "tools/bazel"
+      "third_party/rust"
+      "crates/aos/modules/aos-module-docs"
+      "crates/aos/modules/aos-module-format"
+      "crates/aos/registry/aos-registry-format"
+      "crates/aos/release/aos-release-format"
+      "crates/hub/aos-hub-db"
+      "crates/hub/aos-hub-model"
+      "crates/shared/aos-artifact-evidence"
+      "crates/shared/aos-core"
+      "crates/shared/aos-oci-types"
+    ];
+    repositories = aosBazelRepositories // aosBazelRustRepositories.hub-db-tests // {aos_native = aosBazelStoreLibraries;};
+    dependencyProfile = "hub-db-tests";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = ["//crates/hub/aos-hub-db:unit"];
+  };
+  aosBazelHubDbAllFeaturesWorkspace = mkAosBazelWorkspace {
+    root = ../../..;
+    sourceDirectories = [
+      "tools/bazel"
+      "third_party/rust"
+      "crates/aos/modules/aos-module-docs"
+      "crates/aos/modules/aos-module-format"
+      "crates/aos/registry/aos-registry-format"
+      "crates/aos/release/aos-release-format"
+      "crates/hub/aos-hub-db"
+      "crates/hub/aos-hub-model"
+      "crates/shared/aos-artifact-evidence"
+      "crates/shared/aos-core"
+      "crates/shared/aos-oci-types"
+    ];
+    repositories = aosBazelRepositories // aosBazelRustRepositories.hub-db-all-features-tests // {aos_native = aosBazelStoreLibraries;};
+    dependencyProfile = "hub-db-all-features-tests";
+    rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
+    analysisTargets = ["//crates/hub/aos-hub-db:unit"];
   };
   aosBazelPackageManagerWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -792,6 +852,16 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelControlWorkspace;
+    }).launcher;
+  aosBazelHubDbLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelHubDbWorkspace;
+    }).launcher;
+  aosBazelHubDbAllFeaturesLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelHubDbAllFeaturesWorkspace;
     }).launcher;
   aosBazelPackageManagerLauncher =
     (import ./development.nix {

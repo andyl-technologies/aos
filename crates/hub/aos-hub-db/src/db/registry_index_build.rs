@@ -191,6 +191,10 @@ impl Database {
     ///
     /// Returns an error for a stale claim, unexpected visible generation,
     /// malformed digest, or persistence failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn complete_registry_index_build(
         &self,
         registry_id: i64,

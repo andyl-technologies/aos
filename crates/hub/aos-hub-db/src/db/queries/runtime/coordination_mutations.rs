@@ -202,6 +202,10 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error for a stale authority or an ineligible candidate.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn request_surface_write_promotion(
         &self,
         authority_id: i64,

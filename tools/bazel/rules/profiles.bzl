@@ -2,6 +2,10 @@
 
 def _dependency_profile_impl(ctx):
     if ctx.build_setting_value not in [
+        "hub-db",
+        "hub-db-tests",
+        "hub-db-all-features",
+        "hub-db-all-features-tests",
         "package-manager",
         "package-manager-tests",
         "boot-preparation",

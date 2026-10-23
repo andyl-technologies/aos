@@ -47,6 +47,7 @@
         "crates/aos/release/aos-release-signer/Cargo.toml"
         "crates/hub/aos-hub-client/Cargo.toml"
         "crates/hub/aos-hub-model/Cargo.toml"
+        "crates/hub/aos-hub-db/Cargo.toml"
         "crates/hub/aos-hub-api/Cargo.toml"
         "crates/hub/aos-hub-ui/Cargo.toml"
         "crates/aos/packages/aos-deployment/Cargo.toml"
@@ -139,6 +140,7 @@ in
     native-foundation = import ./_bazel-native-foundation.nix {inherit pkgs;};
     activation-core = import ./_bazel-activation-core.nix {inherit pkgs;};
     activation-storage = import ./_bazel-activation-storage.nix {inherit pkgs;};
+    hub-db = import ./_bazel-hub-db.nix {inherit pkgs;};
     package-manager = import ./_bazel-package-manager.nix {inherit pkgs;};
     boot-preparation = import ./_bazel-boot-preparation.nix {inherit pkgs;};
     release-coordination = import ./_bazel-release-coordination.nix {inherit pkgs;};
@@ -353,6 +355,8 @@ in
         native-foundation.tests
         activation-core.tests
         activation-storage.tests
+        hub-db.default.tests
+        hub-db.all-features.tests
         package-manager.tests
         boot-preparation.tests
         boot-preparation.without-boot-tools.tests
@@ -469,6 +473,7 @@ in
             activation-crucible.all
             cli-support.all
             build-services.all
+            hub-db.all
             package-manager.all
             boot-preparation.all
             release-coordination.all

@@ -7,6 +7,11 @@ load(":boot-preparation-minimal/aliases.bzl", BOOT_PREPARATION_MINIMAL_CRATES = 
 load(":package-manager.bzl", "PACKAGE_MANAGER_FEATURE_VARIANTS", "PACKAGE_MANAGER_PACKAGES", "PACKAGE_MANAGER_TESTS_FEATURE_VARIANTS", "PACKAGE_MANAGER_TESTS_PACKAGES")
 load(":package-manager/aliases.bzl", PACKAGE_MANAGER_CRATES = "CRATES")
 load(":package-manager-tests/aliases.bzl", PACKAGE_MANAGER_TESTS_CRATES = "CRATES")
+load(":hub-db.bzl", "HUB_DB_PACKAGES", "HUB_DB_FEATURE_VARIANTS", "HUB_DB_TESTS_PACKAGES", "HUB_DB_TESTS_FEATURE_VARIANTS", "HUB_DB_ALL_FEATURES_PACKAGES", "HUB_DB_ALL_FEATURES_FEATURE_VARIANTS", "HUB_DB_ALL_FEATURES_TESTS_PACKAGES", "HUB_DB_ALL_FEATURES_TESTS_FEATURE_VARIANTS")
+load(":hub-db/aliases.bzl", HUB_DB_CRATES = "CRATES")
+load(":hub-db-tests/aliases.bzl", HUB_DB_TESTS_CRATES = "CRATES")
+load(":hub-db-all-features/aliases.bzl", HUB_DB_ALL_FEATURES_CRATES = "CRATES")
+load(":hub-db-all-features-tests/aliases.bzl", HUB_DB_ALL_FEATURES_TESTS_CRATES = "CRATES")
 load(":release-coordination.bzl", "RELEASE_COORDINATION_FEATURE_VARIANTS", "RELEASE_COORDINATION_PACKAGES")
 load(":release-coordination/aliases.bzl", RELEASE_COORDINATION_CRATES = "CRATES")
 load(":registry-native.bzl", "REGISTRY_NATIVE_FEATURE_VARIANTS", "REGISTRY_NATIVE_PACKAGES")
@@ -52,6 +57,10 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:hub_db_dependencies": HUB_DB_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:hub_db_tests_dependencies": HUB_DB_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:hub_db_all_features_dependencies": HUB_DB_ALL_FEATURES_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:hub_db_all_features_tests_dependencies": HUB_DB_ALL_FEATURES_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:package_manager_dependencies": PACKAGE_MANAGER_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:package_manager_tests_dependencies": PACKAGE_MANAGER_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:boot_preparation_dependencies": BOOT_PREPARATION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -93,7 +102,11 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         visibility = ["//visibility:public"],
     )
     for name in sorted(dict(
-        PACKAGE_MANAGER_CRATES.items()
+        HUB_DB_CRATES.items()
+        + HUB_DB_TESTS_CRATES.items()
+        + HUB_DB_ALL_FEATURES_CRATES.items()
+        + HUB_DB_ALL_FEATURES_TESTS_CRATES.items()
+        + PACKAGE_MANAGER_CRATES.items()
         + PACKAGE_MANAGER_TESTS_CRATES.items()
         + BOOT_PREPARATION_CRATES.items()
         + BOOT_PREPARATION_MINIMAL_CRATES.items()
@@ -203,6 +216,10 @@ STORE_ANNOTATIONS = {
             "PKG_CONFIG_ALLOW_CROSS": "1",
         },
     ),
+}
+
+HUB_DB_ANNOTATIONS = {
+    "libsqlite3-sys": STORE_ANNOTATIONS["libsqlite3-sys"],
 }
 
 # Guest tests add campaign/store to the protocol and emitter closure. The
@@ -915,6 +932,10 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    "hub-db": HUB_DB_FEATURE_VARIANTS,
+    "hub-db-tests": HUB_DB_TESTS_FEATURE_VARIANTS,
+    "hub-db-all-features": HUB_DB_ALL_FEATURES_FEATURE_VARIANTS,
+    "hub-db-all-features-tests": HUB_DB_ALL_FEATURES_TESTS_FEATURE_VARIANTS,
     "package-manager": PACKAGE_MANAGER_FEATURE_VARIANTS,
     "package-manager-tests": PACKAGE_MANAGER_TESTS_FEATURE_VARIANTS,
     "boot-preparation": BOOT_PREPARATION_FEATURE_VARIANTS,
@@ -1678,6 +1699,10 @@ APPROVED_LICENSES = [
         family = family,
         definition = "BUILD.bazel",
         extra_definitions = {
+            "hub-db": ["hub-db.bzl"],
+            "hub-db-tests": ["hub-db.bzl"],
+            "hub-db-all-features": ["hub-db.bzl"],
+            "hub-db-all-features-tests": ["hub-db.bzl"],
             "package-manager": ["package-manager.bzl"],
             "package-manager-tests": ["package-manager.bzl"],
             "boot-preparation": ["boot-preparation.bzl"],
@@ -1710,6 +1735,10 @@ APPROVED_LICENSES = [
         ("boot-preparation-minimal", BOOT_PREPARATION_MINIMAL_PACKAGES, {name: annotation for name, annotation in NATIVE_FOUNDATION_ANNOTATIONS.items() if name != "zstd-sys"}, "apache-host"),
         ("package-manager", PACKAGE_MANAGER_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
         ("package-manager-tests", PACKAGE_MANAGER_TESTS_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
+        ("hub-db", HUB_DB_PACKAGES, HUB_DB_ANNOTATIONS, "apache-host"),
+        ("hub-db-tests", HUB_DB_TESTS_PACKAGES, HUB_DB_ANNOTATIONS, "apache-host"),
+        ("hub-db-all-features", HUB_DB_ALL_FEATURES_PACKAGES, HUB_DB_ANNOTATIONS, "apache-host"),
+        ("hub-db-all-features-tests", HUB_DB_ALL_FEATURES_TESTS_PACKAGES, HUB_DB_ANNOTATIONS, "apache-host"),
         ("release-coordination", RELEASE_COORDINATION_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
         ("registry-native", REGISTRY_NATIVE_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
         ("registry-native-tests", REGISTRY_NATIVE_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
@@ -1756,6 +1785,10 @@ APPROVED_LICENSES = [
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
     for family in [
+        "hub-db",
+        "hub-db-tests",
+        "hub-db-all-features",
+        "hub-db-all-features-tests",
         "package-manager",
         "package-manager-tests",
         "boot-preparation",

@@ -2475,3 +2475,48 @@ conditional real-cache fixtures retain their existing dedicated gates. No
 service or remote cache is introduced. Performance of ordered collections, complete
 compiler invocation equivalence, foreign/Wasm execution, numeric performance acceptance,
 production migration, and Cargo removal remain separate work.
+
+## Hub database family
+
+`aos-dev bazel --family hub-db` selects the native SQLite persistence library.
+`--family hub-db-all-features` additionally enables PostgreSQL, MySQL, query
+timing, disposable-worker support, and fixture helpers. These configurations
+have separate production and test dependency profiles. The default profiles
+pin 213 and 224 source crates; the all-feature profiles pin 248 and 259. Each
+preserves two reviewed target/exec feature distinctions from Cargo.
+
+The library and unit target declare all eight checked-in SQL inputs. Source
+ownership retains those files as loading data, so strict workspace selection
+does not depend on undeclared migration files. SQLite comes from the AOS
+source-built native repository, and dependency resolution remains an explicit
+update operation. Ordinary compilation uses pinned local repositories.
+
+SQL parameter vectors retain their existing owned storage. String-keyed lookup
+collections use ordered maps and sets, and security nonces and draft-signing
+seeds obtain fallible platform entropy. Existing persistence argument lists,
+optional service-latency clocks, and the public inline OCI projection have
+scoped lint exceptions with explicit reasons. The source audit preserves all
+281 test declarations and their assertion counts across 166 Rust files.
+
+`tests/evidence/hub-db-developer-checkpoint.json` retains passing conservative
+native tests, four strict Clippy actions, Rustdoc, and formatting for all
+thirty-two Rust corrections. All selected actions run uncached in the Linux
+sandbox without invoking Cargo. Strict configured staging, fresh Cargo
+comparisons, and selected editor parity qualify separate checkpoints.
+
+`tests/evidence/hub-db-configured-graph.json` retains all 34 configured family
+inventories, 41 dependency specifications, 186 policy tests, and CLI checks for
+30 launchers. The previous 37 locks and 7,358 generated crate BUILD files stay
+unchanged. The database inventory contains sixteen requested roots, 950
+configured reports, and 343 declared files: 332 Rust files, eight SQL files,
+and three Bazel support files. Engine loading inputs grow by the eight SQL
+files while Rust source ownership remains unchanged.
+
+The unchanged Cargo baselines retain 272 default unit cases and 281 all-feature
+unit cases, with two passing and one ignored doctest in each configuration. Both Cargo
+and Bazel use four outer workers; the concurrent-installation case retains its
+internal concurrency and timeout. The initial host-default Cargo run exhausted
+SQLite's writer-lock timeout and remains recorded in the default baseline.
+Live PostgreSQL/MySQL services, foreign/Wasm execution, compiler invocation
+equivalence, performance acceptance, production cutover, and Cargo removal
+remain separate gates.

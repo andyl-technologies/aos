@@ -24,6 +24,10 @@ impl Database {
     ///
     /// Returns the same errors as [`Self::create_project`], plus a duplicate
     /// plan conflict.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn create_project_from_plan(
         &self,
         org_id: i64,

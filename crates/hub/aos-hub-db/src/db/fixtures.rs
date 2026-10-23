@@ -53,7 +53,7 @@ pub async fn route_fixture() -> (Database, i64, RouteSpec, String, [u8; 32]) {
         .create_surface_placement(&crate::db::NewSurfacePlacementSpec {
             surface: SurfaceTarget::Registry(registry_id),
             name: "primary".to_string(),
-            binding_id: binding_id,
+            binding_id,
             prefix: "registry-route-probes".to_string(),
             kind: "complete".to_string(),
             desired_state: "active".to_string(),

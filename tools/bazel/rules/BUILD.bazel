@@ -310,3 +310,27 @@ config_setting(
     flag_values = {":dependency_profile": "package-manager-tests"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "hub_db_dependencies",
+    flag_values = {":dependency_profile": "hub-db"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_db_tests_dependencies",
+    flag_values = {":dependency_profile": "hub-db-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_db_all_features_dependencies",
+    flag_values = {":dependency_profile": "hub-db-all-features"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "hub_db_all_features_tests_dependencies",
+    flag_values = {":dependency_profile": "hub-db-all-features-tests"},
+    visibility = ["//visibility:public"],
+)

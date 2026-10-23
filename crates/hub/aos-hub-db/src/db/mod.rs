@@ -295,11 +295,12 @@ use crate::backend::SqlxBackend;
 /// Builds a `Vec<Value>` parameter list from a heterogeneous set of bindable
 /// values, mirroring rusqlite's `params!` ergonomics for the [`Backend`] API.
 ///
+/// The vector stays owned because statement batches retain and extend bindings.
 /// Each argument is converted via [`ToValue`], so `i64`, `Option<i64>`,
 /// `&str`, `String`, `bool`, `u32`, … all bind directly.
 macro_rules! vals {
     ($($v:expr),* $(,)?) => {
-        vec![$( crate::value::ToValue::to_value(&$v) ),*]
+        Vec::from([$( crate::value::ToValue::to_value(&$v) ),*])
     };
 }
 

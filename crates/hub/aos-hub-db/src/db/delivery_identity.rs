@@ -12,7 +12,6 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
-use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use unicode_normalization::UnicodeNormalization;
@@ -1226,7 +1225,7 @@ impl Database {
     /// # Errors
     ///
     /// Returns an error for an invalid attempt, a missing endpoint generation,
-    /// inconsistent persisted state, or database failure.
+    /// inconsistent persisted state, unavailable platform entropy, or database failure.
     pub async fn issue_domain_probe_challenge(
         &self,
         operation_id: &str,
@@ -1248,7 +1247,9 @@ impl Database {
                 &vals![now],
             )
             .await?;
-        let random: [u8; 32] = rand::rng().random();
+        let mut random = [0u8; 32];
+        rand::TryRngCore::try_fill_bytes(&mut rand::rngs::OsRng, &mut random)
+            .context("obtaining domain probe challenge entropy")?;
         let candidate = URL_SAFE_NO_PAD.encode(random);
         self.backend
             .execute(
@@ -2090,6 +2091,10 @@ impl Database {
     ///
     /// Returns an error for invalid typed identity/revision fields, duplicate
     /// identity, an invalid owner, or a database failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn create_network_policy(
         &self,
         id: &str,
@@ -2479,6 +2484,10 @@ impl Database {
     ///
     /// Returns an error for invalid observation shape, a stale/missing
     /// lifecycle row, or a database failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn reconcile_network_policy_revision(
         &self,
         boundary_id: &str,
@@ -2569,6 +2578,10 @@ impl Database {
     ///
     /// Returns an error for invalid activation mode, unverified/stale state,
     /// an invalid or changed default-pointer seal, or a database failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn activate_network_policy_revision(
         &self,
         boundary_id: &str,
@@ -3372,6 +3385,10 @@ impl Database {
     ///
     /// Returns an error for stale source/target state, dependent source uses,
     /// an ineligible boundary lifecycle, or database failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn activate_staged_endpoint_generation(
         &self,
         endpoint_id: &str,
@@ -3756,6 +3773,10 @@ impl Database {
     ///
     /// Returns an error for a stale lifecycle, live pins, the public singleton,
     /// or a database failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn retire_network_policy_revision(
         &self,
         boundary_id: &str,

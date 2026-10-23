@@ -3,6 +3,10 @@
 use super::*;
 
 impl Database {
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub(in crate::db) async fn create_project_with_plan(
         &self,
         org_id: i64,

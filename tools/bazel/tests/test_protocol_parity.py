@@ -176,6 +176,18 @@ class ProtocolParityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "feature inventories differ"):
             self.compare()
 
+    def test_hub_db_repositories_preserve_exact_feature_checks(self):
+        for profile in ["hub_db", "hub_db_tests", "hub_db_all_features", "hub_db_all_features_tests"]:
+            with self.subTest(profile=profile):
+                self.reports[0]["label"] = "@@+aos_tools_repository+aos_" + profile + "_crates__serde-1.0.228//:serde"
+                self.reports[0]["features"] = ["derive", "default"]
+
+                self.compare()
+
+                self.reports[0]["features"] = ["default"]
+                with self.assertRaisesRegex(ValueError, "feature inventories differ"):
+                    self.compare()
+
     def test_package_manager_repositories_preserve_exact_feature_checks(self):
         for profile in ["package_manager", "package_manager_tests"]:
             with self.subTest(profile=profile):

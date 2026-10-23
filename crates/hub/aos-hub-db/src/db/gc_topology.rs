@@ -5089,6 +5089,10 @@ impl Database {
     ///
     /// Returns an error for malformed identity, a missing placement or building
     /// inventory, duplicate manifest identity, or database failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn stage_cache_inventory_manifest(
         &self,
         cache_id: i64,
@@ -9467,6 +9471,10 @@ impl Database {
     ///
     /// Returns an error for incomplete closure coverage, stale topology or
     /// inventory, malformed physical evidence, or database failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn build_cache_gc_plan_topology(
         &self,
         cache_id: i64,

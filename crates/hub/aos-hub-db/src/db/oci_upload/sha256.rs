@@ -55,7 +55,7 @@ impl OciSha256State {
             bail!("unsupported OCI SHA-256 state version {}", self.version);
         }
         if self.tail_hex.len() > 126
-            || self.tail_hex.len() % 2 != 0
+            || !self.tail_hex.len().is_multiple_of(2)
             || self
                 .tail_hex
                 .bytes()
@@ -87,10 +87,7 @@ impl OciSha256State {
             .context("OCI SHA-256 total byte count overflow")?;
 
         let complete_len = pending.len() / 64 * 64;
-        for block in pending[..complete_len].chunks_exact(64) {
-            let block: &[u8; 64] = block
-                .try_into()
-                .context("OCI SHA-256 block has an invalid length")?;
+        for block in pending[..complete_len].as_chunks::<64>().0 {
             sha256_compress(&mut self.words, block);
         }
         self.tail_hex = encode_lower_hex(&pending[complete_len..]);
@@ -117,10 +114,7 @@ impl OciSha256State {
         final_bytes.extend_from_slice(&bit_length.to_be_bytes());
 
         let mut words = self.words;
-        for block in final_bytes.chunks_exact(64) {
-            let block: &[u8; 64] = block
-                .try_into()
-                .context("OCI SHA-256 final block has an invalid length")?;
+        for block in final_bytes.as_chunks::<64>().0 {
             sha256_compress(&mut words, block);
         }
         let mut encoded = String::with_capacity(64);
@@ -133,12 +127,14 @@ impl OciSha256State {
 }
 
 fn decode_lower_hex(value: &str) -> Result<Vec<u8>> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         bail!("lowercase hexadecimal value has an odd length");
     }
     value
         .as_bytes()
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let high = lower_hex_nibble(pair[0])?;
             let low = lower_hex_nibble(pair[1])?;
@@ -234,7 +230,7 @@ fn sha256_compress(state: &mut [u32; 8], block: &[u8; 64]) {
         0xc671_78f2,
     ];
     let mut schedule = [0_u32; 64];
-    for (index, bytes) in block.chunks_exact(4).enumerate() {
+    for (index, bytes) in block.as_chunks::<4>().0.iter().enumerate() {
         schedule[index] = u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
     }
     for index in 16..64 {
