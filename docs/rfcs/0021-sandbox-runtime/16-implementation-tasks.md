@@ -10979,3 +10979,12 @@ The preceding BPF loader inventory independently passes the complete stage-0
 package build at
 `/nix/store/c40xfpjvnfr29lrc2pzryh7n9pz25xfy-aos-selinux-stage0-1`.
 That package predates the runtime-parent change and does not qualify its boot.
+
+### Host BPF image bounds (installed execution pending)
+
+The BPF-enabled Host fixture completes its labeled initrd and signed UKIs, then
+stops before QEMU because the initrd measures 224.57 MiB against its previous
+224 MiB artifact bound. The fixture now permits 240 MiB. Both normal signed
+UKIs measure 241.0 MiB and retain their existing 256 MiB bound; the ESP, root
+partitions and resource-bank limits are unchanged. Formatting and diff checks
+pass. This packaging correction supplies no installed Host-readiness receipt.

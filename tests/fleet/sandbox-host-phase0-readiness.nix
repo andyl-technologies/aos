@@ -109,9 +109,9 @@
           # The measured 844.9 MiB EROFS root carries the fixed Host services,
           # credential fixture, and full guest template in one image.
           maxRootMiB = 896;
-          # The measured labeled stage-1 initrd is 223.7 MiB. Retain the
-          # complete payload and room for the kernel and stub in each UKI.
-          maxInitrdMiB = 224;
+          # BPF support brings the measured labeled initrd to 224.6 MiB.
+          # Keep bounded headroom; the signed UKI still measures 241.0 MiB.
+          maxInitrdMiB = 240;
           maxBootExecutableMiB = 256;
           # Peak publication retains two normal and three recovery UKIs.
           # Two 256 MiB normal images + three 64 MiB recovery images + 32 MiB
