@@ -6,20 +6,20 @@
   qemuSourceUrl = "https://download.qemu.org/qemu-11.1.1.tar.xz";
 
   file = "crucible-qemu-11.1.1.patch";
-  sha256 = "b702c7d648a3c7a30db436b832f4f33db9ce273d2cf725fecba3696f24479f04";
-  subject = "plugins: preserve source ownership and constructor coordinates";
-  body = "Retain the complete canonical observation implementation and its owner\nlineage. Order the actual invocation caller declaration before owning uses\nand validate constructor callbacks against genuine lender publication.\nOrdinary behavior and explicit missing-profile refusals remain unchanged.\n\nThis cumulative source delivery does not assert binary, runtime, paid\nissuer or complete profile qualification.";
-  commit = "b01e82be2e8f9c98f7e3ba6380860b5b2a12a1db";
-  tree = "d2ca3f4f7b335e7abf5bd75560ab335f67a5ff77";
+  sha256 = "ef468bf3c3ebbc202c75c6d7588db4eed263a614d7b3c808b43e7265600b5cbc";
+  subject = "Make Crucible construction result types self-contained";
+  body = "Include the canonical Core quantum type owner before the existing\nconstruction and Original by-value return records. Preserve user/system\nconditionals and bind the actual dependent source guards.";
+  commit = "c55af78276f2b0913acedc72c1c09e9fc2f31b86";
+  tree = "d66b723cd8645446aae14fc1737fcf10cc5b82dc";
   catalogName = "crucible-deterministic-qemu-integration";
   class = "F";
   enforces = "DET-1,DET-35,HFORK-4,HFORK-22,CPERF-5,PATCH-39,QEMU-43,PKG-9";
   capability = "one atomic, reconstructible QEMU 11.1.1 integration artifact provides the versioned Crucible plugin protocol, deterministic execution, exact checkpoint capture and restore, retained hot fork with asynchronous-worker quiescence, device fingerprints, and their build and test plumbing";
 
-  branchRef = "dplecki/quantum-source-compile-correction-atomic";
+  branchRef = "dplecki/quantum-header-self-containment-atomic";
   branchModel = "single-atomic-final-state-integration-commit";
   bundle = ./crucible-qemu-11.1.1.bundle;
-  bundleSha256 = "584c1a0d6616d513b708e8e62223b98448090c4c09a7a6afbe10174cab38534c";
+  bundleSha256 = "f9350cecc0d8b5a0ca18fad04bbf91a65a75d13f317fa013d97e7a2ff5dd1522";
   baseCommit = "1ed046750938db278a12dc55c6a7934d5fc68c14";
   baseTree = "c08cc386be14139bc835ab077baa0e72ef7ba7ef";
   deterministicAuthorName = "Dylan Plecki";

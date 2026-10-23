@@ -63,7 +63,7 @@ failed attempts appear in the dated entries below.
 | Publisher transport | `e9784079c4` creates the once-owned physical session under the actual Source payer and installing Original, exports exact roles and sends Setup6 with plan nine. Six physical controls, five alias controls, seven startup controls, setup completion and hygiene pass. | Mandatory application compilation passes with all 5,279 committed Rust/TOML files matching the frozen source. Genuine launched transfer, command publication, peer acquisition and terminal consumption remain unqualified. |
 | Host alias custody | `90f00965fa` journals each standing descriptor before the next guarded duplication. Five real-socket controls, 73 focused policy checks and five hygiene checks pass. | Mandatory application compilation passes at `yyiy0g0z5lfdkx3x563k0sgnf1i20d1c`; all 5,272 committed Rust/TOML files match its immutable source. All 211 exact supervision cases pass at `dy2jldwf5dizmsmj0icwwxnlfpf8k45a`. |
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
-| Native integration | The narrow correction imports signed atomic `b01e82be2e`, conventional `7fdf8c13aa`, tree `d2ca3f4f`. Independent review verifies all 46 sealed artifacts and 78,448 tracked source paths, including exact correspondence to the twelve reviewed changes. Patch/bundle reconstruction and the 641-file license ledger pass. | The unchanged caller helper now precedes its first use, and request predicates use genuine constructor/lender coordinates. Genuine configure succeeds; the first fresh run stops on inventory row ordering, with all 86,090 per-path records identical. The comparator-only successor configures and compiles its first 29 owning variants, then stops on the next genuine object failure before layout/getter execution. The registered Source object compiles but its executable fails to link eighteen actual provider symbols; no unit case runs. The original failures remain preserved. Successful postbody resource custody, complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
+| Native integration | The header correction imports signed atomic `c55af78276`, conventional `ee8eebc886`, tree `d66b723c`. Independent review verifies all 42 sealed artifacts and 78,448 tracked source paths, including the canonical Core include and six literal guard updates. Patch/bundle reconstruction and the unchanged 641-file license ledger pass. | The unchanged caller helper now precedes its first use, and request predicates use genuine constructor/lender coordinates. Genuine configure succeeds; the first fresh run stops on inventory row ordering, with all 86,090 per-path records identical. The comparator-only successor configures and compiles its first 29 owning variants, then stops on the next genuine object failure before layout/getter execution. The registered Source object compiles but its executable fails to link eighteen actual provider symbols; no unit case runs. The original failures remain preserved. Successful postbody resource custody, complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | Latest focused checks pass all 73 policy and five hygiene controls; the fresh broad gate reports twenty paths: thirteen daemon and seven host/plugin paths. | The latest completed canonical license-boundary check stops at strict controller Clippy with 660 host-library errors; its boundary assertions did not run. Earlier attempts and their larger finding counts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
@@ -940,9 +940,10 @@ engineering-hygiene gate also passes. Strict default-feature Host linting remain
 failed (624 library and 697 test diagnostics); the two former process-purpose
 argument-count findings are absent. The feature-matched strict run reports 694 library errors and fourteen warnings,
 with 765 test errors and five warnings; no compiler type error or interface
-visibility warning remains. Mandatory application-target compilation is running
-against commit `a44d65bee6`; all 5,364 Rust/TOML inputs and six fixture/license
-files match its immutable build source. These checks do not qualify native
+visibility warning remains. Mandatory application-target compilation passes at
+`8n0g45iar92qafd7pc6fdbbxj6k54v77` against commit `a44d65bee6`; all 5,364
+Rust/TOML inputs and six fixture/license files match its immutable build source.
+These checks do not qualify native
 issuance or physical return.
 
 The remaining guarded child-birth and concurrent fork-worker argument groups
@@ -957,8 +958,11 @@ engineering hygiene pass with the three containing-source reviews refreshed.
 The strict default-feature all-target Host command with `-D warnings` still
 fails with 639 library and 701 test diagnostics, including warnings promoted
 by that flag; both former argument-count findings are absent. The matching
-private-feature lint comparison is running. Mandatory application-target
-compilation remains required for this revision; these changes do not qualify
+private-feature lint comparison reports 692 library errors and fourteen warnings,
+with 763 test errors and five warnings, two fewer errors in each target than
+the preceding comparison. Mandatory application-target compilation is running
+against commit `a2aa1d11bb`; all 5,364 Rust/TOML inputs and six fixture/license
+files match its immutable build source. These changes do not qualify
 native birth, issued Cleanup, paid profiles or physical retirement.
 
 #### Cumulative construction and request ownership source
@@ -1075,6 +1079,34 @@ linkage remains required; substitute implementations cannot qualify ownership.
 Later postbody, successful resource retirement and recipient-journal drafts
 remain separate. There is no native runtime, paid-profile or successful
 physical-return qualification for this tree.
+
+#### Self-contained construction result types
+
+Signed atomic `c55af78276f2b0913acedc72c1c09e9fc2f31b86` imports conventional
+`ee8eebc886fc9fe1ada9ad3301ddd99d30d149bb`, the sole child of `7fdf8c13aa`.
+Both commits have tree `d66b723cd8645446aae14fc1737fcf10cc5b82dc`. The
+construction header now includes the canonical Core quantum header before its
+existing by-value return records. Six dependent literal source guards bind the
+corrected header. No type, field, layout or user/system conditional changes.
+Independent inspection follows all fifteen quoted Core headers and seventeen
+include edges without finding a return cycle or implementation dependency.
+
+Independent complete correspondence authenticates all 42 sealed payloads,
+78,448 tracked paths, 78,376 regular files totaling 699,496,790 bytes and 72
+literal symlinks against both signed Git trees and the source archive. The
+correspondence record has SHA-256
+`7106671a768f4cac775ce812a5d09c2d2133e54e54f0cd772ef634f16329b4fa`.
+Hermetic patch/bundle reconstruction passes at
+`iklsrqyaniq8jvfwzxj2idply5zj6cbg`; the unchanged 641-file license ledger,
+core evaluation and focused Nix formatting pass.
+
+The proposed fresh owning-compile plan remains unexecuted: independent review
+finds one stale nested inventory digest in its reconstruction inputs. The
+original sealed plan and its failure are retained while a separate corrected
+plan is prepared. The earlier genuine native-invocation compile failure and
+the registered Source unit's eighteen unresolved providers remain preserved;
+neither is qualified by this source-only correction. Fresh owning compilation,
+getter readback, runtime, paid profiles and physical return remain required.
 
 #### Initial loader storage component
 
