@@ -11573,3 +11573,21 @@ repairs the subprocess fixture's layout for separate single-file Nix inputs;
 the earlier batch's effects failure was that fixture import error. Full Rust
 test-target compilation and the normal installed startup profiles for the
 Rust publication fix remain pending.
+
+Full Rust test-target compilation for `90ad76f1bb` now passes at
+`/nix/store/18rkjdx78b3bccqng325jlxjlj51l5jz-aos-test-targets-0.1.0`.
+The earlier Python-publication revision also passes its complete Rust target
+compilation at
+`/nix/store/4gqz3h5r2z7ghylwrxm888300p14ih88-aos-test-targets-0.1.0`.
+
+The fresh non-enforcing transport boot and the earlier normal batch's Secure
+Boot enrollment prerequisite fail authenticated initrd handoff: importing the
+network handler's shared helper creates bytecode inside the handler artifact,
+changing its NAR. A writable copy of the actual installed entrypoint reproduces
+the added `libexec/__pycache__/aos_service_resources.cpython-314.pyc`; suppressing
+bytecode leaves every artifact file unchanged. Commit `e8ca5ef4aa` applies that
+suppression to the network wrapper, matching the service wrapper. The clean
+transport retry also selects the exact installed Root kernel, with an
+evaluation-time equality check. Its result remains pending. These failures
+precede TPM assertions and do not invalidate or replace the earlier successful
+transport receipt.
