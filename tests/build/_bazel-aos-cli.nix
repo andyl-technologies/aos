@@ -97,8 +97,8 @@
     };
   workspace = pkgs.mkAosBazelWorkspace {
     inherit root;
-    # Repository architecture tests still read Cargo manifests. Keep this
-    # conservative input set explicit until their metadata audit is migrated.
+    # Integration contracts inspect declared repository inputs. Architecture
+    # checks consume the generated all-profile Bazel production graph.
     sourceDirectories =
       ["tools/bazel" "third_party/rust" "api/proto"]
       ++ builtins.attrValues packages ++ builtins.attrValues dependencyPackages;

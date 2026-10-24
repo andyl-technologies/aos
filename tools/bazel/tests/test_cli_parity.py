@@ -45,6 +45,16 @@ test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
         with self.assertRaisesRegex(ValueError, "did not pass"):
             cargo_results(log, self.messages)
 
+    def test_expected_panic_annotation_preserves_the_discovered_case_name(self):
+        log = self.log.replace("cli::parses ... ok", "cli::parses - should panic ... ok")
+
+        self.assertEqual(cargo_results(log, self.messages), {
+            "//" + CLI_PATH + ":unit": ["cli::parses"],
+        })
+
+        with self.assertRaisesRegex(ValueError, "failed, were ignored"):
+            cargo_results(log.replace("should panic ... ok", "should panic ... FAILED"), self.messages)
+
     def test_rejects_ignored_case(self):
         log = self.log.replace("cli::parses ... ok", "cli::parses ... ignored")
         log = log.replace("1 passed; 0 failed; 0 ignored", "0 passed; 0 failed; 1 ignored")

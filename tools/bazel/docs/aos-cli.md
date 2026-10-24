@@ -30,10 +30,11 @@ working directory. Cargo's already absolute binary paths retain their behavior.
 Repository-aware tests receive an audited, declared source tree. The imported
 files use a suffix until materialization so nested BUILD files cannot silently
 truncate a Bazel filegroup. The materializer verifies file hashes, lengths, and
-executable permissions before restoring their original paths. This remains a
-conservative snapshot: architecture tests still read Cargo manifests. Replacing
-that dependency with configured Bazel metadata is required before strict source
-qualification or Cargo removal.
+executable permissions before restoring their original paths. Architecture guards consume the declared all-profile Bazel production graph
+and fail if it is missing or a dependency walk reaches an unmodeled package.
+The independent Cargo comparison temporarily retains its manifest oracle. Other
+repository-aware integration tests still use a conservative source snapshot;
+strict source qualification and Cargo removal remain separate work.
 
 Profile lifecycle and cache installation tests use real immutable AOS packages,
 native deployment envelopes, private Nix databases, and signed registry
@@ -56,11 +57,13 @@ output directory. The verifier requires exact feature units, test targets,
 executed case names, and empty doctest inventories. Failed or ignored Cargo
 cases and Bazel case output containing skip diagnostics fail the comparison.
 
-The retained development checkpoint passes all 540 ordinary and 548 fleet
-cases under both Cargo and Bazel. Each configuration matches 38 first-party
+The architecture-consumer checkpoint passes all 543 ordinary and 551 fleet
+cases under both Cargo and Bazel, including all six architecture guards.
+`../tests/evidence/aos-cli-architecture.json` binds the consumer source and declared
+metadata to each actual build and comparison. Each configuration matches 38 first-party
 and 439 external crate feature inventories. The required application Rust
-unit and integration compile gate, formatting, core evaluation, and 221 Python
-policy checks also pass. Bazel used the explicit local disk action cache;
+unit and integration compile gate, formatting, and both configurations' Clippy
+and documentation actions also pass. Bazel used the explicit local disk action cache;
 these results do not establish strict uncached qualification.
 
 The test configurations also expose `editor`, `editor-cargo-oracle`, and

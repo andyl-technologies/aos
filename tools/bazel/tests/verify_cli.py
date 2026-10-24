@@ -39,7 +39,9 @@ def cargo_results(log, messages):
         # The final libtest section is followed by rustdoc's independent run.
         section = re.split(r"^\s*Doc-tests \S+\s*$", section, flags=re.MULTILINE)[0]
         summaries = re.findall(r"^test result: (ok|FAILED)\. (\d+) passed; (\d+) failed; (\d+) ignored;", section, re.MULTILINE)
-        cases = re.findall(r"^test (.+?) \.\.\. (ok|FAILED|ignored(?:, [^\n]*)?)$", section, re.MULTILINE)
+        # Libtest annotates expected panics in execution output, but not in
+        # its discovery inventory or the Bazel runner's retained case names.
+        cases = re.findall(r"^test (.+?)(?: - should panic)? \.\.\. (ok|FAILED|ignored(?:, [^\n]*)?)$", section, re.MULTILINE)
         if len(summaries) != 1 or summaries[0][0] != "ok":
             raise ValueError("Cargo CLI test did not pass: " + label)
         counts = tuple(int(value) for value in summaries[0][1:])

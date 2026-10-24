@@ -30,6 +30,10 @@ declared repository source manifest, which verifies the generated file's size
 and digest before materializing it. Bazel test executions require that input;
 they cannot fall back to reading Cargo manifests. The dependency guards retain
 the portable-core, application-layering, and permissive-QEMU-boundary checks.
+Three additional cases cover metadata validation and rejection of reachable
+unmodeled packages. The retained `../tests/evidence/aos-cli-architecture.json`
+checkpoint binds all six guards to matching default/fleet Bazel and Cargo runs,
+Clippy and documentation actions, and the application Rust compilation gate.
 
 The temporary Cargo oracle checks source identities for every workspace member
 and exact production dependency sets for every modeled package. It includes
