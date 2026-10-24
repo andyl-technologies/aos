@@ -213,12 +213,12 @@ impl PacketCompleteReportStartupHolder {
         }
     }
 
-    /// Checks the real journal reservation before any actual owner is observed.
+    /// Checks the real provider-receiver reservation before any actual owner is observed.
     ///
     /// # Errors
     /// Refuses absent or misplaced members, zero reservation, or a holder walk
     /// that reaches actual owners before charging its retained Core member.
-    pub(in crate::node_qualification::packet_collection::complete) fn original_inactive_journal_reservation_for_test(
+    pub(in crate::node_qualification::packet_collection::complete) fn original_inactive_receiver_reservation_for_test(
         original: &Rc<RefCell<Self>>,
     ) -> Result<usize, RuntimeError> {
         let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;

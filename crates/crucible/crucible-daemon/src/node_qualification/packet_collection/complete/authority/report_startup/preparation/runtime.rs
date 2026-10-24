@@ -79,7 +79,7 @@ impl PreparationOwners {
                 .checked_add(data.retained_requested_bytes())
                 .ok_or(RuntimeError::ResourceLimit)?;
             reservation = reservation
-                .checked_add(data.retained_journal_reservation_bytes())
+                .checked_add(data.retained_receiver_reservation_bytes())
                 .ok_or(RuntimeError::ResourceLimit)?;
             transient = transient
                 .checked_add(data.maximum_simultaneous_transient_bytes())

@@ -1,7 +1,8 @@
 //! Counts and retains the original collecting-node admission beneath its real graph.
 //!
-//! Requested data describes only new node/route/request/hash/boxed-preparation
-//! ownership. Source/graph/registry/native validation and oracle callbacks are
+//! Requested data describes new node/route/request/hash/boxed-preparation
+//! ownership and the actual provider-receiver reservation. Source, graph, registry
+//! and native validation and oracle callbacks are
 //! independently admitted by the enclosing same-holder construction action.
 
 use super::*;
@@ -10,7 +11,7 @@ use crate::node_adapters::cnp::semantic::{
     packet_connected_source::PacketConnectedSemanticSource, packet_source::PacketSemanticSource,
 };
 use crate::node_contract::{NodeRuntime, RuntimeError, RuntimeOwnedStorage};
-use crucible_node_transport::{ProviderError, client::OriginalNative5CustodyFacts};
+use crucible_node_transport::{ProviderError, client::OriginalObservationReceiveStorageData};
 use std::{
     any::Any,
     mem::size_of,
@@ -21,7 +22,7 @@ use std::{
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CnpConformanceNodeConstructionStorageData {
     retained: usize,
-    retained_journal_reservation: usize,
+    retained_receiver_reservation: usize,
     transient: usize,
     scratch: usize,
 }
@@ -32,13 +33,14 @@ impl CnpConformanceNodeConstructionStorageData {
         self.retained
     }
 
-    /// Returns future journal backing at the actual unchanged SDK ceilings.
+    /// Returns future provider-receiver backing at the actual unchanged SDK ceilings.
     ///
     /// The enclosing Core member retains this charge after node construction.
-    /// Existing owners, content, transient work and observation growth remain
-    /// independently funded. This DATA grants no quota or allocation right.
-    pub fn retained_journal_reservation_bytes(self) -> usize {
-        self.retained_journal_reservation
+    /// Existing owners, controller-origin journals, transient work and observation
+    /// growth remain independently funded. This DATA grants no quota or allocation
+    /// right.
+    pub fn retained_receiver_reservation_bytes(self) -> usize {
+        self.retained_receiver_reservation
     }
 
     /// Returns simultaneous local request, identity and diagnostic requests.
@@ -62,7 +64,8 @@ impl CnpSemanticPreparation {
     ///
     /// # Errors
     /// Refuses foreign creator/Source, changed realized DTOs, absent completed
-    /// original Admit, an occupied runtime slot or checked requested overflow.
+    /// original Admit, an occupied runtime slot, a nonidle receiver or checked
+    /// requested overflow.
     pub fn original_conformance_node_construction_storage_data(
         &self,
         source: &Rc<PacketCompleteSemanticSource>,
@@ -139,21 +142,20 @@ impl CnpSemanticPreparation {
             size_of::<blake3::Hasher>(), size_of::<blake3::Hash>(),
             returned_layout(|| blake3::Hash::from([0; 32]).to_hex()),
             super::super::initial_lifecycle_diagnostics::OriginalInitialLifecycleDiagnostics::requested_bytes()], maximum)?;
-        let retained_journal_reservation = native
+        let retained_receiver_reservation = native
             .controller()
             .ok_or(RuntimeError::OwnerUnavailable)?
-            .original_native5_custody_facts()
-            .map_err(|_| RuntimeError::ForeignAuthority)?
-            .original_journal_retained_storage_data(maximum)
-            .map_err(|_| RuntimeError::ResourceLimit)?;
+            .original_observation_receive_storage_data(maximum)
+            .map_err(|_| RuntimeError::ResourceLimit)?
+            .retained_requested_bytes_data();
         let scratch = Self::original_conformance_node_construction_counter_scratch_data();
         sum(
-            &[retained, retained_journal_reservation, transient, scratch],
+            &[retained, retained_receiver_reservation, transient, scratch],
             maximum,
         )?;
         Ok(CnpConformanceNodeConstructionStorageData {
             retained,
-            retained_journal_reservation,
+            retained_receiver_reservation,
             transient,
             scratch,
         })
@@ -161,9 +163,9 @@ impl CnpSemanticPreparation {
 
     /// Counts fixed original-node projection and diagnostic headers.
     pub fn original_conformance_node_construction_counter_scratch_data() -> usize {
-        OriginalNative5CustodyFacts::original_journal_retained_counter_scratch_data()
-            + size_of::<OriginalNative5CustodyFacts>()
-            + size_of::<Result<OriginalNative5CustodyFacts, ProviderError>>()
+        CnpController::original_observation_receive_counter_scratch_data()
+            + size_of::<OriginalObservationReceiveStorageData>()
+            + size_of::<Result<OriginalObservationReceiveStorageData, ProviderError>>()
             + size_of::<Option<&CnpController>>()
             + size_of::<usize>()
             + NodeRuntime::capture_serialization_counter_scratch_data()

@@ -76,7 +76,7 @@ pub const fn original_json_value_storage_forest_counter_scratch_data() -> usize 
     original_json_value_storage_extent_counter_scratch_data()
         + 2 * size_of::<OriginalJsonValueStorageExtentData>()
         + size_of::<Result<OriginalJsonValueStorageExtentData, ProviderError>>()
-        + 8 * size_of::<usize>()
+        + size_of::<[usize; 8]>()
         + size_of::<Result<usize, ProviderError>>()
 }
 
