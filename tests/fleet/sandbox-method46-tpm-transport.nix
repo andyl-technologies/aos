@@ -1,18 +1,29 @@
 # QEMU/vTPM qualification of the production device/HMAC transport. The probe
 # has test-only hierarchy authority; this does not release daemon admission.
 {
+  lib,
   pkgs,
   mkSystem,
+  systems,
   ...
-}: let
+} @ args: let
   probe = import ./_method46-tpm-transport-probe.nix {inherit pkgs;};
   command = "${probe}/bin/method46-tpm-transport-probe";
-  system = mkSystem [
+  installedSystem = (import ./sandbox-root-startup.nix args).machines.vm.system;
+  installedKernel = installedSystem.config.system.build.kernel;
+  transportSystem = mkSystem [
     ../../systems/server-test.nix
     {
       environment.systemPackages = [probe pkgs.tpm2-tools];
+      # Exercise the deployed TPM driver bytes. This lightweight userspace
+      # still grants only transport-test provisioning, not installed custody.
+      aos.kernel._extraConfigFragments = lib.mkForce installedSystem.config.aos.kernel._extraConfigFragments;
     }
   ];
+  system =
+    if toString transportSystem.config.system.build.kernel == toString installedKernel
+    then transportSystem
+    else throw "method46 transport must use the installed Root kernel";
 in {
   name = "sandbox-method46-tpm-transport";
   timeout = 900;
