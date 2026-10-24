@@ -4,6 +4,12 @@
 //! retain only their original DATA identities; no old prefix MAC is fabricated.
 //! The new Capture reserve is retained in Boot before baseline construction.
 
+use super::super::super::bootstrap_settled::{
+    OriginalRestoredSettledBootInputsData, OriginalRestoredSettledBootstrap,
+};
+use super::super::super::restored_settled::{
+    NativeRestoredSettledCaptureOwner, OriginalRestoredSettledCaptureInputsData,
+};
 use super::*;
 
 impl NativeAckBoot {
@@ -13,16 +19,20 @@ impl NativeAckBoot {
     /// Refuses repeated output, stale inherited custody, a different private
     /// key/birth/purpose/body/row, invalid boot data or insufficient credit.
     pub(in crate::reference_packet::service::ack_emitter::native_boot) fn prepare_original_restored_settled_into(
-        value: &serde_json::Value,
-        launch: &PacketNative5SourceLaunch,
-        raw8: &[u8],
-        raw7: &[u8],
-        original6: Vec<u8>,
-        purpose: PacketNativeInvocationPurposeData,
-        existing_rows: &PacketRestoredSettledNativeExistingRowsData,
-        startup: &mut super::super::super::bootstrap_settled::OriginalRestoredSettledBootstrap,
+        inputs: OriginalRestoredSettledBootInputsData<'_>,
+        startup: &mut OriginalRestoredSettledBootstrap,
         completed: &mut Option<Rc<RefCell<Self>>>,
     ) -> Result<(), ProviderError> {
+        let OriginalRestoredSettledBootInputsData {
+            value,
+            launch,
+            raw8,
+            raw7,
+            original6,
+            purpose,
+            existing_rows,
+        } = inputs;
+
         if completed.is_some() {
             return Err(refused());
         }
@@ -42,9 +52,17 @@ impl NativeAckBoot {
                     restored_settled,
                     ..
                 } = &mut *owner;
-                super::super::super::restored_settled::NativeRestoredSettledCaptureOwner::retain_from_bootstrap_into(
-                    startup, &original, data.private_key.as_slice(), data.birth_id.as_slice(), raw8,
-                    existing_rows, purpose, restored_settled,
+                NativeRestoredSettledCaptureOwner::retain_from_bootstrap_into(
+                    startup,
+                    &original,
+                    OriginalRestoredSettledCaptureInputsData {
+                        key: data.private_key.as_slice(),
+                        birth: data.birth_id.as_slice(),
+                        raw8,
+                        existing_rows,
+                        purpose,
+                    },
+                    restored_settled,
                 )?;
             }
             let expected = startup.data.suffix.invocation;

@@ -5,6 +5,7 @@
 //! A decoded advertisement cannot construct this private one-shot owner. The
 //! caller retains it on every later error, including a failed native install.
 
+use super::restored_settled::OriginalRestoredSettledCaptureInputsData;
 use crate::ProviderError;
 use crate::reference_packet::service::native_startup::*;
 use crate::reference_packet::service::native_startup::{
@@ -21,6 +22,27 @@ use crate::{
 };
 use std::{cell::RefCell, io::Write, path::Path, rc::Rc};
 use std::{mem::size_of, os::fd::AsFd, time::Duration};
+
+/// Groups the original inputs for retaining one prefix17 boot.
+///
+/// This record carries the same owned nested launch and borrowed authenticated
+/// inputs. It supplies no bootstrap permission or independently usable owner.
+pub(super) struct OriginalRestoredSettledBootInputsData<'a> {
+    /// Borrows the actual private boot value already retained by the reader.
+    pub(super) value: &'a serde_json::Value,
+    /// Borrows the actual decoded Source launch.
+    pub(super) launch: &'a PacketNative5SourceLaunch,
+    /// Borrows the complete original wrapper8 bytes.
+    pub(super) raw8: &'a [u8],
+    /// Borrows the original nested suffix7 bytes.
+    pub(super) raw7: &'a [u8],
+    /// Moves the same independently retained nested invocation6 bytes.
+    pub(super) original6: Vec<u8>,
+    /// Carries the original invocation purpose without issuing authority.
+    pub(super) purpose: PacketNativeInvocationPurposeData,
+    /// Borrows the complete decoded existing allocation rows.
+    pub(super) existing_rows: &'a PacketRestoredSettledNativeExistingRowsData,
+}
 
 /// Owns one genuine prefix17 occurrence, rather than a portable bootstrap DTO.
 pub(super) struct OriginalRestoredSettledBootstrap {
@@ -236,7 +258,13 @@ pub(crate) const fn original_restored_settled_bootstrap_header_data() -> usize {
 
 /// Reports defining fixed prefix authentication and once-claim views.
 pub(crate) fn original_restored_settled_bootstrap_counter_scratch_data() -> usize {
-    OriginalRestoredSettledBootstrap::counter_scratch_data()
+    // Both call boundaries retain their own input headers. The existing native
+    // construction quote includes this fixed scratch before owner admission;
+    // the owned launch backing remains separately priced by its original row.
+    2 * size_of::<OriginalRestoredSettledBootInputsData<'static>>()
+        + 2 * size_of::<OriginalRestoredSettledCaptureInputsData<'static>>()
+        + size_of::<usize>()
+        + OriginalRestoredSettledBootstrap::counter_scratch_data()
         + super::bootstrap_suffix::original_restored_suffix_bootstrap_counter_scratch_data()
         + size_of::<SettledBootstrap>()
         + size_of::<PacketNative8RestoredSettledLaunch>()
@@ -417,13 +445,15 @@ impl SettledBootstrap {
         );
         self.startup.ensure_current()?;
         super::boot::NativeAckBoot::prepare_original_restored_settled_into(
-            self.boot_value.as_ref().ok_or_else(refused)?,
-            launch,
-            &self.launch8,
-            &self.launch7,
-            self.launch6.clone(),
-            purpose,
-            decoded.existing_rows_data()?,
+            OriginalRestoredSettledBootInputsData {
+                value: self.boot_value.as_ref().ok_or_else(refused)?,
+                launch,
+                raw8: &self.launch8,
+                raw7: &self.launch7,
+                original6: self.launch6.clone(),
+                purpose,
+                existing_rows: decoded.existing_rows_data()?,
+            },
             &mut self.startup,
             &mut self.boot,
         )?;

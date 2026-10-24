@@ -23,6 +23,23 @@ use crate::reference_packet::service::native_startup::{
 };
 use std::{cell::RefCell, rc::Rc};
 
+/// Borrows the original private Capture17 constructor inputs.
+///
+/// Actual bootstrap custody, retained boot identity and the failed-prefix
+/// destination remain separate operands of the consuming constructor.
+pub(super) struct OriginalRestoredSettledCaptureInputsData<'a> {
+    /// Borrows the actual retained boot's private key.
+    pub(super) key: &'a [u8],
+    /// Borrows the actual retained boot's birth identifier.
+    pub(super) birth: &'a [u8],
+    /// Borrows the complete original wrapper8 bytes.
+    pub(super) raw8: &'a [u8],
+    /// Borrows the original existing allocation rows.
+    pub(super) existing_rows: &'a PacketRestoredSettledNativeExistingRowsData,
+    /// Carries the same independently validated invocation purpose.
+    pub(super) purpose: PacketNativeInvocationPurposeData,
+}
+
 /// Keeps the real inherited reserve beside native once-attempt custody.
 pub(super) struct NativeRestoredSettledCaptureOwner {
     creator: u32,
@@ -46,16 +63,24 @@ impl NativeRestoredSettledCaptureOwner {
     /// The caller installs the returned owner in the SAME retained Boot before
     /// closing bootstrap. A refusal leaves the bootstrap spent/failed; no public
     /// carrier, archived key or scalar reservation can call this constructor.
+    ///
+    /// # Errors
+    /// Refuses an occupied destination, stale or different bootstrap inputs,
+    /// malformed original bytes, allocation failure or insufficient initial credit.
     pub(super) fn retain_from_bootstrap_into(
         bootstrap: &mut OriginalRestoredSettledBootstrap,
         boot: &Rc<RefCell<NativeAckBoot>>,
-        key: &[u8],
-        birth: &[u8],
-        raw8: &[u8],
-        existing_rows: &PacketRestoredSettledNativeExistingRowsData,
-        purpose: PacketNativeInvocationPurposeData,
+        inputs: OriginalRestoredSettledCaptureInputsData<'_>,
         destination: &mut Option<Self>,
     ) -> Result<(), ProviderError> {
+        let OriginalRestoredSettledCaptureInputsData {
+            key,
+            birth,
+            raw8,
+            existing_rows,
+            purpose,
+        } = inputs;
+
         if destination.is_some() {
             bootstrap.interrupt();
             return Err(refused());
