@@ -70,6 +70,20 @@ impl OriginalNativeStartupBootstrap {
                 "native startup prefix parent/birth differs",
             ));
         }
+        // Invocation adds its own counter to the original startup window.
+        // Admit both authenticated rows before parsing either private frame.
+        let scratch = crate::reference_packet::service::native_startup::original_native_birth_startup_counter_scratch_data()
+            .checked_add(original_native_invocation_counter_scratch_data())
+            .ok_or(ProviderError::ResourceExhausted("invocation counter extent"))?;
+        let scratch = u64::try_from(scratch)
+            .map_err(|_| ProviderError::ResourceExhausted("invocation counter extent"))?;
+        if scratch > data.private_bootstrap.declared_counter_scratch_bytes.get()
+            || scratch > data.native_birth.declared_counter_scratch_bytes.get()
+        {
+            return Err(ProviderError::ResourceExhausted(
+                "native invocation counter window",
+            ));
+        }
         // A valid private prefix must cover the actual fixed initial banks
         // before any Rc/frame/parser constructor. Full typed geometry is
         // recounted against the same rows before native model construction.

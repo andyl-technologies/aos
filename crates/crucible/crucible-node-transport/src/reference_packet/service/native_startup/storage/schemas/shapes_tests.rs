@@ -171,6 +171,14 @@ fn actual_schema_adapter_is_added_to_original_defining_counter() {
             + size_of::<std::thread::ThreadId>()
             + size_of::<u32>()
             + 2 * size_of::<Result<(), ProviderError>>()
+            // Prefix admission adds its own checked scalar/result window.
+            + size_of::<usize>()
+            + 2 * size_of::<u64>()
+            + size_of::<Option<usize>>()
+            + size_of::<Result<usize, ProviderError>>()
+            + 2 * size_of::<Result<u64, std::num::TryFromIntError>>()
+            + 2 * size_of::<Result<u64, ProviderError>>()
+            + 4 * size_of::<bool>()
             + counter_scratch_data()
             + admit::adapter_counter_scratch_data()
             + super::super::super::private_backing::ADAPTER_COUNTER_SCRATCH_DATA

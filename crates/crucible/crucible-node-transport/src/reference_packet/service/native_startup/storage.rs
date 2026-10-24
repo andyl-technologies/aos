@@ -155,6 +155,16 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
         + size_of::<std::thread::ThreadId>()
         + size_of::<u32>()
         + 2 * size_of::<Result<(), ProviderError>>()
+        // Prefix14/15 independently admit both scratch grants before private
+        // JSON parsing. Keep their checked sums/conversions and comparisons
+        // alongside every previous defining counter term.
+        + size_of::<usize>()
+        + 2 * size_of::<u64>()
+        + size_of::<Option<usize>>()
+        + size_of::<Result<usize, ProviderError>>()
+        + 2 * size_of::<Result<u64, std::num::TryFromIntError>>()
+        + 2 * size_of::<Result<u64, ProviderError>>()
+        + 4 * size_of::<bool>()
         + retained_overlap::counter_scratch_data()
         + schemas::counter_scratch_data()
         + admit::adapter_counter_scratch_data()

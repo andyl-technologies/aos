@@ -89,6 +89,19 @@ impl OriginalNativeStartupBootstrap {
                 "native startup prefix parent/birth differs",
             ));
         }
+        // Both original rows fund the defining counter before either private
+        // JSON frame can construct parser, canonical or decoded child banks.
+        let scratch = u64::try_from(
+            crate::reference_packet::service::native_startup::original_native_birth_startup_counter_scratch_data(),
+        )
+        .map_err(|_| ProviderError::ResourceExhausted("native startup counter extent"))?;
+        if scratch > data.private_bootstrap.declared_counter_scratch_bytes.get()
+            || scratch > data.native_birth.declared_counter_scratch_bytes.get()
+        {
+            return Err(ProviderError::ResourceExhausted(
+                "native startup counter window",
+            ));
+        }
         // A valid private prefix must cover the actual fixed initial banks
         // before any Rc/frame/parser constructor. Full typed geometry is
         // recounted against the same rows before native model construction.
@@ -452,3 +465,7 @@ mod requote_tests {
 
 #[path = "bootstrap_invocation.rs"]
 mod invocation;
+
+#[cfg(test)]
+#[path = "bootstrap_counter_tests.rs"]
+mod counter_tests;
