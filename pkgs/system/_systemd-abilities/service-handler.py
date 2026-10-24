@@ -18,7 +18,7 @@ import sys
 
 from aos_service_resources import (
     ResourceHandler, absolute, checked_text, digest,
-    durable_unlink, durable_write, locked_dispatch, mode, read_digest,
+    durable_unlink, durable_write, label_systemd_unit, locked_dispatch, mode, read_digest,
     read_invocation, synchronize_directory,
 )
 
@@ -28,6 +28,8 @@ from aos_service_storage import complete_handoff, handoff_state, plan_handoffs, 
 TRUE_EXECUTABLE = None
 FLOCK_EXECUTABLE = None
 MAC_CONDITION_EXECUTABLE = None
+MATCHPATHCON_EXECUTABLE = None
+SETFILECON_EXECUTABLE = None
 
 
 CAPABILITIES = {
@@ -910,7 +912,12 @@ class Handler(ResourceHandler):
             for name, text in realization["units"].items():
                 # Pending custody permits converting this exact projected alias
                 # to an owned regular definition on mutable installations.
-                durable_write(self.unit_directory / name, text.encode())
+                durable_write(
+                    self.unit_directory / name, text.encode(),
+                    prepare=lambda temporary, name=name: label_systemd_unit(
+                        temporary, name, MATCHPATHCON_EXECUTABLE, SETFILECON_EXECUTABLE,
+                    ),
+                )
             self.remove_links({name: target for name, target in prior_links.items() if realization["links"].get(name) != target})
             self.install_links(realization["links"])
             self.manager("daemon-reload")
@@ -1086,12 +1093,15 @@ def render_services(services, directory):
 
 def main():
     global TRUE_EXECUTABLE, FLOCK_EXECUTABLE, MAC_CONDITION_EXECUTABLE
+    global MATCHPATHCON_EXECUTABLE, SETFILECON_EXECUTABLE
     parser = argparse.ArgumentParser()
     parser.add_argument("--systemctl")
     parser.add_argument("--true-executable")
     parser.add_argument("--flock-executable")
     parser.add_argument("--mac-condition-executable")
     parser.add_argument("--unit-directory")
+    parser.add_argument("--matchpathcon")
+    parser.add_argument("--setfilecon")
     parser.add_argument("--state-directory")
     parser.add_argument("--image-unit-directory", default="/usr/lib/aos/toplevel/systemd-units")
     parser.add_argument("action", choices=["apply", "remove", "observe", "render", "check-mac"])
@@ -1101,6 +1111,8 @@ def main():
     TRUE_EXECUTABLE = args.true_executable
     FLOCK_EXECUTABLE = args.flock_executable
     MAC_CONDITION_EXECUTABLE = args.mac_condition_executable
+    MATCHPATHCON_EXECUTABLE = args.matchpathcon
+    SETFILECON_EXECUTABLE = args.setfilecon
     if args.action == "check-mac":
         try:
             enforcing = Path("/sys/fs/selinux/enforce").read_text().strip() == "1"

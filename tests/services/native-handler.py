@@ -157,6 +157,33 @@ def active_bus_manager(calls):
 
 
 class NativeHandlerTests(unittest.TestCase):
+    def test_unit_label_failure_prevents_publication_and_manager_dispatch(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            instance = handler_module.Handler(
+                invocation("serviceManagement", "realize", service()), "unused", units, state,
+            )
+            calls = []
+            instance.manager = active_bus_manager(calls)
+
+            def label(staged, name, lookup, setter):
+                self.assertEqual(name, "example.service")
+                self.assertIn("[Service]", staged.read_text())
+                self.assertFalse((units / name).exists())
+                self.assertEqual(calls, [])
+                raise ValueError("label refused")
+
+            with patch.object(handler_module, "label_systemd_unit", side_effect=label) as labeling:
+                with self.assertRaisesRegex(ValueError, "label refused"):
+                    instance.service("apply")
+
+            labeling.assert_called_once()
+            self.assertEqual(calls, [])
+            self.assertFalse((units / "example.service").exists())
+            self.assertEqual(list(units.iterdir()), [])
+            self.assertTrue(instance.receipt["pending"])
+
     def test_immutable_initrd_uses_runtime_service_ownership(self):
         document = invocation("serviceManagement", "realize", service())
         document["input"].update(activation_owner="image", auto_start=False)
@@ -386,8 +413,8 @@ class NativeHandlerTests(unittest.TestCase):
             updated.manager = active_bus_manager(calls)
             original_write = handler_module.durable_write
 
-            def interrupted_write(path, contents, *args):
-                original_write(path, contents, *args)
+            def interrupted_write(path, contents, *args, **kwargs):
+                original_write(path, contents, *args, **kwargs)
                 if Path(path).parent == updated.unit_directory:
                     raise RuntimeError("interrupted after durable unit replacement")
 
@@ -415,10 +442,10 @@ class NativeHandlerTests(unittest.TestCase):
             value, rendered, instance, calls, originals = self.projected_service(root)
             original_write = handler_module.durable_write
 
-            def interrupted_write(path, contents, *args):
+            def interrupted_write(path, contents, *args, **kwargs):
                 if Path(path).parent == instance.unit_directory:
                     raise RuntimeError("interrupted before unit conversion")
-                return original_write(path, contents, *args)
+                return original_write(path, contents, *args, **kwargs)
 
             with patch.object(handler_module, "durable_write", interrupted_write):
                 with self.assertRaisesRegex(RuntimeError, "before unit conversion"):

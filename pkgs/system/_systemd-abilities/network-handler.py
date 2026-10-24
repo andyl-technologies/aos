@@ -17,6 +17,8 @@ import subprocess
 import sys
 import tempfile
 
+from aos_service_resources import label_systemd_unit
+
 LIMIT = 1048576
 STATE = Path("/var/lib/aos/network")
 INITRD_STATE = Path("/run/aos/initrd-native-network-effects")
@@ -198,7 +200,7 @@ def read(path):
     return content.decode()
 
 
-def write(path, content, mode=0o644):
+def write(path, content, mode=0o644, *, prepare=None):
     safe_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=".aos-network-", dir=path.parent)
@@ -207,6 +209,8 @@ def write(path, content, mode=0o644):
             os.fchmod(stream.fileno(), mode)
             stream.write(content)
             stream.flush()
+            if prepare is not None:
+                prepare(Path(temporary))
             os.fsync(stream.fileno())
         os.replace(temporary, path)
         parent = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
@@ -422,7 +426,12 @@ def converge(args, invocation):
         for path, content in desired["files"].items():
             target = Path("/") / path
             if not (initrd and immutable_image_file(target, content)):
-                write(target, content)
+                prepare = None
+                if path.startswith(("run/systemd/system/", "etc/systemd/system/")):
+                    prepare = lambda temporary, name=target.name: label_systemd_unit(
+                        temporary, name, args.matchpathcon, args.setfilecon,
+                    )
+                write(target, content, prepare=prepare)
         for path, link in desired["symlinks"].items():
             target = Path("/") / path
             if link_at(target) is None:
@@ -448,6 +457,8 @@ def main():
     parser.add_argument("--systemctl")
     parser.add_argument("--wait-online")
     parser.add_argument("--unit-directory")
+    parser.add_argument("--matchpathcon")
+    parser.add_argument("--setfilecon")
     parser.add_argument("action", choices=["apply", "remove", "observe", "render-network"])
     parser.add_argument("--output-dir")
     args = parser.parse_args()

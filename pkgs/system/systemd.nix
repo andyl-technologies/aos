@@ -990,6 +990,8 @@ in
             --systemctl "$out/bin/systemctl" \\
             --wait-online "$out/lib/systemd/systemd-networkd-wait-online" \\
             --unit-directory "$out/lib/systemd/system" \\
+            --matchpathcon "${libselinux}/sbin/matchpathcon" \\
+            --setfilecon "${libselinux}/sbin/setfilecon" \\
             "\$@"
           EOF
           chmod +x "$handlers/bin/aos-network-handler"
@@ -1010,6 +1012,8 @@ in
             --true-executable "${coreutils}/bin/true" \\
             --flock-executable "${util-linux}/bin/flock" \\
             --mac-condition-executable "$handlers/bin/aos-service-handler" \\
+            --matchpathcon "${libselinux}/sbin/matchpathcon" \\
+            --setfilecon "${libselinux}/sbin/setfilecon" \\
             "\$@"
           EOF
           chmod +x "$handlers/bin/aos-service-handler"
