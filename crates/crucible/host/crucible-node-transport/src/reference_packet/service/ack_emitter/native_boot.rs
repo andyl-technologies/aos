@@ -13,6 +13,10 @@ pub use boot::{
 use boot::{
     measure_original_restore_controller_executable, measure_original_restore_current_executable,
 };
+pub(in crate::reference_packet::service) use boot::{
+    original_native_startup_attempt_counter_scratch_data,
+    original_native_startup_attempt_transient_data,
+};
 mod bootstrap;
 mod owned_read;
 

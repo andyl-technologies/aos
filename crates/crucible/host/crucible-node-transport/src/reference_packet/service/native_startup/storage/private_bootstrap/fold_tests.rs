@@ -2,6 +2,7 @@
 
 use super::super::fold_original;
 use super::*;
+use crate::reference_packet::service::ack_emitter::native_boot::original_native_startup_attempt_transient_data;
 
 fn outcome(value: Result<PrivateBootstrapStorage, ProviderError>) -> Result<[usize; 6], String> {
     value
@@ -16,6 +17,25 @@ fn outcome(value: Result<PrivateBootstrapStorage, ProviderError>) -> Result<[usi
             ]
         })
         .map_err(|error| format!("{error:?};{error}"))
+}
+
+// Keep the complete saved schedule and all old terms, then add only the
+// newly retained attempt's defining transient headers.
+fn original_with_attempt_headers(
+    input: &PacketNativeBirthStartupInputs<'_>,
+    maximum: usize,
+    source_project: fn(&[u8], usize) -> Result<source_binding::SourceBindingStorage, ProviderError>,
+    preflight: bool,
+) -> Result<PrivateBootstrapStorage, ProviderError> {
+    let mut data = fold_original::project_with_source(input, maximum, source_project, preflight)?;
+    data.transient = sum(
+        &[
+            data.transient,
+            original_native_startup_attempt_transient_data(),
+        ],
+        maximum,
+    )?;
+    Ok(data)
 }
 
 fn source(invocation: bool) -> Vec<u8> {
@@ -65,7 +85,7 @@ fn shared_private_fold_preserves_complete_original_rows_and_first_failures()
         } else {
             source_binding::project
         };
-        let original = outcome(fold_original::project_with_source(
+        let original = outcome(original_with_attempt_headers(
             &input,
             usize::MAX,
             source_project,
@@ -88,7 +108,7 @@ fn shared_private_fold_preserves_complete_original_rows_and_first_failures()
                     source_project,
                     preflight
                 )),
-                outcome(fold_original::project_with_source(
+                outcome(original_with_attempt_headers(
                     &input,
                     maximum,
                     source_project,
@@ -125,7 +145,7 @@ fn shared_private_fold_keeps_malformed_source_and_registration_refusals()
             source_binding::project,
             false,
         ));
-        let original = outcome(fold_original::project_with_source(
+        let original = outcome(original_with_attempt_headers(
             &input,
             usize::MAX,
             source_binding::project,

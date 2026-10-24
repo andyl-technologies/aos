@@ -5,6 +5,7 @@
 //! no future grant object or private key is fabricated to run the counter.
 
 use super::*;
+use crate::reference_packet::service::ack_emitter::native_boot::original_native_startup_attempt_transient_data;
 use crate::reference_packet::service::PacketNative5LaunchValidationFields as Fields;
 use crate::retained_metadata::serialization_storage::OriginalSerializationStorageData;
 use crucible_source_birth_data::profile::reference_packet::service::native_startup::private_shapes as shapes;
@@ -109,6 +110,7 @@ fn project_with_source(
         source_project = source_project,
         preflight = preflight,
         bootstrap_layout = super::super::super::ack_emitter::original_native_private_bootstrap_layout,
+        startup_attempt_transient = original_native_startup_attempt_transient_data,
         measurement_counter = super::super::super::ack_emitter::original_prepare_executable_measurement_counter_scratch_data,
         invocation_backing = super::super::original_native_private_invocation_backing_data,
         bank_shared_layout = super::super::original_native_private_bank_shared_layout_data,

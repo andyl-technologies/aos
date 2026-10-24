@@ -95,11 +95,14 @@ impl<'a> OriginalNativeBootstrapOwned11<'a> {
         } else {
             startup_codec::authenticate_original(original, &boot, startup)?;
         }
+        // Successful history lends this immutable Bootstrap only after all
+        // decoded attempt children have moved into its native boot.
         if boot
             .policy
             .as_ref()
             .is_none_or(|policy| !Rc::ptr_eq(policy, &token.policy))
             || original.launch.is_some()
+            || original.startup_attempt.is_some()
             || original.launch_value.is_none()
             || original.boot_value.is_none()
             || original.reader.stream_ref().cut.is_some()
@@ -199,6 +202,7 @@ impl<'a> OriginalNativeBootstrapOwned11<'a> {
             launch,
             boot_value,
             boot,
+            startup_attempt: _,
             startup: _,
         } = self.original;
         observer.boxed_value(self.original)?;
@@ -277,6 +281,7 @@ impl Serialize for OriginalNativeBootstrapOwned11<'_> {
             launch,
             boot_value,
             boot: _,
+            startup_attempt: _,
             startup: _,
         } = self.original;
         if self.invocation {
@@ -330,6 +335,7 @@ impl OriginalNativeBootstrapOwned11<'_> {
             launch,
             boot_value,
             boot,
+            startup_attempt: _,
             startup: _,
         } = self.original;
         // The successful Any slot owns this concrete Box independently of every

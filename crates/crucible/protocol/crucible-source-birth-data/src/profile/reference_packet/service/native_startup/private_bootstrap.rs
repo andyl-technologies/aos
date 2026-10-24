@@ -55,6 +55,7 @@ macro_rules! source_birth_private_bootstrap_body {
         source_project = $source_project:ident,
         preflight = $preflight:ident,
         bootstrap_layout = $bootstrap_layout:path,
+        startup_attempt_transient = $startup_attempt_transient:path,
         measurement_counter = $measurement_counter:path,
         invocation_backing = $invocation_backing:path,
         bank_shared_layout = $bank_shared_layout:path,
@@ -224,7 +225,12 @@ macro_rules! source_birth_private_bootstrap_body {
             ],
             $maximum,
         )?;
-        let transient = transient.max(measurement);
+        // Retaining the decoded original14 copy has its own fixed initializer
+        // and Option assignment beside the resident Bootstrap header.
+        let transient = $sum(
+            &[transient.max(measurement), $startup_attempt_transient()],
+            $maximum,
+        )?;
         // Original launch/source/registration/boot DOM children survive successful
         // service birth in the original private bootstrap holder. These independent
         // owners are not released merely because policy retains equivalent values.

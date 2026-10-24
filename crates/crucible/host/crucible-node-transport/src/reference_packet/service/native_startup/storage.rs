@@ -5,6 +5,10 @@
 //! before any DOM/typed decode. The caller admits the fixed counter window
 //! first. This producer grants no permission to launch, parse, Admit or Prepare.
 
+use super::super::ack_emitter::native_boot::{
+    original_native_startup_attempt_counter_scratch_data,
+    original_native_startup_attempt_transient_data,
+};
 use super::super::{PacketConnectedSourceProgram, PacketNative5SourceLaunch};
 use crate::retained_metadata::{
     MetadataObserver, requested_metadata_backing_storage_data,
@@ -139,6 +143,8 @@ pub fn original_native_birth_startup_counter_scratch_data() -> usize {
         + crate::reference_packet::control::PacketControl::original_native_birth_selection_counter_scratch_data()
         + super::data_equality::counter_scratch_data()
         + invocation_ingress_counter_scratch_data()
+        // The inline original14 attempt precedes independent native-row admission.
+        + original_native_startup_attempt_counter_scratch_data()
         // Both claim paths retain these terminal-check origin views and helper
         // operands until the sticky failure flag is cleared.
         + size_of::<&mut bool>()
@@ -901,6 +907,8 @@ pub(super) fn private_frame_work_data(
             raw.canonical_pass_requested_bytes()?,
             typed,
             carry,
+            // The decoded copy is retained inline before its native row claim.
+            original_native_startup_attempt_transient_data(),
         ],
         usize::MAX,
     )

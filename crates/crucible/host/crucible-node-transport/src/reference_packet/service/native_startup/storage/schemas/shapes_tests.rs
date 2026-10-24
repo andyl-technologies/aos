@@ -1,6 +1,7 @@
 //! Checks the genuine selected schema producer against its full prior schedule.
 
 use super::*;
+use crate::reference_packet::service::ack_emitter::native_boot::original_native_startup_attempt_counter_scratch_data;
 use crucible_node_format::{Bytes, U64};
 use serde_json::json;
 
@@ -160,6 +161,7 @@ fn actual_schema_adapter_is_added_to_original_defining_counter() {
     assert_eq!(
         original_native_birth_startup_counter_scratch_data(),
         original_birth_counter_scratch_data()
+            + original_native_startup_attempt_counter_scratch_data()
             // Both claim paths now retain the terminal origin-check views.
             + size_of::<&mut bool>()
             + size_of::<&std::thread::ThreadId>()

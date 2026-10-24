@@ -21,6 +21,7 @@ struct Bootstrap<S> {
     launch: Option<PacketNative5SourceLaunch>,
     boot_value: Option<serde_json::Value>,
     boot: Option<Rc<RefCell<super::boot::NativeAckBoot>>>,
+    startup_attempt: Option<super::boot::OriginalNativeStartupBootAttempt>,
     startup: Option<admitted::OriginalNativeStartupBootstrap>,
 }
 
@@ -47,6 +48,7 @@ pub(in crate::reference_packet::service) fn accept(
         launch: None,
         boot_value: None,
         boot: None,
+        startup_attempt: None,
         startup: None,
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| owner.prepare(socket)));
@@ -94,6 +96,7 @@ pub(in crate::reference_packet::service) fn accept_admitted(
         launch: None,
         boot_value: None,
         boot: None,
+        startup_attempt: None,
         startup: Some(startup),
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| owner.prepare(socket)));
@@ -146,6 +149,7 @@ pub(in crate::reference_packet::service) fn accept_invocation(
         launch: None,
         boot_value: None,
         boot: None,
+        startup_attempt: None,
         startup: Some(startup),
     };
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| owner.prepare(socket)));
@@ -329,6 +333,7 @@ impl<S: AsFd> Bootstrap<S> {
                     launch,
                     self.launch_bytes.clone(),
                     startup,
+                    &mut self.startup_attempt,
                     &mut self.boot,
                 )?;
             }

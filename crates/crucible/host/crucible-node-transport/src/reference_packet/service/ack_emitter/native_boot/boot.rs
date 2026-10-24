@@ -7,7 +7,7 @@ use crate::{
 };
 use crucible_node_format::{Bytes, ContentRef, ContractError, Id, U64, canonical};
 use serde::Deserialize;
-use std::{cell::RefCell, rc::Rc, thread::ThreadId};
+use std::{cell::RefCell, mem::size_of, rc::Rc, thread::ThreadId};
 
 #[path = "owned11.rs"]
 mod owned11;
@@ -78,6 +78,41 @@ struct BootData {
     host_executable: ContentRef,
 }
 
+// Retains the original decoded children before the independent native row
+// permits construction of the larger Rc-owned boot. Bootstrap owns this inline.
+pub(super) struct OriginalNativeStartupBootAttempt {
+    launch_body: Vec<u8>,
+    data: Option<BootData>,
+}
+
+// Pays the actual attempt/helper loans before the independent native-row claim.
+pub(in crate::reference_packet::service) const fn original_native_startup_attempt_counter_scratch_data()
+-> usize {
+    2 * size_of::<&serde_json::Value>()
+        + 2 * size_of::<&PacketNative5SourceLaunch>()
+        + 2 * size_of::<&mut super::bootstrap::admitted::OriginalNativeStartupBootstrap>()
+        + size_of::<&mut Option<OriginalNativeStartupBootAttempt>>()
+        + 2 * size_of::<&mut OriginalNativeStartupBootAttempt>()
+        + 2 * size_of::<&mut Option<Rc<RefCell<NativeAckBoot>>>>()
+        + size_of::<&BootData>()
+        + size_of::<Option<&BootData>>()
+        + size_of::<Result<&BootData, ProviderError>>()
+        + 2 * size_of::<Result<(), ProviderError>>()
+        + 2 * size_of::<bool>()
+        + 2 * size_of::<usize>()
+}
+
+// Counts the owned initializer and Option assignment separately from the
+// resident inline slot already included in Bootstrap's retained layout.
+pub(in crate::reference_packet::service) const fn original_native_startup_attempt_transient_data()
+-> usize {
+    size_of::<OriginalNativeStartupBootAttempt>()
+        + size_of::<Option<OriginalNativeStartupBootAttempt>>()
+        + size_of::<Result<BootData, ContractError>>()
+        + size_of::<Option<BootData>>()
+        + size_of::<Result<BootData, ProviderError>>()
+}
+
 pub(crate) struct NativeAckBoot {
     // Only the separate resource-admitted bootstrap constructor may create
     // Some. The existing boot5 constructor remains explicitly unavailable to it.
@@ -141,36 +176,64 @@ impl NativeAckBoot {
         launch: &PacketNative5SourceLaunch,
         original_launch_body: Vec<u8>,
         startup: &mut super::bootstrap::admitted::OriginalNativeStartupBootstrap,
+        attempt: &mut Option<OriginalNativeStartupBootAttempt>,
         completed: &mut Option<Rc<RefCell<Self>>>,
     ) -> Result<(), ProviderError> {
-        if completed.is_some() {
+        if completed.is_some() || attempt.is_some() {
             return Err(ProviderError::Conflict("native ACK boot already attempted"));
         }
+        let retained = attempt.insert(OriginalNativeStartupBootAttempt {
+            launch_body: original_launch_body,
+            data: None,
+        });
+        let result = Self::prepare_original_startup_attempt_data(
+            value, launch, startup, retained, completed,
+        );
+        // Installation moves every decoded child and the launch copy into the
+        // native boot, including when its later preparation fails. Only the
+        // emptied inline slot is released; pre-claim refusals keep their inputs.
+        if completed.is_some() {
+            *attempt = None;
+        }
+        if result.is_err() {
+            startup.failed = true;
+        }
+        result
+    }
+
+    fn prepare_original_startup_attempt_data(
+        value: &serde_json::Value,
+        launch: &PacketNative5SourceLaunch,
+        startup: &mut super::bootstrap::admitted::OriginalNativeStartupBootstrap,
+        attempt: &mut OriginalNativeStartupBootAttempt,
+        completed: &mut Option<Rc<RefCell<Self>>>,
+    ) -> Result<(), ProviderError> {
         startup.ensure_original()?;
         crate::connection::serialized_credit(value, startup.maximum_boot_bytes)?;
-        let data: BootData =
-            BootData::deserialize(value).map_err(crucible_node_format::ContractError::from)?;
+        attempt.data = Some(BootData::deserialize(value).map_err(ContractError::from)?);
+        let data = attempt.data.as_ref().ok_or(ProviderError::Correlation(
+            "native startup decoded boot absent",
+        ))?;
         let admitted = startup.claim_birth_data(
             launch,
-            &original_launch_body,
+            &attempt.launch_body,
             &data.source_birth,
             &data.expected_host_registration,
             &data.private_launch,
             data.private_key.as_slice(),
             data.birth_id.as_slice(),
         )?;
-        let result = Self::prepare_data_into(
+        let data = attempt.data.take().ok_or(ProviderError::Correlation(
+            "native startup decoded boot transferred",
+        ))?;
+        Self::prepare_data_into(
             data,
             launch,
-            original_launch_body,
+            std::mem::take(&mut attempt.launch_body),
             Some(admitted),
             None,
             completed,
-        );
-        if result.is_err() {
-            startup.failed = true;
-        }
-        result
+        )
     }
 
     fn prepare_data_into(
@@ -187,7 +250,7 @@ impl NativeAckBoot {
         Self::prepare_retained_data(&original, launch, invocation)
     }
 
-    // No fallible post-decode check precedes installation in the original slot.
+    // Installs the native owner before subsequent policy/model preparation.
     fn retain_boot_data_into(
         data: BootData,
         original_launch_body: Vec<u8>,
@@ -733,3 +796,7 @@ pub(crate) use capture17::{
     native_capture17_receive_scope_counter_scratch_data,
     native_capture17_upload_scope_counter_scratch_data,
 };
+
+#[cfg(test)]
+#[path = "boot_startup_tests.rs"]
+mod startup_tests;
