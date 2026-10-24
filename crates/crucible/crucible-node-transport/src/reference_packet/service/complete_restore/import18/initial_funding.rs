@@ -1,11 +1,11 @@
 //! Declares the separately derived initial bootstrap funding result.
 //!
-//! This opaque Copy DATA is not the announced complete recipe. A defining
-//! producer must independently price actual Bootstrap18, body parsing and seven
-//! receiving-bank construction before it can construct this result. No producer
-//! exists until those terms are physical; no numeric or deserialization path can
-//! replace it with a caller-supplied row. Its matching helpers issue no native
-//! escrow, Source purpose, ready model or phase claim.
+//! This opaque Copy DATA is separate from the complete recipe. Its producer
+//! derives the Bootstrap18, parser, empty receiving-bank and Hello construction
+//! row from actual operands, and joins it to the same opaque recipe and launch.
+//! No numeric or deserialization path replaces that derivation. The producer and
+//! matching helpers issue no native escrow, Source purpose, ready model or phase
+//! claim. The complete five-phase recipe and genuine consumers remain required.
 
 use super::*;
 use crate::reference_packet::service::native_startup::PacketNativeStartupAllocationRow;
@@ -13,6 +13,14 @@ use std::mem::size_of;
 
 pub(in crate::reference_packet) mod history;
 pub use history::PacketNativeImport18InitialFundingHistoryData;
+
+mod producer;
+pub use producer::{
+    PacketNativeImport18InitialFundingInputs, derive_native_import18_initial_funding_data,
+    native_import18_initial_funding_producer_construction_data,
+    native_import18_initial_funding_producer_counter_scratch_data,
+    native_import18_initial_funding_producer_projection_data,
+};
 
 /// Retains one defining initial row bound to the same immutable birth operands.
 ///
@@ -107,8 +115,9 @@ impl PacketNativeImport18InitialFundingData {
 
 /// Names actual result/Result construction outputs, excluding all producer work.
 ///
-/// The separate Bootstrap18/parser/receiver row must add its real backing and
-/// constructor windows. These headers alone cannot produce an initial result.
+/// The defining producer additionally prices actual Bootstrap18/parser/receiver
+/// demand and its own Source/launch construction windows. These output headers
+/// alone never replace that derivation.
 pub const fn native_import18_initial_funding_construction_transient_data() -> usize {
     size_of::<PacketNativeImport18InitialFundingData>()
         + size_of::<Result<PacketNativeImport18InitialFundingData, ProviderError>>()
@@ -116,8 +125,8 @@ pub const fn native_import18_initial_funding_construction_transient_data() -> us
 
 /// Names fixed result matcher controls without borrowing another phase's scratch.
 ///
-/// This declaration excludes the actual initial producer/canonical/body parsing
-/// work. No complete initial funding quote is claimed until its producer exists.
+/// This declaration excludes the actual producer and canonical/body parsing
+/// work, which have separately named defining construction quotes.
 pub fn native_import18_initial_funding_counter_scratch_data() -> usize {
     size_of::<&PacketNativeImport18InitialFundingData>()
         + size_of::<&PacketNativeImport18PrebirthRecipeData>()

@@ -199,9 +199,13 @@ pub(in crate::reference_packet) use prebirth_recipe::projection::{
 };
 
 pub use initial_funding::{
-    PacketNativeImport18InitialFundingData,
+    PacketNativeImport18InitialFundingData, PacketNativeImport18InitialFundingInputs,
+    derive_native_import18_initial_funding_data,
     native_import18_initial_funding_construction_transient_data,
     native_import18_initial_funding_counter_scratch_data,
+    native_import18_initial_funding_producer_construction_data,
+    native_import18_initial_funding_producer_counter_scratch_data,
+    native_import18_initial_funding_producer_projection_data,
 };
 
 // This borrowed DATA preserves all partial initial-result operands.

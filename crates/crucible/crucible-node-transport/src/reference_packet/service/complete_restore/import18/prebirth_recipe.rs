@@ -651,3 +651,7 @@ mod tests {
 
 #[path = "prebirth_recipe/projection.rs"]
 pub(in crate::reference_packet) mod projection;
+
+#[cfg(test)]
+#[path = "prebirth_recipe_initial_funding_tests.rs"]
+mod initial_funding_tests;
