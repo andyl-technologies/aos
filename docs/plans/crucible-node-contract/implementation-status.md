@@ -10,6 +10,44 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Original invocation attempt retention
+
+Commit `761dde3d2c` installs original15's actual launch copy in Bootstrap's
+existing inline one-shot slot before origin, frame-credit or DTO checks. It uses
+the borrowed representation inspector and literal opaque-JSON copier introduced
+for original14. Complete DTOs and launch bytes move together into the existing
+native owner before schema/claim checks. Early refusals keep the inline owner;
+later refusals keep the native owner. Every failure spends the inherited startup
+scope, and neither constructor can retry through the occupied slot or owner.
+
+The original counter quote retains all previous terms and adds the invocation
+wrapper/helper loans, fixed purpose copies, transfer headers and results. The
+resident Bootstrap slot and its construction transients already belong to the
+shared original projection; this change creates no row-derived authority.
+
+Both raw-JSON and standard controls pass seven actual inherited-parent
+invocation refusal flights and the six existing original14 flights. The
+invocation fixture separately quotes its actual incoming parser window before
+reading the inherited prefix.
+All-feature/all-target Transport/Engine/Daemon compilation and all six
+architecture gates pass. Complete raw-JSON and unchanged standard rerun suites
+each pass 2,090 tests with zero failures, 18 ignored tests and no filtering.
+The first standard flight passed 2,089 tests and failed an existing gem5 census
+control with a process-group parse refusal. Its log remains retained; twenty
+isolated repetitions and the full unchanged standard rerun pass. The exact
+failing token was not retained, and containment investigation continues.
+Current-source application/boundary checks remain pending. Workspace-enforced production
+Transport Clippy remains at 41 errors and 1,733 warnings, with no diagnostics in
+the invocation changes; promoting all warnings to errors also fails. All 491
+frozen owned Rust/Cargo inputs match the working tree, committed revision,
+actual application source and all three funded-VM Rust component captures. The
+funded Source/Birth VM is queued separately; capture agreement does not qualify
+a build or guest flight.
+
+This qualifies only the retained constructor attempt; complete native
+failed-prefix custody, genuine Recipe/Initial production and RFC-0025 remain
+unfinished.
+
 ## Original startup representation and literal JSON custody
 
 Commit `48b372ab72` checks every original14 scalar/reference spelling through a
