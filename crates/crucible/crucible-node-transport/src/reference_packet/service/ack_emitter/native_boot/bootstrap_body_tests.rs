@@ -188,7 +188,7 @@ fn inherited_body_child() -> TestResult {
         2,
     )?));
     let stream = super::super::owned_read::OriginalPrivateBootstrapStream {
-        original: std::io::stdin(),
+        original: OriginalPrivateBootstrapInput::Inherited(rustix::stdio::stdin()),
         cut: Some(cut),
     };
     let mut reader = FrameReader::with_limits(

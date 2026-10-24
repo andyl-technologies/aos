@@ -7,7 +7,7 @@ use super::*;
 use crate::reference_packet::service::native_startup::decode_original_native_invocation_preamble_data;
 
 pub(super) fn authenticate_original(
-    original: &Bootstrap<std::io::Stdin>,
+    original: &Bootstrap<OriginalPrivateBootstrapInput>,
     boot: &super::super::super::boot::NativeAckBoot,
 ) -> Result<(), ProviderError> {
     let invalid = || ProviderError::Correlation("invocation bootstrap owner differs");

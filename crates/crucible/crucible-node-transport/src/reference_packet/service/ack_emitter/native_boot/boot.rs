@@ -185,6 +185,12 @@ pub(in crate::reference_packet::service) fn original_native_startup_attempt_coun
         + 3 * size_of::<bool>()
         + crate::transport::original_frames::original_frame_view_counter_scratch_data()
         + body::counter_scratch_data()
+        // Selected entry initializers and AsFd's finite dispatch borrow the
+        // inherited descriptor without constructing another buffered bank.
+        + 2 * size_of::<super::owned_read::OriginalPrivateBootstrapInput>()
+        + 4 * size_of::<std::os::fd::BorrowedFd<'static>>()
+        + 2 * size_of::<&super::owned_read::OriginalPrivateBootstrapInput>()
+        + size_of::<bool>()
 }
 
 // Counts the owned initializer and Option assignment separately from the

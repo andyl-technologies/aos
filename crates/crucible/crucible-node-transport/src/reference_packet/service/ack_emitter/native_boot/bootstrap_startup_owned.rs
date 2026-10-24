@@ -67,7 +67,7 @@ pub(super) fn observe_startup(
 }
 
 pub(super) fn authenticate_original(
-    original: &Bootstrap<std::io::Stdin>,
+    original: &Bootstrap<OriginalPrivateBootstrapInput>,
     boot: &super::super::super::boot::NativeAckBoot,
     selected: bool,
 ) -> Result<(), ProviderError> {

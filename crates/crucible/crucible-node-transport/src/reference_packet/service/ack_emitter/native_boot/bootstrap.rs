@@ -1,5 +1,6 @@
 //! Retains the actual inherited private channel until native birth completes.
 
+use super::owned_read::OriginalPrivateBootstrapInput;
 use crate::reference_packet::service::{PacketNative5SourceLaunch, PacketSourceService};
 use crate::transport::original_frames::OriginalFrameReservation;
 use crate::{ProviderError, client::OriginalNative5BirthCut, transport::FrameReader};
@@ -39,7 +40,7 @@ pub(in crate::reference_packet::service) fn accept(
         2,
     )?));
     let stream = super::owned_read::OriginalPrivateBootstrapStream {
-        original: stdin,
+        original: OriginalPrivateBootstrapInput::Legacy(stdin),
         cut: Some(cut),
     };
     let mut reader = FrameReader::with_limits(stream, 1024 * 1024, 64)?;
@@ -73,17 +74,17 @@ pub(in crate::reference_packet::service) fn accept(
 pub(in crate::reference_packet::service) fn accept_admitted(
     socket: &Path,
 ) -> Result<PacketSourceService, ProviderError> {
-    // rustix's safe std-enabled handle borrows fd0 without constructing std's
-    // global buffered Stdin owner before the private prefix admission.
-    let startup = admitted::OriginalNativeStartupBootstrap::read_original(&rustix::stdio::stdin())?;
-    let stdin = std::io::stdin();
+    // Retain the same safe fd0 borrow through prefix admission and frame reads;
+    // no standard-library buffered stdin owner is constructed on this path.
+    let stdin = rustix::stdio::stdin();
+    let startup = admitted::OriginalNativeStartupBootstrap::read_original(&stdin)?;
     let cut = OriginalNative5BirthCut::from_original_preparser_cut(startup.original_cut)?;
     let bank = Rc::new(RefCell::new(OriginalFrameReservation::reserve(
         1024 * 1024 + 512 * 1024 + 8,
         2,
     )?));
     let stream = super::owned_read::OriginalPrivateBootstrapStream {
-        original: stdin,
+        original: OriginalPrivateBootstrapInput::Inherited(stdin),
         cut: Some(cut),
     };
     let mut reader = FrameReader::with_limits(
@@ -125,18 +126,17 @@ pub(in crate::reference_packet::service) fn accept_admitted(
 pub(in crate::reference_packet::service) fn accept_invocation(
     socket: &Path,
 ) -> Result<PacketSourceService, ProviderError> {
-    // rustix's safe std-enabled handle borrows fd0 without constructing std's
-    // global buffered Stdin owner before the private prefix admission.
-    let startup =
-        admitted::OriginalNativeStartupBootstrap::read_invocation(&rustix::stdio::stdin())?;
-    let stdin = std::io::stdin();
+    // Retain the same safe fd0 borrow through prefix admission and frame reads;
+    // no standard-library buffered stdin owner is constructed on this path.
+    let stdin = rustix::stdio::stdin();
+    let startup = admitted::OriginalNativeStartupBootstrap::read_invocation(&stdin)?;
     let cut = OriginalNative5BirthCut::from_original_preparser_cut(startup.original_cut)?;
     let bank = Rc::new(RefCell::new(OriginalFrameReservation::reserve(
         1024 * 1024 + 512 * 1024 + 8,
         2,
     )?));
     let stream = super::owned_read::OriginalPrivateBootstrapStream {
-        original: stdin,
+        original: OriginalPrivateBootstrapInput::Inherited(stdin),
         cut: Some(cut),
     };
     let mut reader = FrameReader::with_limits(
@@ -417,5 +417,13 @@ impl<S: AsFd> Bootstrap<S> {
 }
 
 pub(crate) const fn original_native_private_bootstrap_layout() -> usize {
-    std::mem::size_of::<Bootstrap<std::io::Stdin>>()
+    // Preserve the legacy layout floor while independently counting the actual
+    // closed input enum in every selected Bootstrap owner.
+    let original = std::mem::size_of::<Bootstrap<std::io::Stdin>>();
+    let current = std::mem::size_of::<Bootstrap<OriginalPrivateBootstrapInput>>();
+    if current > original {
+        current
+    } else {
+        original
+    }
 }

@@ -1,7 +1,27 @@
 //! Owns one inherited private stream and its immutable original birth cut.
 
 use crate::client::OriginalNative5BirthCut;
-use std::{io, os::fd::AsFd};
+use std::{
+    io,
+    os::fd::{AsFd, BorrowedFd},
+};
+
+// The legacy entry retains its original standard handle. Admitted entries
+// borrow fd0 directly: constructing std's global BufReader would introduce an
+// unrelated heap bank even though all private reads use recv below.
+pub(super) enum OriginalPrivateBootstrapInput {
+    Legacy(io::Stdin),
+    Inherited(BorrowedFd<'static>),
+}
+
+impl AsFd for OriginalPrivateBootstrapInput {
+    fn as_fd(&self) -> BorrowedFd<'_> {
+        match self {
+            Self::Legacy(stdin) => stdin.as_fd(),
+            Self::Inherited(stdin) => stdin.as_fd(),
+        }
+    }
+}
 
 pub(super) struct OriginalPrivateBootstrapStream<S> {
     pub(super) original: S,

@@ -9,7 +9,7 @@ use crate::retained_metadata::{MetadataObserver, aliases::MetadataSharedKind};
 use serde::{Serialize, Serializer};
 
 pub(crate) struct OriginalNativeBootstrapOwned11<'a> {
-    original: &'a Bootstrap<std::io::Stdin>,
+    original: &'a Bootstrap<OriginalPrivateBootstrapInput>,
     startup: bool,
     invocation: bool,
     reader: crate::transport::OriginalFrameReaderFacts,
@@ -58,9 +58,20 @@ impl<'a> OriginalNativeBootstrapOwned11<'a> {
         invocation: bool,
     ) -> Result<Self, ProviderError> {
         token.authenticate_current(connection)?;
-        let original = retained.downcast_ref::<Bootstrap<std::io::Stdin>>().ok_or(
-            ProviderError::Correlation("native whole11 bootstrap type unresolved"),
-        )?;
+        let original = retained
+            .downcast_ref::<Bootstrap<OriginalPrivateBootstrapInput>>()
+            .ok_or(ProviderError::Correlation(
+                "native whole11 bootstrap type unresolved",
+            ))?;
+        if matches!(
+            original.reader.stream_ref().original,
+            OriginalPrivateBootstrapInput::Inherited(_)
+        ) != startup
+        {
+            return Err(ProviderError::Correlation(
+                "native whole11 bootstrap input edition differs",
+            ));
+        }
         let boot_owner = original.boot.as_ref().ok_or(ProviderError::Correlation(
             "native whole11 bootstrap boot absent",
         ))?;
@@ -249,7 +260,9 @@ impl<'a> OriginalNativeBootstrapOwned11<'a> {
     }
 }
 
-fn ensure_closed_original(original: &Bootstrap<std::io::Stdin>) -> Result<(), ProviderError> {
+fn ensure_closed_original(
+    original: &Bootstrap<OriginalPrivateBootstrapInput>,
+) -> Result<(), ProviderError> {
     let mut probe = [0u8; 1];
     match rustix::net::recv(
         &original.reader.stream_ref().original,
