@@ -247,7 +247,7 @@ impl PacketCompleteReportStartupHolder {
                 let [a, b, c] = outputs
                     .each_ref()
                     .map(|n| n.as_ref().ok_or(RuntimeError::OwnerUnavailable));
-                member.begin_original_constructor_diagnostics(
+                let scope = OriginalRuntimeConstructionScope::postconstruction_data(
                     &held.plan,
                     phase,
                     &held.authority.roster.sources,
@@ -255,7 +255,8 @@ impl PacketCompleteReportStartupHolder {
                     [a?, b?, c?],
                     scene.activation()?,
                     scene.limits()?,
-                )?
+                );
+                member.begin_original_constructor_diagnostics(&scope)?
             };
             let _daemon_diagnostics =
                 super::super::super::super::construction_diagnostics::Scope::enter();

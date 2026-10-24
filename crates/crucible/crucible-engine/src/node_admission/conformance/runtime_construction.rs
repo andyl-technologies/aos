@@ -45,6 +45,33 @@ pub struct OriginalRuntimeConstructionScope<'a> {
 }
 
 impl OriginalRuntimeConstructionScope<'_> {
+    /// Borrows a complete intended postconstruction scope as inert DATA.
+    ///
+    /// Admit the original construction counter before creating these views.
+    /// Neither the postconstruction label nor the borrowed roster establishes
+    /// completion, currentness or permission. The original member separately
+    /// authenticates every owner and the registered holder before using it.
+    pub const fn postconstruction_data<'a>(
+        plan: &'a InstalledConformancePlan,
+        phase: OriginalRuntimeConstructionPhase,
+        sources: &'a [Rc<PacketCompleteSemanticSource>; 3],
+        launches: &'a [PacketNative5SourceLaunch; 3],
+        sdks: [&'a PacketCompleteOriginalHostSdk; 3],
+        activation: &'a ActivationRecord,
+        limits: RuntimeLimits,
+    ) -> OriginalRuntimeConstructionScope<'a> {
+        OriginalRuntimeConstructionScope {
+            plan,
+            phase,
+            after: true,
+            sources,
+            launches,
+            sdks,
+            activation,
+            limits,
+        }
+    }
+
     /// Borrows this same installed plan allocation.
     pub fn plan(&self) -> &InstalledConformancePlan {
         self.plan
@@ -162,6 +189,11 @@ impl InstalledConformancePlan {
     pub fn original_runtime_construction_counter_scratch_data() -> Result<usize, RuntimeError> {
         let fixed = [
             size_of::<OriginalRuntimeConstructionScope<'_>>(),
+            // Preserve prior controls and charge the caller/return scope,
+            // nested borrows and three new entries in this quote's term array.
+            size_of::<OriginalRuntimeConstructionScope<'_>>(),
+            3 * size_of::<&OriginalRuntimeConstructionScope<'_>>(),
+            size_of::<[usize; 3]>(),
             size_of::<CompleteOriginalRuntimeConstructionMember>(),
             size_of::<OriginalRuntimeConstructionPolicy>(),
             2 * size_of::<OriginalRuntimeConstructionStorage>(),
@@ -286,38 +318,25 @@ impl CompleteOriginalRuntimeConstructionMember {
     /// Refuses foreign creator, phase, Source/plan or revoked registered holder.
     pub fn authenticate_original_data(
         &self,
-        plan: &InstalledConformancePlan,
-        phase: OriginalRuntimeConstructionPhase,
-        sources: &[Rc<PacketCompleteSemanticSource>; 3],
-        launches: &[PacketNative5SourceLaunch; 3],
-        sdks: [&PacketCompleteOriginalHostSdk; 3],
-        activation: &ActivationRecord,
-        limits: RuntimeLimits,
+        scope: &OriginalRuntimeConstructionScope<'_>,
     ) -> Result<(), RuntimeError> {
         self.origin()?;
-        if phase != self.phase
+        if !scope.after
+            || scope.phase != self.phase
             || !self
                 .plan
                 .upgrade()
                 .map_err(|_| RuntimeError::ForeignAuthority)?
-                .same_original(plan)
-            || (0..3).any(|i| self.sources[i].as_ptr() != Rc::as_ptr(&sources[i]))
+                .same_original(scope.plan)
+            || (0..3).any(|i| self.sources[i].as_ptr() != Rc::as_ptr(&scope.sources[i]))
         {
             return Err(RuntimeError::ForeignAuthority);
         }
-        let scope = OriginalRuntimeConstructionScope {
-            plan,
-            phase,
-            after: true,
-            sources,
-            launches,
-            sdks,
-            activation,
-            limits,
-        };
-        plan.0
+        scope
+            .plan
+            .0
             .authority
-            .authenticate_original_runtime_construction_member(&plan.evidence(), &scope)?;
+            .authenticate_original_runtime_construction_member(&scope.plan.evidence(), scope)?;
         self.origin()
     }
 
@@ -335,19 +354,10 @@ impl CompleteOriginalRuntimeConstructionMember {
         activation: &ActivationRecord,
         limits: RuntimeLimits,
     ) -> Result<usize, RuntimeError> {
-        self.authenticate_original_data(
+        let scope = OriginalRuntimeConstructionScope::postconstruction_data(
             plan, self.phase, sources, launches, sdks, activation, limits,
-        )?;
-        let scope = OriginalRuntimeConstructionScope {
-            plan,
-            phase: self.phase,
-            after: true,
-            sources,
-            launches,
-            sdks,
-            activation,
-            limits,
-        };
+        );
+        self.authenticate_original_data(&scope)?;
         if plan
             .0
             .authority
@@ -398,9 +408,7 @@ impl CompleteOriginalRuntimeConstructionMember {
             return Err(RuntimeError::ResourceLimit);
         }
         // No arbitrary callback follows this terminal original-identity fence.
-        self.authenticate_original_data(
-            plan, self.phase, sources, launches, sdks, activation, limits,
-        )?;
+        self.authenticate_original_data(&scope)?;
         Ok(peak)
     }
 }
@@ -530,15 +538,9 @@ impl CompleteOriginalRuntimeConstructionMember {
     /// Refuses a foreign, stale or revoked issued member before changing state.
     pub fn begin_original_constructor_diagnostics(
         &self,
-        plan: &InstalledConformancePlan,
-        phase: OriginalRuntimeConstructionPhase,
-        sources: &[Rc<PacketCompleteSemanticSource>; 3],
-        launches: &[PacketNative5SourceLaunch; 3],
-        sdks: [&PacketCompleteOriginalHostSdk; 3],
-        activation: &ActivationRecord,
-        limits: RuntimeLimits,
+        scope: &OriginalRuntimeConstructionScope<'_>,
     ) -> Result<CompleteOriginalRuntimeConstructionDiagnostics, RuntimeError> {
-        self.authenticate_original_data(plan, phase, sources, launches, sdks, activation, limits)?;
+        self.authenticate_original_data(scope)?;
         Ok(CompleteOriginalRuntimeConstructionDiagnostics {
             previous_runtime: SELECTED_RUNTIME_DIAGNOSTICS.replace(true),
             _source: crate::node_adapters::cnp::OriginalInitialLifecycleDiagnostics::begin(),
