@@ -238,7 +238,7 @@ in {
           # The `hash` column has to be the *real* NAR hash of the
           # on-disk content. `aos cache push`'s pack path shells out
           # to `nix-store --export ${storePath}` (via
-          # `streaming_export` in aos-cache/src/compress.rs), and Nix
+          # `streaming_export` in packages/aos-nix-cache/src/compress.rs), and Nix
           # refuses with `"hash of path ... has changed from ... to
           # ..."` if the registered hash doesn't match what it just
           # computed by re-NARing the path. So precompute the hash
@@ -271,7 +271,7 @@ in {
           NAR_SIZE=$(stat -c %s "$NAR_TMP")
           rm -f "$NAR_TMP"
           # Seed the `ca` column so the server's `validate_imported_path`
-          # check (aos-server/src/pack.rs:140-189) treats this path as a
+          # check (packages/aos-build-server/src/pack.rs:140-189) treats this path as a
           # fixed-output content-addressed path and accepts it. The pack-
           # import handler refuses to register anything that's not .drv
           # or CA, on the grounds that unverified non-CA store paths from
@@ -290,7 +290,7 @@ in {
           # `upload_pack_handler` → `create_tmp_root`), but the
           # narinfo / NAR handlers go through `check_visibility`
           # which only consults `bin/` and `src/`
-          # (aos-server/src/views.rs:48-58). In production a `bin/`
+          # (packages/aos-build-server/src/views.rs:48-58). In production a `bin/`
           # root is materialised once `apm build` completes; the
           # fleet test isn't running a build, so we materialise it
           # by hand. Without this, step 3.6's narinfo curl would 404

@@ -1,0 +1,420 @@
+--- a/include/linux/crucible_allocator.h
++++ b/include/linux/crucible_allocator.h
+@@ -56,6 +56,12 @@
+ 	u64 metadata_bytes;
+ 	u64 physical_resident_bound;
+ 	u64 physical_peak_bound;
++	const void *original_first_chunk_issuer;
++	u64 first_chunk_group_bytes;
++	u64 first_chunk_atom_bytes;
++	u32 first_chunk_units;
++	u32 first_chunk_padding_units;
++	u32 first_chunk_groups;
+ 	u32 cpu_ids;
+ 	u32 slot_limit;
+ };
+--- a/mm/percpu.c
++++ b/mm/percpu.c
+@@ -200,6 +200,7 @@
+ static bool pcpu_async_enabled __read_mostly;
+ static bool pcpu_atomic_alloc_failed;
+ 
++#include "crucible-percpu-first-chunk.inc.c"
+ #include "crucible-percpu-pool.inc.c"
+ 
+ static void pcpu_schedule_balance_work(void)
+@@ -2747,6 +2748,7 @@
+ 
+ 	/* we're done */
+ 	pcpu_base_addr = base_addr;
++	crucible_percpu_first_chunk_adopt(ai, base_addr);
+ 	crucible_percpu_pool_birth(ai, base_addr);
+ }
+ 
+@@ -3043,11 +3045,13 @@
+ 	unsigned long max_distance;
+ 	int group, i, highest_group, rc = 0;
+ 
++	crucible_percpu_first_chunk_begin(true);
+ 	ai = pcpu_build_alloc_info(reserved_size, dyn_size, atom_size,
+ 				   cpu_distance_fn);
+ 	if (IS_ERR(ai))
+ 		return PTR_ERR(ai);
+ 
++	crucible_percpu_first_chunk_layout(ai);
+ 	size_sum = ai->static_size + ai->reserved_size + ai->dyn_size;
+ 	areas_size = PFN_ALIGN(ai->nr_groups * sizeof(void *));
+ 
+@@ -3063,13 +3067,17 @@
+ 		struct pcpu_group_info *gi = &ai->groups[group];
+ 		unsigned int cpu = NR_CPUS;
+ 		void *ptr;
++		struct crucible_percpu_first_chunk_token source_token;
+ 
+ 		for (i = 0; i < gi->nr_units && cpu == NR_CPUS; i++)
+ 			cpu = gi->cpu_map[i];
+ 		BUG_ON(cpu == NR_CPUS);
+ 
+ 		/* allocate space for the whole group */
++		source_token = crucible_percpu_first_chunk_group_begin(ai, group, cpu,
++			gi->nr_units * ai->unit_size, atom_size);
+ 		ptr = pcpu_fc_alloc(cpu, gi->nr_units * ai->unit_size, atom_size, cpu_to_nd_fn);
++		crucible_percpu_first_chunk_group_complete(source_token, ptr);
+ 		if (!ptr) {
+ 			rc = -ENOMEM;
+ 			goto out_free_areas;
+@@ -3223,6 +3231,7 @@
+ 
+ 	snprintf(psize_str, sizeof(psize_str), "%luK", PAGE_SIZE >> 10);
+ 
++	crucible_percpu_first_chunk_begin(false);
+ 	ai = pcpu_build_alloc_info(reserved_size, 0, PAGE_SIZE, NULL);
+ 	if (IS_ERR(ai))
+ 		return PTR_ERR(ai);
+--- a/mm/crucible-percpu-pool.inc.c
++++ b/mm/crucible-percpu-pool.inc.c
+@@ -57,7 +57,7 @@
+ 
+ u64 crucible_allocator_percpu_pool_metadata_bytes(void)
+ {
+-	return sizeof(crucible_percpu_pool);
++	return sizeof(crucible_percpu_pool) + sizeof(crucible_percpu_first_chunk);
+ }
+ EXPORT_SYMBOL_GPL(crucible_allocator_percpu_pool_metadata_bytes);
+ 
+@@ -151,28 +151,36 @@
+ 	 * issuer. Do not infer one from the logical static arena's byte count.
+ 	 */
+ 	if (IS_ENABLED(CONFIG_KASAN) || IS_ENABLED(CONFIG_KMSAN) ||
+-	    !crucible_percpu_pool_current())
++	    (!crucible_percpu_pool_current() || !crucible_percpu_first_chunk_current()))
+ 		return false;
+-	/* Include the original linker template and every CPU ID conservatively.
++	/* Charge every original padded group request and the full linker template.
++	 * Hole/tail frees never reduce this bound; NUMA virtual gaps do not add
++	 * physical bytes. Native allocator-internal/boot peak remains unqualified.
+ 	 * Bound both the direct-map and per-CPU aliases by a private page-table
+ 	 * page at every hardware level for every data page. Mapping sharing is
+ 	 * overcharged rather than inferred from final-pointer addition.
+ 	 * Runtime pool operations allocate no pages, tables, shadow or scratch.
+ 	 */
+-	if (check_mul_overflow((u64)sizeof(crucible_percpu_storage),
+-	    (u64)nr_cpu_ids + 1, &data) ||
++	data = crucible_percpu_first_chunk.group_backing_bound;
++	if (check_add_overflow(data, (u64)PAGE_ALIGN(crucible_percpu_first_chunk.static_bytes), &data) ||
+ 	    check_mul_overflow(data, 2ULL * CONFIG_PGTABLE_LEVELS, &mappings) ||
+ 	    check_add_overflow(data, mappings, &resident) ||
+-	    check_add_overflow(resident, (u64)sizeof(crucible_percpu_pool), &resident))
++	    check_add_overflow(resident, crucible_allocator_percpu_pool_metadata_bytes(), &resident))
+ 		return false;
+ 	shape->generation = 1;
+ 	shape->original_issuer = &crucible_percpu_pool.birth;
+ 	shape->original_storage = &crucible_percpu_storage;
+ 	shape->original_offsets = crucible_percpu_pool.birth.original_offsets;
+ 	shape->arena_bytes = sizeof(crucible_percpu_storage);
+-	shape->metadata_bytes = sizeof(crucible_percpu_pool);
++	shape->metadata_bytes = crucible_allocator_percpu_pool_metadata_bytes();
+ 	shape->physical_resident_bound = resident;
+ 	shape->physical_peak_bound = resident;
++	shape->original_first_chunk_issuer = &crucible_percpu_first_chunk;
++	shape->first_chunk_group_bytes = crucible_percpu_first_chunk.group_backing_bound;
++	shape->first_chunk_atom_bytes = crucible_percpu_first_chunk.atom_bytes;
++	shape->first_chunk_units = crucible_percpu_first_chunk.unit_count;
++	shape->first_chunk_padding_units = crucible_percpu_first_chunk.padding_units;
++	shape->first_chunk_groups = crucible_percpu_first_chunk.group_count;
+ 	shape->cpu_ids = nr_cpu_ids;
+ 	shape->slot_limit = CRUCIBLE_PERCPU_LEASES;
+ 	return true;
+--- /dev/null
++++ b/mm/crucible-percpu-first-chunk.inc.c
+@@ -0,0 +1,290 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Original embedded first-chunk allocations and their padded CPU-map lineage.
++ * This is boot source custody, not a userspace issuer or whole boot-peak proof.
++ */
++
++#define CRUCIBLE_PERCPU_FIRST_CHUNK_UNITS (2U * NR_CPUS)
++
++struct crucible_percpu_first_chunk_group {
++	void *original_return;
++	u64 requested_bytes;
++	u64 alignment;
++	u64 final_base_offset;
++	u32 map_start;
++	u32 units;
++	u32 original_cpu;
++	bool attempted;
++	bool returned;
++};
++
++struct crucible_percpu_first_chunk_token {
++	u64 generation;
++	u32 group;
++	bool retained;
++};
++
++struct crucible_percpu_first_chunk_birth {
++	const struct pcpu_alloc_info *original_input;
++	void *original_base;
++	const unsigned long *original_group_offsets;
++	const size_t *original_group_sizes;
++	const unsigned long *original_unit_offsets;
++	const int *original_unit_map;
++	struct pcpu_chunk *original_first_chunk;
++	struct pcpu_chunk *original_reserved_chunk;
++	struct crucible_percpu_first_chunk_group groups[NR_CPUS];
++	u32 cpu_map[CRUCIBLE_PERCPU_FIRST_CHUNK_UNITS];
++	unsigned long unit_offsets[NR_CPUS];
++	int unit_map[NR_CPUS];
++	cpumask_t original_possible;
++	u64 generation;
++	u64 unit_bytes;
++	u64 atom_bytes;
++	u64 static_bytes;
++	u64 reserved_bytes;
++	u64 dynamic_bytes;
++	u64 group_backing_bound;
++	u32 group_count;
++	u32 unit_count;
++	u32 padding_units;
++	u32 cpu_ids;
++	u32 next_group;
++	bool attempted;
++	bool layout_known;
++	bool complete;
++	bool failed;
++} __aligned(PAGE_SIZE);
++
++static struct crucible_percpu_first_chunk_birth crucible_percpu_first_chunk;
++
++static void __init crucible_percpu_first_chunk_begin(bool embedded)
++{
++	struct crucible_percpu_first_chunk_birth *birth = &crucible_percpu_first_chunk;
++
++	if (birth->attempted) {
++		birth->failed = true;
++		return;
++	}
++	birth->attempted = true;
++	birth->generation = 1;
++	/* A page-remapped route or fallback needs its own original allocation and
++	 * table-population lineage. Ordinary native boot is never intercepted.
++	 */
++	if (!embedded)
++		birth->failed = true;
++}
++
++static void __init crucible_percpu_first_chunk_layout(const struct pcpu_alloc_info *ai)
++{
++	struct crucible_percpu_first_chunk_birth *birth = &crucible_percpu_first_chunk;
++	cpumask_t seen;
++	u64 bytes, total = 0, size_sum;
++	u32 group, unit, index = 0;
++
++	if (!birth->attempted || birth->failed || birth->layout_known || !ai)
++		goto refuse;
++	if (ai->nr_groups <= 0 || ai->nr_groups > NR_CPUS ||
++	    !nr_cpu_ids || nr_cpu_ids > NR_CPUS || !ai->unit_size ||
++	    offset_in_page(ai->unit_size) || !is_power_of_2(ai->atom_size) ||
++	    offset_in_page(ai->atom_size) ||
++	    check_add_overflow((u64)ai->static_size, (u64)ai->reserved_size, &size_sum) ||
++	    check_add_overflow(size_sum, (u64)ai->dyn_size, &size_sum) ||
++	    size_sum > ai->unit_size)
++		goto refuse;
++	birth->original_input = ai;
++	birth->unit_bytes = ai->unit_size;
++	birth->atom_bytes = ai->atom_size;
++	birth->static_bytes = ai->static_size;
++	birth->reserved_bytes = ai->reserved_size;
++	birth->dynamic_bytes = ai->dyn_size;
++	birth->group_count = ai->nr_groups;
++	birth->cpu_ids = nr_cpu_ids;
++	cpumask_copy(&birth->original_possible, cpu_possible_mask);
++	cpumask_clear(&seen);
++
++	for (group = 0; group < birth->group_count; group++) {
++		const struct pcpu_group_info *input = &ai->groups[group];
++		struct crucible_percpu_first_chunk_group *row = &birth->groups[group];
++
++		if (!input->cpu_map || !input->nr_units ||
++		    input->nr_units > CRUCIBLE_PERCPU_FIRST_CHUNK_UNITS - index ||
++		    check_mul_overflow((u64)input->nr_units, birth->unit_bytes, &bytes) ||
++		    bytes % birth->atom_bytes || check_add_overflow(total, bytes, &total))
++			goto refuse;
++		row->map_start = index;
++		row->units = input->nr_units;
++		row->requested_bytes = bytes;
++		row->alignment = birth->atom_bytes;
++		row->original_cpu = NR_CPUS;
++		for (unit = 0; unit < row->units; unit++) {
++			u32 cpu = input->cpu_map[unit];
++
++			birth->cpu_map[index++] = cpu;
++			if (cpu == NR_CPUS) {
++				birth->padding_units++;
++				continue;
++			}
++			if (cpu >= birth->cpu_ids || !cpumask_test_cpu(cpu, cpu_possible_mask) ||
++			    cpumask_test_cpu(cpu, &seen))
++				goto refuse;
++			cpumask_set_cpu(cpu, &seen);
++			if (row->original_cpu == NR_CPUS)
++				row->original_cpu = cpu;
++		}
++		if (row->original_cpu == NR_CPUS)
++			goto refuse;
++	}
++	if (!cpumask_equal(&seen, &birth->original_possible))
++		goto refuse;
++	birth->unit_count = index;
++	birth->group_backing_bound = total;
++	birth->layout_known = true;
++	return;
++refuse:
++	birth->failed = true;
++}
++
++static struct crucible_percpu_first_chunk_token __init
++crucible_percpu_first_chunk_group_begin(const struct pcpu_alloc_info *ai,
++	u32 group, u32 cpu, size_t bytes, size_t alignment)
++{
++	struct crucible_percpu_first_chunk_birth *birth = &crucible_percpu_first_chunk;
++	struct crucible_percpu_first_chunk_token token = { };
++	struct crucible_percpu_first_chunk_group *row;
++
++	if (birth->failed || !birth->layout_known || ai != birth->original_input ||
++	    group >= birth->group_count || group != birth->next_group)
++		goto refuse;
++	row = &birth->groups[group];
++	if (row->attempted || row->original_cpu != cpu || row->requested_bytes != bytes ||
++	    row->alignment != alignment)
++		goto refuse;
++	row->attempted = true;
++	birth->next_group++;
++	token.generation = birth->generation;
++	token.group = group;
++	token.retained = true;
++	return token;
++refuse:
++	birth->failed = true;
++	return token;
++}
++
++static void __init crucible_percpu_first_chunk_group_complete(
++	struct crucible_percpu_first_chunk_token token, void *original_return)
++{
++	struct crucible_percpu_first_chunk_birth *birth = &crucible_percpu_first_chunk;
++	struct crucible_percpu_first_chunk_group *row;
++	u64 end;
++
++	if (!token.retained || token.generation != birth->generation ||
++	    token.group >= birth->group_count) {
++		birth->failed = true;
++		return;
++	}
++	row = &birth->groups[token.group];
++	if (!row->attempted || row->returned) {
++		birth->failed = true;
++		return;
++	}
++	/* Keep the actual result even when another original attempt has failed. */
++	row->original_return = original_return;
++	row->returned = true;
++	if (!original_return || (unsigned long)original_return % row->alignment ||
++	    check_add_overflow((u64)(unsigned long)original_return, row->requested_bytes, &end))
++		birth->failed = true;
++}
++
++static void __init crucible_percpu_first_chunk_adopt(const struct pcpu_alloc_info *ai,
++	void *base_addr)
++{
++	struct crucible_percpu_first_chunk_birth *birth = &crucible_percpu_first_chunk;
++	u32 group, unit, start = 0;
++
++	if (birth->failed || !birth->layout_known || birth->complete ||
++	    ai != birth->original_input || birth->next_group != birth->group_count ||
++	    !base_addr || pcpu_nr_groups != birth->group_count ||
++	    pcpu_nr_units != birth->unit_count || pcpu_unit_size != birth->unit_bytes ||
++	    pcpu_atom_size != birth->atom_bytes || nr_cpu_ids != birth->cpu_ids ||
++	    !pcpu_group_offsets || !pcpu_group_sizes || !pcpu_unit_offsets || !pcpu_unit_map ||
++	    !pcpu_first_chunk || !pcpu_first_chunk->immutable ||
++	    !cpumask_equal(cpu_possible_mask, &birth->original_possible))
++		goto refuse;
++	if (ai->static_size != birth->static_bytes || ai->reserved_size != birth->reserved_bytes ||
++	    ai->dyn_size != birth->dynamic_bytes || ai->unit_size != birth->unit_bytes ||
++	    ai->atom_size != birth->atom_bytes || ai->nr_groups != birth->group_count)
++		goto refuse;
++
++	for (group = 0; group < birth->group_count; group++) {
++		const struct pcpu_group_info *input = &ai->groups[group];
++		struct crucible_percpu_first_chunk_group *row = &birth->groups[group];
++		u64 address;
++
++		if (!row->returned || !row->original_return || input->nr_units != row->units ||
++		    pcpu_group_offsets[group] != input->base_offset ||
++		    pcpu_group_sizes[group] != row->requested_bytes ||
++		    check_add_overflow((u64)(unsigned long)base_addr,
++			(u64)input->base_offset, &address) ||
++		    address != (unsigned long)row->original_return)
++			goto refuse;
++		row->final_base_offset = input->base_offset;
++		for (unit = 0; unit < row->units; unit++) {
++			u32 cpu = birth->cpu_map[row->map_start + unit];
++
++			if (!input->cpu_map || input->cpu_map[unit] != cpu)
++				goto refuse;
++			if (cpu == NR_CPUS)
++				continue;
++			if (pcpu_unit_offsets[cpu] != row->final_base_offset + unit * birth->unit_bytes ||
++			    pcpu_unit_map[cpu] != start + unit)
++				goto refuse;
++		}
++		start += row->units;
++	}
++	birth->original_base = base_addr;
++	birth->original_group_offsets = pcpu_group_offsets;
++	birth->original_group_sizes = pcpu_group_sizes;
++	birth->original_unit_offsets = pcpu_unit_offsets;
++	birth->original_unit_map = pcpu_unit_map;
++	birth->original_first_chunk = pcpu_first_chunk;
++	birth->original_reserved_chunk = pcpu_reserved_chunk;
++	for_each_cpu(unit, &birth->original_possible) {
++		birth->unit_offsets[unit] = pcpu_unit_offsets[unit];
++		birth->unit_map[unit] = pcpu_unit_map[unit];
++	}
++	birth->complete = true;
++	return;
++refuse:
++	birth->failed = true;
++}
++
++static bool crucible_percpu_first_chunk_current(void)
++{
++	const struct crucible_percpu_first_chunk_birth *birth = &crucible_percpu_first_chunk;
++	unsigned int group, cpu;
++
++	/* Check original array membership before following native metadata. */
++	if (birth->failed || !birth->complete || birth->original_base != pcpu_base_addr ||
++	    birth->original_group_offsets != pcpu_group_offsets ||
++	    birth->original_group_sizes != pcpu_group_sizes ||
++	    birth->original_unit_offsets != pcpu_unit_offsets ||
++	    birth->original_unit_map != pcpu_unit_map ||
++	    birth->original_first_chunk != pcpu_first_chunk ||
++	    birth->original_reserved_chunk != pcpu_reserved_chunk ||
++	    birth->group_count != pcpu_nr_groups || birth->unit_count != pcpu_nr_units ||
++	    birth->unit_bytes != pcpu_unit_size || birth->atom_bytes != pcpu_atom_size ||
++	    birth->cpu_ids != nr_cpu_ids ||
++	    !pcpu_first_chunk || !pcpu_first_chunk->immutable ||
++	    (pcpu_reserved_chunk && !pcpu_reserved_chunk->immutable) ||
++	    !cpumask_equal(&birth->original_possible, cpu_possible_mask))
++		return false;
++	for (group = 0; group < birth->group_count; group++)
++		if (pcpu_group_offsets[group] != birth->groups[group].final_base_offset ||
++		    pcpu_group_sizes[group] != birth->groups[group].requested_bytes)
++			return false;
++	for_each_cpu(cpu, &birth->original_possible)
++		if (pcpu_unit_offsets[cpu] != birth->unit_offsets[cpu] ||
++		    pcpu_unit_map[cpu] != birth->unit_map[cpu])
++			return false;
++	return true;
++}

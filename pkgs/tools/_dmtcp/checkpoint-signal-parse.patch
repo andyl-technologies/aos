@@ -1,0 +1,25 @@
+--- a/src/dmtcpworker.cpp
++++ b/src/dmtcpworker.cpp
+@@ -132,13 +132,15 @@
+   static const char *tmp = getenv(ENV_VAR_SIGCKPT);
+ 
+   if (tmp != NULL) {
+-    sig = strtol(tmp, &endp, 0);
+-    if ((errno != 0) || (tmp == endp)) {
+-      sig = CKPT_SIGNAL;
+-    }
+-    if (sig < 1 || sig >= SIGRTMAX) {
+-      sig = CKPT_SIGNAL;
+-    }
++    // Unrelated loader/file lookup errors must not override a valid signal.
++    // Preserve the caller's errno while validating the complete value.
++    int saved_errno = errno;
++    errno = 0;
++    long parsed = strtol(tmp, &endp, 0);
++    bool invalid = errno != 0 || tmp == endp || *endp != '\0' ||
++                   parsed < 1 || parsed >= SIGRTMAX;
++    errno = saved_errno;
++    sig = invalid ? CKPT_SIGNAL : static_cast<int>(parsed);
+   }
+   return sig;
+ }

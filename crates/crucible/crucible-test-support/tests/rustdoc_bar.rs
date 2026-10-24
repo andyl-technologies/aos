@@ -44,7 +44,7 @@ const FORMAT_OWNING_SOURCES: &[(&str, &str)] = &[
         "ABI golden-vector records",
     ),
 ];
-const RUSTDOC_FENCE_TAGS: &[&str] = &["text", "rust", "toml", "no_run", "ignore"];
+const RUSTDOC_FENCE_TAGS: &[&str] = &["text", "rust", "toml", "json", "no_run", "ignore"];
 const DOCTESTED_RUSTDOC_FENCE_TAGS: &[&str] = &["rust", "no_run"];
 const NON_DOCTESTED_PACKAGES: &[&str] = &["crucible-cli", "crucible-qemu-plugin"];
 
@@ -223,6 +223,21 @@ pub fn documented() {}
 /// A fallible function.
 pub fn fallible() -> Result<(), ()> {
     Ok(())
+}
+
+#[test]
+fn json_format_fences_remain_nondoctested_and_unknown_tags_are_refused() {
+    let json = ["//! ```json", "//! {\"schema_version\":1}", "//! ```"];
+    assert!(rustdoc_fence_failures(&json, "crucible/crucible-node-format/src/schema.rs").is_empty());
+    assert!(!rustdoc_fence_is_doctested("json"));
+    assert!(has_tagged_format_sketch(&[
+        "```json".into(),
+        "{\"schema_version\":1}".into(),
+        "```".into(),
+    ]));
+
+    let unknown = ["//! ```unreviewed", "//! payload", "//! ```"];
+    assert!(!rustdoc_fence_failures(&unknown, "synthetic.rs").is_empty());
 }
 "#;
     let missing_panics = r#"
@@ -513,7 +528,7 @@ struct Cli {}
     assert_contains(
         &rustdoc_bar_failures(
             non_doctested_rust_fence,
-            "crucible-cli/src/main.rs",
+            "crucible/crucible-cli/src/main.rs",
             true,
             None,
         ),
@@ -522,7 +537,7 @@ struct Cli {}
     assert_contains(
         &rustdoc_bar_failures(
             non_doctested_no_run_fence,
-            "crucible-cli/src/main.rs",
+            "crucible/crucible-cli/src/main.rs",
             true,
             None,
         ),
@@ -531,7 +546,7 @@ struct Cli {}
     assert_contains(
         &rustdoc_bar_failures(
             documented_clap_container,
-            "crucible-cli/src/main.rs",
+            "crucible/crucible-cli/src/main.rs",
             false,
             None,
         ),
@@ -540,7 +555,7 @@ struct Cli {}
     assert_contains(
         &rustdoc_bar_failures(
             documented_clap_container_before_comment,
-            "crucible-cli/src/main.rs",
+            "crucible/crucible-cli/src/main.rs",
             false,
             None,
         ),
@@ -549,7 +564,7 @@ struct Cli {}
     assert_contains(
         &rustdoc_bar_failures(
             documented_clap_container_after_derive,
-            "crucible-cli/src/main.rs",
+            "crucible/crucible-cli/src/main.rs",
             false,
             None,
         ),
@@ -558,7 +573,7 @@ struct Cli {}
     assert_contains(
         &rustdoc_bar_failures(
             documented_clap_container_after_comment,
-            "crucible-cli/src/main.rs",
+            "crucible/crucible-cli/src/main.rs",
             false,
             None,
         ),
@@ -567,7 +582,7 @@ struct Cli {}
     assert_contains(
         &rustdoc_bar_failures(
             documented_cfg_attr_clap_container,
-            "crucible-cli/src/main.rs",
+            "crucible/crucible-cli/src/main.rs",
             false,
             None,
         ),
@@ -576,7 +591,7 @@ struct Cli {}
     assert_contains(
         &rustdoc_bar_failures(
             documented_clap_container_before_multiline_attr,
-            "crucible-cli/src/main.rs",
+            "crucible/crucible-cli/src/main.rs",
             false,
             None,
         ),
@@ -585,7 +600,7 @@ struct Cli {}
     assert_contains(
         &rustdoc_bar_failures(
             documented_clap_container_after_multiline_attr,
-            "crucible-cli/src/main.rs",
+            "crucible/crucible-cli/src/main.rs",
             false,
             None,
         ),
@@ -594,7 +609,7 @@ struct Cli {}
     assert_contains(
         &rustdoc_bar_failures(
             documented_cfg_attr_clap_container_after_attr,
-            "crucible-cli/src/main.rs",
+            "crucible/crucible-cli/src/main.rs",
             false,
             None,
         ),

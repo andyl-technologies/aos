@@ -1,0 +1,71 @@
+{
+  "binding": {
+    "algorithm": "blake3-256",
+    "digest": "2f90cdb9f6195ae01adb93078a1be277c8c42b6415c87cfe06f0127f4c47676d",
+    "domain": "cnp.node-binding.v1"
+  },
+  "capabilities": {
+    "hash": {
+      "algorithm": "blake3-256",
+      "digest": "fbeffcf56b0eb977e3c0d45c1ead4ae7d33f94b9b87a552656265f5f1dbc1e3d",
+      "domain": "cnp.blob.v1"
+    },
+    "length": "2742",
+    "media_type": "application/json"
+  },
+  "configuration": {
+    "hash": {
+      "algorithm": "blake3-256",
+      "digest": "7ec896004649aa7754449c9365b9254798a4edae083f111ad8ab02c554fe9d5c",
+      "domain": "cnp.blob.v1"
+    },
+    "length": "639",
+    "media_type": "application/json"
+  },
+  "descriptor": {
+    "algorithm": "blake3-256",
+    "digest": "eecdf7c7d5267d8ad324465c004a4d85dd71a8a14722b7461aa9d1799785a40b",
+    "domain": "cnp.node-descriptor.v1"
+  },
+  "guarantees": {
+    "hash": {
+      "algorithm": "blake3-256",
+      "digest": "48dacc4e8729d507a01f76b2651366bd460d309b239c519ae184706d7f19ff89",
+      "domain": "cnp.blob.v1"
+    },
+    "length": "386",
+    "media_type": "application/json"
+  },
+  "initialization": {
+    "hash": {
+      "algorithm": "blake3-256",
+      "digest": "e9458551505dfa5a1d342f0235f40863482787a5dae8612db2f97fc29946f8ec",
+      "domain": "cnp.blob.v1"
+    },
+    "length": "881",
+    "media_type": "application/octet-stream"
+  },
+  "model": {
+    "hash": {
+      "algorithm": "blake3-256",
+      "digest": "154423fde569d68c26145dbc355c11a5ae370cbe20c907eed9d76efc0977de93",
+      "domain": "cnp.blob.v1"
+    },
+    "length": "353",
+    "media_type": "text/plain"
+  },
+  "scenario": {
+    "hash": {
+      "algorithm": "blake3-256",
+      "digest": "36886e350042a9d14b5e4e1d8aadba663a69dece1b84acf204d5c284b2c486af",
+      "domain": "cnp.blob.v1"
+    },
+    "length": "95997",
+    "media_type": "application/json"
+  },
+  "world": {
+    "algorithm": "blake3-256",
+    "digest": "6112fd4391c5157021ecbd7ba1b59395075c5b798d711888685a95f3c126b838",
+    "domain": "cnp.world-binding.v1"
+  }
+}

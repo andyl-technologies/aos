@@ -115,7 +115,7 @@ pub(super) fn boundary_manifest_findings(
         .filter(|_| !matches!(package, "crucible-cli" | "crucible-daemon" | "crucible-qemu-host"))
         .map(|dependency| {
             format!(
-                "`{package}` may not route host nondeterminism directly into engine State; dependency `{}` in {} must cross an API/session boundary or the crucible-sim decision source",
+                "`{package}` may not route host nondeterminism directly into engine State; dependency `{}` in {} must cross an API/session boundary or the crucible-determinism decision source",
                 dependency.key, dependency.scope
             )
         })
@@ -173,6 +173,14 @@ fn boundary_package_source_findings(
     let mut findings = Vec::new();
 
     for (path, content) in sources {
+        if package == "crucible-node-transport" {
+            findings.extend(provider_operational_access_findings(
+                package_dir,
+                path,
+                content,
+            ));
+        }
+
         let nondeterminism_findings = scan_content(path, content);
         if nondeterminism_findings.is_empty() {
             continue;
@@ -186,6 +194,28 @@ fn boundary_package_source_findings(
         findings.extend(public_export_findings(path, content));
         findings.extend(route_ingress_findings(path, content));
         findings.extend(state_influence_findings(path, content));
+        if package == "crucible-node-transport" {
+            findings.extend(token_identifier_findings(
+                path,
+                content,
+                &[
+                    "Position",
+                    "Time",
+                    "SuperdenseTime",
+                    "Serialize",
+                    "Deserialize",
+                    "Serializer",
+                    "Deserializer",
+                    "serde",
+                    "serde_json",
+                    "encode",
+                    "decode",
+                    "canonical_json",
+                    "as_nanos",
+                ],
+                "raw host clock reaches portable time/state/codec",
+            ));
+        }
     }
 
     findings
@@ -202,6 +232,7 @@ fn boundary_source_allows_host_nondeterminism(
     let relative = relative.to_string_lossy().replace('\\', "/");
 
     match package {
+        "crucible-node-transport" => relative == "src/operational_time.rs",
         "crucible-cli" => {
             relative == "src/main.rs"
                 || relative_is_under(&relative, "src/diagnostics")
@@ -214,6 +245,7 @@ fn boundary_source_allows_host_nondeterminism(
             relative_is_under(&relative, "src/diagnostics")
                 || relative_is_under(&relative, "src/supervision")
                 || relative_is_under(&relative, "src/transport")
+                || relative == "src/node_control/transport.rs"
         }
         "crucible-qemu-host" => {
             relative_is_under(&relative, "src/block_realization_gate")
@@ -440,4 +472,73 @@ pub(super) struct DependencySpec {
     pub(super) key: String,
     pub(super) package: String,
     pub(super) scope: String,
+}
+
+/// Restricts opaque operational primitives even in sources without raw clocks.
+/// The physical duration emitter is confined to the native reference observer;
+/// it cannot be imported by a portable codec or another execution model.
+fn provider_operational_access_findings(
+    package_dir: &Path,
+    path: &Path,
+    content: &str,
+) -> Vec<String> {
+    let Ok(relative) = path.strip_prefix(package_dir) else {
+        return Vec::new();
+    };
+    let relative = relative.to_string_lossy().replace('\\', "/");
+    let allowed = matches!(
+        relative.as_str(),
+        "src/operational_time.rs"
+            | "src/client/deadline.rs"
+            | "src/conformance/unix.rs"
+            | "src/gem5/process.rs"
+            | "src/gem5/containment.rs"
+            | "src/gem5/closure.rs"
+            | "src/reference_device/process.rs"
+    );
+    let scrubbed = scrub_comments_and_strings(content);
+    let tokens = tokenize(&scrubbed);
+    let mut findings = Vec::new();
+
+    for (index, token) in tokens.iter().enumerate() {
+        let Some(identifier) = token.kind.as_ident() else {
+            continue;
+        };
+        if ![
+            "operational_time",
+            "OperationalDeadline",
+            "PhysicalMeasurement",
+        ]
+        .contains(&identifier)
+        {
+            continue;
+        }
+        // The crate declares one private helper; reexports still fail below.
+        let private_declaration = relative == "src/lib.rs"
+            && identifier == "operational_time"
+            && index > 0
+            && tokens[index - 1].kind.as_ident() == Some("mod")
+            && (index == 1
+                || matches!(
+                    tokens[index - 2].kind,
+                    TokenKind::Punct(';') | TokenKind::Punct('}')
+                ));
+        let physical_allowed = identifier != "PhysicalMeasurement"
+            || matches!(
+                relative.as_str(),
+                "src/operational_time.rs" | "src/reference_device/process.rs"
+            );
+        if !private_declaration && (!allowed || !physical_allowed) {
+            push_finding(
+                &mut findings,
+                path,
+                content,
+                token.line,
+                "operational host primitive outside audited transport/observation path",
+                identifier,
+                "host-nondeterminism-state",
+            );
+        }
+    }
+    filter_cfg_test_findings(content, findings)
 }

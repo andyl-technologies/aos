@@ -60,7 +60,9 @@
 //! [`prepared_result_journal`] retains a complete semantic result across
 //! crash-safe publication retries;
 //! [`crucible_execution`] supplies the typed runner boundary used by the local
-//! QEMU/session adapter; [`crucible_qemu_runner`] connects that boundary to the
+//! adapters; [`attempt_execution_limits`] accounts admitted execution quanta;
+//! [`attempt_execution_router`] owns backend-neutral original-proof
+//! routing; [`crucible_qemu_runner`] retains the QEMU compatibility adapter to the
 //! exact-restore/thin-replay QEMU realization path; [`crucible_qemu_session`]
 //! composes its attempt-scoped live backend, resource guard, and modeled driver;
 //! [`qemu_lifecycle_launcher`] streams lifecycle checkpoint artifacts into one
@@ -92,6 +94,18 @@
 
 mod anchored_fs;
 pub mod assignment_ledger;
+pub mod attempt_evidence;
+pub mod campaign_exploration;
+pub mod campaign_finding_export;
+mod campaign_planner_meter;
+pub mod campaign_replay_closure;
+pub mod modeled_campaign_driver;
+
+pub(crate) use qemu_campaign_lifecycle::{
+    GuardedDefaultCampaignInvariantError, GuardedDefaultCampaignRunError,
+};
+pub mod attempt_execution_limits;
+pub mod attempt_execution_router;
 pub mod automatic_finding_runner;
 pub mod campaign_attachment;
 pub mod campaign_bootstrap;
@@ -124,6 +138,7 @@ pub mod exact_checkpoint_store;
 pub mod exact_pin_retention;
 pub mod executor_capability;
 pub mod executor_loopback;
+pub mod executor_node_capabilities;
 pub mod executor_pool;
 pub mod executor_server;
 pub mod executor_service;
@@ -142,6 +157,12 @@ mod hot_checkpoint_pool;
 pub mod hot_checkpoint_retention;
 #[cfg(target_os = "linux")]
 mod managed_qemu_hot_fork_source_world_pool;
+pub mod node_control;
+pub(crate) mod node_execution;
+pub mod node_lifecycle;
+pub mod node_observed_executor;
+pub mod node_qualification;
+pub mod node_scenario;
 mod owned_advisory_lock;
 pub mod packaged_qemu_executor;
 pub mod packaged_qemu_identity;
@@ -173,6 +194,8 @@ mod qemu_hot_fork_world_factory;
 mod qemu_hot_fork_world_resource;
 pub mod qemu_lifecycle_launcher;
 pub mod qemu_resource_guard;
+#[cfg(target_os = "linux")]
+pub mod qemu_sim_preparation;
 pub mod repository_admission;
 mod supervision;
 
@@ -184,6 +207,12 @@ pub use assignment_ledger::{
     AttemptRuntimeState, AttemptStateCas, CheckpointPromotionExecutionBasis,
     CompletedFindingCandidate, DirectoryAssignmentLedger, ExactCheckpointResumeBasis,
     MemoryAssignmentLedger, visit_directory_attempt_states_bounded,
+};
+pub use attempt_execution_limits::{AttemptExecutionQuantumCounter, ExecutionQuantumExhausted};
+pub use attempt_execution_router::{
+    AttemptExecutionRouter, AttemptExecutionRouterConstructionError,
+    AttemptExecutionRouterConstructionFailure, AttemptExecutionRouterError,
+    AttemptOriginResumeRunner, AttemptOriginVerifier, AttemptReplayContract,
 };
 pub use automatic_finding_runner::{
     AutomaticFindingDeterminismProbe, AutomaticFindingDeterminismProbeDisposition,

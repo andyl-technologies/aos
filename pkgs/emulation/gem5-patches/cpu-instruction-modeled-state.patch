@@ -1,0 +1,311 @@
+--- a/src/arch/arm/insts/pred_inst.hh
++++ b/src/arch/arm/insts/pred_inst.hh
+@@ -219,6 +219,24 @@
+ 
+     ConditionCode condCode;
+ 
++    void cruciblePredicatedFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        crucibleArmFields(writer, prefix);
++        writer.set(prefix + ".arm.condition", condCode);
++    }
++
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        if (!writer.beginBody(this, "static-instruction")) {
++            writer.reference(prefix + ".identity", this, "static-instruction");
++            return;
++        }
++        cruciblePredicatedFields(writer, prefix);
++        writer.string(prefix + ".coverage.unsupported", "generated-arm-predicated-instruction-private-fields");
++    }
++
++
++
+     /// Constructor
+     PredOp(const char *mnem, ExtMachInst _machInst, OpClass __opClass) :
+            ArmStaticInst(mnem, _machInst, __opClass)
+@@ -245,6 +263,20 @@
+     uint32_t rotate;
+ 
+     /// Constructor
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        if (!writer.beginBody(this, "static-instruction")) {
++            writer.reference(prefix + ".identity", this, "static-instruction");
++            return;
++        }
++        cruciblePredicatedFields(writer, prefix);
++        writer.set(prefix + ".arm.immediate.imm", imm);
++        writer.set(prefix + ".arm.immediate.rotated_imm", rotated_imm);
++        writer.set(prefix + ".arm.immediate.rotated_carry", rotated_carry);
++        writer.set(prefix + ".arm.immediate.rotate", rotate);
++        writer.string(prefix + ".coverage.unsupported", "generated-arm-immediate-instruction-private-fields");
++    }
++
+     PredImmOp(const char *mnem, ExtMachInst _machInst, OpClass __opClass) :
+               PredOp(mnem, _machInst, __opClass),
+               imm(machInst.imm), rotated_imm(0), rotated_carry(0),
+@@ -270,6 +302,18 @@
+     uint32_t shift;
+ 
+     /// Constructor
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        if (!writer.beginBody(this, "static-instruction")) {
++            writer.reference(prefix + ".identity", this, "static-instruction");
++            return;
++        }
++        cruciblePredicatedFields(writer, prefix);
++        writer.set(prefix + ".arm.integer.shift_size", shift_size);
++        writer.set(prefix + ".arm.integer.shift", shift);
++        writer.string(prefix + ".coverage.unsupported", "generated-arm-integer-instruction-private-fields");
++    }
++
+     PredIntOp(const char *mnem, ExtMachInst _machInst, OpClass __opClass) :
+               PredOp(mnem, _machInst, __opClass),
+               shift_size(machInst.shiftSize), shift(machInst.shift)
+@@ -289,6 +333,20 @@
+     // this instruction.
+     bool rotC;
+ 
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        if (!writer.beginBody(this, "static-instruction")) {
++            writer.reference(prefix + ".identity", this, "static-instruction");
++            return;
++        }
++        cruciblePredicatedFields(writer, prefix);
++        writer.set(prefix + ".arm.data_immediate.dest", dest);
++        writer.set(prefix + ".arm.data_immediate.op1", op1);
++        writer.set(prefix + ".arm.data_immediate.imm", imm);
++        writer.set(prefix + ".arm.data_immediate.rotC", rotC);
++        writer.string(prefix + ".coverage.unsupported", "generated-arm-data_immediate-instruction-private-fields");
++    }
++
+     DataImmOp(const char *mnem, ExtMachInst _machInst, OpClass __opClass,
+               RegIndex _dest, RegIndex _op1, uint32_t _imm, bool _rotC) :
+         PredOp(mnem, _machInst, __opClass),
+@@ -305,6 +363,21 @@
+     RegIndex dest, op1, op2;
+     int32_t shiftAmt;
+     ArmShiftType shiftType;
++
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        if (!writer.beginBody(this, "static-instruction")) {
++            writer.reference(prefix + ".identity", this, "static-instruction");
++            return;
++        }
++        cruciblePredicatedFields(writer, prefix);
++        writer.set(prefix + ".arm.data_register.dest", dest);
++        writer.set(prefix + ".arm.data_register.op1", op1);
++        writer.set(prefix + ".arm.data_register.op2", op2);
++        writer.set(prefix + ".arm.data_register.shiftAmt", shiftAmt);
++        writer.set(prefix + ".arm.data_register.shiftType", shiftType);
++        writer.string(prefix + ".coverage.unsupported", "generated-arm-data_register-instruction-private-fields");
++    }
+ 
+     DataRegOp(const char *mnem, ExtMachInst _machInst, OpClass __opClass,
+               RegIndex _dest, RegIndex _op1, RegIndex _op2,
+@@ -324,6 +397,21 @@
+     RegIndex dest, op1, op2, shift;
+     ArmShiftType shiftType;
+ 
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        if (!writer.beginBody(this, "static-instruction")) {
++            writer.reference(prefix + ".identity", this, "static-instruction");
++            return;
++        }
++        cruciblePredicatedFields(writer, prefix);
++        writer.set(prefix + ".arm.data_register_register.dest", dest);
++        writer.set(prefix + ".arm.data_register_register.op1", op1);
++        writer.set(prefix + ".arm.data_register_register.op2", op2);
++        writer.set(prefix + ".arm.data_register_register.shift", shift);
++        writer.set(prefix + ".arm.data_register_register.shiftType", shiftType);
++        writer.string(prefix + ".coverage.unsupported", "generated-arm-data_register_register-instruction-private-fields");
++    }
++
+     DataRegRegOp(const char *mnem, ExtMachInst _machInst, OpClass __opClass,
+                  RegIndex _dest, RegIndex _op1, RegIndex _op2,
+                  RegIndex _shift, ArmShiftType _shiftType) :
+@@ -357,6 +445,26 @@
+         flags[IsMacroop] = true;
+     }
+ 
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        if (!writer.beginBody(this, "static-instruction")) {
++            writer.reference(prefix + ".identity", this, "static-instruction");
++            return;
++        }
++        cruciblePredicatedFields(writer, prefix);
++        writer.set(prefix + ".macroop.microop_count", numMicroops);
++        fatal_if(numMicroops > 65536 || (numMicroops && !microOps),
++                 "Macroop microop roster exceeds the diagnostic ceiling");
++        for (size_t index = 0; index < numMicroops; ++index) {
++            const auto key = prefix + ".macroop.microop[" + std::to_string(index) + "]";
++            writer.set(key + ".present", microOps[index].get() != nullptr);
++            writer.reference(key + ".identity", microOps[index].get(), "static-instruction");
++            if (microOps[index])
++                microOps[index]->crucibleFields(writer, key + ".state");
++        }
++        writer.string(prefix + ".coverage.unsupported", "generated-arm-macroop-private-fields");
++    }
++
+     ~PredMacroOp()
+     {
+         if (numMicroops)
+--- a/src/arch/arm/insts/static_inst.hh
++++ b/src/arch/arm/insts/static_inst.hh
+@@ -162,6 +162,25 @@
+             intWidth = (aarch64 && bits(machInst, 31)) ? 64 : 32;
+     }
+ 
++    /** Reads initialized Arm instruction fields without executing the instruction. */
++    void crucibleArmFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        crucibleBaseFields(writer, prefix);
++        writer.set(prefix + ".arm.machine_instruction", static_cast<uint64_t>(machInst));
++        writer.set(prefix + ".arm.aarch64", aarch64);
++        writer.set(prefix + ".arm.integer_width", intWidth);
++    }
++
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        if (!writer.beginBody(this, "static-instruction")) {
++            writer.reference(prefix + ".identity", this, "static-instruction");
++            return;
++        }
++        crucibleArmFields(writer, prefix);
++        writer.string(prefix + ".coverage.unsupported", "generated-arm-instruction-private-fields-and-microops");
++    }
++
+     /// Print a register name for disassembly given the unique
+     /// dependence tag number (FP or int).
+     void printIntReg(std::ostream &os, RegIndex reg_idx,
+--- a/src/arch/x86/insts/macroop.hh
++++ b/src/arch/x86/insts/macroop.hh
+@@ -92,6 +92,37 @@
+     }
+ 
+   public:
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        if (!writer.beginBody(this, "static-instruction")) {
++            writer.reference(prefix + ".identity", this, "static-instruction");
++            return;
++        }
++        crucibleX86Fields(writer, prefix);
++        writer.set(prefix + ".macroop.microop_count", numMicroops);
++        fatal_if(numMicroops > 65536 || (numMicroops && !microops),
++                 "Macroop microop roster exceeds the diagnostic ceiling");
++        writer.set(prefix + ".macroop.environment.reg", env.reg);
++        writer.set(prefix + ".macroop.environment.regm", env.regm);
++        writer.set(prefix + ".macroop.environment.segment", env.seg);
++        writer.set(prefix + ".macroop.environment.scale", env.scale);
++        writer.set(prefix + ".macroop.environment.index_class", env.index.classValue());
++        writer.set(prefix + ".macroop.environment.index", env.index.index());
++        writer.set(prefix + ".macroop.environment.base_class", env.base.classValue());
++        writer.set(prefix + ".macroop.environment.base", env.base.index());
++        writer.set(prefix + ".macroop.environment.data_size", env.dataSize);
++        writer.set(prefix + ".macroop.environment.address_size", env.addressSize);
++        writer.set(prefix + ".macroop.environment.stack_size", env.stackSize);
++        for (size_t index = 0; index < numMicroops; ++index) {
++            const auto key = prefix + ".macroop.microop[" + std::to_string(index) + "]";
++            writer.set(key + ".present", microops[index].get() != nullptr);
++            writer.reference(key + ".identity", microops[index].get(), "static-instruction");
++            if (microops[index])
++                microops[index]->crucibleFields(writer, key + ".state");
++        }
++        writer.string(prefix + ".coverage.unsupported", "generated-x86-macroop-private-fields;uninitialized-shadowed-macrocode-block");
++    }
++
+     ExtMachInst
+     getExtMachInst()
+     {
+--- a/src/arch/x86/insts/microop.hh
++++ b/src/arch/x86/insts/microop.hh
+@@ -129,6 +129,22 @@
+         return ss.str();
+     }
+ 
++    void crucibleMicroopFields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        crucibleX86Fields(writer, prefix);
++        writer.string(prefix + ".microop.instruction_mnemonic", instMnem ? instMnem : "");
++    }
++
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        if (!writer.beginBody(this, "static-instruction")) {
++            writer.reference(prefix + ".identity", this, "static-instruction");
++            return;
++        }
++        crucibleMicroopFields(writer, prefix);
++        writer.string(prefix + ".coverage.unsupported", "generated-x86-microop-private-fields;constructor-dependent-op-size-and-address-size");
++    }
++
+     bool checkCondition(uint64_t flags, int condition) const;
+ 
+     void
+@@ -165,6 +181,17 @@
+     uint8_t cc;
+ 
+   public:
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        if (!writer.beginBody(this, "static-instruction")) {
++            writer.reference(prefix + ".identity", this, "static-instruction");
++            return;
++        }
++        crucibleMicroopFields(writer, prefix);
++        writer.set(prefix + ".microop.condition", cc);
++        writer.string(prefix + ".coverage.unsupported", "generated-x86-conditional-microop-private-fields;constructor-dependent-op-size-and-address-size");
++    }
++
+     MicroCondBase(ExtMachInst mach_inst, const char *mnem,
+             const char *inst_mnem, uint64_t set_flags, OpClass op_class,
+             uint8_t _cc) :
+--- a/src/arch/x86/insts/static_inst.hh
++++ b/src/arch/x86/insts/static_inst.hh
+@@ -117,6 +117,38 @@
+   public:
+     ExtMachInst machInst;
+ 
++    /** Reads initialized ISA-family fields without decoding or disassembling. */
++    void crucibleX86Fields(CrucibleStateWriter &writer, const std::string &prefix) const
++    {
++        crucibleBaseFields(writer, prefix);
++        writer.set(prefix + ".x86.legacy", static_cast<uint8_t>(machInst.legacy));
++        writer.set(prefix + ".x86.rex", static_cast<uint8_t>(machInst.rex));
++        writer.set(prefix + ".x86.vex", static_cast<uint8_t>(machInst.vex));
++        writer.set(prefix + ".x86.opcode_type", machInst.opcode.type);
++        writer.set(prefix + ".x86.opcode", static_cast<uint8_t>(machInst.opcode.op));
++        writer.set(prefix + ".x86.mod_rm", static_cast<uint8_t>(machInst.modRM));
++        writer.set(prefix + ".x86.sib", static_cast<uint8_t>(machInst.sib));
++        writer.set(prefix + ".x86.immediate", machInst.immediate);
++        writer.set(prefix + ".x86.displacement", machInst.displacement);
++        writer.set(prefix + ".x86.operand_size", machInst.opSize);
++        writer.set(prefix + ".x86.address_size", machInst.addrSize);
++        writer.set(prefix + ".x86.stack_size", machInst.stackSize);
++        writer.set(prefix + ".x86.displacement_size", machInst.dispSize);
++        writer.set(prefix + ".x86.mode", static_cast<uint8_t>(machInst.mode));
++    }
++
++    void crucibleFields(CrucibleStateWriter &writer, const std::string &prefix) const override
++    {
++        if (!writer.beginBody(this, "static-instruction")) {
++            writer.reference(prefix + ".identity", this, "static-instruction");
++            return;
++        }
++        crucibleX86Fields(writer, prefix);
++        writer.string(prefix + ".coverage.unsupported", "generated-x86-instruction-private-fields-and-microops");
++    }
++
++
++
+   protected:
+     // Constructor.
+     X86StaticInst(const char *mnem, ExtMachInst _machInst, OpClass __opClass) :

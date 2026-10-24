@@ -37,25 +37,31 @@ mod device_rings;
 mod fault_transports;
 #[path = "mapped_setup_region/hot_fork.rs"]
 mod hot_fork;
+
+#[path = "mapped_setup_region/selected_lifecycle.rs"]
+pub(crate) mod selected_lifecycle;
 pub use hot_fork::{
     HOT_FORK_RING_IMAGE_SCHEMA_VERSION, HotForkChildMappingInstallError,
     HotForkMappingDispositionError, HotForkRingImage, HotForkRingImageError,
     MappedRingIoBarrierSnapshot,
 };
+pub use selected_lifecycle::{
+    OrdinaryPreparationView, OwnedSetupMapping, PreparedDirectedRingHoldError,
+    PreparedDirectedRingHoldSnapshot, PreparedDirectedRingRoster, RetainedWholeMapping,
+    SelectedRingAdmissionBudget, SelectedRingCompletion, SharedOwnedSetupMapping,
+    SharedSetupMappingReadGuard, WholeMappingCustodyError,
+};
 
 impl Drop for MappedSetupRegion {
     fn drop(&mut self) {
-        // SAFETY: `getpid` has no pointer preconditions and cannot fail.
-        // A DONTFORK child inherits this Rust owner but not its source VMA. It
-        // must not unmap an unrelated mapping that later occupied the address.
-        if self.mapping_process_id != unsafe { libc::getpid() } {
-            return;
-        }
-        // SAFETY: `ptr` and `len` were returned by `mmap` and are owned by this
-        // value until `Drop`.
-        unsafe {
-            libc::munmap(self.base_ptr().cast::<libc::c_void>(), self.len);
-        }
+        // A selected or uncertain original retains its physical VMA. The
+        // registry authenticates this owner before any address can be reused.
+        let _retained = selected_lifecycle::unmap_ordinary(self, || {
+            // SAFETY: the authenticated original process owns the live mmap
+            // extent; its domain loan and registration fence exclude teardown
+            // and keep address reuse publication ordered after this syscall.
+            unsafe { libc::munmap(self.base_ptr().cast::<libc::c_void>(), self.len) == 0 }
+        });
     }
 }
 
@@ -97,42 +103,45 @@ pub fn mmap_setup_region(
     }
     verify_setup_region_shrink_seal(fd)?;
 
-    // SAFETY: the returned mapping is checked before being wrapped. The fd is
-    // borrowed for the syscall only; the mapping owns the resulting address.
-    let raw = unsafe {
-        libc::mmap(
-            core::ptr::null_mut(),
+    selected_lifecycle::map_registered(backing_identity, || {
+        // SAFETY: the returned mapping is checked before being wrapped. The fd is
+        // borrowed for the syscall only; the mapping owns the resulting address.
+        let raw = unsafe {
+            libc::mmap(
+                core::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_SHARED,
+                fd.as_raw_fd(),
+                0,
+            )
+        };
+        if raw == libc::MAP_FAILED {
+            return Err(SetupRegionMapError::MmapFailed {
+                errno: last_os_error(),
+            });
+        }
+
+        let Some(ptr) = NonNull::new(raw.cast::<u8>()) else {
+            unmap_setup_region(raw, len);
+            return Err(SetupRegionMapError::NullMapping);
+        };
+        if !(ptr.as_ptr() as usize).is_multiple_of(REGION_HEADER_ALIGN) {
+            unmap_setup_region(raw, len);
+            return Err(SetupRegionMapError::UnalignedMapping {
+                alignment: REGION_HEADER_ALIGN,
+            });
+        }
+
+        Ok(MappedSetupRegion {
+            address: ptr.as_ptr() as usize,
             len,
-            libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_SHARED,
-            fd.as_raw_fd(),
-            0,
-        )
-    };
-    if raw == libc::MAP_FAILED {
-        return Err(SetupRegionMapError::MmapFailed {
-            errno: last_os_error(),
-        });
-    }
-
-    let Some(ptr) = NonNull::new(raw.cast::<u8>()) else {
-        unmap_setup_region(raw, len);
-        return Err(SetupRegionMapError::NullMapping);
-    };
-    if !(ptr.as_ptr() as usize).is_multiple_of(REGION_HEADER_ALIGN) {
-        unmap_setup_region(raw, len);
-        return Err(SetupRegionMapError::UnalignedMapping {
-            alignment: REGION_HEADER_ALIGN,
-        });
-    }
-
-    Ok(MappedSetupRegion {
-        address: ptr.as_ptr() as usize,
-        len,
-        region_len,
-        backing_identity,
-        // SAFETY: `getpid` has no pointer preconditions and cannot fail.
-        mapping_process_id: unsafe { libc::getpid() },
+            region_len,
+            backing_identity,
+            // SAFETY: `getpid` has no pointer preconditions and cannot fail.
+            mapping_process_id: unsafe { libc::getpid() },
+            mapping_registration: None,
+        })
     })
 }
 
@@ -222,6 +231,21 @@ mod tests {
     #[test]
     fn hot_fork_child_installs_private_mapping_at_exact_source_address()
     -> Result<(), Box<dyn std::error::Error>> {
+        let status = std::process::Command::new(std::env::current_exe()?)
+            .args([
+                "--ignored",
+                "--exact",
+                "mapped_setup_region::tests::hot_fork_child_installs_private_mapping_fixture",
+                "--test-threads=1",
+            ])
+            .status()?;
+        assert!(status.success());
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "invoked alone to prevent inheriting concurrent registry loans"]
+    fn hot_fork_child_installs_private_mapping_fixture() -> Result<(), Box<dyn std::error::Error>> {
         let region_len = REGION_HEADER_SIZE as u64;
         let source_fd = prepared_test_memfd(region_len)?;
         let destination_fd = prepared_test_memfd(region_len)?;

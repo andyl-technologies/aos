@@ -7,11 +7,34 @@ use super::*;
 #[derive(Debug, PartialEq, Eq)]
 pub struct BlockRequestToken {
     pub(super) block_owner_id: u64,
+    pub(super) response_capacity: usize,
     pub(super) identity: BlockRequestIdentity,
     pub(super) device_token: DeviceIoRequestToken,
 }
 
 impl BlockRequestToken {
+    /// Retains the response extent from the same successfully submitted request.
+    ///
+    /// The field is assigned from the original request before returning its
+    /// nonclone token; portable response metadata cannot change this bound.
+    pub(crate) const fn original_response_capacity(&self) -> usize {
+        self.response_capacity
+    }
+
+    /// Checks a complete response against the same submitted request shape.
+    pub(crate) fn original_response_shape_current(&self, response: &BlockResponse) -> bool {
+        response.identity() == self.identity
+            && match response.status() {
+                BlockResponseStatus::Ok => response.payload().len() == self.response_capacity,
+                BlockResponseStatus::Error => response.error_code().is_ok(),
+                BlockResponseStatus::TransportReset
+                | BlockResponseStatus::DuplicateIgnored
+                | BlockResponseStatus::DuplicateProtocolError | BlockResponseStatus::RetryPreserveId
+                | BlockResponseStatus::RetryNewId
+                | BlockResponseStatus::DropCompletion => false,
+            }
+    }
+
     /// Returns the block wire request id.
     #[must_use]
     pub const fn request_id(&self) -> u32 {

@@ -143,7 +143,7 @@ fn ready_marker_with_nonzero_logical_offset_uses_raw_stop_proof() {
     );
 }
 
-impl QemuModeledAttemptLifecycle for NetworkBoundaryLifecycle {
+impl ModeledAttemptLifecycle for NetworkBoundaryLifecycle {
     fn set_attempt_stop_frontier(
         &mut self,
         _frontier: Option<VirtualTime>,
@@ -172,6 +172,22 @@ impl QemuModeledAttemptLifecycle for NetworkBoundaryLifecycle {
         Ok(self.checkpoint_ready)
     }
 
+    fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
+        Ok(self.queues_empty)
+    }
+
+    fn pending_network_output_count(&self) -> usize {
+        0
+    }
+
+    fn sample_fingerprint(&mut self, _node: NodeId) -> Result<FingerprintSample, SchedulerError> {
+        Err(SchedulerError::BoundaryViolation {
+            message: String::from("boundary fixture has no fingerprint"),
+        })
+    }
+}
+
+impl QemuModeledAttemptLifecycle for NetworkBoundaryLifecycle {
     fn parked_campaign_marker(
         &mut self,
         node: &NodeId,
@@ -209,10 +225,6 @@ impl QemuModeledAttemptLifecycle for NetworkBoundaryLifecycle {
             .contains(&(node.clone(), marker.to_owned(), selected)))
     }
 
-    fn campaign_network_queues_empty(&self) -> Result<bool, SchedulerError> {
-        Ok(self.queues_empty)
-    }
-
     fn drain_pending_selectable_requests(
         &mut self,
     ) -> Result<Vec<QemuNodeSelectablePendingRequest>, SchedulerError> {
@@ -229,16 +241,6 @@ impl QemuModeledAttemptLifecycle for NetworkBoundaryLifecycle {
     ) -> Result<Vec<SchedulerEventLogEntry>, SchedulerError> {
         Err(SchedulerError::BoundaryViolation {
             message: String::from("boundary fixture has no selectable reply"),
-        })
-    }
-
-    fn pending_network_output_count(&self) -> usize {
-        0
-    }
-
-    fn sample_fingerprint(&mut self, _node: NodeId) -> Result<FingerprintSample, SchedulerError> {
-        Err(SchedulerError::BoundaryViolation {
-            message: String::from("boundary fixture has no fingerprint"),
         })
     }
 }

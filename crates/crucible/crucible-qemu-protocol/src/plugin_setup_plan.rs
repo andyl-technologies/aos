@@ -16,8 +16,17 @@
 //! 28      A     canonical AppRandomBranchPlanV1 body
 //! 28+A    S     canonical SelectableCatalogPlanV4 body
 //! ```
+//!
+//! Edition three uses a 36-byte header: the original nested lengths retain
+//! their offsets, followed by whole-selection extent at28 and reserved zero
+//! at32. Its complete original staged selection follows the two nested plans.
+//! Ordinary construction retains the exact edition-two encoding.
 
 use thiserror::Error;
+
+use crate::whole_control::staged::selection::{
+    WHOLE_SELECTION_MAX_BYTES, WholeConstructorSelection,
+};
 
 use crate::{
     app_random_branch_plan::{
@@ -37,13 +46,21 @@ pub const PLUGIN_SETUP_PLAN_HEADER_BYTES: usize = 28;
 /// Maximum canonical bytes in one composite plugin setup plan.
 pub const PLUGIN_SETUP_PLAN_MAX_BYTES: usize = PLUGIN_SETUP_PLAN_HEADER_BYTES
     + MAX_APP_RANDOM_BRANCH_PLAN_BYTES
-    + SELECTABLE_CATALOG_PLAN_MAX_BYTES;
+    + SELECTABLE_CATALOG_PLAN_MAX_BYTES
+    + 8
+    + WHOLE_SELECTION_MAX_BYTES;
+
+/// Selects a sealed composite plan with a complete staged constructor selection.
+pub const PLUGIN_SETUP_WHOLE_VERSION: u32 = 3;
+/// Counts the complete staged composite header, including its reserved field.
+pub const PLUGIN_SETUP_WHOLE_HEADER_BYTES: usize = 36;
 
 /// One complete immutable process-neutral plugin setup plan.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PluginSetupPlan {
     app_random_branch_plan: AppRandomBranchPlan,
     selectable_catalog_plan: SelectableCatalogPlan,
+    whole_constructor: Option<WholeConstructorSelection>,
 }
 
 impl PluginSetupPlan {
@@ -56,7 +73,28 @@ impl PluginSetupPlan {
         Self {
             app_random_branch_plan,
             selectable_catalog_plan,
+            whole_constructor: None,
         }
+    }
+
+    /// Builds an explicitly staged composite without upgrading an ordinary plan.
+    #[must_use]
+    pub fn new_whole(
+        app_random_branch_plan: AppRandomBranchPlan,
+        selectable_catalog_plan: SelectableCatalogPlan,
+        whole_constructor: WholeConstructorSelection,
+    ) -> Self {
+        Self {
+            app_random_branch_plan,
+            selectable_catalog_plan,
+            whole_constructor: Some(whole_constructor),
+        }
+    }
+
+    /// Borrows all original staged constructor bytes when explicitly selected.
+    #[must_use]
+    pub const fn whole_constructor(&self) -> Option<&WholeConstructorSelection> {
+        self.whole_constructor.as_ref()
     }
 
     /// Returns the immutable app-random branch plan.
@@ -71,10 +109,55 @@ impl PluginSetupPlan {
         &self.selectable_catalog_plan
     }
 
-    /// Consumes the composite and returns both independently validated plans.
+    /// Consumes the composite and retains every independently validated plan.
     #[must_use]
-    pub fn into_parts(self) -> (AppRandomBranchPlan, SelectableCatalogPlan) {
-        (self.app_random_branch_plan, self.selectable_catalog_plan)
+    pub fn into_parts(
+        self,
+    ) -> (
+        AppRandomBranchPlan,
+        SelectableCatalogPlan,
+        Option<WholeConstructorSelection>,
+    ) {
+        (
+            self.app_random_branch_plan,
+            self.selectable_catalog_plan,
+            self.whole_constructor,
+        )
+    }
+
+    /// Counts the full original setup body before any encoding allocation.
+    ///
+    /// This checked count includes both independently versioned nested plans
+    /// and the complete selected constructor body when present.
+    ///
+    /// # Errors
+    /// Rejects invalid nested message lengths, overflow or an oversized body.
+    pub fn encoded_len(&self) -> Result<usize, PluginSetupPlanError> {
+        let app = self
+            .app_random_branch_plan
+            .encoded_len()
+            .map_err(|source| PluginSetupPlanError::AppRandom { source })?;
+        let catalog = self
+            .selectable_catalog_plan
+            .encoded_len()
+            .map_err(|source| PluginSetupPlanError::Selectable { source })?;
+        let total = checked_total_len(app, catalog)?
+            .checked_add(
+                self.whole_constructor
+                    .as_ref()
+                    .map_or(0, |selection| 8 + selection.body().len()),
+            )
+            .ok_or(PluginSetupPlanError::PlanTooLarge {
+                bytes: usize::MAX,
+                maximum: PLUGIN_SETUP_PLAN_MAX_BYTES,
+            })?;
+        if total > PLUGIN_SETUP_PLAN_MAX_BYTES {
+            return Err(PluginSetupPlanError::PlanTooLarge {
+                bytes: total,
+                maximum: PLUGIN_SETUP_PLAN_MAX_BYTES,
+            });
+        }
+        Ok(total)
     }
 
     /// Encodes this plan in the canonical composite descriptor-body format.
@@ -84,12 +167,16 @@ impl PluginSetupPlan {
     /// Returns [`PluginSetupPlanError`] if the selectable plan cannot be
     /// encoded or the aggregate canonical length cannot be represented.
     pub fn encode(&self) -> Result<Vec<u8>, PluginSetupPlanError> {
+        let total_len = self.encoded_len()?;
         let app_random_bytes = self.app_random_branch_plan.encode();
         let selectable_bytes = self
             .selectable_catalog_plan
             .encode()
             .map_err(|source| PluginSetupPlanError::Selectable { source })?;
-        let total_len = checked_total_len(app_random_bytes.len(), selectable_bytes.len())?;
+        let whole_bytes = self
+            .whole_constructor
+            .as_ref()
+            .map(WholeConstructorSelection::body);
         let total_len_u32 =
             u32::try_from(total_len).map_err(|_error| PluginSetupPlanError::PlanTooLarge {
                 bytes: total_len,
@@ -110,13 +197,25 @@ impl PluginSetupPlan {
 
         let mut bytes = Vec::with_capacity(total_len);
         bytes.extend_from_slice(&PLUGIN_SETUP_PLAN_MAGIC);
-        bytes.extend_from_slice(&PLUGIN_SETUP_PLAN_VERSION.to_be_bytes());
-        bytes.extend_from_slice(&(PLUGIN_SETUP_PLAN_HEADER_BYTES as u32).to_be_bytes());
+        let (version, header) = if whole_bytes.is_some() {
+            (PLUGIN_SETUP_WHOLE_VERSION, PLUGIN_SETUP_WHOLE_HEADER_BYTES)
+        } else {
+            (PLUGIN_SETUP_PLAN_VERSION, PLUGIN_SETUP_PLAN_HEADER_BYTES)
+        };
+        bytes.extend_from_slice(&version.to_be_bytes());
+        bytes.extend_from_slice(&(header as u32).to_be_bytes());
         bytes.extend_from_slice(&total_len_u32.to_be_bytes());
         bytes.extend_from_slice(&app_random_len.to_be_bytes());
         bytes.extend_from_slice(&selectable_len.to_be_bytes());
+        if let Some(body) = whole_bytes {
+            bytes.extend_from_slice(&(body.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(&0u32.to_be_bytes());
+        }
         bytes.extend_from_slice(&app_random_bytes);
         bytes.extend_from_slice(&selectable_bytes);
+        if let Some(body) = whole_bytes {
+            bytes.extend_from_slice(body);
+        }
         Ok(bytes)
     }
 
@@ -141,12 +240,17 @@ impl PluginSetupPlan {
         if bytes[..8] != PLUGIN_SETUP_PLAN_MAGIC {
             return Err(PluginSetupPlanError::InvalidMagic);
         }
-        if version != PLUGIN_SETUP_PLAN_VERSION {
+        if version != PLUGIN_SETUP_PLAN_VERSION && version != PLUGIN_SETUP_WHOLE_VERSION {
             return Err(PluginSetupPlanError::UnsupportedVersion { version });
         }
         let header_len = usize::try_from(read_u32(bytes, 12)?)
             .map_err(|_error| PluginSetupPlanError::InvalidHeaderLength { bytes: usize::MAX })?;
-        if header_len != PLUGIN_SETUP_PLAN_HEADER_BYTES {
+        let expected_header = if version == PLUGIN_SETUP_WHOLE_VERSION {
+            PLUGIN_SETUP_WHOLE_HEADER_BYTES
+        } else {
+            PLUGIN_SETUP_PLAN_HEADER_BYTES
+        };
+        if header_len != expected_header {
             return Err(PluginSetupPlanError::InvalidHeaderLength { bytes: header_len });
         }
         let declared_total = usize::try_from(read_u32(bytes, 16)?).map_err(|_error| {
@@ -173,9 +277,25 @@ impl PluginSetupPlan {
                 selectable_bytes: usize::MAX,
             }
         })?;
+        let whole_len = if version == PLUGIN_SETUP_WHOLE_VERSION {
+            if read_u32(bytes, 32)? != 0 {
+                return Err(PluginSetupPlanError::WholeConstructor);
+            }
+            let extent = read_u32(bytes, 28)? as usize;
+            if !(200..=WHOLE_SELECTION_MAX_BYTES).contains(&extent) {
+                return Err(PluginSetupPlanError::WholeConstructor);
+            }
+            extent
+        } else {
+            0
+        };
+        let total = header_len
+            .checked_add(app_random_len)
+            .and_then(|total| total.checked_add(selectable_len))
+            .and_then(|total| total.checked_add(whole_len));
         if app_random_len > MAX_APP_RANDOM_BRANCH_PLAN_BYTES
             || selectable_len > SELECTABLE_CATALOG_PLAN_MAX_BYTES
-            || checked_total_len(app_random_len, selectable_len)? != bytes.len()
+            || total != Some(bytes.len())
         {
             return Err(PluginSetupPlanError::InvalidNestedLengths {
                 app_random_bytes: app_random_len,
@@ -183,13 +303,27 @@ impl PluginSetupPlan {
             });
         }
 
-        let app_random_end = PLUGIN_SETUP_PLAN_HEADER_BYTES + app_random_len;
+        let app_random_end = header_len + app_random_len;
+        let selectable_end = app_random_end + selectable_len;
         let app_random_branch_plan =
-            AppRandomBranchPlan::decode(&bytes[PLUGIN_SETUP_PLAN_HEADER_BYTES..app_random_end])
+            AppRandomBranchPlan::decode(&bytes[header_len..app_random_end])
                 .map_err(|source| PluginSetupPlanError::AppRandom { source })?;
-        let selectable_catalog_plan = SelectableCatalogPlan::decode(&bytes[app_random_end..])
-            .map_err(|source| PluginSetupPlanError::Selectable { source })?;
-        Ok(Self::new(app_random_branch_plan, selectable_catalog_plan))
+        let selectable_catalog_plan =
+            SelectableCatalogPlan::decode(&bytes[app_random_end..selectable_end])
+                .map_err(|source| PluginSetupPlanError::Selectable { source })?;
+        if version == PLUGIN_SETUP_WHOLE_VERSION {
+            let selection = WholeConstructorSelection::from_body(
+                bytes[selectable_end..].to_vec().into_boxed_slice(),
+            )
+            .map_err(|_| PluginSetupPlanError::WholeConstructor)?;
+            Ok(Self::new_whole(
+                app_random_branch_plan,
+                selectable_catalog_plan,
+                selection,
+            ))
+        } else {
+            Ok(Self::new(app_random_branch_plan, selectable_catalog_plan))
+        }
     }
 }
 
@@ -225,6 +359,9 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, PluginSetupPlanError> {
 /// Invalid canonical composite plugin setup plan.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum PluginSetupPlanError {
+    /// The explicitly staged constructor selection or reserved header is invalid.
+    #[error("plugin staged constructor selection is invalid")]
+    WholeConstructor,
     /// The body is shorter than the fixed header or one declared field.
     #[error("plugin setup plan is truncated")]
     Truncated,
@@ -238,7 +375,7 @@ pub enum PluginSetupPlanError {
         version: u32,
     },
     /// The fixed header length differs from the canonical profile.
-    #[error("plugin setup plan header has {bytes} bytes, expected 28")]
+    #[error("plugin setup plan header has invalid {bytes}-byte extent")]
     InvalidHeaderLength {
         /// Declared header byte length.
         bytes: usize,
@@ -299,6 +436,59 @@ mod tests {
             )
             .unwrap_or_else(|error| panic!("catalog plan must validate: {error}")),
         )
+    }
+
+    #[test]
+    fn staged_descriptor_preserves_full_launch_and_never_upgrades_ordinary_bytes() {
+        use crate::whole_control::{
+            inventory::WholeQueueRole,
+            staged::{
+                launch::{LaunchArchitecture, LaunchSelection},
+                selection::{LogicalQueueRole, WholeConstructorSelection},
+                tests::{launch_body, profile},
+            },
+        };
+
+        for architecture in [LaunchArchitecture::X86_64, LaunchArchitecture::Arm64] {
+            let launch_body = launch_body(architecture);
+            let launch = LaunchSelection::decode(&launch_body)
+                .unwrap_or_else(|error| panic!("launch shape: {error}"));
+            let selection = WholeConstructorSelection::new(
+                profile(),
+                &launch,
+                &[LogicalQueueRole {
+                    role: WholeQueueRole::PacketDelivery,
+                    node: "node/1",
+                    port: "packet",
+                    lane: "rx",
+                }],
+            )
+            .unwrap_or_else(|error| panic!("selection shape: {error}"));
+            let (app, catalog, ordinary_selection) = empty_plan().into_parts();
+            assert!(ordinary_selection.is_none());
+            let plan = PluginSetupPlan::new_whole(app, catalog, selection);
+            let body = plan
+                .encode()
+                .unwrap_or_else(|error| panic!("staged encoding: {error}"));
+            assert_eq!(&body[8..12], &3u32.to_be_bytes());
+            assert_eq!(&body[12..16], &36u32.to_be_bytes());
+            assert_eq!(PluginSetupPlan::decode(&body), Ok(plan));
+
+            for extent in 0..body.len() {
+                assert!(PluginSetupPlan::decode(&body[..extent]).is_err());
+            }
+            for offset in [8, 12, 16, 20, 24, 28, 32] {
+                let mut changed = body.clone();
+                changed[offset] ^= 1;
+                assert!(PluginSetupPlan::decode(&changed).is_err());
+            }
+        }
+        let ordinary = empty_plan()
+            .encode()
+            .unwrap_or_else(|error| panic!("ordinary encoding: {error}"));
+        assert_eq!(ordinary.len(), 156);
+        assert_eq!(&ordinary[8..12], &2u32.to_be_bytes());
+        assert_eq!(&ordinary[12..16], &28u32.to_be_bytes());
     }
 
     #[test]

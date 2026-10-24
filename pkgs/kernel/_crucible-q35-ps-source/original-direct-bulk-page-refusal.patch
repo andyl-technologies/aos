@@ -1,0 +1,124 @@
+--- a/include/linux/crucible_allocator.h
++++ b/include/linux/crucible_allocator.h
+@@ -3,6 +3,8 @@
+ #define _LINUX_CRUCIBLE_ALLOCATOR_H
+ 
+ #include <linux/types.h>
++#include <linux/gfp_types.h>
++#include <linux/nodemask.h>
+ 
+ struct task_struct;
+ struct kmem_cache;
+@@ -29,6 +31,8 @@
+ 	CRUCIBLE_ALLOCATOR_SLAB = 1,
+ 	CRUCIBLE_ALLOCATOR_LARGE = 2,
+ 	CRUCIBLE_ALLOCATOR_BULK = 3,
++	CRUCIBLE_ALLOCATOR_PAGE = 4,
++	CRUCIBLE_ALLOCATOR_PAGE_BULK = 5,
+ };
+ 
+ struct crucible_uncovered_request {
+@@ -37,6 +41,10 @@
+ 	u32 family;
+ 	u32 allocation_flags;
+ 	s32 native_node;
++	u32 page_order;
++	u64 page_populated;
++	bool has_nodemask;
++	nodemask_t node_mask;
+ };
+ 
+ /* This is the original post-hook native result. Backing may be shared with
+@@ -88,6 +96,9 @@
+ bool crucible_allocator_slab_reserve(const struct crucible_slab_request *request,
+ 	struct crucible_allocator_token *token);
+ bool crucible_allocator_uncovered(const struct crucible_uncovered_request *request);
++bool crucible_allocator_page_uncovered(gfp_t flags, unsigned int order,
++	int native_node, const nodemask_t *nodemask, unsigned long requested_pages,
++	unsigned long populated_pages, bool bulk);
+ void crucible_allocator_slab_complete(struct crucible_allocator_token *token,
+ 	const struct crucible_slab_output *output);
+ 
+--- a/mm/crucible_allocator.c
++++ b/mm/crucible_allocator.c
+@@ -5,6 +5,7 @@
+ #include <linux/crucible_allocator.h>
+ #include <linux/export.h>
+ #include <linux/interrupt.h>
++#include <linux/mm_types.h>
+ #include <linux/sched.h>
+ 
+ static bool crucible_allocator_actor(struct crucible_allocator_scope *scope)
+@@ -150,3 +151,40 @@
+ 	return false;
+ }
+ EXPORT_SYMBOL_GPL(crucible_allocator_uncovered);
++
++/* Snapshot only for an enrolled original Task. The ordinary/interrupt inverse
++ * does not inspect an otherwise unused nodemask. This retains a refusal input;
++ * no page-array ownership or complete page-allocation coverage is issued. */
++bool crucible_allocator_page_uncovered(gfp_t flags, unsigned int order,
++	int native_node, const nodemask_t *nodemask, unsigned long requested_pages,
++	unsigned long populated_pages, bool bulk)
++{
++	struct crucible_allocator_scope *scope;
++	struct crucible_uncovered_request request = { };
++	u64 pages = requested_pages;
++
++	scope = READ_ONCE(current->crucible_allocator_scope);
++	if (!scope || !in_task())
++		return true;
++	if (!crucible_allocator_actor(scope) || READ_ONCE(scope->callback_active)) {
++		WRITE_ONCE(scope->failed, true);
++		return false;
++	}
++
++	if (!bulk)
++		pages = order < 64 ? 1ULL << order : 0;
++	request.requested_objects = pages;
++	if (pages <= U64_MAX / PAGE_SIZE)
++		request.requested_bytes = pages * PAGE_SIZE;
++	request.family = bulk ? CRUCIBLE_ALLOCATOR_PAGE_BULK : CRUCIBLE_ALLOCATOR_PAGE;
++	request.allocation_flags = flags;
++	request.native_node = native_node;
++	request.page_order = order;
++	request.page_populated = populated_pages;
++	request.has_nodemask = nodemask != NULL;
++	if (nodemask)
++		request.node_mask = *nodemask;
++
++	return crucible_allocator_uncovered(&request);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_page_uncovered);
+--- a/mm/page_alloc.c
++++ b/mm/page_alloc.c
+@@ -16,6 +16,7 @@
+ 
+ #include <linux/stddef.h>
+ #include <linux/mm.h>
++#include <linux/crucible_allocator.h>
+ #include <linux/highmem.h>
+ #include <linux/interrupt.h>
+ #include <linux/jiffies.h>
+@@ -5120,6 +5121,10 @@
+ 	if (unlikely(nr_pages - nr_populated == 0))
+ 		goto out;
+ 
++	if (!crucible_allocator_page_uncovered(gfp, 0, preferred_nid,
++			nodemask, nr_pages, nr_populated, true))
++		goto out;
++
+ 	/* Bulk allocator does not support memcg accounting. */
+ 	if (memcg_kmem_online() && (gfp & __GFP_ACCOUNT))
+ 		goto failed;
+@@ -5272,6 +5277,10 @@
+ 	unsigned int alloc_flags = ALLOC_WMARK_LOW;
+ 	gfp_t alloc_gfp; /* The gfp_t that was actually used for allocation */
+ 	struct alloc_context ac = { };
++
++	if (!crucible_allocator_page_uncovered(gfp, order, preferred_nid,
++			nodemask, 0, 0, false))
++		return NULL;
+ 
+ 	/*
+ 	 * There are several places where we assume that the order value is sane

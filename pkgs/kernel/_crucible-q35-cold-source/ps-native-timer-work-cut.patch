@@ -1,0 +1,126 @@
+--- a/arch/x86/kvm/crucible-clock.h
++++ b/arch/x86/kvm/crucible-clock.h
+@@ -20,7 +20,9 @@
+ bool kvm_arch_crucible_q35_ps_native_cut_locked(struct kvm *kvm,
+ 	u64 *closed_workers, u64 *pending_mask);
+ bool kvm_arch_crucible_q35_ps_execution_ready_locked(struct kvm *kvm);
++bool kvm_arch_crucible_q35_ps_timers_closed_locked(struct kvm *kvm);
+ int kvm_crucible_q35_ps_pit_bind_original_birth(struct kvm *kvm);
++bool kvm_crucible_q35_ps_pit_birth_current_locked(struct kvm *kvm);
+ int kvm_crucible_q35_ps_irq_control(struct kvm *kvm, struct kvm_enable_cap *cap);
+ bool kvm_crucible_q35_ps_irq_claim_locked(struct kvm *kvm, u32 kind,
+ 	int source, u32 gsi, int level, bool line_status);
+--- a/arch/x86/kvm/crucible-q35-pit-ps-adoption.inc.c
++++ b/arch/x86/kvm/crucible-q35-pit-ps-adoption.inc.c
+@@ -111,3 +111,18 @@
+ 	mutex_unlock(&pit->pit_state.lock);
+ 	return result;
+ }
++
++/* A later source40 setter cannot replace the immutable bootstrap birth behind
++ * a previously issued PS binding. Guest PIO requires its own arm ancestry;
++ * this readback neither equates those arms nor clears native timer state.
++ */
++bool kvm_crucible_q35_ps_pit_birth_current_locked(struct kvm *kvm)
++{
++	struct kvm_crucible_ps_clock_state *ps = &kvm->arch.crucible_clock.ps;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	return ps->pit_birth_bound && ps->native_pit == kvm->arch.vpit &&
++		ps->native_pit == kvm->arch.crucible_pic_board.pit &&
++		ps->pit_birth && pit_ps_original_birth_locked(kvm) == ps->pit_birth;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_q35_ps_pit_birth_current_locked);
+--- a/arch/x86/kvm/crucible-q35-ps-clock.inc.c
++++ b/arch/x86/kvm/crucible-q35-ps-clock.inc.c
+@@ -255,7 +255,9 @@
+ 		    hrtimer_active(&clock->ceiling_timer) ||
+ 		    hrtimer_callback_running(&clock->ceiling_timer) ||
+ 		    kvm->crucible_effect_owners || kvm->crucible_irq_input.owners ||
+-		    pending || closed_workers != 15) {
++		    pending || closed_workers != 15 ||
++		    (ps->plan.version == 2 &&
++		     !kvm_arch_crucible_q35_ps_timers_closed_locked(kvm))) {
+ 			result = -EBUSY;
+ 			goto cache_result;
+ 		}
+@@ -271,7 +273,9 @@
+ 		/* This only acknowledges the kernel cut to its original Task. QEMU
+ 		 * must seal its actual output cohort before issuing this operation. */
+ 		if (ps->phase != KVM_CRUCIBLE_PS_NATIVE_CLOSED ||
+-		    pending || closed_workers != 15 || clock->run_owners || clock->timer_owners) {
++		    pending || closed_workers != 15 || clock->run_owners || clock->timer_owners ||
++		    (ps->plan.version == 2 &&
++		     !kvm_arch_crucible_q35_ps_timers_closed_locked(kvm))) {
+ 			result = -EBUSY;
+ 			goto cache_result;
+ 		}
+--- a/arch/x86/kvm/crucible-q35-ps-native-cut.inc.c
++++ b/arch/x86/kvm/crucible-q35-ps-native-cut.inc.c
+@@ -112,3 +112,66 @@
+ 		kvm->crucible_response_enabled && kvm->crucible_run_return_enabled &&
+ 		kvm->crucible_response_bytes_enabled;
+ }
++
++/* The original resource locks/gate exclude new admitted producers. Native
++ * workqueue/IOAPIC locks are tried, never waited for in their inverse order.
++ * This samples physical callback/work closure without canceling unknown work,
++ * consuming logical expiry rows, or declaring a QEMU output cohort sealed.
++ */
++bool kvm_arch_crucible_q35_ps_timers_closed_locked(struct kvm *kvm)
++{
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_ps_clock_state *ps = &clock->ps;
++	struct kvm_pit *pit = kvm->arch.vpit;
++	struct kvm_ioapic *ioapic = kvm->arch.vioapic;
++	struct kvm_crucible_pit_journal *journal;
++	struct kvm_vcpu *vcpu;
++	unsigned long index;
++	bool closed;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	lockdep_assert_held(&kvm->lock);
++	lockdep_assert_held(&kvm->slots_lock);
++	lockdep_assert_held(&kvm->irq_lock);
++	if (!ps->selected || ps->plan.version != 2 || ps->controller != current ||
++	    !kvm_crucible_q35_ps_pit_birth_current_locked(kvm) ||
++	    !ps->pit_birth_bound || ps->native_pit != pit || !ps->pit_birth ||
++	    clock->active || clock->run_owners || clock->timer_owners ||
++	    kvm->crucible_effect_owners || kvm->crucible_irq_input.owners ||
++	    kvm->crucible_irq_input.tainted || kvm->crucible_memory_tainted ||
++	    hrtimer_active(&clock->ceiling_timer) ||
++	    hrtimer_callback_running(&clock->ceiling_timer) ||
++	    !pit || !ioapic || ioapic->kvm != kvm ||
++	    ioapic != kvm->arch.crucible_pic_board.ioapic ||
++	    !kvm_arch_crucible_q35_pit_bootstrap_quiescent_locked(kvm))
++		return false;
++	journal = &pit->pit_state.crucible;
++	if (journal->queued || journal->callback_active || journal->worker_active ||
++	    journal->work_scheduled || journal->access_active || journal->count ||
++	    journal->awaiting_ack || journal->worker_owner ||
++	    atomic_read(&pit->pit_state.pending))
++		return false;
++	if (!spin_trylock(&ioapic->lock))
++		return false;
++	closed = !ioapic->crucible_eoi.queued && !ioapic->crucible_eoi.active &&
++		!delayed_work_pending(&ioapic->eoi_inject) &&
++		!work_busy(&ioapic->eoi_inject.work);
++	spin_unlock(&ioapic->lock);
++	if (!closed)
++		return false;
++	kvm_for_each_vcpu(index, vcpu, kvm) {
++		struct kvm_lapic *apic = vcpu->arch.apic;
++		struct kvm_timer *timer;
++
++		lockdep_assert_held(&vcpu->mutex);
++		if (index >= 4 || !apic || apic->vcpu != vcpu)
++			return false;
++		timer = &apic->lapic_timer;
++		if (timer->hv_timer_in_use || timer->crucible_arm_queued ||
++		    timer->crucible_callback_active || timer->crucible_resume_owner ||
++		    timer->crucible_callback_owner || atomic_read(&timer->pending) ||
++		    hrtimer_active(&timer->timer) || hrtimer_callback_running(&timer->timer))
++			return false;
++	}
++	return kvm->created_vcpus == 4;
++}

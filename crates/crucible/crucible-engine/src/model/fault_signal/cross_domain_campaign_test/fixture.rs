@@ -2,9 +2,9 @@
 
 use super::*;
 use crate::model::{
-    ChoiceTag, Decision, EngineError, Icount, NodeId, NodeTemplate, OverrideDecision, Plan,
-    Properties, ReadyPoint, ScenarioDefForm, SchedulingPoint, Seed, WhiteBoxPolicy, World,
-    WorldNode,
+    ChoiceTag, ComputeNodeDef, ComputeNodeTemplate, Decision, EngineError, Icount, NodeId,
+    OverrideDecision, Plan, Properties, ReadyPoint, ScenarioDefForm, SchedulingPoint, Seed,
+    WhiteBoxPolicy, World,
 };
 
 #[derive(Default)]
@@ -239,12 +239,12 @@ pub(super) fn campaign_coordinate() -> FaultCoordinate {
 }
 
 pub(super) fn campaign_scenario() -> ScenarioDefForm {
-    let world = World::from_nodes(vec![WorldNode {
+    let world = World::from_nodes(vec![ComputeNodeDef {
         id: NodeId {
             name: "fleet-node-a".to_owned(),
         },
-        arch: NodeTemplate::DEFAULT_ARCH,
-        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        arch: ComputeNodeTemplate::DEFAULT_ARCH,
+        memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
         cmdline: "crucible-cross-domain-fleet".to_owned(),
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 64 },

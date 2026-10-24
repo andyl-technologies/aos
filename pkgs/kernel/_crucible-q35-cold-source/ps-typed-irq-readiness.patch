@@ -1,0 +1,69 @@
+--- a/arch/x86/kvm/crucible-q35-ps-native-cut.inc.c
++++ b/arch/x86/kvm/crucible-q35-ps-native-cut.inc.c
+@@ -100,17 +100,43 @@
+ 
+ bool kvm_arch_crucible_q35_ps_execution_ready_locked(struct kvm *kvm)
+ {
+-	/* The currently supplied constructor families do not install this active
+-	 * IRQ/clock issuer. Keep admission closed until a source-owned whole-board
+-	 * installation actually establishes all these native fields. */
+-	return kvm->arch.crucible_clock.ps.selected &&
+-		(kvm->arch.crucible_clock.ps.plan.version == 1 ||
+-		 kvm->arch.crucible_clock.ps.execution_installed) &&
+-		kvm->arch.crucible_clock.enabled && kvm->crucible_controlled &&
+-		kvm->crucible_continuation_roster_frozen && kvm->crucible_irq_input.enabled &&
+-		!kvm->crucible_irq_input.inflight && !kvm->crucible_irq_input.tainted &&
+-		kvm->crucible_response_enabled && kvm->crucible_run_return_enabled &&
+-		kvm->crucible_response_bytes_enabled;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_ps_clock_state *ps = &clock->ps;
++	struct kvm_crucible_ps_irq_state *irq = &ps->irq;
++	u32 index;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	if (!ps->selected || !clock->enabled || !kvm->crucible_controlled ||
++	    !kvm->crucible_continuation_roster_frozen || kvm->crucible_irq_input.inflight ||
++	    kvm->crucible_irq_input.tainted || !kvm->crucible_response_enabled ||
++	    !kvm->crucible_run_return_enabled || !kvm->crucible_response_bytes_enabled)
++		return false;
++	if (ps->plan.version == 1)
++		return kvm->crucible_irq_input.enabled;
++
++	/* The typed PS journal is independent of the legacy continuation input
++	 * lane. Whole installation stays unissued until its actual physical/output
++	 * source join; legacy enablement cannot substitute for those resources. */
++	if (ps->plan.version != 2 || !ps->execution_installed ||
++	    kvm->crucible_irq_input.enabled || !irq->installed || !irq->rows ||
++	    irq->owner != ps->controller || irq->uncertain || irq->inflight ||
++	    !irq->installation.maximum_inputs ||
++	    irq->installation.maximum_inputs > KVM_CRUCIBLE_Q35_PS_IRQ_MAX_INPUTS ||
++	    irq->issued > irq->installation.maximum_inputs ||
++	    irq->installation.configuration_enrollment_id != ps->plan.configuration_enrollment_id ||
++	    irq->routing != kvm->arch.crucible_pic_board.routing ||
++	    irq->routing != rcu_dereference_protected(kvm->irq_routing, 1))
++		return false;
++	for (index = 0; index < irq->issued; index++) {
++		struct kvm_crucible_ps_irq_row *row = &irq->rows[index];
++
++		if (!row->known || !row->claimed ||
++		    row->output.flags != KVM_CRUCIBLE_Q35_PS_IRQ_KNOWN ||
++		    row->input.input_id != index + 1 ||
++		    row->input.configuration_enrollment_id != ps->plan.configuration_enrollment_id)
++			return false;
++	}
++	return true;
+ }
+ 
+ /* The original resource locks/gate exclude new admitted producers. Native
+--- a/virt/kvm/crucible-q35-ps-irq-input.inc.c
++++ b/virt/kvm/crucible-q35-ps-irq-input.inc.c
+@@ -178,7 +178,8 @@
+ 	/* Whole installation remains unissued until the original parked QEMU
+ 	 * output join and physical-stop issuer exist. The cold binding alone
+ 	 * cannot authorize even a boundary input effect. */
+-	if (!ps->execution_installed || !irq->installed || irq->owner != current ||
++	if (!kvm_arch_crucible_q35_ps_execution_ready_locked(kvm) ||
++	    !ps->execution_installed || !irq->installed || irq->owner != current ||
+ 	    input.maximum_inputs != irq->installation.maximum_inputs ||
+ 	    irq->routing != kvm->arch.crucible_pic_board.routing ||
+ 	    irq->routing != rcu_dereference_protected(kvm->irq_routing, 1) ||

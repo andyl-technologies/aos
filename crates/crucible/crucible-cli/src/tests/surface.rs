@@ -1066,6 +1066,7 @@ pub(super) fn cli_skeleton_exposes_closed_subcommand_set() {
             "completions",
             "debug",
             "fuzz",
+            "node",
             "replay",
             "resume",
             "run",
@@ -2805,6 +2806,18 @@ pub(super) fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_
             CliSubcommand::Completions,
             vec!["crucible", "completions", "bash"],
         ),
+        (
+            CliSubcommand::Node,
+            vec![
+                "crucible",
+                "node",
+                "status",
+                "--socket",
+                "/tmp/node.sock",
+                "--execution",
+                "29292929292929292929292929292929",
+            ],
+        ),
     ];
     let mut observed = BTreeSet::new();
 
@@ -2843,7 +2856,8 @@ pub(super) fn cli_thin_wrapper_maps_every_subcommand_to_session_api_or_declared_
         assert_eq!(recorder.state_references, plan.state_references);
     }
 
-    assert_eq!(observed.len(), 13);
+    assert_eq!(observed.len(), 14);
+    assert!(observed.contains(&CliSubcommand::Node));
     assert!(observed.contains(&CliSubcommand::Run));
     assert!(observed.contains(&CliSubcommand::Store));
     assert!(observed.contains(&CliSubcommand::Completions));

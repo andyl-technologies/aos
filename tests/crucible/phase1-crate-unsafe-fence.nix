@@ -4,6 +4,7 @@
 }: let
   inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
+  packageDisplayPath = package: "crates/${lib.removePrefix "${toString cratesDir}/" (toString (packageDir package))}";
   crateUnsafeFenceRust = builtins.readFile ../../crates/crucible/crucible-test-support/tests/crate_unsafe_fence.rs;
   crateUnsafeFenceSupport = builtins.readFile ../../crates/crucible/crucible-test-support/tests/support/crate_unsafe_fence.rs;
   crateUnsafeFenceHarness = crateUnsafeFenceRust + "\n" + crateUnsafeFenceSupport;
@@ -294,9 +295,37 @@
     lib.concatMap (
       source:
         unsafeSourceFailuresForContent spec source.display (builtins.readFile source.path)
-    ) (rustSources (packageDir spec.package + "/src") "crates/${spec.package}/src");
+    ) (rustSources (packageDir spec.package + "/src") "${packageDisplayPath spec.package}/src");
 
   specs = [
+    {
+      package = "crucible-host-resources";
+      root = "src/lib.rs";
+      unsafeBoundary = true;
+      safeWrapperContract = [
+        "Unsafe boundary discipline:"
+        "public callers use safe resource capability types"
+        "wrappers validate descriptor/process/kernel invariants"
+      ];
+    }
+    {
+      package = "crucible-node-format";
+      root = "src/lib.rs";
+      unsafeBoundary = false;
+      safeWrapperContract = [];
+    }
+    {
+      package = "crucible-source-birth-data";
+      root = "src/lib.rs";
+      unsafeBoundary = false;
+      safeWrapperContract = [];
+    }
+    {
+      package = "crucible-node-transport";
+      root = "src/lib.rs";
+      unsafeBoundary = false;
+      safeWrapperContract = [];
+    }
     {
       package = "crucible-store";
       root = "src/lib.rs";
@@ -409,6 +438,12 @@
       safeWrapperContract = [];
     }
     {
+      package = "crucible-source-birth-worker";
+      root = "src/main.rs";
+      unsafeBoundary = false;
+      safeWrapperContract = [];
+    }
+    {
       package = "crucible-cli";
       root = "src/main.rs";
       unsafeBoundary = false;
@@ -475,7 +510,7 @@
       if spec.unsafeBoundary
       then safeFence
       else unsafeFence;
-    displayPath = "crates/${spec.package}/${spec.root}";
+    displayPath = "${packageDisplayPath spec.package}/${spec.root}";
     contractFailures =
       if spec.unsafeBoundary && spec.safeWrapperContract == []
       then [

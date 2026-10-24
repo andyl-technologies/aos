@@ -24,6 +24,26 @@ struct LayerSpec {
 
 const RUNTIME_SPECS: &[LayerSpec] = &[
     LayerSpec {
+        package: "crucible-host-resources",
+        layer: 2,
+        in_vm: false,
+    },
+    LayerSpec {
+        package: "crucible-node-format",
+        layer: 1,
+        in_vm: false,
+    },
+    LayerSpec {
+        package: "crucible-source-birth-data",
+        layer: 1,
+        in_vm: false,
+    },
+    LayerSpec {
+        package: "crucible-node-transport",
+        layer: 2,
+        in_vm: false,
+    },
+    LayerSpec {
         package: "crucible-determinism",
         layer: 0,
         in_vm: false,
@@ -105,6 +125,11 @@ const RUNTIME_SPECS: &[LayerSpec] = &[
     },
     LayerSpec {
         package: "crucible-daemon",
+        layer: 4,
+        in_vm: false,
+    },
+    LayerSpec {
+        package: "crucible-source-birth-worker",
         layer: 4,
         in_vm: false,
     },

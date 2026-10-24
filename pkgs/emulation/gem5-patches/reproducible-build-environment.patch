@@ -1,0 +1,12 @@
+diff --git a/site_scons/gem5_scons/defaults.py b/site_scons/gem5_scons/defaults.py
+--- a/site_scons/gem5_scons/defaults.py
++++ b/site_scons/gem5_scons/defaults.py
+@@ -59,6 +59,8 @@
+         "PKG_CONFIG_PATH",
+         "PROTOC",
+         "PYTHONPATH",
++        "PYTHONHASHSEED",
++        "SOURCE_DATE_EPOCH",
+         "RANLIB",
+         "TERM",  # for clang reports errors in color
+         "PYTHON_CONFIG",  # gem5 specific build env

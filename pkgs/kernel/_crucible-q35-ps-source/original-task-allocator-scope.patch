@@ -1,0 +1,324 @@
+--- a/include/linux/sched.h
++++ b/include/linux/sched.h
+@@ -1667,6 +1667,9 @@
+ 	struct unwind_task_info		unwind_info;
+ #endif
+ 
++	/* Original constructor allocation scope; explicitly reset on clone. */
++	struct crucible_allocator_scope *crucible_allocator_scope;
++
+ 	/* CPU-specific state of this task: */
+ 	struct thread_struct		thread;
+ 
+--- a/kernel/fork.c
++++ b/kernel/fork.c
+@@ -926,6 +926,9 @@
+ 	if (err)
+ 		goto free_tsk;
+ 
++	/* arch_dup_task_struct copied the parent's source-private enrollment. */
++	tsk->crucible_allocator_scope = NULL;
++
+ 	err = alloc_thread_stack_node(tsk, node);
+ 	if (err)
+ 		goto free_tsk;
+--- a/mm/Makefile
++++ b/mm/Makefile
+@@ -52,7 +52,7 @@
+ 			   maccess.o page-writeback.o folio-compat.o \
+ 			   readahead.o swap.o truncate.o vmscan.o shrinker.o \
+ 			   shmem.o util.o mmzone.o vmstat.o backing-dev.o \
+-			   mm_init.o percpu.o slab_common.o \
++			   mm_init.o percpu.o slab_common.o crucible_allocator.o \
+ 			   compaction.o show_mem.o \
+ 			   interval_tree.o list_lru.o workingset.o \
+ 			   debug.o gup.o mmap_lock.o vma_init.o $(mmu-y)
+--- a/mm/slub.c
++++ b/mm/slub.c
+@@ -13,6 +13,7 @@
+  */
+ 
+ #include <linux/mm.h>
++#include <linux/crucible_allocator.h>
+ #include <linux/swap.h> /* mm_account_reclaimed_pages() */
+ #include <linux/module.h>
+ #include <linux/bit_spinlock.h>
+@@ -4892,15 +4893,43 @@
+ static __fastpath_inline void *slab_alloc_node(struct kmem_cache *s,
+ 		gfp_t gfpflags, int node, const struct slab_alloc_context *ac)
+ {
++	struct crucible_allocator_token token;
++	struct crucible_slab_request request = {
++		.original_cache = s,
++		.requested_bytes = ac->orig_size,
++		.object_bytes = s->object_size,
++		.stride_bytes = s->size,
++		.slab_order = oo_order(s->oo),
++		.slab_objects = oo_objects(s->oo),
++		.minimum_order = oo_order(s->min),
++		.minimum_objects = oo_objects(s->min),
++		.allocation_flags = gfpflags,
++	};
++	struct crucible_slab_output output = {};
+ 	void *object;
+ 
++	/* This bound is one possible fresh slab, not observed resident bytes.
++	 * Extension metadata is kept separate from overlapping object stride. */
++	request.slab_backing_bound = (u64)PAGE_SIZE <<
++		max(request.slab_order, request.minimum_order);
++#ifdef CONFIG_SLAB_OBJ_EXT
++	request.extension_array_bytes = (u64)sizeof(struct slabobj_ext) *
++		request.slab_objects;
++#endif
++	if (!crucible_allocator_slab_reserve(&request, &token))
++		return NULL;
+ 	s = slab_pre_alloc_hook(s, gfpflags);
+-	if (unlikely(!s))
++	if (unlikely(!s)) {
++		crucible_allocator_slab_complete(&token, &output);
+ 		return NULL;
+-
++	}
++
++	output.native_attempted = true;
+ 	object = kfence_alloc(s, ac->orig_size, gfpflags);
+-	if (unlikely(object))
++	if (unlikely(object)) {
++		output.kfence_object = true;
+ 		goto out;
++	}
+ 
+ 	object = alloc_from_pcs(s, gfpflags, ac->alloc_flags, node);
+ 
+@@ -4915,6 +4944,18 @@
+ 	 * object is set to NULL
+ 	 */
+ 	slab_post_alloc_hook(s, gfpflags, 1, &object, ac);
++	output.native_object = object;
++	if (token.original_scope && object && !output.kfence_object) {
++		output.native_slab = virt_to_slab(object);
++		if (output.native_slab) {
++			output.native_cache = output.native_slab->slab_cache;
++			output.native_slab_objects = output.native_slab->objects;
++			output.slab_backing_bytes = slab_size(output.native_slab);
++			if (output.native_cache)
++				output.native_stride_bytes = output.native_cache->size;
++		}
++	}
++	crucible_allocator_slab_complete(&token, &output);
+ 
+ 	return object;
+ }
+--- /dev/null
++++ b/include/linux/crucible_allocator.h
+@@ -0,0 +1,77 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++#ifndef _LINUX_CRUCIBLE_ALLOCATOR_H
++#define _LINUX_CRUCIBLE_ALLOCATOR_H
++
++#include <linux/types.h>
++
++struct task_struct;
++struct kmem_cache;
++struct slab;
++struct crucible_allocator_scope;
++
++/* Source snapshots remain separate: slab backing and object stride overlap.
++ * Neither their sum nor this row is an exact physical resident observation. */
++struct crucible_slab_request {
++	struct kmem_cache *original_cache;
++	u64 requested_bytes;
++	u64 object_bytes;
++	u64 stride_bytes;
++	u64 slab_backing_bound;
++	u64 extension_array_bytes;
++	u32 slab_order;
++	u32 slab_objects;
++	u32 minimum_order;
++	u32 minimum_objects;
++	u32 allocation_flags;
++};
++
++/* This is the original post-hook native result. Backing may be shared with
++ * other live objects; consumers must retain its identity instead of summing
++ * the same slab pages once for each object. KFENCE has no SLUB slab identity. */
++struct crucible_slab_output {
++	void *native_object;
++	struct slab *native_slab;
++	struct kmem_cache *native_cache;
++	u64 slab_backing_bytes;
++	u64 native_stride_bytes;
++	u32 native_slab_objects;
++	bool kfence_object;
++	bool native_attempted;
++};
++
++/* All callbacks are original kernel source functions retained by the issuer.
++ * They must not allocate, sleep or publish effects. Their original owner and
++ * code lifetime must outlive every outstanding lease and completion. */
++struct crucible_allocator_ops {
++	bool (*source_current)(void *owner);
++	bool (*reserve_slab)(void *owner,
++		const struct crucible_slab_request *request, void **lease);
++	void (*complete_slab)(void *owner, void *lease,
++		const struct crucible_slab_output *output);
++};
++
++struct crucible_allocator_scope {
++	struct task_struct *original_task;
++	void *original_owner;
++	const struct crucible_allocator_ops *original_ops;
++	bool callback_active;
++	bool failed;
++};
++
++struct crucible_allocator_token {
++	struct crucible_allocator_scope *original_scope;
++	void *original_lease;
++	struct kmem_cache *original_cache;
++};
++
++/* Only a literal source issuer may enroll its current original Task. This is
++ * kernel-private constructor custody, not a userspace registration interface.
++ * A child never inherits enrollment; interrupt ownership is not inferred. */
++bool crucible_allocator_enter(struct crucible_allocator_scope *scope);
++bool crucible_allocator_leave(struct crucible_allocator_scope *scope);
++bool crucible_allocator_slab_reserve(const struct crucible_slab_request *request,
++	struct crucible_allocator_token *token);
++void crucible_allocator_slab_complete(struct crucible_allocator_token *token,
++	const struct crucible_slab_output *output);
++
++#endif
+--- /dev/null
++++ b/mm/crucible_allocator.c
+@@ -0,0 +1,130 @@
++// SPDX-License-Identifier: GPL-2.0-only
++/* Original Task-local allocation admission. Missing allocator families do not
++ * become covered merely because a source issuer has entered this scope. */
++
++#include <linux/crucible_allocator.h>
++#include <linux/export.h>
++#include <linux/interrupt.h>
++#include <linux/sched.h>
++
++static bool crucible_allocator_actor(struct crucible_allocator_scope *scope)
++{
++	return scope && in_task() && scope->original_task == current &&
++		scope->original_owner && scope->original_ops &&
++		scope->original_ops->source_current && scope->original_ops->reserve_slab &&
++		scope->original_ops->complete_slab;
++}
++
++static bool crucible_allocator_current(struct crucible_allocator_scope *scope)
++{
++	bool valid;
++
++	if (!crucible_allocator_actor(scope) || READ_ONCE(scope->failed) ||
++	    READ_ONCE(scope->callback_active))
++		return false;
++	WRITE_ONCE(scope->callback_active, true);
++	valid = scope->original_ops->source_current(scope->original_owner);
++	WRITE_ONCE(scope->callback_active, false);
++	return valid && !READ_ONCE(scope->failed);
++}
++
++bool crucible_allocator_enter(struct crucible_allocator_scope *scope)
++{
++	if (!scope || !crucible_allocator_actor(scope))
++		return false;
++	if (READ_ONCE(current->crucible_allocator_scope)) {
++		WRITE_ONCE(scope->failed, true);
++		return false;
++	}
++	/* Install before checking source currentness: its callback must not
++	 * obtain an ordinary allocation path through an uninstalled scope. */
++	WRITE_ONCE(current->crucible_allocator_scope, scope);
++	if (!crucible_allocator_current(scope)) {
++		WRITE_ONCE(scope->failed, true);
++		WRITE_ONCE(current->crucible_allocator_scope, NULL);
++		return false;
++	}
++	return true;
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_enter);
++
++bool crucible_allocator_leave(struct crucible_allocator_scope *scope)
++{
++	bool valid;
++
++	if (!scope || READ_ONCE(current->crucible_allocator_scope) != scope ||
++	    !crucible_allocator_actor(scope))
++		return false;
++	valid = crucible_allocator_current(scope);
++	if (!valid)
++		WRITE_ONCE(scope->failed, true);
++	WRITE_ONCE(current->crucible_allocator_scope, NULL);
++	return valid;
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_leave);
++
++bool crucible_allocator_slab_reserve(const struct crucible_slab_request *request,
++	struct crucible_allocator_token *token)
++{
++	struct crucible_allocator_scope *scope;
++	void *lease = NULL;
++	bool reserved;
++
++	token->original_scope = NULL;
++	token->original_lease = NULL;
++	token->original_cache = NULL;
++	scope = READ_ONCE(current->crucible_allocator_scope);
++	/* An interrupt sharing this Task is not the original constructor actor.
++	 * Its allocations remain outside this currently incomplete source scope. */
++	if (!scope || !in_task())
++		return true;
++	if (!request || !request->original_cache || !request->stride_bytes ||
++	    request->object_bytes > request->stride_bytes ||
++	    request->requested_bytes > request->object_bytes ||
++	    !request->slab_objects || !request->minimum_objects ||
++	    !request->slab_backing_bound ||
++	    !crucible_allocator_current(scope))
++		goto refuse;
++
++	WRITE_ONCE(scope->callback_active, true);
++	reserved = scope->original_ops->reserve_slab(scope->original_owner,
++		request, &lease);
++	WRITE_ONCE(scope->callback_active, false);
++	if (!reserved || !lease || !crucible_allocator_current(scope))
++		goto refuse;
++	/* The original reservation remains retained even if a later allocation
++	 * fails. No implicit refund or retry is manufactured by this dispatcher. */
++	token->original_scope = scope;
++	token->original_lease = lease;
++	token->original_cache = request->original_cache;
++	return true;
++
++refuse:
++	WRITE_ONCE(scope->failed, true);
++	return false;
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_slab_reserve);
++
++void crucible_allocator_slab_complete(struct crucible_allocator_token *token,
++	const struct crucible_slab_output *output)
++{
++	struct crucible_allocator_scope *scope = token->original_scope;
++
++	if (!scope)
++		return;
++	/* Consume the local token before invoking the source sink. The sink
++	 * records the actual native pointer (including NULL) before currentness
++	 * reconciliation, so changed phase cannot erase an allocation result. */
++	token->original_scope = NULL;
++	WRITE_ONCE(scope->callback_active, true);
++	scope->original_ops->complete_slab(scope->original_owner,
++		token->original_lease, output);
++	WRITE_ONCE(scope->callback_active, false);
++	if (output->kfence_object ||
++	    (output->native_object && (!output->native_slab ||
++		output->native_cache != token->original_cache)) ||
++	    READ_ONCE(current->crucible_allocator_scope) != scope ||
++	    !crucible_allocator_current(scope))
++		WRITE_ONCE(scope->failed, true);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_slab_complete);

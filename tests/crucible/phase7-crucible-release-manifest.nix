@@ -16,6 +16,9 @@
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
   doorbellAbi = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/doorbell_abi.rs;
   apiRpcAbi = builtins.readFile ../../crates/crucible/crucible-control-api/src/rpc_abi.rs;
+  targetModule = "crates/crucible/crucible-engine/src/node_admission/conformance/restoration_construction/target/phase.rs";
+  cargoSrc = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
+  applicationSrc = import ../../pkgs/tools/aos/_workspace-source.nix {inherit lib;};
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   crucibleCargoDepsHash = import ../../pkgs/tools/crucible/_cargo-deps-hash.nix {cargoDeps = pkgs.crucible-controller.passthru.cargoDeps;};
 
@@ -61,6 +64,7 @@
     gnumake = null;
     bash = "/aos-bash";
     perl = "/aos-perl";
+    patch = "/aos-patch";
     pkg-config = null;
     meson = null;
     ninja = null;
@@ -68,6 +72,7 @@
     python3 = "/aos-python3";
     stdenv = {
       isCross = false;
+      buildPlatform.isLinux = true;
       hostPlatform = {
         isDarwin = false;
         isLinux = true;
@@ -75,6 +80,16 @@
       };
     };
     buildPackages = {};
+    # The metadata probe models the required paired outputs without building
+    # or executing an emulator, firmware, or the private observer.
+    qemu-firmware-x86 = {
+      outPath = "/aos-qemu-firmware-x86";
+      source = "/aos-qemu-firmware-x86-source";
+    };
+    qom-private-unwind = {
+      outPath = "/aos-qom-private-unwind";
+      source = "/aos-qom-private-unwind-source";
+    };
     setuptools = null;
     distlib = null;
     python3-pygdbmi = null;
@@ -157,7 +172,11 @@
     forbiddenTimestampNeedles;
 
   failures =
-    lib.optionals (manifest.schemaVersion != 1) [
+    lib.concatMap (source:
+      lib.optional (!builtins.pathExists (source + "/${targetModule}"))
+      "Cargo source filter omitted the real restoration target module")
+    [crucibleSrc cargoSrc applicationSrc]
+    ++ lib.optionals (manifest.schemaVersion != 1) [
       "release manifest schema version is not 1"
     ]
     ++ lib.optionals (manifest.crucible.version != crucibleVersion) [
@@ -202,7 +221,7 @@
     ++ lib.optionals (manifest.components.boundaryCrates.license != "MIT") [
       "release manifest does not record the GPL plugin's MIT boundary-crate license selection"
     ]
-    ++ lib.optionals (manifest.components.boundaryCrates.packages != ["crucible-qemu-protocol" "crucible-qemu-shmem"]) [
+    ++ lib.optionals (manifest.components.boundaryCrates.packages != ["crucible-qemu-protocol" "crucible-qemu-shmem" "crucible-node-format"]) [
       "release manifest boundary-crate inventory is incomplete"
     ]
     ++ lib.optionals (
@@ -445,7 +464,7 @@
       }
       {
         label = "source filter excludes target";
-        needle = "base != \"target\"";
+        needle = "isCargoBuildDirectory repoRoot path";
       }
       {
         label = "source filter excludes only the repository-root result";

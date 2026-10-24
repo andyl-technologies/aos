@@ -1,0 +1,1082 @@
+{
+  "files": [
+    {
+      "path": "arch/arm64/include/asm/kvm_host.h",
+      "identity": {
+        "sha256": "37a667fdcbd2dd7afa577e419bc6f789b6cb7999959ddda1d51d7de6401d6f4d",
+        "bytes": 52038
+      }
+    },
+    {
+      "path": "arch/arm64/kvm/Makefile",
+      "identity": {
+        "sha256": "f50f6860879deeb2cae1a6e2ef2ffe3280a00a1e4bb96cc17159dca4b3f4805d",
+        "bytes": 1471
+      }
+    },
+    {
+      "path": "arch/arm64/kvm/arch_timer.c",
+      "identity": {
+        "sha256": "de947b1381a7815f54f4454dabe935d6c73b2400d44fd641881d4ceec6c73b8a",
+        "bytes": 49074
+      }
+    },
+    {
+      "path": "arch/arm64/kvm/arm.c",
+      "identity": {
+        "sha256": "ae367f9fce81c4e87c026427f00966434d15b70cad4f05011d450e5e5e1a3db3",
+        "bytes": 79172
+      }
+    },
+    {
+      "path": "arch/arm64/kvm/crucible-clock.c",
+      "identity": {
+        "sha256": "ec40c6bc75fb31ac1e99ddbc845bfe0622788bb9c2e22711641a2ddee6f6d9c4",
+        "bytes": 14853
+      }
+    },
+    {
+      "path": "arch/arm64/kvm/crucible-clock.h",
+      "identity": {
+        "sha256": "863c74327fdb001f678e19970e39d806734b37a97e1b4f3b956fc30d82abe8d4",
+        "bytes": 1384
+      }
+    },
+    {
+      "path": "arch/arm64/kvm/hyp/include/hyp/switch.h",
+      "identity": {
+        "sha256": "f633a9c8ed8ef8c3b84bb58c24d4c4c5c3518f2454f7decffd5608b1e823711b",
+        "bytes": 27307
+      }
+    },
+    {
+      "path": "arch/arm64/kvm/hypercalls.c",
+      "identity": {
+        "sha256": "e188320f81c3208026f337d4c5714d165543bab267a743865094070c5d81de65",
+        "bytes": 18446
+      }
+    },
+    {
+      "path": "arch/arm64/kvm/mmio.c",
+      "identity": {
+        "sha256": "debf8eeda4e70cba4ee24e057a3dcea98a0a1b75040c8b19dae807ca984feadc",
+        "bytes": 7368
+      }
+    },
+    {
+      "path": "arch/arm64/kvm/pvtime.c",
+      "identity": {
+        "sha256": "71b2810d3f810e0786f43df7e35be12a524e523192cb1d1c215f433ecbbdba01",
+        "bytes": 3045
+      }
+    },
+    {
+      "path": "arch/arm64/kvm/sys_regs.c",
+      "identity": {
+        "sha256": "6c4556f95cbbe04e21b191486aaf5cd7cf63ab98c9804b380b3759dfaffb4bc0",
+        "bytes": 164172
+      }
+    },
+    {
+      "path": "arch/arm64/kvm/trace_arm.h",
+      "identity": {
+        "sha256": "2b0ef80f680bb4914726597afea823f50ab3fd1b1b8021236b904b3cf32834aa",
+        "bytes": 10557
+      }
+    },
+    {
+      "path": "arch/arm64/kvm/vgic/vgic-init.c",
+      "identity": {
+        "sha256": "b1720da92367fc31709e2892482ab924abed6efe0a2ff62e06c42e81cb751666",
+        "bytes": 22053
+      }
+    },
+    {
+      "path": "arch/arm64/kvm/vgic/vgic-its.c",
+      "identity": {
+        "sha256": "e84125a8541f74be1c223bb0932820f6b36c2ee9601bb5e75b8f46b4e40b4935",
+        "bytes": 72565
+      }
+    },
+    {
+      "path": "arch/arm64/kvm/vgic/vgic-mmio-v3.c",
+      "identity": {
+        "sha256": "fbbc9a1ca5f27d53389efb21e01245f48e9e8b435897b3f7536990681ea80612",
+        "bytes": 32500
+      }
+    },
+    {
+      "path": "arch/arm64/kvm/vgic/vgic.h",
+      "identity": {
+        "sha256": "9af04b4061477d6dc0794291b3111e851276f4c4585cc52d1afce5524ff46d62",
+        "bytes": 16634
+      }
+    },
+    {
+      "path": "arch/x86/include/asm/kvm-x86-ops.h",
+      "identity": {
+        "sha256": "862e08934cb79f66b0551cc944cbae9af1181697d74030c01ad8bfe87003934e",
+        "bytes": 5045
+      }
+    },
+    {
+      "path": "arch/x86/include/asm/kvm_host.h",
+      "identity": {
+        "sha256": "5f1ee50bd2a7ad7661123500f0d62ab04cbaf5bd41a30bfe862da07bb6312bfe",
+        "bytes": 89771
+      }
+    },
+    {
+      "path": "arch/x86/include/uapi/asm/kvm.h",
+      "identity": {
+        "sha256": "2383787b19e7579c919615f006ad0d762f275346d44f855fd5ec02e6a42c52eb",
+        "bytes": 24488
+      }
+    },
+    {
+      "path": "arch/x86/kvm/Makefile",
+      "identity": {
+        "sha256": "b88774b7449c87c7e5123586406e09fb77563fbd52f91bd4798136fb2277808b",
+        "bytes": 3568
+      }
+    },
+    {
+      "path": "arch/x86/kvm/cpuid.c",
+      "identity": {
+        "sha256": "b0649cc044e8bbe317421826357fdedcee1795f81a614fffc02a15e55068885d",
+        "bytes": 60113
+      }
+    },
+    {
+      "path": "arch/x86/kvm/cpuid.h",
+      "identity": {
+        "sha256": "d962505562f7288a8dcff2e8a12e93f9b5e3ed13ecc0b79775e1a89e72a890ab",
+        "bytes": 9462
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-apic-target.inc.c",
+      "identity": {
+        "sha256": "ad6a9984da67bb125d4ea1c108e0e07aae5684b9de7ef1d19e71af5ace153dc9",
+        "bytes": 10363
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-clock-math.h",
+      "identity": {
+        "sha256": "9de723344c8591b37eca2010f523fa308540bc15baf99209b322d1f0d11e2386",
+        "bytes": 87
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-clock.c",
+      "identity": {
+        "sha256": "b574d1b6d7601a05ca4ea689a902e6e1bbffb09a26d2f277a47322a0471a6fcf",
+        "bytes": 32492
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-clock.h",
+      "identity": {
+        "sha256": "d12596dae9b86f11abd0c01b4d3de030f2a9d0cb09065c7188a3fa75a636661f",
+        "bytes": 3423
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-ioapic-eoi.inc.c",
+      "identity": {
+        "sha256": "4f53a67f8c5185932be43e219355935a85b85a6f575f9dc23cb9a7607bf21e20",
+        "bytes": 9225
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-ipi-source.h",
+      "identity": {
+        "sha256": "2c98fe5d17546fe737a04785d8cffe6ebf6f1d364f7a915c07eac2cc0a35a58d",
+        "bytes": 4166
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-irq-device-access.h",
+      "identity": {
+        "sha256": "b3a75dec5f7440728ce59e8f1b7aef7b3fc0c3908b4a2c3c7ac809768caba701",
+        "bytes": 3183
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-irq-injection.h",
+      "identity": {
+        "sha256": "0cf5693267e12b9690502c6e2fd583723edb2da35a2a4d8bd02a786e1b7d59aa",
+        "bytes": 3934
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-lapic-timer-ancestry.inc.c",
+      "identity": {
+        "sha256": "0b4663d479091aa5dcb0835bf3294b0ae895096cca359adab5ee09cb41849509",
+        "bytes": 11714
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-pic-board-constructor.inc.c",
+      "identity": {
+        "sha256": "07d9f10a749299fc2e778f064f5b28f012b4b5d96589d28688fc8d7a5803aac5",
+        "bytes": 12583
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-pic-device-birth.inc.c",
+      "identity": {
+        "sha256": "ad10c0e38cb2b66b11d1a5c1ad8dc3fb50498b60f28c4cfbaabb5181c5697bc8",
+        "bytes": 6119
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-pic-eoi.inc.c",
+      "identity": {
+        "sha256": "5ef2169cdbfea89d9c4cddd29bfc6ffba5fa63ad1bee16f4fdcd94474c4592e0",
+        "bytes": 7726
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-pic-initializer-cpu-bytes.inc.c",
+      "identity": {
+        "sha256": "7691f72090723914b19e66b74590dc7d0bd617172bcf3b087c4177dc1cd3dc21",
+        "bytes": 14186
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-pic-initializer-roster.inc.c",
+      "identity": {
+        "sha256": "5dc7c554f828f6122ae592273f1b84d6b08a1b9c3b7ea735e742ad5bfeabbd23",
+        "bytes": 6949
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-pic-initializer.inc.c",
+      "identity": {
+        "sha256": "54bd1ac600fba75c34a0e1ff1857a0336bac572837c8749b0f074fc31770898a",
+        "bytes": 28791
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-pic-run.h",
+      "identity": {
+        "sha256": "2c9614da4421d328e12d3f8873425d2d19c77d001923b444fb4adc155cdca905",
+        "bytes": 726
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-pic-vm-setup.inc.c",
+      "identity": {
+        "sha256": "c302466c581423ebfe9745ae6757e8e53a3e92d0fee9a432cdfd5e04fda0451a",
+        "bytes": 6760
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-pit-ancestry.inc.c",
+      "identity": {
+        "sha256": "42a18aa2d98097d68314587c29656516ffcf0edb7835d74f3296f3fedebbc484",
+        "bytes": 33484
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-pit-pic-ack.inc.c",
+      "identity": {
+        "sha256": "a95ce182d0c39d485f526336da091ee952fe2f69f6d988f89acb3feb91490ba4",
+        "bytes": 3868
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-q35-bootstrap-clock.inc.c",
+      "identity": {
+        "sha256": "6a5121399b9e40f260bd6756ba97ac8c6f49f8849888face6bb2e5cce01b59fe",
+        "bytes": 2223
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-q35-device-initializer.inc.c",
+      "identity": {
+        "sha256": "47679d6dcc82e3d2e05d15b19063549edb914520848b46092696a750447b9206",
+        "bytes": 17083
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-q35-inactive-clock.inc.c",
+      "identity": {
+        "sha256": "8e308588e5da2f94391944dc66eabd39dbd596a5bbbb42e82b4ff676c80825a1",
+        "bytes": 3137
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-q35-initial-routing.inc.c",
+      "identity": {
+        "sha256": "e91ceab4816e71aef2ebaffa0a66ddb1e8007ffbb8b8787acb0c9c1418307eeb",
+        "bytes": 11672
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-q35-loaded-counter.inc.c",
+      "identity": {
+        "sha256": "caeb89d840d9b21e677612c306f1cb2b17e880db7876a3a9bec458c6797d8db6",
+        "bytes": 6585
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-q35-msr-filter.inc.c",
+      "identity": {
+        "sha256": "a3597964322be3707c05e6636729d625544430b1dd43c211ad2741ec02738e2f",
+        "bytes": 9761
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-q35-pit-bootstrap-arm.inc.c",
+      "identity": {
+        "sha256": "443d7e11d6902bacb736ad9fd450cbff7e12d71bd942139ac4e99d5c37ffd7e6",
+        "bytes": 6131
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-q35-pit-ps-adoption.inc.c",
+      "identity": {
+        "sha256": "a68ecb4d3022769375be98f621dccabef01b5bac556a75a05f4d617acab3047e",
+        "bytes": 5616
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-q35-ps-clock.inc.c",
+      "identity": {
+        "sha256": "3bbb6ac8d834131f555f8041933d62b4e23e0068401cca93fe112a0bc9a64ddf",
+        "bytes": 12135
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-q35-ps-native-cut.inc.c",
+      "identity": {
+        "sha256": "c053c5dbc06aa0a46c2af321416ad956e2bfbef6a21c4721d05fdf8ff89c322e",
+        "bytes": 9469
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-q35-vm-configuration.inc.c",
+      "identity": {
+        "sha256": "75dfb48abcf07d62b8fb9e24326c1a83faecb2365a8e2fae97e3cf93e4f0da4c",
+        "bytes": 13697
+      }
+    },
+    {
+      "path": "arch/x86/kvm/crucible-x2apic-ipi.inc.c",
+      "identity": {
+        "sha256": "f2890c093728066cbdddb40ca39023a019a5c01f9ecd76f98e8673cbe7515b08",
+        "bytes": 2460
+      }
+    },
+    {
+      "path": "arch/x86/kvm/fpu.h",
+      "identity": {
+        "sha256": "70195086d34c526956cafc48833b9d08ab096f44b480b8d8b44fdcde58f0416c",
+        "bytes": 7120
+      }
+    },
+    {
+      "path": "arch/x86/kvm/hyperv.h",
+      "identity": {
+        "sha256": "4bd8c43c7e00bacc83713c3a897fc5541214b996918db84b938256cd5994c95f",
+        "bytes": 9853
+      }
+    },
+    {
+      "path": "arch/x86/kvm/i8254.c",
+      "identity": {
+        "sha256": "898cb788106fd5a89e26b068f8431495878678d7c8e64bd04b3a710f0dcadebb",
+        "bytes": 27013
+      }
+    },
+    {
+      "path": "arch/x86/kvm/i8254.h",
+      "identity": {
+        "sha256": "4e7563ff4727e6b5f42d94e915e17fabea988b1ddd91a6c4a1f7382c5eb7125d",
+        "bytes": 4472
+      }
+    },
+    {
+      "path": "arch/x86/kvm/i8259.c",
+      "identity": {
+        "sha256": "d0964dc346c33a4ef55f63306819c801154c5545bbf10dfc90f9268abf33ae7c",
+        "bytes": 30860
+      }
+    },
+    {
+      "path": "arch/x86/kvm/ioapic.c",
+      "identity": {
+        "sha256": "9c553e1398c370f5250fe6a466599edac4b2ea976739e8dd39ae85381e962239",
+        "bytes": 26307
+      }
+    },
+    {
+      "path": "arch/x86/kvm/ioapic.h",
+      "identity": {
+        "sha256": "d47cddc1470cab67dc1ff147c965e49bd749e91096eff23b499f758439bfadc0",
+        "bytes": 3923
+      }
+    },
+    {
+      "path": "arch/x86/kvm/irq.c",
+      "identity": {
+        "sha256": "5a67eafee5d08fa78c3a9159707626684265ded65fa2db5cd6e39e4aa77ef802",
+        "bytes": 18108
+      }
+    },
+    {
+      "path": "arch/x86/kvm/irq.h",
+      "identity": {
+        "sha256": "9e0085b0f13a3c57d0282a7ed2e9ac9065cb85ff5e98df2ecc0548f46aa27b3b",
+        "bytes": 4287
+      }
+    },
+    {
+      "path": "arch/x86/kvm/kvm_emulate.h",
+      "identity": {
+        "sha256": "6cc706d9c3a4dc7fe1a1619127c03eb66d4f550edc3e3aaa150e2fc89d6af304",
+        "bytes": 19119
+      }
+    },
+    {
+      "path": "arch/x86/kvm/lapic.c",
+      "identity": {
+        "sha256": "497143d5ea2bdcb4d9d848013834579d566f9850125bc8cd1b38c6c842ae02b7",
+        "bytes": 109122
+      }
+    },
+    {
+      "path": "arch/x86/kvm/lapic.h",
+      "identity": {
+        "sha256": "bd60215f1904e12204c12579c53995b69b1c158fcecb10f588b43d1c92c69d88",
+        "bytes": 9303
+      }
+    },
+    {
+      "path": "arch/x86/kvm/mmu.h",
+      "identity": {
+        "sha256": "cc63348e766b4fb0fc0034c1e37afc6e6686680a38cfeb7683179e55204b63aa",
+        "bytes": 10533
+      }
+    },
+    {
+      "path": "arch/x86/kvm/mmu/page_track.h",
+      "identity": {
+        "sha256": "43f7310945acd967925f8f802f3eda2c5ff268edc1fdfd5b4b7a98bf43497ee6",
+        "bytes": 1963
+      }
+    },
+    {
+      "path": "arch/x86/kvm/pmu.h",
+      "identity": {
+        "sha256": "7a27a0e1f0030e0757561ca632a93da580967657bc89247858e5385e61ff7543",
+        "bytes": 9315
+      }
+    },
+    {
+      "path": "arch/x86/kvm/regs.h",
+      "identity": {
+        "sha256": "733fb149c5229ddefdb40187e133c31108f6632588e106dbb6e89b574eae3936",
+        "bytes": 12763
+      }
+    },
+    {
+      "path": "arch/x86/kvm/reverse_cpuid.h",
+      "identity": {
+        "sha256": "21795878ef39e33d2d13f68f5b30159322ad955211dc9b58cb0693b89cdbf2a1",
+        "bytes": 9538
+      }
+    },
+    {
+      "path": "arch/x86/kvm/smm.h",
+      "identity": {
+        "sha256": "28c0a6e2b7b53bae2a57d7e70b9169f3f420a4d8d5e9107aad4b21019f2d9d79",
+        "bytes": 3811
+      }
+    },
+    {
+      "path": "arch/x86/kvm/svm/avic.c",
+      "identity": {
+        "sha256": "9ea251f050a31415f9c776250672f819fedc7f02c226a611b5f60daae9040b46",
+        "bytes": 39280
+      }
+    },
+    {
+      "path": "arch/x86/kvm/svm/hyperv.c",
+      "identity": {
+        "sha256": "dce02515bf180fa31673b8afb4c507296d72de97a4b419651f9579022e47689f",
+        "bytes": 654
+      }
+    },
+    {
+      "path": "arch/x86/kvm/svm/hyperv.h",
+      "identity": {
+        "sha256": "3a3e7ed15674d8a7d6d607b6fcbe45276b7acc2be09e0879497d2ea49980746a",
+        "bytes": 1774
+      }
+    },
+    {
+      "path": "arch/x86/kvm/svm/nested.c",
+      "identity": {
+        "sha256": "5465d849dd6cba97a73813619d80e1a02f65406060b7d9816538b4e3c71983b2",
+        "bytes": 64779
+      }
+    },
+    {
+      "path": "arch/x86/kvm/svm/pmu.c",
+      "identity": {
+        "sha256": "35b0815e5805154265132d71b01637ca1ed606912b658656e619b9595d3ad034",
+        "bytes": 8899
+      }
+    },
+    {
+      "path": "arch/x86/kvm/svm/sev.c",
+      "identity": {
+        "sha256": "4c263732d9f57e0f5e41cc06d1b2eabf53f16c17cbbd353501285577ee568cc5",
+        "bytes": 150111
+      }
+    },
+    {
+      "path": "arch/x86/kvm/svm/svm.c",
+      "identity": {
+        "sha256": "3e12cbf5464138e74bb0aed6c94e3f4b9bd718f717fbefd77ab81dcf053304fb",
+        "bytes": 169787
+      }
+    },
+    {
+      "path": "arch/x86/kvm/svm/svm.h",
+      "identity": {
+        "sha256": "ddd99f957aa3c8413d4a015ee7f9e7a6bfeb61509220d6e1d3087dbd94cb5091",
+        "bytes": 31327
+      }
+    },
+    {
+      "path": "arch/x86/kvm/svm/svm_onhyperv.c",
+      "identity": {
+        "sha256": "2c531a8250bc708beb026f978de84d6c26c779ab30549906d4a4739fc3a773fe",
+        "bytes": 1644
+      }
+    },
+    {
+      "path": "arch/x86/kvm/svm/svm_onhyperv.h",
+      "identity": {
+        "sha256": "c0c21c01ff6da3256000b586cd33ba5f9ff8714ea7ec19b3f90e6a73889be02a",
+        "bytes": 2224
+      }
+    },
+    {
+      "path": "arch/x86/kvm/svm/svm_ops.h",
+      "identity": {
+        "sha256": "69d7d3d8aa900392fc70c57d3d474883ff3f745d4604950e877b287b18b6541e",
+        "bytes": 1451
+      }
+    },
+    {
+      "path": "arch/x86/kvm/svm/vmenter.S",
+      "identity": {
+        "sha256": "773f181997a87cd0f41c8dc79f239e7a3d87713a807c7ce041cdbeabc4662221",
+        "bytes": 7045
+      }
+    },
+    {
+      "path": "arch/x86/kvm/trace.h",
+      "identity": {
+        "sha256": "7b9c3902940d7d06a9ebb9b8f07216812a31e7081b8e7ee417243d4c74c79849",
+        "bytes": 49076
+      }
+    },
+    {
+      "path": "arch/x86/kvm/tss.h",
+      "identity": {
+        "sha256": "39312de3f7bf6c8ae1b2f7c8a9065cb3f0e611b7fd2f25e63215bf3b6e90956c",
+        "bytes": 661
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/capabilities.h",
+      "identity": {
+        "sha256": "9433bc0ebe2c9b9ba53aab055ea44a7fafa06b3f042e3ece780ffe8867997752",
+        "bytes": 9824
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/common.h",
+      "identity": {
+        "sha256": "e27f15b86682b7f42a040fd32b4ce10593923335a4e01263ef1d68841cb07c5a",
+        "bytes": 5371
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/hyperv.c",
+      "identity": {
+        "sha256": "f7167347b20e43bd995b17bf733934fe34278ee7f59beb2ef1481450c3add7c1",
+        "bytes": 6233
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/hyperv.h",
+      "identity": {
+        "sha256": "99e3e26f069baa6782b471d3e025c80f43d458efc28643f48fc23e7d6b6302f0",
+        "bytes": 2153
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/hyperv_evmcs.c",
+      "identity": {
+        "sha256": "bf25f27330e33ecd035c592e212262d9e100daeaee66451f612eded8e57997a5",
+        "bytes": 14716
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/hyperv_evmcs.h",
+      "identity": {
+        "sha256": "4bb251b26b7161a490cb4732fb40603efb58b7018cded444ec1131ebd231dbc4",
+        "bytes": 5249
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/main.c",
+      "identity": {
+        "sha256": "610905431b1aa863982d1eb09757236b3913d885dac8d676a2985063d4ddc749",
+        "bytes": 24035
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/nested.c",
+      "identity": {
+        "sha256": "93e26f7d4b0b087a02fb3d5de33c6a9fb040804ef9703cc786395233372e2714",
+        "bytes": 239289
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/nested.h",
+      "identity": {
+        "sha256": "e2e1133a472258d25b071359a8f808c134cefdc9cb253e9171de1182042eda0f",
+        "bytes": 9886
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/pmu_intel.c",
+      "identity": {
+        "sha256": "1e04d98ce05ccfa968d172faa041c64fbd79e6afc556662ae139fb33dd5348ce",
+        "bytes": 25055
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/pmu_intel.h",
+      "identity": {
+        "sha256": "411d81e3f093960c4121e13ce4be07ea8034475d51a8d8395ebcfe8ad59c1f6c",
+        "bytes": 1082
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/posted_intr.c",
+      "identity": {
+        "sha256": "22ed5f40e7bea73c6b98f75fbaadaee82f1bc17a0996f451fff60f344d6271a9",
+        "bytes": 10236
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/posted_intr.h",
+      "identity": {
+        "sha256": "978986695d5575119ddc4fb10925e501aa2458c34947e243193a7b710364276a",
+        "bytes": 902
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/sgx.c",
+      "identity": {
+        "sha256": "42f2ca961b87caf9506c8d961482f855422c43d37a93752ae04a1b8dbf928348",
+        "bytes": 15435
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/sgx.h",
+      "identity": {
+        "sha256": "67644a1b9f7b1f90bccbddf398b471e781f035491317c21d08910de31ca10fb0",
+        "bytes": 878
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/tdx.c",
+      "identity": {
+        "sha256": "3a3f5d8afebe6445fea2cadeb6464fe2136e61e4e7fa2c0e7dadba8fb3f2cfe2",
+        "bytes": 97563
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/tdx.h",
+      "identity": {
+        "sha256": "b207dd47b4b75c4db0a797cb9d6e53c0552e85cfa67629408fe4c88bbf2dacb5",
+        "bytes": 5744
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/tdx_arch.h",
+      "identity": {
+        "sha256": "e2820bc7b6abb910603823cd3986b142e1fd7e96091947ef147d04c75905c90f",
+        "bytes": 4414
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/vmcs.h",
+      "identity": {
+        "sha256": "9a284b52a6598240a4d9f440ca3e327e43c4a3dfe592d2fd4a95c2de05ad8cb2",
+        "bytes": 4906
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/vmcs12.c",
+      "identity": {
+        "sha256": "b570c12e5ead83a39141248f63d123c4ac88f9a15dd759cd425b4ccc54c61aca",
+        "bytes": 9056
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/vmcs12.h",
+      "identity": {
+        "sha256": "c98f21b5ae74d4855186923f91cca529c0a7c05a391adff7c339601e87cff7c0",
+        "bytes": 14168
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/vmcs_shadow_fields.h",
+      "identity": {
+        "sha256": "05cf8962809227a47a91ce72fd8c09f054d7e165200837277bab8c18298237ea",
+        "bytes": 3176
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/vmenter.S",
+      "identity": {
+        "sha256": "51723a8c4dc02884413e150decbd39d1280ab71be191de29053d5ac83fc53a82",
+        "bytes": 7489
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/vmx.c",
+      "identity": {
+        "sha256": "e7b9979aee4d7ee6732021780bf7cdf8bbe707435d63cdd6ebe7d652d4986f32",
+        "bytes": 262613
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/vmx.h",
+      "identity": {
+        "sha256": "c0995c2db91db85b6faa993154529bd77e42d967b7ffd3d498ccf45e9849acc7",
+        "bytes": 22739
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/vmx_onhyperv.c",
+      "identity": {
+        "sha256": "4ad11a24cd1338d87cc9e33ea9be839cf60bfca6ce7ee2543316759a89a8c696",
+        "bytes": 1281
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/vmx_onhyperv.h",
+      "identity": {
+        "sha256": "9964cd14f50f6e281204fc7a28376172e479e62e28a3146c3c2822dce4151a26",
+        "bytes": 3574
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/vmx_ops.h",
+      "identity": {
+        "sha256": "b506da0483a9534eb12ebe4f16c8ec9e8291c4d102b56530d346aee2a8cc217e",
+        "bytes": 10269
+      }
+    },
+    {
+      "path": "arch/x86/kvm/vmx/x86_ops.h",
+      "identity": {
+        "sha256": "e0f6be71898b14b14fbb06f2b48ce08b06186f54d9b5a51fd1b9a42eeaadff5e",
+        "bytes": 7785
+      }
+    },
+    {
+      "path": "arch/x86/kvm/x86.c",
+      "identity": {
+        "sha256": "d4141b7cc32f4d1dc4e71cda5aec30da80f79f4464e7f04ab643f18c8b0f528d",
+        "bytes": 428002
+      }
+    },
+    {
+      "path": "arch/x86/kvm/x86.h",
+      "identity": {
+        "sha256": "afc7d852c3d3fd40a96eaf4637b66c9c6d7bda60ae8f768e09c85284f40c38f9",
+        "bytes": 21855
+      }
+    },
+    {
+      "path": "arch/x86/kvm/xen.h",
+      "identity": {
+        "sha256": "b17aa395627915b393829ae18190497590510de1cefd8dcebd788e2ecfa6ecbd",
+        "bytes": 6973
+      }
+    },
+    {
+      "path": "arch/x86/tools/gen-insn-attr-x86.awk",
+      "identity": {
+        "sha256": "7dee6e733c1c5881bf9c2b4a29a08dfd5404bcfa6334da685d7a54b426c01575",
+        "bytes": 13205
+      }
+    },
+    {
+      "path": "include/linux/kvm_crucible_clock_continuation.h",
+      "identity": {
+        "sha256": "ce2cf23b4facc72236ac3960e2c8a952068c4b079ed9b2eec38123cf7f7c7b8a",
+        "bytes": 3988
+      }
+    },
+    {
+      "path": "include/linux/kvm_crucible_clock_math.h",
+      "identity": {
+        "sha256": "1ac8f51a56b889518522a4f71e53f50425ccae5011620ca3ed49049213ff5951",
+        "bytes": 4509
+      }
+    },
+    {
+      "path": "include/linux/kvm_crucible_completion.h",
+      "identity": {
+        "sha256": "4a93c69e8a5433c040a2719e22af84ad5361edc7add33ba9a39b3e3608799274",
+        "bytes": 4080
+      }
+    },
+    {
+      "path": "include/linux/kvm_crucible_ps_clock.h",
+      "identity": {
+        "sha256": "fad902f1eb245de2dc6811a38291b7fe5df4c38af342469ed2df5401eb2168a6",
+        "bytes": 2861
+      }
+    },
+    {
+      "path": "include/linux/kvm_host.h",
+      "identity": {
+        "sha256": "489698703730bbb7f64e02ede4931c435f972b851c2dbfcdf9b726f43d60a6af",
+        "bytes": 92272
+      }
+    },
+    {
+      "path": "include/trace/bpf_probe.h",
+      "identity": {
+        "sha256": "15c1f88b25012d24854ef474d6ade85b0e10b9c826074f429b0265bd45aeb2f5",
+        "bytes": 4836
+      }
+    },
+    {
+      "path": "include/trace/define_trace.h",
+      "identity": {
+        "sha256": "40e1178cf2e1e53952358928814e5960207c5fe6346107ea701a0e1e48630990",
+        "bytes": 5266
+      }
+    },
+    {
+      "path": "include/trace/events/ipi.h",
+      "identity": {
+        "sha256": "5ea629bdb9753ebdf82b16ab79c2c02d6109e34141e5f5922678fdb50bc647f9",
+        "bytes": 2971
+      }
+    },
+    {
+      "path": "include/trace/events/kvm.h",
+      "identity": {
+        "sha256": "3ecac6fc9952d8fa91d83622c581930585989dc2d3fa0bc99719571253e9ae88",
+        "bytes": 9786
+      }
+    },
+    {
+      "path": "include/trace/perf.h",
+      "identity": {
+        "sha256": "b2c369d077881480bf61e7291152d922b9baa4af3512231bfdc87f1188468303",
+        "bytes": 3536
+      }
+    },
+    {
+      "path": "include/trace/stages/init.h",
+      "identity": {
+        "sha256": "80e5cde1a2ecdf8bedafdee9f2e7c01d9aec26b25a805fa460f726fa15539670",
+        "bytes": 1036
+      }
+    },
+    {
+      "path": "include/trace/stages/stage1_struct_define.h",
+      "identity": {
+        "sha256": "73d15730f2d117c182a7e7269b912ed7ed5044a4ba1d79f4093825ccfc8c84f5",
+        "bytes": 1650
+      }
+    },
+    {
+      "path": "include/trace/stages/stage2_data_offsets.h",
+      "identity": {
+        "sha256": "35ac0aef5833cc26da10e93cfdbe3cb9705c62bfac80a570204e5f63c9bfa2b5",
+        "bytes": 1700
+      }
+    },
+    {
+      "path": "include/trace/stages/stage3_trace_output.h",
+      "identity": {
+        "sha256": "53e6c5f769e1d18d80a8325b9be38f0700be14334032e480e82eba086fd4e5e6",
+        "bytes": 4816
+      }
+    },
+    {
+      "path": "include/trace/stages/stage4_event_fields.h",
+      "identity": {
+        "sha256": "6cc43722edb173d9cb1ae55978cdc9987a83bc4a9ec19766ac966d0c19dd9a50",
+        "bytes": 2730
+      }
+    },
+    {
+      "path": "include/trace/stages/stage5_get_offsets.h",
+      "identity": {
+        "sha256": "8e07cf49276cfa8c03c866426134aca550c5857f4d077af943d7910fbb6513e3",
+        "bytes": 3945
+      }
+    },
+    {
+      "path": "include/trace/stages/stage6_event_callback.h",
+      "identity": {
+        "sha256": "fd3f2319ad3585cccb4c5bfa9981a096ce9733a7ce202848449fd4a2ca9c049c",
+        "bytes": 4026
+      }
+    },
+    {
+      "path": "include/trace/stages/stage7_class_define.h",
+      "identity": {
+        "sha256": "96ae3644deb5c07135744b6ef4d375138f2600ef3ba180df08aaaf37daf06627",
+        "bytes": 1582
+      }
+    },
+    {
+      "path": "include/trace/syscall.h",
+      "identity": {
+        "sha256": "bd01e4f718f9a210dafdfdfff26c45a56c7e12addee5cf3f29cbabb1ff981dca",
+        "bytes": 1573
+      }
+    },
+    {
+      "path": "include/trace/trace_events.h",
+      "identity": {
+        "sha256": "e39a114e4a1450fa403177c5057a68f8302e901afc2426300abf0c1173e94053",
+        "bytes": 15681
+      }
+    },
+    {
+      "path": "include/uapi/linux/kvm.h",
+      "identity": {
+        "sha256": "3085e7a812321c76c90ad8f14ae6a97818ffc5c177f1a9c118ddef9f1239386f",
+        "bytes": 71447
+      }
+    },
+    {
+      "path": "tools/arch/x86/tools/gen-insn-attr-x86.awk",
+      "identity": {
+        "sha256": "7dee6e733c1c5881bf9c2b4a29a08dfd5404bcfa6334da685d7a54b426c01575",
+        "bytes": 13205
+      }
+    },
+    {
+      "path": "virt/kvm/Makefile.kvm",
+      "identity": {
+        "sha256": "b3fc12b5bdaca1a80fe0ab5496ec4ad3492170ba1ff25164bd239d58b5e62bff",
+        "bytes": 602
+      }
+    },
+    {
+      "path": "virt/kvm/async_pf.h",
+      "identity": {
+        "sha256": "b4bfb46730c12ccca205ad36e9fb56f81285b4208a80aa49b4a8323eae1021fa",
+        "bytes": 518
+      }
+    },
+    {
+      "path": "virt/kvm/coalesced_mmio.h",
+      "identity": {
+        "sha256": "19e146db0fb1eabe0963240398f06154337d6c9e77c06368f163f4ae35745696",
+        "bytes": 884
+      }
+    },
+    {
+      "path": "virt/kvm/crucible-clock-continuation.inc.c",
+      "identity": {
+        "sha256": "792dbc76d72c53093d3791c01ecb85fce885241b2f000409d270190b73974d19",
+        "bytes": 11068
+      }
+    },
+    {
+      "path": "virt/kvm/crucible-completion.c",
+      "identity": {
+        "sha256": "7aaf507415f08099e3418e866237e087d5aa45a557ac2eb7fc31d646b2b20fb3",
+        "bytes": 12786
+      }
+    },
+    {
+      "path": "virt/kvm/crucible-initialization-observation.inc.c",
+      "identity": {
+        "sha256": "245eb0a990389d5b654a34d5b68eaf0d2b7af7d83a911a36158d4ecb541e4559",
+        "bytes": 6204
+      }
+    },
+    {
+      "path": "virt/kvm/crucible-pic-memory-initialization.inc.c",
+      "identity": {
+        "sha256": "eb8842dbd5848f8db96dc58d67ac3d00fd4f3eab0c8ce2de628e4501574b8603",
+        "bytes": 6967
+      }
+    },
+    {
+      "path": "virt/kvm/crucible-q35-memory-effects.inc.c",
+      "identity": {
+        "sha256": "43d5756223b7a04cdc042858df1a74364562f37ec44b3547d2a55835b2eb1a44",
+        "bytes": 12897
+      }
+    },
+    {
+      "path": "virt/kvm/crucible-q35-ps-irq-input.inc.c",
+      "identity": {
+        "sha256": "63ceeec77b15eb630038f0009dbc7f5c0700068734b02dc8211d43e82d1415c5",
+        "bytes": 9901
+      }
+    },
+    {
+      "path": "virt/kvm/crucible-response-bytes.c",
+      "identity": {
+        "sha256": "b4bee79df2bb1bdef16de1ad1bd12cb1d488c36fa3ede68a9205a1db4d81fae3",
+        "bytes": 11647
+      }
+    },
+    {
+      "path": "virt/kvm/irqchip.c",
+      "identity": {
+        "sha256": "a8a1327d910696f5d1e90545930f454010076525daac75a48e2a4e252f15fc1c",
+        "bytes": 19601
+      }
+    },
+    {
+      "path": "virt/kvm/kvm_main.c",
+      "identity": {
+        "sha256": "1ca759b4442fae520d6b7768211abb0d7d861e16a48bf931917251b0532005e2",
+        "bytes": 189423
+      }
+    },
+    {
+      "path": "virt/kvm/kvm_mm.h",
+      "identity": {
+        "sha256": "6b8d78d6f96fc32f3301a702864f347f0985c58a960dd4aeca0f0808f23df4e9",
+        "bytes": 2819
+      }
+    },
+    {
+      "path": "virt/kvm/vfio.h",
+      "identity": {
+        "sha256": "ff25a6499e0f1d5d5c595898a77d6b286b781b12a6a341a64db7318ce10d8c2b",
+        "bytes": 289
+      }
+    }
+  ]
+}

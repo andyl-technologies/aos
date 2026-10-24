@@ -29,6 +29,7 @@ required-features = ["test-double"]
 workspace = true
 
 [dependencies]
+crucible-node-format = { workspace = true }
 crucible-control-client = { path = "../crucible-control-client" }
 crucible-control-server = { path = "../crucible-control-server" }
 aws-credential-types = { workspace = true }
@@ -52,6 +53,7 @@ url = { workspace = true }
 zeroize = { workspace = true }
 
 [dev-dependencies]
+crucible-node-transport = { workspace = true }
 crucible-control-api = { path = "../crucible-control-api" }
 crucible-store = { path = "../crucible-store" }
 crucible-engine = { path = "../crucible-engine", features = ["test-support"] }

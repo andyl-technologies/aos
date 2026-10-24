@@ -86,7 +86,8 @@ for the complete intake and record-handling requirements.
 ## License by path
 
 - Original AOS files use Apache-2.0 unless a more specific notice applies.
-- `crucible-qemu-protocol` and `crucible-qemu-shmem` use `MIT OR Apache-2.0`.
+- `crucible-qemu-protocol`, `crucible-qemu-shmem`, and `crucible-node-format` use
+  `MIT OR Apache-2.0`.
 - `crucible-qemu-plugin` and `crucible-qemu-trace-plugin` use
   `GPL-2.0-only`.
 - Existing QEMU files and patches to them retain the applicable upstream file

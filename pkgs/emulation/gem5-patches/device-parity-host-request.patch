@@ -1,0 +1,718 @@
+diff --git a/src/dev/virtio/VirtIOHostRequest.py b/src/dev/virtio/VirtIOHostRequest.py
+new file mode 100644
+--- /dev/null
++++ b/src/dev/virtio/VirtIOHostRequest.py
+@@ -0,0 +1,46 @@
++#  * SPDX-License-Identifier: MIT
++#  * Copyright (c) 2026 Andyl, Inc.
++#  *
++#  * Permission is hereby granted, free of charge, to any person obtaining a copy
++#  * of this software and associated documentation files (the "Software"), to deal
++#  * in the Software without restriction, including without limitation the rights
++#  * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
++#  * of the Software, and to permit persons to whom the Software is furnished to do
++#  * so, subject to the following conditions:
++#  *
++#  * The above copyright notice and this permission notice shall be included in all
++#  * copies or substantial portions of the Software.
++#  *
++#  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++#  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++#  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++#  * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++#  * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++#  * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++#  * SOFTWARE.
++
++"""Finite asynchronous block/9p frontend, with no host file or socket handles."""
++from m5.objects.VirtIO import VirtIODeviceBase
++from m5.params import Param
++from m5.SimObject import PyBindMethod
++
++
++class VirtIOHostRequest(VirtIODeviceBase):
++    type = "VirtIOHostRequest"
++    cxx_header = "dev/virtio/host_request.hh"
++    cxx_class = "gem5::VirtIOHostRequest"
++    cxx_exports = [
++        PyBindMethod("setExecutionParent"),
++        PyBindMethod("pendingRequestMetadata"),
++        PyBindMethod("pendingRequestBytes"),
++        PyBindMethod("pendingCompletionMetadata"),
++        PyBindMethod("acknowledgeRequest"),
++        PyBindMethod("stageReply"),
++        PyBindMethod("retireCompleted"),
++    ]
++    kind = Param.String("block", "Device kind: block or 9p")
++    queue_size = Param.Unsigned(128, "Finite power-of-two split-ring descriptors")
++    request_capacity = Param.Unsigned(128, "Retained requests including completions")
++    maximum_payload_bytes = Param.Unsigned(1048576, "Maximum request or reply bytes")
++    capacity_sectors = Param.UInt64(0, "Immutable block capacity in 512-byte sectors")
++    mount_tag = Param.String("crucible", "Immutable 9p mount tag")
+diff --git a/src/dev/virtio/host_request.hh b/src/dev/virtio/host_request.hh
+new file mode 100644
+--- /dev/null
++++ b/src/dev/virtio/host_request.hh
+@@ -0,0 +1,125 @@
++/*
++ * SPDX-License-Identifier: MIT
++ * Copyright (c) 2026 Andyl, Inc.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
++ * of the Software, and to permit persons to whom the Software is furnished to do
++ * so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in all
++ * copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++ * SOFTWARE.
++ */
++
++#ifndef __DEV_VIRTIO_HOST_REQUEST_HH__
++#define __DEV_VIRTIO_HOST_REQUEST_HH__
++
++#include <deque>
++#include <string>
++#include <vector>
++
++#include "dev/virtio/base.hh"
++#include "sim/eventq.hh"
++
++namespace gem5
++{
++
++struct VirtIOHostRequestParams;
++
++/** Retains original guest requests until sealed replies and custody retirement. */
++class VirtIOHostRequest : public VirtIODeviceBase
++{
++  public:
++    explicit VirtIOHostRequest(const VirtIOHostRequestParams &params);
++    void readConfig(PacketPtr pkt, Addr offset) override;
++    void serialize(CheckpointOut &cp) const override;
++    void unserialize(CheckpointIn &cp) override;
++
++    bool setExecutionParent(uint64_t parent);
++    std::vector<uint64_t> pendingRequestMetadata() const;
++    std::vector<uint8_t> pendingRequestBytes() const;
++    /** Returns actual completed DMA birth and bytes without custody authority. */
++    std::vector<uint64_t> pendingCompletionMetadata() const;
++    bool acknowledgeRequest(uint64_t id);
++    bool stageReply(uint64_t id, Tick tick, uint64_t parent, uint8_t status,
++                    const std::vector<uint8_t> &payload);
++    bool retireCompleted(uint64_t id);
++
++  private:
++    struct Span
++    {
++        Addr address;
++        uint32_t length;
++    };
++
++    struct Request
++    {
++        uint64_t id;
++        Tick birthTick;
++        uint64_t birthOrdinal;
++        uint64_t birthTickOrdinal;
++        uint64_t parent;
++        uint32_t opcode;
++        uint64_t sector;
++        uint16_t tag;
++        uint16_t head;
++        uint64_t queueIncarnation;
++        size_t payloadBytes;
++        std::vector<uint8_t> bytes;
++        std::vector<Span> writable;
++        bool acknowledged = false;
++        bool replyStaged = false;
++        bool completed = false;
++        Tick replyTick = 0;
++        uint64_t replyParent = 0;
++        uint8_t status = 0;
++        Tick completionTick = 0;
++        uint64_t completionOrdinal = 0;
++        uint64_t completionTickOrdinal = 0;
++        uint64_t completionParent = 0;
++        size_t writtenBytes = 0;
++        std::vector<uint8_t> reply;
++    };
++
++    class Queue : public VirtQueue
++    {
++      public:
++        Queue(PortProxy &proxy, uint16_t size, VirtIOHostRequest &device);
++        void onNotify() override;
++      private:
++        VirtIOHostRequest &device;
++    };
++
++    void collectRequests();
++    Request decode(VirtDescriptor *head) const;
++    void completeDue();
++    void scheduleReplies();
++    size_t writeReply(const Request &request);
++
++    const bool block;
++    const unsigned requestCapacity;
++    const unsigned maximumPayloadBytes;
++    const uint64_t capacitySectors;
++    std::vector<uint8_t> configuration;
++    PortProxy &memory;
++    Queue queue;
++    EventFunctionWrapper replyEvent;
++    EventFunctionWrapper creditEvent;
++    std::deque<Request> requests;
++    uint64_t nextRequest = 1;
++    uint64_t retiredThrough = 0;
++    uint64_t executionParent = 0;
++};
++
++} // namespace gem5
++#endif
+diff --git a/src/dev/virtio/host_request.cc b/src/dev/virtio/host_request.cc
+new file mode 100644
+--- /dev/null
++++ b/src/dev/virtio/host_request.cc
+@@ -0,0 +1,434 @@
++/*
++ * SPDX-License-Identifier: MIT
++ * Copyright (c) 2026 Andyl, Inc.
++ *
++ * Permission is hereby granted, free of charge, to any person obtaining a copy
++ * of this software and associated documentation files (the "Software"), to deal
++ * in the Software without restriction, including without limitation the rights
++ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
++ * of the Software, and to permit persons to whom the Software is furnished to do
++ * so, subject to the following conditions:
++ *
++ * The above copyright notice and this permission notice shall be included in all
++ * copies or substantial portions of the Software.
++ *
++ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
++ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
++ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
++ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
++ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
++ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
++ * SOFTWARE.
++ */
++
++#include "dev/virtio/host_request.hh"
++
++#include <algorithm>
++#include <cstring>
++#include <limits>
++
++#include "base/logging.hh"
++#include "params/VirtIOHostRequest.hh"
++#include "sim/system.hh"
++#include "sim/crucible_output.hh"
++
++namespace gem5
++{
++
++namespace
++{
++
++size_t boundedConfigurationSize(const VirtIOHostRequestParams &params)
++{
++    fatal_if(params.kind != "block" && params.kind != "9p",
++             "Unknown host-request device kind");
++    fatal_if(params.kind == "9p" && (params.mount_tag.empty() ||
++             params.mount_tag.size() > 255),
++             "Invalid bounded host-request mount tag");
++    return params.kind == "block" ? 16 : 2 + params.mount_tag.size();
++}
++
++template<typename T>
++T loadLittle(const std::vector<uint8_t> &bytes, size_t offset)
++{
++    panic_if(offset > bytes.size() || sizeof(T) > bytes.size() - offset,
++             "Truncated host-request message");
++    T value;
++    std::memcpy(&value, bytes.data() + offset, sizeof(value));
++    return letoh(value);
++}
++
++template<typename T>
++void storeLittle(std::vector<uint8_t> &bytes, size_t offset, T value)
++{
++    panic_if(offset > bytes.size() || sizeof(T) > bytes.size() - offset,
++             "Invalid host-request configuration geometry");
++    value = htole(value);
++    std::memcpy(bytes.data() + offset, &value, sizeof(value));
++}
++
++} // anonymous namespace
++
++VirtIOHostRequest::VirtIOHostRequest(const VirtIOHostRequestParams &params)
++    : VirtIODeviceBase(params, params.kind == "block" ? 2 : 9,
++        boundedConfigurationSize(params),
++        params.kind == "block" ? (FeatureBits(1) << 1) | (FeatureBits(1) << 2) |
++            (FeatureBits(1) << 9) : FeatureBits(1)),
++      block(params.kind == "block"), requestCapacity(params.request_capacity),
++      maximumPayloadBytes(params.maximum_payload_bytes),
++      capacitySectors(params.capacity_sectors), configuration(configSize),
++      memory(params.system->physProxy), queue(memory, params.queue_size, *this),
++      replyEvent([this] { completeDue(); }, name() + ".sealed-reply"),
++      creditEvent([this] { collectRequests(); }, name() + ".request-credit")
++{
++    fatal_if(params.kind != "block" && params.kind != "9p",
++             "Unknown host-request device kind");
++    fatal_if(!requestCapacity || requestCapacity > 4096 ||
++        maximumPayloadBytes < 512 || maximumPayloadBytes > 1048576 ||
++        !params.queue_size || params.queue_size > 65535 ||
++        (params.queue_size & (params.queue_size - 1)) ||
++        byteOrder != ByteOrder::little,
++        "Invalid finite host-request resource contract");
++    fatal_if(block ? !capacitySectors : params.mount_tag.empty() ||
++             params.mount_tag.size() > 255,
++             "Invalid immutable host-request configuration");
++    if (block) {
++        storeLittle<uint64_t>(configuration, 0, capacitySectors);
++        storeLittle<uint32_t>(configuration, 8, maximumPayloadBytes);
++        storeLittle<uint32_t>(configuration, 12, params.queue_size);
++    } else {
++        storeLittle<uint16_t>(configuration, 0, params.mount_tag.size());
++        std::copy(params.mount_tag.begin(), params.mount_tag.end(),
++                  configuration.begin() + 2);
++    }
++    registerQueue(queue);
++}
++
++VirtIOHostRequest::Queue::Queue(PortProxy &proxy, uint16_t size,
++                               VirtIOHostRequest &device)
++    : VirtQueue(proxy, ByteOrder::little, size), device(device)
++{
++}
++
++void
++VirtIOHostRequest::Queue::onNotify()
++{
++    device.collectRequests();
++}
++
++void
++VirtIOHostRequest::readConfig(PacketPtr pkt, Addr offset)
++{
++    readConfigBlob(pkt, offset, configuration.data());
++}
++
++void
++VirtIOHostRequest::serialize(CheckpointOut &cp) const
++{
++    // Stock gem5 checkpoints cannot preserve reply event queue ordering or
++    // hidden host filesystem ownership. Exact capture uses the process image.
++    fatal("Host-request device prohibits stock gem5 checkpoint capture");
++}
++
++void
++VirtIOHostRequest::unserialize(CheckpointIn &cp)
++{
++    fatal("Host-request device prohibits stock gem5 checkpoint restore");
++}
++
++bool
++VirtIOHostRequest::setExecutionParent(uint64_t parent)
++{
++    if (!parent)
++        return false;
++    executionParent = parent;
++    return true;
++}
++
++VirtIOHostRequest::Request
++VirtIOHostRequest::decode(VirtDescriptor *head) const
++{
++    Request result{};
++    result.head = head->index();
++    result.queueIncarnation = queue.incarnation();
++    size_t readable = 0;
++    size_t writable = 0;
++    bool reachedWritable = false;
++    for (const VirtDescriptor *part = head; part; part = part->next()) {
++        if (!part->size())
++            continue;
++        panic_if(part->size() > maximumPayloadBytes + 17,
++                 "Host-request segment exceeds the installed byte budget");
++        if (part->isOutgoing()) {
++            reachedWritable = true;
++            panic_if(part->size() > maximumPayloadBytes + 17 - writable,
++                     "Host-request writable bytes exceed the installed budget");
++            writable += part->size();
++            result.writable.push_back({part->dataAddress(), uint32_t(part->size())});
++        } else {
++            panic_if(reachedWritable ||
++                part->size() > maximumPayloadBytes + 17 - readable,
++                "Host-request readable direction or byte budget is invalid");
++            readable += part->size();
++        }
++    }
++    panic_if(!writable || !readable,
++             "Host-request chain lacks request or reply storage");
++    result.bytes.resize(readable);
++    head->chainRead(0, result.bytes.data(), readable);
++
++    if (block) {
++        panic_if(readable < 16, "Truncated block request header");
++        result.opcode = loadLittle<uint32_t>(result.bytes, 0);
++        result.sector = loadLittle<uint64_t>(result.bytes, 8);
++        panic_if(result.opcode != 0 && result.opcode != 1 && result.opcode != 4,
++                 "Guest used an unadvertised block operation");
++        if (result.opcode == 0) {
++            panic_if(readable != 16 || writable <= 1,
++                     "Invalid block read buffer directions");
++            result.payloadBytes = writable - 1;
++        } else if (result.opcode == 1) {
++            panic_if(writable != 1 || readable <= 16,
++                     "Invalid block write buffer directions");
++            result.payloadBytes = readable - 16;
++        } else {
++            panic_if(readable != 16 || writable != 1 ||
++                     !(guestFeatures & (FeatureBits(1) << 9)),
++                     "Invalid or unnegotiated block flush");
++            result.payloadBytes = 0;
++        }
++        const size_t sectors = result.payloadBytes / 512;
++        panic_if(result.payloadBytes > maximumPayloadBytes ||
++                 result.payloadBytes % 512 || result.sector > capacitySectors ||
++                 sectors > capacitySectors - result.sector,
++                 "Block request exceeds immutable sector capacity");
++        result.bytes.erase(result.bytes.begin(), result.bytes.begin() + 16);
++    } else {
++        panic_if(readable < 7 || readable > maximumPayloadBytes || writable < 7 ||
++                 writable > maximumPayloadBytes ||
++                 loadLittle<uint32_t>(result.bytes, 0) != readable,
++                 "Invalid bounded 9p message geometry");
++        result.opcode = result.bytes[4];
++        result.tag = loadLittle<uint16_t>(result.bytes, 5);
++        panic_if(result.opcode & 1, "Guest sent a 9p response as a request");
++        result.payloadBytes = writable;
++    }
++    return result;
++}
++
++void
++VirtIOHostRequest::collectRequests()
++{
++    if (!getDeviceStatus().driver_ok || !queue.ready())
++        return;
++    while (requests.size() < requestCapacity) {
++        VirtDescriptor *head = queue.consumeDescriptor();
++        if (!head)
++            return;
++        panic_if(!executionParent || nextRequest == std::numeric_limits<uint64_t>::max(),
++                 "Native request lacks sealed execution ownership or identity");
++        Request request = decode(head);
++        const auto birth = crucibleNativeEventPosition();
++        panic_if(!birth.active || !birth.ordinal || !birth.tickOrdinal,
++                 "Native request lacks an actual event birth");
++        panic_if(std::any_of(requests.begin(), requests.end(),
++            [&request, this](const Request &original) {
++                return !original.completed && (original.head == request.head ||
++                    (!block && original.tag == request.tag));
++            }), "Guest reused an outstanding native request identity");
++        request.id = nextRequest++;
++        request.birthTick = curTick();
++        request.birthOrdinal = birth.ordinal;
++        request.birthTickOrdinal = birth.tickOrdinal;
++        request.parent = executionParent;
++        requests.push_back(std::move(request));
++    }
++}
++
++std::vector<uint64_t>
++VirtIOHostRequest::pendingRequestMetadata() const
++{
++    for (const Request &request : requests) {
++        if (!request.acknowledged)
++            return {request.id, request.birthTick, request.parent, request.opcode,
++                    request.sector, request.tag, request.payloadBytes,
++                    request.birthOrdinal, request.birthTickOrdinal};
++    }
++    return {};
++}
++
++std::vector<uint8_t>
++VirtIOHostRequest::pendingRequestBytes() const
++{
++    for (const Request &request : requests) {
++        if (!request.acknowledged)
++            return request.bytes;
++    }
++    return {};
++}
++
++bool
++VirtIOHostRequest::acknowledgeRequest(uint64_t id)
++{
++    if (!id)
++        return false;
++    if (id <= retiredThrough)
++        return true;
++    for (Request &request : requests) {
++        if (request.id != id) {
++            if (!request.acknowledged)
++                return false;
++            continue;
++        }
++        request.acknowledged = true;
++        return true;
++    }
++    return false;
++}
++
++bool
++VirtIOHostRequest::stageReply(uint64_t id, Tick tick, uint64_t parent,
++                             uint8_t status, const std::vector<uint8_t> &payload)
++{
++    auto found = std::find_if(requests.begin(), requests.end(),
++        [id](const Request &request) { return request.id == id; });
++    if (found == requests.end())
++        return false;
++    Request &request = *found;
++    if (request.replyStaged)
++        return request.replyTick == tick && request.replyParent == parent &&
++            request.status == status && request.reply == payload;
++    if (!parent || tick < curTick() || tick == MaxTick ||
++        payload.size() > maximumPayloadBytes)
++        return false;
++    if (block) {
++        if (status > 2 || (request.opcode == 0 && status == 0 ?
++            payload.size() != request.payloadBytes : !payload.empty()))
++            return false;
++    } else {
++        if (status || payload.size() < 7 || payload.size() > request.payloadBytes ||
++            loadLittle<uint32_t>(payload, 0) != payload.size() ||
++            loadLittle<uint16_t>(payload, 5) != request.tag ||
++            (payload[4] != request.opcode + 1 && payload[4] != 7 && payload[4] != 107))
++            return false;
++    }
++    request.replyTick = tick;
++    request.replyParent = parent;
++    request.status = status;
++    request.reply = payload;
++    request.replyStaged = true;
++    scheduleReplies();
++    return true;
++}
++
++void
++VirtIOHostRequest::scheduleReplies()
++{
++    Tick earliest = MaxTick;
++    for (const Request &request : requests) {
++        if (request.replyStaged && !request.completed)
++            earliest = std::min(earliest, request.replyTick);
++    }
++    if (earliest == MaxTick) {
++        if (replyEvent.scheduled())
++            deschedule(replyEvent);
++    } else if (replyEvent.scheduled()) {
++        if (replyEvent.when() != earliest)
++            reschedule(replyEvent, earliest);
++    } else {
++        schedule(replyEvent, earliest);
++    }
++}
++
++size_t
++VirtIOHostRequest::writeReply(const Request &request)
++{
++    panic_if(!queue.ready() || request.queueIncarnation != queue.incarnation(),
++             "Sealed reply belongs to a different native queue incarnation");
++    // Frozen spans are retained at original submission; later guest changes
++    // cannot redirect the authenticated reply to replacement addresses.
++    std::vector<uint8_t> bytes = request.reply;
++    if (block) {
++        if (request.opcode == 0 && request.status != 0)
++            bytes.resize(request.payloadBytes, 0);
++        bytes.push_back(request.status);
++    }
++    size_t offset = 0;
++    for (const Span &span : request.writable) {
++        const size_t count = std::min<size_t>(span.length, bytes.size() - offset);
++        if (count)
++            memory.writeBlob(span.address, bytes.data() + offset, count);
++        offset += count;
++        if (offset == bytes.size())
++            break;
++    }
++    panic_if(offset != bytes.size(), "Sealed reply exceeds its original spans");
++    queue.produceDescriptor(queue.getDescriptor(request.head), bytes.size());
++    return bytes.size();
++}
++
++void
++VirtIOHostRequest::completeDue()
++{
++    panic_if(!getDeviceStatus().driver_ok || !queue.ready(),
++             "Guest reset a device with outstanding sealed replies");
++    while (true) {
++        auto selected = requests.end();
++        for (auto request = requests.begin(); request != requests.end(); ++request) {
++            if (!request->replyStaged || request->completed ||
++                request->replyTick > curTick())
++                continue;
++            if (selected == requests.end() || request->replyTick < selected->replyTick ||
++                (request->replyTick == selected->replyTick && request->id < selected->id))
++                selected = request;
++        }
++        if (selected == requests.end())
++            break;
++        const auto completion = crucibleNativeEventPosition();
++        panic_if(!completion.active || !completion.ordinal ||
++                 !completion.tickOrdinal || !executionParent,
++                 "Native reply completion lacks actual event ownership");
++        const size_t written = writeReply(*selected);
++        selected->completed = true;
++        selected->completionTick = completion.tick;
++        selected->completionOrdinal = completion.ordinal;
++        selected->completionTickOrdinal = completion.tickOrdinal;
++        selected->completionParent = executionParent;
++        selected->writtenBytes = written;
++        kick();
++    }
++    scheduleReplies();
++}
++
++std::vector<uint64_t>
++VirtIOHostRequest::pendingCompletionMetadata() const
++{
++    std::vector<uint64_t> result;
++    for (const Request &request : requests) {
++        if (request.completed)
++            result.insert(result.end(), {request.id, request.completionTick,
++                request.completionOrdinal, request.completionTickOrdinal,
++                request.head, request.writtenBytes, request.completionParent,
++                request.replyParent, request.queueIncarnation});
++    }
++    return result;
++}
++
++bool
++VirtIOHostRequest::retireCompleted(uint64_t id)
++{
++    if (id && id <= retiredThrough)
++        return true;
++    if (requests.empty() || requests.front().id != id ||
++        !requests.front().acknowledged || !requests.front().completed)
++        return false;
++    retiredThrough = id;
++    requests.pop_front();
++    if (creditEvent.scheduled())
++        reschedule(creditEvent, curTick());
++    else
++        schedule(creditEvent, curTick());
++    return true;
++}
++
++} // namespace gem5
+diff --git a/src/dev/virtio/SConscript b/src/dev/virtio/SConscript
+--- a/src/dev/virtio/SConscript
++++ b/src/dev/virtio/SConscript
+@@ -48,6 +48,9 @@
+ Source('base.cc')
+ Source('pci.cc')
+ Source('console.cc')
++SimObject('VirtIOHostRequest.py', sim_objects=['VirtIOHostRequest'])
++Source('host_request.cc')
++
+ Source('block.cc')
+ Source('fs9p.cc')
+ Source('rng.cc')
+diff --git a/src/dev/virtio/base.hh b/src/dev/virtio/base.hh
+--- a/src/dev/virtio/base.hh
++++ b/src/dev/virtio/base.hh
+@@ -142,6 +142,9 @@
+     /** Get the descriptor's index into the virtqueue. */
+     Index index() const { return _index; }
+ 
++    /** Returns the already validated native data address for frozen custody. */
++    Addr dataAddress() const { return desc.addr; }
++
+     /** Populate this descriptor with data from the guest. */
+     void update();
+ 
+@@ -350,6 +353,9 @@
+     void setReady(bool ready);
+     bool ready() const { return _ready; }
+ 
++    /** Returns a native reset/reconfiguration fence, never guest authority. */
++    uint64_t incarnation() const { return _incarnation; }
++
+     /**
+      * Get the number of descriptors available in this queue.
+      *
+@@ -605,6 +611,7 @@
+     uint16_t _last_avail;
+     /** Device-owned used cursor; guest writes never authorize completion. */
+     uint16_t _last_used;
++    uint64_t _incarnation = 1;
+ 
+     /** Vector of pre-created descriptors indexed by their index into
+      * the queue. */
+diff --git a/src/dev/virtio/base.cc b/src/dev/virtio/base.cc
+--- a/src/dev/virtio/base.cc
++++ b/src/dev/virtio/base.cc
+@@ -259,6 +259,7 @@
+     SERIALIZE_SCALAR(_address);
+     SERIALIZE_SCALAR(_last_avail);
+     SERIALIZE_SCALAR(_last_used);
++    SERIALIZE_SCALAR(_incarnation);
+     SERIALIZE_SCALAR(_driverAddress);
+     SERIALIZE_SCALAR(_deviceAddress);
+     SERIALIZE_SCALAR(_modern);
+@@ -272,6 +273,8 @@
+     UNSERIALIZE_SCALAR(_address);
+     UNSERIALIZE_SCALAR(_last_avail);
+     UNSERIALIZE_SCALAR(_last_used);
++    UNSERIALIZE_SCALAR(_incarnation);
++    fatal_if(!_incarnation, "Invalid restored queue incarnation");
+     UNSERIALIZE_SCALAR(_driverAddress);
+     UNSERIALIZE_SCALAR(_deviceAddress);
+     UNSERIALIZE_SCALAR(_modern);
+@@ -302,6 +305,9 @@
+ void
+ VirtQueue::reset()
+ {
++    panic_if(_incarnation == std::numeric_limits<uint64_t>::max(),
++             "Native queue incarnation exhausted");
++    ++_incarnation;
+     _address = 0;
+     _driverAddress = 0;
+     _deviceAddress = 0;
+@@ -331,6 +337,11 @@
+                               _size * sizeof(uint16_t));
+     const Addr addr_used((addr_avail_end + sizeof(uint16_t) +
+                           (ALIGN_SIZE - 1)) & ~(ALIGN_SIZE - 1));
++    if (_address != address || (_ready && !address)) {
++        panic_if(_incarnation == std::numeric_limits<uint64_t>::max(),
++                 "Native queue incarnation exhausted");
++        ++_incarnation;
++    }
+     _address = address;
+     _driverAddress = addr_avail;
+     _deviceAddress = addr_used;
+@@ -374,6 +385,11 @@
+         _driverAddress > maximum - 4 - Addr(_size) * sizeof(uint16_t) ||
+         _deviceAddress > maximum - 4 - Addr(_size) * sizeof(vring_used_elem)),
+         "Modern virtqueue address geometry overflows");
++    if (_ready && !ready) {
++        panic_if(_incarnation == std::numeric_limits<uint64_t>::max(),
++                 "Native queue incarnation exhausted");
++        ++_incarnation;
++    }
+     _ready = ready;
+ }
+ 

@@ -259,7 +259,7 @@ impl CampaignRepository {
     /// # Errors
     ///
     /// Returns the same errors as [`Self::validate_executor_request`], or an
-    /// integrity error when any Crucible, QEMU, protocol, scenario-schema, or
+    /// integrity error when any Crucible, backend, protocol, scenario-schema, or
     /// exact-closure-schema compatibility field differs.
     pub fn validate_executor_request_with_profile(
         &self,

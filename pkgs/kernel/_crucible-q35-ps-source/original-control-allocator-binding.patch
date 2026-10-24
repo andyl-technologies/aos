@@ -1,0 +1,246 @@
+--- a/virt/kvm/crucible-original-kernel-resource.inc.c
++++ b/virt/kvm/crucible-original-kernel-resource.inc.c
+@@ -3,6 +3,7 @@
+  * quote is useful readback, but never permission for uncovered constructors. */
+ 
+ #include <linux/overflow.h>
++#include <linux/crucible_allocator.h>
+ 
+ #define CRUCIBLE_RESOURCE_CONTEXTS 8U
+ #define CRUCIBLE_RESOURCE_ALLOCATION_ROWS 4096U
+@@ -37,6 +38,10 @@
+ 	u64 metadata_bytes;
+ 	u32 family;
+ 	u32 state;
++	struct crucible_slab_request slab_request;
++	struct crucible_slab_output slab_output;
++	u32 control_index;
++	bool source_reservation_known;
+ 	bool native_attempted;
+ 	bool native_known;
+ 	bool retirement_attempted;
+@@ -61,6 +66,10 @@
+ 	u64 output_bytes;
+ 	u64 metadata_bytes;
+ 	u32 allocations_used;
++	raw_spinlock_t allocator_lock;
++	struct crucible_allocator_scope delivery_scopes[2];
++	bool delivery_scope_active[2];
++	u32 current_delivery;
+ 	s64 prepare_delivery_result;
+ 	u64 prepare_delivered_prefix;
+ 	s64 query_delivery_result;
+@@ -70,8 +79,10 @@
+ 	s64 create_result;
+ 	bool prepared;
+ 	bool prepare_delivery_known;
++	bool prepare_delivery_attempted;
+ 	bool query_attempted;
+ 	bool query_delivery_known;
++	bool query_delivery_attempted;
+ 	bool create_attempted;
+ 	bool create_native_entered;
+ 	bool create_no_effect_known;
+@@ -171,6 +182,119 @@
+ 	return 0;
+ }
+ 
++/* These callbacks run in the allocator, including its atomic paths. They use
++ * only the precharged original bank and never allocate or take the registry
++ * mutex. The module/Task/mm references were retained by original PREPARE. */
++static bool crucible_resource_allocator_current(void *owner)
++{
++	struct kvm_crucible_kernel_resource_context *context = owner;
++	u32 control = READ_ONCE(context->current_delivery);
++
++	return READ_ONCE(context->prepared) && !READ_ONCE(context->closed) &&
++		control < ARRAY_SIZE(context->delivery_scopes) &&
++		READ_ONCE(context->delivery_scope_active[control]) &&
++		context->original_task == current && context->original_mm == current->mm &&
++		context->original_file && context->original_file->f_op == &kvm_chardev_ops;
++}
++
++static bool crucible_resource_allocator_reserve(void *owner,
++	const struct crucible_slab_request *request, void **lease)
++{
++	struct kvm_crucible_kernel_resource_context *context = owner;
++	struct kvm_crucible_resource_allocation *row;
++	unsigned long flags;
++	u64 bound, reserved;
++	u32 control = READ_ONCE(context->current_delivery);
++	bool admitted = false;
++
++	*lease = NULL;
++	raw_spin_lock_irqsave(&context->allocator_lock, flags);
++	if (!crucible_resource_allocator_current(context) || context->uncertain ||
++	    context->allocations_used >= CRUCIBLE_RESOURCE_ALLOCATION_ROWS ||
++	    ktime_get_ns() > context->input.constructor_deadline_ns)
++		goto refuse;
++	/* This is a conservative reservation bound, not a resident sum. The
++	 * object stride, fresh slab and extension array can overlap physically;
++	 * all three source facts remain separately retained in the journal. */
++	if (check_add_overflow(request->stride_bytes, request->slab_backing_bound, &bound) ||
++	    check_add_overflow(bound, request->extension_array_bytes, &bound) ||
++	    check_add_overflow(context->reserved_bytes, bound, &reserved) ||
++	    reserved > context->input.reserved_ceiling ||
++	    reserved > context->input.peak_ceiling ||
++	    bound > context->input.transient_ceiling)
++		goto refuse;
++
++	row = &context->allocations[context->allocations_used++];
++	row->actor = current;
++	row->vm = context->original_vm;
++	row->generation = context->generation;
++	row->slab_request = *request;
++	row->control_index = control;
++	row->requested_bytes = request->requested_bytes;
++	row->quoted_rounded_bytes = request->stride_bytes;
++	row->reserved_bytes = bound;
++	row->source_reservation_known = true;
++	row->state = 1;
++	context->reserved_bytes = reserved;
++	*lease = row;
++	admitted = true;
++	goto unlock;
++
++refuse:
++	WRITE_ONCE(context->uncertain, true);
++unlock:
++	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
++	return admitted;
++}
++
++static void crucible_resource_allocator_complete(void *owner, void *lease,
++	const struct crucible_slab_output *output)
++{
++	struct kvm_crucible_kernel_resource_context *context = owner;
++	struct kvm_crucible_resource_allocation *row = NULL;
++	unsigned long flags;
++	u32 index;
++
++	raw_spin_lock_irqsave(&context->allocator_lock, flags);
++	/* Validate against original retained row addresses without dereferencing
++	 * a supplied pointer or manufacturing membership from pointer arithmetic. */
++	for (index = 0; index < context->allocations_used; index++)
++		if (lease == &context->allocations[index]) {
++			row = &context->allocations[index];
++			break;
++		}
++	if (!row || row->state != 1 || !row->source_reservation_known) {
++		WRITE_ONCE(context->uncertain, true);
++		goto unlock;
++	}
++	/* Cache the native producer output before ANY source phase check. NULL
++	 * does not imply no internal allocation or no native transient effects. */
++	row->slab_output = *output;
++	row->original_pointer = output->native_object;
++	row->observed_rounded_bytes = output->native_stride_bytes;
++	row->native_attempted = output->native_attempted;
++	row->native_known = true;
++	row->state = 2;
++	if (!crucible_resource_allocator_current(context) || row->actor != current ||
++	    row->generation != context->generation || row->vm != context->original_vm ||
++	    row->control_index != context->current_delivery || output->kfence_object ||
++	    (output->native_object && output->native_cache != row->slab_request.original_cache))
++		WRITE_ONCE(context->uncertain, true);
++	/* Retirement, internal metadata and other allocator families are not
++	 * installed. A raw result is Known; its complete live ownership is not.
++	 * Preserve the original charge and bank until that gap is resolved. */
++	if (output->native_attempted)
++		WRITE_ONCE(context->uncertain, true);
++unlock:
++	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
++}
++
++static const struct crucible_allocator_ops crucible_resource_allocator_ops = {
++	.source_current = crucible_resource_allocator_current,
++	.reserve_slab = crucible_resource_allocator_reserve,
++	.complete_slab = crucible_resource_allocator_complete,
++};
++
+ /* Same original reservation is required BEFORE descriptor-table expansion,
+  * VM allocation, SRCU/perCPU and all original architecture constructors. */
+ static int kvm_crucible_resource_before_create(struct file *file, unsigned long type)
+@@ -223,6 +347,8 @@
+ 	u64 now, latest;
+ 	u32 index;
+ 	int result;
++	u32 control;
++	bool scope_entered, scope_known, uncertain_before;
+ 
+ 	*handled = false;
+ 	/* Unsupported ordinary ENABLE_CAP keeps its architecture result. The
+@@ -302,6 +428,12 @@
+ 			goto unlock;
+ 		}
+ 		memset(context, 0, sizeof(*context));
++		raw_spin_lock_init(&context->allocator_lock);
++		for (index = 0; index < ARRAY_SIZE(context->delivery_scopes); index++) {
++			context->delivery_scopes[index].original_task = current;
++			context->delivery_scopes[index].original_owner = context;
++			context->delivery_scopes[index].original_ops = &crucible_resource_allocator_ops;
++		}
+ 		context->input = input;
+ 		context->generation = ++crucible_resource_generation;
+ 		output.reservation_generation = context->generation;
+@@ -320,25 +452,47 @@
+ 		/* Publish only the already charged complete original bank. */
+ 		context->original_file = file;
+ 	}
++	control = input.operation == KVM_CRUCIBLE_KERNEL_RESOURCE_PREPARE ? 0 : 1;
++	context->current_delivery = control;
++	uncertain_before = READ_ONCE(context->uncertain);
++	WRITE_ONCE(context->delivery_scope_active[control], true);
+ 	mutex_unlock(&crucible_resource_lock);
+ 
+-	remaining = copy_to_user(pointer, &output, sizeof(output));
++	/* The literal original output delivery owns this Task scope. A failed
++	 * enrollment cannot enter native usercopy or obtain an ordinary allocator
++	 * fallback. Its raw delivery is separately retained from source refusal. */
++	scope_entered = crucible_allocator_enter(&context->delivery_scopes[control]);
++	if (scope_entered) {
++		remaining = copy_to_user(pointer, &output, sizeof(output));
++		scope_known = crucible_allocator_leave(&context->delivery_scopes[control]);
++	} else {
++		remaining = sizeof(output);
++		scope_known = false;
++	}
+ 
+ 	mutex_lock(&crucible_resource_lock);
++	WRITE_ONCE(context->delivery_scope_active[control], false);
+ 	if (remaining > sizeof(output)) {
+ 		context->uncertain = true;
+ 		result = -EIO;
+ 		goto unlock;
+ 	}
+-	result = remaining ? -EFAULT : 0;
++	result = scope_entered ? (remaining ? -EFAULT : 0) : -ECANCELED;
+ 	if (input.operation == KVM_CRUCIBLE_KERNEL_RESOURCE_PREPARE) {
+ 		context->prepare_delivery_result = result;
+ 		context->prepare_delivered_prefix = sizeof(output) - remaining;
+ 		context->prepare_delivery_known = true;
++		context->prepare_delivery_attempted = scope_entered;
+ 	} else {
+ 		context->query_delivery_result = result;
+ 		context->query_delivered_prefix = sizeof(output) - remaining;
+ 		context->query_delivery_known = true;
++		context->query_delivery_attempted = scope_entered;
++	}
++	if (!scope_entered || !scope_known ||
++	    (!uncertain_before && READ_ONCE(context->uncertain))) {
++		WRITE_ONCE(context->uncertain, true);
++		result = -EIO;
+ 	}
+ unlock:
+ 	mutex_unlock(&crucible_resource_lock);
+@@ -354,7 +508,9 @@
+ 	mutex_lock(&crucible_resource_lock);
+ 	context = crucible_resource_find(file);
+ 	if (context) {
+-		context->closed = true;
++		WRITE_ONCE(context->closed, true);
++		WRITE_ONCE(context->delivery_scope_active[0], false);
++		WRITE_ONCE(context->delivery_scope_active[1], false);
+ 		/* Unknown allocations never release or recycle this original bank. */
+ 		if (!context->original_vm && !context->allocations_used && !context->uncertain) {
+ 			task = context->original_task;

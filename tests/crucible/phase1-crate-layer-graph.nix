@@ -8,6 +8,11 @@
 
   runtimeSpecs = [
     {
+      package = "crucible-host-resources";
+      layer = 2;
+      inVm = false;
+    }
+    {
       package = "crucible-determinism";
       layer = 0;
       inVm = false;
@@ -23,12 +28,27 @@
       inVm = false;
     }
     {
+      package = "crucible-node-format";
+      layer = 1;
+      inVm = false;
+    }
+    {
+      package = "crucible-source-birth-data";
+      layer = 1;
+      inVm = false;
+    }
+    {
       package = "crucible-device";
       layer = 1;
       inVm = false;
     }
     {
       package = "crucible-qemu-host";
+      layer = 2;
+      inVm = false;
+    }
+    {
+      package = "crucible-node-transport";
       layer = 2;
       inVm = false;
     }
@@ -84,6 +104,11 @@
     }
     {
       package = "crucible-daemon";
+      layer = 4;
+      inVm = false;
+    }
+    {
+      package = "crucible-source-birth-worker";
       layer = 4;
       inVm = false;
     }
@@ -280,7 +305,7 @@ in
             check=checks.crucible.phase1.crateLayerGraph
             gate=gate:harness-lint
             tasks=T-ARCH-2,T-CRATE-3
-            runtime_crates=18
+            runtime_crates=${builtins.toString (builtins.length runtimeSpecs)}
             test_only_crates=1
             upward_edges=0
             host_adapter_upward_edge_exceptions=1

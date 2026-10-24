@@ -24,7 +24,7 @@ pub(super) fn module_doc_lines(source: &str) -> Vec<String> {
 
 pub(super) fn has_tagged_format_sketch(module_docs: &[String]) -> bool {
     module_docs.iter().any(|line| {
-        ["```text", "```toml", "```ignore", "```no_run"]
+        ["```text", "```toml", "```json", "```ignore", "```no_run"]
             .iter()
             .any(|fence| line.trim_start().starts_with(fence))
     })

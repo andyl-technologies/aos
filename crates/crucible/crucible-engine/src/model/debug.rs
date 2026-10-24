@@ -44,10 +44,10 @@ impl DebugGdbEndpoint {
 pub struct DebugAttachRequest {
     /// Checkpoint configuration resolved from the operator coordinate.
     pub configuration: Configuration,
-    /// Node whose QEMU gdbstub is exposed to the operator.
+    /// Node whose backend gdbstub is exposed to the operator.
     pub node: NodeId,
-    /// Host-side endpoint where QEMU exposes its raw gdbstub.
-    pub qemu_gdbstub: DebugGdbEndpoint,
+    /// Host-side endpoint where the backend exposes its raw gdbstub.
+    pub backend_gdbstub: DebugGdbEndpoint,
     /// Operator-facing `--gdb-listen` endpoint served by Crucible's proxy.
     pub gdb_listen: DebugGdbEndpoint,
 }
@@ -62,13 +62,13 @@ impl DebugAttachRequest {
     pub fn new(
         configuration: Configuration,
         node: NodeId,
-        qemu_gdbstub: impl Into<String>,
+        backend_gdbstub: impl Into<String>,
         gdb_listen: impl Into<String>,
     ) -> Result<Self, EngineError> {
         Ok(Self {
             configuration,
             node,
-            qemu_gdbstub: DebugGdbEndpoint::new("qemu_gdbstub", qemu_gdbstub)?,
+            backend_gdbstub: DebugGdbEndpoint::new("backend_gdbstub", backend_gdbstub)?,
             gdb_listen: DebugGdbEndpoint::new("gdb_listen", gdb_listen)?,
         })
     }
@@ -115,16 +115,16 @@ impl DebugAttachChannelSet {
     }
 }
 
-/// The mediated QEMU gdbstub channel exposed during a debug attach.
+/// The mediated backend gdbstub channel exposed during a debug attach.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DebugGdbstubChannel {
-    /// Node whose QEMU child owns the gdbstub.
+    /// Node whose backend owns the gdbstub.
     pub node: NodeId,
-    /// Host-side endpoint where QEMU exposes the raw gdbstub.
-    pub qemu_endpoint: DebugGdbEndpoint,
+    /// Host-side endpoint where the backend exposes the raw gdbstub.
+    pub backend_endpoint: DebugGdbEndpoint,
     /// Operator-facing gdb-protocol endpoint served by Crucible's proxy.
     pub operator_listen: DebugGdbEndpoint,
-    /// Whether Crucible mediates the raw QEMU gdbstub.
+    /// Whether Crucible mediates the raw backend gdbstub.
     pub mediated_by_crucible: bool,
     /// Whether the channel is outside scheduler delivery order.
     pub out_of_band: bool,
@@ -788,8 +788,8 @@ pub enum DebugBreakpointClientKind {
 pub enum DebugBreakpointMechanism {
     /// A 17a condition evaluated by Crucible at deterministic boundaries.
     EngineCondition,
-    /// A QEMU/gdbstub hardware breakpoint or debug-register trap.
-    QemuHardwareBreakpoint,
+    /// A backend gdbstub hardware breakpoint or debug-register trap.
+    BackendHardwareBreakpoint,
 }
 
 /// Breakpoint target requested by the operator or gdb-protocol client.
@@ -864,7 +864,7 @@ impl DebugBreakpointRequest {
                 Some(DebugBreakpointMechanism::EngineCondition)
             }
             DebugBreakpointTarget::GuestAddress { .. } => {
-                Some(DebugBreakpointMechanism::QemuHardwareBreakpoint)
+                Some(DebugBreakpointMechanism::BackendHardwareBreakpoint)
             }
             DebugBreakpointTarget::GuestMemoryPatchOnly { .. } => None,
         }
@@ -2078,12 +2078,12 @@ impl DebugGotoReport {
 /// Backend request to replace the live debug runtime at a resolved graph coordinate.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct DebugRuntimeRepositionRequest {
-    /// Node whose live QEMU process and gateway backend are replaced.
+    /// Node whose live runtime and debugger gateway backend are replaced.
     pub node: NodeId,
     /// Configuration currently owned by the live runtime.
     pub current_configuration: ContentHash,
-    /// Private QEMU endpoint currently selected by the debugger gateway.
-    pub current_qemu_gdbstub: DebugGdbEndpoint,
+    /// Private backend endpoint currently selected by the debugger gateway.
+    pub current_backend_gdbstub: DebugGdbEndpoint,
     /// Complete target configuration the backend must instantiate.
     pub target: Configuration,
     /// Configuration whose checkpoint must be restored before replay.
@@ -2109,7 +2109,7 @@ impl DebugRuntimeRepositionRequest {
         target: Configuration,
         goto: &DebugGotoReport,
         node: NodeId,
-        current_qemu_gdbstub: DebugGdbEndpoint,
+        current_backend_gdbstub: DebugGdbEndpoint,
     ) -> Result<Self, EngineError> {
         if target.id() != goto.target_configuration {
             return Err(EngineError::CheckpointConfigurationMismatch {
@@ -2128,7 +2128,7 @@ impl DebugRuntimeRepositionRequest {
         Ok(Self {
             node,
             current_configuration: goto.current_configuration,
-            current_qemu_gdbstub,
+            current_backend_gdbstub,
             target,
             restore_configuration: goto.restore_configuration,
             restore_checkpoint: goto.restore_checkpoint,
@@ -2159,8 +2159,8 @@ pub struct DebugRuntimeRepositionReport {
     pub target_configuration: ContentHash,
     /// Fat checkpoint verified after replay reached the target.
     pub target_checkpoint: ContentHash,
-    /// Private QEMU endpoint promoted by the debugger gateway.
-    pub qemu_gdbstub: DebugGdbEndpoint,
+    /// Private backend endpoint promoted by the debugger gateway.
+    pub backend_gdbstub: DebugGdbEndpoint,
     /// Nonzero gateway generation returned by the committed prepare transaction.
     pub gateway_generation: u64,
     /// How the replaced world was deauthorized after gateway promotion.
@@ -2170,7 +2170,7 @@ pub struct DebugRuntimeRepositionReport {
 /// Teardown evidence for a world retired by debugger runtime replacement.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum DebugRetiredWorldCleanup {
-    /// Every old QEMU child completed the normal shutdown and reap ladder.
+    /// Every old backend child completed the normal shutdown and reap ladder.
     Reaped,
     /// Runtime authority was detached, but process cleanup was not observed.
     DetachedCleanupPending {
@@ -2196,12 +2196,12 @@ impl DebugRuntimeRepositionReport {
     #[must_use]
     pub fn completed(
         request: &DebugRuntimeRepositionRequest,
-        qemu_gdbstub: DebugGdbEndpoint,
+        backend_gdbstub: DebugGdbEndpoint,
         gateway_generation: u64,
     ) -> Self {
         Self::completed_with_cleanup(
             request,
-            qemu_gdbstub,
+            backend_gdbstub,
             gateway_generation,
             DebugRetiredWorldCleanup::Reaped,
         )
@@ -2211,7 +2211,7 @@ impl DebugRuntimeRepositionReport {
     #[must_use]
     pub fn completed_with_cleanup(
         request: &DebugRuntimeRepositionRequest,
-        qemu_gdbstub: DebugGdbEndpoint,
+        backend_gdbstub: DebugGdbEndpoint,
         gateway_generation: u64,
         retired_world_cleanup: DebugRetiredWorldCleanup,
     ) -> Self {
@@ -2220,7 +2220,7 @@ impl DebugRuntimeRepositionReport {
             previous_configuration: request.current_configuration,
             target_configuration: request.target.id(),
             target_checkpoint: request.target_checkpoint,
-            qemu_gdbstub,
+            backend_gdbstub,
             gateway_generation,
             retired_world_cleanup,
         }
@@ -2234,7 +2234,7 @@ impl DebugRuntimeRepositionReport {
             && self.previous_configuration == request.current_configuration
             && self.target_configuration == request.target.id()
             && self.target_checkpoint == request.target_checkpoint
-            && self.qemu_gdbstub != request.current_qemu_gdbstub
+            && self.backend_gdbstub != request.current_backend_gdbstub
             && self.gateway_generation != 0
             && self.retired_world_cleanup.proves_deauthorization()
     }

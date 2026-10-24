@@ -265,10 +265,13 @@ in
         "$out/share/licenses/crucible-qemu-plugin/GPL-2.0.txt"
       cp ${../../LICENSES/MIT.txt} \
         "$out/share/licenses/crucible-qemu-plugin/MIT.txt"
+      cp ${../../LICENSES/BSL-1.0.txt} \
+        "$out/share/licenses/crucible-qemu-plugin/BSL-1.0.txt"
       cat > "$out/share/licenses/crucible-qemu-plugin/COMPONENT" <<'LICENSE_SCOPE'
       crucible-qemu-plugin is an in-process QEMU adapter.
       SPDX-License-Identifier: GPL-2.0-only
-      crucible-qemu-protocol and crucible-qemu-shmem are used under their MIT option.
+      crucible-qemu-protocol, crucible-qemu-shmem, and crucible-node-format use their MIT option.
+      ryu-js is used under its BSL-1.0 option.
       LICENSE_SCOPE
     '';
 

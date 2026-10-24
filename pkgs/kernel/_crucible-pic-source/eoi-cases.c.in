@@ -1,0 +1,289 @@
+/* These are source-model cases, not a native guest or PIT board qualification.
+ * setup_consumed models the previously retained native injection-tail receipt;
+ * the EOI register, LOW wake, pending journal and PIT ACK functions are extracted
+ * from their actual source. Guest execution and the original arm are peers. */
+
+static void immediate_eoi_case(void)
+{
+    setup_consumed(true);
+    assert(!pthread_mutex_lock(&vm.target.mutex));
+    assert(!pic_pit_original_eoi(&vm.target, &pic, 0x20));
+    assert(pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_ACKED);
+    assert(!pic.pics[0].isr && !generic_notifiers);
+    assert(pit.pit_state.crucible.last_acknowledged == 11);
+    assert(pit.pit_state.crucible.last_ack_writer_invocation == 99);
+    assert(!pit.pit_state.crucible.awaiting_ack && !vm.crucible_effect_owners);
+    assert(pic.crucible_eoi_issued == 1 && native_eoi_tails == 1);
+
+    /* A repeated EOI is a new native request, not permission to repeat ACK. */
+    assert(pic_pit_original_eoi(&vm.target, &pic, 0x20) == -EAGAIN);
+    assert(pic.crucible_eoi_issued == 1 && native_eoi_tails == 1);
+    assert(pit.pit_state.crucible.last_acknowledged == 11);
+    assert(!pthread_mutex_unlock(&vm.target.mutex));
+}
+
+static void early_eoi_case(void)
+{
+    struct kvm_crucible_pit_irq_birth low;
+
+    setup_consumed(false);
+    assert(!pthread_mutex_lock(&vm.target.mutex));
+    assert(!pic_pit_original_eoi(&vm.target, &pic, 0x60));
+    assert(pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_EOI_PENDING);
+    assert(pic.crucible_pit[0].eoi_native_known && !pic.crucible_pit[0].low_tail_known);
+    assert(!pic.pics[0].isr && !pit.pit_state.crucible.last_acknowledged);
+    assert(pit.pit_state.crucible.awaiting_ack && !vm.crucible_effect_owners);
+    assert(!pthread_mutex_unlock(&vm.target.mutex));
+
+    /* The original guest RUN may have returned. Only the exact original LOW
+     * worker can finish its retained EOI; an ambient current RUN is irrelevant. */
+    vm.target.crucible_timer_run_owner = NULL;
+    vm.target.crucible_run_return.outstanding = false;
+    enter_original_low_worker(&low);
+    assert(kvm_crucible_pic_set_pit_irq(&route, &vm, KVM_PIT_IRQ_SOURCE_ID,
+        0, false, &low) >= 0);
+    assert(pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_ACKED);
+    assert(pic.crucible_pit[0].low_tail_known);
+    assert(!pit.pit_state.crucible.awaiting_ack);
+    assert(pit.pit_state.crucible.last_ack_writer_invocation == 99);
+    leave_original_low_worker();
+}
+
+static void *held_guest_eoi(void *unused)
+{
+    (void)unused;
+    current_owner = &guest_task;
+    assert(!pthread_mutex_lock(&vm.target.mutex));
+    assert(!pic_pit_original_eoi(&vm.target, &pic, 0x20));
+    assert(!pthread_mutex_unlock(&vm.target.mutex));
+    return NULL;
+}
+
+static void held_eoi_wake_case(void)
+{
+    pthread_t guest;
+    struct kvm_crucible_pit_irq_birth low;
+
+    setup_consumed(false);
+    hold_guest_eoi_tail = true;
+    assert(!pthread_create(&guest, NULL, held_guest_eoi, NULL));
+    assert(!pthread_mutex_lock(&tail_mutex));
+    while (!guest_eoi_tail_waiting)
+        assert(!pthread_cond_wait(&tail_condition, &tail_mutex));
+    assert(!pthread_mutex_unlock(&tail_mutex));
+
+    /* The real source EOI has cleared ISR and dropped PIC before its release
+     * returns. LOW may return first, but cannot borrow an unknown EOI result. */
+    enter_original_low_worker(&low);
+    assert(kvm_crucible_pic_set_pit_irq(&route, &vm, KVM_PIT_IRQ_SOURCE_ID,
+        0, false, &low) >= 0);
+    assert(pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_EOI_PENDING);
+    assert(pic.crucible_pit[0].low_tail_known && !pic.crucible_pit[0].eoi_native_known);
+    assert(!pit.pit_state.crucible.last_acknowledged);
+    assert(pit.pit_state.crucible.awaiting_ack && vm.crucible_effect_owners == 1);
+    leave_original_low_worker();
+
+    assert(!pthread_mutex_lock(&tail_mutex));
+    release_guest_eoi_tail = true;
+    assert(!pthread_cond_broadcast(&tail_condition));
+    assert(!pthread_mutex_unlock(&tail_mutex));
+    assert(!pthread_join(guest, NULL));
+    assert(pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_ACKED);
+    assert(!pit.pit_state.crucible.awaiting_ack && !vm.crucible_effect_owners);
+    assert(pit.pit_state.crucible.last_ack_writer_invocation == 99);
+}
+
+static void refused_identity_cases(void)
+{
+    for (unsigned fault = 0; fault < 7; fault++) {
+        setup_consumed(true);
+        switch (fault) {
+        case 0: pic.crucible_pit[0].high_known = false; break;
+        case 1: pic.crucible_pit[0].geometry++; break;
+        case 2: pic.crucible_pit[0].target_id++; break;
+        case 3: pit.pit_state.crucible.ack_sequence++; break;
+        case 4: pit.pit_state.crucible.ack_generation++; break;
+        case 5: pit.pit_state.crucible.ack_invocation++; break;
+        case 6: pic.crucible_pit[0].phase = CRUCIBLE_PIC_PIT_ACKED; break;
+        }
+        assert(!pthread_mutex_lock(&vm.target.mutex));
+        assert(pic_pit_original_eoi(&vm.target, &pic, 0x20) == -EAGAIN);
+        assert(pic.pics[0].isr == 1 && !native_eoi_tails);
+        assert(!pit.pit_state.crucible.last_acknowledged);
+        assert(!pthread_mutex_unlock(&vm.target.mutex));
+    }
+}
+
+static void late_ack_queue_case(void)
+{
+    setup_consumed(true);
+    pit.pit_state.crucible.count = 1;
+    close_at_ack_queue = true;
+    assert(!pthread_mutex_lock(&vm.target.mutex));
+    assert(pic_pit_original_eoi(&vm.target, &pic, 0x20) == -EAGAIN);
+    assert(pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_UNKNOWN);
+    assert(vm.crucible_irq_input.tainted && !vm.crucible_effect_owners);
+    assert(!pic.pics[0].isr && queued_work == 1);
+    /* The native ACK fields and queue call happened before the late cut;
+     * they are retained effects, never rolled back or reported NoEffects. */
+    assert(pit.pit_state.crucible.last_acknowledged == 11);
+    assert(!pit.pit_state.crucible.awaiting_ack && dead_calls);
+    assert(!pthread_mutex_unlock(&vm.target.mutex));
+}
+
+static void final_finish_cut_case(void)
+{
+    setup_consumed(true);
+    close_at_final_finish = true;
+    assert(!pthread_mutex_lock(&vm.target.mutex));
+    assert(pic_pit_original_eoi(&vm.target, &pic, 0x20) == -EAGAIN);
+    assert(final_credit_observed);
+    assert(pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_UNKNOWN);
+    assert(!vm.crucible_effect_owners && !pic.crucible_pit[0].eoi_inflight);
+    assert(pit.pit_state.crucible.last_acknowledged == 11);
+    assert(!pit.pit_state.crucible.awaiting_ack && dead_calls);
+    assert(!pthread_mutex_unlock(&vm.target.mutex));
+}
+
+static void *held_final_eoi(void *unused)
+{
+    (void)unused;
+    current_owner = &guest_task;
+    assert(!pthread_mutex_lock(&vm.target.mutex));
+    assert(pic_pit_original_eoi(&vm.target, &pic, 0x20) == -EAGAIN);
+    assert(!pthread_mutex_unlock(&vm.target.mutex));
+    return NULL;
+}
+
+static void next_high_before_release_case(void)
+{
+    pthread_t guest;
+    struct kvm_crucible_pit_irq_birth next;
+
+    setup_consumed(true);
+    hold_final_tail = true;
+    assert(!pthread_create(&guest, NULL, held_final_eoi, NULL));
+    assert(!pthread_mutex_lock(&tail_mutex));
+    while (!final_tail_waiting)
+        assert(!pthread_cond_wait(&tail_condition, &tail_mutex));
+    assert(!pthread_mutex_unlock(&tail_mutex));
+
+    /* The ACK field/queue effect is known, but the original PIO owner has
+     * not released. A legitimate next worker must not overwrite that row. */
+    enter_original_low_worker(&next);
+    next.sequence = 12;
+    next.phase = 0;
+    pit.pit_state.crucible.issued = 12;
+    pit.pit_state.crucible.pending[0].sequence = 12;
+    pit.pit_state.crucible.pending[0].phase = 0;
+    assert(kvm_crucible_pic_set_pit_irq(&route, &vm, KVM_PIT_IRQ_SOURCE_ID,
+        1, false, &next) == -EAGAIN);
+    assert(pic.crucible_pit[0].original.sequence == 11);
+    assert(!pic.pics[0].irr && !pic.pics[0].last_irr && !pic.irq_states[0]);
+    assert(pic.crucible_pit[0].eoi_inflight && vm.crucible_effect_owners == 1);
+    leave_original_low_worker();
+
+    assert(!pthread_mutex_lock(&tail_mutex));
+    release_final_tail = true;
+    assert(!pthread_cond_broadcast(&tail_condition));
+    assert(!pthread_mutex_unlock(&tail_mutex));
+    assert(!pthread_join(guest, NULL));
+    assert(pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_UNKNOWN);
+    assert(!pic.crucible_pit[0].eoi_inflight && !vm.crucible_effect_owners);
+}
+
+static void controller_write_before_release_case(void)
+{
+    struct kvm_vcpu writer = { .kvm = &vm, .vcpu_id = 1 };
+    const unsigned char mask = 1;
+    pthread_t guest;
+
+    setup_consumed(true);
+    assert(!pthread_mutex_init(&writer.mutex, NULL));
+    hold_final_tail = true;
+    assert(!pthread_create(&guest, NULL, held_final_eoi, NULL));
+    assert(!pthread_mutex_lock(&tail_mutex));
+    while (!final_tail_waiting)
+        assert(!pthread_cond_wait(&tail_condition, &tail_mutex));
+    assert(!pthread_mutex_unlock(&tail_mutex));
+
+    /* A second original native RUN is modeled explicitly. Its actual write
+     * wrapper must refuse while the first PIO still owns the ACKED row. */
+    current_owner = &controller_task;
+    writer.crucible_timer_run_owner = current;
+    writer.crucible_timer_run_invocation = 100;
+    writer.crucible_run_return.outstanding = true;
+    writer.crucible_run_return.original.invocation = 100;
+    writer.crucible_run_return.original.generation_begin = 7;
+    writer.crucible_run_return.original.native_vcpu_id = 1;
+    assert(!pthread_mutex_lock(&writer.mutex));
+    assert(picdev_write(&writer, &pic, 0x21, 1, &mask) == -EAGAIN);
+    assert(!controller_field_writes && !pic.pics[0].imr);
+    assert(pic.crucible_pit[0].eoi_inflight && vm.crucible_effect_owners == 1);
+    assert(!pthread_mutex_unlock(&writer.mutex));
+    assert(!pthread_mutex_destroy(&writer.mutex));
+
+    assert(!pthread_mutex_lock(&tail_mutex));
+    release_final_tail = true;
+    assert(!pthread_cond_broadcast(&tail_condition));
+    assert(!pthread_mutex_unlock(&tail_mutex));
+    assert(!pthread_join(guest, NULL));
+    current_owner = &guest_task;
+    assert(pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_UNKNOWN);
+    assert(!pic.crucible_pit[0].eoi_inflight && !vm.crucible_effect_owners);
+}
+
+static void final_geometry_revalidation_case(void)
+{
+    setup_consumed(true);
+    change_geometry_at_final_finish = true;
+    assert(!pthread_mutex_lock(&vm.target.mutex));
+    assert(pic_pit_original_eoi(&vm.target, &pic, 0x20) == -EAGAIN);
+    assert(final_credit_observed && pic.pics[0].irq_base == 33);
+    assert(pic.crucible_pit[0].phase == CRUCIBLE_PIC_PIT_UNKNOWN);
+    assert(!pic.crucible_pit[0].eoi_inflight && !vm.crucible_effect_owners);
+    assert(pit.pit_state.crucible.last_acknowledged == 11);
+    assert(!pthread_mutex_unlock(&vm.target.mutex));
+}
+
+static void refused_eoi_cases(void)
+{
+    setup_consumed(true);
+    pit.pit_state.crucible.awaiting_ack = false;
+    assert(!pthread_mutex_lock(&vm.target.mutex));
+    assert(pic_pit_original_eoi(&vm.target, &pic, 0x20) == -EAGAIN);
+    assert(pic.pics[0].isr == 1 && !pic.crucible_eoi_issued && !native_eoi_tails);
+    assert(!pthread_mutex_unlock(&vm.target.mutex));
+
+    setup_consumed(true);
+    vm.target.crucible_timer_run_owner = NULL;
+    assert(!pthread_mutex_lock(&vm.target.mutex));
+    assert(pic_pit_original_eoi(&vm.target, &pic, 0x20) == -EAGAIN);
+    assert(pic.pics[0].isr == 1 && !pic.crucible_eoi_issued && !native_eoi_tails);
+    assert(!pthread_mutex_unlock(&vm.target.mutex));
+
+    setup_consumed(true);
+    pic.crucible_eoi_issued = CRUCIBLE_PIC_PIT_ISSUED;
+    assert(!pthread_mutex_lock(&vm.target.mutex));
+    assert(pic_pit_original_eoi(&vm.target, &pic, 0x20) == -EAGAIN);
+    assert(pic.pics[0].isr == 1 && !native_eoi_tails);
+    assert(!pthread_mutex_unlock(&vm.target.mutex));
+}
+
+int main(void)
+{
+    immediate_eoi_case();
+    early_eoi_case();
+    held_eoi_wake_case();
+    refused_eoi_cases();
+    refused_identity_cases();
+    late_ack_queue_case();
+    final_finish_cut_case();
+    next_high_before_release_case();
+    controller_write_before_release_case();
+    final_geometry_revalidation_case();
+    /* Lower request/kick peers are observational counters only. */
+    assert(!native_wakes && !native_requests);
+    puts("Original pending EOI source model PASS; no guest or board authority");
+    return 0;
+}

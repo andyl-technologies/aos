@@ -1,8 +1,8 @@
 # Crate rename and extraction reference
 
 This reference maps every package in the former flat 67-package workspace to its
-implemented owner in the 77-package workspace. Cargo package names carry scope;
-subdirectories group related code for readers. The [workspace design](crate-workspace.md)
+implemented owner in the current 80-package workspace. Cargo package names carry
+scope; subdirectories group related code for readers. The [workspace design](crate-workspace.md)
 explains naming and dependency direction, and the [active inventory](crate-inventory.md)
 lists every current package and directory.
 
@@ -30,7 +30,7 @@ move into the owning directory group. Links point to current manifests.
 | `aos-systemd` | [`aos-systemd-client`](../../crates/linux/aos-systemd-client/Cargo.toml) | Identifies a systemd D-Bus client, distinct from activation policy. |
 | `aos-oci` | [`aos-oci`](../../crates/artifacts/aos-oci/Cargo.toml) | Package name retained; source moves under its owner. |
 | `aos-oci-types` | [`aos-oci-types`](../../crates/artifacts/aos-oci-types/Cargo.toml) | Package name retained; source moves under its owner. |
-| `crucible-linux-resource` | [`aos-linux-project-quota`](../../crates/linux/aos-linux-project-quota/Cargo.toml) | Promotes the implemented Linux project-quota capability for reuse across projects. |
+| `crucible-linux-resource` | [`aos-linux-project-quota`](../../crates/linux/aos-linux-project-quota/Cargo.toml), [`crucible-host-resources`](../../crates/crucible/crucible-host-resources/Cargo.toml) | Quota mechanics are reusable; original descriptor read leases and notification custody retain Crucible ownership. |
 
 ### AOS applications and subsystems
 
@@ -115,10 +115,11 @@ move into the owning directory group. Links point to current manifests.
 - `aos-boot-preparation-provider` → `aos_boot_runtime::preparation`.
 - `crucible-assert` → `crucible-test-support`.
 
-## Fifteen extracted packages
+## Fifteen packages extracted in the initial migration
 
-These packages add independently consumable implementations. They are distinct
-from the 62 retained or renamed package boundaries, giving **67 − 5 + 15 = 77**.
+These packages added independently consumable implementations to the initial
+77-package base. They are distinct from its 62 retained or renamed package
+boundaries, giving **67 − 5 + 15 = 77**.
 
 | Extracted package(s) | Source responsibility |
 |---|---|
@@ -131,6 +132,19 @@ from the 62 retained or renamed package boundaries, giving **67 − 5 + 15 = 77*
 | [`aos-hub-client`](../../crates/hub/aos-hub-client/Cargo.toml) | Hub client and login operations from the former remote client. |
 | [`aos-hub-model`](../../crates/hub/aos-hub-model/Cargo.toml), [`aos-hub-db`](../../crates/hub/aos-hub-db/Cargo.toml) | Domain policy and persistence from the former Hub core. |
 | [`crucible-control-client`](../../crates/crucible/crucible-control-client/Cargo.toml), [`crucible-control-server`](../../crates/crucible/crucible-control-server/Cargo.toml) | Client transport and server integration from the former combined control API. |
+
+## Later implemented Crucible owners
+
+The current workspace adds the two CNP packages from #711 and the first real
+host-resource extraction, giving **77 + 2 + 1 = 80**. The latter establishes the
+owner planned for #696; its future RAM, budget and supervision work remains
+separate.
+
+| Earlier ownership | Current package | Implemented responsibility |
+|---|---|---|
+| `crucible-node-contract` | [`crucible-node-format`](../../crates/crucible/crucible-node-format/Cargo.toml) | Portable CNP data, strict JSON, canonical identities, and validation. |
+| `crucible-node-provider` | [`crucible-node-transport`](../../crates/crucible/crucible-node-transport/Cargo.toml) | Bounded host process transport, request custody, and reference-provider tools. |
+| Read leases beside the quota implementation | [`crucible-host-resources`](../../crates/crucible/crucible-host-resources/Cargo.toml) | Original Linux descriptor read leases and isolated notification custody; generic quotas stay separate. |
 
 ## Updating consumers
 
@@ -154,6 +168,6 @@ the initial map does not perform the later architectural refactors. See the
 [tooling guide](../../tools/dev/crate-migration.md) for supported checks.
 
 Crates on other branches are tracked separately in the
-[unmerged-PR inventory](unmerged-crates.md); those proposals are outside the 77
-implemented packages. Validation outcomes and their tested checkpoints are in the
-[validation record](crate-migration-validation.md).
+[unmerged-PR inventory](unmerged-crates.md); its remaining proposals are outside
+the 80 implemented packages. Validation outcomes and their tested checkpoints are
+in the [validation record](crate-migration-validation.md).

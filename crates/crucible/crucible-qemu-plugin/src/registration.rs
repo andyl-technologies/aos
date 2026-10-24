@@ -707,6 +707,8 @@ const fn setup_error_registration_step(source: &PluginSetupError) -> PluginRegis
         PluginSetupError::InspectSharedMemory { .. }
         | PluginSetupError::MapRegion { .. }
         | PluginSetupError::ValidateRegion { .. }
+        | PluginSetupError::SelectedDescriptorUnavailable
+        | PluginSetupError::SelectedNativeAuthentication { .. }
         | PluginSetupError::ValidatePluginSetupPlan { .. }
         | PluginSetupError::NodeCountMismatch { .. }
         | PluginSetupError::SlotOutsideRegionNodeCount { .. } => {

@@ -12,6 +12,7 @@ crate-type = ["cdylib"]
 workspace = true
 
 [dependencies]
+crucible-node-format = { workspace = true }
 blake3 = { workspace = true }
 crucible-qemu-protocol = { path = "../crucible-qemu-protocol" }
 crucible-qemu-shmem = { path = "../crucible-qemu-shmem" }

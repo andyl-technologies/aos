@@ -1704,7 +1704,7 @@
   # fetchCargoVendor
   # ---------------------------------------------------------------------------
   # fetchCargoVendor { cargo; python3; git; caCertificates; bootstrapTools;
-  #                    src; hash; sourceRoot?; cargoPatches?; }
+  #                    src; hash; sourceRoot?; lockFile?; cargoPatches?; }
   #
   # Lockfile-driven Cargo vendoring (ported from nixpkgs's fetchCargoVendor /
   # fetch-cargo-vendor-util-v2 design). Two stages:
@@ -1734,6 +1734,7 @@
     src,
     hash,
     sourceRoot ? null,
+    lockFile ? null,
     cargoPatches ? [],
     extraLibPaths ? [],
     extraPaths ? [],
@@ -1741,6 +1742,35 @@
     system ? defaultSystem,
   }: let
     utilDir = ./cargo-vendor;
+    # A supplied post-patch lockfile lets registry-only assembly omit Git and
+    # Cargo. Both stages authenticate its exact bytes before work.
+    lockHash =
+      if lockFile == null
+      then null
+      else builtins.hashFile "sha256" lockFile;
+    needsGitTools =
+      if lockFile == null
+      then true
+      else
+        builtins.any
+        (package: builtins.match "git\\+.*" (package.source or "") != null)
+        (builtins.fromTOML (builtins.readFile lockFile)).package;
+    cargoPath =
+      if needsGitTools
+      then "${cargo}/bin:"
+      else "";
+    gitPath =
+      if needsGitTools
+      then "${git}/bin:"
+      else "";
+    lockArgument =
+      if lockHash == null
+      then ""
+      else "--expected-lock-sha256 ${lockHash}";
+    lockMetadata =
+      if lockHash == null
+      then {}
+      else {expectedLockSha256 = lockHash;};
     ldLibPath = builtins.concatStringsSep ":" (
       builtins.map (d: "${builtins.toString d}/lib") extraLibPaths
     );
@@ -1754,7 +1784,7 @@
         "-c"
         ''
           set -euo pipefail
-          export PATH="${cargo}/bin:${python3}/bin:${git}/bin:${bootstrapTools}/bin${builtins.concatStringsSep "" (builtins.map (p: ":${builtins.toString p}/bin") extraPaths)}"
+          export PATH="${gitPath}${python3}/bin:${bootstrapTools}/bin${builtins.concatStringsSep "" (builtins.map (p: ":${builtins.toString p}/bin") extraPaths)}"
           export GIT_SSL_CAINFO="${caCertificates}/etc/ssl/certs/ca-certificates.crt"
           export SSL_CERT_FILE="$GIT_SSL_CAINFO"
           ${
@@ -1779,7 +1809,7 @@
           ${builtins.concatStringsSep "\n" (builtins.map (p: "patch -p1 < ${p}") cargoPatches)}
 
           python3 ${utilDir}/fetch-cargo-vendor-util.py \
-            create-vendor-staging Cargo.lock "$out"
+            create-vendor-staging Cargo.lock "$out" ${lockArgument}
         ''
       ];
 
@@ -1790,37 +1820,43 @@
       preferLocalBuild = true;
     };
   in
+    assert lockFile == null || builtins.isPath lockFile;
     # Stage 2: pure transformation of staging into cargo vendor layout.
-    annotateFixedOutput (builtins.derivation {
-      inherit name system;
-      builder = builderPath;
-      args = [
-        "-c"
-        ''
-          set -euo pipefail
-          export PATH="${cargo}/bin:${python3}/bin:${bootstrapTools}/bin${builtins.concatStringsSep "" (builtins.map (p: ":${builtins.toString p}/bin") extraPaths)}"
-          python3 ${utilDir}/fetch-cargo-vendor-util.py \
-            create-vendor "${vendorStaging}" "$out"
-        ''
-      ];
+      annotateFixedOutput (builtins.derivation {
+        inherit name system;
+        builder = builderPath;
+        args = [
+          "-c"
+          ''
+            set -euo pipefail
+            export PATH="${cargoPath}${python3}/bin:${bootstrapTools}/bin${builtins.concatStringsSep "" (builtins.map (p: ":${builtins.toString p}/bin") extraPaths)}"
+            python3 ${utilDir}/fetch-cargo-vendor-util.py \
+              create-vendor "${vendorStaging}" "$out" ${lockArgument}
+          ''
+        ];
 
-      preferLocalBuild = true;
-    }) {
-      kind = "cargo-vendor";
-      inherit hash;
-      hashMode = "recursive";
-      sourceInputs = [builtins.toString src];
-      outputDerivation = vendorStaging.drvPath;
-      builderParameters = {
-        sourceRoot =
-          if sourceRoot == null
-          then "<auto>"
-          else sourceRoot;
-        patches = builtins.map builtins.toString cargoPatches;
-        cargo = builtins.toString cargo;
-        inherit system;
+        preferLocalBuild = true;
+      }) {
+        kind = "cargo-vendor";
+        inherit hash;
+        hashMode = "recursive";
+        sourceInputs = [builtins.toString src];
+        outputDerivation = vendorStaging.drvPath;
+        builderParameters =
+          {
+            sourceRoot =
+              if sourceRoot == null
+              then "<auto>"
+              else sourceRoot;
+            patches = builtins.map builtins.toString cargoPatches;
+            cargo =
+              if needsGitTools
+              then builtins.toString cargo
+              else "<not-required-for-registry-lockfile>";
+            inherit system;
+          }
+          // lockMetadata;
       };
-    };
 
   # ---------------------------------------------------------------------------
   # fetchGoModules

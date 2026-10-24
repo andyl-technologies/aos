@@ -27,14 +27,11 @@ use thiserror::Error;
 use super::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
     CapturedAttemptCheckpoint, CrucibleExecutionOutcome, CrucibleExecutionRunner,
-    MAX_QEMU_ATTEMPT_GENERATION_NODES, MAX_QEMU_CAMPAIGN_EVENT_LOG_BYTES,
-    MAX_QEMU_CAMPAIGN_EVENT_LOG_ENTRIES, QemuAttemptContinuation, QemuFreshAttemptLifecycleFactory,
-    QemuFreshAttemptLifecycleOwner,
+    QemuAttemptContinuation, QemuFreshAttemptLifecycleFactory, QemuFreshAttemptLifecycleOwner,
 };
 use crate::{AttemptExecutionDisposition, AttemptExecutionReconciliationStep};
 
-const MAX_EXECUTION_FINGERPRINT_SAMPLES: usize = MAX_QEMU_ATTEMPT_GENERATION_NODES * 2;
-const MAX_TERMINAL_FINGERPRINT_SAMPLES: usize = MAX_QEMU_ATTEMPT_GENERATION_NODES;
+use crate::attempt_evidence::{self as store, MAX_TERMINAL_FINGERPRINT_SAMPLES};
 
 /// Lifecycle wrapper that records exact process-local execution evidence.
 ///
@@ -342,8 +339,12 @@ where
     }
 }
 
-mod store;
-pub use store::{QemuAttemptExecutionEvidence, QemuAttemptExecutionEvidenceSnapshot};
+// Temporary source aliases preserve the existing QEMU lifecycle API while
+// callers migrate to the shared logical evidence vocabulary.
+pub use crate::attempt_evidence::{
+    AttemptExecutionEvidence as QemuAttemptExecutionEvidence,
+    AttemptExecutionEvidenceSnapshot as QemuAttemptExecutionEvidenceSnapshot,
+};
 
 /// Adds bounded process-local evidence capture to a QEMU lifecycle factory.
 pub struct QemuObservedFreshAttemptLifecycleFactory<F> {

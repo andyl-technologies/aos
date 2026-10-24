@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 publish = false
+autobins = false
 
 [features]
 default = []
@@ -14,6 +15,9 @@ test-support = ["crucible-control-server/test-support", "crucible-engine/test-su
 workspace = true
 
 [dependencies]
+crucible-host-resources = { workspace = true }
+crucible-node-format = { workspace = true }
+crucible-node-transport = { workspace = true }
 crucible-device = { path = "../crucible-device" }
 crucible-control-client = { path = "../crucible-control-client" }
 crucible-control-server = { path = "../crucible-control-server" }
@@ -32,7 +36,7 @@ crucible-store-s3 = { workspace = true }
 crucible-session = { path = "../crucible-session" }
 ed25519-dalek = { workspace = true }
 rand = { workspace = true }
-rustix = { workspace = true, features = ["event", "net", "time"] }
+rustix = { workspace = true, features = ["event", "net", "param", "process", "time"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
@@ -52,4 +56,16 @@ required-features = ["test-support"]
 
 [[test]]
 name = "gate_exact_closure_streaming"
+required-features = ["test-support"]
+
+[[bin]]
+name = "crucible-reference-singleton-collector"
+path = "src/bin/crucible-reference-singleton-collector.rs"
+
+[[example]]
+name = "crucible-complete-scene-fixture"
+required-features = ["test-support"]
+
+[[example]]
+name = "crucible-funded-source-templates-flight"
 required-features = ["test-support"]

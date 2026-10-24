@@ -22,6 +22,34 @@ pub struct CrateSpecIndexEntry {
 /// The canonical crate-to-spec index in workspace package order.
 pub const CRATE_SPEC_INDEX: &[CrateSpecIndexEntry] = &[
     CrateSpecIndexEntry {
+        package: "crucible-host-resources",
+        root: "src/lib.rs",
+        spec_files: &[],
+        supplemental_spec: Some("RFC-0025 files 01, 02, 05, 06, 08"),
+        section_6_row: false,
+    },
+    CrateSpecIndexEntry {
+        package: "crucible-node-format",
+        root: "src/lib.rs",
+        spec_files: &[],
+        supplemental_spec: Some("RFC-0025 files 00, 01, 02, 03, 04, 05, 06, 08, 09"),
+        section_6_row: false,
+    },
+    CrateSpecIndexEntry {
+        package: "crucible-source-birth-data",
+        root: "src/lib.rs",
+        spec_files: &[],
+        supplemental_spec: Some("RFC-0025 files 01, 02, 05, 06, 08, 09"),
+        section_6_row: false,
+    },
+    CrateSpecIndexEntry {
+        package: "crucible-node-transport",
+        root: "src/lib.rs",
+        spec_files: &[],
+        supplemental_spec: Some("RFC-0025 files 06, 07, 08"),
+        section_6_row: false,
+    },
+    CrateSpecIndexEntry {
         package: "crucible-store",
         root: "src/lib.rs",
         spec_files: &["35"],
@@ -139,6 +167,13 @@ pub const CRATE_SPEC_INDEX: &[CrateSpecIndexEntry] = &[
         spec_files: &["20", "21"],
         supplemental_spec: Some("RFC-0020 file 04a"),
         section_6_row: true,
+    },
+    CrateSpecIndexEntry {
+        package: "crucible-source-birth-worker",
+        root: "src/main.rs",
+        spec_files: &[],
+        supplemental_spec: Some("RFC-0025 files 01, 02, 05, 06, 08, 09"),
+        section_6_row: false,
     },
     CrateSpecIndexEntry {
         package: "crucible-cli",

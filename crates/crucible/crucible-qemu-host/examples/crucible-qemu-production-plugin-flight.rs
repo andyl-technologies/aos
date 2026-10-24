@@ -86,6 +86,7 @@ const PRODUCTION_RUNTIME_TRACE_BYTES: u64 = 256 * 1024 * 1024;
 const BLOCK_RECOVERY_ONLY_ENVIRONMENT: &str =
     "CRUCIBLE_PRODUCTION_PLUGIN_FLIGHT_BLOCK_RECOVERY_ONLY";
 const PHASE4_PARTITION_PROBE_ENVIRONMENT: &str = "CRUCIBLE_PHASE4_PARTITION_PROBE";
+const APIC_ORIGIN_DIAGNOSTIC_ENVIRONMENT: &str = "CRUCIBLE_APIC_ORIGIN_DIAGNOSTIC";
 
 fn main() -> ExitCode {
     match run() {
@@ -123,6 +124,19 @@ fn run() -> Result<(), Box<dyn Error>> {
             "expected QEMU PLUGIN KERNEL IDLE_INITRD BLOCK_INITRD FIRMWARE CGROUP_ROOT RUN_ROOT REFERENCE_TRACE_SUMMARY_OUT".into(),
         );
     };
+    let origin_diagnostic = match std::env::var_os(APIC_ORIGIN_DIAGNOSTIC_ENVIRONMENT) {
+        None => false,
+        Some(value) if value == "1" => true,
+        Some(_) => {
+            return Err("CRUCIBLE_APIC_ORIGIN_DIAGNOSTIC must be absent or exactly 1".into());
+        }
+    };
+    if origin_diagnostic
+        && (block_recovery_only_requested()?
+            || std::env::var_os(PHASE4_PARTITION_PROBE_ENVIRONMENT).is_some())
+    {
+        return Err("APIC origin diagnostics require the original reference/hostile flight".into());
+    }
     let host = LinuxQemuAttemptHostConfig::new(
         cgroup_root,
         run_root,
@@ -208,8 +222,41 @@ fn run() -> Result<(), Box<dyn Error>> {
         return Ok(());
     }
 
-    let reference = run_once(&mut factory, &config, qemu, false, None)?;
-    let hostile = run_once(&mut factory, &config, qemu, true, None)?;
+    let config = if origin_diagnostic {
+        config.with_apic_origin_trace()
+    } else {
+        config
+    };
+    let reference_raw = reference_trace_output.with_extension("reference.full.trace");
+    let hostile_raw = reference_trace_output.with_extension("hostile.full.trace");
+    let reference = run_once_retained(
+        &mut factory,
+        &config,
+        qemu,
+        false,
+        None,
+        origin_diagnostic.then_some(reference_raw.as_path()),
+    )?;
+    let hostile = run_once_retained(
+        &mut factory,
+        &config,
+        qemu,
+        true,
+        None,
+        origin_diagnostic.then_some(hostile_raw.as_path()),
+    )?;
+    if origin_diagnostic {
+        // Preserve both summaries and full raw files before any original oracle
+        // can refuse. A missing/truncated diagnostic remains an explicit error.
+        fs::write(
+            reference_trace_output.with_extension("reference.summary"),
+            reference.diagnostics.trace.report(),
+        )?;
+        fs::write(
+            reference_trace_output.with_extension("hostile.summary"),
+            hostile.diagnostics.trace.report(),
+        )?;
+    }
     fs::write(reference_trace_output, reference.diagnostics.trace.report())?;
     compare_boundaries(
         "host-preempted restart",
@@ -238,6 +285,10 @@ fn run() -> Result<(), Box<dyn Error>> {
     }
     if !hostile.shutdown.reaped || hostile.shutdown.leaked {
         return Err("hostile QEMU did not shut down cleanly".into());
+    }
+    if origin_diagnostic {
+        reference.diagnostics.trace.validate_origin_diagnostic()?;
+        hostile.diagnostics.trace.validate_origin_diagnostic()?;
     }
     let production_variants = [&reference, &hostile];
     let on_demand_acknowledgements = production_variants
@@ -878,7 +929,43 @@ fn run_once(
     hostile: bool,
     partition_step_ps: Option<u64>,
 ) -> Result<FlightRun, Box<dyn Error>> {
-    let mut owner = factory.begin(4, MEMORY_BYTES, DISK_BYTES)?;
+    run_once_retained(factory, config, qemu, hostile, partition_step_ps, None)
+}
+
+/// Reserves the extra raw-copy extent only for the diagnostic variant.
+const fn attempt_writable_bytes(retain_raw_trace: bool) -> u64 {
+    if retain_raw_trace {
+        // This also bounds the attempt project quota and RLIMIT_FSIZE backstop.
+        DISK_BYTES + PRODUCTION_RUNTIME_TRACE_BYTES
+    } else {
+        DISK_BYTES
+    }
+}
+
+fn run_once_retained(
+    factory: &mut LinuxQemuAttemptHostFactory,
+    config: &QemuLiveNodeStepGateConfig,
+    qemu: &Path,
+    hostile: bool,
+    partition_step_ps: Option<u64>,
+    raw_trace_output: Option<&Path>,
+) -> Result<FlightRun, Box<dyn Error>> {
+    // Own the destination before spawning; no failure can silently replace an
+    // earlier flight's complete trace. The optional file is diagnostic data.
+    let mut retained_raw = raw_trace_output
+        .map(|path| {
+            fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .create_new(true)
+                .open(path)
+        })
+        .transpose()?;
+    let mut owner = factory.begin(
+        4,
+        MEMORY_BYTES,
+        attempt_writable_bytes(retained_raw.is_some()),
+    )?;
     let mut directory = owner.prepare_generation_run_directory(config.resource_requirements())?;
     directory.prepare_fresh_artifacts_guarded(qemu, None, owner.process_contract()?)?;
     let launch = config.clone().with_run_directory(directory.path());
@@ -1049,10 +1136,21 @@ fn run_once(
         .into());
     }
     let raw_boundary = final_busy_raw_boundary(&runtime_baseline)?;
-    let trace_result = directory
-        .inspect_runtime_determinism_trace_after_reap(PRODUCTION_RUNTIME_TRACE_BYTES, |reader| {
-            runtime_trace::summarize(reader, raw_boundary, TARGETS[TARGETS.len() - 1] as i64)
-        });
+    let trace_result = directory.inspect_runtime_determinism_trace_after_reap(
+        PRODUCTION_RUNTIME_TRACE_BYTES,
+        |reader| {
+            if let Some(output) = retained_raw.as_mut() {
+                runtime_trace::retain_and_summarize(
+                    reader,
+                    output,
+                    raw_boundary,
+                    TARGETS[TARGETS.len() - 1] as i64,
+                )
+            } else {
+                runtime_trace::summarize(reader, raw_boundary, TARGETS[TARGETS.len() - 1] as i64)
+            }
+        },
+    );
     drop(directory);
     let finish_result = owner.finish();
     let trace = match (trace_result, finish_result) {

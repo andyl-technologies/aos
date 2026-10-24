@@ -1,0 +1,151 @@
+--- a/arch/x86/kvm/crucible-clock.c
++++ b/arch/x86/kvm/crucible-clock.c
+@@ -22,6 +22,9 @@
+ 
+ static u64 q35_ps_now_locked(struct kvm_crucible_clock_domain *clock, u64 now_ns);
+ static void q35_ps_seal_locked(struct kvm *kvm);
++static int q35_ps_timer_host_locked(struct kvm *kvm, u64 logical_ps,
++	ktime_t *host, u64 now_ns);
++static bool q35_ps_timer_due_locked(struct kvm *kvm, u64 logical_ps, u64 now_ns);
+ 
+ /* Clock completion joins both native timer families. Pending PIT expiry/ACK
+  * records survive Pause; Resume maps only their retained same-generation arm. */
+@@ -815,6 +818,10 @@
+ 		if (target > U64_MAX / 1000)
+ 			goto out;
+ 		target *= 1000;
++		if (clock->ps.plan.version == 2) {
++			valid = q35_ps_timer_host_locked(kvm, target, host, ktime_get_ns()) == 1;
++			goto out;
++		}
+ 		if (target > clock->ps.end_ps)
+ 			goto out;
+ 		delay = target <= clock->ps.start_ps ? 0 :
+@@ -839,6 +846,22 @@
+ 	return valid;
+ }
+ 
++/* PS callers keep the complete unsigned coordinate, including sub-ns values.
++ * A result of zero retains a future/boundary expiry; negative results refuse
++ * this projection. No timer owner or native queue changes in this reader.
++ */
++int kvm_crucible_q35_ps_timer_host(struct kvm *kvm, u64 logical_ps, ktime_t *host)
++{
++	unsigned long flags;
++	int result;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	result = q35_ps_timer_host_locked(kvm, logical_ps, host, ktime_get_ns());
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return result;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_q35_ps_timer_host);
++
+ bool kvm_crucible_clock_timer_enter(struct kvm *kvm, ktime_t logical)
+ {
+ 	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
+@@ -846,8 +869,16 @@
+ 	bool admitted;
+ 
+ 	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+-	admitted = clock->active && clock->timer_owners != U32_MAX && logical >= 0 &&
+-		clock_now_locked(clock) >= ktime_to_ns(logical);
++	if (clock->ps.selected && clock->ps.plan.version == 2) {
++		u64 target = ktime_to_ns(logical);
++
++		admitted = logical >= 0 && target <= U64_MAX / 1000 &&
++			clock->timer_owners != U32_MAX &&
++			q35_ps_timer_due_locked(kvm, target * 1000, ktime_get_ns());
++	} else {
++		admitted = clock->active && clock->timer_owners != U32_MAX && logical >= 0 &&
++			clock_now_locked(clock) >= ktime_to_ns(logical);
++	}
+ 	if (admitted)
+ 		clock->timer_owners++;
+ 	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
+--- a/arch/x86/kvm/crucible-clock.h
++++ b/arch/x86/kvm/crucible-clock.h
+@@ -58,6 +58,10 @@
+ void kvm_crucible_clock_sample(struct kvm_vcpu *vcpu, u64 *ns, u64 *tsc);
+ bool kvm_crucible_clock_host_expiration(struct kvm *kvm, ktime_t logical,
+ 					ktime_t *host);
++/* Source-current unsigned-PS deadline reader: 1 projects, 0 retains a future
++ * expiry, and a negative result refuses. It grants no native timer effect.
++ */
++int kvm_crucible_q35_ps_timer_host(struct kvm *kvm, u64 logical_ps, ktime_t *host);
+ bool kvm_crucible_clock_timer_enter(struct kvm *kvm, ktime_t logical);
+ void kvm_crucible_clock_timer_leave(struct kvm *kvm);
+ ktime_t kvm_crucible_clock_tsc_deadline(struct kvm_vcpu *vcpu, u64 deadline);
+--- a/arch/x86/kvm/crucible-q35-ps-clock.inc.c
++++ b/arch/x86/kvm/crucible-q35-ps-clock.inc.c
+@@ -15,6 +15,70 @@
+ 		return ps->current_ps;
+ 	return kvm_crucible_ps_project(now_ns - clock->host_origin_ns,
+ 		ps->start_ps, ps->end_ps, ps->plan.physical_slice_ns);
++}
++
++/* Timer projection observes the installed source domain; it does not create
++ * an arm, callback ancestry or output permission. The original timer caller
++ * retains those separately through actual native queue publication.
++ */
++static bool q35_ps_timer_window_current_locked(struct kvm *kvm, u64 now_ns)
++{
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_ps_clock_state *ps = &clock->ps;
++	u64 slice = ps->plan.physical_slice_ns;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	return ps->selected && ps->plan.version == 2 &&
++		kvm_arch_crucible_q35_ps_execution_ready_locked(kvm) &&
++		ps->phase == KVM_CRUCIBLE_PS_ACTIVE && clock->active &&
++		kvm->crucible_active && clock->window_generation &&
++		ps->start_ps < ps->end_ps && ps->plan.quantum_ps &&
++		ps->end_ps - ps->start_ps == ps->plan.quantum_ps &&
++		slice && clock->host_origin_ns <= KTIME_MAX &&
++		slice <= KTIME_MAX - clock->host_origin_ns &&
++		clock->host_ceiling_ns == clock->host_origin_ns + slice &&
++		kvm->crucible_host_ceiling_ns == clock->host_ceiling_ns &&
++		now_ns >= clock->host_origin_ns && now_ns < clock->host_ceiling_ns;
++}
++
++/* A future or boundary expiry remains a logical pending row. It is never
++ * converted to an unbounded host arm or borrowed from a previous window.
++ * The positive result supplies a deadline only, not a timer-effect lease.
++ */
++static int q35_ps_timer_host_locked(struct kvm *kvm, u64 logical_ps,
++	ktime_t *host, u64 now_ns)
++{
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_ps_clock_state *ps = &clock->ps;
++	u64 delay;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	if (!ps->selected || ps->plan.version != 2 || !host)
++		return -EOPNOTSUPP;
++	if (!q35_ps_timer_window_current_locked(kvm, now_ns))
++		return -EAGAIN;
++	if (logical_ps >= ps->end_ps)
++		return 0;
++	delay = logical_ps <= ps->start_ps ? 0 :
++		kvm_crucible_ps_host_delay(logical_ps - ps->start_ps,
++			ps->plan.quantum_ps, ps->plan.physical_slice_ns);
++	/* An interior logical expiry that rounds to the physical stop cannot be
++	 * represented by this native window. Refuse rather than move it silently.
++	 */
++	if (delay >= ps->plan.physical_slice_ns)
++		return -ERANGE;
++	*host = ns_to_ktime(clock->host_origin_ns + delay);
++	return 1;
++}
++
++static bool q35_ps_timer_due_locked(struct kvm *kvm, u64 logical_ps, u64 now_ns)
++{
++	struct kvm_crucible_ps_clock_state *ps = &kvm->arch.crucible_clock.ps;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	return q35_ps_timer_window_current_locked(kvm, now_ns) &&
++		logical_ps < ps->end_ps &&
++		logical_ps <= q35_ps_now_locked(&kvm->arch.crucible_clock, now_ns);
+ }
+ 
+ static void q35_ps_seal_locked(struct kvm *kvm)

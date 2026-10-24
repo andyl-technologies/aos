@@ -301,13 +301,13 @@
     ++ failuresFor "crates/crucible/crucible-test-support/tests/gate_target_mapping.rs" gateTargetMappingTest [
       {
         label = "campaign-continuity target mapping assertion";
-        needle = "\"gate:campaign-continuity\",\n                \"crucible-cas\",\n                \"gate_campaign_continuity\"";
+        needle = "\"gate:campaign-continuity\",\n                \"crucible-store\",\n                \"gate_campaign_continuity\"";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-test-support/tests/testing_standards.rs" testingStandards [
       {
         label = "campaign-continuity testing standard";
-        needle = "gate: \"gate:campaign-continuity\",\n        owner_packages: &[\"crucible-cas\"],\n        layers: &[Layer::L3],\n        shape: TestShape::CampaignContinuity,\n        backend: TestBackend::InProcess,";
+        needle = "gate: \"gate:campaign-continuity\",\n        owner_packages: &[\"crucible-store\"],\n        layers: &[Layer::L3],\n        shape: TestShape::CampaignContinuity,\n        backend: TestBackend::InProcess,";
       }
       {
         label = "crucible-cas owns campaign continuity";
@@ -321,7 +321,7 @@
       }
       {
         label = "crucible-cas layer";
-        needle = "\"crucible\" | \"crucible-cas\" | \"crucible-campaign\" => Some(Layer::L3)";
+        needle = "\"crucible-engine\" | \"crucible-store\" | \"crucible-campaign\" => Some(Layer::L3)";
       }
     ]
     ++ failuresFor "tests/crucible/phase1-gate-target-mapping.nix" gateTargetMapping [
@@ -337,7 +337,7 @@
       }
       {
         label = "phase1 testing standards include campaign continuity";
-        needle = "gate = \"gate:campaign-continuity\";\n      ownerPackages = [\"crucible-cas\"];\n      layers = [\"L3\"];\n      shape = \"campaign-continuity\";\n      backend = \"in-process\";";
+        needle = "gate = \"gate:campaign-continuity\";\n      ownerPackages = [\"crucible-store\"];\n      layers = [\"L3\"];\n      shape = \"campaign-continuity\";\n      backend = \"in-process\";";
       }
       {
         label = "phase1 testing standards enforce campaign continuity shape";

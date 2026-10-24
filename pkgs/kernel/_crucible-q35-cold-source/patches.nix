@@ -1,0 +1,22 @@
+# Ordered complete source chain; no patch is applied outside the exact guard.
+[
+  ../linux-gawk-array-argument.patch
+  ../crucible-controller-clock-7.2.3.patch
+  ../crucible-controller-clock-stage2-7.2.3.patch
+  ../crucible-controller-clock-stage3-7.2.3.patch
+  ../crucible-controller-clock-stage4-7.2.3.patch
+  ../crucible-controller-completion-stage5-7.2.3.patch
+  ../crucible-controller-run-return-stage6-7.2.3.patch
+  ../crucible-controller-response-bytes-stage7-7.2.3.patch
+  ../_crucible-pic-source/prerequisite-source.patch
+  ../_crucible-pic-source/pic-component.patch
+  ../_crucible-pic-source/pending-eoi-component.patch
+  ../_crucible-pic-source/deferred-pit-component.patch
+  ./reviewed-initialization-component.patch
+  ./reviewed-q35-cold-ps-component.patch
+  ./ps-pit-original-birth.patch
+  ./ps-typed-boundary-irq.patch
+  ./ps-irq-install-currentness.patch
+  ./ps-native-timer-work-cut.patch
+  ./ps-typed-irq-readiness.patch
+]

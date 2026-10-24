@@ -1,0 +1,55 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
+/* Executes the exact patched kernel arithmetic without requiring KVM hardware. */
+#include <assert.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <linux/kvm.h>
+
+typedef uint64_t u64;
+typedef uint32_t u32;
+#include "arch/x86/kvm/crucible-clock-math.h"
+
+static uint64_t next(uint64_t *state)
+{
+	*state = *state * UINT64_C(6364136223846793005) + 1;
+	return *state;
+}
+
+int main(void)
+{
+	uint64_t seed = 1;
+	unsigned int iteration;
+
+	_Static_assert(sizeof(struct kvm_crucible_clock) == 96, "controller ABI size");
+	_Static_assert(offsetof(struct kvm_crucible_clock, current_ns) == 48,
+		       "controller ABI time offset");
+	_Static_assert(offsetof(struct kvm_crucible_clock, reserved) == 76,
+		       "controller ABI reserved offset");
+
+	assert(kvm_crucible_clock_project(0, 10, 1010, 50, 3) == 10);
+	assert(kvm_crucible_clock_project(3, 10, 1010, 50, 3) == 60);
+	assert(kvm_crucible_clock_project(60, 10, 1010, 50, 3) == 1010);
+	assert(kvm_crucible_clock_project(UINT64_MAX, 10, 1010, 50, 3) == 1010);
+	assert(kvm_crucible_clock_project(1, UINT64_MAX - 1, UINT64_MAX,
+					1, 1) == UINT64_MAX);
+	assert(kvm_crucible_clock_project(2, 0, UINT64_MAX, 1, 1) == 2);
+	assert(kvm_crucible_clock_project(UINT64_MAX, 0, UINT64_MAX, 1, 1)
+	       == UINT64_MAX);
+
+	/* Differential wide-integer oracle checks saturation and multiplication
+	 * safety over valid installed windows, including large clock coordinates.
+	 */
+	for (iteration = 0; iteration < 100000; iteration++) {
+		u32 numerator = next(&seed) % 65535 + 1;
+		u32 denominator = next(&seed) % 65535 + 1;
+		u64 extent = next(&seed) % (UINT64_MAX / denominator) + 1;
+		u64 start = next(&seed) % (UINT64_MAX - extent + 1);
+		u64 elapsed = next(&seed);
+		__uint128_t delta = (__uint128_t)elapsed * numerator / denominator;
+		u64 expected = start + (delta > extent ? extent : (u64)delta);
+
+		assert(kvm_crucible_clock_project(elapsed, start, start + extent,
+						numerator, denominator) == expected);
+	}
+	return 0;
+}

@@ -1,0 +1,139 @@
+--- a/src/dev/arm/generic_timer.cc
++++ b/src/dev/arm/generic_timer.cc
+@@ -39,6 +39,7 @@
+ 
+ #include <cmath>
+ #include <string_view>
++#include <typeinfo>
+ 
+ #include "arch/arm/page_size.hh"
+ #include "arch/arm/regs/misc.hh"
+@@ -59,6 +60,8 @@
+ #include "params/SystemCounter.hh"
+ #include "sim/core.hh"
+ #include "sim/cur_tick.hh"
++#include "sim/crucible_native_scope.hh"
++#include "sim/crucible_state.hh"
+ 
+ namespace gem5
+ {
+@@ -86,6 +89,68 @@
+     // Set the active frequency to be the base
+     _freq = _freqTable.front();
+     _period = (1.0 / _freq) * sim_clock::Frequency;
++}
++
++bool
++SystemCounter::crucibleNativeClosure(crucible::NativeClosureWalk &walk) const
++{
++    // Listener targets are nested ArchTimer/CoreTimers owners, not SimObjects.
++    // Until their original counter/parent/pin edges are closed, even one
++    // listener refuses this narrow producer. An event census cannot close it.
++    if (typeid(*this) != typeid(SystemCounter) || !_listeners.empty() ||
++        _listeners.capacity() || _freqTable.size() < 2 ||
++        _freqTable.size() > MAX_FREQ_ENTRIES ||
++        _freqTable.capacity() > 2 * MAX_FREQ_ENTRIES || _freqTable.back() ||
++        _activeFreqEntry >= _freqTable.size() - 1 ||
++        _nextFreqEntry >= _freqTable.size() - 1 || !_freq || !_period ||
++        _freqTable[_activeFreqEntry] != _freq ||
++        _increment != _freqTable.front() / _freq || _updateTick > curTick())
++        return false;
++
++    for (size_t index = 0; index + 1 < _freqTable.size(); ++index) {
++        if (!_freqTable[index] || _freqTable.front() % _freqTable[index])
++            return false;
++    }
++
++    // Register the exact constructor-bound member even when not scheduled.
++    // The existing walk checks its queued identity and unchanged native tick.
++    return walk.callback(this, &_freqUpdateEvent, 1);
++}
++
++std::map<std::string, std::string>
++SystemCounter::crucibleModeledFields() const
++{
++    if (_freqTable.size() > MAX_FREQ_ENTRIES)
++        throw std::runtime_error("counter frequency table exceeds source bound");
++
++    CrucibleStateWriter writer;
++    // value() and whenValue() update these cached fields. Inspection reads the
++    // stored values directly, without normalizing the counter or its events.
++    writer.set("counter.enabled", _enabled);
++    writer.set("counter.frequency", _freq);
++    writer.set("counter.cached_value", _value);
++    writer.set("counter.increment", _increment);
++    writer.set("counter.active_frequency_entry", _activeFreqEntry);
++    writer.set("counter.period", _period);
++    writer.set("counter.update_tick", _updateTick);
++    writer.set("counter.next_frequency_entry", _nextFreqEntry);
++    writer.set("counter.frequency_table_entries", _freqTable.size());
++    writer.set("counter.frequency_table_capacity_entries", _freqTable.capacity());
++    for (size_t index = 0; index < _freqTable.size(); ++index)
++        writer.set("counter.frequency_table[" + std::to_string(index) + "]",
++                   _freqTable[index]);
++
++    writer.set("counter.listener_count", _listeners.size());
++    writer.set("counter.listener_capacity_entries", _listeners.capacity());
++    writer.reference("counter.frequency_event",
++                     static_cast<const Event *>(&_freqUpdateEvent), "event");
++    writer.set("counter.frequency_event_scheduled", _freqUpdateEvent.scheduled());
++    if (_freqUpdateEvent.scheduled())
++        writer.set("counter.frequency_event_tick", _freqUpdateEvent.when());
++
++    writer.string("coverage.unsupported",
++        "counter-listener-targets-callback-payloads-native-backing-and-inherited-simobject");
++    return std::move(writer.fields);
+ }
+ 
+ void
+--- a/src/dev/arm/generic_timer.hh
++++ b/src/dev/arm/generic_timer.hh
+@@ -114,6 +114,12 @@
+   public:
+     SystemCounter(const SystemCounterParams &p);
+ 
++    /** Checks the bounded concrete counter with no listener dependencies. */
++    bool crucibleNativeClosure(crucible::NativeClosureWalk &walk) const override;
++
++    /** Reads cached counter state without updating time or notifying listeners. */
++    std::map<std::string, std::string> crucibleModeledFields() const override;
++
+     /// Validates a System Counter reference
+     /// @param sys_cnt System counter reference to validate
+     static void validateCounterRef(SystemCounter *sys_cnt);
+--- a/src/dev/arm/GenericTimer.py
++++ b/src/dev/arm/GenericTimer.py
+@@ -44,6 +44,7 @@
+ from m5.proxy import Parent
+ from m5.SimObject import SimObject
+ from m5.util import fatal
++from m5.util.pybind import PyBindMethod
+ from m5.util.fdthelper import (
+     FdtNode,
+     FdtProperty,
+@@ -65,6 +66,8 @@
+     type = "SystemCounter"
+     cxx_header = "dev/arm/generic_timer.hh"
+     cxx_class = "gem5::SystemCounter"
++    # The source-owned native witness schedules the real frequency callback.
++    cxx_exports = [PyBindMethod("freqUpdateSchedule")]
+ 
+     # Maximum of 1004 frequency entries, including end marker
+     freqs = VectorParam.UInt32(
+--- a/src/sim/crucible_native_scope.cc
++++ b/src/sim/crucible_native_scope.cc
+@@ -33,10 +33,10 @@
+ 
+ ProcessLifetimeScope lifetime;
+ 
+-// The matching check verifies explicit profile-v3 constructor/table geometry.
+-// All fixed backing exists before object births. Ordinary ReplacementData
+-// layout and allocation are unchanged; the profile grants no authority.
+-const Digest diagnosticProfileDigest = {0x03, 0xc3, 0xb5, 0x77, 0x34, 0x18, 0xba, 0x5a, 0xf9, 0x2c, 0x8c, 0xbc, 0x91, 0x8f, 0x2c, 0x31, 0xd8, 0xc1, 0x00, 0x64, 0x71, 0x2b, 0x41, 0x84, 0x62, 0xda, 0x9f, 0xdc, 0x08, 0xd5, 0xdf, 0xcd};
++// The matching check verifies profile-v4 table and no-listener counter bounds.
++// Fixed owner banks precede object births. Counter vector backing is bounded
++// native state; complete process resources and capture authority stay separate.
++const Digest diagnosticProfileDigest = {0x39, 0xd5, 0xeb, 0x03, 0x0d, 0xc1, 0x38, 0x92, 0x84, 0xd0, 0x5c, 0x7c, 0xb5, 0x1e, 0xce, 0x23, 0x40, 0x1d, 0xe9, 0xbb, 0x6b, 0x3f, 0xa3, 0x06, 0x25, 0xf9, 0x61, 0x8e, 0x59, 0x79, 0x81, 0xfd};
+ 
+ bool
+ nonzero(const Digest &bytes)

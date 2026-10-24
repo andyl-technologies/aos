@@ -219,4 +219,6 @@
 in
   baseStdenv
   // lib.optionalAttrs (tc ? gccStage2) {inherit (tc) gccStage2;}
+  // lib.optionalAttrs (tc ? gccUnwindFile) {inherit (tc) gccUnwindFile;}
+  // lib.optionalAttrs (tc ? linuxHeaders) {inherit (tc) linuxHeaders;}
   // lib.optionalAttrs (tc ? bootstrap) {inherit (tc) bootstrap;}

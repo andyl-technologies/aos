@@ -33,6 +33,34 @@ struct FenceSpec {
 
 const FENCE_SPECS: &[FenceSpec] = &[
     FenceSpec {
+        package: "crucible-host-resources",
+        root: "src/lib.rs",
+        unsafe_boundary: true,
+        safe_wrapper_contract: &[
+            "Unsafe boundary discipline:",
+            "public callers use safe resource capability types",
+            "wrappers validate descriptor/process/kernel invariants",
+        ],
+    },
+    FenceSpec {
+        package: "crucible-node-format",
+        root: "src/lib.rs",
+        unsafe_boundary: false,
+        safe_wrapper_contract: &[],
+    },
+    FenceSpec {
+        package: "crucible-source-birth-data",
+        root: "src/lib.rs",
+        unsafe_boundary: false,
+        safe_wrapper_contract: &[],
+    },
+    FenceSpec {
+        package: "crucible-node-transport",
+        root: "src/lib.rs",
+        unsafe_boundary: false,
+        safe_wrapper_contract: &[],
+    },
+    FenceSpec {
         package: "crucible-store",
         root: "src/lib.rs",
         unsafe_boundary: false,
@@ -152,6 +180,12 @@ const FENCE_SPECS: &[FenceSpec] = &[
     FenceSpec {
         package: "crucible-daemon",
         root: "src/lib.rs",
+        unsafe_boundary: false,
+        safe_wrapper_contract: &[],
+    },
+    FenceSpec {
+        package: "crucible-source-birth-worker",
+        root: "src/main.rs",
         unsafe_boundary: false,
         safe_wrapper_contract: &[],
     },

@@ -1295,7 +1295,7 @@ peer-credential completion remain open in T-DBG-11.
   [DBG-13]; spec §36.3.2.
   Completed under `checks.crucible.phase6.canonicalDebugBreakpoint`:
   `TemporalGraph::canonical_debug_breakpoint` resolves canonical breakpoint requests
-  only to out-of-band mechanisms (`EngineCondition` or `QemuHardwareBreakpoint`),
+  only to out-of-band mechanisms (`EngineCondition` or `BackendHardwareBreakpoint`),
   transparently satisfies a client software-breakpoint request through the mediated
   gdbstub as a QEMU hardware breakpoint when available, and returns
   `EngineError::DebugBreakpointRequiresAllowMutate` with `--allow-mutate` guidance

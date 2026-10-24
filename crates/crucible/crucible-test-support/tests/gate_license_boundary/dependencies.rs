@@ -59,6 +59,7 @@ fn plugin_distributed_dependency_graph_has_gpl2_compatible_license_choices()
             PLUGIN_PACKAGE,
             "crucible-qemu-protocol",
             "crucible-qemu-shmem",
+            "crucible-node-format",
         ],
         gpl2_compatible_external_license,
         "plugin",
@@ -79,7 +80,11 @@ fn debug_gateway_distributed_dependency_graph_has_gpl2_compatible_license_choice
     let failures = resolved_production_graph_failures(
         &metadata,
         DEBUG_GATEWAY_PACKAGE,
-        &[DEBUG_GATEWAY_PACKAGE, "crucible-qemu-protocol"],
+        &[
+            DEBUG_GATEWAY_PACKAGE,
+            "crucible-qemu-protocol",
+            "crucible-node-format",
+        ],
         gpl2_compatible_external_license,
         "debug gateway",
     )?;
@@ -97,11 +102,19 @@ fn permissive_boundary_dependency_graphs_remain_implementation_neutral()
 -> Result<(), Box<dyn Error>> {
     let metadata = cargo_metadata()?;
     let mut failures = Vec::new();
-    for root in ["crucible-qemu-protocol", "crucible-qemu-shmem"] {
+    for root in [
+        "crucible-qemu-protocol",
+        "crucible-qemu-shmem",
+        "crucible-node-format",
+    ] {
         failures.extend(resolved_production_graph_failures(
             &metadata,
             root,
-            &["crucible-qemu-protocol", "crucible-qemu-shmem"],
+            &[
+                "crucible-qemu-protocol",
+                "crucible-qemu-shmem",
+                "crucible-node-format",
+            ],
             permissive_external_license,
             root,
         )?);
@@ -228,6 +241,7 @@ fn gpl2_compatible_external_license(license: &str) -> bool {
             "Zlib",
             "0BSD",
             "CC0-1.0",
+            "BSL-1.0",
             "GPL-2.0-only",
             "GPL-2.0-or-later",
         ],
@@ -245,6 +259,7 @@ fn permissive_external_license(license: &str) -> bool {
             "Zlib",
             "0BSD",
             "CC0-1.0",
+            "BSL-1.0",
         ],
     )
 }
@@ -265,6 +280,11 @@ fn external_license_has_approved_choice(license: &str, approved: &[&str]) -> boo
 
 #[test]
 fn external_license_choice_parser_accepts_only_an_independently_approved_branch() {
+    // The JCS number formatter selects Boost's permissive branch. Its GPL
+    // compatibility is listed at https://www.gnu.org/licenses/license-list.html#boost.
+    assert!(permissive_external_license("Apache-2.0 OR BSL-1.0"));
+    assert!(gpl2_compatible_external_license("Apache-2.0 OR BSL-1.0"));
+    assert!(!permissive_external_license("BUSL-1.1"));
     assert!(permissive_external_license(
         "CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception"
     ));

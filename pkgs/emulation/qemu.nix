@@ -6,6 +6,7 @@
   gnumake,
   bash,
   perl,
+  patch,
   pkg-config,
   meson,
   ninja,
@@ -39,6 +40,7 @@
   iproute2 ? null,
   kmod ? null,
   linux ? null,
+  linuxSource ? null,
   sed ? null,
   util-linux ? null,
   stdenv,
@@ -53,6 +55,9 @@
   fullUpstreamTestSuiteOnly ? false,
   focusedUpstreamTest ? null,
   qemuTestRunner ? null,
+  qemu-firmware-x86 ? null,
+  qom-private-unwind ? null,
+  requireQomPrivateUnwind ? applyCruciblePatch,
   atomicPatch ? import ./qemu-patches/_atomic-patch.nix,
 }: let
   _testArtifactPolicy =
@@ -98,7 +103,32 @@
     else if fullUpstreamTestSuiteOnly && qemuTestRunner == null
     then throw "the full patched-QEMU test suite requires an explicit generic QEMU runner"
     else null;
+  _qomObserverPolicy =
+    if applyCruciblePatch && !requireQomPrivateUnwind
+    then throw "patched QEMU requires its matching source-built private observer"
+    else if requireQomPrivateUnwind && !applyCruciblePatch
+    then throw "the retained QOM observer requires the selected QEMU patch"
+    else if requireQomPrivateUnwind && qom-private-unwind == null
+    then throw "the retained QOM patch requires a source-built private GNU observer"
+    else if requireQomPrivateUnwind && !(qom-private-unwind ? source)
+    then throw "the private GNU observer requires matching complete source"
+    else if requireQomPrivateUnwind && (!stdenv.buildPlatform.isLinux || !stdenv.hostPlatform.isLinux || !(builtins.elem stdenv.hostPlatform.constraints.cpu ["x86_64" "aarch64"]))
+    then throw "the private GNU observer requires supported Linux GNU build and host platforms"
+    else null;
+  qomPrivateUnwindSource =
+    if requireQomPrivateUnwind
+    then qom-private-unwind.source
+    else null;
   version = atomicPatch.qemuVersion;
+  selectedX86Firmware =
+    if applyCruciblePatch && stdenv.hostPlatform.isLinux
+    then qemu-firmware-x86
+    else null;
+  selectedFirmwareInstaller = ./_install-selected-qemu-firmware.py;
+  _selectedFirmwarePolicy =
+    if applyCruciblePatch && stdenv.hostPlatform.isLinux && selectedX86Firmware == null
+    then throw "Patched Linux QEMU requires its source-built selected x86 firmware provider"
+    else null;
   nativeCostsBaseline = import ./qemu-patches/_native-costs-baseline.nix;
   nativeCostsBaselineManifest = builtins.toFile "native-costs-baseline.json" (
     builtins.toJSON (builtins.removeAttrs nativeCostsBaseline ["patch"])
@@ -119,6 +149,10 @@
   # the Crucible checks and install their evidence.
   runCrucibleChecks =
     applyCruciblePatch && !fullUpstreamTestSuiteOnly && !stdenv.isCross;
+  kvmWindowByteChecks =
+    if runCrucibleChecks
+    then import ./_kvm-window-byte-checks.nix {inherit python3 patch linuxSource;}
+    else "";
   buildPython =
     if stdenv.isCross
     then buildPackages.python3
@@ -510,6 +544,11 @@
     qemu_shmem_abi=${shmemAbi}
     qemu_shmem_header=${shmemHeaderInstallPath}
     qemu_shmem_header_hash=${shmemHeaderHash}
+    ${lib.optionalString (selectedX86Firmware != null) ''
+      qemu_selected_x86_firmware=${selectedX86Firmware}
+      qemu_selected_x86_firmware_source=${selectedX86Firmware.source}
+      qemu_selected_x86_installer_hash=${builtins.hashFile "sha256" selectedFirmwareInstaller}
+    ''}
   '';
   qemuBuildIdentity = builtins.hashString "sha256" qemuBuildIdentityMaterial;
   patchPhase =
@@ -521,6 +560,8 @@ in
   assert _testArtifactPolicy == null;
   assert _fullTestSuitePolicy == null;
   assert _fullTestVmPolicy == null;
+  assert _selectedFirmwarePolicy == null;
+  assert _qomObserverPolicy == null;
     mkDerivation {
       platformSupport =
         if pname == "qemu"
@@ -691,7 +732,12 @@ in
               qemuTestRunner
             ]
           );
-      runtimeDeps = qemuRuntimeDeps ++ lib.optional enableLinuxUser bash;
+      runtimeDeps =
+        qemuRuntimeDeps
+        ++ lib.optional enableLinuxUser bash
+        ++ lib.optionals requireQomPrivateUnwind [qom-private-unwind qomPrivateUnwindSource]
+        ++ lib.optionals (selectedX86Firmware != null)
+        [selectedX86Firmware selectedX86Firmware.source];
       propagatedDeps = [];
       exportReferencesGraph =
         if fullUpstreamTestSuiteOnly
@@ -862,7 +908,8 @@ in
                   storage-daemon/qemu-storage-daemon qemu-system-x86_64
                 make -C build Makefile.mtest
               ''
-              else "make -j$NIX_BUILD_CORES"
+              # QEMU maps make -k to Ninja -k0; keep all job/dependency flags.
+              else "make -k -j$NIX_BUILD_CORES"
             }
           '';
         }
@@ -1693,6 +1740,42 @@ in
               build/tests/unit/test-crucible-rc4030-period --tap
               build/tests/unit/test-crucible-riscv-cpc-clock --tap
               build/tests/unit/test-crucible-mips-gic-migration --tap
+              # Exercise the production directory validator through its native unit.
+              timeout -k 5 60 build/tests/unit/test-crucible-fwcfg-directory --tap \
+                --seed=R02S00000000000000000000000000000000 \
+                > fwcfg-directory-tests.tap
+              cat fwcfg-directory-tests.tap
+              grep -Fxq '1..4' fwcfg-directory-tests.tap
+              test "$(grep -c '^ok [0-9]' fwcfg-directory-tests.tap)" -eq 4
+              if grep -Eq '^not ok|^Bail out!|#[[:space:]]*(SKIP|TODO)([[:space:]]|$)' \
+                fwcfg-directory-tests.tap; then
+                echo 'FW_CFG directory native unit did not complete all controls' >&2
+                exit 1
+              fi
+              cp fwcfg-directory-tests.tap \
+                "$out/share/aos/crucible/fwcfg-directory-tests.tap"
+              timeout -k 5 60 build/tests/unit/test-crucible-prefix-live --tap \
+                --seed=R02S00000000000000000000000000000000 \
+                > prefix-live-tests.tap
+              cat prefix-live-tests.tap
+              grep -Fxq '1..6' prefix-live-tests.tap
+              test "$(grep -c '^ok [0-9]' prefix-live-tests.tap)" -eq 6
+              if grep -Eq '^not ok|^Bail out!|#[[:space:]]*(SKIP|TODO)([[:space:]]|$)' \
+                prefix-live-tests.tap; then
+                echo "native live-prefix comparison controls did not all execute" >&2
+                exit 1
+              fi
+              cp prefix-live-tests.tap "$out/share/aos/crucible/prefix-live-tests.tap"
+
+              # Run each isolated hwcore fixture without a case filter.
+              for device_fixture in test-crucible-i3c-timer \
+                test-crucible-mos6522-clock test-qdev test-qdev-global-props; do
+                timeout -k 5 60 "build/tests/unit/$device_fixture" --tap \
+                  --seed=R02S00000000000000000000000000000000
+              done
+              # Cover every ptimer policy with the isolated timer implementations.
+              timeout -k 5 60 build/tests/unit/ptimer-test --tap \
+                --seed=R02S00000000000000000000000000000000
               build/tests/unit/test-crucible-ptimer-wide-clock --tap
               build/tests/unit/test-crucible-openrisc-wide-clock --tap
               build/tests/unit/test-crucible-s390-tod-wide-clock --tap
@@ -1885,6 +1968,93 @@ in
               grep -q '^PASS production-body differential rule-presence fixture' fault-rule-presence.result
               cat rr-sim-barriers.result
               grep -q '^PASS healthy ordinary 8->3 cycles per CPU' rr-sim-barriers.result
+              # Check the optional KVM response ledger independently of native
+              # execution. Compiled mutation failures must reach actual assertions.
+              # Historical Applied evidence cannot grant acknowledgment or Ready.
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-preparation-successor-guards.py "$PWD"
+              # Compile genuine original observation bodies with configured AOS
+              # flags. Synthetic root predicates remain explicit; these tests
+              # never qualify Ready, execution, capture or timer dispatch.
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-observation-guards.py "$PWD"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-observation-model.py finite \
+                "$PWD" "$CC" "$PWD/native-finite-arm-proof" --mutations
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-observation-model.py administration \
+                "$PWD" "$CC" "$PWD/native-administration-proof" --mutations
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-administration-argv.py \
+                "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64"
+              # These compiled source-body oracles use synthetic admission
+              # predicates. They cannot qualify closed roots, Ready or effects.
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-root-model.py registration \
+                "$PWD" "$CC" "$PWD/native-root-registration-proof" --mutations
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-root-model.py fwcfg \
+                "$PWD" "$CC" "$PWD/native-fwcfg-root-proof" --mutations
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-root-argv.py \
+                "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64"
+              # Compile dormant epoch and actual held-writer gates. Native
+              # owner eligibility remains modeled; no callback/effect is admitted.
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-held-roots-guards.py "$PWD"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-held-roots-model.py \
+                "$PWD" "$CC" "$PWD/native-held-epoch-proof" --case epoch
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-held-roots-model.py \
+                "$PWD" "$CC" "$PWD/native-held-irq-proof" --case irq
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/native-held-roots-model.py \
+                "$PWD" "$CC" "$PWD/native-held-endpoint-proof" --case endpoint
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-userspace-exit-guards.py "$PWD"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-userspace-exit-model.py \
+                "$PWD" "$CC" "$PWD/kvm-userspace-exit-proof"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-userspace-exit-mutations.py \
+                "$PWD" "$CC" "$PWD/kvm-userspace-exit-mutations"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-component-refusal.py \
+                "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-userspace-exit-refusal.py \
+                "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64"
+              # Compile the original completion-only commands against the exact
+              # kernel ABI/policy. No source/model result qualifies a live node.
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-component-v3-model.py \
+                "$PWD" "$CC" "$PWD/kvm-component-v3-proof"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-component-v3-refusal.py \
+                "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-completion-guards.py "$PWD"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-completion-model.py \
+                "$PWD" "$CC" "$PWD/kvm-completion-proof" \
+                ${../kernel/crucible-controller-completion-stage5-7.2.3.patch}
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-completion-mutations.py \
+                "$PWD" "$CC" "$PWD/kvm-completion-mutations" \
+                ${../kernel/crucible-controller-completion-stage5-7.2.3.patch} \
+                ${./qemu-patches/_fixtures}/kvm-completion-model.py
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures}/kvm-completion-refusal.py \
+                "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64" \
+                ${./qemu-patches/_fixtures}/kvm-component-refusal.py
+              # Compile source-owned paused service transitions and actual child
+              # fail-stop boundaries. These component proofs do not qualify KVM.
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures/kvm-paused-service-model.py} \
+                "$PWD" "$CC" "$PWD/kvm-paused-service-proof"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures/kvm-paused-service-mutations.py} \
+                "$PWD" "$CC" "$PWD/kvm-paused-service-mutations" \
+                ${./qemu-patches/_fixtures/kvm-paused-service-model.py}
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures/kvm-response-service}/guards.py "$PWD"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures/kvm-response-service}/model.py \
+                "$PWD" "$CC" "$PWD/kvm-response-service-proof" \
+                ${../kernel/crucible-controller-completion-stage5-7.2.3.patch} \
+                ${./qemu-patches/_fixtures/kvm-completion-model.py}
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures/kvm-response-service}/mutations.py \
+                "$PWD" "$CC" "$PWD/kvm-response-service-mutations" \
+                ${../kernel/crucible-controller-completion-stage5-7.2.3.patch} \
+                ${./qemu-patches/_fixtures/kvm-response-service}/model.py \
+                ${./qemu-patches/_fixtures/kvm-completion-model.py}
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures/kvm-response-service}/lifetime_model.py \
+                "$PWD" "$CC" "$PWD/kvm-response-lifetime-proof" \
+                "$PWD/kvm-response-service-proof/response.c"
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures/kvm-response-service}/lifetime_mutations.py \
+                "$PWD" "$CC" "$PWD/kvm-response-lifetime-mutations" \
+                ${../kernel/crucible-controller-completion-stage5-7.2.3.patch} \
+                ${./qemu-patches/_fixtures/kvm-response-service}/model.py \
+                ${./qemu-patches/_fixtures/kvm-completion-model.py} \
+                ${./qemu-patches/_fixtures/kvm-response-service}/lifetime_model.py
+              ${python3}/bin/python3 ${./qemu-patches/_fixtures/kvm-response-service}/refusal.py \
+                "$PWD/build/qemu-system-x86_64" "$PWD/build/qemu-system-aarch64" \
+                ${./qemu-patches/_fixtures/kvm-component-refusal.py}
+              ${kvmWindowByteChecks}
               # Use each changed translation unit's actual configured command,
               # then compare the reconstructed prior production bodies. Every
               # negative must compile and fail a native ownership assertion.
@@ -2438,7 +2608,165 @@ in
                   timer.index("bool qemu_clock_run_timers")
               ]
 
+              prefix_root = Path(
+                  "accel/tcg/crucible-prefix-root-rr.inc.c"
+              ).read_text()
+              prefix_stopped = Path(
+                  "accel/tcg/crucible-prefix-stopped-rr.inc.c"
+              ).read_text()
+              stopped_header = Path(
+                  "include/qemu/crucible-prefix-stopped.h"
+              ).read_text()
+              stopped_request = prefix_stopped[
+                  prefix_stopped.index("static int rr_prefix_stopped_request(void)"):
+                  prefix_stopped.index(
+                      "int qemu_plugin_crucible_node_query_original_prefix_stopped("
+                  )
+              ]
+              stopped_reader = prefix_stopped[
+                  prefix_stopped.index(
+                      "int qemu_plugin_crucible_node_query_original_prefix_stopped("
+                  ):
+              ]
+              stopped_reader_code = re.sub(
+                  r"/\*.*?\*/", "", stopped_reader, flags=re.DOTALL
+              )
+
+              prefix_live = Path(
+                  "accel/tcg/crucible-prefix-live-rr.inc.c"
+              ).read_text()
+              live_header = Path(
+                  "include/qemu/crucible-prefix-live.h"
+              ).read_text()
+              live_unit = Path(
+                  "tests/unit/test-crucible-prefix-live.c"
+              ).read_text()
+              live_quiet = prefix_live[
+                  prefix_live.index("static int rr_prefix_live_quiet("):
+                  prefix_live.index("static int rr_prefix_live_propose(")
+              ]
+              live_retire = prefix_live[
+                  prefix_live.index("static int rr_prefix_live_propose("):
+                  prefix_live.index("static int rr_prefix_live_accept(")
+              ]
+              live_commit = prefix_live[
+                  prefix_live.index("static int rr_prefix_live_accept("):
+                  prefix_live.index("static int rr_prefix_live_service(")
+              ]
+              live_reader = prefix_live[
+                  prefix_live.index(
+                      "int qemu_plugin_crucible_node_query_original_prefix_live("
+                  ):
+              ]
+              live_reader_code = re.sub(
+                  r"/\*.*?\*/", "", live_reader, flags=re.DOTALL
+              )
+
               checks = [
+                  # Source predicates bind the observational seam; actual
+                  # Session/native execution remains a separate registered gate.
+                  ("initial stopped observation precedes command dispatch", prefix_root,
+                   r"!qatomic_load_acquire\(&rr_prefix_preparation_acknowledged\).*?"
+                   r"rr_prefix_preparation_request\(\).*?"
+                   r"rr_prefix_stopped_request\(\).*?"
+                   r"rr_prefix_original_command\(\)", 1),
+                  ("stopped census retains original before-after validation", prefix_stopped,
+                   r"rr_prefix_stopped_sample\(&before\).*?"
+                   r"ops->validate_held\(root, owned_epoch, input->userdata\).*?"
+                   r"rr_crucible_prefix_source_matches\(root, owned_epoch\).*?"
+                   r"rr_prefix_stopped_sample\(&after\).*?"
+                   r"memcmp\(&before, &after, sizeof\(before\)\).*?"
+                   r"\*facts = after;", 1),
+                  ("stopped request refuses noninitial sequence", stopped_request,
+                   r"CRUCIBLE_PREFIX_REQUEST_STOPPED_OBSERVE.*?"
+                   r"query->size != sizeof\(\*query\).*?query->sequence != 1.*?"
+                   r"query->prepared_scope.*?query->prefix_preparation_commitment", 1),
+                  ("stopped publication follows real census and origin recheck", stopped_request,
+                   r"rr_prefix_query_stopped\(&rr_prefix_root,.*?&facts\).*?"
+                   r"process != getpid\(\).*?thread != qemu_get_thread_id\(\).*?"
+                   r"facts.actual_raw_counter.*?facts.original_command_sequence.*?"
+                   r"stopped_record_encode\(.*?"
+                   r"qatomic_store_release\(&rr_prefix_stopped_record_retained, true\)", 1),
+                  ("stopped historical reader requires original retained query", stopped_reader_code,
+                   r"rr_prefix_preparation_reader\(root, owned_epoch\).*?"
+                   r"qatomic_load_acquire\(&rr_prefix_stopped_record_retained\).*?"
+                   r"memcmp\(query, &rr_prefix_stopped_original_query, sizeof\(\*query\)\).*?"
+                   r"memcpy\(bytes, rr_prefix_stopped_record, length\)", 1),
+                  ("stopped reader never samples current state or dispatches", stopped_reader_code,
+                   r"rr_prefix_(?:query_stopped|stopped_sample|run_cpu|original_command)\(|"
+                   r"qemu_timer_crucible_prefix_frontier\(", 0),
+                  ("stopped wire extent and private interrupt normalization",
+                   stopped_header + prefix_stopped,
+                   r"#define CRUCIBLE_PREFIX_STOPPED_WIRE_BYTES 408.*?"
+                   r"preparation_u32\(&cursor, facts->cpu_interrupt_request != 0\)", 1),
+                  # These bind the selected live11 source path. They do not
+                  # establish execution, common readiness or exact preservation.
+                  ("live RR retirement selects original live dispatcher", prefix_root,
+                   r"if \(!result && rr_prefix_live_initial_retired\).*?"
+                   r"rr_prefix_live_service\(&handled\).*?"
+                   r"if \(!result && !handled\).*?result = -EAGAIN;.*?"
+                   r"else if \(!result\).*?rr_prefix_original_command\(\)", 1),
+                  ("live current census checks actual clock around original source", prefix_live,
+                   r"before_clock = icount_crucible_sim_tick_observed\(\).*?"
+                   r"before_clock != rr_prefix_root.current_cursor.time_ps.*?"
+                   r"rr_prefix_query_stopped\(&rr_prefix_root,.*?&facts\).*?"
+                   r"icount_crucible_sim_tick_observed\(\) != before_clock.*?"
+                   r"stopped_record_encode\(&facts, getpid\(\), qemu_get_thread_id\(\), record\)", 1),
+                  ("live quiet checks actual before and after its authorized park", live_quiet,
+                   r"rr_prefix_query_stopped\(&rr_prefix_root,.*?&before\).*?"
+                   r"crucible_prefix_live_quiet_obstruction\(&before, command->limit\).*?"
+                   r"if \(!needs_evaluation\).*?"
+                   r"icount_crucible_node_service_park\(command->limit.time_ps\).*?"
+                   r"rr_prefix_root.current_cursor = command->limit;.*?"
+                   r"rr_prefix_query_stopped\(&rr_prefix_root,.*?&after\).*?"
+                   r"icount_crucible_sim_tick_observed\(\).*?"
+                   r"memcmp\(expected_record, after_record, sizeof\(expected_record\)\).*?"
+                   r"rr_prefix_live_bank.quiet_retained = true;", 1),
+                  ("live initial retirement requires completed consumed original ACK", live_retire,
+                   r"!last->completed.*?!last->source_transition_valid.*?"
+                   r"qatomic_load_acquire\(&last->acknowledgement_retained\).*?"
+                   r"last->applied_acknowledgement.*?"
+                   r"CRUCIBLE_EFFECT_RESULT_COMPLETED.*?"
+                   r"rr_prefix_cuts\[index\].acknowledgement_retained.*?"
+                   r"rr_prefix_live_census\(current\).*?"
+                   r"rr_prefix_live_bank.phase = 1;", 1),
+                  ("live receipt then commit preserve exact source and archive joins", live_commit,
+                   r"accept->archive_digest.*?"
+                   r"accept->native_digest, rr_prefix_live_bank.proposal_digest.*?"
+                   r"accept->native_digest, rr_prefix_live_bank.receipt_digest.*?"
+                   r"rr_prefix_live_current_matches\(rr_prefix_live_bank.proposal \+ 208\).*?"
+                   r"rr_prefix_live_bank.phase = 2;.*?"
+                   r"preparation_hash\(&cursor, rr_prefix_live_bank.receipt_digest\).*?"
+                   r"preparation_hash\(&cursor, accept->archive_digest\).*?"
+                   r"rr_prefix_live_retired_sequence = rr_prefix_live_bank.identity.sequence;.*?"
+                   r"rr_prefix_live_initial_retired = true;.*?"
+                   r"rr_prefix_live_bank.phase = 3;", 1),
+                  ("live history reader copies only exact original retained result", live_reader_code,
+                   r"rr_prefix_preparation_reader\(root, owned_epoch\).*?"
+                   r"rr_prefix_live_bank.request_retained\[slot\].*?"
+                   r"memcmp\(request, &rr_prefix_live_bank.requests\[slot\], sizeof\(\*request\)\).*?"
+                   r"memcpy\(bytes, reply, reply_length\)", 1),
+                  ("live history reader never resamples or dispatches", live_reader_code,
+                   r"rr_prefix_(?:query_stopped|live_census|live_quiet|live_service|run_cpu)\(|"
+                   r"icount_crucible_node_service_park\(", 0),
+                  ("live obstruction compares full CPU and timer positions", live_header,
+                   r"left.time_ps != right.time_ps.*?left.microstep != right.microstep.*?"
+                   r"return left.phase < right.phase;.*?"
+                   r"facts->cpu_interrupt_request \|\| facts->original_startup_exit_pending.*?"
+                   r"crucible_prefix_live_position_before\(facts->next_cpu, limit\).*?"
+                   r"facts->timer_present.*?facts->next_timer.evaluation, limit", 1),
+                  ("live fixed native storage and portable reply extents", live_header,
+                   r"CRUCIBLE_PREFIX_LIVE_REQUEST_BYTES 312.*?"
+                   r"CRUCIBLE_PREFIX_LIVE_QUIET_BYTES 952.*?"
+                   r"CRUCIBLE_PREFIX_LIVE_PROPOSAL_BYTES 640.*?"
+                   r"CRUCIBLE_PREFIX_LIVE_RECEIPT_BYTES 128.*?"
+                   r"CRUCIBLE_PREFIX_LIVE_COMMIT_BYTES 160", 1),
+                  ("live RR fragment preserves explicit GPL scope", prefix_live,
+                   r"\A/\* SPDX-License-Identifier: GPL-2\.0-or-later \*/", 1),
+                  ("live private header preserves explicit GPL scope", live_header,
+                   r"\A/\* SPDX-License-Identifier: GPL-2\.0-or-later \*/", 1),
+                  ("live ordinary unit preserves explicit GPL scope", live_unit,
+                   r"\A/\* SPDX-License-Identifier: GPL-2\.0-or-later \*/", 1),
                   ("clamp declaration", shmem_header,
                    r"clamp_cpu_budget\([^;]+max_advance_icount\);", 1),
                   ("clamp implementation", shmem,
@@ -2710,7 +3038,13 @@ in
                    r"\s*#endif\s*/\*.*?\*/\s*async_run_on_cpu\(", 1),
                   ("RR timer notification header is TCG-only", cpu_timers,
                    r'#ifdef CONFIG_TCG\s*#include "accel/tcg/'
-                   r'tcg-accel-ops-rr\.h"\s*#endif', 1),
+                   r'tcg-accel-ops-rr\.h"\s*'
+                   r'#include "accel/tcg/tcg-accel-ops-sim-shmem\.h"\s*'
+                   r'#endif', 1),
+                  ("sole RR timer notification header", cpu_timers,
+                   r'#include "accel/tcg/tcg-accel-ops-rr\.h"', 1),
+                  ("sole native SIM timer notification header", cpu_timers,
+                   r'#include "accel/tcg/tcg-accel-ops-sim-shmem\.h"', 1),
                   ("RR timer notification has one guarded call", cpu_timers,
                    r"rr_crucible_sim_timer_notify_needs_vcpu_work\(\)", 1),
                   ("timer notify queues work only for parked RR states",
@@ -2926,23 +3260,29 @@ in
                    r"qemu_event_init\(&rr_main_loop_resume_event, false\);\s*"
                    r"qatomic_store_release\(&rr_dispatch_ceiling_event_"
                    r"initialized, true\);.*?single_tcg_halt_cond", 1),
-                  ("finite RR installs main-loop completion notifier",
+                  ("finite RR installs captured original tuple or exact legacy notifier",
                    start_thread,
                    r"if \(rr_crucible_sim_quantum_dispatch_fence\(\)\) \{\s*"
                    r"g_assert\(!rr_main_loop_poll_notifier_registered\);\s*"
                    r"rr_main_loop_poll_notifier.notify =\s*"
                    r"rr_crucible_sim_main_loop_poll;\s*"
-                   r"main_loop_poll_add_notifier\("
-                   r"&rr_main_loop_poll_notifier\);\s*"
-                   r"rr_main_loop_poll_notifier_registered = true;\s*"
-                   r"aio_register_crucible_notify_hook\("
-                   r"rr_crucible_sim_aio_notify\);\s*"
+                   r"if \(crucible_utility_constructor_captured\(\)\) \{\s*"
+                   r"const CrucibleUtilityConstruction \*original =\s*"
+                   r"crucible_node_prefix_constructor_utility\(\);\s*"
+                   r"if \(!original \|\| crucible_utility_enroll_original_rr\(original,\s*"
+                   r"&rr_main_loop_poll_notifier,\s*"
+                   r"rr_crucible_sim_main_loop_replay_released,\s*"
+                   r"rr_crucible_sim_main_loop_poll_ready,\s*"
+                   r"rr_crucible_sim_aio_notify\)\) \{\s*"
+                   r"_exit\(125\);\s*\}\s*\} else \{\s*"
+                   r"main_loop_poll_add_notifier\(&rr_main_loop_poll_notifier\);\s*"
+                   r"aio_register_crucible_notify_hook\(rr_crucible_sim_aio_notify\);\s*"
                    r"main_loop_register_crucible_replay_release\(\s*"
                    r"rr_crucible_sim_main_loop_replay_released\);\s*"
                    r"main_loop_register_crucible_poll_ready\(\s*"
-                   r"rr_crucible_sim_main_loop_poll_ready\);\s*"
-                   r"qatomic_store_release\("
-                   r"&rr_main_loop_poll_priming, true\);\s*"
+                   r"rr_crucible_sim_main_loop_poll_ready\);\s*\}\s*"
+                   r"rr_main_loop_poll_notifier_registered = true;\s*"
+                   r"qatomic_store_release\(&rr_main_loop_poll_priming, true\);\s*"
                    r"qemu_notify_event\(\);\s*\}", 1),
                   ("hot-fork dispatch event reinit", hot_fork,
                    r"qemu_event_destroy\(&rr_dispatch_ceiling_event\);\s*"
@@ -2986,6 +3326,7 @@ in
                    r"bool single_threaded_rr = drained && first_cpu &&\s*"
                    r"qemu_plugin_crucible_single_threaded_rr\(\);\s*"
                    r"if \(drained\) \{\s*"
+                   r"prefix_notifier_dispatch_guard\(\);\s*"
                    r"notifier_list_notify\(&qemu_plugin_wake_notifiers,\s*"
                    r"\(void \*\)\(intptr_t\)"
                    r"QEMU_PLUGIN_WAKE_EVENT_DRAINED\);\s*\}\s*"
@@ -3289,10 +3630,13 @@ in
                   ("global virtual timer owner registration", timer,
                    r"void qemu_timer_register_crucible_global_virtual_timer_owner"
                    r"\(\s*QemuCrucibleGlobalVirtualTimerOwner \*owner\)\s*"
-                   r"\{\s*assert\(owner\);\s*"
+                   r"\{\s*whole_q35_timer_registration_guard\(\);\s*"
+                   r"assert\(owner\);\s*"
                    r"assert\(!crucible_global_virtual_timer_owner\);\s*"
                    r"qatomic_store_release\("
                    r"&crucible_global_virtual_timer_owner, owner\);\s*\}", 1),
+                  ("global virtual timer owner registration definition", timer,
+                   r"(?:^|\n)void qemu_timer_register_crucible_global_virtual_timer_owner\(", 1),
                   ("sim precise unresolved deadline budget", icount,
                    r"if \(limit <= 0\) \{\s*"
                    r"if \(current_accel_is_sim\(\) &&\s*"
@@ -3306,9 +3650,12 @@ in
                   ("sole global virtual timer owner registration", rr,
                    r"qemu_timer_register_crucible_global_virtual_timer_owner\(",
                    1),
-                  ("sim RR global virtual timer owner", rr,
+                  ("sim RR global virtual timer owner",
+                   re.sub(r"/\*.*?\*/", "", rr, flags=re.DOTALL),
                    r"static bool rr_crucible_sim_global_virtual_timer_owner"
                    r"\(void\)\s*\{\s*"
+                   r"if \(icount_crucible_whole_selected\(\)\) \{\s*"
+                   r"return rr_crucible_whole_event_current\(\) == 0;\s*\}\s*"
                    r"return first_cpu && qemu_cpu_is_self\(first_cpu\) &&\s*"
                    r"!qemu_crucible_fault_lifecycle_virtual_timers_paused\(\);"
                    r"\s*\}",
@@ -3349,10 +3696,13 @@ in
                    r"\*crucible_determinism_timer_sample;.*?"
                    r"void qemu_timer_register_crucible_determinism_sampler\(\s*"
                    r"QemuCrucibleDeterminismTimerSample \*sample\)\s*\{\s*"
+                   r"whole_q35_timer_registration_guard\(\);\s*"
                    r"assert\(sample\);\s*"
                    r"assert\(!crucible_determinism_timer_sample\);\s*"
                    r"qatomic_store_release\("
                    r"&crucible_determinism_timer_sample, sample\);\s*\}", 1),
+                  ("determinism timer sampler registration definition", timer,
+                   r"(?:^|\n)void qemu_timer_register_crucible_determinism_sampler\(", 1),
                   ("determinism timer stable classification", timer,
                    r"if \(timer_list == main_loop_tlg\.tl\[type\]\) \{\s*"
                    r"return \"global\";\s*\}\s*return \"aio\";", 1),
@@ -3371,11 +3721,38 @@ in
                    r"qemu_timer_register_crucible_determinism_sampler\(\s*"
                    r"rr_crucible_sim_sample_determinism_timer\);\s*"
                    r"qemu_timer_register_crucible_global_virtual_timer_owner\("
-                   r"\s*rr_crucible_sim_global_virtual_timer_owner\);\s*\}\s*"
+                   r"\s*rr_crucible_sim_global_virtual_timer_owner\);\s*"
+                   r"if \(crucible_node_control_registered\(\)\) \{\s*"
+                   r"qemu_timer_register_crucible_node_virtual_timer_owner\(\s*"
+                   r"rr_crucible_node_virtual_timer_owner\);\s*"
+                   r"rr_node_timer_owner_registered = true;\s*\}\s*\}\s*"
                    r"qemu_event_init\(&rr_dispatch_ceiling_event, false\);",
                    1),
                   ("sole determinism timer sampler registration", rr,
                    r"qemu_timer_register_crucible_determinism_sampler\(", 1),
+                  ("native virtual timer owner registration paths", rr,
+                   r"qemu_timer_register_crucible_node_virtual_timer_owner\(", 2),
+                  ("late native phase registers the actual all-list owner", rr,
+                   r"void rr_crucible_node_install_phase_sampler\(void\).*?"
+                   r"assert\(crucible_node_control_registered\(\) &&\s*"
+                   r"crucible_node_phase_registered\(\)\);\s*"
+                   r"qemu_timer_node_register_birth_sampler\("
+                   r"rr_crucible_node_sample_timer_birth\);\s*"
+                   r"if \(!rr_node_timer_owner_registered\) \{\s*"
+                   r"qemu_timer_register_crucible_node_virtual_timer_owner\(\s*"
+                   r"rr_crucible_node_virtual_timer_owner\);\s*"
+                   r"rr_node_timer_owner_registered = true;\s*\}", 1),
+                  ("strict preparation registration requires BQL", main_loop,
+                   r"int main_loop_register_node_initialization\("
+                   r"bool \(\*dispatch\)\(void\)\).*?"
+                   r"if \(!bql_locked\(\)\) \{\s*return -EPERM;\s*\}", 1),
+                  ("strict preparation excludes ordinary model polling", main_loop,
+                   r"if \(node_initialization_dispatch\) \{.*?"
+                   r"qemu_event_reset\(&node_initialization_event\);\s*"
+                   r"node_initialization_dispatch\(\);\s*"
+                   r"bql_unlock\(\);\s*"
+                   r"qemu_event_wait\(&node_initialization_event\);\s*"
+                   r"bql_lock\(\);\s*return;\s*\}", 1),
                   ("determinism virtual timer callback trace", timer_callback,
                    r"if \(timer_list->clock->type == QEMU_CLOCK_VIRTUAL &&\s*"
                    r"timer_exact_virtual_ps &&\s*"
@@ -3399,7 +3776,15 @@ in
                    r"\(int64_t\)expire_time,\s*"
                    r"\(int64_t\)virtual_time, raw\);\s*"
                    r"qemu_crucible_determinism_trace_end\(\);\s*\}\s*\}\s*"
-                   r"cb\(opaque\);", 1),
+                   r"if \(qatomic_load_acquire\(&crucible_node_birth_enabled\)\) \{\s*"
+                   r"uint64_t previous_parent_id = crucible_node_parent_timer_id;\s*"
+                   r"uint64_t previous_parent_arm = crucible_node_parent_arm_generation;\s*"
+                   r"crucible_node_parent_timer_id = ts->crucible_hot_fork_id;\s*"
+                   r"crucible_node_parent_arm_generation = ts->crucible_node_arm_generation;\s*"
+                   r"cb\(opaque\);\s*"
+                   r"crucible_node_parent_timer_id = previous_parent_id;\s*"
+                   r"crucible_node_parent_arm_generation = previous_parent_arm;\s*"
+                   r"\} else \{\s*cb\(opaque\);\s*\}", 1),
                   ("global virtual timer RR ownership gate", timer_callback,
                    r"if \(timer_list == "
                    r"main_loop_tlg\.tl\[QEMU_CLOCK_VIRTUAL\]\) \{\s*"
@@ -4446,6 +4831,13 @@ in
               done
             ''}
 
+            ${lib.optionalString (selectedX86Firmware != null) ''
+              # Selected constructors consume a distinct source-built profile.
+              # Keep legacy firmware and deterministic ordinary boots intact.
+              ${buildPython}/bin/python3 ${selectedFirmwareInstaller} \
+                ${selectedX86Firmware} ${selectedX86Firmware.source} "$out"
+            ''}
+
             ${lib.optionalString (!stdenv.hostPlatform.isDarwin) ''
               # ELF-relative function ranges survive stripping and let local
               # profilers resolve samples without retaining DWARF or paths.
@@ -4709,6 +5101,7 @@ in
           qemuSimCapability
           qemuConfigureFlags
           qemuConfigureFlagsHash
+          qomPrivateUnwindSource
           qemuConfigureIdentityFlags
           qemuConfigureIdentityMaterial
           qemuConfigureFlagsMaterial

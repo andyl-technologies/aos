@@ -1,0 +1,144 @@
+--- a/src/arch/arm/tlb.cc
++++ b/src/arch/arm/tlb.cc
+@@ -490,7 +490,10 @@
+                               const TLB *owner) const
+ {
+     const auto *replacement = dynamic_cast<const replacement_policy::LRU *>(replPolicy);
+-    if (!replacement || !indexingPolicy) return false;
++    if (!replacement || !indexingPolicy || owner->size <= 0 ||
++        entries.size() != std::size_t(owner->size) ||
++        !walk.table(owner, indexingPolicy, entries.size()))
++        return false;
+     for (const auto &entry : entries) {
+         if (!replacement->crucibleNativeData(entry.replacementData)) return false;
+         if (!walk.tableEntry(owner, indexingPolicy, &entry)) return false;
+--- a/src/sim/crucible_native_scope.cc
++++ b/src/sim/crucible_native_scope.cc
+@@ -33,10 +33,10 @@
+ 
+ ProcessLifetimeScope lifetime;
+ 
+-// The matching check retains these profile-v2 bytes and verifies their digest.
+-// Constructor-birth backing is reserved before objects, without changing the
+-// ordinary ReplacementData layout or granting execution/capture authority.
+-const Digest diagnosticProfileDigest = {0xfe, 0x6a, 0xcd, 0x44, 0x3a, 0x31, 0x4b, 0xea, 0xfc, 0x89, 0x87, 0x21, 0xe6, 0x0b, 0x60, 0x95, 0x4f, 0x64, 0xce, 0x7e, 0xd3, 0x18, 0xce, 0xdf, 0x7e, 0xee, 0x78, 0xb6, 0x0a, 0x4e, 0xb3, 0x62};
++// The matching check verifies explicit profile-v3 constructor/table geometry.
++// All fixed backing exists before object births. Ordinary ReplacementData
++// layout and allocation are unchanged; the profile grants no authority.
++const Digest diagnosticProfileDigest = {0x03, 0xc3, 0xb5, 0x77, 0x34, 0x18, 0xba, 0x5a, 0xf9, 0x2c, 0x8c, 0xbc, 0x91, 0x8f, 0x2c, 0x31, 0xd8, 0xc1, 0x00, 0x64, 0x71, 0x2b, 0x41, 0x84, 0x62, 0xda, 0x9f, 0xdc, 0x08, 0xd5, 0xdf, 0xcd};
+ 
+ bool
+ nonzero(const Digest &bytes)
+@@ -352,6 +352,31 @@
+ }
+ 
+ bool
++OriginalNodeScope::declareTable(const SimObject *owner, const SimObject *index,
++                                std::size_t entries)
++{
++    if (!current() || phase != State::Walking) return false;
++    const auto indexOrdinal = ordinal(index);
++    if (visiting != owner || ordinal(owner) == ObjectCapacity ||
++        indexOrdinal == ObjectCapacity || !entries || entries > TableEntryCapacity)
++        return refuse(Refusal::InvalidTable);
++    if (objects[indexOrdinal].visit != Visit::Unvisited)
++        return refuse(Refusal::InvalidTable);
++
++    // A declaration consumes one original slot. It cannot replace a partial
++    // declaration, renew an entry allowance or borrow another owner's index.
++    for (std::size_t slot = 0; slot < tablesUsed; ++slot) {
++        if (tables[slot].index == index) return refuse(Refusal::InvalidTable);
++    }
++    if (tablesUsed == TableCapacity) return refuse(Refusal::TableCapacity);
++    auto &table = tables[tablesUsed++];
++    table.owner = owner;
++    table.index = index;
++    table.expected = entries;
++    return true;
++}
++
++bool
+ OriginalNodeScope::tableEntry(const SimObject *owner, const SimObject *index,
+                               const ReplaceableEntry *entry)
+ {
+@@ -367,12 +392,8 @@
+         table = &tables[slot];
+         break;
+     }
+-    if (!table) {
+-        if (tablesUsed == TableCapacity) return refuse(Refusal::TableCapacity);
+-        table = &tables[tablesUsed++];
+-        table->owner = owner;
+-        table->index = index;
+-    }
++    if (!table || table->used >= table->expected)
++        return refuse(Refusal::InvalidTable);
+     for (std::size_t slot = 0; slot < table->used; ++slot) {
+         if (table->entries[slot].entry == entry) return refuse(Refusal::InvalidTable);
+     }
+@@ -405,9 +426,11 @@
+ bool
+ OriginalNodeScope::tablesComplete(const SimObject *index)
+ {
++    if (!current() || phase != State::Walking) return false;
+     for (std::size_t slot = 0; slot < tablesUsed; ++slot) {
+         const auto &table = tables[slot];
+         if (table.index != index) continue;
++        if (table.used != table.expected) return refuse(Refusal::InvalidTable);
+         for (std::size_t offset = 0; offset < table.used; ++offset) {
+             if (!table.entries[offset].indexed) return refuse(Refusal::InvalidTable);
+         }
+@@ -467,6 +490,13 @@
+ }
+ 
+ bool
++NativeClosureWalk::table(const SimObject *owner, const SimObject *index,
++                         std::size_t entries)
++{
++    return scope.declareTable(owner, index, entries);
++}
++
++bool
+ NativeClosureWalk::tableEntry(const SimObject *owner, const SimObject *index,
+                              const ReplaceableEntry *entry)
+ {
+--- a/src/sim/crucible_native_scope.hh
++++ b/src/sim/crucible_native_scope.hh
+@@ -48,6 +48,9 @@
+ 
+     /** Registers the original native port member for reciprocal edge checks. */
+     bool port(const SimObject *owner, const Port *port, std::uint32_t member);
++
++    /** Declares an actual table extent against the original fixed storage. */
++    bool table(const SimObject *owner, const SimObject *index, std::size_t entries);
+ 
+     /** Binds actual entry members before visiting their native indexing owner. */
+     bool tableEntry(const SimObject *owner, const SimObject *index,
+@@ -80,7 +83,9 @@
+     static constexpr std::size_t CallbackCapacity = 256;
+     static constexpr std::size_t PortCapacity = 256;
+     static constexpr std::size_t TableCapacity = 16;
+-    static constexpr std::size_t TableEntryCapacity = 1024;
++    // Retain the selected source profile's normal 1280-entry ARM L2 table.
++    // All sixteen backing arrays exist before the first object birth.
++    static constexpr std::size_t TableEntryCapacity = 1280;
+ 
+     enum class State : unsigned char { Constructing, Walking, Refused, Walked };
+     enum class Refusal : unsigned char {
+@@ -184,6 +189,7 @@
+         const SimObject *owner = nullptr;
+         const SimObject *index = nullptr;
+         std::array<TableEntry, TableEntryCapacity> entries{};
++        std::size_t expected = 0;
+         std::size_t used = 0;
+     };
+ 
+@@ -210,6 +216,8 @@
+     bool portOwner(const SimObject *owner, const Port *port,
+                    std::uint32_t member);
+     bool portsClosed();
++    bool declareTable(const SimObject *owner, const SimObject *index,
++                      std::size_t entries);
+     bool tableEntry(const SimObject *owner, const SimObject *index,
+                     const ReplaceableEntry *entry);
+     bool indexedEntry(const SimObject *index, const ReplaceableEntry *entry);

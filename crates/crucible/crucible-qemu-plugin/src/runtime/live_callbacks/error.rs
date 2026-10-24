@@ -6,6 +6,12 @@ use thiserror::Error;
 /// An error in live production callback setup or dispatch.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum LiveVcpuTimeCallbackError {
+    /// The original mapping cannot admit ordinary callback view construction.
+    #[error("original setup mapping custody refused callback construction: {source}")]
+    MappingCustody {
+        /// Original local ownership refusal.
+        source: crucible_qemu_shmem::WholeMappingCustodyError,
+    },
     /// A required QEMU callback registration symbol is absent.
     #[error("required live callback capability `{symbol}` is unavailable")]
     CapabilityUnavailable {
@@ -279,6 +285,9 @@ pub enum LiveVcpuTimeCallbackError {
     /// Another live callback state pointer is already globally visible.
     #[error("live production callback state is already published")]
     CallbackStateAlreadyPublished,
+    /// A repeated callback observation changed its original function or userdata.
+    #[error("original live callback function or userdata changed")]
+    CallbackRosterChanged,
     /// The callback observed a shutdown action without a matching acquire proof.
     #[error("shared shutdown action could not be proven from the region header")]
     SharedShutdownProofUnavailable,

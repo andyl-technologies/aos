@@ -1,0 +1,4765 @@
+--- a/arch/x86/include/asm/kvm_host.h
++++ b/arch/x86/include/asm/kvm_host.h
+@@ -1484,6 +1484,240 @@
+ 	bool delivery_known;
+ };
+ 
++/* Native timer rows are VM-private lifetime storage. The original producer
++ * consumes its own quota before effects; no accepted row is recycled. */
++struct kvm_crucible_ps_timer_origin {
++	struct task_struct *actor;
++	struct kvm_vcpu *writer;
++	struct hrtimer *timer;
++	u64 ordinal;
++	u64 generation;
++	u64 invocation;
++	u64 position_ps;
++	u64 deadline_ps;
++	u64 period_ps;
++	ktime_t host_deadline;
++	u32 kind;
++	u32 native_vcpu_id;
++	s32 native_result;
++	bool attempted;
++	bool known;
++	bool retired;
++};
++
++struct kvm_crucible_ps_pit_arm_row {
++	struct kvm_crucible_ps_timer_origin original;
++	struct kvm_pit_state2 input;
++	struct kvm_pit_state2 output;
++	struct kvm_pit *pit;
++	struct kvm_crucible_ps_pit_arm_row *superseded;
++	u64 address;
++	u32 length;
++	u32 value;
++	s32 cancel_result;
++	bool cancel_attempted;
++	bool cancel_known;
++	bool state_output_known;
++};
++
++struct kvm_crucible_ps_lapic_arm_row {
++	struct kvm_crucible_ps_timer_origin original;
++	struct kvm_lapic_state input;
++	struct kvm_lapic_state output;
++	struct kvm_lapic *apic;
++};
++
++struct kvm_crucible_ps_timer_expiry_row {
++	struct kvm_crucible_ps_timer_origin original;
++	struct kvm_crucible_ps_timer_origin *arm;
++	struct task_struct *worker;
++	u64 observed_ps;
++	u64 observed_host_ns;
++	u64 route_begin;
++	u64 nmi_begin;
++	u32 route_count;
++	u32 nmi_count;
++	bool completion_known;
++	struct task_struct *work_actor;
++	u64 work_host_ns;
++	u64 work_position_ps;
++	s32 queue_result;
++	s32 work_refusal_result;
++	bool queue_attempted;
++	bool queue_known;
++	bool work_entered;
++	bool work_refusal_known;
++	u32 pulse_attempted;
++	u32 pulse_claimed;
++	u32 pulse_completed;
++	s32 pulse_results[2];
++	s32 input_watchdog_count;
++	s32 output_watchdog_count;
++	bool watchdog_observed;
++	bool watchdog_completed;
++};
++
++struct kvm_crucible_ps_irq_target_row {
++	struct task_struct *actor;
++	struct kvm_vcpu *vcpu;
++	struct kvm_lapic *apic;
++	struct kvm_lapic_state input;
++	struct kvm_lapic_state output;
++	u64 generation;
++	u32 native_vcpu_id;
++	s32 delivery_mode;
++	s32 vector;
++	s32 level;
++	s32 trigger_mode;
++	s32 native_result;
++	u32 owner_kind;
++	u64 input_requests;
++	u64 output_requests;
++	u32 input_nmi_queued;
++	u32 output_nmi_queued;
++	u32 input_nmi_pending;
++	u32 output_nmi_pending;
++	u64 input_pending_events;
++	u64 output_pending_events;
++	s32 input_arb_prio;
++	s32 output_arb_prio;
++	u32 input_sipi_vector;
++	u32 output_sipi_vector;
++	bool input_irr_pending;
++	bool output_irr_pending;
++	bool input_pv_unhalted;
++	bool output_pv_unhalted;
++	bool input_smi_pending;
++	bool output_smi_pending;
++	bool attempted;
++	bool output_known;
++	bool known;
++};
++
++struct kvm_crucible_ps_timer_route_row {
++	struct kvm_crucible_ps_timer_expiry_row *expiry;
++	struct kvm_kernel_irq_routing_entry *input;
++	struct kvm_kernel_irq_routing_entry *buffer;
++	u64 ordinal;
++	u64 generation;
++	u32 source;
++	u32 gsi;
++	u32 level;
++	s32 native_result;
++	s32 receiver_native_result;
++	bool attempted;
++	bool known;
++	void *receiver;
++	struct kvm_irqchip receiver_input;
++	struct kvm_irqchip receiver_output;
++	struct kvm_irqchip receiver_peer_input;
++	struct kvm_irqchip receiver_peer_output;
++	u64 receiver_control_input[4];
++	u64 receiver_control_output[4];
++	u64 receiver_irq_states_input[24];
++	u64 receiver_irq_states_output[24];
++	u32 receiver_extra_input;
++	u32 receiver_extra_output;
++	struct kvm_crucible_ps_irq_target_row targets[4];
++	bool receiver_input_known;
++	bool receiver_output_known;
++};
++
++struct kvm_crucible_ps_timer_nmi_row {
++	struct kvm_crucible_ps_timer_expiry_row *expiry;
++	struct task_struct *actor;
++	struct kvm_vcpu *vcpu;
++	struct kvm_lapic *apic;
++	u64 ordinal;
++	u64 generation;
++	u32 native_vcpu_id;
++	u32 input_lvt0;
++	u32 output_lvt0;
++	u32 input_pending;
++	u32 output_pending;
++	struct kvm_crucible_ps_irq_target_row target;
++	s32 native_result;
++	bool hardware_enabled;
++	bool output_known;
++	bool local_attempted;
++	bool attempted;
++	bool known;
++};
++
++struct kvm_crucible_ps_timer_eoi_row {
++	struct kvm_crucible_ps_timer_expiry_row *expiry;
++	struct kvm_vcpu *vcpu;
++	struct task_struct *actor;
++	u64 ordinal;
++	u64 generation;
++	u64 invocation;
++	u64 route_bits;
++	u32 native_vcpu_id;
++	u32 vector;
++	u32 pin;
++	u32 trigger_mode;
++	s32 native_result;
++	bool attempted;
++	bool known;
++};
++
++struct kvm_crucible_ps_timer_roots {
++	struct kvm_pit *pit;
++	struct kthread_worker *pit_worker;
++	struct task_struct *pit_task;
++	struct kthread_work *pit_work;
++	struct hrtimer *pit_timer;
++	struct kvm_lapic *apics[4];
++	struct hrtimer *lapic_timers[4];
++};
++
++/* Native installation outcome and its userspace delivery are distinct.
++ * INSTALL and its once-only QUERY each retain complete original body bytes. */
++struct kvm_crucible_ps_timer_delivery_row {
++	struct kvm_crucible_q35_ps_timer_bank input;
++	struct kvm_crucible_q35_ps_timer_bank output;
++	struct task_struct *actor;
++	u64 ordinal;
++	s32 syscall_result;
++	u32 uncopied;
++	bool output_known;
++	bool delivery_attempted;
++	bool delivery_known;
++};
++
++struct kvm_crucible_ps_timer_state {
++	struct kvm_crucible_q35_ps_timer_bank installation;
++	struct kvm_crucible_q35_ps_timer_bank installation_output;
++	struct kvm_crucible_ps_timer_roots roots;
++	struct kvm_crucible_ps_timer_delivery_row deliveries[2];
++	struct kvm_crucible_ps_pit_arm_row *pit_arms;
++	struct kvm_crucible_ps_lapic_arm_row *lapic_arms;
++	struct kvm_crucible_ps_timer_expiry_row *expiries;
++	struct kvm_crucible_ps_timer_route_row *routes;
++	struct kvm_kernel_irq_routing_entry *route_storage;
++	struct kvm_crucible_ps_timer_nmi_row *nmis;
++	struct kvm_crucible_ps_timer_eoi_row *eois;
++	struct task_struct *owner;
++	struct kvm_crucible_ps_pit_arm_row *pit_access;
++	struct kvm_crucible_ps_pit_arm_row *pit_active_arm;
++	struct kvm_crucible_ps_timer_expiry_row *pit_queued_expiry;
++	struct kvm_crucible_ps_timer_route_row *pit_dispatch_route;
++	struct kvm_crucible_ps_timer_nmi_row *pit_dispatch_nmi;
++	u32 pit_dispatch_level;
++	bool pit_dispatch_active;
++	u32 pit_arms_used;
++	u32 lapic_arms_used;
++	u32 expiries_used;
++	u32 routes_used;
++	u32 nmis_used;
++	u32 eois_used;
++	bool installation_attempted;
++	bool installation_known;
++	bool installed;
++	bool installation_queried;
++	bool uncertain;
++};
++
+ struct kvm_crucible_ps_clock_state {
+ 	struct kvm_crucible_q35_ps_clock plan;
+ 	struct kvm_crucible_q35_ps_clock last_request;
+@@ -1494,6 +1728,7 @@
+ 	struct kvm_pit *native_pit;
+ 	bool pit_birth_bound;
+ 	struct kvm_crucible_ps_irq_state irq;
++	struct kvm_crucible_ps_timer_state timers;
+ 	bool execution_installed;
+ 	u64 current_ps;
+ 	u64 start_ps;
+@@ -1563,6 +1798,35 @@
+ 	bool cpu_bytes_charged;
+ 	bool cpu_prepared;
+ 	bool cpu_completed;
++	bool cpu_callback_returned;
++	bool cpu_completion_error;
++	u32 input_cpu_copied_bytes;
++	const void *cpuid_header;
++	u32 cpuid_header_copied_bytes;
++	bool cpuid_header_charged;
++	/* Preowned at native-v2 SELECT and charged before any worker effect. */
++	/* Edition2's metadata offer has independent precharged fixed storage. */
++	struct kvm_crucible_q35_cpu_bytes reader_metadata_request;
++	struct kvm_crucible_q35_cpu_bytes reader_metadata_reply;
++	long reader_metadata_delivery_result;
++	u32 reader_metadata_header_delivered;
++	bool reader_metadata_attempted;
++	struct kvm_crucible_q35_cpu_bytes reader_request;
++	struct kvm_crucible_q35_cpu_bytes reader_reply;
++	long reader_delivery_result;
++	u64 reader_input_delivered;
++	u64 reader_output_delivered;
++	u64 reader_header_delivered;
++	bool reader_attempted;
++	long nested_native_result;
++	bool nested_callback_active;
++	bool nested_copy_failed;
++	u32 nested_write_count;
++	struct {
++		u32 offset;
++		u32 bytes;
++		bool cleared;
++	} nested_writes[4];
+ };
+ 
+ /* Numeric IDs correlate the public journal; the retained actual task and
+@@ -2385,6 +2649,10 @@
+ 	int (*get_state)(struct kvm_vcpu *vcpu,
+ 			 struct kvm_nested_state __user *user_kvm_nested_state,
+ 			 unsigned user_data_size);
++	/* Original kernel output bank, never a user address or public protocol. */
++	int (*get_state_owned)(struct kvm_vcpu *vcpu, struct kvm_nested_state *owned,
++			       unsigned capacity);
++	u32 get_state_owned_scratch_bytes;
+ 	int (*set_state)(struct kvm_vcpu *vcpu,
+ 			 struct kvm_nested_state __user *user_kvm_nested_state,
+ 			 const struct kvm_nested_state *kvm_state,
+--- a/arch/x86/kvm/crucible-clock.c
++++ b/arch/x86/kvm/crucible-clock.c
+@@ -853,6 +853,50 @@
+ 	return kvm_crucible_lapic_tsc_prepare_write(vcpu) ? 0 : -EAGAIN;
+ }
+ 
++/* Native producer admission consumes the same original loaded RUN cut.
++ * Completion may retain an effect after the physical stop; it cannot admit a
++ * new effect or sample a substituted VM/vCPU/counter owner. */
++bool kvm_crucible_q35_ps_pit_guest_current_locked(struct kvm_vcpu *vcpu,
++	u64 *position_ps, bool completion)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_run_return_state *run = &vcpu->crucible_run_return;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	if (in_interrupt() || !q35_ps_run_counter_current_locked(vcpu) ||
++	    !run->ps_counter_attempted || !run->ps_counter_known || run->ps_counter_result ||
++	    READ_ONCE(kvm->vm_dead) || kvm->crucible_irq_input.tainted ||
++	    kvm->crucible_memory_tainted ||
++	    (!completion && !clock_ps_counter_live_locked(vcpu, false)))
++		return false;
++	*position_ps = q35_ps_now_locked(clock, ktime_get_ns());
++	return true;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_q35_ps_pit_guest_current_locked);
++
++int kvm_crucible_q35_ps_timer_host_locked(struct kvm *kvm, u64 logical_ps,
++	ktime_t *host)
++{
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	return q35_ps_timer_host_locked(kvm, logical_ps, host, ktime_get_ns());
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_q35_ps_timer_host_locked);
++
++u64 kvm_crucible_q35_ps_timer_now_locked(struct kvm *kvm, u64 host_ns)
++{
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	return q35_ps_now_locked(&kvm->arch.crucible_clock, host_ns);
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_q35_ps_timer_now_locked);
++
++void kvm_crucible_q35_ps_timer_fault_locked(struct kvm *kvm)
++{
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	clock_counter_fault_locked(kvm);
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_q35_ps_timer_fault_locked);
++
+ int kvm_crucible_clock_write_tsc(struct kvm_vcpu *vcpu, u64 value, bool host)
+ {
+ 	struct kvm *kvm = vcpu->kvm;
+@@ -1143,3 +1187,4 @@
+ #include "../../../virt/kvm/crucible-initialization-observation.inc.c"
+ 
+ #include "crucible-q35-ps-clock.inc.c"
++#include "crucible-q35-ps-timer-bank.inc.c"
+--- a/arch/x86/kvm/crucible-clock.h
++++ b/arch/x86/kvm/crucible-clock.h
+@@ -60,6 +60,35 @@
+ void kvm_crucible_clock_sample(struct kvm_vcpu *vcpu, u64 *ns, u64 *tsc);
+ bool kvm_crucible_clock_host_expiration(struct kvm *kvm, ktime_t logical,
+ 					ktime_t *host);
++/* Cold original producer installation reserves typed lifetime banks only. */
++int kvm_crucible_q35_ps_timer_bank_control(struct kvm *kvm, struct kvm_enable_cap *cap);
++void kvm_crucible_q35_ps_timer_bank_destroy(struct kvm *kvm);
++/* Complete retained native producer outputs; physical quiescence is separate. */
++bool kvm_crucible_q35_ps_timer_outputs_closed_locked(struct kvm *kvm);
++bool kvm_crucible_q35_ps_pit_guest_current_locked(struct kvm_vcpu *vcpu,
++	u64 *position_ps, bool completion);
++int kvm_crucible_q35_ps_timer_host_locked(struct kvm *kvm, u64 logical_ps,
++	ktime_t *host);
++u64 kvm_crucible_q35_ps_timer_now_locked(struct kvm *kvm, u64 host_ns);
++void kvm_crucible_q35_ps_timer_fault_locked(struct kvm *kvm);
++bool kvm_crucible_q35_ps_pit_dispatch_current_locked(struct kvm *kvm,
++	struct kvm_crucible_ps_timer_expiry_row **expiry);
++bool kvm_crucible_q35_ps_pit_irq_claim_locked(struct kvm *kvm, u32 kind,
++	int source, u32 gsi, int level, bool line_status);
++bool kvm_crucible_q35_ps_pit_receiver_begin(struct kvm *kvm,
++	struct kvm_kernel_irq_routing_entry *entry, void *receiver,
++	const struct kvm_irqchip *input, const unsigned long *irq_states,
++	u32 count, u32 extra, const struct kvm_irqchip *peer, const u64 control[4]);
++bool kvm_crucible_q35_ps_pit_receiver_complete(struct kvm *kvm,
++	struct kvm_kernel_irq_routing_entry *entry, void *receiver,
++	const struct kvm_irqchip *output, const unsigned long *irq_states,
++	u32 count, u32 extra, const struct kvm_irqchip *peer, const u64 control[4], int native_result);
++
++bool kvm_crucible_q35_ps_pit_roots_locked(struct kvm *kvm,
++	struct kvm_crucible_ps_timer_roots *roots);
++bool kvm_crucible_q35_ps_lapic_roots_locked(struct kvm_vcpu *vcpu,
++	struct kvm_crucible_ps_timer_roots *roots);
++
+ /* Source-current unsigned-PS deadline reader: 1 projects, 0 retains a future
+  * expiry, and a negative result refuses. It grants no native timer effect.
+  */
+@@ -68,4 +97,7 @@
+ void kvm_crucible_clock_timer_leave(struct kvm *kvm);
+ ktime_t kvm_crucible_clock_tsc_deadline(struct kvm_vcpu *vcpu, u64 deadline);
+ 
++bool kvm_crucible_q35_ps_pit_watchdogs(struct kvm *kvm,
++	struct kvm_crucible_ps_timer_expiry_row *expiry);
++
+ #endif
+--- a/arch/x86/kvm/crucible-pic-initializer-cpu-bytes.inc.c
++++ b/arch/x86/kvm/crucible-pic-initializer-cpu-bytes.inc.c
+@@ -15,9 +15,22 @@
+ 		*bytes = sizeof(u64);
+ 		return true;
+ 	case KVM_SET_REGS:
++		*write = true;
+ 		fallthrough;
+ 	case KVM_GET_REGS:
+ 		*bytes = sizeof(struct kvm_regs);
++		return true;
++	case KVM_SET_MP_STATE:
++		*write = true;
++		fallthrough;
++	case KVM_GET_MP_STATE:
++		*bytes = sizeof(struct kvm_mp_state);
++		return true;
++	case KVM_SET_VCPU_EVENTS:
++		*write = true;
++		fallthrough;
++	case KVM_GET_VCPU_EVENTS:
++		*bytes = sizeof(struct kvm_vcpu_events);
+ 		return true;
+ 	case KVM_SET_SREGS:
+ 		*write = true;
+@@ -85,6 +98,11 @@
+ 	case KVM_X86_SETUP_MCE:
+ 	case KVM_SET_TSC_KHZ:
+ 	case KVM_GET_TSC_KHZ:
++	case KVM_GET_NESTED_STATE:
++	case KVM_GET_MP_STATE:
++	case KVM_SET_MP_STATE:
++	case KVM_GET_VCPU_EVENTS:
++	case KVM_SET_VCPU_EVENTS:
+ 	case KVM_GET_REGS:
+ 	case KVM_SET_REGS:
+ 	case KVM_GET_SREGS:
+@@ -179,6 +197,25 @@
+ 	return effect->native_ioctl == ioctl ? effect : NULL;
+ }
+ 
++/* Retention alone may complete after currentness is lost. This matches the
++ * original in-flight Task/vCPU/row and grants no native effect permission. */
++static struct kvm_crucible_pic_initializer_effect *
++pic_initializer_retained_cpu_effect_locked(struct kvm_vcpu *vcpu,
++	unsigned int ioctl)
++{
++	struct kvm_crucible_pic_initializer_state *state =
++		pic_initializer_actor_state(vcpu->kvm, vcpu);
++	struct kvm_crucible_pic_initializer_effect *effect;
++
++	lockdep_assert_held(&vcpu->kvm->crucible_gate_lock);
++	if (!state || state->task != current || state->vcpu != vcpu ||
++	    !state->inflight || !state->issued ||
++	    state->issued > state->maximum_effects)
++		return NULL;
++	effect = &state->effects[state->issued - 1];
++	return effect->native_ioctl == ioctl ? effect : NULL;
++}
++
+ int kvm_arch_crucible_pic_initializer_cpu_prepare(struct kvm_vcpu *vcpu,
+ 	unsigned int ioctl, void *buffer, u32 bytes)
+ {
+@@ -197,7 +234,8 @@
+ 	if (!buffer || !pic_initializer_cpu_bytes_layout(vcpu, ioctl, &expected, &write) ||
+ 	    expected != bytes || (write && !pic_initializer_cpu_input_valid(ioctl, buffer)))
+ 		return result;
+-	charge = write ? 2 * bytes : bytes;
++	/* Charge allocator size classes before either history allocation. */
++	charge = kmalloc_size_roundup(bytes) * (write ? 2 : 1);
+ 
+ 	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+ 	state = pic_initializer_actor_state(kvm, vcpu);
+@@ -221,22 +259,21 @@
+ 		if (!input)
+ 			return -ENOMEM;
+ 	}
+-	output = kmalloc(bytes, GFP_KERNEL);
+-	if (!output) {
+-		kfree(input);
+-		return -ENOMEM;
+-	}
+-
++	output = kzalloc(bytes, GFP_KERNEL);
+ 	result = -EOPNOTSUPP;
+ 	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+-	effect = pic_initializer_cpu_effect_locked(vcpu, ioctl);
++	effect = pic_initializer_retained_cpu_effect_locked(vcpu, ioctl);
+ 	if (effect && effect->cpu_bytes_charged && !effect->cpu_prepared &&
+ 	    effect->input_cpu_bytes == (write ? bytes : 0) &&
+ 	    effect->output_cpu_bytes == bytes) {
+ 		effect->input_cpu = input;
+ 		effect->output_cpu = output;
+-		effect->cpu_prepared = true;
+-		result = 0;
++		effect->input_cpu_copied_bytes = write ? bytes : 0;
++		effect->cpu_prepared = output != NULL;
++		result = output ? 0 : -ENOMEM;
++		/* Attached original history survives allocation/currentness errors. */
++		input = NULL;
++		output = NULL;
+ 	}
+ 	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
+ 	if (result) {
+@@ -251,6 +288,75 @@
+ }
+ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_arch_crucible_pic_initializer_cpu_prepare);
+ 
++/* Fixed scalar input is owned before the first faultable read. This shares
++ * the same finite row budget as ordinary byte preparation, but a partial
++ * prefix stays reachable even when no native callback may be invoked. */
++int kvm_arch_crucible_pic_initializer_cpu_read_input(struct kvm_vcpu *vcpu,
++	unsigned int ioctl, void *buffer, const void __user *source, u32 bytes)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_crucible_pic_initializer_state *state;
++	struct kvm_crucible_pic_initializer_effect *effect;
++	void *input, *output;
++	unsigned long flags, remaining;
++	u32 expected, charge;
++	bool write;
++	int result = -EOPNOTSUPP;
++
++	if (!buffer || !pic_initializer_cpu_bytes_layout(vcpu, ioctl, &expected, &write) ||
++	    !write || expected != bytes)
++		return -EINVAL;
++	charge = 2 * kmalloc_size_roundup(bytes);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	state = pic_initializer_actor_state(kvm, vcpu);
++	effect = pic_initializer_cpu_effect_locked(vcpu, ioctl);
++	if (effect && !effect->cpu_bytes_charged && state->input_bytes <=
++	    KVM_CRUCIBLE_PIC_INITIALIZER_MAX_INPUT_BYTES - charge) {
++		effect->cpu_bytes_charged = true;
++		effect->input_cpu_bytes = bytes;
++		effect->output_cpu_bytes = bytes;
++		state->input_bytes += charge;
++		result = 0;
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (result)
++		return result;
++
++	input = kzalloc(bytes, GFP_KERNEL);
++	output = kzalloc(bytes, GFP_KERNEL);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	effect = pic_initializer_retained_cpu_effect_locked(vcpu, ioctl);
++	if (!effect || effect->input_cpu || effect->output_cpu) {
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++		kfree(output);
++		kfree(input);
++		return -ESTALE;
++	}
++	effect->input_cpu = input;
++	effect->output_cpu = output;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (!input || !output)
++		return -ENOMEM;
++
++	remaining = copy_from_user(input, source, bytes);
++	effect->input_cpu_copied_bytes = bytes - remaining;
++	memcpy(buffer, input, bytes);
++	if (remaining)
++		return -EFAULT;
++	if (!pic_initializer_cpu_input_valid(ioctl, input))
++		return -EOPNOTSUPP;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	result = -ESTALE;
++	if (effect == pic_initializer_cpu_effect_locked(vcpu, ioctl)) {
++		effect->cpu_prepared = true;
++		result = 0;
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return result;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_arch_crucible_pic_initializer_cpu_read_input);
++
+ int kvm_arch_crucible_pic_initializer_cpu_complete(struct kvm_vcpu *vcpu,
+ 	unsigned int ioctl, const void *buffer, u32 bytes, long native_result)
+ {
+@@ -263,18 +369,77 @@
+ 	    !smp_load_acquire(&kvm->arch.crucible_pic_board.initializer_roster.selected))
+ 		return 0;
+ 	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+-	effect = pic_initializer_cpu_effect_locked(vcpu, ioctl);
+-	if (effect && effect->cpu_prepared && !effect->cpu_completed &&
++	effect = pic_initializer_retained_cpu_effect_locked(vcpu, ioctl);
++	if (effect && !effect->cpu_callback_returned) {
++		effect->native_cpu_result = native_result;
++		effect->cpu_callback_returned = true;
++		effect->cpu_completion_error = true;
++	}
++	if (effect && effect == pic_initializer_cpu_effect_locked(vcpu, ioctl) &&
++	    effect->cpu_prepared && !effect->cpu_completed &&
+ 	    effect->output_cpu && effect->output_cpu_bytes == bytes && buffer) {
+ 		memcpy(effect->output_cpu, buffer, bytes);
+ 		effect->native_cpu_result = native_result;
+ 		effect->cpu_completed = true;
++		effect->cpu_completion_error = false;
+ 		result = 0;
+ 	}
+ 	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
+ 	return result;
+ }
+ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_arch_crucible_pic_initializer_cpu_complete);
++
++/* A header fault still belongs to the original admitted syscall. Precharge
++ * and attach its zeroed storage before that first userspace read, then retain
++ * the copied prefix separately from any later variable-tail allocation. */
++int kvm_arch_crucible_pic_initializer_cpuid_header(struct kvm_vcpu *vcpu,
++	unsigned int ioctl, void *header, const void __user *source, u32 bytes)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_crucible_pic_initializer_state *state;
++	struct kvm_crucible_pic_initializer_effect *effect;
++	void *owned;
++	unsigned long flags, remaining;
++	u32 charge;
++	int result = -EOPNOTSUPP;
++
++	if (!header || bytes != sizeof(struct kvm_cpuid2) ||
++	    (ioctl != KVM_SET_CPUID && ioctl != KVM_SET_CPUID2 &&
++	     ioctl != KVM_GET_CPUID2))
++		return -EINVAL;
++	charge = kmalloc_size_roundup(bytes);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	state = pic_initializer_actor_state(kvm, vcpu);
++	effect = pic_initializer_cpu_effect_locked(vcpu, ioctl);
++	if (effect && !effect->cpuid_header_charged &&
++	    state->input_bytes <= KVM_CRUCIBLE_PIC_INITIALIZER_MAX_INPUT_BYTES - charge) {
++		effect->cpuid_header_charged = true;
++		state->input_bytes += charge;
++		result = 0;
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (result)
++		return result;
++
++	owned = kzalloc(bytes, GFP_KERNEL);
++	if (!owned)
++		return -ENOMEM;
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	effect = pic_initializer_retained_cpu_effect_locked(vcpu, ioctl);
++	if (!effect || effect->cpuid_header) {
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++		kfree(owned);
++		return -ESTALE;
++	}
++	effect->cpuid_header = owned;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++
++	remaining = copy_from_user(owned, source, bytes);
++	effect->cpuid_header_copied_bytes = bytes - remaining;
++	memcpy(header, owned, bytes);
++	return remaining ? -EFAULT : 0;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_arch_crucible_pic_initializer_cpuid_header);
+ 
+ /* CPUID retains its once-copied header separately from the variable user tail.
+  * Allocation and all history charges precede that tail read. The working copy
+@@ -308,15 +473,27 @@
+ 	input_bytes = get ? sizeof(*shape) : bytes;
+ 	output_bytes = sizeof(*shape) + shape->nent * sizeof(struct kvm_cpuid_entry2);
+ 	/* Charge the transient converter and published native entries as well. */
+-	charge = input_bytes + output_bytes + bytes +
+-		(get ? 0 : bytes + output_bytes);
++	charge = kmalloc_size_roundup(input_bytes) +
++		kmalloc_size_roundup(output_bytes) + kmalloc_size_roundup(bytes);
++	if (!get && shape->nent) {
++		/* Native owned setters allocate the converter and/or published
++		 * entry array themselves. Their complete size classes are charged
++		 * here before the variable user tail or native callback. */
++		if (ioctl == KVM_SET_CPUID)
++			charge += kmalloc_size_roundup(shape->nent * entry_bytes);
++		charge += kmalloc_size_roundup(shape->nent *
++			sizeof(struct kvm_cpuid_entry2));
++	}
+ 	if (charge > KVM_CRUCIBLE_PIC_INITIALIZER_MAX_INPUT_BYTES)
+ 		return result;
+ 
+ 	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+ 	state = pic_initializer_actor_state(kvm, vcpu);
+ 	effect = pic_initializer_cpu_effect_locked(vcpu, ioctl);
+-	if (effect && !effect->cpu_bytes_charged && state->input_bytes <=
++	if (effect && effect->cpuid_header &&
++	    effect->cpuid_header_copied_bytes == sizeof(*shape) &&
++	    !memcmp(effect->cpuid_header, header, sizeof(*shape)) &&
++	    !effect->cpu_bytes_charged && state->input_bytes <=
+ 	    KVM_CRUCIBLE_PIC_INITIALIZER_MAX_INPUT_BYTES - charge) {
+ 		effect->cpu_bytes_charged = true;
+ 		effect->input_cpu_bytes = input_bytes;
+@@ -331,26 +508,45 @@
+ 	input = kzalloc(input_bytes, GFP_KERNEL);
+ 	output = kzalloc(output_bytes, GFP_KERNEL);
+ 	copy = kzalloc(bytes, GFP_KERNEL);
++
++	result = -EOPNOTSUPP;
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	effect = pic_initializer_retained_cpu_effect_locked(vcpu, ioctl);
++	if (effect && effect->cpu_bytes_charged && !effect->input_cpu &&
++	    !effect->output_cpu && !effect->cpu_prepared) {
++		effect->input_cpu = input;
++		effect->output_cpu = output;
++		result = 0;
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (result) {
++		kfree(input);
++		kfree(output);
++		goto out;
++	}
++	/* From attachment onward both arrays belong to this retained row. A user
++	 * tail fault keeps its copied prefix and zeroed suffix, without retry. */
+ 	if (!input || !output || !copy) {
+ 		result = -ENOMEM;
+ 		goto out;
+ 	}
+ 	memcpy(input, header, sizeof(*shape));
+-	if (!get && shape->nent && copy_from_user(input + sizeof(*shape), entries,
+-						bytes - sizeof(*shape))) {
+-		result = -EFAULT;
+-		goto out;
++	effect->input_cpu_copied_bytes = sizeof(*shape);
++	if (!get && shape->nent) {
++		unsigned long remaining = copy_from_user(input + sizeof(*shape),
++			entries, bytes - sizeof(*shape));
++
++		effect->input_cpu_copied_bytes = bytes - remaining;
++		if (remaining) {
++			result = -EFAULT;
++			goto out;
++		}
+ 	}
+ 	memcpy(copy, input, input_bytes);
+ 
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+ 	result = -EOPNOTSUPP;
+-	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+-	effect = pic_initializer_cpu_effect_locked(vcpu, ioctl);
+-	if (effect && effect->cpu_bytes_charged && !effect->cpu_prepared &&
+-	    effect->input_cpu_bytes == input_bytes &&
+-	    effect->output_cpu_bytes == output_bytes) {
+-		effect->input_cpu = input;
+-		effect->output_cpu = output;
++	if (effect == pic_initializer_cpu_effect_locked(vcpu, ioctl)) {
+ 		effect->cpu_prepared = true;
+ 		*working = copy;
+ 		*working_bytes = bytes;
+@@ -358,11 +554,8 @@
+ 	}
+ 	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
+ out:
+-	if (result) {
++	if (result)
+ 		kfree(copy);
+-		kfree(output);
+-		kfree(input);
+-	}
+ 	return result;
+ }
+ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_arch_crucible_pic_initializer_cpuid_prepare);
+@@ -378,8 +571,14 @@
+ 	int result = -EOPNOTSUPP;
+ 
+ 	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+-	effect = pic_initializer_cpu_effect_locked(vcpu, ioctl);
+-	if (!effect || !effect->cpu_prepared || effect->cpu_completed ||
++	effect = pic_initializer_retained_cpu_effect_locked(vcpu, ioctl);
++	if (effect && !effect->cpu_callback_returned) {
++		effect->native_cpu_result = native_result;
++		effect->cpu_callback_returned = true;
++		effect->cpu_completion_error = true;
++	}
++	if (!effect || effect != pic_initializer_cpu_effect_locked(vcpu, ioctl) ||
++	    !effect->cpu_prepared || effect->cpu_completed ||
+ 	    !effect->output_cpu || vcpu->arch.cpuid_nent > KVM_MAX_CPUID_ENTRIES)
+ 		goto out;
+ 	bytes = sizeof(*output) + vcpu->arch.cpuid_nent * sizeof(output->entries[0]);
+@@ -388,15 +587,15 @@
+ 	if (!native_result && bytes > effect->output_cpu_bytes)
+ 		goto out;
+ 	output = effect->output_cpu;
+-	if (!native_result && ioctl == KVM_GET_CPUID2) {
++	if (ioctl == KVM_GET_CPUID2) {
+ 		const struct kvm_cpuid2 *observed = working;
+ 
+ 		/* Cache the exact native getter buffer later delivered to userspace.
+ 		 * A second native-state read cannot substitute for those output bytes. */
+ 		if (!observed || working_bytes != effect->output_cpu_bytes ||
+-		    observed->nent != vcpu->arch.cpuid_nent ||
+-		    sizeof(*observed) + observed->nent * sizeof(observed->entries[0]) >
+-			working_bytes)
++		    (!native_result && (observed->nent != vcpu->arch.cpuid_nent ||
++		     sizeof(*observed) + observed->nent * sizeof(observed->entries[0]) >
++			working_bytes)))
+ 			goto out;
+ 		memcpy(output, working, working_bytes);
+ 	} else if (!native_result) {
+@@ -407,6 +606,7 @@
+ 	}
+ 	effect->native_cpu_result = native_result;
+ 	effect->cpu_completed = true;
++	effect->cpu_completion_error = false;
+ 	result = 0;
+ out:
+ 	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
+--- /dev/null
++++ b/arch/x86/kvm/crucible-pic-initializer-nested-output.inc.c
+@@ -0,0 +1,194 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Literal VMX/SVM producers write the original kernel bank. No user output
++ * is reread, no field grants execution, and every failed bank stays owned. */
++
++int kvm_arch_crucible_pic_initializer_nested_output_prepare(struct kvm_vcpu *vcpu,
++	const void __user *size_input, u32 scratch_bytes, u32 *capacity,
++	struct kvm_nested_state **owned)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_crucible_pic_initializer_state *state;
++	struct kvm_crucible_pic_initializer_effect *effect;
++	u32 *input, bytes, charge;
++	void *output;
++	unsigned long flags, remaining;
++	int result = -EOPNOTSUPP;
++
++	*capacity = 0;
++	*owned = NULL;
++	if (scratch_bytes > KVM_CRUCIBLE_PIC_INITIALIZER_MAX_NESTED_BYTES)
++		return result;
++	charge = kmalloc_size_roundup(sizeof(*input));
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	state = pic_initializer_actor_state(kvm, vcpu);
++	effect = pic_initializer_cpu_effect_locked(vcpu, KVM_GET_NESTED_STATE);
++	if (effect && !effect->cpu_bytes_charged && state->input_bytes <=
++	    KVM_CRUCIBLE_PIC_INITIALIZER_MAX_INPUT_BYTES - charge) {
++		effect->cpu_bytes_charged = true;
++		effect->input_cpu_bytes = sizeof(*input);
++		state->input_bytes += charge;
++		result = 0;
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (result)
++		return result;
++
++	input = kzalloc(sizeof(*input), GFP_KERNEL);
++	if (!input)
++		return -ENOMEM;
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	effect = pic_initializer_retained_cpu_effect_locked(vcpu, KVM_GET_NESTED_STATE);
++	if (!effect || effect->input_cpu) {
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++		kfree(input);
++		return -ESTALE;
++	}
++	effect->input_cpu = input;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	remaining = copy_from_user(input, size_input, sizeof(*input));
++	effect->input_cpu_copied_bytes = sizeof(*input) - remaining;
++	if (remaining)
++		return -EFAULT;
++	bytes = *input;
++	if (bytes < sizeof(struct kvm_nested_state) ||
++	    bytes > KVM_CRUCIBLE_PIC_INITIALIZER_MAX_NESTED_BYTES)
++		return -EOPNOTSUPP;
++
++	/* Native SVM's temporary control array is charged here before its
++	 * literal kzalloc; VMX has no corresponding temporary allocation. */
++	charge = kmalloc_size_roundup(bytes) +
++		(scratch_bytes ? kmalloc_size_roundup(scratch_bytes) : 0);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	state = pic_initializer_actor_state(kvm, vcpu);
++	result = -EOPNOTSUPP;
++	if (effect == pic_initializer_cpu_effect_locked(vcpu, KVM_GET_NESTED_STATE) &&
++	    !effect->output_cpu_bytes && state->input_bytes <=
++	    KVM_CRUCIBLE_PIC_INITIALIZER_MAX_INPUT_BYTES - charge) {
++		effect->output_cpu_bytes = bytes;
++		state->input_bytes += charge;
++		result = 0;
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (result)
++		return result;
++
++	output = kzalloc(bytes, GFP_KERNEL);
++	if (!output)
++		return -ENOMEM;
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	if (effect != pic_initializer_retained_cpu_effect_locked(vcpu,
++		KVM_GET_NESTED_STATE) || effect->output_cpu) {
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++		kfree(output);
++		return -ESTALE;
++	}
++	effect->output_cpu = output;
++	result = -ESTALE;
++	if (effect == pic_initializer_cpu_effect_locked(vcpu, KVM_GET_NESTED_STATE)) {
++		effect->cpu_prepared = true;
++		effect->nested_callback_active = true;
++		*capacity = bytes;
++		*owned = output;
++		result = 0;
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return result;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_arch_crucible_pic_initializer_nested_output_prepare);
++
++bool kvm_arch_crucible_pic_initializer_nested_output_current(struct kvm_vcpu *vcpu,
++	const struct kvm_nested_state *owned, u32 capacity)
++{
++	struct kvm_crucible_pic_initializer_effect *effect;
++	unsigned long flags;
++	bool result;
++
++	raw_spin_lock_irqsave(&vcpu->kvm->crucible_gate_lock, flags);
++	effect = pic_initializer_cpu_effect_locked(vcpu, KVM_GET_NESTED_STATE);
++	result = effect && effect->cpu_prepared && effect->nested_callback_active &&
++		!effect->nested_copy_failed && effect->output_cpu == owned &&
++		effect->output_cpu_bytes == capacity;
++	raw_spin_unlock_irqrestore(&vcpu->kvm->crucible_gate_lock, flags);
++	return result;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_arch_crucible_pic_initializer_nested_output_current);
++
++int kvm_arch_crucible_pic_initializer_nested_output_copy(struct kvm_vcpu *vcpu,
++	struct kvm_nested_state *owned, u32 offset, const void *source, u32 bytes,
++	bool clear)
++{
++	struct kvm_crucible_pic_initializer_effect *effect;
++	unsigned long flags;
++	int result = -ESTALE;
++	u32 index;
++
++	raw_spin_lock_irqsave(&vcpu->kvm->crucible_gate_lock, flags);
++	effect = pic_initializer_cpu_effect_locked(vcpu, KVM_GET_NESTED_STATE);
++	/* Compare destination identity before following it. No candidate pointer
++	 * dereference, copy or native producer work is allowed after revocation. */
++	if (!effect || !effect->cpu_prepared || !effect->nested_callback_active ||
++	    effect->output_cpu != owned || effect->nested_copy_failed)
++		goto unlock;
++	if ((!clear && bytes && !source) || offset > effect->output_cpu_bytes ||
++	    bytes > effect->output_cpu_bytes - offset ||
++	    effect->nested_write_count == ARRAY_SIZE(effect->nested_writes)) {
++		effect->nested_copy_failed = true;
++		goto unlock;
++	}
++
++	index = effect->nested_write_count++;
++	effect->nested_writes[index].offset = offset;
++	effect->nested_writes[index].bytes = bytes;
++	effect->nested_writes[index].cleared = clear;
++	if (clear)
++		memset((void *)owned + offset, 0, bytes);
++	else
++		memcpy((void *)owned + offset, source, bytes);
++	result = 0;
++unlock:
++	raw_spin_unlock_irqrestore(&vcpu->kvm->crucible_gate_lock, flags);
++	return result;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_arch_crucible_pic_initializer_nested_output_copy);
++
++int kvm_arch_crucible_pic_initializer_nested_output_complete(struct kvm_vcpu *vcpu,
++	struct kvm_nested_state *owned, long native_result)
++{
++	struct kvm_crucible_pic_initializer_effect *effect;
++	unsigned long flags;
++	int result = -ESTALE;
++
++	raw_spin_lock_irqsave(&vcpu->kvm->crucible_gate_lock, flags);
++	effect = pic_initializer_retained_cpu_effect_locked(vcpu, KVM_GET_NESTED_STATE);
++	if (!effect || !effect->nested_callback_active || effect->output_cpu != owned)
++		goto unlock;
++
++	/* Revoke the original destination loan and retain the literal callback
++	 * return before any fallible post-observation. Known never comes from
++	 * userspace bytes or from a normalized substitute for this return. */
++	effect->nested_callback_active = false;
++	effect->nested_native_result = native_result;
++	effect->cpu_callback_returned = true;
++	effect->cpu_completion_error = true;
++	effect->native_cpu_result = native_result < 0 ? native_result :
++		(native_result > effect->output_cpu_bytes ? -E2BIG : 0);
++	if (effect != pic_initializer_cpu_effect_locked(vcpu, KVM_GET_NESTED_STATE) ||
++	    effect->nested_copy_failed)
++		goto unlock;
++	if (native_result > KVM_CRUCIBLE_PIC_INITIALIZER_MAX_NESTED_BYTES)
++		goto unlock;
++	if (native_result >= 0 && native_result <= effect->output_cpu_bytes &&
++	    (native_result < sizeof(*owned) || owned->size != native_result ||
++	     !effect->nested_write_count))
++		goto unlock;
++	if (native_result > effect->output_cpu_bytes)
++		/* Same ordinary ioctl response field when native capacity was short. */
++		owned->size = native_result;
++	effect->cpu_completed = true;
++	effect->cpu_completion_error = false;
++	result = 0;
++unlock:
++	raw_spin_unlock_irqrestore(&vcpu->kvm->crucible_gate_lock, flags);
++	return result;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_arch_crucible_pic_initializer_nested_output_complete);
+--- a/arch/x86/kvm/crucible-pic-initializer-roster.inc.c
++++ b/arch/x86/kvm/crucible-pic-initializer-roster.inc.c
+@@ -161,6 +161,12 @@
+ 			state = &board->initializer_roster.actors[index];
+ 			state->enrollment_id = request.enrollment_id;
+ 			state->maximum_effects = request.maximum_effects;
++			/* Every declared row owns its read-request/reply metadata before
++			 * the first worker/native callback; this credit never renews. */
++			state->input_bytes = KVM_CRUCIBLE_PIC_INITIALIZER_MAX_EFFECTS *
++				(sizeof(state->effects[0]) -
++				 offsetof(struct kvm_crucible_pic_initializer_effect,
++					cpu_callback_returned));
+ 			state->native_vcpu_id = index;
+ 		}
+ 		smp_store_release(&board->initializer_roster.selected, true);
+--- a/arch/x86/kvm/crucible-pic-initializer.inc.c
++++ b/arch/x86/kvm/crucible-pic-initializer.inc.c
+@@ -648,6 +648,7 @@
+ }
+ 
+ #include "crucible-pic-initializer-cpu-bytes.inc.c"
++#include "crucible-pic-initializer-nested-output.inc.c"
+ 
+ static void pic_initializer_release_actor_inputs(
+ 	struct kvm_crucible_pic_initializer_state *state)
+@@ -657,6 +658,7 @@
+ 	for (index = 0; index < state->issued; index++) {
+ 		kfree(state->effects[index].output_cpu);
+ 		kfree(state->effects[index].input_cpu);
++		kfree(state->effects[index].cpuid_header);
+ 		kfree(state->effects[index].output_msrs);
+ 		kfree(state->effects[index].input_msrs);
+ 		kfree(state->effects[index].input_nested);
+@@ -729,7 +731,7 @@
+ 	cpu_bytes = kvm->arch.crucible_pic_board.initializer_roster.selected &&
+ 		pic_initializer_cpu_bytes_operation(ioctl);
+ 	if (cpu_bytes && effect_index && effect_index <= state->issued &&
+-	    state->effects[effect_index - 1].cpu_completed)
++	    state->effects[effect_index - 1].cpu_callback_returned)
+ 		callback_result = state->effects[effect_index - 1].native_cpu_result;
+ 	/* Every caller holds the VM/file reference across the native function.
+ 	 * Reconcile the original row before credit release, wake or containment.
+@@ -746,6 +748,7 @@
+ 		if (cpu_bytes) {
+ 			known = known && effect->cpu_bytes_charged &&
+ 				effect->cpu_prepared && effect->cpu_completed &&
++				!effect->cpu_completion_error &&
+ 				effect->output_cpu && effect->output_cpu_bytes &&
+ 				(!effect->input_cpu_bytes || effect->input_cpu) &&
+ 				pic_initializer_cpu_result_known(vcpu, effect);
+@@ -801,3 +804,4 @@
+ EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_arch_crucible_pic_initializer_finish);
+ 
+ #include "crucible-pic-initializer-roster.inc.c"
++#include "crucible-q35-cpu-output-reader.inc.c"
+--- /dev/null
++++ b/arch/x86/kvm/crucible-q35-cpu-output-reader.inc.c
+@@ -0,0 +1,362 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Complete immutable native-v2 CPU history. This read-only control owns one
++ * delivery attempt per original row and cannot reenter a native callback. */
++
++static bool q35_cpu_bytes_request_valid(
++	const struct kvm_crucible_q35_cpu_bytes *request)
++{
++	u32 index;
++
++	if (!((request->version == 1 &&
++	       request->operation == KVM_CRUCIBLE_Q35_CPU_BYTES_READ) ||
++	      (request->version == 2 &&
++	       (request->operation == KVM_CRUCIBLE_Q35_CPU_BYTES_METADATA_V2 ||
++	        request->operation == KVM_CRUCIBLE_Q35_CPU_BYTES_READ_V2))) ||
++	    !request->enrollment_id ||
++	    request->native_vcpu_id >= KVM_CRUCIBLE_PIC_INITIALIZER_V2_CPUS ||
++	    !request->effect_index ||
++	    request->effect_index > KVM_CRUCIBLE_PIC_INITIALIZER_MAX_EFFECTS ||
++	    !request->native_ioctl || request->flags || request->input_bytes ||
++	    request->output_bytes || request->native_result ||
++	    request->original_delivery_result || request->reader_delivery_result ||
++	    request->input_copied_bytes ||
++	    request->input_capacity > KVM_CRUCIBLE_PIC_INITIALIZER_MAX_INPUT_BYTES ||
++	    request->output_capacity > KVM_CRUCIBLE_PIC_INITIALIZER_MAX_INPUT_BYTES)
++		return false;
++	if (request->version == 2 &&
++	    request->operation == KVM_CRUCIBLE_Q35_CPU_BYTES_METADATA_V2 &&
++	    (request->input_buffer || request->input_capacity ||
++	     request->output_buffer || request->output_capacity))
++		return false;
++	for (index = 0; index < ARRAY_SIZE(request->reserved); index++)
++		if (request->reserved[index])
++			return false;
++	return true;
++}
++
++static void q35_cpu_bytes_retained_spans(
++	const struct kvm_crucible_pic_initializer_effect *effect,
++	const void **input, u64 *input_bytes, const void **output,
++	u64 *output_bytes, u64 *copied)
++{
++	*input = NULL;
++	*output = NULL;
++	*input_bytes = 0;
++	*output_bytes = 0;
++	*copied = 0;
++
++	if (effect->cpu_bytes_charged) {
++		*input = effect->input_cpu;
++		*input_bytes = *input ? effect->input_cpu_bytes : 0;
++		*output = effect->output_cpu;
++		*output_bytes = *output ? effect->output_cpu_bytes : 0;
++		*copied = effect->input_cpu_copied_bytes;
++	} else if (effect->cpuid_header) {
++		*input = effect->cpuid_header;
++		*input_bytes = sizeof(struct kvm_cpuid2);
++		*copied = effect->cpuid_header_copied_bytes;
++	} else if (effect->input_msrs_known && effect->input_msrs) {
++		*input = effect->input_msrs;
++		*input_bytes = sizeof(*effect->input_msrs) +
++			effect->input_msrs->nmsrs * sizeof(effect->input_msrs->entries[0]);
++		*copied = *input_bytes;
++		if (effect->output_msrs_known && effect->output_msrs) {
++			*output = effect->output_msrs;
++			*output_bytes = sizeof(*effect->output_msrs) +
++				effect->output_msrs->nmsrs *
++				sizeof(effect->output_msrs->entries[0]);
++		}
++	} else if (effect->input_nested_known && effect->input_nested) {
++		*input = effect->input_nested;
++		*input_bytes = effect->input_nested_bytes;
++		*copied = *input_bytes;
++	} else if (effect->input_events_known) {
++		*input = &effect->input_events;
++		*input_bytes = sizeof(effect->input_events);
++		*copied = *input_bytes;
++	}
++}
++
++/* This resolves only the original completed row. It grants no CPU effect,
++ * execution window or new Task/vCPU enrollment. */
++static struct kvm_crucible_pic_initializer_effect *
++q35_cpu_bytes_original_row_locked(struct kvm *kvm,
++	const struct kvm_crucible_q35_cpu_bytes *request)
++{
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_crucible_pic_initializer_state *actor;
++	struct kvm_crucible_pic_initializer_effect *effect;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	if (board->constructor != current ||
++	    board->edition != KVM_CRUCIBLE_Q35_BOARD_ONLY ||
++	    !board->initializer_roster.selected ||
++	    board->initializer_roster.enrollment_id != request->enrollment_id)
++		return NULL;
++	actor = &board->initializer_roster.actors[request->native_vcpu_id];
++	if (!actor->task || !actor->vcpu || actor->inflight ||
++	    actor->enrollment_id != request->enrollment_id ||
++	    actor->native_vcpu_id != request->native_vcpu_id ||
++	    kvm_get_vcpu(kvm, request->native_vcpu_id) != actor->vcpu ||
++	    actor->vcpu->vcpu_id != request->native_vcpu_id ||
++	    request->effect_index > actor->issued)
++		return NULL;
++	effect = &actor->effects[request->effect_index - 1];
++	/* A scalar receipt is not a complete byte owner. Selected nested GET
++	 * now owns its literal producer output; the ordinary user-output path
++	 * remains separate. Refuse every selector lacking an original byte
++	 * owner rather than manufacture an empty complete payload. */
++	if (!pic_initializer_cpu_bytes_operation(effect->native_ioctl) &&
++	    !effect->input_msrs_known && !effect->input_nested_known &&
++	    !effect->input_events_known)
++		return NULL;
++	if (effect->native_ioctl != request->native_ioctl)
++		return NULL;
++	return effect;
++}
++
++/* A failed variable allocation can leave only the original CPUID header.
++ * Edition1 retains its exact span semantics. Edition2 names that real surviving
++ * bank instead of guessing the originally requested variable allocation. */
++static void q35_cpu_bytes_spans_v2(
++	const struct kvm_crucible_pic_initializer_effect *effect,
++	const void **input, u64 *input_bytes, const void **output,
++	u64 *output_bytes, u64 *copied)
++{
++	q35_cpu_bytes_retained_spans(effect, input, input_bytes, output,
++		output_bytes, copied);
++	if (!*input && effect->cpuid_header) {
++		*input = effect->cpuid_header;
++		*input_bytes = sizeof(struct kvm_cpuid2);
++		*copied = effect->cpuid_header_copied_bytes;
++	}
++}
++
++static int q35_cpu_bytes_admit_locked(struct kvm *kvm,
++	const struct kvm_crucible_q35_cpu_bytes *request,
++	struct kvm_crucible_pic_initializer_effect **retained,
++	const void **input, const void **output)
++{
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_crucible_pic_initializer_state *actor;
++	struct kvm_crucible_pic_initializer_effect *effect;
++	struct kvm_crucible_q35_cpu_bytes reply = *request;
++	u64 input_bytes, output_bytes, copied;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	if (board->constructor != current ||
++	    board->edition != KVM_CRUCIBLE_Q35_BOARD_ONLY ||
++	    !board->initializer_roster.selected ||
++	    board->initializer_roster.enrollment_id != request->enrollment_id)
++		return -EPERM;
++	actor = &board->initializer_roster.actors[request->native_vcpu_id];
++	if (!actor->task || !actor->vcpu || actor->inflight ||
++	    actor->enrollment_id != request->enrollment_id ||
++	    actor->native_vcpu_id != request->native_vcpu_id ||
++	    kvm_get_vcpu(kvm, request->native_vcpu_id) != actor->vcpu ||
++	    actor->vcpu->vcpu_id != request->native_vcpu_id ||
++	    request->effect_index > actor->issued)
++		return -ESTALE;
++	effect = &actor->effects[request->effect_index - 1];
++	/* A scalar receipt is not a complete byte owner. Selected nested GET
++	 * now owns its literal producer output; the ordinary user-output path
++	 * remains separate. Refuse every selector lacking an original byte
++	 * owner rather than manufacture an empty complete payload. */
++	if (!pic_initializer_cpu_bytes_operation(effect->native_ioctl) &&
++	    !effect->input_msrs_known && !effect->input_nested_known &&
++	    !effect->input_events_known)
++		return -EOPNOTSUPP;
++	if (effect->native_ioctl != request->native_ioctl)
++		return -ESTALE;
++	if (effect->reader_attempted)
++		return -EALREADY;
++
++	if (request->version == 2) {
++		if (!effect->reader_metadata_attempted ||
++		    effect->reader_metadata_delivery_result ||
++		    effect->reader_metadata_reply.input_bytes != request->input_capacity ||
++		    effect->reader_metadata_reply.output_bytes != request->output_capacity)
++			return -ESTALE;
++		q35_cpu_bytes_spans_v2(effect, input, &input_bytes, output,
++			&output_bytes, &copied);
++	} else {
++		q35_cpu_bytes_retained_spans(effect, input, &input_bytes, output,
++			&output_bytes, &copied);
++	}
++	/* The whole original storage must fit before the one-shot read is spent.
++	 * Capacity mistakes admit no prefix or replacement buffer. */
++	if (copied > input_bytes || input_bytes != request->input_capacity ||
++	    output_bytes != request->output_capacity ||
++	    (!!input_bytes != !!request->input_buffer) ||
++	    (!!output_bytes != !!request->output_buffer))
++		return -EINVAL;
++
++	reply.input_bytes = input_bytes;
++	reply.output_bytes = output_bytes;
++	reply.input_copied_bytes = copied;
++	/* MSR counts and nested required extents are literal native callback
++	 * returns. They remain distinct from normalized ioctl delivery below. */
++	reply.native_result = effect->output_msrs_known ?
++		effect->native_msr_result :
++		(effect->native_ioctl == KVM_GET_NESTED_STATE && effect->cpu_callback_returned ?
++		 effect->nested_native_result : effect->native_result);
++	reply.original_delivery_result = pic_initializer_cpu_bytes_operation(effect->native_ioctl) ?
++		effect->cpu_delivery_result : effect->native_result;
++	reply.flags = effect->known ? KVM_CRUCIBLE_Q35_CPU_BYTES_KNOWN :
++		KVM_CRUCIBLE_Q35_CPU_BYTES_UNCERTAIN;
++	if (input_bytes && copied == input_bytes)
++		reply.flags |= KVM_CRUCIBLE_Q35_CPU_BYTES_INPUT_COMPLETE;
++	if (effect->cpu_callback_returned || effect->output_msrs_known ||
++	    (!pic_initializer_cpu_bytes_operation(effect->native_ioctl) && effect->known))
++		reply.flags |= KVM_CRUCIBLE_Q35_CPU_BYTES_NATIVE_RETURNED;
++	if ((effect->cpu_completed &&
++	     (effect->native_ioctl != KVM_GET_NESTED_STATE ||
++	      effect->nested_write_count ||
++	      effect->nested_native_result > effect->output_cpu_bytes)) ||
++	    effect->output_msrs_known)
++		reply.flags |= KVM_CRUCIBLE_Q35_CPU_BYTES_OUTPUT_OBSERVED;
++
++	/* Storage and its metadata were precharged at SELECT. The immutable
++	 * tuple is retained before any user delivery; errors never renew it. */
++	effect->reader_request = *request;
++	effect->reader_reply = reply;
++	effect->reader_attempted = true;
++	effect->reader_delivery_result = -EINPROGRESS;
++	*retained = effect;
++	return 0;
++}
++
++static int q35_cpu_bytes_metadata_locked(struct kvm *kvm,
++	const struct kvm_crucible_q35_cpu_bytes *request,
++	struct kvm_crucible_pic_initializer_effect **retained)
++{
++	struct kvm_crucible_pic_initializer_effect *effect;
++	struct kvm_crucible_q35_cpu_bytes reply = *request;
++	const void *input, *output;
++	u64 input_bytes, output_bytes, copied;
++
++	effect = q35_cpu_bytes_original_row_locked(kvm, request);
++	if (!effect)
++		return -ESTALE;
++	if (effect->reader_metadata_attempted || effect->reader_attempted)
++		return -EALREADY;
++	q35_cpu_bytes_spans_v2(effect, &input, &input_bytes, &output,
++		&output_bytes, &copied);
++	if (copied > input_bytes ||
++	    input_bytes > KVM_CRUCIBLE_PIC_INITIALIZER_MAX_INPUT_BYTES ||
++	    output_bytes > KVM_CRUCIBLE_PIC_INITIALIZER_MAX_INPUT_BYTES)
++		return -ESTALE;
++	reply.input_bytes = input_bytes;
++	reply.output_bytes = output_bytes;
++	reply.input_copied_bytes = copied;
++	/* MSR counts and nested required extents are literal native callback
++	 * returns. They remain distinct from normalized ioctl delivery below. */
++	reply.native_result = effect->output_msrs_known ?
++		effect->native_msr_result :
++		(effect->native_ioctl == KVM_GET_NESTED_STATE && effect->cpu_callback_returned ?
++		 effect->nested_native_result : effect->native_result);
++	reply.original_delivery_result = pic_initializer_cpu_bytes_operation(effect->native_ioctl) ?
++		effect->cpu_delivery_result : effect->native_result;
++	reply.flags = effect->known ? KVM_CRUCIBLE_Q35_CPU_BYTES_KNOWN :
++		KVM_CRUCIBLE_Q35_CPU_BYTES_UNCERTAIN;
++	if (input_bytes && copied == input_bytes)
++		reply.flags |= KVM_CRUCIBLE_Q35_CPU_BYTES_INPUT_COMPLETE;
++	if (effect->cpu_callback_returned || effect->output_msrs_known ||
++	    (!pic_initializer_cpu_bytes_operation(effect->native_ioctl) && effect->known))
++		reply.flags |= KVM_CRUCIBLE_Q35_CPU_BYTES_NATIVE_RETURNED;
++	if ((effect->cpu_completed &&
++	     (effect->native_ioctl != KVM_GET_NESTED_STATE ||
++	      effect->nested_write_count ||
++	      effect->nested_native_result > effect->output_cpu_bytes)) ||
++	    effect->output_msrs_known)
++		reply.flags |= KVM_CRUCIBLE_Q35_CPU_BYTES_OUTPUT_OBSERVED;
++
++
++	/* Both exact bodies and final delivery counters were charged at SELECT.
++	 * Partial delivery consumes this slot, preserving the offered body. */
++	effect->reader_metadata_request = *request;
++	effect->reader_metadata_reply = reply;
++	effect->reader_metadata_delivery_result = -EINPROGRESS;
++	effect->reader_metadata_attempted = true;
++	*retained = effect;
++	return 0;
++}
++
++static int kvm_crucible_q35_cpu_bytes_control(struct kvm *kvm,
++	struct kvm_enable_cap *cap)
++{
++	struct kvm_crucible_q35_cpu_bytes request;
++	struct kvm_crucible_pic_initializer_effect *effect = NULL;
++	void __user *argument = u64_to_user_ptr(cap->args[0]);
++	const void *input = NULL, *output = NULL;
++	unsigned long flags, remaining;
++	int result;
++
++	BUILD_BUG_ON(sizeof(request) != 128);
++	BUILD_BUG_ON(offsetof(struct kvm_crucible_q35_cpu_bytes, native_result) != 80);
++	BUILD_BUG_ON(offsetof(struct kvm_crucible_q35_cpu_bytes, input_copied_bytes) != 104);
++	if (cap->flags || !cap->args[0] || cap->args[1] ||
++	    cap->args[2] || cap->args[3])
++		return -EINVAL;
++	if (copy_from_user(&request, argument, sizeof(request)))
++		return -EFAULT;
++	if (!q35_cpu_bytes_request_valid(&request))
++		return -EINVAL;
++	if (!mutex_trylock(&kvm->crucible_configuration_lock))
++		return -EBUSY;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	if (request.version == 2 &&
++	    request.operation == KVM_CRUCIBLE_Q35_CPU_BYTES_METADATA_V2)
++		result = q35_cpu_bytes_metadata_locked(kvm, &request, &effect);
++	else
++	result = q35_cpu_bytes_admit_locked(kvm, &request, &effect, &input, &output);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (result)
++		goto unlock;
++
++	if (request.version == 2 &&
++	    request.operation == KVM_CRUCIBLE_Q35_CPU_BYTES_METADATA_V2) {
++		remaining = copy_to_user(argument, &effect->reader_metadata_reply,
++			sizeof(effect->reader_metadata_reply));
++		effect->reader_metadata_header_delivered =
++			sizeof(effect->reader_metadata_reply) - remaining;
++		result = remaining ? -EFAULT : 0;
++		effect->reader_metadata_delivery_result = result;
++		goto unlock;
++	}
++
++	/* Configuration exclusion ends only after the same preowned reply and
++	 * complete payload attempts. No raw spinlock spans a userspace fault. */
++	result = -EFAULT;
++	if (request.input_capacity) {
++		remaining = copy_to_user(u64_to_user_ptr(request.input_buffer),
++			input, request.input_capacity);
++		effect->reader_input_delivered = request.input_capacity - remaining;
++		if (remaining)
++			goto retain_delivery;
++	}
++	if (request.output_capacity) {
++		remaining = copy_to_user(u64_to_user_ptr(request.output_buffer),
++			output, request.output_capacity);
++		effect->reader_output_delivered = request.output_capacity - remaining;
++		if (remaining)
++			goto retain_delivery;
++	}
++	result = 0;
++
++retain_delivery:
++	effect->reader_reply.reader_delivery_result = result;
++	remaining = copy_to_user(argument, &effect->reader_reply,
++		sizeof(effect->reader_reply));
++	effect->reader_header_delivered = sizeof(effect->reader_reply) - remaining;
++	if (remaining)
++		result = -EFAULT;
++	effect->reader_delivery_result = result;
++	/* Preserve the exact header offered before copyout. Header loss changes
++	 * only the separate final delivery record, never that offered body or
++	 * the retained native result and original payload allocations. */
++unlock:
++	mutex_unlock(&kvm->crucible_configuration_lock);
++	return result;
++}
+--- a/arch/x86/kvm/crucible-q35-ps-clock.inc.c
++++ b/arch/x86/kvm/crucible-q35-ps-clock.inc.c
+@@ -418,7 +418,8 @@
+ 		    kvm->crucible_effect_owners || kvm->crucible_irq_input.owners ||
+ 		    pending || closed_workers != 15 ||
+ 		    (ps->plan.version == 2 &&
+-		     !kvm_arch_crucible_q35_ps_timers_closed_locked(kvm))) {
++		     (!kvm_arch_crucible_q35_ps_timers_closed_locked(kvm) ||
++		      !kvm_crucible_q35_ps_timer_outputs_closed_locked(kvm)))) {
+ 			result = -EBUSY;
+ 			goto cache_result;
+ 		}
+@@ -436,7 +437,8 @@
+ 		if (ps->phase != KVM_CRUCIBLE_PS_NATIVE_CLOSED ||
+ 		    pending || closed_workers != 15 || clock->run_owners || clock->timer_owners ||
+ 		    (ps->plan.version == 2 &&
+-		     !kvm_arch_crucible_q35_ps_timers_closed_locked(kvm))) {
++		     (!kvm_arch_crucible_q35_ps_timers_closed_locked(kvm) ||
++		      !kvm_crucible_q35_ps_timer_outputs_closed_locked(kvm)))) {
+ 			result = -EBUSY;
+ 			goto cache_result;
+ 		}
+--- /dev/null
++++ b/arch/x86/kvm/crucible-q35-ps-pit-apic.inc.c
+@@ -0,0 +1,152 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Each literal APIC acceptance retains observed input/output bytes from its
++ * original native PIT route. Whole stopped hardware state is a separate cut. */
++
++static bool ps_pit_watchdog_target_begin(struct kvm_lapic *apic, int mode,
++	int vector, int level, int trigger, struct kvm_crucible_ps_irq_target_row **lease);
++static bool ps_pit_watchdog_target_complete(struct kvm_lapic *apic,
++	struct kvm_crucible_ps_irq_target_row *row, int result);
++
++static void ps_pit_apic_snapshot(struct kvm_lapic *apic,
++	struct kvm_crucible_ps_irq_target_row *row, bool output)
++{
++	struct kvm_vcpu *vcpu = apic->vcpu;
++	struct kvm_lapic_state *state = output ? &row->output : &row->input;
++
++	memcpy(state->regs, apic->regs, sizeof(state->regs));
++	if (output) {
++		row->output_requests = READ_ONCE(vcpu->requests);
++		row->output_nmi_queued = atomic_read(&vcpu->arch.nmi_queued);
++		row->output_nmi_pending = READ_ONCE(vcpu->arch.nmi_pending);
++		row->output_pending_events = READ_ONCE(apic->pending_events);
++		row->output_sipi_vector = READ_ONCE(apic->sipi_vector);
++		row->output_arb_prio = READ_ONCE(vcpu->arch.apic_arb_prio);
++		row->output_irr_pending = READ_ONCE(apic->irr_pending);
++		row->output_pv_unhalted = READ_ONCE(vcpu->arch.pv.pv_unhalted);
++		row->output_smi_pending = READ_ONCE(vcpu->arch.smi_pending);
++	} else {
++		row->input_requests = READ_ONCE(vcpu->requests);
++		row->input_nmi_queued = atomic_read(&vcpu->arch.nmi_queued);
++		row->input_nmi_pending = READ_ONCE(vcpu->arch.nmi_pending);
++		row->input_pending_events = READ_ONCE(apic->pending_events);
++		row->input_sipi_vector = READ_ONCE(apic->sipi_vector);
++		row->input_arb_prio = READ_ONCE(vcpu->arch.apic_arb_prio);
++		row->input_irr_pending = READ_ONCE(apic->irr_pending);
++		row->input_pv_unhalted = READ_ONCE(vcpu->arch.pv.pv_unhalted);
++		row->input_smi_pending = READ_ONCE(vcpu->arch.smi_pending);
++	}
++}
++
++static bool ps_pit_apic_route_reference(struct kvm_crucible_ps_timer_state *timers,
++	struct kvm_crucible_ps_timer_route_row *route)
++{
++	u32 index;
++
++	if (!timers->routes || timers->routes_used > timers->installation.maximum_routes ||
++	    timers->installation.maximum_routes > KVM_CRUCIBLE_Q35_PS_TIMER_MAX_ROUTES)
++		return false;
++	for (index = 0; index < timers->routes_used; index++)
++		if (route == &timers->routes[index])
++			return true;
++	return false;
++}
++
++static bool ps_pit_apic_begin(struct kvm_lapic *apic, int mode, int vector,
++	int level, int trigger, struct kvm_crucible_ps_irq_target_row **lease)
++{
++	struct kvm_vcpu *vcpu = apic->vcpu;
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_crucible_ps_timer_state *timers = &kvm->arch.crucible_clock.ps.timers;
++	struct kvm_crucible_ps_timer_route_row *route;
++	struct kvm_crucible_ps_timer_expiry_row *expiry;
++	struct kvm_crucible_ps_irq_target_row *row;
++	unsigned long flags;
++	bool valid;
++
++	*lease = NULL;
++	if (!READ_ONCE(kvm->arch.crucible_clock.ps.selected) ||
++	    READ_ONCE(kvm->arch.crucible_clock.ps.plan.version) != 2 ||
++	    !READ_ONCE(timers->pit_dispatch_active))
++		return true;
++	if (READ_ONCE(timers->pit_dispatch_nmi))
++		return ps_pit_watchdog_target_begin(apic, mode, vector, level, trigger, lease);
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	route = timers->pit_dispatch_route;
++	valid = kvm_crucible_q35_ps_pit_dispatch_current_locked(kvm, &expiry) &&
++		ps_pit_apic_route_reference(timers, route) && route->expiry == expiry &&
++		route->attempted && !route->known && route->receiver_input_known &&
++		vcpu->vcpu_id < 4 && kvm_get_vcpu(kvm, vcpu->vcpu_id) == vcpu &&
++		timers->roots.apics[vcpu->vcpu_id] == apic && apic->regs &&
++		!apic->guest_apic_protected &&
++		(mode == APIC_DM_FIXED || mode == APIC_DM_LOWEST || mode == APIC_DM_EXTINT) &&
++		vector >= 0 && vector < 256 &&
++		level >= 0 && level <= 1 && trigger >= 0 && trigger <= 1;
++	if (valid) {
++		row = &route->targets[vcpu->vcpu_id];
++		valid = !row->attempted;
++		if (valid) {
++			/* All four actual target bodies were charged with this route
++			 * at original bank installation, before native delivery. */
++			row->owner_kind = 1;
++			row->actor = current;
++			row->vcpu = vcpu;
++			row->apic = apic;
++			row->native_vcpu_id = vcpu->vcpu_id;
++			row->generation = expiry->original.generation;
++			row->delivery_mode = mode;
++			row->vector = vector;
++			row->level = level;
++			row->trigger_mode = trigger;
++			row->attempted = true;
++			ps_pit_apic_snapshot(apic, row, false);
++			*lease = row;
++		}
++	}
++	if (!valid) {
++		timers->uncertain = true;
++		kvm_crucible_q35_ps_timer_fault_locked(kvm);
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (!valid)
++		kvm_vm_dead(kvm);
++	return valid;
++}
++
++static bool ps_pit_apic_complete(struct kvm_lapic *apic,
++	struct kvm_crucible_ps_irq_target_row *row, int result)
++{
++	struct kvm *kvm = apic->vcpu->kvm;
++	struct kvm_crucible_ps_timer_state *timers = &kvm->arch.crucible_clock.ps.timers;
++	struct kvm_crucible_ps_timer_route_row *route;
++	struct kvm_crucible_ps_timer_expiry_row *expiry;
++	unsigned long flags;
++	bool valid;
++
++	if (!row)
++		return true;
++	if (row->owner_kind == 2)
++		return ps_pit_watchdog_target_complete(apic, row, result);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	/* The original call lease owns these bytes even after a stop/refusal.
++	 * Preserve its native status and output before currentness checks. */
++	row->native_result = result;
++	ps_pit_apic_snapshot(apic, row, true);
++	row->output_known = true;
++	route = timers->pit_dispatch_route;
++	valid = ps_pit_apic_route_reference(timers, route) &&
++		apic->vcpu->vcpu_id < 4 && row == &route->targets[apic->vcpu->vcpu_id] &&
++		row->apic == apic && row->vcpu == apic->vcpu && row->actor == current &&
++		row->attempted && !row->known &&
++		kvm_crucible_q35_ps_pit_dispatch_current_locked(kvm, &expiry) &&
++		route->expiry == expiry && row->generation == expiry->original.generation;
++	row->known = valid;
++	if (!valid) {
++		timers->uncertain = true;
++		kvm_crucible_q35_ps_timer_fault_locked(kvm);
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (!valid)
++		kvm_vm_dead(kvm);
++	return valid;
++}
+--- /dev/null
++++ b/arch/x86/kvm/crucible-q35-ps-pit-producer.inc.c
+@@ -0,0 +1,509 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Source-owned PIT guest mutation, native publication and contained expiry.
++ * IRQ pulse/NMI/EOI completion is a distinct, still-unissued source join. */
++
++static enum hrtimer_restart pit_timer_fn(struct hrtimer *timer);
++static void pit_do_work(struct kthread_work *work);
++static const struct kvm_io_device_ops pit_dev_ops;
++
++static bool pit_ps_selected(struct kvm_pit *pit)
++{
++	struct kvm_crucible_ps_clock_state *ps = &pit->kvm->arch.crucible_clock.ps;
++
++	return READ_ONCE(ps->selected) && READ_ONCE(ps->plan.version) == 2;
++}
++
++static void pit_ps_fault_locked(struct kvm_pit *pit)
++{
++	pit->kvm->arch.crucible_clock.ps.timers.uncertain = true;
++	kvm_crucible_q35_ps_timer_fault_locked(pit->kvm);
++}
++
++static bool pit_ps_roots_current_locked(struct kvm_pit *pit)
++{
++	struct kvm *kvm = pit->kvm;
++	struct kvm_crucible_ps_clock_state *ps = &kvm->arch.crucible_clock.ps;
++	struct kvm_crucible_ps_timer_state *timers = &ps->timers;
++	const struct kvm_crucible_ps_timer_roots *roots = &timers->roots;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	return pit_ps_selected(pit) && timers->installed &&
++		timers->installation_attempted && timers->installation_known && !timers->uncertain &&
++		timers->owner == ps->controller &&
++		timers->installation.configuration_enrollment_id == ps->plan.configuration_enrollment_id &&
++		pit == kvm->arch.vpit && pit == kvm->arch.crucible_pic_board.pit &&
++		roots->pit == pit && roots->pit_worker == pit->worker && pit->worker &&
++		roots->pit_task == pit->worker->task && roots->pit_work == &pit->expired &&
++		roots->pit_timer == &pit->pit_state.timer && pit->dev.ops == &pit_dev_ops &&
++		pit->expired.func == pit_do_work && pit->pit_state.timer.function == pit_timer_fn;
++}
++
++static bool pit_ps_arm_reference(struct kvm_crucible_ps_timer_state *timers,
++	struct kvm_crucible_ps_pit_arm_row *arm)
++{
++	u32 index;
++
++	if (timers->pit_arms_used > timers->installation.maximum_pit_arms ||
++	    timers->installation.maximum_pit_arms > KVM_CRUCIBLE_Q35_PS_TIMER_MAX_ARMS)
++		return false;
++	for (index = 0; index < timers->pit_arms_used; index++)
++		if (arm == &timers->pit_arms[index])
++			return true;
++	return false;
++}
++
++static bool pit_ps_active_owner_locked(struct kvm_pit *pit)
++{
++	struct kvm_crucible_ps_timer_state *timers = &pit->kvm->arch.crucible_clock.ps.timers;
++	struct kvm_crucible_ps_pit_arm_row *arm = timers->pit_active_arm;
++
++	if (hrtimer_callback_running(&pit->pit_state.timer))
++		return false;
++	if (!arm)
++		return !hrtimer_active(&pit->pit_state.timer);
++	return pit_ps_arm_reference(timers, arm) && arm->pit == pit &&
++		arm->original.known && arm->state_output_known && !arm->original.retired &&
++		arm->original.timer == &pit->pit_state.timer;
++}
++
++static void pit_ps_snapshot(struct kvm_pit *pit, struct kvm_pit_state2 *state)
++{
++	lockdep_assert_held(&pit->pit_state.lock);
++	memset(state, 0, sizeof(*state));
++	memcpy(state->channels, pit->pit_state.channels, sizeof(state->channels));
++	state->flags = pit->pit_state.flags;
++}
++
++static bool pit_ps_write_begin(struct kvm_pit *pit, struct kvm_vcpu *vcpu,
++	gpa_t address, int length, u32 value)
++{
++	struct kvm *kvm = pit->kvm;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_ps_timer_state *timers = &clock->ps.timers;
++	struct kvm_crucible_ps_pit_arm_row *row;
++	unsigned long flags;
++	u64 position;
++	bool valid;
++
++	lockdep_assert_held(&pit->pit_state.lock);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	valid = vcpu && vcpu->kvm == kvm && length == 1 &&
++		pit_ps_roots_current_locked(pit) && !timers->pit_access &&
++		!timers->pit_queued_expiry &&
++		timers->pit_arms && timers->installation.maximum_pit_arms &&
++		timers->installation.maximum_pit_arms <= KVM_CRUCIBLE_Q35_PS_TIMER_MAX_ARMS &&
++		timers->pit_arms_used < timers->installation.maximum_pit_arms &&
++		clock->timer_owners != U32_MAX &&
++		pit_ps_active_owner_locked(pit) &&
++		kvm_crucible_q35_ps_pit_guest_current_locked(vcpu, &position, false);
++	if (!valid) {
++		pit_ps_fault_locked(pit);
++		goto unlock;
++	}
++	/* Charge the complete original input and effect credit before any native
++	 * PIT register mutation. This row is never renewed or reused. */
++	row = &timers->pit_arms[timers->pit_arms_used++];
++	row->pit = pit;
++	row->address = address;
++	row->length = length;
++	row->value = value;
++	row->original.actor = current;
++	row->original.writer = vcpu;
++	row->original.timer = &pit->pit_state.timer;
++	row->original.ordinal = timers->pit_arms_used;
++	row->original.generation = clock->window_generation;
++	row->original.invocation = vcpu->crucible_timer_run_invocation;
++	row->original.native_vcpu_id = vcpu->vcpu_id;
++	row->original.position_ps = position;
++	row->original.kind = 1;
++	row->original.attempted = true;
++	row->original.retired = true;
++	pit_ps_snapshot(pit, &row->input);
++	timers->pit_access = row;
++	clock->timer_owners++;
++unlock:
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return valid;
++}
++
++static bool pit_ps_write_finish(struct kvm_pit *pit)
++{
++	struct kvm *kvm = pit->kvm;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_ps_timer_state *timers = &clock->ps.timers;
++	struct kvm_crucible_ps_pit_arm_row *row;
++	unsigned long flags;
++	u64 position;
++	bool valid;
++
++	lockdep_assert_held(&pit->pit_state.lock);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	row = timers->pit_access;
++	valid = pit_ps_arm_reference(timers, row) && row->pit == pit &&
++		row->original.actor == current && row->original.writer && clock->timer_owners;
++	if (valid) {
++		/* Native output is retained before currentness reconciliation, even
++		 * if the physical stop raced with the completed register effect. */
++		pit_ps_snapshot(pit, &row->output);
++		row->state_output_known = true;
++		valid = pit_ps_roots_current_locked(pit) &&
++			kvm_crucible_q35_ps_pit_guest_current_locked(row->original.writer,
++				&position, true) && row->original.generation == clock->window_generation &&
++			row->original.invocation == row->original.writer->crucible_timer_run_invocation;
++		row->original.known = valid;
++		clock->timer_owners--;
++		timers->pit_access = NULL;
++	}
++	if (!valid)
++		pit_ps_fault_locked(pit);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return valid;
++}
++
++static bool pit_ps_cancel_locked(struct kvm_pit *pit,
++	struct kvm_crucible_ps_pit_arm_row *row)
++{
++	struct kvm_crucible_ps_timer_state *timers = &pit->kvm->arch.crucible_clock.ps.timers;
++	struct kvm_crucible_ps_pit_arm_row *prior = timers->pit_active_arm;
++	bool active = hrtimer_active(&pit->pit_state.timer);
++
++	if (hrtimer_callback_running(&pit->pit_state.timer) ||
++	    (active && !prior) || (prior &&
++	     (!pit_ps_arm_reference(timers, prior) || prior->pit != pit ||
++	      !prior->original.known || !prior->state_output_known || prior->original.retired ||
++	      prior->original.timer != &pit->pit_state.timer)))
++		return false;
++	if (!prior)
++		return true;
++	row->superseded = prior;
++	if (active) {
++		row->cancel_attempted = true;
++		row->cancel_result = hrtimer_try_to_cancel(&pit->pit_state.timer);
++		row->cancel_known = row->cancel_result >= 0;
++		if (!row->cancel_known)
++			return false;
++	}
++	prior->original.retired = true;
++	timers->pit_active_arm = NULL;
++	return true;
++}
++
++static bool pit_ps_program(struct kvm_pit *pit, u32 count, bool periodic)
++{
++	struct kvm *kvm = pit->kvm;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_ps_timer_state *timers = &clock->ps.timers;
++	struct kvm_crucible_ps_pit_arm_row *row;
++	unsigned long flags;
++	u64 position, observed_position, interval, minimum, deadline;
++	ktime_t host, observed_host;
++	int projection;
++	bool valid = false;
++
++	lockdep_assert_held(&pit->pit_state.lock);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	row = timers->pit_access;
++	if (!pit_ps_roots_current_locked(pit) || !pit_ps_arm_reference(timers, row) ||
++	    row->pit != pit || row->original.actor != current || !row->original.writer ||
++	    !kvm_crucible_q35_ps_pit_guest_current_locked(row->original.writer, &position, false) ||
++	    !count || count > 0x10000 ||
++	    check_mul_overflow((u64)min_timer_period_us, 1000000ULL, &minimum))
++		goto fault;
++	interval = mul_u64_u32_div(1000000000000ULL, count, KVM_PIT_FREQ);
++	if (periodic && interval < minimum)
++		interval = minimum;
++	if (!interval || check_add_overflow(position, interval, &deadline))
++		goto fault;
++	projection = kvm_crucible_q35_ps_timer_host_locked(kvm, deadline, &host);
++	if (projection < 0 || !pit_ps_cancel_locked(pit, row))
++		goto fault;
++	/* Native cancellation can finish after the original admission sample.
++	 * Revalidate the SAME original RUN and projection before publication;
++	 * its retained cancellation is not permission to arm after the stop. */
++	if (projection &&
++	    (!kvm_crucible_q35_ps_pit_guest_current_locked(row->original.writer,
++		&observed_position, false) ||
++	     kvm_crucible_q35_ps_timer_host_locked(kvm, deadline, &observed_host) != 1 ||
++	     observed_host != host))
++		goto fault;
++	row->original.position_ps = position;
++	row->original.deadline_ps = deadline;
++	row->original.period_ps = periodic ? interval : 0;
++	row->original.host_deadline = projection ? host : 0;
++	row->original.native_result = 0;
++	row->original.known = true;
++	row->original.retired = false;
++	timers->pit_active_arm = row;
++	pit->pit_state.period = div_u64(interval, 1000);
++	pit->pit_state.is_periodic = periodic;
++	if (projection) {
++		/* The original row and native timer credit precede publication.
++		 * The callback cannot inspect a half-published row through the gate. */
++		hrtimer_start(&pit->pit_state.timer, host, HRTIMER_MODE_ABS);
++	}
++	valid = true;
++	goto unlock;
++fault:
++	if (pit_ps_arm_reference(timers, row))
++		row->original.native_result = -EIO;
++	pit_ps_fault_locked(pit);
++unlock:
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return valid;
++}
++
++static void pit_ps_cancel(struct kvm_pit *pit)
++{
++	struct kvm *kvm = pit->kvm;
++	struct kvm_crucible_ps_timer_state *timers = &kvm->arch.crucible_clock.ps.timers;
++	struct kvm_crucible_ps_pit_arm_row *row;
++	unsigned long flags;
++
++	lockdep_assert_held(&pit->pit_state.lock);
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	row = timers->pit_access;
++	if (!pit_ps_roots_current_locked(pit) || !pit_ps_arm_reference(timers, row) ||
++	    row->original.actor != current || !pit_ps_cancel_locked(pit, row))
++		pit_ps_fault_locked(pit);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++}
++
++static void pit_ps_unowned_callback(struct kvm_pit *pit)
++{
++	struct kvm *kvm = pit->kvm;
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	pit_ps_fault_locked(pit);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	kvm_vm_dead(kvm);
++}
++
++static enum hrtimer_restart pit_ps_expire(struct kvm_pit *pit)
++{
++	struct kvm *kvm = pit->kvm;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_ps_timer_state *timers = &clock->ps.timers;
++	struct kvm_crucible_ps_pit_arm_row *arm;
++	struct kvm_crucible_ps_timer_expiry_row *expiry;
++	unsigned long flags;
++	u64 position;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	arm = timers->pit_active_arm;
++	if (!pit_ps_roots_current_locked(pit) || !pit_ps_arm_reference(timers, arm) ||
++	    arm->pit != pit || !arm->original.known || arm->original.retired ||
++	    arm->original.generation != clock->window_generation ||
++	    !timers->expiries || timers->expiries_used >= timers->installation.maximum_expiries ||
++	    timers->installation.maximum_expiries > KVM_CRUCIBLE_Q35_PS_TIMER_MAX_EXPIRIES ||
++	    timers->pit_queued_expiry || clock->timer_owners == U32_MAX)
++		goto fault;
++	/* Native callback entry reserves its own output before any queue, pulse,
++	 * NMI or periodic rearm. Unfinished delivery cannot be discarded at Close. */
++	expiry = &timers->expiries[timers->expiries_used++];
++	expiry->original = arm->original;
++	expiry->original.ordinal = timers->expiries_used;
++	expiry->original.retired = true;
++	expiry->arm = &arm->original;
++	expiry->worker = timers->roots.pit_task;
++	expiry->observed_host_ns = ktime_get_ns();
++	position = kvm_crucible_q35_ps_timer_now_locked(kvm, expiry->observed_host_ns);
++	expiry->observed_ps = position;
++	expiry->route_begin = timers->routes_used;
++	expiry->nmi_begin = timers->nmis_used;
++	expiry->original.known = position >= arm->original.deadline_ps &&
++		arm->original.deadline_ps < clock->ps.end_ps;
++	arm->original.retired = true;
++	timers->pit_active_arm = NULL;
++	if (!expiry->original.known)
++		goto fault;
++	/* The original expiry row and completion credit precede actual native
++	 * publication. Neither a failed queue nor early worker entry renews it. */
++	timers->pit_queued_expiry = expiry;
++	clock->timer_owners++;
++	expiry->queue_attempted = true;
++	expiry->queue_result = kthread_queue_work(pit->worker, &pit->expired);
++	expiry->queue_known = expiry->queue_result == 1;
++	if (!expiry->queue_known)
++		goto fault;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return HRTIMER_NORESTART;
++fault:
++	pit_ps_fault_locked(pit);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	kvm_vm_dead(kvm);
++	return HRTIMER_NORESTART;
++}
++
++/* Only the same original native worker and queued expiry can issue a pulse.
++ * The complete active installation still has its own, presently closed gate. */
++bool kvm_crucible_q35_ps_pit_dispatch_current_locked(struct kvm *kvm,
++	struct kvm_crucible_ps_timer_expiry_row **output)
++{
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_ps_clock_state *ps = &clock->ps;
++	struct kvm_crucible_ps_timer_state *timers = &ps->timers;
++	struct kvm_crucible_ps_timer_expiry_row *expiry = timers->pit_queued_expiry;
++	struct kvm_pit *pit = kvm->arch.vpit;
++	u32 index;
++	bool original = false;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	*output = NULL;
++	if (!pit || !pit_ps_roots_current_locked(pit) || in_interrupt() ||
++	    current != timers->roots.pit_task || !timers->pit_dispatch_active ||
++	    !clock->timer_owners || READ_ONCE(kvm->vm_dead) ||
++	    kvm->crucible_irq_input.enabled || kvm->crucible_irq_input.tainted ||
++	    kvm->crucible_memory_tainted ||
++	    !kvm_arch_crucible_q35_ps_execution_ready_locked(kvm) ||
++	    (ps->phase != KVM_CRUCIBLE_PS_ACTIVE && ps->phase != KVM_CRUCIBLE_PS_STOP_REQUESTED) ||
++	    ktime_get_ns() > ps->physical_stop_deadline_ns ||
++	    timers->expiries_used > timers->installation.maximum_expiries ||
++	    timers->installation.maximum_expiries > KVM_CRUCIBLE_Q35_PS_TIMER_MAX_EXPIRIES ||
++	    ps->irq.routing != kvm->arch.crucible_pic_board.routing ||
++	    ps->irq.routing != rcu_dereference_protected(kvm->irq_routing, 1))
++		return false;
++	for (index = 0; index < timers->expiries_used; index++)
++		if (expiry == &timers->expiries[index]) {
++			original = true;
++			break;
++		}
++	if (!original || expiry->worker != current || expiry->work_actor != current ||
++	    !expiry->work_entered || !expiry->queue_known || expiry->queue_result != 1 ||
++	    expiry->completion_known || expiry->work_refusal_known ||
++	    !expiry->original.known || expiry->original.generation != clock->window_generation ||
++	    expiry->original.deadline_ps >= ps->end_ps ||
++	    pit->worker->current_work != &pit->expired)
++		return false;
++	*output = expiry;
++	return true;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_q35_ps_pit_dispatch_current_locked);
++
++bool kvm_crucible_q35_ps_pit_irq_claim_locked(struct kvm *kvm, u32 kind,
++	int source, u32 gsi, int level, bool line_status)
++{
++	struct kvm_crucible_ps_timer_state *timers = &kvm->arch.crucible_clock.ps.timers;
++	struct kvm_crucible_ps_timer_expiry_row *expiry;
++	u32 bit;
++
++	if (!kvm_crucible_q35_ps_pit_dispatch_current_locked(kvm, &expiry) ||
++	    kind != KVM_CRUCIBLE_IRQ_SOURCE_LINE || source != KVM_PIT_IRQ_SOURCE_ID ||
++	    gsi || line_status || level < 0 || level > 1 ||
++	    timers->pit_dispatch_level != level)
++		return false;
++	bit = 1U << (level ? 0 : 1);
++	if (!(expiry->pulse_attempted & bit) || (expiry->pulse_claimed & bit) ||
++	    (level == 0 && expiry->pulse_completed != 1))
++		return false;
++	expiry->pulse_claimed |= bit;
++	return true;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_q35_ps_pit_irq_claim_locked);
++
++static bool pit_ps_pulse(struct kvm_pit *pit,
++	struct kvm_crucible_ps_timer_expiry_row *expiry, u32 level)
++{
++	struct kvm *kvm = pit->kvm;
++	struct kvm_crucible_ps_timer_state *timers = &kvm->arch.crucible_clock.ps.timers;
++	struct kvm_crucible_ps_timer_expiry_row *original;
++	unsigned long flags;
++	u32 bit = 1U << (level ? 0 : 1), begin, index;
++	int result;
++	bool valid;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	valid = kvm_crucible_q35_ps_pit_dispatch_current_locked(kvm, &original) &&
++		original == expiry && !(expiry->pulse_attempted & bit) &&
++		!timers->pit_dispatch_route;
++	if (!valid) {
++		pit_ps_fault_locked(pit);
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++		return false;
++	}
++	begin = timers->routes_used;
++	timers->pit_dispatch_level = level;
++	expiry->pulse_attempted |= bit;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++
++	result = kvm_set_irq(kvm, KVM_PIT_IRQ_SOURCE_ID, 0, level, false);
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	/* Raw aggregate status remains distinct from route-callback permission.
++	 * A fully retained masked/ignored negative status can still be Known. */
++	expiry->pulse_results[level ? 0 : 1] = result;
++	valid = kvm_crucible_q35_ps_pit_dispatch_current_locked(kvm, &original) &&
++		original == expiry && (expiry->pulse_claimed & bit) &&
++		timers->routes_used == begin + 2 && !timers->pit_dispatch_route;
++	for (index = begin; valid && index < timers->routes_used; index++)
++		valid = timers->routes[index].expiry == expiry &&
++			timers->routes[index].known && timers->routes[index].receiver_output_known;
++	if (valid)
++		expiry->pulse_completed |= bit;
++	else
++		pit_ps_fault_locked(pit);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return valid;
++}
++
++/* The literal original PIT worker claims this expiry before any IRQ effect.
++ * Completion is deliberately held until the full source pulse/NMI/EOI join;
++ * native callback entry alone does not complete or publish the output row. */
++static void pit_ps_work(struct kvm_pit *pit)
++{
++	struct kvm *kvm = pit->kvm;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_ps_timer_state *timers = &clock->ps.timers;
++	struct kvm_crucible_ps_timer_expiry_row *expiry;
++	unsigned long flags;
++	u32 index;
++	bool original = false, running = false;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	expiry = timers->pit_queued_expiry;
++	if (!pit_ps_roots_current_locked(pit) || in_interrupt() ||
++	    current != timers->roots.pit_task || !clock->timer_owners ||
++	    timers->expiries_used > timers->installation.maximum_expiries ||
++	    timers->installation.maximum_expiries > KVM_CRUCIBLE_Q35_PS_TIMER_MAX_EXPIRIES)
++		goto fault;
++	for (index = 0; index < timers->expiries_used; index++)
++		if (expiry == &timers->expiries[index]) {
++			original = true;
++			break;
++		}
++	if (!original || expiry->worker != current || !expiry->queue_attempted ||
++	    !expiry->queue_known || expiry->queue_result != 1 || expiry->work_entered ||
++	    expiry->original.generation != clock->window_generation ||
++	    !expiry->original.known || !expiry->original.retired)
++		goto fault;
++	/* Native worker lock is tried rather than acquired in inverse order.
++	 * It verifies real callback entry, not a task-name or caller label. */
++	if (raw_spin_trylock(&pit->worker->lock)) {
++		running = pit->worker->current_work == &pit->expired;
++		raw_spin_unlock(&pit->worker->lock);
++	}
++	if (!running)
++		goto fault;
++	expiry->work_actor = current;
++	expiry->work_host_ns = ktime_get_ns();
++	expiry->work_position_ps = kvm_crucible_q35_ps_timer_now_locked(kvm,
++		expiry->work_host_ns);
++	expiry->work_entered = true;
++	timers->pit_dispatch_active = true;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (!pit_ps_pulse(pit, expiry, 1) || !pit_ps_pulse(pit, expiry, 0) ||
++	    !kvm_crucible_q35_ps_pit_watchdogs(kvm, expiry)) {
++		raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++		goto fault;
++	}
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	/* The exact original dual pulse is retained. EOI/periodic carry and
++	 * stopped output publication remain separate, still-unissued joins. */
++	expiry->work_refusal_result = -EOPNOTSUPP;
++	expiry->work_refusal_known = true;
++fault:
++	timers->pit_dispatch_active = false;
++	pit_ps_fault_locked(pit);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	kvm_vm_dead(kvm);
++}
+--- /dev/null
++++ b/arch/x86/kvm/crucible-q35-ps-pit-watchdog.inc.c
+@@ -0,0 +1,299 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Original PIT watchdog callbacks retain the exact local-delivery operand and
++ * native result. Pending NMI ownership is separate from guest consumption. */
++
++static bool ps_pit_watchdog_selected(struct kvm_vcpu *vcpu)
++{
++	struct kvm_crucible_ps_clock_state *ps = &vcpu->kvm->arch.crucible_clock.ps;
++
++	return READ_ONCE(ps->selected) && READ_ONCE(ps->plan.version) == 2;
++}
++
++static void ps_pit_watchdog_fault_locked(struct kvm *kvm)
++{
++	kvm->arch.crucible_clock.ps.timers.uncertain = true;
++	kvm_crucible_q35_ps_timer_fault_locked(kvm);
++}
++
++static bool ps_pit_watchdog_reference(struct kvm_crucible_ps_timer_state *timers,
++	struct kvm_crucible_ps_timer_nmi_row *row)
++{
++	u32 index;
++
++	if (!timers->nmis || timers->nmis_used > timers->installation.maximum_nmis ||
++	    timers->installation.maximum_nmis > KVM_CRUCIBLE_Q35_PS_TIMER_MAX_NMIS)
++		return false;
++	for (index = 0; index < timers->nmis_used; index++)
++		if (row == &timers->nmis[index])
++			return true;
++	return false;
++}
++
++static bool ps_pit_watchdog_context_locked(struct kvm *kvm,
++	struct kvm_crucible_ps_timer_nmi_row *row)
++{
++	struct kvm_crucible_ps_timer_state *timers = &kvm->arch.crucible_clock.ps.timers;
++	struct kvm_crucible_ps_timer_expiry_row *expiry;
++	u32 id;
++
++	if (!ps_pit_watchdog_reference(timers, row) ||
++	    !kvm_crucible_q35_ps_pit_dispatch_current_locked(kvm, &expiry))
++		return false;
++	id = row->native_vcpu_id;
++	return id < 4 && row->expiry == expiry && row->actor == current &&
++		row->ordinal == expiry->nmi_begin + id + 1 && expiry->nmi_count == 4 &&
++		row == &timers->nmis[expiry->nmi_begin + id] &&
++		row->generation == expiry->original.generation &&
++		row->vcpu && row->apic && row->vcpu == kvm_get_vcpu(kvm, id) &&
++		row->apic == timers->roots.apics[id] && row->vcpu->arch.apic == row->apic &&
++		row->apic->regs &&
++		!row->apic->guest_apic_protected && expiry->pulse_completed == 3;
++}
++
++/* The native caller passes the ONE LVT read ultimately consumed by its body.
++ * A prevalidation read followed by a second native read would be insufficient. */
++static bool ps_pit_watchdog_local_begin(struct kvm_lapic *apic, int lvt_type,
++	u32 reg, bool hardware_enabled)
++{
++	struct kvm *kvm = apic->vcpu->kvm;
++	struct kvm_crucible_ps_timer_state *timers = &kvm->arch.crucible_clock.ps.timers;
++	struct kvm_crucible_ps_timer_nmi_row *row;
++	unsigned long flags;
++	bool valid;
++
++	if (!ps_pit_watchdog_selected(apic->vcpu))
++		return true;
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	row = timers->pit_dispatch_nmi;
++	valid = ps_pit_watchdog_context_locked(kvm, row) && row->apic == apic &&
++		row->attempted && !row->local_attempted && !row->output_known &&
++		lvt_type == APIC_LVT0;
++	if (valid) {
++		row->input_lvt0 = reg;
++		row->hardware_enabled = hardware_enabled;
++		row->input_pending = atomic_read(&apic->vcpu->arch.nmi_queued);
++		row->local_attempted = true;
++	} else {
++		ps_pit_watchdog_fault_locked(kvm);
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (!valid)
++		kvm_vm_dead(kvm);
++	return valid;
++}
++
++static bool ps_pit_watchdog_target_begin(struct kvm_lapic *apic, int mode,
++	int vector, int level, int trigger, struct kvm_crucible_ps_irq_target_row **lease)
++{
++	struct kvm *kvm = apic->vcpu->kvm;
++	struct kvm_crucible_ps_timer_state *timers = &kvm->arch.crucible_clock.ps.timers;
++	struct kvm_crucible_ps_timer_nmi_row *row;
++	struct kvm_crucible_ps_irq_target_row *target;
++	unsigned long flags;
++	bool valid;
++
++	*lease = NULL;
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	row = timers->pit_dispatch_nmi;
++	valid = ps_pit_watchdog_context_locked(kvm, row) && row->apic == apic &&
++		row->attempted && row->local_attempted && !row->output_known &&
++		!row->target.attempted && row->hardware_enabled &&
++		!(row->input_lvt0 & APIC_LVT_MASKED) &&
++		mode == (row->input_lvt0 & APIC_MODE_MASK) &&
++		vector == (row->input_lvt0 & APIC_VECTOR_MASK) && level == 1 &&
++		trigger == (row->input_lvt0 & APIC_LVT_LEVEL_TRIGGER) &&
++		(mode == APIC_DM_FIXED || mode == APIC_DM_LOWEST ||
++		 mode == APIC_DM_EXTINT || mode == APIC_DM_NMI);
++	if (valid) {
++		target = &row->target;
++		target->owner_kind = 2;
++		target->actor = current;
++		target->vcpu = row->vcpu;
++		target->apic = apic;
++		target->generation = row->generation;
++		target->native_vcpu_id = row->native_vcpu_id;
++		target->delivery_mode = mode;
++		target->vector = vector;
++		target->level = level;
++		target->trigger_mode = trigger;
++		target->attempted = true;
++		ps_pit_apic_snapshot(apic, target, false);
++		*lease = target;
++	} else {
++		ps_pit_watchdog_fault_locked(kvm);
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (!valid)
++		kvm_vm_dead(kvm);
++	return valid;
++}
++
++static bool ps_pit_watchdog_target_complete(struct kvm_lapic *apic,
++	struct kvm_crucible_ps_irq_target_row *target, int result)
++{
++	struct kvm *kvm = apic->vcpu->kvm;
++	struct kvm_crucible_ps_timer_state *timers = &kvm->arch.crucible_clock.ps.timers;
++	struct kvm_crucible_ps_timer_nmi_row *row;
++	unsigned long flags;
++	bool valid;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	/* Original native call lease survives a lost phase. Cache its result and
++	 * observed output before reconciling permission; neither grants delivery. */
++	target->native_result = result;
++	ps_pit_apic_snapshot(apic, target, true);
++	target->output_known = true;
++	row = timers->pit_dispatch_nmi;
++	valid = ps_pit_watchdog_reference(timers, row) && target == &row->target &&
++		target->apic == apic && target->vcpu == apic->vcpu && target->actor == current &&
++		target->owner_kind == 2 && target->attempted && !target->known &&
++		ps_pit_watchdog_context_locked(kvm, row);
++	target->known = valid;
++	if (!valid)
++		ps_pit_watchdog_fault_locked(kvm);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (!valid)
++		kvm_vm_dead(kvm);
++	return valid;
++}
++
++/* Reached only from the literal original watchdog caller. All four leases
++ * already exist before any native local-delivery callback runs. */
++static void ps_pit_watchdog_deliver(struct kvm_vcpu *vcpu)
++{
++	struct kvm *kvm = vcpu->kvm;
++	struct kvm_crucible_ps_timer_state *timers = &kvm->arch.crucible_clock.ps.timers;
++	struct kvm_crucible_ps_timer_nmi_row *row;
++	struct kvm_lapic *apic;
++	unsigned long flags;
++	int result;
++	bool valid;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	row = timers->pit_dispatch_nmi;
++	valid = ps_pit_watchdog_context_locked(kvm, row) && row->vcpu == vcpu &&
++		row->attempted && !row->local_attempted && !row->output_known;
++	if (!valid) {
++		ps_pit_watchdog_fault_locked(kvm);
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++		kvm_vm_dead(kvm);
++		return;
++	}
++	apic = row->apic;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++
++	result = kvm_apic_local_deliver(apic, APIC_LVT0);
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	row->native_result = result;
++	row->output_lvt0 = kvm_lapic_get_reg(apic, APIC_LVT0);
++	row->output_pending = atomic_read(&vcpu->arch.nmi_queued);
++	row->output_known = true;
++	valid = ps_pit_watchdog_context_locked(kvm, row) && timers->pit_dispatch_nmi == row &&
++		row->local_attempted && !row->known &&
++		(!row->target.attempted || (row->target.known && row->target.output_known));
++	row->known = valid;
++	if (!valid)
++		ps_pit_watchdog_fault_locked(kvm);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (!valid)
++		kvm_vm_dead(kvm);
++}
++
++bool kvm_crucible_q35_ps_pit_watchdogs(struct kvm *kvm,
++	struct kvm_crucible_ps_timer_expiry_row *expiry)
++{
++	struct kvm_crucible_ps_timer_state *timers = &kvm->arch.crucible_clock.ps.timers;
++	struct kvm_crucible_ps_timer_expiry_row *original;
++	struct kvm_crucible_ps_timer_nmi_row *row;
++	struct kvm_vcpu *vcpu;
++	unsigned long flags;
++	u32 index, begin;
++	int count;
++	bool valid;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	valid = kvm_crucible_q35_ps_pit_dispatch_current_locked(kvm, &original) &&
++		original == expiry && expiry->pulse_completed == 3 &&
++		!expiry->watchdog_observed && !timers->pit_dispatch_route &&
++		!timers->pit_dispatch_nmi;
++	count = atomic_read(&kvm->arch.vapics_in_nmi_mode);
++	if (!valid)
++		goto fault;
++	expiry->input_watchdog_count = count;
++	if (count < 0 || count > 4)
++		goto fault;
++	expiry->watchdog_observed = true;
++	if (!count) {
++		expiry->output_watchdog_count = count;
++		expiry->watchdog_completed = true;
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++		return true;
++	}
++	if (!timers->nmis || timers->installation.maximum_nmis > KVM_CRUCIBLE_Q35_PS_TIMER_MAX_NMIS ||
++	    timers->nmis_used > timers->installation.maximum_nmis ||
++	    4 > timers->installation.maximum_nmis - timers->nmis_used ||
++	    expiry->nmi_begin != timers->nmis_used || expiry->nmi_count)
++		goto fault;
++	/* Validate every original receiver before consuming the entire cohort. */
++	for (index = 0; index < 4; index++) {
++		vcpu = kvm_get_vcpu(kvm, index);
++		if (!vcpu || vcpu->vcpu_id != index || !vcpu->arch.apic ||
++		    vcpu->arch.apic != timers->roots.apics[index] || !vcpu->arch.apic->regs ||
++		    vcpu->arch.apic->guest_apic_protected)
++			goto fault;
++	}
++	begin = timers->nmis_used;
++	timers->nmis_used += 4;
++	expiry->nmi_count = 4;
++	for (index = 0; index < 4; index++) {
++		vcpu = kvm_get_vcpu(kvm, index);
++		row = &timers->nmis[begin + index];
++		row->expiry = expiry;
++		row->actor = current;
++		row->vcpu = vcpu;
++		row->apic = vcpu->arch.apic;
++		row->ordinal = begin + index + 1;
++		row->generation = expiry->original.generation;
++		row->native_vcpu_id = index;
++		row->native_result = -EINPROGRESS;
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++
++	for (index = 0; index < 4; index++) {
++		raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++		row = &timers->nmis[begin + index];
++		if (!ps_pit_watchdog_context_locked(kvm, row) || row->attempted || row->known ||
++		    timers->pit_dispatch_nmi || (index && !timers->nmis[begin + index - 1].known))
++			goto fault;
++		row->attempted = true;
++		timers->pit_dispatch_nmi = row;
++		vcpu = row->vcpu;
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++
++		kvm_apic_nmi_wd_deliver(vcpu);
++
++		raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++		if (!ps_pit_watchdog_context_locked(kvm, row) || timers->pit_dispatch_nmi != row ||
++		    !row->known || !row->output_known)
++			goto fault;
++		timers->pit_dispatch_nmi = NULL;
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	}
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	expiry->output_watchdog_count = atomic_read(&kvm->arch.vapics_in_nmi_mode);
++	if (!kvm_crucible_q35_ps_pit_dispatch_current_locked(kvm, &original) ||
++	    original != expiry || timers->pit_dispatch_nmi ||
++	    expiry->output_watchdog_count < 0 || expiry->output_watchdog_count > 4)
++		goto fault;
++	expiry->watchdog_completed = true;
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return true;
++
++fault:
++	ps_pit_watchdog_fault_locked(kvm);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	kvm_vm_dead(kvm);
++	return false;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_q35_ps_pit_watchdogs);
+--- /dev/null
++++ b/arch/x86/kvm/crucible-q35-ps-timer-bank.inc.c
+@@ -0,0 +1,537 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* This source-owned cold installation retains typed producer backing. It
++ * neither dispatches a timer nor installs whole execution/output authority. */
++
++#include <linux/overflow.h>
++
++static void ps_timer_bank_free(struct kvm_crucible_ps_timer_state *timers)
++{
++	kfree(timers->pit_arms);
++	kfree(timers->lapic_arms);
++	kfree(timers->expiries);
++	kfree(timers->routes);
++	kfree(timers->route_storage);
++	kfree(timers->nmis);
++	kfree(timers->eois);
++	if (timers->roots.pit_task)
++		put_task_struct(timers->roots.pit_task);
++	memset(timers, 0, sizeof(*timers));
++}
++
++void kvm_crucible_q35_ps_timer_bank_destroy(struct kvm *kvm)
++{
++	/* The architecture calls this after destroying PIT work and all vCPUs. */
++	ps_timer_bank_free(&kvm->arch.crucible_clock.ps.timers);
++}
++
++#ifdef CONFIG_KVM_IOAPIC
++static bool ps_timer_bank_geometry(const struct kvm_crucible_q35_ps_timer_bank *input,
++	u64 *storage_bytes)
++{
++	u64 total = sizeof(struct kvm_crucible_ps_timer_state), bytes;
++	u32 index;
++	u32 counts[] = {
++		input->maximum_pit_arms, input->maximum_lapic_arms,
++		input->maximum_expiries, input->maximum_routes,
++		input->maximum_nmis, input->maximum_eois,
++	};
++	u32 sizes[] = {
++		sizeof(struct kvm_crucible_ps_pit_arm_row),
++		sizeof(struct kvm_crucible_ps_lapic_arm_row),
++		sizeof(struct kvm_crucible_ps_timer_expiry_row),
++		sizeof(struct kvm_crucible_ps_timer_route_row) +
++			2 * sizeof(struct kvm_kernel_irq_routing_entry),
++		sizeof(struct kvm_crucible_ps_timer_nmi_row),
++		sizeof(struct kvm_crucible_ps_timer_eoi_row),
++	};
++	u32 maxima[] = {
++		KVM_CRUCIBLE_Q35_PS_TIMER_MAX_ARMS,
++		KVM_CRUCIBLE_Q35_PS_TIMER_MAX_ARMS,
++		KVM_CRUCIBLE_Q35_PS_TIMER_MAX_EXPIRIES,
++		KVM_CRUCIBLE_Q35_PS_TIMER_MAX_ROUTES,
++		KVM_CRUCIBLE_Q35_PS_TIMER_MAX_NMIS,
++		KVM_CRUCIBLE_Q35_PS_TIMER_MAX_EOIS,
++	};
++
++	if (input->version != 2 || !input->configuration_enrollment_id ||
++	    (input->operation != KVM_CRUCIBLE_Q35_PS_TIMER_INSTALL &&
++	     input->operation != KVM_CRUCIBLE_Q35_PS_TIMER_QUERY) ||
++	    !input->maximum_storage_bytes ||
++	    input->maximum_storage_bytes > KVM_CRUCIBLE_Q35_PS_TIMER_MAX_STORAGE ||
++	    input->actual_storage_bytes || input->native_result || input->flags ||
++	    input->producer_mask || input->reserved32 || input->reserved64 ||
++	    input->pit_arm_row_bytes || input->lapic_arm_row_bytes ||
++	    input->expiry_row_bytes || input->route_row_bytes ||
++	    input->nmi_row_bytes || input->eoi_row_bytes)
++		return false;
++	for (index = 0; index < ARRAY_SIZE(counts); index++) {
++		if (!counts[index] || counts[index] > maxima[index] ||
++		    check_mul_overflow((u64)counts[index], (u64)sizes[index], &bytes) ||
++		    check_add_overflow(total, bytes, &total))
++			return false;
++	}
++	if (total > input->maximum_storage_bytes)
++		return false;
++	*storage_bytes = total;
++	return true;
++}
++
++static bool ps_timer_bank_allocate(struct kvm_crucible_ps_timer_state *timers,
++	const struct kvm_crucible_q35_ps_timer_bank *input)
++{
++	u32 index;
++
++	timers->pit_arms = kcalloc(input->maximum_pit_arms,
++		sizeof(*timers->pit_arms), GFP_KERNEL_ACCOUNT);
++	timers->lapic_arms = kcalloc(input->maximum_lapic_arms,
++		sizeof(*timers->lapic_arms), GFP_KERNEL_ACCOUNT);
++	timers->expiries = kcalloc(input->maximum_expiries,
++		sizeof(*timers->expiries), GFP_KERNEL_ACCOUNT);
++	timers->routes = kcalloc(input->maximum_routes,
++		sizeof(*timers->routes), GFP_KERNEL_ACCOUNT);
++	timers->route_storage = kcalloc(input->maximum_routes * 2,
++		sizeof(*timers->route_storage), GFP_KERNEL_ACCOUNT);
++	timers->nmis = kcalloc(input->maximum_nmis,
++		sizeof(*timers->nmis), GFP_KERNEL_ACCOUNT);
++	timers->eois = kcalloc(input->maximum_eois,
++		sizeof(*timers->eois), GFP_KERNEL_ACCOUNT);
++	if (!timers->pit_arms || !timers->lapic_arms || !timers->expiries ||
++	    !timers->routes || !timers->route_storage || !timers->nmis || !timers->eois)
++		return false;
++	for (index = 0; index < input->maximum_routes; index++) {
++		timers->routes[index].input = &timers->route_storage[index * 2];
++		timers->routes[index].buffer = &timers->route_storage[index * 2 + 1];
++	}
++	return true;
++}
++
++static void ps_timer_bank_output(struct kvm_crucible_q35_ps_timer_bank *output,
++	const struct kvm_crucible_q35_ps_timer_bank *input, u64 storage_bytes)
++{
++	*output = *input;
++	output->actual_storage_bytes = storage_bytes;
++	output->pit_arm_row_bytes = sizeof(struct kvm_crucible_ps_pit_arm_row);
++	output->lapic_arm_row_bytes = sizeof(struct kvm_crucible_ps_lapic_arm_row);
++	output->expiry_row_bytes = sizeof(struct kvm_crucible_ps_timer_expiry_row);
++	output->route_row_bytes = sizeof(struct kvm_crucible_ps_timer_route_row) +
++		2 * sizeof(struct kvm_kernel_irq_routing_entry);
++	output->nmi_row_bytes = sizeof(struct kvm_crucible_ps_timer_nmi_row);
++	output->eoi_row_bytes = sizeof(struct kvm_crucible_ps_timer_eoi_row);
++	output->producer_mask = 31;
++	output->flags = KVM_CRUCIBLE_Q35_PS_TIMER_KNOWN;
++}
++
++static u64 ps_timer_bank_charged(const struct kvm_crucible_ps_timer_state *timers,
++	const struct kvm_crucible_q35_ps_timer_bank *input)
++{
++	u64 bytes = sizeof(*timers);
++
++	if (timers->pit_arms)
++		bytes += (u64)input->maximum_pit_arms * sizeof(*timers->pit_arms);
++	if (timers->lapic_arms)
++		bytes += (u64)input->maximum_lapic_arms * sizeof(*timers->lapic_arms);
++	if (timers->expiries)
++		bytes += (u64)input->maximum_expiries * sizeof(*timers->expiries);
++	if (timers->routes)
++		bytes += (u64)input->maximum_routes * sizeof(*timers->routes);
++	if (timers->route_storage)
++		bytes += (u64)input->maximum_routes * 2 * sizeof(*timers->route_storage);
++	if (timers->nmis)
++		bytes += (u64)input->maximum_nmis * sizeof(*timers->nmis);
++	if (timers->eois)
++		bytes += (u64)input->maximum_eois * sizeof(*timers->eois);
++	return bytes;
++}
++
++static bool ps_timer_roots_read_locked(struct kvm *kvm,
++	struct kvm_crucible_ps_timer_roots *roots)
++{
++	struct kvm_vcpu *vcpu;
++	unsigned long index;
++
++	if (!kvm_crucible_q35_ps_pit_roots_locked(kvm, roots))
++		return false;
++	kvm_for_each_vcpu(index, vcpu, kvm)
++		if (!kvm_crucible_q35_ps_lapic_roots_locked(vcpu, roots))
++			return false;
++	return kvm->created_vcpus == 4;
++}
++#endif
++
++#ifdef CONFIG_KVM_IOAPIC
++static bool ps_timer_origin_closed(struct kvm *kvm,
++	const struct kvm_crucible_ps_timer_origin *origin, u64 ordinal,
++	struct hrtimer *timer, u32 kind)
++{
++	struct kvm_crucible_pic_board *board = &kvm->arch.crucible_pic_board;
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_vcpu *vcpu;
++
++	if (!origin->attempted || !origin->known || !origin->retired ||
++	    origin->native_result || origin->ordinal != ordinal ||
++	    origin->kind != kind || origin->timer != timer ||
++	    !origin->generation || origin->generation > clock->window_generation ||
++	    !origin->invocation || origin->native_vcpu_id >= 4 ||
++	    origin->position_ps > clock->ps.current_ps)
++		return false;
++	vcpu = kvm_get_vcpu(kvm, origin->native_vcpu_id);
++	return vcpu && origin->writer == vcpu &&
++		board->initializer_roster.actors[origin->native_vcpu_id].vcpu == vcpu &&
++		origin->actor == board->initializer_roster.actors[origin->native_vcpu_id].task;
++}
++
++static bool ps_timer_expiry_reference(const struct kvm_crucible_ps_timer_state *timers,
++	const struct kvm_crucible_ps_timer_expiry_row *expiry)
++{
++	u32 index;
++
++	/* Equality is checked before dereference. No pointer range comparison or
++	 * caller-selected address can create a native expiry reference. */
++	for (index = 0; index < timers->expiries_used; index++)
++		if (expiry == &timers->expiries[index])
++			return true;
++	return false;
++}
++
++static bool ps_timer_arm_reference(const struct kvm_crucible_ps_timer_state *timers,
++	const struct kvm_crucible_ps_timer_expiry_row *expiry)
++{
++	u32 index;
++
++	for (index = 0; index < timers->pit_arms_used; index++)
++		if (expiry->arm == &timers->pit_arms[index].original)
++			return expiry->original.kind == 1 &&
++				expiry->worker == timers->roots.pit_task;
++	for (index = 0; index < timers->lapic_arms_used; index++)
++		if (expiry->arm == &timers->lapic_arms[index].original)
++			return expiry->original.kind == 2 &&
++				expiry->worker == expiry->arm->actor;
++	return false;
++}
++
++static bool ps_timer_delivery_closed(const struct kvm_crucible_ps_timer_delivery_row *row,
++	const struct kvm_crucible_q35_ps_timer_bank *input,
++	const struct kvm_crucible_q35_ps_timer_bank *output,
++	struct task_struct *owner, u64 ordinal)
++{
++	if (row->actor != owner || row->ordinal != ordinal || !row->output_known ||
++	    !row->delivery_known || !row->delivery_attempted ||
++	    row->uncopied > sizeof(*output) ||
++	    row->syscall_result != (row->uncopied ? -EFAULT : 0))
++		return false;
++	return !memcmp(&row->input, input, sizeof(*input)) &&
++		!memcmp(&row->output, output, sizeof(*output));
++}
++#endif
++
++/* A closed native queue is insufficient if an original callback output is
++ * unresolved. This walk reads only source-owned lifetime rows and retains
++ * them after closure; it grants neither execution nor publication authority.
++ * Until a genuine logical carry issuer exists, every consumed arm must be
++ * retired. A future deadline alone cannot stand in for that ownership. */
++bool kvm_crucible_q35_ps_timer_outputs_closed_locked(struct kvm *kvm)
++{
++#ifdef CONFIG_KVM_IOAPIC
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_ps_clock_state *ps = &clock->ps;
++	struct kvm_crucible_ps_timer_state *timers = &ps->timers;
++	const struct kvm_crucible_q35_ps_timer_bank *input = &timers->installation;
++	struct kvm_crucible_q35_ps_timer_bank expected, query_input, query_output;
++	struct kvm_crucible_ps_timer_roots roots = {};
++	u64 bytes, route_end = 0, nmi_end = 0;
++	u32 index;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	lockdep_assert_held(&kvm->lock);
++	lockdep_assert_held(&kvm->slots_lock);
++	lockdep_assert_held(&kvm->irq_lock);
++	if (!ps->selected || ps->plan.version != 2 || ps->controller != current ||
++	    timers->owner != ps->controller || !timers->installation_attempted ||
++	    !timers->installation_known || !timers->installed || timers->uncertain ||
++	    timers->pit_access || timers->pit_active_arm || timers->pit_queued_expiry ||
++	    !timers->pit_arms || !timers->lapic_arms || !timers->expiries ||
++	    !timers->routes || !timers->route_storage || !timers->nmis || !timers->eois ||
++	    input->operation != KVM_CRUCIBLE_Q35_PS_TIMER_INSTALL ||
++	    input->configuration_enrollment_id != ps->plan.configuration_enrollment_id ||
++	    !ps_timer_bank_geometry(input, &bytes) ||
++	    ps_timer_bank_charged(timers, input) != bytes ||
++	    timers->pit_arms_used > input->maximum_pit_arms ||
++	    timers->lapic_arms_used > input->maximum_lapic_arms ||
++	    timers->expiries_used > input->maximum_expiries ||
++	    timers->routes_used > input->maximum_routes ||
++	    timers->nmis_used > input->maximum_nmis ||
++	    timers->eois_used > input->maximum_eois ||
++	    !ps_timer_roots_read_locked(kvm, &roots) ||
++	    memcmp(&roots, &timers->roots, sizeof(roots)))
++		return false;
++	ps_timer_bank_output(&expected, input, bytes);
++	if (memcmp(&expected, &timers->installation_output, sizeof(expected)) ||
++	    !ps_timer_delivery_closed(&timers->deliveries[0], input, &expected,
++		ps->controller, 1))
++		return false;
++	if (timers->installation_queried) {
++		query_input = *input;
++		query_input.operation = KVM_CRUCIBLE_Q35_PS_TIMER_QUERY;
++		query_output = expected;
++		query_output.operation = query_input.operation;
++		if (!ps_timer_delivery_closed(&timers->deliveries[1], &query_input,
++			&query_output, ps->controller, 2))
++			return false;
++	}
++	for (index = 0; index < timers->pit_arms_used; index++) {
++		const struct kvm_crucible_ps_pit_arm_row *row = &timers->pit_arms[index];
++
++		if (!row->state_output_known ||
++		    (row->cancel_attempted && (!row->cancel_known || row->cancel_result < 0)) ||
++		    row->pit != roots.pit ||
++		    !ps_timer_origin_closed(kvm, &row->original, index + 1, roots.pit_timer, 1))
++			return false;
++	}
++	for (index = 0; index < timers->lapic_arms_used; index++) {
++		const struct kvm_crucible_ps_lapic_arm_row *row = &timers->lapic_arms[index];
++		u32 vcpu_id = row->original.native_vcpu_id;
++
++		if (vcpu_id >= 4 || row->apic != roots.apics[vcpu_id] ||
++		    !ps_timer_origin_closed(kvm, &row->original, index + 1,
++			roots.lapic_timers[vcpu_id], 2))
++			return false;
++	}
++	for (index = 0; index < timers->expiries_used; index++) {
++		const struct kvm_crucible_ps_timer_expiry_row *row = &timers->expiries[index];
++
++		if (!ps_timer_arm_reference(timers, row) || !row->completion_known ||
++		    !ps_timer_origin_closed(kvm, &row->original, index + 1,
++			row->arm->timer, row->arm->kind) ||
++		    row->original.generation != row->arm->generation ||
++		    row->observed_ps < row->arm->deadline_ps || row->observed_ps > ps->current_ps ||
++		    row->route_begin != route_end || row->nmi_begin != nmi_end ||
++		    check_add_overflow(route_end, (u64)row->route_count, &route_end) ||
++		    check_add_overflow(nmi_end, (u64)row->nmi_count, &nmi_end) ||
++		    route_end > timers->routes_used || nmi_end > timers->nmis_used)
++			return false;
++	}
++	if (route_end != timers->routes_used || nmi_end != timers->nmis_used)
++		return false;
++	for (index = 0; index < timers->routes_used; index++) {
++		const struct kvm_crucible_ps_timer_route_row *row = &timers->routes[index];
++
++		if (!row->attempted || !row->known || row->ordinal != index + 1 ||
++		    !ps_timer_expiry_reference(timers, row->expiry) ||
++		    row->generation != row->expiry->original.generation ||
++		    index < row->expiry->route_begin ||
++		    index - row->expiry->route_begin >= row->expiry->route_count ||
++		    row->input != &timers->route_storage[index * 2] ||
++		    row->buffer != &timers->route_storage[index * 2 + 1])
++			return false;
++	}
++	for (index = 0; index < timers->nmis_used; index++) {
++		const struct kvm_crucible_ps_timer_nmi_row *row = &timers->nmis[index];
++
++		if (!row->attempted || !row->known || row->ordinal != index + 1 ||
++		    row->native_vcpu_id >= 4 ||
++		    row->vcpu != kvm_get_vcpu(kvm, row->native_vcpu_id) ||
++		    row->apic != roots.apics[row->native_vcpu_id] ||
++		    !ps_timer_expiry_reference(timers, row->expiry) ||
++		    row->generation != row->expiry->original.generation ||
++		    index < row->expiry->nmi_begin ||
++		    index - row->expiry->nmi_begin >= row->expiry->nmi_count)
++			return false;
++	}
++	for (index = 0; index < timers->eois_used; index++) {
++		const struct kvm_crucible_ps_timer_eoi_row *row = &timers->eois[index];
++		const struct kvm_crucible_pic_initializer_state *actor;
++
++		if (row->native_vcpu_id >= 4)
++			return false;
++		actor = &kvm->arch.crucible_pic_board.initializer_roster.actors[row->native_vcpu_id];
++		if (!row->attempted || !row->known || row->ordinal != index + 1 ||
++		    row->vcpu != kvm_get_vcpu(kvm, row->native_vcpu_id) ||
++		    actor->vcpu != row->vcpu || actor->task != row->actor ||
++		    !row->invocation || row->vector > 255 || row->pin >= 24 || row->trigger_mode > 1 ||
++		    !ps_timer_expiry_reference(timers, row->expiry) ||
++		    row->generation != row->expiry->original.generation)
++			return false;
++	}
++	return true;
++#else
++	return false;
++#endif
++}
++
++int kvm_crucible_q35_ps_timer_bank_control(struct kvm *kvm, struct kvm_enable_cap *cap)
++{
++#ifdef CONFIG_KVM_IOAPIC
++	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
++	struct kvm_crucible_ps_clock_state *ps = &clock->ps;
++	struct kvm_crucible_ps_timer_state *timers = &ps->timers;
++	struct kvm_crucible_ps_timer_state allocation = {};
++	struct kvm_crucible_q35_ps_timer_bank input, output, identity;
++	struct kvm_crucible_ps_timer_roots roots = {};
++	struct kvm_crucible_ps_timer_roots observed = {};
++	struct kvm_vcpu *vcpu;
++	void __user *argument = u64_to_user_ptr(cap->args[0]);
++	unsigned long index, flags;
++	u64 storage_bytes, closed, pending;
++	u32 locked = 0, uncopied = 0;
++	int delivery_index = -1;
++	int result = -EBUSY;
++	bool contain = false;
++
++	BUILD_BUG_ON(sizeof(input) != 128);
++	if (cap->flags || !argument || cap->args[1] || cap->args[2] || cap->args[3])
++		return -EINVAL;
++	if (copy_from_user(&input, argument, sizeof(input)))
++		return -EFAULT;
++	if (!ps_timer_bank_geometry(&input, &storage_bytes))
++		return -EINVAL;
++	if (!mutex_trylock(&clock->control_lock))
++		return -EBUSY;
++	if (!mutex_trylock(&kvm->crucible_configuration_lock))
++		goto unlock_control;
++	if (!mutex_trylock(&kvm->lock))
++		goto unlock_configuration;
++	if (!mutex_trylock(&kvm->slots_lock))
++		goto unlock_vm;
++	if (!mutex_trylock(&kvm->irq_lock))
++		goto unlock_slots;
++	kvm_for_each_vcpu(index, vcpu, kvm) {
++		if (index != locked || index >= 4 || !mutex_trylock(&vcpu->mutex))
++			goto unlock_vcpus;
++		locked++;
++	}
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	result = -EOPNOTSUPP;
++	if (!ps->selected || ps->plan.version != 2 || ps->controller != current ||
++	    ps->plan.configuration_enrollment_id != input.configuration_enrollment_id ||
++	    timers->uncertain || READ_ONCE(kvm->vm_dead) ||
++	    kvm->crucible_irq_input.tainted || kvm->crucible_memory_tainted)
++		goto unlock_gate;
++	if (input.operation == KVM_CRUCIBLE_Q35_PS_TIMER_QUERY) {
++		identity = input;
++		identity.operation = KVM_CRUCIBLE_Q35_PS_TIMER_INSTALL;
++		if (!timers->installation_attempted || !timers->installation_known ||
++		    timers->owner != current ||
++		    timers->installation_queried ||
++		    memcmp(&identity, &timers->installation, sizeof(identity)))
++			goto unlock_gate;
++		/* Cached installation readback does not assert active root currentness. */
++		delivery_index = 1;
++		timers->deliveries[1].input = input;
++		timers->deliveries[1].actor = current;
++		timers->deliveries[1].ordinal = 2;
++		timers->installation_queried = true;
++		output = timers->installation_output;
++		output.operation = input.operation;
++		timers->deliveries[1].output = output;
++		timers->deliveries[1].output_known = true;
++		result = 0;
++		goto unlock_gate;
++	}
++	if (timers->installation_attempted || timers->installed ||
++	    timers->pit_arms || timers->lapic_arms ||
++	    timers->expiries || timers->routes || timers->route_storage ||
++	    timers->nmis || timers->eois || ps->phase != KVM_CRUCIBLE_PS_COLD ||
++	    input.expected_phase != ps->phase || input.generation || input.position_ps ||
++	    clock->window_generation || clock->active || clock->run_owners ||
++	    clock->timer_owners || kvm->crucible_effect_owners ||
++	    kvm->crucible_irq_input.enabled || kvm->crucible_irq_input.owners ||
++	    !ps->irq.installed || ps->irq.uncertain || ps->irq.owner != current ||
++	    !kvm_arch_crucible_q35_ps_native_cut_locked(kvm, &closed, &pending) ||
++	    closed != 15 || pending ||
++	    !kvm_arch_crucible_q35_ps_timers_closed_locked(kvm) ||
++	    !ps_timer_roots_read_locked(kvm, &roots))
++		goto unlock_gate;
++
++	/* Once-retained input and actor consume the installation before allocation.
++	 * A failed allocation has its own cached result and cannot renew a bank. */
++	timers->installation = input;
++	timers->owner = current;
++	timers->installation_attempted = true;
++	delivery_index = 0;
++	timers->deliveries[0].input = input;
++	timers->deliveries[0].actor = current;
++	timers->deliveries[0].ordinal = 1;
++	get_task_struct(roots.pit_task);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++
++	result = ps_timer_bank_allocate(&allocation, &input) ? 0 : -ENOMEM;
++	allocation.installation = input;
++	allocation.owner = current;
++	allocation.roots = roots;
++	allocation.installation_attempted = true;
++	allocation.installation_known = true;
++	allocation.installed = !result;
++	ps_timer_bank_output(&output, &input, storage_bytes);
++	output.actual_storage_bytes = ps_timer_bank_charged(&allocation, &input);
++	output.native_result = result;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	if (ps->phase != KVM_CRUCIBLE_PS_COLD || timers->owner != current ||
++	    !timers->installation_attempted ||
++	    memcmp(&timers->installation, &input, sizeof(input)) ||
++	    kvm->crucible_irq_input.tainted || kvm->crucible_memory_tainted ||
++	    READ_ONCE(kvm->vm_dead) || clock->active || clock->run_owners ||
++	    clock->timer_owners ||
++	    !kvm_arch_crucible_q35_ps_native_cut_locked(kvm, &closed, &pending) ||
++	    closed != 15 || pending ||
++	    !kvm_arch_crucible_q35_ps_timers_closed_locked(kvm) ||
++	    !ps_timer_roots_read_locked(kvm, &observed) ||
++	    memcmp(&roots, &observed, sizeof(roots))) {
++		allocation.uncertain = true;
++		allocation.installed = false;
++		allocation.installation_known = false;
++		output.flags |= KVM_CRUCIBLE_Q35_PS_TIMER_UNCERTAIN;
++		ps->phase = KVM_CRUCIBLE_PS_UNKNOWN;
++		kvm_arch_crucible_irq_taint_locked(kvm);
++		contain = true;
++		result = -EIO;
++	}
++	/* Partial backing is retained through teardown too. Neither failure nor
++	 * a changed source cut returns installation credit to the constructor. */
++	allocation.installation_output = output;
++	allocation.deliveries[0] = timers->deliveries[0];
++	allocation.deliveries[0].output = output;
++	allocation.deliveries[0].output_known = true;
++	*timers = allocation;
++	memset(&allocation, 0, sizeof(allocation));
++unlock_gate:
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++unlock_vcpus:
++	while (locked)
++		mutex_unlock(&kvm_get_vcpu(kvm, --locked)->mutex);
++	mutex_unlock(&kvm->irq_lock);
++unlock_slots:
++	mutex_unlock(&kvm->slots_lock);
++unlock_vm:
++	mutex_unlock(&kvm->lock);
++unlock_configuration:
++	mutex_unlock(&kvm->crucible_configuration_lock);
++unlock_control:
++	mutex_unlock(&clock->control_lock);
++	ps_timer_bank_free(&allocation);
++	if (contain)
++		kvm_vm_dead(kvm);
++	if (!result) {
++		/* The complete native output was retained before this user callback. */
++		uncopied = copy_to_user(argument, &output, sizeof(output));
++		if (uncopied)
++			result = -EFAULT;
++	}
++	if (delivery_index >= 0) {
++		struct kvm_crucible_ps_timer_delivery_row *delivery =
++			&timers->deliveries[delivery_index];
++
++		/* The original VM file reference spans delivery. Query does not edit
++		 * the earlier INSTALL row, even when either user mapping rejects copy. */
++		raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++		delivery->syscall_result = result;
++		delivery->uncopied = uncopied;
++		delivery->delivery_attempted = !result || uncopied;
++		delivery->delivery_known = true;
++		raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	}
++	return result;
++#else
++	return -EOPNOTSUPP;
++#endif
++}
+--- a/arch/x86/kvm/i8254.c
++++ b/arch/x86/kvm/i8254.c
+@@ -80,6 +80,7 @@
+ #include "crucible-pit-ancestry.inc.c"
+ #include "crucible-q35-pit-bootstrap-arm.inc.c"
+ #include "crucible-q35-pit-ps-adoption.inc.c"
++#include "crucible-q35-ps-pit-producer.inc.c"
+ 
+ /* The frozen source lane admits guest PIT effects only from the actual
+  * original RUN. A host ioctl, IRQ context or same-process foreign task cannot
+@@ -91,6 +92,10 @@
+ 	struct kvm_crucible_clock_domain *clock = &kvm->arch.crucible_clock;
+ 	unsigned long flags;
+ 	bool valid;
++
++	/* This edition has no retained PIT-read or speaker-effect owner yet. */
++	if (pit_ps_selected(pit))
++		return false;
+ 
+ 	if (!READ_ONCE(kvm->crucible_irq_input.enabled) ||
+ 	    !READ_ONCE(kvm->crucible_continuation_roster_frozen))
+@@ -338,6 +343,11 @@
+ 						 irq_ack_notifier);
+ 	struct kvm_pit *pit = pit_state_to_pit(ps);
+ 
++	if (pit_ps_selected(pit)) {
++		pit_ps_unowned_callback(pit);
++		return;
++	}
++
+ 	if (pit_native_selected(pit)) {
+ 		pit_native_ack(pit);
+ 		return;
+@@ -361,6 +371,11 @@
+ 	if (vcpu->vcpu_id || !pit)
+ 		return;
+ 
++	if (pit_ps_selected(pit)) {
++		pit_ps_unowned_callback(pit);
++		return;
++	}
++
+ 	if (pit_native_selected(pit)) {
+ 		pit_native_migrate(pit, vcpu);
+ 		return;
+@@ -380,6 +395,11 @@
+ 		return;
+ 	}
+ 
++	if (pit_ps_selected(pit)) {
++		pit_ps_cancel(pit);
++		return;
++	}
++
+ 	if (pit_native_selected(pit)) {
+ 		pit_native_cancel(pit);
+ 		return;
+@@ -396,6 +416,11 @@
+ 	struct kvm_vcpu *vcpu;
+ 	unsigned long i;
+ 	struct kvm_kpit_state *ps = &pit->pit_state;
++
++	if (pit_ps_selected(pit)) {
++		pit_ps_work(pit);
++		return;
++	}
+ 
+ 	if (pit_native_selected(pit)) {
+ 		pit_native_work(pit);
+@@ -426,6 +451,9 @@
+ {
+ 	struct kvm_kpit_state *ps = container_of(data, struct kvm_kpit_state, timer);
+ 	struct kvm_pit *pt = pit_state_to_pit(ps);
++
++	if (pit_ps_selected(pt))
++		return pit_ps_expire(pt);
+ 
+ 	if (pit_native_selected(pt))
+ 		return pit_native_expire(pt);
+@@ -499,6 +527,11 @@
+ 		return;
+ 	}
+ 
++	if (pit_ps_selected(pit)) {
++		pit_ps_program(pit, val, is_period);
++		return;
++	}
++
+ 	interval = mul_u64_u32_div(val, NSEC_PER_SEC, KVM_PIT_FREQ);
+ 
+ 	pr_debug("create pit timer, interval is %llu nsec\n", interval);
+@@ -616,15 +649,30 @@
+ 	struct kvm_kpit_state *pit_state = &pit->pit_state;
+ 	int channel, access;
+ 	struct kvm_kpit_channel_state *s;
+-	u32 val = *(u32 *) data;
++	u32 val;
++	bool ps_owned = pit_ps_selected(pit);
+ 	if (!pit_in_range(addr))
+ 		return -EOPNOTSUPP;
+ 
+-	val  &= 0xff;
++	if (ps_owned && len != 1) {
++		pit_ps_unowned_callback(pit);
++		return -EOPNOTSUPP;
++	}
++
++	val = ps_owned ? *(const u8 *)data : *(const u32 *)data;
++	val &= 0xff;
+ 	addr &= KVM_PIT_CHANNEL_MASK;
+ 
+-	if (!pit_original_access_lock(pit, vcpu))
++	if (ps_owned) {
++		mutex_lock(&pit->pit_state.lock);
++		if (!pit_ps_write_begin(pit, vcpu, addr | KVM_PIT_BASE_ADDRESS, len, val)) {
++			mutex_unlock(&pit->pit_state.lock);
++			kvm_vm_dead(pit->kvm);
++			return -EAGAIN;
++		}
++	} else if (!pit_original_access_lock(pit, vcpu)) {
+ 		return -EAGAIN;
++	}
+ 
+ 	if (val != 0)
+ 		pr_debug("write addr is 0x%x, len is %d, val is 0x%x\n",
+@@ -680,7 +728,18 @@
+ 		}
+ 	}
+ 
+-	pit_original_access_unlock(pit);
++	if (ps_owned) {
++		bool known = pit_ps_write_finish(pit);
++
++		mutex_unlock(&pit->pit_state.lock);
++		wake_up_all(&pit->kvm->crucible_stopped);
++		if (!known) {
++			kvm_vm_dead(pit->kvm);
++			return -EIO;
++		}
++	} else {
++		pit_original_access_unlock(pit);
++	}
+ 	return 0;
+ }
+ 
+@@ -1000,3 +1059,30 @@
+ 		kfree(pit);
+ 	}
+ }
++
++/* The literal source-local callbacks and device class establish these roots.
++ * The caller holds the original cold configuration/resource cut; the getter
++ * never cancels unexpected work to manufacture an inactive producer. */
++bool kvm_crucible_q35_ps_pit_roots_locked(struct kvm *kvm,
++	struct kvm_crucible_ps_timer_roots *roots)
++{
++	struct kvm_pit *pit = kvm->arch.vpit;
++
++	lockdep_assert_held(&kvm->crucible_gate_lock);
++	lockdep_assert_held(&kvm->irq_lock);
++	if (!pit || !roots || pit->kvm != kvm ||
++	    pit != kvm->arch.crucible_pic_board.pit || !pit->worker ||
++	    !pit->worker->task || pit->dev.ops != &pit_dev_ops ||
++	    pit->pit_state.timer.function != pit_timer_fn ||
++	    pit->expired.func != pit_do_work ||
++	    !kvm_crucible_q35_ps_pit_birth_current_locked(kvm) ||
++	    !kvm_arch_crucible_q35_pit_bootstrap_quiescent_locked(kvm))
++		return false;
++	roots->pit = pit;
++	roots->pit_worker = pit->worker;
++	roots->pit_task = pit->worker->task;
++	roots->pit_work = &pit->expired;
++	roots->pit_timer = &pit->pit_state.timer;
++	return true;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_q35_ps_pit_roots_locked);
+--- a/arch/x86/kvm/i8259.c
++++ b/arch/x86/kvm/i8259.c
+@@ -39,6 +39,7 @@
+ #include <linux/kvm_host.h>
+ #include "trace.h"
+ 
++#include "crucible-clock.h"
+ #include "crucible-irq-device-access.h"
+ #include "crucible-pic-run.h"
+ 
+@@ -206,6 +207,11 @@
+ 	struct kvm_pic *s = kvm->arch.vpic;
+ 	int irq = e->irqchip.pin;
+ 	int ret, irq_level;
++	bool ps_pit = READ_ONCE(kvm->arch.crucible_clock.ps.selected) &&
++		READ_ONCE(kvm->arch.crucible_clock.ps.plan.version) == 2 &&
++		irq_source_id == KVM_PIT_IRQ_SOURCE_ID;
++	struct kvm_irqchip snapshot = {}, peer = {};
++	u64 control[4];
+ 
+ 	if (WARN_ON_ONCE(irq < 0 || irq >= PIC_NUM_PINS))
+ 		return -1;
+@@ -217,6 +223,22 @@
+ 			level, line_status, NULL);
+ 
+ 	pic_lock(s);
++	if (ps_pit) {
++		snapshot.chip_id = KVM_IRQCHIP_PIC_MASTER;
++		peer.chip_id = KVM_IRQCHIP_PIC_SLAVE;
++		memcpy(&snapshot.chip.pic, &s->pics[0], sizeof(snapshot.chip.pic));
++		memcpy(&peer.chip.pic, &s->pics[1], sizeof(peer.chip.pic));
++		control[0] = s->pending_acks;
++		control[1] = s->wakeup_needed;
++		control[2] = s->pics[0].isr_ack;
++		control[3] = s->pics[1].isr_ack;
++		if (!kvm_crucible_q35_ps_pit_receiver_begin(kvm, e, s, &snapshot,
++			s->irq_states, PIC_NUM_PINS, s->output, &peer, control)) {
++			spin_unlock(&s->lock);
++			kvm_vm_dead(kvm);
++			return -EPERM;
++		}
++	}
+ 	irq_level = __kvm_irq_line_state(&s->irq_states[irq],
+ 					 irq_source_id, level);
+ 	ret = pic_set_irq1(&s->pics[irq >> 3], irq & 7, irq_level);
+@@ -224,6 +246,23 @@
+ 	trace_kvm_pic_set_irq(irq >> 3, irq & 7, s->pics[irq >> 3].elcr,
+ 			      s->pics[irq >> 3].imr, ret == 0);
+ 	pic_unlock(s);
++	if (ps_pit) {
++		pic_lock(s);
++		memcpy(&snapshot.chip.pic, &s->pics[0], sizeof(snapshot.chip.pic));
++		memcpy(&peer.chip.pic, &s->pics[1], sizeof(peer.chip.pic));
++		control[0] = s->pending_acks;
++		control[1] = s->wakeup_needed;
++		control[2] = s->pics[0].isr_ack;
++		control[3] = s->pics[1].isr_ack;
++		if (!kvm_crucible_q35_ps_pit_receiver_complete(kvm, e, s, &snapshot,
++			s->irq_states, PIC_NUM_PINS, s->output, &peer, control, ret)) {
++			spin_unlock(&s->lock);
++			kvm_vm_dead(kvm);
++			return -EPERM;
++		}
++		/* The original wake tail already ran; this is observation only. */
++		spin_unlock(&s->lock);
++	}
+ 
+ 	return ret;
+ }
+--- a/arch/x86/kvm/ioapic.c
++++ b/arch/x86/kvm/ioapic.c
+@@ -506,15 +506,47 @@
+ 	struct kvm_ioapic *ioapic = kvm->arch.vioapic;
+ 	int irq = e->irqchip.pin;
+ 	int ret, irq_level;
++	bool ps_pit = READ_ONCE(kvm->arch.crucible_clock.ps.selected) &&
++		READ_ONCE(kvm->arch.crucible_clock.ps.plan.version) == 2 &&
++		irq_source_id == KVM_PIT_IRQ_SOURCE_ID;
++	struct kvm_irqchip snapshot = {};
++	u64 control[4] = {};
+ 
+ 	if (WARN_ON_ONCE(irq < 0 || irq >= IOAPIC_NUM_PINS))
+ 		return -1;
+ 
+ 	spin_lock(&ioapic->lock);
++	if (ps_pit) {
++		snapshot.chip_id = KVM_IRQCHIP_IOAPIC;
++		memcpy(&snapshot.chip.ioapic, ioapic, sizeof(snapshot.chip.ioapic));
++		control[0] = delayed_work_pending(&ioapic->eoi_inject);
++		control[1] = work_busy(&ioapic->eoi_inject.work);
++		control[2] = ioapic->rtc_status.pending_eoi;
++		control[3] = ioapic->irq_eoi[irq];
++		if (!kvm_crucible_q35_ps_pit_receiver_begin(kvm, e, ioapic, &snapshot,
++			ioapic->irq_states, IOAPIC_NUM_PINS, ioapic->irr_delivered, NULL, control)) {
++			spin_unlock(&ioapic->lock);
++			kvm_vm_dead(kvm);
++			return -EPERM;
++		}
++	}
+ 	irq_level = __kvm_irq_line_state(&ioapic->irq_states[irq],
+ 					 irq_source_id, level);
+ 	ret = ioapic_set_irq(ioapic, irq, irq_level, line_status);
+ 
++	if (ps_pit) {
++		memcpy(&snapshot.chip.ioapic, ioapic, sizeof(snapshot.chip.ioapic));
++		control[0] = delayed_work_pending(&ioapic->eoi_inject);
++		control[1] = work_busy(&ioapic->eoi_inject.work);
++		control[2] = ioapic->rtc_status.pending_eoi;
++		control[3] = ioapic->irq_eoi[irq];
++		if (!kvm_crucible_q35_ps_pit_receiver_complete(kvm, e, ioapic, &snapshot,
++			ioapic->irq_states, IOAPIC_NUM_PINS, ioapic->irr_delivered, NULL, control, ret)) {
++			spin_unlock(&ioapic->lock);
++			kvm_vm_dead(kvm);
++			return -EPERM;
++		}
++	}
+ 	spin_unlock(&ioapic->lock);
+ 
+ 	return ret;
+--- a/arch/x86/kvm/lapic.c
++++ b/arch/x86/kvm/lapic.c
+@@ -1516,6 +1516,9 @@
+  * Add a pending IRQ into lapic.
+  * Return 1 if successfully added and 0 if discarded.
+  */
++#include "crucible-q35-ps-pit-apic.inc.c"
++#include "crucible-q35-ps-pit-watchdog.inc.c"
++
+ static int __apic_accept_irq(struct kvm_lapic *apic, int delivery_mode,
+ 			     int vector, int level, int trig_mode,
+ 			     struct rtc_status *rtc_status,
+@@ -1525,6 +1528,10 @@
+ 	struct kvm_vcpu *vcpu = apic->vcpu;
+ 
+ 	bool retained;
++	struct kvm_crucible_ps_irq_target_row *ps_lease;
++
++	if (!ps_pit_apic_begin(apic, delivery_mode, vector, level, trig_mode, &ps_lease))
++		return -EAGAIN;
+ 
+ 	if (!crucible_apic_target_begin(apic, birth, delivery_mode, vector,
+ 		level, trig_mode, rtc_status, &retained))
+@@ -1617,6 +1624,8 @@
+ 		       delivery_mode);
+ 		break;
+ 	}
++	if (!ps_pit_apic_complete(apic, ps_lease, result))
++		return -EAGAIN;
+ 	return crucible_apic_target_finish(apic, birth, vector, retained, result);
+ }
+ 
+@@ -3264,8 +3273,12 @@
+ 	u32 reg = kvm_lapic_get_reg(apic, lvt_type);
+ 	int vector, mode, trig_mode;
+ 	int r;
+-
+-	if (kvm_apic_hw_enabled(apic) && !(reg & APIC_LVT_MASKED)) {
++	bool hardware_enabled = kvm_apic_hw_enabled(apic);
++
++	if (!ps_pit_watchdog_local_begin(apic, lvt_type, reg, hardware_enabled))
++		return -EAGAIN;
++
++	if (hardware_enabled && !(reg & APIC_LVT_MASKED)) {
+ 		vector = reg & APIC_VECTOR_MASK;
+ 		mode = reg & APIC_MODE_MASK;
+ 		trig_mode = reg & APIC_LVT_LEVEL_TRIGGER;
+@@ -3282,6 +3295,11 @@
+ void kvm_apic_nmi_wd_deliver(struct kvm_vcpu *vcpu)
+ {
+ 	struct kvm_lapic *apic = vcpu->arch.apic;
++
++	if (ps_pit_watchdog_selected(vcpu)) {
++		ps_pit_watchdog_deliver(vcpu);
++		return;
++	}
+ 
+ 	if (!kvm_arch_crucible_pit_nmi_admit(vcpu))
+ 		return;
+@@ -3961,3 +3979,31 @@
+ 	hrtimer_cancel(&vcpu->arch.apic->lapic_timer.timer);
+ 	restart_apic_timer(vcpu->arch.apic);
+ }
++
++/* Original vCPU mutexes exclude LAPIC replacement. Literal source callback
++ * and MMIO class checks remain separate from any future active arm permit. */
++bool kvm_crucible_q35_ps_lapic_roots_locked(struct kvm_vcpu *vcpu,
++	struct kvm_crucible_ps_timer_roots *roots)
++{
++	struct kvm_lapic *apic = vcpu->arch.apic;
++	struct kvm_timer *timer;
++	u32 index = vcpu->vcpu_id;
++
++	lockdep_assert_held(&vcpu->mutex);
++	lockdep_assert_held(&vcpu->kvm->crucible_gate_lock);
++	if (!roots || index >= 4 || kvm_get_vcpu(vcpu->kvm, index) != vcpu ||
++	    !apic || apic->vcpu != vcpu || !apic->regs ||
++	    apic->dev.ops != &apic_mmio_ops)
++		return false;
++	timer = &apic->lapic_timer;
++	if (timer->timer.function != apic_timer_fn || timer->hv_timer_in_use ||
++	    timer->crucible_arm_queued || timer->crucible_callback_active ||
++	    timer->crucible_resume_owner || timer->crucible_callback_owner ||
++	    atomic_read(&timer->pending) || hrtimer_active(&timer->timer) ||
++	    hrtimer_callback_running(&timer->timer))
++		return false;
++	roots->apics[index] = apic;
++	roots->lapic_timers[index] = &timer->timer;
++	return true;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_q35_ps_lapic_roots_locked);
+--- a/arch/x86/kvm/svm/nested.c
++++ b/arch/x86/kvm/svm/nested.c
+@@ -1877,9 +1877,16 @@
+ 	/* 'clean' and 'hv_enlightenments' are not changed by KVM */
+ }
+ 
+-static int svm_get_nested_state(struct kvm_vcpu *vcpu,
++#define SVM_NESTED_COPY(offset, user, source, bytes) \
++	(owned ? kvm_arch_crucible_pic_initializer_nested_output_copy(vcpu, owned, \
++		(offset), (source), (bytes), false) : copy_to_user((user), (source), (bytes)))
++#define SVM_NESTED_CLEAR(offset, user, bytes) \
++	(owned ? kvm_arch_crucible_pic_initializer_nested_output_copy(vcpu, owned, \
++		(offset), NULL, (bytes), true) : clear_user((user), (bytes)))
++
++static int svm_get_nested_state_internal(struct kvm_vcpu *vcpu,
+ 				struct kvm_nested_state __user *user_kvm_nested_state,
+-				u32 user_data_size)
++				u32 user_data_size, struct kvm_nested_state *owned)
+ {
+ 	struct vcpu_svm *svm;
+ 	struct vmcb_control_area *ctl;
+@@ -1890,7 +1897,11 @@
+ 		.size = sizeof(kvm_state),
+ 	};
+ 	struct vmcb __user *user_vmcb = (struct vmcb __user *)
+-		&user_kvm_nested_state->data.svm[0];
++		(user_kvm_nested_state ? &user_kvm_nested_state->data.svm[0] : NULL);
++
++	if (owned && !kvm_arch_crucible_pic_initializer_nested_output_current(vcpu,
++		owned, user_data_size))
++		return -ESTALE;
+ 
+ 	if (!vcpu)
+ 		return kvm_state.size + KVM_STATE_NESTED_SVM_VMCB_SIZE;
+@@ -1916,7 +1927,12 @@
+ 	if (gif_set(svm))
+ 		kvm_state.flags |= KVM_STATE_NESTED_GIF_SET;
+ 
+-	if (copy_to_user(user_kvm_nested_state, &kvm_state, sizeof(kvm_state)))
++	/* The owned bank cannot receive beyond its admitted capacity. Preserve
++	 * the native required extent for the ordinary ioctl E2BIG response. */
++	if (owned && user_data_size < kvm_state.size)
++		goto out;
++
++	if (SVM_NESTED_COPY(0, user_kvm_nested_state, &kvm_state, sizeof(kvm_state)))
+ 		return -EFAULT;
+ 
+ 	if (!is_guest_mode(vcpu))
+@@ -1926,7 +1942,8 @@
+ 	 * Copy over the full size of the VMCB rather than just the size
+ 	 * of the structs.
+ 	 */
+-	if (clear_user(user_vmcb, KVM_STATE_NESTED_SVM_VMCB_SIZE))
++	if (SVM_NESTED_CLEAR(offsetof(struct kvm_nested_state, data), user_vmcb,
++		KVM_STATE_NESTED_SVM_VMCB_SIZE))
+ 		return -EFAULT;
+ 
+ 	ctl = kzalloc_obj(*ctl);
+@@ -1934,18 +1951,37 @@
+ 		return -ENOMEM;
+ 
+ 	nested_copy_vmcb_cache_to_control(ctl, &svm->nested.ctl);
+-	r = copy_to_user(&user_vmcb->control, ctl,
+-			 sizeof(user_vmcb->control));
++	r = SVM_NESTED_COPY(offsetof(struct kvm_nested_state, data) +
++			      offsetof(struct vmcb, control), &user_vmcb->control, ctl,
++			      sizeof(user_vmcb->control));
+ 	kfree(ctl);
+ 	if (r)
+ 		return -EFAULT;
+ 
+-	if (copy_to_user(&user_vmcb->save, &svm->vmcb01.ptr->save,
+-			 sizeof(user_vmcb->save)))
++	if (SVM_NESTED_COPY(offsetof(struct kvm_nested_state, data) +
++			      offsetof(struct vmcb, save), &user_vmcb->save,
++			      &svm->vmcb01.ptr->save, sizeof(user_vmcb->save)))
+ 		return -EFAULT;
+ out:
+ 	return kvm_state.size;
+ }
++#undef SVM_NESTED_COPY
++#undef SVM_NESTED_CLEAR
++
++static int svm_get_nested_state(struct kvm_vcpu *vcpu,
++	struct kvm_nested_state __user *user_state, u32 capacity)
++{
++	return svm_get_nested_state_internal(vcpu, user_state, capacity, NULL);
++}
++
++static int svm_get_nested_state_owned(struct kvm_vcpu *vcpu,
++	struct kvm_nested_state *owned, unsigned capacity)
++{
++	if (!vcpu || !owned)
++		return -EINVAL;
++	return svm_get_nested_state_internal(vcpu, NULL, capacity, owned);
++}
++
+ 
+ static int svm_set_nested_state(struct kvm_vcpu *vcpu,
+ 				struct kvm_nested_state __user *user_kvm_nested_state,
+@@ -2175,6 +2211,8 @@
+ 	.triple_fault = nested_svm_triple_fault,
+ 	.get_nested_state_pages = svm_get_nested_state_pages,
+ 	.get_state = svm_get_nested_state,
++	.get_state_owned = svm_get_nested_state_owned,
++	.get_state_owned_scratch_bytes = sizeof(struct vmcb_control_area),
+ 	.set_state = svm_set_nested_state,
+ 	.hv_inject_synthetic_vmexit_post_tlb_flush = svm_hv_inject_synthetic_vmexit_post_tlb_flush,
+ };
+--- a/arch/x86/kvm/vmx/nested.c
++++ b/arch/x86/kvm/vmx/nested.c
+@@ -6741,9 +6741,13 @@
+ 	return true;
+ }
+ 
+-static int vmx_get_nested_state(struct kvm_vcpu *vcpu,
++#define VMX_NESTED_COPY(offset, user, source, bytes) \
++	(owned ? kvm_arch_crucible_pic_initializer_nested_output_copy(vcpu, owned, \
++		(offset), (source), (bytes), false) : copy_to_user((user), (source), (bytes)))
++
++static int vmx_get_nested_state_internal(struct kvm_vcpu *vcpu,
+ 				struct kvm_nested_state __user *user_kvm_nested_state,
+-				u32 user_data_size)
++				u32 user_data_size, struct kvm_nested_state *owned)
+ {
+ 	struct vcpu_vmx *vmx;
+ 	struct vmcs12 *vmcs12;
+@@ -6757,7 +6761,11 @@
+ 		.hdr.vmx.preemption_timer_deadline = 0,
+ 	};
+ 	struct kvm_vmx_nested_state_data __user *user_vmx_nested_state =
+-		&user_kvm_nested_state->data.vmx[0];
++		user_kvm_nested_state ? &user_kvm_nested_state->data.vmx[0] : NULL;
++
++	if (owned && !kvm_arch_crucible_pic_initializer_nested_output_current(vcpu,
++		owned, user_data_size))
++		return -ESTALE;
+ 
+ 	if (!vcpu)
+ 		return kvm_state.size + sizeof(*user_vmx_nested_state);
+@@ -6811,7 +6819,7 @@
+ 	if (user_data_size < kvm_state.size)
+ 		goto out;
+ 
+-	if (copy_to_user(user_kvm_nested_state, &kvm_state, sizeof(kvm_state)))
++	if (VMX_NESTED_COPY(0, user_kvm_nested_state, &kvm_state, sizeof(kvm_state)))
+ 		return -EFAULT;
+ 
+ 	if (!vmx_has_valid_vmcs12(vcpu))
+@@ -6851,18 +6859,37 @@
+ 	 * Copy over the full allocated size of vmcs12 rather than just the size
+ 	 * of the struct.
+ 	 */
+-	if (copy_to_user(user_vmx_nested_state->vmcs12, vmcs12, VMCS12_SIZE))
++	if (VMX_NESTED_COPY(offsetof(struct kvm_nested_state, data) +
++			  offsetof(struct kvm_vmx_nested_state_data, vmcs12),
++		user_vmx_nested_state->vmcs12, vmcs12, VMCS12_SIZE))
+ 		return -EFAULT;
+ 
+ 	if (nested_cpu_has_shadow_vmcs(vmcs12) &&
+ 	    vmcs12->vmcs_link_pointer != INVALID_GPA) {
+-		if (copy_to_user(user_vmx_nested_state->shadow_vmcs12,
+-				 get_shadow_vmcs12(vcpu), VMCS12_SIZE))
++		if (VMX_NESTED_COPY(offsetof(struct kvm_nested_state, data) +
++			      offsetof(struct kvm_vmx_nested_state_data, shadow_vmcs12),
++			user_vmx_nested_state->shadow_vmcs12, get_shadow_vmcs12(vcpu), VMCS12_SIZE))
+ 			return -EFAULT;
+ 	}
+ out:
+ 	return kvm_state.size;
+ }
++#undef VMX_NESTED_COPY
++
++static int vmx_get_nested_state(struct kvm_vcpu *vcpu,
++	struct kvm_nested_state __user *user_state, u32 capacity)
++{
++	return vmx_get_nested_state_internal(vcpu, user_state, capacity, NULL);
++}
++
++static int vmx_get_nested_state_owned(struct kvm_vcpu *vcpu,
++	struct kvm_nested_state *owned, unsigned capacity)
++{
++	if (!vcpu || !owned)
++		return -EINVAL;
++	return vmx_get_nested_state_internal(vcpu, NULL, capacity, owned);
++}
++
+ 
+ void vmx_leave_nested(struct kvm_vcpu *vcpu)
+ {
+@@ -7496,6 +7523,8 @@
+ 	.has_events = vmx_has_nested_events,
+ 	.triple_fault = nested_vmx_triple_fault,
+ 	.get_state = vmx_get_nested_state,
++	.get_state_owned = vmx_get_nested_state_owned,
++	.get_state_owned_scratch_bytes = 0,
+ 	.set_state = vmx_set_nested_state,
+ 	.get_nested_state_pages = vmx_get_nested_state_pages,
+ 	.write_log_dirty = nested_vmx_write_pml_buffer,
+--- a/arch/x86/kvm/x86.c
++++ b/arch/x86/kvm/x86.c
+@@ -4880,6 +4880,7 @@
+ 	int r = 0;
+ 
+ 	switch (ext) {
++	case KVM_CAP_CRUCIBLE_Q35_PS_TIMER_BANK_V2:
+ 	case KVM_CAP_CRUCIBLE_Q35_PS_IRQ_INPUT_V2:
+ 	case KVM_CAP_CRUCIBLE_Q35_PS_WHOLE_CLOCK_V1:
+ 		/* Reserved whole PS clock edition is unsupported until fully installed. */
+@@ -6440,9 +6441,16 @@
+ 		struct kvm_cpuid __user *cpuid_arg = argp;
+ 		struct kvm_cpuid cpuid;
+ 
+-		r = -EFAULT;
+-		if (copy_from_user(&cpuid, cpuid_arg, sizeof(cpuid)))
+-			goto out;
++		if (vcpu->kvm->arch.crucible_pic_board.initializer_roster.selected) {
++			r = kvm_arch_crucible_pic_initializer_cpuid_header(vcpu,
++				KVM_SET_CPUID, &cpuid, cpuid_arg, sizeof(cpuid));
++			if (r)
++				goto out;
++		} else {
++			r = -EFAULT;
++			if (copy_from_user(&cpuid, cpuid_arg, sizeof(cpuid)))
++				goto out;
++		}
+ 		if (vcpu->kvm->arch.crucible_pic_board.initializer_roster.selected) {
+ 			struct kvm_cpuid *owned;
+ 			void *working;
+@@ -6454,9 +6462,9 @@
+ 				goto out;
+ 			owned = working;
+ 			r = kvm_vcpu_ioctl_set_cpuid_owned(vcpu, owned, owned->entries);
+-			if (kvm_arch_crucible_pic_initializer_cpuid_complete(vcpu,
+-				KVM_SET_CPUID, working, bytes, r))
+-				r = -EOPNOTSUPP;
++			/* A journal error cannot overwrite the native callback result. */
++			(void)kvm_arch_crucible_pic_initializer_cpuid_complete(vcpu,
++				KVM_SET_CPUID, working, bytes, r);
+ 			kfree(working);
+ 			break;
+ 		}
+@@ -6467,9 +6475,16 @@
+ 		struct kvm_cpuid2 __user *cpuid_arg = argp;
+ 		struct kvm_cpuid2 cpuid;
+ 
+-		r = -EFAULT;
+-		if (copy_from_user(&cpuid, cpuid_arg, sizeof(cpuid)))
+-			goto out;
++		if (vcpu->kvm->arch.crucible_pic_board.initializer_roster.selected) {
++			r = kvm_arch_crucible_pic_initializer_cpuid_header(vcpu,
++				KVM_SET_CPUID2, &cpuid, cpuid_arg, sizeof(cpuid));
++			if (r)
++				goto out;
++		} else {
++			r = -EFAULT;
++			if (copy_from_user(&cpuid, cpuid_arg, sizeof(cpuid)))
++				goto out;
++		}
+ 		if (vcpu->kvm->arch.crucible_pic_board.initializer_roster.selected) {
+ 			struct kvm_cpuid2 *owned;
+ 			void *working;
+@@ -6481,9 +6496,9 @@
+ 				goto out;
+ 			owned = working;
+ 			r = kvm_vcpu_ioctl_set_cpuid2_owned(vcpu, owned, owned->entries);
+-			if (kvm_arch_crucible_pic_initializer_cpuid_complete(vcpu,
+-				KVM_SET_CPUID2, working, bytes, r))
+-				r = -EOPNOTSUPP;
++			/* A journal error cannot overwrite the native callback result. */
++			(void)kvm_arch_crucible_pic_initializer_cpuid_complete(vcpu,
++				KVM_SET_CPUID2, working, bytes, r);
+ 			kfree(working);
+ 			break;
+ 		}
+@@ -6495,9 +6510,16 @@
+ 		struct kvm_cpuid2 __user *cpuid_arg = argp;
+ 		struct kvm_cpuid2 cpuid;
+ 
+-		r = -EFAULT;
+-		if (copy_from_user(&cpuid, cpuid_arg, sizeof(cpuid)))
+-			goto out;
++		if (vcpu->kvm->arch.crucible_pic_board.initializer_roster.selected) {
++			r = kvm_arch_crucible_pic_initializer_cpuid_header(vcpu,
++				KVM_GET_CPUID2, &cpuid, cpuid_arg, sizeof(cpuid));
++			if (r)
++				goto out;
++		} else {
++			r = -EFAULT;
++			if (copy_from_user(&cpuid, cpuid_arg, sizeof(cpuid)))
++				goto out;
++		}
+ 		if (vcpu->kvm->arch.crucible_pic_board.initializer_roster.selected) {
+ 			struct kvm_cpuid2 *owned;
+ 			void *working;
+@@ -6509,9 +6531,9 @@
+ 				goto out;
+ 			owned = working;
+ 			r = kvm_vcpu_ioctl_get_cpuid2_owned(vcpu, owned, owned->entries);
+-			if (kvm_arch_crucible_pic_initializer_cpuid_complete(vcpu,
+-				KVM_GET_CPUID2, working, bytes, r))
+-				r = -EOPNOTSUPP;
++			/* A journal error cannot overwrite the native callback result. */
++			(void)kvm_arch_crucible_pic_initializer_cpuid_complete(vcpu,
++				KVM_GET_CPUID2, working, bytes, r);
+ 			if (!r && (copy_to_user(cpuid_arg->entries, owned->entries,
+ 				owned->nent * sizeof(owned->entries[0])) ||
+ 				copy_to_user(cpuid_arg, owned, sizeof(*owned))))
+@@ -6581,18 +6603,19 @@
+ 	case KVM_X86_SETUP_MCE: {
+ 		u64 mcg_cap;
+ 
+-		r = -EFAULT;
+-		if (copy_from_user(&mcg_cap, argp, sizeof(mcg_cap)))
+-			goto out;
+-		r = kvm_arch_crucible_pic_initializer_cpu_prepare(vcpu,
+-			KVM_X86_SETUP_MCE, &mcg_cap, sizeof(mcg_cap));
++		if (vcpu->kvm->arch.crucible_pic_board.initializer_roster.selected) {
++			r = kvm_arch_crucible_pic_initializer_cpu_read_input(vcpu,
++				KVM_X86_SETUP_MCE, &mcg_cap, argp, sizeof(mcg_cap));
++		} else {
++			r = copy_from_user(&mcg_cap, argp, sizeof(mcg_cap)) ? -EFAULT : 0;
++		}
+ 		if (r)
+ 			goto out;
+ 		r = kvm_vcpu_ioctl_x86_setup_mce(vcpu, mcg_cap);
+ 		mcg_cap = vcpu->arch.mcg_cap;
+-		if (kvm_arch_crucible_pic_initializer_cpu_complete(vcpu,
+-			KVM_X86_SETUP_MCE, &mcg_cap, sizeof(mcg_cap), r))
+-			r = -EOPNOTSUPP;
++		/* A journal error cannot overwrite the native callback result. */
++		(void)kvm_arch_crucible_pic_initializer_cpu_complete(vcpu,
++			KVM_X86_SETUP_MCE, &mcg_cap, sizeof(mcg_cap), r);
+ 		break;
+ 	}
+ 	case KVM_X86_SET_MCE: {
+@@ -6607,7 +6630,13 @@
+ 	case KVM_GET_VCPU_EVENTS: {
+ 		struct kvm_vcpu_events events;
+ 
++		r = kvm_arch_crucible_pic_initializer_cpu_prepare(vcpu,
++			ioctl, &events, sizeof(events));
++		if (r)
++			break;
+ 		kvm_vcpu_ioctl_x86_get_vcpu_events(vcpu, &events);
++		(void)kvm_arch_crucible_pic_initializer_cpu_complete(vcpu,
++			ioctl, &events, sizeof(events), 0);
+ 
+ 		r = -EFAULT;
+ 		if (copy_to_user(argp, &events, sizeof(struct kvm_vcpu_events)))
+@@ -6641,9 +6670,15 @@
+ 		if (r)
+ 			break;
+ 
++		r = kvm_arch_crucible_pic_initializer_cpu_prepare(vcpu,
++			ioctl, &events, sizeof(events));
++		if (r)
++			break;
+ 		kvm_vcpu_srcu_read_lock(vcpu);
+ 		r = kvm_vcpu_ioctl_x86_set_vcpu_events(vcpu, &events);
+ 		kvm_vcpu_srcu_read_unlock(vcpu);
++		(void)kvm_arch_crucible_pic_initializer_cpu_complete(vcpu,
++			ioctl, &events, sizeof(events), r);
+ 		break;
+ 	}
+ 	case KVM_GET_DEBUGREGS: {
+@@ -6835,9 +6870,9 @@
+ 			r = 0;
+ tsc_complete:
+ 		actual_rate = vcpu->arch.virtual_tsc_khz;
+-		if (kvm_arch_crucible_pic_initializer_cpu_complete(vcpu,
+-			KVM_SET_TSC_KHZ, &actual_rate, sizeof(actual_rate), r))
+-			r = -EOPNOTSUPP;
++		/* A journal error cannot overwrite the native callback result. */
++		(void)kvm_arch_crucible_pic_initializer_cpu_complete(vcpu,
++			KVM_SET_TSC_KHZ, &actual_rate, sizeof(actual_rate), r);
+ 		goto out;
+ 	}
+ 	case KVM_GET_TSC_KHZ: {
+@@ -6849,9 +6884,9 @@
+ 			goto out;
+ 		actual_rate = vcpu->arch.virtual_tsc_khz;
+ 		r = actual_rate;
+-		if (kvm_arch_crucible_pic_initializer_cpu_complete(vcpu,
+-			KVM_GET_TSC_KHZ, &actual_rate, sizeof(actual_rate), r))
+-			r = -EOPNOTSUPP;
++		/* A journal error cannot overwrite the native callback result. */
++		(void)kvm_arch_crucible_pic_initializer_cpu_complete(vcpu,
++			KVM_GET_TSC_KHZ, &actual_rate, sizeof(actual_rate), r);
+ 		goto out;
+ 	}
+ 	case KVM_KVMCLOCK_CTRL: {
+@@ -6874,6 +6909,41 @@
+ 		r = -EINVAL;
+ 		if (!kvm_x86_ops.nested_ops->get_state)
+ 			break;
++
++		if (vcpu->kvm->arch.crucible_pic_board.initializer_roster.selected) {
++			struct kvm_nested_state *owned;
++			long native_result;
++
++			if (!kvm_x86_ops.nested_ops->get_state_owned) {
++				r = -EOPNOTSUPP;
++				break;
++			}
++			r = kvm_arch_crucible_pic_initializer_nested_output_prepare(vcpu,
++				&user_kvm_nested_state->size,
++				kvm_x86_ops.nested_ops->get_state_owned_scratch_bytes,
++				&user_data_size, &owned);
++			if (r)
++				break;
++			native_result = kvm_x86_ops.nested_ops->get_state_owned(vcpu,
++				owned, user_data_size);
++			r = kvm_arch_crucible_pic_initializer_nested_output_complete(vcpu,
++				owned, native_result);
++			if (r) {
++				/* Raw native return is already retained; an uncertain bank
++				 * cannot publish a success or retry the producer. */
++				r = native_result < 0 ? native_result : -EAGAIN;
++				break;
++			}
++			r = native_result;
++			if (r < 0)
++				break;
++			if (r > user_data_size) {
++				r = put_user(r, &user_kvm_nested_state->size) ? -EFAULT : -E2BIG;
++				break;
++			}
++			r = copy_to_user(user_kvm_nested_state, owned, r) ? -EFAULT : 0;
++			break;
++		}
+ 
+ 		BUILD_BUG_ON(sizeof(user_data_size) != sizeof(user_kvm_nested_state->size));
+ 		r = -EFAULT;
+@@ -7114,6 +7184,8 @@
+ 	switch (cap->cap) {
+ 	case KVM_CAP_CRUCIBLE_PIC_DEVICE_BIRTH_V1:
+ 		return kvm_crucible_pic_device_birth_control(kvm, cap);
++	case KVM_CAP_CRUCIBLE_Q35_PS_TIMER_BANK_V2:
++		return kvm_crucible_q35_ps_timer_bank_control(kvm, cap);
+ 	case KVM_CAP_CRUCIBLE_Q35_PS_IRQ_INPUT_V2:
+ 		return kvm_crucible_q35_ps_irq_control(kvm, cap);
+ 	case KVM_CAP_CRUCIBLE_Q35_PS_WHOLE_CLOCK_V1:
+@@ -7124,6 +7196,8 @@
+ 		return kvm_crucible_q35_device_initializer_control(kvm, cap);
+ 	case KVM_CAP_CRUCIBLE_Q35_INACTIVE_CLOCK_V2:
+ 		return kvm_crucible_q35_inactive_clock_control(kvm, cap);
++	case KVM_CAP_CRUCIBLE_Q35_CPU_BYTES_V1:
++		return kvm_crucible_q35_cpu_bytes_control(kvm, cap);
+ 	case KVM_CAP_CRUCIBLE_Q35_INITIAL_ROUTING_V2:
+ 		return kvm_crucible_q35_initial_routing_control(kvm, cap);
+ 	case KVM_CAP_CRUCIBLE_Q35_MSR_FILTER_V2:
+@@ -14148,6 +14222,8 @@
+ 	if (kvm->arch.created_mediated_pmu)
+ 		perf_release_mediated_pmu();
+ 	kvm_destroy_vcpus(kvm);
++	/* Producer banks outlive the actual PIT worker and all LAPIC timers. */
++	kvm_crucible_q35_ps_timer_bank_destroy(kvm);
+ 	kvm_free_msr_filter(srcu_dereference_check(kvm->arch.msr_filter, &kvm->srcu, 1));
+ 	kvm_crucible_q35_device_initializer_destroy(kvm);
+ 	kvm_crucible_q35_initial_routing_destroy(kvm);
+--- a/include/linux/kvm_host.h
++++ b/include/linux/kvm_host.h
+@@ -767,10 +767,26 @@
+ int kvm_arch_crucible_pic_initializer_enter(struct kvm *kvm,
+ 	struct kvm_vcpu *vcpu, unsigned int ioctl, unsigned long arg,
+ 	u32 *effect_index);
++int kvm_arch_crucible_pic_initializer_cpu_read_input(struct kvm_vcpu *vcpu,
++	unsigned int ioctl, void *buffer, const void __user *source, u32 bytes);
++
+ int kvm_arch_crucible_pic_initializer_cpu_prepare(struct kvm_vcpu *vcpu,
+ 	unsigned int ioctl, void *buffer, u32 bytes);
+ int kvm_arch_crucible_pic_initializer_cpu_complete(struct kvm_vcpu *vcpu,
+ 	unsigned int ioctl, const void *buffer, u32 bytes, long native_result);
++int kvm_arch_crucible_pic_initializer_nested_output_prepare(struct kvm_vcpu *vcpu,
++	const void __user *size_input, u32 scratch_bytes, u32 *capacity,
++	struct kvm_nested_state **owned);
++bool kvm_arch_crucible_pic_initializer_nested_output_current(struct kvm_vcpu *vcpu,
++	const struct kvm_nested_state *owned, u32 capacity);
++int kvm_arch_crucible_pic_initializer_nested_output_copy(struct kvm_vcpu *vcpu,
++	struct kvm_nested_state *owned, u32 offset, const void *source, u32 bytes,
++	bool clear);
++int kvm_arch_crucible_pic_initializer_nested_output_complete(struct kvm_vcpu *vcpu,
++	struct kvm_nested_state *owned, long native_result);
++
++int kvm_arch_crucible_pic_initializer_cpuid_header(struct kvm_vcpu *vcpu,
++	unsigned int ioctl, void *header, const void __user *source, u32 bytes);
+ int kvm_arch_crucible_pic_initializer_cpuid_prepare(struct kvm_vcpu *vcpu,
+ 	unsigned int ioctl, const void *header, const void __user *entries,
+ 	void **working, u32 *working_bytes);
+@@ -900,6 +916,8 @@
+ 	bool known;
+ 	bool tainted;
+ };
++
++struct kvm_crucible_kernel_resource_context;
+ 
+ struct kvm {
+ 	/* Native domain admission, callback ownership and bypass installation share
+@@ -928,6 +946,7 @@
+ 	bool crucible_memory_tainted;
+ 	u64 crucible_memory_taint_generation;
+ 	struct kvm_crucible_irq_input_state crucible_irq_input;
++	struct kvm_crucible_kernel_resource_context *crucible_resources;
+ #ifdef KVM_HAVE_MMU_RWLOCK
+ 	rwlock_t mmu_lock;
+ #else
+--- a/include/uapi/linux/kvm.h
++++ b/include/uapi/linux/kvm.h
+@@ -983,6 +983,45 @@
+  * A selected but incomplete roster never authorizes clocks or guest entry. */
+ #define KVM_CAP_CRUCIBLE_PIC_INITIALIZER_V2 0xa033
+ #define KVM_CAP_CRUCIBLE_Q35_BOARD_CONSTRUCTOR_V2 0xa034
++
++/* A distinct system-file policy on the existing private cap34 namespace.
++ * VM-file policy2 is unchanged. This control does not grant RUN or Ready. */
++#define KVM_CRUCIBLE_Q35_SYSTEM_RESOURCE_POLICY 3U
++#define KVM_CRUCIBLE_KERNEL_RESOURCE_VERSION 1U
++#define KVM_CRUCIBLE_KERNEL_RESOURCE_PREPARE 1U
++#define KVM_CRUCIBLE_KERNEL_RESOURCE_QUERY 2U
++#define KVM_CRUCIBLE_KERNEL_RESOURCE_METADATA_KNOWN (1U << 0)
++#define KVM_CRUCIBLE_KERNEL_RESOURCE_COVERAGE_COMPLETE (1U << 1)
++#define KVM_CRUCIBLE_KERNEL_RESOURCE_UNCERTAIN (1U << 2)
++#define KVM_CRUCIBLE_KERNEL_RESOURCE_PREPARE_DELIVERY_KNOWN (1U << 3)
++
++struct kvm_crucible_kernel_resource_policy {
++	__u32 version;
++	__u32 operation;
++	__u64 enrollment_id;
++	__u64 expected_vm_type;
++	__u64 constructor_deadline_ns;
++	__u64 resident_ceiling;
++	__u64 peak_ceiling;
++	__u64 reserved_ceiling;
++	__u64 transient_ceiling;
++	__u64 output_ceiling;
++	__u64 metadata_ceiling;
++	__u64 quoted_resident;
++	__u64 quoted_peak;
++	__u64 quoted_reserved;
++	__u64 quoted_transient;
++	__u64 quoted_output;
++	__u64 quoted_metadata;
++	__u64 coverage;
++	__u64 reservation_generation;
++	__s64 native_result;
++	__u32 flags;
++	__u32 reserved32;
++	__s64 prepare_delivery_result;
++	__u64 prepare_delivered_prefix;
++	__u64 reserved[2];
++};
+ #define KVM_CAP_CRUCIBLE_Q35_DEVICE_BIRTH_V2 0xa035
+ /* Constructor-owned native RAM effects and a separate current alias cut.
+  * Numeric planning alone is not a native backing or board/clock permission. */
+@@ -1022,10 +1061,93 @@
+ };
+ 
+ #define KVM_CAP_CRUCIBLE_Q35_INACTIVE_CLOCK_V2 0xa041
+-/* 0xa042 remains reserved for a separately versioned CPU output reader. */
++/* Ordinary same-process ioctl addresses below never form a public process
++ * protocol. The reader copies complete immutable history, not native objects.
++ * Each native-v2 initializer row admits one exact-capacity READ. A lost or
++ * partial copyout retains the original request/result and never admits retry.
++ * Native effect outcome and original delivery are independent of reader I/O.
++ * Availability remains zero until the complete backend issuer is qualified. */
++#define KVM_CAP_CRUCIBLE_Q35_CPU_BYTES_V1 0xa042
++#define KVM_CRUCIBLE_Q35_CPU_BYTES_READ 1U
++/* Edition2 separates an original cached extent offer from the byte delivery.
++ * Buffer addresses remain ordinary ioctl arguments, never portable proof. */
++#define KVM_CRUCIBLE_Q35_CPU_BYTES_METADATA_V2 1U
++#define KVM_CRUCIBLE_Q35_CPU_BYTES_READ_V2 2U
++#define KVM_CRUCIBLE_Q35_CPU_BYTES_KNOWN 1U
++#define KVM_CRUCIBLE_Q35_CPU_BYTES_UNCERTAIN 2U
++#define KVM_CRUCIBLE_Q35_CPU_BYTES_INPUT_COMPLETE 4U
++#define KVM_CRUCIBLE_Q35_CPU_BYTES_OUTPUT_OBSERVED 8U
++#define KVM_CRUCIBLE_Q35_CPU_BYTES_NATIVE_RETURNED 16U
++
++/* Fixed128-byte native UAPI header. Payloads are exact retained allocations;
++ * input_copied_bytes distinguishes a partial user-tail copy from its zeroed
++ * suffix. Output fields and reserved bytes must be zero in the request. */
++struct kvm_crucible_q35_cpu_bytes {
++	__u32 version;
++	__u32 operation;
++	__u64 enrollment_id;
++	__u32 native_vcpu_id;
++	__u32 effect_index;
++	__u32 native_ioctl;
++	__u32 flags;
++	__u64 input_buffer;
++	__u64 input_capacity;
++	__u64 output_buffer;
++	__u64 output_capacity;
++	__u64 input_bytes;
++	__u64 output_bytes;
++	__s64 native_result;
++	__s64 original_delivery_result;
++	__s64 reader_delivery_result;
++	__u64 input_copied_bytes;
++	__u64 reserved[2];
++};
+ #define KVM_CAP_CRUCIBLE_Q35_PS_WHOLE_CLOCK_V1 0xa043
+ #define KVM_CAP_CRUCIBLE_Q35_LOADED_COUNTER_V1 0xa044
+ #define KVM_CAP_CRUCIBLE_Q35_PS_IRQ_INPUT_V2 0xa045
++#define KVM_CAP_CRUCIBLE_Q35_PS_TIMER_BANK_V2 0xa046
++
++#define KVM_CRUCIBLE_Q35_PS_TIMER_INSTALL 1
++#define KVM_CRUCIBLE_Q35_PS_TIMER_QUERY 2
++#define KVM_CRUCIBLE_Q35_PS_TIMER_KNOWN 1U
++#define KVM_CRUCIBLE_Q35_PS_TIMER_UNCERTAIN 2U
++#define KVM_CRUCIBLE_Q35_PS_TIMER_MAX_ARMS 4096U
++#define KVM_CRUCIBLE_Q35_PS_TIMER_MAX_EXPIRIES 8192U
++#define KVM_CRUCIBLE_Q35_PS_TIMER_MAX_ROUTES 49152U
++#define KVM_CRUCIBLE_Q35_PS_TIMER_MAX_NMIS 32768U
++#define KVM_CRUCIBLE_Q35_PS_TIMER_MAX_EOIS 16384U
++#define KVM_CRUCIBLE_Q35_PS_TIMER_MAX_STORAGE (64ULL << 20)
++
++/* Typed lifetime banks have independent quotas. Native sizeof values include
++ * private owner and outcome metadata; the128-byte control is not their budget.
++ * This cold installation does not enable execution or publish timer outputs. */
++struct kvm_crucible_q35_ps_timer_bank {
++	__u32 version;
++	__u32 operation;
++	__u64 configuration_enrollment_id;
++	__u64 generation;
++	__u64 position_ps;
++	__u32 expected_phase;
++	__u32 maximum_pit_arms;
++	__u32 maximum_lapic_arms;
++	__u32 maximum_expiries;
++	__u32 maximum_routes;
++	__u32 maximum_nmis;
++	__u32 maximum_eois;
++	__u32 reserved32;
++	__u64 maximum_storage_bytes;
++	__u64 actual_storage_bytes;
++	__s32 native_result;
++	__u32 flags;
++	__u64 producer_mask;
++	__u32 pit_arm_row_bytes;
++	__u32 lapic_arm_row_bytes;
++	__u32 expiry_row_bytes;
++	__u32 route_row_bytes;
++	__u32 nmi_row_bytes;
++	__u32 eoi_row_bytes;
++	__u64 reserved64;
++};
+ 
+ #define KVM_CRUCIBLE_Q35_COUNTER_APPLY 1
+ #define KVM_CRUCIBLE_Q35_COUNTER_QUERY 2
+--- /dev/null
++++ b/virt/kvm/crucible-original-kernel-resource.inc.c
+@@ -0,0 +1,375 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Original system-file reservation precedes VM/FD allocation. A partial source
++ * quote is useful readback, but never permission for uncovered constructors. */
++
++#include <linux/overflow.h>
++
++#define CRUCIBLE_RESOURCE_CONTEXTS 8U
++#define CRUCIBLE_RESOURCE_ALLOCATION_ROWS 4096U
++#define CRUCIBLE_RESOURCE_CONSTRUCTOR_NS (5ULL * NSEC_PER_SEC)
++
++#define CRUCIBLE_RESOURCE_METADATA BIT_ULL(0)
++#define CRUCIBLE_RESOURCE_VM_ROOT BIT_ULL(1)
++#define CRUCIBLE_RESOURCE_FD_TABLE BIT_ULL(2)
++#define CRUCIBLE_RESOURCE_ANON_FILE BIT_ULL(3)
++#define CRUCIBLE_RESOURCE_SRCU BIT_ULL(4)
++#define CRUCIBLE_RESOURCE_IRQ_ROUTES BIT_ULL(5)
++#define CRUCIBLE_RESOURCE_IO_BUSES BIT_ULL(6)
++#define CRUCIBLE_RESOURCE_ARCH_VM BIT_ULL(7)
++#define CRUCIBLE_RESOURCE_MMU_NOTIFIER BIT_ULL(8)
++#define CRUCIBLE_RESOURCE_COALESCED_MMIO BIT_ULL(9)
++#define CRUCIBLE_RESOURCE_PUBLICATION BIT_ULL(10)
++#define CRUCIBLE_RESOURCE_REQUIRED ((1ULL << 11) - 1)
++
++/* Actual allocation records and peak counters stay kernel-private. The 192-byte
++ * constructor control cannot masquerade as a complete live allocation reader. */
++struct kvm_crucible_resource_allocation {
++	struct task_struct *actor;
++	struct kvm *vm;
++	void *original_pointer;
++	u64 generation;
++	u64 requested_bytes;
++	u64 quoted_rounded_bytes;
++	u64 observed_rounded_bytes;
++	u64 reserved_bytes;
++	u64 transient_bytes;
++	u64 output_bytes;
++	u64 metadata_bytes;
++	u32 family;
++	u32 state;
++	bool native_attempted;
++	bool native_known;
++	bool retirement_attempted;
++	bool retirement_known;
++};
++
++struct kvm_crucible_kernel_resource_context {
++	struct file *original_file;
++	struct task_struct *original_task;
++	struct mm_struct *original_mm;
++	struct kvm *original_vm;
++	u64 generation;
++	struct kvm_crucible_kernel_resource_policy input;
++	struct kvm_crucible_kernel_resource_policy prepare_output;
++	struct kvm_crucible_kernel_resource_policy query_input;
++	struct kvm_crucible_kernel_resource_policy query_output;
++	struct kvm_crucible_resource_allocation allocations[CRUCIBLE_RESOURCE_ALLOCATION_ROWS];
++	u64 resident_bytes;
++	u64 peak_bytes;
++	u64 reserved_bytes;
++	u64 transient_bytes;
++	u64 output_bytes;
++	u64 metadata_bytes;
++	u32 allocations_used;
++	s64 prepare_delivery_result;
++	u64 prepare_delivered_prefix;
++	s64 query_delivery_result;
++	u64 query_delivered_prefix;
++	struct task_struct *create_actor;
++	u64 create_operand;
++	s64 create_result;
++	bool prepared;
++	bool prepare_delivery_known;
++	bool query_attempted;
++	bool query_delivery_known;
++	bool create_attempted;
++	bool create_native_entered;
++	bool create_no_effect_known;
++	bool uncertain;
++	bool closed;
++} __aligned(PAGE_SIZE);
++
++/* Each selected context owns a distinct page-aligned original metadata bank.
++ * Known unused retirement may recycle a slot with a NEW native generation;
++ * uncertainty retains the old slot and its original references permanently. */
++static struct kvm_crucible_kernel_resource_context
++	crucible_resource_contexts[CRUCIBLE_RESOURCE_CONTEXTS];
++static DEFINE_MUTEX(crucible_resource_lock);
++static u64 crucible_resource_generation;
++
++static struct kvm_crucible_kernel_resource_context *
++crucible_resource_find(struct file *file)
++{
++	u32 index;
++
++	lockdep_assert_held(&crucible_resource_lock);
++	for (index = 0; index < CRUCIBLE_RESOURCE_CONTEXTS; index++)
++		if (crucible_resource_contexts[index].original_file == file)
++			return &crucible_resource_contexts[index];
++	return NULL;
++}
++
++static bool crucible_resource_actor(struct kvm_crucible_kernel_resource_context *context,
++	struct file *file)
++{
++	lockdep_assert_held(&crucible_resource_lock);
++	return context && context->original_file == file && !context->closed &&
++		context->original_task == current && context->original_mm == current->mm &&
++		file->f_op == &kvm_chardev_ops;
++}
++
++static bool crucible_resource_input_same(
++	const struct kvm_crucible_kernel_resource_policy *input,
++	const struct kvm_crucible_kernel_resource_policy *original)
++{
++	return input->version == original->version &&
++		input->enrollment_id == original->enrollment_id &&
++		input->expected_vm_type == original->expected_vm_type &&
++		input->constructor_deadline_ns == original->constructor_deadline_ns &&
++		input->resident_ceiling == original->resident_ceiling &&
++		input->peak_ceiling == original->peak_ceiling &&
++		input->reserved_ceiling == original->reserved_ceiling &&
++		input->transient_ceiling == original->transient_ceiling &&
++		input->output_ceiling == original->output_ceiling &&
++		input->metadata_ceiling == original->metadata_ceiling;
++}
++
++static bool crucible_resource_input_clean(
++	const struct kvm_crucible_kernel_resource_policy *input)
++{
++	return !input->quoted_resident && !input->quoted_peak && !input->quoted_reserved &&
++		!input->quoted_transient && !input->quoted_output && !input->quoted_metadata &&
++		!input->coverage && !input->reservation_generation && !input->native_result &&
++		!input->flags && !input->reserved32 && !input->prepare_delivery_result &&
++		!input->prepare_delivered_prefix && !input->reserved[0] && !input->reserved[1];
++}
++
++static int crucible_resource_quote(
++	const struct kvm_crucible_kernel_resource_policy *input,
++	struct kvm_crucible_kernel_resource_policy *output)
++{
++	u64 metadata = sizeof(struct kvm_crucible_kernel_resource_context);
++	u64 vm_request, resident;
++
++	BUILD_BUG_ON(sizeof(*input) != 192);
++	BUILD_BUG_ON(sizeof(struct kvm_crucible_kernel_resource_context) % PAGE_SIZE);
++#ifndef CONFIG_X86_64
++	return -EOPNOTSUPP;
++#endif
++	if (input->expected_vm_type)
++		return -EOPNOTSUPP;
++	/* This native request rounding is a diagnostic minimum, not complete
++	 * slab/page allocator metadata, slack or internal transient coverage. */
++	vm_request = kmalloc_size_roundup(sizeof(struct kvm));
++	if (!vm_request || check_add_overflow(metadata, vm_request, &resident))
++		return -EOVERFLOW;
++	*output = *input;
++	output->quoted_resident = resident;
++	output->quoted_peak = resident;
++	output->quoted_reserved = resident;
++	output->quoted_transient = vm_request;
++	output->quoted_output = 2 * sizeof(*output);
++	output->quoted_metadata = metadata;
++	/* The fixed source-born metadata bank is covered. VM root request size
++	 * is observed, but its allocator-complete coverage remains unissued. */
++	output->coverage = CRUCIBLE_RESOURCE_METADATA;
++	output->flags = KVM_CRUCIBLE_KERNEL_RESOURCE_METADATA_KNOWN;
++	if (input->resident_ceiling < resident || input->peak_ceiling < resident ||
++	    input->reserved_ceiling < resident || input->transient_ceiling < vm_request ||
++	    input->output_ceiling < output->quoted_output || input->metadata_ceiling < metadata)
++		return -E2BIG;
++	return 0;
++}
++
++/* Same original reservation is required BEFORE descriptor-table expansion,
++ * VM allocation, SRCU/perCPU and all original architecture constructors. */
++static int kvm_crucible_resource_before_create(struct file *file, unsigned long type)
++{
++	struct kvm_crucible_kernel_resource_context *context;
++	int result = 0;
++
++	mutex_lock(&crucible_resource_lock);
++	context = crucible_resource_find(file);
++	if (!context)
++		goto unlock;
++	if (!crucible_resource_actor(context, file) || context->uncertain ||
++	    !context->prepared || context->create_attempted ||
++	    type != context->input.expected_vm_type ||
++	    ktime_get_ns() > context->input.constructor_deadline_ns) {
++		context->uncertain = true;
++		result = -EPERM;
++		goto unlock;
++	}
++	context->create_actor = current;
++	context->create_operand = type;
++	context->create_attempted = true;
++	/* No caller flag, quote width or cap number completes native coverage.
++	 * Missing constructor families refuse before any native allocation. */
++	if (context->prepare_output.coverage != CRUCIBLE_RESOURCE_REQUIRED ||
++	    !(context->prepare_output.flags & KVM_CRUCIBLE_KERNEL_RESOURCE_COVERAGE_COMPLETE)) {
++		context->create_result = -EOPNOTSUPP;
++		context->create_no_effect_known = true;
++		result = -EOPNOTSUPP;
++		goto unlock;
++	}
++	/* The allocation-family continuation itself is not installed yet. Even
++	 * a corrupted complete bit cannot enter ordinary unaccounted creation. */
++	context->uncertain = true;
++	context->create_result = -EOPNOTSUPP;
++	result = -EOPNOTSUPP;
++unlock:
++	mutex_unlock(&crucible_resource_lock);
++	return result;
++}
++
++static int kvm_crucible_resource_system_control(struct file *file,
++	unsigned long arg, bool *handled)
++{
++	struct kvm_enable_cap cap;
++	struct kvm_crucible_kernel_resource_policy input, output;
++	struct kvm_crucible_kernel_resource_context *context = NULL;
++	void __user *pointer;
++	unsigned long remaining;
++	u64 now, latest;
++	u32 index;
++	int result;
++
++	*handled = false;
++	/* Unsupported ordinary ENABLE_CAP keeps its architecture result. The
++	 * eventual private branch consumes THIS complete copied cap, never an
++	 * earlier classification snapshot followed by a substituted tuple. */
++	if (copy_from_user(&cap, (void __user *)arg, sizeof(cap)) ||
++	    cap.cap != KVM_CAP_CRUCIBLE_Q35_BOARD_CONSTRUCTOR_V2 ||
++	    cap.flags || cap.args[0] != KVM_CRUCIBLE_Q35_SYSTEM_RESOURCE_POLICY ||
++	    !cap.args[1] || cap.args[2] || cap.args[3])
++		return -EINVAL;
++	*handled = true;
++	for (index = 0; index < sizeof(cap.pad); index++)
++		if (cap.pad[index])
++			return -EINVAL;
++	if (file->f_op != &kvm_chardev_ops)
++		return -EINVAL;
++	pointer = u64_to_user_ptr(cap.args[1]);
++	if (copy_from_user(&input, pointer, sizeof(input)))
++		return -EFAULT;
++	if (input.version != KVM_CRUCIBLE_KERNEL_RESOURCE_VERSION || !input.enrollment_id ||
++	    !crucible_resource_input_clean(&input) ||
++	    (input.operation != KVM_CRUCIBLE_KERNEL_RESOURCE_PREPARE &&
++	     input.operation != KVM_CRUCIBLE_KERNEL_RESOURCE_QUERY))
++		return -EINVAL;
++
++	mutex_lock(&crucible_resource_lock);
++	context = crucible_resource_find(file);
++	if (input.operation == KVM_CRUCIBLE_KERNEL_RESOURCE_QUERY) {
++		if (!crucible_resource_actor(context, file) || !context->prepared ||
++		    !context->prepare_delivery_known || context->query_attempted ||
++		    !crucible_resource_input_same(&input, &context->input)) {
++			result = -EPERM;
++			goto unlock;
++		}
++		context->query_input = input;
++		context->query_attempted = true;
++		output = context->prepare_output;
++		output.operation = KVM_CRUCIBLE_KERNEL_RESOURCE_QUERY;
++		output.prepare_delivery_result = context->prepare_delivery_result;
++		output.prepare_delivered_prefix = context->prepare_delivered_prefix;
++		output.flags |= KVM_CRUCIBLE_KERNEL_RESOURCE_PREPARE_DELIVERY_KNOWN;
++		if (context->uncertain)
++			output.flags |= KVM_CRUCIBLE_KERNEL_RESOURCE_UNCERTAIN;
++		context->query_output = output;
++	} else {
++		if (context) {
++			context->uncertain = true;
++			result = -EPERM;
++			goto unlock;
++		}
++		now = ktime_get_ns();
++		if (!current->mm || !input.resident_ceiling ||
++		    input.peak_ceiling < input.resident_ceiling ||
++		    input.reserved_ceiling < input.peak_ceiling ||
++		    !input.transient_ceiling || input.transient_ceiling > input.peak_ceiling ||
++		    !input.output_ceiling || input.output_ceiling > input.resident_ceiling ||
++		    !input.metadata_ceiling || input.metadata_ceiling > input.resident_ceiling ||
++		    check_add_overflow(now, CRUCIBLE_RESOURCE_CONSTRUCTOR_NS, &latest) ||
++		    input.constructor_deadline_ns <= now || input.constructor_deadline_ns > latest) {
++			result = -EINVAL;
++			goto unlock;
++		}
++		result = crucible_resource_quote(&input, &output);
++		if (result)
++			goto unlock;
++		for (index = 0; index < CRUCIBLE_RESOURCE_CONTEXTS; index++)
++			if (!crucible_resource_contexts[index].original_file) {
++				context = &crucible_resource_contexts[index];
++				break;
++			}
++		if (!context || crucible_resource_generation == U64_MAX) {
++			result = -ENOSPC;
++			goto unlock;
++		}
++		if (!try_module_get(THIS_MODULE)) {
++			result = -EOPNOTSUPP;
++			goto unlock;
++		}
++		memset(context, 0, sizeof(*context));
++		context->input = input;
++		context->generation = ++crucible_resource_generation;
++		output.reservation_generation = context->generation;
++		output.native_result = 0;
++		context->prepare_output = output;
++		context->original_task = current;
++		context->original_mm = current->mm;
++		get_task_struct(current);
++		mmgrab(current->mm);
++		context->resident_bytes = output.quoted_metadata;
++		context->peak_bytes = context->resident_bytes;
++		context->reserved_bytes = context->resident_bytes;
++		context->metadata_bytes = output.quoted_metadata;
++		context->output_bytes = output.quoted_output;
++		context->prepared = true;
++		/* Publish only the already charged complete original bank. */
++		context->original_file = file;
++	}
++	mutex_unlock(&crucible_resource_lock);
++
++	remaining = copy_to_user(pointer, &output, sizeof(output));
++
++	mutex_lock(&crucible_resource_lock);
++	if (remaining > sizeof(output)) {
++		context->uncertain = true;
++		result = -EIO;
++		goto unlock;
++	}
++	result = remaining ? -EFAULT : 0;
++	if (input.operation == KVM_CRUCIBLE_KERNEL_RESOURCE_PREPARE) {
++		context->prepare_delivery_result = result;
++		context->prepare_delivered_prefix = sizeof(output) - remaining;
++		context->prepare_delivery_known = true;
++	} else {
++		context->query_delivery_result = result;
++		context->query_delivered_prefix = sizeof(output) - remaining;
++		context->query_delivery_known = true;
++	}
++unlock:
++	mutex_unlock(&crucible_resource_lock);
++	return result;
++}
++
++static int kvm_crucible_resource_system_release(struct inode *inode, struct file *file)
++{
++	struct kvm_crucible_kernel_resource_context *context;
++	struct task_struct *task = NULL;
++	struct mm_struct *mm = NULL;
++
++	mutex_lock(&crucible_resource_lock);
++	context = crucible_resource_find(file);
++	if (context) {
++		context->closed = true;
++		/* Unknown allocations never release or recycle this original bank. */
++		if (!context->original_vm && !context->allocations_used && !context->uncertain) {
++			task = context->original_task;
++			mm = context->original_mm;
++			memset(context, 0, sizeof(*context));
++		} else {
++			context->uncertain = true;
++		}
++	}
++	mutex_unlock(&crucible_resource_lock);
++	if (task)
++		put_task_struct(task);
++	if (mm) {
++		mmdrop(mm);
++		module_put(THIS_MODULE);
++	}
++	return 0;
++}
+--- a/virt/kvm/crucible-q35-ps-irq-input.inc.c
++++ b/virt/kvm/crucible-q35-ps-irq-input.inc.c
+@@ -55,6 +55,7 @@
+ /* One literal route callback consumes this private original lease. */
+ struct ps_irq_route_lease {
+ 	struct kvm_crucible_ps_irq_row *row;
++	struct kvm_crucible_ps_timer_route_row *pit_row;
+ 	struct kvm_kernel_irq_routing_entry *buffer;
+ 	u32 index;
+ };
+@@ -111,6 +112,10 @@
+ 	bool valid;
+ 
+ 	lease->row = NULL;
++	lease->pit_row = NULL;
++	if (source == KVM_PIT_IRQ_SOURCE_ID && ps->selected && ps->plan.version == 2)
++		return ps_pit_route_prepare(kvm, source, gsi, level, line_status,
++			input, index, count, &lease->pit_row);
+ 	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
+ 	/* This is not IRQ permission: source_begin already admitted the genuine
+ 	 * ordinary or original constructor lane before reaching this reader. */
+@@ -158,6 +163,12 @@
+ 	unsigned long flags;
+ 	bool valid;
+ 
++	if (lease->pit_row) {
++		struct kvm_crucible_ps_timer_route_row *pit_row = lease->pit_row;
++
++		lease->pit_row = NULL;
++		return ps_pit_route_complete(kvm, pit_row, native_result);
++	}
+ 	if (!row)
+ 		return true;
+ 	lease->row = NULL;
+--- /dev/null
++++ b/virt/kvm/crucible-q35-ps-pit-route.inc.c
+@@ -0,0 +1,243 @@
++/* SPDX-License-Identifier: GPL-2.0-only */
++/* Native PIT pulse routing consumes the original worker/expiry issuer, not
++ * the external controller IRQ journal or a caller-selected route capsule. */
++
++static void ps_pit_route_fault_locked(struct kvm *kvm)
++{
++	kvm->arch.crucible_clock.ps.timers.uncertain = true;
++	kvm_crucible_q35_ps_timer_fault_locked(kvm);
++}
++
++static bool ps_pit_route_reference(struct kvm_crucible_ps_timer_state *timers,
++	struct kvm_crucible_ps_timer_route_row *row)
++{
++	u32 index;
++
++	if (!timers->routes || timers->routes_used > timers->installation.maximum_routes ||
++	    timers->installation.maximum_routes > KVM_CRUCIBLE_Q35_PS_TIMER_MAX_ROUTES)
++		return false;
++	for (index = 0; index < timers->routes_used; index++)
++		if (row == &timers->routes[index])
++			return true;
++	return false;
++}
++
++static bool ps_pit_route_context_locked(struct kvm *kvm,
++	struct kvm_crucible_ps_timer_route_row *row)
++{
++	struct kvm_crucible_ps_timer_state *timers = &kvm->arch.crucible_clock.ps.timers;
++	struct kvm_crucible_ps_timer_expiry_row *expiry;
++	u32 index;
++
++	if (!kvm_crucible_q35_ps_pit_dispatch_current_locked(kvm, &expiry) ||
++	    timers->routes_used > timers->installation.maximum_routes ||
++	    timers->installation.maximum_routes > KVM_CRUCIBLE_Q35_PS_TIMER_MAX_ROUTES)
++		return false;
++	for (index = 0; index < timers->routes_used; index++)
++		if (row == &timers->routes[index])
++			return row->expiry == expiry && row->ordinal == index + 1 &&
++				row->generation == expiry->original.generation &&
++				row->source == KVM_PIT_IRQ_SOURCE_ID && !row->gsi &&
++				row->level == timers->pit_dispatch_level &&
++				row->input == &timers->route_storage[index * 2] &&
++				row->buffer == &timers->route_storage[index * 2 + 1];
++	return false;
++}
++
++/* A matching integer chip/pin cannot replace the literal native callback. */
++static bool ps_pit_native_route(const struct kvm_kernel_irq_routing_entry *entry)
++{
++#ifdef CONFIG_KVM_IOAPIC
++	return entry->type == KVM_IRQ_ROUTING_IRQCHIP &&
++		((entry->irqchip.irqchip == KVM_IRQCHIP_PIC_MASTER &&
++		  entry->irqchip.pin == 0 && entry->set == kvm_pic_set_irq) ||
++		 (entry->irqchip.irqchip == KVM_IRQCHIP_IOAPIC &&
++		  entry->irqchip.pin == 2 && entry->set == kvm_ioapic_set_irq));
++#else
++	return false;
++#endif
++}
++
++/* kvm_set_irq passes its exact original native array entry. Reserve/copy all
++ * two source routes before the first callback; callbacks consume in native
++ * reverse-array order and cannot substitute their working storage. */
++static struct kvm_kernel_irq_routing_entry *ps_pit_route_prepare(struct kvm *kvm,
++	int source, u32 gsi, int level, bool line_status,
++	struct kvm_kernel_irq_routing_entry *input, u32 index, u32 count,
++	struct kvm_crucible_ps_timer_route_row **lease)
++{
++	struct kvm_crucible_ps_timer_state *timers = &kvm->arch.crucible_clock.ps.timers;
++	struct kvm_crucible_ps_timer_expiry_row *expiry;
++	struct kvm_crucible_ps_timer_route_row *row;
++	unsigned long flags;
++	u32 begin, position;
++	bool valid = false;
++
++	*lease = NULL;
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	if (!kvm_crucible_q35_ps_pit_dispatch_current_locked(kvm, &expiry) ||
++	    source != KVM_PIT_IRQ_SOURCE_ID || gsi || line_status || level < 0 || level > 1 ||
++	    timers->pit_dispatch_level != level || count != 2 || index >= count ||
++	    timers->pit_dispatch_route || !timers->routes || !timers->route_storage ||
++	    timers->installation.maximum_routes > KVM_CRUCIBLE_Q35_PS_TIMER_MAX_ROUTES)
++		goto fault;
++	if (index == count - 1) {
++		if (timers->routes_used > timers->installation.maximum_routes ||
++		    count > timers->installation.maximum_routes - timers->routes_used ||
++		    timers->routes_used != expiry->route_begin + expiry->route_count)
++			goto fault;
++		/* Both immutable records are complete before any callback effect.
++		 * The original source route table is already frozen by its issuer. */
++		for (position = 0; position < count; position++) {
++			struct kvm_kernel_irq_routing_entry *entry = input - index + position;
++
++			if (!ps_pit_native_route(entry))
++				goto fault;
++		}
++		if ((input - index)->irqchip.irqchip == input->irqchip.irqchip)
++			goto fault;
++		begin = timers->routes_used;
++		timers->routes_used += count;
++		expiry->route_count += count;
++		for (position = 0; position < count; position++) {
++			row = &timers->routes[begin + position];
++			*row->input = *(input - position);
++			*row->buffer = *row->input;
++			row->expiry = expiry;
++			row->ordinal = begin + position + 1;
++			row->generation = expiry->original.generation;
++			row->source = source;
++			row->gsi = gsi;
++			row->level = level;
++			row->native_result = -EINPROGRESS;
++		}
++	}
++	if (expiry->route_count < count)
++		goto fault;
++	begin = expiry->route_begin + expiry->route_count - count;
++	row = &timers->routes[begin + count - index - 1];
++	if (!ps_pit_route_context_locked(kvm, row) || row->attempted || row->known ||
++	    (index + 1 < count && !timers->routes[begin + count - index - 2].known) ||
++	    memcmp(input, row->input, sizeof(*input)))
++		goto fault;
++	row->attempted = true;
++	timers->pit_dispatch_route = row;
++	*lease = row;
++	valid = true;
++	goto unlock;
++fault:
++	ps_pit_route_fault_locked(kvm);
++unlock:
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (!valid)
++		kvm_vm_dead(kvm);
++	return valid ? row->buffer : NULL;
++}
++
++static bool ps_pit_route_complete(struct kvm *kvm,
++	struct kvm_crucible_ps_timer_route_row *row, int result)
++{
++	struct kvm_crucible_ps_timer_state *timers = &kvm->arch.crucible_clock.ps.timers;
++	unsigned long flags;
++	u32 index;
++	bool valid;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	/* Literal native result is retained before permission reconciliation. */
++	row->native_result = result;
++	valid = ps_pit_route_context_locked(kvm, row) && timers->pit_dispatch_route == row &&
++		row->attempted && !row->known && row->receiver_input_known &&
++		row->receiver_output_known &&
++		!memcmp(row->input, row->buffer, sizeof(*row->buffer));
++	for (index = 0; valid && index < 4; index++)
++		if (row->targets[index].attempted && !row->targets[index].known)
++			valid = false;
++	row->known = valid;
++	if (valid)
++		timers->pit_dispatch_route = NULL;
++	else
++		ps_pit_route_fault_locked(kvm);
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	if (!valid)
++		kvm_vm_dead(kvm);
++	return valid;
++}
++
++/* Called under the SAME native PIC/IOAPIC lock as its actual mutations. */
++bool kvm_crucible_q35_ps_pit_receiver_begin(struct kvm *kvm,
++	struct kvm_kernel_irq_routing_entry *entry, void *receiver,
++	const struct kvm_irqchip *input, const unsigned long *irq_states,
++	u32 count, u32 extra, const struct kvm_irqchip *peer, const u64 control[4])
++{
++	struct kvm_crucible_ps_timer_state *timers = &kvm->arch.crucible_clock.ps.timers;
++	struct kvm_crucible_ps_timer_route_row *row;
++	unsigned long flags;
++	u32 index;
++	bool valid;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	row = timers->pit_dispatch_route;
++	valid = ps_pit_route_context_locked(kvm, row) && row->attempted && !row->known &&
++		!row->receiver_input_known && entry == row->buffer && count <= 24 &&
++		input->chip_id == entry->irqchip.irqchip &&
++		((input->chip_id == KVM_IRQCHIP_PIC_MASTER && count == 16 &&
++		  receiver == kvm->arch.vpic && receiver == kvm->arch.crucible_pic_board.pic) ||
++		 (input->chip_id == KVM_IRQCHIP_IOAPIC && count == 24 &&
++		  receiver == kvm->arch.vioapic && receiver == kvm->arch.crucible_pic_board.ioapic));
++	if (valid) {
++		row->receiver = receiver;
++		row->receiver_input = *input;
++		row->receiver_extra_input = extra;
++		if (peer)
++			row->receiver_peer_input = *peer;
++		memcpy(row->receiver_control_input, control, sizeof(row->receiver_control_input));
++		for (index = 0; index < count; index++)
++			row->receiver_irq_states_input[index] = irq_states[index];
++		row->receiver_input_known = true;
++	} else {
++		ps_pit_route_fault_locked(kvm);
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return valid;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_q35_ps_pit_receiver_begin);
++
++bool kvm_crucible_q35_ps_pit_receiver_complete(struct kvm *kvm,
++	struct kvm_kernel_irq_routing_entry *entry, void *receiver,
++	const struct kvm_irqchip *output, const unsigned long *irq_states,
++	u32 count, u32 extra, const struct kvm_irqchip *peer, const u64 control[4], int native_result)
++{
++	struct kvm_crucible_ps_timer_state *timers = &kvm->arch.crucible_clock.ps.timers;
++	struct kvm_crucible_ps_timer_route_row *row;
++	unsigned long flags;
++	u32 index;
++	bool valid;
++
++	raw_spin_lock_irqsave(&kvm->crucible_gate_lock, flags);
++	row = timers->pit_dispatch_route;
++	/* The original callback lease survives a lost phase. Retain its observed
++	 * output and raw receiver status before currentness reconciliation. */
++	valid = ps_pit_route_reference(timers, row) && row->attempted && !row->known &&
++		row->receiver_input_known && !row->receiver_output_known && entry == row->buffer &&
++		row->receiver == receiver && output->chip_id == row->receiver_input.chip_id &&
++		((output->chip_id == KVM_IRQCHIP_PIC_MASTER && count == 16) ||
++		 (output->chip_id == KVM_IRQCHIP_IOAPIC && count == 24));
++	if (valid) {
++		row->receiver_native_result = native_result;
++		row->receiver_output = *output;
++		row->receiver_extra_output = extra;
++		if (peer)
++			row->receiver_peer_output = *peer;
++		memcpy(row->receiver_control_output, control, sizeof(row->receiver_control_output));
++		for (index = 0; index < count; index++)
++			row->receiver_irq_states_output[index] = irq_states[index];
++		row->receiver_output_known = true;
++		valid = ps_pit_route_context_locked(kvm, row);
++	}
++	if (!valid) {
++		ps_pit_route_fault_locked(kvm);
++	}
++	raw_spin_unlock_irqrestore(&kvm->crucible_gate_lock, flags);
++	return valid;
++}
++EXPORT_SYMBOL_FOR_KVM_INTERNAL(kvm_crucible_q35_ps_pit_receiver_complete);
+--- a/virt/kvm/irqchip.c
++++ b/virt/kvm/irqchip.c
+@@ -22,7 +22,9 @@
+ #include <trace/events/kvm.h>
+ #ifdef CONFIG_X86
+ #include "../../arch/x86/kvm/crucible-clock.h"
++#include "../../arch/x86/kvm/ioapic.h"
+ #include <linux/kvm_crucible_ps_clock.h>
++#include "crucible-q35-ps-pit-route.inc.c"
+ #include "crucible-q35-ps-irq-input.inc.c"
+ #endif
+ 
+@@ -44,7 +46,8 @@
+ {
+ #ifdef CONFIG_X86
+ 	return kvm_arch_crucible_q35_device_irq_claim_locked(kvm, kind, source, gsi, level, line_status) ||
+-		kvm_crucible_q35_ps_irq_claim_locked(kvm, kind, source, gsi, level, line_status);
++		kvm_crucible_q35_ps_irq_claim_locked(kvm, kind, source, gsi, level, line_status) ||
++		kvm_crucible_q35_ps_pit_irq_claim_locked(kvm, kind, source, gsi, level, line_status);
+ #else
+ 	return false;
+ #endif
+--- a/virt/kvm/kvm_main.c
++++ b/virt/kvm/kvm_main.c
+@@ -1169,6 +1169,10 @@
+ static int kvm_enable_virtualization(void);
+ static void kvm_disable_virtualization(void);
+ 
++static struct file_operations kvm_chardev_ops;
++
++#include "crucible-original-kernel-resource.inc.c"
++
+ static struct kvm *kvm_create_vm(unsigned long type, const char *fdname)
+ {
+ 	struct kvm *kvm = kvm_arch_alloc_vm();
+@@ -4746,7 +4750,13 @@
+ 	case KVM_GET_MP_STATE: {
+ 		struct kvm_mp_state mp_state;
+ 
++		r = kvm_arch_crucible_pic_initializer_cpu_prepare(vcpu,
++			ioctl, &mp_state, sizeof(mp_state));
++		if (r)
++			goto out;
+ 		r = kvm_arch_vcpu_ioctl_get_mpstate(vcpu, &mp_state);
++		(void)kvm_arch_crucible_pic_initializer_cpu_complete(vcpu,
++			ioctl, &mp_state, sizeof(mp_state), r);
+ 		if (r)
+ 			goto out;
+ 		r = -EFAULT;
+@@ -4766,7 +4776,13 @@
+ 			r = -EOPNOTSUPP;
+ 			goto out;
+ 		}
++		r = kvm_arch_crucible_pic_initializer_cpu_prepare(vcpu,
++			ioctl, &mp_state, sizeof(mp_state));
++		if (r)
++			goto out;
+ 		r = kvm_arch_vcpu_ioctl_set_mpstate(vcpu, &mp_state);
++		(void)kvm_arch_crucible_pic_initializer_cpu_complete(vcpu,
++			ioctl, &mp_state, sizeof(mp_state), r);
+ 		break;
+ 	}
+ 	case KVM_TRANSLATE: {
+@@ -5539,6 +5555,7 @@
+ 	case KVM_CAP_CRUCIBLE_PIC_MEMORY_INITIALIZATION_V1:
+ 		return kvm_crucible_pic_memory_control(kvm, cap);
+ #endif
++	case KVM_CAP_CRUCIBLE_Q35_PS_TIMER_BANK_V2:
+ 	case KVM_CAP_CRUCIBLE_Q35_PS_IRQ_INPUT_V2:
+ 	case KVM_CAP_CRUCIBLE_Q35_PS_WHOLE_CLOCK_V1:
+ 	case KVM_CAP_CRUCIBLE_Q35_LOADED_COUNTER_V1:
+@@ -6055,12 +6072,16 @@
+ }
+ EXPORT_SYMBOL_FOR_KVM_INTERNAL(file_is_kvm);
+ 
+-static int kvm_dev_ioctl_create_vm(unsigned long type)
++static int kvm_dev_ioctl_create_vm(struct file *original_system_file, unsigned long type)
+ {
+ 	char fdname[ITOA_MAX_LEN + 1];
+ 	int r, fd;
+ 	struct kvm *kvm;
+ 	struct file *file;
++
++	r = kvm_crucible_resource_before_create(original_system_file, type);
++	if (r)
++		return r;
+ 
+ 	fd = get_unused_fd_flags(O_CLOEXEC);
+ 	if (fd < 0)
+@@ -6110,8 +6131,16 @@
+ 		r = KVM_API_VERSION;
+ 		break;
+ 	case KVM_CREATE_VM:
+-		r = kvm_dev_ioctl_create_vm(arg);
++		r = kvm_dev_ioctl_create_vm(filp, arg);
+ 		break;
++	case KVM_ENABLE_CAP: {
++		bool handled;
++
++		r = kvm_crucible_resource_system_control(filp, arg, &handled);
++		if (!handled)
++			return kvm_arch_dev_ioctl(filp, ioctl, arg);
++		break;
++	}
+ 	case KVM_CHECK_EXTENSION:
+ 		r = kvm_vm_ioctl_check_extension_generic(NULL, arg);
+ 		break;
+@@ -6134,6 +6163,7 @@
+ }
+ 
+ static struct file_operations kvm_chardev_ops = {
++	.release        = kvm_crucible_resource_system_release,
+ 	.unlocked_ioctl = kvm_dev_ioctl,
+ 	.llseek		= noop_llseek,
+ 	KVM_COMPAT(kvm_dev_ioctl),

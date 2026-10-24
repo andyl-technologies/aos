@@ -14,6 +14,14 @@ test-double = ["dep:crucible-qemu-shmem"]
 workspace = true
 
 [dependencies]
+crucible-source-birth-data = { workspace = true }
+crucible-host-resources = { workspace = true }
+crucible-node-format = { workspace = true }
+crucible-node-transport = { workspace = true }
+hmac = { workspace = true }
+rustix = { workspace = true, features = ["process"] }
+sha2 = { workspace = true }
+zeroize = { workspace = true }
 blake3 = { workspace = true }
 ciborium = { workspace = true }
 crucible-determinism = { path = "../crucible-determinism" }

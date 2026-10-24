@@ -1,0 +1,126 @@
+--- a/glib/gmain.c
++++ b/glib/gmain.c
+@@ -305,6 +305,9 @@
+   GSourceDisposeFunc dispose;
+ 
+   gboolean static_name;
++
++  /* Original caller-owned source/private storage outlives final unref. */
++  gboolean crucible_owned_storage;
+   GCrucibleSourceRole crucible_role;
+   const void *crucible_owner;
+ };
+@@ -1055,6 +1058,72 @@
+   return source;
+ }
+ 
++
++/* This geometry query performs no allocation or ownership adoption. */
++gsize
++g_source_crucible_storage_bytes (guint struct_size)
++{
++  const gsize alignment = G_ALIGNOF (GSourcePrivate);
++  gsize private_offset;
++
++  if (struct_size < sizeof (GSource) ||
++      (gsize) struct_size > G_MAXSIZE - (alignment - 1))
++    return 0;
++
++  private_offset = ((gsize) struct_size + alignment - 1) & ~(alignment - 1);
++  if (private_offset > G_MAXSIZE - sizeof (GSourcePrivate))
++    return 0;
++
++  return private_offset + sizeof (GSourcePrivate);
++}
++
++/* Supplies the same initial source state using fully retained native backing.
++ * The original allocator/issuer must authenticate the slice before this call;
++ * this API neither allocates credit nor grants a dispatch/source permission.
++ */
++GSource *
++g_source_crucible_new_owned (GSourceFuncs *source_funcs,
++                            guint         struct_size,
++                            gpointer      storage,
++                            gsize         storage_bytes)
++{
++  const gsize required = g_source_crucible_storage_bytes (struct_size);
++  const gsize alignment = G_ALIGNOF (GSourcePrivate);
++  const gsize private_offset = required ? required - sizeof (GSourcePrivate) : 0;
++  GSource *source;
++  guintptr functions;
++  guintptr start;
++
++  if (!source_funcs || !storage || !required || storage_bytes != required ||
++      ((guintptr) storage % G_ALIGNOF (GSource)) != 0 ||
++      ((guintptr) storage % alignment) != 0 ||
++      (guintptr) storage > G_MAXSIZE - required)
++    return NULL;
++
++  /* Zeroing original storage must not erase the original callback table. */
++  functions = (guintptr) source_funcs;
++  start = (guintptr) storage;
++  if (functions >= start ? functions - start < required
++                         : start - functions < sizeof (GSourceFuncs))
++    return NULL;
++
++  memset (storage, 0, required);
++  source = storage;
++  source->priv = (GSourcePrivate *) ((guint8 *) storage + private_offset);
++  source->priv->crucible_owned_storage = TRUE;
++  source->source_funcs = source_funcs;
++  source->ref_count = 1;
++  source->priority = G_PRIORITY_DEFAULT;
++  source->flags = G_HOOK_FLAG_ACTIVE;
++  source->priv->ready_time = -1;
++
++  TRACE (GLIB_SOURCE_NEW (source, source_funcs->prepare, source_funcs->check,
++                          source_funcs->dispatch, source_funcs->finalize,
++                          struct_size));
++  return source;
++}
++
++
+ /**
+  * g_source_set_dispose_function:
+  * @source: A #GSource to set the dispose function on
+@@ -2477,10 +2546,18 @@
+           g_source_unref_internal (child_source, context, TRUE);
+         }
+ 
+-      g_slice_free (GSourcePrivate, source->priv);
+-      source->priv = NULL;
+-
+-      g_free (source);
++      if (source->priv->crucible_owned_storage)
++        {
++          /* Finalization ends the source lifetime without returning original
++           * retained backing to an allocator or renewing its issuer slot. */
++          source->priv = NULL;
++        }
++      else
++        {
++          g_slice_free (GSourcePrivate, source->priv);
++          source->priv = NULL;
++          g_free (source);
++        }
+       if (context)
+         context->crucible_callbacks--;
+     }
+--- a/glib/gmain.h
++++ b/glib/gmain.h
+@@ -688,6 +688,15 @@
+ GSource *g_source_new             (GSourceFuncs   *source_funcs,
+                                    guint           struct_size);
+ 
++/* Native-only caller storage APIs. Pointers never enter a process protocol. */
++GLIB_AVAILABLE_IN_ALL
++gsize    g_source_crucible_storage_bytes (guint struct_size);
++GLIB_AVAILABLE_IN_ALL
++GSource *g_source_crucible_new_owned (GSourceFuncs *source_funcs,
++                                    guint struct_size,
++                                    gpointer original_storage,
++                                    gsize original_storage_bytes);
++
+ G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+ GLIB_AVAILABLE_IN_2_64
+ void     g_source_set_dispose_function (GSource            *source,

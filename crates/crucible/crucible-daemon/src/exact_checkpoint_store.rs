@@ -89,7 +89,7 @@ impl CapturedAttemptCheckpoint {
     fn choice_closure_bytes(&self) -> Result<Vec<u8>, ExactCheckpointStoreError> {
         match &self.choice_closure {
             Some(bytes) => Ok(bytes.clone()),
-            None => crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
+            None => crate::campaign_replay_closure::GuardedCampaignReplayClosure::empty()
                 .to_canonical_bytes()
                 .map_err(|_| invalid_root("empty choice closure could not be encoded")),
         }
@@ -429,7 +429,7 @@ impl ExactCheckpointStore {
         closure: ProductionExactCheckpointClosure,
         cancellation: &ExecutionCancellation,
     ) -> Result<PreparedProductionExactCheckpoint, ExactCheckpointStoreError> {
-        let choices = crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::empty()
+        let choices = crate::campaign_replay_closure::GuardedCampaignReplayClosure::empty()
             .to_canonical_bytes()
             .map_err(|_| invalid_root("empty choice closure could not be encoded"))?;
         self.prepare_production_closure_with_cancellation(closure, choices, cancellation)

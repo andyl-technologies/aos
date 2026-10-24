@@ -67,11 +67,12 @@ fn policy_timeout_capture_authenticates_host_marker_after_native_qemu_log() {
     let native =
         SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "execution-quanta");
     let marker = SchedulerEventLogEntry::execution_budget_exhausted(1, frontier, "virtual-time");
-    let snapshot = crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot::for_replay_capture_test(
-        1,
-        frontier,
-        vec![native.clone()],
-    );
+    let snapshot =
+        crate::attempt_evidence::AttemptExecutionEvidenceSnapshot::for_replay_capture_test(
+            1,
+            frontier,
+            vec![native.clone()],
+        );
     let record = FailureTimeoutRecord::new(
         FailureTimeoutBudgetKind::VirtualTime,
         Some(frontier.ticks),
@@ -154,11 +155,12 @@ fn ordinary_replay_capture_preserves_exact_native_snapshot_suffix() {
     let frontier = VirtualTime { ticks: 7 };
     let native =
         SchedulerEventLogEntry::execution_budget_exhausted(0, frontier, "execution-quanta");
-    let snapshot = crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot::for_replay_capture_test(
-        1,
-        frontier,
-        vec![native.clone()],
-    );
+    let snapshot =
+        crate::attempt_evidence::AttemptExecutionEvidenceSnapshot::for_replay_capture_test(
+            1,
+            frontier,
+            vec![native.clone()],
+        );
     let passed = crate::FindingProductionReplayTerminalOutcome::Passed;
 
     assert!(matches!(

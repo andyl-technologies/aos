@@ -88,9 +88,9 @@ pub trait Backend {
     fn shutdown(&mut self) -> Result<(), BackendError>;
 }
 
-/// Pluggable session backend boundary used by the control plane.
+/// Routes a collection of node runtimes for scheduler and control operations.
 ///
-/// `SimulationBackend` is the L4-facing backend contract from RFC-0010 §20.10.
+/// This is the L4-facing collection contract from RFC-0010 §20.10.
 /// The scheduler remains the only source of timing authority: callers pass a
 /// virtual-time ceiling to [`SimulationBackend::step_to`], and implementations
 /// report what they observed while advancing toward that ceiling. They do not
@@ -100,7 +100,7 @@ pub trait Backend {
 /// Backend objects are owned by the session actor that drives them. The trait
 /// intentionally does not require [`Send`] because concrete QEMU adapters may
 /// wrap thread-affine channel and process-runtime handles.
-pub trait SimulationBackend {
+pub trait NodeRuntimeSet {
     /// Observes an original received Group under complete held Source input.
     ///
     /// # Errors
@@ -550,6 +550,9 @@ pub trait SimulationBackend {
     fn shutdown(&mut self) -> Result<(), BackendError>;
 }
 
+/// Retains the source name used by existing collection adapters.
+pub use self::NodeRuntimeSet as SimulationBackend;
+
 /// A horizon to which a backend should advance.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ExecutionHorizon {
@@ -711,7 +714,7 @@ pub struct GdbAttachInfo {
     /// Node whose gdbstub is exposed.
     pub node: NodeId,
     /// Backend-owned raw gdbstub endpoint.
-    pub qemu_endpoint: String,
+    pub backend_endpoint: String,
     /// Operator-facing listener served by Crucible.
     pub operator_listen: GdbListen,
     /// Whether Crucible mediates the raw backend gdbstub.

@@ -7,18 +7,18 @@ impl GdbAttachInfo {
     ///
     /// # Errors
     ///
-    /// Returns [`BackendError::Rejected`] when `qemu_endpoint` is not stable
+    /// Returns [`BackendError::Rejected`] when `backend_endpoint` is not stable
     /// endpoint text.
     pub fn new(
         node: NodeId,
-        qemu_endpoint: impl Into<String>,
+        backend_endpoint: impl Into<String>,
         operator_listen: GdbListen,
     ) -> Result<Self, BackendError> {
-        let qemu_endpoint = qemu_endpoint.into();
-        validate_gdb_endpoint("qemu_gdbstub", &qemu_endpoint)?;
+        let backend_endpoint = backend_endpoint.into();
+        validate_gdb_endpoint("backend_gdbstub", &backend_endpoint)?;
         Ok(Self {
             node,
-            qemu_endpoint,
+            backend_endpoint,
             operator_listen,
             mediated_by_crucible: true,
             out_of_band: true,

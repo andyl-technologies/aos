@@ -163,6 +163,7 @@ pub struct QemuLiveNodeStepGateConfig {
     console_capture: bool,
     rr_control_boundary_trace: bool,
     runtime_determinism_trace: bool,
+    apic_origin_trace: bool,
     runtime_determinism_trace_budget_bytes: u64,
     runtime_liveness_trace: bool,
     fault_capabilities: Option<crucible_engine::model::WorldNodeFaultCapabilities>,
@@ -249,6 +250,11 @@ impl QemuLiveNodeStepGateConfig {
         } else if self.runtime_determinism_trace {
             requirements = requirements
                 .with_diagnostic_trace_bytes(self.runtime_determinism_trace_budget_bytes);
+            if self.apic_origin_trace {
+                // The host retains a full raw copy before any cross-run test.
+                requirements = requirements
+                    .with_diagnostic_trace_bytes(self.runtime_determinism_trace_budget_bytes);
+            }
         } else if self.runtime_liveness_trace {
             requirements = requirements.with_diagnostic_trace_bytes(
                 crate::launch::MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES,
@@ -329,6 +335,7 @@ impl QemuLiveNodeStepGateConfig {
             console_capture: false,
             rr_control_boundary_trace: false,
             runtime_determinism_trace: false,
+            apic_origin_trace: false,
             runtime_determinism_trace_budget_bytes:
                 crate::launch::MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES,
             runtime_liveness_trace: false,
@@ -391,6 +398,7 @@ impl QemuLiveNodeStepGateConfig {
             console_capture: false,
             rr_control_boundary_trace: false,
             runtime_determinism_trace: false,
+            apic_origin_trace: false,
             runtime_determinism_trace_budget_bytes:
                 crate::launch::MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES,
             runtime_liveness_trace: false,
@@ -676,6 +684,7 @@ impl QemuLiveNodeStepGateConfig {
     pub const fn with_rr_control_boundary_trace(mut self) -> Self {
         self.rr_control_boundary_trace = true;
         self.runtime_determinism_trace = false;
+        self.apic_origin_trace = false;
         self.runtime_liveness_trace = false;
         self
     }
@@ -689,7 +698,22 @@ impl QemuLiveNodeStepGateConfig {
     pub const fn with_runtime_determinism_trace(mut self) -> Self {
         self.rr_control_boundary_trace = false;
         self.runtime_determinism_trace = true;
+        self.apic_origin_trace = false;
         self.runtime_liveness_trace = false;
+        self
+    }
+
+    /// Enables separate APIC origin observations in the runtime trace.
+    ///
+    /// This opt-in diagnostic retains programming and arm facts without changing
+    /// timer arithmetic. It adds one full raw trace copy to writable admission;
+    /// callers must retain that copy before comparing the ordinary timer rows.
+    #[must_use]
+    pub const fn with_apic_origin_trace(mut self) -> Self {
+        self.runtime_determinism_trace = true;
+        self.rr_control_boundary_trace = false;
+        self.runtime_liveness_trace = false;
+        self.apic_origin_trace = true;
         self
     }
 
@@ -724,6 +748,7 @@ impl QemuLiveNodeStepGateConfig {
     pub const fn with_runtime_liveness_trace(mut self) -> Self {
         self.rr_control_boundary_trace = false;
         self.runtime_determinism_trace = false;
+        self.apic_origin_trace = false;
         self.runtime_liveness_trace = true;
         self
     }
@@ -738,6 +763,7 @@ impl QemuLiveNodeStepGateConfig {
             command
                 .with_runtime_determinism_trace()
                 .with_runtime_determinism_trace_budget(self.runtime_determinism_trace_budget_bytes)
+                .with_apic_origin_trace(self.apic_origin_trace)
         } else if self.runtime_liveness_trace {
             command.with_runtime_liveness_trace()
         } else {

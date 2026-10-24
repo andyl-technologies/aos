@@ -89,7 +89,7 @@ mod private {
 /// Owns immutable deployment inputs and process-local evidence for private replay capture.
 pub(crate) struct QemuFindingReplayCaptureProducer {
     lifecycle: crate::ProductionVmLifecycleConfig,
-    evidence: crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidence,
+    evidence: crate::attempt_evidence::AttemptExecutionEvidence,
     static_byte_limit: u64,
     shared_context: OneEntryCache<
         QemuFindingReplaySharedContextScope,
@@ -156,7 +156,7 @@ impl QemuFindingReplayCaptureProducer {
     /// Creates a capture owner before the production replay runner takes lifecycle authority.
     pub(crate) const fn new(
         lifecycle: crate::ProductionVmLifecycleConfig,
-        evidence: crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidence,
+        evidence: crate::attempt_evidence::AttemptExecutionEvidence,
         static_byte_limit: u64,
     ) -> Self {
         Self {
@@ -206,7 +206,7 @@ impl QemuFindingReplayCaptureProducer {
     pub(crate) fn execution_snapshot(
         &self,
     ) -> Result<
-        crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
+        crate::attempt_evidence::AttemptExecutionEvidenceSnapshot,
         crucible_engine::SchedulerError,
     > {
         self.evidence.snapshot()
@@ -264,7 +264,7 @@ pub trait PrivateFindingReplayRunner: CrucibleExecutionRunner + private::Sealed 
         input: &CrucibleAttemptExecution,
         candidate: &ConfigurationArtifact,
         finding: &FindingReproductionArtifact,
-        replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+        replay_closure: &crate::campaign_replay_closure::GuardedCampaignReplayClosure,
         target_signature: &FindingSignature,
         context: &AttemptExecutionContext,
     ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>>;
@@ -397,7 +397,7 @@ where
         input: &CrucibleAttemptExecution,
         candidate: &ConfigurationArtifact,
         finding: &FindingReproductionArtifact,
-        replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+        replay_closure: &crate::campaign_replay_closure::GuardedCampaignReplayClosure,
         target_signature: &FindingSignature,
         context: &AttemptExecutionContext,
     ) -> Result<AutomaticFindingReplayOutcome, AttemptWorkerFailure<Self::Error>> {
@@ -492,14 +492,14 @@ where
 }
 
 type QemuFindingReplaySnapshots = Option<(
-    Option<crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot>,
-    Option<crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot>,
+    Option<crate::attempt_evidence::AttemptExecutionEvidenceSnapshot>,
+    Option<crate::attempt_evidence::AttemptExecutionEvidenceSnapshot>,
 )>;
 
 fn qemu_finding_replay_snapshot<F, D>(
     runner: &mut QemuFreshExecutionRunner<F, D>,
 ) -> Result<
-    Option<crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot>,
+    Option<crate::attempt_evidence::AttemptExecutionEvidenceSnapshot>,
     crucible_engine::SchedulerError,
 > {
     runner
@@ -518,7 +518,7 @@ fn capture_qemu_finding_replay_material(
     >,
     finding: &FindingReproductionArtifact,
     finding_kind: FindingKind,
-    replay_closure: &crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure,
+    replay_closure: &crate::campaign_replay_closure::GuardedCampaignReplayClosure,
 ) -> Result<
     Option<crate::FindingProductionReplayMaterialOutcome>,
     crate::FindingProductionReplayCaptureError,
@@ -609,7 +609,7 @@ fn capture_qemu_finding_replay_material(
 fn capture_qemu_finding_replay_side(
     outcome: crate::FindingProductionReplayTerminalOutcome,
     complete_log: &[crucible_engine::SchedulerEventLogEntry],
-    snapshot: &crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
+    snapshot: &crate::attempt_evidence::AttemptExecutionEvidenceSnapshot,
     timeout_record: Option<&crucible_engine::FailureTimeoutRecord>,
     policy_timeout: Option<&(
         crucible_campaign::StopCondition,
@@ -668,7 +668,7 @@ fn capture_qemu_finding_replay_side(
 
 fn authenticate_timeout_capture(
     complete_log: &[crucible_engine::SchedulerEventLogEntry],
-    snapshot: &crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidenceSnapshot,
+    snapshot: &crate::attempt_evidence::AttemptExecutionEvidenceSnapshot,
     timeout_record: Option<&crucible_engine::FailureTimeoutRecord>,
     policy_timeout: Option<&(
         crucible_campaign::StopCondition,
@@ -820,7 +820,7 @@ fn divergence_fingerprint(
 pub struct AutomaticFindingExecutionRunner<M, R> {
     store: CampaignExecutorStore,
     exact_retention: Arc<dyn FindingExactRetentionSource>,
-    exact_failure_evidence: Option<crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidence>,
+    exact_failure_evidence: Option<crate::attempt_evidence::AttemptExecutionEvidence>,
     main: M,
     replay: R,
     verify_determinism_findings: bool,
@@ -851,7 +851,7 @@ impl<M, R> AutomaticFindingExecutionRunner<M, R> {
     #[must_use]
     pub(crate) fn with_exact_failure_evidence(
         mut self,
-        evidence: crate::qemu_campaign_lifecycle::QemuAttemptExecutionEvidence,
+        evidence: crate::attempt_evidence::AttemptExecutionEvidence,
     ) -> Self {
         self.exact_failure_evidence = Some(evidence);
         self
@@ -904,7 +904,7 @@ where
     Artifact(#[source] CrucibleArtifactError),
     /// A candidate's authenticated campaign choice closure was invalid.
     #[error("automatic finding replay closure failed: {0}")]
-    ReplayClosure(#[source] crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosureError),
+    ReplayClosure(#[source] crate::campaign_replay_closure::GuardedCampaignReplayClosureError),
     /// The deterministic minimization or final finding attachment failed.
     #[error("automatic finding preparation failed: {0}")]
     Preparation(#[source] AutomaticFindingPreparationError),
@@ -1183,7 +1183,7 @@ where
         .map_err(CandidateReplayFailure::Campaign)?;
     let replay_context = context.for_origin_replay();
     let replay_closure =
-        crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosure::from_resolved_selections(
+        crate::campaign_replay_closure::GuardedCampaignReplayClosure::from_resolved_selections(
             candidate.artifact.scenario_form(),
             candidate.artifact.schedule(),
             &starting_selections,
@@ -1250,7 +1250,7 @@ pub(crate) enum CandidateReplayFailure<R> {
     Operational(AttemptWorkerFailure<R>),
     Campaign(CampaignCodecError),
     Artifact(CrucibleArtifactError),
-    ReplayClosure(crate::qemu_campaign_lifecycle::GuardedCampaignReplayClosureError),
+    ReplayClosure(crate::campaign_replay_closure::GuardedCampaignReplayClosureError),
 }
 
 fn private_replay_unwind_error() -> EngineError {

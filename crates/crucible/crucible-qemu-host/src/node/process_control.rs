@@ -15,6 +15,38 @@ use super::{
     QemuShutdownTargetError,
 };
 
+#[cfg(target_os = "linux")]
+impl QemuNodeChild {
+    /// Kills and polls the same failed direct child without waiting or sleeping.
+    ///
+    /// An observed reap makes later calls no-ops. A live child retains its
+    /// unique wait authority; the owning actor must schedule another poll.
+    /// This operation contains a process and does not establish guest rollback.
+    ///
+    /// # Errors
+    /// Returns actual wait or kill failure while preserving the original Child.
+    /// An exit racing with kill is decided by the subsequent actual wait.
+    pub fn poll_force_kill_and_reap_failed_helper(
+        &mut self,
+    ) -> Result<bool, QemuShutdownTargetError> {
+        if self.reaped {
+            return Ok(true);
+        }
+        if self.try_wait_natural_exit()?.is_some() {
+            return Ok(true);
+        }
+
+        let kill = self.child.kill();
+        if self.try_wait_natural_exit()?.is_some() {
+            return Ok(true);
+        }
+        kill.map_err(|error| {
+            QemuShutdownTargetError::new("kill failed QEMU helper", error.to_string())
+        })?;
+        Ok(false)
+    }
+}
+
 /// Non-owning process-control loan for one externally parented QEMU node.
 ///
 /// The implementation may signal only the exact authenticated process

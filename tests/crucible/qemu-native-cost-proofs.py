@@ -25,10 +25,37 @@ def checked_reference(path, expected_hash):
     return observed_hash
 
 
+def check_reviewed_adaptation(source_root, manifest):
+    """Pin the reviewed source additions without changing any baseline hash."""
+    adaptation = manifest.get("reviewedAdaptation")
+    if adaptation is None:
+        return None
+
+    header_path = "include/qemu/crucible-fault.h"
+    expected_paths = {header_path, "plugins/crucible-fault-clock.c"}
+    if set(adaptation["files"]) != expected_paths:
+        raise ValueError("unreviewed native-cost reconstruction adaptation")
+    for field in ("revision", "tree"):
+        if not re.fullmatch(r"[0-9a-f]{40}", adaptation[field]):
+            raise ValueError("invalid reviewed source provenance")
+    for relative_path, expected_hash in adaptation["files"].items():
+        checked_reference(source_root / relative_path, expected_hash)
+
+    header = (source_root / header_path).read_bytes()
+    addition = adaptation["headerAddition"].encode("utf-8")
+    if not addition or header.count(addition) != 1:
+        raise ValueError("reviewed header addition is missing or ambiguous")
+    original_header = header.replace(addition, b"", 1)
+    if hashlib.sha256(original_header).hexdigest() != manifest["files"][header_path]:
+        raise ValueError("reviewed header addition changes frozen declarations")
+    return header_path
+
+
 def reconstruct_baseline(args):
     """Reverse only the reviewed native hunks and verify exact retained files."""
     manifest = json.loads(args.baseline_manifest.read_text())
     checked_reference(args.baseline_patch, manifest["patchSha256"])
+    adapted_header = check_reviewed_adaptation(args.source_root, manifest)
     baseline_root = args.output_dir / "baseline-source"
     for relative_path in manifest["files"]:
         target = baseline_root / relative_path
@@ -50,9 +77,10 @@ def reconstruct_baseline(args):
     reconstruction.check_returncode()
     for relative_path, expected_hash in manifest["files"].items():
         checked_reference(baseline_root / relative_path, expected_hash)
-    # Production declarations and compiler macros stay identical in both variants.
+    # All original declarations and compiler macros remain identical. The
+    # singleton reviewed prototype was verified against the frozen header above.
     for relative_path, expected_hash in manifest["files"].items():
-        if relative_path.endswith(".h"):
+        if relative_path.endswith(".h") and relative_path != adapted_header:
             checked_reference(args.source_root / relative_path, expected_hash)
     (args.output_dir / "baseline-manifest.json").write_text(
         json.dumps(manifest, indent=2) + "\n"

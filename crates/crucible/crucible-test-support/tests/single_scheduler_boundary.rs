@@ -208,6 +208,7 @@ fn dependency_package_name(name: &str, value: &Value) -> String {
 fn non_authority_scheduler_exports(root: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     let mut findings = Vec::new();
     for package in [
+        "crucible-host-resources",
         "crucible-determinism",
         "crucible-test-support",
         "crucible-qemu-shmem",

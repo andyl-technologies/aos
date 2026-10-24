@@ -35,7 +35,9 @@ struct AuthoredCampaignLineage {
     genesis: String,
     genesis_content: String,
     crucible_version: String,
-    qemu_build: String,
+    backend_build_identity: Option<String>,
+    // Retains the original version-one authoring key as an explicit read alias.
+    qemu_build: Option<String>,
     protocol_versions: BTreeMap<String, u32>,
     scenario_schema: u32,
     exact_closure_schema: u32,
@@ -104,6 +106,21 @@ impl AuthoredCampaignLineage {
                 self.schema_version, CAMPAIGN_LINEAGE_AUTHORING_SCHEMA_VERSION
             )));
         }
+        let backend_build_identity = match (self.backend_build_identity, self.qemu_build) {
+            (Some(identity), None) | (None, Some(identity)) => identity,
+            (Some(identity), Some(legacy)) if identity == legacy => identity,
+            (Some(_), Some(_)) => {
+                return Err(usage_error(
+                    "campaign lineage backend_build_identity conflicts with legacy qemu_build",
+                ));
+            }
+            (None, None) => {
+                return Err(usage_error(
+                    "campaign lineage requires backend_build_identity",
+                ));
+            }
+        };
+
         let scenario = parse_semantic_hash(&self.scenario, "scenario")?;
         let genesis = parse_semantic_hash(&self.genesis, "genesis configuration")?;
         let scenario_content = ScenarioArtifactId::parse(&self.scenario_content)
@@ -116,7 +133,7 @@ impl AuthoredCampaignLineage {
             ConfigurationId::from_hash(genesis),
             genesis_content,
             self.crucible_version,
-            self.qemu_build,
+            backend_build_identity,
             self.protocol_versions,
             self.scenario_schema,
             self.exact_closure_schema,
@@ -171,7 +188,7 @@ scenario_content = "{scenario_content}"
 genesis = "{genesis}"
 genesis_content = "{genesis_content}"
 crucible_version = "crucible-0.1.0"
-qemu_build = "qemu-11.1.1-crucible"
+backend_build_identity = "qemu-11.1.1-crucible"
 scenario_schema = 3
 exact_closure_schema = 5
 
@@ -212,5 +229,70 @@ shared-memory = 26
 
         assert!(compile_campaign_lineage(&input, &output).is_err());
         assert!(!output.exists());
+    }
+
+    #[test]
+    fn neutral_legacy_and_matching_dual_identity_keys_compile_identical_lineage_bytes() {
+        let temporary = tempdir().expect("temporary directory");
+        let neutral = manifest();
+        let legacy = neutral.replace("backend_build_identity =", "qemu_build =");
+        let dual = neutral.replace(
+            "backend_build_identity = \"qemu-11.1.1-crucible\"",
+            "backend_build_identity = \"qemu-11.1.1-crucible\"\nqemu_build = \"qemu-11.1.1-crucible\"",
+        );
+        let mut results = Vec::new();
+        for (label, text) in [("neutral", neutral), ("legacy", legacy), ("dual", dual)] {
+            let input = temporary.path().join(format!("{label}.toml"));
+            let output = temporary.path().join(format!("{label}.bin"));
+            std::fs::write(&input, text).expect("write lineage input");
+
+            let report =
+                compile_campaign_lineage(&input, &output).expect("compile compatible lineage");
+            let bytes = std::fs::read(output).expect("read canonical lineage");
+            let lineage =
+                CampaignLineage::from_canonical_bytes(&bytes).expect("decode canonical lineage");
+            assert_eq!(lineage.backend_build_identity(), "qemu-11.1.1-crucible");
+            assert_eq!(lineage.protocol_versions().get("control"), Some(&3));
+            results.push((report.lineage, bytes));
+        }
+
+        assert_eq!(results[0], results[1]);
+        assert_eq!(results[0], results[2]);
+    }
+
+    #[test]
+    fn conflicting_missing_and_empty_build_identities_refuse_before_output_creation() {
+        let temporary = tempdir().expect("temporary directory");
+        let original = "backend_build_identity = \"qemu-11.1.1-crucible\"";
+        for (label, replacement) in [
+            (
+                "conflict",
+                "backend_build_identity = \"native-build-a\"\nqemu_build = \"native-build-b\"",
+            ),
+            (
+                "reverse-conflict",
+                "qemu_build = \"native-build-b\"\nbackend_build_identity = \"native-build-a\"",
+            ),
+            ("missing", ""),
+            ("neutral-empty", "backend_build_identity = \"\""),
+            ("legacy-empty", "qemu_build = \"\""),
+        ] {
+            let input = temporary.path().join(format!("{label}.toml"));
+            let output = temporary.path().join(format!("{label}.bin"));
+            std::fs::write(&input, manifest().replace(original, replacement))
+                .expect("write invalid lineage input");
+
+            let error =
+                compile_campaign_lineage(&input, &output).expect_err("refuse invalid identity");
+
+            if label.contains("conflict") {
+                assert!(
+                    error
+                        .to_string()
+                        .contains("conflicts with legacy qemu_build")
+                );
+            }
+            assert!(!output.exists(), "{label} created an output record");
+        }
     }
 }

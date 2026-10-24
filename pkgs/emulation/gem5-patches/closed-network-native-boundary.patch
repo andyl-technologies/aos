@@ -1,0 +1,86 @@
+--- a/src/dev/virtio/net.hh
++++ b/src/dev/virtio/net.hh
+@@ -72,6 +72,8 @@
+     std::vector<uint8_t> crucibleTxPublicationBytes(uint64_t id) const;
+     /** Idempotently acknowledges the oldest actual native output. */
+     bool acknowledgeTx(uint64_t id);
++    /** Binds one retained source handler before any native callbacks. */
++    bool bindTransmitHandler(Event *handler);
+     /** Binds subsequent native outputs to the controller's sealed execution. */
+     bool setExecutionParent(uint64_t parent);
+ 
+@@ -143,6 +145,7 @@
+     uint64_t nextTx = 1;
+     uint64_t acknowledgedTx = 0;
+     uint64_t executionParent = 0;
++    Event *transmitHandler = nullptr;
+ };
+ 
+ } // namespace gem5
+--- a/src/dev/virtio/net.cc
++++ b/src/dev/virtio/net.cc
+@@ -105,6 +105,18 @@
+ }
+ 
+ bool
++VirtIONet::bindTransmitHandler(Event *handler)
++{
++    const auto position = crucibleNativeEventPosition();
++    if (!handler || transmitHandler || handler->scheduled() || position.active ||
++        position.ordinal || !outputs.empty() || !inputs.empty() || nextTx != 1 ||
++        lastAcceptedRx)
++        return false;
++    transmitHandler = handler;
++    return true;
++}
++
++bool
+ VirtIONet::stageRx(uint64_t id, Tick tick, uint64_t causal_parent,
+                  const std::vector<uint8_t> &bytes)
+ {
+@@ -206,6 +218,7 @@
+         next->consumedTick = consumption.tick;
+         next->consumptionParent = executionParent;
+         kick();
++        crucibleNoteDevicePublication();
+     }
+     scheduleReceive();
+ }
+@@ -248,6 +261,9 @@
+         outputs.push_back(std::move(frame));
+         transmitQueue.produceDescriptor(descriptor, 0);
+         kick();
++        if (transmitHandler)
++            transmitHandler->process();
++        crucibleNoteDevicePublication();
+     }
+ }
+ 
+@@ -388,6 +404,7 @@
+ void
+ VirtIONet::serialize(CheckpointOut &cp) const
+ {
++    fatal_if(transmitHandler, "Source-owned native transmit handler requires an opaque process image");
+     VirtIODeviceBase::serialize(cp);
+     SERIALIZE_SCALAR(lastAcceptedRx);
+     SERIALIZE_SCALAR(retiredRx);
+@@ -498,6 +515,9 @@
+     writer.set("net.next_tx", nextTx);
+     writer.set("net.acknowledged_tx", acknowledgedTx);
+     writer.set("net.execution_parent", executionParent);
++    writer.reference("net.source_transmit_handler_event", transmitHandler, "event");
++    writer.set("net.source_transmit_handler_present", transmitHandler != nullptr);
++    writer.string("coverage.net.source_handler", "opaque-process-image-only");
+     writer.reference("net.receive_event", static_cast<const Event *>(&receiveEvent), "event");
+     writer.reference("net.transmit_credit_event", static_cast<const Event *>(&transmitCreditEvent), "event");
+     writer.set("net.receive_scheduled", receiveEvent.scheduled());
+--- a/src/dev/virtio/VirtIONet.py
++++ b/src/dev/virtio/VirtIONet.py
+@@ -41,6 +41,7 @@
+         PyBindMethod("crucibleTxPublicationBytes"),
+         PyBindMethod("acknowledgeTx"),
+         PyBindMethod("setExecutionParent"),
++        PyBindMethod("bindTransmitHandler"),
+     ]
+ 
+     queue_size = Param.UInt16(256, "Maximum descriptors per split ring")

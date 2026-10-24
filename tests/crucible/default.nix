@@ -150,6 +150,7 @@ in rec {
     searchTreeGrowth = import ./phase0-search-tree.nix {inherit pkgs;};
   };
   phase1 = {
+    nodeContractRequirementMap = import ./phase1-node-contract-requirement-map.nix {inherit pkgs lib;};
     rustSourceScrub = import ./rust-source-scrub.nix {inherit pkgs lib;};
     aosWorkspaceBuild = import ./phase1-aos-workspace-build.nix {inherit pkgs lib;};
     adversarialHostFixture = import ./phase1-adversarial-host-fixture.nix {inherit pkgs lib;};
@@ -421,6 +422,7 @@ in rec {
     };
   };
   phase2 = {
+    nativePrefixCompletion = import ./phase2-native-prefix-completion.nix {inherit pkgs lib;};
     protocolFrameFormat = import ./phase2-protocol-frame-format.nix {inherit pkgs lib;};
     protocolCodec = import ./phase2-protocol-codec.nix {inherit pkgs lib;};
     protocolDescriptorHandover = import ./phase2-protocol-descriptor-handover.nix {inherit pkgs lib;};
@@ -884,6 +886,9 @@ in rec {
   phase4 = {
     projectQuotaVm = import ./phase4-project-quota-vm.nix {inherit pkgs lib;};
     qemuHostOwnerVm = import ./phase4-qemu-host-owner-vm.nix {inherit pkgs lib;};
+    pureWorkerOwnerVm = import ./phase4-pure-worker-owner-vm.nix {inherit pkgs lib;};
+    deploymentReservation = import ./phase4-deployment-reservation.nix {inherit pkgs lib;};
+    fundedSourceTemplatesVm = import ./phase4-funded-source-templates-vm.nix {inherit pkgs lib;};
     packagedCampaignVm = import ./phase4-packaged-campaign-vm.nix {inherit pkgs lib;};
     singleGuestBootVm = import ./phase4-single-guest-boot-vm.nix {inherit pkgs lib;};
     singleGuestMaterializationVm = import ./phase4-single-guest-materialization-vm.nix {inherit pkgs lib;};

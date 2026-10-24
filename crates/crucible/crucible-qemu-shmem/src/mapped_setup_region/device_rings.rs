@@ -13,6 +13,9 @@ impl MappedSetupRegion {
         &mut self,
         vm_slot: u32,
     ) -> Result<MappedHostGuestIntrospectionRingsMut<'_>, MappedSetupRegionAccessError> {
+        selected_lifecycle::authorize_mutable_view(self.mapping_owner_key())
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let GuestIntrospectionRingPairMut { request, response } =
             self.guest_introspection_ring_pair_mut(vm_slot)?;
         Ok(MappedHostGuestIntrospectionRingsMut {
@@ -41,6 +44,9 @@ impl MappedSetupRegion {
         &mut self,
         vm_slot: u32,
     ) -> Result<MappedPluginGuestIntrospectionRingsMut<'_>, MappedSetupRegionAccessError> {
+        selected_lifecycle::authorize_mutable_view(self.mapping_owner_key())
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let GuestIntrospectionRingPairMut { request, response } =
             self.guest_introspection_ring_pair_mut(vm_slot)?;
         Ok(MappedPluginGuestIntrospectionRingsMut {
@@ -69,6 +75,9 @@ impl MappedSetupRegion {
         &mut self,
         vm_slot: u32,
     ) -> Result<MappedPluginAcceleratorRingsMut<'_>, MappedSetupRegionAccessError> {
+        selected_lifecycle::authorize_mutable_view(self.mapping_owner_key())
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let (request_header, request_entries, completion_header, completion_entries) =
             self.accelerator_ring_pair_mut(vm_slot)?;
         Ok(MappedPluginAcceleratorRingsMut {
@@ -97,6 +106,9 @@ impl MappedSetupRegion {
         &mut self,
         vm_slot: u32,
     ) -> Result<MappedHostAcceleratorRingsMut<'_>, MappedSetupRegionAccessError> {
+        selected_lifecycle::authorize_mutable_view(self.mapping_owner_key())
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let (request_header, request_entries, completion_header, completion_entries) =
             self.accelerator_ring_pair_mut(vm_slot)?;
         Ok(MappedHostAcceleratorRingsMut {
@@ -119,6 +131,9 @@ impl MappedSetupRegion {
         &mut self,
         vm_slot: u32,
     ) -> Result<AcceleratorRingPairMut<'_>, MappedSetupRegionAccessError> {
+        selected_lifecycle::authorize_mutable_view(self.mapping_owner_key())
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let layout = self
             .layout()
             .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
@@ -156,6 +171,12 @@ impl MappedSetupRegion {
                 index: vm_slot,
             }
         })?;
+        selected_lifecycle::authorize_mutable_headers(
+            self,
+            &[request_header_offset, completion_header_offset],
+        )
+        .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let base = self.base_ptr();
         // SAFETY: both offset helpers validate complete aligned ranges. The
         // request and completion indices are distinct and their fixed strides
@@ -181,6 +202,9 @@ impl MappedSetupRegion {
         &mut self,
         vm_slot: u32,
     ) -> Result<GuestIntrospectionRingPairMut<'_>, MappedSetupRegionAccessError> {
+        selected_lifecycle::authorize_mutable_view(self.mapping_owner_key())
+            .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let layout = self
             .layout()
             .map_err(|source| MappedSetupRegionAccessError::Header { source })?;
@@ -227,6 +251,12 @@ impl MappedSetupRegion {
                 index: vm_slot,
             });
         }
+        selected_lifecycle::authorize_mutable_headers(
+            self,
+            &[request_header_offset, response_header_offset],
+        )
+        .map_err(|source| MappedSetupRegionAccessError::WholeCustody { source })?;
+
         let base = self.base_ptr();
         // SAFETY: the offset helpers validate every complete aligned range in
         // this owned mapping. Request and response indices are distinct and

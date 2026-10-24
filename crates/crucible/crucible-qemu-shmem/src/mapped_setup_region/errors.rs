@@ -5,6 +5,12 @@ use super::*;
 /// An error produced while borrowing typed objects from a mapped setup region.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum MappedSetupRegionAccessError {
+    /// The original whole mapping lifecycle forbids this mutation.
+    #[error("the original whole mapping custody refuses this operation")]
+    WholeCustody {
+        /// Retained lifecycle refusal.
+        source: WholeMappingCustodyError,
+    },
     /// The mapped region header failed ABI or geometry validation.
     #[error("mapped setup region header validation failed")]
     Header {
@@ -123,6 +129,12 @@ pub enum MappedSetupRegionAccessError {
 /// An error produced while mapping a setup shared-memory descriptor.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum SetupRegionMapError {
+    /// The original whole mapping lifecycle forbids this mutation.
+    #[error("the original whole mapping custody refuses this operation")]
+    WholeCustody {
+        /// Retained lifecycle refusal.
+        source: WholeMappingCustodyError,
+    },
     /// The `Setup.region_len` cannot be represented as a process-local mapping length.
     #[error("setup region length {region_len} cannot fit in usize")]
     RegionLenTooLarge {

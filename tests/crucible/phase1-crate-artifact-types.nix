@@ -7,6 +7,22 @@
 
   specs = [
     {
+      package = "crucible-host-resources";
+      expected = "library";
+    }
+    {
+      package = "crucible-node-format";
+      expected = "library";
+    }
+    {
+      package = "crucible-source-birth-data";
+      expected = "library";
+    }
+    {
+      package = "crucible-node-transport";
+      expected = "node-transport-tools";
+    }
+    {
       package = "crucible-determinism";
       expected = "library";
     }
@@ -60,11 +76,15 @@
     }
     {
       package = "crucible-daemon";
-      expected = "library";
+      expected = "daemon-collector-tool";
     }
     {
       package = "crucible-qemu-debug-gateway";
       expected = "debug-gateway";
+    }
+    {
+      package = "crucible-source-birth-worker";
+      expected = "source-birth-worker";
     }
     {
       package = "crucible-cli";
@@ -134,6 +154,24 @@
       "${package}: library/plugin package must not have implicit binary targets under src/bin"
     ];
 
+  transportToolNames = [
+    "crucible-node-conformance"
+    "crucible-reference-device"
+    "crucible-reference-lineage-device"
+    "crucible-reference-lineage-manifest"
+    "crucible-reference-lineage-provider"
+    "crucible-reference-lineage-reader-manifest"
+    "crucible-reference-lineage-reader-provider"
+    "crucible-reference-lineage-reader-typed-manifest"
+    "crucible-reference-lineage-reader-typed-provider"
+    "crucible-reference-manifest"
+    "crucible-reference-packet-provider"
+    "crucible-reference-progress-device"
+    "crucible-reference-progress-manifest"
+    "crucible-reference-progress-provider"
+    "crucible-reference-provider"
+  ];
+
   checkArtifact = spec: manifest: layout: let
     package = manifestPackageName manifest;
     packageNameFailures = lib.optionals (package != spec.package) [
@@ -151,6 +189,80 @@
           "${spec.package}: plugin must expose a library target"
         ]
         ++ forbiddenBinaryFailures spec.package manifest layout
+      else if builtins.elem spec.expected ["node-transport-tools" "daemon-collector-tool"]
+      then let
+        collector = spec.expected == "daemon-collector-tool";
+        names =
+          if collector
+          then ["crucible-reference-singleton-collector"]
+          else transportToolNames;
+        requiredTargets =
+          map (name: {
+            inherit name;
+            path = "src/bin/${name}.rs";
+          })
+          names;
+        bins = binTargets manifest;
+        actualTargets =
+          map (bin: {
+            name = bin.name or null;
+            path = bin.path or null;
+          })
+          bins;
+        # Count each original name/path exactly once, independent of table order.
+        exactTargets =
+          builtins.length actualTargets
+          == builtins.length requiredTargets
+          && builtins.all (required:
+            builtins.length (builtins.filter (actual: actual == required) actualTargets) == 1)
+          requiredTargets;
+        featureGuarded = collector && builtins.any (bin: (bin."required-features" or []) != []) bins;
+      in
+        lib.optionals (!(declaresOrImpliesLibTarget manifest layout)) [
+          "${spec.package}: process tool owner must expose a Rust library target"
+        ]
+        ++ lib.concatMap (crateType:
+          lib.optionals (!(builtins.elem crateType ["lib" "rlib"])) [
+            "${spec.package}: forbidden crate-type `${crateType}` for process tool library"
+          ]) (crateTypes manifest)
+        ++ lib.optionals (
+          !exactTargets
+          || (manifest.package.autobins or null) != false
+          || layout.hasMainRs
+          || !layout.hasSrcBinDir
+          || featureGuarded
+        ) [
+          (
+            if collector
+            then "${spec.package}: daemon must explicitly declare only its singleton collector without feature gating and disable implicit binaries"
+            else "${spec.package}: node transport must explicitly declare its fifteen process tools and disable implicit binaries"
+          )
+        ]
+      else if spec.expected == "source-birth-worker"
+      then let
+        bins = binTargets manifest;
+        actual =
+          map (bin: {
+            name = bin.name or null;
+            path = bin.path or null;
+          })
+          bins;
+        required = [
+          {
+            name = spec.package;
+            path = "src/main.rs";
+          }
+        ];
+      in
+        lib.optionals (
+          actual
+          != required
+          || (manifest.package.autobins or null) != false
+          || declaresOrImpliesLibTarget manifest layout
+          || !layout.hasMainRs
+          || layout.hasSrcBinDir
+          || builtins.any (bin: (bin."required-features" or []) != []) bins
+        ) ["${spec.package}: worker must expose only its explicit, ungated src/main.rs binary and disable implicit binaries"]
       else if spec.expected == "cli-binary"
       then let
         bins = binTargets manifest;
@@ -224,7 +336,7 @@
           "${spec.package}: ${artifactLabel} must not add extra implicit binary targets under src/bin"
         ]
       # The debug gateway ships its mediated-transport library and one
-      # `crucible-qemu-debug-gateway` binary built from src/main.rs.
+      # `crucible-debug-gateway` binary built from src/main.rs.
       else if spec.expected == "gateway-binary"
       then let
         bins = binTargets manifest;
@@ -311,6 +423,78 @@
     )
     specs;
 
+  processToolRegressionFailures = spec: let
+    manifest = readManifest spec.package;
+    layout = packageLayout spec.package;
+    bins = binTargets manifest;
+    first = builtins.head bins;
+    rest = builtins.tail bins;
+    manifestCases =
+      [
+        (manifest
+          // {
+            package = manifest.package // {autobins = true;};
+          })
+        (manifest
+          // {
+            package = builtins.removeAttrs manifest.package ["autobins"];
+          })
+        (manifest
+          // {
+            bin =
+              bins
+              ++ [
+                {
+                  name = "unreviewed-tool";
+                  path = "src/bin/unreviewed-tool.rs";
+                }
+              ];
+          })
+        (manifest // {bin = bins ++ [first];})
+      ]
+      ++ lib.concatMap (selected: [
+        (manifest
+          // {
+            bin = builtins.filter (bin: bin != selected) bins;
+          })
+        (manifest
+          // {
+            bin = map (bin:
+              if bin == selected
+              then bin // {name = "unreviewed-tool";}
+              else bin)
+            bins;
+          })
+        (manifest
+          // {
+            bin = map (bin:
+              if bin == selected
+              then bin // {path = "src/bin/unreviewed-tool.rs";}
+              else bin)
+            bins;
+          })
+      ])
+      bins
+      ++ map (kind:
+        manifest
+        // {
+          lib = (manifest.lib or {}) // {"crate-type" = [kind];};
+        }) ["cdylib" "dylib" "staticlib"]
+      ++ lib.optional (spec.expected == "daemon-collector-tool") (manifest
+        // {
+          bin = [(first // {"required-features" = ["test-support"];})] ++ rest;
+        });
+    rejectedManifestCases = builtins.all (mutant: checkArtifact spec mutant layout != []) manifestCases;
+    rejectedLayoutCases = builtins.all (mutant: checkArtifact spec manifest mutant != []) [
+      (layout // {hasLibRs = false;})
+      (layout // {hasMainRs = true;})
+      (layout // {hasSrcBinDir = false;})
+    ];
+  in
+    lib.optionals (!rejectedManifestCases || !rejectedLayoutCases) [
+      "${spec.package}: process-tool regression accepted implicit, omitted, rebound, duplicate, guarded, or native output drift"
+    ];
+
   regressionFailures = let
     pluginFindings =
       checkArtifact {
@@ -344,7 +528,7 @@
         package.name = "crucible-cli";
         bin = [
           {
-            name = "crucible-engine";
+            name = "crucible";
             path = "src/main.rs";
           }
           {
@@ -384,7 +568,44 @@
       "artifact-type regression failed to reject a library src/main.rs implicit binary"
     ];
 
-  failures = packageSetFailures ++ regressionFailures ++ realFailures;
+  workerRegressionFailures = let
+    package = "crucible-source-birth-worker";
+    spec = {
+      inherit package;
+      expected = "source-birth-worker";
+    };
+    manifest = readManifest package;
+    layout = packageLayout package;
+    first = builtins.head (binTargets manifest);
+    candidates = [
+      (manifest // {package = builtins.removeAttrs manifest.package ["autobins"];})
+      (manifest // {bin = [(first // {"required-features" = ["hidden"];})];})
+      (manifest // {bin = [(first // {path = "src/other.rs";})];})
+      (manifest // {bin = [(first // {name = "unreviewed-worker";})];})
+      (manifest // {bin = [];})
+      (manifest // {bin = [first first];})
+      (manifest // {lib = {};})
+    ];
+  in
+    lib.optionals (
+      !(builtins.all (candidate: checkArtifact spec candidate layout != []) candidates)
+      || checkArtifact spec manifest (layout // {hasSrcBinDir = true;}) == []
+      || checkArtifact spec manifest (layout // {hasMainRs = false;}) == []
+    ) ["worker artifact regression failed to reject an implicit, hidden, rebound, duplicate or library output"];
+
+  failures =
+    packageSetFailures
+    ++ workerRegressionFailures
+    ++ regressionFailures
+    ++ realFailures
+    ++ processToolRegressionFailures {
+      package = "crucible-node-transport";
+      expected = "node-transport-tools";
+    }
+    ++ processToolRegressionFailures {
+      package = "crucible-daemon";
+      expected = "daemon-collector-tool";
+    };
 in
   if failures != []
   then throw "crucible phase1 crate artifact-type lint failed:\n${builtins.concatStringsSep "\n" failures}"
@@ -409,6 +630,8 @@ in
             cdylib_package=crucible-qemu-plugin
             binary_package=crucible-cli
             binary_name=crucible
+            transport_process_tools=15
+            daemon_collectors=1
             RESULT
           '';
         }

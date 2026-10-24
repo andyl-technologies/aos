@@ -270,7 +270,7 @@
   sourceFailures = [];
 
   regressionFailures = let
-    missingModuleDoc = rustdocFailuresForContent "crucible-determinism" "crucible-sim/src/lib.rs" ''
+    missingModuleDoc = rustdocFailuresForContent "crucible-determinism" "crucible/crucible-determinism/src/lib.rs" ''
       pub fn documented() {}
     '';
     missingFormat = rustdocFailuresForContent "crucible-qemu-shmem" "crucible-qemu-shmem/src/lib.rs" ''
@@ -280,7 +280,7 @@
       #![deny(missing_docs)]
       #![deny(rustdoc::broken_intra_doc_links)]
     '';
-    untaggedFence = rustdocFailuresForContent "crucible-determinism" "crucible-sim/src/lib.rs" ''
+    untaggedFence = rustdocFailuresForContent "crucible-determinism" "crucible/crucible-determinism/src/lib.rs" ''
       //! synthetic
       //!
       //! Module map: synthetic.
@@ -291,7 +291,7 @@
       #![deny(missing_docs)]
       #![deny(rustdoc::broken_intra_doc_links)]
     '';
-    untaggedBlockFence = rustdocFailuresForContent "crucible-determinism" "crucible-sim/src/lib.rs" ''
+    untaggedBlockFence = rustdocFailuresForContent "crucible-determinism" "crucible/crucible-determinism/src/lib.rs" ''
       /*!
        * synthetic
        *
@@ -302,7 +302,7 @@
       #![deny(missing_docs)]
       #![deny(rustdoc::broken_intra_doc_links)]
     '';
-    malformedClosingFence = rustdocFailuresForContent "crucible-determinism" "crucible-sim/src/lib.rs" ''
+    malformedClosingFence = rustdocFailuresForContent "crucible-determinism" "crucible/crucible-determinism/src/lib.rs" ''
       //! synthetic
       //!
       //! Module map: synthetic.
@@ -314,7 +314,7 @@
       #![deny(missing_docs)]
       #![deny(rustdoc::broken_intra_doc_links)]
     '';
-    nestedShorterFence = rustdocFailuresForContent "crucible-determinism" "crucible-sim/src/lib.rs" ''
+    nestedShorterFence = rustdocFailuresForContent "crucible-determinism" "crucible/crucible-determinism/src/lib.rs" ''
       //! synthetic
       //!
       //! Module map: synthetic.
@@ -327,7 +327,7 @@
       #![deny(missing_docs)]
       #![deny(rustdoc::broken_intra_doc_links)]
     '';
-    tabTaggedFence = rustdocFailuresForContent "crucible-determinism" "crucible-sim/src/lib.rs" (builtins.concatStringsSep "\n" [
+    tabTaggedFence = rustdocFailuresForContent "crucible-determinism" "crucible/crucible-determinism/src/lib.rs" (builtins.concatStringsSep "\n" [
       "//! synthetic"
       "//!"
       "//! Module map: synthetic."
@@ -338,7 +338,7 @@
       "#![deny(missing_docs)]"
       "#![deny(rustdoc::broken_intra_doc_links)]"
     ]);
-    nonDoctestedNoRunFence = rustdocFailuresForContent "crucible-cli" "crucible-cli/src/main.rs" ''
+    nonDoctestedNoRunFence = rustdocFailuresForContent "crucible-cli" "crucible/crucible-cli/src/main.rs" ''
       //! synthetic
       //!
       //! Module map: synthetic.

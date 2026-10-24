@@ -1,0 +1,732 @@
+--- a/include/linux/crucible_allocator.h
++++ b/include/linux/crucible_allocator.h
+@@ -9,6 +9,9 @@
+ struct task_struct;
+ struct kmem_cache;
+ struct slab;
++struct page;
++struct vm_struct;
++struct work_struct;
+ struct crucible_allocator_scope;
+ 
+ /* Source snapshots remain separate: slab backing and object stride overlap.
+@@ -34,6 +37,7 @@
+ 	CRUCIBLE_ALLOCATOR_PAGE = 4,
+ 	CRUCIBLE_ALLOCATOR_PAGE_BULK = 5,
+ 	CRUCIBLE_ALLOCATOR_PAGE_NOLOCK = 6,
++	CRUCIBLE_ALLOCATOR_VM_AREA = 7,
+ };
+ 
+ struct crucible_uncovered_request {
+@@ -62,6 +66,54 @@
+ 	bool native_attempted;
+ };
+ 
++/* Actual vmalloc constructor inputs, captured before metadata allocation.
++ * Virtual extent and metadata rounding are not physical backing coverage.
++ */
++struct crucible_vm_area_request {
++	u64 requested_bytes;
++	u64 aligned_bytes;
++	u64 alignment;
++	u64 page_shift;
++	u64 native_flags;
++	u64 virtual_start;
++	u64 virtual_end;
++	u64 metadata_bytes;
++	u64 rounded_metadata_bytes;
++	const void *native_caller;
++	u32 allocation_flags;
++	s32 native_node;
++};
++
++struct crucible_vm_area_cleanup {
++	struct vm_struct *original_area;
++	struct work_struct *original_work;
++	void (*original_method)(struct work_struct *);
++	struct task_struct *native_actor;
++	void *native_address;
++	struct page **native_pages;
++	u64 native_page_count;
++	u32 native_path;
++	struct work_struct *native_work;
++	void (*native_method)(struct work_struct *);
++	bool route_same;
++	bool enqueue_attempted;
++	bool native_running;
++	bool closing;
++	bool native_returned;
++	bool enqueue_returned;
++	bool list_was_empty;
++	bool schedule_attempted;
++	bool schedule_accepted;
++};
++
++/* Opaque process-private token. Dispatchers establish source-bank membership
++ * and generation before following any candidate pointer or callback.
++ */
++struct crucible_vm_area_token {
++	void *original_record;
++	u64 generation;
++};
++
+ /* All callbacks are original kernel source functions retained by the issuer.
+  * They must not allocate, sleep or publish effects. Their original owner and
+  * code lifetime must outlive every outstanding lease and completion. */
+@@ -73,6 +125,12 @@
+ 		const struct crucible_slab_output *output);
+ 	void (*refuse_uncovered)(void *owner,
+ 		const struct crucible_uncovered_request *request);
++	bool (*reserve_vm_area)(void *owner,
++		const struct crucible_vm_area_request *request, void **lease);
++	void (*complete_vm_area)(void *owner, void *lease, struct vm_struct *area,
++		bool native_attempted);
++	void (*observe_vm_area_cleanup)(void *owner, void *lease,
++		const struct crucible_vm_area_cleanup *output, bool native_returned);
+ };
+ 
+ struct crucible_allocator_scope {
+@@ -105,4 +163,20 @@
+ void crucible_allocator_slab_complete(struct crucible_allocator_token *token,
+ 	const struct crucible_slab_output *output);
+ 
++/* Metadata bank geometry is source-derived and never physical peak proof. */
++u64 crucible_allocator_vm_area_metadata_bytes(void);
++bool crucible_allocator_vm_area_reserve(const struct crucible_vm_area_request *request,
++	struct crucible_vm_area_token *token);
++void crucible_allocator_vm_area_complete(struct crucible_vm_area_token *token,
++	struct vm_struct *area, bool native_attempted);
++void crucible_allocator_vm_area_defer(struct vm_struct *area,
++	struct work_struct *work, void (*method)(struct work_struct *),
++	struct crucible_vm_area_token *token);
++void crucible_allocator_vm_area_enqueued(struct crucible_vm_area_token *token,
++	bool list_was_empty, bool schedule_attempted, bool schedule_accepted);
++void crucible_allocator_vm_area_cleanup_begin(struct vm_struct *area,
++	struct work_struct *work, void (*method)(struct work_struct *),
++	struct crucible_vm_area_token *token);
++void crucible_allocator_vm_area_cleanup_complete(struct crucible_vm_area_token *token);
++
+ #endif
+--- a/mm/crucible_allocator.c
++++ b/mm/crucible_allocator.c
+@@ -7,6 +7,9 @@
+ #include <linux/interrupt.h>
+ #include <linux/mm_types.h>
+ #include <linux/sched.h>
++#include <linux/spinlock.h>
++#include <linux/vmalloc.h>
++#include <linux/workqueue.h>
+ 
+ static bool crucible_allocator_actor(struct crucible_allocator_scope *scope)
+ {
+@@ -207,3 +210,314 @@
+ 		0, 0, CRUCIBLE_ALLOCATOR_PAGE_NOLOCK);
+ }
+ EXPORT_SYMBOL_GPL(crucible_allocator_page_nolock_uncovered);
++
++/* Source-born origin records outlive native metadata and deferred callbacks.
++ * Returned cleanup is deliberately not physical retirement; records are never
++ * renewed or refunded. Original issuers must pin owner/code/Task/mm lifetime.
++ */
++#define CRUCIBLE_VM_AREA_RECORDS 256U
++
++enum crucible_vm_area_state {
++	CRUCIBLE_VM_AREA_RESERVED = 1,
++	CRUCIBLE_VM_AREA_BOUND,
++	CRUCIBLE_VM_AREA_DEFERRED,
++	CRUCIBLE_VM_AREA_CLOSING,
++	CRUCIBLE_VM_AREA_RETURNED,
++	CRUCIBLE_VM_AREA_REFUSED,
++};
++
++struct crucible_vm_area_origin {
++	void *original_owner;
++	const struct crucible_allocator_ops *original_ops;
++	void *original_lease;
++	struct vm_struct *original_area;
++	u64 generation;
++	u32 state;
++	struct crucible_vm_area_cleanup cleanup;
++};
++
++struct crucible_vm_area_bank {
++	struct crucible_vm_area_origin records[CRUCIBLE_VM_AREA_RECORDS];
++} __aligned(PAGE_SIZE);
++
++static struct crucible_vm_area_bank crucible_vm_areas;
++static DEFINE_RAW_SPINLOCK(crucible_vm_area_lock);
++static u32 crucible_vm_area_used;
++static u64 crucible_vm_area_generation;
++
++/* A cleanup worker gets an allocation-refusal guard, not the original
++ * constructor's permission. Original callbacks are observational and cannot
++ * obtain an ordinary allocator path by running outside that Task scope.
++ */
++static void crucible_vm_area_observe(struct crucible_vm_area_origin *record,
++	const struct crucible_vm_area_cleanup *output, bool native_returned)
++{
++	struct crucible_allocator_scope *saved = READ_ONCE(current->crucible_allocator_scope);
++	struct crucible_allocator_scope guard = {
++		.original_task = current,
++		.original_owner = record->original_owner,
++		.original_ops = record->original_ops,
++		.callback_active = true,
++	};
++
++	WRITE_ONCE(current->crucible_allocator_scope, &guard);
++	record->original_ops->observe_vm_area_cleanup(record->original_owner,
++		record->original_lease, output, native_returned);
++	WRITE_ONCE(current->crucible_allocator_scope, saved);
++}
++
++u64 crucible_allocator_vm_area_metadata_bytes(void)
++{
++	return sizeof(crucible_vm_areas);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_vm_area_metadata_bytes);
++
++static struct crucible_vm_area_origin *
++crucible_vm_area_token_find(const struct crucible_vm_area_token *token)
++{
++	u32 index;
++
++	lockdep_assert_held(&crucible_vm_area_lock);
++	for (index = 0; index < crucible_vm_area_used; index++)
++		if (token->original_record == &crucible_vm_areas.records[index] &&
++		    token->generation == crucible_vm_areas.records[index].generation)
++			return &crucible_vm_areas.records[index];
++	return NULL;
++}
++
++static struct crucible_vm_area_origin *crucible_vm_area_find(struct vm_struct *area)
++{
++	u32 index;
++
++	lockdep_assert_held(&crucible_vm_area_lock);
++	if (!area)
++		return NULL;
++	for (index = 0; index < crucible_vm_area_used; index++) {
++		struct crucible_vm_area_origin *record = &crucible_vm_areas.records[index];
++
++		if (record->original_area == area &&
++		    (record->state == CRUCIBLE_VM_AREA_BOUND ||
++		     record->state == CRUCIBLE_VM_AREA_DEFERRED))
++			return record;
++	}
++	return NULL;
++}
++
++bool crucible_allocator_vm_area_reserve(const struct crucible_vm_area_request *request,
++	struct crucible_vm_area_token *token)
++{
++	struct crucible_allocator_scope *scope = READ_ONCE(current->crucible_allocator_scope);
++	struct crucible_vm_area_origin *record;
++	unsigned long flags;
++	void *lease = NULL;
++	bool reserved;
++
++	token->original_record = NULL;
++	token->generation = 0;
++	if (!scope || !in_task())
++		return true;
++	if (!request || !crucible_allocator_current(scope) ||
++	    !scope->original_ops->reserve_vm_area ||
++	    !scope->original_ops->complete_vm_area ||
++	    !scope->original_ops->observe_vm_area_cleanup)
++		goto refuse;
++	raw_spin_lock_irqsave(&crucible_vm_area_lock, flags);
++	if (crucible_vm_area_used == CRUCIBLE_VM_AREA_RECORDS ||
++	    crucible_vm_area_generation == U64_MAX) {
++		raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++		goto refuse;
++	}
++	record = &crucible_vm_areas.records[crucible_vm_area_used++];
++	record->generation = ++crucible_vm_area_generation;
++	record->state = CRUCIBLE_VM_AREA_RESERVED;
++	raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++
++	/* No issuer callback runs under the native bank/list/workqueue locks. */
++	WRITE_ONCE(scope->callback_active, true);
++	reserved = scope->original_ops->reserve_vm_area(scope->original_owner, request, &lease);
++	WRITE_ONCE(scope->callback_active, false);
++	raw_spin_lock_irqsave(&crucible_vm_area_lock, flags);
++	if (reserved && lease) {
++		record->original_owner = scope->original_owner;
++		record->original_ops = scope->original_ops;
++		record->original_lease = lease;
++		token->original_record = record;
++		token->generation = record->generation;
++	} else {
++		record->state = CRUCIBLE_VM_AREA_REFUSED;
++	}
++	raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++	if (!reserved || !lease || !crucible_allocator_current(scope))
++		goto refuse;
++	return true;
++
++refuse:
++	WRITE_ONCE(scope->failed, true);
++	return false;
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_vm_area_reserve);
++
++void crucible_allocator_vm_area_complete(struct crucible_vm_area_token *token,
++	struct vm_struct *area, bool native_attempted)
++{
++	struct crucible_vm_area_origin *record;
++	unsigned long flags;
++
++	if (!token->original_record)
++		return;
++	raw_spin_lock_irqsave(&crucible_vm_area_lock, flags);
++	record = crucible_vm_area_token_find(token);
++	if (!record || record->state != CRUCIBLE_VM_AREA_RESERVED) {
++		raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++		return;
++	}
++	/* Preserve the actual metadata allocation return before source checks. */
++	record->original_area = area;
++	record->state = CRUCIBLE_VM_AREA_BOUND;
++	raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++	token->original_record = NULL;
++	record->original_ops->complete_vm_area(record->original_owner,
++		record->original_lease, area, native_attempted);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_vm_area_complete);
++
++void crucible_allocator_vm_area_defer(struct vm_struct *area,
++	struct work_struct *work, void (*method)(struct work_struct *),
++	struct crucible_vm_area_token *token)
++{
++	struct crucible_vm_area_origin *record;
++	struct crucible_vm_area_cleanup output;
++	unsigned long flags;
++
++	token->original_record = NULL;
++	token->generation = 0;
++	raw_spin_lock_irqsave(&crucible_vm_area_lock, flags);
++	record = crucible_vm_area_find(area);
++	if (!record || record->state != CRUCIBLE_VM_AREA_BOUND) {
++		raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++		return;
++	}
++	/* Original area membership precedes native-field snapshots. Work and
++	 * literal method are retained BEFORE list publication or scheduling.
++	 */
++	record->cleanup.original_area = area;
++	record->cleanup.enqueue_attempted = true;
++	record->cleanup.original_work = work;
++	record->cleanup.original_method = method;
++	record->cleanup.native_address = area->addr;
++	record->cleanup.native_pages = area->pages;
++	record->cleanup.native_page_count = area->nr_pages;
++	record->cleanup.native_path = area->pages ? 2 : 1;
++	record->cleanup.route_same = work && method && work->func == method;
++	record->state = CRUCIBLE_VM_AREA_DEFERRED;
++	output = record->cleanup;
++	token->original_record = record;
++	token->generation = record->generation;
++	raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++	crucible_vm_area_observe(record, &output, false);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_vm_area_defer);
++
++void crucible_allocator_vm_area_enqueued(struct crucible_vm_area_token *token,
++	bool list_was_empty, bool schedule_attempted, bool schedule_accepted)
++{
++	struct crucible_vm_area_origin *record;
++	struct crucible_vm_area_cleanup output;
++	unsigned long flags;
++
++	if (!token->original_record)
++		return;
++	raw_spin_lock_irqsave(&crucible_vm_area_lock, flags);
++	record = crucible_vm_area_token_find(token);
++	if (!record) {
++		raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++		return;
++	}
++	/* Worker completion can precede this observation. The original token,
++	 * not an area address that may have been freed/reused, retains its row.
++	 */
++	record->cleanup.enqueue_returned = true;
++	record->cleanup.list_was_empty = list_was_empty;
++	record->cleanup.schedule_attempted = schedule_attempted;
++	record->cleanup.schedule_accepted = schedule_accepted;
++	output = record->cleanup;
++	raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++	token->original_record = NULL;
++	crucible_vm_area_observe(record, &output, false);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_vm_area_enqueued);
++
++void crucible_allocator_vm_area_cleanup_begin(struct vm_struct *area,
++	struct work_struct *work, void (*method)(struct work_struct *),
++	struct crucible_vm_area_token *token)
++{
++	struct crucible_vm_area_origin *record;
++	struct crucible_vm_area_cleanup output;
++	unsigned long flags;
++
++	token->original_record = NULL;
++	token->generation = 0;
++	raw_spin_lock_irqsave(&crucible_vm_area_lock, flags);
++	record = crucible_vm_area_find(area);
++	if (!record) {
++		raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++		return;
++	}
++	/* Closing precedes every native backing/metadata free in the worker.
++	 * The worker is an observed cleanup actor, never the original Task's
++	 * allocator permission. It does not inherit an allocation scope.
++	 */
++	record->cleanup.original_area = area;
++	record->cleanup.native_actor = current;
++	record->cleanup.native_running = true;
++	record->cleanup.closing = true;
++	record->cleanup.native_work = work;
++	record->cleanup.native_method = method;
++	if (record->state == CRUCIBLE_VM_AREA_DEFERRED)
++		record->cleanup.route_same = record->cleanup.original_work == work &&
++			record->cleanup.original_method == method && work && method &&
++			work->func == method && record->cleanup.native_address == area->addr &&
++			record->cleanup.native_pages == area->pages &&
++			record->cleanup.native_page_count == area->nr_pages;
++	else
++		record->cleanup.route_same = !work && !method;
++	if (record->state == CRUCIBLE_VM_AREA_BOUND) {
++		record->cleanup.native_address = area->addr;
++		record->cleanup.native_pages = area->pages;
++		record->cleanup.native_page_count = area->nr_pages;
++		record->cleanup.native_path = area->pages ? 2 : 1;
++	}
++	record->state = CRUCIBLE_VM_AREA_CLOSING;
++	output = record->cleanup;
++	token->original_record = record;
++	token->generation = record->generation;
++	raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++	crucible_vm_area_observe(record, &output, false);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_vm_area_cleanup_begin);
++
++void crucible_allocator_vm_area_cleanup_complete(struct crucible_vm_area_token *token)
++{
++	struct crucible_vm_area_origin *record;
++	struct crucible_vm_area_cleanup output;
++	unsigned long flags;
++
++	if (!token->original_record)
++		return;
++	raw_spin_lock_irqsave(&crucible_vm_area_lock, flags);
++	record = crucible_vm_area_token_find(token);
++	if (!record || record->state != CRUCIBLE_VM_AREA_CLOSING) {
++		raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++		return;
++	}
++	record->state = CRUCIBLE_VM_AREA_RETURNED;
++	record->cleanup.native_returned = true;
++	output = record->cleanup;
++	raw_spin_unlock_irqrestore(&crucible_vm_area_lock, flags);
++	token->original_record = NULL;
++	/* The area is already gone. No pointer follow, implicit refund, work
++	 * cancellation/flush or physical retirement proof is manufactured.
++	 */
++	crucible_vm_area_observe(record, &output, true);
++}
++EXPORT_SYMBOL_GPL(crucible_allocator_vm_area_cleanup_complete);
+--- a/virt/kvm/crucible-original-kernel-resource.inc.c
++++ b/virt/kvm/crucible-original-kernel-resource.inc.c
+@@ -41,6 +41,13 @@
+ 	struct crucible_slab_request slab_request;
+ 	struct crucible_slab_output slab_output;
+ 	struct crucible_uncovered_request uncovered_request;
++	struct crucible_vm_area_request vm_area_request;
++	struct vm_struct *original_vm_area;
++	struct crucible_vm_area_cleanup vm_area_cleanup;
++	u32 vm_area_observations;
++	bool vm_area_returned;
++	bool vm_area_native_attempted;
++	bool vm_area_cleanup_returned;
+ 	u32 control_index;
+ 	bool source_reservation_known;
+ 	bool native_attempted;
+@@ -163,9 +170,13 @@
+ 	const struct kvm_crucible_kernel_resource_policy *input,
+ 	struct kvm_crucible_kernel_resource_policy *output)
+ {
+-	u64 metadata = sizeof(struct kvm_crucible_kernel_resource_context);
++	u64 metadata;
++	u64 origin_metadata = crucible_allocator_vm_area_metadata_bytes();
+ 	u64 vm_request, resident;
+ 
++	if (check_add_overflow((u64)sizeof(struct kvm_crucible_kernel_resource_context),
++	    origin_metadata, &metadata))
++		return -EOVERFLOW;
+ 	BUILD_BUG_ON(sizeof(*input) != 192);
+ 	BUILD_BUG_ON(sizeof(struct kvm_crucible_kernel_resource_context) % PAGE_SIZE);
+ #ifndef CONFIG_X86_64
+@@ -342,11 +353,115 @@
+ 	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
+ }
+ 
++static struct kvm_crucible_resource_allocation *crucible_resource_vm_area_row(
++	struct kvm_crucible_kernel_resource_context *context, void *lease)
++{
++	u32 index;
++
++	lockdep_assert_held(&context->allocator_lock);
++	for (index = 0; index < context->allocations_used; index++)
++		if (lease == &context->allocations[index] &&
++		    context->allocations[index].family == CRUCIBLE_ALLOCATOR_VM_AREA)
++			return &context->allocations[index];
++	return NULL;
++}
++
++static bool crucible_resource_vm_area_reserve(void *owner,
++	const struct crucible_vm_area_request *request, void **lease)
++{
++	struct kvm_crucible_kernel_resource_context *context = owner;
++	struct kvm_crucible_resource_allocation *row;
++	unsigned long flags;
++	u64 reserved;
++	bool admitted = false;
++
++	*lease = NULL;
++	raw_spin_lock_irqsave(&context->allocator_lock, flags);
++	if (!crucible_resource_allocator_current(context) || context->uncertain ||
++	    context->allocations_used >= CRUCIBLE_RESOURCE_ALLOCATION_ROWS ||
++	    !request->metadata_bytes || request->rounded_metadata_bytes < request->metadata_bytes ||
++	    ktime_get_ns() > context->input.constructor_deadline_ns ||
++	    check_add_overflow(context->reserved_bytes, request->rounded_metadata_bytes, &reserved) ||
++	    reserved > context->input.reserved_ceiling || reserved > context->input.peak_ceiling ||
++	    request->rounded_metadata_bytes > context->input.transient_ceiling)
++		goto refuse;
++	row = &context->allocations[context->allocations_used++];
++	row->actor = current;
++	row->vm = context->original_vm;
++	row->generation = context->generation;
++	row->control_index = context->current_delivery;
++	row->family = CRUCIBLE_ALLOCATOR_VM_AREA;
++	row->vm_area_request = *request;
++	row->requested_bytes = request->metadata_bytes;
++	row->reserved_bytes = request->rounded_metadata_bytes;
++	row->source_reservation_known = true;
++	row->state = 4;
++	context->reserved_bytes = reserved;
++	*lease = row;
++	admitted = true;
++	goto unlock;
++refuse:
++	WRITE_ONCE(context->uncertain, true);
++unlock:
++	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
++	return admitted;
++}
++
++static void crucible_resource_vm_area_complete(void *owner, void *lease,
++	struct vm_struct *area, bool native_attempted)
++{
++	struct kvm_crucible_kernel_resource_context *context = owner;
++	struct kvm_crucible_resource_allocation *row;
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&context->allocator_lock, flags);
++	row = crucible_resource_vm_area_row(context, lease);
++	if (row && row->state == 4) {
++		/* Raw metadata return precedes source phase reconciliation. The
++		 * lease retains original module/Task/mm/context through cleanup.
++		 */
++		row->original_vm_area = area;
++		row->vm_area_native_attempted = native_attempted;
++		row->vm_area_returned = true;
++		row->state = 5;
++	}
++	/* Page arrays, mapping tables, retries and backing lifetime remain
++	 * incomplete. Keep every charge/reference, including a NULL return.
++	 */
++	WRITE_ONCE(context->uncertain, true);
++	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
++}
++
++static void crucible_resource_vm_area_observe(void *owner, void *lease,
++	const struct crucible_vm_area_cleanup *output, bool native_returned)
++{
++	struct kvm_crucible_kernel_resource_context *context = owner;
++	struct kvm_crucible_resource_allocation *row;
++	unsigned long flags;
++
++	raw_spin_lock_irqsave(&context->allocator_lock, flags);
++	row = crucible_resource_vm_area_row(context, lease);
++	if (row && row->vm_area_returned && row->original_vm_area == output->original_area) {
++		row->vm_area_cleanup = *output;
++		if (row->vm_area_observations != U32_MAX)
++			row->vm_area_observations++;
++		row->vm_area_cleanup_returned |= native_returned;
++	}
++	/* Worker identity is observation, never inherited allocation authority.
++	 * A native callback return is not cancellation/flush or retirement.
++	 */
++	WRITE_ONCE(context->uncertain, true);
++	raw_spin_unlock_irqrestore(&context->allocator_lock, flags);
++}
++
+ static const struct crucible_allocator_ops crucible_resource_allocator_ops = {
+ 	.source_current = crucible_resource_allocator_current,
+ 	.refuse_uncovered = crucible_resource_allocator_refuse_uncovered,
+ 	.reserve_slab = crucible_resource_allocator_reserve,
+ 	.complete_slab = crucible_resource_allocator_complete,
++	.reserve_vm_area = crucible_resource_vm_area_reserve,
++	.complete_vm_area = crucible_resource_vm_area_complete,
++	.observe_vm_area_cleanup = crucible_resource_vm_area_observe,
+ };
+ 
+ /* Root custody is established at the native constructor, never by a quote
+--- a/mm/vmalloc.c
++++ b/mm/vmalloc.c
+@@ -9,6 +9,7 @@
+  */
+ 
+ #include <linux/vmalloc.h>
++#include <linux/crucible_allocator.h>
+ #include <linux/mm.h>
+ #include <linux/module.h>
+ #include <linux/highmem.h>
+@@ -3223,6 +3224,20 @@
+ {
+ 	struct vmap_area *va;
+ 	struct vm_struct *area;
++	struct crucible_vm_area_token origin, closing;
++	struct crucible_vm_area_request request = {
++		.requested_bytes = size,
++		.alignment = align,
++		.page_shift = shift,
++		.native_flags = flags,
++		.virtual_start = start,
++		.virtual_end = end,
++		.metadata_bytes = sizeof(*area),
++		.rounded_metadata_bytes = kmalloc_size_roundup(sizeof(*area)),
++		.native_caller = caller,
++		.allocation_flags = gfp_mask,
++		.native_node = node,
++	};
+ 	unsigned long requested_size = size;
+ 
+ 	BUG_ON(in_nmi() || in_hardirq());
+@@ -3234,7 +3249,13 @@
+ 		align = 1ul << clamp_t(int, get_count_order_long(size),
+ 				       PAGE_SHIFT, IOREMAP_MAX_ORDER);
+ 
++	request.aligned_bytes = size;
++	if (!crucible_allocator_vm_area_reserve(&request, &origin)) {
++		crucible_allocator_vm_area_complete(&origin, NULL, false);
++		return NULL;
++	}
+ 	area = kzalloc_node(sizeof(*area), gfp_mask & GFP_RECLAIM_MASK, node);
++	crucible_allocator_vm_area_complete(&origin, area, true);
+ 	if (unlikely(!area))
+ 		return NULL;
+ 
+@@ -3247,7 +3268,9 @@
+ 
+ 	va = alloc_vmap_area(size, align, start, end, node, gfp_mask, 0, area);
+ 	if (IS_ERR(va)) {
++		crucible_allocator_vm_area_cleanup_begin(area, NULL, NULL, &closing);
+ 		kfree(area);
++		crucible_allocator_vm_area_cleanup_complete(&closing);
+ 		return NULL;
+ 	}
+ 
+@@ -3484,6 +3507,7 @@
+ void vfree(const void *addr)
+ {
+ 	struct vm_struct *vm;
++	struct crucible_vm_area_token closing;
+ 
+ 	if (unlikely(in_interrupt())) {
+ 		vfree_atomic(addr);
+@@ -3504,12 +3528,14 @@
+ 		return;
+ 	}
+ 
++	crucible_allocator_vm_area_cleanup_begin(vm, NULL, NULL, &closing);
+ 	if (unlikely(vm->flags & VM_FLUSH_RESET_PERMS))
+ 		vm_reset_perms(vm);
+ 
+ 	vm_area_free_pages(vm, 0, vm->nr_pages);
+ 	kvfree(vm->pages);
+ 	kfree(vm);
++	crucible_allocator_vm_area_cleanup_complete(&closing);
+ }
+ EXPORT_SYMBOL(vfree);
+ 
+@@ -3525,6 +3551,7 @@
+ void vunmap(const void *addr)
+ {
+ 	struct vm_struct *vm;
++	struct crucible_vm_area_token closing;
+ 
+ 	BUG_ON(in_interrupt());
+ 	might_sleep();
+@@ -3537,7 +3564,9 @@
+ 				addr);
+ 		return;
+ 	}
++	crucible_allocator_vm_area_cleanup_begin(vm, NULL, NULL, &closing);
+ 	kfree(vm);
++	crucible_allocator_vm_area_cleanup_complete(&closing);
+ }
+ EXPORT_SYMBOL(vunmap);
+ 
+@@ -3799,16 +3828,20 @@
+ {
+ 	struct vm_struct *area, *tmp;
+ 	struct llist_node *head;
++	struct crucible_vm_area_token closing;
+ 
+ 	head = llist_del_all(&pending_vm_area_cleanup);
+ 	if (!head)
+ 		return;
+ 
+ 	llist_for_each_entry_safe(area, tmp, head, llnode) {
++		crucible_allocator_vm_area_cleanup_begin(area, work,
++			cleanup_vm_area_work, &closing);
+ 		if (!area->pages)
+ 			free_vm_area(area);
+ 		else
+ 			vfree(area->addr);
++		crucible_allocator_vm_area_cleanup_complete(&closing);
+ 	}
+ }
+ 
+@@ -3819,8 +3852,15 @@
+ static DECLARE_WORK(cleanup_vm_area, cleanup_vm_area_work);
+ static void defer_vm_area_cleanup(struct vm_struct *area)
+ {
+-	if (llist_add(&area->llnode, &pending_vm_area_cleanup))
+-		schedule_work(&cleanup_vm_area);
++	struct crucible_vm_area_token publication;
++	bool empty, accepted = false;
++
++	crucible_allocator_vm_area_defer(area, &cleanup_vm_area,
++		cleanup_vm_area_work, &publication);
++	empty = llist_add(&area->llnode, &pending_vm_area_cleanup);
++	if (empty)
++		accepted = schedule_work(&cleanup_vm_area);
++	crucible_allocator_vm_area_enqueued(&publication, empty, empty, accepted);
+ }
+ 
+ /*
+@@ -4888,9 +4928,13 @@
+ void free_vm_area(struct vm_struct *area)
+ {
+ 	struct vm_struct *ret;
++	struct crucible_vm_area_token closing;
++
++	crucible_allocator_vm_area_cleanup_begin(area, NULL, NULL, &closing);
+ 	ret = remove_vm_area(area->addr);
+ 	BUG_ON(ret != area);
+ 	kfree(area);
++	crucible_allocator_vm_area_cleanup_complete(&closing);
+ }
+ EXPORT_SYMBOL_GPL(free_vm_area);
+ 

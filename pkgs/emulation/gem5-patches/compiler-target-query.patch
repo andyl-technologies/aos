@@ -1,0 +1,25 @@
+diff --git a/SConstruct b/SConstruct
+--- a/SConstruct
++++ b/SConstruct
+@@ -463,15 +463,15 @@
+ if main['GCC'] + main['CLANG'] > 1:
+     error('Two compilers enabled at once?')
+ 
+-# Find the gem5 binary target architecture (usually host architecture). The
+-# "Target: <target>" is consistent accross gcc and clang at the time of
+-# writting this.
+-bin_target_arch = readCommand([main['CXX'], '--verbose'], exception=False)
++# Query the target without entering the compile/link driver. Compiler wrappers
++# may inject linker flags, making a bare verbose invocation attempt to link a
++# program with no main function.
++bin_target_arch = readCommand([main['CXX'], '-dumpmachine'])
+ main["BIN_TARGET_ARCH"] = (
+     "x86_64"
+-    if bin_target_arch.find("Target: x86_64") != -1
++    if bin_target_arch.startswith("x86_64")
+     else "aarch64"
+-    if bin_target_arch.find("Target: aarch64") != -1
++    if bin_target_arch.startswith("aarch64")
+     else "unknown"
+ )
+ 

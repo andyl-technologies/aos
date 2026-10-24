@@ -125,23 +125,73 @@ impl BindingSearchChoice {
             return Vec::new();
         }
         (0..self.candidate_count)
-            .filter_map(|candidate_index| {
-                let semantic_tag = self.candidate_semantics.candidate(candidate_index)?.tag();
-                Some(OverrideDecision {
-                    point: SchedulingPoint {
-                        key: format!(
-                            "signal-fault/{}/{}/{}",
-                            parent_branch.to_hex(),
-                            self.id.content_hash().to_hex(),
-                            self.candidates_digest.to_hex()
-                        ),
-                    },
-                    choice: ChoiceTag {
-                        name: format!("candidate/{candidate_index}/{semantic_tag}"),
-                    },
-                })
-            })
+            .filter_map(|candidate_index| self.candidate_decision(parent_branch, candidate_index))
             .collect()
+    }
+
+    /// Materializes one finite candidate after validating the complete roster.
+    ///
+    /// Returns the same decision as indexing [`Self::override_decisions`],
+    /// without allocating decisions for the other candidates. Returns `None`
+    /// for an inconsistent roster or an out-of-range candidate index.
+    #[must_use]
+    pub fn override_decision(
+        &self,
+        parent_branch: ContentHash,
+        candidate_index: u32,
+    ) -> Option<OverrideDecision> {
+        if !self
+            .candidate_semantics
+            .is_valid_for_count(self.candidate_count)
+        {
+            return None;
+        }
+        if candidate_index >= self.candidate_count {
+            return None;
+        }
+
+        self.candidate_decision(parent_branch, candidate_index)
+    }
+
+    fn candidate_decision(
+        &self,
+        parent_branch: ContentHash,
+        candidate_index: u32,
+    ) -> Option<OverrideDecision> {
+        let candidate = self.candidate_semantics.candidate(candidate_index)?;
+        Some(Self::materialize_candidate_decision(
+            self.id,
+            self.candidates_digest,
+            parent_branch,
+            candidate_index,
+            candidate,
+        ))
+    }
+
+    // Formatting typed data is not validation or authority. Public mutable
+    // choices validate their complete roster before reaching this helper;
+    // immutable promoted owners already validated their private owned roster.
+    pub(crate) fn materialize_candidate_decision(
+        choice: SearchChoiceId,
+        candidates_digest: ContentHash,
+        parent_branch: ContentHash,
+        candidate_index: u32,
+        candidate: BindingSearchCandidate,
+    ) -> OverrideDecision {
+        let semantic_tag = candidate.tag();
+        OverrideDecision {
+            point: SchedulingPoint {
+                key: format!(
+                    "signal-fault/{}/{}/{}",
+                    parent_branch.to_hex(),
+                    choice.content_hash().to_hex(),
+                    candidates_digest.to_hex()
+                ),
+            },
+            choice: ChoiceTag {
+                name: format!("candidate/{candidate_index}/{semantic_tag}"),
+            },
+        }
     }
 }
 
@@ -295,5 +345,121 @@ mod tests {
         fields.insert(String::from("unknown"), serde_json::Value::Bool(true));
 
         assert!(serde_json::from_value::<BindingSearchCandidate>(encoded).is_err());
+    }
+
+    fn choice(semantics: BindingSearchCandidateSemantics, count: u32) -> BindingSearchChoice {
+        BindingSearchChoice {
+            id: SearchChoiceId::from_content_hash(ContentHash::from_bytes(b"choice")),
+            candidates_digest: ContentHash::from_bytes(b"candidates"),
+            candidate_count: count,
+            candidate_semantics: semantics,
+            selected_index: None,
+            overridden: false,
+        }
+    }
+
+    #[test]
+    fn indexed_override_preserves_all_typed_bulk_decisions_and_canonical_names() {
+        let parent = ContentHash::from_bytes(b"parent");
+        let candidates = vec![
+            ContentHash::from_bytes(b"first"),
+            ContentHash::from_bytes(b"second"),
+        ];
+        let choices = [
+            choice(BindingSearchCandidateSemantics::Outcome, 2),
+            choice(
+                BindingSearchCandidateSemantics::Transition(candidates.clone()),
+                2,
+            ),
+            choice(
+                BindingSearchCandidateSemantics::Parameter {
+                    parameter: MappedEffectParameter::DurationNanos,
+                    candidates,
+                },
+                2,
+            ),
+        ];
+
+        for original in choices {
+            let bulk = original.override_decisions(parent);
+            for (index, expected) in bulk.iter().enumerate() {
+                let index =
+                    u32::try_from(index).unwrap_or_else(|error| panic!("small index: {error}"));
+                let actual = original.override_decision(parent, index);
+                assert_eq!(actual.as_ref(), Some(expected));
+                assert_eq!(
+                    expected.point.key,
+                    format!(
+                        "signal-fault/{}/{}/{}",
+                        parent.to_hex(),
+                        original.id.content_hash().to_hex(),
+                        original.candidates_digest.to_hex()
+                    )
+                );
+                assert!(
+                    expected
+                        .choice
+                        .name
+                        .starts_with(&format!("candidate/{index}/"))
+                );
+            }
+            assert_eq!(original.override_decision(parent, 2), None);
+            assert_eq!(original.override_decision(parent, u32::MAX), None);
+        }
+    }
+
+    #[test]
+    fn indexed_override_revalidates_mutated_or_duplicate_rosters_before_selection() {
+        let parent = ContentHash::from_bytes(b"parent");
+        let identity = ContentHash::from_bytes(b"candidate");
+        let invalid = [
+            choice(BindingSearchCandidateSemantics::Outcome, 1),
+            choice(BindingSearchCandidateSemantics::Transition(Vec::new()), 0),
+            choice(
+                BindingSearchCandidateSemantics::Transition(vec![identity, identity]),
+                2,
+            ),
+            choice(
+                BindingSearchCandidateSemantics::Parameter {
+                    parameter: MappedEffectParameter::DurationNanos,
+                    candidates: vec![identity],
+                },
+                2,
+            ),
+        ];
+
+        for original in invalid {
+            assert!(original.override_decisions(parent).is_empty());
+            assert_eq!(original.override_decision(parent, 0), None);
+        }
+
+        let mut original = choice(
+            BindingSearchCandidateSemantics::Transition(vec![identity]),
+            1,
+        );
+        assert!(original.override_decision(parent, 0).is_some());
+        original.candidate_count = 2;
+        assert_eq!(original.override_decision(parent, 0), None);
+    }
+
+    #[test]
+    fn indexed_override_preserves_maximum_original_roster_endpoints() {
+        let parent = ContentHash::from_bytes(b"parent");
+        let candidates = (0..4095)
+            .map(|index| ContentHash::from_bytes(format!("candidate-{index}").as_bytes()))
+            .collect();
+        let original = choice(
+            BindingSearchCandidateSemantics::Transition(candidates),
+            4095,
+        );
+        let bulk = original.override_decisions(parent);
+
+        assert_eq!(bulk.len(), 4095);
+        assert_eq!(original.override_decision(parent, 0).as_ref(), bulk.first());
+        assert_eq!(
+            original.override_decision(parent, 4094).as_ref(),
+            bulk.last()
+        );
+        assert_eq!(original.override_decision(parent, 4095), None);
     }
 }

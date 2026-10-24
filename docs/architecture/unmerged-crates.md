@@ -1,14 +1,30 @@
 # Unmerged crate migration inventory
 
-The implemented base is [PR #715](https://github.com/andyl-technologies/aos/pull/715), branch
+The historical base is [PR #715](https://github.com/andyl-technologies/aos/pull/715), branch
 `dplecki/crate-monorepo`, with 77 workspace packages. Original master comparison:
-`2ee6311aea39bef7aef6ba4b566f9f502649f3f2`. This inventory classifies future packages at exact
-checked PR heads; it does not merge or modify owning PRs. The [workspace
+`2ee6311aea39bef7aef6ba4b566f9f502649f3f2`. This inventory records package
+classifications at exact checked PR heads; it does not merge or modify owning PRs. The [workspace
 design](crate-workspace.md) and [active inventory](crate-inventory.md) describe implemented
 ownership.
 
 The open-PR heads are pinned at `2026-10-09T21:52:35.570559+00:00`; later commits are outside
 this audit.
+
+## Current workspace additions
+
+The current workspace has 80 packages: the 77-package base, both #711 CNP
+packages, and the first implemented `crucible-host-resources` capability. These
+owners are present here; this does not mark the other PRs or their features as
+merged or qualified. The pinned head census and historical observations below
+remain unchanged.
+
+| Pinned proposal | Implemented package | Current scope |
+|---|---|---|
+| #711 `crucible-node-contract` | `crucible-node-format` | Portable CNP data and validation under `crates/crucible/crucible-node-format`. |
+| #711 `crucible-node-provider` | `crucible-node-transport` | Host process transport and request custody under `crates/crucible/crucible-node-transport`. |
+| #696 planned host-resource owner | `crucible-host-resources` | Original Linux descriptor read leases and isolated notification custody under `crates/crucible/crucible-host-resources`; no RAM/budget/supervision extension is implied. |
+
+## Pinned PR-head census
 
 | PR | Audited head | Added top-level / fixture crates | Ownership |
 |---|---|---|---|
@@ -22,10 +38,12 @@ this audit.
 | [#231](https://github.com/andyl-technologies/aos/pull/231) | `69cc082e8c1b7be564556a4ef2d4c70fb9c67b78` | 0 / 0 | Darwin tooling |
 | [#716](https://github.com/andyl-technologies/aos/pull/716) | `a048a32b44f7a6652a02944d82bd1ae03e3115ef` | 5 / 0 | Dispatch assignment SDK/runtime/conformance |
 
-Future names below are proposed for code outside the base workspace. Generic journal,
-descriptor and SQLite promotion require API review; base extractions are already implemented.
+Names below classify code at the pinned snapshot. The two #711 mappings are now
+implemented as recorded above; the remaining proposed packages are outside the
+current workspace. Generic journal, descriptor and SQLite promotion still require
+API review.
 
-## Proposed names for added packages
+## Proposed names for added packages at the pinned snapshot
 
 | PR | Current package | Proposed full package name | Proposed directory |
 |---|---|---|---|
@@ -33,7 +51,7 @@ descriptor and SQLite promotion require API review; base extractions are already
 | #713 | `aos-assessment-providers` | `aos-package-assessment-sources` | `crates/maintenance/aos-package-assessment-sources` |
 | #713 | `aos-assessment-runtime` | `aos-package-assessment-coordinator` | `crates/maintenance/aos-package-assessment-coordinator` |
 | #711 | `crucible-node-contract` | `crucible-node-format` | `crates/crucible/crucible-node-format` |
-| #711 | `crucible-node-provider` | `crucible-node-transport` | `crates/crucible/host/crucible-node-transport` |
+| #711 | `crucible-node-provider` | `crucible-node-transport` | `crates/crucible/crucible-node-transport` |
 | #696 | `crucible-ram` | `crucible-ram` | `crates/crucible/crucible-ram` |
 | #696 | `crucible-sqlite-heap` | `crucible-sqlite-heap` | `crates/crucible/crucible-sqlite-heap` |
 | #420 | `aos-terrane` | `aos-terrane-integration` | `crates/terrane/integration/aos-terrane-integration` |
@@ -125,17 +143,18 @@ domain admission, custody and evidence authority. The scratch bundle records the
 late head, committed source hashes and new exports. This is source review only,
 with no owning-branch build/test claim or addition to the 77-member base.
 
-## Additional required future extractions
+## Additional required future work
 
 | Owning PR | Package | Directory | Responsibility |
 |---|---|---|---|
 | #232 | `aos-sandbox-api` | `crates/sandbox/protocol/aos-sandbox-api` | Generated public/local/shared coordinator message data from `api/proto/` |
-| #696 | `crucible-host-resources` | `crates/crucible/host/crucible-host-resources` | Crucible-specific host budgets, supervision, RAM placement and measurement controls, separate from generic quota mechanics |
+| #696 | `crucible-host-resources` | `crates/crucible/crucible-host-resources` | Extend the existing read-lease owner with separately reviewed Crucible host budgets, supervision, RAM placement and measurement controls; do not create another crate or promote them into generic quota mechanics |
 
 ## Required cross-PR boundaries
 
 - #696: `aos-linux-project-quota` stays generic; new supervision/RAM policy/measurement
-  authority belongs in separate `crucible-host-resources`.
+  authority extends the existing `crucible-host-resources` owner; its current
+  read-lease capability does not implement or authorize those future operations.
 - #232: generated sandbox data belongs in distinct `aos-sandbox-api` sourced from `api/proto/`;
   `aos-build-api` is not a universal API umbrella.
 - #232: review generic Linux descriptor extraction so `aos-systemd-client` does not depend on
@@ -162,17 +181,20 @@ owner tests.
 
 Static inventory only. No owning checkout was edited and no PR-branch build/test claims are
 made. Owning branches must rebase and run local hermetic builds plus project-specific
-integration, portability and process/license gates after migration. Base names and exported
-namespaces were verified against the actual 77-member workspace. Future package moves and
-shared-library promotions remain work for owning branches.
+integration, portability and process/license gates after migration. At the pinned audit,
+base names and exported namespaces were verified against its 77-member workspace.
+The current 80-member ownership is recorded above; it does not upgrade those
+historical validation claims. Remaining package moves and shared-library promotions
+remain work for owning branches.
 
 ## Implemented exported namespaces and schema reuse
 
 The implemented base is PR [#715](https://github.com/andyl-technologies/aos/pull/715), branch
-`dplecki/crate-monorepo`. Its current workspace has 77 packages. The authoritative design is
-`docs/architecture/crate-workspace.md`, and active paths are in
+`dplecki/crate-monorepo`. The table records that 77-package base snapshot; the
+current workspace additions above bring ownership to 80 packages. The authoritative
+design is `docs/architecture/crate-workspace.md`, and active paths are in
 `docs/architecture/crate-inventory.md`. The table below describes implemented packages. Future
-packages in this inventory remain work for their owning PRs.
+packages still proposed in this inventory remain work for their owning PRs.
 
 | Former ownership | Current dependency / namespace |
 |---|---|

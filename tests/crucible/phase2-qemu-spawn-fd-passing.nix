@@ -35,7 +35,7 @@
     failuresFor "docs/rfcs/0010-crucible/10-qemu-integration.md" qemuSpec [
       {
         label = "T-QEMU-7 completion note names Linux spawn adapter";
-        needle = "Linux-only `crucible-qemu` spawn adapter";
+        needle = "Linux-only `crucible-qemu-host` spawn adapter";
       }
       {
         label = "T-QEMU-7 completion note names fixed child fds";

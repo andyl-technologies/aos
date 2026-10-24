@@ -6,25 +6,27 @@
 
 use crucible_control_api::LifecycleApiError;
 use crucible_control_server::debug_gateway::DebugGatewayProcess;
+#[cfg(test)]
+use crucible_engine::SchedulerState;
 use crucible_engine::model::{
     FaultCoordinate, FaultResourceLimits, HostFaultAdapterManifests,
     OwnedDagSignalArtifactProvider, ResolvedEffectTrace, SignalArtifactProvider,
     SignalBoundarySnapshot,
 };
+#[cfg(test)]
+use crucible_engine::{Action, AssertionPhase};
 use crucible_engine::{
-    Action, AssertionPhase, BackendQuantumLoop, BlackBoxHostOracle, Checkpoint, CheckpointKind,
-    CheckpointTerminalCause, ConditionEvaluationPass, ConditionLeaf, Configuration, ContentHash,
-    ControlOperation, DagStore, DebugGdbEndpoint, DebugRetiredWorldCleanup,
-    DebugRuntimeRepositionReport, DebugRuntimeRepositionRequest, Decision, EventFirings,
-    EventGraph, EventGraphState, EventLogOffset, ExecutionFingerprint, FingerprintSample,
-    GdbAttachInfo, GdbListen, HostAssertionEvaluator, HostAssertionEvaluatorCheckpoint,
-    HostAssertionOutcome, HostAssertionOutcomeKind, Icount, NodeId, NodeLifecycle, ObservableEvent,
-    QuantumLoop, QuantumOutcome, QuantumRequest, QuantumTerminalVerdict, RuntimeState, ScenarioDef,
-    ScenarioDefForm, Schedule, SchedulerError, SchedulerEventLogAppend, SchedulerEventLogEntry,
-    SchedulerLivenessScenario, SchedulerNodeActivity, SchedulerQuiescence, SchedulerState,
-    SearchFrontierChoices, Seed, SelectionDecision, SignalFaultCampaignReplayPlan, SimDuration,
-    SimInstant, SimulationBackend, SingleScheduler, SingleSchedulerCheckpoint, VirtualTime,
-    VmArchitecture, World, WorldIoNodeKind,
+    BackendQuantumLoop, BlackBoxHostOracle, Checkpoint, CheckpointKind, CheckpointTerminalCause,
+    Configuration, ContentHash, ControlOperation, DagStore, DebugGdbEndpoint,
+    DebugRetiredWorldCleanup, DebugRuntimeRepositionReport, DebugRuntimeRepositionRequest,
+    Decision, EventGraph, EventGraphState, EventLogOffset, ExecutionFingerprint, FingerprintSample,
+    GdbAttachInfo, GdbListen, HostAssertionEvaluator, HostAssertionEvaluatorCheckpoint, Icount,
+    NodeId, NodeLifecycle, ObservableEvent, QuantumLoop, QuantumOutcome, QuantumRequest,
+    QuantumTerminalVerdict, RuntimeState, ScenarioDef, ScenarioDefForm, Schedule, SchedulerError,
+    SchedulerEventLogAppend, SchedulerEventLogEntry, SchedulerLivenessScenario,
+    SchedulerNodeActivity, SchedulerQuiescence, SearchFrontierChoices, Seed, SelectionDecision,
+    SignalFaultCampaignReplayPlan, SimDuration, SimInstant, SimulationBackend, SingleScheduler,
+    SingleSchedulerCheckpoint, VirtualTime, VmArchitecture, World, WorldIoNodeKind,
 };
 pub use crucible_qemu_host::{
     BoundedSchedulerPreemptionEvidence, BoundedSchedulerPreemptionEvidenceSnapshot,
@@ -54,6 +56,7 @@ use quantum_loop::{
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write as _;
+#[cfg(test)]
 use std::net::SocketAddr;
 #[cfg(target_os = "linux")]
 use std::path::{Path, PathBuf};
@@ -118,8 +121,6 @@ const DEFAULT_RUN_CEILING_TICKS: u64 = 16_000_000;
 const DEFAULT_QUANTUM_BUDGET: u64 = 4_096;
 /// Per-direction shared-memory frame capacity for production VM nodes.
 const PRODUCTION_QUEUE_CAPACITY: u32 = 1_024;
-/// Maximum number of trigger batches admitted at one scheduler boundary.
-const MAX_TRIGGER_SETTLE_BATCHES: usize = 1_024;
 
 // Packaged execution captures baked genesis before its first modeled quantum,
 // while the guest catalog is still exactly cold. Both lifecycle and event-log
@@ -330,18 +331,7 @@ fn production_fault_search_overrides(
     Ok(overrides)
 }
 
-/// Original live-execution evidence sampled at one scheduler boundary.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct ProductionVmDebugRuntimeEvidence {
-    configuration: ContentHash,
-    event_log: EventLogOffset,
-    scheduler: SchedulerState,
-    node_icounts: BTreeMap<NodeId, Icount>,
-    node_times: BTreeMap<NodeId, VirtualTime>,
-    fingerprints: BTreeMap<NodeId, FingerprintSample>,
-    graph_runtimes: Vec<RuntimeState>,
-    runtime: Option<RuntimeState>,
-}
+use crate::node_lifecycle::RecordedDebugBoundary as ProductionVmDebugRuntimeEvidence;
 
 #[derive(Debug)]
 struct ProductionVmExactCheckpointTarget {

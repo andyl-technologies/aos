@@ -82,16 +82,16 @@ fn sampled_search_offset_localizes_bisection_sequence() -> Result<(), EngineErro
     let node = NodeId {
         name: String::from("sampled-offset-node"),
     };
-    let world = World::from_nodes(vec![WorldNode {
+    let world = World::from_nodes(vec![ComputeNodeDef {
         id: node.clone(),
-        arch: NodeTemplate::DEFAULT_ARCH,
-        memory_mib: NodeTemplate::DEFAULT_MEMORY_MIB,
+        arch: ComputeNodeTemplate::DEFAULT_ARCH,
+        memory_mib: ComputeNodeTemplate::DEFAULT_MEMORY_MIB,
         cmdline: String::from("sampled-search-offset"),
         ready_point: ReadyPoint::FixedIcount {
             icount: Icount { retired: 222 },
         },
         white_box: WhiteBoxPolicy::Disabled,
-        smp_vcpus: NodeTemplate::DEFAULT_SMP_VCPUS,
+        smp_vcpus: ComputeNodeTemplate::DEFAULT_SMP_VCPUS,
         kernel: None,
         root_image: None,
         initrd: None,

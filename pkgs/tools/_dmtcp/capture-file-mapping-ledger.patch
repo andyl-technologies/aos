@@ -1,0 +1,88 @@
+--- a/include/dmtcp.h
++++ b/include/dmtcp.h
+@@ -505,6 +505,11 @@
+ int dmtcp_crucible_checkpoint_fd(int index, uint64_t *address,
+                                void *bytes, size_t capacity);
+ int dmtcp_crucible_checkpoint_map_count(void);
++int dmtcp_crucible_checkpoint_file_map_count(void);
++/* 5224-byte private receipt: original Area prefix, saved path[4096],
++ * checkpointed flag and the temporary mapping descriptor. The receipt is part of the captured process image. */
++int dmtcp_crucible_checkpoint_file_map(int index, uint64_t *address,
++                                     void *bytes, size_t capacity);
+ /* Returns the 1112-byte meaningful native Area prefix (all fields and name),
+  * excluding the union's non-semantic padding. Captured coordinates are private.
+  */
+--- a/src/plugin/ipc/file/fileconnlist.cpp
++++ b/src/plugin/ipc/file/fileconnlist.cpp
+@@ -83,6 +83,38 @@
+ static FileConnList *fileConnList = NULL;
+ static FileConnList *vfork_fileConnList = NULL;
+ 
++// These fixed records bind the real pre-transform file mapping to the saved
++// FileConnection copy. They are filled before the writer captures any bytes.
++struct CrucibleFileMapReceipt {
++  unsigned char original[1112];
++  char supplementary[4096];
++  uint64_t checkpointed;
++  uint64_t transient_fd;
++};
++static_assert(sizeof(CrucibleFileMapReceipt) == 5224, "receipt ABI changed");
++static CrucibleFileMapReceipt crucibleFileMaps[1024];
++static int crucibleFileMapCount = -1;
++
++extern "C" int
++dmtcp_crucible_checkpoint_file_map_count(void)
++{
++  return crucibleFileMapCount;
++}
++
++extern "C" int
++dmtcp_crucible_checkpoint_file_map(int index, uint64_t *address,
++                                 void *bytes, size_t capacity)
++{
++  if (index < 0 || index >= crucibleFileMapCount || !address || !bytes ||
++      capacity < sizeof(CrucibleFileMapReceipt)) {
++    return -1;
++  }
++  const auto &record = crucibleFileMaps[index];
++  *address = (uint64_t)&record;
++  memcpy(bytes, &record, sizeof(record));
++  return sizeof(record);
++}
++
+ void
+ dmtcp_FileConnList_EventHook(DmtcpEvent_t event, DmtcpEventData_t *data)
+ {
+@@ -308,6 +340,23 @@
+ {
+   ConnectionList::preCkpt();
+ 
++  JASSERT(shmAreas.size() == shmAreaConn.size());
++  JASSERT(shmAreas.size() <= 1024);
++  for (size_t index = 0; index < shmAreas.size(); ++index) {
++    auto &record = crucibleFileMaps[index];
++    memcpy(record.original, &shmAreas[index], sizeof(record.original));
++    // The FileConnection's native saved path is known only after preCkpt.
++    string savedPath = shmAreaConn[index]->savedFilePath();
++    JASSERT(savedPath.size() < sizeof(record.supplementary));
++    memcpy(record.supplementary, savedPath.c_str(), savedPath.size() + 1);
++    record.checkpointed = shmAreaConn[index]->checkpointed() ? 1 : 0;
++    JASSERT(shmAreaConn[index]->getFds().size() == 1);
++    int descriptor = shmAreaConn[index]->getFds()[0];
++    JASSERT(descriptor >= 0);
++    record.transient_fd = descriptor;
++  }
++  crucibleFileMapCount = shmAreas.size();
++
+   string fdInfoFile = dmtcp_get_ckpt_files_subdir();
+   fdInfoFile += "/fd-info.txt";
+   int tmpfd = _real_open(fdInfoFile.c_str(),
+@@ -387,6 +436,8 @@
+   ProcSelfMaps procSelfMaps;
+   ProcMapsArea area;
+ 
++  crucibleFileMapCount = -1;
++  memset(crucibleFileMaps, 0, sizeof(crucibleFileMaps));
+   shmAreas.clear();
+   unlinkedShmAreas.clear();
+   missingUnlinkedShmFiles.clear();

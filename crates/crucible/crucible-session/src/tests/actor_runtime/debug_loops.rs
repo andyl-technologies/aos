@@ -53,7 +53,7 @@ impl QuantumLoop for DebugGdbLoop {
         &mut self,
         request: DebugRuntimeRepositionRequest,
     ) -> Result<crucible_engine::DebugRuntimeRepositionReport, SchedulerError> {
-        let next_endpoint = if request.current_qemu_gdbstub.as_str().ends_with(":9001") {
+        let next_endpoint = if request.current_backend_gdbstub.as_str().ends_with(":9001") {
             "tcp:127.0.0.1:9002"
         } else {
             "tcp:127.0.0.1:9001"

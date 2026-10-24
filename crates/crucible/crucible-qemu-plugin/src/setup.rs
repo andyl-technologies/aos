@@ -29,7 +29,8 @@ use crucible_qemu_protocol::{
 #[cfg(unix)]
 use crucible_qemu_shmem::{
     HotForkChildMappingInstallError, MappedSetupRegion, RegionLayout, RegionSetupValidationError,
-    SetupRegionBackingIdentity, SetupRegionMapError, ValidatedSetupRegion, mmap_setup_region,
+    RetainedWholeMapping, SetupRegionBackingIdentity, SetupRegionMapError, SharedOwnedSetupMapping,
+    SharedSetupMappingReadGuard, ValidatedSetupRegion, WholeMappingCustodyError, mmap_setup_region,
 };
 
 #[cfg(unix)]
@@ -41,7 +42,11 @@ use crate::{
 #[cfg(unix)]
 mod boot_barrier;
 #[cfg(unix)]
+mod whole_setup;
+#[cfg(unix)]
 pub use boot_barrier::PluginSetupBootBarrierError;
+#[cfg(unix)]
+pub(crate) use whole_setup::prepare_selected_setup_completion;
 #[cfg(unix)]
 mod failure_ack;
 #[cfg(unix)]
@@ -51,7 +56,28 @@ pub use failure_ack::{PluginSetupFailureStage, send_callback_registration_failur
 #[cfg(unix)]
 #[derive(Debug)]
 pub struct ArmedWakeFd {
-    fd: OwnedFd,
+    fd: WakeDescriptorCustody,
+}
+
+#[cfg(unix)]
+#[derive(Debug)]
+enum WakeDescriptorCustody {
+    Ordinary(OwnedFd),
+    Selected {
+        raw: RawFd,
+        _original_socket:
+            std::sync::Arc<crate::runtime::whole_original_socket::OriginalWholeSocket>,
+    },
+}
+
+#[cfg(unix)]
+impl WakeDescriptorCustody {
+    fn as_raw_fd(&self) -> RawFd {
+        match self {
+            Self::Ordinary(fd) => fd.as_raw_fd(),
+            Self::Selected { raw, .. } => *raw,
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -75,7 +101,9 @@ impl ArmedWakeFd {
         set_close_on_exec(fd.as_raw_fd())?;
         set_nonblocking(fd.as_raw_fd())?;
         validate_wake_descriptor(fd.as_raw_fd())?;
-        Ok(Self { fd })
+        Ok(Self {
+            fd: WakeDescriptorCustody::Ordinary(fd),
+        })
     }
 
     /// Returns the raw descriptor number for QEMU registration.
@@ -156,7 +184,8 @@ impl RegisteredWakeFd {
 /// keep it for the plugin process lifetime before any callback touches shmem.
 #[cfg(unix)]
 pub struct PluginSetupCompletion {
-    mapped_region: MappedSetupRegion,
+    mapped_region: SharedOwnedSetupMapping,
+    original_mapping_geometry: (usize, u64),
     validated_region: ValidatedSetupRegion,
     validated_layout: RegionLayout,
     shared_memory_device: u64,
@@ -164,20 +193,224 @@ pub struct PluginSetupCompletion {
     wake_fd: ArmedWakeFd,
     app_random_branch_plan: AppRandomBranchPlan,
     selectable_catalog_plan: Option<SelectableCatalogPlan>,
+    whole_constructor:
+        Option<crucible_qemu_protocol::whole_control::staged::selection::WholeConstructorSelection>,
+    original_setup_body: Box<[u8]>,
+    original_setup_fd: whole_setup::RetainedSetupDescriptor,
     registered_wake_fd: Option<RegisteredWakeFd>,
 }
 
 #[cfg(unix)]
 impl PluginSetupCompletion {
-    /// Returns the mapped shared-memory region.
+    /// Borrows the complete original sealed descriptor body retained before installation.
     #[must_use]
-    pub const fn mapped_region(&self) -> &MappedSetupRegion {
-        &self.mapped_region
+    pub fn original_setup_body(&self) -> &[u8] {
+        &self.original_setup_body
     }
 
-    /// Returns mutable access to the owned mapping for disjoint typed views.
-    pub(crate) fn mapped_region_mut(&mut self) -> &mut MappedSetupRegion {
-        &mut self.mapped_region
+    /// Borrows the same original sealed descriptor received through setup handover.
+    ///
+    /// # Errors
+    /// Refuses a selected descriptor outside its original process or journal.
+    pub fn original_setup_fd(&self) -> Result<BorrowedFd<'_>, PluginSetupError> {
+        self.original_setup_fd.borrow()
+    }
+
+    /// Borrows the explicitly selected staged constructor and all logical names.
+    ///
+    /// Names and encoded limits grant no physical queue or native readiness.
+    #[must_use]
+    pub fn whole_constructor(
+        &self,
+    ) -> Option<&crucible_qemu_protocol::whole_control::staged::selection::WholeConstructorSelection>
+    {
+        self.whole_constructor.as_ref()
+    }
+    /// Returns original scalar geometry without touching an absent child VMA.
+    ///
+    /// Native fork-plan checks use these immutable coordinates before source
+    /// replacement. They grant no mapping ownership, epoch or readiness.
+    pub(crate) const fn original_mapping_geometry(&self) -> (usize, u64) {
+        self.original_mapping_geometry
+    }
+
+    /// Borrows the current process's original mapping under a short guard.
+    ///
+    /// The guard ends before returning to native code. References obtained
+    /// through it cannot escape into another callback or mutable service loan.
+    ///
+    /// # Errors
+    /// Refuses foreign, busy, poisoned or unregistered mapping ownership.
+    pub fn mapped_region(
+        &self,
+    ) -> Result<SharedSetupMappingReadGuard<'_>, WholeMappingCustodyError> {
+        self.mapped_region.mapping()
+    }
+
+    /// Borrows the initial ordinary mapping before callback registration.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign, selected, poisoned or nonunique initial ownership.
+    pub(crate) fn mapped_region_mut(
+        &mut self,
+    ) -> Result<&mut MappedSetupRegion, WholeMappingCustodyError> {
+        self.mapped_region.ordinary_mapping_mut()
+    }
+
+    /// Borrows immutable mapping facts without retaining a guard across callbacks.
+    ///
+    /// The closure performs Rust observations only and does not reenter native
+    /// code. Native getter calls precede this short mapping observation.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign or unavailable current mapping ownership.
+    pub(crate) fn with_mapped_region<T>(
+        &self,
+        read: impl FnOnce(&MappedSetupRegion) -> T,
+    ) -> Result<T, WholeMappingCustodyError> {
+        let mapping = self.mapped_region()?;
+        Ok(read(&mapping))
+    }
+
+    /// Returns the current actual mapping identity after PID authentication.
+    ///
+    /// This identity may differ from the immutable setup-time identity after
+    /// a genuine fork replacement. No source readiness follows from identity.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign or unavailable current mapping ownership.
+    pub(crate) fn current_backing_identity(
+        &self,
+    ) -> Result<SetupRegionBackingIdentity, WholeMappingCustodyError> {
+        self.with_mapped_region(MappedSetupRegion::backing_identity)
+    }
+
+    /// Reserves original owning retention before native constructor effects.
+    ///
+    /// The issuer calls this before registering or entering native SourceHOLD.
+    /// Failure stops that construction; it cannot fall back to ordinary IO.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign, failed, busy, poisoned or exhausted original retention.
+    pub(crate) fn prepare_whole_mapping_intent_retention(
+        &self,
+    ) -> Result<(), crucible_qemu_shmem::WholeMappingCustodyError> {
+        self.mapped_region.prepare_whole_intent_retention()
+    }
+
+    /// Lends restricted original ring construction for authenticated stopped RR.
+    ///
+    /// Native permission must be captured before calling this method. The
+    /// closure performs only Rust construction; no borrow or guard may cross a
+    /// native setter, binding, HOLD or service callback. The view never exposes
+    /// mutable ownership of the mapping itself or permits its replacement.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign, unprepared, failed, selected, busy or shared ownership.
+    /// Current-generation refusal retains the same prepared mapping ticket.
+    pub(crate) fn with_whole_ordinary_preparation<T, E>(
+        &self,
+        construct: impl FnOnce(&mut crucible_qemu_shmem::OrdinaryPreparationView<'_>) -> Result<T, E>,
+    ) -> Result<Result<T, E>, WholeMappingCustodyError> {
+        self.mapped_region.with_ordinary_preparation(construct)
+    }
+
+    /// Holds the same six source-prepared directed headers without releasing them.
+    ///
+    /// The caller authenticates the distinct native HOLD getter and original
+    /// status destination before entry. This short Rust loan returns only
+    /// mapped ring/exclusion facts; it does not create an epoch or native grant.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign, changed, busy, repeated or incomplete original custody.
+    /// Partial failure retains the armed mapping ticket and closed alias fence.
+    pub(crate) fn hold_whole_prepared_directed_rings(
+        &self,
+        roster: &mut crucible_qemu_shmem::PreparedDirectedRingRoster,
+    ) -> Result<
+        crucible_qemu_shmem::PreparedDirectedRingHoldSnapshot,
+        crucible_qemu_shmem::PreparedDirectedRingHoldError,
+    > {
+        self.mapped_region.hold_prepared_directed_rings(roster)
+    }
+
+    /// Fences ordinary aliases before observing the real native constructor.
+    ///
+    /// The literal source callback establishes native HOLD first, then calls
+    /// this before fallible getter observation. No Rust guard remains held
+    /// when the native getter is invoked, and no readiness is inferred.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign or unavailable ownership and existing ordinary loans.
+    /// Refusal keeps the same original mapping intent-fenced.
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )]
+    pub(crate) fn begin_whole_mapping_intent(&self) -> Result<(), WholeMappingCustodyError> {
+        self.mapped_region.begin_whole_intent()
+    }
+
+    /// Cancels local scope custody before any native failure is returned.
+    ///
+    /// The mandatory native refusal callback and every getter, body or
+    /// currentness failure invoke this without borrowing mapped memory or
+    /// entering an ownership mutex. It preserves original HELD ownership and
+    /// history; native retirement, ACK consumption and release remain absent.
+    pub(crate) fn refuse_whole_mapping_control(&self) {
+        self.mapped_region.refuse_whole_control();
+    }
+
+    /// Adopts the native constructor's exact original mapping and role roster.
+    ///
+    /// The real native getter, constructor receipt and registered handles must
+    /// authenticate epoch, capacity and offsets before calling this method.
+    /// Its one guard installs sticky selection and the exact restricted roster
+    /// before returning; local success establishes no native readiness.
+    ///
+    /// # Errors
+    ///
+    /// Returns sticky selection or exact original-header roster refusal.
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )]
+    pub(crate) fn select_whole_mapping_roster_bounded(
+        &self,
+        epoch: u64,
+        operation_capacity: u64,
+        header_offsets: &[u64],
+    ) -> Result<(), WholeMappingCustodyError> {
+        self.mapped_region
+            .select_whole_roster_bounded(epoch, operation_capacity, header_offsets)
+    }
+
+    /// Borrows the same selected mapping for one authenticated Rust callback.
+    ///
+    /// Native currentness is checked before entering this short guard. The
+    /// closure makes no calls back into C, and no mapping reference escapes.
+    /// Separate begin and end callbacks retain only the finite TLS permit.
+    ///
+    /// # Errors
+    ///
+    /// Refuses foreign or unavailable selected custody, or retains the
+    /// callback's original error without inferring native retirement.
+    #[expect(
+        dead_code,
+        reason = "The Preparing-only controller keeps genuine source adoption and execution closed."
+    )]
+    pub(crate) fn with_selected_whole_mapping<T, E>(
+        &self,
+        callback: impl FnOnce(&mut RetainedWholeMapping) -> Result<T, E>,
+    ) -> Result<Result<T, E>, WholeMappingCustodyError> {
+        self.mapped_region.with_selected(callback)
     }
 
     /// Returns the validated setup region header token.
@@ -192,13 +425,13 @@ impl PluginSetupCompletion {
         self.validated_layout
     }
 
-    /// Returns the backing object's stable device number captured before mmap.
+    /// Returns the immutable setup-time backing device number.
     #[must_use]
     pub const fn shared_memory_device(&self) -> u64 {
         self.shared_memory_device
     }
 
-    /// Returns the backing object's nonzero inode captured before mmap.
+    /// Returns the immutable setup-time backing inode.
     #[must_use]
     pub const fn shared_memory_inode(&self) -> u64 {
         self.shared_memory_inode
@@ -246,7 +479,7 @@ impl PluginSetupCompletion {
     /// identity authentication fails, the replacement header is invalid, or
     /// its validated setup contract differs from the template contract.
     pub(crate) fn install_hot_fork_child_mapping(
-        &mut self,
+        &self,
         fd: BorrowedFd<'_>,
         expected: SetupRegionBackingIdentity,
     ) -> Result<(), PluginSetupChildMappingError> {
@@ -254,19 +487,17 @@ impl PluginSetupCompletion {
             .install_hot_fork_child_mapping(fd, expected)
             .map_err(|source| PluginSetupChildMappingError::Install { source })?;
 
-        let actual_region = PluginShmemOrdering::validate_setup_header(&self.mapped_region)
+        let mapping = self
+            .mapped_region()
+            .map_err(|source| PluginSetupChildMappingError::MappingCustody { source })?;
+        let actual_region = PluginShmemOrdering::validate_setup_header(&mapping)
             .map_err(|source| PluginSetupChildMappingError::Validate { source })?;
-        let actual_layout = self
-            .mapped_region
+        let actual_layout = mapping
             .layout()
             .map_err(|source| PluginSetupChildMappingError::Validate { source })?;
         if actual_region != self.validated_region || actual_layout != self.validated_layout {
             return Err(PluginSetupChildMappingError::ContractMismatch);
         }
-
-        let identity = self.mapped_region.backing_identity();
-        self.shared_memory_device = identity.device();
-        self.shared_memory_inode = identity.inode();
         Ok(())
     }
 }
@@ -275,6 +506,12 @@ impl PluginSetupCompletion {
 #[cfg(unix)]
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub(crate) enum PluginSetupChildMappingError {
+    /// Selected mapping custody refuses ordinary child replacement.
+    #[error("fork-child setup mapping custody refused installation: {source}")]
+    MappingCustody {
+        /// Original selected or nonunique owner refusal.
+        source: WholeMappingCustodyError,
+    },
     /// Exact-address mapping or backing-identity authentication failed.
     #[error("fork-child setup mapping installation failed")]
     Install {
@@ -432,7 +669,8 @@ where
         }
     };
     Ok(PluginSetupCompletion {
-        mapped_region,
+        original_mapping_geometry: (mapped_region.mapping_start(), mapped_region.region_len()),
+        mapped_region: SharedOwnedSetupMapping::new(mapped_region),
         validated_region,
         validated_layout,
         shared_memory_device,
@@ -440,6 +678,11 @@ where
         wake_fd,
         app_random_branch_plan: decoded_plans.app_random_branch_plan,
         selectable_catalog_plan: decoded_plans.selectable_catalog_plan,
+        whole_constructor: decoded_plans.whole_constructor,
+        original_setup_body: decoded_plans.original_setup_body,
+        original_setup_fd: whole_setup::RetainedSetupDescriptor::Ordinary(
+            decoded_plans.original_setup_fd,
+        ),
         registered_wake_fd: None,
     })
 }
@@ -470,6 +713,10 @@ fn shared_memory_identity(fd: BorrowedFd<'_>) -> Result<(u64, u64), i32> {
 struct DecodedPluginSetupPlans {
     app_random_branch_plan: AppRandomBranchPlan,
     selectable_catalog_plan: Option<SelectableCatalogPlan>,
+    whole_constructor:
+        Option<crucible_qemu_protocol::whole_control::staged::selection::WholeConstructorSelection>,
+    original_setup_body: Box<[u8]>,
+    original_setup_fd: OwnedFd,
 }
 
 #[cfg(target_os = "linux")]
@@ -569,10 +816,13 @@ fn read_plugin_setup_plan(
     }
     let plan = PluginSetupPlan::decode(&bytes)
         .map_err(|source| PluginSetupPlanDescriptorError::DecodeComposite { source })?;
-    let (app_random_branch_plan, selectable_catalog_plan) = plan.into_parts();
+    let (app_random_branch_plan, selectable_catalog_plan, whole_constructor) = plan.into_parts();
     Ok(DecodedPluginSetupPlans {
         app_random_branch_plan,
         selectable_catalog_plan: Some(selectable_catalog_plan),
+        whole_constructor,
+        original_setup_body: bytes.into_boxed_slice(),
+        original_setup_fd: fd,
     })
 }
 
@@ -816,7 +1066,7 @@ pub(crate) fn test_plugin_setup_plan_fd() -> OwnedFd {
 }
 
 #[cfg(all(test, target_os = "linux"))]
-fn test_sealed_setup_plan_fd(bytes: &[u8]) -> OwnedFd {
+pub(crate) fn test_sealed_setup_plan_fd(bytes: &[u8]) -> OwnedFd {
     use std::os::fd::FromRawFd;
 
     let name = c"crucible-test-plugin-setup-plan";
@@ -949,6 +1199,16 @@ pub enum WakeFdSignalError {
 #[cfg(unix)]
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum PluginSetupError {
+    /// The selected original socket/SCM journal cannot lend its original FD.
+    #[error("selected original setup descriptor custody is unavailable")]
+    SelectedDescriptorUnavailable,
+    /// The source refused the same early descriptor at late installation.
+    #[error("native source refused original selected setup with status {status}")]
+    SelectedNativeAuthentication {
+        /// Original native rejection status.
+        status: i32,
+    },
+
     /// Receiving the setup frame and descriptors failed.
     #[error("receiving setup descriptors failed")]
     ReceiveSetup {

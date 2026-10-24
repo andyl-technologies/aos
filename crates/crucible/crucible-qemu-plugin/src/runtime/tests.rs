@@ -410,7 +410,11 @@ fn wait_until_callback_admission_closed(quiescence: &LiveCallbackQuiescence) {
     panic!("teardown worker did not close callback admission");
 }
 
-fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStream>) {
+/// Creates an actual paired RUN lifecycle for sibling retention tests.
+///
+/// # Panics
+/// Panics when the test socket pair or original setup handshake fails.
+pub(super) fn running_plugin_control_pair() -> (UnixStream, ControlLifecycleStream<UnixStream>) {
     let (mut host, plugin_socket) = UnixStream::pair()
         .unwrap_or_else(|error| panic!("control socket pair should open: {error}"));
     let mut plugin = ControlLifecycleStream::connected_unix_stream(plugin_socket)
@@ -1036,9 +1040,15 @@ fn live_install_retains_active_state_only_after_complete_ordered_sequence() {
             ..exact_endpoint_plan
         }
     ));
-    let source_mapping_start =
-        u64::try_from(runtime._callbacks.setup().mapped_region().mapping_start())
-            .unwrap_or_else(|error| panic!("mapping start should fit the fixed ABI: {error}"));
+    let source_mapping_start = u64::try_from(
+        runtime
+            ._callbacks
+            .setup()
+            .mapped_region()
+            .unwrap_or_else(|error| panic!("current original setup mapping: {error}"))
+            .mapping_start(),
+    )
+    .unwrap_or_else(|error| panic!("mapping start should fit the fixed ABI: {error}"));
     let exact_mapping_plan = crate::QemuPluginHotForkChildPlan {
         shmem_length: length,
         source_mapping_start,

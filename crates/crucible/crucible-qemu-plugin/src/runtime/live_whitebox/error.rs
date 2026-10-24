@@ -24,6 +24,12 @@ pub(super) fn write_stderr(bytes: &[u8]) -> std::io::Result<()> {
 /// Reports a failure at the live QEMU white-box ABI boundary.
 #[derive(Debug, Error)]
 pub enum LiveWhiteboxError {
+    /// The original mapping cannot admit ordinary callback view construction.
+    #[error("original setup mapping custody refused callback construction: {source}")]
+    MappingCustody {
+        /// Original local ownership refusal.
+        source: crucible_qemu_shmem::WholeMappingCustodyError,
+    },
     /// The host did not provide the architecture's collision-free attestation.
     #[error("live white-box registration requires a matching architecture setup attestation")]
     SetupAttestationMissing,

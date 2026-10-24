@@ -1,0 +1,99 @@
+//! Compares prospective geometry with independent actual closed wire constructors.
+//!
+//! Fixtures construct inert wire DATA only, never an opaque Initial or Recipe.
+
+use super::*;
+use crate::reference_packet::service::complete_restore::import18::inert_bootstrap_fixtures;
+use serde_json::json;
+
+#[test]
+fn prospective_actual_fields_cover_each_native_parser_axis_and_future_decimal_width() {
+    for reactive in [false, true] {
+        for length in [1, 2, 3, 32, 2049] {
+            for (decimal, mut recipe) in [
+                (1u64, inert_bootstrap_fixtures::recipe()),
+                (u64::MAX, inert_bootstrap_fixtures::maximum_recipe()),
+            ] {
+                let mut selected = inert_bootstrap_fixtures::selected_launch(reactive);
+                selected["launch"]["fresh_restore_allocation_selection"] =
+                    json!("completed_admit13");
+                let registration = json!({"nested": [{"$serde_json::private::RawValue": "[0]"}]});
+                let mut boot = inert_bootstrap_fixtures::boot(length, registration.clone());
+                // These remain unvalidated announcements. Choosing a decimal
+                // width exercises geometry, never a producer recipe factory.
+                recipe["generation"] = json!(decimal.to_string());
+                for row in [
+                    &mut selected["initial_funding"],
+                    &mut boot["source_birth"]["initial_funding"],
+                ] {
+                    *row = json!({
+                        "retained_requested_bytes": decimal.to_string(),
+                        "maximum_simultaneous_transient_bytes": decimal.to_string(),
+                        "declared_counter_scratch_bytes": decimal.to_string(),
+                    });
+                }
+                boot["source_birth"]["prebirth_recipe"] = recipe.clone();
+                selected["prebirth_recipe_identity"] = recipe["identity"].clone();
+                let parsed_selected: PacketNativeImport18SelectedLaunchWireData =
+                    serde_json::from_value(selected.clone()).unwrap();
+                let source = vec![255; length];
+                let selected_launch = &parsed_selected.launch;
+                let declaration =
+                    native_import18_source_declaration_bank_view_data(&source, selected_launch)
+                        .unwrap();
+                let private_launch = Id::new("private.data").unwrap();
+                let executable =
+                    canonical::content_ref(b"inert", "application/octet-stream").unwrap();
+                let operands = PrivateOperands {
+                    declaration,
+                    expected_host_registration: &registration,
+                    private_launch: &private_launch,
+                    host_executable: &executable,
+                };
+                let quote = construction_data(selected_launch, &operands, usize::MAX / 4).unwrap();
+                let banks = [&recipe, &selected, &boot]
+                    .map(|value| canonical::canonical_json(value).unwrap());
+                let actual = private_body_decode_backing_data(
+                    banks.each_ref().map(Vec::as_slice),
+                    usize::MAX / 4,
+                )
+                .unwrap();
+                let mut slots = OriginalImport18DecodedBodies::empty();
+                let owned = slots
+                    .construction_data(banks.each_ref().map(Vec::as_slice), usize::MAX / 4)
+                    .unwrap();
+                for index in 0..3 {
+                    assert!(banks[index].len() <= quote.maximum_encoded_bytes[index]);
+                    for axis in 0..3 {
+                        assert!(
+                            actual[index][axis] <= quote.parser_rows[index][axis],
+                            "body={index}, axis={axis}"
+                        );
+                        assert!(
+                            owned[index][axis] <= quote.parser_rows[index][axis],
+                            "owned body={index}, axis={axis}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn small_complete_restrictions_refuse() {
+    let selected: PacketNativeImport18SelectedLaunchWireData =
+        serde_json::from_value(inert_bootstrap_fixtures::selected_launch(false)).unwrap();
+    let source = [255; 32];
+    let registration = json!({});
+    let private_launch = Id::new("private.data").unwrap();
+    let executable = canonical::content_ref(b"inert", "application/octet-stream").unwrap();
+    let operands = PrivateOperands {
+        declaration: native_import18_source_declaration_bank_view_data(&source, &selected.launch)
+            .unwrap(),
+        expected_host_registration: &registration,
+        private_launch: &private_launch,
+        host_executable: &executable,
+    };
+    assert!(construction_data(&selected.launch, &operands, 1).is_err());
+}
