@@ -1,6 +1,7 @@
 //! Checks the actual first unpublished startup Capture window before effects.
 
 use super::*;
+use crate::connection::native_owned14::NativeAfterProtocolCapacityInputsData;
 
 impl PreparedExchange<crate::client::DeadlineStream> {
     pub(crate) fn preflight_native_owned14_after_protocol_capacity(
@@ -45,11 +46,13 @@ impl PreparedExchange<crate::client::DeadlineStream> {
             .preflight_native_owned14_after_protocol_capacity_inner(
                 after,
                 blobs,
-                context,
-                allocation,
-                &self.record.originals,
-                storage,
-                maximum_counter_bytes,
+                NativeAfterProtocolCapacityInputsData {
+                    context,
+                    allocation,
+                    prepared: &self.record.originals,
+                    storage,
+                    maximum_counter_bytes,
+                },
             )
     }
 
@@ -95,11 +98,13 @@ impl PreparedExchange<crate::client::DeadlineStream> {
             .preflight_native_owned15_after_protocol_capacity_inner(
                 after,
                 blobs,
-                context,
-                allocation,
-                &self.record.originals,
-                storage,
-                maximum_counter_bytes,
+                NativeAfterProtocolCapacityInputsData {
+                    context,
+                    allocation,
+                    prepared: &self.record.originals,
+                    storage,
+                    maximum_counter_bytes,
+                },
             )
     }
 }

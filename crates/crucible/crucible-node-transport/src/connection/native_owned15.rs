@@ -8,6 +8,7 @@
 //! accepts a restoration target or settled transfer. Snapshot outer14 and its
 //! exact Source definition remain mandatory separate caller/decoder joins.
 
+use super::native_owned14::NativeAfterProtocolCapacityInputsData;
 use super::native_startup_protocol::{NativeCurrentConnectionView, NativeInvocationConnectionView};
 use super::*;
 use crate::protocol_snapshot::{ProtocolCaptureCut, ProtocolSnapshotReservation};
@@ -138,12 +139,16 @@ impl Connection<crate::client::DeadlineStream> {
         &self,
         reservation: &mut ProtocolSnapshotReservation,
         blobs: &crate::blob::BlobReceiver,
-        context: &OriginalNativeCaptureContext<'_>,
-        allocation: &OriginalNativeCaptureAllocationOwned12<'_>,
-        prepared: &[Envelope],
-        storage: &OriginalContinuationPrefixStorageData,
-        maximum_counter_bytes: usize,
+        inputs: NativeAfterProtocolCapacityInputsData<'_, '_, '_>,
     ) -> Result<NativeOwned14AfterProtocolCapacityFacts, ProviderError> {
+        let NativeAfterProtocolCapacityInputsData {
+            context,
+            allocation,
+            prepared,
+            storage,
+            maximum_counter_bytes,
+        } = inputs;
+
         self.protocol_owner.ensure_current()?;
         self.authenticate_native5_source_codec()?;
         self.original_native_owned11_admission()?;

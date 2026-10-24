@@ -18,7 +18,32 @@ use crate::reference_packet::service::{
 };
 use serde_json::Value;
 
+/// Borrows the existing inputs of an unpublished native Capture capacity walk.
+///
+/// This view supplies no original registration, row, bank or Capture authority.
+/// Each selected decoder still authenticates the complete original owner graph.
+pub(in crate::connection) struct NativeAfterProtocolCapacityInputsData<'loan, 'context, 'allocation>
+{
+    /// Borrows the actual native service and registrar context.
+    pub(in crate::connection) context: &'loan OriginalNativeCaptureContext<'context>,
+    /// Borrows the same retained native Capture allocation owner.
+    pub(in crate::connection) allocation:
+        &'loan OriginalNativeCaptureAllocationOwned12<'allocation>,
+    /// Borrows the exact unpublished response and proof originals.
+    pub(in crate::connection) prepared: &'loan [Envelope],
+    /// Borrows their independently priced continuation prefix.
+    pub(in crate::connection) storage: &'loan OriginalContinuationPrefixStorageData,
+    /// Keeps the existing bound for the same counter walk.
+    pub(in crate::connection) maximum_counter_bytes: usize,
+}
+
 impl Connection<crate::client::DeadlineStream> {
+    /// Counts caller/callee capacity-input headers without authenticating a cut.
+    pub(crate) const fn original_native_after_capacity_counter_scratch_data() -> usize {
+        2 * std::mem::size_of::<NativeAfterProtocolCapacityInputsData<'static, 'static, 'static>>()
+            + std::mem::size_of::<usize>()
+    }
+
     /// Captures the actual service with complete typed owners and original banks.
     ///
     /// # Errors
@@ -239,12 +264,16 @@ impl Connection<crate::client::DeadlineStream> {
         &self,
         reservation: &mut ProtocolSnapshotReservation,
         blobs: &crate::blob::BlobReceiver,
-        context: &OriginalNativeCaptureContext<'_>,
-        allocation: &OriginalNativeCaptureAllocationOwned12<'_>,
-        prepared: &[Envelope],
-        storage: &OriginalContinuationPrefixStorageData,
-        maximum_counter_bytes: usize,
+        inputs: NativeAfterProtocolCapacityInputsData<'_, '_, '_>,
     ) -> Result<NativeOwned14AfterProtocolCapacityFacts, ProviderError> {
+        let NativeAfterProtocolCapacityInputsData {
+            context,
+            allocation,
+            prepared,
+            storage,
+            maximum_counter_bytes,
+        } = inputs;
+
         self.protocol_owner.ensure_current()?;
         self.authenticate_native5_source_codec()?;
         self.original_native_owned11_admission()?;
