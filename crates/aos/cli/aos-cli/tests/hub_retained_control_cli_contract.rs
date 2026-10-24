@@ -4,6 +4,8 @@ use std::ffi::OsString;
 
 use clap::{Command, CommandFactory, Parser};
 
+// This target checks parsing; production documentation dispatch is not called.
+#[allow(dead_code)]
 #[path = "../src/cli/mod.rs"]
 mod cli;
 

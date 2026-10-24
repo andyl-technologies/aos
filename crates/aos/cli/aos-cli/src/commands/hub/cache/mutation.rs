@@ -49,6 +49,8 @@ where
 /// # Errors
 ///
 /// Returns an error if request validation, credential resolution, or a hub API call fails.
+// Keep reviewed-plan identity, confirmation, and idempotency inputs distinct.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn apply_reviewed_cache_plan<Resp>(
     printer: &Printer,
     access: &crate::cli::HubAccessArgs,

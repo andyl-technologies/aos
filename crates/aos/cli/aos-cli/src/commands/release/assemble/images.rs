@@ -155,7 +155,12 @@ pub(super) fn assemble(
                 relation: ArtifactRelation::Documents,
                 target: finalized_id.clone(),
             });
-            let (derivation, output, store_path, nar_hash) = nix_identity(planned, &nar_hashes)?;
+            let NixArtifactIdentity {
+                derivation,
+                output,
+                store_path,
+                nar_hash,
+            } = nix_identity(planned, &nar_hashes)?;
             let attributes = ArtifactAttributes {
                 platform: Some(set.platform),
                 system_variant: Some(set.system_variant.clone()),
@@ -288,27 +293,31 @@ fn planned_nar_hashes(
         .collect()
 }
 
+/// Carries the complete Nix identity of a planned image, or no Nix identity.
+#[derive(Default)]
+struct NixArtifactIdentity {
+    derivation: Option<String>,
+    output: Option<String>,
+    store_path: Option<String>,
+    nar_hash: Option<Sha256Digest>,
+}
+
 fn nix_identity(
     artifact: &PlannedArtifact,
     nar_hashes: &BTreeMap<String, Sha256Digest>,
-) -> Result<(
-    Option<String>,
-    Option<String>,
-    Option<String>,
-    Option<Sha256Digest>,
-)> {
+) -> Result<NixArtifactIdentity> {
     match (&artifact.derivation, &artifact.output, &artifact.store_path) {
-        (Some(derivation), Some(output), Some(store_path)) => Ok((
-            Some(derivation.clone()),
-            Some(output.clone()),
-            Some(store_path.clone()),
-            Some(
+        (Some(derivation), Some(output), Some(store_path)) => Ok(NixArtifactIdentity {
+            derivation: Some(derivation.clone()),
+            output: Some(output.clone()),
+            store_path: Some(store_path.clone()),
+            nar_hash: Some(
                 *nar_hashes
                     .get(store_path)
                     .with_context(|| format!("missing image NAR hash for {store_path}"))?,
             ),
-        )),
-        (None, None, None) => Ok((None, None, None, None)),
+        }),
+        (None, None, None) => Ok(NixArtifactIdentity::default()),
         _ => bail!("planned image artifact has an incomplete Nix identity"),
     }
 }

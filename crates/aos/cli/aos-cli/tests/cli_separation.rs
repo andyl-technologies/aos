@@ -72,7 +72,7 @@ fn require_success(output: Output, description: &str) -> Result<String> {
         );
     }
 
-    Ok(String::from_utf8(output.stdout).context("CLI help was not UTF-8")?)
+    String::from_utf8(output.stdout).context("CLI help was not UTF-8")
 }
 
 #[test]

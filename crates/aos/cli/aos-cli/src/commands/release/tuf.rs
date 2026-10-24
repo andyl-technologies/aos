@@ -225,6 +225,8 @@ pub(super) async fn run(
     Ok(())
 }
 
+// Bind role-specific signing to the plan, manifest, provider, and shared nonce set.
+#[allow(clippy::too_many_arguments)]
 async fn sign_metadata<T: Serialize + Clone>(
     signed: T,
     role: TufRole,

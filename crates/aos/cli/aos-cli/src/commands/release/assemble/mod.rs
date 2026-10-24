@@ -107,10 +107,10 @@ impl PayloadBuilder {
             .context("release artifact destination has no parent")?;
         fs::create_dir_all(parent)?;
         let captured = capture::copy_payload_file(source, &destination, &relative)?;
-        if let Some(expected) = attributes.expected {
-            if captured.size_bytes != expected.0 || captured.sha256 != expected.1 {
-                bail!("release artifact {id} differs from its finalized identity");
-            }
+        if let Some(expected) = attributes.expected
+            && (captured.size_bytes != expected.0 || captured.sha256 != expected.1)
+        {
+            bail!("release artifact {id} differs from its finalized identity");
         }
         self.artifacts.push(ArtifactRecord {
             id,
@@ -471,7 +471,7 @@ fn map_decision(
             failure_evidence,
         } => MatrixCell::Blocked {
             required_work: required_work.clone(),
-            failure_evidence: failure_evidence.clone(),
+            failure_evidence: *failure_evidence,
         },
     }
 }

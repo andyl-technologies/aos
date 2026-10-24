@@ -1,5 +1,8 @@
 //! Process checks for explicit documentation sources without Nix or a checkout.
 
+// These process tests bound real HTTP waits with the host monotonic clock.
+#![allow(clippy::disallowed_methods)]
+
 #[macro_use]
 #[path = "support/binaries.rs"]
 mod binaries;

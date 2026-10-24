@@ -123,7 +123,7 @@ fn apr_keys_generate_add_appends_to_roster_with_signed_commit() -> Result<()> {
     assert!(git_ssh::verify_commit_signature(
         &registry_dir,
         "HEAD",
-        &[initial.0.clone()],
+        std::slice::from_ref(&initial.0),
     )?);
 
     Ok(())

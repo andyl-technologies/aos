@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use aos_release_format::qualification::QualificationContract;
 
-use super::super::config::MaintainerConfig;
+use super::super::{config::MaintainerConfig, qualification_fixture};
 
 /// A maintainer configuration whose referenced files live in a temporary directory.
 pub(super) struct ConfigFixture {
@@ -117,7 +117,3 @@ pub(super) fn contract() -> Result<QualificationContract> {
     contract.validate()?;
     Ok(contract)
 }
-
-#[path = "../../../../../../release/aos-release-format/src/test_support/qualification/mod.rs"]
-#[allow(dead_code)]
-mod qualification_fixture;

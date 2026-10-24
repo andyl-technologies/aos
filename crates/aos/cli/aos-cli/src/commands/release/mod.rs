@@ -38,6 +38,12 @@ mod fitness_gate;
 mod plan;
 mod porcelain;
 mod publish;
+// Compile the shared fixture once for all release unit-test modules.
+#[cfg(test)]
+#[path = "../../../../../release/aos-release-format/src/test_support/qualification/mod.rs"]
+#[allow(dead_code)]
+mod qualification_fixture;
+
 mod qualification_executor;
 mod qualification_objects;
 mod qualification_run;

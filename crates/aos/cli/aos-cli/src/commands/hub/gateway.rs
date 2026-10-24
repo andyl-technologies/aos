@@ -147,7 +147,7 @@ pub(super) async fn gateway(printer: &Printer, command: &HubGatewayCmd) -> Resul
                     stable_id: gateway.clone(),
                     revision: Some(hub_types::GatewayRevisionSpec {
                         endpoint_generation: endpoint_generation
-                            .map(|value| i64::try_from(value))
+                            .map(i64::try_from)
                             .transpose()?
                             .unwrap_or_default(),
                         client_base_path: client_base_path.clone().unwrap_or_default(),

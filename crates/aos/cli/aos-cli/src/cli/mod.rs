@@ -14,6 +14,10 @@
 //! Command *implementations* live in the `commands` module, keyed by the
 //! same names.
 
+// Clap constructs one command tree per invocation. Keeping argument variants
+// inline preserves the parser types without allocating each subcommand.
+#![allow(clippy::large_enum_variant)]
+
 mod ability;
 mod build;
 mod cache;

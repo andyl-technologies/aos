@@ -106,8 +106,12 @@ and 41 configured source inventory families. The previous 54 SDKs preserve all
 13,060 existing lock and generated files. Runtime evidence is separate from
 this metadata validation.
 
-The developer checkpoint currently exposes CLI Clippy failures,
-including host clock and entropy operations under the workspace policy. Those
-failures remain a required gate. Full compiler argument parity, strict uncached
-qualification, live service and VM checks, performance
-acceptance, and production migration also remain separate work.
+The default, fleet, and production Clippy checks pass after the repairs recorded
+in `../tests/evidence/aos-cli-lint-repair.json`. Native CLI clock and entropy use
+is explicitly scoped outside Crucible replay policy. The report also binds the
+540/548 Cargo and Bazel cases, format checks, production executable smoke tests,
+and required application Rust compilation to the repaired source bytes. The
+earlier failing developer report remains as baseline evidence.
+
+Full compiler argument parity, strict uncached qualification, live service and
+VM checks, performance acceptance, and production migration remain separate work.
