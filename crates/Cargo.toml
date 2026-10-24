@@ -233,10 +233,9 @@ flate2 = { version = "1", default-features = false, features = ["rust_backend"] 
 crc32fast = "1"
 bzip2 = { version = "0.5", features = ["static"] }
 xz2 = { version = "0.1", features = ["static"] }
-# Pure-Rust NAR decompressors used by the mirror/pull-through to verify a
-# compressed NAR's *decompressed* bytes against the signed NarHash (sec CR-1).
-# In-process (no subprocess) so the verification path cannot be subverted by a
-# missing/hijacked external binary, and pure-Rust to stay wasm-clean.
+# In-process NAR codecs used by the native mirror/pull-through verification
+# path. Native xz/lzma decoding uses liblzma's streaming memory limit; the
+# remaining codecs are pure Rust.
 lzma-rs = "0.3"
 bzip2-rs = "0.1"
 
