@@ -11464,3 +11464,35 @@ release batch for that commit has submitted full native evaluation, all Rust
 test targets, the backend artifact check, the immutable-file regression, both
 native replay checks and all three installed VM tests. The new master compiler
 bootstrap is still building; the complete batch remains pending.
+
+### Runtime verity-unit labeling
+
+The clean `055b989b1b` batch completes full native evaluation at
+`/nix/store/bv426hi7g8r8l4s8d0pfyba48rvh658c-aos-native-evaluation-checks-0`
+and all Rust test-target compilation at
+`/nix/store/ryjh2y4qwa9smizpg6ybyvq8s01yl5zr-aos-test-targets-0.1.0`.
+The backend artifact check passes at
+`/nix/store/6mwj9ksr494672a71nf8dizrxxj65gff-aos-systemd-backend-policy-artifact-check`;
+the release immutable-file regression passes at
+`/nix/store/4jysa2l0fnqhk430v4yk5b8m106x6q1r-initrd-configuration-store-files-check`.
+Both native replay checks also pass. These replace the earlier pending
+compiler and build-check status; they do not qualify installed startup.
+
+All three installed retries now pass SELinux handle initialization and reach
+early systemd startup. Their verity setup then fails the SELinux service check:
+`systemd-veritysetup@root.service` was copied into `/run/systemd/system` with
+`init_runtime_t`. PID 1 consequently refuses its explicit start request, and
+`/dev/mapper/root` times out. The failed release derivations are
+`84l9zaagaqri7a1vfazmzc0iksa1fxda`, `afsrjvvad3x5vnxl2xdm7wvd4m2hvk03`
+and `gvd5jrvd1474ig7z264imfgvhlgxvvqg`; none reaches the installed test body.
+
+The fixed publisher now resolves that exact unit's canonical
+`/usr/lib/systemd/system` path through the deployed policy and applies the
+result to the runtime file before reload and start. The AOS-built libselinux
+utilities are already in systemd's runtime dependencies. Policy checks confirm
+the existing manager relabel permissions, and the canonical lookup returns
+`systemd_unit_t`; no policy grant is added. Five publication regression cases
+pass with the AOS-built shell and tools: SELinux disabled, successful labeling,
+lookup failure, relabel failure and missing generator output. Failed labeling
+never submits reload or start, and staging directories are removed. Packaged
+checks and installed VM retries for this correction remain pending.

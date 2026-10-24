@@ -15,6 +15,17 @@ fi
 
 mkdir -p /run/systemd/system
 cp "$generated_unit" /run/systemd/system/systemd-veritysetup@root.service
+
+# The runtime directory's inherited label is not a unit-file service label.
+# Resolve this fixed unit through the deployed policy's canonical unit path;
+# a failed lookup or relabel must stop before PID 1 receives a start request.
+if [[ -e /sys/fs/selinux/enforce ]]; then
+  unit_context=$(@libselinux@/sbin/matchpathcon -n -m file \
+    /usr/lib/systemd/system/systemd-veritysetup@root.service)
+  @libselinux@/sbin/setfilecon "$unit_context" \
+    /run/systemd/system/systemd-veritysetup@root.service
+fi
+
 systemctl daemon-reload
 systemctl start systemd-veritysetup@root.service
 

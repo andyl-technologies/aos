@@ -782,7 +782,9 @@ in
             "$out/lib/kernel/install.d/60-ukify.install"
 
           mkdir -p "$out/libexec"
-          sed 's|@bash@|${bash}|g' \
+          sed \
+            -e 's|@bash@|${bash}|g' \
+            -e 's|@libselinux@|${libselinux}|g' \
             ${./aos-systemd-verity-root-setup.sh.in} \
             > "$out/libexec/aos-systemd-verity-root-setup"
           chmod 0555 "$out/libexec/aos-systemd-verity-root-setup"
