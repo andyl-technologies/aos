@@ -355,8 +355,9 @@ impl RpcService {
             PlacementReadOutcome::Found(read) => read.value,
             PlacementReadOutcome::NotFound => return Ok(RegistryServeOutcome::NotFound),
         };
+        let publicly_cacheable = registry.visibility == "public" || registry.org_id.is_none();
         Ok(RegistryServeOutcome::Response(
-            Self::streamed_surface_response(path, read)?,
+            Self::streamed_surface_response(path, read, publicly_cacheable)?,
         ))
     }
 
@@ -876,11 +877,7 @@ impl RpcService {
                     clock::now_unix_secs(),
                 )
                 .await
-                .map_err(|holder| {
-                    RpcError::FailedPrecondition(format!(
-                        "registry publication lease is held by {holder}"
-                    ))
-                })?;
+                .map_err(RpcError::publish_lease)?;
             if !self
                 .db
                 .advance_registry_publication(

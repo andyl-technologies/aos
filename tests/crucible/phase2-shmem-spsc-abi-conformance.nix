@@ -7,7 +7,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  shmemGate = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/tests/gate_layer1_injection.rs;
+  shmemGate = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/gate_layer1_injection.rs;
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -16,7 +16,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_layer1_injection.rs" shmemGate [
+    failuresFor "crates/crucible/crucible-qemu-shmem/tests/gate_layer1_injection.rs" shmemGate [
       {
         label = "SPSC exhaustive ordering model";
         needle = "assert_spsc_ring_exhaustive_ordering_model(";
@@ -106,7 +106,7 @@
         needle = "if live_count(head, tail, capacity)? == 0";
       }
     ]
-    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_layer1_injection.rs" shmemGate [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-shmem/tests/gate_layer1_injection.rs" shmemGate [
       {
         label = "ignored SPSC ABI conformance test";
         needle = "#[ignore";

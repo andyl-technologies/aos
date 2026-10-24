@@ -5,8 +5,8 @@
   taskIds ? ["T-PKG-18"],
 }: let
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
-  casSource = builtins.readFile ../../crates/crucible/storage/crucible-store/src/lib.rs;
-  casManifest = builtins.readFile ../../crates/crucible/storage/crucible-store/Cargo.toml;
+  casSource = builtins.readFile ../../crates/crucible/crucible-store/src/lib.rs;
+  casManifest = builtins.readFile ../../crates/crucible/crucible-store/Cargo.toml;
   defaultChecks = builtins.readFile ./default.nix;
   standaloneDependencyLint = builtins.readFile ./phase1-standalone-dependencies.nix;
   inherit (import ./_workspace-packages.nix {inherit lib;}) cruciblePackages;
@@ -20,7 +20,7 @@
         needle = "Completed by `checks.crucible.phase7.crucibleCasRatchetSeam`";
       }
     ]
-    ++ failuresFor "crates/crucible/storage/crucible-store/src/lib.rs" casSource [
+    ++ failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
       {
         label = "future shared-store integration";
         needle = "Future shared-store integration may supply a shared";
@@ -74,7 +74,7 @@
     ++ lib.optionals (!(hasInfix "forbiddenExactNames = [\"ratchet\" \"aos-nix\"];" (builtins.readFile ./phase1-standalone-dependencies.nix))) [
       "tests/crucible/phase1-standalone-dependencies.nix: structured standalone dependency lint must reject exact ratchet/aos-nix names"
     ]
-    ++ forbiddenFor "crates/crucible/storage/crucible-store/Cargo.toml" casManifest [
+    ++ forbiddenFor "crates/crucible/crucible-store/Cargo.toml" casManifest [
       {
         label = "ratchet dependency prefix";
         needle = "ratchet-";

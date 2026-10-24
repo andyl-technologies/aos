@@ -43,6 +43,7 @@ in
 
     inherit version cargoDeps;
     cargoEnv = {
+      AOS_LIBSSH2_PREFIX = "${libssh2}";
       OPENSSL_DIR = "${openssl}";
       OPENSSL_LIB_DIR = "${openssl}/lib";
       OPENSSL_INCLUDE_DIR = "${openssl}/include";

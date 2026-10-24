@@ -6,7 +6,7 @@
   root = ../..;
   cratesDir = ../../crates;
   defaultNix = builtins.readFile ./default.nix;
-  hygieneRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/engineering_hygiene.rs;
+  hygieneRust = builtins.readFile ../../crates/crucible/crucible-test-support/tests/engineering_hygiene.rs;
   hygieneBaselineText = builtins.readFile ./engineering-hygiene-baseline.txt;
 
   responsibilityReviewThreshold = 1000;

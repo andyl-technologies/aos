@@ -5,7 +5,7 @@
 //!
 //! - **System of record** — `registries`, `channel_floors`, the
 //!   phase-2a tenancy tables `orgs`, `projects`, `users`,
-//!   `user_identities`, `service_accounts`, `memberships`, and
+//!   `user_mailboxes`, `user_identities`, `service_accounts`, `memberships`, and
 //!   `invitations`, the phase-2b authentication tables `tokens`,
 //!   `sessions`, `device_codes`, and `magic_links`, and the phase-2c
 //!   `bindings` and topology-placement tables that bind a surface to
@@ -188,18 +188,20 @@
 //!                   txt_challenge "aos-domain-verify=<random>"
 //!                   verified_at 1730000000        -- NULL until verified
 //!
-//! oidc_flows        state "<opaque>"  org_id 1  nonce "<opaque>"
-//!                   code_verifier "<43..128 chars>"  redirect_after "/"
+//! oidc_flows        state "<opaque>"  org_id 1  verifier_id "<digest>"
+//!                   nonce "<opaque>"
+//!                   code_verifier "<43..128 chars>"
+//!                   browser_binding_hash "<sha256>"  redirect_after "/"
 //!                   created_at 1730000000  expires_at 1730000600
 //! ```
 //!
-//! Login keys identities on `(issuer, subject)` — never bare email — through
-//! [`Database::link_or_create_identity`]: an existing `(iss, sub)` resolves to
-//! its user, an IdP-verified email on a captured domain links to an existing
-//! user, and otherwise a fresh user + identity is provisioned (when
-//! `allow_jit`). The OIDC flow itself — PKCE, the authorization URL, the token
-//! exchange, and JWKS-backed RS256 id_token verification — lives in
-//! the hub's `auth::oidc` module; this module only stores and lists the rows.
+//! Login keys identities on `(verifier_id, subject)` through
+//! [`Database::link_or_create_identity`]. The verifier identity covers the
+//! expected issuer, audience, key source, and signature algorithm. An existing
+//! identity resolves to its user, an IdP-verified email on a captured domain
+//! links to an existing user, and otherwise a fresh user and identity are
+//! provisioned when `allow_jit` is enabled. The OIDC flow itself lives in the
+//! hub's `auth::oidc` module; this module only stores and lists the rows.
 //!
 //! # Signing-key lifecycle
 //!
@@ -439,7 +441,9 @@ mod snapshot_insert_tests {
 }
 
 mod cache_write_admission;
+mod controller_leases;
 pub use cache_write_admission::*;
+pub use controller_leases::{ControllerLeaseFence, CONTROLLER_LEASE_TTL_SECONDS};
 mod delivery_identity;
 pub use delivery_identity::*;
 mod delivery_workflow;
@@ -534,6 +538,15 @@ pub fn portable_relational_id(incarnation: uuid::Uuid) -> i64 {
 /// | 6 | `migration-0006-release-ability-graphs.sql` | Native release ability references. |
 /// | 7 | `migration-0007-native-documentation.sql` | Native documentation and search projections. |
 /// | 8 | `migration-0008-native-deployment-report.sql` | Native deployment reports and replay fences. |
+/// | 9 | `migration-0009-oidc-verifier-identities.sql` | OIDC identities and flows bound to verifier configuration. |
+/// | 10 | `migration-0010-user-mailboxes.sql` | Verified mailbox ownership independent from provider profiles. |
+/// | 11 | `migration-0011-controller-leases.sql` | Durable controller lease ownership and generations. |
+/// | 12 | `migration-0012-session-authentication.sql` | Browser-session authentication evidence. |
+/// | 13 | `migration-0013-passkey-reauthentication.sql` | Passkey-registration session bindings. |
+/// | 14 | `migration-0014-membership-incarnations.sql` | Stable membership incarnation identities. |
+/// | 15 | `migration-0015-oidc-browser-binding.sql` | Browser-bound OIDC login flows. |
+/// | 16 | `migration-0016-oidc-flow-retention.sql` | Bounded OIDC flow admission and indexed retention. |
+/// | 17 | `migration-0017-native-documentation-lookup.sql` | Indexed native documentation digest lookup. |
 pub const MIGRATIONS: &[&str] = &[
     include_str!("schema.sql"),
     include_str!("release_channel_advances.sql"),
@@ -543,6 +556,15 @@ pub const MIGRATIONS: &[&str] = &[
     include_str!("migration-0006-release-ability-graphs.sql"),
     include_str!("migration-0007-native-documentation.sql"),
     include_str!("migration-0008-native-deployment-report.sql"),
+    include_str!("migration-0009-oidc-verifier-identities.sql"),
+    include_str!("migration-0010-user-mailboxes.sql"),
+    include_str!("migration-0011-controller-leases.sql"),
+    include_str!("migration-0012-session-authentication.sql"),
+    include_str!("migration-0013-passkey-reauthentication.sql"),
+    include_str!("migration-0014-membership-incarnations.sql"),
+    include_str!("migration-0015-oidc-browser-binding.sql"),
+    include_str!("migration-0016-oidc-flow-retention.sql"),
+    include_str!("migration-0017-native-documentation-lookup.sql"),
 ];
 
 /// Identifies the production migration lineage independently of its version.
@@ -624,6 +646,16 @@ fn mysql_migration_index_identity(sql: &str) -> Option<(&str, &str)> {
 pub fn is_last_owner_error(err: &anyhow::Error) -> bool {
     err.chain()
         .any(|cause| cause.downcast_ref::<LastOwnerError>().is_some())
+}
+
+/// Whether any error in `err`'s chain is a [`MembershipMutationConflictError`].
+#[must_use]
+pub fn is_membership_mutation_conflict(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<MembershipMutationConflictError>()
+            .is_some()
+    })
 }
 
 const BINDING_READ_DETAIL_SQL: &str =
@@ -744,6 +776,12 @@ fn row_to_webhook(row: &Row) -> Result<WebhookRecord> {
 
 /// Maximum active and inactive webhook subscriptions retained by one org.
 pub const MAX_WEBHOOKS_PER_ORG: usize = 100;
+
+/// Maximum unexpired OIDC login flows retained for one organization.
+pub const MAX_PENDING_OIDC_FLOWS_PER_ORG: i64 = 128;
+
+/// Maximum unexpired OIDC login flows retained across one hub database.
+pub const MAX_PENDING_OIDC_FLOWS_TOTAL: i64 = 4_096;
 
 /// The hub database handle.
 pub struct Database {
@@ -1214,15 +1252,6 @@ fn row_to_idp_config(row: &Row) -> Result<IdpConfigRecord> {
     })
 }
 
-/// The host portion of an issuer URL, for synthesizing a JIT pseudo-email
-/// when the IdP supplies no address. Falls back to the raw issuer string.
-fn issuer_host(issuer: &str) -> String {
-    url::Url::parse(issuer)
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_string))
-        .unwrap_or_else(|| issuer.replace(['/', ':'], "."))
-}
-
 /// The `change_requests` columns, in the order [`row_to_changeset`] reads.
 const CHANGESET_COLUMNS: &str = "change_id, actor_kind, actor_id, actor_label, scope, status, \
      summary, created_at, applied_at, reverted_by_change_id, git_ref, git_commit, \
@@ -1252,19 +1281,34 @@ fn row_to_oidc_flow(row: &Row) -> Result<OidcFlowRecord> {
     Ok(OidcFlowRecord {
         state: row.get(0)?,
         org_id: row.get(1)?,
-        nonce: row.get(2)?,
-        code_verifier: row.get(3)?,
-        redirect_after: row.get(4)?,
-        expires_at: row.get(5)?,
+        verifier_id: row.get(2)?,
+        nonce: row.get(3)?,
+        code_verifier: row.get(4)?,
+        redirect_after: row.get(5)?,
+        expires_at: row.get(6)?,
     })
 }
 
 fn row_to_webauthn_challenge(row: &Row) -> Result<WebauthnChallengeRecord> {
+    let session_id_hash: Option<String> = row.get(4)?;
+    let reauthentication_generation: Option<i64> = row.get(5)?;
+    let registration_binding = match (session_id_hash, reauthentication_generation) {
+        (Some(session_id_hash), Some(reauthentication_generation)) => {
+            Some(WebauthnChallengeBinding {
+                session_id_hash,
+                reauthentication_generation,
+            })
+        }
+        (None, None) => None,
+        _ => anyhow::bail!("webauthn challenge session binding is malformed"),
+    };
+
     Ok(WebauthnChallengeRecord {
         challenge: row.get(0)?,
         user_id: row.get(1)?,
         kind: row.get(2)?,
         expires_at: row.get(3)?,
+        registration_binding,
     })
 }
 

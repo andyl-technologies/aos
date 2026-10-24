@@ -34,12 +34,11 @@
   };
 
   rootfs = fcLib.mkFirecrackerRootfs {
-    pname = "crucible-phase0-coverage";
     rootfsDeps = [workload];
-    testScript = ''
-      crucible-coverage-workload ${iterations}
-    '';
   };
+  testInput = fcLib.mkFirecrackerTestInput ''
+    crucible-coverage-workload ${iterations}
+  '';
 in
   pkgs.mkDerivation {
     pname = "crucible-phase0-coverage-overhead";
@@ -61,7 +60,7 @@ in
 
     QEMU = "${pkgs.qemu-crucible}/bin/qemu-system-x86_64";
     KERNEL = builtins.toString pkgs.linux;
-    ROOTFS = builtins.toString rootfs;
+    ROOTFS = "${rootfs}/root.img";
     ITERATIONS = iterations;
 
     phases = [
@@ -93,7 +92,7 @@ in
           run_qemu() {
             label="$1"
             mode="$2"
-            cp "$ROOTFS" "$TMPDIR/rootfs-$label.img"
+            cp --reflink=auto --sparse=always "$ROOTFS" "$TMPDIR/rootfs-$label.img"
             chmod u+w "$TMPDIR/rootfs-$label.img"
 
             start_ns=$(date +%s%N)
@@ -117,6 +116,8 @@ in
                 -append "console=ttyS0 reboot=k panic=1 root=/dev/vda ro init=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0" \
                 -drive id=rootfs,file="$TMPDIR/rootfs-$label.img",format=raw,if=none,cache=unsafe \
                 -device virtio-blk-pci,drive=rootfs \
+                -drive id=test-input,file=${testInput}/test.img,format=raw,if=none,readonly=on \
+                -device virtio-blk-pci,drive=test-input \
                 -chardev file,id=serial0,path="$TMPDIR/serial-$label.log" \
                 -serial chardev:serial0 \
                 -no-reboot
@@ -140,6 +141,8 @@ in
                 -append "console=ttyS0 reboot=k panic=1 root=/dev/vda ro init=/init quiet nokaslr norandmaps random.trust_cpu=off net.ifnames=0" \
                 -drive id=rootfs,file="$TMPDIR/rootfs-$label.img",format=raw,if=none,cache=unsafe \
                 -device virtio-blk-pci,drive=rootfs \
+                -drive id=test-input,file=${testInput}/test.img,format=raw,if=none,readonly=on \
+                -device virtio-blk-pci,drive=test-input \
                 -chardev file,id=serial0,path="$TMPDIR/serial-$label.log" \
                 -serial chardev:serial0 \
                 -plugin "$plugin",mode="$mode",out="$TMPDIR/plugin-$label.txt" \

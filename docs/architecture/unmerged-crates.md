@@ -29,13 +29,13 @@ descriptor and SQLite promotion require API review; base extractions are already
 
 | PR | Current package | Proposed full package name | Proposed directory |
 |---|---|---|---|
-| #713 | `aos-assessment` | `aos-package-assessment` | `crates/aos/maintenance/aos-package-assessment` |
-| #713 | `aos-assessment-providers` | `aos-package-assessment-sources` | `crates/aos/maintenance/aos-package-assessment-sources` |
-| #713 | `aos-assessment-runtime` | `aos-package-assessment-coordinator` | `crates/aos/maintenance/aos-package-assessment-coordinator` |
-| #711 | `crucible-node-contract` | `crucible-node-format` | `crates/crucible/protocol/crucible-node-format` |
+| #713 | `aos-assessment` | `aos-package-assessment` | `crates/maintenance/aos-package-assessment` |
+| #713 | `aos-assessment-providers` | `aos-package-assessment-sources` | `crates/maintenance/aos-package-assessment-sources` |
+| #713 | `aos-assessment-runtime` | `aos-package-assessment-coordinator` | `crates/maintenance/aos-package-assessment-coordinator` |
+| #711 | `crucible-node-contract` | `crucible-node-format` | `crates/crucible/crucible-node-format` |
 | #711 | `crucible-node-provider` | `crucible-node-transport` | `crates/crucible/host/crucible-node-transport` |
-| #696 | `crucible-ram` | `crucible-ram` | `crates/crucible/protocol/crucible-ram` |
-| #696 | `crucible-sqlite-heap` | `crucible-sqlite-heap` | `crates/crucible/storage/crucible-sqlite-heap` |
+| #696 | `crucible-ram` | `crucible-ram` | `crates/crucible/crucible-ram` |
+| #696 | `crucible-sqlite-heap` | `crucible-sqlite-heap` | `crates/crucible/crucible-sqlite-heap` |
 | #420 | `aos-terrane` | `aos-terrane-integration` | `crates/terrane/integration/aos-terrane-integration` |
 | #420 | `terrane` | `terrane-sdk` | `crates/terrane/sdk/terrane-sdk` |
 | #420 | `terrane-cli` | `terrane-cli` | `crates/terrane/cli/terrane-cli` |
@@ -91,7 +91,7 @@ descriptor and SQLite promotion require API review; base extractions are already
 
 At the pinned snapshot, the #713 owning checkout contained uncommitted `aos-assessment-http` at
 `crates/aos-assessment-http/Cargo.toml`, separate from its three committed added crates.
-Proposed name/path: `aos-package-assessment-http` under `crates/aos/maintenance/`. It owns
+Proposed name/path: `aos-package-assessment-http` under `crates/maintenance/`. It owns
 bounded native HTTPS source effects, explicit physical time and scoped credentials, with
 reqwest/async-trait/zeroize dependencies and Apache-2.0 licensing. Keep it outside Worker
 and portable coordinator dependencies. The scratch handoff records exact local source
@@ -111,7 +111,7 @@ No other owning PR adds or removes a Cargo package relative to that snapshot.
 
 | Current package / manifest | Proposed full name | Proposed directory | Actual consumer |
 |---|---|---|---|
-| `aos-assessment-http` / `crates/aos-assessment-http/Cargo.toml` | `aos-package-assessment-http` | `crates/aos/maintenance/aos-package-assessment-http` | `aos` → `aos-cli` |
+| `aos-assessment-http` / `crates/aos-assessment-http/Cargo.toml` | `aos-package-assessment-http` | `crates/maintenance/aos-package-assessment-http` | `aos` → `aos-cli` |
 
 The Apache-2.0 native adapter now has `executor`, `credentials` and `remote`
 modules. They bind process-local execution to installed pairing/limits, resolve
@@ -130,7 +130,7 @@ with no owning-branch build/test claim or addition to the 77-member base.
 | Owning PR | Package | Directory | Responsibility |
 |---|---|---|---|
 | #232 | `aos-sandbox-api` | `crates/sandbox/protocol/aos-sandbox-api` | Generated public/local/shared coordinator message data from `api/proto/` |
-| #696 | `crucible-host-resources` | `crates/crucible/host/crucible-host-resources` | Crucible-specific host budgets, supervision, RAM placement and measurement controls, separate from generic quota mechanics |
+| #696 | `crucible-host-resources` | `crates/crucible/crucible-host-resources` | Crucible-specific host budgets, supervision, RAM placement and measurement controls, separate from generic quota mechanics |
 
 ## Required cross-PR boundaries
 
@@ -153,7 +153,7 @@ with no owning-branch build/test claim or addition to the 77-member base.
 
 `crates/terrane/{sdk,linux,cli,integration}` and
 `crates/sandbox/{model,protocol,controller,host,guest,storage,security,filesystem,testing}`
-group their owning projects. Assessment uses `crates/aos/maintenance`; Dispatch uses
+group their owning projects. Assessment uses `crates/maintenance`; Dispatch uses
 `crates/dispatch/{model,protocol,runtime,sdk,testing}`. Full Cargo package names
 carry scope; leaf directories retain those full names. Nested fixture packages stay beside
 owner tests.

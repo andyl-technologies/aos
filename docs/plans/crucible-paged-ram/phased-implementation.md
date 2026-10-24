@@ -70,6 +70,31 @@ failed attempts appear in the dated entries below.
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 651 bindings: 632 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
+#### Integration with origin/master
+
+The merge of `b04bda7d9a62c7824126d047bb787adaf71b31d9` adopts the
+category workspace layout, including the RFC-only `crucible-ram`,
+`crucible-host-resources` and `crucible-sqlite-heap` packages under
+`crates/crucible/`. All 1,482 additions relocated by Git matched their original
+RFC blobs before path adjustments; every prior RFC Crucible file remains present
+at its mapped location. Manifest dependencies, source includes, case selectors
+and source-review bindings follow the new layout.
+
+The VM fixture consumes the reusable root image directory and a separate
+read-only assertion disk. Its configured systemd files and runner remain in the
+root filesystem closure. Ninja retains its existing packaged Bash interpreter
+and build phases while exposing the upstream explicit shell-selection factory.
+The shared lockfile retains upstream dependency updates, including the current
+AWS dependency graph; the set of vendored registry packages matches master.
+
+The crate migration check and focused Nix formatting checks pass. Inventory
+`yxhq4f1k81d99zk5xx52l3x3nhl3ks41` preserves all 651 bindings, 142 uncovered
+requirements and zero qualifications. The engineering-hygiene derivation
+evaluates successfully with content-bound reviews of the merged sources.
+Merged-source Rust compilation, component execution and ABI execution remain
+pending; pre-merge passing checks do not qualify this merge. No native fixture
+execution or activation authority follows from these source and inventory checks.
+
 #### Isolated patched-libc build support
 
 The shared hermetic libc builder now applies an ordered list of explicit source
@@ -3235,9 +3260,10 @@ itself. All 778 ordinary storage tests, 95 policy controls and strict
 storage/portable-RAM Clippy pass. Hermetic storage output
 `9awg9vdvkrwykkl6mxxkcrc7qvj966fy` passes all 128 selected cases and
 149 independently checked successful nested summaries. Mandatory application
-compilation remains pending at the frozen source
+compilation passes at `11pk11z3nsv5d3296rxlixqm3dfpzaxz`, independently bound
+to its actual deriver and frozen source
 `29a7q1bqq2gn74pnw8vhyqz5mwiz0and`; all 5,423 committed Rust/TOML inputs
-and six fixtures match `8ad5c1b2fd`. These controls do not qualify native
+and six fixtures match `8ad5c1b2fd`. This is pre-merge evidence. These controls do not qualify native
 activation, physical lifecycle, lower residency or performance parity.
 
 The separate source-only exclusive-wait packet

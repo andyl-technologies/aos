@@ -107,8 +107,8 @@
     if innerInvocation == null
     then "${flight}/bin/crucible-daemon-paging-flight --ignored --exact ${testName} --nocapture"
     else innerInvocation {inherit flight;};
-  rootfs = (import ../../lib/testing/firecracker.nix {inherit pkgs lib;}).mkFirecrackerRootfs {
-    inherit pname;
+  firecracker = import ../../lib/testing/firecracker.nix {inherit pkgs lib;};
+  rootfs = firecracker.mkFirecrackerRootfs {
     systemdConfig = normalServiceConfig;
     extraWritableMiB = writableMiB;
     rootfsDeps =
@@ -127,75 +127,75 @@
       ++ lib.optionals (!normalMode) [flight]
       ++ lib.optionals normalMode [pkgs.crucible pkgs.systemd]
       ++ extraRootfsDeps;
-    testScript = ''
-      set -eu
-      ${kernelSetupScript}
-      ${innerPreparation}
-      ${lib.optionalString normalMode ''
-        test "$(${pkgs.systemd}/bin/systemctl show --property=Delegate --value crucible-campaign.service)" = yes
-        test "$(${pkgs.systemd}/bin/systemctl show --property=DelegateSubgroup --value crucible-campaign.service)" = guardian
-        if ! ${pkgs.systemd}/bin/systemctl start crucible-campaign.service; then
-          ${pkgs.systemd}/bin/journalctl --no-pager -u crucible-campaign.service
-          exit 1
-        fi
-        # Observe the actual installed Main, never a renamed test executable.
-        main_pid="$(${pkgs.systemd}/bin/systemctl show --property=MainPID --value crucible-campaign.service)"
-        test "$main_pid" -gt 1
-        test "$(${pkgs.coreutils}/bin/readlink "/proc/$main_pid/exe")" = ${normalService.package.passthru.controller}/bin/crucible
-        service_group="$(${pkgs.systemd}/bin/systemctl show --property=ControlGroup --value crucible-campaign.service)"
-        test -n "$service_group"
-        service_root="/sys/fs/cgroup$service_group"
-        test -d "$service_root/guardian"
-        test -d "$service_root/workload"
-        test -z "$(${pkgs.coreutils}/bin/cat "$service_root/cgroup.procs")"
-        for required_controller in cpu memory pids; do
-          for selected_root in "$service_root" "$service_root/workload"; do
-            enabled_controllers="$(${pkgs.coreutils}/bin/cat "$selected_root/cgroup.subtree_control")"
-            case " $enabled_controllers " in
-              *" $required_controller "*) ;;
-              *) echo "normal workload delegation missing" >&2; exit 1 ;;
-            esac
-          done
-        done
-        # The normal main authenticates this actual PID1 owner itself. The
-        # external client receives no resource token from these observations.
-        export CRUCIBLE_NORMAL_CAMPAIGN_SOCKET=${lib.escapeShellArg normalService.socketPath}
-        export CRUCIBLE_NORMAL_SERVICE_GROUP="$service_group"
-      ''}
-      echo managed_kernel_mode=${selectedMode}
-      log=/tmp/paging-native.log
-      set +e
-      ${pkgs.coreutils}/bin/timeout -k 30 ${toString innerTimeoutSeconds} \
-        ${invocation} > "$log" 2>&1
-      status=$?
-      set -e
-      cat "$log"
-      ${lib.optionalString normalMode ''
-        if test "$status" -ne 0; then
-          ${pkgs.systemd}/bin/journalctl --no-pager -u crucible-campaign.service
-        fi
-      ''}
-      test "$status" -eq 0
-      ${lib.optionalString (!normalMode) ''
-        ${pkgs.grep}/bin/grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
-      ''}
-      test "$(${pkgs.grep}/bin/grep -Fxc ${successMarker} "$log")" -eq 1
-      ${innerEvidence {inherit buildGraph;}}
-      ${lib.optionalString normalMode ''
-        ${pkgs.systemd}/bin/systemctl is-active --quiet crucible-campaign.service
-        test "$(${pkgs.systemd}/bin/systemctl show --property=Result --value crucible-campaign.service)" = success
-        ${pkgs.systemd}/bin/systemctl stop crucible-campaign.service
-      ''}
-      ${pkgs.util-linux}/bin/umount /var/paging-storage
-      echo PASS
-      echo gate=${gateId}
-      echo check=${attrPath}
-    '';
   };
+  testInput = firecracker.mkFirecrackerTestInput ''
+    set -eu
+    ${kernelSetupScript}
+    ${innerPreparation}
+    ${lib.optionalString normalMode ''
+      test "$(${pkgs.systemd}/bin/systemctl show --property=Delegate --value crucible-campaign.service)" = yes
+      test "$(${pkgs.systemd}/bin/systemctl show --property=DelegateSubgroup --value crucible-campaign.service)" = guardian
+      if ! ${pkgs.systemd}/bin/systemctl start crucible-campaign.service; then
+        ${pkgs.systemd}/bin/journalctl --no-pager -u crucible-campaign.service
+        exit 1
+      fi
+      # Observe the actual installed Main, never a renamed test executable.
+      main_pid="$(${pkgs.systemd}/bin/systemctl show --property=MainPID --value crucible-campaign.service)"
+      test "$main_pid" -gt 1
+      test "$(${pkgs.coreutils}/bin/readlink "/proc/$main_pid/exe")" = ${normalService.package.passthru.controller}/bin/crucible
+      service_group="$(${pkgs.systemd}/bin/systemctl show --property=ControlGroup --value crucible-campaign.service)"
+      test -n "$service_group"
+      service_root="/sys/fs/cgroup$service_group"
+      test -d "$service_root/guardian"
+      test -d "$service_root/workload"
+      test -z "$(${pkgs.coreutils}/bin/cat "$service_root/cgroup.procs")"
+      for required_controller in cpu memory pids; do
+        for selected_root in "$service_root" "$service_root/workload"; do
+          enabled_controllers="$(${pkgs.coreutils}/bin/cat "$selected_root/cgroup.subtree_control")"
+          case " $enabled_controllers " in
+            *" $required_controller "*) ;;
+            *) echo "normal workload delegation missing" >&2; exit 1 ;;
+          esac
+        done
+      done
+      # The normal main authenticates this actual PID1 owner itself. The
+      # external client receives no resource token from these observations.
+      export CRUCIBLE_NORMAL_CAMPAIGN_SOCKET=${lib.escapeShellArg normalService.socketPath}
+      export CRUCIBLE_NORMAL_SERVICE_GROUP="$service_group"
+    ''}
+    echo managed_kernel_mode=${selectedMode}
+    log=/tmp/paging-native.log
+    set +e
+    ${pkgs.coreutils}/bin/timeout -k 30 ${toString innerTimeoutSeconds} \
+      ${invocation} > "$log" 2>&1
+    status=$?
+    set -e
+    cat "$log"
+    ${lib.optionalString normalMode ''
+      if test "$status" -ne 0; then
+        ${pkgs.systemd}/bin/journalctl --no-pager -u crucible-campaign.service
+      fi
+    ''}
+    test "$status" -eq 0
+    ${lib.optionalString (!normalMode) ''
+      ${pkgs.grep}/bin/grep -Fq 'test result: ok. 1 passed; 0 failed; 0 ignored;' "$log"
+    ''}
+    test "$(${pkgs.grep}/bin/grep -Fxc ${successMarker} "$log")" -eq 1
+    ${innerEvidence {inherit buildGraph;}}
+    ${lib.optionalString normalMode ''
+      ${pkgs.systemd}/bin/systemctl is-active --quiet crucible-campaign.service
+      test "$(${pkgs.systemd}/bin/systemctl show --property=Result --value crucible-campaign.service)" = success
+      ${pkgs.systemd}/bin/systemctl stop crucible-campaign.service
+    ''}
+    ${pkgs.util-linux}/bin/umount /var/paging-storage
+    echo PASS
+    echo gate=${gateId}
+    echo check=${attrPath}
+  '';
   runtimeScript = ''
     set -eu
     mkdir -p "$out"
-    cp ${rootfs} rootfs.img
+    cp ${rootfs}/root.img rootfs.img
     chmod u+w rootfs.img
     # Closure-derived image geometry is provenance; declared writable space
     # and the outer VM resource limits retain their existing authored values.
@@ -216,6 +216,7 @@
       -kernel "$kernel" \
       -append "console=ttyS0 reboot=k panic=1 root=/dev/vda rw init=/init net.ifnames=0" \
       -drive file=rootfs.img,format=raw,if=virtio \
+      -drive file=${testInput}/test.img,format=raw,if=virtio,readonly=on \
       > "$out/serial.raw.log" 2>&1
     status=$?
     set -e
@@ -249,5 +250,5 @@ in
           script = runtimeScript;
         }
       ];
-      passthru = {inherit rootfs flight guest buildGraph kernelSetupScript runtimeScript;};
+      passthru = {inherit rootfs testInput flight guest buildGraph kernelSetupScript runtimeScript;};
     }

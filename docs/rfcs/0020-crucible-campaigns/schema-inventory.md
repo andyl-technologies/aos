@@ -120,8 +120,8 @@ rows. They do not create an additional wire or durable schema:
 
 The following production `write_all` and `serde_json::{to_*,from_*}` paths
 were reviewed as a bounded source family, excluding test fixtures. The VM
-lifecycle paths live under `crates/crucible/control/crucible-daemon/src`; debugger
-transport paths live under `crates/crucible/control/crucible-control-server/src`:
+lifecycle paths live under `crates/crucible/crucible-daemon/src`; debugger
+transport paths live under `crates/crucible/crucible-control-server/src`:
 
 | Source paths | Classification |
 | --- | --- |
@@ -155,7 +155,7 @@ The QEMU patch's internal plugin child plan/status, child QMP and console
 reinitializers, and selectable-reply status are separately registered under
 their `qemu-patch::*` owners where they cross a versioned process boundary.
 
-The production `crucible/control/crucible-daemon/src` `write_all`, CBOR, and TOML decode paths
+The production `crucible/crucible-daemon/src` `write_all`, CBOR, and TOML decode paths
 were reviewed as one bounded source family. `planner_process` writes the
 registered `crucible.planner.process-frame`. `campaign_gc` manifests and
 journal, `exact_pin_retention`, `hot_checkpoint_retention`,
@@ -196,20 +196,20 @@ not its source tag. The `crucible.signal-mutation-provenance.v1` JSON written by
 `crucible_cli::cli::artifact_capture` is a named component inside the
 registered reproduction artifact, not a separately decoded record.
 
-The remaining production `crucible/storage/crucible-store/src` `write_all` paths were classified
+The remaining production `crucible/crucible-store/src` `write_all` paths were classified
 against the existing content-store and campaign-CAS rows: pack and index,
 encrypted/compressed objects, quota, inventory, refs, write-back journal,
 frontier/claim records, and campaign-head entries retain their own registered
 formats. Generic store copying and staged writes preserve their caller's
 format. The searched production CAS source has no direct serde JSON or TOML
-codec. In `crucible/control/crucible-cli/src`, the report renderers serialize the registered
+codec. In `crucible/crucible-cli/src`, the report renderers serialize the registered
 `crucible.cli.*` output schemas; the packed-repack journal and QEMU fuzz
 index/descriptor have their existing rows. The fuzz coverage JSON is stored
 and loaded only by the version-1 descriptor's `coverage_events` reference,
 so it inherits that descriptor contract. The schedule-prefix-proof text is
 hash input, not an independently decoded record.
 
-The production `crucible/qemu/crucible-qemu-host/src` generic writers and `crucible/testing/crucible-test-support/src`
+The production `crucible/crucible-qemu-host/src` generic writers and `crucible/crucible-test-support/src`
 serialization paths were reviewed as a bounded source family:
 
 | Source paths | Classification |
@@ -231,7 +231,7 @@ persist their callers' registered scenario, schedule, lineage, policy,
 import-manifest, branch-report, and component-authority records; the daemon
 already checks the authority file's version-one `CRUCCA01` magic and length.
 
-The production `crucible/guest/crucible-guest/src` emitter and `crucible/control/crucible-session/src` paths
+The production `crucible/crucible-guest/src` emitter and `crucible/crucible-session/src` paths
 were also checked. `crucible_guest::selectable` and its group wrapper use the
 registered selectable register/request/reply and guest-choice codecs;
 `guest_introspection_agent` uses the registered introspection doorbell and

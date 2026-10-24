@@ -8,11 +8,11 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   protocolLib = builtins.concatStringsSep "\n" (map builtins.readFile [
-    ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs
-    ../../crates/crucible/protocol/crucible-qemu-protocol/src/plugin_observation.rs
-    ../../crates/crucible/protocol/crucible-qemu-protocol/src/control_lifecycle.rs
+    ../../crates/crucible/crucible-qemu-protocol/src/lib.rs
+    ../../crates/crucible/crucible-qemu-protocol/src/plugin_observation.rs
+    ../../crates/crucible/crucible-qemu-protocol/src/control_lifecycle.rs
   ]);
-  handshakeTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/tests/handshake.rs;
+  handshakeTest = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/handshake.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -21,7 +21,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocolLib [
+    failuresFor "crates/crucible/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "current protocol version";
         needle = "pub const CONTROL_PROTOCOL_VERSION";
@@ -87,7 +87,7 @@
         needle = "writer.flush()";
       }
     ]
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/handshake.rs" handshakeTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/tests/handshake.rs" handshakeTest [
       {
         label = "host happy path";
         needle = "host_accepts_exact_hello_and_writes_hello_ack";

@@ -294,7 +294,7 @@ issuer rather than treating the first single-family increment as qualification.
 
 ## Retained shutdown and candidate handback
 
-The host's [child shutdown continuation](../../../crates/crucible/qemu/crucible-qemu-host/src/node/shutdown_continuation.rs)
+The host's [child shutdown continuation](../../../crates/crucible/crucible-qemu-host/src/node/shutdown_continuation.rs)
 keeps one Cleanup operation, entered ladder, returned wait results and independent
 post history for each actual child. QMP Quit borrows that operation. An observed
 reap remains factual even if its post refuses, and later calls do not repeat
@@ -304,7 +304,7 @@ the complete node's RAM source, controller or staged child services.
 
 A failed debugger candidate now keeps its original constructor, receiver and
 receipt in the lifecycle's existing inline slot. The
-[staged handback](../../../crates/crucible/control/crucible-daemon/src/vm_lifecycle/construction/retained_debug.rs)
+[staged handback](../../../crates/crucible/crucible-daemon/src/vm_lifecycle/construction/retained_debug.rs)
 saves an accepted receipt before converting its error shell, then requires actual
 Complete stage, retained post-body and terminal custody. Body cleanup alone cannot
 clear the slot. Completed history moves into the containing post-body's existing

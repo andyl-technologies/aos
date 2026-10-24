@@ -3,6 +3,177 @@
 use super::*;
 
 #[tokio::test]
+async fn membership_apply_rejects_a_changed_reviewed_baseline() {
+    let (service, db, _lease, admin_auth) = injected_service(vec![], vec![]).await;
+    let org_id = db
+        .create_org("membership-review", "Membership review")
+        .await
+        .unwrap();
+    let scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
+    let target_id = db
+        .create_user("reviewed-member@example.test", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", target_id, &scope, "viewer")
+        .await
+        .unwrap();
+
+    let plan = service
+        .plan_set_membership(
+            Some(&admin_auth),
+            pb::PlanSetMembershipRequest {
+                principal_kind: "user".into(),
+                principal_ref: "reviewed-member@example.test".into(),
+                scope: scope.clone(),
+                role: String::new(),
+                expected_resource_version: "viewer".into(),
+                idempotency_key: "plan-reviewed-membership".into(),
+            },
+        )
+        .await
+        .unwrap()
+        .plan
+        .unwrap();
+
+    db.set_membership_role_owner_safe("user", target_id, &scope, "owner")
+        .await
+        .unwrap();
+    let error = service
+        .apply_set_membership(
+            Some(&admin_auth),
+            pb::ApplyTopologyPlanRequest {
+                plan_id: plan.plan_id,
+                idempotency_key: "apply-reviewed-membership".into(),
+                confirmation_hash: plan.confirmation_hash,
+            },
+        )
+        .await
+        .unwrap_err();
+
+    assert!(matches!(error, RpcError::FailedPrecondition(_)));
+    assert_eq!(
+        db.membership_snapshot("user", target_id, &scope)
+            .await
+            .unwrap()
+            .unwrap()
+            .role,
+        "owner"
+    );
+}
+
+#[tokio::test]
+async fn bearer_permissions_follow_parent_lifecycle_and_provenance() {
+    let (service, db, _lease, _admin_auth) = injected_service(vec![], vec![]).await;
+    let owner_id = db
+        .create_user("bearer-parent@example.test", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", owner_id, "instance", Role::Owner.as_str())
+        .await
+        .unwrap();
+    let owner = Principal::user(owner_id);
+    let (token_id, secret) = db
+        .create_token(owner, "instance", &[Permission::Read], None, None)
+        .await
+        .unwrap();
+    let token_auth = db.validate_token(&secret).await.unwrap().unwrap();
+    let bearer = service.jwt_keys.mint(&token_auth, 3_600).unwrap();
+    let claims = service.jwt_keys.verify(&bearer).unwrap();
+
+    service
+        .require_permission(&claims, Permission::Read, &Scope::root())
+        .await
+        .unwrap();
+
+    db.revoke_token(&token_id).await.unwrap();
+    assert!(matches!(
+        service
+            .require_permission(&claims, Permission::Read, &Scope::root())
+            .await,
+        Err(RpcError::Unauthenticated(_))
+    ));
+    assert!(
+        !service
+            .claims_allow(Some(&claims), Permission::Read, &Scope::root())
+            .await
+    );
+
+    let session_auth = TokenAuth {
+        token_id: format!("browser-session-{owner_id}"),
+        owner,
+        scope: Scope::root(),
+        permissions: vec![Permission::Read],
+        expires_at: None,
+    };
+    let session_bearer = service
+        .jwt_keys
+        .mint_browser_session(&session_auth, 300)
+        .unwrap();
+    let session_claims = service.jwt_keys.verify(&session_bearer).unwrap();
+    service
+        .require_permission(&session_claims, Permission::Read, &Scope::root())
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+async fn cached_token_resolution_rechecks_retirement_and_expiry() {
+    let (service, db, _lease, _admin_auth) = injected_service(vec![], vec![]).await;
+    let kv = Arc::new(crate::kv::InMemoryKv::new());
+    let service = service.with_kv(kv);
+    let owner_id = db
+        .create_user("cached-token-owner@example.test", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", owner_id, "instance", Role::Owner.as_str())
+        .await
+        .unwrap();
+    let owner = Principal::user(owner_id);
+
+    let (retired_id, retired_secret) = db
+        .create_token(owner, "instance", &[Permission::Read], None, None)
+        .await
+        .unwrap();
+    assert!(service
+        .validate_token_cached(&retired_secret)
+        .await
+        .unwrap()
+        .is_some());
+
+    db.revoke_token(&retired_id).await.unwrap();
+    assert!(service
+        .validate_token_cached(&retired_secret)
+        .await
+        .unwrap()
+        .is_none());
+
+    let expires_at = aos_hub_model::clock::now_unix_secs() + 2;
+    let (_expired_id, expired_secret) = db
+        .create_token(
+            owner,
+            "instance",
+            &[Permission::Read],
+            None,
+            Some(expires_at),
+        )
+        .await
+        .unwrap();
+    assert!(service
+        .validate_token_cached(&expired_secret)
+        .await
+        .unwrap()
+        .is_some());
+
+    tokio::time::sleep(std::time::Duration::from_millis(2_100)).await;
+    assert!(db.validate_token(&expired_secret).await.unwrap().is_none());
+    assert!(service
+        .validate_token_cached(&expired_secret)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
 async fn reporter_apply_recovers_after_mutation_and_revokes_an_inactive_principal() {
     let (service, db, _lease, admin_auth) = injected_service(vec![], vec![]).await;
     let org_id = db
@@ -167,7 +338,31 @@ async fn registry_lookup_accepts_stable_identity_and_canonical_slug() {
 
 #[tokio::test]
 async fn access_tokens_use_native_permissions_and_stable_scopes() {
-    let (service, _db, _lease, auth) = injected_service(vec![], vec![]).await;
+    let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+    let owner_id = db
+        .user_by_email("writer@example.test")
+        .await
+        .unwrap()
+        .unwrap();
+    let jwt_keys = JwtKeys::from_secret(b"injected-write-flow-test-key");
+    let token = jwt_keys
+        .mint(
+            &TokenAuth {
+                token_id: "self-service-token".into(),
+                owner: Principal::user(owner_id),
+                scope: Scope::root(),
+                permissions: vec![
+                    Permission::Read,
+                    Permission::Publish,
+                    Permission::TokensManage,
+                    Permission::TokensSelf,
+                ],
+                expires_at: None,
+            },
+            3600,
+        )
+        .unwrap();
+    let auth = format!("Bearer {token}");
     let plan = service
         .plan_issue_access_token(
             Some(&auth),
@@ -219,6 +414,168 @@ async fn access_tokens_use_native_permissions_and_stable_scopes() {
     assert_eq!(token.permissions, vec!["publish", "read"]);
     assert_eq!(token.comment, "test publisher");
     assert_eq!(token.resource_version, "active");
+}
+
+#[tokio::test]
+async fn human_access_tokens_are_limited_to_the_authenticated_owner() {
+    let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+    let administrator_id = db
+        .create_user("token-admin@example.test", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", administrator_id, "instance", Role::Admin.as_str())
+        .await
+        .unwrap();
+    let owner_id = db
+        .create_user("token-owner@example.test", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", owner_id, "instance", Role::Owner.as_str())
+        .await
+        .unwrap();
+
+    let jwt_keys = JwtKeys::from_secret(b"injected-write-flow-test-key");
+    let token = jwt_keys
+        .mint(
+            &TokenAuth {
+                token_id: "token-admin".into(),
+                owner: Principal::user(administrator_id),
+                scope: Scope::root(),
+                permissions: vec![Permission::TokensManage, Permission::MembersManage],
+                expires_at: None,
+            },
+            3600,
+        )
+        .unwrap();
+    let auth = format!("Bearer {token}");
+
+    let result = service
+        .plan_issue_access_token(
+            Some(&auth),
+            pb::PlanIssueAccessTokenRequest {
+                owner: "user:token-owner@example.test".into(),
+                scope: "instance".into(),
+                permissions: vec!["members.manage".into()],
+                ttl_secs: 3600,
+                expected_resource_version: String::new(),
+                idempotency_key: "other-human-token".into(),
+                comment: String::new(),
+            },
+        )
+        .await;
+
+    assert!(matches!(result, Err(RpcError::PermissionDenied(_))));
+    assert!(
+        db.list_tokens_for(Principal::user(owner_id))
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[tokio::test]
+async fn service_account_token_delegation_is_bounded_and_rechecked() {
+    let (service, db, _lease, _auth) = injected_service(vec![], vec![]).await;
+    let administrator_id = db
+        .create_user("service-token-admin@example.test", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", administrator_id, "instance", Role::Admin.as_str())
+        .await
+        .unwrap();
+    let org_id = db
+        .create_org("token-delegation", "Token delegation")
+        .await
+        .unwrap();
+    let service_account_id = db
+        .create_service_account(org_id, "publisher")
+        .await
+        .unwrap();
+    db.grant_membership(
+        "service_account",
+        service_account_id,
+        "instance",
+        Role::Owner.as_str(),
+    )
+    .await
+    .unwrap();
+
+    let jwt_keys = JwtKeys::from_secret(b"injected-write-flow-test-key");
+    let token = jwt_keys
+        .mint(
+            &TokenAuth {
+                token_id: "service-token-admin".into(),
+                owner: Principal::user(administrator_id),
+                scope: Scope::root(),
+                permissions: vec![Permission::Read, Permission::TokensManage],
+                expires_at: None,
+            },
+            3600,
+        )
+        .unwrap();
+    let auth = format!("Bearer {token}");
+    let request = |permission: &str, idempotency_key: &str| pb::PlanIssueAccessTokenRequest {
+        owner: "service_account:token-delegation/publisher".into(),
+        scope: "instance".into(),
+        permissions: vec![permission.into()],
+        ttl_secs: 3600,
+        expected_resource_version: String::new(),
+        idempotency_key: idempotency_key.into(),
+        comment: String::new(),
+    };
+
+    let excessive = service
+        .plan_issue_access_token(
+            Some(&auth),
+            request("members.manage", "service-token-excessive"),
+        )
+        .await;
+    assert!(matches!(excessive, Err(RpcError::PermissionDenied(_))));
+
+    let successful_plan = service
+        .plan_issue_access_token(Some(&auth), request("read", "service-token-success"))
+        .await
+        .unwrap()
+        .plan
+        .unwrap();
+    let issued = service
+        .apply_issue_access_token(
+            Some(&auth),
+            pb::ApplyTopologyPlanRequest {
+                plan_id: successful_plan.plan_id,
+                confirmation_hash: successful_plan.confirmation_hash,
+                idempotency_key: "service-token-success-apply".into(),
+            },
+        )
+        .await
+        .unwrap();
+    let issued_auth = db.validate_token(&issued.secret).await.unwrap().unwrap();
+    assert_eq!(
+        issued_auth.owner,
+        Principal::service_account(service_account_id)
+    );
+    assert_eq!(issued_auth.permissions, vec![Permission::Read]);
+
+    let stale_plan = service
+        .plan_issue_access_token(Some(&auth), request("read", "service-token-stale"))
+        .await
+        .unwrap()
+        .plan
+        .unwrap();
+    db.grant_membership("user", administrator_id, "instance", Role::Viewer.as_str())
+        .await
+        .unwrap();
+    let stale = service
+        .apply_issue_access_token(
+            Some(&auth),
+            pb::ApplyTopologyPlanRequest {
+                plan_id: stale_plan.plan_id,
+                confirmation_hash: stale_plan.confirmation_hash,
+                idempotency_key: "service-token-stale-apply".into(),
+            },
+        )
+        .await;
+    assert!(matches!(stale, Err(RpcError::FailedPrecondition(_))));
 }
 
 #[tokio::test]
@@ -815,12 +1172,13 @@ async fn invitation_acceptance_atomically_creates_membership_for_matching_user()
         .unwrap();
     let token = service
         .jwt_keys
-        .mint(
+        .mint_browser_session(
             &TokenAuth {
                 token_id: "invitee-session".into(),
                 owner: Principal::user(invitee),
                 scope: Scope::root(),
                 permissions: Vec::new(),
+                expires_at: None,
             },
             3600,
         )

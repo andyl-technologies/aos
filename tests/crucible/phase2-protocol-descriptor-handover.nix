@@ -7,16 +7,16 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  protocolCargo = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/Cargo.toml;
+  protocolCargo = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/Cargo.toml;
   protocolLib = builtins.concatStringsSep "\n" (map builtins.readFile [
-    ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs
-    ../../crates/crucible/protocol/crucible-qemu-protocol/src/plugin_observation.rs
-    ../../crates/crucible/protocol/crucible-qemu-protocol/src/control_lifecycle.rs
+    ../../crates/crucible/crucible-qemu-protocol/src/lib.rs
+    ../../crates/crucible/crucible-qemu-protocol/src/plugin_observation.rs
+    ../../crates/crucible/crucible-qemu-protocol/src/control_lifecycle.rs
   ]);
-  descriptorTest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/tests/descriptor_handover.rs;
+  descriptorTest = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/tests/descriptor_handover.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   crateSpec = builtins.readFile ../../docs/rfcs/0010-crucible/27-crate-structure.md;
-  unsafeFenceRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/crate_unsafe_fence.rs;
+  unsafeFenceRust = builtins.readFile ../../crates/crucible/crucible-test-support/tests/crate_unsafe_fence.rs;
   unsafeFenceNix = builtins.readFile ./phase1-crate-unsafe-fence.nix;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -25,13 +25,13 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible/protocol/crucible-qemu-protocol/Cargo.toml" protocolCargo [
+    failuresFor "crates/crucible/crucible-qemu-protocol/Cargo.toml" protocolCargo [
       {
         label = "libc workspace dependency";
         needle = "libc = { workspace = true }";
       }
     ]
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocolLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "unsafe-boundary fence";
         needle = "#![deny(unsafe_op_in_unsafe_fn)]";
@@ -117,7 +117,7 @@
         needle = "OwnedFd::from_raw_fd";
       }
     ]
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/descriptor_handover.rs" descriptorTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/tests/descriptor_handover.rs" descriptorTest [
       {
         label = "fixed-order transfer test";
         needle = "setup_handover_transfers_three_descriptors_in_fixed_order";
@@ -163,7 +163,7 @@
         needle = "The engine and control plane remain safe.";
       }
     ]
-    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/crate_unsafe_fence.rs" unsafeFenceRust [
+    ++ failuresFor "crates/crucible/crucible-test-support/tests/crate_unsafe_fence.rs" unsafeFenceRust [
       {
         label = "Rust unsafe-fence protocol spec";
         needle = "package: \"crucible-qemu-protocol\"";

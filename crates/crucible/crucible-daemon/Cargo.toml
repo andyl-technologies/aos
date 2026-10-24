@@ -1,0 +1,72 @@
+[package]
+name = "crucible-daemon"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[features]
+default = []
+destructive-recovery-faults = ["crucible-campaign/destructive-recovery-faults"]
+test-support = ["crucible-control-api/test-support", "crucible-control-server/test-support", "crucible-engine/test-support", "crucible-qemu-host/test-support"]
+private-measurement-domain = ["crucible-host-resources/private-measurement-domain", "crucible-qemu-host/private-measurement-domain"]
+
+[lints]
+workspace = true
+
+[dependencies]
+crucible-host-resources = { workspace = true }
+crucible-ram = { workspace = true }
+zbus = { workspace = true }
+crucible-device = { path = "../crucible-device" }
+crucible-control-client = { path = "../crucible-control-client" }
+crucible-control-server = { path = "../crucible-control-server" }
+sha2 = { workspace = true }
+blake3 = { workspace = true }
+ciborium = { workspace = true }
+crucible-engine = { path = "../crucible-engine" }
+crucible-control-api = { path = "../crucible-control-api" }
+crucible-campaign = { path = "../crucible-campaign" }
+crucible-store = { workspace = true }
+aos-linux-project-quota = { workspace = true }
+crucible-qemu-protocol = { path = "../crucible-qemu-protocol" }
+crucible-qemu-host = { path = "../crucible-qemu-host" }
+crucible-qemu-shmem = { path = "../crucible-qemu-shmem" }
+crucible-store-s3 = { workspace = true }
+crucible-session = { path = "../crucible-session" }
+ed25519-dalek = { workspace = true }
+rand = { workspace = true }
+rustix = { workspace = true, features = ["event", "net", "time", "process", "param"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+toml = { workspace = true }
+
+[dev-dependencies]
+crucible-store = { workspace = true, features = ["test-support"] }
+crucible-host-resources = { workspace = true, features = ["test-support"] }
+rusqlite = { workspace = true }
+crucible-engine = { path = "../crucible-engine", features = ["test-double", "test-support"] }
+crucible-control-api = { path = "../crucible-control-api" }
+crucible-guest = { path = "../crucible-guest" }
+crucible-qemu-host = { path = "../crucible-qemu-host", features = ["test-support"] }
+
+[[test]]
+name = "gate_campaign_component_contract"
+required-features = ["test-support"]
+
+[[test]]
+name = "gate_exact_closure_streaming"
+required-features = ["test-support"]
+
+[[bin]]
+name = "crucible-measurement-actor"
+path = "src/bin/measurement_actor.rs"
+required-features = ["private-measurement-domain"]
+
+[[bin]]
+name = "crucible-measurement-workflow"
+path = "src/bin/measurement_workflow.rs"
+required-features = ["private-measurement-domain"]

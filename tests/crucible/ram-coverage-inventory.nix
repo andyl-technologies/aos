@@ -78,8 +78,8 @@
         features = ["test-support"];
       };
       evidenceFiles = map evidenceFile [
-        "crates/crucible/protocol/crucible-ram/examples/ram_hash_benchmark.rs"
-        "crates/crucible/protocol/crucible-ram/Cargo.toml"
+        "crates/crucible/crucible-ram/examples/ram_hash_benchmark.rs"
+        "crates/crucible/crucible-ram/Cargo.toml"
         "docs/rfcs/0021-crucible-paged-ram/measurements/host-hashing/README.md"
         "docs/rfcs/0021-crucible-paged-ram/measurements/host-hashing/receipt.json"
         "docs/rfcs/0021-crucible-paged-ram/measurements/host-hashing/measurements.csv"

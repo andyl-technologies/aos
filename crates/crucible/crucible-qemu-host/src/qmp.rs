@@ -1,0 +1,2759 @@
+//! Minimal typed QMP client.
+//!
+//! This module limits QMP use to capability negotiation, typed VM
+//! status/topology, hot-fork-readiness observation, bounded QEMU-owned resource
+//! inventories, the reversible plugin callback barrier, and QEMU's retained
+//! template-preparation coordinator, plus crate-owned snapshot maintenance,
+//! snapshot job polling, bounded standard `getfd`/`closefd` transfer plus
+//! QEMU-owned authenticated private-ring retention, and graceful quit. The
+//! client parses JSON-line QMP responses internally,
+//! skips asynchronous event objects while waiting for a command response, and
+//! exposes no public arbitrary-command execution path.
+
+use std::io::{self, BufReader, ErrorKind, Read, Write};
+use std::net::TcpStream;
+#[cfg(unix)]
+use std::os::fd::BorrowedFd;
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
+use std::thread;
+use std::time::Duration;
+
+use crate::supervision::HostSupervisionDeadline;
+use crucible_host_resources::host_supervision::{
+    HostOperationClass, HostOperationGuard, HostOperationSupervisor,
+};
+
+use serde_json::{Value, json};
+use thiserror::Error;
+
+use crucible_qemu_shmem::SetupRegionBackingIdentity;
+
+use crate::QemuNodeChannelError;
+
+#[cfg(any(test, feature = "test-support"))]
+mod block_completion_observation;
+mod checkpoint;
+#[cfg(target_os = "linux")]
+mod checkpoint_begin;
+#[cfg(target_os = "linux")]
+mod checkpoint_original_wait;
+mod command;
+#[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+mod selectable_reset;
+#[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+pub use selectable_reset::QmpSelectableResetComplete;
+#[cfg(feature = "kernel-swap-measurement")]
+mod kernel_swap_residency;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub(crate) mod parent_park_drain;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use parent_park_drain::{QmpParentParkClosedRequest, QmpParentParkResult};
+mod paused_cpu;
+#[cfg(any(test, all(target_os = "linux", feature = "private-measurement-domain")))]
+pub(crate) mod readonly_backing_stream;
+mod receiving_runstate;
+#[cfg(test)]
+mod supervision_tests;
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use readonly_backing_stream::{
+    BackingEvent as QmpReadOnlyBackingEvent, BackingOwner as QmpReadOnlyBackingOwner,
+};
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use readonly_backing_stream::{
+    QmpReadOnlyBackingFailure, QmpReadOnlyBackingReceipt, QmpReadOnlyBackingSink,
+    QmpReadOnlyBackingStreamError,
+};
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub(crate) mod readonly_backing_transport;
+#[cfg(feature = "kernel-swap-measurement")]
+pub use kernel_swap_residency::{
+    QMP_QUERY_KERNEL_SWAP_ADMISSION_COMMAND, QMP_QUERY_KERNEL_SWAP_RESIDENCY_COMMAND,
+    QmpKernelSwapAdmission, QmpKernelSwapCancellation, QmpKernelSwapResidency,
+};
+#[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+pub use readonly_backing_transport::BackingCaptureFailure as QmpReadOnlyBackingCaptureFailure;
+#[cfg(any(test, feature = "test-support"))]
+mod cpu_write_observation;
+#[cfg(any(test, feature = "test-support"))]
+mod performance_observation;
+#[cfg(any(test, feature = "test-support"))]
+pub use cpu_write_observation::QemuCpuWriteObservation;
+pub use paused_cpu::{QMP_PAUSED_CPU_SCHEMA_VERSION, QMP_QUERY_PAUSED_CPU_COMMAND, QmpPausedCpu};
+#[cfg(any(test, feature = "test-support"))]
+pub use performance_observation::QemuPerformanceObservation;
+mod fingerprint_projection;
+mod hot_fork;
+mod hot_fork_coordinator;
+mod hot_fork_stages;
+#[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
+mod native_alias_probe;
+pub(crate) mod ram_restore;
+use command::{
+    HotForkAsyncWorkerBarrierAction, HotForkBlockBarrierAction, HotForkChildConsoleAction,
+    HotForkChildDiagnosticAction, HotForkChildQmpAction, HotForkPluginBarrierAction,
+    HotForkPluginEndpointAction, HotForkPrivateRingAction, HotForkRcuBarrierAction,
+    HotForkTemplateAction, QmpCommand,
+};
+use fingerprint_projection::{
+    QMP_QUERY_FINGERPRINT_PROJECTION_MANIFEST_COMMAND, parse_fingerprint_projection_manifest,
+};
+pub(crate) use fingerprint_projection::{
+    QmpFingerprintProjectionManifest, QmpFingerprintProjectionManifestRow,
+};
+#[cfg(all(test, target_os = "linux"))]
+mod checkpoint_paged_source_tests;
+
+#[cfg(all(test, unix))]
+pub(crate) mod checkpoint_paged_source_support;
+
+mod hot_fork_ram;
+pub(crate) use hot_fork_ram::{
+    QmpHotForkChildRamDescriptors, QmpHotForkChildRamNames, QmpHotForkChildRamState,
+};
+mod snapshot_tag;
+#[cfg(target_os = "linux")]
+mod unix_socket;
+mod vmstate_control;
+
+pub(crate) use checkpoint::{
+    QMP_CHECKPOINT_ABORT_COMMAND, QMP_CHECKPOINT_CAPTURE_COMMAND, QMP_CHECKPOINT_COMMIT_COMMAND,
+    QMP_CHECKPOINT_RESTORE_COMMAND, QMP_QUERY_CHECKPOINT_EPOCH_COMMAND,
+};
+pub(crate) use checkpoint::{
+    QmpCheckpointCapture, QmpCheckpointCaptureOutputs, QmpCheckpointCaptureRequest,
+};
+mod checkpoint_topology;
+pub use checkpoint::{QmpCheckpointEpochState, QmpCheckpointIdentity};
+pub(crate) use checkpoint_topology::QmpCheckpointTopology;
+pub(crate) use hot_fork::QmpHotForkAsyncWorkerBarrierState;
+pub(crate) use hot_fork::source_mapping_extent;
+use hot_fork::{
+    HotForkChildFilesAction, HotForkChildProcessAction, HotForkChildProcessContractAction,
+    parse_hot_fork_async_worker_barrier_state, parse_hot_fork_block_barrier_state,
+    parse_hot_fork_block_seal_state, parse_hot_fork_child_console_state,
+    parse_hot_fork_child_diagnostic_state, parse_hot_fork_child_files_state,
+    parse_hot_fork_child_process_contract_state, parse_hot_fork_child_process_state,
+    parse_hot_fork_child_qmp_state, parse_hot_fork_child_runtime_state,
+    parse_hot_fork_plugin_barrier_state, parse_hot_fork_plugin_endpoint_state,
+    parse_hot_fork_plugin_resource_inventory, parse_hot_fork_private_ring_state,
+    parse_hot_fork_rcu_barrier_state, parse_hot_fork_source_graph, parse_hot_fork_state,
+    parse_hot_fork_template_state,
+};
+pub use hot_fork::{
+    QMP_HOT_FORK_ASYNC_WORKER_BARRIER_COMMAND, QMP_HOT_FORK_ASYNC_WORKER_BARRIER_SCHEMA_VERSION,
+    QMP_HOT_FORK_BLOCK_BARRIER_COMMAND, QMP_HOT_FORK_BLOCK_BARRIER_SCHEMA_VERSION,
+    QMP_HOT_FORK_BLOCK_NODE_NAME_MAX_BYTES, QMP_HOT_FORK_BLOCK_SEAL_COMMAND,
+    QMP_HOT_FORK_BLOCK_SEAL_SCHEMA_VERSION, QMP_HOT_FORK_BLOCK_SOURCE_PROOF_SCHEMA_VERSION,
+    QMP_HOT_FORK_CHILD_CONSOLE_COMMAND, QMP_HOT_FORK_CHILD_CONSOLE_SCHEMA_VERSION,
+    QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND, QMP_HOT_FORK_CHILD_DIAGNOSTICS_SCHEMA_VERSION,
+    QMP_HOT_FORK_CHILD_DIAGNOSTICS_TARGET_FD, QMP_HOT_FORK_CHILD_FILES_COMMAND,
+    QMP_HOT_FORK_CHILD_FILES_MAX, QMP_HOT_FORK_CHILD_FILES_SCHEMA_VERSION,
+    QMP_HOT_FORK_CHILD_PROCESS_COMMAND, QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND,
+    QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_SCHEMA_VERSION, QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
+    QMP_HOT_FORK_CHILD_QMP_COMMAND, QMP_HOT_FORK_CHILD_QMP_SCHEMA_VERSION,
+    QMP_HOT_FORK_CHILD_RUNTIME_SCHEMA_VERSION, QMP_HOT_FORK_COMMAND,
+    QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND, QMP_HOT_FORK_PLUGIN_BARRIER_SCHEMA_VERSION,
+    QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND, QMP_HOT_FORK_PLUGIN_ENDPOINTS_SCHEMA_VERSION,
+    QMP_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_SCHEMA_VERSION, QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
+    QMP_HOT_FORK_PRIVATE_RINGS_SCHEMA_VERSION, QMP_HOT_FORK_RCU_BARRIER_COMMAND,
+    QMP_HOT_FORK_RCU_BARRIER_SCHEMA_VERSION, QMP_HOT_FORK_SCHEMA_VERSION,
+    QMP_HOT_FORK_SOURCE_GRAPH_SCHEMA_VERSION, QMP_HOT_FORK_TEMPLATE_COMMAND,
+    QMP_HOT_FORK_TEMPLATE_REQUIRED_PROOFS, QMP_HOT_FORK_TEMPLATE_RESOURCE_STAGE_SCHEMA_VERSION,
+    QMP_HOT_FORK_TEMPLATE_SCHEMA_VERSION, QMP_QUERY_HOT_FORK_BLOCK_SEAL_COMMAND,
+    QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND, QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND,
+    QmpHotForkBlockBarrierState, QmpHotForkBlockSealCandidate, QmpHotForkBlockSealRequest,
+    QmpHotForkBlockSealState, QmpHotForkBlockSealedRoot, QmpHotForkBlockSnapshotBinding,
+    QmpHotForkBlockSnapshotBindingError, QmpHotForkBlockSnapshotRoot, QmpHotForkBlockSourceProof,
+    QmpHotForkChildConsoleState, QmpHotForkChildDiagnosticState, QmpHotForkChildFile,
+    QmpHotForkChildFileRoot, QmpHotForkChildFilesState, QmpHotForkChildProcessContractIdentity,
+    QmpHotForkChildProcessContractNames, QmpHotForkChildProcessContractState,
+    QmpHotForkChildProcessPhase, QmpHotForkChildProcessState, QmpHotForkChildQmpState,
+    QmpHotForkChildRuntimePhase, QmpHotForkChildRuntimeState, QmpHotForkOutcome,
+    QmpHotForkPluginBarrierState, QmpHotForkPluginEndpointDescriptorPlan,
+    QmpHotForkPluginEndpointIdentity, QmpHotForkPluginEndpointState,
+    QmpHotForkPluginResourceInventory, QmpHotForkPrivateRingState, QmpHotForkProof,
+    QmpHotForkRamBorrowInventory, QmpHotForkRcuBarrierState, QmpHotForkRequest,
+    QmpHotForkRequestError, QmpHotForkSourceGraphMember, QmpHotForkSourceGraphReceipt,
+    QmpHotForkState, QmpHotForkTemplateFailureStage, QmpHotForkTemplateOutcome,
+    QmpHotForkTemplateResourceStageState, QmpHotForkTemplateState,
+};
+pub(crate) use ram_restore::{QmpCheckpointRestore, QmpCheckpointRestoreRequest};
+pub(crate) use snapshot_tag::QmpSnapshotTag;
+pub use vmstate_control::QemuQmpVmStateControlChannel;
+
+/// QMP command name used for capability negotiation.
+pub const QMP_CAPABILITIES_COMMAND: &str = "qmp_capabilities";
+/// QMP command name used for saving the QEMU VMState half of a checkpoint.
+pub const QMP_SNAPSHOT_SAVE_COMMAND: &str = "snapshot-save";
+/// QMP command name used for deleting the QEMU VMState half of a checkpoint.
+pub const QMP_SNAPSHOT_DELETE_COMMAND: &str = "snapshot-delete";
+/// QMP command name used for polling snapshot job completion.
+pub const QMP_QUERY_JOBS_COMMAND: &str = "query-jobs";
+/// QMP command name used to release one concluded snapshot job.
+pub const QMP_JOB_DISMISS_COMMAND: &str = "job-dismiss";
+/// QMP command name used for reading the VM run state.
+pub const QMP_QUERY_STATUS_COMMAND: &str = "query-status";
+/// QMP command used to stop guest execution at a lifecycle boundary.
+pub const QMP_STOP_COMMAND: &str = "stop";
+/// QMP command used to resume guest execution after a lifecycle boundary.
+pub const QMP_CONT_COMMAND: &str = "cont";
+/// QMP command that authorizes one authenticated terminal lifecycle exit.
+pub const QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND: &str = "crucible-complete-terminal-lifecycle";
+/// QMP command name used for graceful QEMU termination.
+pub const QMP_QUIT_COMMAND_NAME: &str = "quit";
+/// Standard QMP command used to import one Unix descriptor under a stable name.
+pub const QMP_GETFD_COMMAND: &str = "getfd";
+/// Standard QMP command used to close one previously imported descriptor.
+pub const QMP_CLOSEFD_COMMAND: &str = "closefd";
+/// Patched QMP command that adopts the authenticated startup block roots.
+pub const QMP_ADOPT_LAUNCH_FDSETS_COMMAND: &str = "x-crucible-adopt-launch-fdsets";
+/// Maximum bytes in one descriptor name admitted by the typed QMP surface.
+pub const QMP_DESCRIPTOR_NAME_MAX_BYTES: usize = 128;
+/// Versioned token consumed by the dormant fixture-side debugger bootstrap.
+pub const QMP_DEBUG_GUEST_ACTIVATION_TOKEN: &str = "CRUCIBLE_DEBUG_AGENT_V1\n";
+/// QMP snapshot device name used for diskless VMState snapshots.
+pub const QMP_SNAPSHOT_VMSTATE_DEVICE: &str = "vmstate";
+/// Default maximum number of `query-jobs` polls for a snapshot operation.
+pub const QMP_JOB_QUERY_LIMIT: usize = 1200;
+/// Default delay between `query-jobs` polls for a snapshot operation.
+pub const QMP_JOB_QUERY_INTERVAL: Duration = Duration::from_millis(250);
+/// Default timeout for the initial QMP greeting.
+pub const QMP_GREETING_TIMEOUT: Duration = Duration::from_secs(5);
+/// Default timeout for one QMP command read or write.
+pub const QMP_COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+/// Default maximum bytes in one QMP JSON line.
+pub const QMP_MAX_LINE_BYTES: usize = 1024 * 1024;
+
+// Explicit capacity keeps the real BufReader allocation in its host request.
+pub(crate) const QMP_READ_BUFFER_BYTES: usize = 8 * 1024;
+/// Default maximum asynchronous QMP event objects skipped while awaiting a command.
+pub const QMP_MAX_ASYNC_EVENTS_PER_COMMAND: usize = 1024;
+
+/// Stream contract required by the bounded QMP client.
+pub trait QmpTimeoutStream: Read + Write + Send {
+    /// Installs the read timeout used by the next QMP receive operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] when the stream cannot install the timeout.
+    fn set_qmp_read_timeout(&mut self, timeout: Duration) -> io::Result<()>;
+
+    /// Installs the write timeout used by the next QMP send operation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::Error`] when the stream cannot install the timeout.
+    fn set_qmp_write_timeout(&mut self, timeout: Duration) -> io::Result<()>;
+
+    /// Sends one complete QMP request prefix with one attached Unix descriptor.
+    ///
+    /// Implementations must attach the descriptor with exactly one
+    /// `SCM_RIGHTS` control message to the first returned byte. A successful
+    /// short write may be completed by ordinary stream writes because the
+    /// descriptor is already attached to that request prefix.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`io::ErrorKind::Unsupported`] when this stream cannot transfer
+    /// Unix descriptors, or another I/O error when the transfer fails.
+    #[cfg(unix)]
+    fn send_qmp_bytes_with_descriptor(
+        &mut self,
+        _bytes: &[u8],
+        _descriptor: BorrowedFd<'_>,
+    ) -> io::Result<usize> {
+        Err(io::Error::new(
+            ErrorKind::Unsupported,
+            "QMP stream does not support Unix descriptor transfer",
+        ))
+    }
+
+    /// Polls this connection alongside one backing stream and its cancellation.
+    ///
+    /// The tuple reports QMP readiness and cancellation readiness. This fixed
+    /// progress operation lends no descriptor or ownership to its caller.
+    ///
+    /// # Errors
+    /// Refuses transports without Unix descriptor readiness, invalid time
+    /// conversion, or an actual kernel polling error. The caller supplies its
+    /// existing original interval; polling never creates or extends one.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn poll_qmp_backing_progress(
+        &self,
+        _output: BorrowedFd<'_>,
+        _cancellation: BorrowedFd<'_>,
+        _qmp_pending: bool,
+        _data_pending: bool,
+        _timeout: Duration,
+    ) -> io::Result<(bool, bool)> {
+        Err(io::Error::new(
+            ErrorKind::Unsupported,
+            "QMP stream does not support backing readiness",
+        ))
+    }
+
+    /// Permanently closes a stream whose command boundary became ambiguous.
+    ///
+    /// In-memory test transports may retain the default no-op implementation;
+    /// production socket transports must prevent every subsequent exchange.
+    fn poison_qmp_stream(&mut self) {}
+}
+
+impl QmpTimeoutStream for TcpStream {
+    fn set_qmp_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        self.set_read_timeout(Some(timeout))
+    }
+
+    fn set_qmp_write_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        self.set_write_timeout(Some(timeout))
+    }
+}
+
+#[cfg(unix)]
+impl QmpTimeoutStream for UnixStream {
+    fn set_qmp_read_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        self.set_read_timeout(Some(timeout))
+    }
+
+    fn set_qmp_write_timeout(&mut self, timeout: Duration) -> io::Result<()> {
+        self.set_write_timeout(Some(timeout))
+    }
+
+    fn send_qmp_bytes_with_descriptor(
+        &mut self,
+        bytes: &[u8],
+        descriptor: BorrowedFd<'_>,
+    ) -> io::Result<usize> {
+        unix_socket::send_bytes_with_descriptor(self, bytes, descriptor)
+    }
+
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    fn poll_qmp_backing_progress(
+        &self,
+        output: BorrowedFd<'_>,
+        cancellation: BorrowedFd<'_>,
+        qmp_pending: bool,
+        data_pending: bool,
+        timeout: Duration,
+    ) -> io::Result<(bool, bool)> {
+        use rustix::event::{PollFd, PollFlags, Timespec, poll};
+
+        let timeout = Timespec::try_from(timeout)
+            .map_err(|_| io::Error::new(ErrorKind::InvalidInput, "invalid original poll slice"))?;
+        let mut descriptors = [
+            PollFd::new(
+                self,
+                if qmp_pending {
+                    PollFlags::IN
+                } else {
+                    PollFlags::empty()
+                },
+            ),
+            PollFd::new(
+                &output,
+                if data_pending {
+                    PollFlags::IN
+                } else {
+                    PollFlags::empty()
+                },
+            ),
+            PollFd::new(&cancellation, PollFlags::IN),
+        ];
+        match poll(&mut descriptors, Some(&timeout)) {
+            Ok(_) => Ok((
+                !descriptors[0].revents().is_empty(),
+                !descriptors[2].revents().is_empty(),
+            )),
+            Err(rustix::io::Errno::INTR) => Ok((false, false)),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn poison_qmp_stream(&mut self) {
+        let _result = self.shutdown(std::net::Shutdown::Both);
+    }
+}
+
+/// Typed minimal QMP client over an established stream.
+#[derive(Debug)]
+pub struct QmpClient<S> {
+    stream: BufReader<S>,
+    greeting: QmpGreeting,
+    job_poll_policy: QmpJobPollPolicy,
+    io_timeout_policy: QmpIoTimeoutPolicy,
+    predeclared_debug_guest_endpoint: bool,
+    poisoned: bool,
+    host_supervisor: Option<HostOperationSupervisor>,
+    #[cfg(target_os = "linux")]
+    checkpoint_loan: Option<crate::CheckpointOriginalLoan>,
+    #[cfg(target_os = "linux")]
+    checkpoint_request: Option<checkpoint_begin::CheckpointRequestReceipt>,
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    selectable_reset_correlation: u64,
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    selectable_reset_observation: u64,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    readonly_backing_correlation: u64,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    parent_park_session: Option<parent_park_drain::ParentParkSession>,
+}
+
+impl<S> QmpClient<S>
+where
+    S: QmpTimeoutStream,
+{
+    /// Connects a client to an established QMP stream and negotiates capabilities.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the greeting cannot be read or decoded, when the
+    /// greeting is not a QMP greeting, when the capabilities request cannot be
+    /// written, or when QMP reports an error response.
+    pub fn connect(stream: S) -> Result<Self, QmpError> {
+        Self::connect_with_policies(
+            stream,
+            QmpJobPollPolicy::default(),
+            QmpIoTimeoutPolicy::default(),
+        )
+    }
+
+    /// Connects a client with explicit snapshot-job and stream timeout policies.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when either timeout is zero, when the greeting cannot
+    /// be read or decoded, when the greeting is not a QMP greeting, when the
+    /// capabilities request cannot be written, or when QMP cannot enable the
+    /// required OOB capability or reports another error response.
+    pub fn connect_with_policies(
+        stream: S,
+        job_poll_policy: QmpJobPollPolicy,
+        io_timeout_policy: QmpIoTimeoutPolicy,
+    ) -> Result<Self, QmpError> {
+        Self::connect_with_authority(stream, job_poll_policy, io_timeout_policy, None)
+    }
+
+    /// Connects with live target authority before reading the initial greeting.
+    ///
+    /// Greeting and capability waits retain their original starts while runtime
+    /// policy updates change their allowances. Static I/O timeouts apply only
+    /// to clients constructed without operational authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid policies, expiration or cancellation, a
+    /// malformed greeting, or failed capability negotiation.
+    pub fn connect_supervised_with_policies(
+        stream: S,
+        job_poll_policy: QmpJobPollPolicy,
+        io_timeout_policy: QmpIoTimeoutPolicy,
+        supervisor: HostOperationSupervisor,
+    ) -> Result<Self, QmpError> {
+        Self::connect_with_authority(stream, job_poll_policy, io_timeout_policy, Some(supervisor))
+    }
+
+    fn connect_with_authority(
+        stream: S,
+        job_poll_policy: QmpJobPollPolicy,
+        io_timeout_policy: QmpIoTimeoutPolicy,
+        supervisor: Option<HostOperationSupervisor>,
+    ) -> Result<Self, QmpError> {
+        io_timeout_policy.validate()?;
+        let mut client = Self {
+            stream: BufReader::with_capacity(QMP_READ_BUFFER_BYTES, stream),
+            greeting: QmpGreeting {
+                version_present: false,
+                capabilities_present: false,
+            },
+            job_poll_policy,
+            io_timeout_policy,
+            predeclared_debug_guest_endpoint: false,
+            poisoned: false,
+            host_supervisor: supervisor,
+            #[cfg(target_os = "linux")]
+            checkpoint_loan: None,
+            #[cfg(target_os = "linux")]
+            checkpoint_request: None,
+            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+            selectable_reset_correlation: 0,
+            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+            selectable_reset_observation: 0,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            readonly_backing_correlation: 0,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            parent_park_session: None,
+        };
+        client.greeting = client.read_greeting()?;
+        client.send_command(QmpCommand::Capabilities)?;
+        Ok(client)
+    }
+
+    /// Returns the QMP greeting fields observed during connection setup.
+    #[must_use]
+    pub const fn greeting(&self) -> QmpGreeting {
+        self.greeting
+    }
+
+    /// Attaches the target execution's shared operational supervision authority.
+    ///
+    /// Later commands use live class budgets and responsive polling. This
+    /// handle must belong to the child or restored execution; copying a source
+    /// controller's authority does not bind a new process owner.
+    pub fn set_host_operation_supervisor(&mut self, supervisor: HostOperationSupervisor) {
+        self.host_supervisor = Some(supervisor);
+    }
+
+    /// Reads scalar CPU state at an admitted paused SIM boundary.
+    ///
+    /// # Errors
+    /// Refuses native scope failures, stale generations and invalid responses.
+    pub fn query_paused_cpu(
+        &mut self,
+        vcpu: u32,
+        generation: Option<u64>,
+    ) -> Result<QmpPausedCpu, QmpError> {
+        let response = self.send_command_return(QmpCommand::QueryPausedCpu { vcpu, generation })?;
+        paused_cpu::parse_paused_cpu(&response.value, vcpu, generation)
+    }
+
+    /// Reads ordinary stopped generation under the caller's retained original.
+    ///
+    /// # Errors
+    /// Refuses the same native scope, stale-generation and response failures as
+    /// [`Self::query_paused_cpu`], and the original operation's refusal.
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    pub fn query_paused_cpu_under_original(
+        &mut self,
+        vcpu: u32,
+        generation: Option<u64>,
+        original: &HostOperationGuard,
+    ) -> Result<QmpPausedCpu, QmpError> {
+        let response =
+            self.exchange_under(QmpCommand::QueryPausedCpu { vcpu, generation }, original)?;
+        paused_cpu::parse_paused_cpu(&response.value, vcpu, generation)
+    }
+
+    pub(crate) fn query_fingerprint_projection_manifest(
+        &mut self,
+    ) -> Result<QmpFingerprintProjectionManifest, QmpError> {
+        let response = self.send_command_return(QmpCommand::QueryFingerprintProjectionManifest)?;
+        parse_fingerprint_projection_manifest(&response.value)
+    }
+
+    pub(crate) fn adopt_guarded_launch_fdsets(
+        &mut self,
+        has_root_overlay: bool,
+    ) -> Result<(), QmpError> {
+        self.send_command(QmpCommand::AdoptLaunchFdsets { has_root_overlay })
+            .map(|_complete| ())
+    }
+
+    /// Returns a client whose launch already contains the fixed inert endpoint.
+    #[must_use]
+    pub const fn with_predeclared_debug_guest_endpoint(mut self) -> Self {
+        self.predeclared_debug_guest_endpoint = true;
+        self
+    }
+
+    /// Retains the caller's paid original through exact capture and disposition.
+    ///
+    /// # Errors
+    /// Refuses an unusable stream, a different retained original or its boundary.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn bind_checkpoint_original(
+        &mut self,
+        original: crate::CheckpointOriginalLoan,
+    ) -> Result<(), QmpError> {
+        self.ensure_usable()?;
+        if let Some(existing) = &self.checkpoint_loan
+            && !existing.same_owner(&original)
+        {
+            return Err(QmpError::InvalidBound {
+                operation: "bind checkpoint original",
+            });
+        }
+        original
+            .check()
+            .map_err(|source| QmpError::CheckpointOriginal {
+                operation: "bind checkpoint original",
+                source,
+            })?;
+        self.checkpoint_loan = Some(original);
+        Ok(())
+    }
+
+    /// Saves the VMState snapshot under a tag derived from a checkpoint address.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the request cannot be written, when the response
+    /// cannot be read or decoded, when QMP returns an error response, or when
+    /// the snapshot job reports failure or does not conclude within
+    /// [`QMP_JOB_QUERY_LIMIT`] polls.
+    pub(crate) fn savevm(&mut self, tag: &QmpSnapshotTag) -> Result<QmpCommandComplete, QmpError> {
+        let job_id = snapshot_job_id("save", tag);
+        self.send_command(QmpCommand::SaveVm {
+            tag,
+            job_id: &job_id,
+        })?;
+        self.wait_for_job(QmpCommandKind::SaveVm, &job_id)
+    }
+
+    /// Deletes the VMState snapshot named by a checkpoint-derived tag.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the request cannot be written, when the response
+    /// cannot be decoded, or when the delete job fails or exceeds its poll bound.
+    pub(crate) fn delete_snapshot(
+        &mut self,
+        tag: &QmpSnapshotTag,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        let job_id = snapshot_job_id("delete", tag);
+        self.send_command(QmpCommand::DeleteSnapshot {
+            tag,
+            job_id: &job_id,
+        })?;
+        self.wait_for_job(QmpCommandKind::DeleteSnapshot, &job_id)
+    }
+
+    /// Captures one bounded initial or incremental paged RAM candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails or QEMU's response differs
+    /// from the requested identity, capture selection, schema, or output ceilings.
+    pub(crate) fn capture_checkpoint(
+        &mut self,
+        request: &QmpCheckpointCaptureRequest,
+    ) -> Result<QmpCheckpointCapture, QmpError> {
+        let response = self.send_command_return(QmpCommand::CheckpointCapture { request })?;
+        checkpoint::parse_checkpoint_capture(&response.value, request)
+    }
+
+    pub(crate) fn prepare_checkpoint_topology(
+        &mut self,
+        request: &QmpCheckpointCaptureRequest,
+    ) -> Result<QmpCheckpointTopology, QmpError> {
+        let response = self.send_command_return(QmpCommand::CheckpointTopology { request })?;
+        checkpoint_topology::parse(&response.value)
+    }
+
+    /// Restores one authenticated lazy RAM root and non-RAM checkpoint.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails or QEMU's response differs
+    /// from the requested identity, schema, RAM source binding, or byte ceilings.
+    pub(crate) fn restore_checkpoint(
+        &mut self,
+        request: &QmpCheckpointRestoreRequest,
+    ) -> Result<QmpCheckpointRestore, QmpError> {
+        let response = self.send_command_return(QmpCommand::CheckpointRestore { request })?;
+        ram_restore::parse_checkpoint_restore(&response.value, request)
+    }
+
+    /// Commits the exact active checkpoint candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails or QEMU returns malformed
+    /// epoch authority after committing `identity`.
+    pub(crate) fn commit_checkpoint(
+        &mut self,
+        identity: QmpCheckpointIdentity,
+        capture_generation: u64,
+    ) -> Result<QmpCheckpointEpochState, QmpError> {
+        let response = self.send_command_return(QmpCommand::CheckpointCommit {
+            identity,
+            capture_generation,
+        })?;
+        let state = checkpoint::parse_checkpoint_epoch_state(response.command, &response.value)?;
+        if capture_generation == 0
+            || state.committed() != Some(identity)
+            || state.committed_capture_generation() != Some(capture_generation)
+            || state.candidate().is_some()
+        {
+            return Err(QmpError::MalformedTypedResponse {
+                command: response.command,
+                response: response.value.to_string(),
+            });
+        }
+        Ok(state)
+    }
+
+    /// Aborts the exact active checkpoint candidate.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails or QEMU returns malformed
+    /// retained parent authority after aborting `identity`.
+    pub(crate) fn abort_checkpoint(
+        &mut self,
+        identity: QmpCheckpointIdentity,
+        capture_generation: u64,
+    ) -> Result<QmpCheckpointEpochState, QmpError> {
+        let response = self.send_command_return(QmpCommand::CheckpointAbort {
+            identity,
+            capture_generation,
+        })?;
+        let state = checkpoint::parse_checkpoint_epoch_state(response.command, &response.value)?;
+        if state.candidate().is_some() {
+            return Err(QmpError::MalformedTypedResponse {
+                command: response.command,
+                response: response.value.to_string(),
+            });
+        }
+        Ok(state)
+    }
+
+    /// Queries QEMU's committed checkpoint and active candidate authority.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the exchange fails or the response violates
+    /// the exact epoch schema.
+    pub(crate) fn query_checkpoint_epoch(&mut self) -> Result<QmpCheckpointEpochState, QmpError> {
+        let response = self.send_command_return(QmpCommand::QueryCheckpointEpoch)?;
+        checkpoint::parse_checkpoint_epoch_state(response.command, &response.value)
+    }
+
+    /// Requests graceful QEMU termination over QMP.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the request cannot be written, when the response
+    /// cannot be read or decoded, or when QMP returns an error response.
+    pub fn quit(&mut self) -> Result<QmpCommandComplete, QmpError> {
+        self.send_command(QmpCommand::Quit)
+    }
+
+    /// Requests termination without creating another cleanup operation.
+    ///
+    /// # Errors
+    /// Returns the actual transport, response or same-Original refusal.
+    pub(crate) fn quit_under_original(
+        &mut self,
+        original: &HostOperationGuard,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        let response = self.exchange_under(QmpCommand::Quit, original)?;
+        Ok(QmpCommandComplete {
+            command: response.command,
+        })
+    }
+
+    /// Imports one Unix descriptor into QEMU under an exact bounded name.
+    ///
+    /// The JSON command and `SCM_RIGHTS` descriptor are sent as one QMP stream
+    /// operation. Any error after transfer begins poisons the client because
+    /// neither the byte-stream boundary nor QEMU's ownership is then safe to
+    /// infer. The caller continues to own its descriptor in every outcome.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the descriptor name is invalid, the transport
+    /// cannot attach exactly one descriptor, the complete command cannot be
+    /// written or acknowledged within the absolute command deadline, or QEMU
+    /// rejects the standard `getfd` command. Every transfer-path error poisons
+    /// this client.
+    #[cfg(unix)]
+    pub fn install_descriptor(
+        &mut self,
+        name: &QmpDescriptorName,
+        descriptor: BorrowedFd<'_>,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        #[cfg(target_os = "linux")]
+        let original = self.checkpoint_loan.clone();
+        let work = self.install_descriptor_inner(name, descriptor);
+        #[cfg(target_os = "linux")]
+        if let Some(original) = original {
+            return self.checkpoint_postcut(work, &original, QmpCommandKind::GetFd.wire_name());
+        }
+        work
+    }
+
+    #[cfg(unix)]
+    fn install_descriptor_inner(
+        &mut self,
+        name: &QmpDescriptorName,
+        descriptor: BorrowedFd<'_>,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        self.ensure_usable()?;
+        let command = QmpCommand::GetFd { name };
+        let kind = command.kind();
+        let deadline = self.operation_deadline(QmpCommandKind::GetFd)?;
+        let result = self
+            .write_json_line_with_descriptor(
+                kind.wire_name(),
+                command.request(),
+                descriptor,
+                &deadline,
+            )
+            .and_then(|()| self.read_command_response(kind, &deadline))
+            .and_then(|response| {
+                deadline.complete(kind.wire_name())?;
+                Ok(response)
+            })
+            .map(|response| QmpCommandComplete {
+                command: response.command,
+            });
+        if result.is_err() {
+            self.poisoned = true;
+            self.stream.get_mut().poison_qmp_stream();
+        }
+        result
+    }
+
+    /// Closes one descriptor previously imported with [`Self::install_descriptor`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the client is poisoned, the command cannot be
+    /// exchanged within its absolute deadline, or QEMU does not own `name`.
+    #[cfg(unix)]
+    pub fn close_descriptor(
+        &mut self,
+        name: &QmpDescriptorName,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        self.send_command(QmpCommand::CloseFd { name })
+    }
+
+    /// Returns the current VM run state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the request or response fails, when QEMU omits
+    /// a required field, reports an unknown QEMU run state, or contradicts
+    /// the typed relationship between `running` and `status`.
+    pub fn query_status(&mut self) -> Result<QmpRunState, QmpError> {
+        let response = self.send_command_return(QmpCommand::QueryStatus)?;
+        let running = response.value.get("running").and_then(Value::as_bool);
+        let status = response
+            .value
+            .get("status")
+            .and_then(Value::as_str)
+            .and_then(QmpRunStateKind::from_wire);
+        match (running, status) {
+            (Some(running), Some(status)) if running == (status == QmpRunStateKind::Running) => {
+                Ok(QmpRunState { running, status })
+            }
+            _ => Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::QueryStatus,
+                response: response.value.to_string(),
+            }),
+        }
+    }
+
+    /// Stops guest execution while leaving the QMP main loop responsive.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the command fails or QEMU does not report the
+    /// typed paused state after acknowledging it.
+    pub fn stop(&mut self) -> Result<QmpCommandComplete, QmpError> {
+        let complete = self.send_command(QmpCommand::Stop)?;
+        let state = self.query_status()?;
+        if state.running || state.status != QmpRunStateKind::Paused {
+            return Err(QmpError::UnexpectedRunState {
+                command: QmpCommandKind::Stop,
+                status: state.status,
+                running: state.running,
+            });
+        }
+        Ok(complete)
+    }
+
+    /// Resumes guest execution after a lifecycle boundary.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the command fails or QEMU does not report the
+    /// typed running state after acknowledging it.
+    pub fn cont(&mut self) -> Result<QmpCommandComplete, QmpError> {
+        let complete = self.send_command(QmpCommand::Cont)?;
+        let state = self.query_status()?;
+        if !state.running || state.status != QmpRunStateKind::Running {
+            return Err(QmpError::UnexpectedRunState {
+                command: QmpCommandKind::Cont,
+                status: state.status,
+                running: state.running,
+            });
+        }
+        Ok(complete)
+    }
+
+    /// Resumes guest execution and returns after QEMU acknowledges `cont`.
+    ///
+    /// This narrower operation is for an exact restore whose simulator may
+    /// immediately park on the plugin barrier. A follow-up QMP query would then
+    /// create an ordering cycle: the query cannot run until the scheduler
+    /// receives the restored node and publishes its next ceiling. The `cont`
+    /// reply itself is emitted only after QEMU accepts the run-state change;
+    /// the first bounded node step provides the subsequent execution proof.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when the command cannot be written, its response
+    /// cannot be decoded, or QEMU rejects the run-state transition.
+    pub(crate) fn cont_acknowledged(&mut self) -> Result<QmpCommandComplete, QmpError> {
+        self.send_command(QmpCommand::Cont)
+    }
+
+    /// Completes an authenticated terminal lifecycle transition.
+    ///
+    /// This dedicated command never resumes guest execution. Patched QEMU
+    /// validates the action, evidence, and process generation before scheduling
+    /// the transition-specific exit. Repeating the same request is idempotent.
+    /// The owning process supervisor must independently reap and verify that
+    /// exact child after this method returns.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError`] when QEMU does not acknowledge the command.
+    pub fn complete_terminal_lifecycle_exit(
+        &mut self,
+        action: crucible_engine::ContentHash,
+        evidence: crucible_engine::ContentHash,
+        process_generation: u64,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        self.send_command(QmpCommand::CompleteTerminalLifecycle {
+            action,
+            evidence,
+            process_generation,
+        })
+    }
+
+    fn hot_fork_child_process(
+        &mut self,
+        action: HotForkChildProcessAction,
+        generation: u64,
+    ) -> Result<QmpHotForkChildProcessState, QmpError> {
+        if generation == 0 {
+            return Err(QmpError::InvalidBound {
+                operation: "operate on QEMU hot-fork child process",
+            });
+        }
+        let result = self
+            .send_command_return(QmpCommand::HotForkChildProcess { action, generation })
+            .and_then(|response| {
+                parse_hot_fork_child_process_state(&response.value, generation, action)
+            });
+        let command_rejection = matches!(
+            &result,
+            Err(QmpError::Command {
+                command: QmpCommandKind::HotForkChildProcess,
+                ..
+            })
+        );
+        if result.is_err() && !command_rejection {
+            self.poisoned = true;
+            self.stream.get_mut().poison_qmp_stream();
+        }
+        result
+    }
+
+    fn hot_fork_template(
+        &mut self,
+        action: HotForkTemplateAction,
+        block_snapshot_bindings: Option<&[QmpHotForkBlockSnapshotBinding]>,
+    ) -> Result<QmpHotForkTemplateState, QmpError> {
+        let result = (|| {
+            let response = self.send_command_return(QmpCommand::HotForkTemplate {
+                action,
+                block_snapshot_bindings,
+            })?;
+            let state = parse_hot_fork_template_state(&response.value)?;
+            // QEMU delivers a pending completion before interpreting the next
+            // action. Query and prepare can therefore observe the previous abort,
+            // and abort can observe an already-completed failed preparation.
+            let postcondition_holds = match action {
+                HotForkTemplateAction::Prepare => matches!(
+                    state.outcome(),
+                    QmpHotForkTemplateOutcome::Draining
+                        | QmpHotForkTemplateOutcome::Blocked
+                        | QmpHotForkTemplateOutcome::Prepared
+                        | QmpHotForkTemplateOutcome::Aborted
+                ),
+                HotForkTemplateAction::Query => matches!(
+                    state.outcome(),
+                    QmpHotForkTemplateOutcome::Idle
+                        | QmpHotForkTemplateOutcome::Draining
+                        | QmpHotForkTemplateOutcome::Prepared
+                        | QmpHotForkTemplateOutcome::Blocked
+                        | QmpHotForkTemplateOutcome::Aborted
+                ),
+                HotForkTemplateAction::AdoptChild => {
+                    state.outcome() == QmpHotForkTemplateOutcome::ChildAdopted
+                }
+                HotForkTemplateAction::Abort => {
+                    matches!(
+                        state.outcome(),
+                        QmpHotForkTemplateOutcome::Idle
+                            | QmpHotForkTemplateOutcome::Blocked
+                            | QmpHotForkTemplateOutcome::Aborted
+                    ) || (state.outcome() == QmpHotForkTemplateOutcome::Draining
+                        && !state.plugin_barrier().held()
+                        && !state.rcu_barrier().held()
+                        && !state.async_worker_barrier().held())
+                }
+            };
+            if !postcondition_holds {
+                return Err(QmpError::MalformedTypedResponse {
+                    command: QmpCommandKind::HotForkTemplate,
+                    response: response.value.to_string(),
+                });
+            }
+            Ok(state)
+        })();
+        if result.is_err() {
+            // A late response to a possibly effected template command cannot
+            // be interpreted as the result of a rollback or a new query.
+            self.poisoned = true;
+            self.stream.get_mut().poison_qmp_stream();
+        }
+        result
+    }
+
+    fn hot_fork_plugin_barrier(
+        &mut self,
+        action: HotForkPluginBarrierAction,
+    ) -> Result<QmpHotForkPluginBarrierState, QmpError> {
+        let response = self.send_command_return(QmpCommand::HotForkPluginBarrier { action })?;
+        let state = parse_hot_fork_plugin_barrier_state(&response.value)?;
+        let postcondition_holds = match action {
+            HotForkPluginBarrierAction::Hold => state.held() && !state.teardown_closed(),
+            HotForkPluginBarrierAction::Query => true,
+            HotForkPluginBarrierAction::Release => state.registered() && !state.held(),
+        };
+        if !postcondition_holds {
+            return Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkPluginBarrier,
+                response: response.value.to_string(),
+            });
+        }
+        Ok(state)
+    }
+
+    fn hot_fork_rcu_barrier(
+        &mut self,
+        action: HotForkRcuBarrierAction,
+    ) -> Result<QmpHotForkRcuBarrierState, QmpError> {
+        let response = self.send_command_return(QmpCommand::HotForkRcuBarrier { action })?;
+        let state = parse_hot_fork_rcu_barrier_state(&response.value)?;
+        let postcondition_holds = match action {
+            HotForkRcuBarrierAction::Hold => state.held(),
+            HotForkRcuBarrierAction::Query => true,
+            HotForkRcuBarrierAction::Release => !state.held(),
+        };
+        if !postcondition_holds {
+            return Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkRcuBarrier,
+                response: response.value.to_string(),
+            });
+        }
+        Ok(state)
+    }
+
+    fn hot_fork_async_worker_barrier(
+        &mut self,
+        action: HotForkAsyncWorkerBarrierAction,
+    ) -> Result<QmpHotForkAsyncWorkerBarrierState, QmpError> {
+        let response =
+            self.send_command_return(QmpCommand::HotForkAsyncWorkerBarrier { action })?;
+        let state = parse_hot_fork_async_worker_barrier_state(&response.value)?;
+        let postcondition_holds = match action {
+            HotForkAsyncWorkerBarrierAction::Hold => state.held(),
+            HotForkAsyncWorkerBarrierAction::Query => true,
+            HotForkAsyncWorkerBarrierAction::Release => !state.held(),
+        };
+        if !postcondition_holds {
+            return Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkAsyncWorkerBarrier,
+                response: response.value.to_string(),
+            });
+        }
+        Ok(state)
+    }
+
+    fn hot_fork_block_barrier(
+        &mut self,
+        action: HotForkBlockBarrierAction,
+    ) -> Result<QmpHotForkBlockBarrierState, QmpError> {
+        let response = self.send_command_return(QmpCommand::HotForkBlockBarrier { action })?;
+        let state = parse_hot_fork_block_barrier_state(&response.value)?;
+        let postcondition_holds = match action {
+            HotForkBlockBarrierAction::Hold => state.held(),
+            HotForkBlockBarrierAction::Query => true,
+            HotForkBlockBarrierAction::Release => !state.held(),
+        };
+        if !postcondition_holds {
+            return Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkBlockBarrier,
+                response: response.value.to_string(),
+            });
+        }
+        Ok(state)
+    }
+
+    fn read_greeting(&mut self) -> Result<QmpGreeting, QmpError> {
+        let mut deadline = QmpOperationDeadline::new(self.io_timeout_policy.greeting_timeout);
+        if let Some(supervisor) = &self.host_supervisor {
+            deadline.shared = Some(supervisor.begin(HostOperationClass::Preparation).map_err(
+                |source| QmpError::OperationalSupervision {
+                    operation: "read QMP greeting",
+                    source,
+                },
+            )?);
+        }
+        let response = self.read_json_line("read QMP greeting", &deadline)?;
+        let Some(qmp) = response.get("QMP") else {
+            return Err(QmpError::UnexpectedGreeting {
+                response: response.to_string(),
+            });
+        };
+        let Some(qmp) = qmp.as_object() else {
+            return Err(QmpError::UnexpectedGreeting {
+                response: response.to_string(),
+            });
+        };
+
+        let greeting = QmpGreeting {
+            version_present: qmp.contains_key("version"),
+            capabilities_present: qmp.contains_key("capabilities"),
+        };
+        if !greeting.version_present || !greeting.capabilities_present {
+            return Err(QmpError::UnexpectedGreeting {
+                response: response.to_string(),
+            });
+        }
+
+        deadline.complete("read QMP greeting")?;
+        Ok(greeting)
+    }
+
+    fn send_command(&mut self, command: QmpCommand<'_>) -> Result<QmpCommandComplete, QmpError> {
+        let command = self.send_command_return(command)?;
+        Ok(QmpCommandComplete {
+            command: command.command,
+        })
+    }
+
+    fn send_command_return(
+        &mut self,
+        command: QmpCommand<'_>,
+    ) -> Result<QmpCommandReturn, QmpError> {
+        #[cfg(target_os = "linux")]
+        if command.kind() != QmpCommandKind::Quit
+            && let Some(original) = self.checkpoint_loan.clone()
+        {
+            return self
+                .exchange_under_checkpoint_original(command, original.guard())
+                .map_err(|failure| match failure.original_after {
+                    Some(original_after) => QmpError::CheckpointPostcut {
+                        source: Box::new(failure.source),
+                        original_after,
+                    },
+                    None => failure.source,
+                });
+        }
+        self.send_command_return_inner(command)
+    }
+
+    fn send_command_return_inner(
+        &mut self,
+        command: QmpCommand<'_>,
+    ) -> Result<QmpCommandReturn, QmpError> {
+        self.ensure_usable()?;
+        let kind = command.kind();
+        let deadline = self.operation_deadline(kind)?;
+        if let Err(error) = self.write_json_line(kind.wire_name(), command.request(), &deadline) {
+            self.poisoned = true;
+            self.stream.get_mut().poison_qmp_stream();
+            return Err(error);
+        }
+        let response = match self.read_command_response(kind, &deadline) {
+            Ok(response) => response,
+            Err(error) => {
+                // A complete QMP rejection closes the request. A partial frame
+                // or lost response leaves its execution and byte cursor
+                // uncertain, so this connection cannot admit another command.
+                if !matches!(error, QmpError::Command { .. }) {
+                    self.poisoned = true;
+                    self.stream.get_mut().poison_qmp_stream();
+                }
+                return Err(error);
+            }
+        };
+        deadline.complete(kind.wire_name())?;
+        Ok(response)
+    }
+
+    fn exchange_under(
+        &mut self,
+        command: QmpCommand<'_>,
+        guard: &HostOperationGuard,
+    ) -> Result<QmpCommandReturn, QmpError> {
+        self.ensure_usable()?;
+        let kind = command.kind();
+        let mut deadline = QmpOperationDeadline::new(self.io_timeout_policy.command_timeout);
+        deadline.borrowed = Some(guard);
+        deadline.remaining(kind.wire_name())?;
+        if let Err(error) = self.write_json_line(kind.wire_name(), command.request(), &deadline) {
+            self.poisoned = true;
+            self.stream.get_mut().poison_qmp_stream();
+            return Err(error);
+        }
+        #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+        let result = match &command {
+            QmpCommand::SelectableReset {
+                pending,
+                correlation,
+                ..
+            } => self.read_selectable_reset_response(pending, *correlation, &deadline),
+            _ => self.read_command_response(kind, &deadline),
+        };
+        #[cfg(not(any(test, feature = "test-support", feature = "private-measurement-domain")))]
+        let result = self.read_command_response(kind, &deadline);
+        if result
+            .as_ref()
+            .is_err_and(|error| !matches!(error, QmpError::Command { .. }))
+        {
+            self.poisoned = true;
+            self.stream.get_mut().poison_qmp_stream();
+        }
+        let response = result?;
+        // A nested Quit is one child-cleanup phase, not completion of that
+        // operation's required work. The child owner records progress only
+        // after actual reap; the borrowed exchange still checks its raw post.
+        let post = if kind == QmpCommandKind::Quit {
+            deadline.remaining(kind.wire_name()).map(|_| ())
+        } else {
+            deadline.complete(kind.wire_name())
+        };
+        if let Err(error) = post {
+            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+            if kind == QmpCommandKind::SelectableReset {
+                self.poisoned = true;
+                self.stream.get_mut().poison_qmp_stream();
+            }
+            return Err(error);
+        }
+        Ok(response)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn checkpoint_postcut<T>(
+        &mut self,
+        work: Result<T, QmpError>,
+        original: &crate::CheckpointOriginalLoan,
+        operation: &'static str,
+    ) -> Result<T, QmpError> {
+        match (work, original.check().err()) {
+            (Err(source), Some(original_after)) => {
+                self.poisoned = true;
+                self.stream.get_mut().poison_qmp_stream();
+                Err(QmpError::CheckpointPostcut {
+                    source: Box::new(source),
+                    original_after,
+                })
+            }
+            (Ok(_), Some(source)) => {
+                self.poisoned = true;
+                self.stream.get_mut().poison_qmp_stream();
+                Err(QmpError::CheckpointOriginal { operation, source })
+            }
+            (work, None) => work,
+        }
+    }
+
+    fn operation_deadline(
+        &self,
+        command: QmpCommandKind,
+    ) -> Result<QmpOperationDeadline<'static>, QmpError> {
+        #[cfg(target_os = "linux")]
+        if command != QmpCommandKind::Quit
+            && let Some(original) = &self.checkpoint_loan
+        {
+            original
+                .check()
+                .map_err(|source| QmpError::CheckpointOriginal {
+                    operation: command.wire_name(),
+                    source,
+                })?;
+            return Ok(QmpOperationDeadline {
+                supervision: None,
+                timeout: self.io_timeout_policy.command_timeout,
+                shared: None,
+                checkpoint_original: None,
+                checkpoint_loan: Some(original.clone()),
+                borrowed: None,
+                #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+                paired: None,
+                _lifetime: std::marker::PhantomData,
+            });
+        }
+        let class = match command {
+            QmpCommandKind::CheckpointCapture | QmpCommandKind::CheckpointTopology => {
+                HostOperationClass::CheckpointCapture
+            }
+            QmpCommandKind::CheckpointCommit => HostOperationClass::CheckpointPublication,
+            QmpCommandKind::CheckpointAbort | QmpCommandKind::Quit => HostOperationClass::Cleanup,
+            QmpCommandKind::CheckpointRestore => HostOperationClass::Restore,
+            QmpCommandKind::HotFork
+            | QmpCommandKind::HotForkTemplate
+            | QmpCommandKind::HotForkChildRam => HostOperationClass::ForkRearm,
+            QmpCommandKind::Stop | QmpCommandKind::Cont => HostOperationClass::Quiescence,
+            _ => HostOperationClass::Preparation,
+        };
+        let mut deadline = QmpOperationDeadline::new(self.io_timeout_policy.command_timeout);
+        if let Some(supervisor) = &self.host_supervisor {
+            deadline.shared = Some(supervisor.begin(class).map_err(|error| {
+                QmpError::OperationalSupervision {
+                    operation: command.wire_name(),
+                    source: error,
+                }
+            })?);
+        }
+        Ok(deadline)
+    }
+
+    fn read_command_response(
+        &mut self,
+        command: QmpCommandKind,
+        deadline: &QmpOperationDeadline<'_>,
+    ) -> Result<QmpCommandReturn, QmpError> {
+        let mut skipped_events = 0usize;
+        loop {
+            let response = self.read_json_line(command.wire_name(), deadline)?;
+            if response.get("event").is_some() {
+                skipped_events = skipped_events.saturating_add(1);
+                if skipped_events > self.io_timeout_policy.max_async_events_per_command {
+                    return Err(QmpError::AsyncEventLimitExceeded {
+                        command,
+                        limit: self.io_timeout_policy.max_async_events_per_command,
+                    });
+                }
+                continue;
+            }
+            if let Some(value) = response.get("return") {
+                return Ok(QmpCommandReturn {
+                    command,
+                    value: value.clone(),
+                    #[cfg(any(
+                        test,
+                        feature = "test-support",
+                        feature = "private-measurement-domain"
+                    ))]
+                    selectable_reset: None,
+                });
+            }
+            if let Some(error) = response.get("error") {
+                return Err(command_error(command, error));
+            }
+            return Err(QmpError::UnexpectedResponse {
+                command,
+                response: response.to_string(),
+            });
+        }
+    }
+
+    fn wait_for_job(
+        &mut self,
+        command: QmpCommandKind,
+        job_id: &str,
+    ) -> Result<QmpCommandComplete, QmpError> {
+        for attempt in 0..self.job_poll_policy.max_polls {
+            let jobs = self.send_command_return(QmpCommand::QueryJobs)?;
+            let Some(jobs) = jobs.value.as_array() else {
+                return Err(QmpError::UnexpectedJobList {
+                    command,
+                    response: jobs.value.to_string(),
+                });
+            };
+            for job in jobs {
+                if job.get("id").and_then(Value::as_str) != Some(job_id) {
+                    continue;
+                }
+                if let Some(error) = job.get("error") {
+                    self.send_command(QmpCommand::JobDismiss { job_id })?;
+                    return Err(QmpError::JobFailed {
+                        command,
+                        job_id: job_id.to_owned(),
+                        detail: error.to_string(),
+                    });
+                }
+                if job.get("status").and_then(Value::as_str) == Some("concluded") {
+                    self.send_command(QmpCommand::JobDismiss { job_id })?;
+                    return Ok(QmpCommandComplete { command });
+                }
+            }
+
+            if attempt + 1 < self.job_poll_policy.max_polls {
+                #[cfg(target_os = "linux")]
+                if let Some(original) = &self.checkpoint_loan {
+                    let slice = checkpoint_original_wait::wait_slice(
+                        original.guard(),
+                        command.wire_name(),
+                    )?;
+                    thread::sleep(self.job_poll_policy.poll_interval.min(slice));
+                    original
+                        .check()
+                        .map_err(|source| QmpError::CheckpointOriginal {
+                            operation: command.wire_name(),
+                            source,
+                        })?;
+                    continue;
+                }
+                thread::sleep(self.job_poll_policy.poll_interval);
+            }
+        }
+
+        Err(QmpError::JobNotConcluded {
+            command,
+            job_id: job_id.to_owned(),
+            polls: self.job_poll_policy.max_polls,
+        })
+    }
+
+    fn read_json_line(
+        &mut self,
+        operation: &'static str,
+        deadline: &QmpOperationDeadline<'_>,
+    ) -> Result<Value, QmpError> {
+        let mut line = Vec::new();
+        loop {
+            if line.len() == self.io_timeout_policy.max_line_bytes {
+                return Err(QmpError::LineTooLong {
+                    operation,
+                    max_bytes: self.io_timeout_policy.max_line_bytes,
+                });
+            }
+            let remaining = deadline.remaining(operation)?;
+            self.stream
+                .get_mut()
+                .set_qmp_read_timeout(remaining)
+                .map_err(|error| QmpError::from_io("set QMP read timeout", error))?;
+            let mut byte = [0u8; 1];
+            let read = match self.stream.read(&mut byte) {
+                Ok(read) => read,
+                Err(error) if deadline.retry_slice(&error) => continue,
+                Err(error) => {
+                    return Err(QmpError::from_io_with_timeout(
+                        operation,
+                        deadline.timeout,
+                        error,
+                    ));
+                }
+            };
+            if read == 0 {
+                return Err(QmpError::Io {
+                    operation,
+                    kind: ErrorKind::UnexpectedEof,
+                });
+            }
+            line.push(byte[0]);
+            if byte[0] == b'\n' {
+                break;
+            }
+        }
+        serde_json::from_slice(&line).map_err(|error| QmpError::Json {
+            operation,
+            message: error.to_string(),
+        })
+    }
+
+    fn write_json_line(
+        &mut self,
+        operation: &'static str,
+        request: Value,
+        deadline: &QmpOperationDeadline<'_>,
+    ) -> Result<(), QmpError> {
+        let mut line = serde_json::to_vec(&request).map_err(|error| QmpError::Json {
+            operation,
+            message: error.to_string(),
+        })?;
+        line.extend_from_slice(b"\r\n");
+        let mut written = 0usize;
+        while written < line.len() {
+            let remaining = deadline.remaining(operation)?;
+            self.stream
+                .get_mut()
+                .set_qmp_write_timeout(remaining)
+                .map_err(|error| QmpError::from_io("set QMP write timeout", error))?;
+            let count = match self.stream.get_mut().write(&line[written..]) {
+                Ok(count) => count,
+                Err(error) if deadline.retry_slice(&error) => continue,
+                Err(error) => {
+                    return Err(QmpError::from_io_with_timeout(
+                        "write QMP request",
+                        deadline.timeout,
+                        error,
+                    ));
+                }
+            };
+            if count == 0 {
+                return Err(QmpError::Io {
+                    operation: "write QMP request",
+                    kind: ErrorKind::WriteZero,
+                });
+            }
+            written = written.saturating_add(count);
+        }
+        self.stream.get_mut().flush().map_err(|error| {
+            QmpError::from_io_with_timeout("flush QMP request", deadline.timeout, error)
+        })
+    }
+
+    #[cfg(unix)]
+    fn write_json_line_with_descriptor(
+        &mut self,
+        operation: &'static str,
+        request: Value,
+        descriptor: BorrowedFd<'_>,
+        deadline: &QmpOperationDeadline<'_>,
+    ) -> Result<(), QmpError> {
+        let mut line = serde_json::to_vec(&request).map_err(|error| QmpError::Json {
+            operation,
+            message: error.to_string(),
+        })?;
+        line.extend_from_slice(b"\r\n");
+
+        let remaining = deadline.remaining(operation)?;
+        self.stream
+            .get_mut()
+            .set_qmp_write_timeout(remaining)
+            .map_err(|error| QmpError::from_io("set QMP write timeout", error))?;
+        let first = self
+            .stream
+            .get_mut()
+            .send_qmp_bytes_with_descriptor(&line, descriptor)
+            .map_err(|error| {
+                QmpError::from_io_with_timeout(
+                    "write QMP request with descriptor",
+                    deadline.timeout,
+                    error,
+                )
+            })?;
+        if first == 0 || first > line.len() {
+            return Err(QmpError::DescriptorTransferLength {
+                expected_maximum: line.len(),
+                actual: first,
+            });
+        }
+
+        let mut written = first;
+        while written < line.len() {
+            let remaining = deadline.remaining(operation)?;
+            self.stream
+                .get_mut()
+                .set_qmp_write_timeout(remaining)
+                .map_err(|error| QmpError::from_io("set QMP write timeout", error))?;
+            let count = match self.stream.get_mut().write(&line[written..]) {
+                Ok(count) => count,
+                Err(error) if deadline.retry_slice(&error) => continue,
+                Err(error) => {
+                    return Err(QmpError::from_io_with_timeout(
+                        "complete QMP descriptor request",
+                        deadline.timeout,
+                        error,
+                    ));
+                }
+            };
+            if count == 0 {
+                return Err(QmpError::Io {
+                    operation: "complete QMP descriptor request",
+                    kind: ErrorKind::WriteZero,
+                });
+            }
+            written = written.saturating_add(count);
+        }
+        self.stream.get_mut().flush().map_err(|error| {
+            QmpError::from_io_with_timeout("flush QMP descriptor request", deadline.timeout, error)
+        })
+    }
+
+    fn poison_after_descriptor_mutation_error<T>(
+        &mut self,
+        result: Result<T, QmpError>,
+    ) -> Result<T, QmpError> {
+        if result.is_err() {
+            self.poisoned = true;
+            self.stream.get_mut().poison_qmp_stream();
+        }
+        result
+    }
+
+    fn ensure_usable(&self) -> Result<(), QmpError> {
+        if self.poisoned {
+            Err(QmpError::ConnectionPoisoned)
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Exact bounded name assigned to one descriptor imported through QMP.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct QmpDescriptorName(String);
+
+impl QmpDescriptorName {
+    /// Validates one descriptor name for the typed Crucible QMP subset.
+    ///
+    /// Names contain 1 through [`QMP_DESCRIPTOR_NAME_MAX_BYTES`] lowercase
+    /// ASCII letters, digits, or hyphens. This deliberately narrower grammar
+    /// keeps generated hot-fork resource names language-neutral and bounded.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError::InvalidDescriptorName`] when the length or grammar
+    /// is outside the typed subset.
+    pub fn new(name: impl AsRef<str>) -> Result<Self, QmpError> {
+        let name = name.as_ref();
+        let valid_length = !name.is_empty() && name.len() <= QMP_DESCRIPTOR_NAME_MAX_BYTES;
+        let valid_bytes = name
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-');
+        if !valid_length || !valid_bytes {
+            return Err(QmpError::InvalidDescriptorName { length: name.len() });
+        }
+        Ok(Self(name.to_owned()))
+    }
+
+    /// Returns the exact wire name.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+struct QmpOperationDeadline<'a> {
+    supervision: Option<HostSupervisionDeadline>,
+    timeout: Duration,
+    shared: Option<HostOperationGuard>,
+    #[cfg(target_os = "linux")]
+    checkpoint_original: Option<&'a HostOperationGuard>,
+    #[cfg(target_os = "linux")]
+    checkpoint_loan: Option<crate::CheckpointOriginalLoan>,
+    borrowed: Option<&'a HostOperationGuard>,
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    paired: Option<&'a HostOperationGuard>,
+    _lifetime: std::marker::PhantomData<&'a ()>,
+}
+
+impl QmpOperationDeadline<'_> {
+    fn new(timeout: Duration) -> Self {
+        // QMP lifecycle I/O uses host realtime only to bound child liveness; the
+        // resulting timestamp is never folded into virtual-time ordering state.
+        Self {
+            supervision: Some(HostSupervisionDeadline::start(timeout)),
+            timeout,
+            shared: None,
+            #[cfg(target_os = "linux")]
+            checkpoint_original: None,
+            #[cfg(target_os = "linux")]
+            checkpoint_loan: None,
+            borrowed: None,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            paired: None,
+            _lifetime: std::marker::PhantomData,
+        }
+    }
+
+    fn remaining(&self, operation: &'static str) -> Result<Duration, QmpError> {
+        #[cfg(target_os = "linux")]
+        if let Some(original) = &self.checkpoint_loan {
+            return checkpoint_original_wait::wait_slice(original.guard(), operation);
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(original) = self.checkpoint_original {
+            return checkpoint_original_wait::wait_slice(original, operation);
+        }
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if let Some(family) = self.paired {
+            let actor = self.borrowed.ok_or(QmpError::InvalidBound {
+                operation: "parent park/drain original pair",
+            })?;
+            return parent_park_drain::paired_wait_slice(actor, family, operation);
+        }
+        if let Some(guard) = self.borrowed {
+            return guard
+                .wait_slice()
+                .map_err(|error| QmpError::OperationalSupervision {
+                    operation,
+                    source: error,
+                });
+        }
+        if let Some(guard) = &self.shared {
+            return guard
+                .wait_slice()
+                .map_err(|error| QmpError::OperationalSupervision {
+                    operation,
+                    source: error,
+                });
+        }
+        // See `new`: this deadline gates a host control-plane wait, not guest
+        // ordering or replay-visible state.
+        let supervision = self
+            .supervision
+            .as_ref()
+            .ok_or(QmpError::InvalidBound { operation })?;
+        let Some(remaining) = supervision.remaining() else {
+            return Err(QmpError::Timeout {
+                operation,
+                timeout: self.timeout,
+            });
+        };
+        if remaining.is_zero() {
+            Err(QmpError::Timeout {
+                operation,
+                timeout: self.timeout,
+            })
+        } else {
+            Ok(remaining)
+        }
+    }
+
+    fn retry_slice(&self, error: &io::Error) -> bool {
+        let supervised = self.shared.is_some();
+        #[cfg(target_os = "linux")]
+        let supervised =
+            supervised || self.checkpoint_original.is_some() || self.checkpoint_loan.is_some();
+        #[cfg(any(
+            test,
+            feature = "test-support",
+            feature = "kernel-swap-measurement",
+            feature = "private-measurement-domain"
+        ))]
+        let supervised = supervised || self.borrowed.is_some();
+        supervised
+            && matches!(
+                error.kind(),
+                ErrorKind::Interrupted | ErrorKind::WouldBlock | ErrorKind::TimedOut
+            )
+    }
+
+    fn complete(&self, operation: &'static str) -> Result<(), QmpError> {
+        #[cfg(target_os = "linux")]
+        if let Some(original) = &self.checkpoint_loan {
+            return checkpoint_original_wait::wait_slice(original.guard(), operation).map(|_| ());
+        }
+        #[cfg(target_os = "linux")]
+        if let Some(original) = self.checkpoint_original {
+            // An exchange is neither whole-capture completion nor required
+            // work progress. Pending queries cannot restart the idle clock.
+            return checkpoint_original_wait::wait_slice(original, operation).map(|_| ());
+        }
+        #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+        if let Some(family) = self.paired {
+            let actor = self.borrowed.ok_or(QmpError::InvalidBound {
+                operation: "parent park/drain original pair",
+            })?;
+            return parent_park_drain::complete_pair(actor, family, operation);
+        }
+        if let Some(guard) = self.borrowed {
+            return guard
+                .progress(1)
+                .and_then(|()| guard.wait_slice().map(|_| ()))
+                .map_err(|error| QmpError::OperationalSupervision {
+                    operation,
+                    source: error,
+                });
+        }
+        if let Some(guard) = &self.shared {
+            guard
+                .progress(1)
+                .and_then(|()| guard.complete().map(|_| ()))
+                .map_err(|error| QmpError::OperationalSupervision {
+                    operation,
+                    source: error,
+                })?;
+        }
+        Ok(())
+    }
+}
+
+/// Polling policy for QMP snapshot jobs and retained template acquisition.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QmpJobPollPolicy {
+    /// Maximum exchanges before reporting an incomplete job or template barrier.
+    pub max_polls: usize,
+    /// Delay between polls.
+    pub poll_interval: Duration,
+}
+
+impl QmpJobPollPolicy {
+    /// Returns a zero-delay policy for deterministic unit tests.
+    #[must_use]
+    pub const fn fast_test(max_polls: usize) -> Self {
+        Self {
+            max_polls,
+            poll_interval: Duration::ZERO,
+        }
+    }
+}
+
+impl Default for QmpJobPollPolicy {
+    fn default() -> Self {
+        Self {
+            max_polls: QMP_JOB_QUERY_LIMIT,
+            poll_interval: QMP_JOB_QUERY_INTERVAL,
+        }
+    }
+}
+
+/// Timeout policy for blocking QMP stream operations.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QmpIoTimeoutPolicy {
+    /// Timeout for the initial QMP greeting read.
+    pub greeting_timeout: Duration,
+    /// Timeout for each command write and response read.
+    pub command_timeout: Duration,
+    /// Maximum bytes accepted before a QMP newline.
+    pub max_line_bytes: usize,
+    /// Maximum asynchronous event objects skipped while awaiting one command.
+    pub max_async_events_per_command: usize,
+}
+
+impl QmpIoTimeoutPolicy {
+    /// Builds a QMP I/O timeout policy from explicit budgets.
+    #[must_use]
+    pub const fn new(greeting_timeout: Duration, command_timeout: Duration) -> Self {
+        Self {
+            greeting_timeout,
+            command_timeout,
+            max_line_bytes: QMP_MAX_LINE_BYTES,
+            max_async_events_per_command: QMP_MAX_ASYNC_EVENTS_PER_COMMAND,
+        }
+    }
+
+    /// Uses one QMP command budget for both greeting and command I/O.
+    #[must_use]
+    pub const fn from_command_timeout(command_timeout: Duration) -> Self {
+        Self::new(command_timeout, command_timeout)
+    }
+
+    /// Validates that all QMP stream operations have nonzero timeouts.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`QmpError::UnboundedTimeout`] when either timeout is zero.
+    pub fn validate(self) -> Result<(), QmpError> {
+        if self.greeting_timeout.is_zero() {
+            return Err(QmpError::UnboundedTimeout {
+                operation: "read QMP greeting",
+            });
+        }
+        if self.command_timeout.is_zero() {
+            return Err(QmpError::UnboundedTimeout {
+                operation: "QMP command",
+            });
+        }
+        if self.max_line_bytes == 0 {
+            return Err(QmpError::InvalidBound {
+                operation: "QMP line bytes",
+            });
+        }
+        if self.max_async_events_per_command == 0 {
+            return Err(QmpError::InvalidBound {
+                operation: "QMP async events",
+            });
+        }
+        Ok(())
+    }
+}
+
+impl Default for QmpIoTimeoutPolicy {
+    fn default() -> Self {
+        Self {
+            greeting_timeout: QMP_GREETING_TIMEOUT,
+            command_timeout: QMP_COMMAND_TIMEOUT,
+            max_line_bytes: QMP_MAX_LINE_BYTES,
+            max_async_events_per_command: QMP_MAX_ASYNC_EVENTS_PER_COMMAND,
+        }
+    }
+}
+
+/// Fields observed in the QMP greeting.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QmpGreeting {
+    /// Whether the greeting carried a `version` object.
+    pub version_present: bool,
+    /// Whether the greeting carried a `capabilities` array.
+    pub capabilities_present: bool,
+}
+
+/// Current VM run state returned by typed `query-status`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QmpRunState {
+    /// Whether the VM is in QEMU's running state.
+    pub running: bool,
+    /// Exact typed QEMU run state.
+    pub status: QmpRunStateKind,
+}
+
+/// QEMU run-state values admitted by typed `query-status`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QmpRunStateKind {
+    /// Execution stopped for debugger control.
+    Debug,
+    /// Execution stopped to finish migration.
+    FinishMigrate,
+    /// Waiting for incoming migration.
+    InMigrate,
+    /// Execution stopped by an internal error.
+    InternalError,
+    /// Execution stopped by a configured I/O error action.
+    IoError,
+    /// Execution explicitly paused.
+    Paused,
+    /// Execution stopped after migration.
+    PostMigrate,
+    /// VM started with `-S` and has not executed.
+    Prelaunch,
+    /// Restoring VM state.
+    RestoreVm,
+    /// Guest execution is running.
+    Running,
+    /// Saving VM state.
+    SaveVm,
+    /// Guest shut down under `-no-shutdown`.
+    Shutdown,
+    /// Guest entered hardware suspend.
+    Suspended,
+    /// Watchdog action paused execution.
+    Watchdog,
+    /// Guest panic paused execution.
+    GuestPanicked,
+    /// COLO checkpoint save or restore state.
+    Colo,
+}
+
+impl QmpRunStateKind {
+    fn from_wire(value: &str) -> Option<Self> {
+        Some(match value {
+            "debug" => Self::Debug,
+            "finish-migrate" => Self::FinishMigrate,
+            "inmigrate" => Self::InMigrate,
+            "internal-error" => Self::InternalError,
+            "io-error" => Self::IoError,
+            "paused" => Self::Paused,
+            "postmigrate" => Self::PostMigrate,
+            "prelaunch" => Self::Prelaunch,
+            "restore-vm" => Self::RestoreVm,
+            "running" => Self::Running,
+            "save-vm" => Self::SaveVm,
+            "shutdown" => Self::Shutdown,
+            "suspended" => Self::Suspended,
+            "watchdog" => Self::Watchdog,
+            "guest-panicked" => Self::GuestPanicked,
+            "colo" => Self::Colo,
+            _ => return None,
+        })
+    }
+}
+
+/// Supported QMP command kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum QmpCommandKind {
+    /// QMP capability negotiation.
+    Capabilities,
+    /// VMState snapshot save.
+    SaveVm,
+    /// VMState snapshot deletion.
+    DeleteSnapshot,
+    /// Consumes the retained native checkpoint request before any stop effects.
+    #[cfg(target_os = "linux")]
+    CheckpointBegin,
+    /// Exact direct or delta checkpoint capture.
+    CheckpointCapture,
+    /// Bounded topology metadata before host catalog graph admission.
+    CheckpointTopology,
+    /// Exact direct-plus-delta checkpoint restore.
+    CheckpointRestore,
+    /// Exact checkpoint candidate commit.
+    CheckpointCommit,
+    /// Exact checkpoint candidate abort.
+    CheckpointAbort,
+    /// Exact checkpoint epoch query.
+    QueryCheckpointEpoch,
+    /// Read-only architectural PC at a paused SIM boundary.
+    QueryPausedCpu,
+    /// Original-bound complete registered RAM backing export.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    ExportBackingMaterial,
+    /// Sealed main-RAM identity at an admitted paused experiment boundary.
+    #[cfg(feature = "kernel-swap-measurement")]
+    QueryKernelSwapAdmission,
+    /// Interval residency samples for the controlled host-swap experiment.
+    #[cfg(feature = "kernel-swap-measurement")]
+    QueryKernelSwapResidency,
+    /// Fixed read-only observations for admitted performance fixtures.
+    #[cfg(any(test, feature = "test-support", feature = "kernel-swap-measurement"))]
+    PerformanceObservation,
+    /// Exact realized fingerprint projection manifest query.
+    QueryFingerprintProjectionManifest,
+    /// Snapshot job status query.
+    QueryJobs,
+    /// Release a concluded snapshot job.
+    JobDismiss,
+    /// VM run-state query.
+    QueryStatus,
+    /// Stop guest execution.
+    Stop,
+    /// Resume guest execution.
+    Cont,
+    /// Correlated physical reset of an exact stopped selectable request.
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    SelectableReset,
+    /// Begins one authenticated retained paired Park request.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    ParentParkBegin,
+    /// Observes physical return on that request's original connection.
+    #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+    ParentParkReturn,
+    /// Authenticated terminal lifecycle completion.
+    CompleteTerminalLifecycle,
+    /// QEMU-owned sealed plugin-resource inventory query.
+    QueryHotForkPluginResourceInventory,
+    /// QEMU-owned registered fork-child runtime query.
+    QueryHotForkChildRuntime,
+    /// QEMU-owned reversible plugin callback-barrier operation.
+    HotForkPluginBarrier,
+    /// QEMU-owned reversible RCU admission/drain-barrier operation.
+    HotForkRcuBarrier,
+    /// QEMU-owned reversible asynchronous-worker barrier operation.
+    HotForkAsyncWorkerBarrier,
+    /// QEMU-owned reversible all-block drain-barrier operation.
+    HotForkBlockBarrier,
+    /// QEMU-owned complete original source graph and descriptor receipt.
+    HotForkSourceGraph,
+    /// QEMU-owned current root and retained block-seal query.
+    QueryHotForkBlockSeal,
+    /// QEMU-owned all-root block-seal transaction.
+    HotForkBlockSeal,
+    /// Creates one detached empty file-backed qcow2 node for the seal.
+    HotForkDetachedBlockdevAdd,
+    /// QEMU-owned retained hot-fork template coordinator operation.
+    HotForkTemplate,
+    /// QEMU-owned retained-template fork operation.
+    HotFork,
+    /// Source-QEMU child-process status query or release.
+    HotForkChildProcess,
+    /// One-shot target cgroup and cancellation contract operation.
+    HotForkChildProcessContract,
+    /// Independently bound child RAM authority import and custody operation.
+    HotForkChildRam,
+    /// One-shot child-private native file plan operation.
+    HotForkChildFiles,
+    /// QEMU-owned branch-private ring descriptor retention operation.
+    HotForkPrivateRings,
+    /// QEMU-owned branch-private plugin endpoint retention operation.
+    HotForkPluginEndpoints,
+    /// QEMU-owned branch-private child diagnostics retention operation.
+    HotForkChildDiagnostics,
+    /// QEMU-owned branch-private child QMP retention operation.
+    HotForkChildQmp,
+    /// QEMU-owned branch-private child console retention operation.
+    HotForkChildConsole,
+    /// Graceful QEMU quit.
+    Quit,
+    /// Import one Unix descriptor under a stable name.
+    GetFd,
+    /// Close one previously imported Unix descriptor.
+    CloseFd,
+    /// Adopt and retire the authenticated startup descriptor sets.
+    AdoptLaunchFdsets,
+}
+
+impl QmpCommandKind {
+    const fn wire_name(self) -> &'static str {
+        match self {
+            Self::Capabilities => QMP_CAPABILITIES_COMMAND,
+            Self::SaveVm => QMP_SNAPSHOT_SAVE_COMMAND,
+            Self::DeleteSnapshot => QMP_SNAPSHOT_DELETE_COMMAND,
+            #[cfg(target_os = "linux")]
+            Self::CheckpointBegin => checkpoint_begin::COMMAND,
+            Self::CheckpointCapture => QMP_CHECKPOINT_CAPTURE_COMMAND,
+            Self::CheckpointTopology => checkpoint_topology::COMMAND,
+            Self::CheckpointRestore => QMP_CHECKPOINT_RESTORE_COMMAND,
+            Self::CheckpointCommit => QMP_CHECKPOINT_COMMIT_COMMAND,
+            Self::CheckpointAbort => QMP_CHECKPOINT_ABORT_COMMAND,
+            Self::QueryCheckpointEpoch => QMP_QUERY_CHECKPOINT_EPOCH_COMMAND,
+            Self::QueryFingerprintProjectionManifest => {
+                QMP_QUERY_FINGERPRINT_PROJECTION_MANIFEST_COMMAND
+            }
+            Self::QueryPausedCpu => QMP_QUERY_PAUSED_CPU_COMMAND,
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            Self::ExportBackingMaterial => "crucible-export-backing-material-v1",
+            #[cfg(feature = "kernel-swap-measurement")]
+            Self::QueryKernelSwapResidency => QMP_QUERY_KERNEL_SWAP_RESIDENCY_COMMAND,
+            #[cfg(feature = "kernel-swap-measurement")]
+            Self::QueryKernelSwapAdmission => QMP_QUERY_KERNEL_SWAP_ADMISSION_COMMAND,
+            #[cfg(any(test, feature = "test-support", feature = "kernel-swap-measurement"))]
+            Self::PerformanceObservation => "human-monitor-command",
+            Self::QueryJobs => QMP_QUERY_JOBS_COMMAND,
+            Self::JobDismiss => QMP_JOB_DISMISS_COMMAND,
+            Self::QueryStatus => QMP_QUERY_STATUS_COMMAND,
+            Self::Stop => QMP_STOP_COMMAND,
+            Self::Cont => QMP_CONT_COMMAND,
+            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+            Self::SelectableReset => "crucible-selectable-reset-v1",
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            Self::ParentParkBegin => "crucible-parent-park-begin",
+            #[cfg(all(target_os = "linux", feature = "private-measurement-domain"))]
+            Self::ParentParkReturn => "crucible-parent-park-return",
+            Self::CompleteTerminalLifecycle => QMP_COMPLETE_TERMINAL_LIFECYCLE_COMMAND,
+            Self::QueryHotForkPluginResourceInventory => {
+                QMP_QUERY_HOT_FORK_PLUGIN_RESOURCE_INVENTORY_COMMAND
+            }
+            Self::QueryHotForkChildRuntime => QMP_QUERY_HOT_FORK_CHILD_RUNTIME_COMMAND,
+            Self::HotForkPluginBarrier => QMP_HOT_FORK_PLUGIN_BARRIER_COMMAND,
+            Self::HotForkRcuBarrier => QMP_HOT_FORK_RCU_BARRIER_COMMAND,
+            Self::HotForkAsyncWorkerBarrier => QMP_HOT_FORK_ASYNC_WORKER_BARRIER_COMMAND,
+            Self::HotForkBlockBarrier => QMP_HOT_FORK_BLOCK_BARRIER_COMMAND,
+            Self::HotForkSourceGraph => hot_fork::QMP_HOT_FORK_SOURCE_GRAPH_COMMAND,
+            Self::QueryHotForkBlockSeal => QMP_QUERY_HOT_FORK_BLOCK_SEAL_COMMAND,
+            Self::HotForkBlockSeal => QMP_HOT_FORK_BLOCK_SEAL_COMMAND,
+            Self::HotForkDetachedBlockdevAdd => "blockdev-add",
+            Self::HotForkTemplate => QMP_HOT_FORK_TEMPLATE_COMMAND,
+            Self::HotFork => QMP_HOT_FORK_COMMAND,
+            Self::HotForkChildProcess => QMP_HOT_FORK_CHILD_PROCESS_COMMAND,
+            Self::HotForkChildProcessContract => QMP_HOT_FORK_CHILD_PROCESS_CONTRACT_COMMAND,
+            Self::HotForkChildRam => hot_fork_ram::COMMAND,
+            Self::HotForkChildFiles => QMP_HOT_FORK_CHILD_FILES_COMMAND,
+            Self::HotForkPrivateRings => QMP_HOT_FORK_PRIVATE_RINGS_COMMAND,
+            Self::HotForkPluginEndpoints => QMP_HOT_FORK_PLUGIN_ENDPOINTS_COMMAND,
+            Self::HotForkChildDiagnostics => QMP_HOT_FORK_CHILD_DIAGNOSTICS_COMMAND,
+            Self::HotForkChildQmp => QMP_HOT_FORK_CHILD_QMP_COMMAND,
+            Self::HotForkChildConsole => QMP_HOT_FORK_CHILD_CONSOLE_COMMAND,
+            Self::Quit => QMP_QUIT_COMMAND_NAME,
+            Self::GetFd => QMP_GETFD_COMMAND,
+            Self::CloseFd => QMP_CLOSEFD_COMMAND,
+            Self::AdoptLaunchFdsets => QMP_ADOPT_LAUNCH_FDSETS_COMMAND,
+        }
+    }
+}
+
+/// Successful response for a typed QMP command.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct QmpCommandComplete {
+    /// Command that completed successfully.
+    pub command: QmpCommandKind,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct QmpCommandReturn {
+    command: QmpCommandKind,
+    value: Value,
+    #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+    selectable_reset: Option<QmpSelectableResetComplete>,
+}
+
+#[path = "qmp/error.rs"]
+mod error;
+
+pub use error::{QmpError, QmpRuntimeOperation};
+
+fn snapshot_job_id(job_action: &'static str, tag: &QmpSnapshotTag) -> String {
+    format!("crucible-{job_action}-{}", tag.as_str())
+}
+
+fn command_error(command: QmpCommandKind, error: &Value) -> QmpError {
+    let class = error
+        .get("class")
+        .and_then(Value::as_str)
+        .unwrap_or("Unknown")
+        .to_owned();
+    let description = error
+        .get("desc")
+        .and_then(Value::as_str)
+        .unwrap_or("QMP command failed")
+        .to_owned();
+    QmpError::Command {
+        command,
+        class,
+        description,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // crucible-lint: allow panic-shortcut -- focused protocol fixtures use exact panic messages.
+    #![allow(clippy::expect_used)]
+
+    use std::collections::VecDeque;
+    use std::io::Cursor;
+
+    use super::*;
+
+    #[test]
+    fn checkpoint_and_projection_versions_match_registry() {
+        let registry =
+            include_str!("../../../../docs/rfcs/0020-crucible-campaigns/schema-registry.tsv");
+        let schemas = [
+            (
+                "crucible.qemu.checkpoint-qmp",
+                checkpoint::QMP_CHECKPOINT_SCHEMA_VERSION,
+            ),
+            (
+                "crucible.qemu.fingerprint-projection-manifest",
+                fingerprint_projection::QMP_FINGERPRINT_PROJECTION_MANIFEST_SCHEMA_VERSION,
+            ),
+        ];
+
+        for (name, version) in schemas {
+            let row = format!("{name}\t{version}\tcrucible-qemu-host::qmp::");
+            assert!(
+                registry.lines().any(|line| line.starts_with(&row)),
+                "missing current QMP schema {name}"
+            );
+        }
+    }
+
+    #[derive(Debug)]
+    struct ScriptedStream {
+        read: Cursor<Vec<u8>>,
+        written: Vec<u8>,
+    }
+
+    impl ScriptedStream {
+        fn new(lines: &[&str]) -> Self {
+            let mut bytes = lines.join("\r\n").into_bytes();
+            bytes.extend_from_slice(b"\r\n");
+            Self {
+                read: Cursor::new(bytes),
+                written: Vec::new(),
+            }
+        }
+    }
+
+    impl Read for ScriptedStream {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            self.read.read(buffer)
+        }
+    }
+
+    impl Write for ScriptedStream {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.written.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl QmpTimeoutStream for ScriptedStream {
+        fn set_qmp_read_timeout(&mut self, _timeout: Duration) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn set_qmp_write_timeout(&mut self, _timeout: Duration) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct PollingStream {
+        scripted: ScriptedStream,
+        fault_position: u64,
+        faults: VecDeque<ErrorKind>,
+    }
+
+    impl Read for PollingStream {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.scripted.read.position() == self.fault_position
+                && let Some(kind) = self.faults.pop_front()
+            {
+                return Err(io::Error::from(kind));
+            }
+            self.scripted.read(&mut buffer[..1])
+        }
+    }
+
+    impl Write for PollingStream {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.scripted.write(buffer)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.scripted.flush()
+        }
+    }
+
+    impl QmpTimeoutStream for PollingStream {
+        fn set_qmp_read_timeout(&mut self, _timeout: Duration) -> io::Result<()> {
+            Ok(())
+        }
+
+        fn set_qmp_write_timeout(&mut self, _timeout: Duration) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    fn polling_stream(faults: VecDeque<ErrorKind>) -> PollingStream {
+        let greeting = r#"{"QMP":{"version":{},"capabilities":[]}}"#;
+        let capabilities = r#"{"return":{}}"#;
+        PollingStream {
+            scripted: ScriptedStream::new(&[greeting, capabilities, capabilities]),
+            fault_position: (greeting.len() + capabilities.len() + 4 + 7) as u64,
+            faults,
+        }
+    }
+
+    #[test]
+    fn shared_supervision_preserves_partial_qmp_response_across_poll_slices() {
+        let stream = polling_stream(VecDeque::from([
+            ErrorKind::TimedOut,
+            ErrorKind::WouldBlock,
+            ErrorKind::Interrupted,
+        ]));
+        let mut client = QmpClient::connect(stream).expect("connect polling fixture");
+        client.set_host_operation_supervisor(
+            HostOperationSupervisor::new(
+                crucible_host_resources::host_supervision::HostOperationBudgets::default(),
+                Some(Duration::from_secs(2)),
+            )
+            .expect("admit shared supervision"),
+        );
+
+        client
+            .send_command(QmpCommand::Stop)
+            .expect("retain partial JSON cursor");
+
+        assert!(!client.poisoned);
+        assert!(client.stream.get_ref().faults.is_empty());
+    }
+
+    #[test]
+    fn supervised_connection_retains_partial_greeting_across_poll_slices() {
+        let mut stream = polling_stream(VecDeque::from([
+            ErrorKind::TimedOut,
+            ErrorKind::WouldBlock,
+            ErrorKind::Interrupted,
+        ]));
+        stream.fault_position = 7;
+        let supervisor = HostOperationSupervisor::new(
+            crucible_host_resources::host_supervision::HostOperationBudgets::default(),
+            Some(Duration::from_secs(2)),
+        )
+        .expect("admit greeting authority");
+
+        let client = QmpClient::connect_supervised_with_policies(
+            stream,
+            QmpJobPollPolicy::default(),
+            QmpIoTimeoutPolicy::new(Duration::from_nanos(1), Duration::from_nanos(1)),
+            supervisor,
+        )
+        .expect("supervised greeting and capabilities outlive fixture timeout");
+
+        assert!(client.greeting().version_present);
+        assert!(client.stream.get_ref().faults.is_empty());
+    }
+
+    #[test]
+    fn terminal_partial_qmp_response_poisoning_prevents_stale_acknowledgment() {
+        let stream = polling_stream(VecDeque::from([ErrorKind::TimedOut]));
+        let mut client = QmpClient::connect(stream).expect("connect polling fixture");
+
+        assert!(client.send_command(QmpCommand::Stop).is_err());
+        assert_eq!(
+            client.send_command(QmpCommand::Cont),
+            Err(QmpError::ConnectionPoisoned)
+        );
+    }
+
+    fn hot_fork_request() -> QmpHotForkRequest {
+        QmpHotForkRequest::for_test(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15)
+    }
+
+    #[test]
+    fn command_response_rejects_excess_async_events() {
+        let mut client = QmpClient::connect_with_policies(
+            ScriptedStream::new(&[
+                r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+                r#"{"return":{}}"#,
+                r#"{"event":"STOP"}"#,
+                r#"{"event":"RESUME"}"#,
+                r#"{"return":{}}"#,
+            ]),
+            QmpJobPollPolicy::fast_test(1),
+            QmpIoTimeoutPolicy {
+                max_async_events_per_command: 1,
+                ..QmpIoTimeoutPolicy::new(Duration::from_millis(7), Duration::from_millis(11))
+            },
+        )
+        .expect("scripted QMP client should connect");
+
+        assert!(matches!(
+            client.quit(),
+            Err(QmpError::AsyncEventLimitExceeded {
+                command: QmpCommandKind::Quit,
+                limit: 1,
+            })
+        ));
+    }
+
+    #[test]
+    fn greeting_rejects_an_oversized_partial_line() {
+        assert!(matches!(
+            QmpClient::connect_with_policies(
+                ScriptedStream::new(&[r#"{"QMP":{"version":{},"capabilities":[]}}"#]),
+                QmpJobPollPolicy::fast_test(1),
+                QmpIoTimeoutPolicy {
+                    max_line_bytes: 8,
+                    ..QmpIoTimeoutPolicy::new(Duration::from_millis(7), Duration::from_millis(11))
+                },
+            ),
+            Err(QmpError::LineTooLong {
+                operation: "read QMP greeting",
+                max_bytes: 8,
+            })
+        ));
+    }
+
+    fn hot_fork_response(qmp_generation: u64) -> String {
+        json!({
+            "return": {
+                "schema-version": 3,
+                "outcome": "forked",
+                "parent-status": 0,
+                "child-pid": 321,
+                "template-generation": 1,
+                "private-ring-generation": 2,
+                "diagnostic-generation": 3,
+                "qmp-generation": qmp_generation,
+                "console-generation": 5,
+                "monitor-generation": 6,
+                "plugin-endpoint-generation": 7,
+                "plugin-barrier-generation": 8,
+                "rcu-barrier-generation": 9,
+                "async-worker-barrier-generation": 10,
+                "block-barrier-generation": 11,
+                "parent-process-generation": 12,
+                "child-process-generation": 13,
+                "child-process-contract-generation": 14,
+                "child-files-generation": 15,
+            }
+        })
+        .to_string()
+    }
+
+    fn hot_fork_child_process_response(
+        generation: u64,
+        phase: &str,
+        status: u8,
+        retained: bool,
+    ) -> String {
+        json!({
+            "return": {
+                "schema-version": QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
+                "generation": generation,
+                "child-pid": 321,
+                "phase": phase,
+                "status": status,
+                "retained": retained,
+            }
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn launch_fdset_adoption_uses_the_typed_private_qmp_command() {
+        for has_root_overlay in [false, true] {
+            let command = QmpCommand::AdoptLaunchFdsets { has_root_overlay };
+            assert_eq!(command.kind(), QmpCommandKind::AdoptLaunchFdsets);
+            assert_eq!(
+                command.request(),
+                json!({
+                    "execute": "x-crucible-adopt-launch-fdsets",
+                    "arguments": { "root-overlay": has_root_overlay },
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn source_graph_query_bypasses_retained_template_admission() {
+        let command = QmpCommand::HotForkSourceGraph {
+            expected_qemu_pid: 451,
+            expected_template_generation: 7,
+        };
+
+        assert_eq!(command.kind(), QmpCommandKind::HotForkSourceGraph);
+        assert_eq!(
+            command.request(),
+            json!({
+                "exec-oob": "crucible-hot-fork-source-graph",
+                "arguments": {
+                    "expected-qemu-pid": 451,
+                    "expected-template-generation": 7,
+                    "maximum-nodes": hot_fork::QMP_HOT_FORK_SOURCE_GRAPH_MAX_NODES,
+                    "maximum-bytes": hot_fork::QMP_HOT_FORK_SOURCE_GRAPH_MAX_BYTES,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn hot_fork_command_carries_every_exact_generation() {
+        let request = hot_fork_request();
+        let cgroup = QmpDescriptorName::new("target-cgroup").expect("valid cgroup name");
+        let cgroup_procs =
+            QmpDescriptorName::new("target-cgroup-procs").expect("valid cgroup.procs name");
+        let cancellation =
+            QmpDescriptorName::new("target-cancellation").expect("valid cancellation name");
+        let identity = QmpHotForkChildProcessContractIdentity::new(11, 12, 14, 13, 4096, 8192)
+            .expect("valid child process identity");
+
+        assert_eq!(
+            QmpCommand::HotFork { request }.request(),
+            json!({
+                "exec-oob": "crucible-hot-fork",
+                "arguments": {
+                    "template-generation": 1,
+                    "private-ring-generation": 2,
+                    "diagnostic-generation": 3,
+                    "qmp-generation": 4,
+                    "console-generation": 5,
+                    "monitor-generation": 6,
+                    "plugin-endpoint-generation": 7,
+                    "plugin-barrier-generation": 8,
+                    "rcu-barrier-generation": 9,
+                    "async-worker-barrier-generation": 10,
+                    "block-barrier-generation": 11,
+                    "parent-process-generation": 12,
+                    "child-process-generation": 13,
+                    "child-process-contract-generation": 14,
+                    "child-files-generation": 15,
+                },
+            })
+        );
+        let vmstate_root = QmpHotForkChildFileRoot::node_name("vmstate").expect("bounded root");
+        let vmstate_file = QmpHotForkChildFile::new(
+            vmstate_root,
+            QmpDescriptorName::new("crucible-hfork-file-v1-0000-000000000000002a")
+                .expect("valid destination name"),
+            21,
+            42,
+        )
+        .expect("nonzero destination identity");
+        assert_eq!(
+            QmpCommand::HotForkChildFiles {
+                action: HotForkChildFilesAction::Stage,
+                files: Some(std::slice::from_ref(&vmstate_file)),
+                maximum_bytes: Some(1 << 30),
+                expected_generation: None,
+            }
+            .request(),
+            json!({
+                "exec-oob": "crucible-hot-fork-child-files",
+                "arguments": {
+                    "action": "stage",
+                    "files": [{
+                        "node-name": "vmstate",
+                        "fdname": "crucible-hfork-file-v1-0000-000000000000002a",
+                        "expected-device": 21,
+                        "expected-inode": 42,
+                    }],
+                    "maximum-bytes": 1_073_741_824_u64,
+                },
+            })
+        );
+        assert_eq!(
+            QmpCommand::HotForkChildFiles {
+                action: HotForkChildFilesAction::Release,
+                files: None,
+                maximum_bytes: None,
+                expected_generation: Some(7),
+            }
+            .request(),
+            json!({
+                "exec-oob": "crucible-hot-fork-child-files",
+                "arguments": { "action": "release", "expected-generation": 7 },
+            })
+        );
+        assert_eq!(
+            QmpCommand::HotForkChildProcess {
+                action: HotForkChildProcessAction::Query,
+                generation: 12,
+            }
+            .request(),
+            json!({
+                "exec-oob": "crucible-hot-fork-child-process",
+                "arguments": {
+                    "action": "query",
+                    "schema-version": QMP_HOT_FORK_CHILD_PROCESS_SCHEMA_VERSION,
+                    "generation": 12,
+                },
+            })
+        );
+        assert_eq!(
+            QmpCommand::HotForkChildProcessContract {
+                action: HotForkChildProcessContractAction::Stage,
+                cgroup_name: Some(&cgroup),
+                cgroup_procs_name: Some(&cgroup_procs),
+                cancellation_name: Some(&cancellation),
+                identity: Some(identity),
+            }
+            .request(),
+            json!({
+                "exec-oob": "crucible-hot-fork-child-process-contract",
+                "arguments": {
+                    "action": "stage",
+                    "cgroup-fdname": "target-cgroup",
+                    "cgroup-procs-fdname": "target-cgroup-procs",
+                    "cancellation-fdname": "target-cancellation",
+                    "expected-cgroup-device": 11,
+                    "expected-cgroup-inode": 12,
+                    "expected-cgroup-procs-inode": 14,
+                    "expected-cancellation-eventfd-id": 13,
+                    "maximum-file-bytes": 4096,
+                    "maximum-locked-bytes": 8192,
+                },
+            })
+        );
+        assert_eq!(
+            QmpCommand::HotForkChildProcessContract {
+                action: HotForkChildProcessContractAction::Query,
+                cgroup_name: None,
+                cgroup_procs_name: None,
+                cancellation_name: None,
+                identity: None,
+            }
+            .request(),
+            json!({
+                "exec-oob": "crucible-hot-fork-child-process-contract",
+                "arguments": { "action": "query" },
+            })
+        );
+    }
+
+    #[test]
+    fn hot_fork_accepts_exact_result_and_poisons_ambiguous_mismatch() {
+        let exact = hot_fork_response(4);
+        let mut client = QmpClient::connect(ScriptedStream::new(&[
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            &exact,
+        ]))
+        .expect("scripted QMP client should connect");
+        let state = client
+            .hot_fork(hot_fork_request())
+            .expect("exact hot-fork response should succeed");
+        assert_eq!(state.child_pid(), 321);
+        assert_eq!(state.request(), hot_fork_request());
+
+        let mismatch = hot_fork_response(99);
+        let mut client = QmpClient::connect(ScriptedStream::new(&[
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            &mismatch,
+        ]))
+        .expect("scripted QMP client should connect");
+        assert!(matches!(
+            client.hot_fork(hot_fork_request()),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotFork,
+                ..
+            })
+        ));
+        assert_eq!(
+            client.hot_fork(hot_fork_request()),
+            Err(QmpError::ConnectionPoisoned)
+        );
+    }
+
+    #[test]
+    fn hot_fork_pre_fork_rejection_keeps_the_connection_usable() {
+        let exact = hot_fork_response(4);
+        let mut client = QmpClient::connect(ScriptedStream::new(&[
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            r#"{"error":{"class":"GenericError","desc":"stale generation"}}"#,
+            &exact,
+        ]))
+        .expect("scripted QMP client should connect");
+        assert!(matches!(
+            client.hot_fork(hot_fork_request()),
+            Err(QmpError::Command {
+                command: QmpCommandKind::HotFork,
+                ..
+            })
+        ));
+        assert_eq!(
+            client
+                .hot_fork(hot_fork_request())
+                .expect("explicit pre-fork rejection should remain retryable")
+                .child_pid(),
+            321
+        );
+    }
+
+    #[test]
+    fn hot_fork_child_status_is_exact_releasable_and_poisoned_on_mismatch() {
+        let running = hot_fork_child_process_response(12, "running", 0, true);
+        let released = hot_fork_child_process_response(12, "exited", 7, false);
+        let mut client = QmpClient::connect(ScriptedStream::new(&[
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            &running,
+            &released,
+        ]))
+        .expect("scripted QMP client should connect");
+        let observed = client
+            .query_hot_fork_child_process(12)
+            .expect("running child record should remain queryable");
+        assert_eq!(observed.child_process_id(), 321);
+        assert_eq!(observed.phase(), QmpHotForkChildProcessPhase::Running);
+        assert!(observed.retained());
+        let released = client
+            .release_hot_fork_child_process(12)
+            .expect("reaped child record should release exactly once");
+        assert_eq!(released.phase(), QmpHotForkChildProcessPhase::Exited);
+        assert_eq!(released.status(), 7);
+        assert!(!released.retained());
+
+        let running = hot_fork_child_process_response(12, "running", 0, true);
+        let mut client = QmpClient::connect(ScriptedStream::new(&[
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            r#"{"error":{"class":"GenericError","desc":"child is still running"}}"#,
+            &running,
+        ]))
+        .expect("scripted QMP client should connect");
+        assert!(matches!(
+            client.release_hot_fork_child_process(12),
+            Err(QmpError::Command {
+                command: QmpCommandKind::HotForkChildProcess,
+                ..
+            })
+        ));
+        assert!(
+            client
+                .query_hot_fork_child_process(12)
+                .expect("explicit running-child rejection should remain retryable")
+                .retained()
+        );
+
+        let mismatched = hot_fork_child_process_response(13, "running", 0, true);
+        let mut client = QmpClient::connect(ScriptedStream::new(&[
+            r#"{"QMP":{"version":{},"capabilities":[]}}"#,
+            r#"{"return":{}}"#,
+            &mismatched,
+        ]))
+        .expect("scripted QMP client should connect");
+        assert!(matches!(
+            client.query_hot_fork_child_process(12),
+            Err(QmpError::MalformedTypedResponse {
+                command: QmpCommandKind::HotForkChildProcess,
+                ..
+            })
+        ));
+        assert_eq!(
+            client.query_hot_fork_child_process(12),
+            Err(QmpError::ConnectionPoisoned)
+        );
+    }
+}

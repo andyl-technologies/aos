@@ -76,12 +76,12 @@
   cliDoc = builtins.readFile ../../docs/rfcs/0010-crucible/23-cli.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   cliMain = import ./_cli-source.nix {inherit lib;};
-  cliLiveFuzz = builtins.readFile ../../crates/crucible/control/crucible-cli/src/cli/run_save/qemu_live/fuzz.rs;
-  cliMachineReadable = builtins.readFile ../../crates/crucible/control/crucible-cli/tests/machine_readable.rs;
+  cliLiveFuzz = builtins.readFile ../../crates/crucible/crucible-cli/src/cli/run_save/qemu_live/fuzz.rs;
+  cliMachineReadable = builtins.readFile ../../crates/crucible/crucible-cli/tests/machine_readable.rs;
   sessionLib = import ./_crucible-session-source.nix {inherit lib;};
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
   engineTrigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  searchStrategiesTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_search_strategies.rs;
+  searchStrategiesTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_search_strategies.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
@@ -251,7 +251,7 @@
         needle = "feeds\n  non-empty plugin basic-block coverage into the engine policy";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
       {
         label = "search arguments";
         needle = "struct SearchArgs";
@@ -689,7 +689,7 @@
         needle = "replay_oracle_validations=3";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
+    ++ failuresFor "crates/crucible/crucible-cli/tests/machine_readable.rs" cliMachineReadable [
       {
         label = "process search/fuzz JSONL regression";
         needle = "cli_exit_machine_readable_search_fuzz_jsonl_reports_final_outcome";
@@ -711,13 +711,13 @@
         needle = "assert_machine_readable_jsonl(&fuzz_stdout, &[\"coverage_guided_fuzz_run\"])?";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-session/src/lib.rs" sessionLib [
+    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" sessionLib [
       {
         label = "search discovered failure re-export";
         needle = "SearchDiscoveredFailure";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" engineModel [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" engineModel [
       {
         label = "sampled strategy search wrapper";
         needle = "struct TemporalGraphSampledSearchRun";
@@ -859,13 +859,13 @@
         needle = "sampled_search_offset_localizes_bisection_sequence";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" engineTrigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" engineTrigger [
       {
         label = "recorded assertion log terminal quantum boundary constructor";
         needle = "pub fn from_entries_with_quantum_evaluation_boundary";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_search_strategies.rs" searchStrategiesTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/gate_search_strategies.rs" searchStrategiesTest [
       {
         label = "sampled search strategy gate";
         needle = "gate_search_strategies_sample_replay_oracle_checks";
@@ -1091,7 +1091,7 @@
         needle = "guest_reachable_warn_with_terminal_quiescence_oracle";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-cli/src/cli/run_save/qemu_live/fuzz.rs" cliLiveFuzz [
+    ++ failuresFor "crates/crucible/crucible-cli/src/cli/run_save/qemu_live/fuzz.rs" cliLiveFuzz [
       {
         label = "live fuzz samples from accepted coverage";
         needle = "sample_coverage_guided(context.plan.config, sequence, &guidance)";

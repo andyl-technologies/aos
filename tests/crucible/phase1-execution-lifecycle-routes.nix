@@ -7,15 +7,15 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  apiLifecycle = builtins.readFile ../../crates/crucible/control/crucible-daemon/src/vm_lifecycle.rs;
-  daemonLifecycle = builtins.readFile ../../crates/crucible/control/crucible-daemon/src/qemu_campaign_lifecycle.rs;
-  daemonLauncher = builtins.readFile ../../crates/crucible/control/crucible-daemon/src/qemu_lifecycle_launcher.rs;
-  bakedReplay = builtins.readFile ../../crates/crucible/control/crucible-daemon/src/qemu_baked_genesis.rs;
+  apiLifecycle = builtins.readFile ../../crates/crucible/crucible-daemon/src/vm_lifecycle.rs;
+  daemonLifecycle = builtins.readFile ../../crates/crucible/crucible-daemon/src/qemu_campaign_lifecycle.rs;
+  daemonLauncher = builtins.readFile ../../crates/crucible/crucible-daemon/src/qemu_lifecycle_launcher.rs;
+  bakedReplay = builtins.readFile ../../crates/crucible/crucible-daemon/src/qemu_baked_genesis.rs;
 
   inherit (import ./_lib.nix {inherit lib;}) failuresFor;
 
   failures =
-    failuresFor "crates/crucible/control/crucible-daemon/src/vm_lifecycle.rs" apiLifecycle [
+    failuresFor "crates/crucible/crucible-daemon/src/vm_lifecycle.rs" apiLifecycle [
       {
         label = "operation-specific exact-resume builder";
         needle = "pub fn build_production_vm_exact_resume_lifecycle<L>(";
@@ -29,13 +29,13 @@
         needle = "pub fn into_replay_admission(";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-daemon/src/qemu_campaign_lifecycle.rs" daemonLifecycle [
+    ++ failuresFor "crates/crucible/crucible-daemon/src/qemu_campaign_lifecycle.rs" daemonLifecycle [
       {
         label = "production exact-resume route";
         needle = "build_production_vm_exact_resume_lifecycle(scenario, source, &config, decoded, launcher)";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-daemon/src/qemu_lifecycle_launcher.rs" daemonLauncher [
+    ++ failuresFor "crates/crucible/crucible-daemon/src/qemu_lifecycle_launcher.rs" daemonLauncher [
       {
         label = "single restored-generation launcher";
         needle = "fn launch_restored(";
@@ -45,7 +45,7 @@
         needle = "admission.into_atomic_restore(request, run_directory, process_contract)";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-daemon/src/qemu_baked_genesis.rs" bakedReplay [
+    ++ failuresFor "crates/crucible/crucible-daemon/src/qemu_baked_genesis.rs" bakedReplay [
       {
         label = "typed baked-replay catalog";
         needle = "pub struct ProductionBakedGenesisReplayCatalogFactory<R>";

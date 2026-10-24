@@ -15,23 +15,23 @@
   abiConformanceCheck = builtins.readFile ./phase2-abi-conformance.nix;
   shmemGateTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/protocol/crucible-qemu-shmem/tests/gate_abi_conformance.rs;
+    entry = ../../crates/crucible/crucible-qemu-shmem/tests/gate_abi_conformance.rs;
   };
   protocolGateTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/protocol/crucible-qemu-protocol/tests/gate_abi_conformance.rs;
+    entry = ../../crates/crucible/crucible-qemu-protocol/tests/gate_abi_conformance.rs;
   };
   protocolGoldenTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/protocol/crucible-qemu-protocol/tests/golden_vectors.rs;
+    entry = ../../crates/crucible/crucible-qemu-protocol/tests/golden_vectors.rs;
   };
   apiGateTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/control/crucible-control-api/tests/gate_abi_conformance.rs;
+    entry = ../../crates/crucible/crucible-control-api/tests/gate_abi_conformance.rs;
   };
   apiRpcAbi = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/control/crucible-control-api/src/rpc_abi.rs;
+    entry = ../../crates/crucible/crucible-control-api/src/rpc_abi.rs;
   };
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -150,7 +150,7 @@
         needle = "rpc_exact_version_rejection=true";
       }
     ])
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_abi_conformance.rs" shmemGateTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-shmem/tests/gate_abi_conformance.rs" shmemGateTest [
       {
         label = "shmem generated header and golden vector aggregate";
         needle = "gate_abi_conformance_checks_generated_header_and_golden_vectors";
@@ -168,7 +168,7 @@
         needle = "golden_vector_negative_control_detects_layout_drift";
       }
     ]
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/gate_abi_conformance.rs" protocolGateTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/tests/gate_abi_conformance.rs" protocolGateTest [
       {
         label = "protocol version field check";
         needle = "protocol_golden_vector_versions_are_explicit";
@@ -194,7 +194,7 @@
         needle = "protocol_doorbell_marker_payload_golden_vectors_match_live_codec_bytes";
       }
     ]
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/golden_vectors.rs" protocolGoldenTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/tests/golden_vectors.rs" protocolGoldenTest [
       {
         label = "protocol golden corpus direct test";
         needle = "golden_vectors_match_canonical_codec_bytes";
@@ -208,7 +208,7 @@
         needle = "marker_payload_golden_vectors_match_canonical_codec_bytes";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-api/src/rpc_abi.rs" apiRpcAbi [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/rpc_abi.rs" apiRpcAbi [
       {
         label = "RPC semantic version";
         needle = "pub const RPC_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion";
@@ -230,7 +230,7 @@
         needle = "pub const GOLDEN_RPC_VECTORS";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-api/tests/gate_abi_conformance.rs" apiGateTest [
+    ++ failuresFor "crates/crucible/crucible-control-api/tests/gate_abi_conformance.rs" apiGateTest [
       {
         label = "RPC exact version and mismatch check";
         needle = "rpc_protocol_version_is_exact_and_rejects_all_drift";

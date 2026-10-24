@@ -7,14 +7,14 @@
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   workspaceManifest = builtins.fromTOML (builtins.readFile ../../crates/Cargo.toml);
   packageInventory = import ../../pkgs/tools/crucible/_packages.nix;
-  casManifest = builtins.fromTOML (builtins.readFile ../../crates/crucible/storage/crucible-store/Cargo.toml);
+  casManifest = builtins.fromTOML (builtins.readFile ../../crates/crucible/crucible-store/Cargo.toml);
   casSource =
-    builtins.readFile ../../crates/crucible/storage/crucible-store/src/lib.rs
-    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_codec.rs
-    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_model.rs
-    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/campaign_store.rs
-    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/invalidation.rs
-    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/tests.rs;
+    builtins.readFile ../../crates/crucible/crucible-store/src/lib.rs
+    + builtins.readFile ../../crates/crucible/crucible-store/src/cas/campaign_codec.rs
+    + builtins.readFile ../../crates/crucible/crucible-store/src/cas/campaign_model.rs
+    + builtins.readFile ../../crates/crucible/crucible-store/src/cas/campaign_store.rs
+    + builtins.readFile ../../crates/crucible/crucible-store/src/cas/invalidation.rs
+    + builtins.readFile ../../crates/crucible/crucible-store/src/cas/tests.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
@@ -40,11 +40,11 @@
     ++ failuresFor "crates/Cargo.toml" (builtins.readFile ../../crates/Cargo.toml) [
       {
         label = "crucible-store workspace member";
-        needle = "\"crucible/storage/crucible-store\"";
+        needle = "\"crucible/crucible-store\"";
       }
       {
         label = "crucible-cas workspace dependency";
-        needle = "crucible-store = { path = \"crucible/storage/crucible-store\" }";
+        needle = "crucible-store = { path = \"crucible/crucible-store\" }";
       }
     ]
     ++ failuresFor "pkgs/tools/crucible/_packages.nix" (builtins.readFile ../../pkgs/tools/crucible/_packages.nix) [
@@ -53,7 +53,7 @@
         needle = "\"crucible-store\"";
       }
     ]
-    ++ failuresFor "crates/crucible/storage/crucible-store/Cargo.toml" (builtins.readFile ../../crates/crucible/storage/crucible-store/Cargo.toml) [
+    ++ failuresFor "crates/crucible/crucible-store/Cargo.toml" (builtins.readFile ../../crates/crucible/crucible-store/Cargo.toml) [
       {
         label = "crucible-cas package name";
         needle = "name = \"crucible-store\"";
@@ -67,7 +67,7 @@
         needle = "thiserror = { workspace = true }";
       }
     ]
-    ++ failuresFor "crates/crucible/storage/crucible-store/src/lib.rs" casSource [
+    ++ failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
       {
         label = "crate-level standalone docs";
         needle = "no dependency on `ratchet` crates";
@@ -135,7 +135,7 @@
         needle = "crucibleCas = import ./phase7-crucible-cas.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/storage/crucible-store/Cargo.toml" (builtins.readFile ../../crates/crucible/storage/crucible-store/Cargo.toml) [
+    ++ forbiddenFor "crates/crucible/crucible-store/Cargo.toml" (builtins.readFile ../../crates/crucible/crucible-store/Cargo.toml) [
       {
         label = "ratchet dependency";
         needle = "ratchet-";
@@ -145,7 +145,7 @@
         needle = "aos-nix-";
       }
     ]
-    ++ forbiddenFor "crates/crucible/storage/crucible-store/src/lib.rs" casSource [
+    ++ forbiddenFor "crates/crucible/crucible-store/src/lib.rs" casSource [
       {
         label = "ratchet import";
         needle = "use ratchet";
@@ -155,7 +155,7 @@
         needle = "use aos_nix";
       }
     ]
-    ++ map (name: "crates/crucible/storage/crucible-store/Cargo.toml: forbidden shared-store dependency ${name}")
+    ++ map (name: "crates/crucible/crucible-store/Cargo.toml: forbidden shared-store dependency ${name}")
     forbiddenDependencyNames;
 in
   if failures != []

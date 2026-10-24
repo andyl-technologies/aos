@@ -31,6 +31,7 @@
     kmod = artifactFor "kmod";
     openssh = sshTools;
     openssl = artifactFor "openssl";
+    python3 = artifactFor "python3";
     systemd = {
       outPath = systemdPackage;
       tools = systemdTools;
@@ -40,13 +41,14 @@
   };
   buildTestDisk = {
     closureInfoFor,
+    mkImageRecipe ? null,
     mkDerivation,
     sshTools,
     testAgent,
     inputs,
   }:
     import ../testing/disk.nix {
-      inherit closureInfoFor lib;
+      inherit closureInfoFor lib mkImageRecipe;
       packages = testDiskPackagesFor {inherit mkDerivation sshTools testAgent;};
     }
     inputs;
@@ -103,6 +105,7 @@
       mtools = artifactFor "mtools";
       openssl = artifactFor "openssl";
       pe-tools = artifactFor "pe-tools";
+      python3 = artifactFor "python3";
       qemu = artifactFor "qemu";
       sbsigntools = artifactFor "sbsigntools";
       systemd = {

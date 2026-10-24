@@ -4,17 +4,17 @@
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  simLib = builtins.readFile ../../crates/crucible/engine/crucible-determinism/src/lib.rs;
-  contractA = builtins.readFile ../../crates/crucible/engine/crucible-determinism/src/contract_a.rs;
-  contractATests = builtins.readFile ../../crates/crucible/engine/crucible-determinism/tests/contract_a.rs;
-  simCargo = builtins.readFile ../../crates/crucible/engine/crucible-determinism/Cargo.toml;
+  simLib = builtins.readFile ../../crates/crucible/crucible-determinism/src/lib.rs;
+  contractA = builtins.readFile ../../crates/crucible/crucible-determinism/src/contract_a.rs;
+  contractATests = builtins.readFile ../../crates/crucible/crucible-determinism/tests/contract_a.rs;
+  simCargo = builtins.readFile ../../crates/crucible/crucible-determinism/Cargo.toml;
   determinismContract = builtins.readFile ../../docs/rfcs/0010-crucible/04-determinism-contract.md;
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible/engine/crucible-determinism/src/lib.rs" simLib [
+    failuresFor "crates/crucible/crucible-determinism/src/lib.rs" simLib [
       {
         label = "contract_a module export";
         needle = "pub mod contract_a;";
@@ -24,7 +24,7 @@
         needle = "[`contract_a`] owns the isolated single-VM Contract A driver";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-determinism/src/contract_a.rs" contractA [
+    ++ failuresFor "crates/crucible/crucible-determinism/src/contract_a.rs" contractA [
       {
         label = "Contract A config";
         needle = "pub struct ContractAConfig";
@@ -110,7 +110,7 @@
         needle = "fn run_fingerprint";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-determinism/tests/contract_a.rs" contractATests [
+    ++ failuresFor "crates/crucible/crucible-determinism/tests/contract_a.rs" contractATests [
       {
         label = "identical replay test marker";
         needle = "contract_a_driver_replays_recorded_inputs_identically";
@@ -156,7 +156,7 @@
         needle = "contract_a_driver_rejects_out_of_interval_recorded_inputs";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-determinism/Cargo.toml" simCargo [
+    ++ forbiddenFor "crates/crucible/crucible-determinism/Cargo.toml" simCargo [
       {
         label = "scheduler crate dependency";
         needle = "crucible =";

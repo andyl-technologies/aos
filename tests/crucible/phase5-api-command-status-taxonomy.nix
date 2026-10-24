@@ -25,15 +25,15 @@
   };
   rpcAbi = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/control/crucible-control-api/src/rpc_abi.rs;
+    entry = ../../crates/crucible/crucible-control-api/src/rpc_abi.rs;
   };
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/control/crucible-control-client/tests/gate_control_client.rs;
+    entry = ../../crates/crucible/crucible-control-client/tests/gate_control_client.rs;
   };
-  abiTest = builtins.readFile ../../crates/crucible/control/crucible-control-api/tests/gate_abi_conformance.rs;
-  streamingEquivalenceTest = builtins.readFile ../../crates/crucible/control/crucible-control-server/tests/gate_streaming_equivalence.rs;
-  explorationForkTest = builtins.readFile ../../crates/crucible/control/crucible-session/tests/gate_exploration_fork.rs;
+  abiTest = builtins.readFile ../../crates/crucible/crucible-control-api/tests/gate_abi_conformance.rs;
+  streamingEquivalenceTest = builtins.readFile ../../crates/crucible/crucible-control-server/tests/gate_streaming_equivalence.rs;
+  explorationForkTest = builtins.readFile ../../crates/crucible/crucible-session/tests/gate_exploration_fork.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -53,7 +53,7 @@
         needle = "`T-API-10` is green through";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-api/src/streaming.rs" streaming [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/streaming.rs" streaming [
       {
         label = "command rejection enum";
         needle = "pub enum CommandRejectionKind";
@@ -111,7 +111,7 @@
         needle = "Ok(false) => Some(CommandRejectionKind::NotFound)";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-session/src/lib.rs" session [
+    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" session [
       {
         label = "actor recovers command-scope rejections";
         needle = "is_recoverable_command_rejection";
@@ -129,7 +129,7 @@
         needle = "apply_command_or_recover";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-client/src/client.rs" client [
+    ++ failuresFor "crates/crucible/crucible-control-client/src/client.rs" client [
       {
         label = "typed RPC status client error";
         needle = "RpcStatus";
@@ -159,7 +159,7 @@
         needle = "RPC error response used success status";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-api/src/rpc_abi.rs" rpcAbi [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/rpc_abi.rs" rpcAbi [
       {
         label = "status code enum";
         needle = "pub enum RpcStatusCode";
@@ -185,7 +185,7 @@
         needle = "name: \"rpc-error-invalid-state\"";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-api/src/lib.rs" apiLib [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "RPC status parser re-export";
         needle = "rpc_status_code_from_wire_name";
@@ -195,7 +195,7 @@
         needle = "rpc_status_code_wire_name";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-client/tests/gate_control_client*.rs" controlClientTest [
+    ++ failuresFor "crates/crucible/crucible-control-client/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "closed taxonomy conversion coverage";
         needle = "assert_command_rejection_taxonomy_is_closed";
@@ -257,7 +257,7 @@
         needle = "assert_raw_send_error";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-api/tests/gate_abi_conformance.rs" abiTest [
+    ++ failuresFor "crates/crucible/crucible-control-api/tests/gate_abi_conformance.rs" abiTest [
       {
         label = "rejected status vector assertion";
         needle = "send-response-rejected-not-found";
@@ -267,7 +267,7 @@
         needle = "rpc-error-invalid-state";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-server/tests/gate_streaming_equivalence.rs" streamingEquivalenceTest [
+    ++ failuresFor "crates/crucible/crucible-control-server/tests/gate_streaming_equivalence.rs" streamingEquivalenceTest [
       {
         label = "streaming equivalence regression test";
         needle = "control_and_send_drive_non_basic_command_classes";
@@ -277,7 +277,7 @@
         needle = "reason: CommandRejectionKind::NotFound";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-session/tests/gate_exploration_fork.rs" explorationForkTest [
+    ++ failuresFor "crates/crucible/crucible-session/tests/gate_exploration_fork.rs" explorationForkTest [
       {
         label = "unwrapped actor missing checkpoint remains fatal";
         needle = "actor_fork_command_completes_reply_on_missing_checkpoint";

@@ -8,7 +8,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  neutralityTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/property_fingerprint_neutrality.rs;
+  neutralityTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -22,7 +22,7 @@
         needle = "Completed by `checks.crucible.phase4.propertyFingerprintNeutrality`";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "scenario material helper";
         needle = "fn scenario_world_plan_properties_seed_material";
@@ -48,7 +48,7 @@
         needle = "pub fn seed(&self) -> Seed";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/property_fingerprint_neutrality.rs" neutralityTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs" neutralityTest [
       {
         label = "identity and neutrality test";
         needle = "property_changes_move_scenario_identity_without_moving_run_material";
@@ -124,7 +124,7 @@
         needle = "attrPath = \"checks.crucible.phase4.propertyFingerprintNeutrality\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/property_fingerprint_neutrality.rs" neutralityTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs" neutralityTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";

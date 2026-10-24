@@ -67,7 +67,7 @@ async fn fixture() -> (RpcService, String, pb::DeliveryDestinationIntent, i64) {
         .unwrap();
     let token = service
         .jwt_keys
-        .mint(
+        .mint_browser_session(
             &TokenAuth {
                 token_id: "delivery-token".into(),
                 owner: Principal::user(user),
@@ -86,6 +86,7 @@ async fn fixture() -> (RpcService, String, pb::DeliveryDestinationIntent, i64) {
                     Permission::NetworkPolicyRead,
                     Permission::PlacementRead,
                 ],
+                expires_at: None,
             },
             3600,
         )

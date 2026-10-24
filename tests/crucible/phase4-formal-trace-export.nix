@@ -8,9 +8,9 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  crateRoot = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
-  crateManifest = builtins.readFile ../../crates/crucible/engine/crucible-engine/Cargo.toml;
-  formalTraceExportTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/formal_trace_export.rs;
+  crateRoot = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  crateManifest = builtins.readFile ../../crates/crucible/crucible-engine/Cargo.toml;
+  formalTraceExportTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/formal_trace_export.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -24,7 +24,7 @@
         needle = "Completed by `checks.crucible.phase4.formalTraceExport`";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "external formal trace export";
         needle = "pub struct ExternalFormalTraceExport";
@@ -58,7 +58,7 @@
         needle = "external_observable_event_payload_material";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "trace export type export";
         needle = "ExternalFormalTraceExport";
@@ -68,7 +68,7 @@
         needle = "ExternalFormalTraceExporter";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/formal_trace_export.rs" formalTraceExportTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/formal_trace_export.rs" formalTraceExportTest [
       {
         label = "deterministic trace export test";
         needle = "formal_trace_export_is_deterministic_trace_bytes_only";
@@ -120,7 +120,7 @@
         needle = "attrPath = \"checks.crucible.phase4.formalTraceExport\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "solver type";
         needle = "struct Solver";
@@ -142,7 +142,7 @@
         needle = "evaluate_spec";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/Cargo.toml" crateManifest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/Cargo.toml" crateManifest [
       {
         label = "SMT dependency";
         needle = "smt";
@@ -160,7 +160,7 @@
         needle = "alloy";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/formal_trace_export.rs" formalTraceExportTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/formal_trace_export.rs" formalTraceExportTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";

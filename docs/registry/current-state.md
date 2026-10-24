@@ -45,7 +45,7 @@ Consumer registry configuration is available below `apm registry`; producer
 operations are available only through `apr`. `aos` has no package subcommand,
 and private on-host lifecycle operations run through `aos-package-runtime`.
 Registry producer implementations are in
-`crates/aos/registry/aos-registry-authoring/src/registry_ops/`. AOS-specific release planning and
+`crates/registry/aos-registry-authoring/src/registry_ops/`. AOS-specific release planning and
 qualification run through `aos maintain release`, using shared libraries;
 `aos release` has no compatibility alias.
 

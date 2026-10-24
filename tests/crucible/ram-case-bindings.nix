@@ -19,22 +19,22 @@
   };
   components = {
     format = component "gate:ram-format" "format" [
-      (group "protocol/crucible-ram" "topology_sort" [] [
+      (group "crucible-ram" "topology_sort" [] [
         (case "ascii_inventory_ordering_allocates_only_its_shared_output" "adversarial" ["RAM-1" "RAM-12"] "Actual construction across empty, single, twelve, 64 and 4096-region maximum-width ASCII inventories and four input orders allocates only its shared output. An independent binary inventory and topology hash preserve canonical ordering; the same finite caller prepays the complete existing decode bound through output close, with no native authority.")
         (case "utf8_inventory_ordering_allocates_only_its_shared_output" "adversarial" ["RAM-1" "RAM-12"] "Maximum-width UTF-8 inventories use an in-place unsigned-byte sort across all four classes and four input orders. Actual allocation observation permits only shared output, and independently encoded inventory bytes and digest match under unchanged finite caller funding; physical memory and execution are not qualified.")
         (case "duplicate_inventory_refusal_needs_no_sorting_allocation" "adversarial" ["RAM-1" "RAM-12"] "Actual duplicate identifiers in two, 64 and 4096-region inventories refuse with the existing InvalidOrder error across scrambled, sorted, reversed and rotated inputs, without allocation or reallocation. Original finite caller credit stays charged throughout the refusal observation; no physical OOM is injected.")
       ])
-      (group "protocol/crucible-ram" "descriptor_decode" [] [
+      (group "crucible-ram" "descriptor_decode" [] [
         (case "selected_descriptor_checks_allocate_no_identifier_copies" "adversarial" ["RAM-9" "RAM-12"] "Actual root decoding adds only its retained selected-root vector to the measured inventory prefix across 96 empty, single, twelve and maximum-width inventory/class/scope/identifier combinations. Repeated descriptors borrow canonical input instead of allocating discarded identifiers; finite caller credit grants no native authority.")
         (case "selected_descriptor_validation_preserves_original_error_kinds" "adversarial" ["RAM-9" "RAM-12"] "Thirteen actual malformed repeated-descriptor cases preserve the original identifier, class, mask, geometry and comparison error precedence. Canonical input is built before finite caller admission, which stays live through returned-error close; no physical OOM or native qualification is claimed.")
       ])
-      (group "protocol/crucible-ram" "conformance" [] [
+      (group "crucible-ram" "conformance" [] [
         (case "canonical_golden_vectors" "positive" ["RAM-3" "RAM-4" "RAM-5" "RAM-7"] "Canonical construction and mathematical scope selection; no machine inventory admission.")
         (case "primitive_mode_and_output_are_fixed" "adversarial" ["RAM-7"] "Official unkeyed vectors and refusal of keyed or derived modes.")
         (case "canonical_codec_adversarial" "adversarial" ["RAM-1" "RAM-2" "RAM-6" "RAM-9"] "Canonical structural records and decoding bounds.")
         (case "proof_rejects_position_length_padding_and_root" "adversarial" ["RAM-6" "RAM-7" "RAM-8" "RAM-9"] "Proof position, valid length, padding and selected root binding.")
       ])
-      (group "protocol/crucible-ram" "allocation_causes" [] [
+      (group "crucible-ram" "allocation_causes" [] [
         (case "root_inventory_vector_refusal_preserves_actual_allocator_source" "adversarial" ["RAM-9" "RAM-12"] "Actual root inventory vector allocation refusal retains its typed allocator cause in bounded inline result storage; cloning needs no allocation or second admission. The finite caller credit grants no native authority.")
         (case "topology_inventory_vector_refusal_preserves_actual_allocator_source" "adversarial" ["RAM-9" "RAM-12"] "Actual standalone inventory vector allocation refusal retains its typed allocator cause and the original finite caller credit; no physical memory pressure or native resource qualification.")
         (case "selected_root_vector_refusal_preserves_actual_allocator_source" "adversarial" ["RAM-9" "RAM-12"] "Actual selected-root vector allocation refusal retains its typed allocator cause after successful inventory decoding; no native admission.")
@@ -45,14 +45,14 @@
       ])
     ];
     merkle = component "gate:ram-merkle-oracle" "model" [
-      (group "protocol/crucible-ram" "conformance" [] [
+      (group "crucible-ram" "conformance" [] [
         (case "persistent_tree_sparse_extreme_geometry" "positive" ["RAM-3" "RAM-6" "RAM-7" "RAM-12"] "Sparse geometry and shared immutable metadata.")
         (case "persistent_updates_fork_isolation_and_budget_rollback" "adversarial" ["RAM-12" "FP-6" "FP-7"] "Immutable paths, content reversion and metadata budget rollback.")
         (case "persistent_batches_match_independent_oracle_across_geometry" "positive" ["RAM-7" "RAM-8" "RAM-12" "FP-12"] "Independent oracle over multiple geometries, reverse updates and every page proof.")
         (case "oracle_independent_full_recompute_detects_suppressed_dirty" "adversarial" ["FP-12" "TEST-4" "TEST-5"] "Deliberately omitted dirty notification in the logical model; no deployed writer coverage.")
         (case "owned_metadata_reservations_release_and_refuse_excess" "adversarial" ["RAM-12"] "Owned metadata reservation lifetime and bounded admission.")
       ])
-      (group "protocol/crucible-ram" "opaque" [] [
+      (group "crucible-ram" "opaque" [] [
         (case "opaque_snapshot_seeds_scoped_roots_without_page_reads" "positive" ["RAM-4" "RAM-5" "CHECK-3"] "Authenticated opaque scoped root construction does not read page bodies; no live source admission.")
         (case "opaque_hydration_preserves_changes_and_matches_independent_oracle" "positive" ["FP-6" "FP-12" "CHECK-5"] "Proof-backed hydration retains changed paths and agrees with an independent logical oracle.")
         (case "opaque_hydration_rejects_foreign_evidence_and_rolls_back_budget" "adversarial" ["RAM-8" "RAM-12"] "Foreign proof evidence and metadata exhaustion cannot publish a hydrated successor.")
@@ -60,25 +60,25 @@
         (case "snapshot_rejects_independent_tree_accounting_domains" "adversarial" ["RAM-12"] "Snapshots reject trees owned by independent metadata accounting domains.")
         (case "dense_metadata_bound_covers_distinct_versions_and_checks_overflow" "positive" ["RAM-12"] "Distinct dense persistent versions remain within the model bound; bound arithmetic rejects overflow.")
       ])
-      (group "protocol/crucible-ram" "lib" [] [
+      (group "crucible-ram" "lib" [] [
         (case "snapshot::tests::shared_control_closes_before_original_refund" "adversarial" ["RAM-12" "STORE-4"] "Actual logical snapshot control deallocation precedes refund of its original finite metadata charge, through ordinary aliases and eight concurrent final borrowers. The genuine budget counter is sampled after System free; cached original tree credit remains distinct, with no native stack or execution admission.")
         (case "tree::tests::shared_control_closes_before_original_refund" "adversarial" ["RAM-12" "STORE-4"] "Actual persistent tree-node control deallocation precedes refund of its original finite metadata charge, through ordinary aliases and eight concurrent final borrowers. Shared-owner, nullable-root and fixed cache extents remain unchanged; native admission and performance remain unqualified.")
       ])
     ];
     dirty = component "gate:ram-dirty-epochs" "model" [
-      (group "protocol/crucible-ram" "conformance" [] [
+      (group "crucible-ram" "conformance" [] [
         (case "dirty_consumers_preserve_races_and_cancel" "positive" ["TRACK-8" "TRACK-9" "TRACK-10"] "Independent consumer capture, acknowledgement, cancellation and concurrent model versions.")
         (case "dirty_fork_and_restore_reject_stale_receipts" "adversarial" ["TRACK-14" "TRACK-15"] "Private tracking incarnations and stale receipts; no native fork or restore qualification.")
         (case "dirty_limits_reject_atomically" "adversarial" ["TRACK-11"] "Range bounds and atomic failure before admitted metadata mutation.")
         (case "dirty_chunks_bound_dense_metadata_and_private_forks" "positive" ["TRACK-8" "TRACK-14"] "Dense chunk accounting, acknowledgement order and private model forks.")
       ])
-      (group "protocol/crucible-ram" "lib" [] [
+      (group "crucible-ram" "lib" [] [
         (case "dirty::tests::shared_control_closes_before_original_refund" "adversarial" ["RAM-12" "TRACK-8"] "Actual dirty-capture control deallocation precedes refund of its original finite metadata charge, through ordinary aliases and eight concurrent final borrowers. The authentic tracker ledger stays live as an independent counter baseline; no guest barrier or native worker funding is qualified.")
         (case "dirty::tests::monotonic_counter_exhaustion_preserves_ledger" "adversarial" ["TRACK-11"] "Monotonic counter exhaustion leaves the prior ledger intact.")
       ])
     ];
     store = component "gate:ram-store-transfer" "model" [
-      (group "storage/crucible-store" "lib" [] [
+      (group "crucible-store" "lib" [] [
         (case "content_store::tests::packed::packed_backend_restarts_repackages_and_keeps_old_reader_inodes_valid" "positive" ["STORE-9"] "Two actual packed objects become one replacement pack while a separately synchronized old reader retains its original inode and bytes. Restart replays the committed generation idempotently and preserves content identities; this backend component supplies no native pager or process-resource qualification.")
         (case "content_store::tests::packed::packed_repack_rejects_stale_or_corrupt_plans_and_preserves_empty_objects" "adversarial" ["STORE-9"] "An actual intervening publication makes the saved repack plan stale, and a changed canonical plan checksum refuses independently. A current plan preserves both real objects including the empty RAM-kind object; no whole-world archive or execution authority is inferred.")
         (case "content_store::packed::read_view::tests::pinned_view_reuses_one_pack_and_keeps_actual_sources_after_view_close" "positive" ["STORE-4" "STORE-9"] "The checked packed view reads real objects through one pinned pack and retains the selected actual source after the view and reader close. Descriptor observations fall from four to one and then to the finite fixture baseline on final handle close; no kernel-wide or native fault lifetime qualification is claimed.")
@@ -199,7 +199,7 @@
         (case "content_store::tests::quotas::directory_quota_handle_and_reader_keep_descriptor_custody_after_facade_drop" "positive" ["STORE-4" "STORE-7"] "Actual directory handles and readers retain their admitted descriptor loans after the facade closes; no native guest placement qualification.")
         (case "content_store::tests::quotas::directory_ref_publication_credit_outlives_facade" "positive" ["STORE-4" "STORE-7"] "Actual directory ref publication retains its original resource credit through publication after the facade closes; no whole-world lifecycle qualification.")
       ])
-      (group "control/crucible-daemon" "lib" ["test-support"] [
+      (group "crucible-daemon" "lib" ["test-support"] [
         (case "campaign_transfer::tests::operation_binding::metadata_archive_operations_bind_the_selected_source_authority" "positive" ["TRANSFER-3"] "Independent actual directory repositories offer the same genuine metadata archive to one destination. Their completed receipts distinguish selected source identities while the same-source retry preserves its operation and authenticates existing destination objects; this covers archive source binding without RAM or execution admission.")
         (case "campaign_transfer::tests::operation_binding::invalid_source_authority_refuses_before_journaling_or_publication" "adversarial" ["TRANSFER-3"] "Empty and oversized selected source identities refuse with the original typed InvalidOperation before journal records, destination object storage or archive publication. Real metadata-only repository fixtures supply no machine or RAM authority; this does not qualify the remaining transfer identity fields or native handoff.")
         (case "campaign_transfer::tests::operation_binding::source_bound_journals_refuse_and_preserve_previous_edition_records" "adversarial" ["TRANSFER-3" "TRANSFER-13"] "The current source-bound journal record round-trips under edition two. A checksum-valid previous-edition record with its actual source-independent operation derivation refuses both parsing and journal reopening and remains byte-for-byte present for explicit recovery; complete restart reconciliation and native execution are not qualified.")
@@ -209,12 +209,12 @@
         (case "campaign_gc::tests::ram_readers::live_lazy_ram_reader_and_fork_allow_unrelated_gc_then_release_the_exact_graph" "positive" ["STORE-7" "STORE-8"] "Actual durable reader claims preserve an authenticated RAM graph across unrelated GC and a final clone's cold partial-page read, then permit reclamation after final release; no QEMU fork, restore, or live migration qualification.")
         (case "exact_checkpoint_store::production::tests::root_credit::decoded_ram_root_credit_survives_the_last_delayed_reader_clone" "adversarial" ["STORE-4" "STORE-7"] "The production checkpoint loader refuses absent metadata authority, retains finite decode credit through Loaded metadata and a delayed authenticated RAM reader, and releases it after the final owner; no physical quota or native restore qualification.")
       ])
-      (group "protocol/crucible-ram" "topology_custody" [] [
+      (group "crucible-ram" "topology_custody" [] [
         (case "inventory_original_loan_survives_clones_and_rebinding_until_actual_slice_free" "adversarial" ["RAM-12" "STORE-4"] "An actual shared inventory slice frees before its original finite component loan refunds. Attachment and topology clones allocate nothing, replacement returns the supplied loan without replacing original custody, and canonical equality, encoding and digest remain unchanged; caller-owned root vectors and native authority remain separate.")
       ])
     ];
     checkpoint = component "gate:ram-continuation" "model" [
-      (group "control/crucible-daemon" "lib" ["test-support"] [
+      (group "crucible-daemon" "lib" ["test-support"] [
         (case "vm_lifecycle::checkpoint_store::tests::paged_exact_fixture_retains_independent_complete_images" "positive" ["CHECK-1" "CHECK-3" "CHECK-5"] "Published host fixture contains a complete authenticated changed image, partial page and immutable image; no live restore qualification.")
         (case "vm_lifecycle::checkpoint_store::tests::paged_catalog_rejects_substituted_authenticated_root" "adversarial" ["STORE-2" "CHECK-6"] "A valid catalog identity cannot authorize a different logical image.")
         (case "vm_lifecycle::checkpoint_store::tests::paged_catalog_cancellation_refuses_capture_and_preserves_existing_root" "adversarial" ["CHECK-5" "STORE-10"] "Canceled host capture cannot publish a successor or overwrite prior bytes.")
@@ -225,7 +225,7 @@
       ])
     ];
     source = component "gate:ram-continuation" "model" [
-      (group "qemu/crucible-qemu-host" "lib" [] [
+      (group "crucible-qemu-host" "lib" [] [
         (case "qmp::checkpoint_paged_source_tests::paged_source_serves_complete_partial_pages_with_authenticated_proofs" "positive" ["STORE-2"] "Actual Unix-socket page service authenticates complete and partial logical pages against immutable model backing; no guest installation.")
         (case "qmp::checkpoint_paged_source_tests::independently_owned_sources_preserve_predecessor_and_changed_images" "positive" ["CHECK-5"] "Separately owned source endpoints preserve old and changed complete model images.")
         (case "qmp::checkpoint_paged_source_tests::paged_source_rejects_corrupt_bytes_before_response_publication" "adversarial" ["STORE-2" "STORE-7"] "Corrupt model backing cannot publish a page response and the failure retains source authority.")
@@ -236,7 +236,7 @@
       ])
     ];
     policyControl = component "gate:ram-runtime-policy" "model" [
-      (group "control/crucible-control-api" "lib" ["test-support"] [
+      (group "crucible-control-api" "lib" ["test-support"] [
         (case "host_operational::codec::tests::status_request_has_frozen_explicit_width_big_endian_bytes" "positive" ["POLICY-10"] "Frozen explicit-width operational status request encoding only.")
         (case "host_operational::codec::tests::policy_request_roundtrip_binds_independent_reservation_and_budget_roster" "positive" ["POLICY-6" "POLICY-10"] "Canonical request binds target, reservation and budget roster; no live application or reservation amendment.")
         (case "host_operational::codec::tests::operational_codec_refuses_unknown_tags_trailing_and_oversized_data" "adversarial" ["POLICY-10"] "Canonical operational decoder refuses unknown tags, trailing bytes and oversized envelopes.")
@@ -255,7 +255,7 @@
         (case "host_operational::codec::tests::unavailable_measurements_do_not_present_physical_zero_as_observed_residency" "adversarial" ["POLICY-8"] "Unavailable measurement encoding cannot present physical zero as observed residency.")
         (case "host_operational::codec::tests::target_discovery_binds_owner_cursor_order_and_bounded_page" "adversarial" ["POLICY-10"] "Canonical discovery pages bind owner and cursor, fit 32 ordered targets within the envelope and reject foreign or unordered cursors; no frozen inventory, live authority or paging qualification.")
       ])
-      (group "control/crucible-control-server" "lib" ["test-support"] [
+      (group "crucible-control-server" "lib" ["test-support"] [
         (case "server::host_operational::tests::operational_transport_rejects_unauthenticated_requests_before_controller_call" "adversarial" ["POLICY-6"] "HTTP authentication failure prevents controller dispatch.")
         (case "server::host_operational::tests::authenticated_transport_dispatches_exact_target_through_executor_authority" "positive" ["POLICY-6"] "Authenticated HTTP dispatch binds the exact target through a controlled executor authority; no native policy application.")
         (case "server::host_operational::tests::host_status_dispatch_does_not_wait_for_modeled_lifecycle_lock" "positive" ["POLICY-9"] "Status dispatch bypasses a held modeled lifecycle mutex; no native fault-blocked responsiveness qualification.")
@@ -264,7 +264,7 @@
       ])
     ];
     policyHistory = component "gate:ram-policy-history" "model" [
-      (group "control/crucible-daemon" "lib" ["test-support"] [
+      (group "crucible-daemon" "lib" ["test-support"] [
         (case "host_operational_registry::tests::live_budget_updates_replay_original_receipts_after_later_changes" "positive" ["POLICY-6" "POLICY-7"] "Actual controller and disk history replay original receipts after later revisions; no native memory convergence.")
         (case "host_operational_registry::tests::outer_cap_retries_retain_original_allowances_after_later_amendments" "positive" ["TIME-9" "TIME-10"] "Shared operational cap amendments retain original acceptance and elapsed origin; no fault-blocked guest qualification.")
         (case "host_operational_registry::tests::exhausted_history_refuses_without_effect_and_does_not_forget_old_keys" "adversarial" ["POLICY-6" "POLICY-11" "TEST-16"] "History capacity refusal precedes controller mutation and retained accepted keys remain replayable; no complete rate/cache admission qualification.")
@@ -277,7 +277,7 @@
       ])
     ];
     supervision = component "gate:ram-supervision" "model" [
-      (group "engine/crucible-engine" "lib" [] [
+      (group "crucible-engine" "lib" [] [
         (case "model::canonical::material_stream::tests::streaming_preserves_length_prefix_and_partial_words" "positive" ["RAM-12" "FP-12"] "The public borrowed display hash matches the existing canonical byte recipe across partial words and fragmented UTF-8; no live machine admission or fingerprint sampling is issued.")
         (case "model::canonical::material_stream::tests::public_display_hash_refuses_changed_length_and_formatter_failure" "adversarial" ["RAM-12"] "Actual public streaming hashing refuses changed formatter length and formatting failure; no Source authority or complete diagnostic funding is proved.")
         (case "owned_decode::tests::canonical_display_hash_admits_scratch_before_formatting" "adversarial" ["RAM-12"] "The real decode budget refuses hashing scratch before the formatter runs and retains/releases its actual finite credits; component authority supplies no selected native payer.")
@@ -286,7 +286,7 @@
         (case "owned_decode::tests::closed_json::retaining_the_actual_json_error_allocates_no_new_holder" "positive" ["RAM-12"] "Retaining the genuine Serde error moves its preborn holder without allocating, preserving classification and source coordinates; complete native execution remains unqualified.")
         (case "owned_decode::tests::closed_json::diagnostic_refusal_precedes_the_actual_serde_error_allocation" "adversarial" ["RAM-12"] "The actual decoder refuses insufficient diagnostic credit before allocating the Serde error, under its installed allocation observer; no Source or native execution authority is granted.")
       ])
-      (group "protocol/crucible-qemu-protocol" "lib" [] [
+      (group "crucible-qemu-protocol" "lib" [] [
         (case "native_transfer::description_vectors::complete_description_matches_independent_correlation_and_completion_vectors" "adversarial" ["PLAN-2"] "All 236 independent complete runtime/transfer/manifest/probe examples distinguish exact correlation from completion: seven correlate and one describes completion; actual paid custody and issuer authority remain unqualified.")
         (case "native_transfer::profile_vectors::manifest_matches_all_independent_public_wire_vectors" "positive" ["PLAN-2"] "All 4461 independent permissive manifest byte vectors match Rust syntax, retaining eight accepted descriptions without issuing resource custody.")
         (case "native_transfer::profile_vectors::probe_matches_independent_syntax_and_completed_description_vectors" "adversarial" ["PLAN-2"] "All 4217 independent permissive probe vectors distinguish syntax, partial facts and six completed descriptions; paid issuance and process ownership remain unqualified.")
@@ -398,7 +398,7 @@
         (case "source_supervision::tests::missing_or_unknown_producer_retention_promise_refuses_before_observation" "adversarial" ["TIME-9"] "Missing and unknown producer-retention editions refuse before observation decoding; no runtime assignment or physical return is established.")
         (case "source_supervision::tests::live_or_initial_unknown_retention_cannot_be_validated_by_equal_identity" "adversarial" ["TIME-9"] "Equal identity cannot validate an unknown retention promise in either initial or live observations; no Native membership or activation is established.")
       ])
-      (group "protocol/crucible-qemu-shmem" "lib" [] [
+      (group "crucible-qemu-shmem" "lib" [] [
         (case "ring_guest_introspection::tests::direct_record_entry_matches_canonical_bytes_and_zeroed_padding" "positive" ["RAM-12"] "A maximum-chunk owned record encodes directly into its fixed shared entry with canonical bytes and zeroed tail, padding and reserved fields; no physical mapping or Native payer is supplied.")
         (case "ring_guest_introspection::tests::direct_record_entry_rejects_zero_sequence_and_oversize_record" "adversarial" ["RAM-12"] "Direct entry construction refuses zero sequence and an oversized aggregate record with the original typed protocol cause; no ring publication or Native authority follows.")
         (case "region::helpers::directed_ring_tests::descriptor_iterator_preserves_every_supported_ring_and_rejects_overflow" "positive" ["RAM-12"] "The actual lazy topology enumerator preserves every descriptor and canonical index for all supported VM counts and refuses overflowing cardinality before allocation; no mapping or Source authority is issued.")
@@ -427,7 +427,7 @@
         (case "fingerprint_sample::tests::final_sample_publication_keeps_its_payload_after_exhaustion" "adversarial" ["TRACK-11"] "The actual final sample remains readable after publication exhaustion refuses a changed payload before mutation.")
         (case "fingerprint_sample::tests::occupied_sample_writer_refuses_without_touching_any_payload_word" "adversarial" ["TRACK-11"] "An actual odd publication generation rejects a competing writer while preserving every atomic payload word.")
       ])
-      (group "qemu/crucible-qemu-plugin" "lib" [] [
+      (group "crucible-qemu-plugin" "lib" [] [
         (case "ram_fingerprint::original::read::tests::backing_read_scope_keeps_parent_debt_through_result_construction_and_unwind" "adversarial" ["RAM-12" "TIME-9"] "The actual Module read-loan ledger retains its parent through synchronous result construction and Rust unwind, refusing a second child; opaque fixture identity supplies no Source Original or Native admission.")
         (case "ram_fingerprint::original::read::tests::changed_parent_cannot_release_retained_read_debt" "adversarial" ["RAM-12" "TIME-9"] "A changed opaque parent prevents actual local loan release and leaves durable parent debt; the fixture executes no genuine Native read.")
         (case "ram_fingerprint::original::read::tests::contended_read_release_retains_parent_without_waiting" "adversarial" ["RAM-12" "TIME-9"] "Holding the actual Module ledger mutex causes physical scope release to retain debt without blocking or changing its parent; no Native custody is issued.")
@@ -530,7 +530,7 @@
         (case "runtime::live_callbacks::control_facts::protected_read::tests::unwind_after_payload_deposit_retains_uncertain_custody_and_refuses_reuse" "adversarial" ["TIME-9"] "Unwind after actual payload deposit poisons the owning journal, retains the original tuple and blocks reuse without publishing reader completion or ACK.")
         (case "runtime::live_callbacks::control_facts::protected_read::tests::empty_read_does_not_create_a_pending_payload" "adversarial" ["TIME-9"] "An actual empty slot creates no payload owner and a subsequent genuine pending tuple can be received once; no semantic action authority.")
       ])
-      (group "host/crucible-host-resources" "lib" [] [
+      (group "crucible-host-resources" "lib" [] [
         (case "host_supervision::source_publisher_storage::tests::final_publisher_and_funding_allocations_close_before_original_refund" "positive" ["TIME-9"] "Both actual shared allocations close before the same paired mechanism charges return; no Source or Main is issued.")
         (case "host_supervision::source_publisher_storage::tests::refused_publisher_closes_value_before_returning_original_charge" "adversarial" ["TIME-9"] "An actual constructor refusal closes its value while both original mechanism charges remain held, allocates nothing and refunds after close; no authenticated Main or Source is issued.")
         (case "host_supervision::source_publisher_storage::tests::dead_publisher_weak_retains_complete_storage_charge_until_actual_free" "adversarial" ["TIME-9"] "Dead-value weak observers retain the complete actual allocation charge through physical storage free; no publication or operation authority.")
@@ -558,11 +558,11 @@
         (case "host_supervision::tests::repeated_progress_does_not_renew_a_stalled_operation" "adversarial" ["TIME-2" "TIME-3"] "Repeated completed-work coordinates cannot renew component progress; no deployed guest quantum oracle.")
         (case "host_supervision::tests::saturated_work_inventory_retains_two_finite_control_records" "adversarial" ["TIME-9"] "Finite ordinary work saturation preserves separately bounded control and cleanup records; no native fault-service availability qualification.")
       ])
-      (group "host/crucible-host-resources" "source_control_terminal" [] [
+      (group "crucible-host-resources" "source_control_terminal" [] [
         (case "final_control_header_closes_before_original_paired_credit_returns" "positive" ["TIME-9"] "The production Source control owner closes its actual shared allocation while both original service loans remain charged; this component creates no Native Source or physical-return proof.")
         (case "concurrent_control_observers_close_before_one_paired_refund" "adversarial" ["TIME-9"] "Concurrent observers perform one actual control close before either paired account refunds; this control proves no native worker, process-family or complete diagnostic lifetime.")
       ])
-      (group "qemu/crucible-qemu-host" "lib" ["test-support"] [
+      (group "crucible-qemu-host" "lib" ["test-support"] [
         (case "node::test_support::checkpoint_ownership::retirement_tests::poisoned_observations_refuse_work_but_close_retained_aliases" "adversarial" ["TIME-2" "TIME-9"] "Poisoned component checkpoint observations return the typed unavailable cause and refuse QMP begin; final owner cleanup still closes its locally retained event alias without clearing poison. No Native receiving authority is issued.")
         (case "node::test_support::checkpoint_ownership::retirement_tests::poisoned_qmp_refuses_without_reentering_the_wire" "adversarial" ["TIME-2" "TIME-9"] "A poisoned component QMP client returns typed unavailable refusals for stop and resume while retaining the same owner; no Native checkpoint, Source or physical-return admission.")
         (case "node::exact_snapshot::capture_original::tests::final_checkpoint_loan_frees_actual_allocation_before_original_credit" "positive" ["TIME-2" "TIME-9"] "Actual checkpoint-loan cloning allocates nothing; its final real Arc deallocation precedes original service-credit return after parent retirement. Component entry supplies no native receiving authority.")
@@ -577,11 +577,11 @@
         (case "launch_cleanup::tests::allocation::cleanup_extent_covers_allocation_and_extracted_destruction_frame" "positive" ["TIME-9"] "The actual cleanup control recipe covers its shared allocation and extracted destruction frame before any Source control reservation; geometry grants no issuer.")
         (case "linux_attempt_host::original_node::helper_receiver::tests::unfunded_helper_first_stays_in_preborn_journal_without_shared_birth" "adversarial" ["TIME-9"] "An unissued journal preserves its actual typed first cause without allocating a shared diagnostic or issuing replacement funding.")
       ])
-      (group "control/crucible-control-api" "backend_error_terminal" [] [
+      (group "crucible-control-api" "backend_error_terminal" [] [
         (case "lifecycle_error_frees_its_control_before_returning_original_paired_credit" "positive" ["TIME-9"] "The production lifecycle error frees its actual shared allocation with both original service loans still charged; no native process or full diagnostic payload qualification.")
         (case "mixed_typed_and_lifecycle_observers_close_once_before_the_paired_refund" "adversarial" ["TIME-9"] "Concurrent typed and lifecycle observers preserve the same downcastable error and one allocation, then observe one physical control close before either paired loan refunds; no Native Source is issued.")
       ])
-      (group "qemu/crucible-qemu-host" "lib" [] [
+      (group "crucible-qemu-host" "lib" [] [
         (case "spawn::memfd_tests::real_setup_memfd_preserves_length_seal_and_writes_without_heap_allocation" "positive" ["TIME-9"] "The actual setup memfd primitive allocates no Rust heap, retains close-on-exec and shrink seal, and permits real writes; this component descriptor issues no Source or child authority.")
         (case "spawn::memfd_tests::oversized_setup_memfd_preserves_typed_refusal_without_allocating" "adversarial" ["TIME-9"] "The real setup memfd primitive retains its oversized-length refusal without allocating; no selected source or descriptor budget is admitted.")
         (case "spawn::helper_receiver::tests::missing_helper_custody_refuses_without_allocating_or_binding" "adversarial" ["RAM-12" "TIME-9"] "Actual missing-custody checks retain an inline typed refusal without allocating or binding a recipient; unvalidated component descriptors issue no Source, helper, funding or physical-return authority.")
@@ -709,25 +709,25 @@
       ])
     ];
     resources = component "gate:ram-runtime-policy" "model" [
-      (group "control/crucible-daemon" "lib" ["test-support"] [
+      (group "crucible-daemon" "lib" ["test-support"] [
         (case "executor_supervisor::tests::host_resources::authored_assignment_peak_is_reserved_before_any_node_launch" "positive" ["RESOURCE-1" "RESOURCE-6"] "Actual actor reserves an authored eight-dimensional assignment peak before node launch and reports the remaining capacity; no measured native peak qualification.")
         (case "executor_supervisor::tests::host_resources::global_paging_task_and_descriptor_limits_are_independent" "adversarial" ["RESOURCE-1"] "Actor admission refuses independently exhausted paging, task and descriptor capacity; no kernel actor or physical residency proof.")
         (case "executor_supervisor::tests::host_resources::finished_execution_keeps_physical_template_and_service_charges_until_cleanup" "positive" ["RESOURCE-2" "RESOURCE-6"] "Actual actor retains template and service reservation ownership after modeled execution finishes until explicit cleanup; no physical final-close or native fork qualification.")
       ])
     ];
     cutover = component "gate:ram-cutover" "format" [
-      (group "protocol/crucible-qemu-protocol" "ram_cutover" [] [
+      (group "crucible-qemu-protocol" "ram_cutover" [] [
         (case "current_ram_contract_peer_receives_exact_ack" "positive" ["CUT-1" "TEST-14"] "Current control/shared-memory peer acknowledgement.")
         (case "predecessor_and_mixed_peers_are_rejected_without_ack" "adversarial" ["CUT-1" "TEST-14"] "Predecessor and mixed control/shared-memory combinations are refused.")
         (case "current_plugin_accepts_only_current_ack" "positive" ["CUT-1" "TEST-14"] "Current plugin handshake acknowledgement.")
         (case "predecessor_ack_cannot_authorize_setup" "adversarial" ["CUT-1" "TEST-14"] "Old acknowledgement cannot authorize setup.")
       ])
-      (group "protocol/crucible-qemu-shmem" "ram_cutover" [] [
+      (group "crucible-qemu-shmem" "ram_cutover" [] [
         (case "current_ram_semantic_header_is_admitted" "positive" ["CUT-1" "TEST-14"] "Current semantic shared-memory header admission.")
         (case "identical_layout_cannot_relabel_predecessor_ram_semantics" "adversarial" ["CUT-1" "TEST-14"] "An unchanged physical layout cannot disguise predecessor semantics.")
         (case "predecessor_is_refused_before_geometry_or_clock_admission" "adversarial" ["CUT-1" "TEST-14"] "Version refusal precedes hostile geometry or clock validation.")
       ])
-      (group "control/crucible-daemon" "lib" ["test-support"] [
+      (group "crucible-daemon" "lib" ["test-support"] [
         (case "vm_lifecycle::checkpoint_store::tests::closure_manifest_round_trip_is_canonical" "positive" ["CUT-1" "TEST-14"] "Current host closure codec admission.")
         (case "vm_lifecycle::checkpoint_store::tests::predecessor_closure_is_refused_before_payload_decoding" "adversarial" ["CUT-1" "TEST-14"] "Prior closure prefix is refused before any current payload decoding.")
       ])

@@ -165,6 +165,14 @@ in
       }
     ];
 
+    # Retain the existing hermetic build identity while allowing consumers to
+    # select the interpreter for their build platform explicitly.
+    passthru.withCommandShell = shell:
+      import ./ninja.nix {
+        inherit lib mkDerivation fetchurl gnumake stdenv;
+        bash = shell;
+      };
+
     meta = {
       description = "Small build system with a focus on speed";
       homepage = "https://ninja-build.org/";
