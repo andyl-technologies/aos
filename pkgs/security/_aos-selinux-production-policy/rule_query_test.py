@@ -114,6 +114,31 @@ class NativeRuleQueryTest(unittest.TestCase):
             {str(member) for member in rules[0].target.expand()}, {"data_t", "other_t"},
         )
 
+    def test_literal_filter_reduces_candidates_without_losing_attribute_witnesses(self):
+        criteria = dict(ruletype=["allow"], tclass=["file"], perms=["read"])
+        broad = self.index.TERuleQuery(self.policy, **criteria)
+        narrow = self.index.TERuleQuery(self.policy, source="second_t", **criteria)
+        self.assertLess(
+            len(list(narrow.policy.terules())), len(list(broad.policy.terules())),
+        )
+        self.assert_same_results(source="second_t", **criteria)
+
+        # Both axes are attributes in a disabled native rule. Literal source
+        # and target restrictions must keep it, and direct matching must not.
+        for source, target in product(("first_t", "second_t"), ("data_t", "other_t")):
+            rules = self.assert_same_results(
+                ruletype=["allow"], source=source, target=target,
+                tclass=["fd"], perms=["use"],
+            )
+            self.assertEqual(len(rules), 1)
+            self.assertFalse(rules[0].enabled())
+            for axis in ("source", "target"):
+                direct = self.assert_same_results(
+                    ruletype=["allow"], source=source, target=target,
+                    tclass=["fd"], perms=["use"], **{f"{axis}_indirect": False},
+                )
+                self.assertEqual(direct, [])
+
     def test_transitions_defaults_attributes_wildcards_and_filename(self):
         for object_class, source, target, default in product(
             ("process", "dir", "file"),
@@ -155,6 +180,31 @@ class NativeRuleQueryTest(unittest.TestCase):
                     ruletype=["allow"], tclass=["file"], perms=["read"], **extra,
                 )
 
+    def test_extended_allow_symbols_selectors_and_permission_options(self):
+        for source, target, source_indirect, target_indirect in product(
+            (None, "first_t", "second_t", "subjects"),
+            (None, "data_t", "other_t", "targets"),
+            (False, True), (False, True),
+        ):
+            self.assert_same_results(
+                ruletype=["allowxperm"], tclass=["file"], perms=["ioctl"],
+                source=source, target=target,
+                source_indirect=source_indirect, target_indirect=target_indirect,
+            )
+
+        for extra in (
+            dict(xperms=[(0x1000, 0x1002)], xperms_equal=True),
+            dict(xperms=[(0x1001, 0x1001)]),
+            dict(xperms=[(0x2000, 0x2000)]),
+            dict(source=".*_t$", source_regex=True),
+            dict(target=".*_t$", target_regex=True),
+            dict(perms_equal=True), dict(perms_subset=True),
+        ):
+            with self.subTest(**extra):
+                self.assert_same_results(
+                    ruletype=["allowxperm"], tclass=["file"], perms=["ioctl"], **extra,
+                )
+
     def test_other_query_shapes_use_unchanged_stock_scan(self):
         for criteria in (
             dict(ruletype=["allow"], tclass=["file"], perms=["read", "write"]),
@@ -163,7 +213,6 @@ class NativeRuleQueryTest(unittest.TestCase):
             dict(ruletype=["allow"], tclass=["file"], perms="r.*", perms_regex=True),
             dict(ruletype=["allow"]),
             dict(tclass=["file"], perms=["ioctl"]),
-            dict(ruletype=["allowxperm"], tclass=["file"], perms=["ioctl"]),
             dict(ruletype=["allow", "allowxperm"], tclass=["file"], perms=["ioctl"]),
             dict(ruletype=["type_transition"], tclass=["file"], perms=["read"]),
         ):
@@ -198,6 +247,8 @@ class NativeRuleQueryTest(unittest.TestCase):
         criteria = dict(
             ruletype=["allow"], tclass=[str(repeated.tclass)],
             perms=[next(iter(repeated.perms))],
+            source=str(next(iter(repeated.source.expand()))),
+            target=str(next(iter(repeated.target.expand()))),
         )
         actual = list(index.TERuleQuery(policy, **criteria).results())
         self.assertEqual(policy.scans, 1)

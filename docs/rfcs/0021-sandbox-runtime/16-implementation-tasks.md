@@ -11314,3 +11314,20 @@ confidentiality lockdown, reads its actual user-namespace inode, stops the
 target and requires the exact inode's BPF ring-buffer death notification.
 The observed inode is `4026532554`. This confirms actual fentry cleanup without
 the inspector report; it does not qualify the full Host path or public Create.
+
+### Offline policy query candidate narrowing
+
+The immutable rule index now caches literal source/target type candidates and
+class-specific `allowxperm` candidates. Rule-side attributes retain all members;
+attribute criteria and regexes still use SETools. The original matcher applies
+every criterion to the retained native objects, including disabled conditional
+branches, original order and repeated witnesses. Unsupported query shapes keep
+the original scan, and query construction still performs SETools validation.
+
+All 159 policy unit tests pass. The compiled 13-rule fixture passes 807 indexed
+versus stock comparisons, including numeric selector ranges and direct versus
+indirect attribute matching. Rechecking the retained production policy at
+`/nix/store/qqy8pir8a3j8ashsfqprj914mpx4g9xv-aos-selinux-production-policy-1`
+produces the identical 14,623-line evidence file. The complete negative-policy
+build is running. This is offline checker evidence; installed Root, Host and
+offline TPM qualification and the public lifecycle gate remain open.

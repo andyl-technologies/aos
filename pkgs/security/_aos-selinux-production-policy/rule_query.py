@@ -1,10 +1,10 @@
 """Indexes immutable native TE rule candidates without replacing SETools matching.
 
 The index preserves each original rule object, iteration order, multiplicity,
-and conditional branch. Only necessary rule-type/class/permission predicates
-select candidates; symbol expansion, wildcards, and all other criteria still
-use the pinned SETools matcher. This is offline artifact analysis, not a live
-policy or authority proof.
+and conditional branch. Necessary rule-type/class/permission and literal-type
+predicates select candidates; the pinned SETools matcher still applies every
+criterion. This is offline artifact analysis, not a live policy or authority
+proof.
 """
 
 from collections import defaultdict
@@ -39,7 +39,7 @@ class IndexedPolicyQueries:
 
     Returned queries must keep their construction criteria unchanged, as all
     current checker helpers do. Construct a fresh query instead of mutating
-    its rule type, class or permissions after a bucket has been selected.
+    its rule type, class, permissions, source or target after selection.
     This is not a general replacement for mutable SETools query objects.
     """
 
@@ -47,7 +47,11 @@ class IndexedPolicyQueries:
         self._setools = setools
         self._policy = policy
         self._allows: dict[tuple[Any, str], list[Any]] = defaultdict(list)
+        self._extended_allows: dict[Any, list[Any]] = defaultdict(list)
         self._transitions: dict[Any, list[Any]] = defaultdict(list)
+        self._empty: list[Any] = []
+        self._members: dict[Any, frozenset[Any]] = {}
+        self._literal_buckets: dict[tuple[Any, ...], list[Any]] = {}
 
         # terules() includes unconditional, filename, and both conditional
         # branches. Do not expand attributes, test enabled(), or deduplicate.
@@ -55,6 +59,8 @@ class IndexedPolicyQueries:
             if rule.ruletype == setools.TERuletype.allow:
                 for permission in rule.perms:
                     self._allows[(rule.tclass, permission)].append(rule)
+            elif rule.ruletype == setools.TERuletype.allowxperm:
+                self._extended_allows[rule.tclass].append(rule)
             elif rule.ruletype == setools.TERuletype.type_transition:
                 self._transitions[rule.tclass].append(rule)
 
@@ -67,8 +73,47 @@ class IndexedPolicyQueries:
 
         candidates = self._candidates(query)
         if candidates is not None:
+            candidates = self._literal_candidates(query, candidates)
             query.policy = _CandidatePolicy(policy, candidates)
         return query
+
+    def _literal_candidates(self, query: Any, candidates: list[Any]) -> list[Any]:
+        """Retains literal-type witnesses, including indirect attribute grants."""
+
+        for axis in ("source", "target"):
+            symbol = getattr(query, axis)
+            if getattr(query, f"{axis}_regex") or not isinstance(symbol, self._setools.Type):
+                continue
+
+            indirect = getattr(query, f"{axis}_indirect")
+            # Every input list remains owned by the immutable index or this
+            # cache, so its identity cannot be recycled during the index life.
+            key = (id(candidates), axis, symbol, indirect)
+            narrowed = self._literal_buckets.get(key)
+            if narrowed is None:
+                narrowed = [
+                    rule for rule in candidates
+                    if self._contains_type(getattr(rule, axis), symbol, indirect)
+                ]
+                self._literal_buckets[key] = narrowed
+            candidates = narrowed
+
+        return candidates
+
+    def _contains_type(self, rule_symbol: Any, symbol: Any, indirect: bool) -> bool:
+        """Applies only the pinned matcher's necessary literal-type predicate."""
+
+        if not indirect:
+            return rule_symbol == symbol
+
+        # A Type expands to itself. Attribute criteria and regexes deliberately
+        # stay with SETools; rule-side attributes must retain all their members,
+        # including those in disabled conditional branches.
+        members = self._members.get(rule_symbol)
+        if members is None:
+            members = frozenset(rule_symbol.expand())
+            self._members[rule_symbol] = members
+        return symbol in members
 
     def _candidates(self, query: Any) -> list[Any] | None:
         """Returns a necessary-predicate bucket or leaves the stock scan intact."""
@@ -88,10 +133,15 @@ class IndexedPolicyQueries:
             if query.perms_regex or not query.perms or len(query.perms) != 1:
                 return None
             permission = next(iter(query.perms))
-            return self._allows.get((object_class, permission), [])
+            return self._allows.get((object_class, permission), self._empty)
 
         if rule_type == self._setools.TERuletype.type_transition and not query.perms:
-            return self._transitions.get(object_class, [])
+            return self._transitions.get(object_class, self._empty)
+
+        if rule_type == self._setools.TERuletype.allowxperm:
+            # Numeric selector ranges and permission options still belong to
+            # SETools. Only rule type, class and literal symbols narrow here.
+            return self._extended_allows.get(object_class, self._empty)
 
         return None
 
