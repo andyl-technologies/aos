@@ -17092,3 +17092,33 @@ the raw-key ordering correction. The native image gate now executes this pure
 case before preparing its VM, retaining the result log. Device, confinement and
 mount effects remain confined to the native guest. This adds an early regression
 check without replacing any original kernel scenario or native witness.
+
+
+Complete independent reviews now verify mandatory application-target compilation
+at the master merge `5f7cd3aff5` (1,695.785 seconds), touched-node checkpoint
+`17c8a21add` (1,255.005 seconds) and late-open checkpoint `54e5dc56d6`
+(858.958 seconds). Each binds all 8,184 immutable source files, 190 test
+executables and 59 workspace packages. These are compilation checks only.
+The subsequent fixed-reservation source `a09f366782` has the same unsorted
+large fixture failure in 230.585 seconds; this remains a failed kernel result.
+Correction `de9dac0681` is pushed, with actual kernel and mandatory workspace
+qualification running from its frozen source. No actor deadline, guest bound,
+production budget or task acceptance is relaxed.
+
+
+The corrected checkpoint `de9dac0681` passes the complete actual kernel guest
+in 370.286 seconds. Complete independent review verifies 8,184 immutable files,
+5,441 bound inputs, its actual Cargo ELF and 15 exact native witnesses. The
+retained pure preparation log also proves its exact setup case passed inside
+the hermetic image build. All eight kernel scenarios pass, including 71 immutable
+entries served within a 16-node worker bound and late completion of the original
+fetch after its first open expires. The earlier unsorted-fixture failures remain
+failed; this corrected-source result supplies the successful native evidence.
+Mandatory workspace compilation of the corrected checkpoint remains pending.
+The `4b15de4d9a` application compilation separately passes in 690.744 seconds,
+with full review of 8,184 files, 190 test executables and 59 packages. This
+compilation success does not change that source's failed native result.
+
+The fixed-reservation checkpoint `a09f366782` also passes mandatory application
+compilation in 696.756 seconds, with full review of the same 8,184 source files,
+190 test executables and 59 packages. Trunk acceptance remains 27/64.
