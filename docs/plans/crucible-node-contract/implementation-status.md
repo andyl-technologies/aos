@@ -10,6 +10,49 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Internal content growth retained by the original runtime
+
+Commits `c741d30fc0` and `26fa1db5d6` price internal content allocation at its
+actual unchanged byte, object and chunk ceilings, including incomplete and
+zero-length transfers, both retained Rc views, tree layouts, identities and
+reference text. The Controller projection borrows its actual private custody
+and adds its own counter. Caller-owned buffers and reference strings with spare
+capacity remain independently charged, even when their capacity exceeds this
+future internal-growth row. Fencing preserves these DATA quotes and sticky
+partials while authority-dependent getters continue to refuse.
+
+Commit `e679847439` adds that internal content backing to the provider-receiver
+reservation retained by the original Core construction member. Overlapping
+future owners receive no alias discount, and actual allocations remain separately
+censused. The reservation persists after construction and through later failure;
+it grants no quota or operation. Full controller-origin journals, complete SDK
+transient/scratch and conservative whole-Source growth still require a separately
+proved runtime handoff.
+
+All four content and two Controller controls pass in both Transport codec modes;
+the two ordinary content-installation controls also pass in both modes. Both
+complete Transport modes pass 2,135 tests with zero failures and twenty ignored.
+Both complete Engine modes pass 2,067 tests with zero failures and 34 ignored,
+including the three Core reservation controls. The ordinary Daemon suite passes
+1,828 tests with zero failures and 165 ignored. The genuine native startup
+control passes in 749.10 seconds, including all construction phases and growth
+rechecks, retained/exact/one-byte-short censuses, retirement and child reclamation.
+No first-Arm, Capture, Native18 or performance qualification is claimed.
+
+All-feature SourceBirth/Transport/Engine/Daemon targets, six architecture checks,
+scoped formatting, application test-target compilation and the funded-Source VM
+pass. Actual application metadata records 185 test artifacts across 58 packages,
+including 76 integration targets. All 627 frozen owned Rust/Cargo inputs match
+the commit, actual application source and all three VM component source captures.
+The Controller review digest was updated after removing only the new child
+module declaration reproduced its previous implementation byte for byte. Its
+review count uses the gate's implementation-only count, corrected separately in
+`c3d01462a9`. Both initial review-metadata failures remain recorded locally.
+Strict Engine Clippy still reports 131 errors and 2,177 warnings; strict Transport
+reports the same four owning-enum errors and 1,732 warnings, without new
+allowances. Full SDK funding, quota handoff, active Capture, Native18 and the
+full RFC remain unfinished.
+
 ## Original construction reservations retained through runtime handoff
 
 Commits `45a855c5ec` and `b6f06f71fd` retain each approved construction member's
@@ -41,7 +84,8 @@ formatting and application test-target compilation pass. Actual application
 metadata records 185 test artifacts across 58 packages, including 76 integration
 targets. All 622 frozen owned Rust/Cargo inputs match the commit and actual
 application source. The same inputs match all three funded-Source VM component
-source captures; that VM run is still pending at this checkpoint.
+source captures. The funded-Source VM also passes, including the real three-worker
+results, retained private births and exact/one-byte-short initial Source census.
 
 The first VM attempt exposed a strict `manual_bits` false positive in the new
 SourceBirth scratch expression. Expressing its unchanged eight-word storage as
