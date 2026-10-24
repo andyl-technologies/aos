@@ -87,7 +87,7 @@
           sed "s|@vendor@|${cargoDeps}|g" \
             "${cargoDeps}/.cargo/config.toml" > .cargo/config.toml
           test "$(${pkgs.grep}/bin/grep -Fxc '        .with_console_capture()' \
-            crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight.rs)" -eq 1
+            crates/crucible/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight.rs)" -eq 1
           cargo build --frozen --offline --release \
             --manifest-path crates/Cargo.toml \
             --target-dir "$TMPDIR/target" \

@@ -22,7 +22,7 @@
 }: let
   # These entry points freeze the complete selected boot-tool closure with
   # env!, so the standalone target is deliberately compiled outside Cargo.
-  source = ../../crates/aos/boot/aos-boot-runtime/standalone;
+  source = ../../crates/boot/aos-boot-runtime/standalone;
   packageRuntime = aos.packageRuntime;
 in
   mkDerivation {

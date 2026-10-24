@@ -28,7 +28,7 @@
         needle = "divergence-bisection";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
       {
         label = "built-in scenario resolver";
         needle = "fn resolve_builtin_example_scenario";

@@ -218,7 +218,7 @@
         '';
       }
       // lib.optionalAttrs (m.packages != []) {
-        "aos/packages.d/fleet-seed".text =
+        "packages.d/fleet-seed".text =
           lib.concatMapStrings (package: "${package}\n") m.packages;
       }
       // lib.optionalAttrs (sshAuthorizedKey != null) {
@@ -264,6 +264,7 @@
     machinesWithIndex,
     hostsEntries,
     sshAuthorizedKey ? null,
+    development ? true,
   }:
     builtins.map (
       m: let
@@ -377,6 +378,7 @@
             initrd = effectiveSystem.config.system.build.initrd;
             disk = vmLib.mkTestDisk {
               system = effectiveSystem;
+              inherit development;
               inherit (m) extraClosures varSizeMiB varProvisioning;
               # The aos-metadata transport obtains operator input only from
               # host.nix; facts and signatures alone still select fallback.
@@ -647,6 +649,7 @@
     hostsEntries = mkHostsEntries machinesWithIndex;
     machineBuilds = mkMachineBuilds {
       inherit machinesWithIndex hostsEntries sshAuthorizedKey;
+      development = false;
     };
 
     # SSH host port = $AOS_FLEET_SSH_BASE + machine index, resolved at
@@ -684,7 +687,7 @@
             SERIAL_LOG_${mb.name}="$FLEET_DIR/${mb.name}-serial.log"
             QEMU_LOG_${mb.name}="$FLEET_DIR/${mb.name}-qemu.log"
 
-            cp "${mb.disk}/disk.img" "$FLEET_DIR/${mb.name}-disk.img"
+            cp --reflink=auto --sparse=always "${mb.disk}/disk.img" "$FLEET_DIR/${mb.name}-disk.img"
             chmod u+w "$FLEET_DIR/${mb.name}-disk.img"
             ${lib.optionalString (mb.metadataISO != null) ''
               cp "${mb.metadataISO}/metadata.iso" "$FLEET_DIR/${mb.name}-metadata.iso"
@@ -863,33 +866,36 @@
       echo "All QEMU instances have exited."
     '';
   in
-    pkgs.mkDerivation {
-      pname = "aos-fleet-interactive-${name}";
-      version = "0";
-      src = null;
+    # Interactive launchers execute on the host, outside the sandbox's cache
+    # mapping, so their image inputs must remain ordinary store artifacts.
+    assert builtins.all (machine: !(lib.hasSuffix "-recipe" machine.disk.name)) machineBuilds;
+      pkgs.mkDerivation {
+        pname = "aos-fleet-interactive-${name}";
+        version = "0";
+        src = null;
 
-      buildDeps = [pkgs.coreutils];
+        buildDeps = [pkgs.coreutils];
 
-      # The output is the launcher script, executed outside the sandbox
-      # after the build; its embedded store paths (qemu, disks, kernels,
-      # metadata ISOs) are the product. The default nuke-references scrub
-      # would rewrite them to dummy hashes and the launcher would try to
-      # copy from a non-existent dummy /nix/store path at runtime.
-      dontNukeRefs = true;
+        # The output is the launcher script, executed outside the sandbox
+        # after the build; its embedded store paths (qemu, disks, kernels,
+        # metadata ISOs) are the product. The default nuke-references scrub
+        # would rewrite them to dummy hashes and the launcher would try to
+        # copy from a non-existent dummy /nix/store path at runtime.
+        dontNukeRefs = true;
 
-      LAUNCHER_SCRIPT = launcherScript;
+        LAUNCHER_SCRIPT = launcherScript;
 
-      phases = [
-        {
-          name = "build";
-          script = ''
-            mkdir -p $out/bin
-            printf '%s\n' "$LAUNCHER_SCRIPT" > $out/bin/run-fleet-interactive
-            chmod +x $out/bin/run-fleet-interactive
-          '';
-        }
-      ];
-    };
+        phases = [
+          {
+            name = "build";
+            script = ''
+              mkdir -p $out/bin
+              printf '%s\n' "$LAUNCHER_SCRIPT" > $out/bin/run-fleet-interactive
+              chmod +x $out/bin/run-fleet-interactive
+            '';
+          }
+        ];
+      };
 in {
   inherit mkFleetTest mkFleetTestInteractive validateFirmwareVarsMachine uriEncode dataUrl;
 }

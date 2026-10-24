@@ -3,22 +3,22 @@
 use super::*;
 
 impl RpcService {
-    /// Validates an API-token secret, read-through cached in KV when one is
-    /// attached, with **revocation safety via a tombstone** (RFC-0004 ch.14
-    /// Phase C, `tok:{hash}` + `tokrev:{token_id}`).
+    /// Validates an API-token secret, caching only its secret-to-id resolution
+    /// in KV when one is attached (RFC-0004 ch.14 Phase C, `tok:{hash}` +
+    /// `tokrev:{token_id}`).
     ///
     /// Token auth runs on every API request; this serves the validated
-    /// [`TokenAuth`](aos_hub_db::db::TokenAuth) from KV (sub-ms, off the database session
-    /// cost) for [`HOT_TTL_SECS`](crate::cache::HOT_TTL_SECS), and skips the
-    /// `last_used_at` write `validate_token` performs on a cache hit.
+    /// [`TokenAuth`](aos_hub_db::db::TokenAuth) secret resolution from KV for
+    /// [`HOT_TTL_SECS`](crate::cache::HOT_TTL_SECS), then authoritatively
+    /// reloads its lifecycle and grants from the database. Cache hits skip the
+    /// `last_used_at` bookkeeping write performed by `validate_token`.
     ///
-    /// Because the cache is keyed by the token **secret** but revocation is by
-    /// token **id**, a naive TTL cache could serve a revoked token until the TTL.
-    /// Instead, [`RpcService::invalidate_token_cache`] writes a `tokrev:{token_id}` tombstone
-    /// on revoke/rotate, and this method **rejects any cached resolution whose
-    /// token id is tombstoned** — so a revoke is observed immediately, not after
-    /// the TTL. (After the resolution TTL the entry re-validates from the
-    /// database, which already excludes revoked/rotated tokens.)
+    /// [`RpcService::invalidate_token_cache`] tombstones remain a fast rejection
+    /// path. The database recheck is authoritative when invalidation is delayed
+    /// or absent, including expiry and the end of a rotation grace period.
+    /// This check governs issuance of a new derived credential. Previously
+    /// minted bearer credentials have their own lifetime and are evaluated by
+    /// the bearer authorization path.
     ///
     /// With no `kv` attached this is exactly
     /// [`validate_token`](aos_hub_db::db::Database::validate_token).
@@ -42,22 +42,15 @@ impl RpcService {
             || async move { db.validate_token(secret).await },
         )
         .await?;
-        // Reject a cached resolution whose token was revoked/rotated since it was
-        // cached (the tombstone written by `invalidate_token_cache`).
-        if let Some(auth) = &cached {
-            let tomb = format!("tokrev:{}", auth.token_id);
-            if kv.get(&tomb).await?.is_some() {
-                return Ok(None);
-            }
-            if !self
-                .db
-                .principal_is_live(auth.owner.kind.as_str(), auth.owner.id)
-                .await?
-            {
-                return Ok(None);
-            }
+        let Some(auth) = cached else {
+            return Ok(None);
+        };
+        let tomb = format!("tokrev:{}", auth.token_id);
+        if kv.get(&tomb).await?.is_some() {
+            return Ok(None);
         }
-        Ok(cached)
+
+        self.db.revalidate_token(&auth.token_id).await
     }
 
     /// Applies one reviewed access-token issuance plan exactly once.
@@ -67,9 +60,7 @@ impl RpcService {
         req: pb::ApplyTopologyPlanRequest,
     ) -> Result<pb::AccessTokenResponse, RpcError> {
         const PLAN_KIND: &str = "issue_access_token";
-        let claims = self
-            .require_control_plan_permission(auth, &req.plan_id, Permission::TokensManage)
-            .await?;
+        let claims = self.require_claims(auth)?;
         if let Some(response) = self
             .replayed_control_result::<pb::AccessTokenResponse>(
                 auth,
@@ -100,8 +91,6 @@ impl RpcService {
             .load_control_plan(auth, &req.plan_id, PLAN_KIND, Some(&req.confirmation_hash))
             .await?;
         let scope = parse_authorization_scope(&input.scope)?;
-        self.require_permission(&claims, Permission::TokensManage, &scope)
-            .await?;
         let owner_id = self
             .resolve_existing_principal_id(&input.owner_kind, &input.owner_ref)
             .await?;
@@ -123,25 +112,14 @@ impl RpcService {
                     .ok_or_else(|| RpcError::invalid(format!("unknown permission '{verb}'")))
             })
             .collect::<Result<Vec<_>, _>>()?;
-        let owner_grants = self
-            .db
-            .effective_scopes(owner)
+        self.authorize_access_token_issue(&claims, owner, &scope, &permissions)
             .await
-            .map_err(RpcError::internal)?;
-        let context = self
-            .db
-            .authorization_context(scope.as_str())
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("authorization scope"))?;
-        if permissions
-            .iter()
-            .any(|permission| !iam::allow(&owner_grants, *permission, &context))
-        {
-            return Err(RpcError::FailedPrecondition(
-                "token-owner authority changed after planning".into(),
-            ));
-        }
+            .map_err(|error| match error {
+                RpcError::PermissionDenied(_) => RpcError::FailedPrecondition(
+                    "token issuance authority changed after planning".into(),
+                ),
+                other => other,
+            })?;
         let expires_at =
             (input.ttl_secs > 0).then_some(clock::now_unix_secs().saturating_add(input.ttl_secs));
         let (token_id, secret) = self

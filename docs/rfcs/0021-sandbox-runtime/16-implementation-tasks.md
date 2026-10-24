@@ -11090,5 +11090,8 @@ Native activation receives only dbusd_unit_t start/status.
 No additional service, bank reservation, capability or generic executable entry
 is introduced. New effective-policy regressions require those exact grants and
 reject foreign preparer entry and recovery-directory mount/removal. All three
-focused regressions pass; complete compiled-policy and installed startup checks
-remain pending. Diagnostic collection alone does not qualify Root readiness.
+focused regressions pass. The pre-merge complete production-policy build
+`0bvqj7v4vga7dsrl4xh30jph320d707w` also passes all 158 checker tests,
+the normal merged-policy scan, deliberately unsafe policy variants and ordered
+kernel class-map checks. Installed startup and merged-tree qualification remain
+pending. Diagnostic collection alone does not qualify Root readiness.

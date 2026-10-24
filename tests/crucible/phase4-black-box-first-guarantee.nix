@@ -7,7 +7,7 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  blackBoxTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/black_box_first_guarantee.rs;
+  blackBoxTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/black_box_first_guarantee.rs;
   triggerDoc = builtins.readFile ../../docs/rfcs/0010-crucible/17a-conditions-and-triggers.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -25,7 +25,7 @@
         needle = "Completed by `checks.crucible.phase4.gates.replayOracle`";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/black_box_first_guarantee.rs" blackBoxTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/black_box_first_guarantee.rs" blackBoxTest [
       {
         label = "complete black-box scenario determinism test";
         needle = "complete_black_box_scenario_runs_deterministically_without_guest_marker";
@@ -111,7 +111,7 @@
         needle = "remain T-TRIG-19";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/black_box_first_guarantee.rs" blackBoxTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/black_box_first_guarantee.rs" blackBoxTest [
       {
         label = "trigger action decision variant";
         needle = "Decision::Trigger";

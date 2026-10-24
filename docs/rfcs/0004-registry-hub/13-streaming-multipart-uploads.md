@@ -143,7 +143,7 @@ the worker bridge, but each body is one sub-cap part — bounded memory.
 
 ## Client: chunked uploader
 
-In `crates/aos/packages/aos-nix-cache` (`backend/mod.rs` + `backend/http.rs` + `push.rs`):
+In `crates/packages/aos-nix-cache` (`backend/mod.rs` + `backend/http.rs` + `push.rs`):
 
 - Add `CacheBackend` multipart methods (`initiate_multipart`, `upload_part`,
   `complete_multipart`, `supports_multipart`).
@@ -162,8 +162,8 @@ In `crates/aos/packages/aos-nix-cache` (`backend/mod.rs` + `backend/http.rs` + `
 3. `crates/hub/aos-hub-native/src/coreports.rs` — local-fs temp-part multipart; native S3 multipart.
 4. `crates/hub/aos-hub-service/src/service.rs` — `initiate/upload_part/complete_upload` (+ auth reuse).
 5. `crates/hub/aos-hub-service/src/connect.rs` — facade query-param branch for the three ops.
-6. `crates/aos/packages/aos-nix-cache/src/backend/mod.rs` + `backend/http.rs` — client multipart methods.
-7. `crates/aos/packages/aos-nix-cache/src/push.rs` — size-threshold routing to multipart.
+6. `crates/packages/aos-nix-cache/src/backend/mod.rs` + `backend/http.rs` — client multipart methods.
+7. `crates/packages/aos-nix-cache/src/push.rs` — size-threshold routing to multipart.
 
 The single-PUT path and `bridge.rs` are unchanged; small objects (narinfo, info/refs,
 sub-threshold NARs) keep working exactly as today.

@@ -6,11 +6,10 @@
 ##! protocol from operator-owned key files for registries without an HSM, such
 ##! as `andyl/experimental`.
 ##!
-##! The binary depends only on pure-Rust cryptography, so the derivation needs
-##! no native libraries. Authenticode and kernel-module transforms shell out to
-##! `sbsign` and `openssl` at paths named in the operator configuration; the
-##! package deliberately does not bake either tool in, because the finalizer
-##! independently pins its own verification copies from the image assembly.
+##! RSA and image transforms shell out to `sbsign` and `openssl` at paths named
+##! in the operator configuration. The package deliberately does not bake
+##! either tool in, because the finalizer independently pins its own
+##! verification copies from the image assembly.
 {
   lib,
   mkAosCargoPackage,

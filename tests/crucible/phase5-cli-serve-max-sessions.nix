@@ -37,7 +37,7 @@
         needle = "`checks.crucible.phase5.cliServeMaxSessions`";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-api/src/lifecycle.rs" lifecycle [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/lifecycle.rs" lifecycle [
       {
         label = "session cap field";
         needle = "max_sessions: Option<usize>";
@@ -51,7 +51,7 @@
         needle = "SessionLimitReached";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-server/src/server.rs" apiServer [
+    ++ failuresFor "crates/crucible/crucible-control-server/src/server.rs" apiServer [
       {
         label = "typed session-limit response";
         needle = "\"session-limit\"";
@@ -61,7 +61,7 @@
         needle = "server_create_session_limit_maps_to_typed_rpc_error";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
       {
         label = "serve max-sessions flag";
         needle = "max_sessions: Option<usize>";

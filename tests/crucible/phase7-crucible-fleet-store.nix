@@ -7,9 +7,9 @@
 }: let
   packagingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/26-packaging-aos-integration.md;
   casSource =
-    builtins.readFile ../../crates/crucible/storage/crucible-store/src/lib.rs
-    + builtins.readFile ../../crates/crucible/storage/crucible-store/src/cas/tests.rs;
-  fleetStoreProbe = builtins.readFile ../../crates/crucible/storage/crucible-store/src/bin/crucible-fleet-store.rs;
+    builtins.readFile ../../crates/crucible/crucible-store/src/lib.rs
+    + builtins.readFile ../../crates/crucible/crucible-store/src/cas/tests.rs;
+  fleetStoreProbe = builtins.readFile ../../crates/crucible/crucible-store/src/bin/crucible-fleet-store.rs;
   fleetStorePackage = builtins.readFile ../../pkgs/tools/crucible-fleet-store.nix;
   # Inspect the dependency list without pinning its other members or their order.
   fleetStoreBuildDeps =
@@ -43,7 +43,7 @@
     ]
     ++ forbiddenFor "docs/rfcs/0010-crucible/26-packaging-aos-integration.md" packagingDoc [
     ]
-    ++ failuresFor "crates/crucible/storage/crucible-store/src/lib.rs" casSource [
+    ++ failuresFor "crates/crucible/crucible-store/src/lib.rs" casSource [
       {
         label = "shared store public type";
         needle = "pub struct SharedDagStore";
@@ -81,7 +81,7 @@
         needle = "shared_store_temp_creation_skips_existing_collision";
       }
     ]
-    ++ failuresFor "crates/crucible/storage/crucible-store/src/bin/crucible-fleet-store.rs" fleetStoreProbe [
+    ++ failuresFor "crates/crucible/crucible-store/src/bin/crucible-fleet-store.rs" fleetStoreProbe [
       {
         label = "fleet store binary name";
         needle = "crucible-fleet-store";

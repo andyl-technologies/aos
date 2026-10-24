@@ -111,7 +111,7 @@
   apmRuntimeTools =
     apmPortableRuntimeTools
     ++ lib.optionals (!isDarwinCross) [systemd util-linux];
-  linkedLibraries = [openssl sqlite zlib];
+  linkedLibraries = [openssl sqlite libssh2 zlib];
   linkedLibraryFlags = lib.concatMapStringsSep " " (dependency: let
     libraryDirectory = "${dependency}/lib";
   in
@@ -206,6 +206,7 @@
       OPENSSL_INCLUDE_DIR = "${openssl}/include";
       OPENSSL_NO_VENDOR = "1";
       OPENSSL_STATIC = "0";
+      AOS_LIBSSH2_PREFIX = "${libssh2}";
       LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
       PROTOC = "${buildProtobuf}/bin/protoc";
     }
@@ -794,7 +795,7 @@
           # Give the shared binary the private entry-point name so
           # current_exe() resolves to the exact signed handler path. The public
           # and split-output private links preserve their own argv[0], which
-          # selects the corresponding parser in crates/aos/cli/aos-cli/src/apm.rs.
+          # selects the corresponding parser in crates/cli/aos-cli/src/apm.rs.
           mv \
             "$apm/bin/.apm-unwrapped" \
             "$apm/bin/.aos-package-runtime-unwrapped"

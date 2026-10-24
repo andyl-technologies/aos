@@ -9,8 +9,8 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
-  propertiesTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/property_fingerprint_neutrality.rs;
-  coverageTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/coverage_condition_leaf.rs;
+  propertiesTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs;
+  coverageTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/coverage_condition_leaf.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -31,7 +31,7 @@
         needle = "`checks.crucible.phase1.spatialPropertiesComponent`";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "properties type";
         needle = "pub struct Properties";
@@ -111,9 +111,9 @@
         pub id: ContentHash,
       ''
       model) [
-      "crates/crucible/engine/crucible-engine/src/model.rs: properties identity field must not be public"
+      "crates/crucible/crucible-engine/src/model.rs: properties identity field must not be public"
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/property_fingerprint_neutrality.rs" propertiesTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/property_fingerprint_neutrality.rs" propertiesTest [
       {
         label = "properties content-address test";
         needle = "fn property_changes_move_scenario_identity_without_moving_run_material()";
@@ -135,7 +135,7 @@
         needle = "assert_scenario_material_points_at_properties(&amended);";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/coverage_condition_leaf.rs" coverageTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/coverage_condition_leaf.rs" coverageTest [
       {
         label = "test rejects undeclared property predicate node";
         needle = "Err(EngineError::PropertyPredicateUnknownNode";

@@ -31,6 +31,7 @@
   mkTestDisk = arguments: let
     guestPackages = arguments.system.pkgs or pkgs;
     buildPackages = guestPackages.buildPackages;
+    development = arguments.development or true;
     platform = arguments.system.config.aos.image.platform;
   in
     if platform == null
@@ -43,10 +44,18 @@
         testAgent = guestPackages.aos-test-agent;
         sshTools = buildPackages.openssh;
         inputs =
-          arguments
+          (builtins.removeAttrs arguments ["development"])
           // {
             guestArchitecture = guestPackages.stdenv.hostPlatform.constraints.cpu;
           };
+        mkImageRecipe =
+          if !development || (pkgs.sharedImageCacheDir or null) == null
+          then null
+          else
+            import ./image-recipe.nix {
+              inherit lib;
+              pkgs = buildPackages // {sharedImageCacheDir = pkgs.sharedImageCacheDir;};
+            };
       };
 
   # ---------------------------------------------------------------------------
@@ -55,22 +64,25 @@
   checksLib = import ./checks.nix;
 
   # ---------------------------------------------------------------------------
-  # Headless test: test script IS init (PID 1), serial PASS/FAIL markers
+  # Headless test: stable init, separate assertions, serial PASS/FAIL markers
   # ---------------------------------------------------------------------------
   mkHeadlessTest = {
     name,
     testScript,
     rootfsDeps ? [],
     memory ? 256,
+    timeout ? null,
     extraWritableMiB ? 0,
     vcpuCount ? 1,
     hostCpuPin ? false,
     hostCpuPinIndex ? null,
   }: let
     rootfs = fcLib.mkFirecrackerRootfs {
-      pname = name;
-      inherit testScript rootfsDeps extraWritableMiB;
+      development = true;
+      inherit rootfsDeps extraWritableMiB;
     };
+    testInput = fcLib.mkFirecrackerTestInput testScript;
+    timeoutCommand = lib.optionalString (timeout != null) "timeout --kill-after=5 ${toString timeout} ";
     # Firecracker boots the uncompressed vmlinux ELF, which lives in the
     # kernel's separate `vmlinux` output (pkgs/kernel/linux.nix) — not in
     # `out`, whose /boot ships only the compressed vmlinuz.
@@ -82,6 +94,8 @@
         pkgs.grep
         pkgs.sed
         firecracker
+        pkgs.python3
+        pkgs.aos-test-driver
       ]
       ++ (
         if hostCpuPin
@@ -103,7 +117,8 @@
         exit 1
       fi
 
-      cp $ROOTFS rootfs.img
+      PYTHONPATH=${pkgs.aos-test-driver}/lib/aos-test-driver \
+        ${pkgs.python3}/bin/python3 -m aos_test_driver.image_cache copy "$ROOTFS" rootfs.img
       chmod u+w rootfs.img
 
       echo "Kernel: $VMLINUX"
@@ -125,6 +140,12 @@
             "is_read_only": false,
             "cache_type": "Unsafe",
             "io_engine": "Sync"
+          },
+          {
+            "drive_id": "test-input",
+            "path_on_host": "${testInput}/test.img",
+            "is_root_device": false,
+            "is_read_only": true
           }
         ],
         "machine-config": {
@@ -178,19 +199,19 @@
             "$host_stepping" "$host_microcode" "$(uname -r)" "$host_allowed" "$host_cpu" \
             > "$TMPDIR/host-reference.env"
           FC_EXIT=0
-          ${pkgs.util-linux}/bin/taskset -c "$host_cpu" \
+          ${timeoutCommand}${pkgs.util-linux}/bin/taskset -c "$host_cpu" \
             firecracker --no-api --config-file "$CONFIG" > "$SERIAL_PIPE" 2>"$FC_LOG" || FC_EXIT=$?
         ''
         else ''
           FC_EXIT=0
-          firecracker --no-api --config-file "$CONFIG" > "$SERIAL_PIPE" 2>"$FC_LOG" || FC_EXIT=$?
+          ${timeoutCommand}firecracker --no-api --config-file "$CONFIG" > "$SERIAL_PIPE" 2>"$FC_LOG" || FC_EXIT=$?
         ''
       }
       wait "$SERIAL_MIRROR_PID" 2>/dev/null || true
 
       echo "Firecracker exited with code: $FC_EXIT"
 
-      if grep -q "TEST_RESULT:PASS" "$SERIAL_LOG"; then
+      if [ "$FC_EXIT" -eq 0 ] && ! grep -q "TEST_RESULT:FAIL" "$SERIAL_LOG" && grep -q "TEST_RESULT:PASS" "$SERIAL_LOG"; then
         echo ""
         echo "==> TEST PASSED: ${name}"
         mkdir -p $out
@@ -228,7 +249,7 @@
 
       buildDeps = headlessBuildDeps;
 
-      ROOTFS = builtins.toString rootfs;
+      ROOTFS = "${rootfs}/root.img";
       KERNEL = kernelPath;
 
       phases = [
@@ -239,6 +260,7 @@
       ];
 
       requiredSystemFeatures = ["kvm"];
+      passthru = {inherit rootfs testInput;};
     };
 
   # ---------------------------------------------------------------------------
@@ -246,14 +268,14 @@
   # ---------------------------------------------------------------------------
   # Supports two modes:
   #   - System mode (system parameter): selected platform + agent
-  #   - Headless mode (rootfsDeps parameter): test script IS init, for package checks
+  #   - Headless mode (rootfsDeps parameter): minimal init plus test input volume
   mkVMTest = {
     name,
     # System mode (selected platform + agent):
     system ? null,
     groupName ? name,
     checks ? [],
-    # Headless mode (test script IS init):
+    # Headless mode (minimal init plus test input volume):
     rootfsDeps ? null,
     # Shared:
     testScript ? null,
@@ -288,6 +310,7 @@
             if memory != null
             then memory
             else 256;
+          inherit timeout;
           vcpuCount = headlessVcpuCount;
         }
     else if system != null

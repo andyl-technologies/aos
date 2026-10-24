@@ -52,7 +52,7 @@
   };
 in
   assert tpm2-tss.version == "4.2.0";
-  assert openssl.version == "4.0.2";
+  assert openssl.version == "4.0.3";
     mkDerivation {
       platformSupport = {
         build = [

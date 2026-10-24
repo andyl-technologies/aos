@@ -8,8 +8,8 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
-  exactLocalTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_exact_local_event.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  exactLocalTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_exact_local_event.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -23,7 +23,7 @@
         needle = "Completed by `checks.crucible.phase3.schedulerExactLocalEvent`";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "I/O exact local variant";
         needle = "IoCompletion";
@@ -61,7 +61,7 @@
         needle = "SchedulerHorizonSource::SignalFaultEvaluation";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "I/O exact local export";
         needle = "exact_local_event_from_io_completion";
@@ -75,7 +75,7 @@
         needle = "next_exact_local_event";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_exact_local_event.rs" exactLocalTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_exact_local_event.rs" exactLocalTest [
       {
         label = "earliest timer/I/O test";
         needle = "next_exact_local_event_selects_earliest_timer_or_io";
@@ -105,7 +105,7 @@
         needle = "horizon_uses_io_completion_as_exact_local_source";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_exact_local_event.rs" exactLocalTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/scheduler_exact_local_event.rs" exactLocalTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";

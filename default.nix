@@ -33,6 +33,7 @@
   crossSystem ? null,
   releasePlatforms ? null,
   containerPublicationInputsOverride ? null,
+  sharedImageCacheDir ? null,
   sharedGoCacheDir ? null,
   sharedBazelCacheDir ? null,
   sharedRustTargetDir ? null,
@@ -182,6 +183,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       stdenv
       buildPackages
       firmwarePackages
+      sharedImageCacheDir
       sharedGoCacheDir
       sharedBazelCacheDir
       sharedRustTargetDir
@@ -1706,6 +1708,7 @@ in rec {
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
   checks = rec {
+    vm-artifact-reuse = import ./tests/build/vm-artifact-headless.nix {inherit pkgs lib;};
     bootstrap.kotlin-java = import ./pkgs/toolchain/_kotlin-bootstrap-2011.nix {
       inherit (buildPackages) mkDerivation;
       inherit (lib) fetchgit fetchurl;
@@ -1785,6 +1788,7 @@ in rec {
       crucible-qemu-plugin = pkgs.crucible-qemu-plugin;
       crucible-guest = pkgs.crucible-guest;
     };
+    advisories = import ./tests/advisory-gate {inherit pkgs;};
     # Pure ability suites evaluate focused module fixed points. Full image
     # construction belongs to the build and qualification checks.
     ability-suites = import ./tests/abilities {inherit pkgs lib;};
@@ -1881,6 +1885,8 @@ in rec {
         inherit lib;
         pkgs = buildPackages;
       };
+      vm-artifacts = import ./tests/build/vm-artifacts.nix {inherit pkgs lib;};
+      image-reproducibility = import ./tests/build/image-reproducibility.nix {inherit pkgs lib;};
       aos-dev-cache-identity = import ./tests/build/aos-dev-cache-identity.nix {
         inherit pkgs system crossSystem;
       };
@@ -2097,6 +2103,7 @@ in rec {
       {
         inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache python-bytecode artifact-consumption native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell esp-population hardening-probe host-native-inputs initrd-native-inputs initrd-module-hardlinks initrd-udev-rules initrd-stage-contract native-stage-replay native-profile-replay kernel-config rootfs-kernel-modules linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets native-acquire-v3-protocol erofs-deduplication linux-cross-llvm linux-cross-runtime sandbox-guest-root-template sandbox-controller-service sandbox-selected-manager-stage0 sandbox-nix-method46-profile sandbox-nix-offline-hardware-profile sandbox-nix-offline-approval-delivery-profile sandbox-resource-unit-names sandbox-policy-cache-recovery-service sandbox-cache-signer-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-scrub vm-rootfs-adapter;
         inherit sandbox-standalone-resource-bank;
+        inherit image-reproducibility vm-artifacts;
         # These checks inspect realized closures, so keep them out of the pure evaluation layer.
         inherit config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness;
         config-manifest = config-manifest;
@@ -2122,6 +2129,7 @@ in rec {
             ++ lib.optional (sandbox-nix-offline-approval-delivery-profile != null) sandbox-nix-offline-approval-delivery-profile
             ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache python-bytecode native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell esp-population initrd-module-hardlinks initrd-udev-rules initrd-stage-contract native-stage-replay native-profile-replay kernel-config rootfs-kernel-modules linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness config-manifest configProvenanceChecks.all renderedEvalSuites.rendered-system]
             ++ [native-acquire-v3-protocol sandbox-guest-root-template sandbox-controller-service sandbox-selected-manager-stage0 sandbox-resource-unit-names sandbox-policy-cache-recovery-service sandbox-cache-signer-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-scrub vm-rootfs-adapter]
+            ++ [vm-artifacts]
             ++ builtins.attrValues (builtins.removeAttrs renderedEvalSuites ["rendered-system"])
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm

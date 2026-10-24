@@ -6,11 +6,11 @@
   cratesDir = ../../crates;
   testingStandardsRust = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/testing/crucible-test-support/tests/testing_standards.rs;
+    entry = ../../crates/crucible/crucible-test-support/tests/testing_standards.rs;
   };
-  testingStandardsSupport = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/testing_standards.rs;
+  testingStandardsSupport = builtins.readFile ../../crates/crucible/crucible-test-support/tests/support/testing_standards.rs;
   testingStandardsSourceInventory =
-    builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/testing_standards/source_inventory.rs;
+    builtins.readFile ../../crates/crucible/crucible-test-support/tests/support/testing_standards/source_inventory.rs;
   testingStandardsCode =
     testingStandardsRust
     + "\n"
@@ -765,7 +765,7 @@
     lib.concatMap (
       required:
         lib.optionals (!(hasInfix required testingStandardsCode)) [
-          "crates/crucible/testing/crucible-test-support/tests/testing_standards.rs: missing testing-standard wiring `${required}`"
+          "crates/crucible/crucible-test-support/tests/testing_standards.rs: missing testing-standard wiring `${required}`"
         ]
     )
     requiredRustText;

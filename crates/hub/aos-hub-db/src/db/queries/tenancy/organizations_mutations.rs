@@ -892,6 +892,7 @@ impl Database {
             .await?
             .with_context(|| format!("no org with id {org_id}"))?;
         let now = unix_now();
+        let recipient_incarnation = uuid::Uuid::new_v4().simple().to_string();
         // Two self-contained writes with all values known up front: a batch,
         // so this commits atomically on both native SQL and Worker HubDb.
         self.backend
@@ -915,11 +916,11 @@ impl Database {
                 .expecting(1),
                 Statement::new(
                     "INSERT INTO memberships
-                 (principal_kind, principal_id, scope_key, role, created_at)
-                 VALUES ('user', ?1, ?2, 'owner', ?3)
+                 (principal_kind, principal_id, scope_key, role, created_at, incarnation_id)
+                 VALUES ('user', ?1, ?2, 'owner', ?3, ?4)
                  ON CONFLICT(principal_kind, principal_id, scope_key)
                  DO UPDATE SET role = excluded.role",
-                    vals![to_user, org.stable_id, now].to_vec(),
+                    vals![to_user, org.stable_id, now, recipient_incarnation].to_vec(),
                 )
                 .unchecked(),
                 Statement::new(

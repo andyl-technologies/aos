@@ -9,12 +9,25 @@
   closureInfoFor,
   lib,
   packages,
+  mkImageRecipe ? null,
 }: let
   pkgs = packages // {inherit buildPackages;};
+  imageMetadata = import ../../../../lib/build/image-metadata.nix {pkgs = buildPackages;};
 
   buildRootfs = import ../platform/_rootfs-builder.nix;
   buildSystemdTestRootfs = arguments:
-    buildRootfs (arguments // {inherit closureInfoFor lib pkgs;});
+    buildRootfs (arguments
+      // {
+        inherit closureInfoFor lib;
+        pkgs =
+          pkgs
+          // {
+            mkDerivation =
+              if mkImageRecipe == null
+              then pkgs.mkDerivation
+              else mkImageRecipe {};
+          };
+      });
 
   # ---------------------------------------------------------------------------
   # Build a rootfs ext4 image for VM testing
@@ -391,7 +404,11 @@
       inherit postPopulate;
     };
   in
-    pkgs.mkDerivation {
+    (
+      if mkImageRecipe == null
+      then pkgs.mkDerivation
+      else mkImageRecipe {dependencies = [rootfs];}
+    ) {
       pname = builtins.seq checkedProvisioningSource "vm-disk-${name}";
       version = "0";
       src = null;
@@ -402,6 +419,7 @@
         buildPackages.fakeroot
         buildPackages.jq
         buildPackages.util-linux # sfdisk
+        buildPackages.python3
       ];
 
       ROOT_IMG = "${rootfs}/root.img";
@@ -414,6 +432,7 @@
           name = "assemble";
           script = ''
             set -eu
+            ${imageMetadata.environment}
             ${lib.optionalString bakeVar ''
               VAR_SIZE_MIB=${builtins.toString storageLayout.varSizeMiB}
 
@@ -426,8 +445,9 @@
               ${varSeed}
 
               # fakeroot so the var partition's files land as uid/gid 0.
-              fakeroot -- mkfs.ext4 -d var -L aos-var -m 0 -q \
-                ${lib.optionalString protectedVar "-E root_selinux=${varRootContext}"} \
+              IMAGE_UUID=$(${imageMetadata.command} tree aos-fleet-var var)
+              fakeroot -- mkfs.ext4 ${imageMetadata.ext4Options}${lib.optionalString protectedVar ",root_selinux=${varRootContext}"} \
+                -d var -L aos-var -m 0 -q \
                 var.img "''${VAR_SIZE_MIB}M"
               ${lib.optionalString protectedVar ''
                 var_label=$(debugfs -R 'ea_get / security.selinux' var.img 2>/dev/null)
@@ -438,7 +458,7 @@
               ''}
             ''}
             # ── Root image from the shared rootfs helper ────────────────
-            cp "$ROOT_IMG" root.img
+            cp --reflink=auto --sparse=always "$ROOT_IMG" root.img
             chmod u+w root.img
             root_bytes=$(cat "$ROOT_SIZE_FILE")
 
@@ -479,6 +499,13 @@
             echo "==> Assembling $(( DISK_BYTES / 1048576 )) MiB GPT disk image"
             truncate -s "$DISK_BYTES" disk.img
 
+            # Content and layout identify a disk independently of scratch or
+            # store output paths. Each partition has its own role-scoped GUID.
+            disk_uuid=$(${imageMetadata.command} files "aos-fleet:${checkedProvisioningSource}:$DISK_BYTES:$ROOT_SECTORS:$SWAP_SECTORS" root.img ${lib.optionalString bakeVar "var.img"})
+            for role in boot root-a root-b swap provenance var; do
+              ${imageMetadata.command} uuid "$disk_uuid:$role" > "$role.uuid"
+            done
+
             # ESP isolates the boot stub from linux-generic /var matching;
             # repart selects existing partitions by type, not the new label.
             # The guest architecture's DPS root GUID isolates root-a from operator
@@ -490,23 +517,26 @@
             # because it is created at first boot.
             {
               echo "label: gpt"
-              echo "size=$BOOT_SECTORS, type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name=boot"
-              echo "size=$ROOT_SECTORS, type=${rootPartitionType}, name=root-a"
-              echo "size=$ROOT_SECTORS, type=${rootPartitionType}, name=root-b"
-              echo "size=$SWAP_SECTORS, type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name=swap"
-              ${lib.optionalString bakeVar ''echo "size=$SENTINEL_SECTORS, type=163BEA60-58C7-46E7-B69A-6846A5A688AF, name=aos-provenance-${checkedProvisioningSource}-v1"''}
-              ${lib.optionalString bakeVar ''echo "size=$VAR_SECTORS,  type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=var"''}
+              echo "label-id: $disk_uuid"
+              echo "size=$BOOT_SECTORS, uuid=$(cat boot.uuid), type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name=boot"
+              echo "size=$ROOT_SECTORS, uuid=$(cat root-a.uuid), type=${rootPartitionType}, name=root-a"
+              echo "size=$ROOT_SECTORS, uuid=$(cat root-b.uuid), type=${rootPartitionType}, name=root-b"
+              echo "size=$SWAP_SECTORS, uuid=$(cat swap.uuid), type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name=swap"
+              ${lib.optionalString bakeVar ''echo "size=$SENTINEL_SECTORS, uuid=$(cat provenance.uuid), type=163BEA60-58C7-46E7-B69A-6846A5A688AF, name=aos-provenance-${checkedProvisioningSource}-v1"''}
+              ${lib.optionalString bakeVar ''echo "size=$VAR_SECTORS, uuid=$(cat var.uuid), type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=var"''}
             } > ptable.sfdisk
             sfdisk disk.img < ptable.sfdisk
 
+            # The destination partition bodies are new holes. sparse skips zero
+            # blocks without overwriting GPT headers or materializing free space.
             # Partition starts are MiB-aligned. Copy at that granularity so
             # production-scale /var fixtures do not issue tens of millions of
             # 512-byte writes during every fleet image build.
             [ $((ROOT_START % 2048)) -eq 0 ]
-            dd if=root.img of=disk.img bs=1M seek="$((ROOT_START / 2048))" conv=notrunc status=none
+            dd if=root.img of=disk.img bs=1M seek="$((ROOT_START / 2048))" conv=notrunc,sparse status=none
             ${lib.optionalString bakeVar ''
               [ $((VAR_START % 2048)) -eq 0 ]
-              dd if=var.img of=disk.img bs=1M seek="$((VAR_START / 2048))" conv=notrunc status=none
+              dd if=var.img of=disk.img bs=1M seek="$((VAR_START / 2048))" conv=notrunc,sparse status=none
             ''}
 
             mkdir -p $out

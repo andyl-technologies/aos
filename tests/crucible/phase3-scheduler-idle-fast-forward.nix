@@ -8,8 +8,8 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
-  idleTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_idle_fast_forward.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  idleTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_idle_fast_forward.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -31,7 +31,7 @@
         needle = "effective clock";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "effective clock type";
         needle = "pub struct SchedulerEffectiveClock";
@@ -65,7 +65,7 @@
         needle = "wake_time = min_instant(wake_time, self.time_limit)";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "effective clock export";
         needle = "SchedulerEffectiveClock";
@@ -75,7 +75,7 @@
         needle = "SchedulerEffectiveClockSource";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_idle_fast_forward.rs" idleTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_idle_fast_forward.rs" idleTest [
       {
         label = "timer fast-forward test";
         needle = "idle_fast_forward_jumps_to_exact_timer_wake_without_schedule_decision";
@@ -107,7 +107,7 @@
         needle = "schedulerIdleFastForward = import ./phase3-scheduler-idle-fast-forward.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_idle_fast_forward.rs" idleTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/scheduler_idle_fast_forward.rs" idleTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";

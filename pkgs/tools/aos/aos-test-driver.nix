@@ -150,6 +150,12 @@ mkDerivation {
         exec ${python3}/bin/python3 -u -m aos_test_driver "\''$@"
         SHIMEND
         chmod +x "$out/bin/aos-test-driver"
+        cat > "$out/bin/aos-test-image-cache" <<SHIMEND
+        #!${bash}/bin/bash
+        export PYTHONPATH="$out/lib/aos-test-driver"
+        exec ${python3}/bin/python3 -u -m aos_test_driver.image_cache "\''$@"
+        SHIMEND
+        chmod +x "$out/bin/aos-test-image-cache"
       '';
     }
   ];

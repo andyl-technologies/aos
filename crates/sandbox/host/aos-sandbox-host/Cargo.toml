@@ -20,7 +20,7 @@ aos-sandbox-model = { path = "../../model/aos-sandbox-model" }
 aos-sandbox-linux = { path = "../aos-sandbox-linux" }
 aos-linux-descriptors.workspace = true
 aos-sandbox-protocol = { path = "../../protocol/aos-sandbox-protocol" }
-aos-systemd-client = { path = "../../../shared/aos-systemd-client" }
+aos-systemd-client = { path = "../../../linux/aos-systemd-client" }
 async-trait.workspace = true
 buffa.workspace = true
 ed25519-dalek.workspace = true

@@ -3,6 +3,119 @@
 use super::*;
 
 #[tokio::test]
+async fn oidc_pending_flow_limit_serializes_the_last_slot() {
+    let db = Arc::new(Database::open_in_memory().await.unwrap());
+    let org_id = db.create_org("oidc-cap", "OIDC Cap").await.unwrap();
+    let binding_hash = "0".repeat(64);
+
+    for ordinal in 0..(MAX_PENDING_OIDC_FLOWS_PER_ORG - 1) {
+        db.create_oidc_flow(
+            &format!("seed-{ordinal}"),
+            org_id,
+            "verifier",
+            "nonce",
+            "code-verifier",
+            &binding_hash,
+            None,
+            600,
+        )
+        .await
+        .unwrap();
+    }
+
+    let create = |state: &'static str| {
+        let db = Arc::clone(&db);
+        let binding_hash = binding_hash.clone();
+        async move {
+            db.create_oidc_flow(
+                state,
+                org_id,
+                "verifier",
+                "nonce",
+                "code-verifier",
+                &binding_hash,
+                None,
+                600,
+            )
+            .await
+        }
+    };
+    let (left, right) = tokio::join!(create("race-left"), create("race-right"));
+
+    assert_ne!(
+        left.is_ok(),
+        right.is_ok(),
+        "exactly one contender wins the last pending-flow slot"
+    );
+    let count: i64 = db
+        .backend
+        .query_opt(
+            "SELECT COUNT(*) FROM oidc_flows WHERE org_id = ?1",
+            &vals![org_id],
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .get(0)
+        .unwrap();
+    assert_eq!(count, MAX_PENDING_OIDC_FLOWS_PER_ORG);
+}
+
+#[tokio::test]
+async fn oidc_flow_cleanup_is_bounded_and_preserves_live_single_use_flows() {
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db
+        .create_org("oidc-retention", "OIDC Retention")
+        .await
+        .unwrap();
+    let binding_hash = "0".repeat(64);
+
+    for state in ["expired-a", "expired-b", "expired-c"] {
+        db.create_oidc_flow(
+            state,
+            org_id,
+            "verifier",
+            "nonce",
+            "code-verifier",
+            &binding_hash,
+            None,
+            -1,
+        )
+        .await
+        .unwrap();
+    }
+    db.create_oidc_flow(
+        "live",
+        org_id,
+        "verifier",
+        "nonce",
+        "code-verifier",
+        &binding_hash,
+        Some("/settings"),
+        600,
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(db.prune_expired_oidc_flows(unix_now(), 2).await.unwrap(), 2);
+    assert_eq!(db.prune_expired_oidc_flows(unix_now(), 2).await.unwrap(), 1);
+    assert_eq!(db.prune_expired_oidc_flows(unix_now(), 2).await.unwrap(), 0);
+
+    let live = db
+        .take_oidc_flow("live", &binding_hash)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(live.redirect_after.as_deref(), Some("/settings"));
+    assert!(db
+        .take_oidc_flow("live", &binding_hash)
+        .await
+        .unwrap()
+        .is_none());
+    assert!(db.prune_expired_oidc_flows(unix_now(), 0).await.is_err());
+}
+
+#[tokio::test]
 async fn orgs_projects_and_principals_roundtrip() {
     let db = Database::open_in_memory().await.unwrap();
     let org = db.create_org("acme", "Acme, Inc.").await.unwrap();
@@ -421,6 +534,35 @@ async fn sessions_create_validate_expire_and_revoke() {
 }
 
 #[tokio::test]
+async fn sessions_retain_authentication_evidence() {
+    let db = Database::open_in_memory().await.unwrap();
+    let user = db.create_user("evidence@acme.com", None).await.unwrap();
+    let secret = db
+        .create_session_with_authentication(
+            user,
+            3_600,
+            1,
+            &SessionAuthentication::Oidc("https://idp.example".into()),
+        )
+        .await
+        .unwrap();
+
+    let session = db.validate_session(&secret).await.unwrap().unwrap();
+    assert_eq!(
+        session.authentication,
+        SessionAuthentication::Oidc("https://idp.example".into())
+    );
+    assert_eq!(session.reauthentication_generation, 0);
+
+    db.elevate_session_with_authentication(&secret, &SessionAuthentication::Password)
+        .await
+        .unwrap();
+    let session = db.validate_session(&secret).await.unwrap().unwrap();
+    assert_eq!(session.authentication, SessionAuthentication::Password);
+    assert_eq!(session.reauthentication_generation, 1);
+}
+
+#[tokio::test]
 async fn repeated_session_validation_preserves_liveness_without_identical_writes() {
     let db = Database::open_in_memory().await.unwrap();
     let user = db
@@ -695,6 +837,231 @@ async fn set_membership_role_owner_safe_blocks_last_owner_demotion() {
 }
 
 #[tokio::test]
+async fn reviewed_membership_replacement_preserves_incarnation_and_revokes_exactly() {
+    use aos_hub_model::domain::Principal;
+
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db
+        .create_org("reviewed-membership", "Reviewed membership")
+        .await
+        .unwrap();
+    let scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
+    let actor_id = db
+        .create_user("owner@reviewed.example", None)
+        .await
+        .unwrap();
+    let target_id = db
+        .create_user("member@reviewed.example", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", actor_id, &scope, "owner")
+        .await
+        .unwrap();
+    db.grant_membership("user", target_id, &scope, "viewer")
+        .await
+        .unwrap();
+
+    let initial = db
+        .membership_snapshot("user", target_id, &scope)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(initial.incarnation_id.is_some());
+    db.replace_membership_if_current(
+        Principal::user(target_id),
+        &scope,
+        Some(&initial),
+        Some("admin"),
+        Principal::user(actor_id),
+    )
+    .await
+    .unwrap();
+
+    let replaced = db
+        .membership_snapshot("user", target_id, &scope)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(replaced.id, initial.id);
+    assert_eq!(replaced.incarnation_id, initial.incarnation_id);
+    assert_eq!(replaced.role, "admin");
+
+    db.replace_membership_if_current(
+        Principal::user(target_id),
+        &scope,
+        Some(&replaced),
+        None,
+        Principal::user(actor_id),
+    )
+    .await
+    .unwrap();
+    assert!(db
+        .membership_snapshot("user", target_id, &scope)
+        .await
+        .unwrap()
+        .is_none());
+
+    db.replace_membership_if_current(
+        Principal::user(target_id),
+        &scope,
+        None,
+        Some("viewer"),
+        Principal::user(actor_id),
+    )
+    .await
+    .unwrap();
+    let recreated = db
+        .membership_snapshot("user", target_id, &scope)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(recreated.role, "viewer");
+    assert_ne!(recreated.incarnation_id, initial.incarnation_id);
+}
+
+#[tokio::test]
+async fn reviewed_membership_rejects_role_change_and_recreated_incarnation() {
+    use aos_hub_model::domain::Principal;
+
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db
+        .create_org("membership-baseline", "Membership baseline")
+        .await
+        .unwrap();
+    let scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
+    let actor_id = db
+        .create_user("owner@baseline.example", None)
+        .await
+        .unwrap();
+    let target_id = db
+        .create_user("member@baseline.example", None)
+        .await
+        .unwrap();
+    db.grant_membership("user", actor_id, &scope, "owner")
+        .await
+        .unwrap();
+    db.grant_membership("user", target_id, &scope, "viewer")
+        .await
+        .unwrap();
+
+    let viewer = db
+        .membership_snapshot("user", target_id, &scope)
+        .await
+        .unwrap()
+        .unwrap();
+    db.set_membership_role_owner_safe("user", target_id, &scope, "owner")
+        .await
+        .unwrap();
+    let error = db
+        .replace_membership_if_current(
+            Principal::user(target_id),
+            &scope,
+            Some(&viewer),
+            None,
+            Principal::user(actor_id),
+        )
+        .await
+        .unwrap_err();
+    assert!(is_membership_mutation_conflict(&error), "got: {error:#}");
+    assert_eq!(
+        db.membership_snapshot("user", target_id, &scope)
+            .await
+            .unwrap()
+            .unwrap()
+            .role,
+        "owner"
+    );
+
+    let owner = db
+        .membership_snapshot("user", target_id, &scope)
+        .await
+        .unwrap()
+        .unwrap();
+    db.revoke_membership_owner_safe("user", target_id, &scope)
+        .await
+        .unwrap();
+    db.grant_membership("user", target_id, &scope, "owner")
+        .await
+        .unwrap();
+    let recreated = db
+        .membership_snapshot("user", target_id, &scope)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(recreated.incarnation_id, owner.incarnation_id);
+
+    let error = db
+        .replace_membership_if_current(
+            Principal::user(target_id),
+            &scope,
+            Some(&owner),
+            Some("admin"),
+            Principal::user(actor_id),
+        )
+        .await
+        .unwrap_err();
+    assert!(is_membership_mutation_conflict(&error), "got: {error:#}");
+    assert_eq!(
+        db.membership_snapshot("user", target_id, &scope)
+            .await
+            .unwrap()
+            .unwrap(),
+        recreated
+    );
+}
+
+#[tokio::test]
+async fn reviewed_membership_rechecks_actor_authority_in_the_write() {
+    use aos_hub_model::domain::Principal;
+
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db
+        .create_org("membership-actor", "Membership actor")
+        .await
+        .unwrap();
+    let scope = db.org_by_id(org_id).await.unwrap().unwrap().stable_id;
+    let owner_id = db.create_user("owner@actor.example", None).await.unwrap();
+    let actor_id = db.create_user("admin@actor.example", None).await.unwrap();
+    let target_id = db.create_user("member@actor.example", None).await.unwrap();
+    db.grant_membership("user", owner_id, &scope, "owner")
+        .await
+        .unwrap();
+    db.grant_membership("user", actor_id, &scope, "admin")
+        .await
+        .unwrap();
+    db.grant_membership("user", target_id, &scope, "viewer")
+        .await
+        .unwrap();
+    let baseline = db
+        .membership_snapshot("user", target_id, &scope)
+        .await
+        .unwrap()
+        .unwrap();
+
+    db.set_membership_role_owner_safe("user", actor_id, &scope, "viewer")
+        .await
+        .unwrap();
+    let error = db
+        .replace_membership_if_current(
+            Principal::user(target_id),
+            &scope,
+            Some(&baseline),
+            Some("developer"),
+            Principal::user(actor_id),
+        )
+        .await
+        .unwrap_err();
+    assert!(is_membership_mutation_conflict(&error), "got: {error:#}");
+    assert_eq!(
+        db.membership_snapshot("user", target_id, &scope)
+            .await
+            .unwrap()
+            .unwrap(),
+        baseline
+    );
+}
+
+#[tokio::test]
 async fn delete_user_re_checks_sole_ownership_in_tx() {
     let db = Database::open_in_memory().await.unwrap();
     let org_id = db.create_org("acme", "Acme").await.unwrap();
@@ -792,8 +1159,9 @@ async fn magic_links_single_use_and_expiry() {
 #[tokio::test]
 async fn take_webauthn_challenge_is_scoped_by_kind() {
     let db = Database::open_in_memory().await.unwrap();
+    let binding = WebauthnChallengeBinding::for_session("session-secret", 3);
     // A registration challenge is in flight for a victim.
-    db.create_webauthn_challenge("chal-abc", Some(1), "registration", 300)
+    db.create_webauthn_challenge("chal-abc", Some(1), "registration", 300, Some(&binding))
         .await
         .unwrap();
 
@@ -812,6 +1180,10 @@ async fn take_webauthn_challenge_is_scoped_by_kind() {
         .unwrap()
         .expect("registration challenge survived the cross-kind attempt");
     assert_eq!(taken.kind, "registration");
+    assert!(taken
+        .registration_binding
+        .unwrap()
+        .matches_session("session-secret", 3));
 
     // And it is single-use: a second take finds nothing.
     assert!(db

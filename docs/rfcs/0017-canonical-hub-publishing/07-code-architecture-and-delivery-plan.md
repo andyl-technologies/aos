@@ -33,13 +33,13 @@ authority.
 
 | Area | Existing implementation | Required change |
 | --- | --- | --- |
-| Package and image catalog schema | [`crates/aos/registry/aos-registry-format/src/manifest.rs`](../../../crates/aos/registry/aos-registry-format/src/manifest.rs) | Continue using it as the registry wire schema; add release-wide schemas in a separate pure crate. |
-| APR package authoring | [`crates/aos/registry/aos-registry-authoring/src/registry_ops.rs`](../../../crates/aos/registry/aos-registry-authoring/src/registry_ops.rs) | Extract authoring and release modules and add a multi-entry isolated transaction. |
-| APR release flow | `ReleaseTreeOptions`, `ReleaseStorePublish`, and `release_registry_tree` in [`registry_ops.rs`](../../../crates/aos/registry/aos-registry-authoring/src/registry_ops.rs) | Stop treating one optional store path as the release unit; separate registry finalization, upload, and channel movement. |
-| Registry signatures | [`crates/aos/registry/aos-registry-authoring/src/security.rs`](../../../crates/aos/registry/aos-registry-authoring/src/security.rs) | Replace production private-key paths with role-bound signer requests. Retain file keys only for explicit tests. |
-| TUF-like metadata | [`crates/aos/registry/aos-registry-authoring/src/registry/tuf.rs`](../../../crates/aos/registry/aos-registry-authoring/src/registry/tuf.rs) | Add explicit delegated roles and independent policies, and move timestamp out of immutable release commits. |
+| Package and image catalog schema | [`crates/registry/aos-registry-format/src/manifest.rs`](../../../crates/registry/aos-registry-format/src/manifest.rs) | Continue using it as the registry wire schema; add release-wide schemas in a separate pure crate. |
+| APR package authoring | [`crates/registry/aos-registry-authoring/src/registry_ops.rs`](../../../crates/registry/aos-registry-authoring/src/registry_ops.rs) | Extract authoring and release modules and add a multi-entry isolated transaction. |
+| APR release flow | `ReleaseTreeOptions`, `ReleaseStorePublish`, and `release_registry_tree` in [`registry_ops.rs`](../../../crates/registry/aos-registry-authoring/src/registry_ops.rs) | Stop treating one optional store path as the release unit; separate registry finalization, upload, and channel movement. |
+| Registry signatures | [`crates/registry/aos-registry-authoring/src/security.rs`](../../../crates/registry/aos-registry-authoring/src/security.rs) | Replace production private-key paths with role-bound signer requests. Retain file keys only for explicit tests. |
+| TUF-like metadata | [`crates/registry/aos-registry-authoring/src/registry/tuf.rs`](../../../crates/registry/aos-registry-authoring/src/registry/tuf.rs) | Add explicit delegated roles and independent policies, and move timestamp out of immutable release commits. |
 | Hub publication admission | [`crates/hub/aos-hub-service/src/service/publication_manifest.rs`](../../../crates/hub/aos-hub-service/src/service/publication_manifest.rs) | Reuse its bounded resumable object admission underneath release-aware staging and promotion. |
-| Hub publication client | Publication handlers in [`crates/aos/cli/aos-cli/src/commands/hub/publication/mod.rs`](../../../crates/aos/cli/aos-cli/src/commands/hub/publication/mod.rs) | Reuse the exact-file uploader; have the release coordinator supply a reviewed bundle instead of rediscovering a directory. |
+| Hub publication client | Publication handlers in [`crates/cli/aos-cli/src/commands/hub/publication/mod.rs`](../../../crates/cli/aos-cli/src/commands/hub/publication/mod.rs) | Reuse the exact-file uploader; have the release coordinator supply a reviewed bundle instead of rediscovering a directory. |
 | Hub protocol | `PublishService` in [`api/proto/aos/hub/v1/hub.proto`](../../../api/proto/aos/hub/v1/hub.proto) | Add release-bundle admission, qualification, promotion, and receipt messages without weakening generic publication. |
 | Image construction | [`pkgs/system/_systemd-abilities/platform/_image-builder.nix`](../../../pkgs/system/_systemd-abilities/platform/_image-builder.nix) and [`pkgs/system/_systemd-abilities/platform/_uki-builder.nix`](../../../pkgs/system/_systemd-abilities/platform/_uki-builder.nix) | Split deterministic unsigned inputs from external signing and final assembly. |
 | Secure Boot options | [`modules/base/secure-boot.nix`](../../../modules/base/secure-boot.nix) | Production configuration contains public authorities and signer role references, never private-key paths. |
@@ -58,14 +58,14 @@ without an alias. See [release stages](../../registry/release-stages.md).
 ### `aos-release-format`
 
 The pure, no-I/O, wasm-clean workspace crate at
-`crates/aos/release/aos-release-format` owns portable release records and policy.
+`crates/release/aos-release-format` owns portable release records and policy.
 It may depend on `aos-registry-format` and dependency-light serialization,
 cryptography, hashing, and version crates. It must not depend on `aos-cli`,
 `aos-package-manager`, `aos-hub-model`, `aos-hub-db`, `aos-hub-service`, Git,
 Nix, an async runtime, or a provider SDK.
 
 ```text
-crates/aos/release/aos-release-format/src/
+crates/release/aos-release-format/src/
   lib.rs          crate overview and public module map
   canonical.rs    strict JSON parsing and integer-only RFC 8785 encoding
   digest.rs       bounded SHA-256 identities and domain separation
@@ -88,7 +88,7 @@ signature verification.
 
 ### `aos-image-finalizer`
 
-Add a focused maintainer-side library at `crates/aos/release/aos-image-finalizer`. It owns
+Add a focused maintainer-side library at `crates/release/aos-image-finalizer`. It owns
 the external finalization algorithm and public verification of its results. It
 may invoke only AOS-built tools supplied explicitly by the caller. Provider
 adapters receive opaque key references; private bytes are never represented in
@@ -99,13 +99,13 @@ Hub.
 
 ### Release coordinator library and `aos` command adapter
 
-Add `crates/aos/cli/aos-cli/src/cli/release.rs` and
-`crates/aos/cli/aos-cli/src/commands/release/`. The command implementation owns local
+Add `crates/cli/aos-cli/src/cli/release.rs` and
+`crates/cli/aos-cli/src/commands/release/`. The command implementation owns local
 filesystem boundaries, Nix and Git process execution, journal persistence,
 signer selection, and Hub calls.
 
 ```text
-crates/aos/cli/aos-cli/src/commands/release/
+crates/cli/aos-cli/src/commands/release/
   mod.rs
   plan.rs
   build.rs
@@ -266,7 +266,7 @@ hide lower-level APR or Hub identifiers needed for recovery.
 Move release-specific code from `registry_ops.rs` into
 the registry authoring owner, `aos-registry-authoring`, and introduce an API
 shaped around a complete transaction. A future `registry/release/` module belongs
-under `crates/aos/registry/aos-registry-authoring/src/`; it is a proposed module,
+under `crates/registry/aos-registry-authoring/src/`; it is a proposed module,
 not an existing package-manager directory:
 
 ```text

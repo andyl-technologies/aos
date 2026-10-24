@@ -33,20 +33,27 @@ their capability rather than an application's deployment requirements.
 
 ## Directory groups
 
-The workspace keeps one manifest and lockfile under `crates/`:
+Every application workspace crate lives at `crates/<category>/<package>/`.
+The workspace manifest and lockfile live directly under `crates/`.
 
 ```text
 crates/
-  shared/       reusable libraries and common primitives
-  aos/
-    cli/        command-line programs and presentation
-    modules/    portable module formats and documentation
-    activation/ execution and concrete operation handlers
-    packages/   package consumption and deployment
-    registry/   registry formats, clients, authoring, and static web application
-    boot/       boot identity, platform metadata, and installed boot tools
-    release/    release formats, coordination, image finalization, and signing
-  hub/          Hub domain, persistence, services, clients, and deployments
+  accache/    compiler action cache and compiler argument parsing
+  activation/ execution and concrete operation handlers
+  artifacts/  artifact evidence, NAR archives, and OCI formats and operations
+  bindings/   native library bindings
+  boot/       boot identity, platform metadata, and installed boot tools
+  cli/        command-line programs and presentation
+  core/       portable primitives
+  crucible/   deterministic execution, QEMU integration, control, and storage
+  hub/        Hub domain, persistence, services, clients, and deployments
+  linux/      Linux project quotas and systemd clients
+  modules/    module formats and documentation
+  nix/        Nix process and store-tool integration
+  packages/   package consumption and deployment
+  registry/   registry formats, clients, authoring, and static web application
+  release/    release formats, coordination, image finalization, and signing
+  transfer/   transfer protocols and progress reporting
   sandbox/
     model/      Sandbox models, ownership, and policy compilation
     protocol/   generated APIs, guest/broker/source contracts, and request data
@@ -56,25 +63,18 @@ crates/
     storage/    Storage and Source/SourceProvider owners
     security/   session custody, ownership deadlines, peers, and signing roles
     filesystem/ portable filesystem formats, views, and FUSE transport
-  crucible/
-    engine/     deterministic execution and campaign models
-    control/    control API, clients, server, sessions, daemon, and CLI
-    protocol/   permissive QEMU process-boundary components
-    qemu/       host integration and GPL-side plugin/debugger processes
-    guest/      optional guest instrumentation
-    storage/    Crucible content storage and transports
-    testing/    test support and architectural gates
 ```
 
 A shared domain format can remain under its owning project's directory while
 being consumed by another project. Dependencies establish reuse; directory
 placement establishes ownership.
 
-`tools/accache` remains an independent Cargo workspace so the compiler cache can
-build without the application workspace or its dependencies. Its `accache` and
-`accache-frontend` packages already have explicit project ownership. Small Cargo
-workspaces under test fixtures remain isolated for the artifact contracts they
-exercise. These independent workspaces are outside the application inventory.
+`crates/accache/` is an independent Cargo workspace with its own lockfile and
+sibling `accache` and `accache-frontend` crates. The compiler cache must build
+without resolving the application workspace or enabling its shared caches.
+Small Cargo workspaces under test fixtures remain isolated for the artifact
+contracts they exercise. These independent workspaces are outside the application
+inventory.
 The six Sandbox fixture packages, however, are explicit members of the main
 workspace and remain nested beside their owning tests.
 

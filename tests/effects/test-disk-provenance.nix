@@ -11,6 +11,7 @@ let
     e2fsprogs = nativePayload;
     fakeroot = nativePayload;
     jq = nativePayload;
+    python3 = nativePayload;
     openssh = nativePayload;
     swtpm = nativePayload;
     util-linux = nativePayload;
@@ -20,6 +21,8 @@ let
     inherit buildPackages;
     stdenv.hostPlatform.constraints.cpu = "x86_64";
     mkDerivation = captureDerivation;
+    e2fsprogs = payload;
+    python3 = payload;
     openssh = payload;
     swtpm = payload;
     writeTextFile = captureDerivation;
@@ -99,6 +102,7 @@ in {
       buildPackages.fakeroot
       buildPackages.jq
       buildPackages.util-linux
+      buildPackages.python3
     ];
   architectureSpecificRootTypes =
     partitionType operator "root-a"
@@ -109,10 +113,10 @@ in {
     && partitionType (assembly {guestArchitecture = "riscv64";}) "root-a" == "72EC70A6-CF74-40E6-BD49-4BDA08E8F224";
   unsupportedArchitectureRejected = !(builtins.tryEval (assembly {guestArchitecture = "unknown";})).success;
   protectedVarLabel =
-    contains protected "-E root_selinux=system_u:object_r:aos_var_t:s0"
+    contains protected "-E hash_seed=\"$IMAGE_UUID\",lazy_itable_init=0,lazy_journal_init=0,root_selinux=system_u:object_r:aos_var_t:s0"
     && contains protected "ea_get / security.selinux"
     && contains protected "security.selinux (23) = \"system_u:object_r:aos_var_t:s0\""
-    && !(contains operator "-E root_selinux=");
+    && !(contains operator "root_selinux=");
   bootTypeCannotMatchVar =
     builtins.all (script: partitionType script "boot" == "C12A7328-F81F-11D2-BA4B-00A0C93EC93B") [operator fallback uninitialized]
     && partitionType operator "var" == "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
