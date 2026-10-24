@@ -8,6 +8,7 @@
 }: let
   repoRoot = ../..;
   repoRootString = toString repoRoot;
+  isCargoBuildDirectory = import ../../pkgs/build-support/_cargo-build-directory.nix;
   source = builtins.path {
     path = repoRoot;
     name = "crucible-production-rust-flight-src";
@@ -24,7 +25,8 @@
       != ".git"
       && base != ".crucible"
       && base != "run-state"
-      && base != "target"
+      # Preserve Rust modules named target while pruning Cargo build outputs.
+      && !(isCargoBuildDirectory repoRoot path)
       && base != "__pycache__"
       && !lib.hasSuffix ".pyc" base
       && (

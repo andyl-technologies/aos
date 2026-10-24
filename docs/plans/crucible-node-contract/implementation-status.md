@@ -10,6 +10,23 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Merged-toolchain DMTCP and qualification source filters
+
+The registered `dmtcp-setuid-launch-check` and `dmtcp-source-owners-check` gates
+pass with the merged source-built toolchain and its matching Firecracker. The
+disposable VM emits `actual_setuid_copied_launcher_exit_and_reaping=true` and
+passes its real copied-setuid-launcher and coordinator-reaping checks. This
+replaces the earlier development-guest-only result for these gates; it does not
+qualify native successor construction or the entire RFC.
+
+The combined application/VM/boundary run subsequently fails in the production
+plugin-flight dependency: its source filter removes a checked-in `target/phase.rs`
+module. The production-flight and campaign-mode source filters now use the
+existing Cargo-directory classifier, preserving source modules while excluding
+Cargo output trees. Application/VM and boundary qualification are rerun
+independently so one failed dependency cannot cancel both clients. These gates
+remain pending until their actual outputs pass.
+
 ## Native scratch admission before private JSON parsing
 
 Commit `bcc6c9fa43` checks both authenticated private-bootstrap and native-birth
