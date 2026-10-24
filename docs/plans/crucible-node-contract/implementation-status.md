@@ -10,6 +10,34 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Engine data projections and installed-provider qualification
+
+Commit `f8798e0414` removes redundant conversions, clones and reference
+projections while preserving the original byte counts. The two eight-scalar
+counter terms use an eight-element `usize` array's byte size; they do not become
+bit widths. The scheduler still authenticates and publishes input custody in
+the same order. Runtime snapshot rustdoc uses a correctly closed format fence.
+
+Both complete raw-JSON and standard Engine suites pass 2,036 tests with zero
+failures, 34 ignored tests and no filtering. Each mode separately passes the
+five installed packet controls with the real provider executable built from the
+same revision. The initial raw run without the required provider environment
+passed 2,031 tests and failed those five controls; its failure log is retained.
+All-feature/all-target Transport/Engine/Daemon checking, changed-file formatting
+and all six architecture checks pass. The engineering review baseline updates
+only the two changed file digests and the rustdoc file's one-line reduction;
+no threshold or exception changes.
+
+Production Engine Clippy falls from 201 to 190 errors, retaining its 444
+warnings. Daemon linting is not reached because Engine still fails. Transport's
+separate production audit remains at 37 errors and 1,733 warnings. These are
+remaining failures, not passing lint qualification.
+
+All 508 frozen owned Rust/Cargo inputs match the commit, actual application
+source and all three funded-VM Rust component captures. Current-toolchain
+application, boundary and Source/Birth VM gates remain pending. The component
+checks do not establish complete native admission or RFC-0025 completion.
+
 ## Named gem5 root launch directories
 
 Commit `9196d12881` groups the three private operational directories by name at
