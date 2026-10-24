@@ -10,6 +10,28 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Consumed input provenance syntax
+
+Commit `a05a77bb4b` validates original provenance references in every retained
+staged delivery, including consumed prefixes that have left the pending queue.
+Two saved-source regressions fail before the fix and pass after it. They cover
+eight malformed-reference mutations across external and routed inputs after
+recomputing inventory identities and round-tripping the complete snapshot.
+This checks reference syntax; native proof authentication remains separate.
+All earlier storage terms remain, with the borrowed validation controls added.
+
+Each complete Engine codec suite passes 2,055 tests with zero failures,
+34 ignored and no filtering, plus eighteen custody and five installed standard-
+provider controls. Both codec modes use the same measured standard provider;
+this does not qualify a raw-codec provider. All-feature Transport/Engine/Daemon
+targets, six architecture checks and scoped formatting pass.
+
+The application and funded-Source VM gates pass. Actual application compiler
+metadata records 185 test artifacts across 58 packages, including 76 integration
+targets. All 555 frozen owned Rust/Cargo inputs match this commit and the actual
+application and three funded-VM Rust component captures. Native18 adoption,
+strict qualification and the full RFC remain unfinished.
+
 ## Saved native publication correspondence
 
 Commit `84351a4e28` rejects contradictory events sharing an original native
