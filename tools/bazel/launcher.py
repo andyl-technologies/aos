@@ -80,6 +80,8 @@ def main():
     parser.add_argument("--output-base", required=True, type=Path)
     parser.add_argument("--cache", type=Path)
     parser.add_argument("--batch", action=argparse.BooleanOptionalAction, default=None)
+    parser.add_argument("--server-idle-seconds", type=int, default=60,
+                        help="Bound private JVM idle time (1-3600 seconds).")
     parser.add_argument("--prepare-lock", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--nix-sandbox", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--shadow-workspace", action="store_true")
@@ -89,6 +91,8 @@ def main():
     parser.add_argument("--rust-project-package", action="append", default=[])
     parser.add_argument("arguments", nargs=argparse.REMAINDER)
     options = parser.parse_args()
+    if not 1 <= options.server_idle_seconds <= 3600:
+        parser.error("private server idle time must be between 1 and 3600 seconds")
     if options.rust_project_package and not options.rust_project_output:
         parser.error("rust-project packages require an editor output")
     config = json.loads(options.config.read_text())
@@ -216,7 +220,7 @@ def main():
 
     command = [
         config["bazel"],
-    ] + (["--batch"] if batch else ["--max_idle_secs=60"]) + [
+    ] + (["--batch"] if batch else [f"--max_idle_secs={options.server_idle_seconds}"]) + [
         # Large builders must not give every small JVM the host's full CPU
         # count or default heap. Keep startup/JIT/GC within the selected jobs.
         "--host_jvm_args=-Xmx2g",

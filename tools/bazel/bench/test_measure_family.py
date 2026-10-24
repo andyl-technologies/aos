@@ -10,10 +10,27 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tests"))
 sys.path.insert(0, str(ROOT / "metadata"))
-from measure_family import apply_edit, bazel_binaries, cargo_binaries, compilation_profile, record_cargo_commands, validate, validate_bazel_profile, validate_profile
+from measure_family import apply_edit, bazel_binaries, cargo_binaries, compilation_profile, record_cargo_commands, validate, validate_bazel_profile, validate_profile, validate_server_lifetime
 
 
 class FamilyMeasurementTests(unittest.TestCase):
+    def test_warm_and_edit_samples_require_the_same_live_jvm(self):
+        for scenario in ["warm", "implementation-edit", "public-api-edit"]:
+            with self.subTest(scenario=scenario):
+                validate_server_lifetime({"server_before": {"pid": 123}, "server_after": {"pid": 123}}, scenario)
+                for before, after in [(None, {"pid": 123}), ({"pid": 123}, {"pid": 456}), ({"pid": 123}, None)]:
+                    with self.subTest(before=before, after=after), self.assertRaises(ValueError):
+                        validate_server_lifetime({"server_before": before, "server_after": after}, scenario)
+
+    def test_new_output_bases_require_a_new_live_jvm(self):
+        for scenario in ["cold", "second-worktree", "fresh-build-directory"]:
+            with self.subTest(scenario=scenario):
+                validate_server_lifetime({"server_before": None, "server_after": {"pid": 123}}, scenario)
+                with self.assertRaises(ValueError):
+                    validate_server_lifetime({"server_before": {"pid": 123}, "server_after": {"pid": 123}}, scenario)
+                with self.assertRaises(ValueError):
+                    validate_server_lifetime({"server_before": None, "server_after": None}, scenario)
+
     def test_compiler_commands_preserve_wrappers_flags_and_literal_shell_characters(self):
         with tempfile.TemporaryDirectory() as temporary:
             log = Path(temporary) / "command.log"

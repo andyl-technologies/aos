@@ -101,6 +101,18 @@ def record_cargo_commands(log, output, require_commands=False):
     return len(commands)
 
 
+def validate_server_lifetime(metrics, scenario):
+    """Rejects warm/edit samples that silently restart the private JVM."""
+    before, after = metrics["server_before"], metrics["server_after"]
+    if after is None:
+        raise ValueError("Bazel server measurement omitted the running JVM")
+    if scenario in {"warm", "implementation-edit", "public-api-edit"}:
+        if before is None or before["pid"] != after["pid"]:
+            raise ValueError("warm/edit measurement requires the same live Bazel JVM")
+    elif before is not None:
+        raise ValueError("fresh output-base measurement already had a running Bazel JVM")
+
+
 def apply_edit(workspace, configuration, scenario):
     """Changes a declared first-party input without allowing paths outside it."""
     defaults = {
@@ -172,7 +184,8 @@ def series(configuration, mode, repetition, scratch, output):
             directory.mkdir()
             if bazel:
                 prefix = [sys.executable, configuration["launcher"], "--config", configuration["bazel_config"],
-                          "--workspace", str(workspace), "--output-base", str(output_base), "--nix-sandbox"]
+                          "--workspace", str(workspace), "--output-base", str(output_base), "--nix-sandbox",
+                          "--no-batch", "--server-idle-seconds", str(configuration.get("server_idle_seconds", 3600))]
                 if prefix not in servers:
                     servers.append(prefix)
                 command = prefix + ["--cache", str(root / "bazel-cache"), "--metrics", str(directory / "launcher.json"),
@@ -195,6 +208,7 @@ def series(configuration, mode, repetition, scratch, output):
                 sample["actions"] = dict(Counter(event["mnemonic"] + (":restored" if event["cacheHit"] else ":executed")
                                                  for event in execution_events(directory)))
                 sample["jvm"] = json.loads((directory / "launcher.json").read_text())
+                validate_server_lifetime(sample["jvm"], scenario)
                 sample["resource_scope"] = "waited launcher/client descendants; private JVM resources recorded separately"
                 sample["compilation_profile"] = dict(configuration.get("bazel_compilation_profile", {
                     "opt_level": "0", "debug": 0, "debug_assertions": True, "overflow_checks": True,

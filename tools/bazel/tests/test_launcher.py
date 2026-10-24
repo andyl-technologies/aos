@@ -168,6 +168,17 @@ class LauncherTests(unittest.TestCase):
         self.assertFalse(any(argument.startswith("--override_") for argument in arguments))
         self.assertNotIn("--repository_disable_download", arguments)
 
+    def test_benchmark_idle_time_is_explicit_and_bounded(self):
+        result = self.invoke(["build", "//:example"], ["--no-batch", "--server-idle-seconds", "3600"])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("--max_idle_secs=3600", json.loads(self.capture.read_text())["args"])
+
+        for duration in ["0", "-1", "3601"]:
+            with self.subTest(duration=duration):
+                result = self.invoke(["build", "//:example"], ["--no-batch", "--server-idle-seconds", duration])
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("between 1 and 3600", result.stderr)
+
     def test_batch_configuration_rejects_server_shutdown(self):
         result = self.invoke(["shutdown"])
         self.assertNotEqual(result.returncode, 0)

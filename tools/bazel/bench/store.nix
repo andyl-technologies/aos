@@ -30,6 +30,10 @@
     text = builtins.toJSON {
       inherit trial packages targets modes;
       jobs = 4;
+      # Untimed case validation can outlast the ordinary development idle
+      # timeout. Keep this private JVM for warm samples; the harness shuts it
+      # down in its finally block and verifies reuse from recorded PIDs.
+      server_idle_seconds = 3600;
       scope = "connected storage/campaign default-feature libtest compilation";
       compiler_profile_scope = "Four selected test-artifact settings are matched; dependency, execution-tool, and incremental code-generation defaults may differ. Cargo compiler commands and Bazel execution events retain actual arguments.";
       require_matched_profiles = true;
