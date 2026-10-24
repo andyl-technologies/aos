@@ -799,7 +799,8 @@ impl CnpSemanticSource for PacketSemanticSource {
             }
             CnpSemanticTransition::Retirement => credit::Prefix::Retirement,
         };
-        prefix.preflight(
+        self.preflight_reply(
+            prefix,
             native
                 .controller()
                 .ok_or_else(|| refused("packet source prefix has no original native controller"))?,
@@ -847,7 +848,7 @@ impl CnpSemanticSource for PacketSemanticSource {
         scope: CnpSemanticRealizationScope<'_>,
         original: &OperationAdmission,
     ) -> Result<(), OperationFailure> {
-        credit::Prefix::Operation.preflight(scope.controller)?;
+        self.preflight_reply(credit::Prefix::Operation, scope.controller)?;
         self.grant_authorization(original, U64::new(0))?;
         self.authenticate_provider(scope.native)?;
         let current = self.latest(&scope)?;
@@ -992,7 +993,7 @@ impl CnpSemanticSource for PacketSemanticSource {
         scope: CnpSemanticRealizationScope<'_>,
         activation: &WorldActivation,
     ) -> Result<(), OperationFailure> {
-        credit::Prefix::WorldActivation.preflight(scope.controller)?;
+        self.preflight_reply(credit::Prefix::WorldActivation, scope.controller)?;
         self.authenticate_provider(scope.native)?;
         let record = activation.record();
         let owners = activation

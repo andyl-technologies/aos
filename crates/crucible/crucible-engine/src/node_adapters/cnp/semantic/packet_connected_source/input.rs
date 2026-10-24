@@ -189,7 +189,7 @@ impl PacketConnectedSemanticSource {
         request: &InputRequest,
     ) -> Result<(Extensions, Vec<InputPayload>), OperationFailure> {
         self.guard(&scope)?;
-        credit::Prefix::InputStage.preflight(scope.controller)?;
+        self.preflight_reply(credit::Prefix::InputStage, scope.controller)?;
         let cut = self.original_cut(batch, request)?;
         let inventory =
             canonical::canonical_json(&serde_json::to_value(batch.deliveries()).map_err(unknown)?)
@@ -371,7 +371,7 @@ impl PacketConnectedSemanticSource {
         staging: &InputResult,
     ) -> Result<(Extensions, Vec<InputPayload>), OperationFailure> {
         self.guard(&scope)?;
-        credit::Prefix::InputCommit.preflight(scope.controller)?;
+        self.preflight_reply(credit::Prefix::InputCommit, scope.controller)?;
         self.commitment(batch, commit)?;
         let (root, original) = self.input_root(&scope, staging)?;
         let staged = self.stage_record(&scope, &root)?;

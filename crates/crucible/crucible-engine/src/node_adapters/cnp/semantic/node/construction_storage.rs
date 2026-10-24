@@ -5,7 +5,10 @@
 //! independently admitted by the enclosing same-holder construction action.
 
 use super::*;
-use crate::node_adapters::cnp::semantic::packet_complete_source::PacketCompleteSemanticSource;
+use crate::node_adapters::cnp::semantic::{
+    packet_complete_source::PacketCompleteSemanticSource,
+    packet_connected_source::PacketConnectedSemanticSource, packet_source::PacketSemanticSource,
+};
 use crate::node_contract::{NodeRuntime, RuntimeError, RuntimeOwnedStorage};
 use std::{
     any::Any,
@@ -138,6 +141,8 @@ impl CnpSemanticPreparation {
     pub fn original_conformance_node_construction_counter_scratch_data() -> usize {
         NodeRuntime::capture_serialization_counter_scratch_data()
             + super::super::implementation::selected_facet_counter_scratch_data()
+            + PacketSemanticSource::reply_credit_selection_counter_scratch_data()
+            + PacketConnectedSemanticSource::reply_credit_selection_counter_scratch_data()
             + size_of::<CnpConformanceNodeConstructionStorageData>()
             + size_of::<[&Id; 4]>() + size_of::<[usize; 9]>()
             + size_of::<AdmitRequest>() + size_of::<NodeRoute>()

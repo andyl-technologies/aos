@@ -189,7 +189,8 @@ impl CnpSemanticSource for PacketConnectedSemanticSource {
             }
             CnpSemanticTransition::Retirement => credit::Prefix::Retirement,
         };
-        prefix.preflight(
+        self.preflight_reply(
+            prefix,
             native
                 .controller()
                 .ok_or_else(|| refused("packet source prefix has no original native controller"))?,
@@ -245,7 +246,7 @@ impl CnpSemanticSource for PacketConnectedSemanticSource {
         let result = (|| {
             self.guard(&scope)?;
             self.guard(&scope)?;
-            credit::Prefix::Operation.preflight(scope.controller)?;
+            self.preflight_reply(credit::Prefix::Operation, scope.controller)?;
             self.connected_authorization(&scope, original, None)?;
             let current = self.latest(&scope)?;
             let (start, _) = operation_interval(original)?;
@@ -412,7 +413,7 @@ impl CnpSemanticSource for PacketConnectedSemanticSource {
         self.guard(&scope)?;
         let result = (|| {
             self.guard(&scope)?;
-            credit::Prefix::WorldActivation.preflight(scope.controller)?;
+            self.preflight_reply(credit::Prefix::WorldActivation, scope.controller)?;
             self.authenticate_provider(scope.native)?;
             let record = activation.record();
             let owners = activation
