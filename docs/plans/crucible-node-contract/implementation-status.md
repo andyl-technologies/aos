@@ -10,6 +10,29 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Initial funding under original Source and Birth custody
+
+Commit `672fcbb890` adds Initial producer quotes and derivation through the
+original authenticated Source declaration loan. The wrappers borrow the actual
+launch, private launch identity and registration; they reauthenticate the loan
+on success and failure. The caller must separately retain the original Recipe
+and mapping-lease guards. The funded Source preparation path now admits the
+fixed counter before the formatter prewalk, releases the loan, performs its
+whole-owner census and admits the returned row before later work.
+
+All five derivation controls pass in both codec modes. All-feature/all-target
+Transport/Engine/Daemon compilation, scoped formatting, six architecture checks,
+application test-target compilation and the funded-Source VM pass. Actual
+application metadata records 185 test artifacts across 58 packages, including
+76 integration targets. All 632 frozen owned Rust/Cargo inputs match this
+commit, the application source and all three VM component source captures.
+The VM executes the new formatter prewalk and passes the real three-worker,
+private-Birth retention and exact/one-byte-short Source census controls.
+Strict Engine Clippy still reports 131 errors and 2,177 warnings, without new
+allowances. This qualifies the genuine Source prewalk, not a production complete
+Recipe issuer or a positive whole-Initial Source handoff. Retained Recipe/Initial
+issuance, live Native18 adoption and the full RFC remain unfinished.
+
 ## Derived Initial funding from actual bootstrap operands
 
 Commit `4aac9aca93` derives opaque Initial DATA from the shared physical
