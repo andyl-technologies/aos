@@ -10,6 +10,37 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Complete native reply credit and runtime handoff
+
+Commit `4b6d8cad28` reserves both separately transferred Complete evidence
+objects: the underlying native record and its receipt. The selected allocation
+Observe also reserves its independent report. Connected-input Stage/Commit
+retain their existing three-object accounting. Seven new controls cover these
+physical reply families, unsupported selections and unchanged input accounting;
+all earlier construction terms remain beside the new selection controls.
+
+Each complete Engine codec suite passes 2,062 tests with zero failures,
+34 ignored and no filtering, plus eighteen custody and five installed standard-
+provider controls. Both modes use the same measured standard provider; this
+does not qualify a raw-codec provider. All-feature Transport/Engine/Daemon
+targets, six architecture checks and scoped formatting pass. The configured
+Daemon suite passes 1,828 tests with zero failures, 165 ignored and no filtering
+in 210.42 seconds.
+
+The application and funded-Source VM gates pass. Actual application compiler
+metadata records 185 test artifacts across 58 packages, including 76 integration
+targets. All 561 frozen owned Rust/Cargo inputs match this commit and the actual
+application and three funded-VM Rust component captures.
+
+The actual native three-stored-grant Capture/reload control fails at Arm before
+World activation, any stored grant, Capture or reload. A temporary diagnostic
+repeat identifies content response credit exhaustion before dispatch; both runs
+retain and genuinely reclaim their original children. The temporary diagnostic
+code and executable copies are removed. Initial startup reserves only the two
+Realize proof objects. A separately funded SDK runtime handoff is still needed;
+this reply-credit correction supplies no additional capacity or readiness.
+Native18 adoption, strict qualification and the full RFC remain unfinished.
+
 ## Consumed input provenance syntax
 
 Commit `a05a77bb4b` validates original provenance references in every retained
