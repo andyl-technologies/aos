@@ -16245,3 +16245,24 @@ its original assertions within its existing bound; the aggregate remains
 failed and no trunk task is accepted from it. Required application target
 compilation passes at `31d1c21289` and `8050ccec45` in 682.185 and
 1,399.523 seconds; complete source/artifact reviews remain pending.
+
+
+#### Failure-only closure census diagnostic
+
+A timed-out retained-file reconciliation now reports a fresh authenticated
+census, the exact original excluded identities and bounded namespace matches
+under its actor-owned native root. The diagnostic follows no symlinks, opens
+no backing, retains no file reference and stops after 4,096 entries or depth
+16. It runs only after the original five-second reconciliation bound fails,
+keeps that failure as the result and grants no closure authority. Census output
+identifies the separate owner's unlinked probe explicitly. No production
+closure behavior or lifecycle limit changes. Strict all-feature/all-target
+lint and compilation of the actual native surface fixture pass; only a fresh
+disposable VM can establish the failure's actual cause.
+
+Complete application reviews now match all 8,090 immutable source files at
+`31d1c21289` and all 8,092 at `8050ccec45`, plus the 185 actual test
+executables across 59 packages at each checkpoint. These remain compilation
+results. The `31d1c21289` already-unlinked-file sibling also passes; together
+with its scoped-owner sibling it leaves only the named-file dependency failed.
+No task checkbox changes.

@@ -37,6 +37,9 @@ mod closure;
 #[path = "exposure/retained_cold.rs"]
 pub(super) mod retained_cold;
 
+#[path = "exposure/closure_diagnostic.rs"]
+mod closure_diagnostic;
+
 #[path = "exposure/retained_file.rs"]
 mod retained_file;
 
