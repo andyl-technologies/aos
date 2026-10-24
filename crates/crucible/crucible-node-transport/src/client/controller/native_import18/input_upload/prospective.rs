@@ -76,8 +76,9 @@ impl CnpController {
     ///
     /// Independently admit the upload prewalk before this quote, then retain and
     /// admit these axes with all real Source/native rows before Prepare effects.
-    /// The predetermined Prepare ID and exact typed inputs are borrowed DATA;
-    /// no assigned original, native lease, token or Source claim is constructed.
+    /// The predetermined Prepare ID and exact typed inputs come from the same
+    /// retained record later moved into the assignment. This borrow constructs
+    /// no assigned original, native lease, token or Source claim.
     ///
     /// # Errors
     /// Refuses foreign/stale Fresh query, changed role bodies, exhausted actual
@@ -86,12 +87,17 @@ impl CnpController {
         &self,
         emitter: &OriginalCanonicalBlobAckEmitter,
         query: &OriginalFreshRestoreQuery,
-        prepare_id: &Id,
-        request: &PacketCompleteRestorePrepareRequest,
-        binding: &PacketNativeImport18Binding,
+        inputs: &OriginalNativeImport18PrepareInputs,
         bodies: [&[u8]; 7],
         maximum: usize,
     ) -> Result<OriginalNativeImport18InputUploadProspectiveStorageData, ProviderError> {
+        let OriginalNativeImport18PrepareInputs {
+            request_id: prepare_id,
+            request,
+            binding,
+            ..
+        } = inputs;
+
         query.authenticate_current(self, emitter)?;
         self.session.native_import18_selection_data()?;
         if self.original(prepare_id).is_some() {

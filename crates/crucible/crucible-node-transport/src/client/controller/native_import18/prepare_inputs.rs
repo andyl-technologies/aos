@@ -68,6 +68,9 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<&mut Option<OriginalNativeImport18Assignment>>()
         + 2 * size_of::<Result<(), ProviderError>>()
         + 2 * size_of::<bool>()
+        // Prepare's outer/inner quote and the prospective upload quote each
+        // retain a caller and callee input-record view beside all old controls.
+        + 6 * size_of::<&OriginalNativeImport18PrepareInputs>()
 }
 
 #[cfg(test)]

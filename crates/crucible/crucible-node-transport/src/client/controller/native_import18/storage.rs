@@ -201,8 +201,10 @@ impl CnpController {
 
     /// Quotes the actual first assignment beneath its completed Fresh query.
     ///
-    /// The defining prewalk must be admitted before entry. This method creates
-    /// no DOM, operational cut, literal slot, native permission or Source claim.
+    /// Borrows the same retained input record later moved into the assignment;
+    /// the quote cannot consume or replace its fields. The defining prewalk must
+    /// be admitted before entry. This method creates no DOM, operational cut,
+    /// literal slot, native permission or Source claim.
     ///
     /// # Errors
     /// Refuses a foreign/stale query, selection, invalid complete inputs, frame
@@ -211,23 +213,23 @@ impl CnpController {
         &self,
         emitter: &OriginalCanonicalBlobAckEmitter,
         query: &OriginalFreshRestoreQuery,
-        request_id: &Id,
-        baseline: &BeginRequest,
-        request: &PacketCompleteRestorePrepareRequest,
-        binding: &PacketNativeImport18Binding,
-        expected_backend_schema: &SchemaRef,
+        inputs: &OriginalNativeImport18PrepareInputs,
         normalization: &[u8],
         maximum: usize,
     ) -> Result<OriginalNativeImport18AssignmentStorageData, ProviderError> {
-        query.authenticate_current(self, emitter)?;
-        self.session.native_import18_selection_data()?;
-        let row = quote(
-            self,
+        let OriginalNativeImport18PrepareInputs {
             request_id,
             baseline,
             request,
             binding,
             expected_backend_schema,
+        } = inputs;
+
+        query.authenticate_current(self, emitter)?;
+        self.session.native_import18_selection_data()?;
+        let row = quote(
+            self,
+            inputs,
             normalization,
             maximum,
             identity(
@@ -250,15 +252,19 @@ impl CnpController {
 
 fn quote(
     controller: &CnpController,
-    request_id: &Id,
-    baseline: &BeginRequest,
-    request: &PacketCompleteRestorePrepareRequest,
-    binding: &PacketNativeImport18Binding,
-    expected_backend_schema: &SchemaRef,
+    inputs: &OriginalNativeImport18PrepareInputs,
     normalization: &[u8],
     maximum: usize,
     identity: blake3::Hash,
 ) -> Result<OriginalNativeImport18AssignmentStorageData, ProviderError> {
+    let OriginalNativeImport18PrepareInputs {
+        request_id,
+        baseline,
+        request,
+        binding,
+        expected_backend_schema,
+    } = inputs;
+
     let phase = PacketNativeImport18Phase::Prepare;
     if controller.original_complete_restore.is_some()
         || controller.original_complete_restore_prepare.is_some()
