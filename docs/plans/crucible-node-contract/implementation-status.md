@@ -10,6 +10,30 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Custody-facts journal projection and failed sends
+
+Commit `f01af860d5` exposes the same journal-backing calculation through the
+custody facts already returned by the sealed Controller. Copied numeric facts
+remain DATA and issue no Source permission. The arithmetic matches the preceding
+custody method after field-to-argument binding; fixed scratch retains its old
+terms and adds the three scalar arguments. No quota or runtime policy changes.
+
+A real Unix socket write failure under an inert SDK registration retains the
+complete original, request identity and charged canonical bytes without a
+response. Both the custody and facts projections cover its recorded allocation
+metadata, and both actual quotas remain unchanged. Separate controls cover both
+request namespaces and invalid copied bounds without discounting local capacity.
+All three journal controls pass in both Transport codec modes. All-feature
+Transport/Engine/Daemon targets, six architecture checks, scoped formatting and
+application test-target compilation pass. Actual application metadata records
+185 test artifacts across 58 packages, including 76 integration targets. All
+614 frozen owned Rust/Cargo inputs match the commit and actual application
+source. Strict Transport Clippy still fails with four owning-enum errors and
+1,733 warnings, without new allowances. No new full suite or VM qualification
+is claimed. Complete SDK storage pricing and a reservation retained after
+construction remain required before the runtime quota handoff or full RFC can
+be considered complete.
+
 ## SDK journal storage bounds
 
 Commit `7835d7e34e` adds a physical JSON-forest quote under one aggregate byte
