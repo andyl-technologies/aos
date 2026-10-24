@@ -10,12 +10,65 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Global staged-input and operation identities
+
+Commit `6c8755539e` rejects reuse of a staging operation across owners, reuse of
+a batch identity across owners, and reuse of a staging operation by a live run.
+The validator removes identities only from its temporary validation sets; the
+original complete histories remain unchanged. The additional batch set borrows
+original identifiers. Its tree and collection storage are separately priced as
+transient work, with its actual fixed views added to the defining counter.
+Every earlier retained, transient and counter term remains in place.
+
+The two operation-alias regressions first fail against the previous validator.
+After that repair, the independent batch-alias regression also reproduces the
+remaining gap before its fix. Both complete Engine suites then pass 2,040 tests
+with zero failures, 34 ignored tests and no filtering. Each mode separately
+passes all six input-custody controls and five actual installed-provider
+controls. Both ordinary and all-feature Transport/Engine/Daemon all-target
+checks pass, as do changed-file formatting and all six architecture checks.
+The scheduler validator's content-bound responsibility review records its
+1,002 implementation lines without changing a threshold or exception.
+
+All 526 frozen owned Rust/Cargo inputs match the commit, actual application
+source and all three funded-VM Rust component captures. Current-toolchain
+application, boundary and funded-VM qualification remain pending. These
+structural exactly-once checks do not complete native successor production or
+full RFC-0025 qualification.
+
+## Shared restoration decoder accounting and original address guards
+
+Commit `a4c2759e4a` loads the restoration decoder-backing counter once and lends
+it to transfer, activation and observation construction. Its complete algorithm
+and tests remain byte-for-byte unchanged after the explicit imports. Every
+caller retains its previous counter terms. Eighteen raw pointer comparisons use
+the standard address-equality primitive with the same operands; origin, phase,
+process, thread and native currentness checks remain in place.
+
+Both complete Engine suites pass 2,037 tests with zero failures, 34 ignored tests
+and no filtering. The identical counter test now compiles once instead of three
+times, accounting for the two-test reduction from the preceding checkpoint.
+Both modes separately pass that counter control and the five actual installed
+packet-provider controls. All-feature/all-target Transport/Engine/Daemon
+checking, changed-file formatting and all six architecture checks pass. The
+initial engineering check refuses two stale review digests; the reviewed rerun
+updates only those digests and the association's three added lines, preserving
+every responsibility, threshold and exception.
+
+Production Engine Clippy falls from 190 to 171 errors, with the same 444 warnings.
+The pointer-comparison and duplicate-module findings are removed. Daemon is not
+reached. All 525 frozen owned Rust/Cargo inputs match the commit, actual
+application source and all three funded-VM Rust component captures.
+Current-toolchain application, boundary and Source/Birth VM qualification remain
+pending; no native successor or full RFC-0025 completion is claimed.
+
 ## Consumed input queues and refreshed master merge
 
 Commit `3daf63f10f` merges `origin/master` at `b82df2e832`, including native NAR
 expansion limits and their dependency changes. The merged lockfile's vendor
 staging is freshly measured with a fake-hash probe before recording its real
 pin. The separate hash file remains the workspace's single pin source.
+The complete vendor staging and assembly also pass with that real pin.
 
 Commit `9ef5561574` rejects an archive that places an already-consumed logical
 input back in the same recipient's pending queue. The comparison preserves the
