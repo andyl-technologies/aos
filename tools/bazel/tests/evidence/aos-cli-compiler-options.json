@@ -1,0 +1,57 @@
+{
+  "audit_sources_sha256": {
+    "tools/bazel/tests/test_compiler_options.py": "3948d3c42cad19ebc66a0fa2a5f8f7ec8fda53ff44b654961e908b29b7b3ba72",
+    "tools/bazel/tests/verify_compiler_options.py": "ae61b4ba7687704ffade4a4a46ac0c73162184b13c9026c71cbefb136ca6dff3"
+  },
+  "configurations": {
+    "default": {
+      "build": "/nix/store/40klqwvl2i28grjhnrl4j0zl08l6j5m1-aos-bazel-aos-cli-tests-tests-1",
+      "cargo": "/nix/store/0r0gfbwgmd345gxal76mbydhm6p3gaif-aos-bazel-aos-cli-cargo-1",
+      "command": "python3 tools/bazel/tests/verify_compiler_options.py --build /nix/store/40klqwvl2i28grjhnrl4j0zl08l6j5m1-aos-bazel-aos-cli-tests-tests-1 --cargo /nix/store/0r0gfbwgmd345gxal76mbydhm6p3gaif-aos-bazel-aos-cli-cargo-1 --output default-compiler-options.json",
+      "differences_by_field": {
+        "codegen": 77,
+        "effective_scalar_codegen": 77,
+        "target": 77
+      },
+      "full_report_sha256": "295ad597de79c4b414067ba6696e882a7026b5419e96a49d918964a5c98ff030",
+      "inputs_sha256": {
+        "actions": "373d65397ed745a12e4eac07cae3f244e7f91db6ffadf63e1ca23bbed1a160d3",
+        "compiler_trace": "9bde87700c226cc214f4ef4f79301d8fc3173549f31fa31723fd95a829a322c9",
+        "execution": "38b10a7a0cc7cd70167f0a800db1c5ad0cbb8fe39414493f3fefd4f12b44bb4d"
+      },
+      "units": 77
+    },
+    "fleet": {
+      "build": "/nix/store/xw4fc2irsgjmv3djmpnw4p7i5iygwp5q-aos-bazel-aos-cli-fleet-tests-tests-1",
+      "cargo": "/nix/store/bsfb92p4dcwwrixykfmkrrs7a5nahr73-aos-bazel-aos-cli-fleet-cargo-1",
+      "command": "python3 tools/bazel/tests/verify_compiler_options.py --build /nix/store/xw4fc2irsgjmv3djmpnw4p7i5iygwp5q-aos-bazel-aos-cli-fleet-tests-tests-1 --cargo /nix/store/bsfb92p4dcwwrixykfmkrrs7a5nahr73-aos-bazel-aos-cli-fleet-cargo-1 --output fleet-compiler-options.json",
+      "differences_by_field": {
+        "codegen": 83,
+        "effective_scalar_codegen": 83,
+        "target": 83
+      },
+      "full_report_sha256": "6ecd556ca4547f766b442e6089e9953915898c1e90a453ef9c80956fa11e3155",
+      "inputs_sha256": {
+        "actions": "c735006fc59064d08192f5c5951b77f95d302ff346beda8c7e00f8a4371417da",
+        "compiler_trace": "141d71f262cac020a9343f0069b9a5c089fa7f0714379284e656db040d7400e9",
+        "execution": "3d8dd158b76e8c792f8c2653ae69ab9e6d81b794df593565685dca8bd638fa7a"
+      },
+      "units": 83
+    }
+  },
+  "limits": [
+    "Bazel response files are bound to execution input digests. Additional rules_rust wrapper argument/environment files are retained by path in execution_command but their contents are not expanded here.",
+    "Compiler defaults and compiler/linker closure or ABI equivalence are not checked here.",
+    "Codegen, target, linker, incremental, and artifact-identity differences are retained for explicit review; this audit does not establish semantic compiler-option equivalence.",
+    "Scalar codegen options use their last explicit value. Repeated and unknown options remain in order; compiler defaults are not inferred.",
+    "The source/test key requires an unambiguous native family. Families compiling the same source in multiple execution/target configurations need an explicit role-aware comparison.",
+    "Captured Cargo invocations prove compiler execution was requested, not that every request succeeded. Runtime and compilation results require their independent gates."
+  ],
+  "policy_tests": {
+    "cases": 8,
+    "command": "python3 -m unittest discover -s tools/bazel/tests -p test_compiler_options.py",
+    "status": "PASS"
+  },
+  "schema_version": 1,
+  "status": "PASS: paired first-party invocations and matching direct cfg/edition arguments"
+}
