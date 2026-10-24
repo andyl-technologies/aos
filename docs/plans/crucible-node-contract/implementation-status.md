@@ -10,6 +10,31 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Named gem5 root launch directories
+
+Commit `9196d12881` groups the three private operational directories by name at
+both ARM and x86 budgeted launch constructors. All four Daemon initial/cold
+callers name native resources, images and temporary storage explicitly. The
+ordinary constructors retain their existing interface. Both installed
+validation, profile measurement and launch construction bodies remain
+byte-for-byte unchanged after destructuring; no path, command, native scope or
+allocation row is selected by the new header.
+
+The complete raw-JSON and standard Transport suites each pass 2,093 tests with
+zero failures, 18 ignored tests and no filtering. Both modes also pass the three
+shape controls, thirteen inherited-parent boot refusal flights and ten
+containment controls. All-feature/all-target Transport/Engine/Daemon checking,
+changed-file formatting and all six architecture gates pass. Production
+Transport Clippy falls from 39 to 37 errors, with the same 1,733 warnings.
+A separate production Engine/Daemon lint audit stops at 201 Engine errors and
+444 warnings before linting Daemon; this audit does not qualify those libraries.
+
+All 499 frozen owned Rust/Cargo inputs match the committed working revision,
+actual application source and all three funded-VM Rust component captures.
+Current-source application, boundary and Source/Birth VM builds remain pending
+on the merged compiler chain. Capture agreement is not a passing build, native
+readiness, model preservation, device parity or full RFC-0025 qualification.
+
 ## Retained original claim input loans
 
 Commit `e106ee9523` groups original14/original15's seven immutable claim inputs
@@ -25,8 +50,10 @@ original15 refusal flights. Raw shape and containment controls also pass.
 All-feature/all-target Transport/Engine/Daemon checking and all six architecture
 gates pass. Workspace-enforced production Transport Clippy falls from 41 to 39
 errors, with 1,733 warnings and no error at either changed claim definition.
-Complete raw/standard suites and the current-toolchain application, boundary
-and funded Source/Birth VM gates remain pending. All 493 frozen owned Rust/Cargo
+The claim-only complete-suite run was superseded before completion. Both full
+suites subsequently pass on the root-launch revision above, with these claim
+bodies unchanged. Current-toolchain application, boundary and funded Source/Birth
+VM gates remain pending. All 493 frozen owned Rust/Cargo
 inputs match this commit, its working revision, the actual application source
 and all three funded-VM Rust source captures. This scoped interface repair does
 not complete native failed-prefix custody, genuine Recipe/Initial production

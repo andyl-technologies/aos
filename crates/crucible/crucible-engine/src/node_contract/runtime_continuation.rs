@@ -167,7 +167,6 @@ pub struct SavedRuntimeInput {
 ///
 /// ```json
 /// {"schema_version":1,"capture_ordinal":"7","operations":[],"inputs":[]}
-
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RuntimeSnapshot {
