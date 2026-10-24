@@ -17192,3 +17192,27 @@ independent review verifies all 17 exact native witnesses, 8,186 immutable files
 5,443 bound inputs, the retained Cargo ELF and the hermetic pure preparation
 case. All nine kernel scenarios pass. Mandatory workspace compilation and the
 older owning aggregates remain pending, and no task acceptance changes.
+
+
+Both backing checkpoints pass mandatory workspace application-target
+compilation: `6b7fe376fb` in 1,602.990 seconds and `e60a701e1d` in
+1,370.817 seconds. Complete independent reviews bind all 8,186 immutable
+source files, 190 test executables and 59 packages for each checkpoint. These
+are compilation checks only. The new scheduler source also has a complete
+feature-matrix request running, with 123 FUSE cases and 253 total native
+all-feature cases (248 ordinary and five creator cases).
+
+The eleven T2 owning gates at `6a121e5cc3` pass in 6,089.166 seconds.
+Independent reviews bind all 8,181 immutable source files and verify the exact
+21 host cases against their owning declarations, the four host gates' 13
+underlying physical guests and all seven remaining shared-directory, isolation, publication, wipe
+and surface gate outputs. The native cache aggregate receives its separate
+full source, 130-case inventory and four actual Cargo/installed-ELF review.
+The review report's temporary case-list variable shadowing is corrected; the
+original invalid bookkeeping output is explicitly retained as invalid. No
+qualification assertion or original test deadline is relaxed.
+
+These are completed, reviewed component qualifications. The complete feature
+matrices remain pending; configured Realize/Gc, production worker/broker
+integration, writable exposure, protocol and CI surface work and T6 remain
+outstanding. Accepted trunk tasks remain 27/64.
