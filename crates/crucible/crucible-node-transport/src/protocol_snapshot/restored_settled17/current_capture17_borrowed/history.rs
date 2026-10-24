@@ -1,5 +1,11 @@
 //! Validates ordinary saved Capture attempts without granting a current cut.
 //!
+//! ```text
+//! CaptureHistory17 = {ordinal,original,body,arguments,capture,capture_context,
+//!   upload,upload_context,continuation,confirmation,checkpoint,outputs,
+//!   terminal,prepared_reply,stage}
+//! ```
+//!
 //! The ordinary writer emits fifteen fields, including failed raw prefixes.
 //! The separately selected current-Capture reader requires seventeen fields.
 //! Framing completes before metadata is consumed, so the previous seventeen-

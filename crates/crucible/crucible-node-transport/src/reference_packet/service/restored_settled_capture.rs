@@ -665,6 +665,9 @@ fn invalid() -> ProviderError {
 }
 
 #[cfg(test)]
+pub(crate) use tests::fixture as capture_history_fixture_data;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::bodies::BeginRequest;
@@ -676,7 +679,11 @@ mod tests {
         Ok(canonical::content_ref(bytes, "application/json")?)
     }
 
-    pub(super) fn fixture() -> Result<(PacketRestoredSettledCaptureRequest, Envelope), ProviderError>
+    /// Builds an inert request/envelope pair for the closed Capture grammar.
+    ///
+    /// # Errors
+    /// Refuses fixture fields that violate their data schemas.
+    pub(crate) fn fixture() -> Result<(PacketRestoredSettledCaptureRequest, Envelope), ProviderError>
     {
         // This is inert DATA from the existing grammar fixture. It creates no
         // Source ticket, controller, socket, model, native owner or Window claim.

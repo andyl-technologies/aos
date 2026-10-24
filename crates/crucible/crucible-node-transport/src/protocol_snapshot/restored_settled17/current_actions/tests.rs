@@ -336,3 +336,80 @@ fn partially_decoded_capture_retains_its_actual_typed_body_on_failure()
     );
     Ok(())
 }
+
+#[test]
+fn typed_capture_artifacts_arguments_and_contexts_survive_source_mac_failure()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::reference_packet::service::restored_settled_capture::{
+        PacketRestoredSettledCaptureArtifact, PacketRestoredSettledCaptureContext,
+        restored_settled_capture_assigned_request_digest_data,
+        restored_settled_capture_context_schema_data, restored_settled_capture_proof_data,
+    };
+    use crucible_node_format::Bytes;
+
+    let (request, mut original) =
+        crate::reference_packet::service::restored_settled_capture::capture_history_fixture_data()?;
+    let context = PacketRestoredSettledCaptureContext {
+        schema: restored_settled_capture_context_schema_data().into(),
+        request: request.clone(),
+        assigned_request: Bytes::new(
+            restored_settled_capture_assigned_request_digest_data(&original, 65_536)?.to_vec(),
+        ),
+    };
+    let key = [41; 32];
+    let artifact = PacketRestoredSettledCaptureArtifact {
+        request,
+        proof: restored_settled_capture_proof_data(&key, &context)?,
+    };
+    original.extensions.insert(
+        RESTORED_SETTLED_CAPTURE_FEATURE.into(),
+        serde_json::to_value(artifact)?,
+    );
+
+    // A fixture MAC is DATA. Neither its success nor these raw-first attempts
+    // supply a Source ticket, installed Boot, registration or Capture action.
+    for valid_key in [true, false] {
+        let mut attempt = NativeRestoredSettledActionAttempt::new_data(17);
+        attempt.retain_original_data(original.clone())?;
+        attempt.decode_body_data(65_536)?;
+
+        for authenticated in [false, true] {
+            if authenticated {
+                let result = attempt
+                    .capture_data_mut()?
+                    .authenticate_capture_source_data(
+                        if valid_key { &key } else { &[42; 32] },
+                        65_536,
+                    );
+                assert_eq!(result.is_ok(), valid_key);
+                if !valid_key {
+                    attempt.interrupt_data();
+                }
+            }
+            let (input, rows) = recorded(&attempt)?;
+            let value: Value = serde_json::from_slice(&input)?;
+            let data = &value["selected"]["data"];
+            assert!(data["body"].is_object());
+            assert!(data["arguments"].is_object());
+            assert!(data["capture"].is_object());
+            assert_eq!(data["capture_context"].is_object(), authenticated);
+            assert_eq!(value["failed"], authenticated && !valid_key);
+
+            let records = ValidatedMetadataRecords::validate(&rows, 8192, 2 * 1024 * 1024)?;
+            let mut historical = Ledger::new(records.rows(), limits());
+            assert!(
+                historical
+                    .read::<HistoricalRestoredAction17>(&input, false)?
+                    .is_none()
+            );
+            assert!(historical.rows.next().is_none());
+            let mut owning = Ledger::new(records.rows(), limits());
+            assert!(
+                owning
+                    .read::<HistoricalRestoredAction17>(&input, true)
+                    .is_err()
+            );
+        }
+    }
+    Ok(())
+}
