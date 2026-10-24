@@ -75,7 +75,7 @@
                 ((.features | index("test-double")) == null))' \
                 "$out/share/component/selected-features.json"
             ''}
-            sha256sum crates/Cargo.lock crates/crucible/control/crucible-daemon/Cargo.toml \
+            sha256sum crates/Cargo.lock crates/crucible/crucible-daemon/Cargo.toml \
               > "$out/share/component/source-inputs.sha256"
             printf '%s\n' component-only package-and-strict-acceptance-pending \
               > "$out/share/component/scope"

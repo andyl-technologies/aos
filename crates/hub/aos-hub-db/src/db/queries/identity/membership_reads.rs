@@ -3,6 +3,34 @@
 use super::*;
 
 impl Database {
+    /// Reads one direct membership together with its stable row identity.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or malformed persisted data.
+    pub async fn membership_snapshot(
+        &self,
+        principal_kind: &str,
+        principal_id: i64,
+        scope: &str,
+    ) -> Result<Option<MembershipSnapshot>> {
+        self.backend
+            .query_opt(
+                "SELECT id, incarnation_id, role FROM memberships
+                  WHERE principal_kind = ?1 AND principal_id = ?2 AND scope_key = ?3",
+                &vals![principal_kind, principal_id, scope],
+            )
+            .await?
+            .map(|row| {
+                Ok(MembershipSnapshot {
+                    id: row.get(0)?,
+                    incarnation_id: row.get(1)?,
+                    role: row.get(2)?,
+                })
+            })
+            .transpose()
+    }
+
     /// Whether a live (unexpired, unaccepted) invitation exists for `email`.
     ///
     /// Used by the `invite_only` signup gate. A user invited to any org may

@@ -88,11 +88,11 @@ CDN policy this workstream depends on:
 The current config model has **no channel concept**. A registry is tracked by a
 single `TrackingMode` enum with four variants plus a default:
 
-- `crates/aos/packages/aos-package-manager/src/types.rs:279-290` — `TrackingMode { Commit, Branch,
+- `crates/packages/aos-package-manager/src/types.rs:279-290` — `TrackingMode { Commit, Branch,
   Tag, Version, Default }`. `Branch` tracks the **HEAD of a named git branch**
   (e.g. `main`/`stable`) — this is the *closest* current analogue to a channel,
   but it is a raw branch HEAD, not a 256-partition rollout surface.
-- `crates/aos/packages/aos-package-manager/src/types.rs:215-226` — config fields `commit` / `branch` /
+- `crates/packages/aos-package-manager/src/types.rs:215-226` — config fields `commit` / `branch` /
   `tag` / `version` (mutually exclusive); `RegistryConfig::tracking_mode()`
   enforces "at most one set" at `types.rs:349-397`.
 
@@ -102,7 +102,7 @@ publisher rollout primitive anywhere in the config or update path.
 ### 2.2 Rollout today is calendar tokens + bundle deltas
 
 Selection of "what to fetch next" is `pick_bundles` in
-`crates/aos/packages/aos-package-manager/src/update.rs:319-418`. It is built entirely around the
+`crates/packages/aos-package-manager/src/update.rs:319-418`. It is built entirely around the
 **calendar `creation_token`** scheme that the target removes:
 
 - `update.rs:370-379` — first sync (no `last_creation_token`) grabs the latest
@@ -485,7 +485,7 @@ to `1.2.0`.
   Add `#[test] fn test_floor_round_trips_as_string()`.
 - [ ] **A3.** Add host-scoped rollout state (`bucket: u8`, `machine_id: String`,
   `selected_at: String`) as a new `pub struct RolloutState` in a dedicated module
-  `crates/aos/packages/aos-package-manager/src/registry/rollout.rs` (new), persisted to a single host
+  `crates/packages/aos-package-manager/src/registry/rollout.rs` (new), persisted to a single host
   file (e.g. `/var/lib/aos/rollout.toml`) — **not** per-registry
   `registries.d/*.toml`. Signatures: `pub fn load_rollout(path: &Path) -> anyhow::Result<Option<RolloutState>>`
   and `pub fn save_rollout(path: &Path, state: &RolloutState) -> anyhow::Result<()>`,
@@ -495,7 +495,7 @@ to `1.2.0`.
 ### Phase B — consumer bucket + resolution
 
 All consumer-side code lands in a new module
-`crates/aos/registry/aos-registry-client/src/registry/channel.rs` (sibling to `state.rs`/`bundle.rs`,
+`crates/registry/aos-registry-client/src/registry/channel.rs` (sibling to `state.rs`/`bundle.rs`,
 registered in `registry/mod.rs` alongside the existing `pub mod state;`).
 
 - [ ] **B1.** Implement bucket selection from the low byte of `sha256(machine_id)`
@@ -549,7 +549,7 @@ registered in `registry/mod.rs` alongside the existing `pub mod state;`).
 
 ### Phase C — producer rollout control
 
-Producer-side code lands in `crates/aos/registry/aos-registry-authoring/src/registry_ops.rs` (where the
+Producer-side code lands in `crates/registry/aos-registry-authoring/src/registry_ops.rs` (where the
 existing `apr tag`/`apr bundle`/`apr sign` live at `registry_ops.rs:1684`/`:1706`/`:1747`)
 plus a frontier helper. The shared git wrappers `git` (`registry_ops.rs:79`) and
 the allow-fail `git_try` (`registry_ops.rs:96`, returns `(bool, String, String)`)

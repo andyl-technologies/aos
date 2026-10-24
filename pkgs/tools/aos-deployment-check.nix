@@ -20,6 +20,7 @@ mkAosCargoPackage {
   buildDeps = [buildPackages.pkg-config buildPackages.protobuf buildPackages.cmake buildPackages.perl];
   runtimeDeps = [openssl sqlite libssh2 zlib];
   cargoEnv = {
+    AOS_LIBSSH2_PREFIX = "${libssh2}";
     OPENSSL_DIR = "${openssl}";
     OPENSSL_LIB_DIR = "${openssl}/lib";
     OPENSSL_INCLUDE_DIR = "${openssl}/include";

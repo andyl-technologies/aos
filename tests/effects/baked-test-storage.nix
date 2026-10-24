@@ -47,6 +47,8 @@
     closureInfoFor = _: {outPath = payload;};
     packages = {
       mkDerivation = capture;
+      e2fsprogs = payload;
+      python3 = payload;
       writeTextFile = capture;
       openssh = payload;
       swtpm = payload;

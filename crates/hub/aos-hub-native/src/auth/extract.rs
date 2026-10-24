@@ -37,7 +37,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 
-use crate::auth::jwt::{Claims, JwtKeys};
+use crate::auth::jwt::{BearerProvenance, Claims, JwtKeys};
 use crate::db::{Database, SessionAuth as DbSessionAuth};
 use crate::domain::{iam, Permission, Scope};
 
@@ -114,6 +114,19 @@ impl FromRequestParts<Arc<AuthState>> for BearerAuth {
             tracing::warn!(error = %e, "JWT validation failed");
             (StatusCode::UNAUTHORIZED, "invalid token").into_response()
         })?;
+        if claims.provenance == BearerProvenance::AccessToken {
+            let parent = state
+                .db
+                .revalidate_token(&claims.sub)
+                .await
+                .map_err(|error| {
+                    tracing::error!(%error, "bearer parent lookup failed");
+                    (StatusCode::INTERNAL_SERVER_ERROR, "authentication error").into_response()
+                })?;
+            if !parent.is_some_and(|parent| claims.matches_token_auth(&parent)) {
+                return Err((StatusCode::UNAUTHORIZED, "invalid token").into_response());
+            }
+        }
         Ok(BearerAuth(claims))
     }
 }
@@ -236,6 +249,7 @@ mod tests {
             owner_id: 1,
             scope: ORG_SCOPE.into(),
             perms: vec!["read".into(), "publish".into()],
+            provenance: BearerProvenance::AccessToken,
             authz_version: crate::auth::jwt::AUTHORIZATION_CLAIMS_VERSION.into(),
             iat: 0,
             exp: 0,
@@ -281,6 +295,7 @@ mod tests {
             owner_id: 1,
             scope: ORG_SCOPE.into(),
             perms: vec!["read".into()],
+            provenance: BearerProvenance::AccessToken,
             authz_version: crate::auth::jwt::AUTHORIZATION_CLAIMS_VERSION.into(),
             iat: 0,
             exp: 0,
@@ -292,6 +307,52 @@ mod tests {
         .unwrap();
         assert!(token_allows(&claims, Permission::Read, &context));
         assert!(!token_allows(&claims, Permission::Publish, &context));
+    }
+
+    #[tokio::test]
+    async fn bearer_extractor_rechecks_the_parent_token() {
+        let db = Arc::new(Database::open_in_memory().await.unwrap());
+        let user_id = db.create_user("bearer@example.test", None).await.unwrap();
+        db.grant_membership("user", user_id, "instance", "owner")
+            .await
+            .unwrap();
+        let (token_id, secret) = db
+            .create_token(
+                crate::domain::Principal::user(user_id),
+                "instance",
+                &[Permission::Read],
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let token_auth = db.validate_token(&secret).await.unwrap().unwrap();
+        let state = Arc::new(AuthState::new(db.clone(), 900));
+        let bearer = state.jwt_keys.mint(&token_auth, 900).unwrap();
+
+        let mut live_request = axum::http::Request::builder()
+            .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        BearerAuth::from_request_parts(&mut live_request, &state)
+            .await
+            .unwrap();
+
+        db.revoke_token(&token_id).await.unwrap();
+        let mut retired_request = axum::http::Request::builder()
+            .header(header::AUTHORIZATION, format!("Bearer {bearer}"))
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+        let response = BearerAuth::from_request_parts(&mut retired_request, &state)
+            .await
+            .err()
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -316,6 +377,8 @@ mod tests {
             auth_level: 0,
             last_authenticated_at: 0,
             expires_at: i64::MAX,
+            authentication: aos_hub_db::db::SessionAuthentication::LegacyLocal,
+            reauthentication_generation: 0,
         };
         assert!(session_allows(
             &db,

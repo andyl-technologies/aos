@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Largest number of expired OIDC flows removed by one maintenance pass.
+const MAX_OIDC_FLOW_PRUNE_BATCH: i64 = 1_000;
+
 impl Database {
     // -- auth: passwords (migration v18) -------------------------------------
 
@@ -26,11 +29,11 @@ impl Database {
         Ok(())
     }
 
-    /// Look up a user's id and stored password hash by email, for login.
+    /// Looks up a verified mailbox owner's id and stored password hash for login.
     ///
     /// Returns `Ok(Some((user_id, phc)))` only when a non-deleted user exists
     /// for `email` **and** has a password set; returns `Ok(None)` when no such
-    /// user exists *or* the user has no password (`password_hash IS NULL`).
+    /// mailbox owner exists or the user has no password (`password_hash IS NULL`).
     /// The caller verifies `phc` with
     /// [`aos_hub_model::auth::password::verify_password`] and must surface the same
     /// generic "invalid email or password" outcome for both the `None` and the
@@ -44,8 +47,10 @@ impl Database {
         let row = self
             .backend
             .query_opt(
-                "SELECT id, password_hash FROM users
-                 WHERE email = ?1 AND deleted_at IS NULL AND password_hash IS NOT NULL",
+                "SELECT u.id, u.password_hash FROM user_mailboxes mailbox
+                 JOIN users u ON u.id = mailbox.user_id
+                 WHERE mailbox.email = ?1 AND u.deleted_at IS NULL
+                   AND u.password_hash IS NOT NULL",
                 &vals![email],
             )
             .await
@@ -271,54 +276,114 @@ impl Database {
 
     /// Record an in-flight OIDC authorization-code request.
     ///
-    /// Stores the opaque `state`, the `nonce` the id_token will be checked
-    /// against, and the PKCE `code_verifier`, with an `expires_at` `ttl_secs`
-    /// from now. The row is consumed exactly once at the callback by
-    /// [`Database::take_oidc_flow`].
+    /// Stores the opaque `state`, the verifier configuration, the `nonce` the
+    /// id_token will be checked against, the PKCE `code_verifier`, and the
+    /// browser-binding digest, with an `expires_at` `ttl_secs` from now. The
+    /// row is consumed exactly once at
+    /// the callback by [`Database::take_oidc_flow`].
     ///
     /// # Errors
     ///
-    /// Returns an error on database failure, including a `state` collision.
+    /// Returns an error on database failure, a `state` collision, or when the
+    /// pending-flow limit for the organization or hub has been reached.
     pub async fn create_oidc_flow(
         &self,
         state: &str,
         org_id: i64,
+        verifier_id: &str,
         nonce: &str,
         code_verifier: &str,
+        browser_binding_hash: &str,
         redirect_after: Option<&str>,
         ttl_secs: i64,
     ) -> Result<()> {
         let now = unix_now();
         self.backend
-            .execute(
-                "INSERT INTO oidc_flows
-             (state, org_id, nonce, code_verifier, redirect_after, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                &vals![
-                    state,
-                    org_id,
-                    nonce,
-                    code_verifier,
-                    redirect_after,
-                    now,
-                    now + ttl_secs
-                ],
-            )
-            .await?;
+            .checked_batch(&[
+                CheckedStatement::unchecked(
+                    "UPDATE hub_schema_identity SET identity = identity WHERE identity = ?1",
+                    vals![SCHEMA_IDENTITY],
+                ),
+                CheckedStatement::exact(
+                    "INSERT INTO oidc_flows
+             (state, org_id, verifier_id, nonce, code_verifier,
+              browser_binding_hash, redirect_after, created_at, expires_at)
+             SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9
+             WHERE (SELECT COUNT(*) FROM oidc_flows
+                    WHERE org_id = ?2 AND expires_at > ?8) < ?10
+               AND (SELECT COUNT(*) FROM oidc_flows
+                    WHERE expires_at > ?8) < ?11",
+                    vals![
+                        state,
+                        org_id,
+                        verifier_id,
+                        nonce,
+                        code_verifier,
+                        browser_binding_hash,
+                        redirect_after,
+                        now,
+                        now + ttl_secs,
+                        MAX_PENDING_OIDC_FLOWS_PER_ORG,
+                        MAX_PENDING_OIDC_FLOWS_TOTAL
+                    ],
+                    1,
+                ),
+            ])
+            .await
+            .context("staging OIDC flow within pending-flow limits")?;
         Ok(())
     }
 
-    /// Consume an OIDC flow by its `state`, returning it exactly once.
+    /// Removes a bounded batch of expired OIDC login flows.
+    ///
+    /// Rows are selected through the expiry index in oldest-first order. The
+    /// nested selection remains portable to MySQL, which rejects deleting
+    /// directly from a table referenced by the same statement's subquery.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `limit` is outside `1..=1000` or on database
+    /// failure.
+    pub async fn prune_expired_oidc_flows(&self, now: i64, limit: i64) -> Result<u64> {
+        anyhow::ensure!(
+            (1..=MAX_OIDC_FLOW_PRUNE_BATCH).contains(&limit),
+            "OIDC flow prune limit must be between 1 and {MAX_OIDC_FLOW_PRUNE_BATCH}"
+        );
+
+        let deleted = self
+            .backend
+            .execute(
+                "DELETE FROM oidc_flows
+                 WHERE state IN (
+                   SELECT state FROM (
+                     SELECT state FROM oidc_flows
+                     WHERE expires_at <= ?1
+                     ORDER BY expires_at, state
+                     LIMIT ?2
+                   ) AS expired_oidc_flows
+                 )",
+                &vals![now, limit],
+            )
+            .await?;
+        Ok(deleted)
+    }
+
+    /// Consumes an OIDC flow by its `state` and browser-binding digest.
     ///
     /// Deletes the row and returns it in one statement (`DELETE … RETURNING`),
     /// so a replayed or forged `state` finds nothing — the single-use,
-    /// CSRF-defeating gate. Returns `Ok(None)` for an unknown, already-consumed,
-    /// or expired flow.
+    /// CSRF-defeating gate. Returns `Ok(None)` for an unknown, mismatched,
+    /// already-consumed, or expired flow. A mismatched digest leaves the row
+    /// available for its initiating browser.
     ///
     /// # Errors
     ///
     /// Returns an error on database failure.
-    pub async fn take_oidc_flow(&self, state: &str) -> Result<Option<OidcFlowRecord>> {
+    pub async fn take_oidc_flow(
+        &self,
+        state: &str,
+        browser_binding_hash: &str,
+    ) -> Result<Option<OidcFlowRecord>> {
         let now = unix_now();
         // sqlite/postgres do the delete-and-read in one `DELETE … RETURNING`;
         // MySQL lacks it, so select-then-delete inside a transaction keeps the
@@ -331,15 +396,20 @@ impl Database {
             let selected = self
                 .backend
                 .query_opt(
-                    "SELECT state, org_id, nonce, code_verifier, redirect_after, expires_at
-                     FROM oidc_flows WHERE state = ?1",
-                    &vals![state],
+                    "SELECT state, org_id, verifier_id, nonce, code_verifier, redirect_after, expires_at
+                     FROM oidc_flows
+                     WHERE state = ?1 AND browser_binding_hash = ?2",
+                    &vals![state, browser_binding_hash],
                 )
                 .await?;
             if let Some(r) = selected {
                 let claimed = self
                     .backend
-                    .execute("DELETE FROM oidc_flows WHERE state = ?1", &vals![state])
+                    .execute(
+                        "DELETE FROM oidc_flows
+                         WHERE state = ?1 AND browser_binding_hash = ?2",
+                        &vals![state, browser_binding_hash],
+                    )
                     .await?;
                 if claimed > 0 {
                     Some(row_to_oidc_flow(&r)?)
@@ -352,9 +422,10 @@ impl Database {
         } else {
             self.backend
                 .query_opt(
-                    "DELETE FROM oidc_flows WHERE state = ?1
-                     RETURNING state, org_id, nonce, code_verifier, redirect_after, expires_at",
-                    &vals![state],
+                    "DELETE FROM oidc_flows
+                     WHERE state = ?1 AND browser_binding_hash = ?2
+                     RETURNING state, org_id, verifier_id, nonce, code_verifier, redirect_after, expires_at",
+                    &vals![state, browser_binding_hash],
                 )
                 .await
                 .context("consuming oidc flow by state")?
@@ -375,7 +446,9 @@ impl Database {
     /// `kind` is `"registration"` or `"assertion"`; `user_id` is the
     /// registering user for a registration ceremony, or `None` for a
     /// usernameless assertion ceremony (the user is resolved from the presented
-    /// credential at verify). The challenge is consumed exactly once by
+    /// credential at verify). Registration ceremonies carry the browser-session
+    /// binding that authorized them; assertion ceremonies pass `None`. The
+    /// challenge is consumed exactly once by
     /// [`Database::take_webauthn_challenge`].
     ///
     /// # Errors
@@ -388,13 +461,31 @@ impl Database {
         user_id: Option<i64>,
         kind: &str,
         ttl_secs: i64,
+        registration_binding: Option<&WebauthnChallengeBinding>,
     ) -> Result<()> {
         let now = unix_now();
+        let (session_id_hash, reauthentication_generation) =
+            registration_binding.map_or((None, None), |binding| {
+                (
+                    Some(binding.session_id_hash.as_str()),
+                    Some(binding.reauthentication_generation),
+                )
+            });
         self.backend
             .execute(
-                "INSERT INTO webauthn_challenges (challenge, user_id, kind, created_at, expires_at)
-             VALUES (?1, ?2, ?3, ?4, ?5)",
-                &vals![challenge, user_id, kind, now, now + ttl_secs],
+                "INSERT INTO webauthn_challenges
+                 (challenge, user_id, kind, created_at, expires_at,
+                  session_id_hash, reauthentication_generation)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                &vals![
+                    challenge,
+                    user_id,
+                    kind,
+                    now,
+                    now + ttl_secs,
+                    session_id_hash,
+                    reauthentication_generation
+                ],
             )
             .await?;
         Ok(())
@@ -430,7 +521,8 @@ impl Database {
             let selected = self
                 .backend
                 .query_opt(
-                    "SELECT challenge, user_id, kind, expires_at
+                    "SELECT challenge, user_id, kind, expires_at,
+                            session_id_hash, reauthentication_generation
                      FROM webauthn_challenges WHERE challenge = ?1 AND kind = ?2",
                     &vals![challenge, kind],
                 )
@@ -455,7 +547,8 @@ impl Database {
             self.backend
                 .query_opt(
                     "DELETE FROM webauthn_challenges WHERE challenge = ?1 AND kind = ?2
-                     RETURNING challenge, user_id, kind, expires_at",
+                     RETURNING challenge, user_id, kind, expires_at,
+                               session_id_hash, reauthentication_generation",
                     &vals![challenge, kind],
                 )
                 .await

@@ -11,14 +11,6 @@ impl RpcService {
     ) -> Result<pb::TopologyPlanResponse, RpcError> {
         let claims = self.require_claims(auth)?;
         let scope = parse_authorization_scope(&req.scope)?;
-        let context = self
-            .db
-            .authorization_context(scope.as_str())
-            .await
-            .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::not_found("authorization scope"))?;
-        self.require_permission(&claims, Permission::TokensManage, &scope)
-            .await?;
         if req.ttl_secs < 0 || req.ttl_secs > ACCESS_TOKEN_MAX_TTL_SECS {
             return Err(RpcError::invalid(format!(
                 "ttl_secs must be 0 or between 1 and {ACCESS_TOKEN_MAX_TTL_SECS}"
@@ -41,21 +33,14 @@ impl RpcService {
                 .ok_or_else(|| RpcError::invalid(format!("unknown permission '{verb}'")))?;
             perms.push(perm);
         }
-        // A token can never exceed its owner's authority.
-        let grants = self
-            .db
-            .effective_scopes(owner)
-            .await
-            .map_err(RpcError::internal)?;
-        if perms.is_empty()
-            || perms
-                .iter()
-                .any(|permission| !iam::allow(&grants, *permission, &context))
-        {
-            return Err(RpcError::PermissionDenied(
-                "token permissions exceed the owner's current grants".to_string(),
+        if perms.is_empty() {
+            return Err(RpcError::invalid(
+                "at least one token permission is required",
             ));
         }
+        let grants = self
+            .authorize_access_token_issue(&claims, owner, &scope, &perms)
+            .await?;
         let mut permissions = perms
             .iter()
             .map(|permission| permission.as_str().to_string())

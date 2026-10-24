@@ -39,11 +39,11 @@ successful child serializer is only a prerequisite.
 
 | Existing owner | Defining source | Role in this plan |
 | --- | --- | --- |
-| Daemon Prepared and its three Member attempts | [import18_templates.rs](../../../crates/crucible/control/crucible-daemon/src/node_qualification/packet_collection/complete/installed/source/fresh_target/prepared/import18_templates.rs) | Retain the operational job, inputs, results and cleanup owner beside the original launch. |
-| Engine Source construction | [import18_prebirth.rs](../../../crates/crucible/engine/crucible-engine/src/node_adapters/cnp/semantic/packet_complete_source/ack_peer/import18_prebirth.rs) | Bind the actual Source and initialized occurrence; select the separate isolated transition and accept banks. |
-| Transport launch and Coordinator schemas | [native5.rs](../../../crates/crucible/host/crucible-node-transport/src/reference_packet/service/native5.rs), [continuation.rs](../../../crates/crucible/host/crucible-node-transport/src/reference_packet/coordinator/continuation.rs) | Remain the defining schema, validation and decode implementations. |
-| Pure SourceBirth and registration views | [views.rs](../../../crates/crucible/engine/crucible-engine/src/node_adapters/cnp/semantic/packet_complete_source/ack_peer/import18_prebirth/views.rs) | Move within Engine behind the shared pure derivation facade. |
-| Parent private Birth | [import18_construction.rs](../../../crates/crucible/engine/crucible-engine/src/node_adapters/cnp/semantic/packet_complete_source/ack_peer/birth/import18_construction.rs) | Consume accepted banks and retain the real parent executable File, revision, fresh key and partial output. |
+| Daemon Prepared and its three Member attempts | [import18_templates.rs](../../../crates/crucible/crucible-daemon/src/node_qualification/packet_collection/complete/installed/source/fresh_target/prepared/import18_templates.rs) | Retain the operational job, inputs, results and cleanup owner beside the original launch. |
+| Engine Source construction | [import18_prebirth.rs](../../../crates/crucible/crucible-engine/src/node_adapters/cnp/semantic/packet_complete_source/ack_peer/import18_prebirth.rs) | Bind the actual Source and initialized occurrence; select the separate isolated transition and accept banks. |
+| Transport launch and Coordinator schemas | [native5.rs](../../../crates/crucible/crucible-node-transport/src/reference_packet/service/native5.rs), [continuation.rs](../../../crates/crucible/crucible-node-transport/src/reference_packet/coordinator/continuation.rs) | Remain the defining schema, validation and decode implementations. |
+| Pure SourceBirth and registration views | [views.rs](../../../crates/crucible/crucible-engine/src/node_adapters/cnp/semantic/packet_complete_source/ack_peer/import18_prebirth/views.rs) | Move within Engine behind the shared pure derivation facade. |
+| Parent private Birth | [import18_construction.rs](../../../crates/crucible/crucible-engine/src/node_adapters/cnp/semantic/packet_complete_source/ack_peer/birth/import18_construction.rs) | Consume accepted banks and retain the real parent executable File, revision, fresh key and partial output. |
 
 Earlier manifest, typed launch and original Source construction remain existing
 input boundaries. They do not validate arbitrary new candidate Coordinator

@@ -196,7 +196,7 @@ in
           test -f "$source_root/build/aos/pkgs/emulation/qemu.nix"
           test -z "$(find "$source_root/build/aos" -type f -regex '.*/core[.][0-9]+' -print -quit)"
           test -z "$(find "$source_root/build/aos" "$source_root/plugin/workspace" -name run-state -print -quit)"
-          test -f "$source_root/build/aos/crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h"
+          test -f "$source_root/build/aos/crates/crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h"
           samba_smbd_version=$(sed -n 's/^qemu_samba_smbd_version=//p' "$source_manifest")
           samba_smbd_source_hash_algo=$(sed -n 's/^qemu_samba_smbd_source_hash_algo=//p' "$source_manifest")
           samba_smbd_source_hash=$(sed -n 's/^qemu_samba_smbd_source_hash=//p' "$source_manifest")
@@ -264,7 +264,7 @@ in
           test -f "$source_root/patches/_atomic-patch.nix"
           test -f "$source_root/plugin/workspace/crates/Cargo.lock"
           test -f "$source_root/plugin/workspace/crates/Cargo.toml"
-          test -f "$source_root/plugin/workspace/crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml"
+          test -f "$source_root/plugin/workspace/crates/crucible/crucible-qemu-plugin/Cargo.toml"
           test -f "$source_root/plugin/workspace/pkgs/emulation/crucible-qemu-plugin.nix"
           test -n "$(find "$source_root/plugin/cargo-vendor" -mindepth 1 -maxdepth 1 -type d -print -quit)"
           archived_workspace="$TMPDIR/archived-plugin-workspace"

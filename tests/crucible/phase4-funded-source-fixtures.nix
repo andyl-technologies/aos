@@ -10,13 +10,13 @@
       host_executable = executable;
       peer_executable = "${peers}/bin/crucible-reference-packet-provider";
       sources = {
-        adapter_source = "${source}/crates/crucible/engine/crucible-engine/src/node_adapters/cnp/semantic/packet_complete_source.rs";
+        adapter_source = "${source}/crates/crucible/crucible-engine/src/node_adapters/cnp/semantic/packet_complete_source.rs";
         build_closure = "${buildClosure}/inventory.json";
-        contract_source = "${source}/crates/crucible/host/crucible-node-transport/src/reference_packet/continuation_contracts.rs";
-        harness_source = "${source}/crates/crucible/control/crucible-daemon/src/node_qualification/packet_collection/complete/installed/source/fresh_target/prepared.rs";
-        native_source = "${source}/crates/crucible/host/crucible-node-transport/src/reference_packet/service/native_startup.rs";
-        program_source = "${source}/crates/crucible/host/crucible-node-transport/src/reference_packet/connected.rs";
-        provider_source = "${source}/crates/crucible/host/crucible-node-transport/src/bin/crucible-reference-packet-provider.rs";
+        contract_source = "${source}/crates/crucible/crucible-node-transport/src/reference_packet/continuation_contracts.rs";
+        harness_source = "${source}/crates/crucible/crucible-daemon/src/node_qualification/packet_collection/complete/installed/source/fresh_target/prepared.rs";
+        native_source = "${source}/crates/crucible/crucible-node-transport/src/reference_packet/service/native_startup.rs";
+        program_source = "${source}/crates/crucible/crucible-node-transport/src/reference_packet/connected.rs";
+        provider_source = "${source}/crates/crucible/crucible-node-transport/src/bin/crucible-reference-packet-provider.rs";
         recipe = "${./phase4-funded-source-components.nix}";
       };
       # These are explicit ordinary scene policies, not a fit assertion. Actual

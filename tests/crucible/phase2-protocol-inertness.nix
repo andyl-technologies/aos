@@ -7,9 +7,9 @@
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
-  qemuLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/lib.rs;
-  inertnessLib = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/inertness.rs;
-  inertnessTest = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/protocol_inertness.rs;
+  qemuLib = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/lib.rs;
+  inertnessLib = builtins.readFile ../../crates/crucible/crucible-qemu-host/src/inertness.rs;
+  inertnessTest = builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/protocol_inertness.rs;
   protocolSpec = builtins.readFile ../../docs/rfcs/0010-crucible/14-protocol.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -18,7 +18,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible/qemu/crucible-qemu-host/src/lib.rs" qemuLib [
+    failuresFor "crates/crucible/crucible-qemu-host/src/lib.rs" qemuLib [
       {
         label = "inertness module";
         needle = "mod inertness;";
@@ -36,7 +36,7 @@
         needle = "QemuSimulationMode";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/inertness.rs" inertnessLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/inertness.rs" inertnessLib [
       {
         label = "sim mode enum";
         needle = "pub enum QemuSimulationMode";
@@ -110,7 +110,7 @@
         needle = "allowed_during_run: false";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/tests/protocol_inertness.rs" inertnessTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/tests/protocol_inertness.rs" inertnessTest [
       {
         label = "sim-off inertness test";
         needle = "sim_mode_off_creates_no_control_socket_and_sends_no_frames";

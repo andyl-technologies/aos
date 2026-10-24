@@ -11,22 +11,22 @@
   coreTests = import ./_crucible-tests-source.nix {inherit lib;};
   worldValidationTests = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/engine/crucible-engine/src/tests/world_validation.rs;
+    entry = ../../crates/crucible/crucible-engine/src/tests/world_validation.rs;
   };
   qemuLaunch =
     import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible/qemu/crucible-qemu-host/src/launch.rs;
+      entry = ../../crates/crucible/crucible-qemu-host/src/launch.rs;
     }
-    + builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/launch/canonical.rs;
+    + builtins.readFile ../../crates/crucible/crucible-qemu-host/src/launch/canonical.rs;
   qemuLaunchTest =
     import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch.rs;
+      entry = ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch.rs;
     }
-    + builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs;
-  replayOracleTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_replay_oracle.rs;
-  propertyTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/coverage_condition_leaf.rs;
+    + builtins.readFile ../../crates/crucible/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs;
+  replayOracleTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_replay_oracle.rs;
+  propertyTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/coverage_condition_leaf.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -47,7 +47,7 @@
         needle = "`WorldNode` carries fixed";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "scenario form constructor validates world identity";
         needle = "validate_world_serialized_identity(world)?;";
@@ -177,7 +177,7 @@
         needle = "smp_vcpus={}";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" coreTests [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" coreTests [
       {
         label = "focused world topology validation test";
         needle = "fn world_topology_rejects_invalid_links()";
@@ -203,7 +203,7 @@
         needle = "Err(EngineError::LinkLossProbabilityOutOfRange";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "matrix covers signal plan wire admission";
         needle = "fn wire_admission_rejects_versions_missing_programs_and_duplicate_contracts()";
@@ -217,13 +217,13 @@
         needle = "fn compact_plan_rejects_resolved_targets_absent_from_decode_world()";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/coverage_condition_leaf.rs" propertyTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/coverage_condition_leaf.rs" propertyTest [
       {
         label = "matrix covers property references";
         needle = "Err(EngineError::PropertyPredicateUnknownNode";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/tests/world_validation.rs" worldValidationTests [
+    ++ failuresFor "crates/crucible/crucible-engine/src/tests/world_validation.rs" worldValidationTests [
       {
         label = "matrix covers ready point opt-in";
         needle = "fn world_ready_point_rejects_agent_signal_without_white_box_opt_in()";
@@ -233,7 +233,7 @@
         needle = "Err(EngineError::WhiteBoxReadyPointWithoutOptIn { .. })";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" coreTests [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" coreTests [
       {
         label = "matrix covers portable launch inputs";
         needle = "fn world_node_launch_inputs_are_portable_and_identity_bearing()";
@@ -247,7 +247,7 @@
         needle = "authored worlds must reject the removed icount shift setting";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/launch.rs" qemuLaunch [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/launch.rs" qemuLaunch [
       {
         label = "launch profile rejects zero vCPU count";
         needle = "if self.smp_vcpus == 0";
@@ -277,7 +277,7 @@
         needle = "DEFAULT_ACCEL.to_owned(),";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch.rs" qemuLaunchTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/tests/deterministic_launch.rs" qemuLaunchTest [
       {
         label = "multi-vCPU launch validation test";
         needle = "fn multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed()";
@@ -299,7 +299,7 @@
         needle = "fn launch_profile_pins_fixed_tick_scale_for_each_node()";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_replay_oracle.rs" replayOracleTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/gate_replay_oracle.rs" replayOracleTest [
       {
         label = "replay oracle feature test target imports NodeTemplate";
         needle = "NodeTemplate";

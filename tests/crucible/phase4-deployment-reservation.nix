@@ -43,13 +43,13 @@ in
           sha256sum "$binary" > "$out/evidence/example-elf.sha256"
           sha256sum \
             crates/Cargo.lock \
-            crates/crucible/host/crucible-host-resources/Cargo.toml \
-            crates/crucible/host/crucible-host-resources/src/lib.rs \
-            crates/crucible/host/crucible-host-resources/src/linux_process_supervisor.rs \
-            crates/crucible/host/crucible-host-resources/src/linux_process_supervisor/bootstrap.rs \
-            crates/crucible/host/crucible-host-resources/src/linux_process_supervisor/current.rs \
-            crates/crucible/host/crucible-host-resources/src/linux_process_supervisor/reservation.rs \
-            crates/crucible/host/crucible-host-resources/examples/crucible-deployment-reservation-controls.rs \
+            crates/crucible/crucible-host-resources/Cargo.toml \
+            crates/crucible/crucible-host-resources/src/lib.rs \
+            crates/crucible/crucible-host-resources/src/linux_process_supervisor.rs \
+            crates/crucible/crucible-host-resources/src/linux_process_supervisor/bootstrap.rs \
+            crates/crucible/crucible-host-resources/src/linux_process_supervisor/current.rs \
+            crates/crucible/crucible-host-resources/src/linux_process_supervisor/reservation.rs \
+            crates/crucible/crucible-host-resources/examples/crucible-deployment-reservation-controls.rs \
             > "$out/evidence/source-inputs.sha256"
 
           # This independent hard wall bounds the launcher and its process group;

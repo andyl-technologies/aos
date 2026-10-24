@@ -1,6 +1,6 @@
 # Installed native archive implementation
 
-The generic archive in `crates/crucible/engine/crucible-engine/src/node_state/native/` preserves native
+The generic archive in `crates/crucible/crucible-engine/src/node_state/native/` preserves native
 owners through the existing complete-world capture admission and inactive restore
 transaction. Its edition, authentication domain and files are independent of the
 existing host archive. A native process image is preservation data; it does not

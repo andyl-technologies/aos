@@ -185,7 +185,6 @@ mod tests {
     };
     use axum::http::StatusCode;
     use tokio::sync::Mutex;
-    use tower::ServiceExt as _;
 
     use super::*;
 
@@ -274,7 +273,7 @@ mod tests {
         let token = state
             .auth
             .jwt_keys
-            .mint(
+            .mint_browser_session(
                 &TokenAuth {
                     token_id: "worker-rollout".to_string(),
                     owner: Principal::user(user_id),
@@ -284,6 +283,7 @@ mod tests {
                         Permission::Publish,
                         Permission::RegistryConfigure,
                     ],
+                    expires_at: None,
                 },
                 900,
             )
@@ -604,12 +604,13 @@ mod tests {
         let token = state
             .auth
             .jwt_keys
-            .mint(
+            .mint_browser_session(
                 &TokenAuth {
                     token_id: "branding-test".into(),
                     owner: Principal::user(user_id),
                     scope: Scope::root(),
                     permissions: vec![Permission::IamAdmin],
+                    expires_at: None,
                 },
                 900,
             )
@@ -1080,29 +1081,75 @@ mod tests {
         path: &str,
         accept: &str,
     ) -> (StatusCode, String) {
+        let response = worker_browser_response(state, origin, path, accept, None).await;
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        (status, String::from_utf8_lossy(&body).into_owned())
+    }
+
+    /// Sends one browser read through the production Worker pipeline.
+    async fn worker_browser_response(
+        state: &Arc<aos_hub_native::server::AppState>,
+        origin: &str,
+        path: &str,
+        accept: &str,
+        cookie: Option<&str>,
+    ) -> axum::response::Response {
         let deps = aos_hub_native::server::console_deps_for_worker_test(state);
         let svc = worker_rpc_service(state);
         let router = aos_hub_service::connect::router(Arc::new(worker_rpc_service(state)))
             .merge(console_router(deps.clone()));
 
         let url = url::Url::parse(&format!("{origin}{path}")).unwrap();
-        let request = http::Request::builder()
+        let mut request = http::Request::builder()
             .method(Method::GET)
             .uri(url.as_str())
-            .header(http::header::ACCEPT, accept)
+            .header(http::header::ACCEPT, accept);
+        if let Some(cookie) = cookie {
+            request = request.header(http::header::COOKIE, cookie);
+        }
+        let request = request
             .extension(
                 aos_hub_service::connect::DeliveryTransportEvidence::from_verified_url(&url, "hub")
                     .unwrap(),
             )
             .body(Body::empty())
             .unwrap();
-        let response = worker_console_request(router, &svc, deps, request).await;
+        worker_console_request(router, &svc, deps, request).await
+    }
 
-        let status = response.status();
-        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
-            .await
-            .unwrap();
-        (status, String::from_utf8_lossy(&body).into_owned())
+    #[tokio::test]
+    async fn worker_bridge_marks_session_browse_responses_private() {
+        let _presentation = SITE_PRESENTATION.lock().await;
+        let control = "https://route-probes.example.test";
+        let state = control_host_with_root_oci_route(true, control).await;
+
+        for path in [
+            "/",
+            "/route-probes/fresh/-/docs",
+            "/route-probes/fresh/-/missing",
+        ] {
+            let response = worker_browser_response(
+                &state,
+                control,
+                path,
+                "text/html",
+                Some("__Host-aos_session=session-secret"),
+            )
+            .await;
+            assert_eq!(
+                response.headers()[http::header::CACHE_CONTROL],
+                "private, no-store",
+                "cache policy for {path}"
+            );
+            assert_eq!(
+                response.headers()[http::header::VARY],
+                "Authorization, Cookie",
+                "credential variance for {path}"
+            );
+        }
     }
 
     #[tokio::test]

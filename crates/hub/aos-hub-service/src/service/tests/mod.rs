@@ -14,7 +14,7 @@ use super::{
 };
 use crate::coordinator::InMemoryCoordinator;
 use crate::fetch::{StreamedRead, SurfaceFetch, SurfaceObjectEvidence, SurfaceProvider};
-use crate::lease::InMemoryLease;
+use crate::lease::{InMemoryLease, LeaseAcquireError, PublishLease};
 use crate::ratelimit::CoordinatorRateLimiter;
 use crate::reindex::Reindexer;
 use crate::surface_write::{
@@ -282,6 +282,24 @@ impl crate::topology_probe::IdentityDomainVerifier for UnavailableIdentityDomain
     }
 }
 
+struct UnavailablePublishLease;
+
+#[async_trait::async_trait]
+impl PublishLease for UnavailablePublishLease {
+    async fn acquire(
+        &self,
+        _registry_id: i64,
+        _token_id: &str,
+        _now: i64,
+    ) -> Result<(), LeaseAcquireError> {
+        Err(LeaseAcquireError::Unavailable(anyhow::anyhow!(
+            "injected lease storage failure"
+        )))
+    }
+
+    async fn release(&self, _registry_id: i64, _token_id: &str) {}
+}
+
 async fn injected_service(
     fetch_behaviors: Vec<FetchBehavior>,
     write_behaviors: Vec<WriteBehavior>,
@@ -338,23 +356,25 @@ async fn injected_service_with_dependencies(
         .await
         .unwrap()
         .unwrap();
-    let token = jwt_keys
-        .mint(
-            &TokenAuth {
-                token_id: "holder".into(),
-                owner: Principal::user(user_id),
-                scope: Scope::root(),
-                permissions: vec![
-                    Permission::RegistryConfigure,
-                    Permission::Publish,
-                    Permission::TokensManage,
-                    Permission::IamAdmin,
-                    Permission::MembersManage,
-                ],
-            },
-            3600,
+    let permissions = vec![
+        Permission::RegistryConfigure,
+        Permission::Publish,
+        Permission::TokensManage,
+        Permission::IamAdmin,
+        Permission::MembersManage,
+    ];
+    let (_, token_secret) = db
+        .create_token(
+            Principal::user(user_id),
+            "instance",
+            &permissions,
+            None,
+            None,
         )
+        .await
         .unwrap();
+    let token_auth = db.validate_token(&token_secret).await.unwrap().unwrap();
+    let token = jwt_keys.mint(&token_auth, 3600).unwrap();
     let coordinator = Arc::new(InMemoryCoordinator::new());
     let lease = Arc::new(InMemoryLease::new());
     let service = RpcService::new(

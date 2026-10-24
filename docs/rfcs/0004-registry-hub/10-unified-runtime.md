@@ -20,7 +20,7 @@
   The deployed wasm artifact is verified end-to-end under workerd + miniflare by
   `pkgs.aos-registry-worker-e2e` (`just test-worker-e2e`).
 - **Audience:** `crates/hub/aos-hub-native/`, `crates/hub/aos-hub-worker/`,
-  `crates/hub/aos-hub-api/`, the `aos` CLI (`crates/aos/cli/aos-cli/`, `crates/aos/packages/aos-build-client/`).
+  `crates/hub/aos-hub-api/`, the `aos` CLI (`crates/cli/aos-cli/`, `crates/packages/aos-build-client/`).
 
 > The proposal, topology sketch and dated spike below retain their original
 > `aos-registry-*` names. Current ownership is split across `aos-hub-model`,

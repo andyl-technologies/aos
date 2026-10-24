@@ -32,6 +32,40 @@ mod tests {
     }
 
     #[test]
+    fn membership_incarnation_migration_translates_for_each_backend() {
+        let migration = crate::db::MIGRATIONS
+            .iter()
+            .find(|migration| migration.contains("memberships_incarnation_idx"))
+            .expect("membership incarnation migration");
+        let statements = crate::db::backend::split_statements(migration);
+        let alter = statements
+            .iter()
+            .find(|statement| statement.starts_with("ALTER TABLE memberships"))
+            .expect("membership incarnation column");
+        let index = statements
+            .iter()
+            .find(|statement| statement.contains("memberships_incarnation_idx"))
+            .expect("membership incarnation index");
+
+        for (dialect, column_type) in [
+            (Dialect::Sqlite, "TEXT COLLATE BINARY"),
+            (Dialect::Postgres, "VARCHAR(32) COLLATE \"C\""),
+            (Dialect::Mysql, "VARBINARY(32)"),
+        ] {
+            let alter = dialect.translate(alter).unwrap().sql;
+            let index = dialect.translate(index).unwrap().sql;
+            assert!(
+                alter.contains(&format!("incarnation_id {column_type}")),
+                "{dialect:?}: {alter}"
+            );
+            assert!(
+                index.contains("memberships(incarnation_id)"),
+                "{dialect:?}: {index}"
+            );
+        }
+    }
+
+    #[test]
     fn mysql_positional_placeholders() {
         let t = Dialect::Mysql
             .translate("INSERT INTO t (a, b) VALUES (?1, ?2)")

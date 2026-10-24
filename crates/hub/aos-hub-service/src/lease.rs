@@ -10,10 +10,10 @@
 //! *different* token's mutable-pointer write is rejected. Immutable object
 //! writes never take the lease.
 //!
-//! - [`PublishLease`] — `acquire` (take or refresh, or report the conflicting
-//!   holder) / `release` (drop iff mine). The hub serves the facade write path
-//!   through this port so the same serialization logic is single-sourced across
-//!   the native hub and the Cloudflare Worker.
+//! - [`PublishLease`] — `acquire` (take or refresh, or report why it could not
+//!   be acquired) / `release` (drop iff mine). The hub serves the facade write
+//!   path through this port so the same serialization logic is single-sourced
+//!   across the native hub and the Cloudflare Worker.
 //!
 //! # Deployment mapping
 //!
@@ -40,6 +40,40 @@ use std::sync::{Arc, Mutex};
 use crate::coordinator::Coordinator;
 use aos_hub_db::backend::BackendBounds;
 
+/// Explains why a publish lease could not be acquired.
+#[derive(Debug)]
+pub enum LeaseAcquireError {
+    /// Another publisher holds a live lease for the registry.
+    Conflict(String),
+    /// The shared coordinator could not confirm lease ownership.
+    Unavailable(anyhow::Error),
+}
+
+impl std::fmt::Display for LeaseAcquireError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            LeaseAcquireError::Conflict(holder) => {
+                write!(formatter, "publish lease is held by {holder}")
+            }
+            LeaseAcquireError::Unavailable(error) => {
+                write!(
+                    formatter,
+                    "publish lease coordinator is unavailable: {error:#}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for LeaseAcquireError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            LeaseAcquireError::Conflict(_) => None,
+            LeaseAcquireError::Unavailable(error) => Some(error.as_ref()),
+        }
+    }
+}
+
 /// Grace period, in seconds, after which an idle publish lease expires and
 /// another token may take it.
 ///
@@ -63,25 +97,28 @@ pub const LEASE_TTL_SECS: i64 = 300;
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 pub trait PublishLease: BackendBounds {
     /// Acquire or refresh the lease for `registry_id` on behalf of `token_id`,
-    /// or report the conflicting holder.
+    /// or report why ownership could not be confirmed.
     ///
     /// Returns `Ok(())` when `token_id` already holds the lease (the deadline is
     /// refreshed to `now + `[`LEASE_TTL_SECS`]) or no live lease exists (a new
-    /// one is taken). Returns `Err(holder)` with the conflicting token id when a
-    /// *different* token holds an unexpired lease.
+    /// one is taken). Returns [`LeaseAcquireError::Conflict`] with the
+    /// conflicting token id when a *different* token holds an unexpired lease.
     ///
     /// `now` is the current unix time in seconds; the caller supplies it so the
     /// clock is testable.
     ///
     /// # Errors
     ///
-    /// The `Err` variant is the *conflict* signal carrying the current holder's
-    /// token id, not a transport failure: a durable implementation that cannot
-    /// reach its store treats that as an internal error of the surrounding write
-    /// handler, not a lease conflict, so it returns a holder string only for a
-    /// genuine live-lease collision and otherwise propagates the IO error out of
-    /// band (by acquiring optimistically — see the Worker impl).
-    async fn acquire(&self, registry_id: i64, token_id: &str, now: i64) -> Result<(), String>;
+    /// Returns [`LeaseAcquireError::Conflict`] for a live lease held by another
+    /// publisher and [`LeaseAcquireError::Unavailable`] when the coordinator
+    /// cannot confirm ownership. Callers must not mutate public pointers after
+    /// either error.
+    async fn acquire(
+        &self,
+        registry_id: i64,
+        token_id: &str,
+        now: i64,
+    ) -> Result<(), LeaseAcquireError>;
 
     /// Release the lease for `registry_id` iff `token_id` currently holds it.
     ///
@@ -130,11 +167,16 @@ impl InMemoryLease {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl PublishLease for InMemoryLease {
-    async fn acquire(&self, registry_id: i64, token_id: &str, now: i64) -> Result<(), String> {
+    async fn acquire(
+        &self,
+        registry_id: i64,
+        token_id: &str,
+        now: i64,
+    ) -> Result<(), LeaseAcquireError> {
         let mut leases = self.leases.lock().unwrap_or_else(|p| p.into_inner());
         match leases.get(&registry_id) {
             Some(lease) if lease.deadline > now && lease.holder_token_id != token_id => {
-                Err(lease.holder_token_id.clone())
+                Err(LeaseAcquireError::Conflict(lease.holder_token_id.clone()))
             }
             _ => {
                 leases.insert(
@@ -191,7 +233,12 @@ impl CoordinatorLease {
 #[cfg_attr(not(target_arch = "wasm32"), async_trait::async_trait)]
 #[cfg_attr(target_arch = "wasm32", async_trait::async_trait(?Send))]
 impl PublishLease for CoordinatorLease {
-    async fn acquire(&self, registry_id: i64, token_id: &str, now: i64) -> Result<(), String> {
+    async fn acquire(
+        &self,
+        registry_id: i64,
+        token_id: &str,
+        now: i64,
+    ) -> Result<(), LeaseAcquireError> {
         match self
             .coordinator
             .acquire_lease(&Self::key(registry_id), token_id, LEASE_TTL_SECS, now)
@@ -200,13 +247,10 @@ impl PublishLease for CoordinatorLease {
             // Acquired or refreshed by us.
             Ok(None) => Ok(()),
             // A different token holds a live lease — the conflict signal.
-            Ok(Some(holder)) => Err(holder),
-            // A coordinator IO error is not a lease conflict: acquire
-            // optimistically so a transient coordinator failure never blocks a
-            // legitimate publish (matching the coordinator's out-of-band
-            // error handling). The surrounding write handler surfaces real IO
-            // failures of the pointer writes themselves.
-            Err(_) => Ok(()),
+            Ok(Some(holder)) => Err(LeaseAcquireError::Conflict(holder)),
+            // Pointer state may advance only after the coordinator confirms
+            // that this publisher owns the lease.
+            Err(error) => Err(LeaseAcquireError::Unavailable(error)),
         }
     }
 
@@ -225,24 +269,61 @@ mod tests {
     use super::*;
     use crate::coordinator::InMemoryCoordinator;
 
+    struct UnavailableCoordinator;
+
+    #[async_trait::async_trait]
+    impl Coordinator for UnavailableCoordinator {
+        async fn admit(
+            &self,
+            _class: &str,
+            _key: &str,
+            _window: i64,
+            _budget: i64,
+        ) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        async fn acquire_lease(
+            &self,
+            _key: &str,
+            _holder: &str,
+            _ttl_secs: i64,
+            _now: i64,
+        ) -> anyhow::Result<Option<String>> {
+            anyhow::bail!("injected coordinator read failure")
+        }
+
+        async fn release_lease(&self, _key: &str, _holder: &str) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        async fn advance_floor(&self, _key: &str, _value: i64) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+    }
+
+    fn assert_conflict(result: Result<(), LeaseAcquireError>, expected_holder: &str) {
+        assert!(
+            matches!(
+                result,
+                Err(LeaseAcquireError::Conflict(holder)) if holder == expected_holder
+            ),
+            "expected a conflict held by {expected_holder}"
+        );
+    }
+
     #[tokio::test]
     async fn coordinator_lease_matches_lease_semantics() {
         let lease = CoordinatorLease::new(Arc::new(InMemoryCoordinator::new()));
         // First token takes it; same token refreshes; a different token conflicts.
         assert!(lease.acquire(1, "token-a", 1000).await.is_ok());
         assert!(lease.acquire(1, "token-a", 1010).await.is_ok());
-        assert_eq!(
-            lease.acquire(1, "token-b", 1020).await,
-            Err("token-a".into())
-        );
+        assert_conflict(lease.acquire(1, "token-b", 1020).await, "token-a");
         // A different registry is independent.
         assert!(lease.acquire(2, "token-b", 1020).await.is_ok());
         // The holder's release frees it for the other token.
         lease.release(1, "token-b").await; // no-op (not holder)
-        assert_eq!(
-            lease.acquire(1, "token-b", 1030).await,
-            Err("token-a".into())
-        );
+        assert_conflict(lease.acquire(1, "token-b", 1030).await, "token-a");
         lease.release(1, "token-a").await;
         assert!(lease.acquire(1, "token-b", 1040).await.is_ok());
     }
@@ -255,10 +336,7 @@ mod tests {
         // Same token refreshes it.
         assert!(leases.acquire(1, "token-a", 1010).await.is_ok());
         // A different token is blocked while the lease is live.
-        assert_eq!(
-            leases.acquire(1, "token-b", 1020).await,
-            Err("token-a".into())
-        );
+        assert_conflict(leases.acquire(1, "token-b", 1020).await, "token-a");
         // A different registry is independent.
         assert!(leases.acquire(2, "token-b", 1020).await.is_ok());
         // After the last refresh's deadline passes, the other token may take it
@@ -275,12 +353,18 @@ mod tests {
         assert!(leases.acquire(1, "token-a", 1000).await.is_ok());
         // A non-holder's release is a no-op: token-a still holds it.
         leases.release(1, "token-b").await;
-        assert_eq!(
-            leases.acquire(1, "token-b", 1010).await,
-            Err("token-a".into())
-        );
+        assert_conflict(leases.acquire(1, "token-b", 1010).await, "token-a");
         // The holder's release frees it; token-b can now take it.
         leases.release(1, "token-a").await;
         assert!(leases.acquire(1, "token-b", 1020).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn coordinator_failure_is_distinct_from_lease_contention() {
+        let lease = CoordinatorLease::new(Arc::new(UnavailableCoordinator));
+
+        let result = lease.acquire(1, "token-a", 1000).await;
+
+        assert!(matches!(result, Err(LeaseAcquireError::Unavailable(_))));
     }
 }

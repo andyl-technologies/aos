@@ -9,15 +9,15 @@
   executionRuntime =
     import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible/engine/crucible-engine/src/model/fault_signal/execution_runtime.rs;
+      entry = ../../crates/crucible/crucible-engine/src/model/fault_signal/execution_runtime.rs;
     }
-    + builtins.readFile ../../crates/crucible/engine/crucible-engine/src/model/fault_signal/execution_runtime_test.rs
-    + builtins.readFile ../../crates/crucible/engine/crucible-engine/src/model/fault_signal/execution_runtime_replay_test.rs;
+    + builtins.readFile ../../crates/crucible/crucible-engine/src/model/fault_signal/execution_runtime_test.rs
+    + builtins.readFile ../../crates/crucible/crucible-engine/src/model/fault_signal/execution_runtime_replay_test.rs;
   defaultChecks = builtins.readFile ./default.nix;
   inherit (import ./_lib.nix {inherit lib;}) failuresFor forbiddenFor;
   taskList = builtins.concatStringsSep "," taskIds;
   failures =
-    failuresFor "crates/crucible/engine/crucible-engine/src/model/fault_signal/execution_runtime.rs" executionRuntime [
+    failuresFor "crates/crucible/crucible-engine/src/model/fault_signal/execution_runtime.rs" executionRuntime [
       {
         label = "seeded signal evaluator ownership";
         needle = "OwnedFaultExecutionRuntime";
@@ -53,7 +53,7 @@
         needle = "schedulerResolveRng = import ./phase3-scheduler-resolve-rng.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/model/fault_signal/execution_runtime.rs" executionRuntime [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/model/fault_signal/execution_runtime.rs" executionRuntime [
       {
         label = "wall-clock entropy";
         needle = "thread_rng";

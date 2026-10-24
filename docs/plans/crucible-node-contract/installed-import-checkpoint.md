@@ -25,7 +25,7 @@ require the later post-Observe journal protocol.
 
 The current selected path retains the actual decoded Host, native-before,
 native-after and registry owners in
-[`archive_owner/retained.rs`](../../../crates/crucible/engine/crucible-engine/src/node_adapters/cnp/semantic/packet_complete_source/archive_owner/retained.rs).
+[`archive_owner/retained.rs`](../../../crates/crucible/crucible-engine/src/node_adapters/cnp/semantic/packet_complete_source/archive_owner/retained.rs).
 Clearing the unrelated Owned11-only `InstalledArchivedProtocolState` slot would
 not change these consumers. A digest or a successful installation flag cannot
 replace the predicates they currently evaluate.
@@ -89,10 +89,10 @@ implementation must also audit their callers and error paths:
 
 | Consumer | Required replacement or phase proof |
 | --- | --- |
-| [`window/observation_continuation.rs`](../../../crates/crucible/engine/crucible-engine/src/node_admission/conformance/restoration_construction/window/observation_continuation.rs) | Replace repeated archived runtime/protocol/native validation while retaining actual current Source/native checks. |
-| [`window.rs::original_signing_inputs_data`](../../../crates/crucible/engine/crucible-engine/src/node_admission/conformance/restoration_construction/window.rs) and `archive_owner/retained.rs` | Supply the authenticated initial journal/Capture terminal from the new bounded immutable reader; activation and later signing callbacks reach this path. |
-| [`window/continuation.rs`](../../../crates/crucible/engine/crucible-engine/src/node_admission/conformance/restoration_construction/window/continuation.rs) and [`window/installed_context.rs`](../../../crates/crucible/engine/crucible-engine/src/node_admission/conformance/restoration_construction/window/installed_context.rs) | Add distinct installed-checkpoint loans, or prove each old branch is unavailable after transition; preserve ordinary failure and partial-owner handling. |
-| [`restoration_activation/evidence.rs`](../../../crates/crucible/engine/crucible-engine/src/node_adapters/cnp/semantic/packet_complete_source/ack_peer/association/restoration_activation/evidence.rs) | Keep actual saved Commit/World pairs and immutable Hold lineage; join the new archived-validation reader under the same SourceRead. |
+| [`window/observation_continuation.rs`](../../../crates/crucible/crucible-engine/src/node_admission/conformance/restoration_construction/window/observation_continuation.rs) | Replace repeated archived runtime/protocol/native validation while retaining actual current Source/native checks. |
+| [`window.rs::original_signing_inputs_data`](../../../crates/crucible/crucible-engine/src/node_admission/conformance/restoration_construction/window.rs) and `archive_owner/retained.rs` | Supply the authenticated initial journal/Capture terminal from the new bounded immutable reader; activation and later signing callbacks reach this path. |
+| [`window/continuation.rs`](../../../crates/crucible/crucible-engine/src/node_admission/conformance/restoration_construction/window/continuation.rs) and [`window/installed_context.rs`](../../../crates/crucible/crucible-engine/src/node_admission/conformance/restoration_construction/window/installed_context.rs) | Add distinct installed-checkpoint loans, or prove each old branch is unavailable after transition; preserve ordinary failure and partial-owner handling. |
+| [`restoration_activation/evidence.rs`](../../../crates/crucible/crucible-engine/src/node_adapters/cnp/semantic/packet_complete_source/ack_peer/association/restoration_activation/evidence.rs) | Keep actual saved Commit/World pairs and immutable Hold lineage; join the new archived-validation reader under the same SourceRead. |
 
 A failed admission, immutable lookup, validation, live borrow or final
 currency check retains the old graph and every actual partial transition owner.

@@ -1,0 +1,7 @@
+# Build the compiler cache independently of the applications that use it.
+[workspace]
+resolver = "3"
+members = ["accache", "accache-frontend"]
+
+[profile.release]
+strip = true

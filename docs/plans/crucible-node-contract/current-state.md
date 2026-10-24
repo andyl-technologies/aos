@@ -6,7 +6,7 @@ This is a nonnormative source audit at commit
 
 ## 1. Existing graph vocabulary is already heterogeneous
 
-[Topology declarations](../../../crates/crucible/engine/crucible-engine/src/model/topology_faults.rs)
+[Topology declarations](../../../crates/crucible/crucible-engine/src/model/topology_faults.rs)
 define `NodeId` at line 9 as a canonical name, without a VM restriction.
 `SchedulerNodeId` at line 18 adds a scheduling kind. Its existing kinds include
 VM, disk, 9p, network, and control plane. `WorldNodeDef` at line 284 includes VM
@@ -15,7 +15,7 @@ names that need to be replaced wholesale.
 
 `WorldNode` at line 62 is specifically compute configuration: architecture,
 memory, guest command line, readiness, vCPUs, kernel, root image, and initrd.
-[NodeTemplate](../../../crates/crucible/engine/crucible-engine/src/model/family.rs), line 11, is its
+[NodeTemplate](../../../crates/crucible/crucible-engine/src/model/family.rs), line 11, is its
 compute-only authoring counterpart. Their broad names obscure that specialization.
 `WorldNodeDef` is the appropriate heterogeneous layer to extend.
 
@@ -41,7 +41,7 @@ Target changes:
 
 ## 2. The backend trait is collection-shaped
 
-[Backend contracts](../../../crates/crucible/engine/crucible-engine/src/backend.rs) contain two relevant
+[Backend contracts](../../../crates/crucible/crucible-engine/src/backend.rs) contain two relevant
 surfaces. `Backend` at line 38 has single-machine advance, input, fingerprint,
 snapshot, restore, and shutdown methods. `SimulationBackend` at line 103 serves
 the session and scheduler and addresses operations by `NodeId`. It includes
@@ -51,7 +51,7 @@ runtime handles can be thread-affine.
 
 `SimulationBackend::dispatch_contract`, line 161, and
 `io_inventory_authority`, line 169, return one contract for the collection.
-[BackendQuantumLoop](../../../crates/crucible/engine/crucible-engine/src/scheduler/event_log/backend_loop.rs),
+[BackendQuantumLoop](../../../crates/crucible/crucible-engine/src/scheduler/event_log/backend_loop.rs),
 line 148, retains one selected dispatch contract and rejects later changes.
 That immutability is valuable; its scope is too broad for a mixed implementation
 graph. The target retains immutable negotiation per realization and uses an
@@ -63,21 +63,21 @@ ceilings and retained native queues. Neither value means “quantized.” Mappin
 KVM to `ControlV3` because it has a controller connection would make an invalid
 exactness claim.
 
-[Concurrent dispatch](../../../crates/crucible/engine/crucible-engine/src/scheduler/concurrent_prepare.rs),
+[Concurrent dispatch](../../../crates/crucible/crucible-engine/src/scheduler/concurrent_prepare.rs),
 line 142, defines `ConcurrentSimulationBackend`. Prepared RUNs retain sealed
 admission and dispatch ceilings. Results distinguish completed, input, tighter
 cap, and internal dispatch boundaries. This authority and settlement structure
 must survive extraction. A new generic observation struct must not collapse an
 unsettled native stop into a completed scheduler boundary.
 
-[QemuNodeSet](../../../crates/crucible/qemu/crucible-qemu-host/src/node_set.rs), line 463, already
+[QemuNodeSet](../../../crates/crucible/crucible-qemu-host/src/node_set.rs), line 463, already
 holds a `BTreeMap<NodeId, QemuNode>` with per-node pending requests and retained
 evidence. Keep it as the QEMU implementation collection. A mixed runtime can
 route to QEMU owners without renaming native QEMU operations to generic names.
 
 ## 3. Devices already separate computation and delivery
 
-[IoSubNode and IoCore](../../../crates/crucible/engine/crucible-device/src/subnode.rs) provide a
+[IoSubNode and IoCore](../../../crates/crucible/crucible-device/src/subnode.rs) provide a
 useful specialized facet. `IoSubNode` at line 74 computes a response from the
 request and owned state, and has rollback state for computation transactions.
 `IoCore` at line 126 owns deterministic queues, local clock, sequence ordering,
@@ -90,11 +90,11 @@ facet and wrap it in the general node contract. Physical adapters advertise
 different guarantees instead of pretending that host or hardware behavior is a
 pure function.
 
-[DeviceSchedulingSubNode](../../../crates/crucible/engine/crucible-engine/src/device_subnode.rs), line
+[DeviceSchedulingSubNode](../../../crates/crucible/crucible-engine/src/device_subnode.rs), line
 313, connects that device state to scheduler participation.
-[Scheduler construction](../../../crates/crucible/engine/crucible-engine/src/scheduler/single_scheduler_state.rs),
+[Scheduler construction](../../../crates/crucible/crucible-engine/src/scheduler/single_scheduler_state.rs),
 line 38, validates VM participants, attaches device nodes to consumers, and
-instantiates world network links. [Scheduler runtime state](../../../crates/crucible/engine/crucible-engine/src/scheduler/runtime_state.rs),
+instantiates world network links. [Scheduler runtime state](../../../crates/crucible/crucible-engine/src/scheduler/runtime_state.rs),
 line 416, holds the authoritative scheduler state.
 
 The target distinguishes an event-driven node's next possible event from an
@@ -105,16 +105,16 @@ inferred from a missing queue observation.
 
 ## 4. Logical time exists, but names still conflate units
 
-[NodeTimeMapping](../../../crates/crucible/engine/crucible-engine/src/node_time.rs), line 12, maps a
+[NodeTimeMapping](../../../crates/crucible/crucible-engine/src/node_time.rs), line 12, maps a
 node-local logical counter to shared time using an anchor. It already supports
 rebasing after restore. It is not a rate controller for a hardware clock, and
 guest clock faults do not change this map.
 
-`ExecutionHorizon` in [backend.rs](../../../crates/crucible/engine/crucible-engine/src/backend.rs), line
+`ExecutionHorizon` in [backend.rs](../../../crates/crucible/crucible-engine/src/backend.rs), line
 555, carries `Icount`; `AdvanceOutcome::Paused` also uses instruction-shaped
 coordinates. Concurrent dispatch turns the admitted horizon into logical ticks.
 The QEMU implementation retains raw retirement and logical time separately in
-its [marker diagnostics](../../../crates/crucible/qemu/crucible-qemu-host/src/node_set.rs), line 488.
+its [marker diagnostics](../../../crates/crucible/crucible-qemu-host/src/node_set.rs), line 488.
 This is evidence for a type cleanup, not evidence that clocks can be arbitrarily
 scaled without changing behavior.
 
@@ -130,41 +130,41 @@ cannot be relabeled to supply this contract.
 
 ## 5. Production lifecycle and campaign code remain QEMU-bound
 
-[ProductionVmLifecycleLoop](../../../crates/crucible/control/crucible-daemon/src/vm_lifecycle.rs), line
+[ProductionVmLifecycleLoop](../../../crates/crucible/crucible-daemon/src/vm_lifecycle.rs), line
 1064, contains `BackendQuantumLoop<SingleScheduler, QemuNodeSet, ...>` and QEMU
 launch configuration, fault, device, generation, debugger, and continuation
 state. Its apparently broad name does not make it a provider-neutral runtime.
 Extract common lifecycle orchestration while retaining actual process launch,
 native receipts, VMState, and debugger implementation adapters.
 
-[The campaign driver](../../../crates/crucible/control/crucible-daemon/src/qemu_campaign_driver.rs)
+[The campaign driver](../../../crates/crucible/crucible-daemon/src/qemu_campaign_driver.rs)
 already declares `QemuModeledAttemptLifecycle`, line 958, as a
 materialization-independent semantic surface. It contains frontier, quantum,
 choice, and quiescence operations, but later methods expose QEMU marker proof.
 Extract a neutral semantic core and an explicit exact compute/marker facet;
 do not merely rename the whole file while leaving its types QEMU-shaped.
 
-[CLI backend resolution](../../../crates/crucible/control/crucible-cli/src/cli/backend.rs), line
+[CLI backend resolution](../../../crates/crucible/crucible-cli/src/cli/backend.rs), line
 127, describes a resolved local QEMU implementation.
-[Finding deployment](../../../crates/crucible/control/crucible-daemon/src/finding_production_replay/deployment.rs)
+[Finding deployment](../../../crates/crucible/crucible-daemon/src/finding_production_replay/deployment.rs)
 also routes through QEMU execution. Provider selection, resource admission,
 attempt orchestration, and node launch need distinct seams.
 
 ## 6. Compatibility and checkpoint identity are global today
 
-[CampaignLineage](../../../crates/crucible/engine/crucible-campaign/src/model.rs), line 77, has
-one `qemu_build`. [ExecutorCompatibilityProfile](../../../crates/crucible/engine/crucible-campaign/src/execution.rs),
+[CampaignLineage](../../../crates/crucible/crucible-campaign/src/model.rs), line 77, has
+one `qemu_build`. [ExecutorCompatibilityProfile](../../../crates/crucible/crucible-campaign/src/execution.rs),
 line 115, compares that build and other global facts.
-[ExecutorCapabilitySet](../../../crates/crucible/engine/crucible-campaign/src/executor_capability.rs),
+[ExecutorCapabilitySet](../../../crates/crucible/crucible-campaign/src/executor_capability.rs),
 line 110, carries QEMU profiles; its constructor at line 147 requires
 `ThinReplay`. That requirement protects the existing deterministic campaign
 path. It cannot apply to unrecorded KVM or hardware attempts, and must not simply
 be deleted from the old schema.
 
-[Checkpoint](../../../crates/crucible/engine/crucible-engine/src/model/materialized.rs), line 906,
+[Checkpoint](../../../crates/crucible/crucible-engine/src/model/materialized.rs), line 906,
 includes per-node blobs and a concrete execution-closure reference.
 `CheckpointMeta` is explicitly identity-irrelevant. Implementation bindings
-cannot be added only to labels. [Exact checkpoint relations](../../../crates/crucible/engine/crucible-engine/src/exact_checkpoint.rs)
+cannot be added only to labels. [Exact checkpoint relations](../../../crates/crucible/crucible-engine/src/exact_checkpoint.rs)
 use canonical, versioned manifest, target, frontier, sparse-artifact, and
 repository relations. These are a sound basis for extending binding to all state
 owners, not a generic bag of optional provider metadata.
@@ -185,12 +185,12 @@ conditional on the complete accepted transcript, including its inbound requests.
 
 ## 7. Dependency placement and license boundary
 
-At the audited revision, [crucible](../../../crates/crucible/engine/crucible-engine/Cargo.toml) depends
+At the audited revision, [crucible](../../../crates/crucible/crucible-engine/Cargo.toml) depends
 on `crucible-sim`, campaign, CAS, device, and protocol crates.
-[crucible-device](../../../crates/crucible/engine/crucible-device/Cargo.toml) depends on sim,
+[crucible-device](../../../crates/crucible/crucible-device/Cargo.toml) depends on sim,
 shmem, and codec libraries, not on `crucible`.
-[crucible-qemu](../../../crates/crucible/qemu/crucible-qemu-host/Cargo.toml) depends on both.
-[crucible-campaign](../../../crates/crucible/engine/crucible-campaign/Cargo.toml) is lower than
+[crucible-qemu](../../../crates/crucible/crucible-qemu-host/Cargo.toml) depends on both.
+[crucible-campaign](../../../crates/crucible/crucible-campaign/Cargo.toml) is lower than
 the runtime and cannot acquire a dependency on the high-level `crucible` crate
 merely to encode implementation identity.
 

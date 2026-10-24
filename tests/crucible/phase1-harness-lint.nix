@@ -31,23 +31,23 @@
   harnessLintBaseline = builtins.readFile ./harness-lint-baseline.txt;
   defaultChecks = builtins.readFile ./default.nix;
   crucibleModel = import ./_crucible-model-source.nix {inherit lib;};
-  predicateDsl = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/predicate_dsl.rs;
-  harnessLintMainRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/harness_lint.rs;
-  harnessLintScanRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/scan.rs;
+  predicateDsl = builtins.readFile ../../crates/crucible/crucible-engine/tests/predicate_dsl.rs;
+  harnessLintMainRust = builtins.readFile ../../crates/crucible/crucible-test-support/tests/harness_lint.rs;
+  harnessLintScanRust = builtins.readFile ../../crates/crucible/crucible-test-support/tests/support/harness_lint/scan.rs;
   harnessLintRust = builtins.concatStringsSep "\n" (
     [
       harnessLintMainRust
     ]
     ++ (map builtins.readFile [
-      ../../crates/crucible/testing/crucible-test-support/tests/harness_lint_annotations.rs
-      ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/allow.rs
-      ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/clippy.rs
-      ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/common.rs
-      ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/confinement.rs
-      ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/error_logging.rs
-      ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/lex.rs
-      ../../crates/crucible/testing/crucible-test-support/tests/support/harness_lint/reference_integrity.rs
-      ../../crates/crucible/testing/crucible-test-support/tests/support/source_sections.rs
+      ../../crates/crucible/crucible-test-support/tests/harness_lint_annotations.rs
+      ../../crates/crucible/crucible-test-support/tests/support/harness_lint/allow.rs
+      ../../crates/crucible/crucible-test-support/tests/support/harness_lint/clippy.rs
+      ../../crates/crucible/crucible-test-support/tests/support/harness_lint/common.rs
+      ../../crates/crucible/crucible-test-support/tests/support/harness_lint/confinement.rs
+      ../../crates/crucible/crucible-test-support/tests/support/harness_lint/error_logging.rs
+      ../../crates/crucible/crucible-test-support/tests/support/harness_lint/lex.rs
+      ../../crates/crucible/crucible-test-support/tests/support/harness_lint/reference_integrity.rs
+      ../../crates/crucible/crucible-test-support/tests/support/source_sections.rs
     ])
     ++ [
       harnessLintScanRust
@@ -1061,7 +1061,7 @@
       lib.concatMap (
         required:
           lib.optionals (!(hasInfix required harnessLintRust)) [
-            "crates/crucible/testing/crucible-test-support/tests/harness_lint.rs: missing custom static-analysis tier wiring `${required}`"
+            "crates/crucible/crucible-test-support/tests/harness_lint.rs: missing custom static-analysis tier wiring `${required}`"
           ]
       )
       requiredRustTierText;
@@ -1162,13 +1162,13 @@
         anyhow::bail!("erased error");
       }
     '';
-    cliBoundaryFindings = scanErrorLoggingContent "crucible/control/crucible-cli/src/main.rs" true ''
+    cliBoundaryFindings = scanErrorLoggingContent "crucible/crucible-cli/src/main.rs" true ''
       fn main() -> anyhow::Result<()> {
         println!("cli output is allowed");
         Ok(())
       }
     '';
-    cliModuleFindings = scanErrorLoggingContent "crucible/control/crucible-cli/src/command.rs" true ''
+    cliModuleFindings = scanErrorLoggingContent "crucible/crucible-cli/src/command.rs" true ''
       pub fn command() -> anyhow::Result<()> {
         println!("command module output crosses the binary boundary");
         Ok(())
@@ -1186,16 +1186,16 @@
     ];
 
   manifestRegressionFailures = let
-    erasedFindings = scanManifestErrorPolicyContent "crucible/engine/crucible-determinism/Cargo.toml" ''
+    erasedFindings = scanManifestErrorPolicyContent "crucible/crucible-determinism/Cargo.toml" ''
       [dependencies]
       thiserror = { workspace = true }
       anyhow = { workspace = true }
     '' [];
-    missingTypedFindings = scanManifestErrorPolicyContent "crucible/engine/crucible-determinism/Cargo.toml" ''
+    missingTypedFindings = scanManifestErrorPolicyContent "crucible/crucible-determinism/Cargo.toml" ''
       [dependencies]
     '' [];
     handRolledFindings =
-      scanManifestErrorPolicyContent "crucible/testing/crucible-test-support/Cargo.toml" ''
+      scanManifestErrorPolicyContent "crucible/crucible-test-support/Cargo.toml" ''
         [dependencies]
       '' [
         ''
@@ -1450,7 +1450,7 @@
       lib.concatMap (
         required:
           lib.optionals (!(hasInfix (normalize required) harnessLintMainCode || hasInfix (normalize required) harnessLintScanCode)) [
-            "crates/crucible/testing/crucible-test-support/tests/harness_lint.rs: missing T-DET-17 harness-lint evidence `${required}`"
+            "crates/crucible/crucible-test-support/tests/harness_lint.rs: missing T-DET-17 harness-lint evidence `${required}`"
           ]
       )
       requiredHarnessCode;
@@ -1474,7 +1474,7 @@
       }
       {
         label = "baseline count field";
-        needle = "crates/crucible/control/crucible-control-server/src/server.rs\tstringly error\tResult<_, String>\t\t32";
+        needle = "crates/crucible/crucible-control-server/src/server.rs\tstringly error\tResult<_, String>\t\t32";
       }
     ];
     phaseWiringFailures =
@@ -1489,7 +1489,7 @@
     harnessFailures ++ denyCoverageFailures ++ docFailures ++ baselineFailures ++ phaseWiringFailures;
 
   tAsrt17CompletionFailures =
-    failuresFor "crates/crucible/engine/crucible-engine/tests/predicate_dsl.rs" predicateDsl [
+    failuresFor "crates/crucible/crucible-engine/tests/predicate_dsl.rs" predicateDsl [
       {
         label = "T-ASRT-17 regression module";
         needle = "Checks T-ASRT-17 predicate DSL desugaring.";
@@ -1515,7 +1515,7 @@
         needle = "Plan::from_event_graph_for_world";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" crucibleModel [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" crucibleModel [
       {
         label = "TOML string DSL parsing";
         needle = "PredicateToml::Dsl(name)";

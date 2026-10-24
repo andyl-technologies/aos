@@ -146,9 +146,9 @@ in
             ${gzip}/bin/gzip -n -c contract.tar > "$profile/contract.tar.gz"
             cp ${./crucible-reference-lineage-reader-typed-implementation.nix} "$profile/recipe.nix"
             cp ${baseSource}/LICENSES/Apache-2.0.txt "$out/share/licenses/crucible-reference-lineage-reader-typed-implementation/LICENSE"
-            cp ${src}/crates/crucible/protocol/crucible-node-format/src/schema/events.rs "$profile/event-definition.rs"
-            cp ${src}/crates/crucible/protocol/crucible-node-format/src/schema/events.rs "$profile/input-definition.rs"
-            cp ${src}/crates/crucible/protocol/crucible-node-format/src/schema/receipts.rs "$profile/stop-definition.rs"
+            cp ${src}/crates/crucible/crucible-node-format/src/schema/events.rs "$profile/event-definition.rs"
+            cp ${src}/crates/crucible/crucible-node-format/src/schema/events.rs "$profile/input-definition.rs"
+            cp ${src}/crates/crucible/crucible-node-format/src/schema/receipts.rs "$profile/stop-definition.rs"
             cat > "$profile/namespace-origin.json" <<'EOF'
             {"schema":"crucible.reference.lineage-reader-typed.namespace-origin.v1","namespace":"org.andyl.reference","source_policy":"public-original-input-lineage-reader-typed-v2","authority":"unqualified installation data; independent source namespace authority required"}
             EOF

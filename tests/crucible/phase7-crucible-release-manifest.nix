@@ -14,9 +14,9 @@
   cargoSourceNix = builtins.readFile ../../pkgs/tools/crucible/_cargo-source.nix;
   defaultChecks = builtins.readFile ./default.nix;
   shmemLib = import ./_crucible-shmem-source.nix {inherit lib;};
-  doorbellAbi = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs;
-  apiRpcAbi = builtins.readFile ../../crates/crucible/control/crucible-control-api/src/rpc_abi.rs;
-  targetModule = "crates/crucible/engine/crucible-engine/src/node_admission/conformance/restoration_construction/target/phase.rs";
+  doorbellAbi = builtins.readFile ../../crates/crucible/crucible-qemu-protocol/src/doorbell_abi.rs;
+  apiRpcAbi = builtins.readFile ../../crates/crucible/crucible-control-api/src/rpc_abi.rs;
+  targetModule = "crates/crucible/crucible-engine/src/node_admission/conformance/restoration_construction/target/phase.rs";
   cargoSrc = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit lib;};
   applicationSrc = import ../../pkgs/tools/aos/_workspace-source.nix {inherit lib;};
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};

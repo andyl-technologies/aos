@@ -10,7 +10,7 @@ MIGRATION = runpy.run_path(str(SCRIPT))
 
 class CrateMigrationTests(unittest.TestCase):
     def rewrite(self, source):
-        return MIGRATION["rust"](source, Path("crates/aos/cli/aos-cli/src/main.rs"))
+        return MIGRATION["rust"](source, Path("crates/cli/aos-cli/src/main.rs"))
 
     def test_quotes_in_character_literals_do_not_hide_imports(self):
         source = "let quote = '\"';\nlet result = aos_release::Release::new();\n"

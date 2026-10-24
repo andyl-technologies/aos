@@ -37,7 +37,7 @@ RFC-0017 fixtures and byte identities.
 
 ### `aos-package-maintenance`
 
-The pure library lives at `crates/aos/release/aos-package-maintenance`. It performs
+The pure library lives at `crates/release/aos-package-maintenance`. It performs
 no filesystem, network, subprocess, Git, Nix, agent, or clock I/O. Callers supply
 all observations explicitly.
 
@@ -79,7 +79,7 @@ commands/maintain/presentation.rs
 ```
 
 Network transfer and SRI hashing should reuse/refactor the AOS machinery behind
-[`aos prefetch`](../../../crates/aos/cli/aos-cli/src/commands/prefetch.rs). Nix and Git
+[`aos prefetch`](../../../crates/cli/aos-cli/src/commands/prefetch.rs). Nix and Git
 operations reuse existing AOS process/repository abstractions where their
 contracts are strong enough.
 

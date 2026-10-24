@@ -9,6 +9,7 @@
   firmwarePackages ? null,
   targetPackages ? null,
   releasePlatforms ? [stdenv.hostPlatform],
+  sharedImageCacheDir ? null,
   sharedGoCacheDir ? null,
   sharedBazelCacheDir ? null,
   sharedRustTargetDir ? null,
@@ -1833,6 +1834,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
 
   self =
     {
+      inherit sharedImageCacheDir;
+
       # --- Plumbing ---
       inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream lib packageNames allPackageNames;
       inherit maintenanceInventory;
@@ -1950,6 +1953,21 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     // outputPackages
     // {
       # --- Explicit overrides for packages needing non-standard arguments ---
+      # Preserve the source-pinned Ninja recipe while supporting callers that
+      # select their build-platform shell through the package factory.
+      ninja = let
+        package = discoveredPackages.ninja;
+      in
+        package
+        // {
+          passthru =
+            (package.passthru or {})
+            // {
+              withCommandShell = shell:
+                callPackage ./toolchain/ninja.nix {bash = shell;};
+            };
+        };
+
       # GLib bootstraps GObject Introspection, while downstream consumers need
       # GLib's GIR metadata. Rebuild this internal variant after the bootstrap
       # scanner exists to break that dependency cycle cleanly.

@@ -107,12 +107,12 @@ Renaming Rust source types does not permit changing any of these bytes/domains.
 | State or operation | Existing authoritative owner and source |
 | --- | --- |
 | Raw retirement, exact physical stop, native timer and input admission | QEMU/plugin, with typed evidence retained by `crucible-qemu` |
-| Node handles and pending native requests | `QemuNodeSet`, `crucible/qemu/crucible-qemu-host/src/node_set.rs` |
-| Shared time, event order, pending scheduler delivery, quantum/decision state | Engine scheduler and its checkpoint, `crucible/engine/crucible-engine/src/scheduler/` |
-| Deterministic device queues, local clock, sequence and in-flight completions | `IoCore`, `crucible/engine/crucible-device/src/subnode.rs` |
-| Host block/9p continuation and independently mapped transport access | `crucible/qemu/crucible-qemu-host/src/supervision/host_io_runtime.rs` and device servicers |
-| VMState, RAM descriptors, native capture/restore admissions | `crucible/qemu/crucible-qemu-host/src/node/exact_snapshot/` and realization adapters |
-| Persisted closure, authenticated selected roots, artifact reachability | `crucible/engine/crucible-engine/src/exact_checkpoint/` and `crucible/control/crucible-control-api/src/vm_lifecycle/checkpoint_store/` |
+| Node handles and pending native requests | `QemuNodeSet`, `crucible/crucible-qemu-host/src/node_set.rs` |
+| Shared time, event order, pending scheduler delivery, quantum/decision state | Engine scheduler and its checkpoint, `crucible/crucible-engine/src/scheduler/` |
+| Deterministic device queues, local clock, sequence and in-flight completions | `IoCore`, `crucible/crucible-device/src/subnode.rs` |
+| Host block/9p continuation and independently mapped transport access | `crucible/crucible-qemu-host/src/supervision/host_io_runtime.rs` and device servicers |
+| VMState, RAM descriptors, native capture/restore admissions | `crucible/crucible-qemu-host/src/node/exact_snapshot/` and realization adapters |
+| Persisted closure, authenticated selected roots, artifact reachability | `crucible/crucible-engine/src/exact_checkpoint/` and `crucible/crucible-control-api/src/vm_lifecycle/checkpoint_store/` |
 | Campaign frontiers, choices and observations | `crucible-campaign`; realized attempt authority remains in the native lifecycle adapter |
 
 Consumer attachments are not capture-owner IDs. Discovery descriptions and

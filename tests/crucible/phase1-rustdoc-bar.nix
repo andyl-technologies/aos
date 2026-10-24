@@ -5,7 +5,7 @@
   inherit (import ./_workspace-packages.nix {inherit lib;}) packageDir packageNames cruciblePackages;
   cratesDir = ../../crates;
   packages = import ../../pkgs/tools/crucible/_packages.nix;
-  rustdocBarTest = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/rustdoc_bar.rs;
+  rustdocBarTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/rustdoc_bar.rs;
   rustdocBarBaseline = builtins.readFile ./rustdoc-bar-baseline.txt;
 
   rootForPackage = {
@@ -270,7 +270,7 @@
   sourceFailures = [];
 
   regressionFailures = let
-    missingModuleDoc = rustdocFailuresForContent "crucible-determinism" "crucible/engine/crucible-determinism/src/lib.rs" ''
+    missingModuleDoc = rustdocFailuresForContent "crucible-determinism" "crucible/crucible-determinism/src/lib.rs" ''
       pub fn documented() {}
     '';
     missingFormat = rustdocFailuresForContent "crucible-qemu-shmem" "crucible-qemu-shmem/src/lib.rs" ''
@@ -280,7 +280,7 @@
       #![deny(missing_docs)]
       #![deny(rustdoc::broken_intra_doc_links)]
     '';
-    untaggedFence = rustdocFailuresForContent "crucible-determinism" "crucible/engine/crucible-determinism/src/lib.rs" ''
+    untaggedFence = rustdocFailuresForContent "crucible-determinism" "crucible/crucible-determinism/src/lib.rs" ''
       //! synthetic
       //!
       //! Module map: synthetic.
@@ -291,7 +291,7 @@
       #![deny(missing_docs)]
       #![deny(rustdoc::broken_intra_doc_links)]
     '';
-    untaggedBlockFence = rustdocFailuresForContent "crucible-determinism" "crucible/engine/crucible-determinism/src/lib.rs" ''
+    untaggedBlockFence = rustdocFailuresForContent "crucible-determinism" "crucible/crucible-determinism/src/lib.rs" ''
       /*!
        * synthetic
        *
@@ -302,7 +302,7 @@
       #![deny(missing_docs)]
       #![deny(rustdoc::broken_intra_doc_links)]
     '';
-    malformedClosingFence = rustdocFailuresForContent "crucible-determinism" "crucible/engine/crucible-determinism/src/lib.rs" ''
+    malformedClosingFence = rustdocFailuresForContent "crucible-determinism" "crucible/crucible-determinism/src/lib.rs" ''
       //! synthetic
       //!
       //! Module map: synthetic.
@@ -314,7 +314,7 @@
       #![deny(missing_docs)]
       #![deny(rustdoc::broken_intra_doc_links)]
     '';
-    nestedShorterFence = rustdocFailuresForContent "crucible-determinism" "crucible/engine/crucible-determinism/src/lib.rs" ''
+    nestedShorterFence = rustdocFailuresForContent "crucible-determinism" "crucible/crucible-determinism/src/lib.rs" ''
       //! synthetic
       //!
       //! Module map: synthetic.
@@ -327,7 +327,7 @@
       #![deny(missing_docs)]
       #![deny(rustdoc::broken_intra_doc_links)]
     '';
-    tabTaggedFence = rustdocFailuresForContent "crucible-determinism" "crucible/engine/crucible-determinism/src/lib.rs" (builtins.concatStringsSep "\n" [
+    tabTaggedFence = rustdocFailuresForContent "crucible-determinism" "crucible/crucible-determinism/src/lib.rs" (builtins.concatStringsSep "\n" [
       "//! synthetic"
       "//!"
       "//! Module map: synthetic."
@@ -338,7 +338,7 @@
       "#![deny(missing_docs)]"
       "#![deny(rustdoc::broken_intra_doc_links)]"
     ]);
-    nonDoctestedNoRunFence = rustdocFailuresForContent "crucible-cli" "crucible/control/crucible-cli/src/main.rs" ''
+    nonDoctestedNoRunFence = rustdocFailuresForContent "crucible-cli" "crucible/crucible-cli/src/main.rs" ''
       //! synthetic
       //!
       //! Module map: synthetic.
@@ -381,16 +381,16 @@
 
   baselineFailures =
     lib.optionals (!(hasInfix "RustdocBarBaseline::load(&root)" rustdocBarTest)) [
-      "crates/crucible/testing/crucible-test-support/tests/rustdoc_bar.rs: missing rustdoc-bar baseline loader"
+      "crates/crucible/crucible-test-support/tests/rustdoc_bar.rs: missing rustdoc-bar baseline loader"
     ]
     ++ lib.optionals (!(hasInfix "stale baseline" rustdocBarTest)) [
-      "crates/crucible/testing/crucible-test-support/tests/rustdoc_bar.rs: missing stale rustdoc-bar baseline check"
+      "crates/crucible/crucible-test-support/tests/rustdoc_bar.rs: missing stale rustdoc-bar baseline check"
     ]
     ++ lib.optionals (!(hasInfix "contains non-ASCII comment/doc text" rustdocBarBaseline)) [
       "tests/crucible/rustdoc-bar-baseline.txt: missing non-ASCII debt baseline"
     ]
     ++ lib.optionals (!(hasInfix "missing `# Errors`" rustdocBarTest)) [
-      "crates/crucible/testing/crucible-test-support/tests/rustdoc_bar.rs: missing # Errors finding kind"
+      "crates/crucible/crucible-test-support/tests/rustdoc_bar.rs: missing # Errors finding kind"
     ];
 
   failures = packageSetFailures ++ regressionFailures ++ sourceFailures ++ attrFailures ++ baselineFailures;

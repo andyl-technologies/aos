@@ -47,17 +47,39 @@ in {
     name ? "cargo-dummy-source",
     cargoRoot ? null,
   }: let
-    rustTargets = collectRustTargets srcRoot "";
+    srcRootString = toString srcRoot;
+    workspaceManifest = builtins.fromTOML (builtins.readFile (srcRoot + "/Cargo.toml"));
+    cratesIoPatches = workspaceManifest.patch."crates-io" or {};
+    patchedCrates = builtins.filter (path: path != null) (
+      lib.mapAttrsToList (_: patch: patch.path or null) cratesIoPatches
+    );
+    isPatchedCratePath = relative:
+      builtins.any
+      (crate: relative == crate || lib.hasPrefix "${crate}/" relative)
+      patchedCrates;
+    patchedCrateInput = pathString:
+      builtins.any
+      (crate: let
+        cratePath = "${srcRootString}/${crate}";
+      in
+        pathString
+        == cratePath
+        || lib.hasPrefix "${cratePath}/" pathString
+        || lib.hasPrefix "${pathString}/" cratePath)
+      patchedCrates;
+    rustTargets = builtins.filter (relative: !isPatchedCratePath relative) (collectRustTargets srcRoot "");
     manifestSource = builtins.path {
       path = srcRoot;
       name = "${name}-manifests";
       filter = path: type: let
         base = baseNameOf path;
+        pathString = toString path;
       in
         if type == "directory"
         then !generatedDirectory srcRoot path && toString path != "${toString srcRoot}/result"
         else
-          builtins.elem base [
+          patchedCrateInput pathString
+          || builtins.elem base [
             "Cargo.toml"
             "Cargo.lock"
             "config"

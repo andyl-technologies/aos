@@ -12,7 +12,7 @@
   # Neither that directory nor the current daemon's run state is package source.
   daemonLocalStatePaths = [
     "${cratesRoot}/crucible-daemon"
-    "${cratesRoot}/crucible/control/crucible-daemon/run-state"
+    "${cratesRoot}/crucible/crucible-daemon/run-state"
   ];
   selectedCrateInput = pathString:
     pathString
