@@ -718,7 +718,7 @@ fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .find(|candidate| {
-            candidate.join("default.nix").is_file() && candidate.join("crates/Cargo.toml").is_file()
+            candidate.join("default.nix").is_file() && candidate.join("MODULE.bazel").is_file()
         })
         .expect("Hub cutover fixtures must run from the AOS repository")
         // Runfiles may expand a declared directory into individual symlinks.

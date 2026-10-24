@@ -43,7 +43,7 @@
     pathString
     == repositoryRootString
     || (inProductionRoot && !excluded && (type == "directory" || (type == "regular" && sourceFile)))
-    || (type == "regular" && builtins.elem relative ["default.nix" "flake.nix" "justfile"]);
+    || (type == "regular" && builtins.elem relative ["MODULE.bazel" "default.nix" "flake.nix" "justfile"]);
   # Enumerate the checkout rather than the filtered store path: read-only Nix
   # evaluation can compute that path without first adding its files to the store.
   sourceFiles = directory: let
@@ -98,7 +98,7 @@ in
                   files[path.relative_to(source).as_posix()] = {
                       "sha256": hashlib.sha256(data).hexdigest(), "size": len(data),
                   }
-          if not files or "crates/Cargo.toml" not in files:
+          if not {"MODULE.bazel", "default.nix"}.issubset(files):
               raise ValueError("production audit source is incomplete")
           (output / "manifest.json").write_text(json.dumps({
               "schema_version": 1, "files": files,

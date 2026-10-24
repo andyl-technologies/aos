@@ -98,12 +98,16 @@ fn hard_cut_fixture_scans_the_complete_production_source_universe() {
         .unwrap_or_else(|| {
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
                 .ancestors()
-                .find(|candidate| candidate.join("crates/Cargo.toml").is_file())
+                .find(|candidate| {
+                    candidate.join("MODULE.bazel").is_file()
+                        && candidate.join("default.nix").is_file()
+                })
                 .expect("retained-control inventory requires the AOS source workspace")
                 .to_path_buf()
         });
     assert!(
-        repository_root.join("crates/Cargo.toml").is_file(),
+        repository_root.join("MODULE.bazel").is_file()
+            && repository_root.join("default.nix").is_file(),
         "production audit requires a complete source workspace"
     );
     let matches = fixture.scan_repository_root(&repository_root).unwrap();
