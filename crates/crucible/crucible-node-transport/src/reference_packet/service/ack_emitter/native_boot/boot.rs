@@ -81,6 +81,46 @@ struct BootData {
     host_executable: ContentRef,
 }
 
+/// Borrows the complete original claim inputs from the retained boot owner.
+///
+/// Both inherited editions use these same immutable operands. Grouping their
+/// loans changes no claim, digest or startup permission; the native claimant
+/// still authenticates each operand against its original inherited prefix.
+pub(super) struct OriginalNativeBootClaimInputs<'a> {
+    /// Borrows the selected typed launch whose parent credentials are checked.
+    pub(super) launch: &'a PacketNative5SourceLaunch,
+    /// Borrows the complete original launch literal, including its edition.
+    pub(super) launch_body: &'a [u8],
+    /// Borrows the retained Source binding whose canonical digest is checked.
+    pub(super) source: &'a serde_json::Value,
+    /// Borrows the retained host registration whose canonical digest is checked.
+    pub(super) registration: &'a serde_json::Value,
+    /// Borrows the private launch identity retained beside the decoded children.
+    pub(super) private_launch: &'a Id,
+    /// Borrows the original private key used to authenticate the prefix MAC.
+    pub(super) key: &'a [u8],
+    /// Borrows the decoded birth identity checked against that same prefix.
+    pub(super) birth_id: &'a [u8],
+}
+
+impl BootData {
+    fn claim_inputs_data<'a>(
+        &'a self,
+        launch: &'a PacketNative5SourceLaunch,
+        launch_body: &'a [u8],
+    ) -> OriginalNativeBootClaimInputs<'a> {
+        OriginalNativeBootClaimInputs {
+            launch,
+            launch_body,
+            source: &self.source_birth,
+            registration: &self.expected_host_registration,
+            private_launch: &self.private_launch,
+            key: self.private_key.as_slice(),
+            birth_id: self.birth_id.as_slice(),
+        }
+    }
+}
+
 // Retains the original decoded children before the independent native row
 // permits construction of the larger Rc-owned boot. Bootstrap owns this inline.
 pub(super) struct OriginalNativeStartupBootAttempt {
@@ -105,6 +145,12 @@ pub(in crate::reference_packet::service) fn original_native_startup_attempt_coun
         + 2 * size_of::<usize>()
         + shape::counter_scratch_data()
         + invocation::attempt_counter_scratch_data()
+        // Each edition adds a getter initializer, return and claim parameter.
+        // Existing individual claim-operand terms remain independently priced.
+        + 6 * size_of::<OriginalNativeBootClaimInputs<'static>>()
+        + 2 * size_of::<&BootData>()
+        + 2 * size_of::<&PacketNative5SourceLaunch>()
+        + 2 * size_of::<&[u8]>()
 }
 
 // Counts the owned initializer and Option assignment separately from the
@@ -224,15 +270,8 @@ impl NativeAckBoot {
         let data = attempt.data.as_ref().ok_or(ProviderError::Correlation(
             "native startup decoded boot absent",
         ))?;
-        let admitted = startup.claim_birth_data(
-            launch,
-            &attempt.launch_body,
-            &data.source_birth,
-            &data.expected_host_registration,
-            &data.private_launch,
-            data.private_key.as_slice(),
-            data.birth_id.as_slice(),
-        )?;
+        let admitted =
+            startup.claim_birth_data(data.claim_inputs_data(launch, &attempt.launch_body))?;
         let data = attempt.data.take().ok_or(ProviderError::Correlation(
             "native startup decoded boot transferred",
         ))?;

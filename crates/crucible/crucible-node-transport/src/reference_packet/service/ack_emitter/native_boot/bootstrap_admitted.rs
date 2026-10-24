@@ -157,13 +157,7 @@ impl OriginalNativeStartupBootstrap {
 impl OriginalNativeStartupBootstrap {
     pub(in crate::reference_packet::service::ack_emitter::native_boot) fn claim_birth_data(
         &mut self,
-        launch: &PacketNative5SourceLaunch,
-        launch_body: &[u8],
-        source: &serde_json::Value,
-        registration: &serde_json::Value,
-        private_launch: &crucible_node_format::Id,
-        key: &[u8],
-        birth_id: &[u8],
+        input: super::super::boot::OriginalNativeBootClaimInputs<'_>,
     ) -> Result<super::super::boot::native_startup::OriginalNativeStartupBoot, ProviderError> {
         use crate::reference_packet::service::native_startup::{
             PACKET_NATIVE_STARTUP_ALLOCATION_SCHEMA, PACKET_NATIVE_STARTUP_SOURCE_BINDING_SCHEMA,
@@ -172,6 +166,16 @@ impl OriginalNativeStartupBootstrap {
             original_native_preflight_birth_startup_storage_data,
         };
         use crucible_node_format::U64;
+
+        let super::super::boot::OriginalNativeBootClaimInputs {
+            launch,
+            launch_body,
+            source,
+            registration,
+            private_launch,
+            key,
+            birth_id,
+        } = input;
 
         self.ensure_original()?;
         if std::mem::replace(&mut self.native_issued, true) {

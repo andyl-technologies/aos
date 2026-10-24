@@ -112,14 +112,8 @@ impl NativeAckBoot {
                 ));
             }
             let admitted = startup.claim_invocation_birth_data(
-                launch,
-                &owner.launch_body,
+                owner.data.claim_inputs_data(launch, &owner.launch_body),
                 &purpose,
-                &owner.data.source_birth,
-                &owner.data.expected_host_registration,
-                &owner.data.private_launch,
-                owner.data.private_key.as_slice(),
-                owner.data.birth_id.as_slice(),
             )?;
             owner.startup = Some(admitted);
         }

@@ -137,16 +137,20 @@ impl OriginalNativeStartupBootstrap {
 
     pub(in crate::reference_packet::service::ack_emitter::native_boot) fn claim_invocation_birth_data(
         &mut self,
-        launch: &PacketNative5SourceLaunch,
-        launch_body: &[u8],
+        input: super::super::super::boot::OriginalNativeBootClaimInputs<'_>,
         purpose: &PacketNativeInvocationPurposeData,
-        source: &serde_json::Value,
-        registration: &serde_json::Value,
-        private_launch: &crucible_node_format::Id,
-        key: &[u8],
-        birth_id: &[u8],
     ) -> Result<super::super::super::boot::native_startup::OriginalNativeStartupBoot, ProviderError>
     {
+        let super::super::super::boot::OriginalNativeBootClaimInputs {
+            launch,
+            launch_body,
+            source,
+            registration,
+            private_launch,
+            key,
+            birth_id,
+        } = input;
+
         self.ensure_original()?;
         if std::mem::replace(&mut self.native_issued, true) {
             return Err(ProviderError::Conflict(
