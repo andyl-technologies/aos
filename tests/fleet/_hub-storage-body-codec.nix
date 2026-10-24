@@ -8,6 +8,10 @@
   evidence = native.passthru.evidenceSources;
   contract = native.passthru.cargoArtifactContract;
 in
+  assert import ./_hub-standalone-lock.nix
+  (native.src + "/crates/Cargo.lock")
+  (source + "/tests/fleet/storage-body-codec/Cargo.lock")
+  || throw "The standalone storage codec lock must match the selected workspace vendor";
   assert builtins.length evidence == 2;
   assert builtins.head evidence == native.src;
     pkgs.mkCargoPackage {

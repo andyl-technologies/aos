@@ -92,6 +92,10 @@
     sharedBuildCache = false;
   };
 in
+  assert import ./_hub-standalone-lock.nix
+  (native.src + "/crates/Cargo.lock")
+  (helperSource + "/tests/fleet/storage-body-codec/Cargo.lock")
+  || throw "The standalone storage codec lock must match the selected workspace vendor";
   assert clientArtifact == null || toString clientArtifact == toString pkgs.aos;
   assert toString nativeArtifact == toString native;
   assert toString workerArtifact == toString worker;
