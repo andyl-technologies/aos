@@ -929,6 +929,13 @@ in rec {
       # post-convergence phase marker hand-off; diagnostic only.
       idlePlanDiagnosticMinimumPs = 1832000000000;
     };
+    packagedCampaignEnvoyNetworkStackSamplesVm = import ./phase4-packaged-campaign-vm.nix {
+      inherit pkgs lib;
+      envoyNetwork = true;
+      # Samples host and QEMU main-thread stacks when an attempt wait stalls;
+      # diagnostic only.
+      hostStackSamples = true;
+    };
     packagedCampaignMaterializationVm = import ./phase4-packaged-campaign-materialization-vm.nix {inherit pkgs lib;};
     eventGraphControlFlow = import ./phase4-event-graph-control-flow.nix {
       inherit pkgs lib;

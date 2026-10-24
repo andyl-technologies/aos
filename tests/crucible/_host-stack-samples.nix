@@ -111,17 +111,19 @@ in {
   # already waited on an advance. Each round needs a newer wait row and rounds
   # stay at least 15 seconds apart, so a wait that recovered cannot spend the
   # whole budget. Thread stacks are not filtered: a stalled vCPU is itself a
-  # parked waiter.
+  # parked waiter. A replay divergence or hot-fork decline also starts a round,
+  # because QEMU children of a failed attempt keep running afterwards. Discovery
+  # can run for hours before either row, so the idle budget covers that.
   startQemuStall = ''
     ${pkgs.coreutils}/bin/rm -f ${stallStopFile}
     (
       qemu_stall_seen=0
       qemu_stall_round=0
       qemu_stall_idle=0
-      while [ "$qemu_stall_round" -lt 3 ] && [ "$qemu_stall_idle" -lt 3600 ] &&
+      while [ "$qemu_stall_round" -lt 3 ] && [ "$qemu_stall_idle" -lt 21600 ] &&
         [ ! -e ${stallStopFile} ]; do
         qemu_stall_rows=$(${pkgs.coreutils}/bin/cat ${serviceStderrDir}/campaign-service-*.stderr 2>/dev/null \
-          | ${pkgs.grep}/bin/grep -c '^CRUCIBLE-HOST-WAIT-V1 phase=advance-pending ' || true)
+          | ${pkgs.grep}/bin/grep -c -E '^(CRUCIBLE-HOST-WAIT-V1 phase=advance-pending |CRUCIBLE-REPLAY-DIVERGENCE-V1 |CRUCIBLE-HOT-FORK-DECLINE-V1 )' || true)
         if [ "''${qemu_stall_rows:-0}" -le "$qemu_stall_seen" ]; then
           ${pkgs.coreutils}/bin/sleep 1
           qemu_stall_idle=$((qemu_stall_idle + 1))
