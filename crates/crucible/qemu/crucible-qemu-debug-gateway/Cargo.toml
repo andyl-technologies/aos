@@ -13,7 +13,7 @@ crucible-qemu-protocol = { path = "../../protocol/crucible-qemu-protocol" }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-crucible-control-server = { path = "../../control/crucible-control-server" }
+crucible-qemu-protocol = { path = "../../protocol/crucible-qemu-protocol", features = ["test-oracle"] }
 tempfile = { workspace = true }
 
 [[bin]]

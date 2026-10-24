@@ -24,6 +24,8 @@
 //! composite setup descriptor body; `preemption` owns deterministic IPI
 //! arithmetic; `golden_vectors` owns the frozen ABI corpus; `codec_fuzz` owns
 //! its fuzz target and corpus.
+//! The optional `test-oracle` feature adds bounded owned-byte framing for
+//! test helpers that exercise host APIs across the process boundary.
 //!
 //! Unsafe boundary discipline: raw `sendmsg`/`recvmsg` and ancillary-buffer
 //! details stay private; public callers use safe setup descriptor handover wrappers.
@@ -59,6 +61,8 @@ mod preemption;
 mod selectable;
 pub mod selectable_catalog_plan;
 pub mod selectable_transport;
+#[cfg(feature = "test-oracle")]
+pub mod test_oracle;
 
 use std::io::{ErrorKind, Read, Write};
 #[cfg(unix)]

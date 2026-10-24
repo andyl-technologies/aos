@@ -62,6 +62,8 @@ load(":session/aliases.bzl", SESSION_CRATES = "CRATES")
 load(":control/aliases.bzl", CONTROL_CRATES = "CRATES")
 load(":qemu-host/aliases.bzl", QEMU_HOST_CRATES = "CRATES")
 load(":qemu-gpl-production/aliases.bzl", QEMU_GPL_PRODUCTION_CRATES = "CRATES")
+load(":qemu-gpl-tests/aliases.bzl", QEMU_GPL_TEST_CRATES = "CRATES")
+load(":qemu-test-oracle-host/aliases.bzl", QEMU_TEST_ORACLE_HOST_CRATES = "CRATES")
 load(":store-s3/aliases.bzl", STORE_S3_CRATES = "CRATES")
 load(":daemon/aliases.bzl", DAEMON_CRATES = "CRATES")
 load(":crucible-cli/aliases.bzl", CRUCIBLE_CLI_CRATES = "CRATES")
@@ -80,6 +82,8 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         name = "core_" + name.replace("-", "_"),
         actual = select({
             "//tools/bazel/rules:qemu_gpl_production_dependencies": QEMU_GPL_PRODUCTION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:qemu_gpl_test_dependencies": QEMU_GPL_TEST_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:qemu_test_oracle_host_dependencies": QEMU_TEST_ORACLE_HOST_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:aos_cli_tests_dependencies": AOS_CLI_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:aos_cli_fleet_tests_dependencies": AOS_CLI_FLEET_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:aos_cli_production_dependencies": AOS_CLI_PRODUCTION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -192,6 +196,8 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         + CONTROL_CRATES.items()
         + QEMU_HOST_CRATES.items()
         + QEMU_GPL_PRODUCTION_CRATES.items()
+        + QEMU_GPL_TEST_CRATES.items()
+        + QEMU_TEST_ORACLE_HOST_CRATES.items()
         + STORE_S3_CRATES.items()
         + DAEMON_CRATES.items()
         + CRUCIBLE_CLI_CRATES.items()
@@ -296,6 +302,11 @@ ENGINE_PACKAGES = dict(
 QEMU_GPL_PRODUCTION_PACKAGES = dict(
     {name: CORE_PACKAGES[name] for name in ["blake3", "libc", "serde", "serde_json", "sha2", "thiserror", "unicode-normalization"]},
     hex = crate.spec(version = "=0.4.3"),
+)
+
+QEMU_GPL_TEST_PACKAGES = dict(
+    QEMU_GPL_PRODUCTION_PACKAGES,
+    tempfile = STORE_PACKAGES["tempfile"],
 )
 
 # The QEMU host adds Linux process/socket APIs without the session/TLS closure.
@@ -999,6 +1010,15 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    # Gateway tests do not compile the plugin's Serde derive dependency. The
+    # resolver sees that SDK root, but Cargo's executed Syn unit omits full.
+    "qemu-gpl-tests": {
+        "syn": json.encode({
+            "version": "2.0.118",
+            "resolved_features": ["clone-impls", "default", "derive", "full", "parsing", "printing", "proc-macro"],
+            "features": ["clone-impls", "default", "derive", "parsing", "printing", "proc-macro"],
+        }),
+    },
     "aos-cli-tests": AOS_CLI_TESTS_FEATURE_VARIANTS,
     "aos-cli-fleet-tests": AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS,
     "aos-cli-production": AOS_CLI_PRODUCTION_FEATURE_VARIANTS,
@@ -1731,6 +1751,13 @@ FAMILY_FEATURE_VARIANTS = {
         }),
     },
     # Transport dependencies retain the same target-side indexmap selection.
+    "qemu-test-oracle-host": {
+        "indexmap": json.encode({
+            "version": "2.14.0",
+            "resolved_features": ["default", "serde", "std"],
+            "features": ["default", "std"],
+        }),
+    },
     "control": {
         "indexmap": json.encode({
             "version": "2.14.0",
@@ -1763,6 +1790,7 @@ APPROVED_LICENSES = [
     # the explicit update until reviewed here.
     "(MIT OR Apache-2.0) AND Unicode-3.0",
     "Apache-2.0 OR MIT",
+    "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "BSD-2-Clause OR Apache-2.0 OR MIT",
@@ -1770,9 +1798,13 @@ APPROVED_LICENSES = [
     "CC0-1.0 OR MIT-0 OR Apache-2.0",
     "MIT",
     "MIT OR Apache-2.0",
+    "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
     "MIT OR Apache-2.0 OR Zlib",
     "MIT/Apache-2.0",
     "Unlicense OR MIT",
+    # Foldhash in tempfile's cross-platform lock graph preserves its Zlib
+    # notice and altered-source requirements without a copyleft restriction.
+    "Zlib",
     "Zlib OR Apache-2.0 OR MIT",
 ]
 
@@ -1818,7 +1850,7 @@ APPROVED_LICENSES = [
             else FORMATS_PERMISSIVE_CRATES if family == "formats"
             else DAEMON_PERMISSIVE_CRATES if family in ["daemon", "crucible-cli"]
             else ACTIVATION_CRUCIBLE_PERMISSIVE_CRATES if family == "activation-crucible"
-            else ENGINE_PERMISSIVE_CRATES if family in ["activation-crucible-tests", "engine", "session", "control", "qemu-host"]
+            else ENGINE_PERMISSIVE_CRATES if family in ["activation-crucible-tests", "engine", "session", "control", "qemu-host", "qemu-test-oracle-host"]
             else GUEST_PERMISSIVE_CRATES if family == "guest"
             else []
         ),
@@ -1881,6 +1913,8 @@ APPROVED_LICENSES = [
         ("control", CONTROL_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("qemu-host", QEMU_HOST_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("qemu-gpl-production", QEMU_GPL_PRODUCTION_PACKAGES, {}, "permissive-protocol"),
+        ("qemu-gpl-tests", QEMU_GPL_TEST_PACKAGES, {}, "permissive-protocol"),
+        ("qemu-test-oracle-host", CONTROL_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("store-s3", STORE_S3_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("daemon", DAEMON_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("crucible-cli", CRUCIBLE_CLI_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
@@ -1952,6 +1986,8 @@ APPROVED_LICENSES = [
         "control",
         "qemu-host",
         "qemu-gpl-production",
+        "qemu-gpl-tests",
+        "qemu-test-oracle-host",
         "store-s3",
         "daemon",
         "crucible-cli",

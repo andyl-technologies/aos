@@ -1,6 +1,6 @@
 {
   "contracts": {
-    "crates/Cargo.lock": "033bfad7de38812960028c5c2f69c2737eaa5a73dba2a810dfcf2f992268e6fd",
+    "crates/Cargo.lock": "59a0d72ad2e632afa1635bd6e42c7cec97d1c0d79fbb88776ab73e78a4fcb5b5",
     "crates/Cargo.toml": "8761ede65c4d2a37b93a130f16436aba18112776494133f86e026d2a9acb6aee",
     "crates/aos/activation/aos-activation-bpf-lsm/Cargo.toml": "bc1b15ee61ab6640d420334be5a6b97c30af4772ea19c1b0b487cb86ff01e2c3",
     "crates/aos/activation/aos-activation-bpf-network/Cargo.toml": "52b7459901ac2b209a4980923e9878c6d79c14582c9e09f47e4100c2c61ced97",
@@ -45,7 +45,7 @@
     "crates/crucible/control/crucible-cli/Cargo.toml": "5424a77afc33611b6fed29bb86be1977e1bc08c33661dacdeff23508b6d94128",
     "crates/crucible/control/crucible-control-api/Cargo.toml": "eb95efa4a90a87187d45324630fb83101369db3c34252f7b81a09a66e32cbe34",
     "crates/crucible/control/crucible-control-client/Cargo.toml": "ab1f3e5e2711c07fe89d2ea54d96a71229f691cc14fd7e83a6e5adc990d096b4",
-    "crates/crucible/control/crucible-control-server/Cargo.toml": "6c85faea979e95336d0d302cea3456619412c18439be302ccc57dd6be32d9001",
+    "crates/crucible/control/crucible-control-server/Cargo.toml": "c52e2c7782377c030ae9c30954142a426584ba680c65ad16e1a46b970584f030",
     "crates/crucible/control/crucible-daemon/Cargo.toml": "e0fccfced811c9ba17cfd9eb9929aafc08e39f46fdfc484fe70dec6279c3317d",
     "crates/crucible/control/crucible-session/Cargo.toml": "6f183b55958b376ca73f6a94e36a521dc8e3beeae82869edb59f85e6954a71e8",
     "crates/crucible/engine/crucible-campaign/Cargo.toml": "6bf2aa4e6289af8444307783a96f6cf575b6ad54b82a2701909747fcdf6cc501",
@@ -53,9 +53,9 @@
     "crates/crucible/engine/crucible-device/Cargo.toml": "297a8eb49276270ac72349c5c14775073e59635ce2e012c38df813cfe610fe2c",
     "crates/crucible/engine/crucible-engine/Cargo.toml": "5482c2365976cc36e19f22398020ba9e6c1ff8a8f36ddf5447ad3b442bfa1f84",
     "crates/crucible/guest/crucible-guest/Cargo.toml": "5e493f278da7566a203a9187f8efb38ec420c88ba100d321fc6867cdfc6f2baa",
-    "crates/crucible/protocol/crucible-qemu-protocol/Cargo.toml": "2d1508f821ce81550f0fd07f9cabbf8083d7dfca4f74deda8570ea874883d8ec",
+    "crates/crucible/protocol/crucible-qemu-protocol/Cargo.toml": "9b3c618ecd4d1658d679a5b9ca5b2414601899c235f2df6d1f5781b5d42f180a",
     "crates/crucible/protocol/crucible-qemu-shmem/Cargo.toml": "6b3c2bd5ee4f6041494b02cbbdf3c619fa09365c9ef1f38b37c7da298fcb7fc7",
-    "crates/crucible/qemu/crucible-qemu-debug-gateway/Cargo.toml": "076c32447b6924883fd505b43c654e99b597f7f85f1f434e17001a83a34fee6e",
+    "crates/crucible/qemu/crucible-qemu-debug-gateway/Cargo.toml": "abd4f878c3e68438a717a54630a7f1f8c835a04d2eef87b8d9793be861bb12c7",
     "crates/crucible/qemu/crucible-qemu-host/Cargo.toml": "f38c5e8e31b920e38a5fb8a867f9bed730509c16f497c84901abf5f392c0f582",
     "crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml": "b6271ef767a37dfdda2d06911c03fb6b7ad1494a1c378d8c16d89245aa317ee2",
     "crates/crucible/storage/crucible-store-s3/Cargo.toml": "c994a7aff677c06539f50942db8069d86d14fead9fe72dc3ece6867ac562c7e0",
@@ -324,6 +324,162 @@
         "mkAosCargoPackage"
       ],
       "path": "tests/abilities/systemd-native-unit-parser.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-activation-core.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-activation-crucible.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-activation-storage.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-activation-systemd.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-boot-preparation.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-build-services.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-cargo-feature-oracles.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-cargo-oracle.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-cli-support.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-deployment.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-hub-client.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-hub-console.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-hub-db-configuration.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-hub-model.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-hub-native.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-hub-portable.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-hub-service-configuration.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-native-foundation.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-package-manager.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-qemu-gpl-cargo.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-qemu-process-cargo.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-registry-native.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-release-coordination.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-release-preparation.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/_bazel-rust-family.nix"
+    },
+    {
+      "interfaces": [
+        "crates/Cargo.toml"
+      ],
+      "path": "tests/build/bazel.nix"
     },
     {
       "interfaces": [
@@ -6374,6 +6530,9 @@
         {
           "features": {
             "default": [],
+            "qemu-test-oracle": [
+              "crucible-qemu-protocol/test-oracle"
+            ],
             "test-support": [
               "crucible-engine/test-support"
             ]
@@ -6384,6 +6543,23 @@
           "metadata": null,
           "name": "crucible-control-server",
           "targets": [
+            {
+              "crate_types": [
+                "bin"
+              ],
+              "doc": true,
+              "doctest": false,
+              "edition": "2024",
+              "kind": [
+                "bin"
+              ],
+              "name": "crucible-qemu-test-oracle",
+              "required_features": [
+                "qemu-test-oracle"
+              ],
+              "source": "crates/crucible/control/crucible-control-server/src/bin/qemu_test_oracle.rs",
+              "test": false
+            },
             {
               "crate_types": [
                 "lib"
@@ -9316,7 +9492,9 @@
           "version": "0.1.0"
         },
         {
-          "features": {},
+          "features": {
+            "test-oracle": []
+          },
           "license": "MIT OR Apache-2.0",
           "links": null,
           "manifest": "crates/crucible/protocol/crucible-qemu-protocol/Cargo.toml",

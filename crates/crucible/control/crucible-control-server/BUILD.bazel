@@ -1,7 +1,8 @@
 load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
-load("//tools/bazel/rules:compile.bzl", "rust_library")
+load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
 load("//tools/bazel/rules:daemon_graph.bzl", "daemon_dependency_libraries")
 load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
 load("//tools/bazel/rules:test.bzl", "aos_rust_test")
@@ -74,8 +75,42 @@ rust_library(
     crate_name = "crucible_control_server",
     crate_root = "src/lib.rs",
     srcs = SOURCES,
-    crate_features = ["default"],
+    crate_features = select({
+        "//tools/bazel/rules:qemu_test_oracle_host_dependencies": ["default", "qemu-test-oracle"],
+        "//conditions:default": ["default"],
+    }),
     deps = COMMON_DEPENDENCIES + PRODUCTION_LIBRARIES,
+)
+
+# The GPL lifecycle tests execute this Apache client as a separate process.
+rust_binary(
+    name = "crucible-qemu-test-oracle",
+    testonly = True,
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_root = "src/bin/qemu_test_oracle.rs",
+    srcs = ["src/bin/qemu_test_oracle.rs"],
+    crate_features = ["default", "qemu-test-oracle"],
+    deps = [":lib", "//crates/crucible/protocol/crucible-qemu-protocol:lib"],
+    visibility = ["//visibility:public"],
+)
+
+aos_package(
+    name = "qemu_test_oracle_artifact",
+    testonly = True,
+    package = RUST_PACKAGE,
+    artifacts = {":crucible-qemu-test-oracle": "bin/crucible-qemu-test-oracle"},
+    executables = ["bin/crucible-qemu-test-oracle"],
+)
+
+rust_clippy(name = "qemu_test_oracle_clippy", testonly = True, deps = [":crucible-qemu-test-oracle"])
+rustfmt_test(name = "qemu_test_oracle_format", targets = [":crucible-qemu-test-oracle"])
+
+aos_license_check(
+    name = "qemu_test_oracle_license_closure",
+    testonly = True,
+    roots = [":crucible-qemu-test-oracle"],
+    license_domain = "apache-host",
 )
 
 # Test libraries preserve the selected Cargo development-dependency features

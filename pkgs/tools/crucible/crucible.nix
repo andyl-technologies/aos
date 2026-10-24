@@ -460,6 +460,18 @@
       mainProgram = "crucible";
     };
   };
+  # The GPL test executable invokes the real Apache client across a Unix
+  # socket. Keep its independent executable outside the gateway's link graph.
+  qemuTestOracle = mkCargoPackage {
+    pname = "crucible-qemu-test-oracle";
+    inherit version src cargoDeps cargoWorkspaceMembers;
+    cargoRoot = "crates";
+    cargoFlags = "-p crucible-control-server --bin crucible-qemu-test-oracle --features qemu-test-oracle";
+    doCheck = false;
+    buildDeps = [buildRustDev buildPkgConfig openssl sqlite];
+    runtimeDeps = [openssl sqlite];
+  };
+
   debugGateway = mkCargoPackage {
     pname = "crucible-debug-gateway";
     inherit version src;
@@ -476,6 +488,13 @@
     doCheck = true;
     buildDeps = [buildRustDev buildPkgConfig sqlite];
     runtimeDeps = [sqlite];
+
+    postBuild = lib.optionalString (!stdenv.isCross) ''
+      export CRUCIBLE_QEMU_TEST_ORACLE=${qemuTestOracle}/bin/crucible-qemu-test-oracle
+    '';
+    preInstall = ''
+      unset CRUCIBLE_QEMU_TEST_ORACLE
+    '';
 
     postInstall = ''
       mkdir -p "$out/share/licenses/crucible-debug-gateway"

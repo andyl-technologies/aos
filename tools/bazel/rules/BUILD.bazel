@@ -126,6 +126,16 @@ dependency_profile(
 )
 
 config_setting(
+    name = "qemu_test_oracle_host_dependencies",
+    flag_values = {":dependency_profile": "qemu-test-oracle-host"},
+)
+
+config_setting(
+    name = "qemu_gpl_test_dependencies",
+    flag_values = {":dependency_profile": "qemu-gpl-tests"},
+)
+
+config_setting(
     name = "device_dependencies",
     flag_values = {":dependency_profile": "device"},
     visibility = ["//visibility:public"],

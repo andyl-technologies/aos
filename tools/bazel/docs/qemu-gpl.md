@@ -14,6 +14,7 @@ nix-build -A checks.build.bazel.qemu-gpl.parity --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.developer-build --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.format --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.installed-inspection --no-out-link
+nix-build -A checks.build.bazel.qemu-gpl.gateway-tests.all --no-out-link
 ```
 
 `parity` builds an independent offline Cargo release baseline and retains three
@@ -66,9 +67,31 @@ collision rejection. This executes the native x86 plugin with both x86 and
 AArch64 guests; it does not qualify an AArch64 host/plugin build. Its host test
 drivers still use the existing source-built Cargo harness.
 
-Production consumers continue to use their existing builders. The gateway's
-four lifecycle cases must retain the real Apache client in a separate helper
-process. The plugin's engine-backed tests likewise need a process oracle;
-Apache engine or server libraries must not be linked into a GPL test target.
+The gateway's `gateway-tests` checks compare all 36 Cargo and Bazel cases:
+six library unit tests, 26 executable unit tests, and four lifecycle tests.
+The lifecycle fixtures and assertions remain GPL-side. An independently linked
+Apache helper owns the real `DebugGatewayProcess` client and executes its public
+operations. Test executables exchange bounded, versioned protocol frames over a
+private inherited Unix socket pair, with no filesystem rendezvous or polling.
+The helper and gateway are immutable declared test inputs;
+each test owns and reaps its processes. No host cache service is involved.
+
+The `qemu-test-oracle-host` and `qemu-gpl-tests` profiles keep host and GPL
+compiler graphs separate. Their parity reports compare first-party and upstream
+feature selections with independent offline Cargo builds. Compiler reports
+compare cfg and edition arguments and retain remaining differences for review.
+GPL license-closure checks also cover the test executables. A separate protocol
+target runs 48 unit tests, including seven framing and malformed-input cases;
+both graphs have Clippy and format checks. The installed helper declares its
+SQLite and compiler runtime dependencies so reference scrubbing preserves them.
+The artifact contract permits exactly this feature-gated helper, requires empty
+default features, disables binary auto-discovery and test/benchmark harnesses,
+and rejects missing restrictions or additional commands. Other library and
+plugin output restrictions remain enforced.
+
+Production consumers continue to use their existing builders. The ordinary
+Cargo gateway checks also launch the separately built helper. The plugin's
+engine-backed tests still need a process oracle; Apache engine or server
+libraries must not be linked into a GPL test target.
 The mandatory ABI, license-boundary, remaining live QEMU, complete closure, and
 release gates remain independent requirements before production migration.

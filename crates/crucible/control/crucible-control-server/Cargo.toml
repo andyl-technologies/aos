@@ -1,5 +1,6 @@
 [package]
 name = "crucible-control-server"
+autobins = false
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
@@ -9,6 +10,14 @@ description = "Crucible lifecycle dispatch, actor adapters, and authenticated HT
 [features]
 default = []
 test-support = ["crucible-engine/test-support"]
+qemu-test-oracle = ["crucible-qemu-protocol/test-oracle"]
+
+[[bin]]
+name = "crucible-qemu-test-oracle"
+path = "src/bin/qemu_test_oracle.rs"
+required-features = ["qemu-test-oracle"]
+test = false
+bench = false
 
 [lints]
 workspace = true

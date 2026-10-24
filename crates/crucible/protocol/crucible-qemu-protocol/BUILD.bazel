@@ -36,6 +36,11 @@ rust_library(
     lint_config = "//tools/bazel/rules:workspace_lints",
     crate_name = "crucible_qemu_protocol",
     crate_root = "src/lib.rs",
+    crate_features = select({
+        "//tools/bazel/rules:qemu_test_oracle_host_dependencies": ["test-oracle"],
+        "//tools/bazel/rules:qemu_gpl_test_dependencies": ["test-oracle"],
+        "//conditions:default": [],
+    }),
     srcs = glob(["src/**/*.rs"]),
     compile_data = ["src/control_protocol_version.in"],
     deps = DEPENDENCIES,
@@ -46,6 +51,27 @@ aos_rust_test(
     package = RUST_PACKAGE,
     lint_config = "//tools/bazel/rules:workspace_lints",
     crate = ":lib",
+)
+
+rust_library(
+    name = "lib_test_oracle",
+    testonly = True,
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible_qemu_protocol",
+    crate_root = "src/lib.rs",
+    crate_features = ["test-oracle"],
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = ["src/control_protocol_version.in"],
+    deps = DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "test_oracle_unit",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":lib_test_oracle",
+    crate_features = ["test-oracle"],
 )
 
 # Each Cargo integration root remains a separate libtest artifact; its support

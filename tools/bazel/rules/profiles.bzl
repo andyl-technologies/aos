@@ -53,6 +53,8 @@ def _dependency_profile_impl(ctx):
         "control",
         "qemu-host",
         "qemu-gpl-production",
+        "qemu-test-oracle-host",
+        "qemu-gpl-tests",
         "store-s3",
         "daemon",
         "crucible-cli",
