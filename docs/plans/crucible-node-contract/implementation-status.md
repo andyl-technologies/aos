@@ -10,6 +10,35 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Consumed input queues and refreshed master merge
+
+Commit `3daf63f10f` merges `origin/master` at `b82df2e832`, including native NAR
+expansion limits and their dependency changes. The merged lockfile's vendor
+staging is freshly measured with a fake-hash probe before recording its real
+pin. The separate hash file remains the workspace's single pin source.
+
+Commit `9ef5561574` rejects an archive that places an already-consumed logical
+input back in the same recipient's pending queue. The comparison preserves the
+original producer and sequence even when a replay changes delivery coordinates
+or publication labels. Other recipients and sequences remain independent. The
+borrowed walk constructs no replacement event or child bank; its defining
+restoration counter adds the actual loans, iterators and fixed results without
+discounting earlier terms.
+
+The new regression first fails against the earlier validator, with its two
+positive controls passing. After the repair, all three controls pass in each
+JSON mode. Both complete Engine suites pass 2,039 tests with zero failures,
+34 ignored tests and no filtering, including the real installed provider's
+five controls. All-feature/all-target Transport/Engine/Daemon checking,
+changed-file formatting and all six architecture checks pass. Production
+Engine Clippy remains at 190 errors and 444 warnings; Daemon is not reached.
+
+All 512 frozen owned Rust/Cargo inputs match the commit, application source
+and all three funded-VM Rust component captures. Current-toolchain application,
+boundary and Source/Birth VM builds remain pending on the merged compiler
+chain. This closes a structural exactly-once validation gap; genuine native
+successor production and full RFC-0025 qualification remain unfinished.
+
 ## Engine data projections and installed-provider qualification
 
 Commit `f8798e0414` removes redundant conversions, clones and reference
