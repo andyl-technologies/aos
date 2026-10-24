@@ -49,6 +49,13 @@ INODE_CASES = [
     "reserved_first_touch_and_checked_metadata_operations_allocate_nothing",
     "directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch",
 ]
+BACKING_PREFIX = "fuse_backing::tests::"
+BACKING_CASES = [
+    "distinct_nodes_install_independently_and_never_replace_original_resources",
+    "exhausted_reservations_and_old_completions_preserve_retry_ownership",
+    "expired_waiter_and_peer_release_keep_the_original_backing_until_retirement",
+    "startup_bounds_include_pending_records_and_the_actual_resource_layout",
+]
 LIFETIME_PREFIX = "fuse_lifetime::tests::"
 LIFETIME_CASES = [
     "forget_waits_for_every_original_handle_and_pending_work_pin",
@@ -171,6 +178,7 @@ def main():
                                  (XATTR_PREFIX, XATTR_CASES, "xattr"),
                                  (OPEN_PREFIX, OPEN_CASES, "open"),
                                  (LIFETIME_PREFIX, LIFETIME_CASES, "lifetime"),
+                                 (BACKING_PREFIX, BACKING_CASES, "backing"),
                                  (DISPATCH_PREFIX, DISPATCH_CASES, "dispatch"),
                                  (READ_PREFIX, READ_CASES, "read")]:
         expected = [prefix + name for name in names]

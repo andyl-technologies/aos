@@ -24,6 +24,7 @@ use terrane_format::{
     },
 };
 use terrane_linux::{
+    fuse_backing,
     fuse_connection::Connection,
     fuse_dispatch::{Limits as MetadataLimits, Metadata, Response},
     fuse_lifetime::{self, Kind as HandleKind},
@@ -128,7 +129,10 @@ fn main() -> Result {
             handles: 16,
             bytes: 4096,
         })?;
-        let mut backing: Option<(u64, FallbackBacking)> = None;
+        let mut backings = fuse_backing::Table::new(fuse_backing::Limits {
+            nodes: 16,
+            bytes: 4096,
+        })?;
         let mut last_file_release: Option<(NonZeroU64, NonZeroU64)> = None;
         let mut read_after_peer_release = false;
         let mut fetch: Option<Fetch> = None;
@@ -232,12 +236,7 @@ fn main() -> Result {
                 }
             }
             while let Some(node) = lifetime.next_unreferenced() {
-                if backing
-                    .as_ref()
-                    .is_some_and(|(original, _)| *original == node.get())
-                {
-                    backing = None;
-                }
+                drop(backings.retire(node)?);
             }
             let open_deadline = opens.next_deadline();
             let readable = tokio::select! {
@@ -251,7 +250,7 @@ fn main() -> Result {
                     fetch = None;
                     backing_client = Some(client);
                     let file = FallbackBacking::from_reply(reply?, size, 131072)?;
-                    backing = Some((ticket.node().get(), file));
+                    backings.install(ticket, file).map_err(|rejected| rejected.error)?;
                     opens.complete(ticket, Outcome::Ready)?;
                     lifetime.unpin(ticket.node())?;
                     continue;
@@ -347,7 +346,7 @@ fn main() -> Result {
                         if request.body_u32(0)? & (libc::O_ACCMODE | libc::O_TRUNC) as u32 != 0 {
                             (None, libc::EROFS)
                         } else if let Kind::File { content, size } = entry.kind() {
-                            if backing.is_none() {
+                            if backings.get(node.ok_or("zero open node")?).is_none() {
                                 let node =
                                     NonZeroU64::new(request.node()).ok_or("zero open node")?;
                                 let unique = NonZeroU64::new(request.unique())
@@ -363,6 +362,7 @@ fn main() -> Result {
                                 lifetime.pin(node)?;
                                 match queued {
                                     Enqueued::Start(ticket) => {
+                                        backings.reserve(ticket)?;
                                         lifetime.pin(node)?;
                                         let mut client = backing_client
                                             .take()
@@ -381,10 +381,7 @@ fn main() -> Result {
                                 }
                                 continue;
                             }
-                            if backing
-                                .as_ref()
-                                .is_some_and(|(node, _)| *node == request.node())
-                            {
+                            if backings.get(node.ok_or("zero open node")?).is_some() {
                                 let handle = lifetime
                                     .open(node.ok_or("zero file node")?, HandleKind::File)?;
                                 (Some(fuse_read::open(handle, &mut opened)?), 0)
@@ -396,9 +393,8 @@ fn main() -> Result {
                         }
                     }
                     (15, Some(_)) if matches!(mode.as_str(), "read" | "late") => {
-                        let (node, file) =
-                            backing.as_ref().ok_or("READ without original backing")?;
-                        let node = NonZeroU64::new(*node).ok_or("zero file node")?;
+                        let node = node.ok_or("zero file node")?;
+                        let file = backings.get(node).ok_or("READ without original backing")?;
                         let handle =
                             NonZeroU64::new(request.body_u64(0)?).ok_or("zero file handle")?;
                         lifetime.check(handle, node, HandleKind::File)?;

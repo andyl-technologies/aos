@@ -113,6 +113,11 @@ fn directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch() {
     )]
     let open_now = std::time::Instant::now();
     let open_timeout = std::time::Duration::from_secs(60);
+    let mut backings = crate::fuse_backing::Table::<u64>::new(crate::fuse_backing::Limits {
+        nodes: 1,
+        bytes: 4096,
+    })
+    .unwrap();
     let mut output = [0; 512];
 
     let ((), allocations) = allocation::measure(|| {
@@ -138,6 +143,12 @@ fn directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch() {
             else {
                 panic!("fresh original open did not start its handoff");
             };
+            backings.reserve(ticket).unwrap();
+            backings.install(ticket, 42).unwrap();
+            assert_eq!(backings.get(original_node), Some(&42));
+            let rejected = backings.install(ticket, 99).unwrap_err();
+            assert_eq!(rejected.error, crate::fuse_backing::Error::Stale);
+            assert_eq!(backings.retire(original_node), Ok(Some(42)));
             pending_opens
                 .complete(ticket, crate::fuse_open::Outcome::Ready)
                 .unwrap();

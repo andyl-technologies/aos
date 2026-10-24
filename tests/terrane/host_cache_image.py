@@ -177,11 +177,16 @@ PACKAGE_PATHS = {
 
 # The all-feature guest adds these cases without replacing the base inventory.
 FUSE_UNIT_PREFIXES = (
-    "fuse_open::", "fuse_lifetime::", "fuse_dispatch::", "fuse_read::", "fuse_xattr::", "fuse_namespace::", "fuse_metadata::", "fuse_directory::",
+    "fuse_backing::", "fuse_open::", "fuse_lifetime::", "fuse_dispatch::", "fuse_read::", "fuse_xattr::", "fuse_namespace::", "fuse_metadata::", "fuse_directory::",
     "fuse_protocol::", "inode_policy::", "maintenance_channel::",
     "structural_index::", "worker_channel::",
 )
 FUSE_UNIT_TESTS = (
+    'fuse_backing::tests::distinct_nodes_install_independently_and_never_replace_original_resources',
+    'fuse_backing::tests::exhausted_reservations_and_old_completions_preserve_retry_ownership',
+    'fuse_backing::tests::expired_waiter_and_peer_release_keep_the_original_backing_until_retirement',
+    'fuse_backing::tests::startup_bounds_include_pending_records_and_the_actual_resource_layout',
+
     'fuse_namespace::tests::touched_nodes_bound_storage_independently_of_paths_and_share_hardlink_records',
     'fuse_namespace::tests::touched_node_refusals_preserve_existing_mappings_and_reserved_capacity',
     'fuse_dispatch::tests::worker_lookup_retains_only_touched_nodes_and_faults_at_the_original_bound',

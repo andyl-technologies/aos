@@ -17122,3 +17122,24 @@ compilation success does not change that source's failed native result.
 The fixed-reservation checkpoint `a09f366782` also passes mandatory application
 compilation in 696.756 seconds, with full review of the same 8,184 source files,
 190 test executables and 59 packages. Trunk acceptance remains 27/64.
+
+
+The corrected kernel-fixture checkpoint `de9dac0681` also passes mandatory
+application-target compilation in 685.024 seconds. Complete source review binds
+all 8,184 immutable source files, 190 test executables and 59 workspace packages.
+This establishes compilation only, independently of its successful native guest.
+
+The next worker component reserves bounded backing slots before submitting
+physical work, binds installation to the original pending open ticket and
+returns refused resources without replacing any installed descriptor. Repeated
+opens and hardlinks share the installed canonical-node resource; retirement
+follows complete connection-local lifetime release. Four pure cases cover
+independent nodes, stale completion after retry, expiry and peer-handle release,
+and actual resource-layout budgets. The existing allocation instrument also
+covers reserve, install, refusal, lookup and retirement with zero allocations.
+The actual kernel fixture now uses this production table. Its single active
+channel request remains a fixture limitation; this does not establish a
+production multi-node scheduler, broker authority or physical release.
+The structural inventory is 82 cases and the all-feature FUSE inventory is
+123 cases. Native and mandatory workspace qualification of this component
+remain pending; accepted trunk tasks remain 27/64.
