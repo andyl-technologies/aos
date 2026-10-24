@@ -143,3 +143,35 @@ fn consumed_input_does_not_remove_another_recipient_or_sequence() {
         super::super::validate_structure(&snapshot).unwrap();
     }
 }
+
+#[test]
+fn unconsumed_staged_input_cannot_disappear_from_its_recipient_queue() {
+    for mut snapshot in [pending_snapshot(), partially_consumed_snapshot()] {
+        super::super::validate_structure(&snapshot).unwrap();
+
+        snapshot.pending_deliveries.pop().unwrap();
+
+        assert!(matches!(
+            super::super::validate_structure(&snapshot),
+            Err(SchedulingError::InvalidSnapshot)
+        ));
+    }
+}
+
+#[test]
+fn unconsumed_staged_input_keeps_its_complete_original_pending_record() {
+    for mut snapshot in [pending_snapshot(), partially_consumed_snapshot()] {
+        super::super::validate_structure(&snapshot).unwrap();
+
+        snapshot
+            .pending_deliveries
+            .last_mut()
+            .unwrap()
+            .publication_id = id("replacement-publication");
+
+        assert!(matches!(
+            super::super::validate_structure(&snapshot),
+            Err(SchedulingError::InvalidSnapshot)
+        ));
+    }
+}

@@ -829,7 +829,7 @@ pub(crate) fn validate_structure(snapshot: &SchedulingSnapshot) -> Result<(), Sc
         {
             return Err(SchedulingError::InvalidSnapshot);
         }
-        input_custody::validate_consumed_queue(snapshot, batch)?;
+        input_custody::validate_input_queue(snapshot, batch)?;
         let bytes = crucible_node_format::canonical::canonical_json(
             &serde_json::to_value(&batch.deliveries)
                 .map_err(crucible_node_format::ContractError::from)?,
