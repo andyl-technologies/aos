@@ -332,6 +332,10 @@ impl QemuFreshAttemptLifecycleOwner for SuffixLifecycle {
         self.quanta
     }
 
+    fn event_log_offset(&self) -> Result<crucible::EventLogOffset, SchedulerError> {
+        crate::qemu_campaign_lifecycle::refuse_event_log_offset()
+    }
+
     fn terminal_verdict_for_stop(&mut self) -> Option<crucible::QuantumTerminalVerdict> {
         (self.world.terminal_at.as_ref() == Some(&self.configuration)).then(|| {
             crucible::QuantumTerminalVerdict::Failed(vec![String::from(

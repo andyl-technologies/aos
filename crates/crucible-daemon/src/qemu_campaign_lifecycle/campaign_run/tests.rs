@@ -219,6 +219,10 @@ impl QemuFreshAttemptLifecycleOwner for TerminalLifecycle {
         self.completed_quanta
     }
 
+    fn event_log_offset(&self) -> Result<crucible::EventLogOffset, SchedulerError> {
+        crate::qemu_campaign_lifecycle::refuse_event_log_offset()
+    }
+
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
         match self.mode {
             TerminalLifecycleMode::Terminal => Some(QuantumTerminalVerdict::Passed),
@@ -441,6 +445,10 @@ impl QemuFreshAttemptLifecycleOwner for SelectableLifecycle {
 
     fn completed_quanta(&self) -> u64 {
         self.completed_quanta
+    }
+
+    fn event_log_offset(&self) -> Result<crucible::EventLogOffset, SchedulerError> {
+        crate::qemu_campaign_lifecycle::refuse_event_log_offset()
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {

@@ -311,6 +311,10 @@ impl QemuFreshAttemptLifecycleOwner for FakeLifecycle {
         self.initial_quanta + self.drives
     }
 
+    fn event_log_offset(&self) -> Result<crucible::EventLogOffset, SchedulerError> {
+        crate::qemu_campaign_lifecycle::refuse_event_log_offset()
+    }
+
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
         self.terminal.clone()
     }
@@ -439,6 +443,10 @@ impl QemuFreshAttemptLifecycleOwner for PendingSelectableLifecycle {
 
     fn completed_quanta(&self) -> u64 {
         self.completed_quanta
+    }
+
+    fn event_log_offset(&self) -> Result<crucible::EventLogOffset, SchedulerError> {
+        crate::qemu_campaign_lifecycle::refuse_event_log_offset()
     }
 
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {

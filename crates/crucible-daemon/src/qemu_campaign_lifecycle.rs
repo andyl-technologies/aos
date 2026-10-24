@@ -269,18 +269,15 @@ pub trait QemuFreshAttemptLifecycleOwner {
 
     /// Returns the segmented event-log offset retained by the live scheduler.
     ///
-    /// Wrappers must forward this: falling back to the refusal silently
-    /// disables anchor roots, whose replay proof binds this offset.
+    /// Every owner answers explicitly. A refusing default once hid two
+    /// wrappers that dropped the offset, silently disabling anchor roots,
+    /// whose replay proof binds it.
     ///
     /// # Errors
     ///
     /// Returns [`SchedulerError`] when this lifecycle cannot expose an exact
     /// replay boundary.
-    fn event_log_offset(&self) -> Result<crucible::EventLogOffset, SchedulerError> {
-        Err(SchedulerError::BoundaryViolation {
-            message: String::from("lifecycle has no exact event-log offset"),
-        })
-    }
+    fn event_log_offset(&self) -> Result<crucible::EventLogOffset, SchedulerError>;
 
     /// Observes the terminal verdict without consuming checkpoint ownership.
     #[must_use]
@@ -2022,6 +2019,14 @@ impl std::fmt::Display for HotForkRefusal {
         }
         Ok(())
     }
+}
+
+/// Refuses an exact event-log offset, for test lifecycles without a scheduler.
+#[cfg(test)]
+pub(crate) fn refuse_event_log_offset() -> Result<crucible::EventLogOffset, SchedulerError> {
+    Err(SchedulerError::BoundaryViolation {
+        message: String::from("lifecycle has no exact event-log offset"),
+    })
 }
 
 /// Failure while reconstructing one exact fresh-QEMU start configuration.
