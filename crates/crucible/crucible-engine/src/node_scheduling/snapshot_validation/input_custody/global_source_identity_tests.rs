@@ -264,3 +264,63 @@ fn consumed_public_identity_cannot_be_shared_by_two_recipient_prefixes() {
         Err(SchedulingError::InvalidSnapshot)
     ));
 }
+
+fn reuse_native_publication(snapshot: &mut SchedulingSnapshot, recipient: &Id) {
+    let batch = snapshot
+        .input_batches
+        .iter_mut()
+        .find(|batch| &batch.node == recipient)
+        .unwrap();
+    assert_eq!(batch.deliveries.len(), 2);
+    let original_sequence = batch.deliveries[0].native_sequence;
+    let changed_sequence = batch.deliveries[1].native_sequence;
+    let endpoint = batch.deliveries[1].producer_endpoint.clone();
+    batch.deliveries[1].native_sequence = original_sequence;
+
+    let bytes = crucible_node_format::canonical::canonical_json(
+        &serde_json::to_value(&batch.deliveries).unwrap(),
+    )
+    .unwrap();
+    batch.inventory = crucible_node_format::canonical::content_ref(
+        &bytes,
+        "application/vnd.crucible.input-inventory+json",
+    )
+    .unwrap();
+    batch.acknowledgement.as_mut().unwrap().inventory = batch.inventory.clone();
+    for delivery in &mut snapshot.pending_deliveries {
+        if delivery.producer_endpoint == endpoint && delivery.native_sequence == changed_sequence {
+            delivery.native_sequence = original_sequence;
+        }
+    }
+}
+
+#[test]
+fn consumed_native_publication_cannot_name_a_different_remaining_event() {
+    let (graph, original) = two_recipient_snapshot(false);
+    validate_saved_source(&graph, &original).unwrap();
+    let mut changed = original.clone();
+    let root = graph.coordinator_policy().external_inputs[0]
+        .node_id
+        .clone();
+    reuse_native_publication(&mut changed, &root);
+
+    assert!(matches!(
+        validate_saved_source(&graph, &changed),
+        Err(SchedulingError::InvalidSnapshot)
+    ));
+    assert_eq!(original.input_batches[0].consumed.len(), 1);
+}
+
+#[test]
+fn pending_native_publication_cannot_name_two_distinct_events() {
+    let (graph, original) = two_recipient_snapshot(false);
+    validate_saved_source(&graph, &original).unwrap();
+    let mut changed = original.clone();
+    let recipient = graph.world().connections[0].consumer.node_id.clone();
+    reuse_native_publication(&mut changed, &recipient);
+
+    assert!(matches!(
+        validate_saved_source(&graph, &changed),
+        Err(SchedulingError::InvalidSnapshot)
+    ));
+}

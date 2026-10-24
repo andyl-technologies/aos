@@ -5,6 +5,9 @@ use super::*;
 #[path = "snapshot_validation/input_custody.rs"]
 pub(super) mod input_custody;
 
+#[path = "snapshot_validation/native_publications.rs"]
+mod native_publications;
+
 pub(super) fn validate_snapshot(
     graph: &AdmittedGraph,
     target: &ActivationRecord,
@@ -873,6 +876,7 @@ pub(crate) fn validate_structure(snapshot: &SchedulingSnapshot) -> Result<(), Sc
         }
     }
     input_custody::validate_consumed_source_identities(snapshot)?;
+    native_publications::validate(snapshot)?;
     for reservation in &snapshot.reservations {
         validate_permission(&reservation.permission, snapshot.maximum_microsteps)?;
     }

@@ -119,6 +119,7 @@ pub(in crate::node_scheduling) const fn counter_scratch_data() -> usize {
         + pending_queue_counter_scratch_data()
         + source_history_counter_scratch_data()
         + consumed_identity_counter_scratch_data()
+        + super::native_publications::counter_scratch_data()
 }
 
 // Names the actual borrowed index header, insertion and membership loans,

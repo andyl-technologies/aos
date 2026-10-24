@@ -415,6 +415,20 @@ fn validation_storage(
     if consumed_count > 0 {
         counter.tree::<(&Id, U64), ()>(consumed_count, false)?;
     }
+    // One native publication can survive in pending and staged recipient
+    // copies. Price every retained row as an upper bound for the borrowed
+    // publication index; duplicate recipients never require cloned backing.
+    let publication_rows = snapshot.input_batches.iter().try_fold(
+        snapshot.pending_deliveries.len(),
+        |total, batch| {
+            total
+                .checked_add(batch.deliveries.len())
+                .ok_or(RuntimeError::ResourceLimit)
+        },
+    )?;
+    if publication_rows > 0 {
+        counter.tree::<(&Endpoint, U64), &Delivery>(publication_rows, false)?;
+    }
     for row in &snapshot.pending_deliveries {
         counter.owned(&row.producer)?;
         counter.owned(&row.payload)?; // Independent fresh content_ref comparison.
@@ -787,6 +801,13 @@ impl PreparedSchedulingRestore {
         let rows = [
             Self::original_retained_installation_duplicate_counter_scratch_data(),
             super::validation::input_custody::counter_scratch_data(),
+            // Independent publication-row sizing cursor and checked accumulator.
+            2 * size_of::<usize>(),
+            size_of::<std::slice::Iter<'static, SavedInputBatch>>(),
+            size_of::<&SavedInputBatch>(),
+            size_of::<Option<usize>>(),
+            size_of::<Result<usize, RuntimeError>>(),
+            size_of::<bool>(),
             // Independent consumed-row sizing cursor and checked accumulator.
             2 * size_of::<usize>(),
             size_of::<std::slice::Iter<'static, SavedInputBatch>>(),
