@@ -10,6 +10,30 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Borrowed inherited stdin through native startup
+
+Commit `a7a4dd9d4c` retains safe borrowed fd0 through startup14 and invocation15
+prefix admission and private frame reads. It avoids constructing the standard
+library's global buffered stdin bank on those paths. Legacy boot5 retains its
+original standard handle. The successful-owner codec accepts only the exact
+closed input type and matching edition; its existing token, boot, origin and
+closed-channel checks remain. Actual input-enum layout and fixed scratch views
+are independently counted, retaining the earlier layout floor and storage terms.
+
+Both complete Transport modes pass 2,100 tests with zero failures, 20 ignored
+and no filtering. Both complete Engine modes pass 2,048 tests with zero failures,
+34 ignored and no filtering, plus 14 custody and five actual rebuilt-provider
+controls each. All-feature Transport/Engine/Daemon targets, six architecture
+checks and formatting pass. Production Transport Clippy remains at 37 errors
+and 1,733 warnings.
+
+The merged-toolchain application and funded-Source VM gates also pass. The
+application compiler records 185 test artifacts across 58 packages, including
+76 integration targets. All 538 owned Rust/Cargo inputs match the commit and
+actual application and three funded-VM Rust component captures. These results
+qualify this component; full private preclaim funding, native successor
+construction, strict production lint and full RFC completion remain open.
+
 ## Borrowed canonical children at native startup claims
 
 Commit `f5b4571a26` validates canonical Source and registration children directly
@@ -30,9 +54,10 @@ Both complete Transport modes pass 2,100 tests, with zero failures, 20 ignored
 and no filtering. All-feature Transport/Engine/Daemon targets, six architecture
 checks and formatting pass. All 535 owned Rust/Cargo inputs match the commit and
 actual application and three funded-VM Rust component captures. Production
-Transport Clippy remains at 37 errors and 1,733 warnings. The current checkpoint's
-merged-toolchain application/VM build remains in progress; full preclaim owner
-funding and native successor construction remain open.
+Transport Clippy remains at 37 errors and 1,733 warnings. This checkpoint also
+passes the merged-toolchain application and funded-Source VM gates. The compiler
+records 185 test artifacts across 58 application packages, including 76 integration
+targets. Full preclaim owner funding and native successor construction remain open.
 
 ## Merged-toolchain DMTCP and qualification source filters
 
