@@ -405,6 +405,9 @@ impl<S: ProviderStream> Connection<S> {
     /// Names only local counter/facts/hash scratch, excluding recursive frames.
     pub(crate) const fn original_packet_prefix_quote_scratch_bytes_data() -> usize {
         size_of::<OriginalPacketPrefixStorageData>()
+            // The actual reply loan crosses caller and validator before the
+            // body/evidence walk; full vector capacity remains observable.
+            + 2 * size_of::<&crate::reference_packet::control::PacketControlReply>()
             + size_of::<Projection>()
             + 4 * size_of::<OriginalSerializationStorageData>()
             + 2 * size_of::<MetadataObserver<'static>>()

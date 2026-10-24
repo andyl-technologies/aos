@@ -144,5 +144,6 @@ fn actual_new_facts_and_forwarding_windows_are_separate_from_old_counter_terms()
         original::original_packet_prefix_quote_scratch_bytes_data()
             + PREFIX_ACK_COUNTER_ADDITIONAL
             + super::super::FRAME_CHARGE_ADAPTER_COUNTER_SCRATCH_DATA
+            + 2 * size_of::<&crate::reference_packet::control::PacketControlReply>()
     );
 }

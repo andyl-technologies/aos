@@ -151,13 +151,8 @@ pub(super) fn prepare_with_projection_storage_data<S: ProviderStream>(
         ));
     };
     connection.authenticate_original_packet_prefix_builder_authority_data(authority)?;
-    let actual = projection.authenticate_actual_inputs(
-        connection,
-        *next_sequence,
-        request,
-        &reply.body,
-        &reply.evidence,
-    )?;
+    let actual =
+        projection.authenticate_actual_inputs(connection, *next_sequence, request, reply)?;
     // Existing242 independently requotes these exact actual inputs again before
     // frames. The prospective upper itself is never passed as an exact quote.
     prepare_with_storage_data(
@@ -193,13 +188,8 @@ pub(super) fn prepare_with_restored_input17_projection_storage_data<S: ProviderS
         return Err(ProviderError::Conflict("Input17 prefix connection absent"));
     };
     connection.authenticate_original_packet_prefix_builder_authority_data(authority)?;
-    let actual = projection.authenticate_actual_inputs(
-        connection,
-        *next_sequence,
-        request,
-        &reply.body,
-        &reply.evidence,
-    )?;
+    let actual =
+        projection.authenticate_actual_inputs(connection, *next_sequence, request, reply)?;
     prepare_inner(
         transport,
         next_sequence,
@@ -240,13 +230,8 @@ pub(super) fn prepare_with_restored_observation17_projection_storage_data<S: Pro
         ));
     };
     connection.authenticate_original_packet_prefix_builder_authority_data(authority)?;
-    let actual = projection.authenticate_actual_inputs(
-        connection,
-        *next_sequence,
-        request,
-        &reply.body,
-        &reply.evidence,
-    )?;
+    let actual =
+        projection.authenticate_actual_inputs(connection, *next_sequence, request, reply)?;
     prepare_inner(
         transport,
         next_sequence,
@@ -286,13 +271,8 @@ pub(super) fn prepare_with_capture17_upload_projection_storage_data<S: ProviderS
         ));
     };
     connection.authenticate_original_packet_prefix_builder_authority_data(authority)?;
-    let actual = projection.authenticate_actual_inputs(
-        connection,
-        *next_sequence,
-        request,
-        &reply.body,
-        &reply.evidence,
-    )?;
+    let actual =
+        projection.authenticate_actual_inputs(connection, *next_sequence, request, reply)?;
     prepare_inner(
         transport,
         next_sequence,

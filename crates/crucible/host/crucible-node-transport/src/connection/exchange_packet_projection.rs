@@ -56,8 +56,7 @@ pub(crate) trait OriginalPacketPrefixProjectionStorageDataExt<const OBJECTS: usi
         connection: &Connection<S>,
         first: u64,
         request: &Envelope,
-        body: &Map<String, Value>,
-        evidence: &Vec<(ContentRef, Vec<u8>)>,
+        reply: &crate::reference_packet::control::PacketControlReply,
     ) -> Result<OriginalPacketPrefixStorageData, ProviderError>;
 }
 
@@ -207,9 +206,10 @@ impl<const OBJECTS: usize> OriginalPacketPrefixProjectionStorageDataExt<OBJECTS>
         connection: &Connection<S>,
         first: u64,
         request: &Envelope,
-        body: &Map<String, Value>,
-        evidence: &Vec<(ContentRef, Vec<u8>)>,
+        reply: &crate::reference_packet::control::PacketControlReply,
     ) -> Result<OriginalPacketPrefixStorageData, ProviderError> {
+        let crate::reference_packet::control::PacketControlReply { body, evidence } = reply;
+
         connection.protocol_owner.ensure_current()?;
         connection.authenticate_native5_source_codec()?;
         if connection.role != EndpointRole::Provider

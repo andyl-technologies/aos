@@ -107,7 +107,9 @@ fn shared_frame_charge_keeps_original_overflow_and_failed_mutation_prefix() -> T
 fn shared_frame_adapter_adds_only_its_actual_defining_header_family() {
     assert_eq!(
         Connection::<crate::client::DeadlineStream>::original_packet_prefix_quote_scratch_bytes_data(),
-        frame_charge_original::counter_scratch_data() + FRAME_CHARGE_ADAPTER_COUNTER_SCRATCH_DATA,
+        frame_charge_original::counter_scratch_data()
+            + FRAME_CHARGE_ADAPTER_COUNTER_SCRATCH_DATA
+            + 2 * size_of::<&crate::reference_packet::control::PacketControlReply>(),
     );
     assert_eq!(
         FRAME_CHARGE_ADAPTER_COUNTER_SCRATCH_DATA,

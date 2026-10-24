@@ -4,6 +4,7 @@
 //! whole-allocation admission fixtures. Nothing is published to the stream.
 
 use super::*;
+use crate::reference_packet::control::PacketControlReply;
 
 fn response_body() -> Result<Map<String, Value>, ProviderError> {
     object(&ResponseShape::Completed {
@@ -27,8 +28,7 @@ fn original_data(request: &Envelope) -> Result<OriginalSerializationStorageData,
 fn projected(
     connection: &Connection<Memory>,
     request: &Envelope,
-    body: &Map<String, Value>,
-    evidence: &[(ContentRef, Vec<u8>)],
+    reply: &PacketControlReply,
 ) -> Result<OriginalPacketPrefixProjectionStorageData, ProviderError> {
     let original = original_data(request)?;
     let terminal = frame_projection(
@@ -36,10 +36,11 @@ fn projected(
         Some(request),
         2,
         Method::Observe,
-        Body::Response(body),
+        Body::Response(&reply.body),
         MAXIMUM,
     )?;
-    let objects = evidence
+    let objects = reply
+        .evidence
         .iter()
         .map(|(reference, bytes)| OriginalContinuationContentExtent {
             maximum_payload_bytes: bytes.len(),
@@ -64,10 +65,10 @@ fn actual_current_observe_owning_counter_fits_prospective_components() -> TestRe
     let body = response_body()?;
     let bytes = b"same actual report proof".to_vec();
     let evidence = vec![(canonical::content_ref(&bytes, "application/json")?, bytes)];
+    let reply = PacketControlReply { body, evidence };
 
-    let projection = projected(&connection, &request, &body, &evidence)?;
-    let actual =
-        projection.authenticate_actual_inputs(&connection, 2, &request, &body, &evidence)?;
+    let projection = projected(&connection, &request, &reply)?;
+    let actual = projection.authenticate_actual_inputs(&connection, 2, &request, &reply)?;
 
     assert_eq!(actual.frames, 4);
     assert_eq!(actual.requests, 3);
@@ -86,29 +87,44 @@ fn actual_spare_payload_and_evidence_capacity_refuse_before_frames() -> TestResu
     let (_handshake, connection, request) = fixture()?;
     let body = response_body()?;
     let bytes = b"same exact immutable report bytes".to_vec();
-    let mut evidence = vec![(canonical::content_ref(&bytes, "application/json")?, bytes)];
-    let projection = projected(&connection, &request, &body, &evidence)?;
-    projection.authenticate_actual_inputs(&connection, 2, &request, &body, &evidence)?;
+    let evidence = vec![(canonical::content_ref(&bytes, "application/json")?, bytes)];
+    let mut reply = PacketControlReply { body, evidence };
+    let projection = projected(&connection, &request, &reply)?;
+    projection.authenticate_actual_inputs(&connection, 2, &request, &reply)?;
 
-    evidence[0]
+    reply.evidence[0]
         .1
         .try_reserve_exact(projection.source_owner_requested_bytes + 1)?;
     // The old owning planner sees identical lengths/references. Erasing the
     // source-capacity guard would therefore let this changed owner reach it.
-    connection.quote_original_packet_prefix_storage_data(2, &request, &body, &evidence, MAXIMUM)?;
+    connection.quote_original_packet_prefix_storage_data(
+        2,
+        &request,
+        &reply.body,
+        &reply.evidence,
+        MAXIMUM,
+    )?;
     assert!(
         projection
-            .authenticate_actual_inputs(&connection, 2, &request, &body, &evidence)
+            .authenticate_actual_inputs(&connection, 2, &request, &reply)
             .is_err()
     );
 
     let bytes = b"same exact immutable report bytes".to_vec();
-    evidence = vec![(canonical::content_ref(&bytes, "application/json")?, bytes)];
-    evidence.try_reserve_exact(projection.source_owner_requested_bytes + 1)?;
-    connection.quote_original_packet_prefix_storage_data(2, &request, &body, &evidence, MAXIMUM)?;
+    reply.evidence = vec![(canonical::content_ref(&bytes, "application/json")?, bytes)];
+    reply
+        .evidence
+        .try_reserve_exact(projection.source_owner_requested_bytes + 1)?;
+    connection.quote_original_packet_prefix_storage_data(
+        2,
+        &request,
+        &reply.body,
+        &reply.evidence,
+        MAXIMUM,
+    )?;
     assert!(
         projection
-            .authenticate_actual_inputs(&connection, 2, &request, &body, &evidence)
+            .authenticate_actual_inputs(&connection, 2, &request, &reply)
             .is_err()
     );
     assert!(connection.reader.stream_ref().output.is_empty());
@@ -122,11 +138,18 @@ fn old_simultaneous_request_limit_refuses_three_nonempty_proofs() -> TestResult 
     let bytes = b"proof".to_vec();
     let reference = canonical::content_ref(&bytes, "application/json")?;
     let evidence = vec![(reference.clone(), bytes.clone()); 3];
+    let reply = PacketControlReply { body, evidence };
     assert_eq!(connection.authority.limits().requests.get(), 8);
-    assert!(projected(&connection, &request, &body, &evidence).is_err());
+    assert!(projected(&connection, &request, &reply).is_err());
     assert!(
         connection
-            .quote_original_packet_prefix_storage_data(2, &request, &body, &evidence, MAXIMUM)
+            .quote_original_packet_prefix_storage_data(
+                2,
+                &request,
+                &reply.body,
+                &reply.evidence,
+                MAXIMUM
+            )
             .is_err()
     );
     assert!(connection.reader.stream_ref().output.is_empty());
@@ -138,22 +161,23 @@ fn changed_original_and_payload_bounds_refuse_on_same_current_connection() -> Te
     let (_handshake, connection, request) = fixture()?;
     let body = response_body()?;
     let bytes = b"report".to_vec();
-    let mut evidence = vec![(canonical::content_ref(&bytes, "application/json")?, bytes)];
-    let projection = projected(&connection, &request, &body, &evidence)?;
-    projection.authenticate_actual_inputs(&connection, 2, &request, &body, &evidence)?;
+    let evidence = vec![(canonical::content_ref(&bytes, "application/json")?, bytes)];
+    let mut reply = PacketControlReply { body, evidence };
+    let projection = projected(&connection, &request, &reply)?;
+    projection.authenticate_actual_inputs(&connection, 2, &request, &reply)?;
 
     let mut foreign = request.clone();
     foreign.request_id = Nullable(Some(Id::new("another-original")?));
     assert!(
         projection
-            .authenticate_actual_inputs(&connection, 2, &foreign, &body, &evidence)
+            .authenticate_actual_inputs(&connection, 2, &foreign, &reply)
             .is_err()
     );
-    evidence[0].1.push(b'!');
-    evidence[0].0 = canonical::content_ref(&evidence[0].1, "application/json")?;
+    reply.evidence[0].1.push(b'!');
+    reply.evidence[0].0 = canonical::content_ref(&reply.evidence[0].1, "application/json")?;
     assert!(
         projection
-            .authenticate_actual_inputs(&connection, 2, &request, &body, &evidence)
+            .authenticate_actual_inputs(&connection, 2, &request, &reply)
             .is_err()
     );
     assert!(connection.reader.stream_ref().output.is_empty());
@@ -209,6 +233,7 @@ fn current_proof_header_requote_refuses_a_short_foreign_authority_bound() -> Tes
     let body = response_body()?;
     let bytes = b"original report".to_vec();
     let evidence = vec![(canonical::content_ref(&bytes, "application/json")?, bytes)];
+    let reply = PacketControlReply { body, evidence };
     // Both original and terminal use the genuinely larger scope's complete
     // counters. Only the multiplied proof header counter comes from short.
     let original = original_data(&long_request)?;
@@ -217,11 +242,11 @@ fn current_proof_header_requote_refuses_a_short_foreign_authority_bound() -> Tes
         Some(&long_request),
         2,
         Method::Observe,
-        Body::Response(&body),
+        Body::Response(&reply.body),
         MAXIMUM,
     )?;
     let objects = [OriginalContinuationContentExtent {
-        maximum_payload_bytes: evidence[0].1.len(),
+        maximum_payload_bytes: reply.evidence[0].1.len(),
         media_type: "application/json",
     }];
     let bound = short.quote_original_packet_prefix_projection_storage_data(
@@ -234,13 +259,19 @@ fn current_proof_header_requote_refuses_a_short_foreign_authority_bound() -> Tes
             maximum_requested_bytes: MAXIMUM,
         },
     )?;
-    bound.authenticate_actual_inputs(&short, 2, &short_request, &body, &evidence)?;
+    bound.authenticate_actual_inputs(&short, 2, &short_request, &reply)?;
     // The old current owning counter itself fits its real bank. The refusal
     // below therefore tests the saved multiplied header bound, not wire no-fit.
-    long.quote_original_packet_prefix_storage_data(2, &long_request, &body, &evidence, MAXIMUM)?;
+    long.quote_original_packet_prefix_storage_data(
+        2,
+        &long_request,
+        &reply.body,
+        &reply.evidence,
+        MAXIMUM,
+    )?;
     assert!(
         bound
-            .authenticate_actual_inputs(&long, 2, &long_request, &body, &evidence)
+            .authenticate_actual_inputs(&long, 2, &long_request, &reply)
             .is_err()
     );
     assert!(long.reader.stream_ref().output.is_empty());
@@ -255,8 +286,9 @@ fn storage_backed_builder_rejects_foreign_authority_before_frames() -> TestResul
     let body = response_body()?;
     let bytes = b"same actual report proof".to_vec();
     let evidence = vec![(canonical::content_ref(&bytes, "application/json")?, bytes)];
-    let projection = projected(&connection, &request, &body, &evidence)?;
-    projection.authenticate_actual_inputs(&connection, 2, &request, &body, &evidence)?;
+    let reply = PacketControlReply { body, evidence };
+    let projection = projected(&connection, &request, &reply)?;
+    projection.authenticate_actual_inputs(&connection, 2, &request, &reply)?;
 
     connection.authenticate_original_packet_prefix_builder_authority_data(&connection.authority)?;
     connection
