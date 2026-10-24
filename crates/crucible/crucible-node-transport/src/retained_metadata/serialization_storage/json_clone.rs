@@ -126,3 +126,58 @@ fn empty_and_overflowing_clone_forests_refuse_before_allocating() -> TestResult 
     );
     Ok(())
 }
+
+fn lexical_storage_units(value: &Value) -> (usize, usize, usize) {
+    match value {
+        Value::Array(values) => values.iter().fold((values.len(), 0, 0), |sum, value| {
+            let child = lexical_storage_units(value);
+            (sum.0 + child.0, sum.1 + child.1, sum.2 + child.2)
+        }),
+        Value::Object(values) => values
+            .iter()
+            .fold((0, values.len(), 0), |sum, (key, value)| {
+                let child = lexical_storage_units(value);
+                (
+                    sum.0 + child.0,
+                    sum.1 + child.1,
+                    sum.2 + key.len() + child.2,
+                )
+            }),
+        Value::String(value) => (0, 0, value.len()),
+        Value::Null | Value::Bool(_) | Value::Number(_) => (0, 0, 0),
+    }
+}
+
+#[test]
+fn joint_canonical_budget_covers_nested_maps_arrays_and_decoded_strings() -> TestResult {
+    let mut values = vec![
+        Value::Null,
+        Value::Bool(false),
+        Value::from(0),
+        Value::from(1e-7),
+        Value::String("\0\n\"\\𝄞".repeat(16)),
+        Value::Array(vec![Value::from(0); 512]),
+    ];
+    let mut nested = Value::from(0);
+    for _ in 0..16 {
+        nested = serde_json::json!({"": [nested, 0], "\n𝄞": "\0\"\\"});
+        values.push(nested.clone());
+    }
+
+    for value in &values {
+        let (array_elements, object_members, string_bytes) = lexical_storage_units(value);
+        let minimum = 1 + 2 * array_elements + 5 * object_members + string_bytes;
+        assert!(canonical::canonical_json(value)?.len() >= minimum);
+    }
+
+    // The two minimal recursive grammars attain the structural bound. This
+    // checks their shared byte accounting independently of the quote formula.
+    for value in [serde_json::json!([0, 0]), serde_json::json!({"": {"": 0}})] {
+        let (array_elements, object_members, string_bytes) = lexical_storage_units(&value);
+        assert_eq!(
+            canonical::canonical_json(&value)?.len(),
+            1 + 2 * array_elements + 5 * object_members + string_bytes,
+        );
+    }
+    verify(&values)
+}

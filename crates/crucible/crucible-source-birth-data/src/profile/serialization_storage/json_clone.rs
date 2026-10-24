@@ -19,6 +19,9 @@ use std::mem::{align_of, size_of};
 /// pinned BTree clone copies each existing node once and returns an unallocated
 /// map for an empty source. Every node of a nonempty BTree owns at least one
 /// entry, so one maximum internal-node layout per member covers its clone.
+/// Array slots, map nodes and decoded strings share a structural lower bound
+/// on the complete canonical encoding. The quote prices its bytes at the most
+/// expensive corresponding backing rate, plus independent root headers.
 /// These are requested-layout bounds, without an allocator-residency claim.
 ///
 /// Admit the fixed counter before using this inert DATA quote. No allocation,
@@ -50,21 +53,21 @@ pub fn original_json_value_clone_storage_forest_data(
         return Err(exhausted());
     }
 
-    // Every document is nonempty. A value/key event consumes at least two
-    // canonical bytes, apart from each root's rounding and boundary allowance;
-    // an object member consumes at least the five bytes in `"":0,`.
     let documents = maximum_documents.min(maximum_canonical_bytes);
-    let values = add(add(maximum_canonical_bytes, documents)? / 2, documents)?;
-    let members = add(maximum_canonical_bytes / 5, documents)?;
     let node = map_node_bytes_for::<String, serde_json::Value>().map_err(|_| exhausted())?;
 
-    // Charging every event as an array element also covers all actual child
-    // vectors. Map slots separately include their key/value inline headers.
-    // Decoded string bytes cannot exceed their complete canonical encodings.
-    let arrays = multiply(values, size_of::<serde_json::Value>())?;
-    let maps = multiply(members, node)?;
+    // For canonical length L, array elements A, object members M and decoded
+    // string/key bytes S, structural induction gives L >= 1 + 2A + 5M + S.
+    // A nonempty array contributes its brackets, separators and each child's
+    // one-byte minimum. An object also contributes quotes and a colon per key.
+    // Empty containers and escaped strings only increase the remaining slack.
+    // The same byte cannot independently fund both a maximal array and map.
+    let array_byte_cost = size_of::<serde_json::Value>().div_ceil(2);
+    let map_byte_cost = node.div_ceil(5);
+    let byte_cost = array_byte_cost.max(map_byte_cost).max(1);
+    let backing = multiply(maximum_canonical_bytes, byte_cost)?;
     let roots = multiply(documents, size_of::<serde_json::Value>())?;
-    add(add(maximum_canonical_bytes, arrays)?, add(maps, roots)?)
+    add(backing, roots)
 }
 
 /// Names fixed clone-forest, checked arithmetic and pinned layout controls.
