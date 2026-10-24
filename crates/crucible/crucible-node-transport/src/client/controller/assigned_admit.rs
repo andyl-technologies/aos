@@ -7,6 +7,7 @@
 //! exact bytes and the original deadline; it cannot assign a fresh sequence.
 
 use super::*;
+use crate::client::session::OriginalAssignedPublicationData;
 use crate::operational_time::OperationalDeadline;
 use crate::reference_packet::service::ack_emitter::{
     MAXIMUM_CANONICAL_ACK_ADMISSION_PROOF_BYTES, PACKET_CANONICAL_ACK_ADMISSION_FEATURE,
@@ -461,10 +462,12 @@ impl PreparedOriginalCanonicalAckAdmit<'_> {
                 .session
                 .publish_original_initial_ack_admit_into(
                     &mut self.controller.custody,
-                    &state.original,
-                    &state.bytes,
-                    state.literal_slot,
-                    state.cut,
+                    OriginalAssignedPublicationData {
+                        original: &state.original,
+                        bytes: &state.bytes,
+                        slot: state.literal_slot,
+                        cut: state.cut,
+                    },
                     &mut state.response,
                     completed,
                 )?;

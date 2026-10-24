@@ -183,13 +183,17 @@ impl ClientSession {
     pub(in crate::client) fn publish_original_initial_ack_admit_into(
         &mut self,
         custody: &mut ClientCustody,
-        original: &Envelope,
-        bytes: &[u8],
-        slot: Option<usize>,
-        cut: crate::operational_time::OperationalDeadline,
+        publication: OriginalAssignedPublicationData<'_>,
         retained: &mut Option<Envelope>,
         completed: &mut Option<ResponseBody>,
     ) -> Result<(), ProviderError> {
+        let OriginalAssignedPublicationData {
+            original,
+            bytes,
+            slot,
+            cut,
+        } = publication;
+
         if retained.is_some() || completed.is_some() || original.method != Method::Admit {
             return Err(refused());
         }

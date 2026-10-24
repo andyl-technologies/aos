@@ -100,6 +100,7 @@ pub fn original_packet_host_initial_lifecycle_counter_scratch_data() -> usize {
         + crate::reference_packet::service::native_startup::data_equality::counter_scratch_data()
         + crate::client::CnpController::original_live_host_metadata_counter_scratch_data()
         + super::super::original_packet_host_startup_counter_scratch_data()
+        + crate::client::ClientSession::original_assigned_publication_counter_scratch_data()
         + crate::reference_packet::service::native_startup::original_initial_literal_shape_counter_scratch_data()
 }
 

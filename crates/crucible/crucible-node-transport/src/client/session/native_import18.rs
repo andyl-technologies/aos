@@ -41,13 +41,17 @@ impl ClientSession {
     pub(in crate::client) fn publish_native_import18_prepare_raw_into_data(
         &mut self,
         _custody: &mut ClientCustody,
-        original: &Envelope,
-        bytes: &[u8],
-        slot: Option<usize>,
-        cut: crate::operational_time::OperationalDeadline,
+        publication: OriginalAssignedPublicationData<'_>,
         raw: &mut Option<crate::transport::RetainedFrame>,
         profile: &mut crate::retained_metadata::NativeImport18JsonMetadataProfileData,
     ) -> Result<(), ProviderError> {
+        let OriginalAssignedPublicationData {
+            original,
+            bytes,
+            slot,
+            cut,
+        } = publication;
+
         self.authenticate_original_ack_admit_cut(original.sequence, cut)?;
         if raw.is_some() {
             return Err(invalid());

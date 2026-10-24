@@ -14,6 +14,7 @@ impl ClientSession {
             + size_of::<Result<U64, crucible_node_format::ContractError>>()
             + size_of::<Option<ReceivedFrame>>()
             + size_of::<Result<Option<ReceivedFrame>, ProviderError>>()
+            + Self::original_assigned_publication_counter_scratch_data()
     }
 
     pub(in crate::client) fn reserve_original_installed_restoration_observation(
@@ -29,13 +30,17 @@ impl ClientSession {
     pub(in crate::client) fn publish_original_installed_restoration_observation(
         &mut self,
         custody: &mut ClientCustody,
-        original: &Envelope,
-        bytes: &[u8],
-        slot: Option<usize>,
-        cut: crate::operational_time::OperationalDeadline,
+        publication: OriginalAssignedPublicationData<'_>,
         terminal: &mut Option<Envelope>,
         decoded: &mut Option<ResponseBody>,
     ) -> Result<(), ProviderError> {
+        let OriginalAssignedPublicationData {
+            original,
+            bytes,
+            slot,
+            cut,
+        } = publication;
+
         if terminal.is_some() || decoded.is_some() {
             return Err(refused());
         }

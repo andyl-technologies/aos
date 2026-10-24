@@ -17,6 +17,7 @@
 //! phases never become unused, and resume never renews their operation cut.
 
 use super::*;
+use crate::client::session::OriginalAssignedPublicationData;
 use crate::operational_time::OperationalDeadline;
 use crate::protocol_snapshot::{OriginalProtocolStorageFacts, ProtocolCaptureOwner};
 use crate::reference_packet::service::complete_restore::{
@@ -426,10 +427,12 @@ impl OriginalNativeImport18Assignment {
                 .session
                 .publish_native_import18_prepare_raw_into_data(
                     &mut controller.custody,
-                    p.original.as_ref().ok_or_else(invalid)?,
-                    &p.bytes,
-                    p.literal_slot,
-                    p.cut.ok_or_else(invalid)?,
+                    OriginalAssignedPublicationData {
+                        original: p.original.as_ref().ok_or_else(invalid)?,
+                        bytes: &p.bytes,
+                        slot: p.literal_slot,
+                        cut: p.cut.ok_or_else(invalid)?,
+                    },
                     &mut p.raw,
                     &mut p.json_profile,
                 )?;

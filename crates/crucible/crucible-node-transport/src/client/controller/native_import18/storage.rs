@@ -117,6 +117,7 @@ impl CnpController {
             + size_of::<OriginalNativeImport18AssignmentStorageData>()
             + size_of::<Result<OriginalNativeImport18AssignmentStorageData, ProviderError>>()
             + prepare_inputs::counter_scratch_data()
+            + crate::client::ClientSession::original_assigned_publication_counter_scratch_data()
             + size_of::<AssignedPhase<PacketCompleteRestorePrepareRequest>>()
             + size_of::<SchemaRef>()
             + size_of::<&SchemaRef>()

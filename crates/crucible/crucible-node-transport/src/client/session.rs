@@ -19,6 +19,9 @@ use crate::transport::{FrameReader, write_frame_with_limits};
 
 use super::{ClientContent, DeadlineStream, ExchangeDeadline};
 
+mod assigned_publication;
+pub(in crate::client) use assigned_publication::OriginalAssignedPublicationData;
+
 mod bootstrap_cut;
 mod fresh_restore_query;
 #[path = "session/original_conflict.rs"]

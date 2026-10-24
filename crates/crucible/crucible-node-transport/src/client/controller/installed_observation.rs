@@ -1,6 +1,7 @@
 //! Retains one separately assigned restored Observe and all failed partials.
 
 use super::*;
+use crate::client::session::OriginalAssignedPublicationData;
 use crate::reference_packet::service::complete_restore::{activation::*, restoration_observe::*};
 use serde::Deserialize;
 
@@ -673,10 +674,12 @@ impl PreparedOriginalInstalledRestorationObservation<'_> {
             .session
             .publish_original_installed_restoration_observation(
                 &mut self.controller.custody,
-                original,
-                &state.bytes,
-                state.literal_slot,
-                state.cut,
+                OriginalAssignedPublicationData {
+                    original,
+                    bytes: &state.bytes,
+                    slot: state.literal_slot,
+                    cut: state.cut,
+                },
                 &mut state.response,
                 &mut state.decoded,
             )?;
