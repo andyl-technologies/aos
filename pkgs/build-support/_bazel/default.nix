@@ -354,6 +354,11 @@
       root = ../../..;
       family = "store-s3";
     };
+    qemu-gpl-production = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "qemu-gpl-production";
+    };
     qemu-host = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;

@@ -2773,6 +2773,9 @@ gates.
 
 The [QEMU plugin ABI inputs](docs/qemu-plugin-abi.md) share the production
 header checks and include matching-header and version-drift qualification.
+The [GPL QEMU component graph](docs/qemu-gpl.md) compiles both production
+components and compares their features, compiler inputs, ELF properties, and
+gateway argument rejection with an offline Cargo baseline.
 
 The [CLI conversion checkpoints](docs/aos-cli.md) describe its three dependency
 configurations, native test fixtures, production package inspection, and gates

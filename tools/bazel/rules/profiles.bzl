@@ -52,6 +52,7 @@ def _dependency_profile_impl(ctx):
         "session",
         "control",
         "qemu-host",
+        "qemu-gpl-production",
         "store-s3",
         "daemon",
         "crucible-cli",

@@ -57,6 +57,7 @@ include("//third_party/rust:quota/repositories.MODULE.bazel")
 include("//third_party/rust:session/repositories.MODULE.bazel")
 include("//third_party/rust:control/repositories.MODULE.bazel")
 include("//third_party/rust:qemu-host/repositories.MODULE.bazel")
+include("//third_party/rust:qemu-gpl-production/repositories.MODULE.bazel")
 include("//third_party/rust:store-s3/repositories.MODULE.bazel")
 include("//third_party/rust:daemon/repositories.MODULE.bazel")
 include("//third_party/rust:crucible-cli/repositories.MODULE.bazel")
@@ -91,3 +92,5 @@ aos_tools(name = "aos_hub_model_test_sources")
 aos_tools(name = "aos_registry_runtime")
 
 aos_tools(name = "aos_boot_tools")
+
+aos_tools(name = "aos_qemu_plugin_abi")

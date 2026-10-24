@@ -1,0 +1,266 @@
+{
+  "abi": {
+    "atomic_patch_sha256": "3492f9060ed975d4a99531dbcb20db7d65d92b233752a14daa920cae0b8d8e30",
+    "plugin_declarations_sha256": "1d580aa38d95805c6818ffe1f4b68b337e14abbb5b3fdb686369afd61229a55e",
+    "qemu": "/nix/store/zdsnl7ib0j7am6f3mg2a7jk4fwsda4wr-qemu-crucible-11.1.1",
+    "qemu_build_id": "9e47e62d424d444db836abca6dd3fac0c893113a43fb6341a41b18e66788c377",
+    "qemu_plugin_api_version": 7,
+    "schema_version": 1,
+    "shmem_abi_version": 30,
+    "shmem_declarations_sha256": "5176b176ccb94105f99f513246c1dcd4e8ff4b9da0ef13c2a52a92b7a1e5eb10",
+    "shmem_header_sha256": "1dc465a755a9d9e8195a7e3cd22ecadcc1496fff89a2e19bcf7ffb7b9c9b8dcd"
+  },
+  "additional_uncached_artifact_comparison": {
+    "build": "/nix/store/80zypy7f581xd2blx08my9hag7v6kdj4-aos-bazel-qemu-gpl-production-1",
+    "cargo": "/nix/store/5nqbpcrlsshgywydik9p77gcvi64m20s-aos-bazel-qemu-gpl-production-cargo-1",
+    "report_sha256": "a46837156a0fa6751e7dbd90c6135a4c225dde912be7095fc63f0f199207c7e4"
+  },
+  "artifacts": {
+    "gateway": {
+      "bazel": {
+        "exports": [],
+        "identity": {
+          "Class": "ELF64",
+          "Data": "2's complement, little endian",
+          "Machine": "Advanced Micro Devices X86-64",
+          "OS/ABI": "UNIX - System V",
+          "Type": "DYN (Position-Independent Executable file)"
+        },
+        "interpreter": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+        ],
+        "needed": [
+          "ld-linux-x86-64.so.2",
+          "libc.so.6"
+        ],
+        "runtime_search_paths": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib:/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib"
+        ],
+        "sha256": "cc7215a382e90e5985ada91e22980ff263cd79f168f0f4562f9b5ba78bf4a2ed"
+      },
+      "cargo": {
+        "exports": [],
+        "identity": {
+          "Class": "ELF64",
+          "Data": "2's complement, little endian",
+          "Machine": "Advanced Micro Devices X86-64",
+          "OS/ABI": "UNIX - System V",
+          "Type": "DYN (Position-Independent Executable file)"
+        },
+        "interpreter": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+        ],
+        "needed": [
+          "ld-linux-x86-64.so.2",
+          "libc.so.6"
+        ],
+        "runtime_search_paths": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib:/nix/store/v9pbq0m4yadjrdyqgm46j6z0gmqvih4k-aos-bazel-qemu-gpl-production-cargo-1/lib"
+        ],
+        "sha256": "534f33f31c42cfdeb7ee28dfa819ec85490522ecd28b58ebc2badca69d493873"
+      }
+    },
+    "plugin": {
+      "bazel": {
+        "exports": [
+          {
+            "kind": "FUNC",
+            "name": "qemu_plugin_install",
+            "size": 6829
+          },
+          {
+            "kind": "OBJECT",
+            "name": "qemu_plugin_version",
+            "size": 4
+          }
+        ],
+        "identity": {
+          "Class": "ELF64",
+          "Data": "2's complement, little endian",
+          "Machine": "Advanced Micro Devices X86-64",
+          "OS/ABI": "UNIX - System V",
+          "Type": "DYN (Shared object file)"
+        },
+        "interpreter": [],
+        "needed": [
+          "ld-linux-x86-64.so.2",
+          "libc.so.6"
+        ],
+        "runtime_search_paths": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib:/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib"
+        ],
+        "sha256": "24f172b2c43c8c478c4b41d4494dff8e3126e8ab2156355880525d9904485e3f"
+      },
+      "cargo": {
+        "exports": [
+          {
+            "kind": "FUNC",
+            "name": "qemu_plugin_install",
+            "size": 6829
+          },
+          {
+            "kind": "OBJECT",
+            "name": "qemu_plugin_version",
+            "size": 4
+          }
+        ],
+        "identity": {
+          "Class": "ELF64",
+          "Data": "2's complement, little endian",
+          "Machine": "Advanced Micro Devices X86-64",
+          "OS/ABI": "UNIX - System V",
+          "Type": "DYN (Shared object file)"
+        },
+        "interpreter": [],
+        "needed": [
+          "ld-linux-x86-64.so.2",
+          "libc.so.6"
+        ],
+        "runtime_search_paths": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib:/nix/store/v9pbq0m4yadjrdyqgm46j6z0gmqvih4k-aos-bazel-qemu-gpl-production-cargo-1/lib"
+        ],
+        "sha256": "47304f6c88919cb605027db51544ebf67b67302948fcad8dffcaa495f6c431a4"
+      }
+    }
+  },
+  "checks": {
+    "core_evaluation": "/nix/store/c26xzi83c5fski2pa0iiw81v7cyxf6yg-aos-native-evaluation-checks-0",
+    "python_cases": 282,
+    "python_policy": "/nix/store/d697nr4w27ilar0qz254khqc4ph13ar4-aos-bazel-policy-checks"
+  },
+  "compiler_limits": [
+    "Bazel response and indirect wrapper input files are bound to execution digests. Working-directory, output-base, and execution-root identities remain explicit symbolic roots.",
+    "Compiler defaults and compiler/linker closure or ABI equivalence are not checked here.",
+    "Codegen, target, linker, incremental, and artifact-identity differences are retained for explicit review; this audit does not establish semantic compiler-option equivalence.",
+    "Scalar codegen options use their last explicit value. Repeated and unknown options remain in order; compiler defaults are not inferred.",
+    "The source/test key requires an unambiguous native family. Families compiling the same source in multiple execution/target configurations need an explicit role-aware comparison.",
+    "Captured Cargo invocations prove compiler execution was requested, not that every request succeeded. Runtime and compilation results require their independent gates."
+  ],
+  "declared_inputs": {
+    "abi": "/nix/store/hwgn5k5yajsvlayh4im9p5rvrgwws10v-aos-bazel-qemu-plugin-abi-1",
+    "build": "/nix/store/7fy1kz8sblr7v1z3rikbhl9b1dm9wzlq-aos-bazel-qemu-gpl-production-1",
+    "cargo": "/nix/store/v9pbq0m4yadjrdyqgm46j6z0gmqvih4k-aos-bazel-qemu-gpl-production-cargo-1",
+    "inventory": "/nix/store/6m20nhz4cvmwgv9yhismvpn6s0c8kh47-aos-bazel-qemu-gpl-production-inventory-1",
+    "schema_version": 1
+  },
+  "developer_checks": {
+    "clippy_actions": 3,
+    "documentation_actions": 2,
+    "format_targets": 2,
+    "status": "PASS"
+  },
+  "elf_limits": [
+    "Runtime search paths are retained separately and are not required to be identical.",
+    "Live QEMU loading, protocol lifecycle tests, complete installed closures, and production cutover remain independent gates."
+  ],
+  "first_party_compiler_units": 5,
+  "first_party_features": {
+    "crucible-qemu-debug-gateway": [
+      []
+    ],
+    "crucible-qemu-plugin": [
+      []
+    ],
+    "crucible-qemu-protocol": [
+      []
+    ],
+    "crucible-qemu-shmem": [
+      []
+    ]
+  },
+  "gateway_argument_cases": [
+    {
+      "arguments": [],
+      "exit_code": 1,
+      "stderr": "crucible-debug-gateway: missing control socket\n",
+      "stdout": ""
+    },
+    {
+      "arguments": [
+        "--help"
+      ],
+      "exit_code": 1,
+      "stderr": "crucible-debug-gateway: usage: crucible-debug-gateway --control-socket <absolute-path> [--owner-gdb-socket <absolute-path>]\n",
+      "stdout": ""
+    },
+    {
+      "arguments": [
+        "--control-socket",
+        "relative"
+      ],
+      "exit_code": 1,
+      "stderr": "crucible-debug-gateway: control socket path must be absolute\n",
+      "stdout": ""
+    },
+    {
+      "arguments": [
+        "--control-socket",
+        "/unused-control",
+        "--owner-gdb-socket",
+        "relative"
+      ],
+      "exit_code": 1,
+      "stderr": "crucible-debug-gateway: owner GDB socket path must be absolute\n",
+      "stdout": ""
+    }
+  ],
+  "negative_probes": [
+    {
+      "case": "shared-libgcc-drift",
+      "diagnostic": "plugin ELF needed differs from Cargo",
+      "status": "PASS: rejected"
+    },
+    {
+      "case": "wrong-qemu-admission-identity",
+      "diagnostic": "bazel plugin omitted checked admission identity: qemu_build_id",
+      "status": "PASS: rejected"
+    }
+  ],
+  "outputs": {
+    "all": "/nix/store/fjbnif2qgm1hci61hfjm6dg6fai1gwkc-aos-bazel-qemu-gpl-production-checks",
+    "build": "/nix/store/7fy1kz8sblr7v1z3rikbhl9b1dm9wzlq-aos-bazel-qemu-gpl-production-1",
+    "cargo": "/nix/store/v9pbq0m4yadjrdyqgm46j6z0gmqvih4k-aos-bazel-qemu-gpl-production-cargo-1",
+    "developer-build": "/nix/store/m02lgkxnx4ac9yjmf5pmls2hdl0wnwrj-aos-bazel-qemu-gpl-production-developer-1",
+    "format": "/nix/store/csjvy0mpj7kbmb2arjbk4lb8mcizwf84-aos-bazel-qemu-gpl-production-format-1",
+    "inventory": "/nix/store/6m20nhz4cvmwgv9yhismvpn6s0c8kh47-aos-bazel-qemu-gpl-production-inventory-1",
+    "parity": "/nix/store/0pnx62p0x42s4zvm5kmhrpx5gszh0xs6-aos-bazel-qemu-gpl-production-parity"
+  },
+  "remaining_gates": [
+    "GPL/Apache process test harnesses",
+    "live matching QEMU loading and runtime",
+    "complete installed package and runtime closure parity",
+    "suite corresponding-source retention and release qualification",
+    "compiler semantic defaults and all target architectures",
+    "production migration"
+  ],
+  "reports_sha256": {
+    "compiler.json": "646397bfced5342e306c1a489f8d68d760b89de17cea3bbb37d16208a5347152",
+    "elf.json": "4d14557ced27b272595cc72e876eca7ef03cae07e2fb0d44f2299d837d362635",
+    "features.json": "c9b1149f3ae3c3b7a46fd3f4435a0e1ea45852b72c7128a009a4ed5ad78bcae9",
+    "inputs.json": "3b3b078533e627a713b2c0b0e087eadb3d925de5bb0b39ed6281517ecedfb411"
+  },
+  "rust_actions": {
+    "cache_hits": 0,
+    "runner": "linux-sandbox",
+    "total": 54
+  },
+  "schema_version": 1,
+  "scope": "GPL production compiler artifacts; production consumers unchanged",
+  "shared_cache_mounts": [],
+  "source_inventory": {
+    "path": "tools/bazel/metadata/qemu-gpl-production-inventory.json",
+    "refreshed_families": 42,
+    "sha256": "317361c6088f64ef64b0d166883c47d1b78c2b2e3415138af84f450a7ef29f57"
+  },
+  "source_sha256": {
+    "crates/crucible/qemu/crucible-qemu-debug-gateway/BUILD.bazel": "8b3887cdac00b622389e4509dcfb73ebb9dd2218c2a15de0bae2fe990125d9c9",
+    "crates/crucible/qemu/crucible-qemu-plugin/BUILD.bazel": "18aa7c413130009d51754cc44f44c87ec2acdb202db4c2fbc04ccbf3cab528c3",
+    "tests/build/_bazel-qemu-gpl-cargo.nix": "4b9a444e57f21dbc1b22146545c9b69736a9bd3c189a7d828a1ec7314e1a6369",
+    "tests/build/_bazel-qemu-gpl.nix": "6187cf4b236f41137bc8515cdf39098fdf248d6a9cb4b8b41b96a7e73a7e0cd2",
+    "third_party/rust/qemu-gpl-production/sources.json": "d9a2e6f24e050d22caeb9b1732451182fd9e7479d6cbdaa73bb0df8760f33f1c",
+    "tools/bazel/tests/verify_compiler_options.py": "9a0209497c41513935ee6f81f32de1377fce858db282166eba66186eb4e05963",
+    "tools/bazel/tests/verify_protocol.py": "c280a1da1df09b1ca87adb777cd36342fb8c8bb57502d02c3cd35b3273166768",
+    "tools/bazel/tests/verify_qemu_gpl.py": "2b5952ca8573c69d4181a0ca612e82720733fc60515826db85767a10ab1a9294"
+  },
+  "upstream_feature_packages": 35
+}

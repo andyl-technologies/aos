@@ -61,6 +61,7 @@ load(":quota/aliases.bzl", QUOTA_CRATES = "CRATES")
 load(":session/aliases.bzl", SESSION_CRATES = "CRATES")
 load(":control/aliases.bzl", CONTROL_CRATES = "CRATES")
 load(":qemu-host/aliases.bzl", QEMU_HOST_CRATES = "CRATES")
+load(":qemu-gpl-production/aliases.bzl", QEMU_GPL_PRODUCTION_CRATES = "CRATES")
 load(":store-s3/aliases.bzl", STORE_S3_CRATES = "CRATES")
 load(":daemon/aliases.bzl", DAEMON_CRATES = "CRATES")
 load(":crucible-cli/aliases.bzl", CRUCIBLE_CLI_CRATES = "CRATES")
@@ -78,6 +79,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:qemu_gpl_production_dependencies": QEMU_GPL_PRODUCTION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:aos_cli_tests_dependencies": AOS_CLI_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:aos_cli_fleet_tests_dependencies": AOS_CLI_FLEET_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:aos_cli_production_dependencies": AOS_CLI_PRODUCTION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -189,6 +191,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         + SESSION_CRATES.items()
         + CONTROL_CRATES.items()
         + QEMU_HOST_CRATES.items()
+        + QEMU_GPL_PRODUCTION_CRATES.items()
         + STORE_S3_CRATES.items()
         + DAEMON_CRATES.items()
         + CRUCIBLE_CLI_CRATES.items()
@@ -286,6 +289,13 @@ ENGINE_PACKAGES = dict(
     regex = crate.spec(version = "=1.12.4"),
     toml = crate.spec(version = "=0.8.23"),
     tracing = crate.spec(version = "=0.1.44"),
+)
+
+# GPL production consumers share only the reviewed permissive protocol closure.
+# Apache engine and control development dependencies belong to separate processes.
+QEMU_GPL_PRODUCTION_PACKAGES = dict(
+    {name: CORE_PACKAGES[name] for name in ["blake3", "libc", "serde", "serde_json", "sha2", "thiserror", "unicode-normalization"]},
+    hex = crate.spec(version = "=0.4.3"),
 )
 
 # The QEMU host adds Linux process/socket APIs without the session/TLS closure.
@@ -1870,6 +1880,7 @@ APPROVED_LICENSES = [
         ("session", SESSION_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("control", CONTROL_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("qemu-host", QEMU_HOST_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
+        ("qemu-gpl-production", QEMU_GPL_PRODUCTION_PACKAGES, {}, "permissive-protocol"),
         ("store-s3", STORE_S3_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("daemon", DAEMON_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("crucible-cli", CRUCIBLE_CLI_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
@@ -1940,6 +1951,7 @@ APPROVED_LICENSES = [
         "session",
         "control",
         "qemu-host",
+        "qemu-gpl-production",
         "store-s3",
         "daemon",
         "crucible-cli",

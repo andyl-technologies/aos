@@ -51,6 +51,7 @@
     "session"
     "control"
     "qemu-host"
+    "qemu-gpl-production"
     "store-s3"
     "daemon"
     "crucible-cli"

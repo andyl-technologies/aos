@@ -1,7 +1,12 @@
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rustfmt_test")
+load("//tools/bazel/rules:compile.bzl", "rust_library", "rust_shared_library")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
 
-# Source ownership is declared before this package's compilation migrates.
+package(default_visibility = ["//crates/crucible:__subpackages__"])
+
 RUST_PACKAGE = aos_rust_package(
     name = "crucible-qemu-plugin",
     version = "0.1.0",
@@ -10,6 +15,63 @@ RUST_PACKAGE = aos_rust_package(
     license_domain = "gpl-qemu",
 )
 
+rust_shared_library(
+    name = "plugin",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible_qemu_plugin",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    rustc_env_files = ["@aos_qemu_plugin_abi//:plugin.env"],
+    compile_data = ["@aos_qemu_plugin_abi//:identity.json"],
+    deps = [
+        "//crates/crucible/protocol/crucible-qemu-protocol:lib",
+        "//crates/crucible/protocol/crucible-qemu-shmem:lib",
+    ] + [
+        "//third_party/rust:core_" + name
+        for name in ["blake3", "hex", "libc", "sha2", "serde_json", "thiserror"]
+    ],
+)
+
+# rules_rust exposes CcInfo for a cdylib. Its Rust development rules need an
+# rlib provider; compile the same source and checked environment for those tools.
+rust_library(
+    name = "lib_for_development",
+    testonly = True,
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible_qemu_plugin",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    rustc_env_files = ["@aos_qemu_plugin_abi//:plugin.env"],
+    compile_data = ["@aos_qemu_plugin_abi//:identity.json"],
+    deps = [
+        "//crates/crucible/protocol/crucible-qemu-protocol:lib",
+        "//crates/crucible/protocol/crucible-qemu-shmem:lib",
+    ] + [
+        "//third_party/rust:core_" + name
+        for name in ["blake3", "hex", "libc", "sha2", "serde_json", "thiserror"]
+    ],
+)
+
+rust_clippy(name = "clippy", testonly = True, deps = [":lib_for_development"])
+rust_doc(name = "documentation", testonly = True, crate = ":lib_for_development")
+rustfmt_test(name = "format", testonly = True, targets = [":lib_for_development"])
+
+aos_license_check(
+    name = "production_license_closure",
+    roots = [":plugin"],
+    license_domain = "gpl-qemu",
+)
+
+aos_package(
+    name = "compiler_artifact",
+    package = RUST_PACKAGE,
+    artifacts = {":plugin": "lib/libcrucible_qemu_plugin.so"},
+)
+
+# Unit tests still require a process-based engine oracle before their Bazel
+# conversion. Apache test support must never become a compiled GPL dependency.
 aos_source_package(
     name = "source_package",
     package = RUST_PACKAGE,

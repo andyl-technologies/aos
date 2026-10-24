@@ -430,3 +430,9 @@ config_setting(
     flag_values = {":dependency_profile": "aos-cli-production"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "qemu_gpl_production_dependencies",
+    flag_values = {":dependency_profile": "qemu-gpl-production"},
+    visibility = ["//visibility:public"],
+)
