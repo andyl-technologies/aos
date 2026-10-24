@@ -473,6 +473,11 @@ fn validate_saved_profile(
             return Err(SchedulingError::InvalidSnapshot);
         }
         for delivery in &batch.deliveries {
+            input_custody::validate_source_history(
+                &sequences,
+                &snapshot.native_sequences,
+                delivery,
+            )?;
             if execution_owners.get(&delivery.consumer) != Some(&batch.owner) {
                 return Err(SchedulingError::InvalidSnapshot);
             }

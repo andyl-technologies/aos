@@ -391,6 +391,12 @@ pub(crate) fn test_fixture_isolated_execution(
     tests::isolated_execution_fixture_with_content(shared_writers)
 }
 
+/// Admits a two-producer fixture with a shared external and routed input.
+#[cfg(test)]
+pub(crate) fn test_fixture_external_fanin() -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
+    tests::external_fanin_fixture_with_content()
+}
+
 /// Constructs a synthetic sealed graph solely for cross-crate model tests.
 ///
 /// Available only under the explicit `test-double` feature. The in-memory

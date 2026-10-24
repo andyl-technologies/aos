@@ -54,6 +54,37 @@ pub(super) fn validate_input_queue(
     Ok(())
 }
 
+/// Checks staged input identities against their original saved histories.
+///
+/// A consumed entry has left pending_deliveries, but its producer and native
+/// endpoint histories remain part of the saved continuation. The existing
+/// indexes are borrowed without constructing a new bank.
+///
+/// # Errors
+/// Refuses an absent producer or native endpoint history, an input at or beyond
+/// the next public sequence, or a native FIFO identity beyond the last observed.
+pub(super) fn validate_source_history(
+    sequences: &BTreeMap<Id, Option<U64>>,
+    native_sequences: &[SavedNativeSequence],
+    delivery: &Delivery,
+) -> Result<(), SchedulingError> {
+    let next = sequences
+        .get(&delivery.producer)
+        .ok_or(SchedulingError::InvalidSnapshot)?;
+    if next.is_some_and(|next| next <= delivery.source_sequence) {
+        return Err(SchedulingError::InvalidSnapshot);
+    }
+
+    let native_last = native_sequences
+        .iter()
+        .find(|saved| saved.endpoint == delivery.producer_endpoint)
+        .ok_or(SchedulingError::InvalidSnapshot)?;
+    if delivery.native_sequence > native_last.last_sequence {
+        return Err(SchedulingError::InvalidSnapshot);
+    }
+    Ok(())
+}
+
 // Adds this borrowed validation walk to the original construction quote. No
 // child storage or replacement event identity is constructed by the check.
 pub(in crate::node_scheduling) const fn counter_scratch_data() -> usize {
@@ -67,6 +98,28 @@ pub(in crate::node_scheduling) const fn counter_scratch_data() -> usize {
         + 4 * size_of::<bool>()
         + size_of::<Result<(), SchedulingError>>()
         + pending_queue_counter_scratch_data()
+        + source_history_counter_scratch_data()
+}
+
+// Prices the independent borrowed history lookup, iterator and its closure,
+// optional/result views, copied public sequence and comparison predicates.
+const fn source_history_counter_scratch_data() -> usize {
+    size_of::<&BTreeMap<Id, Option<U64>>>()
+        + size_of::<&[SavedNativeSequence]>()
+        + 2 * size_of::<&Delivery>()
+        + size_of::<&Id>()
+        + size_of::<std::slice::Iter<'static, SavedNativeSequence>>()
+        + size_of::<&&SavedNativeSequence>()
+        + size_of::<&SavedNativeSequence>()
+        + size_of::<Option<&SavedNativeSequence>>()
+        + size_of::<Result<&SavedNativeSequence, SchedulingError>>()
+        + size_of::<&Option<U64>>()
+        + size_of::<Option<&Option<U64>>>()
+        + size_of::<Result<&Option<U64>, SchedulingError>>()
+        + size_of::<Option<U64>>()
+        + size_of::<U64>()
+        + 3 * size_of::<bool>()
+        + size_of::<Result<(), SchedulingError>>()
 }
 
 // Counts the independent remaining-prefix walk and borrowed binary-search views.
@@ -105,3 +158,7 @@ mod tests;
 #[cfg(test)]
 #[path = "input_custody/operation_identity_tests.rs"]
 mod operation_identity_tests;
+
+#[cfg(test)]
+#[path = "input_custody/source_history_tests.rs"]
+mod source_history_tests;

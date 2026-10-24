@@ -203,6 +203,21 @@ pub(super) fn isolated_execution_fixture_with_content(
     (admitted, fixture.evidence.blobs)
 }
 
+/// Returns admitted fan-in policy and its original content evidence.
+#[cfg(test)]
+pub(super) fn external_fanin_fixture_with_content() -> (AdmittedGraph, BTreeMap<String, Vec<u8>>) {
+    let mut fixture = execution_fixture(false, false);
+    fixture
+        .coordinator
+        .external_inputs
+        .push(fixture.world.connections[0].consumer.clone());
+    fixture.coordinator.external_inputs.sort();
+    fixture.refresh();
+
+    let admitted = fixture.admit(AdmissionLimits::default()).unwrap();
+    (admitted, fixture.evidence.blobs)
+}
+
 #[cfg(test)]
 fn execution_fixture(shared_writers: bool, isolated: bool) -> Fixture {
     let mut fixture = Fixture::new();
