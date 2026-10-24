@@ -10,6 +10,34 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Original Prepare input custody
+
+Commit `2143cf520e` retains the five typed Prepare inputs in a caller-owned
+optional record through early emitter and occupied-destination refusals. Once
+accepted, the same fields move into the retained assignment before row/query
+validation. The transfer performs no allocating or fallible work after taking
+the record. Three controls check missing inputs, an occupied destination and
+successful transfer, including complete field equality and actual heap-pointer
+preservation. They qualify physical SDK custody without constructing a Source,
+Fresh query, native lease or completion witness. All earlier fixed counter
+terms remain, with the new record and move controls added explicitly.
+
+Both complete Transport codec modes pass 2,107 tests with zero failures,
+20 ignored and no filtering, in 247.39 and 247.49 seconds. Both Engine modes
+pass 2,048 tests with zero failures, 34 ignored and no filtering, plus fourteen
+custody and five rebuilt-provider controls each. All-feature Transport/Engine/
+Daemon targets, six architecture checks and scoped formatting pass. Production
+Transport Clippy remains failing at 29 errors and 1,734 warnings; no lint
+allowance or strict acceptance is claimed.
+
+The merged-toolchain application and funded-Source VM gates pass. Actual
+compiler metadata records 185 test artifacts across 58 packages, including
+76 integration targets. All 551 frozen owned Rust/Cargo inputs match this
+commit and the actual application and three funded-VM Rust component captures.
+These results precede the later receipt-only controls. Genuine Recipe/Initial
+production, full Native18 adoption, complete semantic-spend/once-state codecs,
+preservation and full RFC-0025 qualification remain unfinished.
+
 ## Native admission input records
 
 Commit `ae866602ce` groups the original literal/typed Hello pair and connection
