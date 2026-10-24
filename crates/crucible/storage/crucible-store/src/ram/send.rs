@@ -234,9 +234,11 @@ impl RamTransferSender {
             None => self
                 .original
                 .reserve_scratch_bytes(super::response::offer_peak(&self.offer)?)
-                .map_err(admission)?,
+                .map_err(|source| RamStoreError::from_admission(&self.original, source))?,
         };
-        self.original.verify_live().map_err(admission)?;
+        self.original
+            .verify_live()
+            .map_err(|source| RamStoreError::from_admission(&self.original, source))?;
         Ok(RamTransferResponse::new(
             self.message(RamTransferControl::Offer(self.offer.clone())),
             credit,

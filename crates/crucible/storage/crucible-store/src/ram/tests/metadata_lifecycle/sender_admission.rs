@@ -10,6 +10,7 @@ enum AdmissionCut {
     Entry,
     FrameCredit,
     FinalValidation,
+    OfferFinalValidation,
 }
 
 fn construct_sender(cut: AdmissionCut) {
@@ -48,7 +49,7 @@ fn construct_sender(cut: AdmissionCut) {
     };
 
     match cut {
-        AdmissionCut::Healthy => {}
+        AdmissionCut::Healthy | AdmissionCut::OfferFinalValidation => {}
         AdmissionCut::Entry => quota.revoked.store(true, Ordering::SeqCst),
         AdmissionCut::FrameCredit => {
             // Observe the actual entry and diagnostic-slot admission prefix.
@@ -87,17 +88,40 @@ fn construct_sender(cut: AdmissionCut) {
 
     if matches!(cut, AdmissionCut::Healthy) {
         let mut sender = result.ok().unwrap();
-        let response = sender.offer().unwrap();
-        assert_eq!(response.message().operation, [71; 32]);
-        assert_eq!(
-            response.message().control,
-            crucible_qemu_protocol::ram_transfer::RamTransferControl::Offer(offer)
-        );
-        drop(response);
+        // The initial response consumes its constructor credit; the repeated
+        // offer must reserve and return its own real frame credit.
+        for _ in 0..2 {
+            let response = sender.offer().unwrap();
+            assert_eq!(response.message().operation, [71; 32]);
+            assert_eq!(
+                response.message().control,
+                crucible_qemu_protocol::ram_transfer::RamTransferControl::Offer(offer.clone())
+            );
+            drop(response);
+        }
         drop(sender);
         assert_eq!(quota.used(), admitted);
     } else {
-        let error = result.err().unwrap();
+        let error = if matches!(cut, AdmissionCut::OfferFinalValidation) {
+            let mut sender = result.ok().unwrap();
+            drop(sender.offer().unwrap());
+            let retained_sender = quota.used();
+            let before = quota.verifications.load(Ordering::SeqCst);
+            let response = sender.offer().unwrap();
+            let complete = quota.verifications.load(Ordering::SeqCst) - before;
+            drop(response);
+            assert_eq!(quota.used(), retained_sender);
+            assert!(complete > 1);
+
+            quota
+                .revoke_after_verifications
+                .store(complete, Ordering::SeqCst);
+            let error = sender.offer().err().unwrap();
+            drop(sender);
+            error
+        } else {
+            result.err().unwrap()
+        };
         assert!(quota.revoked.load(Ordering::SeqCst));
         let mut cause = Some(&error as &(dyn Error + 'static));
         let mut actual_revocation = false;
@@ -153,4 +177,9 @@ fn sender_constructor_frame_credit_refusal_retains_explicit_original() {
 #[test]
 fn sender_constructor_final_validation_refusal_retains_explicit_original() {
     construct_sender(AdmissionCut::FinalValidation);
+}
+
+#[test]
+fn sender_repeated_offer_final_refusal_retains_original_after_sender_close() {
+    construct_sender(AdmissionCut::OfferFinalValidation);
 }

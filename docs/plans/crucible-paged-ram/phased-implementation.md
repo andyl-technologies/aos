@@ -68,7 +68,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 648 bindings: 629 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 649 bindings: 630 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -3171,10 +3171,34 @@ Inventory `xs5zi5wfj1bhgbfkwx260r4izb7lc6ab` validates 648 bindings across
 243 requirements: 604 model, 25 format and nineteen native bindings. There are
 still 142 uncovered requirements and zero fully qualified requirements. All
 775 ordinary storage tests, 95 policy controls and strict storage/portable-RAM
-Clippy pass. Hermetic storage and required application checks are running.
-The final application source is
-`xb2nf76xq255p8bfvh614ff38nxr3v38`. These component controls do not qualify
+Clippy pass. Hermetic storage output `nia72fkjsn0q91ipwqc3cbrs4vraw7yz`
+passes all 125 selected cases and 146 independently checked successful nested
+summaries. Required application compilation is running from immutable source
+`xb2nf76xq255p8bfvh614ff38nxr3v38`; all 5,423 committed Rust/TOML files and
+six fixtures match `88c6388876` before subsequent source edits. These component controls do not qualify
 complete-world binding, native admission, physical return or performance parity.
+
+Repeated sender offers now preserve the saved original on direct frame-credit
+and final-validation admission errors. A genuine healthy repeated offer supplies
+the complete verification count before the actual next offer irreversibly loses
+authority at final validation. The predecessor passes the other four sender
+controls but fails this refusal: closing sender and caller leaves zero of the
+8,773 prepaid bytes charged while the typed error remains alive. After correction
+all five sender controls pass. The error retains the caller's existing custody
+until final error close; the foreign ambient account takes no loan and closes
+independently. The healthy control checks both initial and repeated portable
+offers and return of their temporary credit. Verification counts, operation
+identities and wire bytes remain unchanged.
+
+Inventory `i1f9dsjh2x2xck74vjyb5plvav5x4m15` validates 649 bindings across
+243 requirements: 605 model, 25 format and nineteen native bindings. There are
+still 142 uncovered requirements and zero fully qualified requirements.
+All 776 ordinary storage tests, 95 policy controls and strict
+storage/portable-RAM Clippy pass. Hermetic storage and required application
+checks are running; the final application source is
+`0g4vvgmlhri8xjbl6kgwwnq17aaxwja7`.
+These controls establish finite storage error custody, without qualifying native
+activation, physical lifecycle, lower residency or performance parity.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`
