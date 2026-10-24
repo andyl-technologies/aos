@@ -11013,3 +11013,22 @@ actual image projection. This checks retained configuration, ownership and
 dependency addresses; it does not substitute for installed activation.
 Core evaluation (`checks.eval`) also passes at
 `/nix/store/kj94vsd9znhm7fnalzcsblb5an17hnm7-aos-native-evaluation-checks-0`.
+
+### BPF-enabled admission and handoff regression receipts
+
+The corrected BPF image bounds, initial runtime-parent labeling and direct
+admission-proof console output now pass the complete three-case installed
+admission test at
+`/nix/store/r53kh5fwp87qi3dj3gj5fn0hf9b0wcfk-aos-fleet-test-selinux-stage0-admission-0`.
+The matching five-case enforcing root-handoff matrix passes at
+`/nix/store/69qpix3plbi8shlqifrabbbxfmxa9j0h-aos-fleet-test-selinux-enforcing-root-handoff-0`.
+These are automated AOS Nix QEMU image tests with the existing enforcing,
+Secure Boot and fail-closed assertions. They do not qualify Host readiness or
+the public sandbox lifecycle.
+
+The complete combined Nix/method-46 startup profile, including the independently
+replayed retained host-unit projection, builds successfully at
+`/nix/store/mhcf86c5v7b2ilmk2pgwpdyic0nc4pzz-sandbox-nix-method46-profile-check`.
+This is a build and contract receipt, not installed TPM floor initialization.
+The latest installed Root and offline hardware tests still fail during service
+setup, before their required positive startup and provisioning assertions.
