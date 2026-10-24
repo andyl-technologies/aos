@@ -16944,3 +16944,19 @@ The earlier mandatory application target requests at `a028b9d05b` and
 `58e98a9dfc` both pass. Complete review binds each actual compiler output to all
 8,179 immutable source files, 190 test executables and 59 workspace packages.
 These are compilation checks, not executions of those test targets.
+
+
+### Owning structural-index qualification gate
+
+`gate:fuse-index-roundtrip` now requires the existing executable structural
+codec inventory, native sealed-mapping guest, all three physical-owner guests,
+authenticated scoped disclosure, exposure pressure and admission pressure. The
+gate retains each prerequisite output and refuses any missing or failed result.
+All imports use the same AOS package source; no registry/source-scan substitute,
+actor deadline change or host execution of native lifecycle fixtures is added.
+
+This joins the already implemented FUSE-7 through FUSE-12 paths under their named
+owning gate. Its qualification remains pending. T-FUSE-1 remains open until the
+complete gate passes and its actual source, Cargo artifacts and native witnesses
+are reviewed. Worker/broker composition, passthrough and writable exposures remain
+separate obligations; accepted trunk tasks remain 27/64.

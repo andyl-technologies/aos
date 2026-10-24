@@ -373,7 +373,7 @@
           }
           // lib.optionalAttrs (builtins.elem file ["algebra.nix" "properties.nix" "cdc.nix" "gc.nix" "index.nix" "surfaces.nix" "shared-dir.nix" "host-cache.nix" "host-publish.nix"]) {inherit nativeSdkGate;}
           // lib.optionalAttrs (file == "gc.nix") {inherit localTwoPhaseGc;}
-          // lib.optionalAttrs (builtins.elem file ["host-publish.nix" "surfaces.nix"]) {inherit sourceGateWithInputs;}
+          // lib.optionalAttrs (builtins.elem file ["host-publish.nix" "surfaces.nix" "fuse-index.nix"]) {inherit sourceGateWithInputs;}
           // lib.optionalAttrs (builtins.elem file ["bucket.nix" "ref_advance.nix"]) {inherit bucketSdkGate;}
           // lib.optionalAttrs (file == "shared-dir.nix") {inherit portableSharedModes initialEnrollmentProof;}
           // lib.optionalAttrs (file == "store.nix") {inherit hostCacheProof hostCacheAllFeatureProof wasmHostProof sourceGateWithInputs;}
