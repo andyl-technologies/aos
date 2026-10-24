@@ -203,6 +203,7 @@ pub(crate) fn original_native_private_bootstrap_floor_data() -> Result<usize, Pr
     use crate::transport::original_frames::original_frame_slot_layout;
     (1024usize * 1024 + 512 * 1024 + 8)
         .checked_add(original_native_private_invocation_backing_data()?)
+        .and_then(|bytes| bytes.checked_add(original_native_private_cut_backing_data().ok()?))
         .and_then(|bytes|bytes.checked_add(original_native_private_bank_shared_layout_data().ok()?))
         .and_then(|bytes| bytes.checked_add(4usize.checked_mul(original_frame_slot_layout())?))
         .and_then(|bytes| bytes.checked_add(
@@ -213,6 +214,21 @@ pub(crate) fn original_native_private_bootstrap_floor_data() -> Result<usize, Pr
 pub(crate) mod data_equality;
 
 mod private_backing;
+
+/// Counts both shared allocations created by the original private birth cut.
+///
+/// The inherited entry creates these before native-row authentication. Their
+/// eventual transfer to the service cannot fund their earlier private lifetime.
+///
+/// # Errors
+/// Refuses invalid shared alignment or checked requested-layout overflow.
+pub(crate) fn original_native_private_cut_backing_data() -> Result<usize, ProviderError> {
+    crate::client::OriginalNative5BirthCut::original_requested_layout_data()?
+        .checked_add(
+            crate::client::ExchangeDeadline::original_host_startup_allocation_layout_data()?,
+        )
+        .ok_or_else(invalid)
+}
 
 pub(crate) fn original_native_private_bank_shared_layout_data() -> Result<usize, ProviderError> {
     private_backing::shared::shared_bank_layout_data(

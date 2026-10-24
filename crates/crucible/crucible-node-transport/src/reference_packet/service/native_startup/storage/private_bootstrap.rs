@@ -114,6 +114,7 @@ fn project_with_source(
         measurement_counter = super::super::super::ack_emitter::original_prepare_executable_measurement_counter_scratch_data,
         invocation_backing = super::super::original_native_private_invocation_backing_data,
         bank_shared_layout = super::super::original_native_private_bank_shared_layout_data,
+        birth_cut_backing = super::super::original_native_private_cut_backing_data,
         private_frame_work = super::private_frame_work_data,
         raw_extent = super::super::pre_dom::raw_extent_data,
         preflight_validation = launch_validation::preflight_work,

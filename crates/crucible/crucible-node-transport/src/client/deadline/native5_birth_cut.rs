@@ -260,6 +260,27 @@ mod tests {
     use std::os::fd::AsRawFd;
 
     #[test]
+    fn private_birth_cut_backing_covers_both_actual_shared_owners()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let original = OriginalNative5BirthCut::start(Duration::from_secs(5))?;
+        let mut observer = crate::retained_metadata::MetadataObserver::new();
+        observer.shared_value(original.0.as_ref())?;
+        original
+            .0
+            .deadline
+            .observe_owned11_metadata(&mut observer)?;
+        let facts = observer.finish();
+
+        assert_eq!(facts.shared_backing_views, 2);
+        assert_eq!(
+            crate::reference_packet::service::native_startup::original_native_private_cut_backing_data()?,
+            crate::retained_metadata::requested_metadata_backing_storage_data(&facts)?
+        );
+        original.ensure_current()?;
+        Ok(())
+    }
+
+    #[test]
     fn native5_birth_immutable_cut_refuses_external_reset_on_every_original_clone() {
         let cut = OriginalNative5BirthCut::start(Duration::from_secs(2)).unwrap();
         let mutable = cut.exchange_deadline().clone();

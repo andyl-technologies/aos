@@ -23,7 +23,12 @@ pub(super) const ADAPTER_COUNTER_SCRATCH_DATA: usize = 4 * size_of::<usize>() //
         + size_of::<Result<usize, ProviderError>>() // lower shared-bank return
         + 4 * size_of::<usize>() // invocation wrapper/helper scalar operands and inputs
         + 2 * size_of::<bool>() // actual cfg predicate and private helper input
-        + 2 * size_of::<Result<usize, ProviderError>>(); // helper and public lower returns
+        + 2 * size_of::<Result<usize, ProviderError>>() // helper and public lower returns
+        // The private cut wrapper uses the existing compiled layout queries.
+        // Their original native calculation windows stay independently priced.
+        + 3 * size_of::<usize>() // two returned extents and the added retained-sum cell
+        + 2 * size_of::<Option<usize>>() // wrapper sum and initial-floor checked addition
+        + 4 * size_of::<Result<usize, ProviderError>>(); // both queries, wrapper and caller returns
 
 #[cfg(test)]
 mod tests;

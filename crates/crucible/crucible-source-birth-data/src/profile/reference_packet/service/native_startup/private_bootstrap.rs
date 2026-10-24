@@ -59,6 +59,7 @@ macro_rules! source_birth_private_bootstrap_body {
         measurement_counter = $measurement_counter:path,
         invocation_backing = $invocation_backing:path,
         bank_shared_layout = $bank_shared_layout:path,
+        birth_cut_backing = $birth_cut_backing:path,
         private_frame_work = $private_frame_work:path,
         raw_extent = $raw_extent:path,
         preflight_validation = $preflight_validation:path,
@@ -238,6 +239,8 @@ macro_rules! source_birth_private_bootstrap_body {
             &[
                 private_literals,
                 $invocation_backing()?,
+                // The cut and nested deadline exist before native birth admission.
+                $birth_cut_backing()?,
                 $bank_shared_layout()?,
                 $input.encoded_launch.len(),
                 // Bootstrap canonical_json writes a growable Vec, not a boxed

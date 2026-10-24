@@ -165,6 +165,8 @@ pub(super) fn project_with_source(
         &[
             private_literals,
             super::super::super::original_native_private_invocation_backing_data()?,
+            // The private reader retains both cut allocations before native admission.
+            super::super::super::original_native_private_cut_backing_data()?,
             super::super::super::original_native_private_bank_shared_layout_data()?,
             input.encoded_launch.len(),
             // Bootstrap canonical_json writes a growable Vec, not a boxed
