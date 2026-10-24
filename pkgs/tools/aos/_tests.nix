@@ -3740,7 +3740,7 @@ in {
           --image-disk "$sysroot_image_disk_store" \
           --image-info "$sysroot_image_info_store" \
           --image-format qcow2 \
-          --image-uki '${imageFixtures.imageUki}/systemd-bootx64.efi' \
+          --image-contract-schema aos.image.metadata/v1 \
           --registry host-image-channel \
           --key-id channel \
           --no-commit > "$work/apr-publish-host-sysroot-image.json"

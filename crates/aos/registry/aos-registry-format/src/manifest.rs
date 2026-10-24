@@ -1121,6 +1121,47 @@ tools = {store_path = "/aos/store/server-tools"}
     }
 
     #[test]
+    fn shared_parser_preserves_each_encoding_artifact_set_and_rejects_schema_drift() {
+        let mut entries = Vec::new();
+        for (format, marker) in [("raw", "1"), ("qcow2", "2")] {
+            let mut image = delivery(format);
+            image.schema_version = 2;
+            image.object_key.clear();
+            image.artifact_contract.document.object_key.clear();
+            image.artifact_contract.document.store_path =
+                format!("/nix/store/{}-image-info-{format}", marker.repeat(32));
+            image.artifact_contract.document.nar_hash = format!("sha256:{}", marker.repeat(52));
+            image.artifact_contract.document.nar_size = 512;
+            image.artifact_contract.artifacts = Some(ImageStoreReference {
+                store_path: format!("/nix/store/{}-image-artifacts-{format}", marker.repeat(32)),
+                nar_hash: format!("sha256:{}", marker.repeat(52)),
+                nar_size: 4096,
+            });
+            entries.push(ImageEntry {
+                format: format.to_string(),
+                store_path: format!("/nix/store/{}-image-{format}", marker.repeat(32)),
+                nar_hash: format!("sha256:{}", marker.repeat(52)),
+                nar_size: 4096,
+                delivery: image,
+            });
+        }
+        let mut document: toml::Value = package_with_images("").parse().unwrap();
+        document["versions"][0]["platforms"]["x86_64-linux"]
+            .as_table_mut()
+            .unwrap()
+            .insert("images".into(), toml::Value::try_from(&entries).unwrap());
+
+        let parsed = parse_package_file(&toml::to_string(&document).unwrap()).unwrap();
+
+        assert_eq!(parsed.versions[0].platforms["x86_64-linux"].images, entries);
+
+        document["versions"][0]["platforms"]["x86_64-linux"]["images"][1]["delivery"]["artifact_contract"]
+            ["schema"] = "aos.other-image/v1".into();
+        let error = parse_package_file(&toml::to_string(&document).unwrap()).unwrap_err();
+        assert!(format!("{error:#}").contains("different artifact contract schemas"));
+    }
+
+    #[test]
     fn filename_policy_rejects_header_and_url_ambiguity() {
         for filename in [
             "server%2fescape.img",
@@ -1648,15 +1689,13 @@ pub fn parse_package_file(content: &str) -> Result<PackageToml> {
                         platform
                     );
                     anyhow::ensure!(
-                        delivery.artifact_contract.schema == first.artifact_contract.schema
-                            && delivery.artifact_contract.artifacts
-                                == first.artifact_contract.artifacts,
-                        "release '{}' platform '{}' image encodings have different artifact contracts",
+                        delivery.artifact_contract.schema == first.artifact_contract.schema,
+                        "release '{}' platform '{}' image encodings have different artifact contract schemas",
                         version.version,
                         platform
                     );
-                    // The provider contract document may bind format-specific
-                    // metadata while every encoding shares one artifact set.
+                    // Each encoding authenticates its own provider artifact
+                    // set and contract document through validate_delivery.
                 }
             }
         }

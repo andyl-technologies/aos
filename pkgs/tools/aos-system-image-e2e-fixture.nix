@@ -110,6 +110,10 @@
                 espPath: "EFI/Linux/systemd-bootx64.efi",
                 byteSize: $ukiSize, sha256: $ukiSha256,
                 signed: true, measured: false}}' > "$out/image-info.json"
+          ${jq}/bin/jq '{schemaVersion, name, version, architecture, platform,
+            format, filename, mediaType, compression, byteSize, sha256,
+            logicalDiskSha256, compatibleTargets}' \
+            "$out/image-info.json" > "$out/image-delivery.json"
         '';
       }
     ];
@@ -158,6 +162,10 @@
               uki: {filename: "systemd-bootx64.efi",
                 espPath: "EFI/Linux/systemd-bootx64.efi", byteSize: $ukiSize,
                 sha256: $ukiSha256, signed: true, measured: false}}' > "$out/image-info.json"
+          ${jq}/bin/jq '{schemaVersion, name, version, architecture, platform,
+            format, filename, mediaType, compression, byteSize, sha256,
+            logicalDiskSha256, compatibleTargets}' \
+            "$out/image-info.json" > "$out/image-delivery.json"
         '';
       }
     ];
@@ -220,8 +228,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "build-input";
     };
@@ -322,7 +341,11 @@ in
           done <<< "$keygen"
           test -n "$public_key"
           key="$HOME/.config/apm/keys/image-e2e-release.key"
-          ${aos.apr}/bin/apr create image-e2e --trust-key "$public_key" --key "$key"
+          ${aos.apr}/bin/apr create image-e2e \
+            --trust-key "$public_key" --trust-key-id release --key "$key"
+          ${aos.apr}/bin/apr add "file://$HOME/.local/share/apm/registries/image-e2e" \
+            --name image-e2e --no-clone --trust-key "$public_key"
+          ${aos.apr}/bin/apr keys register release --registry image-e2e --key "$key"
           ${aos.apr}/bin/apr release 2026.3.0 \
             --registry image-e2e \
             --store-path '${sysroot}' \
@@ -337,15 +360,15 @@ in
             --image-disk '${rawImageDisk}' \
             --image-info '${rawImageInfo}' \
             --image-format raw \
-            --image-uki '${ukiImage}/systemd-bootx64.efi' \
+            --image-contract-schema aos.image.metadata/v1 \
             --image-payload '${qcow2Image}' \
             --image-disk '${qcow2ImageDisk}' \
             --image-info '${qcow2ImageInfo}' \
             --image-format qcow2 \
-            --image-uki '${ukiImage}/systemd-bootx64.efi' \
+            --image-contract-schema aos.image.metadata/v1 \
             --channel stable \
             --init-channel \
-            --key "$key" \
+            --key-id release \
             --cache-url http://127.0.0.1:8799/flat-cache \
             --upload-url "file://$destination/surface"
           printf '%s\n' "$public_key" > "$destination/trust-key"
