@@ -20,6 +20,16 @@ base. Missing or restarted JVMs reject the measurement. The harness shuts down
 every private server in its `finally` block, including after failed validation.
 Ordinary launcher invocations retain the 60-second default.
 
+The completed follow-up is retained in
+[`store-performance-server-lifetime.json`](../tests/evidence/store-performance-server-lifetime.json)
+with its unmodified raw report. Three repetitions cover all six Bazel scenarios:
+18 measurements, each followed by 599 untimed case executions. All nine warm
+and edit invocations retained the same private JVM before and after compilation;
+the remaining scenarios started without an existing JVM in the selected output
+base. Other builds ran on the shared host, and Cargo baselines were not rerun.
+These observations qualify the lifecycle correction without establishing a
+controlled timing comparison or numerical acceptance.
+
 These lifecycle checks qualify what is being measured. They do not establish
 performance acceptance, semantic compiler-option equivalence, or production
 cutover budgets. Keep raw observations, exact sources and toolchain inputs,
