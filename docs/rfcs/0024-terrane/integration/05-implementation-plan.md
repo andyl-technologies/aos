@@ -8710,9 +8710,11 @@ refinement at `3a06af1c39` reproduces the named-file failure; its owner and
 already-unlinked-file controls pass. The corrected complete 209-case native
 feature run at `02b6596fcf` passes in 1,600.579 seconds with complete
 source, installed-ELF, exact inventory and lifecycle witness review. Its
-feature-matrix gate also passes; independent base/matrix review is running. Master is merged at
-`3bd16933a5`; that revision requires its own native qualification. No component result accepts an
-additional task or supplies the remaining deployed role composition.
+feature-matrix gate also passes with complete independent base/matrix review.
+Master is merged at `3bd16933a5`; clean merged application qualification at `46d4f0b3e3`
+passes with all 190 test targets reviewed. Its current native gates remain
+under qualification. No component result accepts an additional task or
+supplies the remaining deployed role composition.
 
 The eleven-component T2 request at `5c427bfc16` passes in 6,872.816 seconds;
 complete source, exact selected-case, actual compiler-artifact and native
@@ -16478,3 +16480,28 @@ Evaluation materializes 8,168 regular source files with no Python bytecode; Nix
 formatting and diff checks pass. Application compilation must be repeated from
 a frozen checkout and reviewed in full. No runtime assertion or native deadline
 is changed by this source-input correction.
+
+
+#### Clean merged application and module qualification
+
+At immutable `46d4f0b3e3`, required application-target compilation passes in
+610.032 seconds. Complete review matches all 8,168 immutable source files and
+all 190 actual unit/integration test executables across 59 packages. The actual
+output is `/nix/store/bj59pshv1jy9bwkww27m62i2rjpbzajm-aos-test-targets-0.1.0`.
+Its source is `/nix/store/bfp75drpcn4bkj9s76i9xrp2bympghny-aos-workspace-src`,
+identical for the clean frozen checkout and the filtered working checkout with
+host bytecode present. The earlier contaminated build retains its failed
+source review; this fresh complete review supplies the merged compilation
+evidence. These are compilation results, not native runtime observations.
+
+All 102 module checks also pass in 18.147 seconds. Independent review matches
+the actual output derivation to evaluation at this exact frozen commit and
+checks its complete unique assertion inventory. This preserves the existing
+T-PKG-3 acceptance without accepting any role runtime.
+
+The `02b6596fcf` feature-matrix review is complete: every immutable source file,
+the exact frozen derivation, independently reviewed 130-case base and 209-case
+full native prerequisites, and both retained compiler feature profiles match.
+The clean merged eleven-component T2 and feature-matrix requests remain in
+progress. Native protected-namespace diagnostics at `34d252e04f` remain in
+progress. Accepted trunk task count remains 27 of 64.
