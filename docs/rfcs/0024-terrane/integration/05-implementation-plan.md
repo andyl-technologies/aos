@@ -17017,3 +17017,29 @@ seven pure in-memory NAR verification cases pass. Fresh merged-source mandatory
 compilation and the feature matrix are running. The structural-index owning gate
 at `35f86562ff` passes in 1,354.359 seconds; complete prerequisite evidence review
 is in progress. Accepted trunk tasks remain 27/64.
+
+
+The owning structural-index gate at `35f86562ff` now has complete independent
+review: all six prerequisite outputs, 75 exact codec cases and seven native
+guests match the same immutable source. Actual Cargo artifacts and original
+sealed mapping, scoped disclosure, custody, recovery and pressure witnesses are
+verified. The touched-node checkpoint `17c8a21add` passes all 78 structural cases
+in 67.173 seconds and its actual FUSE kernel guest in 205.154 seconds. Full
+source/ELF reviews pass; its mandatory workspace compilation remains running.
+No production worker or broker conformance is inferred from synthetic fixtures.
+
+### Native open expiry with surviving shared fetch
+
+The actual kernel fixture adds an independent late-completion scenario. Its
+first open has a 200-millisecond exposure deadline while the original backing
+request retains its unchanged five-second bound. The driver withholds the
+actual sealed grant until the first kernel open returns EIO, then starts a
+hard-link open with its own five-second deadline. That waiter must join the
+original still-pending fetch; metadata must remain responsive. The eventual
+sealed reply must serve exact bytes, later reopens and a surviving original
+handle, with no second backing request and no change to the shared cursor.
+
+The worker checks that the original fetch still exists when the expired response
+is sent. Native execution of this new scenario and its mandatory workspace
+compilation are pending. The guest and actor bounds are unchanged. This extends
+component qualification for FUSE-28 and FUSE-29; accepted trunk tasks remain 27/64.

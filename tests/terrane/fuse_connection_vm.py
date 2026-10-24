@@ -12,6 +12,7 @@ import stat
 import struct
 import subprocess
 import sys
+import time
 from threading import Event
 
 
@@ -85,7 +86,7 @@ def scenario(executable, directory, mode):
             "setpriv", "--reuid=840", "--regid=840", "--clear-groups",
             "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all",
             "--no-new-privs", str(executable), mode,
-        ], stdin=backing_child if mode == "read" else subprocess.DEVNULL,
+        ], stdin=backing_child if mode in {"read", "late"} else subprocess.DEVNULL,
             stdout=child_socket, stderr=subprocess.PIPE,
             close_fds=True)
         child_socket.close()
@@ -109,7 +110,7 @@ def scenario(executable, directory, mode):
         require(supervisor.send(b"M") == 1, "mount-ready message was truncated")
         require(supervisor.recv(64) == b"READY", "actual kernel INIT did not complete")
 
-        if mode in {"serve", "metadata", "read", "readiness"}:
+        if mode in {"serve", "metadata", "read", "late", "readiness"}:
             metadata = target.stat()
             require(stat.S_ISDIR(metadata.st_mode) and metadata.st_mode & 0o7777 == 0o555
                     and metadata.st_ino == 16
@@ -175,8 +176,8 @@ def scenario(executable, directory, mode):
                 require(os.readlink(original + b"/link") == b"./directory/../a\xff"
                         and (target / "link").lstat().st_size == len(b"./directory/../a\xff"),
                         "actual READLINK normalized or decoded original symlink bytes")
-                if mode == "read":
-                    source = directory / "backing" / "original"
+                if mode in {"read", "late"}:
+                    source = directory / "backing" / ("original-" + mode)
                     with source.open("xb") as output:
                         output.write(b"abc")
                         output.flush()
@@ -190,17 +191,32 @@ def scenario(executable, directory, mode):
                     executor = ThreadPoolExecutor(max_workers=3)
                     release = Event()
                     grant = executor.submit(grant_backing, backing_server, backing, child.pid, release)
+                    started = time.monotonic()
                     first = executor.submit(read_file, target / "a")
+                    if mode == "late":
+                        try:
+                            first.result(timeout=2)
+                        except OSError as error:
+                            require(error.errno == errno.EIO,
+                                    "expired actual kernel open did not return EIO")
+                        else:
+                            raise RuntimeError("withheld backing satisfied an expired kernel open")
+                        require(time.monotonic() - started < 2
+                                and supervisor.recv(64) == b"OPEN_EXPIRED",
+                                "open deadline lost its original pending fetch")
                     alias = executor.submit(read_file, target / "b")
                     require((target / "directory").stat().st_mode & 0o7777 == 0o750,
                             "pending backing blocked unrelated kernel metadata")
                     require(supervisor.recv(64) == b"COALESCED",
                             "concurrent kernel opens did not share their original handoff")
                     release.set()
-                    require(first.result(timeout=5) == alias.result(timeout=5)
-                            == (b"a", b"bc", b"c", b""),
+                    expected = (b"a", b"bc", b"c", b"")
+                    require(alias.result(timeout=5) == expected,
                             "actual FUSE fallback READ changed sealed bytes or EOF")
-                    print("PASS concurrent kernel hard-link opens coalesce while metadata remains responsive", flush=True)
+                    if mode == "read":
+                        require(first.result(timeout=5) == expected,
+                                "coalesced original kernel open lost its response")
+                        print("PASS concurrent kernel hard-link opens coalesce while metadata remains responsive", flush=True)
                     with (target / "a").open("rb", buffering=0) as reopened:
                         require(reopened.read() == b"abc",
                                 "repeated original open lost the retained backing")
@@ -213,7 +229,8 @@ def scenario(executable, directory, mode):
                         os.posix_fadvise(first_handle.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
                         require(first_handle.read() == b"bc",
                                 "closing one hard-link handle invalidated another live handle")
-                    print("PASS original kernel handles survive peer RELEASE and repeated opens", flush=True)
+                    if mode == "read":
+                        print("PASS original kernel handles survive peer RELEASE and repeated opens", flush=True)
                     original_stat = grant.result(timeout=5)
                     require((original_stat.st_dev, original_stat.st_ino)
                             == (os.fstat(backing).st_dev, os.fstat(backing).st_ino)
@@ -226,7 +243,10 @@ def scenario(executable, directory, mode):
                         pass
                     else:
                         require(not unexpected, "hard-link opens fetched another backing")
-                    print("PASS actual kernel FUSE READ uses one original sealed grant for repeated hard-link opens with unchanged backing cursor", flush=True)
+                    if mode == "read":
+                        print("PASS actual kernel FUSE READ uses one original sealed grant for repeated hard-link opens with unchanged backing cursor", flush=True)
+                    if mode == "late":
+                        print("PASS expired kernel open returns EIO while its original fetch survives for a later hard-link open and retained reads", flush=True)
             try:
                 (target / "absent").stat()
             except OSError as error:
@@ -278,5 +298,5 @@ def scenario(executable, directory, mode):
 
 if __name__ == "__main__":
     executable, directory = map(pathlib.Path, sys.argv[1:])
-    for selected in ["serve", "metadata", "read", "readiness", "timeout", "cancel"]:
+    for selected in ["serve", "metadata", "read", "late", "readiness", "timeout", "cancel"]:
         scenario(executable, directory, selected)

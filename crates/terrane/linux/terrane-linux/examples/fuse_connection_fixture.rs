@@ -47,7 +47,7 @@ fn main() -> Result {
     let mode = std::env::args().nth(1).ok_or("missing fixture mode")?;
     if !matches!(
         mode.as_str(),
-        "serve" | "metadata" | "read" | "readiness" | "timeout" | "cancel"
+        "serve" | "metadata" | "read" | "late" | "readiness" | "timeout" | "cancel"
     ) {
         return Err("invalid fixture mode".into());
     }
@@ -91,7 +91,7 @@ fn main() -> Result {
         let mut directory_page = vec![0; LIMIT - 16];
         // This empty metadata fixture is not an authenticated repository view.
         // It exercises the production encoder against actual kernel READDIR.
-        let directory_bytes = metadata_bytes(matches!(mode.as_str(), "metadata" | "read"))?;
+        let directory_bytes = metadata_bytes(matches!(mode.as_str(), "metadata" | "read" | "late"))?;
         let directory = Index::open(&directory_bytes)?;
         let mut metadata = Metadata::new(
             directory,
@@ -102,14 +102,14 @@ fn main() -> Result {
                 inode_bytes: 65536,
             },
             CachePolicy::Revalidate,
-            if matches!(mode.as_str(), "metadata" | "read") {
+            if matches!(mode.as_str(), "metadata" | "read" | "late") {
                 XattrPolicy::Recorded
             } else {
                 XattrPolicy::Disabled
             },
         )?;
 
-        let mut backing_client = if mode == "read" {
+        let mut backing_client = if matches!(mode.as_str(), "read" | "late") {
             Some(WorkerClient::bind(
                 io::stdin().as_fd().try_clone_to_owned()?,
                 ExposureContext::new("0123456789abcdef0123456789abcdef", 1, [7; 32])?,
@@ -179,7 +179,7 @@ fn main() -> Result {
         }
         notify(b"READY")?;
 
-        if !matches!(mode.as_str(), "serve" | "metadata" | "read" | "readiness") {
+        if !matches!(mode.as_str(), "serve" | "metadata" | "read" | "late" | "readiness") {
             if mode == "timeout" {
                 let error = connection
                     .receive(&mut input, Duration::from_millis(100))
@@ -221,6 +221,12 @@ fn main() -> Result {
                 };
                 lifetime.unpin(reply.ticket.node())?;
                 send_unique(&mut connection, &mut output, reply.unique, body, libc::EIO).await?;
+                if mode == "late" && reply.outcome == Outcome::IoError {
+                    if fetch.is_none() || opens.pending() != 1 {
+                        return Err("expired open discarded its original shared fetch".into());
+                    }
+                    notify(b"OPEN_EXPIRED")?;
+                }
             }
             while let Some(node) = lifetime.next_unreferenced() {
                 if backing
@@ -258,7 +264,7 @@ fn main() -> Result {
                 },
                 result = stopped(&control) => {
                     result?;
-                    if mode == "read" && !read_after_peer_release {
+                    if matches!(mode.as_str(), "read" | "late") && !read_after_peer_release {
                         return Err("kernel never read an original handle after peer release".into());
                     }
                     drop(connection);
@@ -331,7 +337,7 @@ fn main() -> Result {
                         opened[..8].copy_from_slice(&handle.get().to_ne_bytes());
                         (Some(opened.as_slice()), 0)
                     }
-                    (14, Some(entry)) if mode == "read" => {
+                    (14, Some(entry)) if matches!(mode.as_str(), "read" | "late") => {
                         if request.body().len() != 8 || request.body_u32(4)? != 0 {
                             return Err("invalid actual fallback OPEN".into());
                         }
@@ -343,7 +349,14 @@ fn main() -> Result {
                                     NonZeroU64::new(request.node()).ok_or("zero open node")?;
                                 let unique = NonZeroU64::new(request.unique())
                                     .ok_or("zero open response ID")?;
-                                let queued = opens.enqueue(node, unique, arrived, DEADLINE)?;
+                                // The late-completion scenario configures a short open
+                                // deadline while retaining the original fetch deadline.
+                                let open_deadline = if mode == "late" && opens.pending() == 0 {
+                                    Duration::from_millis(200)
+                                } else {
+                                    DEADLINE
+                                };
+                                let queued = opens.enqueue(node, unique, arrived, open_deadline)?;
                                 lifetime.pin(node)?;
                                 match queued {
                                     Enqueued::Start(ticket) => {
@@ -379,7 +392,7 @@ fn main() -> Result {
                             (None, libc::EISDIR)
                         }
                     }
-                    (15, Some(_)) if mode == "read" => {
+                    (15, Some(_)) if matches!(mode.as_str(), "read" | "late") => {
                         let (node, file) =
                             backing.as_ref().ok_or("READ without original backing")?;
                         let node = NonZeroU64::new(*node).ok_or("zero file node")?;
@@ -416,7 +429,7 @@ fn main() -> Result {
                         }
                         (Some([].as_slice()), 0)
                     }
-                    (25, Some(_)) if mode == "read" => {
+                    (25, Some(_)) if matches!(mode.as_str(), "read" | "late") => {
                         if request.body().len() != 24
                             || request.body_u32(8)? != 0
                             || request.body_u32(12)? != 0
@@ -451,7 +464,7 @@ fn main() -> Result {
             };
             send(&mut connection, &mut output, request, body, errno).await?;
         }
-        if mode == "read" && !read_after_peer_release {
+        if matches!(mode.as_str(), "read" | "late") && !read_after_peer_release {
             return Err("kernel never read an original handle after peer release".into());
         }
         notify(b"STOPPED")?;
