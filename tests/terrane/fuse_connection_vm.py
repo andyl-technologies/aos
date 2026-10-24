@@ -25,7 +25,7 @@ def mount(device, target):
     library.mount.restype = ctypes.c_int
     options = f"fd={device},rootmode=40000,user_id=0,group_id=0,max_read=131072"
     if library.mount(b"terrane-transport-fixture", os.fsencode(target), b"fuse",
-                     2 | 4, options.encode()) != 0:
+                     1 | 2 | 4, options.encode()) != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error))
 
@@ -83,6 +83,13 @@ def scenario(executable, directory, mode):
                     "actual GETATTR reply differs from fixture root")
             if mode == "serve":
                 require(os.listdir(target) == [], "actual READDIR reply was not empty")
+                try:
+                    os.getxattr(target, b"user.note")
+                except OSError as error:
+                    require(error.errno == errno.EOPNOTSUPP,
+                            "disabled xattr presentation returned the wrong errno")
+                else:
+                    raise RuntimeError("disabled exposure served an extended attribute")
             else:
                 original = os.fsencode(target)
                 require(sorted(os.listdir(original)) == [b"a", b"b", b"directory", b"link", b"\xff"],
@@ -96,6 +103,34 @@ def scenario(executable, directory, mode):
                 unrelated = os.stat(original + b"/\xff")
                 require(unrelated.st_ino != left.st_ino and unrelated.st_nlink == 1,
                         "equal file content aliased an unrelated namespace inode")
+                file = original + b"/a"
+                require(sorted(map(os.fsencode, os.listxattr(file))) == [b"user.note", b"user.\xff"]
+                        and os.getxattr(file, b"user.note") == b"raw\0value\xff"
+                        and os.getxattr(file, b"user.\xff") == b"",
+                        "actual xattr size probes or values changed recorded bytes")
+                for name in [b"security.capability", b"system.posix_acl_access", b"trusted.overlay", b"user.absent"]:
+                    try:
+                        os.getxattr(file, name)
+                    except OSError as error:
+                        require(error.errno == errno.ENODATA,
+                                "hidden or absent xattr returned the wrong errno")
+                    else:
+                        raise RuntimeError("hidden or absent xattr was disclosed")
+                library = ctypes.CDLL(None, use_errno=True)
+                library.getxattr.argtypes = [ctypes.c_char_p, ctypes.c_char_p,
+                                            ctypes.c_void_p, ctypes.c_size_t]
+                library.getxattr.restype = ctypes.c_ssize_t
+                small = ctypes.create_string_buffer(1)
+                require(library.getxattr(file, b"user.note", small, 1) == -1
+                        and ctypes.get_errno() == errno.ERANGE,
+                        "actual short xattr request did not return ERANGE")
+                try:
+                    os.setxattr(file, b"user.note", b"changed")
+                except OSError as error:
+                    require(error.errno == errno.EROFS,
+                            "actual lower mount allowed extended attribute mutation")
+                else:
+                    raise RuntimeError("read-only FUSE lower allowed xattr mutation")
                 require(os.listdir(target / "directory") == ["file"]
                         and (target / "directory/file").stat().st_ino != left.st_ino,
                         "nested READDIR or reverse GETATTR escaped its original parent")

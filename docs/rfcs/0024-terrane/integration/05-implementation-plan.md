@@ -16611,3 +16611,44 @@ or production exposure authority. Compilation passes; disposable-kernel executio
 and mandatory application compilation remain required. Trunk acceptance remains
 27 of 64; neither the production dispatcher nor mount-broker composition is
 claimed complete.
+
+
+### Qualified inode-incarnation closure and bounded FUSE xattr replies
+
+The frozen `feecd2d053` surface-index-owner aggregate passes in 1,040.449
+seconds. All three disposable guests pass, including original named and
+already-unlinked file recovery, with ten actual acknowledged Resume witnesses.
+Complete review matches 8,169 immutable source files, four original base Cargo
+ELFs, the exact surface-owner ELF, 5,444 base inputs and 5,428 surface inputs.
+Original descriptor, mapping, charge and authenticated closure assertions all
+remain enforced. The prior failing requests remain historical failures. This
+result establishes the repaired native closure behavior; it does not accept a
+production worker or any additional trunk task.
+
+The `19081df704` FUSE metadata transport guest passes in 214.558 seconds.
+Complete review matches 8,171 immutable files, 5,430 bound inputs, the actual
+Cargo fixture ELF and all original serve, timeout, cancellation and final-close
+witnesses. The namespace increment `b0fe3b4f0a` passes all 48 pure structural
+selectors in 73.659 seconds; its populated-kernel scenario and required
+application compilation remain pending at this checkpoint.
+
+The FUSE xattr encoder now implements GETXATTR and LISTXATTR size probes,
+raw values and complete NUL-terminated name lists from the checked xattr map.
+Disabled exposures refuse operations. Recorded presentation hides security,
+system and trusted namespaces, matching the SDK's conservative policy; unknown
+root properties grant no privilege. Registered privileged-namespace authority
+remains separate. Hidden and missing names return the same absence result.
+Zero-length values remain distinct from absence, and every invalid name, short
+request, Linux-size refusal and worker-buffer refusal precedes output writes.
+No backing inode xattrs or ordinary tree attributes enter these replies.
+
+Five pure cases pass, including raw non-UTF-8 names, binary and empty values,
+size probes, filtering, unchanged refused buffers, a large valid map and the
+Linux 64 KiB defensive limit. The existing first-touch instrumentation includes
+successful xattr probes, values, lists and short-request refusal and still
+observes zero allocations. Strict all-feature/all-target native Clippy passes.
+The closed structural inventory adds five selectors (53 total); the base native
+inventory is unchanged. The disposable fixture now checks actual kernel probes,
+raw values, hidden/absent names and ERANGE, and mounts its lower read-only to
+verify xattr writes fail with EROFS. Fresh kernel execution and mandatory
+application compilation remain required. Accepted trunk tasks remain 27/64.

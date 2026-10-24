@@ -16,7 +16,9 @@ use std::{
 };
 use terrane_format::{
     tree_builder::Tree,
-    tree_format::{Attribute, ContentRef, Entry as TreeEntry, EntryKind, LeafItem, TreeUse},
+    tree_format::{
+        Attribute, ContentRef, Entry as TreeEntry, EntryKind, ExtendedAttribute, LeafItem, TreeUse,
+    },
 };
 use terrane_linux::{
     fuse_connection::Connection,
@@ -24,6 +26,7 @@ use terrane_linux::{
     fuse_metadata::{self, CachePolicy, Presentation},
     fuse_namespace::Namespace,
     fuse_protocol::{self, Reply, Request},
+    fuse_xattr::{self, Policy as XattrPolicy},
     inode_policy::InodeTable,
     quota_confinement,
     structural_index::{self, Index, Kind},
@@ -203,6 +206,44 @@ fn main() -> Result {
                     0,
                 ),
                 (5, Some(entry)) => (Some(fuse_metadata::readlink(entry)?), 0),
+                (22 | 23, Some(entry)) => {
+                    if request.body_u32(4)? != 0 {
+                        return Err("actual xattr request has nonzero padding".into());
+                    }
+                    let policy = if mode == "metadata" {
+                        XattrPolicy::Recorded
+                    } else {
+                        XattrPolicy::Disabled
+                    };
+                    let requested = request.body_u32(0)?;
+                    let result = if request.opcode() == 22 {
+                        let name = request
+                            .body()
+                            .get(8..)
+                            .and_then(|name| name.strip_suffix(&[0]))
+                            .ok_or("actual GETXATTR lacks a terminated name")?;
+                        fuse_xattr::get(entry, policy, name, requested, &mut directory_page)
+                    } else {
+                        if request.body().len() != 8 {
+                            return Err("actual LISTXATTR body has unexpected length".into());
+                        }
+                        fuse_xattr::list(entry, policy, requested, &mut directory_page)
+                    };
+                    match result {
+                        Ok(body) => (Some(body), 0),
+                        Err(error) => (
+                            None,
+                            match error {
+                                fuse_xattr::Error::Disabled => libc::EOPNOTSUPP,
+                                fuse_xattr::Error::NoData => libc::ENODATA,
+                                fuse_xattr::Error::Name => libc::EINVAL,
+                                fuse_xattr::Error::Range => libc::ERANGE,
+                                fuse_xattr::Error::TooLarge => libc::E2BIG,
+                                _ => libc::EIO,
+                            },
+                        ),
+                    }
+                }
                 (27, Some(entry)) if matches!(entry.kind(), Kind::Directory { .. }) => {
                     opened[..8].copy_from_slice(&request.node().to_ne_bytes());
                     (Some(opened.as_slice()), 0)
@@ -259,8 +300,29 @@ fn metadata_bytes(populated: bool) -> Result<Vec<u8>> {
                 },
             ],
             attrs_present: true,
-            xattrs: Vec::new(),
-            xattrs_present: false,
+            xattrs: vec![
+                ExtendedAttribute {
+                    name: b"user.\xff",
+                    value: b"",
+                },
+                ExtendedAttribute {
+                    name: b"user.note",
+                    value: b"raw\0value\xff",
+                },
+                ExtendedAttribute {
+                    name: b"trusted.overlay",
+                    value: b"hidden",
+                },
+                ExtendedAttribute {
+                    name: b"security.capability",
+                    value: b"hidden",
+                },
+                ExtendedAttribute {
+                    name: b"system.posix_acl_access",
+                    value: b"hidden",
+                },
+            ],
+            xattrs_present: true,
             provenance: None,
         },
     };

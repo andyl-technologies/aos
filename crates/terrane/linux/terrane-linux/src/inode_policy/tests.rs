@@ -8,18 +8,35 @@ mod allocation;
 
 #[test]
 fn directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch() {
-    use crate::structural_index::{Index, Kind, Record, compile};
+    use crate::structural_index::{Index, compile_tree};
+    use terrane_format::{
+        tree_builder::Tree,
+        tree_format::{Entry, EntryKind, ExtendedAttribute, LeafItem, TreeUse},
+    };
 
-    let bytes = compile(
-        [7; 32],
-        &[Record {
-            path: b"link",
-            kind: Kind::Symlink(b"exact target"),
+    let tree = Tree::build(
+        vec![LeafItem {
+            key: b"link".to_vec(),
+            entry: Entry {
+                kind: EntryKind::Symlink {
+                    target: b"exact target",
+                },
+                attrs: Vec::new(),
+                attrs_present: false,
+                xattrs: vec![ExtendedAttribute {
+                    name: b"user.raw",
+                    value: b"value\0\xff",
+                }],
+                xattrs_present: true,
+                provenance: None,
+            },
         }],
-        2,
+        None,
         4096,
+        TreeUse::Ordinary,
     )
     .unwrap();
+    let bytes = compile_tree(&tree, &std::collections::BTreeMap::new(), 2, 4096).unwrap();
     let index = Index::open(&bytes).unwrap();
     let namespace = crate::fuse_namespace::Namespace::new(index, 2, 4096).unwrap();
     let mut table = InodeTable::with_reserved_capacity(2, 4096).unwrap();
@@ -61,6 +78,25 @@ fn directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch() {
             assert_eq!(
                 crate::fuse_metadata::readlink(entry).unwrap(),
                 b"exact target"
+            );
+            let policy = crate::fuse_xattr::Policy::Recorded;
+            assert_eq!(
+                crate::fuse_xattr::get(entry, policy, b"user.raw", 0, &mut output)
+                    .unwrap()
+                    .len(),
+                8
+            );
+            assert_eq!(
+                crate::fuse_xattr::get(entry, policy, b"user.raw", 32, &mut output).unwrap(),
+                b"value\0\xff"
+            );
+            assert_eq!(
+                crate::fuse_xattr::list(entry, policy, 32, &mut output).unwrap(),
+                b"user.raw\0"
+            );
+            assert_eq!(
+                crate::fuse_xattr::get(entry, policy, b"user.raw", 1, &mut output),
+                Err(crate::fuse_xattr::Error::Range)
             );
             assert_eq!(
                 crate::fuse_metadata::negative_lookup(cache, &mut output)

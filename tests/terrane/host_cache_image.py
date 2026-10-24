@@ -176,9 +176,18 @@ PACKAGE_PATHS = {
 
 
 # The all-feature guest adds these cases without replacing the base inventory.
-FUSE_UNIT_PREFIXES = ("fuse_namespace::", "fuse_metadata::", "fuse_directory::", "fuse_protocol::", "inode_policy::",
-                      "maintenance_channel::", "structural_index::", "worker_channel::")
+FUSE_UNIT_PREFIXES = (
+    "fuse_xattr::", "fuse_namespace::", "fuse_metadata::", "fuse_directory::",
+    "fuse_protocol::", "inode_policy::", "maintenance_channel::",
+    "structural_index::", "worker_channel::",
+)
 FUSE_UNIT_TESTS = (
+    'fuse_xattr::tests::raw_values_and_size_probes_preserve_exact_bytes_and_unused_output',
+    'fuse_xattr::tests::list_and_get_hide_privileged_names_even_during_size_probes',
+    'fuse_xattr::tests::disabled_empty_and_missing_attributes_have_distinct_kernel_results',
+    'fuse_xattr::tests::short_requests_invalid_names_and_worker_capacity_leave_output_unchanged',
+    'fuse_xattr::tests::linux_payload_limits_preserve_checked_tree_bounds_and_refuse_overflow',
+
     'fuse_namespace::tests::child_lookup_resolves_only_direct_names_and_namespace_dot_components',
     'fuse_namespace::tests::reverse_lookup_preserves_canonical_hardlinks_and_distinct_equal_content',
     'fuse_namespace::tests::graft_reverse_nodes_and_dotdot_keep_original_namespace_prefixes',
@@ -317,6 +326,7 @@ def source_unit_inventory(workspace):
         ("fuse_directory", "lib.rs", "pub mod fuse_directory;"),
         ("fuse_metadata", "lib.rs", "pub mod fuse_metadata;"),
         ("fuse_namespace", "lib.rs", "pub mod fuse_namespace;"),
+        ("fuse_xattr", "lib.rs", "pub mod fuse_xattr;"),
         ("fuse_protocol", "lib.rs", "pub mod fuse_protocol;"),
         ("host_cache/owner/surface_index", "host_cache/owner/mod.rs", "mod surface_index;"),
         ("host_cache/owner/recovery_namespace/surface", "host_cache/owner/recovery_namespace.rs", "mod surface;"),

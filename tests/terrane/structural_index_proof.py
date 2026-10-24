@@ -49,6 +49,14 @@ INODE_CASES = [
     "reserved_first_touch_and_checked_metadata_operations_allocate_nothing",
     "directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch",
 ]
+XATTR_PREFIX = "fuse_xattr::tests::"
+XATTR_CASES = [
+    'raw_values_and_size_probes_preserve_exact_bytes_and_unused_output',
+    'list_and_get_hide_privileged_names_even_during_size_probes',
+    'disabled_empty_and_missing_attributes_have_distinct_kernel_results',
+    'short_requests_invalid_names_and_worker_capacity_leave_output_unchanged',
+    'linux_payload_limits_preserve_checked_tree_bounds_and_refuse_overflow',
+]
 NAMESPACE_PREFIX = "fuse_namespace::tests::"
 NAMESPACE_CASES = [
     'child_lookup_resolves_only_direct_names_and_namespace_dot_components',
@@ -121,7 +129,8 @@ def main():
                                  (INODE_PREFIX, INODE_CASES, "inode"),
                                  (DIRECTORY_PREFIX, DIRECTORY_CASES, "directory"),
                                  (METADATA_PREFIX, METADATA_CASES, "metadata"),
-                                 (NAMESPACE_PREFIX, NAMESPACE_CASES, "namespace")]:
+                                 (NAMESPACE_PREFIX, NAMESPACE_CASES, "namespace"),
+                                 (XATTR_PREFIX, XATTR_CASES, "xattr")]:
         expected = [prefix + name for name in names]
         inventory = captured([prefix, "--list", "--format", "terse"], label + "-inventory.log")
         actual = [line.removesuffix(": test") for line in inventory if line.endswith(": test")]
