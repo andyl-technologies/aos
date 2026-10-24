@@ -99,6 +99,12 @@ fn directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch() {
                 Err(crate::fuse_xattr::Error::Range)
             );
             assert_eq!(
+                crate::fuse_read::open(std::num::NonZeroU64::new(1).unwrap(), &mut output)
+                    .unwrap()
+                    .len(),
+                16
+            );
+            assert_eq!(
                 crate::fuse_metadata::negative_lookup(cache, &mut output)
                     .unwrap()
                     .len(),

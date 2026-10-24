@@ -177,11 +177,15 @@ PACKAGE_PATHS = {
 
 # The all-feature guest adds these cases without replacing the base inventory.
 FUSE_UNIT_PREFIXES = (
-    "fuse_xattr::", "fuse_namespace::", "fuse_metadata::", "fuse_directory::",
+    "fuse_read::", "fuse_xattr::", "fuse_namespace::", "fuse_metadata::", "fuse_directory::",
     "fuse_protocol::", "inode_policy::", "maintenance_channel::",
     "structural_index::", "worker_channel::",
 )
 FUSE_UNIT_TESTS = (
+    'fuse_read::tests::open_keeps_cache_without_passthrough_or_direct_io_and_preserves_unused_bytes',
+    'fuse_read::tests::positioned_ranges_clamp_only_at_prepared_eof_without_offset_overflow',
+    'fuse_read::tests::invalid_limits_sizes_and_short_output_are_refused_before_io',
+
     'fuse_xattr::tests::raw_values_and_size_probes_preserve_exact_bytes_and_unused_output',
     'fuse_xattr::tests::list_and_get_hide_privileged_names_even_during_size_probes',
     'fuse_xattr::tests::disabled_empty_and_missing_attributes_have_distinct_kernel_results',
@@ -327,6 +331,7 @@ def source_unit_inventory(workspace):
         ("fuse_metadata", "lib.rs", "pub mod fuse_metadata;"),
         ("fuse_namespace", "lib.rs", "pub mod fuse_namespace;"),
         ("fuse_xattr", "lib.rs", "pub mod fuse_xattr;"),
+        ("fuse_read", "lib.rs", "pub mod fuse_read;"),
         ("fuse_protocol", "lib.rs", "pub mod fuse_protocol;"),
         ("host_cache/owner/surface_index", "host_cache/owner/mod.rs", "mod surface_index;"),
         ("host_cache/owner/recovery_namespace/surface", "host_cache/owner/recovery_namespace.rs", "mod surface;"),

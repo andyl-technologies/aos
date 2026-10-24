@@ -16688,3 +16688,36 @@ attempt to select nonexistent `checks.eval.core` exits before building; the
 correct repository check completes successfully. The xattr checkpoint
 `a71768a0c8` separately passes all 53 pure structural selectors in 72.223
 seconds. The populated xattr kernel and application requests remain pending.
+
+
+### Bounded positioned reads for the FUSE fallback path
+
+The frozen xattr checkpoint `a71768a0c8` passes its actual kernel fixture in
+200.858 seconds. Complete review binds 8,175 immutable source files, 5,434
+inputs and the exact Cargo ELF. The 53-case structural gate passes in 72.223
+seconds with complete source/ELF review. Workspace target compilation at
+`feecd2d053` passes in 1,533.136 seconds; complete review binds all 8,169
+immutable source files, 190 test executables and 59 packages.
+
+The fallback reader now consumes only a checked worker-channel reply, verifies
+its length against the caller's original prepared file size and retains the
+original sealed descriptor. It performs complete positioned reads into bounded
+caller-owned storage, clamps only at prepared EOF, never changes the descriptor
+cursor and reports unexpected short IO as an error whose whole payload must
+be discarded. Bounds refusals perform no IO or output writes. Neither the
+constructor nor fs-verity substitutes for the dispatcher's original scoped
+content selection. Closing the reader acknowledges no exposure or charge
+release. Open payloads carry FOPEN_KEEP_CACHE without passthrough/direct-IO flags.
+Handle lifetime, open coalescing and the production dispatcher remain separate.
+
+Three pure range/payload cases pass, covering exact flags, unchanged refused
+output, EOF and offset overflow, signed native sizes and explicit read limits.
+The first-touch allocation fixture includes fallback open encoding. The native
+worker-channel fixture now uses this reader after both bounded and manual
+actual descriptor receipt. It must preserve original bytes/inode, tail and EOF
+behavior, untouched output and a deliberately nonzero shared descriptor cursor;
+oversized reads must refuse without effects. This is original sealed-descriptor
+IO evidence, not an actual kernel FUSE READ or repository authority claim.
+The structural closed inventory is 56 cases. Fresh worker-channel VM execution,
+mandatory application compilation and native feature qualification remain
+required. No trunk task is accepted (27/64).

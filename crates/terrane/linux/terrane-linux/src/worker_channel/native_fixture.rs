@@ -216,8 +216,6 @@ fn send_reply(endpoint: &Endpoint, original: &File, unsealed: &Path, mode: &str)
 }
 
 fn client_worker(socket: OwnedFd, mode: &str) -> Result {
-    use std::os::unix::fs::FileExt;
-
     let expected_uid = u32::from(mode == "reply-wrong-uid");
     let context = ExposureContext::new("0123456789abcdef0123456789abcdef", 1, [3; 32])?;
     let mut client = WorkerClient::bind(socket, context, expected_uid)?;
@@ -239,20 +237,43 @@ fn client_worker(socket: OwnedFd, mode: &str) -> Result {
                 }
                 reply
             };
-            let file = reply.into_file();
+            let backing =
+                crate::fuse_read::Backing::from_reply(reply, BODY.len() as u64, BODY.len() as u32)?;
+            rustix::fs::seek(&backing, rustix::fs::SeekFrom::Start(3))?;
             let mut bytes = vec![0; BODY.len()];
-            file.read_exact_at(&mut bytes, 0)?;
-            let metadata = file.metadata()?;
-            if bytes != BODY || metadata.len() != BODY.len() as u64 {
+            let length = backing.read(0, BODY.len() as u32, &mut bytes)?;
+            let metadata = rustix::fs::fstat(&backing)?;
+            if length != BODY.len() || bytes != BODY || metadata.st_size as u64 != BODY.len() as u64
+            {
                 return Err("worker client read another original body".into());
             }
-            let inode = (metadata.dev(), metadata.ino());
+            bytes.fill(0xaa);
+            let length = backing.read(BODY.len() as u64 - 2, BODY.len() as u32, &mut bytes)?;
+            if length != 2
+                || bytes[..2] != BODY[BODY.len() - 2..]
+                || bytes[2..].iter().any(|byte| *byte != 0xaa)
+                || backing.read(u64::MAX, 1, &mut [])? != 0
+                || rustix::fs::seek(&backing, rustix::fs::SeekFrom::Current(0))? != 3
+            {
+                return Err("fallback read changed cursor, EOF or untouched output".into());
+            }
+            bytes.fill(0xaa);
+            if !matches!(
+                backing.read(0, BODY.len() as u32 + 1, &mut bytes),
+                Err(crate::fuse_read::Error::Limit)
+            ) || bytes.iter().any(|byte| *byte != 0xaa)
+            {
+                return Err(
+                    "fallback read accepted oversized work or mutated refused output".into(),
+                );
+            }
+            let inode = (metadata.st_dev, metadata.st_ino);
             if first_inode.is_some_and(|first| first != inode) {
                 return Err("bounded and manual worker requests received different inodes".into());
             }
             first_inode = Some(inode);
             if sequence == 2 {
-                println!("ORIGINAL {} {}", metadata.dev(), metadata.ino());
+                println!("ORIGINAL {} {}", metadata.st_dev, metadata.st_ino);
             }
         }
         return Ok(());

@@ -49,6 +49,12 @@ INODE_CASES = [
     "reserved_first_touch_and_checked_metadata_operations_allocate_nothing",
     "directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch",
 ]
+READ_PREFIX = "fuse_read::tests::"
+READ_CASES = [
+    'open_keeps_cache_without_passthrough_or_direct_io_and_preserves_unused_bytes',
+    'positioned_ranges_clamp_only_at_prepared_eof_without_offset_overflow',
+    'invalid_limits_sizes_and_short_output_are_refused_before_io',
+]
 XATTR_PREFIX = "fuse_xattr::tests::"
 XATTR_CASES = [
     'raw_values_and_size_probes_preserve_exact_bytes_and_unused_output',
@@ -130,7 +136,8 @@ def main():
                                  (DIRECTORY_PREFIX, DIRECTORY_CASES, "directory"),
                                  (METADATA_PREFIX, METADATA_CASES, "metadata"),
                                  (NAMESPACE_PREFIX, NAMESPACE_CASES, "namespace"),
-                                 (XATTR_PREFIX, XATTR_CASES, "xattr")]:
+                                 (XATTR_PREFIX, XATTR_CASES, "xattr"),
+                                 (READ_PREFIX, READ_CASES, "read")]:
         expected = [prefix + name for name in names]
         inventory = captured([prefix, "--list", "--format", "terse"], label + "-inventory.log")
         actual = [line.removesuffix(": test") for line in inventory if line.endswith(": test")]
