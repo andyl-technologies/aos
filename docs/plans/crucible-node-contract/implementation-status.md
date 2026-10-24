@@ -10,6 +10,30 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Original Bootstrap inputs and terminal claim custody
+
+Commit `736b16256e` groups the actual borrowed Hello, opaque Recipe and Initial
+inputs for the original Bootstrap row authenticator. Its defining counter pays
+both aggregate loans; no wire announcement can construct those opaque values.
+Commit `e7708c9f50` checks the original process, thread and nonrenewing deadline
+immediately before clearing the sticky failure flag on both original14 and
+Invocation15 claims. Expired or foreign custody keeps the claim failed.
+
+The first complete raw-JSON run passed 2,084 tests and exposed one stale saved
+counter expectation. Commit `64758d006f` adds the same 156 bytes of terminal
+views to that independent composition control, preserving the old counter.
+The fresh complete raw-JSON and standard suites each pass 2,085 tests with
+zero failures, 16 existing ignored tests and no filtering.
+All-feature/all-target Transport/Engine/Daemon checking, scoped formatting and
+all six architecture gates pass. The required application gate compiles 180
+test executables across 58 packages, including 71 integration targets; all 462
+frozen owned Rust/Cargo inputs match its captured source and committed revision.
+Production Transport Clippy remains at 47 errors and 1,733 warnings.
+
+These results qualify the borrowed input contract and terminal claim checks.
+They do not construct genuine five-phase Recipe/Initial outputs, qualify full
+post-Hello native custody, or complete Native18 readiness or RFC-0025.
+
 ## Shared parent and native initial-construction arithmetic
 
 Commit `7b28a81a48` routes the native initial-construction projection through
