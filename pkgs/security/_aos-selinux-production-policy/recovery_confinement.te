@@ -32,7 +32,9 @@ allow aos_sandbox_policy_recovery_t aos_sandbox_policy_history_t:file { getattr 
 
 # PID 1 prepares only this volatile socket directory. It gains no history access.
 allow aos_sandbox_policy_recovery_runtime_t tmpfs_t:filesystem associate;
-allow init_t aos_sandbox_policy_recovery_runtime_t:dir { add_name create getattr open read relabelto remove_name search setattr write };
+# The manager bind-mounts RuntimeDirectory into the private service namespace
+# and removes the same volatile directory on stop; history remains inaccessible.
+allow init_t aos_sandbox_policy_recovery_runtime_t:dir { add_name create getattr mounton open read relabelto remove_name rmdir search setattr write };
 type_transition init_t var_run_t:dir aos_sandbox_policy_recovery_runtime_t "sandbox-policy-cache-recovery";
 allow aos_sandbox_policy_recovery_t aos_sandbox_policy_recovery_runtime_t:dir { add_name getattr open read remove_name search write };
 allow aos_sandbox_policy_recovery_t aos_sandbox_policy_recovery_runtime_t:sock_file { create getattr open read setattr unlink write };

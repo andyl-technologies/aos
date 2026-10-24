@@ -27,6 +27,7 @@ def matrix(Access, Transition, accesses, all_roles):
     positive.extend(accesses(
         "init_t", DOMAIN, "process2", ("nnp_transition", "nosuid_transition"),
     ))
+    positive.extend(accesses("init_t", RUNTIME, "dir", ("mounton", "rmdir")))
     positive.extend(accesses(
         ROOT, HISTORY, "file",
         (*read, "append", "create", "ioctl", "lock", "rename", "setattr", "unlink", "write"),
@@ -60,6 +61,7 @@ def matrix(Access, Transition, accesses, all_roles):
         if other not in (ROOT, DOMAIN):
             negative.extend(accesses(other, HISTORY, "file", read))
         if other != "init_t":
+            negative.extend(accesses(other, RUNTIME, "dir", ("mounton", "rmdir")))
             negative.append(Access(other, DOMAIN, "process", "transition"))
             negative.extend(accesses(
                 other, DOMAIN, "process2", ("nnp_transition", "nosuid_transition"),

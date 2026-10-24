@@ -281,6 +281,42 @@ FAKE_SETOOLS = SimpleNamespace(
 
 
 class EffectivePolicyTest(unittest.TestCase):
+    def test_native_manager_requires_labeled_dbus_start(self) -> None:
+        for access in (
+            effective_policy.Access("init_t", "dbusd_unit_t", "service", "start"),
+            effective_policy.Access("init_t", "dbusd_unit_t", "service", "status"),
+        ):
+            with self.subTest(access=access):
+                self.assert_missing_allow_rejected(access)
+
+        self.assert_forbidden_allow_rejected(
+            effective_policy.Access("init_t", "init_t", "system", "start")
+        )
+
+    def test_view_preparer_nosuid_entry_stays_with_the_manager(self) -> None:
+        for role in ("source", "cache"):
+            preparer = f"aos_sandbox_{role}_view_preparer_t"
+            with self.subTest(role=role):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access("init_t", preparer, "process2", "nosuid_transition")
+                )
+                self.assert_forbidden_allow_rejected(
+                    effective_policy.Access(
+                        "aos_sandbox_controller_t", preparer, "process2", "nosuid_transition"
+                    )
+                )
+
+    def test_recovery_runtime_mount_lifecycle_stays_with_the_manager(self) -> None:
+        runtime = effective_policy.owner_policy.recovery_policy.RUNTIME
+        for permission in ("mounton", "rmdir"):
+            with self.subTest(permission=permission):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access("init_t", runtime, "dir", permission)
+                )
+                self.assert_forbidden_allow_rejected(
+                    effective_policy.Access("aos_sandbox_controller_t", runtime, "dir", permission)
+                )
+
     def test_namespace_retirement_events_stay_with_the_manager(self) -> None:
         for permission in ("cpu", "kernel", "open", "tracepoint", "write"):
             with self.subTest(permission=permission):

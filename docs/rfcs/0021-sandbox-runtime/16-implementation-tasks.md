@@ -11071,3 +11071,24 @@ including all 155 checker tests, the normal merged-policy scan, deliberately
 unsafe policy variants and the selected kernel's ordered class-map checks.
 Installed Host readiness remains pending; the preceding Host test is a failure,
 not a readiness receipt.
+
+### Root service setup boundaries (installed retry pending)
+
+An exact-image netlink audit rerun confirms three later setup failures after the
+fixed view-root provisioner succeeds. PID 1 cannot enter the Cache view-preparer
+role on the nosuid store, bind the recovery RuntimeDirectory into its private
+namespace or remove that volatile directory, or start the dbusd_unit_t socket
+through native activation. The diagnostic's separate manager-wide start denial
+belongs to a misspelled diagnostic unit, so it does not justify a production
+manager-wide start grant.
+
+The prepared policy retains the existing fixed Source/Cache preparer entrypoints
+and permits only PID 1's nosuid transitions into those two preparation roles.
+The recovery directory receives only the missing manager mounton/rmdir rights;
+its history, compiler state and private listener permissions remain separate.
+Native activation receives only dbusd_unit_t start/status.
+No additional service, bank reservation, capability or generic executable entry
+is introduced. New effective-policy regressions require those exact grants and
+reject foreign preparer entry and recovery-directory mount/removal. All three
+focused regressions pass; complete compiled-policy and installed startup checks
+remain pending. Diagnostic collection alone does not qualify Root readiness.

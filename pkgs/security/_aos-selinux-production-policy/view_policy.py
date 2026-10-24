@@ -59,6 +59,10 @@ def matrix(Access, Transition, accesses, roles):
                 Access("init_t", domain, "process2", "nnp_transition"),
                 Access(domain, executable, "file", "entrypoint"),
             ))
+        positive.append(Access("init_t", preparer, "process2", "nosuid_transition"))
+        for actor in actors:
+            if actor != "init_t":
+                negative.append(Access(actor, preparer, "process2", "nosuid_transition"))
         positive.extend(accesses(
             preparer, "aos_sandbox_view_preparer_tool_exec_t", "file",
             ("execute", "execute_no_trans", "getattr", "map", "open", "read"),

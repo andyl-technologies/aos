@@ -261,6 +261,7 @@ POSITIVE_ACCESS = (
     # Native host activation requires the manager and generated-unit API;
     # owner_policy separately forbids manager mutation by Sandbox services.
     *accesses("init_t", "init_t", "system", ("status", "reload")),
+    *accesses("init_t", "dbusd_unit_t", "service", ("start", "status")),
     *accesses(
         "init_t", "systemd_unit_t", "service", ("status", "start", "stop", "reload")
     ),
@@ -1178,6 +1179,7 @@ POSITIVE_ACCESS = (
 TRANSITIONS = (*TRANSITIONS, *OWNER_TRANSITIONS)
 NEGATIVE_ACCESS = (
     *negative_access(), *OWNER_NEGATIVE,
+    Access("init_t", "init_t", "system", "start"),
     Access("init_t", "init_t", "perf_event", "read"),
     *(
         access

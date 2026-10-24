@@ -27,7 +27,9 @@ type aos_sandbox_root_read_journal_t;
 # Explicit normal-unit contexts, not a generic script/interpreter transition.
 allow init_t { aos_sandbox_source_view_preparer_exec_t aos_sandbox_cache_view_preparer_exec_t }:file { execute execute_no_trans getattr open read };
 allow init_t { aos_sandbox_source_view_preparer_t aos_sandbox_cache_view_preparer_t }:process transition;
-allow init_t { aos_sandbox_source_view_preparer_t aos_sandbox_cache_view_preparer_t }:process2 nnp_transition;
+# Both fixed scripts reside on the authenticated nosuid store. Only PID 1 may
+# enter these preparation roles through the existing explicit unit contexts.
+allow init_t { aos_sandbox_source_view_preparer_t aos_sandbox_cache_view_preparer_t }:process2 { nnp_transition nosuid_transition };
 allow aos_sandbox_source_view_preparer_t aos_sandbox_source_view_preparer_exec_t:file { entrypoint getattr open read };
 allow aos_sandbox_cache_view_preparer_t aos_sandbox_cache_view_preparer_exec_t:file { entrypoint getattr open read };
 allow aos_sandbox_view_preparer aos_sandbox_view_preparer_tool_exec_t:file { entrypoint execute execute_no_trans getattr map open read };

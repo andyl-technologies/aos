@@ -10,6 +10,7 @@ require {
     type init_t;
     type init_tmpfs_t;
     type systemd_unit_t;
+    type dbusd_unit_t;
     type device_t;
     type fixed_disk_device_t;
     type fuse_device_t;
@@ -71,6 +72,8 @@ allow init_t self:perf_event { cpu kernel open tracepoint write };
 # units. Sandbox owners retain their separately checked status-only access.
 allow init_t self:system { reload status };
 allow init_t systemd_unit_t:service { reload start status stop };
+# Native activation adopts the image's already labeled D-Bus socket/service.
+allow init_t dbusd_unit_t:service { start status };
 # Native activation also publishes units into the writable /etc overlay. Those
 # PID-1-domain files retain init_tmpfs_t rather than the immutable image label.
 allow init_t init_tmpfs_t:service { reload start status stop };
