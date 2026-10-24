@@ -10,6 +10,35 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Persistent journal backing from actual fresh clones
+
+Commit `5dba279da4` prices persistent SDK journal backing with a separate
+fresh-clone forest quote. Every production request insertion and response
+assignment retains an actual envelope clone. The pinned String/Vec clones copy
+live lengths; BTree clones copy nonempty nodes and allocate no empty root. The
+quote covers all roots under their shared complete canonical-byte ceiling and
+refuses unsupported Value layouts. It preserves the existing parser/cumulative-
+growth quote, caller-owned backing and prior counter controls, adding the new
+fixed clone controls. Journal quotas and allocation permission remain unchanged.
+
+All four new physical clone controls and three journal controls pass in both
+codec modes. The failed socket-send control retains the actual original request
+while caller and incoming spare capacity stay independently accounted. Both
+complete Transport suites pass 2,150 tests with zero failures and twenty ignored;
+both complete Engine suites pass 2,068 with zero failures and 34 ignored, using
+each mode's freshly built test-profile provider. Both full SourceBirth suites
+pass 62 tests, and strict SourceBirth Clippy passes without allowances. Strict
+Transport Clippy retains exactly its four existing errors, including locations,
+and 1,726 warnings.
+
+All-feature/all-target SourceBirth/Transport/Engine/Daemon checking, scoped
+formatting, six architecture checks and application test-target compilation pass.
+Actual application metadata records 185 test artifacts across 58 packages,
+including 76 integration targets. All 636 frozen owned Rust/Cargo inputs match
+the commit and actual application source. No new native or VM qualification is
+claimed for this component. Complete SDK transient/scratch, owning-census growth,
+runtime quota handoff, live Native18 and the full RFC remain unfinished.
+
 ## Complete borrowed runtime construction scopes
 
 Commit `75049c45f1` authenticates a complete borrowed postconstruction scope
@@ -33,8 +62,9 @@ The genuine inactive startup control passes in 669.72 seconds with normal stack
 settings, construction and terminal growth rechecks, exact/one-byte-short
 censuses, retirement and child reclamation. Earlier attempts used a development-
 profile provider with stale compiler metadata, then a stripped copy, and failed
-during the third peer's initial lifecycle before runtime construction. The
-corrected run rebuilt the actual provider in the test profile used by the earlier
+before runtime construction. Diagnostics narrowed the stripped-provider failure
+to the third peer's initial lifecycle. The corrected run rebuilt the actual
+provider in the test profile used by the earlier
 passing control and captured fresh compiler metadata for both helpers and the
 unmodified Daemon. Temporary diagnostic sources were restored exactly and owned
 executable scratch was removed. This qualifies inactive construction only; no
