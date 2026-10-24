@@ -8708,7 +8708,9 @@ the exact final-close physical charge releases. Its application compilation
 and complete source review pass (185 targets, 59 packages). The diagnostic
 refinement at `3a06af1c39` reproduces the named-file failure; its owner and
 already-unlinked-file controls pass. The corrected complete 209-case native
-feature run at `02b6596fcf` remains under qualification. Master is merged at
+feature run at `02b6596fcf` passes in 1,600.579 seconds with complete
+source, installed-ELF, exact inventory and lifecycle witness review. Its
+feature-matrix gate also passes; independent base/matrix review is running. Master is merged at
 `3bd16933a5`; that revision requires its own native qualification. No component result accepts an
 additional task or supplies the remaining deployed role composition.
 
@@ -16448,3 +16450,31 @@ inspect protected fixture paths. It opens no original file backing, changes no
 production authority or state, and preserves the original actor failure, all
 deadlines and all closure assertions. Post-exit observations are diagnostic,
 not proof of the charge present while the actor was alive. No task is accepted.
+
+
+#### Complete native features and deterministic source inputs
+
+At immutable `02b6596fcf`, the actual complete-feature native guest passes in
+1,600.579 seconds. Independent review verifies all 8,095 immutable source files,
+5,382 bound inputs, four actual Cargo/installed ELF pairs, 92 fixture selectors,
+all 204 ordinary and five creator-identity unit cases, and 27 native lifecycle
+witnesses. Every unit executes exactly once with no failure or ignored case,
+under its original identity and bounds. The feature-matrix request also passes
+in 30,142.432 seconds, including its independently completed base guest. Its
+base/source/compiler-artifact review remains separate. These results qualify
+their frozen pre-merge revision; no additional task is accepted.
+
+The merged `3bd16933a5` structural gate passes all 38 cases. Complete review
+matches 8,168 immutable files, 5,427 bound inputs and the retained actual ELF
+`2d1b0b945a025b77789005344b2fd8b547ac7da72a9059e5f1cb3f7d93c40e8c`.
+The merged application build also exits successfully, but its complete source
+review refuses a host-generated Python bytecode file captured from the working
+checkout. This compilation is not recorded as a complete reviewed merge pass.
+
+The shared workspace source filter now excludes `__pycache__` directories and
+`.pyc`/`.pyo` files. Importing a host proof helper can no longer add compiled
+Python artifacts to the hermetic source closure or change provider identities.
+Evaluation materializes 8,168 regular source files with no Python bytecode; Nix
+formatting and diff checks pass. Application compilation must be repeated from
+a frozen checkout and reviewed in full. No runtime assertion or native deadline
+is changed by this source-input correction.
