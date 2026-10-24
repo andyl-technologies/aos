@@ -158,7 +158,7 @@ in
           # Avoid mixing the bootstrap static C++ personality with the
           # shared runtime used by libc's pthread cancellation unwinder.
           LDFLAGS="''${LDFLAGS-} -L${gcc-libs}/lib -Wl,-rpath,${gcc-libs}/lib" \
-            CXXFLAGS="$CXXFLAGS -std=c++17" \
+            CXXFLAGS="''${CXXFLAGS-} -std=c++17" \
             $CONFIG_SHELL ./configure --prefix="$out" $configureFlags
           grep -q '^#define ELF_INTERPRETER "/nix/store/' include/config.h
         '';
