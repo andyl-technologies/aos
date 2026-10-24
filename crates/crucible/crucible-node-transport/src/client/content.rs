@@ -1030,6 +1030,9 @@ impl ClientContent {
 
 mod observation_receive;
 
+mod internal_growth;
+pub use internal_growth::OriginalClientContentGrowthStorageData;
+
 #[path = "content/capture_current17.rs"]
 mod capture_current17;
 

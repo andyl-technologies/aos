@@ -16,7 +16,7 @@ mod reference;
 mod session;
 
 pub use crate::connection::CanonicalAckCodecMetadataExtent;
-pub use content::ClientContent;
+pub use content::{ClientContent, OriginalClientContentGrowthStorageData};
 pub use controller::{
     CnpController, CnpRegistrarRead, ControllerRoute, InstalledArchivedProtocolState,
     OriginalCanonicalBlobAckEmitter, OriginalCanonicalRestoreInputEmitter,
