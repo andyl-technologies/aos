@@ -21,6 +21,7 @@ fn directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch() {
     )
     .unwrap();
     let index = Index::open(&bytes).unwrap();
+    let namespace = crate::fuse_namespace::Namespace::new(index, 2, 4096).unwrap();
     let mut table = InodeTable::with_reserved_capacity(2, 4096).unwrap();
     let mut limited = InodeTable::with_reserved_capacity(1, 4096).unwrap();
     let mut metadata_table = InodeTable::with_reserved_capacity(2, 4096).unwrap();
@@ -28,7 +29,9 @@ fn directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch() {
 
     let ((), allocations) = allocation::measure(|| {
         for _ in 0..3 {
-            let entry = index.lookup(b"link").unwrap();
+            let entry = namespace.lookup(1, b"link").unwrap().unwrap();
+            assert_eq!(namespace.entry(1).unwrap().path(), b"");
+            assert!(namespace.lookup(1, b"absent").unwrap().is_none());
             let presentation = crate::fuse_metadata::Presentation::default();
             let cache = crate::fuse_metadata::CachePolicy::Pinned;
             assert_eq!(

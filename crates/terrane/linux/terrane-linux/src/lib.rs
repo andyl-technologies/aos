@@ -24,6 +24,8 @@ pub mod fuse_directory;
 #[cfg(feature = "surface-fuse")]
 pub mod fuse_metadata;
 #[cfg(feature = "surface-fuse")]
+pub mod fuse_namespace;
+#[cfg(feature = "surface-fuse")]
 pub mod fuse_protocol;
 pub mod host_cache;
 pub mod host_quota;

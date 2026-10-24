@@ -49,6 +49,14 @@ INODE_CASES = [
     "reserved_first_touch_and_checked_metadata_operations_allocate_nothing",
     "directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch",
 ]
+NAMESPACE_PREFIX = "fuse_namespace::tests::"
+NAMESPACE_CASES = [
+    'child_lookup_resolves_only_direct_names_and_namespace_dot_components',
+    'reverse_lookup_preserves_canonical_hardlinks_and_distinct_equal_content',
+    'graft_reverse_nodes_and_dotdot_keep_original_namespace_prefixes',
+    'raw_names_and_unknown_nodes_never_escape_the_original_index',
+    'startup_budgets_include_every_original_path_and_the_synthesized_root',
+]
 METADATA_PREFIX = "fuse_metadata::tests::"
 METADATA_CASES = [
     'lookup_and_getattr_preserve_recorded_fields_and_hardlink_identity',
@@ -75,7 +83,7 @@ def require(condition, message):
 
 
 def main():
-    """Checks one source-bound Linux artifact and four complete test inventories."""
+    """Checks one source-bound Linux artifact and five complete test inventories."""
     output = Path(os.environ["out"])
     source = Path(os.environ["src"])
     workspace = Path.cwd()
@@ -112,7 +120,8 @@ def main():
     for prefix, names, label in [(PREFIX, CASES, "structural"),
                                  (INODE_PREFIX, INODE_CASES, "inode"),
                                  (DIRECTORY_PREFIX, DIRECTORY_CASES, "directory"),
-                                 (METADATA_PREFIX, METADATA_CASES, "metadata")]:
+                                 (METADATA_PREFIX, METADATA_CASES, "metadata"),
+                                 (NAMESPACE_PREFIX, NAMESPACE_CASES, "namespace")]:
         expected = [prefix + name for name in names]
         inventory = captured([prefix, "--list", "--format", "terse"], label + "-inventory.log")
         actual = [line.removesuffix(": test") for line in inventory if line.endswith(": test")]

@@ -16576,3 +16576,38 @@ mode, ownership, link count and canonical timestamps in the kernel result.
 Complete current application compilation and disposable FUSE qualification are
 required before accepting this component; no FUSE task or production worker
 composition is claimed. Accepted trunk tasks remain 27 of 64.
+
+### Original FUSE namespace reverse lookup
+
+The frozen `19081df704` structural gate passes all 43 closed cases in 79.323
+seconds. Complete independent review verifies 8,171 immutable source files,
+5,430 bound inputs, the retained actual Cargo ELF and every exact nonignored
+result. Its real FUSE GETATTR request and mandatory application-target build
+continue separately; this pure result does not qualify a mounted worker.
+
+The optional namespace component now builds a bounded sorted reverse table from
+kernel node ID to original canonical index position at startup. Root remains
+node one, hard-link aliases share one entry, and distinct canonical entries
+with a colliding node ID are refused. Both memory and entry budgets include
+every original path before hard-link deduplication. Presented inode assignment
+remains lazy in the separate connection table. Request-time reverse lookup and
+binary child lookup borrow index bytes without allocation, IO, full-path
+construction or content fetching. Dot-dot follows namespace parents across
+graft boundaries rather than jumping to a referenced tree's root.
+
+Five pure namespace cases pass, covering direct-child boundaries, raw components,
+unknown nodes, hard links, repeated graft prefixes and exact startup budgets.
+The instrumented first-touch test also observes zero allocations for namespace
+resolution. Strict all-feature, all-target Clippy passes. Structural qualification
+adds these five closed selectors (48 total), preserving every earlier selector
+and the base native inventory.
+
+A fourth genuine FUSE fixture scenario uses a populated synthetic checked tree.
+Actual kernel requests must preserve hard-link identities, recorded ownership,
+raw non-UTF-8 names, symlink bytes, negative lookups and nested directory parents.
+The original empty-directory, receive-timeout and cancellation scenarios remain,
+as do their actor, connection and outer bounds. The fixture grants no repository
+or production exposure authority. Compilation passes; disposable-kernel execution
+and mandatory application compilation remain required. Trunk acceptance remains
+27 of 64; neither the production dispatcher nor mount-broker composition is
+claimed complete.

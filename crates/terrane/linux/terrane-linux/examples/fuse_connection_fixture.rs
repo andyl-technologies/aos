@@ -1,7 +1,7 @@
 //! Qualifies the original FUSE transport in a disposable native guest.
 //!
 //! The supervisor mounts the actual device opened by this unprivileged actor.
-//! A minimal empty directory supplies kernel traffic only; it grants no Terrane
+//! Synthetic checked metadata supplies kernel traffic only; it grants no Terrane
 //! repository, exposure, backing or production mount-broker authority.
 
 use rustix::net::{self, SendAncillaryBuffer, SendAncillaryMessage};
@@ -14,14 +14,19 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use terrane_format::{
+    tree_builder::Tree,
+    tree_format::{Attribute, ContentRef, Entry as TreeEntry, EntryKind, LeafItem, TreeUse},
+};
 use terrane_linux::{
     fuse_connection::Connection,
     fuse_directory,
     fuse_metadata::{self, CachePolicy, Presentation},
+    fuse_namespace::Namespace,
     fuse_protocol::{self, Reply, Request},
     inode_policy::InodeTable,
     quota_confinement,
-    structural_index::{self, Index},
+    structural_index::{self, Index, Kind},
 };
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -30,7 +35,7 @@ const DEADLINE: Duration = Duration::from_secs(5);
 
 fn main() -> Result {
     let mode = std::env::args().nth(1).ok_or("missing fixture mode")?;
-    if !matches!(mode.as_str(), "serve" | "timeout" | "cancel") {
+    if !matches!(mode.as_str(), "serve" | "metadata" | "timeout" | "cancel") {
         return Err("invalid fixture mode".into());
     }
 
@@ -73,10 +78,10 @@ fn main() -> Result {
         let mut directory_page = vec![0; LIMIT - 16];
         // This empty metadata fixture is not an authenticated repository view.
         // It exercises the production encoder against actual kernel READDIR.
-        let directory_bytes = structural_index::compile([7; 32], &[], 1, 4096)?;
+        let directory_bytes = metadata_bytes(mode == "metadata")?;
         let directory = Index::open(&directory_bytes)?;
-        let mut inodes = InodeTable::with_reserved_capacity(1, 4096)?;
-        let root = directory.lookup(b"").ok_or("empty index lost root")?;
+        let namespace = Namespace::new(directory, 16, 4096)?;
+        let mut inodes = InodeTable::with_reserved_capacity(16, 65536)?;
 
         // Invalid arguments must fail before accepting or consuming real INIT.
         let error = connection
@@ -111,7 +116,7 @@ fn main() -> Result {
         .await?;
         notify(b"READY")?;
 
-        if mode != "serve" {
+        if !matches!(mode.as_str(), "serve" | "metadata") {
             if mode == "timeout" {
                 let error = connection
                     .receive(&mut input, Duration::from_millis(100))
@@ -164,24 +169,45 @@ fn main() -> Result {
             if matches!(request.opcode(), 2 | 42) {
                 continue;
             }
-            let mut attributes = [0; 104];
+            let mut attributes = [0; 128];
             let mut opened = [0; 16];
-            let (body, errno) = match (request.opcode(), request.node()) {
-                (3, 1) => {
-                    let encoded = fuse_metadata::getattr(
-                        root,
+            let entry = namespace.entry(request.node());
+            let (body, errno) = match (request.opcode(), entry) {
+                (1, Some(_)) => match namespace.lookup(request.node(), request.name(0, 255)?)? {
+                    Some(child) => (
+                        Some(fuse_metadata::lookup(
+                            child,
+                            Presentation::default(),
+                            CachePolicy::Revalidate,
+                            &mut inodes,
+                            &mut attributes,
+                        )?),
+                        0,
+                    ),
+                    None => (
+                        Some(fuse_metadata::negative_lookup(
+                            CachePolicy::Revalidate,
+                            &mut attributes,
+                        )?),
+                        0,
+                    ),
+                },
+                (3, Some(entry)) => (
+                    Some(fuse_metadata::getattr(
+                        entry,
                         Presentation::default(),
                         CachePolicy::Revalidate,
                         &mut inodes,
                         &mut attributes,
-                    )?;
-                    (Some(encoded), 0)
-                }
-                (27, 1) => {
-                    opened[..8].copy_from_slice(&1_u64.to_ne_bytes());
+                    )?),
+                    0,
+                ),
+                (5, Some(entry)) => (Some(fuse_metadata::readlink(entry)?), 0),
+                (27, Some(entry)) if matches!(entry.kind(), Kind::Directory { .. }) => {
+                    opened[..8].copy_from_slice(&request.node().to_ne_bytes());
                     (Some(opened.as_slice()), 0)
                 }
-                (28, 1) => {
+                (28, Some(entry)) => {
                     if request.body().len() != 40 {
                         return Err("actual READDIR body has unexpected length".into());
                     }
@@ -190,15 +216,15 @@ fn main() -> Result {
                     let capacity = requested.min(directory_page.len());
                     let length = fuse_directory::read(
                         directory,
-                        b"",
+                        entry.path(),
                         cookie,
                         &mut inodes,
                         &mut directory_page[..capacity],
                     )?;
                     (Some(&directory_page[..length]), 0)
                 }
-                (29 | 34, 1) | (38, _) => (Some([].as_slice()), 0),
-                (1, _) => (None, libc::ENOENT),
+                (29 | 34, Some(_)) | (38, _) => (Some([].as_slice()), 0),
+                (_, None) => (None, libc::ESTALE),
                 _ => (None, libc::ENOSYS),
             };
             send(&mut connection, &mut output, request, body, errno).await?;
@@ -206,6 +232,63 @@ fn main() -> Result {
         notify(b"STOPPED")?;
         Ok(())
     })
+}
+
+/// Builds synthetic metadata without a repository, content source or exposure.
+fn metadata_bytes(populated: bool) -> Result<Vec<u8>> {
+    if !populated {
+        return Ok(structural_index::compile([7; 32], &[], 1, 4096)?);
+    }
+    let file = |path: &[u8], link_id| LeafItem {
+        key: path.to_vec(),
+        entry: TreeEntry {
+            kind: EntryKind::File {
+                mode: 0o640,
+                size: 3,
+                content: ContentRef::Inline([2; 32]),
+                link_id,
+            },
+            attrs: vec![
+                Attribute {
+                    name: "gid",
+                    value: &[0x18, 43],
+                },
+                Attribute {
+                    name: "uid",
+                    value: &[0x18, 42],
+                },
+            ],
+            attrs_present: true,
+            xattrs: Vec::new(),
+            xattrs_present: false,
+            provenance: None,
+        },
+    };
+    let mut directory = file(b"directory", None);
+    directory.entry.kind = EntryKind::Directory { mode: 0o750 };
+    let mut symlink = file(b"link", None);
+    symlink.entry.kind = EntryKind::Symlink {
+        target: b"./directory/../a\xff",
+    };
+    let tree = Tree::build(
+        vec![
+            file(b"a", Some(b"a")),
+            file(b"b", Some(b"a")),
+            directory,
+            file(b"directory/file", None),
+            symlink,
+            file(b"\xff", None),
+        ],
+        None,
+        4096,
+        TreeUse::Ordinary,
+    )?;
+    Ok(structural_index::compile_tree(
+        &tree,
+        &std::collections::BTreeMap::new(),
+        16,
+        65536,
+    )?)
 }
 
 async fn send(

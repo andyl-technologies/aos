@@ -71,17 +71,37 @@ def scenario(executable, directory, mode):
         require(supervisor.send(b"M") == 1, "mount-ready message was truncated")
         require(supervisor.recv(64) == b"READY", "actual kernel INIT did not complete")
 
-        if mode == "serve":
+        if mode in {"serve", "metadata"}:
             metadata = target.stat()
             require(stat.S_ISDIR(metadata.st_mode) and metadata.st_mode & 0o7777 == 0o555
                     and metadata.st_ino == 16
-                    and metadata.st_nlink == 2
+                    and metadata.st_nlink == (3 if mode == "metadata" else 2)
                     and (metadata.st_uid, metadata.st_gid) == (0, 0)
                     and metadata.st_atime_ns == 1_000_000_000
                     and metadata.st_mtime_ns == 1_000_000_000
                     and metadata.st_ctime_ns == 1_000_000_000,
                     "actual GETATTR reply differs from fixture root")
-            require(os.listdir(target) == [], "actual READDIR reply was not empty")
+            if mode == "serve":
+                require(os.listdir(target) == [], "actual READDIR reply was not empty")
+            else:
+                original = os.fsencode(target)
+                require(sorted(os.listdir(original)) == [b"a", b"b", b"directory", b"link", b"\xff"],
+                        "actual READDIR lost original direct-child names")
+                left, right = (target / "a").stat(), (target / "b").stat()
+                require(left.st_ino == right.st_ino and left.st_nlink == right.st_nlink == 2
+                        and left.st_size == right.st_size == 3
+                        and (left.st_uid, left.st_gid) == (right.st_uid, right.st_gid) == (42, 43)
+                        and left.st_mode & 0o7777 == right.st_mode & 0o7777 == 0o640,
+                        "actual LOOKUP/GETATTR lost original hard-link identity or attributes")
+                unrelated = os.stat(original + b"/\xff")
+                require(unrelated.st_ino != left.st_ino and unrelated.st_nlink == 1,
+                        "equal file content aliased an unrelated namespace inode")
+                require(os.listdir(target / "directory") == ["file"]
+                        and (target / "directory/file").stat().st_ino != left.st_ino,
+                        "nested READDIR or reverse GETATTR escaped its original parent")
+                require(os.readlink(original + b"/link") == b"./directory/../a\xff"
+                        and (target / "link").lstat().st_size == len(b"./directory/../a\xff"),
+                        "actual READLINK normalized or decoded original symlink bytes")
             try:
                 (target / "absent").stat()
             except OSError as error:
@@ -125,5 +145,5 @@ def scenario(executable, directory, mode):
 
 if __name__ == "__main__":
     executable, directory = map(pathlib.Path, sys.argv[1:])
-    for selected in ["serve", "timeout", "cancel"]:
+    for selected in ["serve", "metadata", "timeout", "cancel"]:
         scenario(executable, directory, selected)

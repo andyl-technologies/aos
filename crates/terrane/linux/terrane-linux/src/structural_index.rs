@@ -432,6 +432,11 @@ pub struct Entry<'a> {
 }
 
 impl<'a> Entry<'a> {
+    /// Returns the checked entry position for connection-local reverse indexing.
+    pub(crate) fn position(&self) -> u32 {
+        self.position
+    }
+
     /// Returns the root-relative full path, or empty bytes for the root.
     #[must_use]
     pub fn path(&self) -> &'a [u8] {
