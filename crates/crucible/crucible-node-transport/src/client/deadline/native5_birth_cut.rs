@@ -34,6 +34,35 @@ struct BirthCut {
 pub struct OriginalNative5BirthCut(Rc<BirthCut>);
 
 impl OriginalNative5BirthCut {
+    /// Observes both actual private allocations without issuing an admission.
+    ///
+    /// The enclosing bootstrap proves its own root roster and aliases.
+    ///
+    /// # Errors
+    /// Refuses overflowing metadata or an unavailable exact shared-owner record.
+    pub(crate) fn observe_original_private_backing_data(
+        &self,
+        observer: &mut crate::retained_metadata::MetadataObserver,
+    ) -> Result<(), ProviderError> {
+        let BirthCut {
+            owner: _,
+            original: _,
+            deadline,
+            refusal: _,
+        } = self.0.as_ref();
+        observer.shared_value(self.0.as_ref())?;
+        deadline.observe_owned11_metadata(observer)
+    }
+
+    /// Counts fixed loans and results for the private allocation observation.
+    pub(crate) const fn original_private_backing_counter_scratch_data() -> usize {
+        std::mem::size_of::<&Self>()
+            + std::mem::size_of::<&BirthCut>()
+            + std::mem::size_of::<&ExchangeDeadline>()
+            + std::mem::size_of::<&mut crate::retained_metadata::MetadataObserver<'static>>()
+            + 3 * std::mem::size_of::<Result<(), ProviderError>>()
+    }
+
     // The nested ExchangeDeadline Rc is independently counted by the actual
     // service root roster; this helper names only this additional BirthCut Rc.
     pub(crate) fn original_requested_layout_data() -> Result<usize, ProviderError> {
@@ -272,6 +301,12 @@ mod tests {
         let facts = observer.finish();
 
         assert_eq!(facts.shared_backing_views, 2);
+        let mut observed = crate::retained_metadata::MetadataObserver::new();
+        original.observe_original_private_backing_data(&mut observed)?;
+        assert_eq!(
+            crate::retained_metadata::requested_metadata_backing_storage_data(&observed.finish())?,
+            crate::retained_metadata::requested_metadata_backing_storage_data(&facts)?
+        );
         assert_eq!(
             crate::reference_packet::service::native_startup::original_native_private_cut_backing_data()?,
             crate::retained_metadata::requested_metadata_backing_storage_data(&facts)?

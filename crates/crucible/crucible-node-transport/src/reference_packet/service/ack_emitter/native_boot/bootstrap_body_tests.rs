@@ -1,10 +1,12 @@
 //! Exercises literal child correlation after authenticating the original parent.
 //!
-//! The wire DTOs are inert DATA. Their retained-only floor cannot fund native
-//! construction, so even the canonical control must refuse before readiness.
+//! The wire DTOs are inert DATA. Their native retained-only floor cannot fund
+//! construction. Private controls independently price the actual SDK banks;
+//! even the exact controls must refuse before native readiness.
 
 use super::*;
 use crate::reference_packet::service::native_startup::*;
+use crate::retained_metadata::{MetadataObserver, requested_metadata_backing_storage_data};
 use crucible_node_format::{Bytes, U64, canonical};
 use serde_json::{Value, json};
 use std::{
@@ -38,6 +40,32 @@ fn invocation_private_read_funds_the_actual_carried_launch() -> TestResult {
     exercise_claim(true, &["carry_exact", "carry_short", "carry_missing"])
 }
 
+#[test]
+fn startup_private_read_funds_its_completed_retained_banks() -> TestResult {
+    exercise_claim(
+        false,
+        &[
+            "resident_exact",
+            "resident_launch_short",
+            "resident_canonical_short",
+            "resident_body_short",
+        ],
+    )
+}
+
+#[test]
+fn invocation_private_read_funds_its_completed_retained_banks() -> TestResult {
+    exercise_claim(
+        true,
+        &[
+            "resident_exact",
+            "resident_launch_short",
+            "resident_canonical_short",
+            "resident_body_short",
+        ],
+    )
+}
+
 fn exercise_claim(invocation: bool, cases: &[&str]) -> TestResult {
     let mut selected = crate::reference_packet::service::complete_restore::import18::inert_bootstrap_fixtures::initial_selected_launch(false);
     selected["launch"]["controller_pid"] = json!(std::process::id().to_string());
@@ -62,6 +90,10 @@ fn exercise_claim(invocation: bool, cases: &[&str]) -> TestResult {
         &parsed_launch
     })?;
     let carried_backing = original_private_launch_backing_data(&carried_launch)?;
+    let canonical_bank = canonical::canonical_json(&parsed_launch)?;
+    let mut resident = MetadataObserver::new();
+    resident.observe(&parsed_launch)?;
+    let launch_backing = requested_metadata_backing_storage_data(&resident.finish())?;
 
     let mut source = crate::reference_packet::service::complete_restore::import18::inert_bootstrap_fixtures::source_birth(&launch);
     for name in [
@@ -108,7 +140,10 @@ fn exercise_claim(invocation: bool, cases: &[&str]) -> TestResult {
     };
 
     for &case in cases {
-        let before_boot = matches!(case, "carry_short" | "carry_missing");
+        let before_boot = matches!(
+            case,
+            "carry_short" | "carry_missing" | "resident_launch_short" | "resident_canonical_short"
+        );
         let mut private_row = row;
         if case.starts_with("carry_") {
             let raw = crate::retained_metadata::serialization_storage::original_json_value_storage_extent_data(
@@ -142,7 +177,34 @@ fn exercise_claim(invocation: bool, cases: &[&str]) -> TestResult {
         }
         // Whitespace controls change only the original child literal. Carry
         // controls instead vary its independent private transient grant.
-        assert_eq!(canonical::parse_json(&body, usize::MAX)?, boot);
+        let parsed_boot = canonical::parse_json(&body, usize::MAX)?;
+        assert_eq!(parsed_boot, boot);
+
+        let mut resident = MetadataObserver::new();
+        resident.observe(&parsed_launch)?;
+        resident.observe(&parsed_boot)?;
+        resident.vector::<u8>(canonical_bank.capacity())?;
+        let complete_backing = requested_metadata_backing_storage_data(&resident.finish())?;
+        let floor = original_native_private_bootstrap_floor_data()?;
+        let retained = if case == "resident_launch_short" {
+            floor
+                .checked_add(launch_backing)
+                .and_then(|bytes| bytes.checked_sub(1))
+        } else if case == "resident_canonical_short" {
+            floor
+                .checked_add(launch_backing)
+                .and_then(|bytes| bytes.checked_add(canonical_bank.capacity()))
+                .and_then(|bytes| bytes.checked_sub(1))
+        } else if case == "resident_body_short" {
+            floor
+                .checked_add(complete_backing)
+                .and_then(|bytes| bytes.checked_sub(1))
+        } else {
+            floor.checked_add(complete_backing)
+        }
+        .ok_or("private retained extent overflow")?;
+        private_row.retained_requested_bytes = U64::new(u64::try_from(retained)?);
+
         let data = PacketNativeStartupPreambleData {
             controller_pid: u64::from(std::process::id()),
             controller_uid: u64::from(rustix::process::geteuid().as_raw()),
@@ -251,8 +313,33 @@ fn inherited_body_child() -> TestResult {
     };
 
     let result = owner.prepare(Path::new("/not-opened-by-private-refusal-flight"));
-    let before_boot = matches!(case, "carry_short" | "carry_missing");
-    if before_boot {
+    let before_boot = matches!(
+        case,
+        "carry_short" | "carry_missing" | "resident_launch_short" | "resident_canonical_short"
+    );
+    let resident_short = matches!(
+        case,
+        "resident_launch_short" | "resident_canonical_short" | "resident_body_short"
+    );
+    if resident_short {
+        assert!(
+            matches!(
+                result,
+                Err(ProviderError::ResourceExhausted(
+                    "native private retained banks"
+                ))
+            ),
+            "{:?}",
+            result.as_ref().err()
+        );
+        assert!(owner.launch_value.is_some());
+        assert_eq!(
+            owner.launch_bytes.is_empty(),
+            case == "resident_launch_short"
+        );
+        assert_eq!(owner.launch.is_none(), before_boot);
+        assert!(!owner.reader.original_owned11_facts(&owner.literals)?.failed);
+    } else if before_boot {
         assert!(
             matches!(
                 result,
@@ -270,7 +357,7 @@ fn inherited_body_child() -> TestResult {
             !owner.reader.original_owned11_facts(&owner.literals)?.failed,
             "unfunded second read attempted"
         );
-    } else if matches!(case, "canonical" | "carry_exact") {
+    } else if matches!(case, "canonical" | "carry_exact" | "resident_exact") {
         assert!(
             matches!(
                 result,
@@ -295,9 +382,12 @@ fn inherited_body_child() -> TestResult {
     }
     let startup = owner.startup.as_ref().ok_or("startup absent")?;
     assert!(startup.failed);
-    assert_eq!(startup.native_issued, !before_boot);
+    assert_eq!(startup.native_issued, !before_boot && !resident_short);
     assert_eq!(owner.boot_value.is_some(), !before_boot);
-    assert_eq!(owner.startup_attempt.is_some(), !before_boot);
+    assert_eq!(
+        owner.startup_attempt.is_some(),
+        !before_boot && !resident_short
+    );
     assert!(owner.boot.is_none(), "unadmitted native boot allocation");
     let frame_index = if before_boot { 0 } else { 1 };
     let (pointer, length) = {

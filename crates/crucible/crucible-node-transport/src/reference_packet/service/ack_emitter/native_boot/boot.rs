@@ -144,6 +144,7 @@ pub(in crate::reference_packet::service) fn original_native_startup_attempt_coun
         + 2 * size_of::<bool>()
         + 2 * size_of::<usize>()
         + shape::counter_scratch_data()
+        + super::bootstrap::retained::counter_scratch_data()
         + invocation::attempt_counter_scratch_data()
         // Each edition adds a getter initializer, return and claim parameter.
         // Existing individual claim-operand terms remain independently priced.

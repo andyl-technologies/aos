@@ -11,6 +11,8 @@ use std::{cell::RefCell, os::fd::AsFd, path::Path, rc::Rc, time::Duration};
 pub(super) mod admitted;
 #[path = "bootstrap_owned11.rs"]
 mod owned11;
+#[path = "bootstrap_retained.rs"]
+pub(super) mod retained;
 
 pub(crate) use owned11::OriginalNativeBootstrapOwned11;
 
@@ -205,6 +207,7 @@ impl<S: AsFd> Bootstrap<S> {
         );
         // A completed Value belongs to this same bootstrap before the next
         // fallible cut check. Expiry retains it alongside its literal journal.
+        retained::finish(retained::check(self), &mut self.startup)?;
         if let Some(startup) = self.startup.as_ref().filter(|_| pre_dom_selected) {
             startup.ensure_original()?;
         }
@@ -213,6 +216,7 @@ impl<S: AsFd> Bootstrap<S> {
                 .as_ref()
                 .ok_or(ProviderError::Frame("native launch slot absent"))?,
         )?;
+        retained::finish(retained::check(self), &mut self.startup)?;
         self.launch = Some(if let Some(startup) = self.startup.as_ref() {
             startup.ensure_original()?;
             let digest = if startup.has_invocation_prefix()? {
@@ -313,6 +317,7 @@ impl<S: AsFd> Bootstrap<S> {
         );
         // Keep the complete second Value on expiry before any boot DTO or
         // Source/registration preparation borrows it.
+        retained::finish(retained::check(self), &mut self.startup)?;
         if let Some(startup) = self.startup.as_ref().filter(|_| pre_dom_selected) {
             startup.ensure_original()?;
         }
