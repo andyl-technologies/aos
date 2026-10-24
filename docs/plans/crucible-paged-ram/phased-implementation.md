@@ -66,7 +66,7 @@ failed attempts appear in the dated entries below.
 | Installing plan reads | `54caaed474` guards every plan read and retry with the same installing Source and preserves the first validation cause on failed ACK. All 24 focused setup tests, 73 policy controls and five hygiene controls pass. | Mandatory application compilation passes with all 5,274 Rust/TOML files matching the immutable source. The corrected setup gate `edb742a73f` passes 39 tests; all 218 exact supervision cases pass at `7iwxg7vg1r0gxwv39ajixz95n45jg9b4`. Genuine Native admission remains unexecuted. |
 | Native integration | Signed atomic `7b817c94ba`, conventional `060716ff3d`, tree `b26b7645` verifies the eleven function exports and two immutable layout objects using their genuine recorded attributes. Independent review verifies all 36 correction payloads, 78,470 Git/disk/archive paths and four byte-exact generated outputs; all 359 pure controls pass. | The earlier genuine-provider companion passes its complete build and all nineteen ordinary/unissued-state TAP cases. Earlier legacy configuration and thirteen read-only Ninja queries pass; later target attempts retain generator, interpreter and unavailable-process refusals. The latest original invocation refuses during configure because a disappeared wrapper lacks original exit-observation custody; its complete signed result and diagnosis pass independent review. Actual object transformation, final provider-binding proof and its 187-case TAP run remain unqualified. Complete paid profile issuance, activation, external physical reap, lower residency and performance parity remain unfinished. |
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
-| Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
+| Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The subsequent daemon dependency check reports 622 host-library errors, predominantly large error carriers. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
 | Requirements | 649 bindings: 630 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
@@ -3110,11 +3110,12 @@ still 142 uncovered requirements and zero fully qualified requirements. All
 767 ordinary storage tests, 95 policy controls and strict storage/portable-RAM
 Clippy pass. Hermetic storage output `lwd8sj7a9pa9bkwnxlmapsi7ikb91zgz`
 passes all 117 selected cases and 138 independently checked successful nested
-summaries. Final cumulative required application-target compilation is running
-from immutable source `a3vgq505px99d20slkwn6swplagy48iw`; all 5,422 committed
+summaries. Required application-target compilation passes at
+`s4bq6sl6dk37bv8fnn8bmyqinrcdmx5z`, from immutable source
+`a3vgq505px99d20slkwn6swplagy48iw`; all 5,422 committed
 Rust/TOML files and six fixtures match `2db83d86d1` before subsequent source
 edits. Four earlier application check clients
-were deliberately stopped as superseded by this final cumulative check; their
+were deliberately stopped as superseded by this later cumulative check; their
 immutable input matches remain recorded above, without a compilation-pass
 claim. The earlier receiver application check now passes at
 `zpblfzqzf60sidq8jxph3z5plp6qr2a6`, with all 5,419 committed Rust/TOML files
@@ -3143,7 +3144,8 @@ still 142 uncovered requirements and zero fully qualified requirements. All
 771 ordinary storage tests, 95 policy controls and strict storage/portable-RAM
 Clippy pass. Hermetic storage output `q20dbp2i67h9cvawchcdhmwhhxvap3dh`
 passes all 121 selected cases and 142 independently checked successful nested
-summaries. Required application compilation is running from immutable source
+summaries. Required application compilation passes at
+`7mjp69ri3qxkjrg4dmhacijnl9ahglsg`, from immutable source
 `iixxwpz9k0jbgnb6pipsbj22dxz8qhaw`; all 5,422 committed Rust/TOML files and
 six fixtures match `aa2af064a5` before subsequent source edits.
 These finite component checks supply no native resource or whole-world
@@ -3173,10 +3175,12 @@ still 142 uncovered requirements and zero fully qualified requirements. All
 775 ordinary storage tests, 95 policy controls and strict storage/portable-RAM
 Clippy pass. Hermetic storage output `nia72fkjsn0q91ipwqc3cbrs4vraw7yz`
 passes all 125 selected cases and 146 independently checked successful nested
-summaries. Required application compilation is running from immutable source
+summaries. The application check was interrupted without a reported compiler
+error and is superseded by the final cumulative check. Its immutable source is
 `xb2nf76xq255p8bfvh614ff38nxr3v38`; all 5,423 committed Rust/TOML files and
-six fixtures match `88c6388876` before subsequent source edits. These component controls do not qualify
-complete-world binding, native admission, physical return or performance parity.
+six fixtures match `88c6388876` before subsequent source edits. These component
+controls do not qualify complete-world binding, native admission, physical return
+or performance parity.
 
 Repeated sender offers now preserve the saved original on direct frame-credit
 and final-validation admission errors. A genuine healthy repeated offer supplies
@@ -3194,9 +3198,14 @@ Inventory `i1f9dsjh2x2xck74vjyb5plvav5x4m15` validates 649 bindings across
 243 requirements: 605 model, 25 format and nineteen native bindings. There are
 still 142 uncovered requirements and zero fully qualified requirements.
 All 776 ordinary storage tests, 95 policy controls and strict
-storage/portable-RAM Clippy pass. Hermetic storage and required application
-checks are running; the final application source is
-`0g4vvgmlhri8xjbl6kgwwnq17aaxwja7`.
+storage/portable-RAM Clippy pass. Hermetic storage output
+`346pmrrflvcf5a7zcq38093wrg6z3cpj` passes all 126 selected cases and
+147 independently checked successful nested summaries. The first application
+check ended with an interruption rather than a reported compiler error. Its
+cause is not established by the retained logs. The cumulative application recheck
+passes at `hzdyh4b7245w1z2sgwjq78r5rxk9bvpj`, from the same immutable source
+`0g4vvgmlhri8xjbl6kgwwnq17aaxwja7`; all 5,423 committed Rust/TOML files and
+six fixtures match `e3f19d5272` before subsequent documentation edits.
 These controls establish finite storage error custody, without qualifying native
 activation, physical lifecycle, lower residency or performance parity.
 
