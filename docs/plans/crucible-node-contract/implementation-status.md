@@ -10,6 +10,24 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Typed Capture authentication prefixes
+
+Commit `5110fa2254` adds an actual-writer regression for complete Capture
+arguments, artifacts and derived contexts before and after successful or failed
+MAC authentication. These fixture MACs remain inert DATA. The test supplies no
+Source ticket, installed Boot, registration or live Capture permission. The
+fixture is shared only under `cfg(test)`; production behavior is unchanged.
+
+All seven current-action controls pass in both Transport codec modes.
+All-feature Transport/Engine/Daemon targets, scoped formatting and application
+test-target compilation pass. Actual compiler metadata records 185 test
+artifacts across 58 packages, including 76 integration targets. All 609 frozen
+owned Rust/Cargo inputs match the commit and actual application source.
+No new full Transport/Engine suite, architecture run or VM qualification is
+claimed for this test checkpoint. The preceding implementation checkpoint below
+records those separate results. Runtime funding, active Capture, Native18 and
+the full RFC remain unfinished.
+
 ## Retained ordinary Capture attempt history
 
 Commit `3e56c7ccf6` validates the actual fifteen-field ordinary Capture writer
