@@ -82,6 +82,11 @@ in rec {
   };
   cargo = import ./_bazel-qemu-gpl-cargo.nix {inherit pkgs;};
   installed = import ./_bazel-qemu-gpl-installed.nix {inherit pkgs build;};
+  live-whitebox = import ../crucible/phase2-qemu-live-whitebox-doorbell.nix {
+    pkgs = pkgs // {crucible-qemu-plugin = installed.plugin;};
+    inherit (pkgs) lib;
+    attrPath = "checks.build.bazel.qemu-gpl.live-whitebox";
+  };
   installed-inspection =
     pkgs.runCommand "aos-bazel-qemu-gpl-installed-inspection" {
       buildDeps = [pkgs.python3];

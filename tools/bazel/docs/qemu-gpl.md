@@ -52,9 +52,23 @@ metadata. This qualifies the install layout and runtime resolution; complete
 closure equivalence and the suite's matching corresponding-source retention
 policy still require their separate release gates.
 
+The live white-box gate runs unchanged against `installed.plugin`:
+
+```text
+nix-build -A checks.build.bazel.qemu-gpl.live-whitebox --no-out-link
+```
+
+It boots an AOS VM and performs nine plugin-launch scenarios with the matching
+patched QEMU. They cover setup and orderly shutdown, x86 white-box mode
+inertness and repeated fingerprints, AArch64 guest markers and exact adjacent
+ticks, application-random replies and branch reconstruction, and reserved-port
+collision rejection. This executes the native x86 plugin with both x86 and
+AArch64 guests; it does not qualify an AArch64 host/plugin build. Its host test
+drivers still use the existing source-built Cargo harness.
+
 Production consumers continue to use their existing builders. The gateway's
 four lifecycle cases must retain the real Apache client in a separate helper
 process. The plugin's engine-backed tests likewise need a process oracle;
 Apache engine or server libraries must not be linked into a GPL test target.
-The mandatory ABI, license-boundary, live QEMU, installed-closure, and release
-gates remain independent requirements before production migration.
+The mandatory ABI, license-boundary, remaining live QEMU, complete closure, and
+release gates remain independent requirements before production migration.
