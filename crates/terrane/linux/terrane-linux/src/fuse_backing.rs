@@ -62,6 +62,7 @@ pub struct Rejected<B> {
 
 struct Entry<B> {
     ticket: Ticket,
+    started: bool,
     backing: Option<B>,
 }
 
@@ -124,9 +125,23 @@ impl<B> Table<B> {
         }
         self.entries.push(Entry {
             ticket,
+            started: false,
             backing: None,
         });
         Ok(())
+    }
+
+    /// Claims one original reserved ticket for submission exactly once.
+    ///
+    /// A worker with a serial backing channel calls this only when that channel
+    /// is idle. Further distinct nodes remain reserved while metadata requests
+    /// and open deadlines continue to run. Expired kernel waiters do not cancel
+    /// this queued physical work. A failed submission must fail the original
+    /// reservation and queue ticket, or fault the exposure.
+    pub fn next_fetch(&mut self) -> Option<Ticket> {
+        let entry = self.entries.iter_mut().find(|entry| !entry.started)?;
+        entry.started = true;
+        Some(entry.ticket)
     }
 
     /// Installs a checked backing under its exact original pending ticket.
@@ -136,13 +151,13 @@ impl<B> Table<B> {
     /// still install the original backing and serve a subsequent open.
     ///
     /// # Errors
-    /// Returns stale, repeated or mismatched installations with the supplied
-    /// resource intact. An existing installed backing is never replaced.
+    /// Returns unsubmitted, stale, repeated or mismatched installations with
+    /// the supplied resource intact. An installed backing is never replaced.
     pub fn install(&mut self, ticket: Ticket, backing: B) -> Result<(), Rejected<B>> {
         let entry = self
             .entries
             .iter_mut()
-            .find(|entry| entry.ticket == ticket && entry.backing.is_none());
+            .find(|entry| entry.ticket == ticket && entry.started && entry.backing.is_none());
         match entry {
             Some(entry) => {
                 entry.backing = Some(backing);

@@ -40,18 +40,20 @@ def unmount(target):
     subprocess.run(["umount", str(target)], check=True, timeout=5)
 
 
-def grant_backing(channel, descriptor, worker_pid, release):
+def grant_backing(channel, descriptor, worker_pid, release, sequence=1, path=b"a", received=None):
     """Returns one original sealed fixture inode over the actual private channel."""
     packet, ancillary, flags, _ = channel.recvmsg(4172, socket.CMSG_SPACE(12))
     require(not flags and len(ancillary) == 1
             and ancillary[0][:2] == (socket.SOL_SOCKET, socket.SCM_CREDENTIALS)
             and struct.unpack("3i", ancillary[0][2]) == (worker_pid, 840, 840),
             "backing request lost its original worker credentials")
-    require(len(packet) == 77 and packet[:8] == b"TBC1\x02\0\0\0"
+    require(len(packet) == 76 + len(path) and packet[:8] == b"TBC1\x02\0\0\0"
             and packet[8:24] == bytes.fromhex("0123456789abcdef0123456789abcdef")
-            and packet[24:40] == struct.pack("<QQ", 1, 1)
-            and packet[72:] == struct.pack("<I", 1) + b"a",
+            and packet[24:40] == struct.pack("<QQ", 1, sequence)
+            and packet[72:] == struct.pack("<I", len(path)) + path,
             "kernel open requested a foreign fixture selection")
+    if received is not None:
+        received.set()
     require(release.wait(5), "concurrent kernel opens never joined the original handoff")
     require(channel.sendmsg([packet], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
                                         array.array("i", [descriptor]))]) == len(packet),
@@ -86,7 +88,7 @@ def scenario(executable, directory, mode):
             "setpriv", "--reuid=840", "--regid=840", "--clear-groups",
             "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all",
             "--no-new-privs", str(executable), mode,
-        ], stdin=backing_child if mode in {"read", "late"} else subprocess.DEVNULL,
+        ], stdin=backing_child if mode in {"read", "late", "multi"} else subprocess.DEVNULL,
             stdout=child_socket, stderr=subprocess.PIPE,
             close_fds=True)
         child_socket.close()
@@ -110,7 +112,7 @@ def scenario(executable, directory, mode):
         require(supervisor.send(b"M") == 1, "mount-ready message was truncated")
         require(supervisor.recv(64) == b"READY", "actual kernel INIT did not complete")
 
-        if mode in {"serve", "metadata", "read", "late", "large", "readiness"}:
+        if mode in {"serve", "metadata", "read", "late", "multi", "large", "readiness"}:
             metadata = target.stat()
             require(stat.S_ISDIR(metadata.st_mode) and metadata.st_mode & 0o7777 == 0o555
                     and metadata.st_ino == 16
@@ -177,7 +179,7 @@ def scenario(executable, directory, mode):
                 require(os.readlink(original + b"/link") == b"./directory/../a\xff"
                         and (target / "link").lstat().st_size == len(b"./directory/../a\xff"),
                         "actual READLINK normalized or decoded original symlink bytes")
-                if mode in {"read", "late"}:
+                if mode in {"read", "late", "multi"}:
                     source = directory / "backing" / ("original-" + mode)
                     with source.open("xb") as output:
                         output.write(b"abc")
@@ -189,11 +191,14 @@ def scenario(executable, directory, mode):
                     argument = struct.pack("=III", 1, 1, 4096) + bytes(116)
                     fcntl.ioctl(backing, 0x40806685, argument)
                     os.lseek(backing, 1, os.SEEK_SET)
-                    executor = ThreadPoolExecutor(max_workers=3)
+                    executor = ThreadPoolExecutor(max_workers=4 if mode == "multi" else 3)
                     release = Event()
-                    grant = executor.submit(grant_backing, backing_server, backing, child.pid, release)
+                    first_received = Event()
+                    grant = executor.submit(grant_backing, backing_server, backing, child.pid,
+                                            release, 1, b"a", first_received)
                     started = time.monotonic()
                     first = executor.submit(read_file, target / "a")
+                    require(first_received.wait(2), "original kernel open did not submit its fetch")
                     if mode == "late":
                         try:
                             first.result(timeout=2)
@@ -210,13 +215,34 @@ def scenario(executable, directory, mode):
                             "pending backing blocked unrelated kernel metadata")
                     require(supervisor.recv(64) == b"COALESCED",
                             "concurrent kernel opens did not share their original handoff")
-                    release.set()
                     expected = (b"a", b"bc", b"c", b"")
+                    if mode == "multi":
+                        distinct = executor.submit(read_file, target / "directory" / "file")
+                        require(supervisor.recv(64) == b"QUEUED_DISTINCT",
+                                "distinct-node open lost its bounded backing reservation")
+                        require((target / "directory").stat().st_mode & 0o7777 == 0o750,
+                                "queued distinct-node open blocked kernel metadata")
+                    release.set()
+                    if mode == "multi":
+                        grant.result(timeout=5)
+                        second_release = Event()
+                        second_received = Event()
+                        second_grant = executor.submit(
+                            grant_backing, backing_server, backing, child.pid,
+                            second_release, 2, b"directory/file", second_received)
+                        require(second_received.wait(2)
+                                and (target / "directory").stat().st_mode & 0o7777 == 0o750,
+                                "second original fetch blocked kernel metadata")
+                        second_release.set()
+                        require(distinct.result(timeout=5) == expected,
+                                "distinct-node backing changed its original file bytes")
+                        second_grant.result(timeout=5)
                     require(alias.result(timeout=5) == expected,
                             "actual FUSE fallback READ changed sealed bytes or EOF")
-                    if mode == "read":
+                    if mode in {"read", "multi"}:
                         require(first.result(timeout=5) == expected,
                                 "coalesced original kernel open lost its response")
+                    if mode == "read":
                         print("PASS concurrent kernel hard-link opens coalesce while metadata remains responsive", flush=True)
                     with (target / "a").open("rb", buffering=0) as reopened:
                         require(reopened.read() == b"abc",
@@ -243,9 +269,11 @@ def scenario(executable, directory, mode):
                     except BlockingIOError:
                         pass
                     else:
-                        require(not unexpected, "hard-link opens fetched another backing")
+                        require(not unexpected, "kernel opens fetched an unexpected additional backing")
                     if mode == "read":
                         print("PASS actual kernel FUSE READ uses one original sealed grant for repeated hard-link opens with unchanged backing cursor", flush=True)
+                    if mode == "multi":
+                        print("PASS distinct kernel inodes queue separate original fetches while hardlinks coalesce and metadata remains responsive", flush=True)
                     if mode == "late":
                         print("PASS expired kernel open returns EIO while its original fetch survives for a later hard-link open and retained reads", flush=True)
             try:
@@ -301,5 +329,5 @@ def scenario(executable, directory, mode):
 
 if __name__ == "__main__":
     executable, directory = map(pathlib.Path, sys.argv[1:])
-    for selected in ["serve", "metadata", "read", "late", "large", "readiness", "timeout", "cancel"]:
+    for selected in ["serve", "metadata", "read", "late", "multi", "large", "readiness", "timeout", "cancel"]:
         scenario(executable, directory, selected)

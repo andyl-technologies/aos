@@ -48,7 +48,15 @@ fn main() -> Result {
     let mode = std::env::args().nth(1).ok_or("missing fixture mode")?;
     if !matches!(
         mode.as_str(),
-        "serve" | "metadata" | "read" | "late" | "large" | "readiness" | "timeout" | "cancel"
+        "serve"
+            | "metadata"
+            | "read"
+            | "late"
+            | "multi"
+            | "large"
+            | "readiness"
+            | "timeout"
+            | "cancel"
     ) {
         return Err("invalid fixture mode".into());
     }
@@ -106,14 +114,14 @@ fn main() -> Result {
                 inode_bytes: 65536,
             },
             CachePolicy::Revalidate,
-            if matches!(mode.as_str(), "metadata" | "read" | "late" | "large") {
+            if matches!(mode.as_str(), "metadata" | "read" | "late" | "multi" | "large") {
                 XattrPolicy::Recorded
             } else {
                 XattrPolicy::Disabled
             },
         )?;
 
-        let mut backing_client = if matches!(mode.as_str(), "read" | "late") {
+        let mut backing_client = if matches!(mode.as_str(), "read" | "late" | "multi") {
             Some(WorkerClient::bind(
                 io::stdin().as_fd().try_clone_to_owned()?,
                 ExposureContext::new("0123456789abcdef0123456789abcdef", 1, [7; 32])?,
@@ -137,7 +145,7 @@ fn main() -> Result {
         let mut read_after_peer_release = false;
         let mut fetch: Option<Fetch> = None;
         let mut opens = fuse_open::Queue::new(fuse_open::Limits {
-            nodes: 1,
+            nodes: 16,
             waiters: 16,
             bytes: 4096,
         })?;
@@ -186,7 +194,7 @@ fn main() -> Result {
         }
         notify(b"READY")?;
 
-        if !matches!(mode.as_str(), "serve" | "metadata" | "read" | "late" | "large" | "readiness") {
+        if !matches!(mode.as_str(), "serve" | "metadata" | "read" | "late" | "multi" | "large" | "readiness") {
             if mode == "timeout" {
                 let error = connection
                     .receive(&mut input, Duration::from_millis(100))
@@ -238,6 +246,31 @@ fn main() -> Result {
             while let Some(node) = lifetime.next_unreferenced() {
                 drop(backings.retire(node)?);
             }
+            // The private channel has one original outstanding request. Other
+            // canonical nodes retain bounded reservations instead of taking it.
+            if fetch.is_none()
+                && let Some(ticket) = backings.next_fetch()
+            {
+                let entry = metadata
+                    .entry(ticket.node().get())
+                    .ok_or("queued backing lost its original namespace entry")?;
+                let Kind::File { content, size } = entry.kind() else {
+                    return Err("queued backing is not an original file".into());
+                };
+
+                let mut client = backing_client
+                    .take()
+                    .ok_or("missing original backing client")?;
+                let selection = RequestedBacking::File {
+                    path: entry.path().to_vec(),
+                    content,
+                };
+
+                fetch = Some(Box::pin(async move {
+                    let reply = client.request_bounded(selection, DEADLINE).await;
+                    (ticket, client, reply, size)
+                }));
+            }
             let open_deadline = opens.next_deadline();
             let readable = tokio::select! {
                 result = async {
@@ -266,7 +299,7 @@ fn main() -> Result {
                 },
                 result = stopped(&control) => {
                     result?;
-                    if matches!(mode.as_str(), "read" | "late") && !read_after_peer_release {
+                    if matches!(mode.as_str(), "read" | "late" | "multi") && !read_after_peer_release {
                         return Err("kernel never read an original handle after peer release".into());
                     }
                     drop(connection);
@@ -339,13 +372,13 @@ fn main() -> Result {
                         opened[..8].copy_from_slice(&handle.get().to_ne_bytes());
                         (Some(opened.as_slice()), 0)
                     }
-                    (14, Some(entry)) if matches!(mode.as_str(), "read" | "late") => {
+                    (14, Some(entry)) if matches!(mode.as_str(), "read" | "late" | "multi") => {
                         if request.body().len() != 8 || request.body_u32(4)? != 0 {
                             return Err("invalid actual fallback OPEN".into());
                         }
                         if request.body_u32(0)? & (libc::O_ACCMODE | libc::O_TRUNC) as u32 != 0 {
                             (None, libc::EROFS)
-                        } else if let Kind::File { content, size } = entry.kind() {
+                        } else if let Kind::File { .. } = entry.kind() {
                             if backings.get(node.ok_or("zero open node")?).is_none() {
                                 let node =
                                     NonZeroU64::new(request.node()).ok_or("zero open node")?;
@@ -364,18 +397,9 @@ fn main() -> Result {
                                     Enqueued::Start(ticket) => {
                                         backings.reserve(ticket)?;
                                         lifetime.pin(node)?;
-                                        let mut client = backing_client
-                                            .take()
-                                            .ok_or("missing original backing client")?;
-                                        let selection = RequestedBacking::File {
-                                            path: entry.path().to_vec(),
-                                            content,
-                                        };
-                                        fetch = Some(Box::pin(async move {
-                                            let reply =
-                                                client.request_bounded(selection, DEADLINE).await;
-                                            (ticket, client, reply, size)
-                                        }));
+                                        if fetch.is_some() {
+                                            notify(b"QUEUED_DISTINCT")?;
+                                        }
                                     }
                                     Enqueued::Joined(_) => notify(b"COALESCED")?,
                                 }
@@ -392,7 +416,7 @@ fn main() -> Result {
                             (None, libc::EISDIR)
                         }
                     }
-                    (15, Some(_)) if matches!(mode.as_str(), "read" | "late") => {
+                    (15, Some(_)) if matches!(mode.as_str(), "read" | "late" | "multi") => {
                         let node = node.ok_or("zero file node")?;
                         let file = backings.get(node).ok_or("READ without original backing")?;
                         let handle =
@@ -428,7 +452,7 @@ fn main() -> Result {
                         }
                         (Some([].as_slice()), 0)
                     }
-                    (25, Some(_)) if matches!(mode.as_str(), "read" | "late") => {
+                    (25, Some(_)) if matches!(mode.as_str(), "read" | "late" | "multi") => {
                         if request.body().len() != 24
                             || request.body_u32(8)? != 0
                             || request.body_u32(12)? != 0
@@ -463,7 +487,7 @@ fn main() -> Result {
             };
             send(&mut connection, &mut output, request, body, errno).await?;
         }
-        if matches!(mode.as_str(), "read" | "late") && !read_after_peer_release {
+        if matches!(mode.as_str(), "read" | "late" | "multi") && !read_after_peer_release {
             return Err("kernel never read an original handle after peer release".into());
         }
         notify(b"STOPPED")?;
@@ -473,7 +497,7 @@ fn main() -> Result {
 
 /// Builds synthetic metadata without a repository, content source or exposure.
 fn metadata_bytes(mode: &str) -> Result<Vec<u8>> {
-    if !matches!(mode, "metadata" | "read" | "late" | "large") {
+    if !matches!(mode, "metadata" | "read" | "late" | "multi" | "large") {
         return Ok(structural_index::compile([7; 32], &[], 1, 4096)?);
     }
     let content: [u8; 32] = TERRANE_V1
@@ -621,6 +645,7 @@ mod tests {
             ("serve", 1),
             ("metadata", 7),
             ("read", 7),
+            ("multi", 7),
             ("late", 7),
             ("large", 71),
         ] {

@@ -52,6 +52,11 @@ fn distinct_nodes_install_independently_and_never_replace_original_resources() {
     table.reserve(second).unwrap();
     assert_eq!(table.get(id(19)), None);
     assert_eq!(table.retire(id(19)), Err(Error::Pending));
+    let unstarted = table.install(first, 999).unwrap_err();
+    assert_eq!((unstarted.error, unstarted.backing), (Error::Stale, 999));
+    assert_eq!(table.next_fetch(), Some(first));
+    assert_eq!(table.next_fetch(), Some(second));
+    assert_eq!(table.next_fetch(), None);
     table.install(second, 200).unwrap();
     table.install(first, 100).unwrap();
 
@@ -86,6 +91,7 @@ fn exhausted_reservations_and_old_completions_preserve_retry_ownership() {
     let rejected = table.install(first, 999).unwrap_err();
     assert_eq!((rejected.error, rejected.backing), (Error::Stale, 999));
     assert_eq!(table.get(id(19)), None);
+    assert_eq!(table.next_fetch(), Some(retry));
     table.install(retry, 100).unwrap();
     assert_eq!(table.get(id(19)), Some(&100));
 }
@@ -118,6 +124,7 @@ fn expired_waiter_and_peer_release_keep_the_original_backing_until_retirement() 
     assert_eq!(expired.outcome, fuse_open::Outcome::IoError);
     assert_eq!(lifetime.next_unreferenced(), None);
     assert_eq!(table.retire(ticket.node()).unwrap_err(), Error::Pending);
+    assert_eq!(table.next_fetch(), Some(ticket));
     table.install(ticket, Resource(drops.clone())).unwrap();
     queue.complete(ticket, fuse_open::Outcome::Ready).unwrap();
 
@@ -170,6 +177,7 @@ fn startup_bounds_include_pending_records_and_the_actual_resource_layout() {
 
     table.reserve(first).unwrap();
     table.reserve(second).unwrap();
+    assert_eq!(table.next_fetch(), Some(first));
     table.install(first, 100).unwrap();
     table.fail(second).unwrap();
     table.retire(first.node()).unwrap();

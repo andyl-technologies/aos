@@ -17143,3 +17143,31 @@ production multi-node scheduler, broker authority or physical release.
 The structural inventory is 82 cases and the all-feature FUSE inventory is
 123 cases. Native and mandatory workspace qualification of this component
 remain pending; accepted trunk tasks remain 27/64.
+
+
+The backing table now claims each reserved fetch exactly once. Installation
+before submission is refused with the resource returned; completed or failed
+reservations cannot be resubmitted. A worker with a serial private channel
+leaves other distinct canonical nodes reserved, processes metadata and expires
+each open independently, then submits the next original ticket after completion.
+The pure transition and zero-allocation cases cover this claim operation.
+
+The actual kernel fixture adds a distinct-node scenario: a withheld fetch for
+`a` coalesces the hardlink `b`, while `directory/file` keeps a separate bounded
+reservation. After the first grant completes, the second channel request must
+carry sequence 2 and the exact distinct path. Metadata must remain responsive
+both while queued and during the second withheld fetch; both original file
+reads must return exact bytes and EOF. The existing peer-RELEASE and original
+handle witness still applies. The driver waits for the first actual channel
+request before starting competing opens, preserving its original path without
+a scheduling race. No request, actor or guest deadline is enlarged.
+Native qualification of this new scenario is pending. The production exposure
+launcher, authenticated mapping composition and broker are still outstanding.
+
+
+The initial backing-table checkpoint `6b7fe376fb` passes all 82 structural
+cases in 73.429 seconds. Complete independent review verifies 8,186 immutable
+source files, 5,443 bound inputs and the exact retained Cargo test ELF.
+The queued-submission refinement passes the four pure transition cases,
+zero-allocation instrument, exact metadata-only fixture-preparation test and
+strict all-feature/all-target Clippy. Its new kernel scenario remains pending.

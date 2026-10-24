@@ -144,6 +144,8 @@ fn directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch() {
                 panic!("fresh original open did not start its handoff");
             };
             backings.reserve(ticket).unwrap();
+            assert_eq!(backings.next_fetch(), Some(ticket));
+            assert_eq!(backings.next_fetch(), None);
             backings.install(ticket, 42).unwrap();
             assert_eq!(backings.get(original_node), Some(&42));
             let rejected = backings.install(ticket, 99).unwrap_err();
