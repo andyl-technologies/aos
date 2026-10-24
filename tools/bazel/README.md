@@ -2771,6 +2771,9 @@ The [Worker build graph](docs/hub-worker.md) describes the five Bazel
 configurations, deployment packaging and separate native, Wasm and real-runtime
 gates.
 
+The [QEMU plugin ABI inputs](docs/qemu-plugin-abi.md) share the production
+header checks and include matching-header and version-drift qualification.
+
 The [CLI conversion checkpoints](docs/aos-cli.md) describe its three dependency
 configurations, native test fixtures, production package inspection, and gates
 that remain before production migration.

@@ -430,6 +430,7 @@ in
     '';
     build-script-metadata = import ./_bazel-build-script-metadata.nix {inherit pkgs;};
     compiler-wrapper = import ../../tools/bazel/tests/compiler-wrapper.nix {inherit pkgs;};
+    qemu-plugin-abi = import ./_bazel-qemu-plugin-abi.nix {inherit pkgs;};
     policy =
       pkgs.runCommand "aos-bazel-policy-checks" {
         buildDeps = [pkgs.python3];
@@ -466,6 +467,7 @@ in
             shell-bootstrap
             build-script-metadata
             compiler-wrapper
+            qemu-plugin-abi
             source-selection
             source-catalog.all
             sysroot-metadata

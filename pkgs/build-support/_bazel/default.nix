@@ -65,6 +65,7 @@
   aosBazelRegistryTestTools = import ./registry-test-tools.nix {inherit pkgs lib;};
   aosBazelNixTestTools = import ./nix-test-tools.nix {inherit pkgs;};
   aosBazelCodegenTools = import ./codegen-tools.nix {inherit pkgs;};
+  aosBazelQemuPluginAbi = import ./qemu-plugin-abi.nix {inherit pkgs;};
   aosBazelWasmTools = import ./wasm-tools.nix {inherit pkgs;};
   aosBazelWorkerTools = import ./worker-tools.nix {inherit pkgs;};
   aosBazelConsoleAssets = import ./console-assets.nix {
