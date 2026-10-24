@@ -16224,3 +16224,24 @@ Required application compilation at `eb2f778d7b`, `0706c9c456` and
 Each complete review matches 8,090 immutable source files and all 185 test
 executables across 59 packages. These are compilation results; the failed
 `d171a64e51` image receipt remains failed and establishes no lifecycle result.
+
+
+#### Native directory root identity and retained-file closure results
+
+The immutable `8050ccec45` actual-device qualification fails in 197.286
+seconds: its Python driver still expects presented root inode 1, whereas the
+shared inode table deliberately assigns the RFC-required first presented inode
+16. The driver now requires exactly 16; the kernel protocol root node remains
+1. The failed receipt is retained, and a fresh VM must exercise GETATTR and
+READDIR before this integration can pass.
+
+The immutable `31d1c21289` surface aggregate fails in 1,158.929 seconds with
+one failed dependency. The named-file control observes exactly one local
+reference and the exact original block and inode charge release after final
+close, then exceeds the unchanged five-second authenticated reconciliation
+bound. This separates physical release from the remaining reconciliation
+failure without establishing its cause. The scoped owner sibling completes
+its original assertions within its existing bound; the aggregate remains
+failed and no trunk task is accepted from it. Required application target
+compilation passes at `31d1c21289` and `8050ccec45` in 682.185 and
+1,399.523 seconds; complete source/artifact reviews remain pending.

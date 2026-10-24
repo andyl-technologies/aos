@@ -74,7 +74,7 @@ def scenario(executable, directory, mode):
         if mode == "serve":
             metadata = target.stat()
             require(stat.S_ISDIR(metadata.st_mode) and metadata.st_mode & 0o7777 == 0o555
-                    and metadata.st_ino == 1, "actual GETATTR reply differs from fixture root")
+                    and metadata.st_ino == 16, "actual GETATTR reply differs from fixture root")
             require(os.listdir(target) == [], "actual READDIR reply was not empty")
             try:
                 (target / "absent").stat()
