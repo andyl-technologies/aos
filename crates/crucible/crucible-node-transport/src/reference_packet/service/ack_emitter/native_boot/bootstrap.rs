@@ -325,6 +325,7 @@ impl<S: AsFd> Bootstrap<S> {
                     self.launch_bytes.clone(),
                     purpose,
                     startup,
+                    &mut self.startup_attempt,
                     &mut self.boot,
                 )?;
             } else {

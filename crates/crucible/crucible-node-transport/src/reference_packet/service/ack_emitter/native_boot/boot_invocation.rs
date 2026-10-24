@@ -6,6 +6,25 @@ use crate::reference_packet::service::native_startup::{
     PacketNativeInvocationPurposeData,
 };
 
+/// Counts additional invocation attempt/helper views beside the original window.
+///
+/// These coexist with the complete original14 constructor window. Purpose DATA
+/// never supplies native currency.
+pub(super) const fn attempt_counter_scratch_data() -> usize {
+    2 * size_of::<&serde_json::Value>()
+        + 2 * size_of::<&PacketNative5SourceLaunch>()
+        + 2 * size_of::<PacketNativeInvocationPurposeData>()
+        + 2 * size_of::<&mut super::super::bootstrap::admitted::OriginalNativeStartupBootstrap>()
+        + size_of::<&mut Option<OriginalNativeStartupBootAttempt>>()
+        + size_of::<&mut OriginalNativeStartupBootAttempt>()
+        + 2 * size_of::<&mut Option<Rc<RefCell<NativeAckBoot>>>>()
+        + size_of::<Rc<RefCell<NativeAckBoot>>>()
+        + size_of::<&mut Vec<u8>>()
+        + 2 * size_of::<Vec<u8>>()
+        + 2 * size_of::<Result<(), ProviderError>>()
+        + 2 * size_of::<bool>()
+}
+
 impl NativeAckBoot {
     /// Borrows the original invocation's authenticated Hello registration.
     ///
@@ -33,46 +52,78 @@ impl NativeAckBoot {
         original_launch_body: Vec<u8>,
         purpose: PacketNativeInvocationPurposeData,
         startup: &mut super::super::bootstrap::admitted::OriginalNativeStartupBootstrap,
+        attempt: &mut Option<OriginalNativeStartupBootAttempt>,
         completed: &mut Option<Rc<RefCell<Self>>>,
     ) -> Result<(), ProviderError> {
-        if completed.is_some() {
+        if completed.is_some() || attempt.is_some() {
             return Err(ProviderError::Conflict(
                 "native invocation boot already attempted",
             ));
         }
-        startup.ensure_original()?;
-        crate::connection::serialized_credit(value, startup.maximum_boot_bytes)?;
-        let data = BootData::deserialize(value).map_err(ContractError::from)?;
-        let original = Self::retain_boot_data_into(data, original_launch_body, None, completed);
-        let result = (|| {
-            {
-                let mut owner = original
-                    .try_borrow_mut()
-                    .map_err(|_| ProviderError::Conflict("native invocation boot borrowed"))?;
-                owner.ensure_origin()?;
-                if owner.data.schema != PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA {
-                    return Err(ProviderError::Correlation(
-                        "native invocation private boot class",
-                    ));
-                }
-                let admitted = startup.claim_invocation_birth_data(
-                    launch,
-                    &owner.launch_body,
-                    &purpose,
-                    &owner.data.source_birth,
-                    &owner.data.expected_host_registration,
-                    &owner.data.private_launch,
-                    owner.data.private_key.as_slice(),
-                    owner.data.birth_id.as_slice(),
-                )?;
-                owner.startup = Some(admitted);
-            }
-            Self::prepare_retained_data(&original, launch, Some(purpose))
-        })();
+        let retained = attempt.insert(OriginalNativeStartupBootAttempt {
+            launch_body: original_launch_body,
+            data: None,
+        });
+        let result = Self::prepare_original_invocation_attempt_data(
+            value, launch, purpose, startup, retained, completed,
+        );
+
+        // The native owner takes both children together. Earlier refusals keep
+        // the inline attempt, and neither path can renew the inherited claim.
+        if completed.is_some() {
+            *attempt = None;
+        }
         if result.is_err() {
             startup.failed = true;
         }
         result
+    }
+
+    fn prepare_original_invocation_attempt_data(
+        value: &serde_json::Value,
+        launch: &PacketNative5SourceLaunch,
+        purpose: PacketNativeInvocationPurposeData,
+        startup: &mut super::super::bootstrap::admitted::OriginalNativeStartupBootstrap,
+        attempt: &mut OriginalNativeStartupBootAttempt,
+        completed: &mut Option<Rc<RefCell<Self>>>,
+    ) -> Result<(), ProviderError> {
+        startup.ensure_original()?;
+        crate::connection::serialized_credit(value, startup.maximum_boot_bytes)?;
+        let shape = shape::inspect_data(value)?;
+        attempt.data = Some(shape.copy_data()?);
+        let data = attempt.data.take().ok_or(ProviderError::Correlation(
+            "native invocation decoded boot absent",
+        ))?;
+        let original = Self::retain_boot_data_into(
+            data,
+            std::mem::take(&mut attempt.launch_body),
+            None,
+            completed,
+        );
+
+        {
+            let mut owner = original
+                .try_borrow_mut()
+                .map_err(|_| ProviderError::Conflict("native invocation boot borrowed"))?;
+            owner.ensure_origin()?;
+            if owner.data.schema != PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA {
+                return Err(ProviderError::Correlation(
+                    "native invocation private boot class",
+                ));
+            }
+            let admitted = startup.claim_invocation_birth_data(
+                launch,
+                &owner.launch_body,
+                &purpose,
+                &owner.data.source_birth,
+                &owner.data.expected_host_registration,
+                &owner.data.private_launch,
+                owner.data.private_key.as_slice(),
+                owner.data.birth_id.as_slice(),
+            )?;
+            owner.startup = Some(admitted);
+        }
+        Self::prepare_retained_data(&original, launch, Some(purpose))
     }
 
     // A private, already constructed boot selects the decoder. A decoded schema
@@ -383,3 +434,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "boot_invocation_attempt_tests.rs"]
+mod attempt_tests;

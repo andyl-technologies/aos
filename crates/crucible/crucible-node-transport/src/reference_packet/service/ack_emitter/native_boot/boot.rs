@@ -104,6 +104,7 @@ pub(in crate::reference_packet::service) fn original_native_startup_attempt_coun
         + 2 * size_of::<bool>()
         + 2 * size_of::<usize>()
         + shape::counter_scratch_data()
+        + invocation::attempt_counter_scratch_data()
 }
 
 // Counts the owned initializer and Option assignment separately from the
