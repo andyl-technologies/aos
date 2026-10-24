@@ -10,6 +10,47 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Saved native publication correspondence
+
+Commit `84351a4e28` rejects contradictory events sharing an original native
+endpoint/FIFO identity across pending deliveries and retained staged inputs,
+including consumed prefixes. It preserves the seven original publication
+operands while allowing recipient-specific routes, public sequences and delivery
+conversions. Two saved-source regressions fail before the fix and pass after it;
+separate controls cover all seven operand mutations, duplicate custody copies,
+fanout and independent native occurrences. The borrowed validation index has
+explicit transient backing and fixed control terms beside all earlier terms.
+
+Each complete Engine codec suite passes 2,053 tests, with zero failures,
+34 ignored and no filtering, plus sixteen custody and five actual installed
+standard-provider controls. All-feature Transport/Engine/Daemon targets, six
+architecture checks and scoped formatting pass. The correctly configured
+Daemon suite passes 1,828 tests with zero failures, 165 ignored and no filtering
+in 222.05 seconds. Its gem5 profile is bound at compilation; required executable
+fixtures are supplied and test concurrency is four.
+
+The application and funded-Source VM gates pass. Actual application compiler
+metadata records 185 test artifacts across 58 packages, including 76 integration
+targets. All 555 frozen owned Rust/Cargo inputs match this commit and the actual
+application and three funded-VM Rust component captures. The later consumed-
+provenance fix has a separate qualification snapshot.
+
+## Refreshed native startup and supporting runtimes
+
+At checkpoint `12ec0f6cfe`, the actual source-built packet startup/reclamation
+control passes in 629.15 seconds with the default stack and one test thread.
+It checks the inactive three-node actor, whole-holder maximum/exact/one-short
+storage, original destinations and genuine retirement/reclamation. Executables
+are frozen and measured for the run, then the temporary copies are removed.
+This is startup qualification; full Capture/reload and performance remain
+separate gates.
+
+The supporting library refresh passes 268 Device, 62 SourceBirthData,
+33 NodeFormat and 35 HostResources tests; NodeFormat retains one existing ignore.
+The SourceBirth worker passes its binary unit test and all three stdio
+integration tests. These results do not establish Native18 readiness or complete
+RFC-0025 qualification.
+
 ## Complete Import18 receipt correspondence controls
 
 Commit `9492834cf3` adds eight controls for the existing Prepare and Commit
