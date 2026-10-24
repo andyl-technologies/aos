@@ -11560,3 +11560,16 @@ builder's SELinux policy while retaining explicit publication-failure checks.
 The clean normal release batch, including all Rust test targets, full native
 evaluation and four installed startup profiles, remains pending. No admission
 or qualification gate is opened.
+
+Commit `90ad76f1bb` extends the same publication boundary to the Rust handler
+for native mount, swap, timer and resource-group units. Its staged files are
+labeled before synchronization and publication without replacement; bounded,
+timed pinned-tool calls fail closed. All 62 activation-handler tests and 69
+boot-runtime tests pass in the packaged provider. The complete effects check
+passes at
+`/nix/store/aw1q7w2yaxrq4s7zz1zl6yf5hm334h84-aos-effect-module-checks-0`,
+including all 109 service-handler and 36 network tests. Commit `5de5fc5d59`
+repairs the subprocess fixture's layout for separate single-file Nix inputs;
+the earlier batch's effects failure was that fixture import error. Full Rust
+test-target compilation and the normal installed startup profiles for the
+Rust publication fix remain pending.
