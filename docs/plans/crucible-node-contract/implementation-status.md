@@ -10,6 +10,27 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Native Prepare verifier inputs
+
+Commit `c3f4538ec9` groups the actual Hello, incoming original, connection and
+optional startup allocation. The boot and all three mutable failed-prefix
+outputs remain separate. The complete verifier body is unchanged. Its startup
+quote independently counts both new headers; the preserved original-quote
+regression requires those headers, the helper result and both aggregation slots
+while asserting identical earlier R/T components across three frame limits.
+
+Both codec modes pass twenty Prepare controls with two measurement tests ignored,
+six fresh-Prepare, 27 transfer and 51 settled-graph controls. All-feature
+Transport/Engine/Daemon targets, six architecture checks, scoped formatting and
+application test-target compilation pass. Actual compiler metadata records 185
+test artifacts across 58 packages, including 76 integration targets. All 595
+frozen owned Rust/Cargo inputs match the commit and actual application source.
+No new full-library or VM qualification is claimed at this checkpoint.
+
+Strict Transport Clippy falls from eight to seven errors with 1,734 warnings and
+no added allowance. Runtime capacity, Native18 adoption and full RFC completion
+remain unfinished.
+
 ## Released World and settled native constructor inputs
 
 Commit `a662f3b6be` groups the seven actual released-World validation inputs.
