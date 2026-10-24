@@ -11504,8 +11504,10 @@ The rebuilt backend artifact check passes at
 `/nix/store/66qblsklrrjj3115i6j0hhdjw5md0wcg-aos-systemd-backend-policy-artifact-check`,
 and full native evaluation passes at
 `/nix/store/smp1g7vf4504y3a32nfsi2zq31aim9mx-aos-native-evaluation-checks-0`.
-The clean `b398b0d53e` Host, Root and offline vTPM retries remain pending;
-these package and evaluation results do not establish installed boot or
+The clean `b398b0d53e` Host, Root and offline vTPM retries verify the verity
+root, then fail before their test agents start: the retained initrd module
+imports an absolute store path that runtime pure evaluation has not admitted.
+These package and evaluation results do not establish installed boot or
 protected lifecycle readiness.
 
 ### Current-kernel TPM transport recovery
@@ -11530,4 +11532,13 @@ pass, including their required negative scans, at
 `/nix/store/11hzfdr7yw7nws03psx4nb911ylzrg59-aos-selinux-production-policy-1`
 and
 `/nix/store/z22jcbdmcpms1gls8syigywn1ka1d2r0-aos-selinux-production-policy-1`.
-The installed Host, Root and offline hardware tests remain pending.
+The initrd correction in `86176c2a1e` embeds the static SELinux selection and
+context effects in the sole retained module. It preserves the explicit policy
+producer dependency without requiring an ambient store import or impure replay.
+The behavioral regression first rejects the former absolute-import module,
+then admits the corrected module by its own fixed NAR in an isolated store and
+checks the exact policy selection, enforcing configuration and context inputs.
+It passes at
+`/nix/store/8282mzmz4q5mg6r1zb5p7335w8jx8r8n-selinux-initrd-pure-evaluation-check`;
+both native replay checks also pass. The fresh normal Host, Root and offline
+hardware retries remain pending. No admission or qualification gate is opened.
