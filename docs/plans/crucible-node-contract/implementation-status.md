@@ -10,6 +10,81 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Master integration and preserved qualification scope
+
+Merge `9209c1ce2d` incorporates `origin/master` at `b04bda7d9a` and adopts
+its workspace layout, including the five RFC-only crates. All 476 previously
+frozen RFC Rust inputs remain byte-identical at their relocated paths. Sixty-two
+literal source/fixture includes in ten other files follow the new layout; their
+edits only change paths. The merged lockfile has a freshly measured vendor
+staging digest. All six architecture checks pass again after the final
+include-path review refresh. Development all-feature/all-target
+Transport/Engine/Daemon checking passes through the previously realized AOS
+Cargo shell. The complete raw-JSON and standard Transport suites each pass
+2,086 tests with zero failures, 17 ignored tests and no filtering. All 488 frozen
+owned Rust/Cargo inputs still match the working tree and committed revision.
+The merged current-source compiler chain is rebuilding, so application
+test-target compilation and current-source Rust/license/ABI qualification
+remain pending. The development results do not substitute for those builds.
+
+A boundary-build attempt exposed an unset CXXFLAGS variable in the selected
+DMTCP recipe. Correcting its empty default allows the toolkit to build and run
+its continuation checks. Its source-owner controls then reach a real setuid
+fixture that Nix's host sandbox forbids creating. Commit `d5996c755a` makes a
+disposable-guest control mandatory for the source-owner check. Its development
+flight passes with the source-built guest kernel and previously realized AOS
+Firecracker: the ordinary inverse and actual setuid launcher both exit and reap
+their application/coordinator children. The copied executable has identical
+bytes and a distinct inode. Commit `e86154b7bf` retains the guest build recipe
+beside the toolkit's corresponding source. The registered guest/source-owner
+and boundary builds remain pending against the merged dependency identities.
+
+The guest also exposed an unquoted executable-copy shell command. Commit
+`457ce385bf` quotes every literal operand and separates copy options from paths.
+The actual setuid launcher now passes with spaces, parentheses and an apostrophe
+in its executable path and punctuation in the guest hostname. Independent
+source-command controls also copy filenames containing quotes, substitutions
+and newlines, and retain their cancellation/signal/child-retirement checks.
+These development guest results use the previously realized AOS Firecracker;
+the registered current-source gates remain separate and pending.
+
+The pre-merge qualification below does not qualify the merged dependency set
+or native artifact identities.
+
+## Original boot retention and fixed-width private codecs
+
+Commit `48d27f25e6` retains the actual launch bytes and complete decoded boot
+children before the original startup row claim. Pre-claim refusals retain those
+inputs; later failures retain them in the installed native owner. Failed attempts
+remain spent. The complete raw-JSON and standard suites each pass 2,086 tests
+with zero failures, 17 ignored tests, and no filtering. The parent regression
+executes three actual inherited-socket refusal flights in each mode.
+This does not retain nested partial allocations inside a failing derived DTO
+deserializer or establish complete failed-prefix closure.
+
+The required application gate compiles 180 test executables across 58 packages,
+including 71 integration targets. The fresh registered funded Source/Birth VM
+passes its positive consumers, foreign-pin rejection, spent-credit refusal
+controls, and terminal cleanup. All 473 frozen owned Rust/Cargo inputs match
+the committed revision and the actual application, VM support, default CLI,
+and ordinary peer source captures. This qualifies preboot Source/Birth custody;
+it does not qualify post-Hello native readiness.
+
+Commit `a1ff95861f` uses fixed two-byte hex views for the complete 64-byte schema
+identity and writes the private three-axis row as fixed-width fields. The full
+identity controls reject mutations at every byte position. All 187 focused
+snapshot/startup/endpoint/retention tests pass in each raw-JSON and standard
+mode, with three actual inherited-socket refusal flights per mode. All-target
+Transport/Engine/Daemon checking, formatting, six architecture checks, and the
+application gate pass; the application gate again compiles 180 test executables
+across 58 packages, including 71 integration targets. All 478 frozen owned
+Rust/Cargo inputs match the committed revision and captured application source.
+Production Transport Clippy remains at 41 errors and 1,733 warnings.
+
+Genuine five-phase Recipe/Initial production, complete native escrow and phase
+consumers, SemanticSpend18, common readiness/capture, and full RFC-0025
+qualification remain unfinished. No component result grants that authority.
+
 ## Actual reply ownership in packet-prefix validation
 
 Commit `3f44365e5e` lends the existing `PacketControlReply` to the prefix

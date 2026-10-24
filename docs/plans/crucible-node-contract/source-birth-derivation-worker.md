@@ -53,7 +53,7 @@ bootstrap and native-startup consumers remain outside this delivery.
 ## Package and layer boundary
 
 Add a dedicated L4 control-plane binary, proposed as
-`crucible-source-birth-worker` under `crates/crucible/control/`. It calls a narrow
+`crucible-source-birth-worker` under `crates/crucible/`. It calls a narrow
 pure facade in the L3 `crucible-engine`, which composes the existing L2 Transport
 schemas and validators. Proposed API names describe data operations only.
 
