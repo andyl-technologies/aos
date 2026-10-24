@@ -88,21 +88,24 @@ fn main() -> Result {
             return Err("invalid deadline unexpectedly closed original device".into());
         }
         let request = connection.receive(&mut input, DEADLINE).await?;
-        if request.opcode() != 26 || request.body_u32(0)? != 7 || request.body_u32(4)? < 40 {
-            return Err("actual kernel did not negotiate FUSE 7.40".into());
+        let initialization = fuse_protocol::init::negotiate(
+            request,
+            fuse_protocol::init::Limits {
+                request_bytes: LIMIT,
+                readahead_bytes: 65536,
+                background_requests: 8,
+            },
+            fuse_protocol::init::Passthrough::Off,
+            false,
+        )?;
+        if initialization.selected() != Some((40, false)) {
+            return Err("actual kernel did not negotiate FUSE 7.40 without passthrough".into());
         }
-        let mut initialization = [0; 64];
-        initialization[..4].copy_from_slice(&7_u32.to_ne_bytes());
-        initialization[4..8].copy_from_slice(&40_u32.to_ne_bytes());
-        initialization[16..18].copy_from_slice(&8_u16.to_ne_bytes());
-        initialization[18..20].copy_from_slice(&4_u16.to_ne_bytes());
-        initialization[20..24].copy_from_slice(&131072_u32.to_ne_bytes());
-        initialization[24..28].copy_from_slice(&1_u32.to_ne_bytes());
         send(
             &mut connection,
             &mut output,
             request,
-            Some(&initialization),
+            Some(initialization.body()),
             0,
         )
         .await?;

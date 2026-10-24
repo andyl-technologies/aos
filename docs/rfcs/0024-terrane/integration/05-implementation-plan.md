@@ -16266,3 +16266,37 @@ executables across 59 packages at each checkpoint. These remain compilation
 results. The `31d1c21289` already-unlinked-file sibling also passes; together
 with its scoped-owner sibling it leaves only the named-file dependency failed.
 No task checkbox changes.
+
+
+#### Actual directory encoder qualification and bounded INIT negotiation
+
+The corrected actual-device VM at immutable `5f340c2074` passes in
+187.797 seconds. Complete review matches all 8,092 immutable source files,
+5,363 bound compiler inputs, the exact installed Cargo ELF and driver, and
+every serving, receive-timeout and cancellation witness. Actual GETATTR
+presents inode 16 and genuine kernel READDIR uses the bounded directory
+encoder. This is a metadata transport control, not an authenticated Terrane
+filesystem or production mount-broker result; the failed preceding receipt
+remains retained.
+
+A new FUSE framing component negotiates the 7.31–7.40 read-protocol baseline
+from a checked actual INIT request. It caps readahead, background counts and
+max-write by explicit preallocated-buffer limits, ignores unknown offered
+capabilities, rejects malformed reserved fields and supports the UAPI's short
+newer-major retry. Passthrough requires both explicit local implementation
+readiness and a supporting kernel offer; `require` refuses missing support,
+`auto` reports fallback and `off` never negotiates it. Selected passthrough
+reserves one stacking level. No writeback, permission-changing extension,
+export or ACL capability is enabled. Dispatch ordering, successful response
+delivery, native backing registration and authority remain separate duties.
+
+Seven pure byte regressions cover exact response contents, older-version
+fallback, newer-major retry, capability intersection, missing support, bad
+headers, truncation, extra/reserved bytes and minimum resource bounds. The
+actual-device fixture now sends the negotiated response rather than a fixed
+handwritten body; new native qualification remains required.
+
+The seven negotiation regressions pass, as do strict all-feature/all-target
+lint, actual-device fixture compilation, separate no-FUSE compilation and
+formatting. The image's complete source declaration comparison still matches
+all 130 no-FUSE cases. No native fixture executes on the host.

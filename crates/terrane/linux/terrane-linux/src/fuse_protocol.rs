@@ -17,6 +17,8 @@
 
 use std::{fmt, num::NonZeroU64};
 
+pub mod init;
+
 const REQUEST_HEADER: usize = 40;
 const REPLY_HEADER: usize = 16;
 
