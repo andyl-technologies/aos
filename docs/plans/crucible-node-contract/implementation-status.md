@@ -10,6 +10,33 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Native scratch admission before private JSON parsing
+
+Commit `bcc6c9fa43` checks both authenticated private-bootstrap and native-birth
+scratch grants immediately after the inherited prefix's MAC and parent/birth
+checks. Startup14 uses its complete defining counter; invocation15 adds its
+independent invocation counter with checked arithmetic. Both paths refuse an
+undersized grant before constructing either private JSON frame. The new fixed
+scalar, conversion, result and comparison views are independently added to the
+counter; all earlier retained, transient and scratch terms remain.
+
+Both inherited-socket regressions first reproduce acceptance of a private grant
+one byte below the defining counter. Each corrected edition then passes three
+real parent-socket flights: exact scratch admission and independent one-byte
+private/native shortfalls. No JSON frames follow these prefixes, and the tests
+construct no Source, opaque Recipe/Initial, native model or readiness.
+
+Both complete Transport suites pass 2,095 tests, with zero failures, 19 ignored
+and no filtering. The same frozen inputs pass the counter composition, boot
+shape/refusal and process-containment controls, all-feature Transport/Engine/
+Daemon target checks, formatting and six architecture checks. All 531 owned
+Rust/Cargo inputs match the commit and the actual application and three funded
+VM Rust component captures. Transport production Clippy remains at 37 errors
+and 1,733 warnings. These are cached AOS Cargo-shell results; merged-toolchain
+application, funded VM and boundary qualification remains pending. Retention of
+canonical child buffers after a later claim refusal and full native successor
+construction remain open.
+
 ## Global consumed identity and shared queue validation
 
 Commit `948c563ee4` refuses a consumed public input identity in any recipient's
