@@ -11444,3 +11444,23 @@ merged-source native stage and profile replay pass at
 The installed Host, Root and offline vTPM checks remain pending. No lifecycle
 admission, protected handoff or method-46 qualification gate is enabled by this
 repair.
+
+The prior Root (`axgnd6s1shc687864hhs880bv02ayxcv`) and offline hardware
+(`f1lzdvgyxjviaczgcp4njc5hwspg6cqm`) retries also freeze before their agents
+start, with the same missing SELinux labeling handle. Neither reaches its
+installed test body or produces a TPM qualification receipt.
+
+Both selected policies from clean merged commit `055b989b1b` now build. Their
+context text is respectively 399,936 and 401,777 bytes; their substitutions are
+1,052 bytes. A diagnostic replays those exact frozen initrd invocations through
+the canonical renderer and the tested provider using the cached AOS compiler.
+Both rendered context pairs compare byte-for-byte with their selected policy
+outputs. The comparison artifacts are
+`/nix/store/njx9a31bqqbalypzc283ly4n1p059ls1-aos-rfc21-selected-initrd-0vysr9n0ir46dmz266qp0rchbwwv52i3`
+and
+`/nix/store/xd1l6qhd94x9n5whi154pcys2pippyz8-aos-rfc21-selected-initrd-hqk75nbqixzsjp01frx577f67ia2jhvs`.
+This is exact-file rendering evidence, not an installed boot receipt. The clean
+release batch for that commit has submitted full native evaluation, all Rust
+test targets, the backend artifact check, the immutable-file regression, both
+native replay checks and all three installed VM tests. The new master compiler
+bootstrap is still building; the complete batch remains pending.
