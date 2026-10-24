@@ -261,6 +261,10 @@
       ({lib, ...}: {
         options.aos.sandbox.controller.uid = lib.mkOption {type = lib.types.int;};
         options.aos.sandbox.controller.gid = lib.mkOption {type = lib.types.int;};
+        options.aos.security.selinux = lib.mkOption {
+          type = lib.types.attrsOf lib.types.anything;
+          default = {};
+        };
         config.aos.sandbox.controller = {
           uid = 811;
           gid = 811;
@@ -278,6 +282,24 @@
         aos.sandbox.hostBroker.credentials = {
           phase0ProbeSigningSeed = "test-phase0-seed";
           phase0ProbePublicKey = "test-phase0-public";
+        };
+      }
+    ];
+  };
+  # A distinct opaque path catches accidental fallback to the package policy;
+  # it supplies no installed policy bytes or runtime authority.
+  deployedHostReadback = pkgs.writeTextFile {
+    name = "sandbox-host-deployed-policy-fixture";
+    destination = "/policy.33";
+    text = "evaluation-only policy selection fixture\n";
+  };
+  deployedHostEvaluation = hostProbeEvaluation.extendModules {
+    modules = [
+      {
+        aos.security.selinux = {
+          enable = true;
+          bootMode = "immutable-stage0";
+          _canonicalReadback = deployedHostReadback;
         };
       }
     ];
@@ -351,6 +373,9 @@ in
   assert !(hostProbeEvaluation.config.systemd.services.aos-sandbox-host-phase0-target.serviceConfig ? User);
   assert !(hostProbeEvaluation.config.systemd.services.aos-sandbox-host-phase0-target.serviceConfig ? Group);
   assert lib.hasSuffix " ${pkgs.aosSelinuxKernelPolicyReadbackForKernel hostProbeEvaluation.config.system.build.kernel}/policy.33" hostProbeEvaluation.config.systemd.services.aos-sandbox-host-phase0-inspector.serviceConfig.ExecStart;
+  assert !deployedHostEvaluation.config.aos.sandbox.hostBroker.componentControl;
+  assert lib.hasSuffix " ${deployedHostReadback}/policy.33" deployedHostEvaluation.config.systemd.services.aos-sandbox-hostd.serviceConfig.ExecStart;
+  assert lib.hasSuffix " ${deployedHostReadback}/policy.33" deployedHostEvaluation.config.systemd.services.aos-sandbox-host-phase0-inspector.serviceConfig.ExecStart;
   assert requires "LoadCredential =\n          nodeCredentials\n          ++ cacheReplayCredentials\n          ++ cacheReadbackCredentials\n          ++ controllerHoldCredentials\n          ++ guestRootTemplateCredentials" moduleSource;
   assert requires ''required = !(endpoint.optionalManifest or false);'' moduleSource;
   assert requires ''optionalManifest = true;'' moduleSource;

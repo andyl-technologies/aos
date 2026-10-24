@@ -11395,3 +11395,24 @@ TPM provisioning receipt. The retry containing the initrd configuration fix
 remains pending. Separately, all 21 merged public-client unit tests pass in the
 cached AOS-built Cargo diagnostic shell; this is client validation, not an
 installed public lifecycle qualification.
+
+### Deployed policy selection for observation-only Host
+
+The rebuilt Host retry (`zwf6pn4lhxxbb8d32y06cvpjlf77dis6`) passes the final
+executable artifact checks, then rejects its SELinux readback. Read-only
+observation of that exact image at
+`/nix/store/bgk77pcdv7fsfdxd2nxx80gk948z6nzf-aos-rfc21-host-policy-observation`
+finds the live policy stable across two reads, with SHA-256
+`36b8c1e1e16d904ae4de8c680b7f98ffa6f1e5cd924ef1bf0db14fffbf64506a`.
+This matches the image-specific kernel readback's provenance. The inspector's
+actual command instead selects the generic package readback, whose SHA-256 is
+`c9056d5b47c290e23fbc22fedacd0fe1712e36bb6fd62ddbaa6f08b86ff31c68`.
+
+Host now selects the deployed policy whenever SELinux is enabled, including
+observation-only profiles without component control. The existing exact live
+byte comparison is unchanged. The rendered-unit regression checks both Host
+and its inspector against a distinct deployed expectation while component
+control remains disabled; it passes at
+`/nix/store/nq27sp7d5gabypknglj9bp6kh7gjry6x-sandbox-controller-service-source-contract-0`.
+The full installed Host retry remains pending. The observation is not backend
+readiness or a public lifecycle qualification receipt.

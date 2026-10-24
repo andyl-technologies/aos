@@ -26,8 +26,10 @@
       (dimension: config.aos.sandbox.resourceBank.parentEnclosure.hostBootPreparationReceiving.${dimension})
       config.aos.sandbox.resourceBank._dimensionOrder;
   controller = config.aos.sandbox.controller;
+  # Observation-only Host still inspects the deployed image's policy. Its
+  # resource-bank and view assignments can differ from the package default.
   canonicalReadback =
-    if cfg.componentControl
+    if (config.aos.security.selinux.enable or false) || cfg.componentControl
     then config.aos.security.selinux._canonicalReadback
     else pkgs.aosSelinuxKernelPolicyReadbackForKernel config.system.build.kernel;
   canonicalReadbackPath = "${canonicalReadback}/policy.33";
