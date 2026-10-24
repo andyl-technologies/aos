@@ -127,10 +127,78 @@ fn read(mut file: File) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
+// Use the verified lower's actual inode label, including an MLS range when
+// present. Reading through a directory descriptor rejects symlink substitution.
+pub(super) fn root_context(path: &Path) -> Result<String> {
+    let directory = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::empty(),
+    )?;
+    let mut bytes = [0_u8; 4096];
+    let length = rustix::fs::fgetxattr(&directory, "security.selinux", &mut bytes[..])
+        .context("reading configuration overlay root label")?;
+    parse_root_context(&bytes[..length])
+}
+
+fn parse_root_context(bytes: &[u8]) -> Result<String> {
+    let bytes = bytes.strip_suffix(&[0]).unwrap_or(bytes);
+    ensure!(
+        !bytes.is_empty()
+            && bytes
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"_:.,-".contains(byte)),
+        "configuration root label contains invalid mount-option bytes"
+    );
+    let context = std::str::from_utf8(bytes)?;
+    ensure!(
+        context
+            .split(':')
+            .take(3)
+            .filter(|part| !part.is_empty())
+            .count()
+            == 3,
+        "configuration root label lacks a user, role, or type"
+    );
+    Ok(context.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+    #[test]
+    fn root_context_preserves_non_mls_and_category_ranges() {
+        for context in [
+            "system_u:object_r:etc_t",
+            "system_u:object_r:etc_t:s0:c0,c3.c7",
+        ] {
+            assert_eq!(parse_root_context(context.as_bytes()).unwrap(), context);
+            let terminated = format!("{context}\0");
+            assert_eq!(parse_root_context(terminated.as_bytes()).unwrap(), context);
+        }
+    }
+
+    #[test]
+    fn root_context_rejects_option_injection_and_malformed_labels() {
+        for bytes in [
+            b"".as_slice(),
+            b"system_u:object_r",
+            b"system_u::etc_t",
+            b"system_u:object_r:etc_t\0\0",
+            b"system_u:object_r:etc_t\n",
+            b"system_u:object_r:etc_t,context=other",
+            b"system_u:object_r:etc_t\"",
+            b"system_u:object_r:etc_t\\",
+            b"system_u:object_r:\xff",
+        ] {
+            assert!(parse_root_context(bytes).is_err(), "{bytes:?}");
+        }
+    }
 
     fn input() -> Input {
         serde_json::from_value(serde_json::json!({

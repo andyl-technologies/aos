@@ -5,7 +5,10 @@
   systems,
   ...
 }: let
-  system = import ./_sandbox-funded-system.nix {inherit lib pkgs systems;};
+  fundedSystem = import ./_sandbox-funded-system.nix {inherit lib pkgs systems;};
+  system = fundedSystem.extendModules {
+    modules = [{environment.systemPackages = [pkgs.python3];}];
+  };
   enrolledFirmwareVars = import ./_secure-boot-enrolled-vars.nix {
     inherit lib pkgs systems;
   };
@@ -30,8 +33,19 @@ in {
     # python
     ''
       def check_startup_enclosure():
+          # Overlay roots must remain traversable by confined roles after both
+          # boot and native activation, without flattening store inode labels.
+          root_labels = (
+              "import os; "
+              "expected = {'/etc': 'etc_t', '/nix': 'usr_t', '/nix/store': 'usr_t', "
+              "'${pkgs.glibc}/lib/libm.so.6': 'lib_t'}; "
+              "assert all(os.getxattr(path, 'security.selinux').rstrip(b'\\0').decode().split(':')[2] == label "
+              "for path, label in expected.items())"
+          )
+          vm.succeed("${pkgs.python3}/bin/python3 -c \"" + root_labels + "\"")
           vm.wait_for_unit("multi-user.target", timeout=300)
           vm.wait_for_unit("aos-activate.service", timeout=60)
+          vm.succeed("${pkgs.python3}/bin/python3 -c \"" + root_labels + "\"")
           vm.succeed("test -c /dev/tpmrm0; test $(cat /sys/fs/selinux/enforce) = 1")
           assert int(vm.succeed("nproc --all").strip()) == 16
           memory = dict(line.split(":", 1) for line in vm.succeed("cat /proc/meminfo").splitlines())

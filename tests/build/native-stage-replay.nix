@@ -45,6 +45,12 @@ in {
     then "true"
     else "false"
   ); true;
+  initrdStoreLabeling = assert replayedInitrd.aos.services."boot-preparations.nix-overlay-setup".environment.variables.AOS_CONFIGURATION_SELINUX_LABELS
+  == (
+    if config.system.build.immutableSelinuxPolicy != null
+    then "true"
+    else "false"
+  ); true;
   hostStoreSeedImageProjection = assert config.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input
   == replayedHost.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input; true;
   hostStoreSeedEnvironment = assert config.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input.environment

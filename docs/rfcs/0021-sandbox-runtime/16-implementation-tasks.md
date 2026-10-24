@@ -11225,3 +11225,30 @@ at key preparation because the loader cannot open `libm.so.6` (permission
 denied, status 127). It has not reached hardware initialization or the later
 power-loss cases. Current-head release checks remain queued behind the
 source-built toolchain changed by master.
+
+### Overlay root labels at boot and native activation
+
+Draining audit records on the same failing Root image identifies directory
+traversal denials on the overlay roots, rather than missing loader-file access:
+`/etc` is `tmpfs_t` and `/nix` is `unlabeled_t`, while the actual `libm.so.6`
+inode remains `lib_t`. The captured diagnostic is
+`/nix/store/8gylvn2pm5ihmfgriz9qvv3hjl6x2w79-aos-rfc21-narrow-root-audit-captured-0`.
+An enforcing QEMU probe on that image verifies explicit overlay `rootcontext`
+selection for both `etc_t` and `usr_t` at
+`/nix/store/qw098yimzvl0y61gl8pii9z5kw4p503x-aos-rfc21-overlay-root-labels-0`.
+These diagnostic wrappers do not qualify installed Root startup.
+
+Initrd overlay setup now selects those root labels for the immutable SELinux
+profile. Native configuration activation derives its root label from the exact
+mounted EROFS lower whose labeling snapshot is bound into the retained receipt.
+It checks staged and active overlay labels and rejects a mislabeled retained
+mount. Root-only labeling preserves individual inode labels. Installed startup
+checks inspect the real overlay roots and loader inode before and after native
+activation, including after reboot.
+
+All 26 configuration-image library tests pass with the cached AOS-built compiler,
+including malformed-context and mount-option injection cases. All of that
+crate's targets compile. The ordinary native stage replay check passes at
+`/nix/store/vw33k53in1gf3rwn6x062spsj9vn1vs0-aos-native-stage-replay`.
+Profile replay, exact-head release compilation and installed retries remain
+pending; this fix does not change public admission or close the lifecycle gate.

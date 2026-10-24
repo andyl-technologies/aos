@@ -458,6 +458,18 @@
   nixOverlaySetup = substrateService {
     key = "nix-overlay-setup";
     description = "Set Up /nix Overlay Filesystem";
+    environment =
+      substrateEnvironment
+      // {
+        variables =
+          substrateEnvironment.variables
+          // {
+            AOS_CONFIGURATION_SELINUX_LABELS =
+              if config.aos.security.selinux.enable && config.aos.security.selinux.bootMode == "immutable-stage0"
+              then "true"
+              else "false";
+          };
+      };
     dependencies =
       emptyDependencies
       // {

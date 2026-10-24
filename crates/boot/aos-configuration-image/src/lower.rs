@@ -332,6 +332,16 @@ pub fn validate_beneath(lower: &Lower, effect: &str, tools: &Tools, root: &Path)
     run_fsck(&tools.fsck, &image)
 }
 
+// Activation must preserve the labeling contract bound into this generation,
+// including when it observes an already mounted overlay after interruption.
+pub(super) fn selinux_labeled(lower: &Lower) -> Result<bool> {
+    let directory = Path::new(&lower.directory);
+    let receipt = read_receipt(directory, &lower.receipt_effect)?;
+    ensure!(receipt.lower == *lower, "retained lower receipt differs");
+    crate::selinux::verify_snapshot(&receipt.input, directory)?;
+    Ok(receipt.input.selinux_file_contexts_sha256.is_some())
+}
+
 fn read_receipt(directory: &Path, effect: &str) -> Result<Receipt> {
     let metadata = fs::symlink_metadata(directory)?;
     ensure!(
