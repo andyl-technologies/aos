@@ -10,6 +10,26 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Earlier Capture comparison inputs
+
+Commit `020f566438` groups the actual earlier Capture occurrence, signed inputs,
+SDK terminal and complete native output views. All chronology, registration,
+reference and bank-byte checks remain unchanged. Its existing Source scratch
+quote retains every prior term and adds both borrowed input headers.
+
+Both codec modes pass 51 settled-graph, five whole-graph, five fresh-query and
+five fresh-Prepare controls. All-feature Transport/Engine/Daemon targets, six
+architecture checks, scoped formatting and application test-target compilation
+pass. Actual application metadata records 185 test artifacts across 58 packages,
+including 76 integration targets. All 581 frozen owned Rust/Cargo inputs match
+the commit and actual application source capture. No new full-library or VM
+qualification is claimed at this checkpoint.
+
+Strict Transport Clippy falls from thirteen to twelve errors, with 1,734
+warnings and no allowance. This input view supplies no completed Capture or
+runtime credit. The runtime handoff, Native18 adoption, strict qualification
+and full RFC remain unfinished.
+
 ## Native Capture and fresh-query Prepare inputs
 
 Commit `1b62165d54` groups the actual unpublished native14/15 Capture capacity
