@@ -618,7 +618,7 @@ mod tests {
         // Construction traverses EVERY retained FK, fails unknown dispositions
         // and rejects unsupported kinds before any archive row is consumed.
         let mut scratch = MemoryReplay::new(catalogue, limits, budget).unwrap();
-        assert_eq!(scratch.tables.len(), 281);
+        assert_eq!(scratch.tables.len(), 283);
         assert_eq!(scratch.retained_rows, 0);
         for table in &scratch.catalogue.schema().tables {
             let count = scratch

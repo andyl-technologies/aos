@@ -28,7 +28,7 @@ tracing-subscriber = { workspace = true }
 flate2 = { workspace = true }
 futures-util = { workspace = true }
 zstd = { workspace = true }
-lzma-rs = { workspace = true }
+xz2 = { workspace = true }
 bzip2-rs = { workspace = true }
 ed25519-dalek = { workspace = true }
 argon2 = { workspace = true }
@@ -72,6 +72,7 @@ required-live-dialects = ["aos-hub-service/do-e2e-test-support"]
 test-support = []
 
 [dev-dependencies]
+lzma-rs = { workspace = true }
 aos-registry-authoring = { workspace = true }
 aos-hub-service = { workspace = true, features = ["test-fixtures"] }
 aos-oci = { workspace = true }
