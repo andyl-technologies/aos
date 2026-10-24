@@ -281,6 +281,25 @@ FAKE_SETOOLS = SimpleNamespace(
 
 
 class EffectivePolicyTest(unittest.TestCase):
+    def test_namespace_retirement_events_stay_with_the_manager(self) -> None:
+        for permission in ("cpu", "kernel", "open", "tracepoint", "write"):
+            with self.subTest(permission=permission):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access("init_t", "init_t", "perf_event", permission)
+                )
+
+        for source, target, permission in (
+            ("init_t", "init_t", "read"),
+            ("init_t", "aos_sandbox_host_t", "open"),
+            ("aos_sandbox_host_t", "aos_sandbox_host_t", "open"),
+            (effective_policy.GUEST_TENANT, effective_policy.GUEST_TENANT, "kernel"),
+            ("aos_sandbox_controller_t", "aos_sandbox_controller_t", "tracepoint"),
+        ):
+            with self.subTest(source=source, target=target, permission=permission):
+                self.assert_forbidden_allow_rejected(
+                    effective_policy.Access(source, target, "perf_event", permission)
+                )
+
     def test_managed_namespace_creation_stays_with_the_manager(self) -> None:
         self.assert_missing_allow_rejected(
             effective_policy.Access("init_t", "init_t", "user_namespace", "create")

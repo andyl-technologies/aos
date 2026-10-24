@@ -11050,3 +11050,20 @@ C17 tests at
 The diagnostic also confirms successful installed view-root preparation at
 `/nix/store/4y10wrngmq77bjslgdhaw43bqnva8qa4-aos-rfc21-root-service-audit-0`;
 its diagnostic completion is not normal Root or offline provisioning readiness.
+
+### Manager-domain namespace retirement events (installed retry pending)
+
+The BPF-enabled Host guest attaches all six namespace restriction LSM hooks,
+then disables managed user namespaces when its retirement kprobe cannot create
+a perf event. An exact-image audit rerun identifies init_t self:perf_event open
+as the denied access. The selected kernel and libbpf paths additionally check
+per-CPU, kernel and tracepoint admission and write permission for the enabling
+ioctl. The policy now grants those five permissions only from init_t to init_t.
+This is a manager-domain grant, not executable-specific isolation. It does not
+grant sample reads or access to another domain's events.
+
+Effective-policy checks require the grant and reject perf events for confined
+Sandbox roles, cross-domain manager access, and manager sample reads. The
+focused missing-grant and forbidden-grant regressions pass. Full compiled
+policy validation and installed Host readiness remain pending; the preceding
+Host test is a failure, not a readiness receipt.

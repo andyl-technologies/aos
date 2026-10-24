@@ -254,6 +254,10 @@ def execution_access() -> tuple[Access, ...]:
 
 POSITIVE_ACCESS = (
     Access("init_t", "init_t", "user_namespace", "create"),
+    *accesses(
+        "init_t", "init_t", "perf_event",
+        ("cpu", "kernel", "open", "tracepoint", "write"),
+    ),
     # Native host activation requires the manager and generated-unit API;
     # owner_policy separately forbids manager mutation by Sandbox services.
     *accesses("init_t", "init_t", "system", ("status", "reload")),
@@ -1174,6 +1178,20 @@ POSITIVE_ACCESS = (
 TRANSITIONS = (*TRANSITIONS, *OWNER_TRANSITIONS)
 NEGATIVE_ACCESS = (
     *negative_access(), *OWNER_NEGATIVE,
+    Access("init_t", "init_t", "perf_event", "read"),
+    *(
+        access
+        for domain in (
+            HANDOFF_DOMAIN, PROVISIONER_DOMAIN, GUEST_ROOT_PUBLISHER,
+            *DOMAINS, *owner_policy.ENFORCING,
+        )
+        for access in (
+            *accesses(domain, domain, "perf_event",
+                      ("cpu", "kernel", "open", "read", "tracepoint", "write")),
+            *accesses("init_t", domain, "perf_event",
+                      ("cpu", "kernel", "open", "read", "tracepoint", "write")),
+        )
+    ),
     *(
         Access(domain, domain, "user_namespace", "create")
         for domain in (
