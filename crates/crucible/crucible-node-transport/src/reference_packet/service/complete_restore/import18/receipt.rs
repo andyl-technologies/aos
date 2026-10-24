@@ -240,3 +240,6 @@ fn keyed(domain: &str, key: &[u8; 32], bytes: &[u8]) -> Bytes {
 fn bytes32(value: [u8; 32]) -> Bytes {
     Bytes::new(value.to_vec())
 }
+
+#[cfg(test)]
+mod tests;
