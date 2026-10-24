@@ -57,6 +57,7 @@ use crate::{
 };
 
 mod attempt_log;
+mod attempt_log_trace;
 mod envoy_boot;
 mod event_log_budget_report;
 mod event_log_retention;

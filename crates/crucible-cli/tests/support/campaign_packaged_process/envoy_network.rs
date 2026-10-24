@@ -15,6 +15,13 @@ use super::attempt_progress::{
 mod flight_limits;
 #[path = "envoy_network/resource_audit.rs"]
 mod resource_audit;
+#[path = "envoy_network/route_diagnostics.rs"]
+mod route_diagnostics;
+
+use route_diagnostics::{
+    assert_hot_fork_tier, attempt_log_trace_directory, attempt_log_trace_window,
+    service_failure_rows,
+};
 // Admission reserves the measured five-guest profile for each retained world:
 // an anchor root at a network fault park and the hot child forked from it.
 const ENVOY_HOT_FORK_BYTE_CEILING: u64 = 9 * 1024 * 1024 * 1024;
@@ -408,30 +415,6 @@ const ANCESTOR_DIAGNOSTIC_PREFIX: &str = "CRUCIBLE-HOT-FORK-ANCESTOR-V1 ";
 /// Both row kinds open with `attempt=<id> anchor=<configuration>` and close
 /// with `decision=<decision> reason=<token>`; ancestor rows also carry a
 /// suffix length between them, which the flight does not pin.
-/// Requires a hot-fork materialization, naming the route rows when it is absent.
-fn assert_hot_fork_tier(
-    service: &CampaignServiceChild,
-    materialization: &[String],
-    attempt: impl std::fmt::Display,
-) -> Result<(), Box<dyn Error>> {
-    let Err(error) = guest_choice::assert_materialization_tier(materialization, attempt, "HotFork")
-    else {
-        return Ok(());
-    };
-    let mut rows = Vec::new();
-    for prefix in [
-        ANCHOR_DIAGNOSTIC_PREFIX,
-        ANCESTOR_DIAGNOSTIC_PREFIX,
-        "CRUCIBLE-HOT-FORK-DECLINE-V1 ",
-        "CRUCIBLE-HOT-FORK-RETENTION-V1 ",
-        "CRUCIBLE-HOT-FORK-SOURCE-PREPARATION-V1 ",
-        "CRUCIBLE-REPLAY-DIVERGENCE-V1 ",
-    ] {
-        rows.extend(service.stderr_lines_with_prefix(prefix, 32, 4096)?);
-    }
-    Err(format!("{error}; route_rows={rows:?}").into())
-}
-
 fn require_hot_fork_root_row(
     service: &CampaignServiceChild,
     prefix: &str,
@@ -1171,10 +1154,11 @@ pub(super) fn wait_for_request_attempt(
             if explanation["runtime"]["phase"] == "terminal-failure" {
                 // A terminal attempt never publishes an observation; report
                 // why it ended instead of waiting out the stall window.
+                let rows = service_failure_rows(service);
                 return Err(format!(
-                    "request {request} attempt {attempt} ended in terminal failure: {}; {}",
+                    "request {request} attempt {attempt} ended in terminal failure: {}; {rows}\n{}",
                     explanation["runtime"],
-                    service_failure_rows(service)
+                    attempt_log_trace_window(fixture, &rows)
                 )
                 .into());
             }
@@ -1190,19 +1174,6 @@ pub(super) fn wait_for_request_attempt(
         Ok(None)
     })?;
     completed.ok_or_else(|| watch.safety_cap_expired().into())
-}
-
-/// Collects the service rows that explain a branch attempt's replay route.
-fn service_failure_rows(service: &CampaignServiceChild) -> String {
-    service
-        .stderr_tail()
-        .lines()
-        .filter(|line| {
-            line.starts_with("CRUCIBLE-HOT-FORK-DECLINE-V1 ")
-                || line.starts_with("CRUCIBLE-REPLAY-DIVERGENCE-V1 ")
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
 }
 
 pub(super) fn require_network_effect(
@@ -1451,6 +1422,9 @@ pub(super) fn start_packaged_network_service(
         None => required_path("CRUCIBLE_FLIGHT_DEPLOYMENT")?,
     };
     let mut invocation = fixture.service_command(None);
+    let trace_directory = attempt_log_trace_directory(fixture);
+    fs::create_dir_all(&trace_directory)?;
+    invocation.env("CRUCIBLE_ATTEMPT_LOG_TRACE_DIR", &trace_directory);
     invocation.env("CRUCIBLE_MATERIALIZATION_DIAGNOSTIC_MAX_EVENTS", "256");
     invocation.env("CRUCIBLE_RR_CLAMP_TAIL", "1");
     invocation

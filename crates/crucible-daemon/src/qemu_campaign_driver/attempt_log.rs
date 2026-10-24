@@ -18,6 +18,7 @@ use crate::attempt_event_log::{
     AttemptEventLog, AttemptEventLogError, AttemptEventLogVisitError, AttemptLogManifest,
     AttemptLogStore,
 };
+use attempt_log_trace::AttemptLogTrace;
 use network_fault_boundary::NetworkFaultMarkerIndex;
 
 /// Default operational bound on one attempt's encoded event log.
@@ -34,6 +35,7 @@ pub(crate) struct RetainedAttemptLog {
     last: Option<SchedulerEventLogEntry>,
     causal_entries: u64,
     network_faults: NetworkFaultMarkerIndex,
+    trace: AttemptLogTrace,
 }
 
 /// Identity of a retained log as bound by savepoint and boundary proofs.
@@ -59,6 +61,7 @@ impl RetainedAttemptLog {
             last: None,
             causal_entries: 0,
             network_faults: NetworkFaultMarkerIndex::default(),
+            trace: AttemptLogTrace::open(),
         }
     }
 
@@ -104,6 +107,7 @@ impl RetainedAttemptLog {
                 self.causal_entries += 1;
             }
             self.network_faults.observe(&entry);
+            self.trace.record(&entry);
             self.last = Some(entry);
         }
         Ok(())
