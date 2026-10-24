@@ -986,7 +986,7 @@ in
           cp ${./_systemd-abilities/network-handler.py} "$handlers/libexec/aos-network-handler.py"
           cat > "$handlers/bin/aos-network-handler" << EOF
           #!${bash}/bin/bash
-          exec "${python3}/bin/python3" "$handlers/libexec/aos-network-handler.py" \\
+          exec "${python3}/bin/python3" -B "$handlers/libexec/aos-network-handler.py" \\
             --systemctl "$out/bin/systemctl" \\
             --wait-online "$out/lib/systemd/systemd-networkd-wait-online" \\
             --unit-directory "$out/lib/systemd/system" \\
