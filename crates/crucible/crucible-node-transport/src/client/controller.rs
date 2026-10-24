@@ -2112,3 +2112,5 @@ pub use native_import18::{
 };
 
 pub use native_import18::OriginalNativeImport18AssignmentRowHistoryData;
+
+pub use native_import18::OriginalNativeImport18PrepareInputs;

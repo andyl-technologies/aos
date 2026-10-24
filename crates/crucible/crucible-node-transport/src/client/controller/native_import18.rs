@@ -50,7 +50,10 @@ mod controller_metadata;
 mod history;
 #[path = "native_import18/metadata.rs"]
 mod metadata;
+#[path = "native_import18/prepare_inputs.rs"]
+mod prepare_inputs;
 pub use history::OriginalNativeImport18AssignmentHistoryView;
+pub use prepare_inputs::OriginalNativeImport18PrepareInputs;
 #[path = "native_import18/input_upload.rs"]
 mod input_upload;
 #[path = "native_import18/receive.rs"]
@@ -144,41 +147,29 @@ impl CnpController {
     /// Installs the actual Prepare owner before validating or allocating its fields.
     ///
     /// The caller independently admits the row and owns the Source's once slot.
-    /// The typed inputs are moved into that slot before any fallible validation;
-    /// constructing them and preserving their prior Source custody is separate.
+    /// The caller's input slot retains the typed owners through early emitter
+    /// and occupied-output refusals. After transfer, the destination retains
+    /// them before row/query validation. Constructing and independently funding
+    /// those inputs under the original Source once scope remains separate.
     /// The full expected backend schema comes from the actual authenticated cold
     /// owner. It is retained independently rather than inferred from the request.
     /// Source/Window separately prove fresh target definition compatibility; this
     /// transport capsule and its archived definition supply no native authority.
     ///
     /// # Errors
-    /// Refuses occupied output, foreign/current query or row, another selected
-    /// codec, altered full normalization/input, exhausted credit or reused ID.
+    /// Refuses missing inputs, occupied output, foreign/stale originals or row,
+    /// another selected codec, altered normalization/input, exhausted credit or reused ID.
     pub fn prepare_original_native_import18_into(
         &mut self,
         emitter: &OriginalCanonicalBlobAckEmitter,
         query: &OriginalFreshRestoreQuery,
-        request_id: Id,
-        baseline: BeginRequest,
-        request: PacketCompleteRestorePrepareRequest,
-        binding: PacketNativeImport18Binding,
-        expected_backend_schema: SchemaRef,
+        inputs: &mut Option<OriginalNativeImport18PrepareInputs>,
         normalization: &[u8],
         row: &OriginalNativeImport18AssignmentStorageData,
         output: &mut Option<OriginalNativeImport18Assignment>,
     ) -> Result<(), ProviderError> {
         emitter.authenticate_original(self)?;
-        if output.is_some() {
-            return Err(invalid());
-        }
-        *output = Some(OriginalNativeImport18Assignment {
-            controller: Rc::clone(&self.protocol_owner),
-            binding,
-            expected_backend_schema,
-            normalization: Vec::new(),
-            prepare: AssignedPhase::new(request_id, baseline, request),
-            uploads: input_upload::InputUploadBank::empty(),
-        });
+        prepare_inputs::retain_into(&self.protocol_owner, inputs, output)?;
         let owner = output.as_mut().ok_or_else(invalid)?;
         let result = (|| {
             row.authenticate_prepare_data(self, emitter, query, owner, normalization)?;
