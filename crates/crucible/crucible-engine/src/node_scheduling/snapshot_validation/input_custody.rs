@@ -41,3 +41,7 @@ pub(in crate::node_scheduling) const fn counter_scratch_data() -> usize {
 #[cfg(test)]
 #[path = "input_custody/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "input_custody/operation_identity_tests.rs"]
+mod operation_identity_tests;

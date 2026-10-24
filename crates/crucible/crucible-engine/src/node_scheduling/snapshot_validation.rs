@@ -398,7 +398,8 @@ fn validate_saved_profile(
             return Err(SchedulingError::InvalidSnapshot);
         }
     }
-    let used: BTreeSet<_> = snapshot.used_operations.iter().cloned().collect();
+    let mut used: BTreeSet<_> = snapshot.used_operations.iter().cloned().collect();
+    let mut used_batches: BTreeSet<_> = snapshot.used_input_batches.iter().collect();
     for connection in &graph.world().connections {
         let policy = graph
             .connection_policy(&connection.id)
@@ -422,10 +423,13 @@ fn validate_saved_profile(
             return Err(SchedulingError::InvalidSnapshot);
         }
     }
+    // Local copies enforce one use per stage and batch identity across owners;
+    // removing a stage also prevents a run from reusing its operation ID.
+    // The complete original histories remain in the saved record.
     for batch in &snapshot.input_batches {
         if execution_owners.get(&batch.node) != Some(&batch.owner)
-            || !snapshot.used_operations.contains(&batch.stage_operation)
-            || !snapshot.used_input_batches.contains(&batch.batch)
+            || !used.remove(&batch.stage_operation)
+            || !used_batches.remove(&batch.batch)
         {
             return Err(SchedulingError::InvalidSnapshot);
         }

@@ -414,6 +414,7 @@ fn validation_storage(
         counter.owned(&row.reference)?;
     }
     counter.tree::<Id, ()>(snapshot.used_operations.len(), true)?;
+    counter.tree::<&Id, ()>(snapshot.used_input_batches.len(), true)?;
     counter.tree::<Id, ()>(snapshot.reservations.len(), false)?;
     for id in &snapshot.used_operations {
         counter.owned(id)?;
@@ -739,6 +740,7 @@ struct ValidationViews<'a> {
     pending_sequences: BTreeSet<(Id, U64)>,
     payloads: BTreeMap<crucible_node_format::ContentRef, &'a crate::node_scheduling::SavedPayload>,
     used: BTreeSet<Id>,
+    used_batches: BTreeSet<&'a Id>,
     reserved: BTreeSet<Id>,
     batch_routes: BTreeSet<Id>,
     batch_owners: Vec<crate::node_contract::OwnerIdentity>,
@@ -772,6 +774,14 @@ impl PreparedSchedulingRestore {
         let rows = [
             Self::original_retained_installation_duplicate_counter_scratch_data(),
             super::validation::input_custody::counter_scratch_data(),
+            size_of::<&mut BTreeSet<Id>>(),
+            size_of::<&Id>(),
+            size_of::<bool>(),
+            size_of::<std::slice::Iter<'static, Id>>(),
+            size_of::<BTreeSet<&'static Id>>(),
+            size_of::<&mut BTreeSet<&'static Id>>(),
+            size_of::<&Id>(),
+            size_of::<bool>(),
             size_of::<Requested>(),
             size_of::<ValidationViews<'_>>(),
             size_of::<Result<usize, RuntimeError>>(),
