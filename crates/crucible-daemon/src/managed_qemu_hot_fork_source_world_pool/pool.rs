@@ -783,12 +783,12 @@ where
         }
 
         // A forked child inherits the source's exact VM configuration and
-        // device roster. Define its reservation as one complete measured source
-        // profile: full guest RAM is charged as template bytes, another full
-        // guest-RAM allowance covers private dirties, and the source's process,
-        // vCPU, descriptor, and writable-overlay counts bound the corresponding
-        // child dimensions. Any future child-only resource class must extend
-        // this profile explicitly before that configuration can be admitted.
+        // device roster. Its reservation is the source's measured child
+        // profile: the bound on what it can newly dirty, charged as its bytes
+        // and its private dirties, plus the source's process, vCPU,
+        // descriptor, and writable-overlay counts. Any future child-only
+        // resource class must extend this profile explicitly before that
+        // configuration can be admitted.
         let resources = world.child_resources;
         let projected_lease_usage = self
             .lease_usage
@@ -873,6 +873,7 @@ where
         );
         Ok(Some(QemuHotForkSourceWorldLease {
             managed_lease: Some(lease),
+            child_dirty_budget: Some(resources.expected_private_dirty_bytes()),
             template,
             identity,
             source,

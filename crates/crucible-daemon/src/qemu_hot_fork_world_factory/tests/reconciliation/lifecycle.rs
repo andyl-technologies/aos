@@ -331,7 +331,11 @@ fn two_factories_keep_independent_live_children_from_one_managed_source() {
     )
     .expect("source resource profile");
     let parent_and_two_children = HotCheckpointResourceProfile::new(
-        source_resources.template_bytes() * 3,
+        // A child reserves its dirty bound as bytes; that bound includes
+        // live procfs samples, so allow one MiB of allocator slack.
+        source_resources.template_bytes()
+            + source_resources.expected_private_dirty_bytes() * 2
+            + 1024 * 1024,
         source_resources.expected_private_dirty_bytes() * 3,
         source_resources.process_count() * 3,
         source_resources.virtual_cpu_count() * 3,

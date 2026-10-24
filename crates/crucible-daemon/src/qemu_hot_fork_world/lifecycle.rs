@@ -659,6 +659,11 @@ where
                 message: String::from("hot-fork world lifecycle was shut down more than once"),
             });
         }
+        let budget = self
+            .source_lease
+            .as_ref()
+            .and_then(QemuHotForkSourceWorldLease::child_dirty_budget);
+        note_child_memory(self.lifecycle.measure_live_node_memory(), budget);
         let events = QuantumLoop::shutdown(&mut self.lifecycle)?;
         self.reconciliations
             .validate_operational_handoff()
@@ -922,5 +927,43 @@ fn retain_remaining_install_failure<G>(
 fn lifecycle_error(message: impl Into<String>) -> LifecycleApiError {
     LifecycleApiError::LoopFactory {
         message: message.into(),
+    }
+}
+
+/// Writes a child world's measured private dirty bytes against its budget.
+///
+/// The budget is a prediction made when the source was measured, so every
+/// child checks it before shutdown. Exceeding it, or failing to measure,
+/// writes a row of its own; neither stops the child.
+fn note_child_memory(
+    measured: Result<crucible_api::SourceMemoryRegions, crucible_api::LifecycleApiError>,
+    budget: Option<u64>,
+) {
+    use std::io::Write as _;
+
+    let mut stderr = std::io::stderr().lock();
+    let regions = match measured {
+        Ok(regions) => regions,
+        Err(error) => {
+            let _ = writeln!(
+                stderr,
+                "CRUCIBLE-HOT-FORK-CHILD-MEMORY-V1 decision=unmeasured budget={budget:?} error=\"{error}\""
+            );
+            return;
+        }
+    };
+    let dirty = regions.private_dirty_bytes;
+    let _ = writeln!(
+        stderr,
+        "CRUCIBLE-HOT-FORK-CHILD-MEMORY-V1 private_dirty_bytes={dirty} budget={budget:?} regions={regions:?}"
+    );
+    if let Some(budget) = budget
+        && dirty > budget
+    {
+        let _ = writeln!(
+            stderr,
+            "CRUCIBLE-HOT-FORK-CHILD-OVER-BUDGET-V1 private_dirty_bytes={dirty} budget={budget} excess={}",
+            dirty - budget
+        );
     }
 }

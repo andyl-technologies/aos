@@ -169,15 +169,18 @@ impl ManagedQemuHotForkSourceWorld {
                 ));
             }
         };
-        note_source_measurement(&key, usage);
-        let resources = match HotCheckpointResourceProfile::new(
-            usage.template_bytes(),
-            usage.expected_private_dirty_bytes(),
-            usage.process_count(),
-            usage.virtual_cpu_count(),
-            usage.descriptor_count(),
-            usage.overlay_count(),
-        ) {
+        measurement::note_source_measurement(&key, usage);
+        let resources = match measurement::source_resources(usage) {
+            Ok(resources) => resources,
+            Err(error) => {
+                return Err(ManagedQemuHotForkSourceWorldBindingFailure::new(
+                    source,
+                    ManagedQemuHotForkSourceWorldBindingError::InvalidResourceProfile(error),
+                ));
+            }
+        };
+
+        let child_resources = match measurement::child_resources(usage) {
             Ok(resources) => resources,
             Err(error) => {
                 return Err(ManagedQemuHotForkSourceWorldBindingFailure::new(
@@ -190,7 +193,7 @@ impl ManagedQemuHotForkSourceWorld {
         Ok(Self {
             key,
             resources,
-            child_resources: resources,
+            child_resources,
             source: Some(source),
             leased_source: None,
             invalidated: false,
@@ -513,24 +516,6 @@ fn published_root_boundary_error(
     None
 }
 
-/// Writes one source world's measured memory profile by QEMU region class.
-fn note_source_measurement(
-    key: &QemuHotForkSourceWorldKey,
-    usage: crucible_api::vm_lifecycle::ProductionVmHotForkSourceWorldResourceUsage,
-) {
-    use std::io::Write as _;
-
-    let _ = writeln!(
-        std::io::stderr().lock(),
-        "CRUCIBLE-HOT-FORK-SOURCE-MEASUREMENT-V1 configuration={:?} processes={} template_bytes={} expected_private_dirty_bytes={} regions={:?}",
-        key.configuration(),
-        usage.process_count(),
-        usage.template_bytes(),
-        usage.expected_private_dirty_bytes(),
-        usage.regions(),
-    );
-}
-
 fn is_canonical_genesis_event_log(offset: crucible::EventLogOffset) -> bool {
     // Counts alone cannot authenticate an empty log: its prefix is part of the boundary.
     offset == crucible::EventLog::new().offset()
@@ -597,6 +582,8 @@ pub enum QemuHotForkSourceWorldDemotionError {
 #[must_use = "return the source lease after complete child reconciliation or abandon it"]
 pub struct QemuHotForkSourceWorldLease {
     managed_lease: Option<u64>,
+    /// Private dirty bytes the managed pool reserved for this child world.
+    child_dirty_budget: Option<u64>,
     template: HotCheckpointPoolKey,
     identity: QemuHotForkSourceWorldCheckoutIdentity,
     source: Arc<Mutex<ProductionVmHotForkSourceWorld>>,
@@ -610,6 +597,7 @@ impl QemuHotForkSourceWorldLease {
         let identity = QemuHotForkSourceWorldCheckoutIdentity::capture(&source);
         Self {
             managed_lease: None,
+            child_dirty_budget: None,
             template,
             identity,
             source: Arc::new(Mutex::new(source)),
@@ -624,6 +612,11 @@ impl QemuHotForkSourceWorldLease {
         &self.identity
     }
 
+    /// Returns the private dirty bytes the pool reserved for this child world.
+    pub(crate) const fn child_dirty_budget(&self) -> Option<u64> {
+        self.child_dirty_budget
+    }
+
     pub(crate) fn reauthenticates_source(&self) -> bool {
         self.source.lock().is_ok_and(|mut source| {
             self.identity.matches(&source) && source.fork_continuation().is_ok()
@@ -636,6 +629,7 @@ impl QemuHotForkSourceWorldLease {
         }
         let Self {
             managed_lease,
+            child_dirty_budget,
             template,
             identity,
             source,
@@ -645,6 +639,7 @@ impl QemuHotForkSourceWorldLease {
             Err(source) => {
                 return Err(Box::new(Self {
                     managed_lease,
+                    child_dirty_budget,
                     template,
                     identity,
                     source,
@@ -655,12 +650,14 @@ impl QemuHotForkSourceWorldLease {
             Ok(source) if identity.matches(&source) => Ok(source),
             Ok(source) => Err(Box::new(Self {
                 managed_lease,
+                child_dirty_budget,
                 template,
                 identity,
                 source: Arc::new(Mutex::new(source)),
             })),
             Err(poisoned) => Err(Box::new(Self {
                 managed_lease,
+                child_dirty_budget,
                 template,
                 identity,
                 source: Arc::new(Mutex::new(poisoned.into_inner())),
@@ -674,6 +671,7 @@ impl std::fmt::Debug for QemuHotForkSourceWorldLease {
         formatter
             .debug_struct("QemuHotForkSourceWorldLease")
             .field("managed_lease", &self.managed_lease)
+            .field("child_dirty_budget", &self.child_dirty_budget)
             .field("template", &self.template)
             .field("identity", &self.identity)
             .finish_non_exhaustive()
@@ -721,6 +719,7 @@ where
 }
 
 mod ancestors;
+mod measurement;
 mod pool;
 mod published_roots;
 pub(crate) use ancestors::QemuHotForkAncestorCheckout;

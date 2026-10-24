@@ -9,11 +9,24 @@
 use super::*;
 
 /// Requires a hot-fork materialization, naming the route rows when it is absent.
+///
+/// Every hot-fork child also checks its measured private dirty bytes against
+/// the budget its lease reserved; any child over budget fails the flight.
 pub(super) fn assert_hot_fork_tier(
     service: &CampaignServiceChild,
     materialization: &[String],
     attempt: impl std::fmt::Display,
 ) -> Result<(), Box<dyn Error>> {
+    let over_budget =
+        service.stderr_lines_with_prefix("CRUCIBLE-HOT-FORK-CHILD-OVER-BUDGET-V1 ", 32, 4096)?;
+    if !over_budget.is_empty() {
+        let measured =
+            service.stderr_lines_with_prefix("CRUCIBLE-HOT-FORK-CHILD-MEMORY-V1 ", 32, 4096)?;
+        return Err(format!(
+            "hot-fork child exceeded its dirty budget: {over_budget:?}; children={measured:?}"
+        )
+        .into());
+    }
     let Err(error) = guest_choice::assert_materialization_tier(materialization, attempt, "HotFork")
     else {
         return Ok(());
@@ -26,6 +39,7 @@ pub(super) fn assert_hot_fork_tier(
         "CRUCIBLE-HOT-FORK-RETENTION-V1 ",
         "CRUCIBLE-HOT-FORK-SOURCE-PREPARATION-V1 ",
         "CRUCIBLE-HOT-FORK-SOURCE-MEASUREMENT-V1 ",
+        "CRUCIBLE-HOT-FORK-CHILD-MEMORY-V1 ",
         "CRUCIBLE-REPLAY-DIVERGENCE-V1 ",
     ] {
         rows.extend(service.stderr_lines_with_prefix(prefix, 32, 4096)?);

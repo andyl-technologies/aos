@@ -9,9 +9,10 @@ impl ProductionVmHotForkSourceWorld {
     /// Measures the stopped source world's retained QEMU process footprint.
     ///
     /// The measurement authenticates every prepared process incarnation, then
-    /// accounts its total resident process memory, full configured guest-memory
-    /// dirty budget in addition to current private dirties, open descriptors,
-    /// vCPUs, and writable overlays. Daemon-side continuation allocations are
+    /// accounts its total resident process memory, the bound on what one
+    /// forked child can newly dirty (see
+    /// [`SourceMemoryRegions::child_dirty_budget`]), open descriptors, vCPUs,
+    /// and writable overlays. Daemon-side continuation allocations are
     /// outside this process profile. The result is an operational admission
     /// input and never enters campaign evidence.
     ///
@@ -43,14 +44,6 @@ impl ProductionVmHotForkSourceWorld {
             let resident_bytes = required_proc_status_kib(&status, "VmRSS:")?
                 .checked_mul(1024)
                 .ok_or_else(|| loop_factory_error("source resident-byte accounting overflowed"))?;
-            let rollup = fs::read_to_string(process.join("smaps_rollup")).map_err(|error| {
-                loop_factory_error(format!(
-                    "read prepared source process memory rollup: {error}"
-                ))
-            })?;
-            let private_dirty_bytes = required_proc_status_kib(&rollup, "Private_Dirty:")?
-                .checked_mul(1024)
-                .ok_or_else(|| loop_factory_error("source dirty-byte accounting overflowed"))?;
             let resources = prepared.launch_resources();
             let smaps = fs::read_to_string(process.join("smaps")).map_err(|error| {
                 loop_factory_error(format!("read prepared source process mappings: {error}"))
@@ -77,8 +70,10 @@ impl ProductionVmHotForkSourceWorld {
                 .template_bytes
                 .checked_add(resident_bytes.max(resources.guest_memory_bytes()))
                 .ok_or_else(|| loop_factory_error("source template-byte accounting overflowed"))?;
-            let dirty_budget = private_dirty_bytes
-                .checked_add(resources.guest_memory_bytes())
+            // The source's own private dirty bytes are already in the
+            // template; a child is charged only what it can newly dirty.
+            let dirty_budget = regions
+                .child_dirty_budget(resources.guest_memory_bytes())
                 .ok_or_else(|| loop_factory_error("source dirty-byte accounting overflowed"))?;
             usage.expected_private_dirty_bytes = usage
                 .expected_private_dirty_bytes
@@ -102,6 +97,48 @@ impl ProductionVmHotForkSourceWorld {
                 .ok_or_else(|| loop_factory_error("source overlay count overflowed"))?;
         }
         Ok(usage)
+    }
+}
+
+impl ProductionVmLifecycleLoop {
+    /// Measures every live QEMU node's memory by region class.
+    ///
+    /// A hot-fork child calls this before shutdown so its actual private
+    /// dirty bytes can be checked against the budget its lease reserved.
+    /// Nodes that already exited are skipped. The result is operational
+    /// evidence only and never enters campaign evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LifecycleApiError`] when a live node's `/proc` mappings
+    /// cannot be read or accounting overflows.
+    pub fn measure_live_node_memory(&self) -> Result<SourceMemoryRegions, LifecycleApiError> {
+        let mut total = SourceMemoryRegions::default();
+        for vm in self.source.world().vm_nodes() {
+            let backend = self.inner.backend();
+            if !backend.contains(&vm.id) {
+                continue;
+            }
+            let Ok(process_id) = backend.process_id(&vm.id) else {
+                continue;
+            };
+            let smaps = fs::read_to_string(
+                PathBuf::from("/proc")
+                    .join(process_id.to_string())
+                    .join("smaps"),
+            )
+            .map_err(|error| {
+                loop_factory_error(format!("read live node `{}` mappings: {error}", vm.id.name))
+            })?;
+            let guest_memory_bytes = u64::from(vm.memory_mib)
+                .checked_mul(1024 * 1024)
+                .ok_or_else(|| loop_factory_error("live node guest memory overflowed"))?;
+            let regions = SourceMemoryRegions::from_smaps(&smaps, guest_memory_bytes)?;
+            total = total
+                .checked_add(regions)
+                .ok_or_else(|| loop_factory_error("live node memory accounting overflowed"))?;
+        }
+        Ok(total)
     }
 }
 
@@ -147,7 +184,7 @@ impl ProductionVmHotForkSourceWorldResourceUsage {
         self.template_bytes
     }
 
-    /// Returns the conservative private-dirty byte budget.
+    /// Returns the private-dirty bytes one forked child may newly write.
     #[must_use]
     pub const fn expected_private_dirty_bytes(self) -> u64 {
         self.expected_private_dirty_bytes
@@ -267,6 +304,28 @@ impl SourceMemoryRegions {
             }
             _ => Some(()),
         }
+    }
+
+    /// Bounds what one child forked from these processes can newly dirty.
+    ///
+    /// A forked child shares every source page copy-on-write, so its private
+    /// dirty bytes are pages it writes after the fork. It can write each
+    /// guest RAM page and each code-buffer page at most once, so both are
+    /// charged at their full mapped size. Other QEMU and plugin state is
+    /// charged twice its measured private dirty size: once for rewriting
+    /// the inherited pages and once as growth headroom of the same size.
+    /// Hot-fork children report their measured dirty bytes against this
+    /// bound, so an exceeded prediction is visible.
+    #[must_use]
+    pub fn child_dirty_budget(self, guest_memory_bytes: u64) -> Option<u64> {
+        let other = self
+            .private_dirty_bytes
+            .checked_sub(self.guest_private_dirty_bytes)?
+            .checked_sub(self.code_private_dirty_bytes)?;
+        guest_memory_bytes
+            .max(self.guest_resident_bytes)
+            .checked_add(self.code_buffer_bytes)?
+            .checked_add(other.checked_mul(2)?)
     }
 
     fn checked_add(self, other: Self) -> Option<Self> {
@@ -407,6 +466,45 @@ Private_Dirty:         0 kB\n";
             regions.proportional_bytes,
             (100 + 64 + 10) * mebibyte + mebibyte / 2
         );
+    }
+
+    #[test]
+    fn child_budget_charges_guest_and_code_once_and_other_state_twice() {
+        let mebibyte = 1024 * 1024;
+        let regions = SourceMemoryRegions {
+            resident_bytes: 900 * mebibyte,
+            proportional_bytes: 400 * mebibyte,
+            private_dirty_bytes: 300 * mebibyte,
+            guest_resident_bytes: 400 * mebibyte,
+            guest_private_dirty_bytes: 150 * mebibyte,
+            code_buffer_bytes: 128 * mebibyte,
+            code_resident_bytes: 100 * mebibyte,
+            code_private_dirty_bytes: 100 * mebibyte,
+        };
+
+        // 512 guest + 128 code + 2 * (300 - 150 - 100) other.
+        assert_eq!(
+            regions.child_dirty_budget(512 * mebibyte),
+            Some((512 + 128 + 100) * mebibyte)
+        );
+
+        // Already-dirtied guest pages are not charged again.
+        let dirtier = SourceMemoryRegions {
+            private_dirty_bytes: 650 * mebibyte,
+            guest_private_dirty_bytes: 500 * mebibyte,
+            ..regions
+        };
+        assert_eq!(
+            dirtier.child_dirty_budget(512 * mebibyte),
+            Some((512 + 128 + 100) * mebibyte)
+        );
+
+        // Classified bytes can never exceed the total.
+        let inconsistent = SourceMemoryRegions {
+            private_dirty_bytes: 10 * mebibyte,
+            ..regions
+        };
+        assert_eq!(inconsistent.child_dirty_budget(512 * mebibyte), None);
     }
 
     #[test]
