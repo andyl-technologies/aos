@@ -140,7 +140,9 @@ impl RamTransferSender {
         limits: RamTransferLimits,
         original: &DecodeBudget,
     ) -> Result<Self, RamStoreError> {
-        original.verify_live().map_err(admission)?;
+        original
+            .verify_live()
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         store.admit_topology(root.record().topology())?;
         let account = super::store_boundary::WorkAccount::new(original)?;
         let world_length = whole_world_root.with_encoded_text(<[u8]>::len);
@@ -152,8 +154,12 @@ impl RamTransferSender {
             .and_then(|n| n.checked_add(destination.len()))
             .ok_or(RamStoreError::Limit("transfer offer allocation"))?;
         let peak = super::response::frame_peak(offer_length, true)?;
-        let offer_credit = original.reserve_scratch_bytes(peak).map_err(admission)?;
-        let initial_response_credit = original.reserve_scratch_bytes(peak).map_err(admission)?;
+        let offer_credit = original
+            .reserve_scratch_bytes(peak)
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
+        let initial_response_credit = original
+            .reserve_scratch_bytes(peak)
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         let path_count = root
             .record()
             .topology()
@@ -165,11 +171,13 @@ impl RamTransferSender {
             .unwrap_or(0);
         let path_credit = original
             .reserve_scratch_array::<path::PathEntry>(path_count)
-            .map_err(admission)?;
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         let control_credit = original
             .reserve_scratch_bytes(super::response::frame_peak(1028, false)?)
-            .map_err(admission)?;
-        original.verify_live().map_err(admission)?;
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
+        original
+            .verify_live()
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         let offer = RamTransferOffer {
             whole_world_root: whole_world_root.to_string(),
             ram_root: root.object_id().to_string(),

@@ -68,7 +68,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 644 bindings: 625 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 648 bindings: 629 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -3141,10 +3141,40 @@ Inventory `pm25lq4z5css91as35n27dcblvgqhnx6` validates 644 bindings across
 243 requirements: 600 model, 25 format and nineteen native bindings. There are
 still 142 uncovered requirements and zero fully qualified requirements. All
 771 ordinary storage tests, 95 policy controls and strict storage/portable-RAM
-Clippy pass. Hermetic storage and required application compilation are running;
-the latter uses immutable source `iixxwpz9k0jbgnb6pipsbj22dxz8qhaw`.
+Clippy pass. Hermetic storage output `q20dbp2i67h9cvawchcdhmwhhxvap3dh`
+passes all 121 selected cases and 142 independently checked successful nested
+summaries. Required application compilation is running from immutable source
+`iixxwpz9k0jbgnb6pipsbj22dxz8qhaw`; all 5,422 committed Rust/TOML files and
+six fixtures match `aa2af064a5` before subsequent source edits.
 These finite component checks supply no native resource or whole-world
 execution authority.
+
+Sender construction now preserves the explicit original on all six direct
+admission-error paths, using the same existing inline bridge. Successful offers,
+temporary loans, verification counts and the portable protocol remain unchanged.
+
+The genuine predecessor passes the healthy offer control but fails three
+refusals: constructor entry, first offer-frame credit and final validation each
+release all 8,773 bytes of existing caller prepayment while the actual typed
+revocation error remains alive. The credit control measures the real healthy
+entry and diagnostic-slot prefix; the final-validation control measures the
+complete healthy constructor. Each refusal irreversibly revokes the same
+original. All four controls pass after correction, retaining the caller until
+final error close while the foreign ambient account acquires no loan and closes
+independently. The healthy control checks the actual immutable offer and return
+of all temporary caller credit. Its seventeen-byte RAM root has independent
+backend funding. The finite caller allowance covers both bounded root-decoder
+overlaps; an initial insufficient-allowance fixture attempt is not counted as
+causal evidence for the later cuts. No production resource limit is raised.
+
+Inventory `xs5zi5wfj1bhgbfkwx260r4izb7lc6ab` validates 648 bindings across
+243 requirements: 604 model, 25 format and nineteen native bindings. There are
+still 142 uncovered requirements and zero fully qualified requirements. All
+775 ordinary storage tests, 95 policy controls and strict storage/portable-RAM
+Clippy pass. Hermetic storage and required application checks are running.
+The final application source is
+`xb2nf76xq255p8bfvh614ff38nxr3v38`. These component controls do not qualify
+complete-world binding, native admission, physical return or performance parity.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`

@@ -28,6 +28,7 @@ mod receiver_allocation;
 mod record_prepay;
 mod representation_domains;
 mod root_decode;
+mod sender_admission;
 mod update_admission;
 mod update_allocation;
 mod update_coordinates;
