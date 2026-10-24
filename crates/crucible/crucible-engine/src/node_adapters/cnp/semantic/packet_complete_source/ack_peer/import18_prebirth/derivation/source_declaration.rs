@@ -21,6 +21,9 @@ mod encoding;
 #[path = "source_declaration/initial_projection.rs"]
 mod initial_projection;
 
+#[path = "source_declaration/initial_funding.rs"]
+mod initial_funding;
+
 #[path = "source_declaration/launch_identity.rs"]
 mod launch_identity;
 

@@ -404,6 +404,18 @@ impl PreparedCompleteRestoration {
         });
         let observed = self.observe_import18_templates_data([0; 3]);
         result.and(observed)?;
+        self.note_funded_operation_stage("quoting original Initial producer formatters");
+        self.observe_import18_templates_data(
+            PacketCompleteSemanticSource::native_import18_original_initial_funding_counter_data(),
+        )?;
+        let prewalk = self.import18_templates.members[selected]
+            .output
+            .completed_data()?
+            .native_import18_original_initial_funding_prewalk_data();
+        // End the genuine Source/Birth loan before either whole-owner census.
+        let observed = self.observe_import18_templates_data([0; 3]);
+        let prewalk = prewalk.and_then(|row| observed.map(|()| row))?;
+        self.observe_import18_templates_data(prewalk)?;
         self.prepare_funded_launch_identity(selected)?;
         self.import18_templates.members[selected].stage = Stage::PrivateBirth;
         Ok(())

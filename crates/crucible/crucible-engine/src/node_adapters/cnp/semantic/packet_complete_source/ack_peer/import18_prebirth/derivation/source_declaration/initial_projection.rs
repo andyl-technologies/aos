@@ -11,7 +11,7 @@ use crucible_node_transport::reference_packet::service::complete_restore::import
     native_import18_initial_construction_data, native_import18_initial_quote_formatter_data,
 };
 
-type InitialOperands<'a> = (
+pub(super) type InitialOperands<'a> = (
     &'a PacketNative5SourceLaunch,
     &'a Id,
     views::RegistrationView<'a>,
@@ -108,7 +108,7 @@ impl PacketCompleteSemanticSource {
 }
 
 impl OriginalSourceDeclarationLoan<'_> {
-    fn initial_operands(&self) -> Result<InitialOperands<'_>, RuntimeError> {
+    pub(super) fn initial_operands(&self) -> Result<InitialOperands<'_>, RuntimeError> {
         let state = self
             .source
             .native_import18_derivation

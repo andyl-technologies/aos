@@ -159,3 +159,19 @@ fn valid_failed_result_is_not_a_success_bank_range() {
         Err(RuntimeError::OwnerUnavailable)
     );
 }
+
+#[test]
+fn ordinary_originals_refuse_initial_producer_prewalk_without_spending_birth() {
+    for reactive in [false, true] {
+        let source = original(reactive);
+        assert!(
+            source
+                .native_import18_original_initial_funding_prewalk_data()
+                .is_err()
+        );
+        assert!(source.native_import18_derivation.is_none());
+        assert!(source.native_import18_birth_construction.is_none());
+        assert!(!source.ack_birth_attempted);
+        assert_eq!(source.isolated_derivation_known_backing_data(0), Ok(0));
+    }
+}
