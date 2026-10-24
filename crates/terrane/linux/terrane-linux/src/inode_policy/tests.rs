@@ -93,10 +93,36 @@ fn directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch() {
     let kernel_read = crate::fuse_protocol::Request::parse(&kernel_read, 4096).unwrap();
     let original_node = std::num::NonZeroU64::new(link_node).unwrap();
     let original_handle = std::num::NonZeroU64::new(1).unwrap();
+    let mut pending_opens = crate::fuse_open::Queue::new(crate::fuse_open::Limits {
+        nodes: 1,
+        waiters: 1,
+        bytes: 4096,
+    })
+    .unwrap();
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "This fixed test origin anchors pure queue operations without reading a clock during allocation measurement or changing repository state."
+    )]
+    let open_now = std::time::Instant::now();
+    let open_timeout = std::time::Duration::from_secs(60);
     let mut output = [0; 512];
 
     let ((), allocations) = allocation::measure(|| {
         for _ in 0..3 {
+            let crate::fuse_open::Enqueued::Start(ticket) = pending_opens
+                .enqueue(original_node, original_handle, open_now, open_timeout)
+                .unwrap()
+            else {
+                panic!("fresh original open did not start its handoff");
+            };
+            pending_opens
+                .complete(ticket, crate::fuse_open::Outcome::Ready)
+                .unwrap();
+            assert_eq!(
+                pending_opens.next_reply(open_now).unwrap().outcome,
+                crate::fuse_open::Outcome::Ready
+            );
+            assert_eq!((pending_opens.pending(), pending_opens.waiting()), (0, 0));
             let read =
                 crate::fuse_read::Read::parse(kernel_read, original_node, original_handle).unwrap();
             assert_eq!(read.offset(), u64::MAX);

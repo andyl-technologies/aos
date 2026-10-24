@@ -177,11 +177,18 @@ PACKAGE_PATHS = {
 
 # The all-feature guest adds these cases without replacing the base inventory.
 FUSE_UNIT_PREFIXES = (
-    "fuse_dispatch::", "fuse_read::", "fuse_xattr::", "fuse_namespace::", "fuse_metadata::", "fuse_directory::",
+    "fuse_open::", "fuse_dispatch::", "fuse_read::", "fuse_xattr::", "fuse_namespace::", "fuse_metadata::", "fuse_directory::",
     "fuse_protocol::", "inode_policy::", "maintenance_channel::",
     "structural_index::", "worker_channel::",
 )
 FUSE_UNIT_TESTS = (
+    'fuse_open::tests::concurrent_same_inode_waiters_share_one_original_handoff',
+    'fuse_open::tests::individual_deadlines_and_late_joiners_never_cancel_the_shared_fetch',
+    'fuse_open::tests::stale_completions_cannot_resolve_a_new_fetch_for_the_same_node',
+    'fuse_open::tests::refusals_leave_original_waiters_and_ticket_sequence_unchanged',
+    'fuse_open::tests::abandoned_and_expired_waiters_preserve_handoffs_through_draining',
+    'fuse_open::tests::startup_budgets_and_completed_deadlines_remain_fail_closed',
+
     'fuse_read::tests::native_read_binds_original_node_and_handle_without_changing_unsigned_ranges',
     'fuse_read::tests::native_read_refuses_foreign_records_handles_padding_and_unnegotiated_flags',
 
@@ -336,6 +343,7 @@ def source_unit_inventory(workspace):
     gated = [
         ("structural_index", "lib.rs", "pub mod structural_index;"),
         ("inode_policy", "lib.rs", "pub mod inode_policy;"),
+        ("fuse_open", "lib.rs", "pub mod fuse_open;"),
         ("fuse_dispatch", "lib.rs", "pub mod fuse_dispatch;"),
         ("fuse_directory", "lib.rs", "pub mod fuse_directory;"),
         ("fuse_metadata", "lib.rs", "pub mod fuse_metadata;"),

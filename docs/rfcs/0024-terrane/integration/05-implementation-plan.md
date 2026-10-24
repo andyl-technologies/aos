@@ -16830,3 +16830,28 @@ The failed request remains recorded; a new disposable VM must execute the
 corrected setup. All 63 pure structural selectors at that checkpoint pass in
 72.537 seconds with complete source/ELF review (8,179 immutable files and 5,437
 bound inputs). That structural pass does not qualify the failed native request.
+
+
+### Bounded shared pending-open state
+
+The pending-open queue now reserves explicit node, waiter and byte budgets at
+startup. Concurrent waiters for one canonical node share one original backing
+ticket. Each waiter retains its own original response ID and arrival deadline;
+expiration returns EIO without cancelling the shared physical request. A new
+waiter arriving after an earlier timeout still joins that original request.
+Completion requires the exact nonrecycled ticket, so a delayed response cannot
+resolve a new attempt for the same node. A successful backing must be installed
+by the caller before completion and remains usable after the last waiter has
+expired. The serve process still owns late sealing and caching.
+
+Six pure tests pass: coalescing, independent expiry and late joins, stale versus
+new completions, unchanged refusal/sequence state at capacity, abandonment and
+draining without fetch cancellation, startup bounds and completed deadlines.
+The first-touch allocation fixture also exercises enqueue, completion and reply
+extraction with zero allocations. Strict all-feature/all-target Clippy passes;
+clock origins are confined to explicitly documented test-only calls. Both exact
+closed inventories include all six cases; structural selection is now 69 cases.
+This queue does no IO and does not launch the production scheduler, install a
+backing, create a handle, send a reply or acknowledge exposure release. Actual
+concurrent kernel-open composition and mandatory workspace compilation remain
+required. Trunk acceptance remains 27/64.

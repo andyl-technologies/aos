@@ -49,6 +49,15 @@ INODE_CASES = [
     "reserved_first_touch_and_checked_metadata_operations_allocate_nothing",
     "directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch",
 ]
+OPEN_PREFIX = "fuse_open::tests::"
+OPEN_CASES = [
+    'concurrent_same_inode_waiters_share_one_original_handoff',
+    'individual_deadlines_and_late_joiners_never_cancel_the_shared_fetch',
+    'stale_completions_cannot_resolve_a_new_fetch_for_the_same_node',
+    'refusals_leave_original_waiters_and_ticket_sequence_unchanged',
+    'abandoned_and_expired_waiters_preserve_handoffs_through_draining',
+    'startup_budgets_and_completed_deadlines_remain_fail_closed',
+]
 DISPATCH_PREFIX = "fuse_dispatch::tests::"
 DISPATCH_CASES = [
     'raw_lookup_getattr_and_readlink_share_one_original_namespace',
@@ -148,6 +157,7 @@ def main():
                                  (METADATA_PREFIX, METADATA_CASES, "metadata"),
                                  (NAMESPACE_PREFIX, NAMESPACE_CASES, "namespace"),
                                  (XATTR_PREFIX, XATTR_CASES, "xattr"),
+                                 (OPEN_PREFIX, OPEN_CASES, "open"),
                                  (DISPATCH_PREFIX, DISPATCH_CASES, "dispatch"),
                                  (READ_PREFIX, READ_CASES, "read")]:
         expected = [prefix + name for name in names]
