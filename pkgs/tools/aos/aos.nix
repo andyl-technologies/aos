@@ -831,7 +831,13 @@
             "$out/bin/.aos-unwrapped" \
             "$apm/bin/.aos-package-runtime-unwrapped" \
             "$apr/bin/.apr-unwrapped"; do
-            strip -s "$binary"
+            # Parser checks can briefly keep an executable mapped while their
+            # runtime threads exit. A fresh inode avoids ETXTBSY without changing
+            # the shared entry-point paths or dropping executable permissions.
+            stripped="$binary.stripped"
+            strip -s -o "$stripped" "$binary"
+            chmod --reference="$binary" "$stripped"
+            mv "$stripped" "$binary"
           done
 
           # Cargo links the binaries before they are distributed among the
