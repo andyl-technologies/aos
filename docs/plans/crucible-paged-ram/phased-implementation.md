@@ -86,11 +86,16 @@ root filesystem closure. Ninja retains its existing packaged Bash interpreter
 and build phases while exposing the upstream explicit shell-selection factory.
 The shared lockfile retains upstream dependency updates, including the current
 AWS dependency graph; the set of vendored registry packages matches master.
+The merged lockfile changes the vendor staging hash because the staging output
+also contains the complete lockfile. Its hash is recomputed from the matching
+registry archives and the merged lockfile; the pinned CBOR seed patch remains
+applied after archive verification.
 
 The crate migration check and focused Nix formatting checks pass. Inventory
 `yxhq4f1k81d99zk5xx52l3x3nhl3ks41` preserves all 651 bindings, 142 uncovered
-requirements and zero qualifications. The engineering-hygiene derivation
-evaluates successfully with content-bound reviews of the merged sources.
+requirements and zero qualifications. Engineering hygiene passes at
+`zcvijji792yblcv5r97p578pnwrl3izi`, with content-bound reviews of the merged
+sources.
 Merged-source Rust compilation, component execution and ABI execution remain
 pending; pre-merge passing checks do not qualify this merge. No native fixture
 execution or activation authority follows from these source and inventory checks.
