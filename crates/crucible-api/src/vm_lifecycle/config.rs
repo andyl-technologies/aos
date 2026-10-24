@@ -545,51 +545,96 @@ impl ProductionVmLifecycleConfig {
 }
 
 impl ProductionVmLifecycleConfig {
-    /// Reports whether `other` launches and drives guests exactly as `self` does.
+    /// Names every launch-basis field in which `other` differs from `self`.
     ///
     /// A retained source world keeps every process this configuration
     /// launched, so a replacement may differ only in start-specific replay
     /// inputs and host completion bounds. Shared stores and preemption flights
-    /// compare by identity because a copy would be a different authority.
-    pub(super) fn launch_basis_matches(&self, other: &Self) -> bool {
-        self.executable == other.executable
-            && self.plugin == other.plugin
-            && self.native_guest_architecture == other.native_guest_architecture
-            && self.guest_assets == other.guest_assets
-            && self.initrd == other.initrd
-            && self.kernel_cmdline_prefix == other.kernel_cmdline_prefix
-            && self.root_image_format == other.root_image_format
-            && self.run_state_root == other.run_state_root
-            && self.run_ceiling_ticks == other.run_ceiling_ticks
-            && self.quantum_budget == other.quantum_budget
-            && self.maximum_host_workers == other.maximum_host_workers
-            && self.rendezvous_interval_ticks == other.rendezvous_interval_ticks
-            && self.coverage == other.coverage
-            && self.rr_control_boundary_trace == other.rr_control_boundary_trace
-            && self.debug_gateway_executable == other.debug_gateway_executable
-            && self.debug == other.debug
-            && self.fault_replay == other.fault_replay
-            && match (&self.fault_trace_segments, &other.fault_trace_segments) {
-                (None, None) => true,
-                (Some(left), Some(right)) => Arc::ptr_eq(left, right),
-                _ => false,
-            }
-            && same_store(
-                self.signal_artifacts.as_ref(),
-                other.signal_artifacts.as_ref(),
-            )
-            && same_store(
-                self.world_artifacts.as_ref(),
-                other.world_artifacts.as_ref(),
-            )
-            && match (
-                &self.bounded_scheduler_preemption,
-                &other.bounded_scheduler_preemption,
-            ) {
-                (None, None) => true,
-                (Some(left), Some(right)) => Arc::ptr_eq(&left.pending, &right.pending),
-                _ => false,
-            }
+    /// compare by identity because a copy would be a different authority. An
+    /// empty result means `other` launches and drives guests exactly as `self`
+    /// does; a refused retained source reports the names.
+    pub(super) fn launch_basis_mismatches(&self, other: &Self) -> Vec<&'static str> {
+        let fault_trace_segments = match (&self.fault_trace_segments, &other.fault_trace_segments) {
+            (None, None) => true,
+            (Some(left), Some(right)) => Arc::ptr_eq(left, right),
+            _ => false,
+        };
+        let bounded_scheduler_preemption = match (
+            &self.bounded_scheduler_preemption,
+            &other.bounded_scheduler_preemption,
+        ) {
+            (None, None) => true,
+            (Some(left), Some(right)) => Arc::ptr_eq(&left.pending, &right.pending),
+            _ => false,
+        };
+        [
+            ("executable", self.executable == other.executable),
+            ("plugin", self.plugin == other.plugin),
+            (
+                "native_guest_architecture",
+                self.native_guest_architecture == other.native_guest_architecture,
+            ),
+            ("guest_assets", self.guest_assets == other.guest_assets),
+            ("initrd", self.initrd == other.initrd),
+            (
+                "kernel_cmdline_prefix",
+                self.kernel_cmdline_prefix == other.kernel_cmdline_prefix,
+            ),
+            (
+                "root_image_format",
+                self.root_image_format == other.root_image_format,
+            ),
+            (
+                "run_state_root",
+                self.run_state_root == other.run_state_root,
+            ),
+            (
+                "run_ceiling_ticks",
+                self.run_ceiling_ticks == other.run_ceiling_ticks,
+            ),
+            (
+                "quantum_budget",
+                self.quantum_budget == other.quantum_budget,
+            ),
+            (
+                "maximum_host_workers",
+                self.maximum_host_workers == other.maximum_host_workers,
+            ),
+            (
+                "rendezvous_interval_ticks",
+                self.rendezvous_interval_ticks == other.rendezvous_interval_ticks,
+            ),
+            ("coverage", self.coverage == other.coverage),
+            (
+                "rr_control_boundary_trace",
+                self.rr_control_boundary_trace == other.rr_control_boundary_trace,
+            ),
+            (
+                "debug_gateway_executable",
+                self.debug_gateway_executable == other.debug_gateway_executable,
+            ),
+            ("debug", self.debug == other.debug),
+            ("fault_replay", self.fault_replay == other.fault_replay),
+            ("fault_trace_segments", fault_trace_segments),
+            (
+                "signal_artifacts",
+                same_store(
+                    self.signal_artifacts.as_ref(),
+                    other.signal_artifacts.as_ref(),
+                ),
+            ),
+            (
+                "world_artifacts",
+                same_store(
+                    self.world_artifacts.as_ref(),
+                    other.world_artifacts.as_ref(),
+                ),
+            ),
+            ("bounded_scheduler_preemption", bounded_scheduler_preemption),
+        ]
+        .into_iter()
+        .filter_map(|(field, matches)| (!matches).then_some(field))
+        .collect()
     }
 
     /// Reports whether this configuration still schedules a branch boundary.

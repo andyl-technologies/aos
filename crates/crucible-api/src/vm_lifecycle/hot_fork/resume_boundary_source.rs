@@ -16,6 +16,8 @@ impl ProductionVmLifecycleLoop {
     /// `config` replaces the configuration children inherit. It must match
     /// the current launch basis (executables, guest assets, recovery root,
     /// scheduler bounds, and shared stores) and schedule no branch boundary.
+    /// A `config` that names no trace segment store adopts the one this world
+    /// launched with, because its runtime keeps sealing segments there.
     /// The launcher's attempt bindings are released before preparation, so a
     /// later attempt cancellation cannot reach the retained processes.
     ///
@@ -31,10 +33,23 @@ impl ProductionVmLifecycleLoop {
         config: ProductionVmLifecycleConfig,
     ) -> Result<ProductionVmHotForkSourceWorld, ProductionVmHotForkSourceWorldPreparationFailure>
     {
-        if !self.config.launch_basis_matches(&config) {
+        // A resume configuration derived from the trusted base names no
+        // attempt store; the retained world's segments already live in its own.
+        let config = match (
+            &config.fault_trace_segments,
+            &self.config.fault_trace_segments,
+        ) {
+            (None, Some(segments)) => config.with_fault_trace_segments(Arc::clone(segments)),
+            _ => config,
+        };
+        let mismatches = self.config.launch_basis_mismatches(&config);
+        if !mismatches.is_empty() {
             return Err(ProductionVmHotForkSourceWorldPreparationFailure::new(
                 self,
-                "retained-source configuration changes the launch basis",
+                format!(
+                    "retained-source configuration changes the launch basis: {}",
+                    mismatches.join(",")
+                ),
                 Vec::new(),
             ));
         }

@@ -105,8 +105,58 @@ fn resume_configuration_cannot_change_the_launch_basis() {
         .err()
         .unwrap_or_else(|| panic!("a changed quantum budget must be rejected"));
 
+    assert!(
+        failure
+            .to_string()
+            .ends_with("launch basis: quantum_budget"),
+        "the refusal names the changed field: {failure}"
+    );
     assert!(!released.load(Ordering::SeqCst));
     assert_eq!(recovered(failure).config.quantum_budget(), budget);
+}
+
+#[test]
+fn resume_configuration_keeps_the_attempt_trace_segment_store() {
+    let (mut lifecycle, _released) = lifecycle_with_launcher(false);
+    let segments: Arc<dyn SegmentSink> =
+        Arc::new(crucible::segment_store::SharedSegmentStore::new());
+    let trusted = lifecycle.config.clone();
+    lifecycle.config = trusted
+        .clone()
+        .with_fault_trace_segments(Arc::clone(&segments));
+
+    // A resume configuration derived from the trusted base names no store;
+    // the retained world keeps sealing into the one it launched with.
+    let source = lifecycle
+        .prepare_hot_fork_source_world_with_config(trusted)
+        .unwrap_or_else(|error| panic!("an unset store should adopt the launched one: {error}"));
+
+    let inherited = source.continuation().config.fault_trace_segments.as_ref();
+    assert!(inherited.is_some_and(|inherited| Arc::ptr_eq(inherited, &segments)));
+}
+
+#[test]
+fn resume_configuration_cannot_replace_the_trace_segment_store() {
+    let (mut lifecycle, released) = lifecycle_with_launcher(false);
+    let launched: Arc<dyn SegmentSink> =
+        Arc::new(crucible::segment_store::SharedSegmentStore::new());
+    let replacement: Arc<dyn SegmentSink> =
+        Arc::new(crucible::segment_store::SharedSegmentStore::new());
+    let trusted = lifecycle.config.clone();
+    lifecycle.config = trusted.clone().with_fault_trace_segments(launched);
+
+    let failure = lifecycle
+        .prepare_hot_fork_source_world_with_config(trusted.with_fault_trace_segments(replacement))
+        .err()
+        .unwrap_or_else(|| panic!("a different trace store must be rejected"));
+
+    assert!(
+        failure
+            .to_string()
+            .ends_with("launch basis: fault_trace_segments"),
+        "the refusal names the store: {failure}"
+    );
+    assert!(!released.load(Ordering::SeqCst));
 }
 
 #[test]
