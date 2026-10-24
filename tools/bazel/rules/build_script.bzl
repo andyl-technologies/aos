@@ -7,7 +7,7 @@ load("@rules_rust//rust:rust_common.bzl", "BuildInfo")
 load(":compile.bzl", "rust_binary")
 load(":license.bzl", "license_tags")
 
-def aos_rust_build_script(name, package, src, deps = [], data = [], tools = [], env = {}, crate_features = [], visibility = None):
+def aos_rust_build_script(name, package, src, deps = [], data = [], tools = [], env = {}, env_files = [], crate_features = [], links = "", visibility = None):
     """Runs a Rust generator directly; no Cargo executable or manifest is used."""
     rust_binary(
         name = name + "_program",
@@ -33,10 +33,12 @@ def aos_rust_build_script(name, package, src, deps = [], data = [], tools = [], 
         data_runfiles = ":" + name + "_inputs",
         pkg_name = package.name,
         version = package.version,
+        links = links,
         deps = deps,
         data = data,
         tools = tools,
         build_script_env = env,
+        build_script_env_files = env_files,
         crate_features = crate_features,
         use_default_shell_env = 0,
         tags = license_tags([], package.license_domain),

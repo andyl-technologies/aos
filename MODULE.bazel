@@ -67,6 +67,7 @@ include("//third_party/rust:crucible-cli/repositories.MODULE.bazel")
 include("//third_party/rust:formats/repositories.MODULE.bazel")
 
 include("//third_party/rust:native-foundation/repositories.MODULE.bazel")
+include("//third_party/rust:native-bindings/repositories.MODULE.bazel")
 
 include("//third_party/rust:native-foundation-tests/repositories.MODULE.bazel")
 

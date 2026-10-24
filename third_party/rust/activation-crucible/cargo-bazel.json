@@ -1,5 +1,5 @@
 {
-  "checksum": "4e96dd27443f64e51496ecf7a97e68627a71e24d78706cd402cc34d787fe49c3",
+  "checksum": "2485856cc8fbc0e642309d5d3835684013d358dd6d77065048c3f08d95beb588",
   "crates": {
     "aho-corasick 1.1.4": {
       "name": "aho-corasick",
@@ -56,14 +56,14 @@
       ],
       "license_file": "LICENSE-MIT"
     },
-    "anyhow 1.0.102": {
+    "anyhow 1.0.103": {
       "name": "anyhow",
-      "version": "1.0.102",
+      "version": "1.0.103",
       "package_url": "https://github.com/dtolnay/anyhow",
       "repository": {
         "Http": {
-          "url": "https://static.crates.io/crates/anyhow/1.0.102/download",
-          "sha256": "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+          "url": "https://static.crates.io/crates/anyhow/1.0.103/download",
+          "sha256": "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
         }
       },
       "targets": [
@@ -107,14 +107,14 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "build_script_build"
             }
           ],
           "selects": {}
         },
         "edition": "2021",
-        "version": "1.0.102"
+        "version": "1.0.103"
       },
       "build_script_attrs": {
         "compile_data_glob": [
@@ -834,7 +834,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -3380,7 +3380,7 @@
     ]
   },
   "direct_deps": [
-    "anyhow 1.0.102",
+    "anyhow 1.0.103",
     "blake3 1.8.5",
     "libc 0.2.186",
     "regex 1.12.4",

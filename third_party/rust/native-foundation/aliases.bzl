@@ -1,11 +1,11 @@
 """Generated direct dependency labels for this resolved family."""
 
 CRATES = {
-    "anyhow": "@aos_native_foundation_crates__anyhow-1.0.102//:anyhow",
+    "anyhow": "@aos_native_foundation_crates__anyhow-1.0.103//:anyhow",
     "async-trait": "@aos_native_foundation_crates__async-trait-0.1.89//:async_trait",
-    "aws-config": "@aos_native_foundation_crates__aws-config-1.8.17//:aws_config",
-    "aws-sdk-s3": "@aos_native_foundation_crates__aws-sdk-s3-1.134.0//:aws_sdk_s3",
-    "aws-types": "@aos_native_foundation_crates__aws-types-1.3.16//:aws_types",
+    "aws-config": "@aos_native_foundation_crates__aws-config-1.13.0//:aws_config",
+    "aws-sdk-s3": "@aos_native_foundation_crates__aws-sdk-s3-1.155.0//:aws_sdk_s3",
+    "aws-types": "@aos_native_foundation_crates__aws-types-1.7.0//:aws_types",
     "base64": "@aos_native_foundation_crates__base64-0.22.1//:base64",
     "bytes": "@aos_native_foundation_crates__bytes-1.11.1//:bytes",
     "crc32fast": "@aos_native_foundation_crates__crc32fast-1.5.0//:crc32fast",
@@ -14,6 +14,10 @@ CRATES = {
     "flate2": "@aos_native_foundation_crates__flate2-1.1.9//:flate2",
     "futures-util": "@aos_native_foundation_crates__futures-util-0.3.32//:futures_util",
     "hex": "@aos_native_foundation_crates__hex-0.4.3//:hex",
+    "libc": "@aos_native_foundation_crates__libc-0.2.186//:libc",
+    "libz-sys": "@aos_native_foundation_crates__libz-sys-1.1.28//:libz_sys",
+    "openssl-sys": "@aos_native_foundation_crates__openssl-sys-0.9.116//:openssl_sys",
+    "pkg-config": "@aos_native_foundation_crates__pkg-config-0.3.33//:pkg_config",
     "rand": "@aos_native_foundation_crates__rand-0.9.4//:rand",
     "reqwest": "@aos_native_foundation_crates__reqwest-0.12.28//:reqwest",
     "rustix": "@aos_native_foundation_crates__rustix-1.1.4//:rustix",

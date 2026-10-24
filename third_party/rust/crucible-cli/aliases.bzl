@@ -2,8 +2,8 @@
 
 CRATES = {
     "aes-gcm": "@aos_crucible_cli_crates__aes-gcm-0.10.3//:aes_gcm",
-    "aws-credential-types": "@aos_crucible_cli_crates__aws-credential-types-1.2.14//:aws_credential_types",
-    "aws-sdk-s3": "@aos_crucible_cli_crates__aws-sdk-s3-1.134.0//:aws_sdk_s3",
+    "aws-credential-types": "@aos_crucible_cli_crates__aws-credential-types-1.3.1//:aws_credential_types",
+    "aws-sdk-s3": "@aos_crucible_cli_crates__aws-sdk-s3-1.155.0//:aws_sdk_s3",
     "axum": "@aos_crucible_cli_crates__axum-0.8.9//:axum",
     "blake3": "@aos_crucible_cli_crates__blake3-1.8.5//:blake3",
     "bytes": "@aos_crucible_cli_crates__bytes-1.11.1//:bytes",
@@ -13,6 +13,7 @@ CRATES = {
     "ed25519-dalek": "@aos_crucible_cli_crates__ed25519-dalek-2.2.0//:ed25519_dalek",
     "futures-util": "@aos_crucible_cli_crates__futures-util-0.3.32//:futures_util",
     "hex": "@aos_crucible_cli_crates__hex-0.4.3//:hex",
+    "http-body-util": "@aos_crucible_cli_crates__http-body-util-0.1.3//:http_body_util",
     "hyper-util": "@aos_crucible_cli_crates__hyper-util-0.1.20//:hyper_util",
     "libc": "@aos_crucible_cli_crates__libc-0.2.186//:libc",
     "num-bigint": "@aos_crucible_cli_crates__num-bigint-0.4.6//:num_bigint",
@@ -24,7 +25,7 @@ CRATES = {
     "reqwest": "@aos_crucible_cli_crates__reqwest-0.12.28//:reqwest",
     "rusqlite": "@aos_crucible_cli_crates__rusqlite-0.32.1//:rusqlite",
     "rustix": "@aos_crucible_cli_crates__rustix-1.1.4//:rustix",
-    "rustls": "@aos_crucible_cli_crates__rustls-0.23.40//:rustls",
+    "rustls": "@aos_crucible_cli_crates__rustls-0.23.46//:rustls",
     "rustls-pemfile": "@aos_crucible_cli_crates__rustls-pemfile-2.2.0//:rustls_pemfile",
     "rustls-pki-types": "@aos_crucible_cli_crates__rustls-pki-types-1.14.1//:rustls_pki_types",
     "serde": "@aos_crucible_cli_crates__serde-1.0.228//:serde",

@@ -23,7 +23,7 @@ cargo_toml_env_vars(
 rust_library(
     name = "async_broadcast",
     deps = [
-        "@aos_native_foundation_minimal_crates__event-listener-5.4.1//:event_listener",
+        "@aos_native_foundation_minimal_crates__event-listener-5.4.2//:event_listener",
         "@aos_native_foundation_minimal_crates__event-listener-strategy-0.5.4//:event_listener_strategy",
         "@aos_native_foundation_minimal_crates__futures-core-0.3.32//:futures_core",
         "@aos_native_foundation_minimal_crates__pin-project-lite-0.2.17//:pin_project_lite",

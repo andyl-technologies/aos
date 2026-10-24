@@ -1,14 +1,14 @@
 {
   "contracts": {
-    "third_party/rust/BUILD.bazel": "dc8a09cd11de7d1471888484d7c4940931f13b8154e71fe906fbae4235f82d2e",
+    "third_party/rust/BUILD.bazel": "1c9f96da6969383195df8a498ba10f95d1b4ddf47b1e62ee47ca122802b87fcf",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
-    "tools/bazel/metadata/update_rust.py": "dbc88bf6155320e30cea520dfaa5c05a43fea136d9daa1b6c04c478894e4b3d7",
+    "tools/bazel/metadata/update_rust.py": "6dba4f1b82faf10f246c5cefa1ea2c92a7d075c4cc58b8da9183b9a34080f28c",
     "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
   },
   "family": "hub-portable",
   "generated_files": {
     "BUILD.aho-corasick-1.1.4.bazel": "50863fab8f10861eae1686e97af49d78ae560dced653627d8fa0527337d0bdfc",
-    "BUILD.anyhow-1.0.102.bazel": "cd7902ec43c1153ad4f0142e5beb923164146910962e53c1b9d87ae3e6361fdc",
+    "BUILD.anyhow-1.0.103.bazel": "51d06c3788a39b0b8f1366b83ac39151b0b876e08f35d64c9ca25a573aab89d0",
     "BUILD.base64-0.21.7.bazel": "f97d7950ac8102ee67e9f198f2d81a4558f040768255ada93a64b90a20d194ee",
     "BUILD.bitflags-2.13.0.bazel": "cae33904771a0d352146052a25e040e8cf13fb1ce54d91a63b95286ea531c9dd",
     "BUILD.bytes-1.11.1.bazel": "80c29901e1fbcabdc2890180e42f9fee8f758f567f1835088eb96d9a8352fc0a",
@@ -42,7 +42,7 @@
     "BUILD.proc-macro2-1.0.106.bazel": "23ea6c0714f4c3d166d88db6e6e7b4d902b39e7491bf29bc3559dcb5c8deb795",
     "BUILD.prost-0.13.5.bazel": "4759961e93f4e54e1bc5f027206e08f9abccf7a151760c7bdf6067078404b229",
     "BUILD.prost-build-0.13.5.bazel": "b2c65e5adbc34ad186c9ad11513aee22032abe55455c2bac7cb1285b369ae8f1",
-    "BUILD.prost-derive-0.13.5.bazel": "1b76484661fb22569f251adeda9e30105e892d6203bb5990c609b5fbcc22d952",
+    "BUILD.prost-derive-0.13.5.bazel": "b45e641a3c482efc8f3da064c41e6827e02362603cf5e46721b8bd9441bcafd9",
     "BUILD.prost-types-0.13.5.bazel": "c5bb0e42c0951fed83fd4e038edd13eb2ac65bcb6b37b58ce4255686d11a258c",
     "BUILD.quote-1.0.46.bazel": "49ad1426662c2a260bc63cd83ecc15628e1d0ec37df4040c83d2e877d42bba59",
     "BUILD.r-efi-6.0.0.bazel": "15290d134b85d8b9587cb0293ccb010b86e2a0bca93cca54a893fa531a37cffc",
@@ -62,23 +62,23 @@
     "BUILD.wasip2-1.0.4+wasi-0.2.12.bazel": "07de05fcffb2cdb1c992069173a15b0fe218c6223a5d9dde833cc85c717bf5aa",
     "BUILD.wasip3-0.4.0+wasi-0.3.0-rc-2026-01-06.bazel": "c3c222195d20cd28e9a2d6041f59520d9574249cd4364c5b245f0946a052aed9",
     "BUILD.wasm-encoder-0.244.0.bazel": "170997612b39c3a2fe919723134915343db3d40d0a907e8c644dc802900c8282",
-    "BUILD.wasm-metadata-0.244.0.bazel": "81eba134c829caafc14eae213b31db5ad738a818a7bc4cf607cc2f5dc49fe62e",
+    "BUILD.wasm-metadata-0.244.0.bazel": "56250f02f47ea90171368a50f5dd8f3994838fa14f942b19444e53554a7f09b0",
     "BUILD.wasmparser-0.244.0.bazel": "6e794a63decbf162cc575b311829068c47aba86a0ac79ea28a1307ef53bbf324",
     "BUILD.windows-link-0.2.1.bazel": "40e660d192bbe56ca439a84580d8b9c93e8d2a12155c79bc463c37219afc4711",
     "BUILD.windows-sys-0.61.2.bazel": "a380e6cd53ecea7ee25725d6ff12a061043c96ca8201d48a428b1b9e447206f3",
     "BUILD.wit-bindgen-0.51.0.bazel": "ebe4078bafca05713394d44558f38049e9e1dc6d5c040779705451319f1448d9",
     "BUILD.wit-bindgen-0.57.1.bazel": "089f9e1306faf1f051f9f8ff29dac6ca71bb69362c9499f3b8e29a908a052375",
-    "BUILD.wit-bindgen-core-0.51.0.bazel": "2189a503f3532eec85216734d6dc66d6489eb123144aee925c753af9fc978cb3",
-    "BUILD.wit-bindgen-rust-0.51.0.bazel": "c78c128231037c77f534f560f331e19a604de0925d35d55fb004a1029e86ec50",
-    "BUILD.wit-bindgen-rust-macro-0.51.0.bazel": "33a83a313c62a5e623db4f2b7643e3fdbb97eb80f8a4513ce0b967cd49ce1a0a",
-    "BUILD.wit-component-0.244.0.bazel": "47b05ba9561ced111dabdcc7bd08c1d5535eb175d7069a449a302beec48bb761",
-    "BUILD.wit-parser-0.244.0.bazel": "ea2c44ff299f622fb27e486db466d48c7ca7abe6ed5e3118c05a75a0b0b736a8",
+    "BUILD.wit-bindgen-core-0.51.0.bazel": "e89d9a7906a48385eb4030fbfd05df8283e7654184ace0971ba3a411d93cfb8a",
+    "BUILD.wit-bindgen-rust-0.51.0.bazel": "267df1b008e7890cca78e4e94459179a124c6c671d0e427752581c8accb65ad4",
+    "BUILD.wit-bindgen-rust-macro-0.51.0.bazel": "59e485b189fab46468d650bc8c1f4d70cec8a1781f5ad15fe1fa357e8cf5d05d",
+    "BUILD.wit-component-0.244.0.bazel": "396c384e93e96b7fad0d2bcf9a8b37527d6fa013c94decb66bd634eb3aaf1c11",
+    "BUILD.wit-parser-0.244.0.bazel": "e2123ebaf561815577eba12c66cd146ba9fe8971c5d70bea6d07addef9932f12",
     "BUILD.zmij-1.0.21.bazel": "194288d58c05923c29dfded37a5cd24ea5b1114924c3509afbebae7a955f6d4f",
-    "Cargo.lock": "1b5a7b078ac73974ad540c90d45b5524f1e32d5bed38f2906e9cbe442e13a512",
+    "Cargo.lock": "4b98ff2b7d286fe7ab35445dd40a68a0de4135c7ec0b76ee90fc5021e5e3c97a",
     "aliases.bzl": "15ed0971b01b29a77343c750f1a9bbd917cbc03f2d3e02910ba68506295d6563",
-    "cargo-bazel.json": "bd5067193cba8b135cb09a4840e0c0f673079361fa562f3aefde1afe71f3e5e6",
+    "cargo-bazel.json": "236d61478f71ca8e0c3d7144562cf8094093fdaef87799af30d6632ef7f393ea",
     "generator-config.json": "61bd8b33bda5297f77fdfc4c16c094a5aae4066ede653630a46c8db408729fd9",
-    "repositories.MODULE.bazel": "56100811b11c0ea0f50d239a6e45249c9369277f1e47231eb520dc6343f8b0a6"
+    "repositories.MODULE.bazel": "70abb23757a84cacebb89703b9f8e1ae290470db48ce84447d6bc414f006b610"
   },
   "schema_version": 1,
   "sources": {
@@ -92,15 +92,15 @@
       "url": "https://static.crates.io/crates/aho-corasick/1.1.4/download",
       "version": "1.1.4"
     },
-    "aos_hub_portable_crates__anyhow-1.0.102": {
-      "build_file": "BUILD.anyhow-1.0.102.bazel",
+    "aos_hub_portable_crates__anyhow-1.0.103": {
+      "build_file": "BUILD.anyhow-1.0.103.bazel",
       "license": "MIT OR Apache-2.0",
       "license_domain": "apache-host",
       "name": "anyhow",
-      "sha256": "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c",
-      "strip_prefix": "anyhow-1.0.102",
-      "url": "https://static.crates.io/crates/anyhow/1.0.102/download",
-      "version": "1.0.102"
+      "sha256": "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3",
+      "strip_prefix": "anyhow-1.0.103",
+      "url": "https://static.crates.io/crates/anyhow/1.0.103/download",
+      "version": "1.0.103"
     },
     "aos_hub_portable_crates__base64-0.21.7": {
       "build_file": "BUILD.base64-0.21.7.bazel",
@@ -774,7 +774,7 @@
       "Zlib OR Apache-2.0 OR MIT"
     ],
     "contracts": {
-      "third_party/rust/BUILD.bazel": "dc8a09cd11de7d1471888484d7c4940931f13b8154e71fe906fbae4235f82d2e",
+      "third_party/rust/BUILD.bazel": "1c9f96da6969383195df8a498ba10f95d1b4ddf47b1e62ee47ca122802b87fcf",
       "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
       "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
     },

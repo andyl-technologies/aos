@@ -3,7 +3,7 @@
 load("@rules_rust//crate_universe:defs.bzl", "crate")
 
 HUB_CONSOLE_PACKAGES = {
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "base64": crate.spec(version = "=0.22.1"),
     "crc32fast": crate.spec(version = "=1.5.0"),
     "ed25519-dalek": crate.spec(version = "=2.2.0", features = ["pkcs8"]),
@@ -25,7 +25,7 @@ HUB_CONSOLE_PACKAGES = {
 }
 
 HUB_CONSOLE_WASM_PACKAGES = {
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "base64": crate.spec(version = "=0.22.1"),
     "crc32fast": crate.spec(version = "=1.5.0"),
     "ed25519-dalek": crate.spec(version = "=2.2.0", features = ["pkcs8"]),

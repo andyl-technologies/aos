@@ -27,7 +27,7 @@ cargo_toml_env_vars(
 rust_proc_macro(
     name = "wit_bindgen_rust_macro",
     deps = [
-        "@aos_hub_service_all_features_crates__anyhow-1.0.102//:anyhow",
+        "@aos_hub_service_all_features_crates__anyhow-1.0.103//:anyhow",
         "@aos_hub_service_all_features_crates__prettyplease-0.2.37//:prettyplease",
         "@aos_hub_service_all_features_crates__proc-macro2-1.0.106//:proc_macro2",
         "@aos_hub_service_all_features_crates__quote-1.0.46//:quote",

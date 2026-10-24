@@ -9,6 +9,7 @@
     aos-registry-client = "crates/registry/aos-registry-client";
   };
   dependencyPackages = {
+    libssh2-sys = "crates/bindings/libssh2-sys";
     aos-activation = "crates/activation/aos-activation";
     aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
     aos-cli-ui = "crates/cli/aos-cli-ui";

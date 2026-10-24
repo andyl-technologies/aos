@@ -2,7 +2,7 @@
 aos_crate = use_repo_rule("//tools/bazel/toolchains:repositories.bzl", "aos_tools_repository")
 
 aos_crate(name = "aos_hub_portable_crates__aho-corasick-1.1.4")
-aos_crate(name = "aos_hub_portable_crates__anyhow-1.0.102")
+aos_crate(name = "aos_hub_portable_crates__anyhow-1.0.103")
 aos_crate(name = "aos_hub_portable_crates__base64-0.21.7")
 aos_crate(name = "aos_hub_portable_crates__bitflags-2.13.0")
 aos_crate(name = "aos_hub_portable_crates__bytes-1.11.1")

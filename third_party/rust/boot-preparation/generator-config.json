@@ -5,17 +5,10 @@
       "additive_build_file_content": null,
       "alias_rule": null,
       "build_script_compile_data": null,
-      "build_script_data": [
-        "@aos_native//:openssl_files",
-        "@aos_native//:crypto_files",
-        "@aos_native//:zlib_files",
-        "@aos_native//:zlib/cflags"
-      ],
+      "build_script_data": null,
       "build_script_data_glob": null,
       "build_script_deps": null,
-      "build_script_env": {
-        "CFLAGS": "@$(execpath @aos_native//:zlib/cflags)"
-      },
+      "build_script_env": null,
       "build_script_exec_properties": null,
       "build_script_link_deps": null,
       "build_script_proc_macro_deps": null,
@@ -34,14 +27,12 @@
       "disable_pipelining": false,
       "extra_aliased_targets": null,
       "gen_binaries": null,
-      "gen_build_script": null,
+      "gen_build_script": false,
       "label_injections": null,
-      "link_deps": [
-        "@aos_native//:openssl",
-        "@aos_native//:crypto",
-        "@aos_native//:zlib"
-      ],
-      "override_targets": null,
+      "link_deps": null,
+      "override_targets": {
+        "lib": "@//crates/bindings/libssh2-sys:lib"
+      },
       "patch_args": null,
       "patch_tool": null,
       "patches": null,

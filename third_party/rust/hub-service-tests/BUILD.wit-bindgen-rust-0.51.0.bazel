@@ -27,7 +27,7 @@ cargo_toml_env_vars(
 rust_library(
     name = "wit_bindgen_rust",
     deps = [
-        "@aos_hub_service_tests_crates__anyhow-1.0.102//:anyhow",
+        "@aos_hub_service_tests_crates__anyhow-1.0.103//:anyhow",
         "@aos_hub_service_tests_crates__heck-0.5.0//:heck",
         "@aos_hub_service_tests_crates__indexmap-2.14.0//:indexmap",
         "@aos_hub_service_tests_crates__prettyplease-0.2.37//:prettyplease",

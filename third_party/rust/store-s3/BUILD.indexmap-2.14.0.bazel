@@ -25,6 +25,7 @@ rust_library(
     deps = [
         "@aos_store_s3_crates__equivalent-1.0.2//:equivalent",
         "@aos_store_s3_crates__hashbrown-0.17.1//:hashbrown",
+        "@aos_store_s3_crates__serde_core-1.0.228//:serde_core",
     ],
     compile_data = glob(
         allow_empty = True,
@@ -40,6 +41,7 @@ rust_library(
     ),
     crate_features = [
         "default",
+        "serde",
         "std",
     ],
     crate_root = "src/lib.rs",

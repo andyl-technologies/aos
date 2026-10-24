@@ -50,7 +50,6 @@ DEPENDENCIES = [
     "//third_party/rust:core_p256",
     "//third_party/rust:core_rand",
     "//third_party/rust:core_reqwest",
-    "//third_party/rust:core_rsa",
     "//third_party/rust:core_rustix",
     "//third_party/rust:core_rustls_pemfile",
     "//third_party/rust:core_semver",
@@ -72,6 +71,7 @@ DEPENDENCIES = [
 ]
 
 TEST_DEPENDENCIES = [
+    "//third_party/rust:core_rcgen",
     "//crates/hub/aos-hub-api:lib",
     "//crates/hub/aos-hub-client:lib",
     "//crates/packages/aos-nix-cache:lib",

@@ -27,7 +27,7 @@ rust_library(
         "@aos_boot_preparation_crates__bytes-1.11.1//:bytes",
         "@aos_boot_preparation_crates__futures-channel-0.3.32//:futures_channel",
         "@aos_boot_preparation_crates__futures-core-0.3.32//:futures_core",
-        "@aos_boot_preparation_crates__h2-0.4.14//:h2",
+        "@aos_boot_preparation_crates__h2-0.4.16//:h2",
         "@aos_boot_preparation_crates__http-1.4.1//:http",
         "@aos_boot_preparation_crates__http-body-1.0.1//:http_body",
         "@aos_boot_preparation_crates__httparse-1.10.1//:httparse",

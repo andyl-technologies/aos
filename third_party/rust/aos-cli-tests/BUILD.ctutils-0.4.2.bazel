@@ -24,6 +24,7 @@ rust_library(
     name = "ctutils",
     deps = [
         "@aos_aos_cli_tests_crates__cmov-0.5.4//:cmov",
+        "@aos_aos_cli_tests_crates__subtle-2.6.1//:subtle",
     ],
     compile_data = glob(
         allow_empty = True,
@@ -37,6 +38,9 @@ rust_library(
             "WORKSPACE.bazel",
         ],
     ),
+    crate_features = [
+        "subtle",
+    ],
     crate_root = "src/lib.rs",
     edition = "2024",
     rustc_env_files = [

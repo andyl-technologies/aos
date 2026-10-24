@@ -304,6 +304,11 @@
       root = ../../..;
       family = "native-foundation";
     };
+    native-bindings = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "native-bindings";
+    };
     native-foundation-tests = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;

@@ -1,11 +1,11 @@
 """Generated direct dependency labels for this resolved family."""
 
 CRATES = {
-    "anyhow": "@aos_registry_native_tests_crates__anyhow-1.0.102//:anyhow",
+    "anyhow": "@aos_registry_native_tests_crates__anyhow-1.0.103//:anyhow",
     "async-trait": "@aos_registry_native_tests_crates__async-trait-0.1.89//:async_trait",
-    "aws-config": "@aos_registry_native_tests_crates__aws-config-1.8.17//:aws_config",
-    "aws-sdk-s3": "@aos_registry_native_tests_crates__aws-sdk-s3-1.134.0//:aws_sdk_s3",
-    "aws-types": "@aos_registry_native_tests_crates__aws-types-1.3.16//:aws_types",
+    "aws-config": "@aos_registry_native_tests_crates__aws-config-1.13.0//:aws_config",
+    "aws-sdk-s3": "@aos_registry_native_tests_crates__aws-sdk-s3-1.155.0//:aws_sdk_s3",
+    "aws-types": "@aos_registry_native_tests_crates__aws-types-1.7.0//:aws_types",
     "base64": "@aos_registry_native_tests_crates__base64-0.22.1//:base64",
     "bytes": "@aos_registry_native_tests_crates__bytes-1.11.1//:bytes",
     "clap": "@aos_registry_native_tests_crates__clap-4.6.1//:clap",
@@ -22,8 +22,11 @@ CRATES = {
     "humantime": "@aos_registry_native_tests_crates__humantime-2.3.0//:humantime",
     "indicatif": "@aos_registry_native_tests_crates__indicatif-0.17.11//:indicatif",
     "libc": "@aos_registry_native_tests_crates__libc-0.2.186//:libc",
+    "libz-sys": "@aos_registry_native_tests_crates__libz-sys-1.1.28//:libz_sys",
+    "openssl-sys": "@aos_registry_native_tests_crates__openssl-sys-0.9.116//:openssl_sys",
     "pbjson": "@aos_registry_native_tests_crates__pbjson-0.7.0//:pbjson",
     "pbjson-build": "@aos_registry_native_tests_crates__pbjson-build-0.7.0//:pbjson_build",
+    "pkg-config": "@aos_registry_native_tests_crates__pkg-config-0.3.33//:pkg_config",
     "prost": "@aos_registry_native_tests_crates__prost-0.13.5//:prost",
     "prost-build": "@aos_registry_native_tests_crates__prost-build-0.13.5//:prost_build",
     "prost-types": "@aos_registry_native_tests_crates__prost-types-0.13.5//:prost_types",

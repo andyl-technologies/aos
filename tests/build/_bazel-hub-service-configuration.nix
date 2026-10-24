@@ -8,6 +8,7 @@
     aos-hub-service = "crates/hub/aos-hub-service";
   };
   dependencyPackages = {
+    libssh2-sys = "crates/bindings/libssh2-sys";
     aos-activation = "crates/activation/aos-activation";
     aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
     aos-cli-ui = "crates/cli/aos-cli-ui";
@@ -59,6 +60,7 @@
   nativeLibraries = [pkgs.openssl pkgs.sqlite pkgs.zstdStaticMultithread pkgs.libssh2 pkgs.zlib];
   nativeTools = [pkgs.pkg-config pkgs.protobuf pkgs.git-minimal pkgs.openssh pkgs.nix pkgs.cmake pkgs.perl pkgs.zstd pkgs.which];
   cargoSetup = ''
+    export AOS_LIBSSH2_PREFIX="${pkgs.libssh2}"
     export OPENSSL_DIR=${pkgs.openssl} OPENSSL_NO_VENDOR=1
     export LIBSQLITE3_SYS_USE_PKG_CONFIG=1 ZSTD_SYS_USE_PKG_CONFIG=1
     export PROTOC="${pkgs.protobuf}/bin/protoc" PROTOC_INCLUDE="${pkgs.protobuf}/include"

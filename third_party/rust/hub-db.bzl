@@ -4,7 +4,7 @@ load("@rules_rust//crate_universe:defs.bzl", "crate")
 
 HUB_DB_PACKAGES = {
     "aes-gcm": crate.spec(version = "=0.10.3"),
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "argon2": crate.spec(version = "=0.5.3"),
     "async-trait": crate.spec(version = "=0.1.89"),
     "base64": crate.spec(version = "=0.22.1"),
@@ -35,7 +35,7 @@ HUB_DB_PACKAGES = {
 
 HUB_DB_TESTS_PACKAGES = {
     "aes-gcm": crate.spec(version = "=0.10.3"),
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "argon2": crate.spec(version = "=0.5.3"),
     "async-trait": crate.spec(version = "=0.1.89"),
     "base64": crate.spec(version = "=0.22.1"),
@@ -69,7 +69,7 @@ HUB_DB_TESTS_PACKAGES = {
 
 HUB_DB_ALL_FEATURES_PACKAGES = {
     "aes-gcm": crate.spec(version = "=0.10.3"),
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "argon2": crate.spec(version = "=0.5.3"),
     "async-trait": crate.spec(version = "=0.1.89"),
     "base64": crate.spec(version = "=0.22.1"),
@@ -100,7 +100,7 @@ HUB_DB_ALL_FEATURES_PACKAGES = {
 
 HUB_DB_ALL_FEATURES_TESTS_PACKAGES = {
     "aes-gcm": crate.spec(version = "=0.10.3"),
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "argon2": crate.spec(version = "=0.5.3"),
     "async-trait": crate.spec(version = "=0.1.89"),
     "base64": crate.spec(version = "=0.22.1"),

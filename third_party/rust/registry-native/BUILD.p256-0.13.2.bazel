@@ -23,14 +23,8 @@ cargo_toml_env_vars(
 rust_library(
     name = "p256",
     deps = [
-        "@aos_registry_native_crates__ecdsa-0.16.9//:ecdsa",
         "@aos_registry_native_crates__elliptic-curve-0.13.8//:elliptic_curve",
-        "@aos_registry_native_crates__primeorder-0.13.6//:primeorder",
-        "@aos_registry_native_crates__sha2-0.10.9//:sha2",
     ],
-    aliases = {
-        "@aos_registry_native_crates__ecdsa-0.16.9//:ecdsa": "ecdsa_core",
-    },
     compile_data = glob(
         allow_empty = True,
         include = ["**"],
@@ -43,19 +37,6 @@ rust_library(
             "WORKSPACE.bazel",
         ],
     ),
-    crate_features = [
-        "alloc",
-        "arithmetic",
-        "default",
-        "digest",
-        "ecdsa",
-        "ecdsa-core",
-        "pem",
-        "pkcs8",
-        "sha2",
-        "sha256",
-        "std",
-    ],
     crate_root = "src/lib.rs",
     edition = "2021",
     rustc_env_files = [

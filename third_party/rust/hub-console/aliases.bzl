@@ -1,7 +1,7 @@
 """Generated direct dependency labels for this resolved family."""
 
 CRATES = {
-    "anyhow": "@aos_hub_console_crates__anyhow-1.0.102//:anyhow",
+    "anyhow": "@aos_hub_console_crates__anyhow-1.0.103//:anyhow",
     "base64": "@aos_hub_console_crates__base64-0.22.1//:base64",
     "crc32fast": "@aos_hub_console_crates__crc32fast-1.5.0//:crc32fast",
     "ed25519-dalek": "@aos_hub_console_crates__ed25519-dalek-2.2.0//:ed25519_dalek",

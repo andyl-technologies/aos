@@ -7,6 +7,7 @@
   nativeLibraries = [pkgs.openssl pkgs.libssh2 pkgs.zlib pkgs.zstdStaticMultithread];
   nativeTools = [pkgs.pkg-config pkgs.cmake pkgs.perl pkgs.protobuf pkgs.git-minimal pkgs.openssh pkgs.zstd pkgs.nix pkgs.which];
   cargoSetup = ''
+    export AOS_LIBSSH2_PREFIX="${pkgs.libssh2}"
     export OPENSSL_DIR="${pkgs.openssl}"
     export OPENSSL_LIB_DIR="${pkgs.openssl}/lib"
     export OPENSSL_INCLUDE_DIR="${pkgs.openssl}/include"

@@ -1,7 +1,7 @@
 """Generated direct dependency labels for this resolved family."""
 
 CRATES = {
-    "anyhow": "@aos_hub_client_crates__anyhow-1.0.102//:anyhow",
+    "anyhow": "@aos_hub_client_crates__anyhow-1.0.103//:anyhow",
     "http": "@aos_hub_client_crates__http-1.4.1//:http",
     "pbjson": "@aos_hub_client_crates__pbjson-0.7.0//:pbjson",
     "pbjson-build": "@aos_hub_client_crates__pbjson-build-0.7.0//:pbjson_build",

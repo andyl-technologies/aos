@@ -22,6 +22,11 @@ cargo_toml_env_vars(
 
 rust_library(
     name = "hashbrown",
+    deps = [
+        "@aos_aos_cli_fleet_tests_crates__allocator-api2-0.2.21//:allocator_api2",
+        "@aos_aos_cli_fleet_tests_crates__equivalent-1.0.2//:equivalent",
+        "@aos_aos_cli_fleet_tests_crates__foldhash-0.2.0//:foldhash",
+    ],
     compile_data = glob(
         allow_empty = True,
         include = ["**"],
@@ -34,6 +39,14 @@ rust_library(
             "WORKSPACE.bazel",
         ],
     ),
+    crate_features = [
+        "allocator-api2",
+        "default",
+        "default-hasher",
+        "equivalent",
+        "inline-more",
+        "raw-entry",
+    ],
     crate_root = "src/lib.rs",
     edition = "2024",
     rustc_env_files = [

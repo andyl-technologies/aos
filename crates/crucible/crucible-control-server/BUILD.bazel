@@ -44,6 +44,7 @@ COMMON_DEPENDENCIES = [
     "//third_party/rust:core_bytes",
     "//third_party/rust:core_futures_util",
     "//third_party/rust:core_hyper_util",
+    "//third_party/rust:core_http_body_util",
     "//third_party/rust:core_rustix",
     "//third_party/rust:core_rustls",
     "//third_party/rust:core_rustls_pemfile",
@@ -62,6 +63,7 @@ COMMON_DEPENDENCIES = [
 })
 
 DEVELOPMENT_DEPENDENCIES = [
+    "//third_party/rust:core_rcgen",
     "//crates/crucible/crucible-qemu-shmem:lib",
 ]
 
@@ -157,6 +159,7 @@ aos_license_check(
         package = RUST_PACKAGE,
         lint_config = "//tools/bazel/rules:workspace_lints",
         crate_root = source,
+        runfile_env = {"AOS_TRANSPORT_LOCKFILE": "//third_party/rust:control_dependency_lock"} if source == "tests/transport_dependency_versions.rs" else {},
         srcs = [source] + glob([source.removesuffix(".rs") + "/**/*.rs"], allow_empty = True),
         crate_features = features,
         deps = [":lib_for_tests" + suffix] + COMMON_DEPENDENCIES + TEST_LIBRARIES + DEVELOPMENT_DEPENDENCIES,

@@ -26,7 +26,7 @@ rust_library(
         "@aos_build_services_crates__http-1.4.1//:http",
         "@aos_build_services_crates__hyper-1.10.0//:hyper",
         "@aos_build_services_crates__hyper-util-0.1.20//:hyper_util",
-        "@aos_build_services_crates__rustls-0.23.40//:rustls",
+        "@aos_build_services_crates__rustls-0.23.46//:rustls",
         "@aos_build_services_crates__tokio-1.52.3//:tokio",
         "@aos_build_services_crates__tokio-rustls-0.26.4//:tokio_rustls",
         "@aos_build_services_crates__tower-service-0.3.3//:tower_service",

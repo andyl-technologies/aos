@@ -1,5 +1,5 @@
 {
-  "checksum": "02ce19316ede23e25221a978e54dda9d18ceea7c6b336c3cf4787598968648c9",
+  "checksum": "bc335c5b28f121f19875f5cd3fd0a4fddd9f3033dbe2e9d4c7a009d9638abe83",
   "crates": {
     "adler2 2.0.1": {
       "name": "adler2",
@@ -338,14 +338,14 @@
       ],
       "license_file": "LICENSE-APACHE"
     },
-    "anyhow 1.0.102": {
+    "anyhow 1.0.103": {
       "name": "anyhow",
-      "version": "1.0.102",
+      "version": "1.0.103",
       "package_url": "https://github.com/dtolnay/anyhow",
       "repository": {
         "Http": {
-          "url": "https://static.crates.io/crates/anyhow/1.0.102/download",
-          "sha256": "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+          "url": "https://static.crates.io/crates/anyhow/1.0.103/download",
+          "sha256": "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
         }
       },
       "targets": [
@@ -389,14 +389,14 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "build_script_build"
             }
           ],
           "selects": {}
         },
         "edition": "2021",
-        "version": "1.0.102"
+        "version": "1.0.103"
       },
       "build_script_attrs": {
         "compile_data_glob": [
@@ -1223,7 +1223,7 @@
         "deps": {
           "common": [
             {
-              "id": "hybrid-array 0.4.12",
+              "id": "hybrid-array 0.4.15",
               "target": "hybrid_array"
             }
           ],
@@ -1669,60 +1669,6 @@
         "version": "0.4.4"
       },
       "license": "MIT OR Apache-2.0",
-      "license_ids": [
-        "Apache-2.0",
-        "MIT"
-      ],
-      "license_file": "LICENSE-APACHE"
-    },
-    "concurrent-queue 2.5.0": {
-      "name": "concurrent-queue",
-      "version": "2.5.0",
-      "package_url": "https://github.com/smol-rs/concurrent-queue",
-      "repository": {
-        "Http": {
-          "url": "https://static.crates.io/crates/concurrent-queue/2.5.0/download",
-          "sha256": "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "concurrent_queue",
-            "crate_root": "src/lib.rs",
-            "srcs": {
-              "allow_empty": true,
-              "include": [
-                "**/*.rs"
-              ]
-            }
-          }
-        }
-      ],
-      "library_target_name": "concurrent_queue",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "crate_features": {
-          "common": [
-            "std"
-          ],
-          "selects": {}
-        },
-        "deps": {
-          "common": [
-            {
-              "id": "crossbeam-utils 0.8.21",
-              "target": "crossbeam_utils"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2021",
-        "version": "2.5.0"
-      },
-      "license": "Apache-2.0 OR MIT",
       "license_ids": [
         "Apache-2.0",
         "MIT"
@@ -2411,7 +2357,7 @@
         "deps": {
           "common": [
             {
-              "id": "hybrid-array 0.4.12",
+              "id": "hybrid-array 0.4.15",
               "target": "hybrid_array"
             }
           ],
@@ -2951,7 +2897,7 @@
               "target": "aes_gcm"
             },
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -3820,14 +3766,14 @@
       ],
       "license_file": "LICENSE-APACHE"
     },
-    "event-listener 5.4.1": {
+    "event-listener 5.4.2": {
       "name": "event-listener",
-      "version": "5.4.1",
+      "version": "5.4.2",
       "package_url": "https://github.com/smol-rs/event-listener",
       "repository": {
         "Http": {
-          "url": "https://static.crates.io/crates/event-listener/5.4.1/download",
-          "sha256": "e13b66accf52311f30a0db42147dadea9850cb48cd070028831ae5f5d4b856ab"
+          "url": "https://static.crates.io/crates/event-listener/5.4.2/download",
+          "sha256": "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2"
         }
       },
       "targets": [
@@ -3860,10 +3806,6 @@
         "deps": {
           "common": [
             {
-              "id": "concurrent-queue 2.5.0",
-              "target": "concurrent_queue"
-            },
-            {
               "id": "parking 2.2.1",
               "target": "parking"
             },
@@ -3875,7 +3817,7 @@
           "selects": {}
         },
         "edition": "2021",
-        "version": "5.4.1"
+        "version": "5.4.2"
       },
       "license": "Apache-2.0 OR MIT",
       "license_ids": [
@@ -6075,14 +6017,14 @@
       ],
       "license_file": "LICENSE-APACHE"
     },
-    "hybrid-array 0.4.12": {
+    "hybrid-array 0.4.15": {
       "name": "hybrid-array",
-      "version": "0.4.12",
+      "version": "0.4.15",
       "package_url": "https://github.com/RustCrypto/hybrid-array",
       "repository": {
         "Http": {
-          "url": "https://static.crates.io/crates/hybrid-array/0.4.12/download",
-          "sha256": "9155a582abd142abc056962c29e3ce5ff2ad5469f4246b537ed42c5deba857da"
+          "url": "https://static.crates.io/crates/hybrid-array/0.4.15/download",
+          "sha256": "27f864f10dfb56725ce5ce5472bc52252c8f93a4ab86327122cebf62c5f59a17"
         }
       },
       "targets": [
@@ -6114,7 +6056,7 @@
           "selects": {}
         },
         "edition": "2024",
-        "version": "0.4.12"
+        "version": "0.4.15"
       },
       "license": "MIT OR Apache-2.0",
       "license_ids": [
@@ -10503,7 +10445,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -13682,7 +13624,7 @@
               "target": "either"
             },
             {
-              "id": "event-listener 5.4.1",
+              "id": "event-listener 5.4.2",
               "target": "event_listener"
             },
             {
@@ -17408,7 +17350,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -18502,7 +18444,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -18570,7 +18512,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -18682,7 +18624,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -18778,7 +18720,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -18880,7 +18822,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -19754,7 +19696,7 @@
   },
   "direct_deps": [
     "aes-gcm 0.10.3",
-    "anyhow 1.0.102",
+    "anyhow 1.0.103",
     "argon2 0.5.3",
     "async-trait 0.1.89",
     "axum 0.8.9",

@@ -23,10 +23,8 @@ cargo_toml_env_vars(
 rust_library(
     name = "crypto_bigint",
     deps = [
-        "@aos_boot_preparation_crates__generic-array-0.14.7//:generic_array",
         "@aos_boot_preparation_crates__rand_core-0.6.4//:rand_core",
         "@aos_boot_preparation_crates__subtle-2.6.1//:subtle",
-        "@aos_boot_preparation_crates__zeroize-1.9.0//:zeroize",
     ],
     compile_data = glob(
         allow_empty = True,
@@ -42,10 +40,8 @@ rust_library(
     ),
     crate_features = [
         "default",
-        "generic-array",
         "rand",
         "rand_core",
-        "zeroize",
     ],
     crate_root = "src/lib.rs",
     edition = "2021",

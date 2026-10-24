@@ -2,8 +2,8 @@
 
 CRATES = {
     "aes-gcm": "@aos_store_s3_crates__aes-gcm-0.10.3//:aes_gcm",
-    "aws-config": "@aos_store_s3_crates__aws-config-1.8.17//:aws_config",
-    "aws-sdk-s3": "@aos_store_s3_crates__aws-sdk-s3-1.134.0//:aws_sdk_s3",
+    "aws-config": "@aos_store_s3_crates__aws-config-1.13.0//:aws_config",
+    "aws-sdk-s3": "@aos_store_s3_crates__aws-sdk-s3-1.155.0//:aws_sdk_s3",
     "blake3": "@aos_store_s3_crates__blake3-1.8.5//:blake3",
     "rusqlite": "@aos_store_s3_crates__rusqlite-0.32.1//:rusqlite",
     "rustix": "@aos_store_s3_crates__rustix-1.1.4//:rustix",

@@ -293,7 +293,7 @@ and links a Rust binary to the native library through an explicit C ABI.
 
 Each Rust package declares `source_package` using the same `RUST_PACKAGE`
 identity as its compilation targets. `//crates:source_catalog` collects all
-77 workspace members; `//:source_catalog` also includes the two standalone
+78 workspace members; `//:source_catalog` also includes the two standalone
 accache packages. The catalogs declare Rust source ownership and expose those
 files as runfiles for repository-wide structural tests. Nested Bazel packages
 retain separate ownership.
@@ -1599,9 +1599,26 @@ Default features execute 210 cases and four doctests; disabling transfer execute
 cases, and the default transfer doctests retain one ignored case. The graphs
 contain 281 and 181 external crate identities respectively, and eight first-party
 libraries. Native inputs are source-built AOS OpenSSL, libssh2, zlib, and Zstandard.
-The Rust SSH binding compiles the libssh2 sources bundled in its pinned crate;
-the AOS libssh2 package remains a declared runtime input. Its crypto and
+The initial baseline compiled the libssh2 sources bundled in its pinned crate;
+the AOS libssh2 package remained a declared runtime input. Its crypto and
 compression inputs come from AOS OpenSSL and zlib.
+
+The merged workspace patches `libssh2-sys` to
+`crates/bindings/libssh2-sys`. Bazel compiles that first-party binding and aliases
+the resolved registry target to it, so the registry crate's bundled libssh2 and
+build script do not compile. The workspace build script checks the selected
+AOS package's version, headers, and library path through declared pkg-config
+inputs. `checks.build.bazel.native-bindings.all` compares its two existing
+initialization and API-version tests, all eight upstream dependency feature
+sets, and the build-script, library, and test compiler cfg/edition arguments
+with the offline Cargo oracle. It requests no shared cache mount.
+
+`tests/evidence/native-bindings-master-iteration.json` retains that passing
+comparison and 18 uncached Linux-sandbox Rustc actions. This iteration uses
+previously built source-built AOS Bazel, Java, and compiler packages; the merged
+master default toolchain remains a separate qualification. The report also
+checks all 62 SDK contracts and their 15,553 generated file digests against the
+workspace lock, with the 18 uncompiled registry binding aliases listed explicitly.
 
 `tests/evidence/native-foundation-initial-cargo-failure.json` retains the initial
 OCI test failure. Two assertions expected 18 objects although their shared signed
@@ -2784,3 +2801,14 @@ it into GPL tests, and declares the existing source-audit integration inputs.
 The [CLI conversion checkpoints](docs/aos-cli.md) describe its three dependency
 configurations, native test fixtures, production package inspection, and gates
 that remain before production migration.
+
+## Registry web Cargo baselines
+
+`tests/evidence/registry-web-master-cargo-baselines.json` retains the merged
+workspace baseline for the registry SPA: 18 native unit cases, one doctest,
+and no ignored cases. A separate offline release build compiles the actual
+`aos-registry-spa` Wasm binary and runs the source-built AOS wasm-bindgen CLI.
+The report records the JavaScript, Wasm, CSS, and declaration file hashes.
+These baselines precede the Bazel conversion. Browser execution, immutable
+asset naming, generated-page loading, and deployment packaging require
+independent qualification.

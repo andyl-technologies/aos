@@ -1,8 +1,8 @@
 {
   "contracts": {
-    "third_party/rust/BUILD.bazel": "dc8a09cd11de7d1471888484d7c4940931f13b8154e71fe906fbae4235f82d2e",
+    "third_party/rust/BUILD.bazel": "1c9f96da6969383195df8a498ba10f95d1b4ddf47b1e62ee47ca122802b87fcf",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
-    "tools/bazel/metadata/update_rust.py": "dbc88bf6155320e30cea520dfaa5c05a43fea136d9daa1b6c04c478894e4b3d7",
+    "tools/bazel/metadata/update_rust.py": "6dba4f1b82faf10f246c5cefa1ea2c92a7d075c4cc58b8da9183b9a34080f28c",
     "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
   },
   "family": "hub-model",
@@ -11,7 +11,7 @@
     "BUILD.aead-0.5.2.bazel": "b9470a293cb76a31c60358206845711a8dc5ad3bd58e8dda69d0f0a214fca9ad",
     "BUILD.aes-0.8.4.bazel": "4f10e1bdb92820be6d6b200c934ba7b046e8ad8bfdf1423e9da53cac1dcc2d72",
     "BUILD.aes-gcm-0.10.3.bazel": "53c638814b1e029645eed83770c10860db9a88a0299a0c5ac277bc6e4e8b2ae2",
-    "BUILD.anyhow-1.0.102.bazel": "27e645909a05a2106a13193a5ce24e832acfa98c106c6baf7ee885a9f574517d",
+    "BUILD.anyhow-1.0.103.bazel": "561dc931f336444b6bdc3291a5a2aaf46792eb503eee37f62c1cf1eaea70e570",
     "BUILD.argon2-0.5.3.bazel": "0ef99005b7b9ae51e530f458a07cb8618dd82d04fe11a3993fa4b3e518984dd0",
     "BUILD.async-trait-0.1.89.bazel": "7cb8a0637dacec7f1428dcfad3de868a79e58e463003838872b6c4ad181d5590",
     "BUILD.base64-0.22.1.bazel": "f5416781762b6288b5f2fb600908a31d45a9cd720a81b4f2ed9922c1f3b36d2e",
@@ -131,11 +131,11 @@
     "BUILD.zerovec-0.11.6.bazel": "880c3bd6df4b155a7979e5696b3a0f100be66de31b734cd3aad9bf8fd66ec039",
     "BUILD.zerovec-derive-0.11.3.bazel": "ebe3895ca7e5aa64ca79e01848b55b6e998ca9ac9f4c16e90d85a357efa8676e",
     "BUILD.zmij-1.0.21.bazel": "3377e2add9a5c829e42325e65d60d5e0de839af6844f112b1f00ee1a7e1602b8",
-    "Cargo.lock": "18da86046f496b447eac30fd11b1b9665d3cd0cd49684193c2dbc388d99afc81",
-    "aliases.bzl": "069e09d3262e26807bf4361c78f6948995a3b3875a513f2f915a719800b3ca24",
-    "cargo-bazel.json": "b3ad9018c19ab4fdc225f4e5d426fdb780a003206743c1e913f2a370b12c8337",
+    "Cargo.lock": "aef83e29b8ebb8f5eadd3ff897baf801ab1b6a0a75d90b3986a0cc617bf2aeb9",
+    "aliases.bzl": "79de11739a3b7410faa255caf714e37760cdab4f6c765d24a0346e80d0c6bc51",
+    "cargo-bazel.json": "328de83fbda5c40771971090dcd17cb34968d4ae278a5661df4e1908eb570419",
     "generator-config.json": "d06615dc4440ffc64d373e0682fde95b26cb42ecea94bfe6209ed1223c0c15f9",
-    "repositories.MODULE.bazel": "d7351f09e5fbf2ee0766b89fa2f1afee6a8872e5e19d3d1eb520de3f7d54f805"
+    "repositories.MODULE.bazel": "857cc03898cff3d2a56573454e09aa9be5cae8d567ef0398b7cc0758f4fccdb6"
   },
   "schema_version": 1,
   "sources": {
@@ -179,15 +179,15 @@
       "url": "https://static.crates.io/crates/aes-gcm/0.10.3/download",
       "version": "0.10.3"
     },
-    "aos_hub_model_crates__anyhow-1.0.102": {
-      "build_file": "BUILD.anyhow-1.0.102.bazel",
+    "aos_hub_model_crates__anyhow-1.0.103": {
+      "build_file": "BUILD.anyhow-1.0.103.bazel",
       "license": "MIT OR Apache-2.0",
       "license_domain": "apache-host",
       "name": "anyhow",
-      "sha256": "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c",
-      "strip_prefix": "anyhow-1.0.102",
-      "url": "https://static.crates.io/crates/anyhow/1.0.102/download",
-      "version": "1.0.102"
+      "sha256": "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3",
+      "strip_prefix": "anyhow-1.0.103",
+      "url": "https://static.crates.io/crates/anyhow/1.0.103/download",
+      "version": "1.0.103"
     },
     "aos_hub_model_crates__argon2-0.5.3": {
       "build_file": "BUILD.argon2-0.5.3.bazel",
@@ -1401,7 +1401,7 @@
       "Zlib OR Apache-2.0 OR MIT"
     ],
     "contracts": {
-      "third_party/rust/BUILD.bazel": "dc8a09cd11de7d1471888484d7c4940931f13b8154e71fe906fbae4235f82d2e",
+      "third_party/rust/BUILD.bazel": "1c9f96da6969383195df8a498ba10f95d1b4ddf47b1e62ee47ca122802b87fcf",
       "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
       "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
     },
@@ -1420,7 +1420,7 @@
       "anyhow": {
         "default-features": true,
         "features": [],
-        "version": "=1.0.102"
+        "version": "=1.0.103"
       },
       "argon2": {
         "default-features": true,

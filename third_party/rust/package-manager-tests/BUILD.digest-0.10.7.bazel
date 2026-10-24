@@ -24,9 +24,7 @@ rust_library(
     name = "digest",
     deps = [
         "@aos_package_manager_tests_crates__block-buffer-0.10.4//:block_buffer",
-        "@aos_package_manager_tests_crates__const-oid-0.9.6//:const_oid",
         "@aos_package_manager_tests_crates__crypto-common-0.1.7//:crypto_common",
-        "@aos_package_manager_tests_crates__subtle-2.6.1//:subtle",
     ],
     compile_data = glob(
         allow_empty = True,
@@ -43,13 +41,9 @@ rust_library(
     crate_features = [
         "alloc",
         "block-buffer",
-        "const-oid",
         "core-api",
         "default",
-        "mac",
-        "oid",
         "std",
-        "subtle",
     ],
     crate_root = "src/lib.rs",
     edition = "2018",

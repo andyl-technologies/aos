@@ -2,7 +2,7 @@
 
 CRATES = {
     "aes-gcm": "@aos_hub_db_all_features_tests_crates__aes-gcm-0.10.3//:aes_gcm",
-    "anyhow": "@aos_hub_db_all_features_tests_crates__anyhow-1.0.102//:anyhow",
+    "anyhow": "@aos_hub_db_all_features_tests_crates__anyhow-1.0.103//:anyhow",
     "argon2": "@aos_hub_db_all_features_tests_crates__argon2-0.5.3//:argon2",
     "async-trait": "@aos_hub_db_all_features_tests_crates__async-trait-0.1.89//:async_trait",
     "base64": "@aos_hub_db_all_features_tests_crates__base64-0.22.1//:base64",

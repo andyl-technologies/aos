@@ -22,10 +22,6 @@ cargo_toml_env_vars(
 
 rust_library(
     name = "signature",
-    deps = [
-        "@aos_package_manager_crates__digest-0.10.7//:digest",
-        "@aos_package_manager_crates__rand_core-0.6.4//:rand_core",
-    ],
     compile_data = glob(
         allow_empty = True,
         include = ["**"],
@@ -40,8 +36,6 @@ rust_library(
     ),
     crate_features = [
         "alloc",
-        "digest",
-        "rand_core",
         "std",
     ],
     crate_root = "src/lib.rs",

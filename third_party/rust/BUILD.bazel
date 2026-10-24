@@ -71,6 +71,7 @@ load(":crucible-cli/aliases.bzl", CRUCIBLE_CLI_CRATES = "CRATES")
 load(":formats/aliases.bzl", FORMATS_CRATES = "CRATES")
 
 load(":native-foundation/aliases.bzl", NATIVE_FOUNDATION_CRATES = "CRATES")
+load(":native-bindings/aliases.bzl", NATIVE_BINDING_CRATES = "CRATES")
 
 load(":native-foundation-tests/aliases.bzl", NATIVE_FOUNDATION_TESTS_CRATES = "CRATES")
 
@@ -82,6 +83,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:native_binding_dependencies": NATIVE_BINDING_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:qemu_gpl_production_dependencies": QEMU_GPL_PRODUCTION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:qemu_gpl_test_dependencies": QEMU_GPL_TEST_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:qemu_gpl_plugin_test_dependencies": QEMU_GPL_PLUGIN_TEST_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -147,7 +149,8 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         visibility = ["//visibility:public"],
     )
     for name in sorted(dict(
-        HUB_SERVICE_CRATES.items()
+        NATIVE_BINDING_CRATES.items()
+        + HUB_SERVICE_CRATES.items()
         + HUB_SERVICE_TESTS_CRATES.items()
         + HUB_SERVICE_ALL_FEATURES_CRATES.items()
         + HUB_SERVICE_ALL_FEATURES_TESTS_CRATES.items()
@@ -212,7 +215,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
 ]
 
 CORE_PACKAGES = {
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "base64": crate.spec(version = "=0.22.1"),
     "blake3": crate.spec(version = "=1.8.5", default_features = False, features = ["std", "pure"]),
     "libc": crate.spec(version = "=0.2.186"),
@@ -247,8 +250,8 @@ STORE_PACKAGES = {
 # feature closure without widening the campaign or engine profiles.
 STORE_S3_PACKAGES = dict(
     {name: STORE_PACKAGES[name] for name in ["aes-gcm", "blake3", "rusqlite", "rustix", "thiserror", "zeroize", "zstd"]}.items() + {
-        "aws-sdk-s3": crate.spec(version = "=1.134.0", default_features = False, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"]),
-        "aws-config": crate.spec(version = "=1.8.17"),
+        "aws-sdk-s3": crate.spec(version = "=1.155.0", default_features = False, features = ["sigv4a", "http-1x", "default-https-client", "rt-tokio"]),
+        "aws-config": crate.spec(version = "=1.13.0"),
         "tokio": crate.spec(version = "=1.52.3", features = ["rt-multi-thread", "sync", "process", "signal", "macros", "net", "io-util", "io-std", "fs", "time"]),
     }.items(),
 )
@@ -329,10 +332,11 @@ CONTROL_PACKAGES = dict(SESSION_PACKAGES.items() + {
     "axum": crate.spec(version = "=0.8.9", features = ["macros"]),
     "bytes": crate.spec(version = "=1.11.1"),
     "futures-util": crate.spec(version = "=0.3.32"),
+    "http-body-util": crate.spec(version = "=0.1.3"),
     "hyper-util": crate.spec(version = "=0.1.20", features = ["tokio", "server-auto", "http1", "http2", "service"]),
     "reqwest": crate.spec(version = "=0.12.28", default_features = False, features = ["rustls-tls-native-roots", "json", "stream", "http2"]),
     "rustix": STORE_PACKAGES["rustix"],
-    "rustls": crate.spec(version = "=0.23.40"),
+    "rustls": crate.spec(version = "=0.23.46"),
     "rustls-pemfile": crate.spec(version = "=2.2.0"),
     "rustls-pki-types": crate.spec(version = "=1.14.1"),
     "sha2": CORE_PACKAGES["sha2"],
@@ -340,6 +344,9 @@ CONTROL_PACKAGES = dict(SESSION_PACKAGES.items() + {
     "tokio-rustls": crate.spec(version = "=0.26.4"),
     "uuid": crate.spec(version = "=1.23.1", features = ["v4", "serde"]),
 }.items())
+
+# Certificate fixtures belong only to control-server tests.
+CONTROL_TEST_PACKAGES = dict(CONTROL_PACKAGES, rcgen = crate.spec(version = "=0.14.8"))
 
 # The daemon combines host transports with the production S3 SDK. Its selected
 # tests do not activate the S3 adapter's aws-config development dependency.
@@ -352,7 +359,7 @@ DAEMON_PACKAGES = dict(CONTROL_PACKAGES.items() + {
 # The CLI adds its command surface and certificate generation to the daemon
 # graph. Its default tests retain the same SDK and native library selections.
 CRUCIBLE_CLI_PACKAGES = dict(DAEMON_PACKAGES.items() + {
-    "aws-credential-types": crate.spec(version = "=1.2.14"),
+    "aws-credential-types": crate.spec(version = "=1.3.1"),
     "clap": crate.spec(version = "=4.6.1", features = ["derive", "env"]),
     "clap_complete": crate.spec(version = "=4.6.5"),
     "hex": crate.spec(version = "=0.4.3"),
@@ -427,11 +434,11 @@ ACTIVATION_CRUCIBLE_TESTS_PACKAGES = dict(ENGINE_PACKAGES.items() + ACTIVATION_C
 # graphs. D-Bus test features never enter the production specification.
 
 NATIVE_FOUNDATION_PACKAGES = {
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "async-trait": crate.spec(version = "=0.1.89"),
-    "aws-config": crate.spec(version = "=1.8.17"),
-    "aws-sdk-s3": crate.spec(version = "=1.134.0", default_features = False, features = ["default-https-client", "http-1x", "rt-tokio", "sigv4a"]),
-    "aws-types": crate.spec(version = "=1.3.16"),
+    "aws-config": crate.spec(version = "=1.13.0"),
+    "aws-sdk-s3": crate.spec(version = "=1.155.0", default_features = False, features = ["default-https-client", "http-1x", "rt-tokio", "sigv4a"]),
+    "aws-types": crate.spec(version = "=1.7.0"),
     "base64": crate.spec(version = "=0.22.1"),
     "bytes": crate.spec(version = "=1.11.1"),
     "crc32fast": crate.spec(version = "=1.5.0"),
@@ -448,7 +455,7 @@ NATIVE_FOUNDATION_PACKAGES = {
     "serde": crate.spec(version = "=1.0.228", features = ["derive", "rc"]),
     "serde_json": crate.spec(version = "=1.0.150"),
     "sha2": crate.spec(version = "=0.10.9", features = ["compress"]),
-    "ssh2": crate.spec(version = "=0.9.5", features = ["vendored-openssl"]),
+    "ssh2": crate.spec(version = "=0.9.5"),
     "tar": crate.spec(version = "=0.4.46"),
     "tempfile": crate.spec(version = "=3.27.0"),
     "thiserror": crate.spec(version = "=2.0.18"),
@@ -481,7 +488,7 @@ ACTIVATION_SYSTEMD_PACKAGES = dict(ACTIVATION_CORE_PACKAGES.items() + {
 
 # Typed Hub clients preserve their own HTTP/TLS feature selection.
 HUB_CLIENT_PACKAGES = {
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "http": crate.spec(version = "=1.4.1"),
     "pbjson": crate.spec(version = "=0.7.0"),
     "pbjson-build": crate.spec(version = "=0.7.0"),
@@ -498,7 +505,7 @@ HUB_CLIENT_PACKAGES = {
 
 # Release preparation preserves its own assembly and signing feature selection.
 RELEASE_PREPARATION_PACKAGES = {
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "async-trait": crate.spec(version = "=0.1.89"),
     "base64": crate.spec(version = "=0.22.1"),
     "clap": crate.spec(version = "=4.6.1", features = ["derive", "env"]),
@@ -526,7 +533,7 @@ RELEASE_PREPARATION_PACKAGES = {
 # Domain production and test roots stay separate to preserve Tokio feature units.
 HUB_MODEL_PACKAGES = {
     "aes-gcm": crate.spec(version = "=0.10.3"),
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "argon2": crate.spec(version = "=0.5.3"),
     "async-trait": crate.spec(version = "=0.1.89"),
     "base64": crate.spec(version = "=0.22.1"),
@@ -551,7 +558,7 @@ HUB_MODEL_PACKAGES = {
 
 HUB_MODEL_TESTS_PACKAGES = {
     "aes-gcm": crate.spec(version = "=0.10.3"),
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "argon2": crate.spec(version = "=0.5.3"),
     "async-trait": crate.spec(version = "=0.1.89"),
     "base64": crate.spec(version = "=0.22.1"),
@@ -592,7 +599,7 @@ HUB_PORTABLE_PACKAGES = {
 
 # Deployment preserves its authenticated format and evaluator dependency closure.
 DEPLOYMENT_PACKAGES = {
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "base64": crate.spec(version = "=0.22.1"),
     "crc32fast": crate.spec(version = "=1.5.0"),
     "ed25519-dalek": crate.spec(version = "=2.2.0", features = ["pkcs8"]),
@@ -613,7 +620,7 @@ DEPLOYMENT_PACKAGES = {
 
 # Build-service and code-generator roots preserve the selected workspace features.
 BUILD_SERVICES_PACKAGES = {
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "async-trait": crate.spec(version = "=0.1.89"),
     "axum": crate.spec(version = "=0.8.9", features = ["macros"]),
     "base64": crate.spec(version = "=0.22.1"),
@@ -628,6 +635,7 @@ BUILD_SERVICES_PACKAGES = {
     "hex": crate.spec(version = "=0.4.3"),
     "http": crate.spec(version = "=1.4.1"),
     "http-body": crate.spec(version = "=1.0.1"),
+    "libc": CORE_PACKAGES["libc"],
     "humantime": crate.spec(version = "=2.3.0"),
     "humantime-serde": crate.spec(version = "=1.1.1"),
     "indicatif": crate.spec(version = "=0.17.11"),
@@ -639,7 +647,7 @@ BUILD_SERVICES_PACKAGES = {
     "regex": crate.spec(version = "=1.12.4"),
     "rusqlite": crate.spec(version = "=0.32.1"),
     "rustix": crate.spec(version = "=1.1.4", features = ["event", "fs", "process"]),
-    "rustls": crate.spec(version = "=0.23.40"),
+    "rustls": crate.spec(version = "=0.23.46"),
     "rustls-native-certs": crate.spec(version = "=0.8.3"),
     "rustls-pemfile": crate.spec(version = "=2.2.0"),
     "rustls-pki-types": crate.spec(version = "=1.14.1"),
@@ -656,8 +664,10 @@ BUILD_SERVICES_PACKAGES = {
     "tower-http": crate.spec(version = "=0.6.11", features = ["cors", "trace"]),
     "tracing": crate.spec(version = "=0.1.44"),
     "uuid": crate.spec(version = "=1.23.1", features = ["serde", "v4"]),
-    "webpki-roots": crate.spec(version = "=1.0.7"),
+    "webpki-roots": crate.spec(version = "=1.0.10"),
     "zstd": crate.spec(version = "=0.13.3", features = ["zstdmt"]),
+    "tower": crate.spec(version = "=0.5.3", features = ["util"]),
+    "webpki": crate.spec(package = "rustls-webpki", version = "=0.103.16"),
 }
 
 # Presentation and Nix inspection use the lightweight transfer library. Keep
@@ -669,18 +679,18 @@ CLI_SUPPORT_PACKAGES = dict({
     "regex": crate.spec(version = "=1.12.4"),
     "console": crate.spec(version = "=0.15.11"),
     "indicatif": crate.spec(version = "=0.17.11"),
-    "ratatui": crate.spec(version = "=0.29.0"),
-    "crossterm": crate.spec(version = "=0.28.1"),
+    "ratatui": crate.spec(version = "=0.30.2"),
+    "crossterm": crate.spec(version = "=0.29.0"),
     "glob": crate.spec(version = "=0.3.3"),
     "ignore": crate.spec(version = "=0.4.25"),
 }.items())
 
 NATIVE_FOUNDATION_TESTS_PACKAGES = {
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "async-trait": crate.spec(version = "=0.1.89"),
-    "aws-config": crate.spec(version = "=1.8.17"),
-    "aws-sdk-s3": crate.spec(version = "=1.134.0", default_features = False, features = ["default-https-client", "http-1x", "rt-tokio", "sigv4a"]),
-    "aws-types": crate.spec(version = "=1.3.16"),
+    "aws-config": crate.spec(version = "=1.13.0"),
+    "aws-sdk-s3": crate.spec(version = "=1.155.0", default_features = False, features = ["default-https-client", "http-1x", "rt-tokio", "sigv4a"]),
+    "aws-types": crate.spec(version = "=1.7.0"),
     "axum": crate.spec(version = "=0.8.9", features = ["macros"]),
     "base64": crate.spec(version = "=0.22.1"),
     "bytes": crate.spec(version = "=1.11.1"),
@@ -698,7 +708,7 @@ NATIVE_FOUNDATION_TESTS_PACKAGES = {
     "serde": crate.spec(version = "=1.0.228", features = ["derive", "rc"]),
     "serde_json": crate.spec(version = "=1.0.150"),
     "sha2": crate.spec(version = "=0.10.9", features = ["compress"]),
-    "ssh2": crate.spec(version = "=0.9.5", features = ["vendored-openssl"]),
+    "ssh2": crate.spec(version = "=0.9.5"),
     "tar": crate.spec(version = "=0.4.46"),
     "tempfile": crate.spec(version = "=3.27.0"),
     "thiserror": crate.spec(version = "=2.0.18"),
@@ -713,7 +723,7 @@ NATIVE_FOUNDATION_TESTS_PACKAGES = {
 }
 
 NATIVE_FOUNDATION_MINIMAL_PACKAGES = {
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "axum": crate.spec(version = "=0.8.9", features = ["macros"]),
     "base64": crate.spec(version = "=0.22.1"),
     "bytes": crate.spec(version = "=1.11.1"),
@@ -754,12 +764,11 @@ NATIVE_FOUNDATION_ANNOTATIONS = dict({"zstd-sys": STORE_ANNOTATIONS["zstd-sys"]}
             "PKG_CONFIG_ALLOW_CROSS": "1",
         },
     ),
-    # Cargo compiles the crate's pinned libssh2 sources. Keep that selection
-    # while importing the same AOS crypto and compression dependencies.
+    # Cargo patches this binding to the workspace package. The registry target
+    # is an alias only; its bundled native sources and build script never run.
     "libssh2-sys": crate.annotation(
-        link_deps = ["@aos_native//:openssl", "@aos_native//:crypto", "@aos_native//:zlib"],
-        build_script_data = ["@aos_native//:openssl_files", "@aos_native//:crypto_files", "@aos_native//:zlib_files", "@aos_native//:zlib/cflags"],
-        build_script_env = {"CFLAGS": "@$(execpath @aos_native//:zlib/cflags)"},
+        override_targets = {"lib": "@//crates/bindings/libssh2-sys:lib"},
+        gen_build_script = False,
     ),
     "libz-sys": crate.annotation(
         link_deps = ["@aos_native//:zlib"],
@@ -773,6 +782,22 @@ NATIVE_FOUNDATION_ANNOTATIONS = dict({"zstd-sys": STORE_ANNOTATIONS["zstd-sys"]}
         },
     ),
 }.items())
+
+BINDING_PACKAGES = {
+    "libc": crate.spec(version = "=0.2.186", default_features = False),
+    "libz-sys": crate.spec(version = "=1.1.28", default_features = False),
+    "openssl-sys": crate.spec(version = "=0.9.116", default_features = False),
+    "pkg-config": crate.spec(version = "=0.3.33", default_features = False),
+}
+
+# The standalone API tests must not inherit cc/parallel from the larger native
+# integration graph. Keep their compiler-helper features identical to Cargo.
+NATIVE_BINDING_PACKAGES = {
+    "libc": crate.spec(version = "=0.2.186"),
+    "libz-sys": crate.spec(version = "=1.1.28", default_features = False, features = ["libc"]),
+    "openssl-sys": crate.spec(version = "=0.9.116"),
+    "pkg-config": crate.spec(version = "=0.3.33"),
+}
 
 # Service tests add the native registry authoring client. Its TLS/compression
 # dependencies use the same source-built libraries as the retained Cargo oracle.
@@ -874,7 +899,7 @@ STORE_FEATURE_VARIANTS = {
 # feature, whose MIT/Apache-2.0 jobserver remains within the same boundary.
 FORMATS_PERMISSIVE_CRATES = [
     "jobserver@0.1.34",
-    "anyhow@1.0.102",
+    "anyhow@1.0.103",
     "base64@0.22.1",
     "block-buffer@0.10.4",
     "cc@1.2.65",
@@ -1845,7 +1870,9 @@ APPROVED_LICENSES = [
             "registry-native-tests": ["registry-native.bzl"],
             "release-coordination": ["release-coordination.bzl"],
         }.get(family, []),
-        packages = packages,
+        # Expose the patched binding's existing transitive dependencies without
+        # enabling additional features in profiles that already declare roots.
+        packages = dict(BINDING_PACKAGES.items() + packages.items()) if "libssh2-sys" in annotations else packages,
         annotations = annotations,
         feature_variants = FAMILY_FEATURE_VARIANTS.get(family, {}),
         permissive_crates = (
@@ -1913,7 +1940,7 @@ APPROVED_LICENSES = [
         ("engine", ENGINE_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("quota", QUOTA_PACKAGES, {}, "apache-host"),
         ("session", SESSION_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
-        ("control", CONTROL_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
+        ("control", CONTROL_TEST_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("qemu-host", QEMU_HOST_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("qemu-gpl-production", QEMU_GPL_PRODUCTION_PACKAGES, {}, "permissive-protocol"),
         ("qemu-gpl-tests", QEMU_GPL_TEST_PACKAGES, {}, "permissive-protocol"),
@@ -1923,6 +1950,7 @@ APPROVED_LICENSES = [
         ("daemon", DAEMON_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("crucible-cli", CRUCIBLE_CLI_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("native-foundation", NATIVE_FOUNDATION_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
+        ("native-bindings", NATIVE_BINDING_PACKAGES, {name: NATIVE_FOUNDATION_ANNOTATIONS[name] for name in ["openssl-sys", "libz-sys"]}, "apache-host"),
         ("native-foundation-tests", NATIVE_FOUNDATION_TESTS_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
         ("native-foundation-minimal", NATIVE_FOUNDATION_MINIMAL_PACKAGES, {"zstd-sys": STORE_ANNOTATIONS["zstd-sys"]}, "apache-host"),
         ("formats", FORMATS_PACKAGES, {"zstd-sys": STORE_ANNOTATIONS["zstd-sys"]}, "apache-host"),
@@ -1997,8 +2025,16 @@ APPROVED_LICENSES = [
         "daemon",
         "crucible-cli",
         "native-foundation",
+        "native-bindings",
         "native-foundation-tests",
         "native-foundation-minimal",
         "formats",
     ]
 ]
+
+# The transport regression gate checks the same resolved sources Bazel compiles.
+filegroup(
+    name = "control_dependency_lock",
+    srcs = ["control/Cargo.lock"],
+    visibility = ["//crates/crucible/crucible-control-server:__pkg__"],
+)

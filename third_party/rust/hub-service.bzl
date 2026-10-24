@@ -4,7 +4,7 @@ load("@rules_rust//crate_universe:defs.bzl", "crate")
 
 HUB_SERVICE_PACKAGES = {
     "aes-gcm": crate.spec(version = "=0.10.3"),
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "argon2": crate.spec(version = "=0.5.3"),
     "async-trait": crate.spec(version = "=0.1.89"),
     "axum": crate.spec(version = "=0.8.9", default_features = False, features = ["form", "json", "query"]),
@@ -48,12 +48,12 @@ HUB_SERVICE_PACKAGES = {
 
 HUB_SERVICE_TESTS_PACKAGES = {
     "aes-gcm": crate.spec(version = "=0.10.3"),
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "argon2": crate.spec(version = "=0.5.3"),
     "async-trait": crate.spec(version = "=0.1.89"),
-    "aws-config": crate.spec(version = "=1.8.17"),
-    "aws-sdk-s3": crate.spec(version = "=1.134.0", default_features = False, features = ["default-https-client", "http-1x", "rt-tokio", "sigv4a"]),
-    "aws-types": crate.spec(version = "=1.3.16"),
+    "aws-config": crate.spec(version = "=1.13.0"),
+    "aws-sdk-s3": crate.spec(version = "=1.155.0", default_features = False, features = ["default-https-client", "http-1x", "rt-tokio", "sigv4a"]),
+    "aws-types": crate.spec(version = "=1.7.0"),
     "axum": crate.spec(version = "=0.8.9", default_features = False, features = ["form", "http1", "json", "query", "tokio"]),
     "base64": crate.spec(version = "=0.22.1"),
     "bytes": crate.spec(version = "=1.11.1"),
@@ -97,7 +97,7 @@ HUB_SERVICE_TESTS_PACKAGES = {
     "sha2": crate.spec(version = "=0.10.9", features = ["compress"]),
     "sqlx": crate.spec(version = "=0.8.6", default_features = False, features = ["runtime-tokio", "sqlite"]),
     "ssh-key": crate.spec(version = "=0.6.7", default_features = False, features = ["ed25519", "std"]),
-    "ssh2": crate.spec(version = "=0.9.5", features = ["vendored-openssl"]),
+    "ssh2": crate.spec(version = "=0.9.5"),
     "tar": crate.spec(version = "=0.4.46"),
     "tempfile": crate.spec(version = "=3.27.0"),
     "thiserror": crate.spec(version = "=2.0.18"),
@@ -115,7 +115,7 @@ HUB_SERVICE_TESTS_PACKAGES = {
 
 HUB_SERVICE_ALL_FEATURES_PACKAGES = {
     "aes-gcm": crate.spec(version = "=0.10.3"),
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "argon2": crate.spec(version = "=0.5.3"),
     "async-trait": crate.spec(version = "=0.1.89"),
     "axum": crate.spec(version = "=0.8.9", default_features = False, features = ["form", "json", "query"]),
@@ -159,12 +159,12 @@ HUB_SERVICE_ALL_FEATURES_PACKAGES = {
 
 HUB_SERVICE_ALL_FEATURES_TESTS_PACKAGES = {
     "aes-gcm": crate.spec(version = "=0.10.3"),
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "argon2": crate.spec(version = "=0.5.3"),
     "async-trait": crate.spec(version = "=0.1.89"),
-    "aws-config": crate.spec(version = "=1.8.17"),
-    "aws-sdk-s3": crate.spec(version = "=1.134.0", default_features = False, features = ["default-https-client", "http-1x", "rt-tokio", "sigv4a"]),
-    "aws-types": crate.spec(version = "=1.3.16"),
+    "aws-config": crate.spec(version = "=1.13.0"),
+    "aws-sdk-s3": crate.spec(version = "=1.155.0", default_features = False, features = ["default-https-client", "http-1x", "rt-tokio", "sigv4a"]),
+    "aws-types": crate.spec(version = "=1.7.0"),
     "axum": crate.spec(version = "=0.8.9", default_features = False, features = ["form", "http1", "json", "query", "tokio"]),
     "base64": crate.spec(version = "=0.22.1"),
     "bytes": crate.spec(version = "=1.11.1"),
@@ -208,7 +208,7 @@ HUB_SERVICE_ALL_FEATURES_TESTS_PACKAGES = {
     "sha2": crate.spec(version = "=0.10.9", features = ["compress"]),
     "sqlx": crate.spec(version = "=0.8.6", default_features = False, features = ["mysql", "postgres", "runtime-tokio", "sqlite"]),
     "ssh-key": crate.spec(version = "=0.6.7", default_features = False, features = ["ed25519", "std"]),
-    "ssh2": crate.spec(version = "=0.9.5", features = ["vendored-openssl"]),
+    "ssh2": crate.spec(version = "=0.9.5"),
     "tar": crate.spec(version = "=0.4.46"),
     "tempfile": crate.spec(version = "=3.27.0"),
     "thiserror": crate.spec(version = "=2.0.18"),

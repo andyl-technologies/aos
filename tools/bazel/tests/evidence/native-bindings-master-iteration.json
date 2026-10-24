@@ -1,0 +1,375 @@
+{
+  "checks": {
+    "bazel": "/nix/store/f7dh849kkxqa8k1b7n06rjkhk6c9hksk-aos-bazel-native-binding-tests-1",
+    "cargo": "/nix/store/98hrrd6h4krin3qil6n77nj2mkvl26w3-aos-bazel-native-binding-cargo-oracle-1",
+    "native_metadata": "/nix/store/mw2jib4dqv8c4qflrs17kpndd181wckl-aos-bazel-native-foundation-library-metadata",
+    "qualification": "/nix/store/5q40jw8x4kx5hz08144m2ka64ak6yskr-aos-bazel-native-binding-checks"
+  },
+  "compiler": {
+    "limits": [
+      "Bazel response and indirect wrapper input files are bound to execution digests. Working-directory, output-base, and execution-root identities remain explicit symbolic roots.",
+      "Compiler defaults and compiler/linker closure or ABI equivalence are not checked here.",
+      "Codegen, target, linker, incremental, and artifact-identity differences are retained for explicit review; this audit does not establish semantic compiler-option equivalence.",
+      "Scalar codegen options use their last explicit value. Repeated and unknown options remain in order; compiler defaults are not inferred.",
+      "The source/test key requires an unambiguous native family. Families compiling the same source in multiple execution/target configurations need an explicit role-aware comparison.",
+      "Captured Cargo invocations prove compiler execution was requested, not that every request succeeded. Runtime and compilation results require their independent gates."
+    ],
+    "paired_units": 3,
+    "status": "PASS: paired first-party invocations and matching wrapper-expanded cfg/edition arguments"
+  },
+  "features": {
+    "cc@1.2.65": [
+      []
+    ],
+    "find-msvc-tools@0.1.9": [
+      []
+    ],
+    "libc@0.2.186": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "libz-sys@1.1.28": [
+      [
+        "libc"
+      ]
+    ],
+    "openssl-sys@0.9.116": [
+      []
+    ],
+    "pkg-config@0.3.33": [
+      []
+    ],
+    "shlex@2.0.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "vcpkg@0.2.15": [
+      []
+    ]
+  },
+  "first_party_features": {
+    "libssh2-sys": [
+      []
+    ]
+  },
+  "limits": [
+    "This iteration used previously built source-built AOS Bazel, Java, and compiler toolchain packages. It does not qualify the merged master default toolchain; that independent check remains pending.",
+    "The Cargo oracle, current native libraries, SDK inputs, and binding sources are selected from the merged workspace. Both builds run in Nix sandboxes with no shared cache mount requested.",
+    "The generated registry libssh2-sys 0.3.3 targets in 18 profiles are uncompiled aliases to the workspace binding 0.3.1. Every compiled upstream source identity appears in the workspace lock.",
+    "Other native families, foreign hosts, complete compiler/linker equivalence, performance acceptance, and production migration are separate gates."
+  ],
+  "reports_sha256": {
+    "actions": "8e4b2ef0197c233ff963c0a67915840b82b34513dc4105577e658c6b03654bde",
+    "compiler": "7fd87ddc3fbfcd916e7363d18809057354f88a653c4b939d27be9491575a604a",
+    "execution": "841b05e399a83f6230769c04a51e6f74347472296c79f4be521267292c41ee95",
+    "parity": "f3c39cfcac6e7db2043b8e0f61d36157d775a5b40cf25b58207aac230dc7b293"
+  },
+  "schema_version": 1,
+  "sdk_integrity": {
+    "generated_files": 15553,
+    "profiles": {
+      "activation-core": {
+        "generated_files": 46,
+        "manifest_sha256": "aac9e19bc8f06a14b149068c67bd645e944baea137f96ffc6d56816793f058b5"
+      },
+      "activation-core-tests": {
+        "generated_files": 81,
+        "manifest_sha256": "7ed245e240328dac847b9edbddd07222b170a942a61102ced6f1910dfc805b27"
+      },
+      "activation-crucible": {
+        "generated_files": 57,
+        "manifest_sha256": "00d43409b84e597aa24323d6e7ce31ca92ce8fe154a5e0da9832677acd0d3413"
+      },
+      "activation-crucible-tests": {
+        "generated_files": 150,
+        "manifest_sha256": "9341fe4ff9da916ca3fc547a6ee9a4a7f5148c2c870975fe5fd0956c269607e4"
+      },
+      "activation-storage": {
+        "generated_files": 75,
+        "manifest_sha256": "ab70a11d36387a2eb08b779706cda59c3fb8405b686f1cbeac47a66e12b32e43"
+      },
+      "activation-systemd": {
+        "generated_files": 144,
+        "manifest_sha256": "1cd590085b4639ff432ef8e372dd2661d0b5015a9cd0108eff086dc115e3025f"
+      },
+      "aos-cli-fleet-tests": {
+        "generated_files": 603,
+        "manifest_sha256": "9eca19720aa174587966fcf6d8ac2c97d9df121ffa181c53193f02d19df45165"
+      },
+      "aos-cli-production": {
+        "generated_files": 565,
+        "manifest_sha256": "e18d7b6f08e27cc594efe83cdecf4e540330cb4aae569b547f9965cd5f5670b0"
+      },
+      "aos-cli-tests": {
+        "generated_files": 603,
+        "manifest_sha256": "9ef2b13aff1665d5421db330d51d08a3dc19f64b75b9a016eb75dc4e433d5e9c"
+      },
+      "boot-preparation": {
+        "generated_files": 356,
+        "manifest_sha256": "236dfab70da22554796f5911d6a019cfc5e4532ba64328ba6cd41ec435c97b53"
+      },
+      "boot-preparation-minimal": {
+        "generated_files": 342,
+        "manifest_sha256": "e651469340d430c2b5bea25623d917fc3dbbd20954691eed82b34b66ca1e92c8"
+      },
+      "build-services": {
+        "generated_files": 268,
+        "manifest_sha256": "53fda30f73275338df490fb6c15b85eda21d0563879066cad5b9f137b095ef4a"
+      },
+      "cli-support": {
+        "generated_files": 264,
+        "manifest_sha256": "f12d34d4c284ffa21fa568dbb852a66d674d70d9d0799ed1f40e577259a33fb8"
+      },
+      "control": {
+        "generated_files": 287,
+        "manifest_sha256": "6802491f3784569601f70ebb62e5c1bdf6f736f23351bce39959b9894b1b7f5f"
+      },
+      "core": {
+        "generated_files": 41,
+        "manifest_sha256": "8a93eedb0ec8c850a192312a048bcc79f8f4e18bd0773f65a05a8398bad8e5b6"
+      },
+      "crucible-cli": {
+        "generated_files": 366,
+        "manifest_sha256": "b0566a3ad60d37cf4de165853066d070b4ae04800f6b879f74f93d014c0bb428"
+      },
+      "daemon": {
+        "generated_files": 336,
+        "manifest_sha256": "248ecc42bf6e217aebc2a022bd1f4334a778853a390d6d13732a0faf8d854625"
+      },
+      "deployment": {
+        "generated_files": 106,
+        "manifest_sha256": "37e060f6bac67639284ee714c7debb76e581b27337b74f9fd0fef7d8d081e50a"
+      },
+      "device": {
+        "generated_files": 48,
+        "manifest_sha256": "69db1732aef40abe6c0fbd1298062c7e644af66199f84bcc82fb8da3ce93f06d"
+      },
+      "engine": {
+        "generated_files": 143,
+        "manifest_sha256": "aae5bdc03f12bafc2dd3a1d71cfb43c8b685333896c9440ce9d63bed95a2a4db"
+      },
+      "formats": {
+        "generated_files": 116,
+        "manifest_sha256": "aaae0188ec68d83b7ded4e90b7f1039b99c05f1bd849f6a764c7c390bfc9bd5f"
+      },
+      "guest": {
+        "generated_files": 124,
+        "manifest_sha256": "d32772cedb345a876d2c3378f8b9ff8181f97333c7ace52f01cad271b2e7e082"
+      },
+      "hub-client": {
+        "generated_files": 197,
+        "manifest_sha256": "d90d43631df7407dc4b85a02533cea8a88f4788e3edcb5c1f68d5107f8945149"
+      },
+      "hub-console": {
+        "generated_files": 119,
+        "manifest_sha256": "f7de92159060793bd916ea58ea3eb9bfcfecc318f7730b5ae7c66a12aac713dc"
+      },
+      "hub-console-wasm": {
+        "generated_files": 266,
+        "manifest_sha256": "0424d73de2863f9fc430f3927463f219e2c839ccd239aa324966cebd4ea969f0"
+      },
+      "hub-db": {
+        "generated_files": 217,
+        "manifest_sha256": "f349a270348cd598355c3adbac58f4d20c0dc47a8f218adca8f6a510d37bbde6"
+      },
+      "hub-db-all-features": {
+        "generated_files": 252,
+        "manifest_sha256": "a4f0284eff590cbe52c6397fdca970b60f6e4a7744a38b64c3ec7c4ff0238491"
+      },
+      "hub-db-all-features-tests": {
+        "generated_files": 263,
+        "manifest_sha256": "53355bc14eaa9660af251fd4b009db593a01485b619922d88fee4fe6f8a5447d"
+      },
+      "hub-db-tests": {
+        "generated_files": 228,
+        "manifest_sha256": "466bfdbf2d342bfeaea30d5321d253c02246ab4ed9605a478df2f21ea7d62476"
+      },
+      "hub-model": {
+        "generated_files": 129,
+        "manifest_sha256": "068be19796747630f97c33b19df86ffc64cda1f994994d20c13d061b29b615db"
+      },
+      "hub-model-tests": {
+        "generated_files": 172,
+        "manifest_sha256": "c688f97da3be2145f5e65de7ac9de9df749cbb16ec96fd9bb24d2bc8e20c7da6"
+      },
+      "hub-native-postgres": {
+        "generated_files": 462,
+        "manifest_sha256": "52b5b86bc6bdc3a77cf958e285a2488364b1f18e8ae5fb50c00dd263c6acf7f3"
+      },
+      "hub-native-tests": {
+        "generated_files": 497,
+        "manifest_sha256": "6f1081653b15da77a4261c457cb483da80bd9c917dc26155ec6728aecb2c3f40"
+      },
+      "hub-portable": {
+        "generated_files": 72,
+        "manifest_sha256": "0fa8108457fd04a514ad04213439f5d94c498ea3dd6bb7745a14194a3014aeef"
+      },
+      "hub-service": {
+        "generated_files": 293,
+        "manifest_sha256": "958ce64d34360332eaa984fc2b0bb8be024377cb6a94e3add4885a799a5658cd"
+      },
+      "hub-service-all-features": {
+        "generated_files": 317,
+        "manifest_sha256": "527987cd70e52fcde07e7972acb52cf6654f9218801736d54990f0e84bb5efae"
+      },
+      "hub-service-all-features-tests": {
+        "generated_files": 473,
+        "manifest_sha256": "c046bcdb521a9696daec2c37e853a0e0b4930315f63aba4048acec29ffd6c72f"
+      },
+      "hub-service-tests": {
+        "generated_files": 450,
+        "manifest_sha256": "151ed549386c7b67b20fddc79d165de572b87d5819f06643eb5ae4f0eb9c179e"
+      },
+      "hub-worker-all-features-tests": {
+        "generated_files": 453,
+        "manifest_sha256": "ba2e42340a7781701c6c6b6f75c4d3147ca10737d533929e177db91463ebd35a"
+      },
+      "hub-worker-tests": {
+        "generated_files": 453,
+        "manifest_sha256": "5e13db69ce67e5d25019cb0bbde9a883ee75377cdd05bc6177f02d2472ac1255"
+      },
+      "hub-worker-wasm": {
+        "generated_files": 273,
+        "manifest_sha256": "783de1566339a6d985e2e7308524671c5bd1d27f64efd91cfcade3a3682e1089"
+      },
+      "hub-worker-wasm-all-features": {
+        "generated_files": 273,
+        "manifest_sha256": "8741a3e869e27a468ef9701f14aaad386b333a76c9fbc237c3816acdf2ef3925"
+      },
+      "hub-worker-wasm-do-e2e": {
+        "generated_files": 273,
+        "manifest_sha256": "a2f135d6564a212f18863e924588bc87aab90bdf3d2b3373992d0c5fffd2292d"
+      },
+      "native-bindings": {
+        "generated_files": 13,
+        "manifest_sha256": "6273a074f0ea10d2683d59193e3d88c51a54ebcd6936557e45e7e7d99374faa8"
+      },
+      "native-foundation": {
+        "generated_files": 344,
+        "manifest_sha256": "6de88da079bc519fcc9a8b59334ad93d48cb245aea800e023d892246f96298f5"
+      },
+      "native-foundation-minimal": {
+        "generated_files": 256,
+        "manifest_sha256": "e761dcc56cb29c2bb76c20e76566556734f2e12732b2f13afc1c31d0a117b8b9"
+      },
+      "native-foundation-tests": {
+        "generated_files": 351,
+        "manifest_sha256": "c7816e586584abc338423a40425c0c8f60749d673c03bb67c0c9131146b54a28"
+      },
+      "package-manager": {
+        "generated_files": 401,
+        "manifest_sha256": "cce53aafb953674bdf92bf523e1c9139c1007f066ca43722f28a79c69dd6b545"
+      },
+      "package-manager-tests": {
+        "generated_files": 425,
+        "manifest_sha256": "909afdbdbe47742a35fd87ce78201298d3cd6879aa49c5a179fc4d1cd5234cd6"
+      },
+      "qemu-gpl-plugin-tests": {
+        "generated_files": 40,
+        "manifest_sha256": "ae1c2f206d5406adb9a7b47cdcee56a9f55369d7b0f0e4960e81e7f4c9fdcf05"
+      },
+      "qemu-gpl-production": {
+        "generated_files": 40,
+        "manifest_sha256": "b3a1f15ea4aca4f851ea3424ba9b48d2dcb3ec30640ea3759a3dc83aff193c46"
+      },
+      "qemu-gpl-tests": {
+        "generated_files": 76,
+        "manifest_sha256": "26a10576f1de93a240279bdd79f9ab0725a373e25f09a78b575ed7de94a261a3"
+      },
+      "qemu-host": {
+        "generated_files": 143,
+        "manifest_sha256": "40fbcf280e71d03ef427bf0f32b3092e747ff685f2a0ced78974a1174825c0b7"
+      },
+      "qemu-test-oracle-host": {
+        "generated_files": 266,
+        "manifest_sha256": "3aa5980f1d75d739941ce177db423d9b0def93458d8b001d3d80cd94d4868b2a"
+      },
+      "quota": {
+        "generated_files": 18,
+        "manifest_sha256": "c2b7d5e5e8e160aa2b0c8c74121fa2ca636adbb0d78259fe175589dfe644bc07"
+      },
+      "registry-native": {
+        "generated_files": 401,
+        "manifest_sha256": "b5716924dd7420c095b14b5666c6b2a124437c2d6119fcc1fbd38db1cef05f66"
+      },
+      "registry-native-tests": {
+        "generated_files": 401,
+        "manifest_sha256": "f2dd5a71c944f1b491d9799bb29043de4753633348d815d7222c9e24856bc916"
+      },
+      "release-coordination": {
+        "generated_files": 379,
+        "manifest_sha256": "35ccf6ee9b69ed97b0726401560fa88a2f18e3404fd5d75a0ff1a2a637366b11"
+      },
+      "release-preparation": {
+        "generated_files": 190,
+        "manifest_sha256": "2666372b401aad5547488f928dd4d5043a96499324969be02e922b0f79bac807"
+      },
+      "session": {
+        "generated_files": 149,
+        "manifest_sha256": "e9a85d6c553d8ea89dcde7bd01d218ff551223c5a31e9c3a026afb01e32e2f2c"
+      },
+      "store": {
+        "generated_files": 124,
+        "manifest_sha256": "ab27e67283353e87dc841fb755fe57952625821520a855d48a11d353866ebbbe"
+      },
+      "store-s3": {
+        "generated_files": 283,
+        "manifest_sha256": "5834be16d6be9be6cd590f0418fa1c74ea58aced68217617e68d671b4944a6c3"
+      }
+    },
+    "uncompiled_registry_binding_alias_profiles": [
+      "aos-cli-fleet-tests",
+      "aos-cli-production",
+      "aos-cli-tests",
+      "boot-preparation",
+      "boot-preparation-minimal",
+      "hub-native-postgres",
+      "hub-native-tests",
+      "hub-service-all-features-tests",
+      "hub-service-tests",
+      "hub-worker-all-features-tests",
+      "hub-worker-tests",
+      "native-foundation",
+      "native-foundation-tests",
+      "package-manager",
+      "package-manager-tests",
+      "registry-native",
+      "registry-native-tests",
+      "release-coordination"
+    ]
+  },
+  "source_sha256": {
+    "crates/Cargo.lock": "b18fd38ac5bba2e0de53f2e79096739f664289b80861a470f72ea7faeb1ead58",
+    "crates/bindings/libssh2-sys/BUILD.bazel": "ba83f6b00081832d375024dbe84faaa154c741a632e99dfa950df2c507060785",
+    "crates/bindings/libssh2-sys/Cargo.toml": "01ab35767b179c4bc6ff58938937126a12abd2544ac472b3612328fc36d585cd",
+    "crates/bindings/libssh2-sys/build.rs": "ef8fe6615bb9e0350a34b09372e1d4e3229d2e589eb3444748aa40eea915c565",
+    "crates/bindings/libssh2-sys/lib.rs": "0d4cae2e162e5fe47b26148012c0ac07f8f728f592b4d2bb4f39d17adf714021",
+    "pkgs/build-support/_bazel/native-foundation-libraries.nix": "bc46eb9b4f5f086a43829d3cbd77273afbce14a8c4b600eda3888a0196dcdb33",
+    "pkgs/build-support/_bazel/native-libraries.nix": "12a165e68fc4c78c21b87ea3afeb5b7230bf5691e8ce65a95fd66e5b25584939",
+    "tests/build/_bazel-native-bindings.nix": "aceccd2d1574a8c15117c0daffcaf10ac8077acde0196a15943cbbc79db0d346",
+    "third_party/rust/BUILD.bazel": "1c9f96da6969383195df8a498ba10f95d1b4ddf47b1e62ee47ca122802b87fcf",
+    "tools/bazel/rules/build_script.bzl": "a57bbc5e69a7a6f214de65ac7decb12e5adc7706d0339f40830cc9c72b7e8c89",
+    "tools/bazel/tests/verify_compiler_options.py": "7f0d1bb5c49578d4c128793d66375f57b1aca4fe4254ad9420c3d398be87f799"
+  },
+  "status": "PASS: isolated native x86_64 Linux binding tests and strict feature/cfg/edition comparison with offline Cargo",
+  "tests": {
+    "//crates/bindings/libssh2-sys:unit": {
+      "executed": [
+        "linked_library_supports_the_required_api_version",
+        "smoke"
+      ],
+      "ignored": []
+    }
+  },
+  "uncached_execution": {
+    "cache_hits": 0,
+    "runners": {
+      "linux-sandbox": 18
+    },
+    "rustc_actions": 18
+  }
+}

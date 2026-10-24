@@ -1,13 +1,13 @@
 {
   "contracts": {
-    "third_party/rust/BUILD.bazel": "dc8a09cd11de7d1471888484d7c4940931f13b8154e71fe906fbae4235f82d2e",
+    "third_party/rust/BUILD.bazel": "1c9f96da6969383195df8a498ba10f95d1b4ddf47b1e62ee47ca122802b87fcf",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
-    "tools/bazel/metadata/update_rust.py": "dbc88bf6155320e30cea520dfaa5c05a43fea136d9daa1b6c04c478894e4b3d7",
+    "tools/bazel/metadata/update_rust.py": "6dba4f1b82faf10f246c5cefa1ea2c92a7d075c4cc58b8da9183b9a34080f28c",
     "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
   },
   "family": "core",
   "generated_files": {
-    "BUILD.anyhow-1.0.102.bazel": "faf475c5950f69fea5d65d7cb9641953ccccca3127ef016d78090f341a5c41ae",
+    "BUILD.anyhow-1.0.103.bazel": "ccc02b47c8e5ed5e7ae74fca7dea7eaac602143b281025af48510c56afb0fc73",
     "BUILD.arrayref-0.3.9.bazel": "3770c56b63e9bb3dc5307841617d3f571a88964fca327bc213a2f80e906dd8a9",
     "BUILD.arrayvec-0.7.7.bazel": "c21c9bc5a4cb3210adb559b0e4c4b86d3919d4d5ac93410900e7acaa40c3e367",
     "BUILD.base64-0.22.1.bazel": "0f791dcc1b91f46a9a9ff50a47f20421362c5541a478427e97fcb00c7ed6608e",
@@ -43,23 +43,23 @@
     "BUILD.unicode-normalization-0.1.25.bazel": "3f7036204c8605f5340b09d61bc0485047f7a27a739d91b000c76757eaab1cf8",
     "BUILD.version_check-0.9.5.bazel": "9c15ce21d06d8b54d9e92bbf4a9bb0af72365fdd645e481871fe383bea6e42af",
     "BUILD.zmij-1.0.21.bazel": "5b94f9eeb59e8572ec8ac99087e029d3a0fca6506ca0ab6a59b1596f3bce9825",
-    "Cargo.lock": "0b168b602b191e454c706aef89dd82a597842773965ee254f1236851428bd615",
-    "aliases.bzl": "aa2b5fdb6dfcf3e321c27a38f4e749a2a01e20cacab21c1e752c58685c43a505",
-    "cargo-bazel.json": "0b55ab8a1cbb5f379f5b3dbfe14b1427b413083d4843653c5393bcb8f5980bf5",
+    "Cargo.lock": "cce92e711782ac4e1ead6fae1e85bd5c6e54608b393efdbcd5407b7477ebf375",
+    "aliases.bzl": "bc74ef2ade97382a785cb09dda9ac37edd6bc1978dc4cfb6e6ae09ecb48cad3d",
+    "cargo-bazel.json": "b074670cd609a4ed3e9e6846a7ad9a81f6fbb1e1afef624f9e0b75209d5044c2",
     "generator-config.json": "03e5876603cfb0b68541647fb515f4cccee521b0eface423ef2462d2cee0e341",
-    "repositories.MODULE.bazel": "e6c38e6f3b3f762e2cf9db1d2d38068501a074fe560d33bd57bc97e06a586ec8"
+    "repositories.MODULE.bazel": "0c9943e2273e4227a1ef96bfb771d080d9a98debcfc332bbe1acfa767a11d668"
   },
   "schema_version": 1,
   "sources": {
-    "aos_core_crates__anyhow-1.0.102": {
-      "build_file": "BUILD.anyhow-1.0.102.bazel",
+    "aos_core_crates__anyhow-1.0.103": {
+      "build_file": "BUILD.anyhow-1.0.103.bazel",
       "license": "MIT OR Apache-2.0",
       "license_domain": "permissive-protocol",
       "name": "anyhow",
-      "sha256": "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c",
-      "strip_prefix": "anyhow-1.0.102",
-      "url": "https://static.crates.io/crates/anyhow/1.0.102/download",
-      "version": "1.0.102"
+      "sha256": "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3",
+      "strip_prefix": "anyhow-1.0.103",
+      "url": "https://static.crates.io/crates/anyhow/1.0.103/download",
+      "version": "1.0.103"
     },
     "aos_core_crates__arrayref-0.3.9": {
       "build_file": "BUILD.arrayref-0.3.9.bazel",
@@ -433,7 +433,7 @@
       "Zlib OR Apache-2.0 OR MIT"
     ],
     "contracts": {
-      "third_party/rust/BUILD.bazel": "dc8a09cd11de7d1471888484d7c4940931f13b8154e71fe906fbae4235f82d2e",
+      "third_party/rust/BUILD.bazel": "1c9f96da6969383195df8a498ba10f95d1b4ddf47b1e62ee47ca122802b87fcf",
       "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
       "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
     },
@@ -447,7 +447,7 @@
       "anyhow": {
         "default-features": true,
         "features": [],
-        "version": "=1.0.102"
+        "version": "=1.0.103"
       },
       "base64": {
         "default-features": true,

@@ -110,6 +110,19 @@ def validate_license(specification, crate):
     return domain
 
 
+def add_license_tags(rendered, crate, license_domain, filename):
+    """Tags rendered compilation rules or an explicitly overridden alias."""
+    marker = "    tags = [\n"
+    if marker not in rendered:
+        # crate_universe prints an alias's single manual tag on one line when
+        # all compiled targets have explicit first-party replacements.
+        alias_marker = '    tags = ["manual"],\n'
+        if not crate.get("override_targets") or alias_marker not in rendered:
+            raise ValueError(f"rendered crate lacks expected tag declarations: {filename}")
+        rendered = rendered.replace(alias_marker, marker + '        "manual",\n    ],\n')
+    return rendered.replace(marker, marker + '        "aos-license:' + license_domain + '",\n')
+
+
 def rendered_features(node):
     """Reads the pinned renderer's literal or platform-selected feature form."""
     if isinstance(node, ast.List):
@@ -340,12 +353,9 @@ def prepare_sources(specification, scratch, repository, staged):
         license_domain = validate_license(specification, crate)
         filename = f"BUILD.{name}-{version}.bazel"
         rendered = (scratch / "rendered" / filename).read_text()
-        marker = "    tags = [\n"
-        if marker not in rendered:
-            raise ValueError(f"rendered crate lacks expected tag declarations: {filename}")
         # Scope is checked independently of the original SPDX expression, which
         # remains in the source inventory and upstream source files.
-        rendered = rendered.replace(marker, marker + '        "aos-license:' + license_domain + '",\n')
+        rendered = add_license_tags(rendered, crate, license_domain, filename)
         rendered = "\n".join(line.rstrip() for line in rendered.splitlines()) + "\n"
         builds[name, version] = rendered
         label = crate_repository(repository, name, version)

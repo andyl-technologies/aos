@@ -24,7 +24,6 @@ rust_library(
     name = "der",
     deps = [
         "@aos_native_foundation_tests_crates__const-oid-0.9.6//:const_oid",
-        "@aos_native_foundation_tests_crates__pem-rfc7468-0.7.0//:pem_rfc7468",
         "@aos_native_foundation_tests_crates__zeroize-1.9.0//:zeroize",
     ],
     compile_data = glob(
@@ -42,7 +41,6 @@ rust_library(
     crate_features = [
         "alloc",
         "oid",
-        "pem",
         "std",
         "zeroize",
     ],

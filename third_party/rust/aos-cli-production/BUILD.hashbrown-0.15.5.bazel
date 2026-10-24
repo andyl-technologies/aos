@@ -23,8 +23,6 @@ cargo_toml_env_vars(
 rust_library(
     name = "hashbrown__aos_target",
     deps = [
-        "@aos_aos_cli_production_crates__allocator-api2-0.2.21//:allocator_api2",
-        "@aos_aos_cli_production_crates__equivalent-1.0.2//:equivalent",
         "@aos_aos_cli_production_crates__foldhash-0.1.5//:foldhash",
         "@aos_aos_cli_production_crates__serde-1.0.228//:serde",
     ],
@@ -40,7 +38,7 @@ rust_library(
             "WORKSPACE.bazel",
         ],
     ),
-    crate_features = ["allocator-api2", "default", "default-hasher", "equivalent", "inline-more", "raw-entry", "serde"],
+    crate_features = ["default-hasher", "serde"],
     crate_root = "src/lib.rs",
     edition = "2021",
     rustc_env_files = [
@@ -73,8 +71,6 @@ rust_library(
 rust_library(
     name = "hashbrown__aos_exec",
     deps = [
-        "@aos_aos_cli_production_crates__allocator-api2-0.2.21//:allocator_api2",
-        "@aos_aos_cli_production_crates__equivalent-1.0.2//:equivalent",
         "@aos_aos_cli_production_crates__foldhash-0.1.5//:foldhash",
         "@aos_aos_cli_production_crates__serde-1.0.228//:serde",
     ],

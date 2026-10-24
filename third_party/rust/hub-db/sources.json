@@ -1,9 +1,9 @@
 {
   "contracts": {
-    "third_party/rust/BUILD.bazel": "dc8a09cd11de7d1471888484d7c4940931f13b8154e71fe906fbae4235f82d2e",
-    "third_party/rust/hub-db.bzl": "ac33988e46098e6f979518594d43138e3358accc78b232545efc09e79e2bc422",
+    "third_party/rust/BUILD.bazel": "1c9f96da6969383195df8a498ba10f95d1b4ddf47b1e62ee47ca122802b87fcf",
+    "third_party/rust/hub-db.bzl": "fdbc288229f3e33687f874b919f48b2c4ec924f43a7ed9ed6624249b30049bc9",
     "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
-    "tools/bazel/metadata/update_rust.py": "dbc88bf6155320e30cea520dfaa5c05a43fea136d9daa1b6c04c478894e4b3d7",
+    "tools/bazel/metadata/update_rust.py": "6dba4f1b82faf10f246c5cefa1ea2c92a7d075c4cc58b8da9183b9a34080f28c",
     "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
   },
   "family": "hub-db",
@@ -14,7 +14,7 @@
     "BUILD.aes-gcm-0.10.3.bazel": "ea8e42417e2c96020606a2c042fc7526d7ba503f4a09727875a446ed637258f6",
     "BUILD.aho-corasick-1.1.4.bazel": "1ae603b47b39d5cfcd8d5d105e9c1c03c0b174350152e7f05fc1d41c00ef5916",
     "BUILD.allocator-api2-0.2.21.bazel": "4b112dd0ef5e783b67f505b660a32635bd74aefb0c645795d0e54c150f9247ac",
-    "BUILD.anyhow-1.0.102.bazel": "ecd6bc7eaaf0f3e9c07dd98ba677b8259d3096839c3e5cdb672e72fdffc882d5",
+    "BUILD.anyhow-1.0.103.bazel": "f8148e268e44585914ae58689e7ffc72cf5e0e724dd83f694f6be00145107f8e",
     "BUILD.argon2-0.5.3.bazel": "0af22a357c5685a183a62c105386bc0cc876495fc4d25874b8c6cdb0e486acab",
     "BUILD.async-trait-0.1.89.bazel": "a2971d7d03374fe2381fc3f871455258c32e44492bbf06929df8c8a04d8bb506",
     "BUILD.atoi-2.0.0.bazel": "79d4bbc39b185a2a2992e87ba1ce4d76d58e258b181c6f1ec9ce72c2552d730c",
@@ -29,7 +29,6 @@
     "BUILD.cc-1.2.65.bazel": "c913d6aeb3ed1dc38934e88725b5aef30eca56a66cfb7bfa74a41e6ed82a1196",
     "BUILD.cfg-if-1.0.4.bazel": "b031bedf10bb268206087a9a0beb9cea85b628a285c512f7d33754d6f8f96267",
     "BUILD.cipher-0.4.4.bazel": "d8386c752838fb50d8454f03237ffff18b42a8080a51872d1f24d90b25905c7b",
-    "BUILD.concurrent-queue-2.5.0.bazel": "a81d777b1ec3228c1fa066a773b701e9121e0d2a6c57f8f704e3e8393583936f",
     "BUILD.const-oid-0.9.6.bazel": "05f51d65aefd1fa65baaa864f78155ad2adac10fe3e784a50710192378662636",
     "BUILD.cpufeatures-0.2.17.bazel": "64e8f48e0d6dacb5d93a14a13e3b8aed1e0f70e14905f1c3f955ac3e020ddb4a",
     "BUILD.crc-3.4.0.bazel": "e99c721e1e2796fa2d665d1cab4e7742c55dbc75833c1f0ed304206e312f746b",
@@ -51,7 +50,7 @@
     "BUILD.either-1.16.0.bazel": "abdfc21c0e9f9281f22c20c12f6d56edb2329163b49d1dee293c7bb82eb4a93f",
     "BUILD.equivalent-1.0.2.bazel": "39f2e4c9d000c2662baa785159be35f3323bafa756813d5906739aed259d3ec5",
     "BUILD.errno-0.3.14.bazel": "7903eecedc8148889777d9288ae576a3e72dcf505bbba8dadc412b02c0be1ec4",
-    "BUILD.event-listener-5.4.1.bazel": "b49406416a4a6f6a3b8d716ea4474800a09888fd06d3235acd29503d42549296",
+    "BUILD.event-listener-5.4.2.bazel": "d09b42c5988c31795e1f58e62a6daf58c78026170dc149f656b7b5f0f5ea6155",
     "BUILD.fiat-crypto-0.2.9.bazel": "0d922d7f7b8ddcce22820d5e1883e5bf576fc89beb6ddfcbd91dc30d63cc199e",
     "BUILD.find-msvc-tools-0.1.9.bazel": "31fda8da8a9ba495aad818506605ed04dfb6c72989d7de1090ccde19d6b82b7b",
     "BUILD.flate2-1.1.9.bazel": "4eafc802eca08a8a7ec1aa19e2f6006a2d3d8a11728304279d9a108f89976b33",
@@ -155,7 +154,7 @@
     "BUILD.spin-0.9.8.bazel": "dee5848c2e3a1f15ae92fd212ed6d428f7e3385de41f57b2861a4f5214851a17",
     "BUILD.spki-0.7.3.bazel": "5a64c4986b6d1aa161c810e078c18e07569770afbe5d62c59f96c700a2b4cf50",
     "BUILD.sqlx-0.8.6.bazel": "2aa25f58a5ff011ef2964d827c32296b62aa8206afe457081ff6fd44b5454cd1",
-    "BUILD.sqlx-core-0.8.6.bazel": "33b520ae4366fbc063e186800719807b5a51c86cc23463825900dd68560e1955",
+    "BUILD.sqlx-core-0.8.6.bazel": "9ffe89b267feb4be46325bd369203e9d3e3f4ad29acfd5b2927807ade5ae241f",
     "BUILD.sqlx-macros-0.8.6.bazel": "e22696bfe4f0c44e3dffce713f97914800a747c0c922c22fb111a59e8ce15159",
     "BUILD.sqlx-macros-core-0.8.6.bazel": "e22620bb1b85171fbad8696a1b5eba2e0da247ff8fd3a849542f8552f3508bed",
     "BUILD.sqlx-sqlite-0.8.6.bazel": "b42555c848b1535535ef5cd1e8e331d930aab146f6c778813eda12d8f7e9f8b2",
@@ -197,18 +196,18 @@
     "BUILD.wasm-bindgen-macro-support-0.2.126.bazel": "7d95c6b07853511a0382bfad2447f643824037c38c116701c21c8932fce934b7",
     "BUILD.wasm-bindgen-shared-0.2.126.bazel": "f308e3788b88731e4b9f00f0b0f84a6c76214402692f9498b7e39a158d626bac",
     "BUILD.wasm-encoder-0.244.0.bazel": "7334dbf5383b3bdb34c7147543de9e31980c364e3c01ee5d23d2e8df976e2097",
-    "BUILD.wasm-metadata-0.244.0.bazel": "13549035e1d2ac9371f08cf6108e45357e7650929f9367f21a72dd37444cea87",
+    "BUILD.wasm-metadata-0.244.0.bazel": "f26b4c1a5af715141019410fb02361e991fc2e7413e53acd761ee5fa0ca72c48",
     "BUILD.wasmparser-0.244.0.bazel": "41e7bc9cb4f67ac9e3b462dc1d9ec6a624182a05a73da197a2add3315f096feb",
     "BUILD.windows-link-0.2.1.bazel": "5d6fcc783c3fc1a82c9428352b75dd17577778df42f317cef80357ee1c337f79",
     "BUILD.windows-sys-0.61.2.bazel": "7e8f899e9ca56b3665fd327a60907eff5a49c2076d21dc29eb97db9aa58cea75",
     "BUILD.winnow-0.7.15.bazel": "11d8aa38d2f93c6d5fbcc4c7f25126814f34d48de32200155a91569f323a91b8",
     "BUILD.wit-bindgen-0.51.0.bazel": "187ecf1a78c4058c71bd40a24d947d1f62b17e282f54a2d6beb4c4e0440bd8a1",
     "BUILD.wit-bindgen-0.57.1.bazel": "7f844e65a65491fa7fa4a6b704279edf212b0471b3f88cc8ab14b0416a31beb3",
-    "BUILD.wit-bindgen-core-0.51.0.bazel": "a567b23f7dafa04b1b21a9c029ff3199648b44af2f8e043b59190e8708aa4cf7",
-    "BUILD.wit-bindgen-rust-0.51.0.bazel": "155bdd8b777d79a798007bd3959bc03e7e82c5cf6f75ed41e1619ad7c5eb9d0b",
-    "BUILD.wit-bindgen-rust-macro-0.51.0.bazel": "74c9a755c425f165b8fdaf75d3c9a274daae96bb36d5842ee3387f370e12f2e9",
-    "BUILD.wit-component-0.244.0.bazel": "e543cfd173f983f6d8ea1162c7439c2b6c5cf0e512d0b3b6be1b4de2defdcab3",
-    "BUILD.wit-parser-0.244.0.bazel": "68edbdd7e59ddec5f9e6a2b641cbe9402003eefc680fcb7cfd8e0e405c167d6c",
+    "BUILD.wit-bindgen-core-0.51.0.bazel": "bfbd14044a68e47035a594a9509a377b9bf608f0a90ca42853e5a222ba969db7",
+    "BUILD.wit-bindgen-rust-0.51.0.bazel": "686f0d0b92b565f5d4e42ca219f0cf3ed6ec167a0b075db2656f60ff82619411",
+    "BUILD.wit-bindgen-rust-macro-0.51.0.bazel": "fbc86e636c124b9b6a280157b91dbc1a8682d3c1f8061a80c6e399ef11ce0f59",
+    "BUILD.wit-component-0.244.0.bazel": "3b37cd8c2991297c5499617503d3f7ddeb822725a88cce0219563c3777e395c1",
+    "BUILD.wit-parser-0.244.0.bazel": "ca807008813aa3a832a8c6d498bb5343862ece207c044c92d0f351d4af4d4f13",
     "BUILD.writeable-0.6.3.bazel": "40f824779427e44929030e249dd0bbac089b403b12f8eb417b2a79b7094a7d2f",
     "BUILD.yoke-0.8.3.bazel": "f5aefd36f164adb9a1b15029efa779763dbfa405e33635fa3a69d875b5963caa",
     "BUILD.yoke-derive-0.8.2.bazel": "3e66ea5f106804da73b78cec8c7b4a8b6ee310e6723fd8594021db8072e95846",
@@ -221,11 +220,11 @@
     "BUILD.zerovec-0.11.6.bazel": "a68570268bdf6556bcfd888d0378b945286572ecff75bff3811254454ee2d671",
     "BUILD.zerovec-derive-0.11.3.bazel": "06993f4ba1cd6d8d2ab56c318fe78edbede7088ae03f5e035d46ca0b80e14bd7",
     "BUILD.zmij-1.0.21.bazel": "53b5fb96acc09be7caef476bb0f97426517a10f1167e10d8eac3d23c43bd0664",
-    "Cargo.lock": "92988e268d72f45c415fb83d7e954679410b8f3315755558b7106af81f259bb2",
-    "aliases.bzl": "5488a4052ae336bf3724467fc8f833f7c3607cea64a206c09e7f380b7cf1b529",
-    "cargo-bazel.json": "d5a915c0a78cbe51c57b637a3e0e7b074a89a3d07338ff42a29f669161a02bca",
+    "Cargo.lock": "64f5584b10f76b2eea89a2a7ddc9c080eb5f2792653bd4a68a8af47ec7c545e8",
+    "aliases.bzl": "5debe49b239fce21845d712f9b89ff8a176edead2fbab06bb89d3397d530145f",
+    "cargo-bazel.json": "6b0f6b01b916a85b7b6d471dcc7fcd66d4504b9f9e4f8f5ee184725a06ce215a",
     "generator-config.json": "6bf27b124e71c34dfccde58fecc5eaec99c69d667099d05b47009ed3bffc2c78",
-    "repositories.MODULE.bazel": "8394b95e9933232d0cc34418369ff0d36e02d45dd8784e262257ecdaef5fbf78"
+    "repositories.MODULE.bazel": "5c8c18c5c118e3b9d07358cc94db409c99aefe5a2d0638b0475c75aab3c5cde4"
   },
   "schema_version": 1,
   "sources": {
@@ -289,15 +288,15 @@
       "url": "https://static.crates.io/crates/allocator-api2/0.2.21/download",
       "version": "0.2.21"
     },
-    "aos_hub_db_crates__anyhow-1.0.102": {
-      "build_file": "BUILD.anyhow-1.0.102.bazel",
+    "aos_hub_db_crates__anyhow-1.0.103": {
+      "build_file": "BUILD.anyhow-1.0.103.bazel",
       "license": "MIT OR Apache-2.0",
       "license_domain": "apache-host",
       "name": "anyhow",
-      "sha256": "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c",
-      "strip_prefix": "anyhow-1.0.102",
-      "url": "https://static.crates.io/crates/anyhow/1.0.102/download",
-      "version": "1.0.102"
+      "sha256": "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3",
+      "strip_prefix": "anyhow-1.0.103",
+      "url": "https://static.crates.io/crates/anyhow/1.0.103/download",
+      "version": "1.0.103"
     },
     "aos_hub_db_crates__argon2-0.5.3": {
       "build_file": "BUILD.argon2-0.5.3.bazel",
@@ -438,16 +437,6 @@
       "strip_prefix": "cipher-0.4.4",
       "url": "https://static.crates.io/crates/cipher/0.4.4/download",
       "version": "0.4.4"
-    },
-    "aos_hub_db_crates__concurrent-queue-2.5.0": {
-      "build_file": "BUILD.concurrent-queue-2.5.0.bazel",
-      "license": "Apache-2.0 OR MIT",
-      "license_domain": "apache-host",
-      "name": "concurrent-queue",
-      "sha256": "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973",
-      "strip_prefix": "concurrent-queue-2.5.0",
-      "url": "https://static.crates.io/crates/concurrent-queue/2.5.0/download",
-      "version": "2.5.0"
     },
     "aos_hub_db_crates__const-oid-0.9.6": {
       "build_file": "BUILD.const-oid-0.9.6.bazel",
@@ -659,15 +648,15 @@
       "url": "https://static.crates.io/crates/errno/0.3.14/download",
       "version": "0.3.14"
     },
-    "aos_hub_db_crates__event-listener-5.4.1": {
-      "build_file": "BUILD.event-listener-5.4.1.bazel",
+    "aos_hub_db_crates__event-listener-5.4.2": {
+      "build_file": "BUILD.event-listener-5.4.2.bazel",
       "license": "Apache-2.0 OR MIT",
       "license_domain": "apache-host",
       "name": "event-listener",
-      "sha256": "e13b66accf52311f30a0db42147dadea9850cb48cd070028831ae5f5d4b856ab",
-      "strip_prefix": "event-listener-5.4.1",
-      "url": "https://static.crates.io/crates/event-listener/5.4.1/download",
-      "version": "5.4.1"
+      "sha256": "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2",
+      "strip_prefix": "event-listener-5.4.2",
+      "url": "https://static.crates.io/crates/event-listener/5.4.2/download",
+      "version": "5.4.2"
     },
     "aos_hub_db_crates__fiat-crypto-0.2.9": {
       "build_file": "BUILD.fiat-crypto-0.2.9.bazel",
@@ -2433,8 +2422,8 @@
       "Zlib OR Apache-2.0 OR MIT"
     ],
     "contracts": {
-      "third_party/rust/BUILD.bazel": "dc8a09cd11de7d1471888484d7c4940931f13b8154e71fe906fbae4235f82d2e",
-      "third_party/rust/hub-db.bzl": "ac33988e46098e6f979518594d43138e3358accc78b232545efc09e79e2bc422",
+      "third_party/rust/BUILD.bazel": "1c9f96da6969383195df8a498ba10f95d1b4ddf47b1e62ee47ca122802b87fcf",
+      "third_party/rust/hub-db.bzl": "fdbc288229f3e33687f874b919f48b2c4ec924f43a7ed9ed6624249b30049bc9",
       "tools/bazel/metadata/export_specs.py": "33810b02484fa4f163fd745fb57e399bccc69357843964dd5d357ac1a16fa1dc",
       "tools/bazel/rules/crates.bzl": "a49b8f78622988c134e0f3c0334e898dcd9399e321f7311ae374da801203b467"
     },
@@ -2492,7 +2481,7 @@
       "anyhow": {
         "default-features": true,
         "features": [],
-        "version": "=1.0.102"
+        "version": "=1.0.103"
       },
       "argon2": {
         "default-features": true,

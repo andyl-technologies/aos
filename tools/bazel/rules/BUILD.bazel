@@ -184,6 +184,12 @@ config_setting(
 )
 
 config_setting(
+    name = "native_binding_dependencies",
+    flag_values = {":dependency_profile": "native-bindings"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
     name = "native_foundation_tests_dependencies",
     flag_values = {":dependency_profile": "native-foundation-tests"},
     visibility = ["//visibility:public"],

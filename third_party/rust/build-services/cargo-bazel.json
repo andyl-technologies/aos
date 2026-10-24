@@ -1,5 +1,5 @@
 {
-  "checksum": "df17a48c26ada5e009023c00f8b697a083941ab7f8bc853132c43c830033b77c",
+  "checksum": "3a95b5f06fbd6fb65265391085f39c87f1f342f2070ffc12736ee085db7ae838",
   "crates": {
     "adler2 2.0.1": {
       "name": "adler2",
@@ -191,14 +191,14 @@
       ],
       "license_file": "LICENSE-MIT"
     },
-    "anyhow 1.0.102": {
+    "anyhow 1.0.103": {
       "name": "anyhow",
-      "version": "1.0.102",
+      "version": "1.0.103",
       "package_url": "https://github.com/dtolnay/anyhow",
       "repository": {
         "Http": {
-          "url": "https://static.crates.io/crates/anyhow/1.0.102/download",
-          "sha256": "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+          "url": "https://static.crates.io/crates/anyhow/1.0.103/download",
+          "sha256": "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
         }
       },
       "targets": [
@@ -242,14 +242,14 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "build_script_build"
             }
           ],
           "selects": {}
         },
         "edition": "2021",
-        "version": "1.0.102"
+        "version": "1.0.103"
       },
       "build_script_attrs": {
         "compile_data_glob": [
@@ -596,14 +596,14 @@
       ],
       "license_file": "LICENSE-APACHE"
     },
-    "aws-lc-rs 1.17.0": {
+    "aws-lc-rs 1.18.2": {
       "name": "aws-lc-rs",
-      "version": "1.17.0",
+      "version": "1.18.2",
       "package_url": "https://github.com/aws/aws-lc-rs",
       "repository": {
         "Http": {
-          "url": "https://static.crates.io/crates/aws-lc-rs/1.17.0/download",
-          "sha256": "5ec2f1fc3ec205783a5da9a7e6c1509cc69dedf09a1949e412c1e18469326d00"
+          "url": "https://static.crates.io/crates/aws-lc-rs/1.18.2/download",
+          "sha256": "faac5829c2b74c28f830747e7818ccfb684261b5f48a1118b1e2a13d36dfab13"
         }
       },
       "targets": [
@@ -647,11 +647,11 @@
         "deps": {
           "common": [
             {
-              "id": "aws-lc-rs 1.17.0",
+              "id": "aws-lc-rs 1.18.2",
               "target": "build_script_build"
             },
             {
-              "id": "aws-lc-sys 0.41.0",
+              "id": "aws-lc-sys 0.46.0",
               "target": "aws_lc_sys"
             },
             {
@@ -662,7 +662,7 @@
           "selects": {}
         },
         "edition": "2021",
-        "version": "1.17.0"
+        "version": "1.18.2"
       },
       "build_script_attrs": {
         "compile_data_glob": [
@@ -677,13 +677,13 @@
         "link_deps": {
           "common": [
             {
-              "id": "aws-lc-sys 0.41.0",
+              "id": "aws-lc-sys 0.46.0",
               "target": "aws_lc_sys"
             }
           ],
           "selects": {}
         },
-        "links": "aws_lc_rs_1_17_0_sys"
+        "links": "aws_lc_rs_1_18_2_sys"
       },
       "license": "ISC AND (Apache-2.0 OR ISC)",
       "license_ids": [
@@ -692,14 +692,14 @@
       ],
       "license_file": "LICENSE"
     },
-    "aws-lc-sys 0.41.0": {
+    "aws-lc-sys 0.46.0": {
       "name": "aws-lc-sys",
-      "version": "0.41.0",
+      "version": "0.46.0",
       "package_url": "https://github.com/aws/aws-lc-rs",
       "repository": {
         "Http": {
-          "url": "https://static.crates.io/crates/aws-lc-sys/0.41.0/download",
-          "sha256": "1a2f9779ce85b93ab6170dd940ad0169b5766ff848247aff13bb788b832fe3f4"
+          "url": "https://static.crates.io/crates/aws-lc-sys/0.46.0/download",
+          "sha256": "f1622d8446a2d4b2ce0c7eefc73dd43a99779028d5ee5c2dd8073a658ba8a2bc"
         }
       },
       "targets": [
@@ -742,14 +742,14 @@
         "deps": {
           "common": [
             {
-              "id": "aws-lc-sys 0.41.0",
+              "id": "aws-lc-sys 0.46.0",
               "target": "build_script_main"
             }
           ],
           "selects": {}
         },
         "edition": "2021",
-        "version": "0.41.0"
+        "version": "0.46.0"
       },
       "build_script_attrs": {
         "compile_data_glob": [
@@ -780,9 +780,16 @@
               "target": "fs_extra"
             }
           ],
-          "selects": {}
+          "selects": {
+            "cfg(unix)": [
+              {
+                "id": "pkg-config 0.3.33",
+                "target": "pkg_config"
+              }
+            ]
+          }
         },
-        "links": "aws_lc_0_41_0"
+        "links": "aws_lc_0_46_0"
       },
       "license": "ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)",
       "license_ids": [
@@ -1923,7 +1930,7 @@
               "target": "pin_project"
             },
             {
-              "id": "rustls 0.23.40",
+              "id": "rustls 0.23.46",
               "target": "rustls"
             },
             {
@@ -2034,7 +2041,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -2097,7 +2104,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -2966,7 +2973,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -3038,6 +3045,10 @@
               "target": "jsonwebtoken"
             },
             {
+              "id": "libc 0.2.186",
+              "target": "libc"
+            },
+            {
               "id": "prost 0.13.5",
               "target": "prost"
             },
@@ -3066,7 +3077,7 @@
               "target": "rustix"
             },
             {
-              "id": "rustls 0.23.40",
+              "id": "rustls 0.23.46",
               "target": "rustls"
             },
             {
@@ -3080,6 +3091,10 @@
             {
               "id": "rustls-pki-types 1.14.1",
               "target": "rustls_pki_types"
+            },
+            {
+              "id": "rustls-webpki 0.103.16",
+              "target": "webpki"
             },
             {
               "id": "serde 1.0.228",
@@ -3122,6 +3137,10 @@
               "target": "toml"
             },
             {
+              "id": "tower 0.5.3",
+              "target": "tower"
+            },
+            {
               "id": "tower-http 0.6.11",
               "target": "tower_http"
             },
@@ -3134,7 +3153,7 @@
               "target": "uuid"
             },
             {
-              "id": "webpki-roots 1.0.7",
+              "id": "webpki-roots 1.0.10",
               "target": "webpki_roots"
             },
             {
@@ -5072,14 +5091,14 @@
       ],
       "license_file": "LICENSE-APACHE"
     },
-    "h2 0.4.14": {
+    "h2 0.4.16": {
       "name": "h2",
-      "version": "0.4.14",
+      "version": "0.4.16",
       "package_url": "https://github.com/hyperium/h2",
       "repository": {
         "Http": {
-          "url": "https://static.crates.io/crates/h2/0.4.14/download",
-          "sha256": "171fefbc92fe4a4de27e0698d6a5b392d6a0e333506bc49133760b3bcf948733"
+          "url": "https://static.crates.io/crates/h2/0.4.16/download",
+          "sha256": "a9f37a958b41b3b19ee2707c06439c0e9e547e847223eb791ecb0cb821c65e27"
         }
       },
       "targets": [
@@ -5151,7 +5170,7 @@
           "selects": {}
         },
         "edition": "2021",
-        "version": "0.4.14"
+        "version": "0.4.16"
       },
       "license": "MIT",
       "license_ids": [
@@ -5891,7 +5910,7 @@
               "target": "futures_core"
             },
             {
-              "id": "h2 0.4.14",
+              "id": "h2 0.4.16",
               "target": "h2"
             },
             {
@@ -5994,7 +6013,7 @@
               "target": "hyper_util"
             },
             {
-              "id": "rustls 0.23.40",
+              "id": "rustls 0.23.46",
               "target": "rustls"
             },
             {
@@ -8520,7 +8539,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -9681,14 +9700,14 @@
       ],
       "license_file": "LICENSE-APACHE"
     },
-    "rustls 0.23.40": {
+    "rustls 0.23.46": {
       "name": "rustls",
-      "version": "0.23.40",
+      "version": "0.23.46",
       "package_url": "https://github.com/rustls/rustls",
       "repository": {
         "Http": {
-          "url": "https://static.crates.io/crates/rustls/0.23.40/download",
-          "sha256": "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
+          "url": "https://static.crates.io/crates/rustls/0.23.46/download",
+          "sha256": "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
         }
       },
       "targets": [
@@ -9738,7 +9757,7 @@
         "deps": {
           "common": [
             {
-              "id": "aws-lc-rs 1.17.0",
+              "id": "aws-lc-rs 1.18.2",
               "target": "aws_lc_rs"
             },
             {
@@ -9750,7 +9769,7 @@
               "target": "once_cell"
             },
             {
-              "id": "rustls 0.23.40",
+              "id": "rustls 0.23.46",
               "target": "build_script_build"
             },
             {
@@ -9759,7 +9778,7 @@
               "alias": "pki_types"
             },
             {
-              "id": "rustls-webpki 0.103.13",
+              "id": "rustls-webpki 0.103.16",
               "target": "webpki"
             },
             {
@@ -9774,7 +9793,7 @@
           "selects": {}
         },
         "edition": "2021",
-        "version": "0.23.40"
+        "version": "0.23.46"
       },
       "build_script_attrs": {
         "compile_data_glob": [
@@ -9789,7 +9808,7 @@
         "link_deps": {
           "common": [
             {
-              "id": "aws-lc-rs 1.17.0",
+              "id": "aws-lc-rs 1.18.2",
               "target": "aws_lc_rs"
             }
           ],
@@ -9986,14 +10005,14 @@
       ],
       "license_file": "LICENSE-APACHE"
     },
-    "rustls-webpki 0.103.13": {
+    "rustls-webpki 0.103.16": {
       "name": "rustls-webpki",
-      "version": "0.103.13",
+      "version": "0.103.16",
       "package_url": "https://github.com/rustls/webpki",
       "repository": {
         "Http": {
-          "url": "https://static.crates.io/crates/rustls-webpki/0.103.13/download",
-          "sha256": "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+          "url": "https://static.crates.io/crates/rustls-webpki/0.103.16/download",
+          "sha256": "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
         }
       },
       "targets": [
@@ -10019,6 +10038,7 @@
           "common": [
             "alloc",
             "aws-lc-rs",
+            "default",
             "std"
           ],
           "selects": {}
@@ -10026,7 +10046,7 @@
         "deps": {
           "common": [
             {
-              "id": "aws-lc-rs 1.17.0",
+              "id": "aws-lc-rs 1.18.2",
               "target": "aws_lc_rs"
             },
             {
@@ -10042,7 +10062,7 @@
           "selects": {}
         },
         "edition": "2021",
-        "version": "0.103.13"
+        "version": "0.103.16"
       },
       "license": "ISC",
       "license_ids": [
@@ -12312,7 +12332,7 @@
         "deps": {
           "common": [
             {
-              "id": "rustls 0.23.40",
+              "id": "rustls 0.23.46",
               "target": "rustls"
             },
             {
@@ -14179,7 +14199,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -14332,14 +14352,14 @@
       ],
       "license_file": "LICENSE-APACHE"
     },
-    "webpki-roots 1.0.7": {
+    "webpki-roots 1.0.10": {
       "name": "webpki-roots",
-      "version": "1.0.7",
+      "version": "1.0.10",
       "package_url": "https://github.com/rustls/webpki-roots",
       "repository": {
         "Http": {
-          "url": "https://static.crates.io/crates/webpki-roots/1.0.7/download",
-          "sha256": "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
+          "url": "https://static.crates.io/crates/webpki-roots/1.0.10/download",
+          "sha256": "1c1c8e20c8a38fc7d65abfe74eb7280e4aa667e8eec8bc84996d2874810748d9"
         }
       },
       "targets": [
@@ -14372,7 +14392,7 @@
           "selects": {}
         },
         "edition": "2021",
-        "version": "1.0.7"
+        "version": "1.0.10"
       },
       "license": "CDLA-Permissive-2.0",
       "license_ids": [
@@ -15443,7 +15463,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -15511,7 +15531,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -15623,7 +15643,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -15719,7 +15739,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -15821,7 +15841,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -16691,7 +16711,7 @@
     ]
   },
   "direct_deps": [
-    "anyhow 1.0.102",
+    "anyhow 1.0.103",
     "async-trait 0.1.89",
     "axum 0.8.9",
     "base64 0.22.1",
@@ -16710,6 +16730,7 @@
     "humantime-serde 1.1.1",
     "indicatif 0.17.11",
     "jsonwebtoken 9.3.1",
+    "libc 0.2.186",
     "prost 0.13.5",
     "prost-types 0.13.5",
     "rand 0.9.4",
@@ -16717,10 +16738,11 @@
     "regex 1.12.4",
     "rusqlite 0.32.1",
     "rustix 1.1.4",
-    "rustls 0.23.40",
+    "rustls 0.23.46",
     "rustls-native-certs 0.8.3",
     "rustls-pemfile 2.2.0",
     "rustls-pki-types 1.14.1",
+    "rustls-webpki 0.103.16",
     "serde 1.0.228",
     "serde_json 1.0.150",
     "sha2 0.10.9",
@@ -16731,10 +16753,11 @@
     "tokio-stream 0.1.18",
     "tokio-util 0.7.18",
     "toml 0.8.23",
+    "tower 0.5.3",
     "tower-http 0.6.11",
     "tracing 0.1.44",
     "uuid 1.23.1",
-    "webpki-roots 1.0.7",
+    "webpki-roots 1.0.10",
     "zstd 0.13.3"
   ],
   "direct_dev_deps": [],

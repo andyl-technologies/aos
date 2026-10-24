@@ -28,6 +28,7 @@ DEPENDENCIES = [
     "//third_party/rust:core_hex",
     "//third_party/rust:core_rand",
     "//third_party/rust:core_reqwest",
+    "//third_party/rust:core_rustix",
     "//third_party/rust:core_serde",
     "//third_party/rust:core_serde_json",
     "//third_party/rust:core_sha2",

@@ -2,7 +2,7 @@
 aos_crate = use_repo_rule("//tools/bazel/toolchains:repositories.bzl", "aos_tools_repository")
 
 aos_crate(name = "aos_activation_core_crates__aho-corasick-1.1.4")
-aos_crate(name = "aos_activation_core_crates__anyhow-1.0.102")
+aos_crate(name = "aos_activation_core_crates__anyhow-1.0.103")
 aos_crate(name = "aos_activation_core_crates__bitflags-2.13.0")
 aos_crate(name = "aos_activation_core_crates__block-buffer-0.10.4")
 aos_crate(name = "aos_activation_core_crates__cfg-if-1.0.4")

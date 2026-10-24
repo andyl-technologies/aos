@@ -4,6 +4,7 @@ load("//tools/bazel/rules:source_package.bzl", "aos_source_catalog")
 aos_source_catalog(
     name = "source_catalog",
     packages = [
+        "//crates/bindings/libssh2-sys:source_package",
         "//crates/activation/aos-activation-bpf-lsm:source_package",
         "//crates/activation/aos-activation-bpf-network:source_package",
         "//crates/activation/aos-activation-config-files:source_package",

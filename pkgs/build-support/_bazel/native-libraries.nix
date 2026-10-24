@@ -25,12 +25,14 @@
         # Shared-library queries can still need private dependencies' headers.
         pkgConfigDependencies = [];
         compilerResponseFile = false;
+        prefixEnvironmentVariable = null;
       }
       // specification;
   in
     assert builtins.match "[a-z][a-z0-9_]*" name != null;
     assert builtins.elem variant.linkage ["shared" "static"];
     assert builtins.isBool variant.compilerResponseFile;
+    assert variant.prefixEnvironmentVariable == null || builtins.match "[A-Z_][A-Z0-9_]*" variant.prefixEnvironmentVariable != null;
     assert builtins.elem variant.licenseDomain ["apache-host" "permissive-protocol" "gpl-qemu"];
     assert variant.package.targetSystem == platform.system;
     assert variant.headerPackage.targetSystem == platform.system;
@@ -58,6 +60,7 @@
       load("@rules_cc//cc:defs.bzl", "cc_import", "cc_library")
 
       package(default_visibility = ["//visibility:public"])
+
     ''
     + lib.concatStringsSep "\n" (lib.mapAttrsToList (name: variant: let
       library = "${name}/lib/${baseNameOf variant.libraryFile}";
@@ -97,6 +100,9 @@
       + lib.optionalString variant.compilerResponseFile ''
         exports_files(["${name}/cflags"], visibility = ["//visibility:public"])
       ''
+      + lib.optionalString (variant.prefixEnvironmentVariable != null) ''
+        exports_files(["${name}/prefix.env"], visibility = ["//visibility:public"])
+      ''
       + lib.optionalString (variant.pkgConfigFiles != []) ''
         exports_files(["${name}/pkg-config"])
 
@@ -118,6 +124,7 @@
       target = platform.config;
     }
     // lib.optionalAttrs variant.compilerResponseFile {inherit (variant) compilerResponseFile;}
+    // lib.optionalAttrs (variant.prefixEnvironmentVariable != null) {inherit (variant) prefixEnvironmentVariable;}
     // lib.optionalAttrs (variant.pkgConfigDependencies != []) {inherit (variant) pkgConfigDependencies;})
   variants;
 in
@@ -207,6 +214,11 @@ in
                 )
 
             for name, variant in variants.items():
+                if "prefixEnvironmentVariable" in variant:
+                    # Keep build-script discovery bound to the imported package.
+                    (Path(sys.argv[2]) / name / "prefix.env").write_text(
+                        variant["prefixEnvironmentVariable"] + "=" + variant["package"] + "\n"
+                    )
                 variant["schema_version"] = 1
                 variant["closure"] = realized([variant["package"], variant["headerPackage"]], name)
                 (Path(sys.argv[2]) / name / "closure.json").write_text(json.dumps(variant, indent=2, sort_keys=True) + "\n")

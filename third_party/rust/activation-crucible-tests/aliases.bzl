@@ -2,7 +2,7 @@
 
 CRATES = {
     "aes-gcm": "@aos_activation_crucible_tests_crates__aes-gcm-0.10.3//:aes_gcm",
-    "anyhow": "@aos_activation_crucible_tests_crates__anyhow-1.0.102//:anyhow",
+    "anyhow": "@aos_activation_crucible_tests_crates__anyhow-1.0.103//:anyhow",
     "blake3": "@aos_activation_crucible_tests_crates__blake3-1.8.5//:blake3",
     "ciborium": "@aos_activation_crucible_tests_crates__ciborium-0.2.2//:ciborium",
     "ed25519-dalek": "@aos_activation_crucible_tests_crates__ed25519-dalek-2.2.0//:ed25519_dalek",

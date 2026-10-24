@@ -1,7 +1,7 @@
 """Generated direct dependency labels for this resolved family."""
 
 CRATES = {
-    "anyhow": "@aos_release_preparation_crates__anyhow-1.0.102//:anyhow",
+    "anyhow": "@aos_release_preparation_crates__anyhow-1.0.103//:anyhow",
     "async-trait": "@aos_release_preparation_crates__async-trait-0.1.89//:async_trait",
     "base64": "@aos_release_preparation_crates__base64-0.22.1//:base64",
     "clap": "@aos_release_preparation_crates__clap-4.6.1//:clap",

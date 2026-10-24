@@ -24,7 +24,6 @@ DEPENDENCIES = [
     "//third_party/rust:core_clap",
     "//third_party/rust:core_ed25519_dalek",
     "//third_party/rust:core_hex",
-    "//third_party/rust:core_rsa",
     "//third_party/rust:core_serde",
     "//third_party/rust:core_serde_json",
     "//third_party/rust:core_sha2",

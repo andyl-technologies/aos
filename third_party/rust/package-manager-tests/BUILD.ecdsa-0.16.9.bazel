@@ -23,12 +23,8 @@ cargo_toml_env_vars(
 rust_library(
     name = "ecdsa",
     deps = [
-        "@aos_package_manager_tests_crates__der-0.7.10//:der",
-        "@aos_package_manager_tests_crates__digest-0.10.7//:digest",
         "@aos_package_manager_tests_crates__elliptic-curve-0.13.8//:elliptic_curve",
-        "@aos_package_manager_tests_crates__rfc6979-0.4.0//:rfc6979",
         "@aos_package_manager_tests_crates__signature-2.2.0//:signature",
-        "@aos_package_manager_tests_crates__spki-0.7.3//:spki",
     ],
     compile_data = glob(
         allow_empty = True,
@@ -42,20 +38,6 @@ rust_library(
             "WORKSPACE.bazel",
         ],
     ),
-    crate_features = [
-        "alloc",
-        "arithmetic",
-        "der",
-        "digest",
-        "hazmat",
-        "pem",
-        "pkcs8",
-        "rfc6979",
-        "signing",
-        "spki",
-        "std",
-        "verifying",
-    ],
     crate_root = "src/lib.rs",
     edition = "2021",
     rustc_env_files = [

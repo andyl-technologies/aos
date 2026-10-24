@@ -20,6 +20,8 @@ DEPENDENCIES = [
     "//crates/nix/aos-nix:lib",
     "//crates/packages/aos-build-api:lib",
     "//third_party/rust:core_anyhow",
+    "//third_party/rust:core_libc",
+    "//third_party/rust:core_tempfile",
     "//third_party/rust:core_serde",
     "//third_party/rust:core_serde_json",
     "//third_party/rust:core_tokio",
@@ -58,6 +60,7 @@ DEPENDENCIES = [
 
 DEVELOPMENT_DEPENDENCIES = [
     "//crates/packages/aos-build-client:lib",
+    "//third_party/rust:core_tower",
     "//third_party/rust:core_tempfile",
 ]
 
@@ -88,7 +91,38 @@ aos_rust_test(
     proc_macro_deps = ["//third_party/rust:core_async_trait"],
 )
 
+aos_rust_test(
+    name = "rest_read_access",
+    package = RUST_PACKAGE,
+    crate_name = "rest_read_access",
+    crate_root = "tests/rest_read_access.rs",
+    srcs = ["tests/rest_read_access.rs"],
+    deps = [":lib"] + DEPENDENCIES + DEVELOPMENT_DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "resumable_uploads",
+    package = RUST_PACKAGE,
+    crate_name = "resumable_uploads",
+    crate_root = "tests/resumable_uploads.rs",
+    srcs = ["tests/resumable_uploads.rs"],
+    deps = [":lib"] + DEPENDENCIES + DEVELOPMENT_DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "store_hash_validation",
+    package = RUST_PACKAGE,
+    crate_name = "store_hash_validation",
+    crate_root = "tests/store_hash_validation.rs",
+    srcs = ["tests/store_hash_validation.rs"],
+    deps = [":lib"] + DEPENDENCIES + DEVELOPMENT_DEPENDENCIES,
+)
+
 DEVELOPER_ARTIFACTS = [
+    ":rest_read_access_binary",
+    ":resumable_uploads_binary",
+    ":store_hash_validation_binary",
+
     ":lib",
     ":unit_binary",
     ":rpc_roundtrip_binary",

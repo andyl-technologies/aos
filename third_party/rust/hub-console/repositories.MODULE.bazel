@@ -3,7 +3,7 @@ aos_crate = use_repo_rule("//tools/bazel/toolchains:repositories.bzl", "aos_tool
 
 aos_crate(name = "aos_hub_console_crates__adler2-2.0.1")
 aos_crate(name = "aos_hub_console_crates__aho-corasick-1.1.4")
-aos_crate(name = "aos_hub_console_crates__anyhow-1.0.102")
+aos_crate(name = "aos_hub_console_crates__anyhow-1.0.103")
 aos_crate(name = "aos_hub_console_crates__base64-0.21.7")
 aos_crate(name = "aos_hub_console_crates__base64-0.22.1")
 aos_crate(name = "aos_hub_console_crates__base64ct-1.8.3")

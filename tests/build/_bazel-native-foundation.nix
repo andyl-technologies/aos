@@ -10,6 +10,7 @@
     aos-systemd-client = "crates/linux/aos-systemd-client";
   };
   dependencyPackages = {
+    libssh2-sys = "crates/bindings/libssh2-sys";
     aos-core = "crates/core/aos-core";
     aos-nar = "crates/artifacts/aos-nar";
     aos-oci-types = "crates/artifacts/aos-oci-types";
@@ -26,6 +27,7 @@
       aos_cli_runtime = pkgs.aosBazelCrucibleCliRuntime;
     };
   cargoSetup = ''
+    export AOS_LIBSSH2_PREFIX="${pkgs.libssh2}"
     export OPENSSL_DIR="${pkgs.openssl}"
     export OPENSSL_LIB_DIR="${pkgs.openssl}/lib"
     export OPENSSL_INCLUDE_DIR="${pkgs.openssl}/include"

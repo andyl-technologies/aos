@@ -24,7 +24,7 @@
 //! resulting [`DownloadResult`]s carry everything [`crate::store::import_nar`]
 //! needs to preserve cache signatures at the store trust boundary.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

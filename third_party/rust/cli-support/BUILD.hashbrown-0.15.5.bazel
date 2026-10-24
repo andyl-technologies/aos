@@ -23,8 +23,6 @@ cargo_toml_env_vars(
 rust_library(
     name = "hashbrown",
     deps = [
-        "@aos_cli_support_crates__allocator-api2-0.2.21//:allocator_api2",
-        "@aos_cli_support_crates__equivalent-1.0.2//:equivalent",
         "@aos_cli_support_crates__foldhash-0.1.5//:foldhash",
     ],
     compile_data = glob(
@@ -40,12 +38,7 @@ rust_library(
         ],
     ),
     crate_features = [
-        "allocator-api2",
-        "default",
         "default-hasher",
-        "equivalent",
-        "inline-more",
-        "raw-entry",
     ],
     crate_root = "src/lib.rs",
     edition = "2021",

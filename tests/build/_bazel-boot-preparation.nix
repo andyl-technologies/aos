@@ -9,6 +9,7 @@
     aos-platform-metadata = "crates/boot/aos-platform-metadata";
   };
   commonDependencies = {
+    libssh2-sys = "crates/bindings/libssh2-sys";
     aos-activation = "crates/activation/aos-activation";
     aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
     aos-core = "crates/core/aos-core";
@@ -35,6 +36,7 @@
   nativeTools = [pkgs.pkg-config pkgs.cmake pkgs.perl pkgs.nix pkgs.erofs-utils pkgs.util-linux pkgs.aos.packageRuntime];
   cargoSource = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit (pkgs) lib;};
   cargoSetup = ''
+    export AOS_LIBSSH2_PREFIX="${pkgs.libssh2}"
     export OPENSSL_DIR="${pkgs.openssl}"
     export OPENSSL_LIB_DIR="${pkgs.openssl}/lib"
     export OPENSSL_INCLUDE_DIR="${pkgs.openssl}/include"

@@ -1,7 +1,7 @@
 """Generated direct dependency labels for this resolved family."""
 
 CRATES = {
-    "anyhow": "@aos_activation_core_tests_crates__anyhow-1.0.102//:anyhow",
+    "anyhow": "@aos_activation_core_tests_crates__anyhow-1.0.103//:anyhow",
     "regex": "@aos_activation_core_tests_crates__regex-1.12.4//:regex",
     "rustix": "@aos_activation_core_tests_crates__rustix-1.1.4//:rustix",
     "schemars": "@aos_activation_core_tests_crates__schemars-1.2.2//:schemars",

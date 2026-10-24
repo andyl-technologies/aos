@@ -59,6 +59,7 @@
     "daemon"
     "crucible-cli"
     "native-foundation"
+    "native-bindings"
     "native-foundation-tests"
     "native-foundation-minimal"
     "formats"

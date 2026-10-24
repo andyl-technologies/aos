@@ -25,7 +25,9 @@ rust_library(
     deps = [
         "@aos_aos_cli_production_crates__deranged-0.5.8//:deranged",
         "@aos_aos_cli_production_crates__itoa-1.0.18//:itoa",
+        "@aos_aos_cli_production_crates__libc-0.2.186//:libc",
         "@aos_aos_cli_production_crates__num-conv-0.2.2//:num_conv",
+        "@aos_aos_cli_production_crates__num_threads-0.1.8//:num_threads",
         "@aos_aos_cli_production_crates__powerfmt-0.2.0//:powerfmt",
         "@aos_aos_cli_production_crates__time-core-0.1.8//:time_core",
     ],
@@ -48,6 +50,7 @@ rust_library(
         "alloc",
         "default",
         "formatting",
+        "local-offset",
         "macros",
         "parsing",
         "std",

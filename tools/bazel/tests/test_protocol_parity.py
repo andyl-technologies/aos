@@ -147,8 +147,8 @@ class ProtocolParityTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unselected package"):
             self.compare(package_target_suffixes={"unknown": "_variant"})
 
-    def test_native_foundation_repositories_preserve_exact_feature_checks(self):
-        for family in ["native_foundation", "native_foundation_tests", "native_foundation_minimal"]:
+    def test_native_repositories_preserve_exact_feature_checks(self):
+        for family in ["native_bindings", "native_foundation", "native_foundation_tests", "native_foundation_minimal"]:
             with self.subTest(family=family):
                 self.reports[0]["label"] = f"@@+aos_tools_repository+aos_{family}_crates__serde-1.0.228//:serde"
                 self.compare()

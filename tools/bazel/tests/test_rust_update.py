@@ -15,6 +15,20 @@ spec.loader.exec_module(updater)
 
 
 class RustUpdateTests(unittest.TestCase):
+    def test_overridden_alias_retains_license_scope_without_a_compilation_rule(self):
+        rendered = 'alias(\n    name = "binding",\n    actual = "//binding:lib",\n    tags = ["manual"],\n)\n'
+        crate = {"override_targets": {"lib": "//binding:lib"}}
+
+        tagged = updater.add_license_tags(rendered, crate, "apache-host", "BUILD.binding.bazel")
+
+        self.assertIn('"aos-license:apache-host"', tagged)
+        self.assertIn('actual = "//binding:lib"', tagged)
+        self.assertNotIn("rust_library(", tagged)
+        with self.assertRaisesRegex(ValueError, "expected tag declarations"):
+            updater.add_license_tags(rendered, {}, "apache-host", "BUILD.binding.bazel")
+        with self.assertRaisesRegex(ValueError, "expected tag declarations"):
+            updater.add_license_tags('alias(name = "binding")\n', crate, "apache-host", "BUILD.binding.bazel")
+
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory()
         self.addCleanup(self.scratch.cleanup)

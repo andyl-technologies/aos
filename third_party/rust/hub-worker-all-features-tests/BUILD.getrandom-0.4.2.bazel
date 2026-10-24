@@ -29,6 +29,7 @@ rust_library(
     deps = [
         "@aos_hub_worker_all_features_tests_crates__cfg-if-1.0.4//:cfg_if",
         "@aos_hub_worker_all_features_tests_crates__getrandom-0.4.2//:build_script_build",
+        "@aos_hub_worker_all_features_tests_crates__rand_core-0.10.1//:rand_core",
     ] + select({
         "@rules_rust//rust/platform:aarch64-unknown-linux-gnu": [
             "@aos_hub_worker_all_features_tests_crates__libc-0.2.186//:libc",  # cfg(all(any(target_os = "linux", target_os = "android"), not(any(all(target_os = "linux", target_env = ""), getrandom_backend = "custom", getrandom_backend = "linux_raw", getrandom_backend = "rdrand", getrandom_backend = "rndr"))))
@@ -50,6 +51,9 @@ rust_library(
             "WORKSPACE.bazel",
         ],
     ),
+    crate_features = [
+        "sys_rng",
+    ],
     crate_root = "src/lib.rs",
     edition = "2024",
     rustc_env_files = [
@@ -93,6 +97,9 @@ cargo_build_script(
             "WORKSPACE.bazel",
         ],
     ),
+    crate_features = [
+        "sys_rng",
+    ],
     crate_name = "build_script_build",
     crate_root = "build.rs",
     data = glob(

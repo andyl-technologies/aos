@@ -1,5 +1,5 @@
 {
-  "checksum": "93122936cc11e0b1a1868aaf34b6103bc95489a8b2038ddb3507b8e0427711a8",
+  "checksum": "c6756bc3d331f88eea0c3f9e38edbcecfc6b7d20782d4904e2311dde92a18d5d",
   "crates": {
     "adler2 2.0.1": {
       "name": "adler2",
@@ -41,14 +41,14 @@
       ],
       "license_file": "LICENSE-0BSD"
     },
-    "anyhow 1.0.102": {
+    "anyhow 1.0.103": {
       "name": "anyhow",
-      "version": "1.0.102",
+      "version": "1.0.103",
       "package_url": "https://github.com/dtolnay/anyhow",
       "repository": {
         "Http": {
-          "url": "https://static.crates.io/crates/anyhow/1.0.102/download",
-          "sha256": "7f202df86484c868dbad7eaa557ef785d5c66295e41b460ef922eca0723b842c"
+          "url": "https://static.crates.io/crates/anyhow/1.0.103/download",
+          "sha256": "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
         }
       },
       "targets": [
@@ -92,14 +92,14 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "build_script_build"
             }
           ],
           "selects": {}
         },
         "edition": "2021",
-        "version": "1.0.102"
+        "version": "1.0.103"
       },
       "build_script_attrs": {
         "compile_data_glob": [
@@ -151,7 +151,7 @@
         "deps": {
           "common": [
             {
-              "id": "event-listener 5.4.1",
+              "id": "event-listener 5.4.2",
               "target": "event_listener"
             },
             {
@@ -1103,60 +1103,6 @@
       ],
       "license_file": "LICENSE"
     },
-    "concurrent-queue 2.5.0": {
-      "name": "concurrent-queue",
-      "version": "2.5.0",
-      "package_url": "https://github.com/smol-rs/concurrent-queue",
-      "repository": {
-        "Http": {
-          "url": "https://static.crates.io/crates/concurrent-queue/2.5.0/download",
-          "sha256": "4ca0197aee26d1ae37445ee532fefce43251d24cc7c166799f4d46817f1d3973"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "concurrent_queue",
-            "crate_root": "src/lib.rs",
-            "srcs": {
-              "allow_empty": true,
-              "include": [
-                "**/*.rs"
-              ]
-            }
-          }
-        }
-      ],
-      "library_target_name": "concurrent_queue",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "crate_features": {
-          "common": [
-            "std"
-          ],
-          "selects": {}
-        },
-        "deps": {
-          "common": [
-            {
-              "id": "crossbeam-utils 0.8.21",
-              "target": "crossbeam_utils"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2021",
-        "version": "2.5.0"
-      },
-      "license": "Apache-2.0 OR MIT",
-      "license_ids": [
-        "Apache-2.0",
-        "MIT"
-      ],
-      "license_file": "LICENSE-APACHE"
-    },
     "const-oid 0.9.6": {
       "name": "const-oid",
       "version": "0.9.6",
@@ -1418,77 +1364,6 @@
         },
         "edition": "2021",
         "version": "1.5.0"
-      },
-      "build_script_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "compile_data_glob_excludes": [
-          "**/*.rs"
-        ],
-        "data_glob": [
-          "**"
-        ]
-      },
-      "license": "MIT OR Apache-2.0",
-      "license_ids": [
-        "Apache-2.0",
-        "MIT"
-      ],
-      "license_file": "LICENSE-APACHE"
-    },
-    "crossbeam-utils 0.8.21": {
-      "name": "crossbeam-utils",
-      "version": "0.8.21",
-      "package_url": "https://github.com/crossbeam-rs/crossbeam",
-      "repository": {
-        "Http": {
-          "url": "https://static.crates.io/crates/crossbeam-utils/0.8.21/download",
-          "sha256": "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
-        }
-      },
-      "targets": [
-        {
-          "Library": {
-            "crate_name": "crossbeam_utils",
-            "crate_root": "src/lib.rs",
-            "srcs": {
-              "allow_empty": true,
-              "include": [
-                "**/*.rs"
-              ]
-            }
-          }
-        },
-        {
-          "BuildScript": {
-            "crate_name": "build_script_build",
-            "crate_root": "build.rs",
-            "srcs": {
-              "allow_empty": true,
-              "include": [
-                "**/*.rs"
-              ]
-            }
-          }
-        }
-      ],
-      "library_target_name": "crossbeam_utils",
-      "common_attrs": {
-        "compile_data_glob": [
-          "**"
-        ],
-        "deps": {
-          "common": [
-            {
-              "id": "crossbeam-utils 0.8.21",
-              "target": "build_script_build"
-            }
-          ],
-          "selects": {}
-        },
-        "edition": "2021",
-        "version": "0.8.21"
       },
       "build_script_attrs": {
         "compile_data_glob": [
@@ -1900,7 +1775,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -2485,14 +2360,14 @@
       ],
       "license_file": "LICENSE-APACHE"
     },
-    "event-listener 5.4.1": {
+    "event-listener 5.4.2": {
       "name": "event-listener",
-      "version": "5.4.1",
+      "version": "5.4.2",
       "package_url": "https://github.com/smol-rs/event-listener",
       "repository": {
         "Http": {
-          "url": "https://static.crates.io/crates/event-listener/5.4.1/download",
-          "sha256": "e13b66accf52311f30a0db42147dadea9850cb48cd070028831ae5f5d4b856ab"
+          "url": "https://static.crates.io/crates/event-listener/5.4.2/download",
+          "sha256": "5a23add41df1562121a9393cb065eab5146a1242410f23a644851e90cfd669d2"
         }
       },
       "targets": [
@@ -2525,10 +2400,6 @@
         "deps": {
           "common": [
             {
-              "id": "concurrent-queue 2.5.0",
-              "target": "concurrent_queue"
-            },
-            {
               "id": "parking 2.2.1",
               "target": "parking"
             },
@@ -2540,7 +2411,7 @@
           "selects": {}
         },
         "edition": "2021",
-        "version": "5.4.1"
+        "version": "5.4.2"
       },
       "license": "Apache-2.0 OR MIT",
       "license_ids": [
@@ -2588,7 +2459,7 @@
         "deps": {
           "common": [
             {
-              "id": "event-listener 5.4.1",
+              "id": "event-listener 5.4.2",
               "target": "event_listener"
             },
             {
@@ -4457,7 +4328,7 @@
               "target": "hyper_util"
             },
             {
-              "id": "rustls 0.23.40",
+              "id": "rustls 0.23.46",
               "target": "rustls"
             },
             {
@@ -7574,7 +7445,7 @@
               "target": "hyper_rustls"
             },
             {
-              "id": "rustls 0.23.40",
+              "id": "rustls 0.23.46",
               "target": "rustls"
             },
             {
@@ -8020,14 +7891,14 @@
       ],
       "license_file": "LICENSE-APACHE"
     },
-    "rustls 0.23.40": {
+    "rustls 0.23.46": {
       "name": "rustls",
-      "version": "0.23.40",
+      "version": "0.23.46",
       "package_url": "https://github.com/rustls/rustls",
       "repository": {
         "Http": {
-          "url": "https://static.crates.io/crates/rustls/0.23.40/download",
-          "sha256": "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
+          "url": "https://static.crates.io/crates/rustls/0.23.46/download",
+          "sha256": "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
         }
       },
       "targets": [
@@ -8080,7 +7951,7 @@
               "target": "ring"
             },
             {
-              "id": "rustls 0.23.40",
+              "id": "rustls 0.23.46",
               "target": "build_script_build"
             },
             {
@@ -8089,7 +7960,7 @@
               "alias": "pki_types"
             },
             {
-              "id": "rustls-webpki 0.103.13",
+              "id": "rustls-webpki 0.103.16",
               "target": "webpki"
             },
             {
@@ -8104,7 +7975,7 @@
           "selects": {}
         },
         "edition": "2021",
-        "version": "0.23.40"
+        "version": "0.23.46"
       },
       "build_script_attrs": {
         "compile_data_glob": [
@@ -8259,14 +8130,14 @@
       ],
       "license_file": "LICENSE-APACHE"
     },
-    "rustls-webpki 0.103.13": {
+    "rustls-webpki 0.103.16": {
       "name": "rustls-webpki",
-      "version": "0.103.13",
+      "version": "0.103.16",
       "package_url": "https://github.com/rustls/webpki",
       "repository": {
         "Http": {
-          "url": "https://static.crates.io/crates/rustls-webpki/0.103.13/download",
-          "sha256": "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+          "url": "https://static.crates.io/crates/rustls-webpki/0.103.16/download",
+          "sha256": "4443b1b6d39d7c663139942cc4558262562d2c84123bb6282ef177009ca8b281"
         }
       },
       "targets": [
@@ -8315,7 +8186,7 @@
           "selects": {}
         },
         "edition": "2021",
-        "version": "0.103.13"
+        "version": "0.103.16"
       },
       "license": "ISC",
       "license_ids": [
@@ -10565,7 +10436,7 @@
         "deps": {
           "common": [
             {
-              "id": "rustls 0.23.40",
+              "id": "rustls 0.23.46",
               "target": "rustls"
             },
             {
@@ -12600,7 +12471,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -13981,7 +13852,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -14049,7 +13920,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -14161,7 +14032,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -14257,7 +14128,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -14359,7 +14230,7 @@
         "deps": {
           "common": [
             {
-              "id": "anyhow 1.0.102",
+              "id": "anyhow 1.0.103",
               "target": "anyhow"
             },
             {
@@ -14691,7 +14562,7 @@
               "target": "enumflags2"
             },
             {
-              "id": "event-listener 5.4.1",
+              "id": "event-listener 5.4.2",
               "target": "event_listener"
             },
             {
@@ -16081,7 +15952,7 @@
     ]
   },
   "direct_deps": [
-    "anyhow 1.0.102",
+    "anyhow 1.0.103",
     "axum 0.8.9",
     "base64 0.22.1",
     "bytes 1.11.1",

@@ -1,7 +1,7 @@
 """Generated direct dependency labels for this resolved family."""
 
 CRATES = {
-    "anyhow": "@aos_native_foundation_minimal_crates__anyhow-1.0.102//:anyhow",
+    "anyhow": "@aos_native_foundation_minimal_crates__anyhow-1.0.103//:anyhow",
     "axum": "@aos_native_foundation_minimal_crates__axum-0.8.9//:axum",
     "base64": "@aos_native_foundation_minimal_crates__base64-0.22.1//:base64",
     "bytes": "@aos_native_foundation_minimal_crates__bytes-1.11.1//:bytes",

@@ -24,6 +24,7 @@
       relative = pkgs.lib.removePrefix "${toString ../..}/" (toString path);
       manifests = [
         "crates/Cargo.toml"
+        "crates/bindings/libssh2-sys/Cargo.toml"
         "crates/artifacts/aos-nar/Cargo.toml"
         "crates/nix/aos-nix/Cargo.toml"
         "crates/transfer/aos-transfer/Cargo.toml"
@@ -145,6 +146,7 @@ in
     formats = import ./_bazel-formats.nix {inherit pkgs;};
     contracts = import ./_bazel-contracts.nix {inherit pkgs;};
     native-foundation = import ./_bazel-native-foundation.nix {inherit pkgs;};
+    native-bindings = import ./_bazel-native-bindings.nix {inherit pkgs;};
     activation-core = import ./_bazel-activation-core.nix {inherit pkgs;};
     activation-storage = import ./_bazel-activation-storage.nix {inherit pkgs;};
     hub-console = import ./_bazel-hub-console.nix {inherit pkgs;};
@@ -366,6 +368,7 @@ in
         formats.tests
         contracts.tests
         native-foundation.tests
+        native-bindings.tests
         activation-core.tests
         activation-storage.tests
         hub-console.tests
@@ -498,6 +501,7 @@ in
             formats.all
             contracts.all
             native-foundation.all
+            native-bindings.all
             activation-core.all
             activation-storage.all
             activation-systemd.all

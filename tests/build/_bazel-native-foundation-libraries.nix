@@ -11,6 +11,7 @@
 in
   assert invalid {zlib = zlib // {pkgConfigDependencies = ["missing"];};};
   assert invalid {zlib = zlib // {compilerResponseFile = "true";};};
+  assert invalid {zlib = zlib // {prefixEnvironmentVariable = "invalid-name";};};
   assert invalid {zlib = zlib // {pkgConfigDependencies = ["zlib"];};};
   assert invalid {
     zlib = zlib // {pkgConfigDependencies = ["other" "other"];};
@@ -51,6 +52,9 @@ in
               'pkg_config': result.stdout.strip(),
               'closure': json.loads((root / name / 'closure.json').read_text()),
           }
+      ssh_prefix = reports['ssh']['closure']['package']
+      if (root / 'ssh/prefix.env').read_text() != f'AOS_LIBSSH2_PREFIX={ssh_prefix}\n':
+          raise ValueError('libssh2 build-script prefix differs from the imported native package')
       # cc-rs passes response files through to the declared AOS compiler. This
       # exercises libz-sys's compile-and-link probe without ambient search paths.
       response = root / 'zlib/cflags'

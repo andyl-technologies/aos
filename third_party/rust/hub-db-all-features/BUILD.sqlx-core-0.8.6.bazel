@@ -28,7 +28,7 @@ rust_library(
         "@aos_hub_db_all_features_crates__crc-3.4.0//:crc",
         "@aos_hub_db_all_features_crates__crossbeam-queue-0.3.13//:crossbeam_queue",
         "@aos_hub_db_all_features_crates__either-1.16.0//:either",
-        "@aos_hub_db_all_features_crates__event-listener-5.4.1//:event_listener",
+        "@aos_hub_db_all_features_crates__event-listener-5.4.2//:event_listener",
         "@aos_hub_db_all_features_crates__futures-core-0.3.32//:futures_core",
         "@aos_hub_db_all_features_crates__futures-intrusive-0.5.0//:futures_intrusive",
         "@aos_hub_db_all_features_crates__futures-io-0.3.32//:futures_io",

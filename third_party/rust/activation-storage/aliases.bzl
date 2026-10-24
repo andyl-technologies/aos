@@ -1,7 +1,7 @@
 """Generated direct dependency labels for this resolved family."""
 
 CRATES = {
-    "anyhow": "@aos_activation_storage_crates__anyhow-1.0.102//:anyhow",
+    "anyhow": "@aos_activation_storage_crates__anyhow-1.0.103//:anyhow",
     "libc": "@aos_activation_storage_crates__libc-0.2.186//:libc",
     "regex": "@aos_activation_storage_crates__regex-1.12.4//:regex",
     "rustix": "@aos_activation_storage_crates__rustix-1.1.4//:rustix",

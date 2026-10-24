@@ -26,7 +26,7 @@ rust_library(
         "@aos_release_coordination_crates__http-1.4.1//:http",
         "@aos_release_coordination_crates__hyper-1.10.0//:hyper",
         "@aos_release_coordination_crates__hyper-util-0.1.20//:hyper_util",
-        "@aos_release_coordination_crates__rustls-0.23.40//:rustls",
+        "@aos_release_coordination_crates__rustls-0.23.46//:rustls",
         "@aos_release_coordination_crates__rustls-native-certs-0.8.3//:rustls_native_certs",
         "@aos_release_coordination_crates__tokio-1.52.3//:tokio",
         "@aos_release_coordination_crates__tokio-rustls-0.26.4//:tokio_rustls",

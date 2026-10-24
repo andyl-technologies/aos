@@ -23,7 +23,7 @@ cargo_toml_env_vars(
 rust_library(
     name = "tokio_rustls",
     deps = [
-        "@aos_hub_worker_tests_crates__rustls-0.23.40//:rustls",
+        "@aos_hub_worker_tests_crates__rustls-0.23.46//:rustls",
         "@aos_hub_worker_tests_crates__tokio-1.52.3//:tokio",
     ],
     compile_data = glob(

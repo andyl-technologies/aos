@@ -6,6 +6,7 @@
 }: let
   packages = {aos-hub-worker = "crates/hub/aos-hub-worker";};
   dependencyPackages = {
+    libssh2-sys = "crates/bindings/libssh2-sys";
     aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
     aos-core = "crates/core/aos-core";
     aos-hub-api = "crates/hub/aos-hub-api";

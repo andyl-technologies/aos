@@ -1,7 +1,7 @@
 """Generated direct dependency labels for this resolved family."""
 
 CRATES = {
-    "anyhow": "@aos_core_crates__anyhow-1.0.102//:anyhow",
+    "anyhow": "@aos_core_crates__anyhow-1.0.103//:anyhow",
     "base64": "@aos_core_crates__base64-0.22.1//:base64",
     "blake3": "@aos_core_crates__blake3-1.8.5//:blake3",
     "libc": "@aos_core_crates__libc-0.2.186//:libc",

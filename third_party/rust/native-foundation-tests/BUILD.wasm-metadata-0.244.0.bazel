@@ -23,7 +23,7 @@ cargo_toml_env_vars(
 rust_library(
     name = "wasm_metadata",
     deps = [
-        "@aos_native_foundation_tests_crates__anyhow-1.0.102//:anyhow",
+        "@aos_native_foundation_tests_crates__anyhow-1.0.103//:anyhow",
         "@aos_native_foundation_tests_crates__indexmap-2.14.0//:indexmap",
         "@aos_native_foundation_tests_crates__wasm-encoder-0.244.0//:wasm_encoder",
         "@aos_native_foundation_tests_crates__wasmparser-0.244.0//:wasmparser",

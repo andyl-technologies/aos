@@ -5,11 +5,11 @@ load("@rules_rust//crate_universe:defs.bzl", "crate")
 # Production and tests compile the same third-party units. Separate families
 # preserve the first-party registry-client test-support feature boundary.
 REGISTRY_NATIVE_PACKAGES = {
-    "anyhow": crate.spec(version = "=1.0.102"),
+    "anyhow": crate.spec(version = "=1.0.103"),
     "async-trait": crate.spec(version = "=0.1.89"),
-    "aws-config": crate.spec(version = "=1.8.17"),
-    "aws-sdk-s3": crate.spec(version = "=1.134.0", default_features = False, features = ["default-https-client", "http-1x", "rt-tokio", "sigv4a"]),
-    "aws-types": crate.spec(version = "=1.3.16"),
+    "aws-config": crate.spec(version = "=1.13.0"),
+    "aws-sdk-s3": crate.spec(version = "=1.155.0", default_features = False, features = ["default-https-client", "http-1x", "rt-tokio", "sigv4a"]),
+    "aws-types": crate.spec(version = "=1.7.0"),
     "base64": crate.spec(version = "=0.22.1"),
     "bytes": crate.spec(version = "=1.11.1"),
     "clap": crate.spec(version = "=4.6.1", features = ["derive", "env"]),
@@ -44,7 +44,7 @@ REGISTRY_NATIVE_PACKAGES = {
     "sha1": crate.spec(version = "=0.10.6"),
     "sha2": crate.spec(version = "=0.10.9", features = ["compress"]),
     "ssh-key": crate.spec(version = "=0.6.7", default_features = False, features = ["ed25519", "std"]),
-    "ssh2": crate.spec(version = "=0.9.5", features = ["vendored-openssl"]),
+    "ssh2": crate.spec(version = "=0.9.5"),
     "tar": crate.spec(version = "=0.4.46"),
     "tempfile": crate.spec(version = "=3.27.0"),
     "thiserror": crate.spec(version = "=2.0.18"),

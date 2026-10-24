@@ -16,6 +16,7 @@
     libraryFile = "lib/libssh2.so";
     pkgConfigFiles = ["lib/pkgconfig/libssh2.pc"];
     pkgConfigDependencies = ["crypto" "zlib"];
+    prefixEnvironmentVariable = "AOS_LIBSSH2_PREFIX";
   };
   zlib = {
     package = pkgs.zlib;

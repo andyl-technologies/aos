@@ -23,7 +23,7 @@ cargo_toml_env_vars(
 rust_library(
     name = "block_buffer",
     deps = [
-        "@aos_hub_service_all_features_crates__hybrid-array-0.4.12//:hybrid_array",
+        "@aos_hub_service_all_features_crates__hybrid-array-0.4.15//:hybrid_array",
     ],
     compile_data = glob(
         allow_empty = True,

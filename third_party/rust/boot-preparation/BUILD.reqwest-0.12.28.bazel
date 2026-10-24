@@ -29,7 +29,7 @@ rust_library(
         "@aos_boot_preparation_crates__futures-util-0.3.32//:futures_util",
         "@aos_boot_preparation_crates__http-1.4.1//:http",
         "@aos_boot_preparation_crates__hyper-rustls-0.27.9//:hyper_rustls",
-        "@aos_boot_preparation_crates__rustls-0.23.40//:rustls",
+        "@aos_boot_preparation_crates__rustls-0.23.46//:rustls",
         "@aos_boot_preparation_crates__rustls-native-certs-0.8.3//:rustls_native_certs",
         "@aos_boot_preparation_crates__rustls-pki-types-1.14.1//:rustls_pki_types",
         "@aos_boot_preparation_crates__serde-1.0.228//:serde",

@@ -23,7 +23,7 @@ cargo_toml_env_vars(
 rust_proc_macro(
     name = "prost_derive",
     deps = [
-        "@aos_hub_service_all_features_crates__anyhow-1.0.102//:anyhow",
+        "@aos_hub_service_all_features_crates__anyhow-1.0.103//:anyhow",
         "@aos_hub_service_all_features_crates__itertools-0.14.0//:itertools",
         "@aos_hub_service_all_features_crates__proc-macro2-1.0.106//:proc_macro2",
         "@aos_hub_service_all_features_crates__quote-1.0.46//:quote",

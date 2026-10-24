@@ -23,7 +23,7 @@ cargo_toml_env_vars(
 rust_library(
     name = "crossbeam_deque",
     deps = [
-        "@aos_package_manager_tests_crates__crossbeam-epoch-0.9.18//:crossbeam_epoch",
+        "@aos_package_manager_tests_crates__crossbeam-epoch-0.9.20//:crossbeam_epoch",
         "@aos_package_manager_tests_crates__crossbeam-utils-0.8.21//:crossbeam_utils",
     ],
     compile_data = glob(

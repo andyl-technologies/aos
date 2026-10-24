@@ -23,7 +23,7 @@ cargo_toml_env_vars(
 rust_library(
     name = "wit_parser",
     deps = [
-        "@aos_aos_cli_fleet_tests_crates__anyhow-1.0.102//:anyhow",
+        "@aos_aos_cli_fleet_tests_crates__anyhow-1.0.103//:anyhow",
         "@aos_aos_cli_fleet_tests_crates__id-arena-2.3.0//:id_arena",
         "@aos_aos_cli_fleet_tests_crates__indexmap-2.14.0//:indexmap",
         "@aos_aos_cli_fleet_tests_crates__log-0.4.30//:log",

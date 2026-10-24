@@ -1,7 +1,7 @@
 """Generated direct dependency labels for this resolved family."""
 
 CRATES = {
-    "anyhow": "@aos_build_services_crates__anyhow-1.0.102//:anyhow",
+    "anyhow": "@aos_build_services_crates__anyhow-1.0.103//:anyhow",
     "async-trait": "@aos_build_services_crates__async-trait-0.1.89//:async_trait",
     "axum": "@aos_build_services_crates__axum-0.8.9//:axum",
     "base64": "@aos_build_services_crates__base64-0.22.1//:base64",
@@ -20,6 +20,7 @@ CRATES = {
     "humantime-serde": "@aos_build_services_crates__humantime-serde-1.1.1//:humantime_serde",
     "indicatif": "@aos_build_services_crates__indicatif-0.17.11//:indicatif",
     "jsonwebtoken": "@aos_build_services_crates__jsonwebtoken-9.3.1//:jsonwebtoken",
+    "libc": "@aos_build_services_crates__libc-0.2.186//:libc",
     "prost": "@aos_build_services_crates__prost-0.13.5//:prost",
     "prost-types": "@aos_build_services_crates__prost-types-0.13.5//:prost_types",
     "rand": "@aos_build_services_crates__rand-0.9.4//:rand",
@@ -27,10 +28,11 @@ CRATES = {
     "regex": "@aos_build_services_crates__regex-1.12.4//:regex",
     "rusqlite": "@aos_build_services_crates__rusqlite-0.32.1//:rusqlite",
     "rustix": "@aos_build_services_crates__rustix-1.1.4//:rustix",
-    "rustls": "@aos_build_services_crates__rustls-0.23.40//:rustls",
+    "rustls": "@aos_build_services_crates__rustls-0.23.46//:rustls",
     "rustls-native-certs": "@aos_build_services_crates__rustls-native-certs-0.8.3//:rustls_native_certs",
     "rustls-pemfile": "@aos_build_services_crates__rustls-pemfile-2.2.0//:rustls_pemfile",
     "rustls-pki-types": "@aos_build_services_crates__rustls-pki-types-1.14.1//:rustls_pki_types",
+    "rustls-webpki": "@aos_build_services_crates__rustls-webpki-0.103.16//:webpki",
     "serde": "@aos_build_services_crates__serde-1.0.228//:serde",
     "serde_json": "@aos_build_services_crates__serde_json-1.0.150//:serde_json",
     "sha2": "@aos_build_services_crates__sha2-0.10.9//:sha2",
@@ -41,9 +43,10 @@ CRATES = {
     "tokio-stream": "@aos_build_services_crates__tokio-stream-0.1.18//:tokio_stream",
     "tokio-util": "@aos_build_services_crates__tokio-util-0.7.18//:tokio_util",
     "toml": "@aos_build_services_crates__toml-0.8.23//:toml",
+    "tower": "@aos_build_services_crates__tower-0.5.3//:tower",
     "tower-http": "@aos_build_services_crates__tower-http-0.6.11//:tower_http",
     "tracing": "@aos_build_services_crates__tracing-0.1.44//:tracing",
     "uuid": "@aos_build_services_crates__uuid-1.23.1//:uuid",
-    "webpki-roots": "@aos_build_services_crates__webpki-roots-1.0.7//:webpki_roots",
+    "webpki-roots": "@aos_build_services_crates__webpki-roots-1.0.10//:webpki_roots",
     "zstd": "@aos_build_services_crates__zstd-0.13.3//:zstd"
 }
