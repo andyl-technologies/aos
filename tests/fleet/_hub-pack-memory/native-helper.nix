@@ -29,6 +29,7 @@ in
         OPENSSL_INCLUDE_DIR = "${pkgs.openssl}/include";
         OPENSSL_NO_VENDOR = "1";
         OPENSSL_STATIC = "0";
+        AOS_LIBSSH2_PREFIX = "${pkgs.libssh2}";
         LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
         PROTOC = "${pkgs.protobuf}/bin/protoc";
         AOS_HUB_CONSOLE_JS = "${pkgs.aos-hub-console-dist}/hub-console.js";
@@ -44,7 +45,7 @@ in
         pkgs.coreutils
         pkgs.grep
       ];
-      runtimeDeps = [pkgs.openssl pkgs.sqlite pkgs.zlib];
+      runtimeDeps = [pkgs.openssl pkgs.sqlite pkgs.libssh2 pkgs.zlib];
       installBins = false;
       doCheck = false;
 

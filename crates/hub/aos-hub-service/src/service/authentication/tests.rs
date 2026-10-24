@@ -40,7 +40,7 @@ async fn assert_denied(service: &RpcService, claims: &Claims, bearer: &str) {
         service
             .require_permission(claims, Permission::StorageManage, &Scope::root())
             .await,
-        Err(RpcError::PermissionDenied(_))
+        Err(RpcError::Unauthenticated(_))
     ));
     assert!(
         !service
@@ -134,11 +134,12 @@ async fn deleted_account_numeric_reuse_never_reauthorizes_retained_api_jwt() {
         .execute("DELETE FROM users WHERE id = ?1", &[Value::Int(user)])
         .await
         .unwrap();
-    let replacement = service
-        .db
-        .create_user("replacement@example.test", None)
-        .await
-        .unwrap();
+    let replacement = crate::service::cache_upload_tests::recycled_user::replacement_user(
+        &service.db,
+        user,
+        "replacement@example.test",
+    )
+    .await;
     assert_eq!(replacement, user);
     service
         .db
@@ -282,11 +283,12 @@ async fn replacement_account_cannot_read_reserve_or_replay_original_actor_plans(
         .execute("DELETE FROM users WHERE id = ?1", &[Value::Int(user)])
         .await
         .unwrap();
-    let replacement = service
-        .db
-        .create_user("plan-replacement@example.test", None)
-        .await
-        .unwrap();
+    let replacement = crate::service::cache_upload_tests::recycled_user::replacement_user(
+        &service.db,
+        user,
+        "plan-replacement@example.test",
+    )
+    .await;
     assert_eq!(replacement, user);
     service
         .db
@@ -407,11 +409,12 @@ async fn cached_cookie_keeps_real_provenance_and_refuses_recycled_account_slot()
         .execute("DELETE FROM users WHERE id = ?1", &[Value::Int(user)])
         .await
         .unwrap();
-    let replacement = service
-        .db
-        .create_user("cached-replacement@example.test", None)
-        .await
-        .unwrap();
+    let replacement = crate::service::cache_upload_tests::recycled_user::replacement_user(
+        &service.db,
+        user,
+        "cached-replacement@example.test",
+    )
+    .await;
     assert_eq!(replacement, user);
     assert!(service
         .resolve_session_cached(&cookie)

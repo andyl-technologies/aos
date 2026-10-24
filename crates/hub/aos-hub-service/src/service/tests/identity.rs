@@ -558,7 +558,7 @@ async fn service_account_token_delegation_is_bounded_and_rechecked() {
             },
         )
         .await;
-    assert!(matches!(stale, Err(RpcError::FailedPrecondition(_))));
+    assert!(matches!(stale, Err(RpcError::Unauthenticated(_))));
 }
 
 #[tokio::test]

@@ -35,7 +35,12 @@ async fn token(service: &RpcService, user: i64, scope: Scope) -> String {
         )
         .await
     };
-    let jwt = service.jwt_keys.mint(&auth, 3600).unwrap();
+    let jwt = if auth.browser_session_id_hash.is_some() {
+        service.jwt_keys.mint_browser_session(&auth, 3600)
+    } else {
+        service.jwt_keys.mint(&auth, 3600)
+    }
+    .unwrap();
     format!("Bearer {jwt}")
 }
 
@@ -910,11 +915,12 @@ async fn authority_operator_replacement_uuid_cannot_apply_or_replay_original_pla
         .execute("DELETE FROM users WHERE id = ?1", &[Value::Int(user)])
         .await
         .unwrap();
-    let replacement = service
-        .db
-        .create_user("authority-replacement@example.test", None)
-        .await
-        .unwrap();
+    let replacement = crate::service::cache_upload_tests::recycled_user::replacement_user(
+        &service.db,
+        user,
+        "authority-replacement@example.test",
+    )
+    .await;
     assert_eq!(replacement, user);
     service
         .db

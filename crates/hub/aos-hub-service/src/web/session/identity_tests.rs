@@ -30,10 +30,12 @@ async fn restored_old_cookie_cannot_adopt_a_replacement_at_the_same_numeric_slot
         .execute("DELETE FROM users WHERE id = ?1", &vals![user])
         .await
         .unwrap();
-    let replacement = db
-        .create_user("replacement@example.test", None)
-        .await
-        .unwrap();
+    let replacement = crate::service::cache_upload_tests::recycled_user::replacement_user(
+        &db,
+        user,
+        "replacement@example.test",
+    )
+    .await;
     assert_eq!(replacement, user);
     let replacement_uuid = db
         .principal_incarnation(Principal::user(replacement))

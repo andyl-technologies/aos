@@ -87,7 +87,7 @@
     cargoFlags = "--bin aos-storage-body-codec --features native-bodies";
     cargoTestFlags = "--bin aos-storage-body-codec --features native-bodies";
     buildDeps = [pkgs.perl pkgs.pkg-config pkgs.openssl pkgs.sqlite pkgs.protobuf];
-    runtimeDeps = [pkgs.openssl pkgs.sqlite pkgs.zlib];
+    runtimeDeps = [pkgs.openssl pkgs.sqlite pkgs.libssh2 pkgs.zlib];
     doCheck = true;
     sharedBuildCache = false;
   };

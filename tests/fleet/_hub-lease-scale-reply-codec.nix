@@ -21,7 +21,7 @@ in
       cargoFlags = "-p aos-hub-service --example lease_scale_observe";
       cargoTestFlags = "-p aos-hub-service --example lease_scale_observe";
       buildDeps = [pkgs.perl pkgs.pkg-config pkgs.openssl pkgs.sqlite pkgs.protobuf];
-      runtimeDeps = [pkgs.openssl pkgs.sqlite pkgs.zlib];
+      runtimeDeps = [pkgs.openssl pkgs.sqlite pkgs.libssh2 pkgs.zlib];
       doCheck = true;
       passthru = {
         nativeSource = source;

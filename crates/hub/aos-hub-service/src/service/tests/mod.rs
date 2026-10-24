@@ -655,6 +655,7 @@ fn image_http_request(
 mod caches;
 mod documentation;
 mod identity;
+pub(crate) mod recycled_user;
 mod registries;
 mod releases;
 mod runtime;

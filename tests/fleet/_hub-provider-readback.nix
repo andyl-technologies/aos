@@ -32,7 +32,7 @@ in
     cargoFlags = "--package aos-hub-native --bin aos-hub-provider-readback";
     cargoTestFlags = "--package aos-hub-native --bin aos-hub-provider-readback";
     buildDeps = [pkgs.perl pkgs.pkg-config pkgs.openssl pkgs.sqlite pkgs.protobuf];
-    runtimeDeps = [pkgs.openssl pkgs.sqlite pkgs.zlib];
+    runtimeDeps = [pkgs.openssl pkgs.sqlite pkgs.libssh2 pkgs.zlib];
     doCheck = true;
     sharedBuildCache = false;
     dontNukeRefs = true;
