@@ -10,6 +10,25 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Complete Import18 receipt correspondence controls
+
+Commit `9492834cf3` adds eight controls for the existing Prepare and Commit
+receipt adapters. They exercise matching MACs, every receipt field, the exact
+seven-bank roster, new receipt extension keys, original request/response
+correlation, transfer-token continuity, complete Prepare response identity,
+normalization bytes and native-registration context. Mutations refuse in both
+codec modes. These fixtures are inert protocol data and create no Source,
+Recipe, Initial funding, leased bank or native completion witness.
+
+Each codec mode passes all eight focused controls. All-feature Transport,
+Engine and Daemon target checking, six architecture checks and scoped formatting
+pass. The merged-toolchain application gate passes with 185 test artifacts
+across 58 packages, including 76 integration targets. All 553 frozen owned
+Rust/Cargo inputs match this commit and the actual application source capture.
+The preceding funded-Source VM qualifies the earlier production checkpoint;
+this later change affects test code only. Full Native18 adoption and complete
+RFC-0025 qualification remain unfinished.
+
 ## Original Prepare input custody
 
 Commit `2143cf520e` retains the five typed Prepare inputs in a caller-owned
