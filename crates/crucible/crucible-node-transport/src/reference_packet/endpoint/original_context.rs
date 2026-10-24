@@ -18,7 +18,9 @@ pub(super) struct OriginalEndpointContextData<'loan, 'context> {
     pub(super) service_context: Option<&'loan OriginalNativeServiceCaptureContext<'context>>,
 }
 
-/// Counts both input headers at their independently funded dispatch boundaries.
+/// Counts the endpoint and nested Control views at each funded dispatch boundary.
 pub(crate) const fn original_endpoint_context_counter_scratch_data() -> usize {
-    2 * size_of::<OriginalEndpointContextData<'static, 'static>>() + size_of::<usize>()
+    2 * size_of::<OriginalEndpointContextData<'static, 'static>>()
+        + size_of::<usize>()
+        + crate::reference_packet::control::original_control_permissions_counter_scratch_data()
 }

@@ -24,6 +24,9 @@ mod capture;
 mod capture_projection;
 mod capture_report_projection;
 mod content;
+mod dispatch_permissions;
+use dispatch_permissions::OriginalControlPermissionsData;
+pub(crate) use dispatch_permissions::original_control_permissions_counter_scratch_data;
 mod continuation_projection;
 mod observe_control_growth;
 mod observe_dispatch;
@@ -738,12 +741,14 @@ impl PacketControl {
         self.dispatch_prepared_with_restoration_permissions(
             request,
             preparation,
-            canonical_ack_admit,
-            selected_observe,
-            restoration_activation,
-            None,
-            None,
-            None,
+            OriginalControlPermissionsData {
+                canonical_ack_admit,
+                selected_observe,
+                restoration_activation,
+                restoration_observation: None,
+                suffix_observation: None,
+                producer_action: None,
+            },
         )
     }
 
@@ -751,21 +756,17 @@ impl PacketControl {
         &mut self,
         request: &Envelope,
         preparation: &mut ReplyPreparation<'_>,
-        canonical_ack_admit: Option<
-            &super::service::ack_emitter::OriginalCanonicalAckControlAdmit<'_>,
-        >,
-        selected_observe: Option<&mut OriginalObserveAllocationPreparation<'_>>,
-        restoration_activation: Option<
-            &super::service::ack_emitter::OriginalRestorationActivationPermit,
-        >,
-        restoration_observation: Option<
-            &super::service::ack_emitter::OriginalRestorationObservationPermit,
-        >,
-        suffix_observation: Option<
-            &super::service::ack_emitter::OriginalRestoredSuffixObserveRead<'_>,
-        >,
-        producer_action: Option<&super::service::ack_emitter::OriginalRestoredProducerRead<'_>>,
+        permissions: OriginalControlPermissionsData<'_, '_, '_, '_, '_>,
     ) -> Result<&PacketControlReply, ProviderError> {
+        let OriginalControlPermissionsData {
+            canonical_ack_admit,
+            selected_observe,
+            restoration_activation,
+            restoration_observation,
+            suffix_observation,
+            producer_action,
+        } = permissions;
+
         if self.capture_creator != std::process::id() {
             return Err(ProviderError::Correlation(
                 "packet original dispatch foreign creator",

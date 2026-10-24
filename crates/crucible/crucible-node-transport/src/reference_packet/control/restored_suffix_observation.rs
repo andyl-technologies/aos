@@ -39,12 +39,14 @@ impl PacketControl {
                 callback: Some(prepare),
                 attempted: false,
             },
-            None,
-            None,
-            None,
-            None,
-            Some(scope),
-            None,
+            OriginalControlPermissionsData {
+                canonical_ack_admit: None,
+                selected_observe: None,
+                restoration_activation: None,
+                restoration_observation: None,
+                suffix_observation: Some(scope),
+                producer_action: None,
+            },
         )
     }
 }

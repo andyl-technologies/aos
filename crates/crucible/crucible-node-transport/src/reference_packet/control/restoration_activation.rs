@@ -305,12 +305,14 @@ impl PacketControl {
                 callback: Some(prepare),
                 attempted: false,
             },
-            None,
-            None,
-            None,
-            Some(permit),
-            None,
-            None,
+            OriginalControlPermissionsData {
+                canonical_ack_admit: None,
+                selected_observe: None,
+                restoration_activation: None,
+                restoration_observation: Some(permit),
+                suffix_observation: None,
+                producer_action: None,
+            },
         )
     }
 
