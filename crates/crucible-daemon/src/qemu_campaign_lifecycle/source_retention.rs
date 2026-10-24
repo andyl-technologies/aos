@@ -263,17 +263,34 @@ pub(super) fn prepare_production_retained_source(
         &[],
     ) {
         Ok(config) => config.with_unbounded_advance_completion(),
-        Err(_error) => return QemuRetainedSourcePreparation::Recovered(lifecycle),
+        Err(error) => {
+            note_source_preparation_decline(&format!("config: {error}"));
+            return QemuRetainedSourcePreparation::Recovered(lifecycle);
+        }
     };
     match lifecycle.prepare_hot_fork_source_world_with_config(config) {
         Ok(world) => QemuRetainedSourcePreparation::Prepared(Box::new(world)),
-        Err(failure) => match failure.into_recovered_lifecycle() {
-            Ok(lifecycle) => QemuRetainedSourcePreparation::Recovered(lifecycle),
-            // Dropping the failure quarantines every source whose rollback
-            // could not be attested; no live authority returns to the caller.
-            Err(_failure) => QemuRetainedSourcePreparation::Quarantined,
-        },
+        Err(failure) => {
+            note_source_preparation_decline(&failure.to_string());
+            match failure.into_recovered_lifecycle() {
+                Ok(lifecycle) => QemuRetainedSourcePreparation::Recovered(lifecycle),
+                // Dropping the failure quarantines every source whose rollback
+                // could not be attested; no live authority returns to the caller.
+                Err(_failure) => QemuRetainedSourcePreparation::Quarantined,
+            }
+        }
     }
+}
+
+/// Writes why a drained world could not become a retained source.
+fn note_source_preparation_decline(detail: &str) {
+    use std::io::Write as _;
+
+    let detail = detail.chars().take(2048).collect::<String>();
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "CRUCIBLE-HOT-FORK-SOURCE-PREPARATION-V1 detail={detail:?}"
+    );
 }
 
 impl<F, D> QemuFreshExecutionRunner<F, D>
