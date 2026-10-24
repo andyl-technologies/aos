@@ -127,8 +127,14 @@ fn read(mut file: File) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 
-// Use the verified lower's actual inode label, including an MLS range when
-// present. Reading through a directory descriptor rejects symlink substitution.
+/// Reads a bounded SELinux context from a real configuration directory.
+///
+/// The directory descriptor rejects symlink substitution. The returned context
+/// preserves the verified lower's actual inode label, including any MLS range.
+///
+/// # Errors
+/// Returns an error for an inaccessible or substituted directory, unavailable
+/// label, or context containing bytes that cannot form a safe mount option.
 pub(super) fn root_context(path: &Path) -> Result<String> {
     let directory = rustix::fs::open(
         path,

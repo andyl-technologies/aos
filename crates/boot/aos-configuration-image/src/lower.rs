@@ -332,8 +332,13 @@ pub fn validate_beneath(lower: &Lower, effect: &str, tools: &Tools, root: &Path)
     run_fsck(&tools.fsck, &image)
 }
 
-// Activation must preserve the labeling contract bound into this generation,
-// including when it observes an already mounted overlay after interruption.
+/// Reports whether the retained generation pins SELinux labeling inputs.
+///
+/// Activation checks the receipt even when observing an existing mount after
+/// interruption, preserving that generation's original labeling contract.
+///
+/// # Errors
+/// Returns an error for a substituted receipt or changed labeling snapshot.
 pub(super) fn selinux_labeled(lower: &Lower) -> Result<bool> {
     let directory = Path::new(&lower.directory);
     let receipt = read_receipt(directory, &lower.receipt_effect)?;

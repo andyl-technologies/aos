@@ -73,8 +73,27 @@ in {
               "cat /etc/aos/method46-tpm-floor/storage-mode"
           ).strip() == "legacy-closed-v1"
 
-      check_startup_enclosure()
+      def check_startup_with_diagnostics():
+          try:
+              check_startup_enclosure()
+          except Exception:
+              # Preserve bounded startup evidence before the driver tears down
+              # the guest. Serial audit backlogs can overflow before a failure.
+              for command in (
+                  "systemctl --failed --no-pager",
+                  "journalctl -b --no-pager -n 160",
+                  "tail -c 65536 /var/log/audit/audit.log",
+              ):
+                  try:
+                      status, stdout, stderr = vm.execute(command, timeout=15)
+                      output = (stdout + stderr).decode("utf-8", errors="replace")
+                      print(f"startup diagnostic ({status}): {command}\n{output}", flush=True)
+                  except Exception as error:
+                      print(f"startup diagnostic unavailable: {error}", flush=True)
+              raise
+
+      check_startup_with_diagnostics()
       vm.reboot()
-      check_startup_enclosure()
+      check_startup_with_diagnostics()
     '';
 }
