@@ -331,6 +331,10 @@ in
           export GIT_AUTHOR_EMAIL='image-e2e@aos.invalid'
           export GIT_COMMITTER_NAME="$GIT_AUTHOR_NAME"
           export GIT_COMMITTER_EMAIL="$GIT_AUTHOR_EMAIL"
+          # Release publication queries artifact closures through nix path-info.
+          # A minimal VM does not inherit the development shell's Nix settings.
+          export NIX_CONFIG="''${NIX_CONFIG-}
+          extra-experimental-features = nix-command"
 
           keygen="$(${aos.apr}/bin/apr keys generate release --registry image-e2e 2>&1)"
           public_key=""

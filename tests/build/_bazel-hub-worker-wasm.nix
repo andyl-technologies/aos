@@ -143,9 +143,10 @@ in rec {
   in
     testing.mkVMTest {
       name = "aos-bazel-hub-worker-do-e2e-live";
-      rootfsDeps = [live-launcher];
+      rootfsDeps = [live-launcher pkgs.iproute2];
       memory = 2048;
       testScript = ''
+        ${pkgs.iproute2}/sbin/ip link set lo up
         ${pkgs.nix}/bin/nix-store --load-db < /usr/lib/aos/nix-registration
         export NIX_REMOTE=""
         ${live-launcher}/bin/aos-hub-worker-do-e2e

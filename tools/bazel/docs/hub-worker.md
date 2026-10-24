@@ -92,6 +92,15 @@ do not establish that runtime behavior. The gate's object-store adapter
 remains the existing SQLite-backed test provider because open-source workerd
 does not implement Cloudflare R2.
 
+The [live runtime checkpoint](../tests/evidence/hub-worker-live-runtime.json)
+passes with the recorded CLI and fresh Bazel Worker outputs after correcting
+image artifact identity validation. It retains the 29-case OCI transcript,
+signed raw and qcow2 publication, private image access, browser management,
+multipart and body-limit checks, and the shipped CLI download byte comparison.
+The minimal VM explicitly enables loopback with AOS iproute2, and the producer
+enables the Nix command feature needed for artifact closure queries. Its image
+page assertions check current provider contracts and download commands.
+
 The frozen Cargo baseline records remain in `../tests/evidence/`. Full
 compiler-argument equivalence, performance acceptance and production-builder
 migration require their own evidence. Adding this graph does not replace the
