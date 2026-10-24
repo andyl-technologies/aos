@@ -16911,3 +16911,36 @@ four owning host gates fail that dependency. No partial aggregate is accepted.
 A fresh eleven-gate request at `6a121e5cc3` uses the bounded scenario split and
 is running. Current mandatory application target compilation also remains
 pending. Accepted trunk tasks remain 27/64.
+
+
+### Bounded kernel lookup and original handle lifetime
+
+The FUSE lifetime table reserves touched-node and simultaneous-handle storage at
+startup, then adds state only for actual lookups, open handles and explicit
+pending-work pins. File and directory handles have distinct never-reused IDs;
+READ, READDIR, optional GETATTR handles, FLUSH and RELEASE are checked against
+their original canonical node and kind. A RELEASE cannot invalidate a peer
+handle, and FORGET cannot retire a node while a handle or shared fetch survives.
+The root retains its implicit connection lifetime. Permanent presented inode
+numbers and physical tier release acknowledgements remain separate authorities.
+
+Single and batch native forget records receive no reply. Complete batch framing,
+record limits, duplicate-node totals and every available lookup count are checked
+before any count changes. Bounded scans avoid request-sized allocation; malformed
+or excessive records fault the exposure rather than partially dropping state.
+Each queued open response and each original shared fetch owns a separate pin.
+Only a node with no lookups, handles or pins can retire its worker backing.
+
+Six pure lifecycle cases, all five metadata dispatch cases and strict all-feature
+all-target Clippy pass. The first-touch fixture measures lookup, pin, open,
+forget, handle validation, release and retirement with zero allocations. The
+structural closed inventory now contains 75 cases. The disposable kernel fixture
+uses these original handles and adds a peer-RELEASE/live-reader assertion. Native
+execution and mandatory workspace compilation of this checkpoint remain pending;
+this synthetic namespace does not establish production broker or view authority.
+Accepted trunk tasks remain 27/64.
+
+The earlier mandatory application target requests at `a028b9d05b` and
+`58e98a9dfc` both pass. Complete review binds each actual compiler output to all
+8,179 immutable source files, 190 test executables and 59 workspace packages.
+These are compilation checks, not executions of those test targets.

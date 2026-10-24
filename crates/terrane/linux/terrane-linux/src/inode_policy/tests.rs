@@ -93,6 +93,14 @@ fn directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch() {
     let kernel_read = crate::fuse_protocol::Request::parse(&kernel_read, 4096).unwrap();
     let original_node = std::num::NonZeroU64::new(link_node).unwrap();
     let original_handle = std::num::NonZeroU64::new(1).unwrap();
+    let forget_bytes = record(2, link_node, &1u64.to_ne_bytes());
+    let forget = crate::fuse_protocol::Request::parse(&forget_bytes, 4096).unwrap();
+    let mut lifetime = crate::fuse_lifetime::Table::new(crate::fuse_lifetime::Limits {
+        nodes: 1,
+        handles: 1,
+        bytes: 4096,
+    })
+    .unwrap();
     let mut pending_opens = crate::fuse_open::Queue::new(crate::fuse_open::Limits {
         nodes: 1,
         waiters: 1,
@@ -109,6 +117,21 @@ fn directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch() {
 
     let ((), allocations) = allocation::measure(|| {
         for _ in 0..3 {
+            lifetime.lookup(original_node).unwrap();
+            lifetime.pin(original_node).unwrap();
+            let handle = lifetime
+                .open(original_node, crate::fuse_lifetime::Kind::File)
+                .unwrap();
+            lifetime.forget(forget, 1).unwrap();
+            lifetime
+                .check(handle, original_node, crate::fuse_lifetime::Kind::File)
+                .unwrap();
+            lifetime
+                .close(handle, original_node, crate::fuse_lifetime::Kind::File)
+                .unwrap();
+            assert_eq!(lifetime.next_unreferenced(), None);
+            lifetime.unpin(original_node).unwrap();
+            assert_eq!(lifetime.next_unreferenced(), Some(original_node));
             let crate::fuse_open::Enqueued::Start(ticket) = pending_opens
                 .enqueue(original_node, original_handle, open_now, open_timeout)
                 .unwrap()

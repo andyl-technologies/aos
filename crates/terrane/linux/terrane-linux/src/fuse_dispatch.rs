@@ -122,8 +122,8 @@ impl<'index> Metadata<'index> {
     ///
     /// Supported operations are LOOKUP, GETATTR, READLINK, READDIR, GETXATTR and
     /// LISTXATTR. The caller supplies schema-resolved presentation per entry.
-    /// Directory handles use their original node IDs; the surrounding worker
-    /// validates open/closed handle lifetime, including GETATTR's optional fh.
+    /// The surrounding worker validates original nonzero directory handles before
+    /// READDIR and open/closed handle lifetime, including GETATTR's optional fh.
     /// Unknown nodes return ESTALE and normal type/absence/xattr refusals return
     /// their operation errno. Unsupported opcodes do not modify bounded state.
     ///
@@ -197,7 +197,7 @@ impl<'index> Metadata<'index> {
             22 | 23 => return self.xattr(request, entry, scratch),
             28 => {
                 if request.body().len() != 40
-                    || request.body_u64(0).map_err(Error::Protocol)? != request.node()
+                    || request.body_u64(0).map_err(Error::Protocol)? == 0
                     || request.body_u32(36).map_err(Error::Protocol)? != 0
                 {
                     return Err(Error::Protocol(fuse_protocol::Error::Encoding));

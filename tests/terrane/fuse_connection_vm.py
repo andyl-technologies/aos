@@ -204,6 +204,13 @@ def scenario(executable, directory, mode):
                     with (target / "a").open("rb", buffering=0) as reopened:
                         require(reopened.read() == b"abc",
                                 "repeated original open lost the retained backing")
+                    with (target / "a").open("rb", buffering=0) as first_handle:
+                        with (target / "b").open("rb", buffering=0) as second_handle:
+                            require(first_handle.read(1) == second_handle.read(1) == b"a",
+                                    "independent live handles did not retain their own cursors")
+                        require(first_handle.read() == b"bc",
+                                "closing one hard-link handle invalidated another live handle")
+                    print("PASS original kernel handles survive peer RELEASE and repeated opens", flush=True)
                     original_stat = grant.result(timeout=5)
                     require((original_stat.st_dev, original_stat.st_ino)
                             == (os.fstat(backing).st_dev, os.fstat(backing).st_ino)

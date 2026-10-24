@@ -241,7 +241,8 @@ fn directory_pages_obey_original_handles_cookies_and_complete_record_bounds() {
     let index = Index::open(&bytes).unwrap();
     let mut metadata = metadata(index, CachePolicy::Pinned, XattrPolicy::Recorded);
     let mut read = [0; 40];
-    read[..8].copy_from_slice(&1u64.to_ne_bytes());
+    // Handle identity is independent of its original canonical node.
+    read[..8].copy_from_slice(&42u64.to_ne_bytes());
     read[16..20].copy_from_slice(&32u32.to_ne_bytes());
     let mut scratch = [0xaa; 256];
 

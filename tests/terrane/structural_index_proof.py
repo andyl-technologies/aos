@@ -49,6 +49,15 @@ INODE_CASES = [
     "reserved_first_touch_and_checked_metadata_operations_allocate_nothing",
     "directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch",
 ]
+LIFETIME_PREFIX = "fuse_lifetime::tests::"
+LIFETIME_CASES = [
+    "forget_waits_for_every_original_handle_and_pending_work_pin",
+    "released_handles_never_alias_reopened_nodes_or_directory_handles",
+    "batch_duplicates_are_summed_before_any_forget_changes_state",
+    "malformed_forgets_and_over_forgets_preserve_all_references",
+    "node_handle_and_counter_exhaustion_refuse_before_mutating_original_state",
+    "expired_waiter_does_not_retire_a_still_pinned_shared_fetch",
+]
 OPEN_PREFIX = "fuse_open::tests::"
 OPEN_CASES = [
     'concurrent_same_inode_waiters_share_one_original_handoff',
@@ -158,6 +167,7 @@ def main():
                                  (NAMESPACE_PREFIX, NAMESPACE_CASES, "namespace"),
                                  (XATTR_PREFIX, XATTR_CASES, "xattr"),
                                  (OPEN_PREFIX, OPEN_CASES, "open"),
+                                 (LIFETIME_PREFIX, LIFETIME_CASES, "lifetime"),
                                  (DISPATCH_PREFIX, DISPATCH_CASES, "dispatch"),
                                  (READ_PREFIX, READ_CASES, "read")]:
         expected = [prefix + name for name in names]

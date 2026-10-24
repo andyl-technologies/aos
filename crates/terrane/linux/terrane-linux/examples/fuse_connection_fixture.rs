@@ -26,6 +26,7 @@ use terrane_format::{
 use terrane_linux::{
     fuse_connection::Connection,
     fuse_dispatch::{Limits as MetadataLimits, Metadata, Response},
+    fuse_lifetime::{self, Kind as HandleKind},
     fuse_metadata::{CachePolicy, Presentation},
     fuse_open::{self, Enqueued, Outcome, Ticket},
     fuse_protocol::{self, Reply, Request},
@@ -117,8 +118,13 @@ fn main() -> Result {
         } else {
             None
         };
-        // This fixture retains the original fallback until connection teardown.
-        // It does not qualify production handle accounting or exposure authority.
+        // Original backing custody remains separate from connection-local counts.
+        // This synthetic view grants no production repository or broker authority.
+        let mut lifetime = fuse_lifetime::Table::new(fuse_lifetime::Limits {
+            nodes: 16,
+            handles: 16,
+            bytes: 4096,
+        })?;
         let mut backing: Option<(u64, FallbackBacking)> = None;
         let mut fetch: Option<Fetch> = None;
         let mut opens = fuse_open::Queue::new(fuse_open::Limits {
@@ -206,11 +212,21 @@ fn main() -> Result {
             while let Some(reply) = opens.next_reply(tokio::time::Instant::now().into_std()) {
                 let mut opened = [0; 16];
                 let body = if reply.outcome == Outcome::Ready {
-                    Some(fuse_read::open(reply.ticket.node(), &mut opened)?)
+                    let handle = lifetime.open(reply.ticket.node(), HandleKind::File)?;
+                    Some(fuse_read::open(handle, &mut opened)?)
                 } else {
                     None
                 };
+                lifetime.unpin(reply.ticket.node())?;
                 send_unique(&mut connection, &mut output, reply.unique, body, libc::EIO).await?;
+            }
+            while let Some(node) = lifetime.next_unreferenced() {
+                if backing
+                    .as_ref()
+                    .is_some_and(|(original, _)| *original == node.get())
+                {
+                    backing = None;
+                }
             }
             let open_deadline = opens.next_deadline();
             let readable = tokio::select! {
@@ -226,6 +242,7 @@ fn main() -> Result {
                     let file = FallbackBacking::from_reply(reply?, size, 131072)?;
                     backing = Some((ticket.node().get(), file));
                     opens.complete(ticket, Outcome::Ready)?;
+                    lifetime.unpin(ticket.node())?;
                     continue;
                 },
                 () = async {
@@ -260,7 +277,27 @@ fn main() -> Result {
             let arrived = tokio::time::Instant::now().into_std();
             // FORGET and BATCH_FORGET never receive replies, even for nonzero IDs.
             if matches!(request.opcode(), 2 | 42) {
+                lifetime.forget(request, 1024)?;
                 continue;
+            }
+            let node = NonZeroU64::new(request.node());
+            if request.opcode() == 28 {
+                lifetime.check(
+                    NonZeroU64::new(request.body_u64(0)?).ok_or("zero directory handle")?,
+                    node.ok_or("zero directory node")?,
+                    HandleKind::Directory,
+                )?;
+            }
+            if request.opcode() == 3 && request.body_u32(0)? & 1 != 0 {
+                let kind = match metadata.entry(request.node()).map(|entry| entry.kind()) {
+                    Some(Kind::Directory { .. }) => HandleKind::Directory,
+                    _ => HandleKind::File,
+                };
+                lifetime.check(
+                    NonZeroU64::new(request.body_u64(8)?).ok_or("zero getattr handle")?,
+                    node.ok_or("zero getattr node")?,
+                    kind,
+                )?;
             }
             let mut opened = [0; 16];
             let entry = metadata.entry(request.node());
@@ -269,11 +306,24 @@ fn main() -> Result {
                 |_| Presentation::default(),
                 &mut directory_page,
             )? {
-                Response::Payload(body) => (Some(body), 0),
+                Response::Payload(body) => {
+                    if request.opcode() == 1 {
+                        let original = u64::from_ne_bytes(body[..8].try_into()?);
+                        if let Some(node) = NonZeroU64::new(original) {
+                            lifetime.lookup(node)?;
+                        }
+                    }
+                    (Some(body), 0)
+                }
                 Response::Errno(errno) => (None, errno),
                 Response::Unhandled => match (request.opcode(), entry) {
                     (27, Some(entry)) if matches!(entry.kind(), Kind::Directory { .. }) => {
-                        opened[..8].copy_from_slice(&request.node().to_ne_bytes());
+                        if request.body().len() != 8 || request.body_u32(4)? != 0 {
+                            return Err("invalid actual OPENDIR".into());
+                        }
+                        let handle = lifetime
+                            .open(node.ok_or("zero directory node")?, HandleKind::Directory)?;
+                        opened[..8].copy_from_slice(&handle.get().to_ne_bytes());
                         (Some(opened.as_slice()), 0)
                     }
                     (14, Some(entry)) if mode == "read" => {
@@ -288,8 +338,11 @@ fn main() -> Result {
                                     NonZeroU64::new(request.node()).ok_or("zero open node")?;
                                 let unique = NonZeroU64::new(request.unique())
                                     .ok_or("zero open response ID")?;
-                                match opens.enqueue(node, unique, arrived, DEADLINE)? {
+                                let queued = opens.enqueue(node, unique, arrived, DEADLINE)?;
+                                lifetime.pin(node)?;
+                                match queued {
                                     Enqueued::Start(ticket) => {
+                                        lifetime.pin(node)?;
                                         let mut client = backing_client
                                             .take()
                                             .ok_or("missing original backing client")?;
@@ -311,8 +364,8 @@ fn main() -> Result {
                                 .as_ref()
                                 .is_some_and(|(node, _)| *node == request.node())
                             {
-                                let handle =
-                                    NonZeroU64::new(request.node()).ok_or("zero file node")?;
+                                let handle = lifetime
+                                    .open(node.ok_or("zero file node")?, HandleKind::File)?;
                                 (Some(fuse_read::open(handle, &mut opened)?), 0)
                             } else {
                                 (None, libc::EIO)
@@ -324,14 +377,60 @@ fn main() -> Result {
                     (15, Some(_)) if mode == "read" => {
                         let (node, file) =
                             backing.as_ref().ok_or("READ without original backing")?;
-                        let handle = NonZeroU64::new(*node).ok_or("zero file handle")?;
-                        let read = fuse_read::Read::parse(request, handle, handle)?;
+                        let node = NonZeroU64::new(*node).ok_or("zero file node")?;
+                        let handle =
+                            NonZeroU64::new(request.body_u64(0)?).ok_or("zero file handle")?;
+                        lifetime.check(handle, node, HandleKind::File)?;
+                        let read = fuse_read::Read::parse(request, node, handle)?;
                         let length =
                             file.read(read.offset(), read.length(), &mut directory_page)?;
                         (Some(&directory_page[..length]), 0)
                     }
-                    (18 | 25, Some(_)) if mode == "read" => (Some([].as_slice()), 0),
-                    (29 | 34, Some(_)) | (38, _) => (Some([].as_slice()), 0),
+                    (18 | 29, Some(_)) => {
+                        if request.body().len() != 24 || request.body_u32(12)? & !3 != 0 {
+                            return Err("invalid actual RELEASE".into());
+                        }
+                        let kind = if request.opcode() == 18 {
+                            HandleKind::File
+                        } else {
+                            HandleKind::Directory
+                        };
+                        lifetime.close(
+                            NonZeroU64::new(request.body_u64(0)?).ok_or("zero released handle")?,
+                            node.ok_or("zero released node")?,
+                            kind,
+                        )?;
+                        (Some([].as_slice()), 0)
+                    }
+                    (25, Some(_)) if mode == "read" => {
+                        if request.body().len() != 24
+                            || request.body_u32(8)? != 0
+                            || request.body_u32(12)? != 0
+                        {
+                            return Err("invalid actual FLUSH".into());
+                        }
+                        lifetime.check(
+                            NonZeroU64::new(request.body_u64(0)?).ok_or("zero flush handle")?,
+                            node.ok_or("zero flush node")?,
+                            HandleKind::File,
+                        )?;
+                        (Some([].as_slice()), 0)
+                    }
+                    (34, Some(_)) => {
+                        if request.body().len() != 16
+                            || request.body_u32(8)? & !1 != 0
+                            || request.body_u32(12)? != 0
+                        {
+                            return Err("invalid actual FSYNCDIR".into());
+                        }
+                        lifetime.check(
+                            NonZeroU64::new(request.body_u64(0)?).ok_or("zero fsyncdir handle")?,
+                            node.ok_or("zero fsyncdir node")?,
+                            HandleKind::Directory,
+                        )?;
+                        (Some([].as_slice()), 0)
+                    }
+                    (38, _) => (Some([].as_slice()), 0),
                     (_, None) => (None, libc::ESTALE),
                     _ => (None, libc::ENOSYS),
                 },
