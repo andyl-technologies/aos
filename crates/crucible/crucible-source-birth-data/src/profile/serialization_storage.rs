@@ -20,6 +20,13 @@ pub use json_forest::{
     original_json_value_storage_forest_data,
 };
 
+#[path = "serialization_storage/json_clone.rs"]
+mod json_clone;
+pub use json_clone::{
+    original_json_value_clone_storage_forest_counter_scratch_data,
+    original_json_value_clone_storage_forest_data,
+};
+
 #[path = "serialization_storage/report.rs"]
 mod report;
 pub use report::OriginalSerializationStorageData;

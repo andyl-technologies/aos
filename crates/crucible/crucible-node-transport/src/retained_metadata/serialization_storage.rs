@@ -6,7 +6,10 @@
 use crate::retained_metadata::RetainedProtocolMetadataFacts;
 use crucible_source_birth_data::profile::serialization_storage as shared;
 pub use shared::{
-    OriginalJsonValueStorageExtentData, original_json_value_storage_extent_counter_scratch_data,
+    OriginalJsonValueStorageExtentData,
+    original_json_value_clone_storage_forest_counter_scratch_data,
+    original_json_value_clone_storage_forest_data,
+    original_json_value_storage_extent_counter_scratch_data,
     original_json_value_storage_extent_data,
     original_json_value_storage_forest_counter_scratch_data,
     original_json_value_storage_forest_data,
@@ -30,6 +33,10 @@ mod json_extent;
 #[cfg(test)]
 #[path = "serialization_storage/json_forest.rs"]
 mod json_forest;
+
+#[cfg(test)]
+#[path = "serialization_storage/json_clone.rs"]
+mod json_clone;
 
 #[cfg(test)]
 #[path = "serialization_storage_tests.rs"]

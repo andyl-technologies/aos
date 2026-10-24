@@ -9,8 +9,9 @@ use crate::retained_metadata::{
     requested_storage::tree_storage_data,
     serialization_storage::{
         OriginalJsonValueStorageExtentData,
+        original_json_value_clone_storage_forest_counter_scratch_data,
+        original_json_value_clone_storage_forest_data,
         original_json_value_storage_forest_counter_scratch_data,
-        original_json_value_storage_forest_data,
     },
 };
 use std::mem::{align_of, size_of};
@@ -23,6 +24,9 @@ impl ClientCustody {
     /// requests whose send fails. Map IDs and request-identity hashes are separate
     /// allocations, priced beside the envelope forest and actual tree layouts.
     /// Current allocations remain independently charged by the owning census.
+    /// Every production insertion retains a fresh envelope clone, including
+    /// assigned Admit and incoming responses. Its backing follows the pinned
+    /// clone layouts; parser growth and the caller's spare capacity stay separate.
     ///
     /// This quotes only journal backing. Caller-owned requests, correlation
     /// clones, receiver/serializer work, content transfers and conservative
@@ -42,6 +46,7 @@ impl ClientCustody {
     /// Names fixed journal/forest quotes and pinned tree-layout controls.
     pub const fn original_journal_retained_counter_scratch_data() -> usize {
         original_json_value_storage_forest_counter_scratch_data()
+            + original_json_value_clone_storage_forest_counter_scratch_data()
             + size_of::<&Self>()
             + size_of::<OriginalJsonValueStorageExtentData>()
             + size_of::<Result<OriginalJsonValueStorageExtentData, ProviderError>>()
@@ -90,7 +95,7 @@ fn quote(
 ) -> Result<usize, ProviderError> {
     let entries = multiply(2, maximum_requests)?;
     let documents = multiply(2, entries)?;
-    let envelopes = original_json_value_storage_forest_data(maximum_bytes, documents)?;
+    let envelopes = original_json_value_clone_storage_forest_data(maximum_bytes, documents)?;
     let trees = tree_storage_data(
         2,
         entries,
@@ -101,10 +106,7 @@ fn quote(
     // These duplicate map keys and identity fields are outside the envelope.
     let identity =
         crucible_node_format::MAX_ID_BYTES + "blake3-256".len() + "cnp.request.v1".len() + 64;
-    let retained = add(
-        envelopes.value_dom_requested_bytes,
-        add(trees, multiply(entries, identity)?)?,
-    )?;
+    let retained = add(envelopes, add(trees, multiply(entries, identity)?)?)?;
     if retained > maximum {
         return Err(refused());
     }
@@ -322,12 +324,25 @@ mod tests {
                 extensions: Extensions::new(),
             })?;
 
+            // The independently held caller keeps its large original bank.
+            // exchange must retain a fresh clone even when its owned input
+            // also arrives with spare capacity and the first send fails.
+            request.protocol.reserve(1024 * 1024);
+            let caller_capacity = request.protocol.capacity();
+            let mut incoming = request.clone();
+            incoming.protocol.reserve(1024 * 1024);
+
             drop(peer);
-            let result = session.exchange(&mut custody, request.clone(), Duration::from_secs(2));
+            let result = session.exchange(&mut custody, incoming, Duration::from_secs(2));
             assert!(matches!(result, Err(ProviderError::Io(_))), "{result:?}");
 
             let retained = custody.controller.get(&id).ok_or_else(refused)?;
             assert_eq!(retained.request, request);
+            assert_eq!(request.protocol.capacity(), caller_capacity);
+            assert_eq!(
+                retained.request.protocol.capacity(),
+                retained.request.protocol.len()
+            );
             assert!(retained.response.is_none());
             assert_eq!(
                 retained.identity,
