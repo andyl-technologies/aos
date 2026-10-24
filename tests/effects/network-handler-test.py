@@ -738,7 +738,13 @@ class NativeNetworkTests(unittest.TestCase):
 
     def test_empty_bootstrap_uses_native_invocation_and_observation(self):
         invocation = {"id": "fixture", "revision": "0" * 64, "effect": {"identity": ["fixture", "network", "bootstrap", "empty"]}, "input": {"configuration": None}, "action": "apply", "previous": None}
-        result = subprocess.run([sys.executable, str(SOURCE), "observe"], input=json.dumps(invocation), capture_output=True, text=True, check=True)
+        with tempfile.TemporaryDirectory() as directory:
+            # Installed handlers share a directory with their modules; Nix
+            # supplies the test inputs as separate single-file store paths.
+            entrypoint = Path(directory) / "network-handler.py"
+            entrypoint.write_bytes(SOURCE.read_bytes())
+            (Path(directory) / "aos_service_resources.py").write_bytes(resources_path.read_bytes())
+            result = subprocess.run([sys.executable, "-B", str(entrypoint), "observe"], input=json.dumps(invocation), capture_output=True, text=True, check=True)
         self.assertEqual(json.loads(result.stdout), {"status": "current", "outputs": {"resource": "systemd-network-bootstrap-empty"}})
 
 
