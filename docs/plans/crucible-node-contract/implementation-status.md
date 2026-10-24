@@ -10,6 +10,34 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Original endpoint context inputs
+
+Commit `e688765201` groups the actual borrowed handshake, existing deadline and
+native service roots. All three callers preserve input evaluation order and the
+five independent concrete action functions. The complete dispatch body is
+unchanged. Six independently funded startup, ingress, release and action paths
+retain their earlier scratch terms and count both new context headers. The
+original startup-counter regression preserves every previous term and requires
+the added dispatch cost.
+
+Both complete Transport suites pass 2,115 tests with zero failures, twenty
+ignored and no filtering. Both Engine modes pass 2,062 tests plus the existing
+custody and installed standard-provider controls. The same measured standard
+provider serves both modes; this does not qualify a raw-codec provider.
+All-feature Transport/Engine/Daemon targets, six architecture checks, scoped
+formatting, application test-target compilation and the funded-Source VM pass.
+Actual application metadata records 185 test artifacts across 58 packages,
+including 76 integration targets. All 599 frozen owned Rust/Cargo inputs match
+the commit, application source and all three actual VM component sources.
+
+The first package install failed while stripping an executable that was still
+mapped. Commit `cd2adebee7` writes the stripped executable to a fresh inode and
+preserves its permissions before replacement. Four busy-executable reproductions
+verify permissions, symlinks and continued execution; the subsequent application
+and VM builds pass. Strict Transport Clippy remains a failed gate with six
+errors and 1,734 warnings, without added allowances. The funded runtime handoff,
+Native18 adoption and full RFC implementation remain unfinished.
+
 ## Native Prepare verifier inputs
 
 Commit `c3f4538ec9` groups the actual Hello, incoming original, connection and
