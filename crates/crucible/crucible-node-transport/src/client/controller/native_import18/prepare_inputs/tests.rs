@@ -218,3 +218,129 @@ fn absent_inputs_leave_the_destination_and_controller_unchanged() {
     assert!(output.is_none());
     assert_eq!(Rc::strong_count(&controller), 1);
 }
+
+fn bank_inputs() -> OriginalNativeImport18PrepareInputs {
+    let mut inputs = inputs("bank-quote");
+    let references: [ContentRef; 7] = std::array::from_fn(|index| {
+        canonical::content_ref(&vec![b'x'; index + 1], "application/json").unwrap()
+    });
+    let [
+        after,
+        control,
+        anchor,
+        snapshot,
+        journal,
+        normalization,
+        semantic,
+    ] = references;
+    inputs.request.native_protocol = after;
+    inputs.request.native_control = control;
+    inputs.request.native_anchor = anchor;
+    inputs.request.restoration.owner_state = snapshot;
+    inputs.request.restoration.journal = journal;
+    inputs.binding.normalization = normalization;
+    inputs.binding.semantic_spend = semantic;
+    // Captured decoder order differs from native receive order. Distinct exact
+    // lengths make a swapped role or ceiling refuse instead of hiding in a sum.
+    inputs.binding.limits.role_maximums = [4, 1, 2, 3, 5].map(U64::new);
+    inputs.binding.normalization_maximum = U64::new(6);
+    inputs.binding.semantic_spend_maximum = U64::new(7);
+    inputs
+}
+
+#[test]
+fn typed_prepare_bank_quote_uses_exact_role_order_and_whole_parent_credit() {
+    let inputs = bank_inputs();
+    let before = input_data(&inputs);
+    let row = inputs
+        .native_receiving_bank_backing_construction_data(usize::MAX)
+        .unwrap();
+    let peak = row.into_iter().sum();
+
+    // Seven bytes banks own 1+...+7 bytes and seven exact full-reference copies.
+    let reference_text = "blake3-256".len() + "cnp.blob.v1".len() + 64 + "application/json".len();
+    assert_eq!(row[0], 28 + 7 * reference_text);
+    assert_eq!(
+        row[2],
+        OriginalNativeImport18PrepareInputs::native_receiving_bank_backing_counter_scratch_data()
+    );
+    assert_eq!(
+        inputs
+            .native_receiving_bank_backing_construction_data(peak)
+            .unwrap(),
+        row
+    );
+    assert!(
+        inputs
+            .native_receiving_bank_backing_construction_data(peak - 1)
+            .is_err()
+    );
+    assert_eq!(input_data(&inputs), before);
+    // A physical quote is still available for these deliberately unverified
+    // fixture DTOs; it cannot authenticate their malformed Prepare schema.
+    assert!(inputs.request.validate_data().is_err());
+}
+
+#[test]
+fn typed_prepare_bank_quote_refuses_each_actual_role_ceiling() {
+    for index in 0..7 {
+        let mut inputs = bank_inputs();
+        let short = U64::new(index as u64);
+        match index {
+            0 => inputs.binding.limits.role_maximums[1] = short,
+            1 => inputs.binding.limits.role_maximums[2] = short,
+            2 => inputs.binding.limits.role_maximums[3] = short,
+            3 => inputs.binding.limits.role_maximums[0] = short,
+            4 => inputs.binding.limits.role_maximums[4] = short,
+            5 => inputs.binding.normalization_maximum = short,
+            6 => inputs.binding.semantic_spend_maximum = short,
+            _ => unreachable!(),
+        }
+        let before = input_data(&inputs);
+
+        assert!(
+            inputs
+                .native_receiving_bank_backing_construction_data(usize::MAX)
+                .is_err(),
+            "role {index}"
+        );
+        assert_eq!(input_data(&inputs), before);
+    }
+}
+
+#[test]
+fn typed_prepare_bank_quote_keeps_original_spare_capacity_separate() {
+    let mut inputs = bank_inputs();
+    let before = inputs
+        .native_receiving_bank_backing_construction_data(usize::MAX)
+        .unwrap();
+    inputs
+        .request
+        .native_protocol
+        .hash
+        .digest
+        .reserve_exact(16_384);
+    inputs
+        .binding
+        .semantic_spend
+        .media_type
+        .reserve_exact(16_384);
+    let capacities = [
+        inputs.request.native_protocol.hash.digest.capacity(),
+        inputs.binding.semantic_spend.media_type.capacity(),
+    ];
+
+    assert_eq!(
+        inputs
+            .native_receiving_bank_backing_construction_data(usize::MAX)
+            .unwrap(),
+        before
+    );
+    assert_eq!(
+        capacities,
+        [
+            inputs.request.native_protocol.hash.digest.capacity(),
+            inputs.binding.semantic_spend.media_type.capacity(),
+        ]
+    );
+}
