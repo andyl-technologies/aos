@@ -1,0 +1,192 @@
+"""Exports production Rust package edges from Bazel's unconfigured query graph.
+
+The structured query retains every selector branch. Only explicit Rust
+compilation dependency attributes contribute package edges; test-only rules,
+runfiles, generators' tool inputs, and implicit toolchains are excluded.
+Uncompiled source packages remain explicitly unmodeled.
+"""
+
+import argparse
+import hashlib
+import json
+from pathlib import Path
+
+
+RUST_RULES = {"rust_library", "rust_binary", "rust_proc_macro", "rust_shared_library"}
+PROFILE_RULES = {
+    name + "_profile_required" for name in [
+        "device", "store", "guest", "engine", "quota", "session", "control",
+        "qemu_host", "store_s3", "daemon", "crucible_cli", "formats",
+    ]
+}
+
+
+def attribute_values(attribute, expected):
+    """Unions typed selector values without interpreting condition labels as edges."""
+    if attribute["type"] == "SELECTOR_LIST":
+        selector = attribute["selectorList"]
+        if selector["type"] != expected:
+            raise ValueError("unexpected selector value type")
+        return [value for element in selector["elements"] for entry in element["entries"]
+                for value in attribute_values({**entry, "type": expected}, expected)]
+    if attribute["type"] != expected:
+        raise ValueError("unexpected architecture attribute type")
+    if expected == "LABEL_LIST":
+        return attribute.get("stringListValue", [])
+    if expected in {"LABEL", "STRING"}:
+        return [attribute["stringValue"]] if "stringValue" in attribute else []
+    raise ValueError("unsupported architecture attribute type: " + expected)
+
+
+def attributes(rule):
+    """Indexes attributes while rejecting duplicate entries in query output."""
+    result = {}
+    for attribute in rule["attribute"]:
+        if attribute["name"] in result:
+            raise ValueError("duplicate architecture rule attribute")
+        result[attribute["name"]] = attribute
+    return result
+
+
+def repository_packages(directory):
+    """Reads authoritative upstream package names from pinned SDK source manifests."""
+    result = {}
+    manifests = {}
+    for path in sorted(directory.glob("*/sources.json")):
+        manifest = json.loads(path.read_text())
+        if manifest["schema_version"] != 1:
+            raise ValueError("unsupported SDK source manifest")
+        manifests[str(path.relative_to(directory))] = hashlib.sha256(path.read_bytes()).hexdigest()
+        for repository, source in manifest["sources"].items():
+            name = source["name"]
+            if repository in result and result[repository] != name:
+                raise ValueError("conflicting SDK repository package name")
+            result[repository] = name
+    if not result:
+        raise ValueError("architecture export requires pinned SDK source manifests")
+    return result, manifests
+
+
+def export(records, repositories):
+    """Retains source ownership and unions production package edges across profiles."""
+    rules = {}
+    for record in records:
+        if record["type"] != "RULE":
+            raise ValueError("architecture query must contain only rules")
+        rule = record["rule"]
+        label = rule["name"]
+        if label in rules:
+            raise ValueError("duplicate architecture query rule: " + label)
+        if rule["ruleClass"] not in RUST_RULES | PROFILE_RULES | {"_source_package", "alias", "cargo_build_script"}:
+            raise ValueError("unexpected architecture query rule class")
+        rules[label] = rule
+    catalog = {}
+    names = set()
+    for label, rule in rules.items():
+        if rule["ruleClass"] != "_source_package":
+            continue
+        identities = attribute_values(attributes(rule)["identity"], "STRING")
+        if len(identities) != 1:
+            raise ValueError("source package identity must be unambiguous")
+        identity = json.loads(identities[0])
+        directory = label.partition(":")[0]
+        if not directory.startswith("//crates/") or directory in catalog or identity["name"] in names:
+            raise ValueError("duplicate or invalid architecture source ownership")
+        if not all(isinstance(identity.get(field), str) and identity[field]
+                   for field in ["name", "version", "edition", "license", "license_domain"]):
+            raise ValueError("incomplete architecture source identity")
+        names.add(identity["name"])
+        catalog[directory] = {**identity, "directory": directory.removeprefix("//")}
+    if not catalog:
+        raise ValueError("architecture query omitted source ownership")
+
+    unavailable = {
+        label: rule["ruleClass"] for label, rule in rules.items()
+        if rule["ruleClass"] in PROFILE_RULES and label.startswith("//tools/bazel/rules:")
+    }
+    resolved = {}
+    native = set()
+
+    def resolve(label, active=()):
+        if label in active:
+            raise ValueError("architecture dependency alias cycle")
+        if label in resolved:
+            return resolved[label]
+        owner = catalog.get(label.partition(":")[0])
+        if label in unavailable:
+            result = set()
+        elif label in rules and rules[label]["ruleClass"] == "alias":
+            actual = attribute_values(attributes(rules[label])["actual"], "LABEL")
+            result = set().union(*(resolve(value, (*active, label)) for value in actual))
+            if not result:
+                raise ValueError("dependency alias has no modeled package: " + label)
+        elif owner and label in rules and rules[label]["ruleClass"] in RUST_RULES | {"cargo_build_script"}:
+            result = {owner["name"]}
+        elif label.startswith("@") and label[1:].partition("//")[0] in repositories:
+            result = {repositories[label[1:].partition("//")[0]]}
+        elif label.startswith(("@aos_native//", "//native/")):
+            # Retain native edges separately; they are not Rust package names.
+            native.add(label)
+            result = set()
+        else:
+            raise ValueError("unmodeled architecture dependency: " + label)
+        resolved[label] = result
+        return result
+
+    production = {name: set() for name in names}
+    targets = {name: [] for name in names}
+    target_edges = {}
+    for label, rule in sorted(rules.items()):
+        if rule["ruleClass"] not in RUST_RULES:
+            continue
+        attrs = attributes(rule)
+        if attrs["testonly"]["type"] != "BOOLEAN":
+            raise ValueError("architecture test-only selection must not be configurable")
+        if attrs["testonly"].get("booleanValue", False):
+            continue
+        owner = catalog.get(label.partition(":")[0])
+        if owner is None:
+            raise ValueError("production Rust target has no declared source package")
+        name = owner["name"]
+        targets[name].append(label)
+        edges = []
+        for attribute in ["deps", "proc_macro_deps"]:
+            if attribute not in attrs:
+                continue
+            for dependency in sorted(set(attribute_values(attrs[attribute], "LABEL_LIST"))):
+                packages = sorted(resolve(dependency) - {name})
+                production[name].update(packages)
+                edges.append({"attribute": attribute, "label": dependency, "packages": packages})
+        target_edges[label] = edges
+    if not any(targets.values()):
+        raise ValueError("architecture query omitted production Rust targets")
+    return {
+        "schema_version": 1,
+        "selection": "union of all declared production platform/feature branches",
+        "packages": sorted([
+            {**identity, "production_targets": sorted(targets[identity["name"]]),
+             "production_dependencies": sorted(production[identity["name"]]) if targets[identity["name"]] else None}
+            for identity in catalog.values()
+        ], key=lambda package: package["name"]),
+        "target_dependencies": target_edges,
+        "unavailable_profile_targets": dict(sorted(unavailable.items())),
+        "native_dependencies": sorted(native),
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--query", type=Path, required=True)
+    parser.add_argument("--sdk-directory", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    options = parser.parse_args()
+    repositories, manifests = repository_packages(options.sdk_directory)
+    records = [json.loads(line) for line in options.query.read_text().splitlines()]
+    result = export(records, repositories)
+    result["query_sha256"] = hashlib.sha256(options.query.read_bytes()).hexdigest()
+    result["sdk_manifests_sha256"] = manifests
+    options.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+
+
+if __name__ == "__main__":
+    main()

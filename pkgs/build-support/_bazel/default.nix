@@ -60,6 +60,7 @@
     };
   };
   aosBazelRepositoryTestSources = import ./repository-test-sources.nix {inherit pkgs lib;};
+  aosBazelArchitecture = import ./architecture.nix {inherit pkgs;};
   aosBazelBootTools = import ./boot-tools.nix {inherit pkgs lib;};
   aosBazelRegistryTestTools = import ./registry-test-tools.nix {inherit pkgs lib;};
   aosBazelNixTestTools = import ./nix-test-tools.nix {inherit pkgs;};

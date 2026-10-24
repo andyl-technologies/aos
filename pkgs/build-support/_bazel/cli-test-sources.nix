@@ -31,6 +31,19 @@ in
             target = output / "source" / (name + ".aos-source")
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
+    # Architecture checks consume Bazel's all-profile production graph through
+    # this declared source tree. Cargo remains only an independent oracle.
+    architecture_name = "build/bazel-architecture.json"
+    if architecture_name in files:
+        raise ValueError("generated architecture metadata conflicts with repository source")
+    architecture = Path("${pkgs.aosBazelArchitecture}/architecture.json").read_bytes()
+    files[architecture_name] = {
+        "sha256": hashlib.sha256(architecture).hexdigest(), "size": len(architecture),
+        "executable": False,
+    }
+    architecture_target = output / "source" / (architecture_name + ".aos-source")
+    architecture_target.parent.mkdir(parents=True, exist_ok=True)
+    architecture_target.write_bytes(architecture)
     if not files or "crates/aos/cli/aos-cli/src/lib.rs" not in files:
         raise ValueError("CLI repository inputs are incomplete")
     (output / "manifest.json").write_text(json.dumps({

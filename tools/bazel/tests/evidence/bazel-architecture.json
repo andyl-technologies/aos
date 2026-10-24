@@ -1,0 +1,52 @@
+{
+  "cargo_oracle": {
+    "architecture_sha256": "b6e3f18ed952afe20c07abca95ee34482c3f6d40c5fd9a34e3ae1df7f0d0323f",
+    "modeled_packages": 73,
+    "schema_version": 1,
+    "source_packages": 77,
+    "status": "PASS: package ownership and modeled production dependency unions match",
+    "unmodeled_packages": [
+      "aos-registry-web",
+      "crucible-qemu-debug-gateway",
+      "crucible-qemu-plugin",
+      "crucible-test-support"
+    ]
+  },
+  "commands": [
+    "nix-build -A pkgs.aosBazelArchitecture --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+    "nix-build tools/bazel/tests/aos-cli.nix -A architecture --no-out-link --max-jobs 4 --cores 4 --option substitute false"
+  ],
+  "core_evaluation": {
+    "output": "/nix/store/1rhi589amw8vjz46zd34mvrgslpkgacn-aos-native-evaluation-checks-0",
+    "status": "PASS"
+  },
+  "declared_cli_input": {
+    "file": "build/bazel-architecture.json",
+    "graph_sha256": "b6e3f18ed952afe20c07abca95ee34482c3f6d40c5fd9a34e3ae1df7f0d0323f",
+    "manifest_sha256": "2736adbab7f51d9b12ab17c32b155ac94d8e46c69e6d6396d3a9ad931845db23",
+    "output": "/nix/store/73nz64b2dj2xjxf13vi4717si5h15wbf-aos-bazel-cli-test-sources"
+  },
+  "limits": [
+    "Four source packages remain explicitly unmodeled. No production qualification is claimed for those packages.",
+    "This evidence qualifies export and temporary Cargo graph parity. CLI architecture-test execution and required Rust compilation for its new metadata consumer are separate gates.",
+    "Native labels are retained separately. The exported Rust package graph does not replace configured license closure, compiler-option, native ABI or runtime qualification."
+  ],
+  "oracle_output": "/nix/store/95bbb0jpj7rxzzla5c7f0v53fkkskq5l-aos-bazel-architecture-cargo-parity",
+  "oracle_report_sha256": "fa73bb8e8db1a45f4b9b9248ee11998296b97c53217fbe96e36dc3dc0c14adcc",
+  "policy_tests": {
+    "architecture_cases": 13,
+    "complete_suite_cases": 257,
+    "status": "PASS",
+    "suite_log_sha256": "eb591433ae27cbde56ec42f5efa201aa3620e1a4a6f3a5e38fedcd67af4dfeed"
+  },
+  "producer": {
+    "architecture_sha256": "b6e3f18ed952afe20c07abca95ee34482c3f6d40c5fd9a34e3ae1df7f0d0323f",
+    "derivation": "/nix/store/6f7hp2q7zzl4z8zjggfdh68ciqqgsz46-aos-bazel-architecture.drv",
+    "modeled_packages": 73,
+    "output": "/nix/store/ga7a0bjl7504zikw899jfs568vv8894z-aos-bazel-architecture",
+    "query_sha256": "a289e2814fc052a02a5804feed1008d19b471e05218ba75236f1cca22df66ca2",
+    "source_packages": 77
+  },
+  "schema_version": 1,
+  "status": "PASS: source catalogue and modeled all-profile production dependency union"
+}
