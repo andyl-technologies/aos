@@ -10,6 +10,36 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Actual completed private retained banks
+
+Commit `c71f532c30` checks completed private ownership after the first parsed
+tree, growable canonical launch bank and second parsed tree. The original floor
+remains conservative. Actual literal-bank and birth-cut/deadline allocations can
+only increase it, while both parsed trees and canonical capacity are added
+independently. Counting the literal reservation once requires the reader's
+actual Rc correspondence check. The inline bootstrap header is explicit; its
+future Box is not observed as an existing allocation. Typed launch backing
+remains independently charged to private transient demand.
+
+Both inherited-parent regressions first reproduce an unfunded next read.
+The corrected seventeen literal, carry and retained-bank flights pass in both
+codec modes, including exact funding and separate one-byte shortfalls at each
+completed-bank boundary. Refusals preserve original banks and spend the same
+scope before another construction phase. Both complete Transport modes pass
+2,104 tests with zero failures, 20 ignored and no filtering. Both complete Engine
+modes pass 2,048 tests with zero failures, 34 ignored and no filtering, plus
+fourteen custody and five rebuilt-provider controls each. All-feature Transport/
+Engine/Daemon targets, six architecture checks and formatting pass. Production
+Transport Clippy remains at 37 errors and 1,733 warnings for this commit.
+
+The merged-toolchain application and funded-Source VM gates pass. The compiler
+records 185 test artifacts across 58 packages, including 76 integration targets.
+All 541 owned Rust/Cargo inputs match the commit and actual application and
+three funded-VM Rust component captures. The inherited-channel controls create
+no Source, Recipe/Initial or native readiness. This census visits completed
+trees; complete failed-constructor custody, Native18 successor construction,
+strict production lint and full RFC completion remain open.
+
 ## Invocation boot parser and carried launch
 
 Commit `a70841a64b` checks invocation15's second raw/Value parser together with
