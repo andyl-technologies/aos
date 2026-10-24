@@ -59,6 +59,9 @@
 #![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 
+#[cfg(test)]
+mod engine_oracle;
+
 pub mod abi;
 pub mod args;
 pub mod block_io;

@@ -185,12 +185,18 @@
     ]
     ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml" pluginCargo [
       {
-        label = "test-only engine dependency";
-        needle = "Test-only HARN-16 cross-check";
+        label = "test-only engine process boundary";
+        needle = "Real engine cross-checks run in a separately linked Apache process.";
       }
       {
-        label = "production plugin deps stay L1-only";
-        needle = "production plugin dependencies stay L1-only";
+        label = "test-only process protocol dependency";
+        needle = "crucible-qemu-protocol = { path = \"../../protocol/crucible-qemu-protocol\", features = [\"test-oracle\"] }";
+      }
+    ]
+    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml" pluginCargo [
+      {
+        label = "linked Apache engine dependency";
+        needle = "crucible-engine";
       }
     ]
     ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [

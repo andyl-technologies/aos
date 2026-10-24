@@ -125,6 +125,7 @@ in rec {
         --readelf ${pkgs.binutils}/bin/readelf --output "$out/elf.json"
     '';
   gateway-tests = import ./_bazel-qemu-gateway-tests.nix {inherit pkgs;};
+  plugin-tests = import ./_bazel-qemu-plugin-tests.nix {inherit pkgs;};
   inventory = pkgs.mkAosBazelBuild {
     pname = "aos-bazel-qemu-gpl-production-inventory";
     inherit workspace;
@@ -142,7 +143,7 @@ in rec {
   };
   all =
     pkgs.runCommand "aos-bazel-qemu-gpl-production-checks" {
-      buildDeps = [parity developer-build format installed-inspection gateway-tests.all];
+      buildDeps = [parity developer-build format installed-inspection gateway-tests.all plugin-tests.all];
     } ''
       mkdir -p "$out"
       printf 'PASS: production compiler artifacts and developer tools\n' > "$out/result"

@@ -566,40 +566,22 @@ mod tests {
 
     mod retained_retry;
 
-    use crucible_engine::{
-        AdvanceOutcome, ExecutionHorizon, Icount, SchedulerError, SchedulerNodeId,
-        SchedulerSendAuthorization, SchedulerSendAuthorizer, SimDouble, SimDoubleConfig,
-        SimDoubleHostScheduleEvent, SimInstructionScript, SimInstructionStep, SimOutboundFrame,
+    use crate::engine_oracle::schedule::{
+        AdvanceOutcome, Icount, ScheduleEvent as SimDoubleHostScheduleEvent,
     };
+    use crate::engine_oracle::{EngineOracle, invalid};
     use crucible_qemu_protocol::{CONTROL_PROTOCOL_VERSION, HostMsg, control_encode_host_msg};
     use crucible_qemu_shmem::{
         ABI_VERSION, AdvanceCeiling, FrameEntry, KIND_VM, MAX_FRAME_DATA, NodeSlot, RingHeader,
         SLOT_NET_ROUTER, authorize_advance_ceiling,
     };
+    use serde_json::{Value, json};
 
     use crate::{
         ExactDeadlineReader, IdleWakeCause, InboundFrameRing, PluginIdleHotLoop,
         PluginShmemOrdering, QueuedIdleAdvance,
         network_tx::{NetworkTxRing, PluginNetworkTx, handle_network_tx_callback},
     };
-
-    static ALLOW_ALL_SENDS: AllowAllSchedulerSendAuthorizer = AllowAllSchedulerSendAuthorizer;
-
-    struct AllowAllSchedulerSendAuthorizer;
-
-    impl SchedulerSendAuthorizer for AllowAllSchedulerSendAuthorizer {
-        fn authorize_cross_node_send(
-            &self,
-            producer: &SchedulerNodeId,
-            consumer: &SchedulerNodeId,
-        ) -> Result<SchedulerSendAuthorization, SchedulerError> {
-            Ok(SchedulerSendAuthorization {
-                producer: producer.clone(),
-                consumer: consumer.clone(),
-                topology_epoch: 0,
-            })
-        }
-    }
 
     #[test]
     fn failed_canonical_commit_refuses_later_guest_delivery() {
@@ -631,39 +613,42 @@ mod tests {
     }
 
     #[test]
-    fn host_observable_schedule_cross_checks_sim_double_against_plugin_projection() {
+    fn host_observable_schedule_cross_checks_sim_double_against_plugin_projection()
+    -> std::io::Result<()> {
         let requested_horizon = 150;
-        let mut double = sim_double_for_schedule_cross_check();
-        complete_sim_double_setup(&mut double);
-        enqueue_double_inbound(&mut double, 7, 50, b"router-first");
-        enqueue_double_inbound(&mut double, 8, 100, b"router-second");
-
-        let horizon = ExecutionHorizon {
-            icount: Icount {
-                retired: requested_horizon,
-            },
-        };
-        assert_eq!(
-            double.advance_scripted_quantum(horizon, &ALLOW_ALL_SENDS),
-            Ok(AdvanceOutcome::Paused {
-                at: Icount { retired: 50 },
-            })
-        );
-        assert_eq!(
-            double.advance_scripted_quantum(horizon, &ALLOW_ALL_SENDS),
-            Ok(AdvanceOutcome::Paused {
-                at: Icount { retired: 100 },
-            })
-        );
-        assert_eq!(
-            double.advance_scripted_quantum(horizon, &ALLOW_ALL_SENDS),
-            Ok(AdvanceOutcome::ReachedHorizon)
-        );
+        let mut double = sim_double_for_schedule_cross_check()?;
+        complete_sim_double_setup(&mut double)?;
+        enqueue_double_inbound(&mut double.oracle, 7, 50, b"router-first")?;
+        enqueue_double_inbound(&mut double.oracle, 8, 100, b"router-second")?;
 
         assert_eq!(
-            double.host_observable_schedule(),
-            plugin_projection_host_observable_schedule(requested_horizon).as_slice()
+            advance_double(&mut double.oracle, requested_horizon)?,
+            AdvanceOutcome::Paused {
+                at: Icount { retired: 50 }
+            }
+            .projection()
         );
+        assert_eq!(
+            advance_double(&mut double.oracle, requested_horizon)?,
+            AdvanceOutcome::Paused {
+                at: Icount { retired: 100 }
+            }
+            .projection()
+        );
+        assert_eq!(
+            advance_double(&mut double.oracle, requested_horizon)?,
+            AdvanceOutcome::ReachedHorizon.projection()
+        );
+
+        let response = double
+            .oracle
+            .request(json!({"operation": "sim-schedule"}))?;
+        let expected = plugin_projection_host_observable_schedule(requested_horizon)
+            .iter()
+            .map(SimDoubleHostScheduleEvent::projection)
+            .collect::<Vec<_>>();
+        assert_eq!(response["events"], json!(expected));
+        Ok(())
     }
 
     #[test]
@@ -956,59 +941,77 @@ mod tests {
         }
     }
 
-    fn sim_double_for_schedule_cross_check() -> SimDouble {
-        let script = SimInstructionScript::new(vec![SimInstructionStep {
-            instruction_budget: 150,
-            outbound_frames: vec![SimOutboundFrame {
-                dst_slot: SLOT_NET_ROUTER as u32,
-                delivery_icount: 150,
-                payload: b"guest-to-router".to_vec(),
-            }],
-        }]);
-        match SimDouble::new(SimDoubleConfig {
-            script,
-            ..SimDoubleConfig::default()
-        }) {
-            Ok(double) => double,
-            Err(error) => panic!("sim double should construct: {error}"),
-        }
+    struct ScheduleDouble {
+        oracle: EngineOracle,
+        node_count: u64,
+        region_size: u64,
     }
 
-    fn complete_sim_double_setup(double: &mut SimDouble) {
+    fn sim_double_for_schedule_cross_check() -> std::io::Result<ScheduleDouble> {
+        let mut oracle = EngineOracle::launch()?;
+        let layout = oracle.request(json!({
+            "operation": "sim-create", "slot": 0, "nodes": 1,
+            "capacity": crucible_qemu_shmem::DEFAULT_QUEUE_CAPACITY,
+            "steps": [{"budget": 150, "frames": [{
+                "destination": SLOT_NET_ROUTER, "icount": 150,
+                "payload": b"guest-to-router".to_vec(),
+            }]}],
+        }))?;
+        let node_count = layout["node_count"]
+            .as_u64()
+            .ok_or_else(|| invalid("oracle layout node count must be a u64"))?;
+        let region_size = layout["region_size"]
+            .as_u64()
+            .ok_or_else(|| invalid("oracle layout region size must be a u64"))?;
+        Ok(ScheduleDouble {
+            oracle,
+            node_count,
+            region_size,
+        })
+    }
+
+    fn complete_sim_double_setup(double: &mut ScheduleDouble) -> std::io::Result<()> {
         let hello_ack = control_encode_host_msg(&HostMsg::HelloAck {
             proto_version: CONTROL_PROTOCOL_VERSION,
             abi_version: ABI_VERSION,
             slot_index: 0,
-            node_count: double.shmem_layout().node_count,
+            node_count: u32::try_from(double.node_count)
+                .map_err(|error| invalid(error.to_string()))?,
         });
-        if let Err(error) = double.accept_host_control_frame(&hello_ack) {
-            panic!("sim double hello ack should succeed: {error}");
-        }
+        double
+            .oracle
+            .request(json!({"operation": "sim-control", "frame": hello_ack}))?;
 
         let setup = control_encode_host_msg(&HostMsg::Setup {
-            region_len: double.shmem_layout().region_size,
+            region_len: double.region_size,
         });
-        match double.accept_host_control_frame(&setup) {
-            Ok(Some(_setup_ack)) => {}
-            Ok(None) => panic!("sim double setup should return SetupAck"),
-            Err(error) => panic!("sim double setup should succeed: {error}"),
+        let response = double
+            .oracle
+            .request(json!({"operation": "sim-control", "frame": setup}))?;
+        if !response["reply"].is_array() {
+            return Err(invalid("sim double setup must return SetupAck bytes"));
         }
+        Ok(())
     }
 
     fn enqueue_double_inbound(
-        double: &mut SimDouble,
+        double: &mut EngineOracle,
         sequence: u32,
         delivery_icount: u64,
         payload: &[u8],
-    ) {
-        if let Err(error) = double.enqueue_inbound_frame_with_sequence(
-            SLOT_NET_ROUTER as u32,
-            sequence,
-            delivery_icount,
-            payload,
-        ) {
-            panic!("sim double inbound frame should enqueue: {error}");
-        }
+    ) -> std::io::Result<()> {
+        double.request(json!({
+            "operation": "sim-inbound", "source": SLOT_NET_ROUTER,
+            "sequence": sequence, "icount": delivery_icount, "payload": payload,
+        }))?;
+        Ok(())
+    }
+
+    fn advance_double(double: &mut EngineOracle, horizon: u64) -> std::io::Result<Value> {
+        double.request(json!({
+            "operation": "sim-advance", "horizon": horizon,
+            "authorization": "allow-all", "topology_epoch": 0,
+        }))
     }
 
     fn plugin_projection_host_observable_schedule(

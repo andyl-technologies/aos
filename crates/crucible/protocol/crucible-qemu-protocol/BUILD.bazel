@@ -38,6 +38,7 @@ rust_library(
     crate_root = "src/lib.rs",
     crate_features = select({
         "//tools/bazel/rules:qemu_test_oracle_host_dependencies": ["test-oracle"],
+        "//tools/bazel/rules:qemu_gpl_plugin_test_dependencies": ["test-oracle"],
         "//tools/bazel/rules:qemu_gpl_test_dependencies": ["test-oracle"],
         "//conditions:default": [],
     }),
@@ -133,4 +134,15 @@ aos_source_package(
     package = RUST_PACKAGE,
     srcs = glob(["**/*.rs"]),
     visibility = ["//visibility:public"],
+)
+
+# Source-only gate inputs are inspected as data, never linked into the plugin.
+filegroup(
+    name = "qemu_plugin_gate_audit",
+    testonly = True,
+    srcs = [
+        "src/lib.rs",
+        "src/doorbell_abi.rs",
+    ],
+    visibility = ["//crates/crucible/qemu/crucible-qemu-plugin:__pkg__"],
 )

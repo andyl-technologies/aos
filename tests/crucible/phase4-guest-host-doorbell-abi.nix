@@ -248,6 +248,8 @@ in
       version = "0";
       src = crucibleSrc;
 
+      # Engine cross-checks execute the independently linked Apache helper.
+      CRUCIBLE_QEMU_TEST_ORACLE = "${pkgs.callPackage ../../pkgs/tools/crucible/_qemu-test-oracle.nix {}}/bin/crucible-qemu-test-oracle";
       runtimeDeps = [pkgs.sqlite];
 
       buildDeps = [

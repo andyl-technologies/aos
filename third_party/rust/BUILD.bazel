@@ -63,6 +63,7 @@ load(":control/aliases.bzl", CONTROL_CRATES = "CRATES")
 load(":qemu-host/aliases.bzl", QEMU_HOST_CRATES = "CRATES")
 load(":qemu-gpl-production/aliases.bzl", QEMU_GPL_PRODUCTION_CRATES = "CRATES")
 load(":qemu-gpl-tests/aliases.bzl", QEMU_GPL_TEST_CRATES = "CRATES")
+load(":qemu-gpl-plugin-tests/aliases.bzl", QEMU_GPL_PLUGIN_TEST_CRATES = "CRATES")
 load(":qemu-test-oracle-host/aliases.bzl", QEMU_TEST_ORACLE_HOST_CRATES = "CRATES")
 load(":store-s3/aliases.bzl", STORE_S3_CRATES = "CRATES")
 load(":daemon/aliases.bzl", DAEMON_CRATES = "CRATES")
@@ -83,6 +84,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         actual = select({
             "//tools/bazel/rules:qemu_gpl_production_dependencies": QEMU_GPL_PRODUCTION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:qemu_gpl_test_dependencies": QEMU_GPL_TEST_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:qemu_gpl_plugin_test_dependencies": QEMU_GPL_PLUGIN_TEST_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:qemu_test_oracle_host_dependencies": QEMU_TEST_ORACLE_HOST_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:aos_cli_tests_dependencies": AOS_CLI_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:aos_cli_fleet_tests_dependencies": AOS_CLI_FLEET_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -197,6 +199,7 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         + QEMU_HOST_CRATES.items()
         + QEMU_GPL_PRODUCTION_CRATES.items()
         + QEMU_GPL_TEST_CRATES.items()
+        + QEMU_GPL_PLUGIN_TEST_CRATES.items()
         + QEMU_TEST_ORACLE_HOST_CRATES.items()
         + STORE_S3_CRATES.items()
         + DAEMON_CRATES.items()
@@ -1914,6 +1917,7 @@ APPROVED_LICENSES = [
         ("qemu-host", QEMU_HOST_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("qemu-gpl-production", QEMU_GPL_PRODUCTION_PACKAGES, {}, "permissive-protocol"),
         ("qemu-gpl-tests", QEMU_GPL_TEST_PACKAGES, {}, "permissive-protocol"),
+        ("qemu-gpl-plugin-tests", QEMU_GPL_PRODUCTION_PACKAGES, {}, "permissive-protocol"),
         ("qemu-test-oracle-host", CONTROL_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("store-s3", STORE_S3_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
         ("daemon", DAEMON_PACKAGES, STORE_ANNOTATIONS, "apache-host"),
@@ -1987,6 +1991,7 @@ APPROVED_LICENSES = [
         "qemu-host",
         "qemu-gpl-production",
         "qemu-gpl-tests",
+        "qemu-gpl-plugin-tests",
         "qemu-test-oracle-host",
         "store-s3",
         "daemon",

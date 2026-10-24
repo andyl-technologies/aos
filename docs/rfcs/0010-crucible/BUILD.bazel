@@ -1,1 +1,13 @@
 exports_files(["24-determinism-harness-testing.md"])
+
+# Source-only gate inputs are inspected as data, never linked into the plugin.
+filegroup(
+    name = "qemu_plugin_gate_audit",
+    testonly = True,
+    srcs = [
+        "12-qemu-plugin.md",
+        "16-guest-host-channel.md",
+        "24-determinism-harness-testing.md",
+    ],
+    visibility = ["//crates/crucible/qemu/crucible-qemu-plugin:__pkg__"],
+)

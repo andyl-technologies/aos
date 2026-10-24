@@ -36,3 +36,19 @@ filegroup(
     srcs = ["fixtures/live-qemu-fuzz.family.toml"],
     visibility = ["//crates/crucible/control/crucible-cli:__pkg__"],
 )
+
+# Source-only gate inputs are inspected as data, never linked into the plugin.
+filegroup(
+    name = "qemu_plugin_gate_audit",
+    testonly = True,
+    srcs = [
+        "default.nix",
+        "_qemu-atomic-patch-repository.nix",
+        "phase2-patch-microtests.nix",
+        "phase2-plugin-qemu-inert.nix",
+        "phase2-protocol-codec-fuzz.nix",
+        "phase2-abi-conformance.nix",
+        "phase4-guest-host-doorbell-abi.nix",
+    ],
+    visibility = ["//crates/crucible/qemu/crucible-qemu-plugin:__pkg__"],
+)

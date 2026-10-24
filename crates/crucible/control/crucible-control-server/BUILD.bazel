@@ -53,7 +53,13 @@ COMMON_DEPENDENCIES = [
     "//third_party/rust:core_tokio",
     "//third_party/rust:core_tokio_rustls",
     "//third_party/rust:core_uuid",
-]
+] + select({
+    "//tools/bazel/rules:qemu_test_oracle_host_dependencies": [
+        "//crates/crucible/engine/crucible-determinism:lib",
+        "//third_party/rust:core_serde_json",
+    ],
+    "//conditions:default": [],
+})
 
 DEVELOPMENT_DEPENDENCIES = [
     "//crates/crucible/protocol/crucible-qemu-shmem:lib",
@@ -75,10 +81,7 @@ rust_library(
     crate_name = "crucible_control_server",
     crate_root = "src/lib.rs",
     srcs = SOURCES,
-    crate_features = select({
-        "//tools/bazel/rules:qemu_test_oracle_host_dependencies": ["default", "qemu-test-oracle"],
-        "//conditions:default": ["default"],
-    }),
+    crate_features = ["default"],
     deps = COMMON_DEPENDENCIES + PRODUCTION_LIBRARIES,
 )
 
@@ -89,9 +92,15 @@ rust_binary(
     package = RUST_PACKAGE,
     lint_config = "//tools/bazel/rules:workspace_lints",
     crate_root = "src/bin/qemu_test_oracle.rs",
-    srcs = ["src/bin/qemu_test_oracle.rs"],
-    crate_features = ["default", "qemu-test-oracle"],
-    deps = [":lib", "//crates/crucible/protocol/crucible-qemu-protocol:lib"],
+    srcs = ["src/bin/qemu_test_oracle.rs"] + glob(["src/bin/qemu_test_oracle/**/*.rs"]),
+    crate_features = ["default", "qemu-test-oracle", "test-support"],
+    deps = [
+        ":lib_for_daemon_tests_test_support",
+        ENGINE + ":lib_for_daemon_tests_test_support",
+        "//crates/crucible/engine/crucible-determinism:lib",
+        "//crates/crucible/protocol/crucible-qemu-protocol:lib",
+        "//third_party/rust:core_serde_json",
+    ],
     visibility = ["//visibility:public"],
 )
 
@@ -219,4 +228,8 @@ daemon_dependency_libraries(
     sources = SOURCES,
     common_deps = COMMON_DEPENDENCIES,
     compile_data = [],
+    extra_features = select({
+        "//tools/bazel/rules:qemu_test_oracle_host_dependencies": ["qemu-test-oracle"],
+        "//conditions:default": [],
+    }),
 )

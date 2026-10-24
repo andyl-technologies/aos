@@ -10,10 +10,10 @@
 //! ```text
 //! offset  size  field
 //! 0       4     magic: CQTO
-//! 4       2     version: 1
+//! 4       2     version: 2 (v1 peers are rejected)
 //! 6       2     kind: request=0, success=1, failure=2
 //! 8       8     request ID
-//! 16      2     operation: ready=0, status=1, reconnect=2, promote=3, shutdown=4
+//! 16      2     operation: ready=0, status=1, reconnect=2, promote=3, shutdown=4, engine=5
 //! 18      2     reserved: 0
 //! 20      4     payload length: at most 65536 bytes
 //! 24      N     owned payload bytes
@@ -26,7 +26,50 @@
 //! `BackendStatus`, `Reconnect`, and `Shutdown` requests have empty payloads.
 //! A successful `Reconnect` also has an empty payload. Failure payloads contain
 //! UTF-8 errors.
-//! No frame contains a native pointer, Rust enum representation, or callback.
+//! Engine mode announces the exact bytes `engine-v2` and accepts only `Engine`
+//! requests. Gateway mode rejects `Engine`; engine mode rejects gateway methods.
+//! Engine payloads are UTF-8 JSON objects. Their closed `operation` registry is:
+//!
+//! ```text
+//! operation      remaining request fields                  successful response
+//! rng-init       seed:u64, stream:string                   {root_seed:u64}
+//! rng-next       advance:u64 (at most 1000000)              {draw:u64}
+//! marker         node:string, icount:u64, frame:bytes       event-log projection
+//! diagnostic     node:string, icount:u64, marker:string     event-log projection
+//! sim-create     slot:u32, nodes:u32, capacity:u32, steps   {node_count:u32, region_size:u64}
+//! sim-control    frame:bytes                               {reply:null|bytes}
+//! sim-inbound    source:u32, sequence:u32, icount:u64,       {}
+//!                payload:bytes
+//! sim-advance    horizon:u64, authorization:"allow-all",    outcome projection
+//!                topology_epoch:u64
+//! sim-schedule                                             {events:[schedule projections]}
+//! ```
+//!
+//! A byte string is an array of integers in `0..=255`. Unknown or missing
+//! request fields are errors. One connection owns one RNG, one event log and
+//! one simulation double. Reinitialization replaces only the selected object.
+//! `rng-next` advances the real stream before drawing. `marker.frame` uses the
+//! existing permissive white-box marker frame codec. Geometry is bounded to
+//! 16 VM nodes and queue capacity 4096 before the engine allocates its region.
+//! Each step is `{budget:u64, frames:[{destination:u32, icount:u64, payload:bytes}]}`.
+//!
+//! An event-log projection is `{entries:[entry], causal_projection_empty:bool}`.
+//! Each entry contains `class` (`causal` or `observational`), `stamp` with
+//! `node` (string or null), `tick:u64`, and `retired` (u64 or null), `source`
+//! with `kind:"guest"` and `node:string`, and `payload` with `kind:string`
+//! and `assertion` (string or null). An unexpected source is an error.
+//!
+//! An outcome is `{kind:"reached-horizon"}` or `{kind:"paused", at:u64}`.
+//! Schedule projections have `kind:"horizon"` with `from`, `requested`,
+//! `reached` (all u64) and `outcome`; `kind:"delivery"` with `source:u32`,
+//! `sequence:u32`, `icount:u64`, `payload:bytes`; or `kind:"emission"` with
+//! `destination:u32` and the same sequence, icount and payload fields.
+//! Other schedule variants fail closed until their wire schema is defined.
+//! JSON is a value projection, never serialization of an engine-native object.
+//!
+//! Version 2 deliberately rejects version 1 peers; its callers and immutable
+//! helper are rebuilt together. No frame contains a native pointer, Rust enum
+//! representation, private structure, or callback.
 
 use std::io::{self, Read, Write};
 
@@ -34,7 +77,7 @@ use std::io::{self, Read, Write};
 pub const MAX_PAYLOAD_BYTES: usize = 65_536;
 
 const HEADER_BYTES: usize = 24;
-const VERSION: u16 = 1;
+const VERSION: u16 = 2;
 
 /// Meaning of a test-oracle frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,6 +105,8 @@ pub enum Operation {
     PromoteBackend = 3,
     /// Gateway termination and reaping through the Apache client.
     Shutdown = 4,
+    /// Parameterized engine operations with the documented JSON value schema.
+    Engine = 5,
 }
 
 /// Versioned test-oracle message containing only portable values and bytes.
@@ -158,6 +203,7 @@ pub fn read_frame(reader: &mut impl Read) -> io::Result<Option<Frame>> {
         2 => Operation::Reconnect,
         3 => Operation::PromoteBackend,
         4 => Operation::Shutdown,
+        5 => Operation::Engine,
         _ => return Err(invalid("unknown test-oracle operation")),
     };
     let length = usize::try_from(u32::from_be_bytes(array(&header[20..24])?))
@@ -216,7 +262,7 @@ mod tests {
         #[rustfmt::skip]
         let expected = [
             // Magic, version, request kind.
-            b'C', b'Q', b'T', b'O', 0, 1, 0, 0,
+            b'C', b'Q', b'T', b'O', 0, 2, 0, 0,
 
             // Request ID seven.
             0, 0, 0, 0, 0, 0, 0, 7,
@@ -285,7 +331,7 @@ mod tests {
 
     #[test]
     fn unknown_header_fields_and_reserved_bytes_are_rejected() {
-        for (index, value) in [(0, b'X'), (5, 2), (7, 9), (17, 99), (19, 1)] {
+        for (index, value) in [(0, b'X'), (5, 1), (5, 3), (7, 9), (17, 99), (19, 1)] {
             let mut bytes = encoded(&request(Vec::new()));
             bytes[index] = value;
             assert_eq!(

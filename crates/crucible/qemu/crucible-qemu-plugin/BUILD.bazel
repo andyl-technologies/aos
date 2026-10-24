@@ -4,6 +4,7 @@ load("//tools/bazel/rules:license.bzl", "aos_license_check")
 load("//tools/bazel/rules:package.bzl", "aos_package")
 load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
 load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
 
 package(default_visibility = ["//crates/crucible:__subpackages__"])
 
@@ -15,22 +16,25 @@ RUST_PACKAGE = aos_rust_package(
     license_domain = "gpl-qemu",
 )
 
+SOURCES = glob(["src/**/*.rs"])
+DEPENDENCIES = [
+    "//crates/crucible/protocol/crucible-qemu-protocol:lib",
+    "//crates/crucible/protocol/crucible-qemu-shmem:lib",
+] + [
+    "//third_party/rust:core_" + name
+    for name in ["blake3", "hex", "libc", "sha2", "serde_json", "thiserror"]
+]
+
 rust_shared_library(
     name = "plugin",
     package = RUST_PACKAGE,
     lint_config = "//tools/bazel/rules:workspace_lints",
     crate_name = "crucible_qemu_plugin",
     crate_root = "src/lib.rs",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = SOURCES,
     rustc_env_files = ["@aos_qemu_plugin_abi//:plugin.env"],
     compile_data = ["@aos_qemu_plugin_abi//:identity.json"],
-    deps = [
-        "//crates/crucible/protocol/crucible-qemu-protocol:lib",
-        "//crates/crucible/protocol/crucible-qemu-shmem:lib",
-    ] + [
-        "//third_party/rust:core_" + name
-        for name in ["blake3", "hex", "libc", "sha2", "serde_json", "thiserror"]
-    ],
+    deps = DEPENDENCIES,
 )
 
 # rules_rust exposes CcInfo for a cdylib. Its Rust development rules need an
@@ -42,16 +46,10 @@ rust_library(
     lint_config = "//tools/bazel/rules:workspace_lints",
     crate_name = "crucible_qemu_plugin",
     crate_root = "src/lib.rs",
-    srcs = glob(["src/**/*.rs"]),
+    srcs = SOURCES,
     rustc_env_files = ["@aos_qemu_plugin_abi//:plugin.env"],
     compile_data = ["@aos_qemu_plugin_abi//:identity.json"],
-    deps = [
-        "//crates/crucible/protocol/crucible-qemu-protocol:lib",
-        "//crates/crucible/protocol/crucible-qemu-shmem:lib",
-    ] + [
-        "//third_party/rust:core_" + name
-        for name in ["blake3", "hex", "libc", "sha2", "serde_json", "thiserror"]
-    ],
+    deps = DEPENDENCIES,
 )
 
 rust_clippy(name = "clippy", testonly = True, deps = [":lib_for_development"])
@@ -70,8 +68,51 @@ aos_package(
     artifacts = {":plugin": "lib/libcrucible_qemu_plugin.so"},
 )
 
-# Unit tests still require a process-based engine oracle before their Bazel
-# conversion. Apache test support must never become a compiled GPL dependency.
+# The Apache engine is an immutable runtime tool in a separate process. Its
+# code never enters the GPL test's compiled dependency or licensing closure.
+aos_rust_test(
+    name = "unit",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":lib_for_development",
+    runfile_env = {"CRUCIBLE_QEMU_TEST_ORACLE": "@aos_qemu_test_tools//:oracle"},
+)
+
+GATE_TESTS = ["gate_abi_conformance", "gate_patch_microtests", "gate_qemu_inert"]
+GATE_INPUTS = [
+    "//:qemu_plugin_gate_audit",
+    "//tests/crucible:qemu_plugin_gate_audit",
+    "//docs/rfcs/0010-crucible:qemu_plugin_gate_audit",
+    "//crates/crucible/protocol/crucible-qemu-protocol:qemu_plugin_gate_audit",
+    "//crates/crucible/guest/crucible-guest:qemu_plugin_gate_audit",
+]
+
+filegroup(name = "gate_source_audit", srcs = SOURCES, testonly = True)
+
+[
+    aos_rust_test(
+        name = name,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_root = "tests/" + name + ".rs",
+        srcs = ["tests/" + name + ".rs"],
+        deps = DEPENDENCIES,
+        data = GATE_INPUTS + [":gate_source_audit"],
+    )
+    for name in GATE_TESTS
+]
+
+TEST_ARTIFACTS = [":unit_binary"] + [":" + name + "_binary" for name in GATE_TESTS]
+rust_clippy(name = "test_clippy", testonly = True, deps = TEST_ARTIFACTS)
+rustfmt_test(name = "test_format", targets = TEST_ARTIFACTS)
+
+aos_license_check(
+    name = "test_license_closure",
+    testonly = True,
+    roots = TEST_ARTIFACTS,
+    license_domain = "gpl-qemu",
+)
+
 aos_source_package(
     name = "source_package",
     package = RUST_PACKAGE,

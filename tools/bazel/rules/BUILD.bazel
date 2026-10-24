@@ -446,3 +446,8 @@ config_setting(
     flag_values = {":dependency_profile": "qemu-gpl-production"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "qemu_gpl_plugin_test_dependencies",
+    flag_values = {":dependency_profile": "qemu-gpl-plugin-tests"},
+)

@@ -364,6 +364,11 @@
       root = ../../..;
       family = "qemu-gpl-tests";
     };
+    qemu-gpl-plugin-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "qemu-gpl-plugin-tests";
+    };
     qemu-test-oracle-host = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;

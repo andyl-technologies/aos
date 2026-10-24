@@ -22,6 +22,6 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-# Test-only HARN-16 cross-check: production plugin dependencies stay L1-only.
-crucible-engine = { path = "../../engine/crucible-engine", features = ["test-double", "test-support"] }
+# Real engine cross-checks run in a separately linked Apache process.
+crucible-qemu-protocol = { path = "../../protocol/crucible-qemu-protocol", features = ["test-oracle"] }
 sha2 = { workspace = true }

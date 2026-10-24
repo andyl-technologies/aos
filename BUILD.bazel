@@ -36,3 +36,17 @@ aos_package(
     license_domain = "apache-host",
     artifacts = {":source_catalog": "share/aos/source-catalog.json"},
 )
+
+# Source-only gate inputs are inspected as data, never linked into the plugin.
+filegroup(
+    name = "qemu_plugin_gate_audit",
+    testonly = True,
+    srcs = [
+        "MODULE.bazel",
+        "default.nix",
+        "pkgs/emulation/qemu.nix",
+        "pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch",
+        "pkgs/emulation/qemu-patches/_atomic-patch.nix",
+    ],
+    visibility = ["//crates/crucible/qemu/crucible-qemu-plugin:__pkg__"],
+)

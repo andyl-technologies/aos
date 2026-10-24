@@ -69,7 +69,7 @@ def _features(component, features, development, session_test_double):
         return ["default", "test-double"] if session_test_double else ["default"]
     return []
 
-def daemon_dependency_libraries(component, package, sources, common_deps, compile_data = []):
+def daemon_dependency_libraries(component, package, sources, common_deps, compile_data = [], extra_features = []):
     """Declares production and development libraries for the selected daemon graph."""
     for session_test_double in [False, True]:
         for development in [False, True]:
@@ -87,7 +87,7 @@ def daemon_dependency_libraries(component, package, sources, common_deps, compil
                     crate_root = "src/lib.rs",
                     srcs = sources,
                     compile_data = compile_data,
-                    crate_features = crate_features,
+                    crate_features = crate_features + extra_features,
                     deps = common_deps + daemon_dependencies(_LIBRARY_EDGES[component], suffix, development, session_test_double) + extra_deps,
                 )
 

@@ -2777,7 +2777,9 @@ The [GPL QEMU component graph](docs/qemu-gpl.md) compiles both production
 components and compares their features, compiler inputs, ELF properties, and
 gateway argument rejection with an offline Cargo baseline. Its gateway test
 checks compare all 36 unit and lifecycle cases, using a separate Apache client
-process for the GPL lifecycle fixtures.
+process for the GPL lifecycle fixtures. Its plugin test graph uses the same
+private process protocol to exercise the actual Apache engine without linking
+it into GPL tests, and declares the existing source-audit integration inputs.
 
 The [CLI conversion checkpoints](docs/aos-cli.md) describe its three dependency
 configurations, native test fixtures, production package inspection, and gates

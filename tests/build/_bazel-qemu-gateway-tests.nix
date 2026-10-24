@@ -69,9 +69,14 @@
         name = "install";
         script = ''
           mkdir -p "$out"
-          ln -s ${hostPackage}/bin/crucible-qemu-test-oracle "$out/oracle"
           jq -cS '{schema: 1, closure: [.oracle[] | {path, narHash}] | sort_by(.path)}' \
             "$NIX_ATTRS_JSON_FILE" > "$out/closure.json"
+          # Bazel hashes file contents after resolving symlinks. Bind the
+          # helper's runtime closure even when its executable bytes are equal.
+          printf '#!${pkgs.bash}/bin/bash\n# Runtime closure: ' > "$out/oracle"
+          cat "$out/closure.json" >> "$out/oracle"
+          printf 'exec ${hostPackage}/bin/crucible-qemu-test-oracle "$@"\n' >> "$out/oracle"
+          chmod +x "$out/oracle"
           cat > "$out/BUILD.bazel" <<'BUILD'
           exports_files(["oracle", "closure.json"], visibility = ["//visibility:public"])
           BUILD
@@ -105,7 +110,7 @@
     runtimeDeps = [pkgs.sqlite pkgs.gcc-libs];
   };
 in rec {
-  inherit hostBuild hostPackage hostWorkspace testWorkspace testTools;
+  inherit hostBuild hostPackage hostWorkspace testWorkspace testTools hostPackageOptions;
   cargo = import ./_bazel-qemu-process-cargo.nix {inherit pkgs;};
   tests = pkgs.mkAosBazelCheck {
     pname = "aos-bazel-qemu-gateway-process-tests";

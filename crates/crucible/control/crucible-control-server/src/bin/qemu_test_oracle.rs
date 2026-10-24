@@ -1,9 +1,10 @@
 //! SPDX-License-Identifier: Apache-2.0
-//! Executes real Apache gateway-client operations for separate GPL test processes.
+//! Executes real Apache gateway and engine operations for separate GPL tests.
 //!
 //! A private Unix socket carries the permissive, versioned test-oracle frames.
-//! This executable owns the actual [`DebugGatewayProcess`], forwards typed
-//! operations through its public API, and reaps the gateway on shutdown or EOF.
+//! Gateway mode owns the actual [`DebugGatewayProcess`] and reaps it on shutdown
+//! or EOF. Engine mode owns deterministic streams, event logs, and simulation
+//! doubles; both modes return owned values through the public process protocol.
 
 use std::env;
 use std::error::Error;
@@ -15,6 +16,9 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::ExitCode;
 use std::time::Duration;
+
+#[path = "qemu_test_oracle/engine.rs"]
+mod engine;
 
 use crucible_control_server::DebugGatewayProcess;
 use crucible_qemu_protocol::test_oracle::{Frame, FrameKind, Operation, read_frame, write_frame};
@@ -31,12 +35,9 @@ fn main() -> ExitCode {
 
 fn run() -> Result<(), Box<dyn Error>> {
     let args: Vec<_> = env::args_os().skip(1).collect();
-    if !(args.len() == 1 || args.len() == 2 && args[1] == "--owner-unix") {
-        return Err(invalid("expected <gateway-executable> [--owner-unix]").into());
-    }
-    let executable = Path::new(&args[0]);
-    if !executable.is_absolute() {
-        return Err(invalid("gateway executable must be absolute").into());
+    let engine_mode = args.len() == 1 && args[0] == "--engine";
+    if !engine_mode && !(args.len() == 1 || args.len() == 2 && args[1] == "--owner-unix") {
+        return Err(invalid("expected --engine or <gateway-executable> [--owner-unix]").into());
     }
 
     // The test passes one end of a private socket pair as stdin. Inheriting
@@ -45,6 +46,13 @@ fn run() -> Result<(), Box<dyn Error>> {
     stream.set_read_timeout(Some(Duration::from_secs(10)))?;
     stream.set_write_timeout(Some(Duration::from_secs(10)))?;
 
+    if engine_mode {
+        return serve_engine(&mut stream);
+    }
+    let executable = Path::new(&args[0]);
+    if !executable.is_absolute() {
+        return Err(invalid("gateway executable must be absolute").into());
+    }
     let launched = if args.len() == 2 {
         DebugGatewayProcess::launch_with_owner_unix(executable)
     } else {
@@ -119,6 +127,7 @@ fn dispatch(
     }
     match request.operation {
         Operation::Ready => Err(invalid("Ready is an oracle response").into()),
+        Operation::Engine => Err(invalid("engine operation requires engine mode").into()),
         Operation::BackendStatus => {
             let status = gateway_mut(gateway)?.client_mut().backend_status()?;
             Ok((status.encode()?, false))
@@ -153,4 +162,45 @@ fn gateway_mut(gateway: &mut Option<DebugGatewayProcess>) -> io::Result<&mut Deb
 
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
+}
+
+fn serve_engine(stream: &mut UnixStream) -> Result<(), Box<dyn Error>> {
+    write_frame(
+        stream,
+        &Frame {
+            kind: FrameKind::Success,
+            operation: Operation::Ready,
+            request_id: 0,
+            payload: b"engine-v2".to_vec(),
+        },
+    )?;
+    let mut engine = engine::EngineOracle::default();
+    let mut next_request = 1_u64;
+    while let Some(request) = read_frame(stream)? {
+        if request.kind != FrameKind::Request || request.request_id != next_request {
+            return Err(invalid("oracle requires sequential request frames").into());
+        }
+        next_request = next_request
+            .checked_add(1)
+            .ok_or_else(|| invalid("oracle request IDs exhausted"))?;
+        let result = if request.operation == Operation::Engine {
+            engine.dispatch(&request.payload)
+        } else {
+            Err(invalid("gateway operation requires gateway mode").into())
+        };
+        let (kind, payload) = match result {
+            Ok(payload) => (FrameKind::Success, payload),
+            Err(error) => (FrameKind::Failure, error.to_string().into_bytes()),
+        };
+        write_frame(
+            stream,
+            &Frame {
+                kind,
+                operation: request.operation,
+                request_id: request.request_id,
+                payload,
+            },
+        )?;
+    }
+    Ok(())
 }

@@ -15,6 +15,7 @@ nix-build -A checks.build.bazel.qemu-gpl.developer-build --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.format --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.installed-inspection --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.gateway-tests.all --no-out-link
+nix-build -A checks.build.bazel.qemu-gpl.plugin-tests.all --no-out-link
 ```
 
 `parity` builds an independent offline Cargo release baseline and retains three
@@ -75,6 +76,9 @@ operations. Test executables exchange bounded, versioned protocol frames over a
 private inherited Unix socket pair, with no filesystem rendezvous or polling.
 The helper and gateway are immutable declared test inputs;
 each test owns and reaps its processes. No host cache service is involved.
+The helper's exec wrapper embeds its complete Nix runtime-closure manifest, so
+test-cache identity also changes when a runtime library changes independently
+of the helper executable's bytes.
 
 The `qemu-test-oracle-host` and `qemu-gpl-tests` profiles keep host and GPL
 compiler graphs separate. Their parity reports compare first-party and upstream
@@ -89,9 +93,26 @@ default features, disables binary auto-discovery and test/benchmark harnesses,
 and rejects missing restrictions or additional commands. Other library and
 plugin output restrictions remain enforced.
 
+The plugin's `plugin-tests` graph uses its own `qemu-gpl-plugin-tests` profile.
+Its engine-backed fixtures keep their original GPL assertions and send bounded
+requests to the Apache helper's engine mode. The helper executes real decision
+streams, event-log appends, and simulation-double operations, returning explicit
+owned projections. No engine implementation enters the GPL compiled graph.
+The v2 test protocol rejects v1 frames and unknown operations or request fields;
+engine requests also bound RNG advancement and simulation geometry.
+
+The plugin graph includes its unit suite and the three existing source-audit
+integration targets. Their repository inputs are declared runfiles rather than
+implicit checkout access. Its independent Cargo comparison builds the same
+helper and test artifacts, retains their compiler invocations, and compares
+case names and results as well as resolved first-party and upstream features.
+Clippy, format, and GPL license-closure checks cover all four test artifacts.
+The comparison covers 579 unit cases and four integration cases, with no
+ignored cases. Two unit cases add rejection and RNG-state checks for the new
+oracle requests; the original plugin assertions remain in the GPL suite.
+
 Production consumers continue to use their existing builders. The ordinary
-Cargo gateway checks also launch the separately built helper. The plugin's
-engine-backed tests still need a process oracle; Apache engine or server
-libraries must not be linked into a GPL test target.
+Cargo gateway and plugin checks also launch the separately built helper.
+Apache engine or server libraries must not be linked into a GPL test target.
 The mandatory ABI, license-boundary, remaining live QEMU, complete closure, and
 release gates remain independent requirements before production migration.

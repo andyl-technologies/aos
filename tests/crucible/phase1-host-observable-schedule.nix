@@ -12,6 +12,7 @@
   simBackend = import ./_crucible-local-and-test-backends-source.nix;
   crateRoot = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
   pluginManifest = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml;
+  engineOracle = builtins.readFile ../../crates/crucible/control/crucible-control-server/src/bin/qemu_test_oracle/engine.rs;
   pluginNetworkRx = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_rx.rs;
   pluginNetworkTx = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
@@ -93,12 +94,25 @@
     ]
     ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml" pluginManifest [
       {
-        label = "test-only layer exception comment";
-        needle = "Test-only HARN-16 cross-check: production plugin dependencies stay L1-only.";
+        label = "test-only process boundary comment";
+        needle = "Real engine cross-checks run in a separately linked Apache process.";
       }
       {
-        label = "test-only crucible dependency";
-        needle = "crucible-engine = { path = \"../../engine/crucible-engine\", features = [\"test-double\", \"test-support\"] }";
+        label = "test-only process protocol dependency";
+        needle = "crucible-qemu-protocol = { path = \"../../protocol/crucible-qemu-protocol\", features = [\"test-oracle\"] }";
+      }
+    ]
+    ++ lib.optionals (hasInfix "crucible-engine" pluginManifest) [
+      "GPL plugin manifest must not link the Apache engine, including in tests"
+    ]
+    ++ failuresFor "crates/crucible/control/crucible-control-server/src/bin/qemu_test_oracle/engine.rs" engineOracle [
+      {
+        label = "actual engine schedule source";
+        needle = "self.double()?.host_observable_schedule()";
+      }
+      {
+        label = "actual engine quantum driver";
+        needle = ".advance_scripted_quantum(horizon, &authorization)?";
       }
     ]
     ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [
@@ -107,12 +121,12 @@
         needle = "host_observable_schedule_cross_checks_sim_double_against_plugin_projection";
       }
       {
-        label = "double schedule source";
-        needle = "double.host_observable_schedule()";
+        label = "double schedule process request";
+        needle = "\"operation\": \"sim-schedule\"";
       }
       {
-        label = "double quantum driver";
-        needle = "double.advance_scripted_quantum(horizon, &ALLOW_ALL_SENDS)";
+        label = "double quantum process request";
+        needle = "\"operation\": \"sim-advance\"";
       }
       {
         label = "plugin callback model schedule projection";
@@ -214,6 +228,8 @@ in
       version = "0";
       src = crucibleSrc;
 
+      # Engine cross-checks execute the independently linked Apache helper.
+      CRUCIBLE_QEMU_TEST_ORACLE = "${pkgs.callPackage ../../pkgs/tools/crucible/_qemu-test-oracle.nix {}}/bin/crucible-qemu-test-oracle";
       runtimeDeps = [pkgs.sqlite];
 
       buildDeps =

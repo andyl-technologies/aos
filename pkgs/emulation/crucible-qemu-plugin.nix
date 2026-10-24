@@ -1,6 +1,8 @@
 ##! crucible-qemu-plugin — RFC-0010 QEMU plugin cdylib
 {
   lib,
+  stdenv,
+  callPackage,
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
@@ -20,6 +22,7 @@
     licenseScope = "GPL-2.0-only";
   };
   cargoEnv = {LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";};
+  qemuTestOracle = callPackage ../tools/crucible/_qemu-test-oracle.nix {};
   cargoArtifacts = mkCargoArtifacts {
     pname = "crucible-qemu-plugin-artifacts";
     inherit version cargoDeps cargoWorkspaceMembers cargoArtifactContract cargoEnv;
@@ -120,6 +123,13 @@ in
 
     buildDeps = [glib.dev glib.tools pkg-config qemu-crucible sqlite];
     runtimeDeps = [glib qemu-crucible sqlite];
+
+    postBuild = lib.optionalString (!stdenv.isCross) ''
+      export CRUCIBLE_QEMU_TEST_ORACLE=${qemuTestOracle}/bin/crucible-qemu-test-oracle
+    '';
+    preInstall = ''
+      unset CRUCIBLE_QEMU_TEST_ORACLE
+    '';
 
     preBuild = import ./_crucible-qemu-plugin-abi.nix {
       inherit lib glib qemu-crucible;

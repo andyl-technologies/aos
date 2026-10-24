@@ -157,3 +157,13 @@ aos_source_package(
     srcs = glob(["**/*.rs"]),
     visibility = ["//visibility:public"],
 )
+
+# Source-only gate inputs are inspected as data, never linked into the plugin.
+filegroup(
+    name = "qemu_plugin_gate_audit",
+    testonly = True,
+    srcs = [
+        "src/lib.rs",
+    ],
+    visibility = ["//crates/crucible/qemu/crucible-qemu-plugin:__pkg__"],
+)

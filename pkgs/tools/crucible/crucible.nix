@@ -6,6 +6,7 @@
   mkCargoPackage,
   mkCargoArtifacts,
   mkCargoDummySource,
+  callPackage,
   aosWorkspaceVendor,
   rust,
   openssl,
@@ -462,15 +463,7 @@
   };
   # The GPL test executable invokes the real Apache client across a Unix
   # socket. Keep its independent executable outside the gateway's link graph.
-  qemuTestOracle = mkCargoPackage {
-    pname = "crucible-qemu-test-oracle";
-    inherit version src cargoDeps cargoWorkspaceMembers;
-    cargoRoot = "crates";
-    cargoFlags = "-p crucible-control-server --bin crucible-qemu-test-oracle --features qemu-test-oracle";
-    doCheck = false;
-    buildDeps = [buildRustDev buildPkgConfig openssl sqlite];
-    runtimeDeps = [openssl sqlite];
-  };
+  qemuTestOracle = callPackage ./_qemu-test-oracle.nix {};
 
   debugGateway = mkCargoPackage {
     pname = "crucible-debug-gateway";
