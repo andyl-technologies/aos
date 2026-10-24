@@ -10,6 +10,30 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Assigned publication inputs
+
+Commit `ad4e60e34c` groups each assigned publication's borrowed original,
+canonical bytes, literal slot and existing deadline. Initial Admit, restored
+Observe and Import18 Prepare retain their original owner checks, publication
+bodies, output slots and failure ordering. Their fixed scratch quotes retain
+all earlier terms and add the actual caller/callee input headers. This view
+supplies no authenticated sent-frame witness. Commit `696429f433` corrects the
+Session review's implementation-only count, excluding its three test lines.
+
+Both complete Transport codec suites pass 2,115 tests with zero failures,
+twenty ignored and no filtering. Their focused controls each pass four initial
+lifecycle, seven observation and thirty Import18 SDK tests. All-feature
+Transport/Engine/Daemon targets, six architecture checks and scoped formatting
+pass. The application gate and funded-Source VM pass; actual compiler metadata
+records 185 test artifacts across 58 packages, including 76 integration targets.
+All 570 frozen owned Rust/Cargo inputs match the publication commit and actual
+application and three funded-VM component source captures.
+
+Strict Transport Clippy falls from nineteen to sixteen errors with 1,734
+warnings and no added allowance. Strict qualification still fails. This
+checkpoint supplies no additional runtime capacity or completed native Capture;
+the funded runtime handoff, Native18 adoption and full RFC remain unfinished.
+
 ## Receipt correspondence and retained Prepare quote inputs
 
 Commit `841b2727e8` groups the original request/response pair and Import18's
