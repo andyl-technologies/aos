@@ -11507,3 +11507,27 @@ and full native evaluation passes at
 The clean `b398b0d53e` Host, Root and offline vTPM retries remain pending;
 these package and evaluation results do not establish installed boot or
 protected lifecycle readiness.
+
+### Current-kernel TPM transport recovery
+
+The clean `b398b0d53e` release transport VM passes on the AOS-built Linux 7.2.3
+kernel at
+`/nix/store/afqinr8h5dkl5jzfhprwpzkzkc32b9n4-aos-fleet-test-sandbox-method46-tpm-transport-0`.
+Both roles pass initialization, repeat-initialization refusal, wrong-role,
+wrong-auth and wrong-pin checks, stale-state refusal, reboot and unclean-reset
+recovery. Two actual QEMU/swtpm power cuts preserve the same disk and TPM state:
+the first permits exact recovery; the second refuses the prepared operation
+whose extend never completed and retains its pending bytes. Clearing the test
+TPM invalidates both old roles while permitting fresh provisioning.
+
+This non-enforcing transport fixture exercises the production ESYS mechanics
+under test-only provisioning authority. It does not qualify the normal
+Controller/Storage journal hooks, their initial floor producer, or public
+execution admission. Those gates remain closed.
+
+The selected production policy builds for the enforcing startup batch also
+pass, including their required negative scans, at
+`/nix/store/11hzfdr7yw7nws03psx4nb911ylzrg59-aos-selinux-production-policy-1`
+and
+`/nix/store/z22jcbdmcpms1gls8syigywn1ka1d2r0-aos-selinux-production-policy-1`.
+The installed Host, Root and offline hardware tests remain pending.
