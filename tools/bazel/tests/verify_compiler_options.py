@@ -9,7 +9,8 @@ does not establish identical artifacts or equivalent compiler profiles.
 import argparse
 import hashlib
 import json
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import posixpath
 
 from verify_cache import execution_events
 from reconstruct_compiler_inputs import reconstruct
@@ -69,6 +70,29 @@ def compilation_source(arguments, prefix):
     """Selects one positional first-party source without interpreting shell text."""
     sources = [argument for argument in arguments
                if argument.startswith(prefix) and argument.endswith(".rs")]
+    if len(sources) > 1:
+        raise ValueError("ambiguous first-party compilation source")
+    return sources[0] if sources else None
+
+
+def cargo_compilation_source(invocation):
+    """Maps captured workspace sources without depending on crate domain names."""
+    directory = PurePosixPath(invocation["directory"])
+    if not directory.is_absolute() or "crates" not in directory.parts:
+        return None
+
+    # Cargo runs from the workspace or a package directory. Registry sources
+    # live outside this root and must not become first-party compiler units.
+    workspace_end = len(directory.parts) - directory.parts[::-1].index("crates")
+    workspace = PurePosixPath(*directory.parts[:workspace_end])
+    sources = []
+    for argument in invocation["arguments"]:
+        if argument.startswith("-") or not argument.endswith(".rs"):
+            continue
+        source = PurePosixPath(posixpath.normpath(str(directory / argument)))
+        if source.is_relative_to(workspace):
+            sources.append("crates/" + str(source.relative_to(workspace)))
+
     if len(sources) > 1:
         raise ValueError("ambiguous first-party compilation source")
     return sources[0] if sources else None
@@ -148,9 +172,9 @@ def audit(build, cargo):
         invocation = json.loads(line)
         if invocation["schema_version"] != 1:
             raise ValueError("unsupported Cargo compiler trace schema")
-        source = compilation_source(invocation["arguments"], ("aos/", "hub/", "shared/", "crucible/"))
+        source = cargo_compilation_source(invocation)
         if source:
-            cargo_invocations.append({**invocation, "source": "crates/" + source})
+            cargo_invocations.append({**invocation, "source": source})
     pairs = pair_invocations(bazel, cargo_invocations)
     result = {
         "schema_version": 1,

@@ -6,13 +6,39 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from verify_compiler_options import audit, compiler_options, pair_invocations
+from verify_compiler_options import audit, cargo_compilation_source, compiler_options, pair_invocations
 from retain_compiler_inputs import command_digest
 
 
 class CompilerOptionsTests(unittest.TestCase):
     def invocation(self, arguments=(), source="crates/shared/example/src/lib.rs"):
         return {"source": source, "arguments": ["rustc", source, "--edition=2024", *arguments]}
+
+    def test_cargo_source_mapping_survives_workspace_layout_changes(self):
+        for domain in ["bindings", "core", "packages", "registry", "shared"]:
+            with self.subTest(domain=domain):
+                source = domain + "/example/src/lib.rs"
+                self.assertEqual(cargo_compilation_source({
+                    "directory": "/build/source/crates", "arguments": ["rustc", source],
+                }), "crates/" + source)
+
+        self.assertEqual(cargo_compilation_source({
+            "directory": "/build/source/crates/bindings/example",
+            "arguments": ["rustc", "src/../lib.rs"],
+        }), "crates/bindings/example/lib.rs")
+
+    def test_cargo_source_mapping_excludes_registry_and_escaped_paths(self):
+        for source in ["/build/cargo/registry/example/src/lib.rs", "../registry/src/lib.rs"]:
+            with self.subTest(source=source):
+                self.assertIsNone(cargo_compilation_source({
+                    "directory": "/build/source/crates", "arguments": ["rustc", source],
+                }))
+
+        with self.assertRaisesRegex(ValueError, "ambiguous first-party compilation source"):
+            cargo_compilation_source({
+                "directory": "/build/source/crates",
+                "arguments": ["rustc", "core/a/lib.rs", "core/b/lib.rs"],
+            })
 
     def test_scalar_profile_overrides_use_the_last_explicit_value(self):
         options = compiler_options([
