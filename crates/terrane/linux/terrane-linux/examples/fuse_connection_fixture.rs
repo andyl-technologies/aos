@@ -551,6 +551,9 @@ fn metadata_bytes(mode: &str) -> Result<Vec<u8>> {
             .collect::<Vec<_>>();
         entries.extend(untouched.iter().map(|path| file(path, None)));
     }
+    // The canonical tree builder requires sorted raw keys, including after
+    // adding untouched ASCII names before the final non-UTF-8 entry.
+    entries.sort_unstable_by(|left, right| left.key.cmp(&right.key));
     let tree = Tree::build(entries, None, 4096, TreeUse::Ordinary)?;
     Ok(structural_index::compile_tree(
         &tree,
@@ -609,5 +612,31 @@ async fn stopped(control: &tokio::io::unix::AsyncFd<io::Stdout>) -> io::Result<(
             Ok(Err(error)) => return Err(error),
             Err(_) => continue,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Checks pure fixture preparation before any device or mount setup.
+
+    #[test]
+    fn large_fixture_compiles_before_native_setup() -> super::Result {
+        for (mode, count) in [
+            ("serve", 1),
+            ("metadata", 7),
+            ("read", 7),
+            ("late", 7),
+            ("large", 71),
+        ] {
+            let bytes = super::metadata_bytes(mode)?;
+            let index = super::Index::open(&bytes)?;
+            assert_eq!(index.len(), count, "fixture mode {mode}");
+            if mode == "large" {
+                assert!(index.len() > 16);
+                assert!(index.lookup(b"untouched-63").is_some());
+                assert!(index.lookup(b"\xff").is_some());
+            }
+        }
+        Ok(())
     }
 }

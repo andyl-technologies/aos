@@ -16,6 +16,10 @@
       cargo build --frozen --offline -p terrane-linux --no-default-features \
         --features native-test-fixtures,surface-fuse --example fuse_connection_fixture \
         --message-format=json > "$out/build.jsonl"
+      cargo test --frozen --offline -p terrane-linux --no-default-features \
+        --features native-test-fixtures,surface-fuse --example fuse_connection_fixture \
+        tests::large_fixture_compiles_before_native_setup -- --exact \
+        > "$out/fixture-preparation.log"
       rustc --print target-libdir > "$TMPDIR/structural-target-libdir"
       python3 ../tests/terrane/fuse_connection_image.py
       mkdir -p "$out/share"

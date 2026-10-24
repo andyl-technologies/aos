@@ -17071,3 +17071,24 @@ dispatch and nine inode-policy cases pass again, including allocation measuremen
 as does strict all-feature/all-target Clippy. The structural inventory remains
 78 cases. Native and mandatory compilation qualification of this refinement
 remain pending; no task acceptance changes.
+
+
+The first large-index kernel qualification at `4b15de4d9a` fails in 211.294
+seconds before INIT: fixture construction appended ASCII paths after the final
+raw non-UTF-8 name, and the canonical tree builder correctly refused that
+unsorted input. Its preceding original read and late-open scenarios pass, but
+the aggregate remains failed. The fixture now sorts raw keys before building
+its canonical tree, with a pure preparation regression covering empty, ordinary,
+late and 71-entry large metadata before any device or mount effects. Corrected
+native qualification remains pending; no production limit or deadline is relaxed.
+
+The fixed reservation checkpoint `a09f366782` passes all 78 structural cases
+in 75.546 seconds, with complete immutable-source and actual-ELF review.
+Its frozen kernel fixture retains the same unsorted large-tree setup and must
+not be accepted without a separate successful corrected-source qualification.
+
+The pure exact fixture-preparation case and strict all-target Clippy pass after
+the raw-key ordering correction. The native image gate now executes this pure
+case before preparing its VM, retaining the result log. Device, confinement and
+mount effects remain confined to the native guest. This adds an early regression
+check without replacing any original kernel scenario or native witness.
