@@ -35,7 +35,7 @@
       trap 'if "$backing_mounted"; then umount "$fixture_root/backing"; fi; rm -rf -- "$fixture_root"' EXIT
       mkdir "$fixture_root/backing"
       truncate -s 64M "$fixture_root/backing.img"
-      mkfs.ext4 -F -O verity "$fixture_root/backing.img"
+      mkfs.ext4 -F -b 4096 -O verity "$fixture_root/backing.img"
       mount -t ext4 -o loop "$fixture_root/backing.img" "$fixture_root/backing"
       backing_mounted=true
       if [ ! -e /dev/fuse ]; then

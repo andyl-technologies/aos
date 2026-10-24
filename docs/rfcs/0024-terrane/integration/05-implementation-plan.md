@@ -16817,3 +16817,16 @@ seconds. Workspace target compilation passes at `6e7364c413` and `3f831728a0`
 in 1,524.254 and 1,190.703 seconds respectively. Complete reviews of those
 newly completed results are retained separately. No task acceptance changes;
 the trunk remains at 27/64.
+
+
+The first kernel READ request at `58e98a9dfc` fails in 215.314 seconds before
+serving file data: its administrative fixture passes zero for the mandatory
+fsverity Merkle block size and creates a small filesystem using mkfs's 1 KiB
+block default. The ioctl returns EINVAL after the original empty and populated
+metadata controls pass. The fixture now explicitly selects 4 KiB for both the
+filesystem and enable argument, matching the existing AOS verity helper and
+other native proof filesystems. No actor/guest deadline or assertion changes.
+The failed request remains recorded; a new disposable VM must execute the
+corrected setup. All 63 pure structural selectors at that checkpoint pass in
+72.537 seconds with complete source/ELF review (8,179 immutable files and 5,437
+bound inputs). That structural pass does not qualify the failed native request.

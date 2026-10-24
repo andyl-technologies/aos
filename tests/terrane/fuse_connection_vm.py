@@ -172,9 +172,10 @@ def scenario(executable, directory, mode):
                         output.flush()
                         os.fsync(output.fileno())
                     backing = os.open(source, os.O_RDONLY | os.O_CLOEXEC)
-                    # Native Linux fsverity_enable_arg: version and SHA-256,
-                    # followed by zero defaults and reserved fields (128 bytes).
-                    fcntl.ioctl(backing, 0x40806685, struct.pack("=II", 1, 1) + bytes(120))
+                    # Native Linux fsverity_enable_arg requires an explicit Merkle
+                    # block size. Match the private ext4 filesystem and AOS helper.
+                    argument = struct.pack("=III", 1, 1, 4096) + bytes(116)
+                    fcntl.ioctl(backing, 0x40806685, argument)
                     os.lseek(backing, 1, os.SEEK_SET)
                     executor = ThreadPoolExecutor(max_workers=1)
                     grant = executor.submit(grant_backing, backing_server, backing, child.pid)
