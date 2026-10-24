@@ -48,6 +48,35 @@ class RepositoryTestSourcesTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "content differs"):
             self.copy()
 
+    def test_suffixed_build_files_retain_their_audited_names(self):
+        nested = self.source / "nested/BUILD.bazel.aos-source"
+        nested.write_bytes(self.bytes)
+        self.files = {"nested/BUILD.bazel": {
+            "sha256": hashlib.sha256(self.bytes).hexdigest(), "size": len(self.bytes),
+        }}
+        self.manifest.write_text(json.dumps({"schema_version": 1, "files": self.files}))
+
+        copier.materialize(self.source, self.manifest, self.output, ".aos-source")
+
+        self.assertEqual((self.output / "nested/BUILD.bazel").read_bytes(), self.bytes)
+
+    def test_source_suffix_cannot_change_directories(self):
+        with self.assertRaisesRegex(ValueError, "must not contain separators"):
+            copier.materialize(self.source, self.manifest, self.output, "/outside")
+
+    def test_audited_executable_mode_is_preserved(self):
+        self.files["nested/lib.rs"]["executable"] = True
+
+        self.copy()
+
+        self.assertEqual((self.output / "nested/lib.rs").stat().st_mode & 0o777, 0o755)
+
+    def test_invalid_executable_flag_is_rejected(self):
+        self.files["nested/lib.rs"]["executable"] = "yes"
+
+        with self.assertRaisesRegex(ValueError, "invalid repository source executable flag"):
+            self.copy()
+
     def test_incorrect_size_is_rejected_even_with_matching_digest(self):
         self.files["nested/lib.rs"]["size"] += 1
 

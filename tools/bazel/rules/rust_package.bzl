@@ -57,6 +57,14 @@ def aos_rust_package(name, version, license_expression, license_domain = "apache
         },
     )
 
+def _package_environment(package, environment):
+    environment = dict(environment)
+    for key, value in package.rustc_env.items():
+        if key in environment and environment[key] != value:
+            fail("Rust target overrides package metadata " + key + ": " + package.name)
+        environment[key] = value
+    return environment
+
 def rust_package_attributes(package, attributes):
     """Applies declared identity, rejecting per-target metadata overrides."""
     attributes = dict(attributes)
@@ -65,9 +73,13 @@ def rust_package_attributes(package, attributes):
             fail("Rust target conflicts with package " + key + ": " + package.name)
         attributes[key] = value
     environment = dict(attributes.get("rustc_env", {}))
-    for key, value in package.rustc_env.items():
-        if key in environment and environment[key] != value:
-            fail("Rust target overrides package metadata " + key + ": " + package.name)
-        environment[key] = value
-    attributes["rustc_env"] = environment
+    variants = attributes.pop("rustc_env_variants", None)
+    if variants == None:
+        attributes["rustc_env"] = _package_environment(package, environment)
+    else:
+        # Validate every branch before select() makes its dictionary opaque.
+        attributes["rustc_env"] = select({
+            condition: _package_environment(package, environment | additional)
+            for condition, additional in variants.items()
+        })
     return attributes

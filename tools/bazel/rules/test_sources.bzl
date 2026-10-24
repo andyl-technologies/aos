@@ -9,6 +9,7 @@ def _repository_test_sources_impl(ctx):
     arguments.add("--source", ctx.file.manifest.dirname + "/source")
     arguments.add("--manifest", ctx.file.manifest)
     arguments.add("--output", output.path)
+    arguments.add("--source-suffix", ctx.attr.source_suffix)
     ctx.actions.run(
         executable = ctx.file._python,
         arguments = [arguments],
@@ -27,6 +28,7 @@ _repository_test_sources = rule(
     attrs = {
         "manifest": attr.label(mandatory = True, allow_single_file = True),
         "sources": attr.label(mandatory = True),
+        "source_suffix": attr.string(),
         "_copy": attr.label(default = "//tools/bazel/metadata:copy_repository_test_sources.py", allow_single_file = True),
         "_python": attr.label(default = "@aos_tools//:python", allow_single_file = True, cfg = "exec"),
         "_tool_identity": attr.label(default = "@aos_tools//:closure.json", allow_single_file = True, cfg = "exec"),

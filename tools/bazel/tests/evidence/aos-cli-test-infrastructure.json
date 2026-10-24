@@ -1,0 +1,80 @@
+{
+  "metadata_policy_output": "/nix/store/5zkdfnbbbs8wwbr4mc8rzv5w4myqlb8a-aos-bazel-package-metadata-policy",
+  "metadata_rejections": {
+    "compile-edition": {
+      "diagnostic": "conflicts with package edition",
+      "exit_code": 1
+    },
+    "compile-environment": {
+      "diagnostic": "overrides package metadata CARGO_PKG_NAME",
+      "exit_code": 1
+    },
+    "compile-environment-variant": {
+      "diagnostic": "overrides package metadata CARGO_PKG_NAME",
+      "exit_code": 1
+    },
+    "compile-license": {
+      "diagnostic": "conflicts with package license domain",
+      "exit_code": 1
+    },
+    "compile-unselected-environment-variant": {
+      "diagnostic": "overrides package metadata CARGO_PKG_NAME",
+      "exit_code": 1
+    },
+    "compile-version": {
+      "diagnostic": "conflicts with package version",
+      "exit_code": 1
+    },
+    "empty-build": {
+      "diagnostic": "Rust package version must be SemVer",
+      "exit_code": 1
+    },
+    "install-version": {
+      "diagnostic": "installed package conflicts with Rust package version",
+      "exit_code": 1
+    },
+    "invalid-edition": {
+      "diagnostic": "unsupported Rust edition",
+      "exit_code": 1
+    },
+    "invalid-name": {
+      "diagnostic": "invalid Rust package name",
+      "exit_code": 1
+    },
+    "invalid-version": {
+      "diagnostic": "Rust package version must be SemVer",
+      "exit_code": 1
+    },
+    "numeric-prerelease": {
+      "diagnostic": "Rust package version must be SemVer",
+      "exit_code": 1
+    },
+    "shared-environment": {
+      "diagnostic": "overrides package metadata CARGO_PKG_NAME",
+      "exit_code": 1
+    },
+    "shared-license": {
+      "diagnostic": "conflicts with package license domain",
+      "exit_code": 1
+    },
+    "shared-version": {
+      "diagnostic": "conflicts with package version",
+      "exit_code": 1
+    },
+    "test-name": {
+      "diagnostic": "Rust test conflicts with package name",
+      "exit_code": 1
+    }
+  },
+  "schema_version": 1,
+  "scope": "Declared source materialization and package metadata analysis; CLI runtime qualification remains separate.",
+  "source_materialization_tests": 10,
+  "source_sha256": {
+    "tools/bazel/metadata/copy_repository_test_sources.py": "be3cf76104d2c517e259a789d6e820ea861410a39aca9ca5a81268152675bbe4",
+    "tools/bazel/rules/rust_package.bzl": "a8b624f61fee8020fd8bb700e75569a1f0c9496e710e7a9ad5769d1e7cf81758",
+    "tools/bazel/rules/test_sources.bzl": "67ef58c24ac3f533c136b46a07f3a8603926ad8e2541ed441006b298ed0ce293",
+    "tools/bazel/tests/test_repository_test_sources.py": "1d878514440561a6950a34aee640545e93e4c66bf7b9e45da3d66a6a4435ee0c",
+    "tools/bazel/tests/verify_metadata_rejections.py": "b5a7e27782cc1ac634a392ec1a67f243ecb22a27408339717ec022024ee7c71e"
+  },
+  "status": "PASS"
+}
