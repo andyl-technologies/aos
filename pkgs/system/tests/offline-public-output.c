@@ -64,7 +64,7 @@ static int test_set(const char *label) {
         ++set_calls;
         if (label) {
                 assert(set_calls == 1 && read_calls == 1 && socket_calls == 0);
-                assert(strcmp(label, "system_u:object_r:aos_nix_offline_public_output_t:s0") == 0);
+                assert(strcmp(label, "system_u:object_r:aos_nix_offline_public_output_t") == 0);
                 if (failure == SET) {
                         errno = EACCES;
                         return -1;

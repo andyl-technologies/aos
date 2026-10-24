@@ -11032,3 +11032,21 @@ replayed retained host-unit projection, builds successfully at
 This is a build and contract receipt, not installed TPM floor initialization.
 The latest installed Root and offline hardware tests still fail during service
 setup, before their required positive startup and provisioning assertions.
+
+### Offline public-output context correction (installed retry pending)
+
+The latest offline hardware guest stops with status 229 before the intentional
+unavailable-journal test can reach status 209. An exact-image diagnostic confirms
+`is_selinux_mls_enabled()` is zero: both context validation and socket-creation
+selection reject the public-output context with an `s0` suffix with EINVAL,
+and accept the same fixed context without the suffix. The production helper now
+uses the canonical non-MLS context. Its initial-null and reset/readback checks,
+fixed unit selection, and refusal paths are unchanged; no policy permission is
+added by this correction.
+
+Both HAVE_SELINUX configurations pass the production helper's existing strict
+C17 tests at
+`/nix/store/q507nb6aaqkkyjmcd33khh0fmyq1wy7m-aos-rfc21-offline-output-context-unit-0`.
+The diagnostic also confirms successful installed view-root preparation at
+`/nix/store/4y10wrngmq77bjslgdhaw43bqnva8qa4-aos-rfc21-root-service-audit-0`;
+its diagnostic completion is not normal Root or offline provisioning readiness.

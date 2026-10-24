@@ -36,7 +36,8 @@ static int aos_offline_public_output_socket(const char *unit, const char *contex
                 _exit(EXIT_SELINUX_CONTEXT);
         if (sym_getsockcreatecon_raw(&previous) < 0 || previous)
                 _exit(EXIT_SELINUX_CONTEXT);
-        if (sym_setsockcreatecon_raw("system_u:object_r:aos_nix_offline_public_output_t:s0") < 0)
+        /* The authenticated AOS policy is non-MLS; an s0 suffix is invalid. */
+        if (sym_setsockcreatecon_raw("system_u:object_r:aos_nix_offline_public_output_t") < 0)
                 _exit(EXIT_SELINUX_CONTEXT);
 
         fd = socket(AF_UNIX, SOCK_STREAM, 0);
