@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::connection::ExchangeRecord;
+use crate::reference_packet::control::ReleasedWorldControlInputsData;
 
 pub(crate) enum OriginalRestorationReleaseState {
     /// Keeps the once-only restoration dispatcher closed to ordinary traffic.
@@ -187,13 +188,15 @@ impl OriginalRestorationReleased {
             return Err(refused());
         }
         control.authenticate_original_restoration_released_control_data(
-            original,
-            terminal,
-            &artifact.request.scope,
-            &self.boot,
-            &commit.mapping,
-            &self.hold,
-            &self.policy,
+            ReleasedWorldControlInputsData {
+                original,
+                terminal,
+                scope: &artifact.request.scope,
+                boot: &self.boot,
+                mapping: &commit.mapping,
+                hold: &self.hold,
+                policy: &self.policy,
+            },
         )?;
         let record = records.get(self.record).ok_or_else(refused)?;
         if record.sent() != record.originals().len()

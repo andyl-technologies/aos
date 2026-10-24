@@ -5,10 +5,47 @@
 //! unchanged for every ordinary dispatcher and unselected restoration route.
 
 use super::*;
-use crate::reference_packet::service::{
-    ack_emitter::OriginalRestorationActivationPermit,
-    complete_restore::activation::PacketRestorationActivationPhase,
+use crate::{
+    protocol_snapshot::PreparedArchivedNativeProtocolMapping,
+    reference_packet::{
+        Native5Policy,
+        service::{
+            ack_emitter::{NativeAckBoot, OriginalRestorationActivationPermit},
+            complete_restore::activation::{
+                PacketRestorationActivationPhase, PacketRestorationActivationScope,
+            },
+        },
+    },
 };
+use std::{cell::RefCell, rc::Rc};
+
+/// Borrows the original released World inputs without supplying a permit.
+///
+/// The private Boot lender and Control independently authenticate their exact
+/// original allocation, scope, cached terminal, complete evidence and physical
+/// release. These borrowed fields confer no action, checkpoint or row rights.
+pub(crate) struct ReleasedWorldControlInputsData<'a> {
+    /// Borrows the actual assigned World activation original.
+    pub(crate) original: &'a Envelope,
+    /// Borrows its physically published cached terminal.
+    pub(crate) terminal: &'a Envelope,
+    /// Borrows the same Source-bound target and restoration scope.
+    pub(crate) scope: &'a PacketRestorationActivationScope,
+    /// Borrows the actual private Boot allocation retained by the lender.
+    pub(crate) boot: &'a Rc<RefCell<NativeAckBoot>>,
+    /// Borrows the same installed and authenticated native mapping allocation.
+    pub(crate) mapping: &'a Rc<RefCell<PreparedArchivedNativeProtocolMapping>>,
+    /// Borrows the original independent physical Hold and release association.
+    pub(crate) hold: &'a Rc<PacketCompleteRestorePhysicalHold>,
+    /// Borrows the same immutable selected native policy.
+    pub(crate) policy: &'a Native5Policy,
+}
+
+/// Counts actual caller/callee view headers beside all earlier release controls.
+pub(crate) const fn original_released_world_inputs_counter_scratch_data() -> usize {
+    2 * std::mem::size_of::<ReleasedWorldControlInputsData<'static>>()
+        + std::mem::size_of::<usize>()
+}
 
 impl PacketControl {
     pub(crate) fn dispatch_original_restoration_activation_with_preflight(
@@ -164,18 +201,18 @@ impl PacketControl {
     /// banks, selection or the independent physical release association.
     pub(crate) fn authenticate_original_restoration_released_control_data(
         &self,
-        original: &Envelope,
-        terminal: &Envelope,
-        scope: &crate::reference_packet::service::complete_restore::activation::PacketRestorationActivationScope,
-        boot: &std::rc::Rc<
-            std::cell::RefCell<crate::reference_packet::service::ack_emitter::NativeAckBoot>,
-        >,
-        mapping: &std::rc::Rc<
-            std::cell::RefCell<crate::protocol_snapshot::PreparedArchivedNativeProtocolMapping>,
-        >,
-        hold: &std::rc::Rc<PacketCompleteRestorePhysicalHold>,
-        policy: &crate::reference_packet::Native5Policy,
+        inputs: ReleasedWorldControlInputsData<'_>,
     ) -> Result<(), ProviderError> {
+        let ReleasedWorldControlInputsData {
+            original,
+            terminal,
+            scope,
+            boot,
+            mapping,
+            hold,
+            policy,
+        } = inputs;
+
         if self.capture_creator != std::process::id()
             || self.fenced
             || !self.immediate
@@ -337,7 +374,8 @@ impl PacketControl {
 /// Names the exact borrowed release/Observe cached-result and content views.
 pub(crate) fn original_restoration_released_counter_scratch_data() -> usize {
     use std::mem::size_of;
-    size_of::<&WorldActivateRequest>()
+    original_released_world_inputs_counter_scratch_data()
+        + size_of::<&WorldActivateRequest>()
         + size_of::<&PacketControlReply>()
         + size_of::<Option<&PacketControlReply>>()
         + size_of::<Option<&Value>>() * 4

@@ -8,6 +8,7 @@
 use super::released::OriginalRestorationReleased;
 use super::*;
 use crate::connection::{ExchangeRecord, ReceivedBody};
+use crate::reference_packet::control::ReleasedWorldControlInputsData;
 use crate::reference_packet::service::complete_restore::restoration_observe::*;
 
 #[path = "observation_suffix.rs"]
@@ -621,13 +622,15 @@ impl OriginalRestorationObservationPermit {
             .request
             .authenticate_body_data(flight.body.as_ref().ok_or_else(refused)?)?;
         control.authenticate_original_restoration_released_control_data(
-            world.original.as_ref().ok_or_else(refused)?,
-            world.terminal.as_ref().ok_or_else(refused)?,
-            &artifact.request.scope,
-            &released.boot,
-            &commit.mapping,
-            &released.hold,
-            &released.policy,
+            ReleasedWorldControlInputsData {
+                original: world.original.as_ref().ok_or_else(refused)?,
+                terminal: world.terminal.as_ref().ok_or_else(refused)?,
+                scope: &artifact.request.scope,
+                boot: &released.boot,
+                mapping: &commit.mapping,
+                hold: &released.hold,
+                policy: &released.policy,
+            },
         )
     }
 

@@ -7,6 +7,7 @@
 //! route consumes its distinct reservation; other baseline actions stay closed.
 
 use super::*;
+use crate::reference_packet::control::ReleasedWorldControlInputsData;
 use std::mem::size_of;
 
 fn exhausted() -> ProviderError {
@@ -350,7 +351,8 @@ pub(crate) fn original_restored_suffix_post_observation_counter_scratch_data() -
         + crate::reference_packet::service::complete_restore::restoration_observe::restoration_observe_protocol_counter_scratch_data()
         + size_of::<Result<(), ProviderError>>();
 
-    owner_loans
+    crate::reference_packet::control::original_released_world_inputs_counter_scratch_data()
+        + owner_loans
         + typed_loans
         + record_views
         + live_owner_views
@@ -604,13 +606,15 @@ impl OriginalRestoredSuffixPostObservation {
             return Err(refused());
         }
         control.authenticate_original_restoration_released_control_data(
-            world.original.as_ref().ok_or_else(refused)?,
-            world.terminal.as_ref().ok_or_else(refused)?,
-            scope,
-            &self.released.boot,
-            &commit.mapping,
-            &self.released.hold,
-            &self.released.policy,
+            ReleasedWorldControlInputsData {
+                original: world.original.as_ref().ok_or_else(refused)?,
+                terminal: world.terminal.as_ref().ok_or_else(refused)?,
+                scope,
+                boot: &self.released.boot,
+                mapping: &commit.mapping,
+                hold: &self.released.hold,
+                policy: &self.released.policy,
+            },
         )
     }
 }

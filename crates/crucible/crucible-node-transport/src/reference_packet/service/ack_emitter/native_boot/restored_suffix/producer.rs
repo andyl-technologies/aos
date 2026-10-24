@@ -414,7 +414,8 @@ impl Drop for OriginalRestoredProducerRead<'_> {
 }
 
 pub(super) fn counter_scratch_data() -> usize {
-    size_of::<OriginalRestoredProducerRead<'static>>()
+    crate::reference_packet::control::original_released_world_inputs_counter_scratch_data()
+        + size_of::<OriginalRestoredProducerRead<'static>>()
         + size_of::<Result<OriginalRestoredProducerRead<'static>, ProviderError>>()
         + size_of::<&OriginalRestoredProducerRead<'static>>()
         + size_of::<NativeRestoredProducerAttempt>()

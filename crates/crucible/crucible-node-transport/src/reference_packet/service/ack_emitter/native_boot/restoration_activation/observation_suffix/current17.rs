@@ -9,6 +9,7 @@
 //! funds the stopped-model comparison and producer before effects.
 
 use super::*;
+use crate::reference_packet::control::ReleasedWorldControlInputsData;
 use crate::reference_packet::service::complete_restore::activation::PacketRestorationActivationScope;
 use crate::reference_packet::service::native_startup::NativeRestoredSettledActionAttempt;
 
@@ -396,15 +397,15 @@ fn authenticate_first<S: ProviderStream>(
         world.incoming_slot.ok_or_else(refused)?,
     )?;
     drop(incoming);
-    control.authenticate_observation17_world_cache_data(
-        world_original,
-        world_terminal,
-        &request.scope,
+    control.authenticate_observation17_world_cache_data(ReleasedWorldControlInputsData {
+        original: world_original,
+        terminal: world_terminal,
+        scope: &request.scope,
         boot,
-        &commit.mapping,
+        mapping: &commit.mapping,
         hold,
-        &admission.policy,
-    )?;
+        policy: &admission.policy,
+    })?;
     authenticate_checkpoint(
         connection,
         control,
@@ -419,7 +420,8 @@ fn authenticate_first<S: ProviderStream>(
 /// Counts the lender's fixed views; callback and producer rows remain separate.
 pub(crate) fn original_observation17_checkpoint_owner_counter_scratch_data() -> usize {
     use std::mem::size_of;
-    size_of::<NativeObservation17OwningCheckpointData<'static>>()
+    crate::reference_packet::control::original_released_world_inputs_counter_scratch_data()
+        + size_of::<NativeObservation17OwningCheckpointData<'static>>()
         + size_of::<ActionOwner>() * 3 + size_of::<PriorOwner>() * 2
         + size_of::<std::cell::Ref<'static, NativeAckBoot>>()
         + size_of::<std::cell::Ref<'static, NativeRestorationObservationAttempt>>()

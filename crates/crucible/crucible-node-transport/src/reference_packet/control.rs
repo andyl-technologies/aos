@@ -56,7 +56,10 @@ pub(crate) use native5::{
     authenticate_original_restoration_coordinator_data,
     original_restoration_coordinator_counter_scratch_data,
 };
-pub(crate) use restoration_activation::original_restoration_released_counter_scratch_data;
+pub(crate) use restoration_activation::{
+    ReleasedWorldControlInputsData, original_released_world_inputs_counter_scratch_data,
+    original_restoration_released_counter_scratch_data,
+};
 pub(crate) use restored_producer::original_restored_producer_control_counter_scratch_data;
 
 pub use native5::{

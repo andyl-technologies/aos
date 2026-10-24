@@ -8,6 +8,7 @@
 //! exact proof pair before any producer effect. Old public validators are intact.
 
 use super::*;
+use crate::reference_packet::control::ReleasedWorldControlInputsData;
 
 impl PacketControl {
     /// Rejoins the same physically released World and immutable cached output.
@@ -17,18 +18,18 @@ impl PacketControl {
     /// active World/hold or cached terminal/content correspondence.
     pub(crate) fn authenticate_observation17_world_cache_data(
         &self,
-        original: &Envelope,
-        terminal: &Envelope,
-        scope: &crate::reference_packet::service::complete_restore::activation::PacketRestorationActivationScope,
-        boot: &std::rc::Rc<
-            std::cell::RefCell<crate::reference_packet::service::ack_emitter::NativeAckBoot>,
-        >,
-        mapping: &std::rc::Rc<
-            std::cell::RefCell<crate::protocol_snapshot::PreparedArchivedNativeProtocolMapping>,
-        >,
-        hold: &std::rc::Rc<PacketCompleteRestorePhysicalHold>,
-        policy: &crate::reference_packet::Native5Policy,
+        inputs: ReleasedWorldControlInputsData<'_>,
     ) -> Result<(), ProviderError> {
+        let ReleasedWorldControlInputsData {
+            original,
+            terminal,
+            scope,
+            boot,
+            mapping,
+            hold,
+            policy,
+        } = inputs;
+
         original.matches_response(terminal)?;
         if self.capture_creator != std::process::id()
             || self.fenced
