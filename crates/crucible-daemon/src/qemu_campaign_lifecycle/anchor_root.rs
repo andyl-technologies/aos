@@ -405,21 +405,33 @@ fn replay_to_anchor<F, D>(
         return Ok(Err("anchor-parallel-boot-active"));
     }
 
-    let proof = lifecycle
-        .event_log_offset()
-        .ok()
-        .and_then(|offset| {
-            QemuSavepointReplayProof::from_retained_boundary(
-                &plan.anchor,
-                replay.completed_quanta,
-                replay.frontier,
-                &replay.event_log,
-            )
-            .and_then(|proof| proof.with_event_log_offset(offset))
-            .ok()
-        })
-        .ok_or("anchor-replay-proof-unavailable");
-    Ok(proof)
+    let offset = lifecycle.event_log_offset();
+    let retained = QemuSavepointReplayProof::from_retained_boundary(
+        &plan.anchor,
+        replay.completed_quanta,
+        replay.frontier,
+        &replay.event_log,
+    );
+    let proof = match (&offset, retained) {
+        (Ok(offset), Ok(proof)) => proof.with_event_log_offset(*offset).ok(),
+        _ => None,
+    };
+    if proof.is_none() {
+        // The scheduler's segment chain and the replay's retained log must
+        // count the same events; name both sides when they do not.
+        let _ = writeln!(
+            std::io::stderr().lock(),
+            "CRUCIBLE-HOT-FORK-ANCHOR-PROOF-V1 offset={} retained_events={} quanta={} frontier_ps={}",
+            offset.map_or_else(
+                |error| format!("error:{error}"),
+                |offset| offset.events.to_string()
+            ),
+            replay.event_log.len(),
+            replay.completed_quanta,
+            replay.frontier.ticks,
+        );
+    }
+    Ok(proof.ok_or("anchor-replay-proof-unavailable"))
 }
 
 /// Returns why a prepared world differs from the replayed anchor boundary.

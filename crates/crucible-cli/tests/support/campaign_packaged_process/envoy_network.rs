@@ -424,6 +424,7 @@ fn assert_hot_fork_tier(
         ANCESTOR_DIAGNOSTIC_PREFIX,
         "CRUCIBLE-HOT-FORK-DECLINE-V1 ",
         "CRUCIBLE-HOT-FORK-ANCHOR-FAILURE-V1 ",
+        "CRUCIBLE-HOT-FORK-ANCHOR-PROOF-V1 ",
         "CRUCIBLE-REPLAY-DIVERGENCE-V1 ",
     ] {
         rows.extend(service.stderr_lines_with_prefix(prefix, 32, 4096)?);
