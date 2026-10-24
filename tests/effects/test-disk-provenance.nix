@@ -5,6 +5,8 @@ let
   captureDerivation = arguments: arguments // {outPath = payload;};
   packages = {
     mkDerivation = captureDerivation;
+    e2fsprogs = payload;
+    python3 = payload;
     openssh = payload;
     swtpm = payload;
     writeTextFile = captureDerivation;

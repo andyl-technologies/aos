@@ -38,7 +38,7 @@ in {
   inherit (vm) mkVMTest mkTestDisk;
   inherit (fleet) mkFleetTest uriEncode dataUrl;
   inherit (darling) mkDarlingFleetSpec mkDarlingFleetSuite;
-  inherit (firecracker) mkFirecrackerRootfs;
+  inherit (firecracker) mkFirecrackerRootfs mkFirecrackerTestInput;
   inherit
     (integration)
     mkLinkCheck
