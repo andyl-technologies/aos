@@ -13,6 +13,7 @@ from native_sdk_test_image import source_hashes
 
 CASES = [
     "nested_tree_has_sorted_paths_and_contiguous_direct_child_indices",
+    "child_resume_skips_direct_indices_and_remains_exhausted_for_oversized_offsets",
     "content_kind_size_symlink_bytes_and_graft_governance_survive_roundtrip",
     "empty_tree_and_exact_compiler_bounds_are_supported",
     "compiler_rejects_missing_nondirectory_duplicate_and_invalid_paths",
@@ -46,6 +47,16 @@ INODE_CASES = [
     "reserved_budget_refuses_before_allocation_and_keeps_number_assignment_lazy",
     "reserved_probe_chains_keep_collisions_and_full_table_refusals_distinct",
     "reserved_first_touch_and_checked_metadata_operations_allocate_nothing",
+    "directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch",
+]
+DIRECTORY_PREFIX = "fuse_directory::tests::"
+DIRECTORY_CASES = [
+    "encodes_only_direct_children_with_exact_names_types_padding_and_parent",
+    "resumes_one_complete_record_at_a_time_and_rewind_preserves_original_numbers",
+    "raw_maximum_component_needs_one_complete_aligned_record_before_inode_assignment",
+    "rejects_lazy_storage_absent_paths_and_non_directories_without_effects",
+    "inode_exhaustion_never_writes_a_partial_record_or_recycles_a_number",
+    "hard_link_names_share_one_presented_inode_but_equal_content_keeps_distinct_inodes",
 ]
 
 
@@ -56,7 +67,7 @@ def require(condition, message):
 
 
 def main():
-    """Checks one source-bound Linux artifact and both complete test inventories."""
+    """Checks one source-bound Linux artifact and three complete test inventories."""
     output = Path(os.environ["out"])
     source = Path(os.environ["src"])
     workspace = Path.cwd()
@@ -91,7 +102,8 @@ def main():
 
     cases = []
     for prefix, names, label in [(PREFIX, CASES, "structural"),
-                                 (INODE_PREFIX, INODE_CASES, "inode")]:
+                                 (INODE_PREFIX, INODE_CASES, "inode"),
+                                 (DIRECTORY_PREFIX, DIRECTORY_CASES, "directory")]:
         expected = [prefix + name for name in names]
         inventory = captured([prefix, "--list", "--format", "terse"], label + "-inventory.log")
         actual = [line.removesuffix(": test") for line in inventory if line.endswith(": test")]

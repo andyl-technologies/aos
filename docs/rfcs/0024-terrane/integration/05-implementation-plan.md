@@ -8699,7 +8699,17 @@ module gate at `5e815dc29f` (102 checks, complete source/report review).
 The four other T2 tasks, deployed runtime composition and milestone exit
 remain open. This scoped packaging acceptance does not accept a role runtime.
 
-Current qualification (2026-10-22): 27 of 64 trunk tasks are accepted.
+Current qualification (2026-10-24): 27 of 64 trunk tasks are accepted.
+Actual FUSE INIT, directory serving, receive timeout and cancellation pass at
+`44b956e8e4`, with complete immutable-source, installed-ELF and driver review.
+The `31ad51a2f6` surface aggregate fails: owner and already-unlinked-file
+controls pass, but named retained-file reconciliation remains blocked after
+the exact final-close physical charge releases. Its application compilation
+and complete source review pass (185 targets, 59 packages). The diagnostic
+refinement at `3a06af1c39` and the complete 209-case native feature run at
+`2b1e0f8832` remain under qualification. No component result accepts an
+additional task or supplies the remaining deployed role composition.
+
 The eleven-component T2 request at `5c427bfc16` passes in 6,872.816 seconds;
 complete source, exact selected-case, actual compiler-artifact and native
 prerequisite reviews pass. The full native cache VM at `221c6c6a6d` passes in
@@ -16360,3 +16370,24 @@ It still opens no backing, preserves all assertions and time bounds, and never
 changes production closure. Strict all-feature/all-target lint and actual
 native fixture compilation pass. A new immutable guest is required to resolve
 the observed discrepancy.
+
+
+#### Complete focused structural and directory inventories
+
+The focused structural-index check still listed only the earlier structural
+and inode cases. It now includes the child-resume regression, all six directory
+encoder cases and the inode-policy regression that proves directory serving
+allocates nothing even on its first inode touch. The first expanded run refuses
+the stale eight-case inode inventory; its failed receipt is preserved. The
+corrected run requires exact complete inventories of 23 structural, nine inode
+and six directory cases and passes all 38 independently, with zero ignored.
+
+The actual completed check is
+`/nix/store/cb6pnqblzqij98h63phnan9iafr4finc-terrane-gate-structural-index-0.1.0`.
+Independent review matches all 8,098 immutable source files and 5,366 bound
+inputs, verifies the actual Cargo `surface-fuse` library artifact and retained
+ELF SHA-256
+`7870acf1483c5a204d848a334b94ea4c203b49fbae75783035467c57dbbcf5d0`,
+and checks every exact one-case runtime result. This is pure structural and
+directory policy qualification; it grants no native custody or FUSE connection
+authority and does not accept T-FUSE-1 or T-FUSE-2. Syntax and diff checks pass.
