@@ -10,6 +10,34 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Invocation boot parser and carried launch
+
+Commit `a70841a64b` checks invocation15's second raw/Value parser together with
+the actual independently retained typed launch before reading the boot frame.
+Both contributions must fit the same original private transient row. Refusal
+spends that scope and preserves the original launch and literal bank without
+allocating a boot Value or attempt. The Source formula already charges these
+owners together; the receiver now enforces that requirement at the read boundary.
+Earlier storage terms remain, with additional fixed helper/control views.
+
+The inherited-parent regression first reproduces an underfunded second read.
+Exact funding reaches the later native-row refusal; one-byte-short and omitted
+carry grants refuse before reading. All nine canonical-child/carry flights pass
+in both codec modes. Both complete Transport modes pass 2,102 tests with zero
+failures, 20 ignored and no filtering. Both complete Engine modes pass 2,048
+tests with zero failures, 34 ignored and no filtering, plus fourteen custody and
+five rebuilt-provider controls each. All-feature Transport/Engine/Daemon targets,
+six architecture checks and formatting pass. Production Transport Clippy remains
+at 37 errors and 1,733 warnings.
+
+The merged-toolchain application and funded-Source VM gates pass. The compiler
+records 185 test artifacts across 58 packages, including 76 integration targets.
+All 540 owned Rust/Cargo inputs match the commit and actual application and
+three funded-VM Rust component captures. The inherited-channel controls create
+no Source, Recipe/Initial or native readiness. Complete private preclaim funding,
+Native18 successor construction, strict production lint and full RFC completion
+remain open.
+
 ## Original private birth-cut backing
 
 Commit `535970e671` separately charges the original birth-cut Rc and its nested
