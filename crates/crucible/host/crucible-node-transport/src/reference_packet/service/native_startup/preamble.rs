@@ -196,13 +196,10 @@ fn read_row(bytes: &[u8]) -> Result<PacketNativeStartupAllocationRow, ProviderEr
 }
 
 fn write_row(bytes: &mut [u8], row: PacketNativeStartupAllocationRow) {
-    for (target, value) in bytes.chunks_exact_mut(8).zip([
-        row.retained_requested_bytes,
-        row.maximum_simultaneous_transient_bytes,
-        row.declared_counter_scratch_bytes,
-    ]) {
-        target.copy_from_slice(&value.get().to_be_bytes());
-    }
+    // Every caller supplies the fixed 24-byte row from this edition's prefix.
+    bytes[..8].copy_from_slice(&row.retained_requested_bytes.get().to_be_bytes());
+    bytes[8..16].copy_from_slice(&row.maximum_simultaneous_transient_bytes.get().to_be_bytes());
+    bytes[16..24].copy_from_slice(&row.declared_counter_scratch_bytes.get().to_be_bytes());
 }
 
 fn invalid() -> ProviderError {

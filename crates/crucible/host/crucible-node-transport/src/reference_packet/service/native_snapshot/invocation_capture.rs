@@ -59,7 +59,9 @@ pub fn authenticate_native_owned14_snapshot_schema_data(
         return Err(invalid());
     }
     const HEX: &[u8; 16] = b"0123456789abcdef";
-    for (byte, pair) in hash.as_bytes().iter().zip(digest.chunks_exact(2)) {
+    // The exact 64-byte gate above proves the two-byte view has no remainder.
+    let (pairs, _) = digest.as_chunks::<2>();
+    for (byte, pair) in hash.as_bytes().iter().zip(pairs) {
         if pair[0] != HEX[usize::from(byte >> 4)] || pair[1] != HEX[usize::from(byte & 15)] {
             return Err(invalid());
         }
@@ -80,6 +82,17 @@ pub const fn native_owned14_snapshot_schema_counter_scratch_data() -> usize {
         + std::mem::size_of::<&crucible_node_format::ContentRef>()
         + std::mem::size_of::<&[u8]>()
         + std::mem::size_of::<(&u8, &[u8])>()
+        // Retain the original counter terms and pay the actual array view,
+        // returned split tuple, typed pair and replacement iterator separately.
+        + std::mem::size_of::<&[[u8; 2]]>()
+        + std::mem::size_of::<(&[[u8; 2]], &[u8])>()
+        + std::mem::size_of::<(&u8, &[u8; 2])>()
+        + std::mem::size_of::<Option<(&u8, &[u8; 2])>>()
+        + std::mem::size_of::<std::slice::Iter<'static, u8>>()
+        + std::mem::size_of::<std::slice::Iter<'static, [u8; 2]>>()
+        + std::mem::size_of::<
+            std::iter::Zip<std::slice::Iter<'static, u8>, std::slice::Iter<'static, [u8; 2]>>,
+        >()
         + std::mem::size_of::<
             std::iter::Zip<std::slice::Iter<'static, u8>, std::slice::ChunksExact<'static, u8>>,
         >()
@@ -506,6 +519,23 @@ mod tests {
                         .insert("unexpected-extension".into(), Value::Bool(true));
                 }
             }
+            assert!(authenticate_native_owned14_snapshot_schema_data(&changed).is_err());
+        }
+
+        // Keep the digest's exact width and valid lowercase spelling while
+        // independently changing every compared byte of the full reference.
+        for index in 0..original.definition.hash.digest.len() {
+            let mut changed = original.clone();
+            let replacement = if changed.definition.hash.digest.as_bytes()[index] == b'0' {
+                "1"
+            } else {
+                "0"
+            };
+            changed
+                .definition
+                .hash
+                .digest
+                .replace_range(index..index + 1, replacement);
             assert!(authenticate_native_owned14_snapshot_schema_data(&changed).is_err());
         }
         Ok(())
