@@ -14,8 +14,8 @@
 
 // Adapted from sccache 8396f0209d74d496b7cb27cdf323cd3ff8d4a291.
 
+use serde::{Deserialize, Serialize};
 use std::path::Path;
-use serde::{Serialize, Deserialize};
 
 /// Possible results of parsing compiler arguments.
 #[derive(Debug, PartialEq, Eq)]

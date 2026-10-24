@@ -17,9 +17,17 @@
 use super::args::*;
 use super::{ColorMode, CompilerArguments};
 use crate::util::OsStrExt;
-use std::{collections::HashSet, ffi::OsString, fmt, fs::{self,File}, io::{Read, BufReader}, path::{Path,PathBuf}, sync::LazyLock};
+use std::{
+    collections::HashSet,
+    ffi::OsString,
+    fmt,
+    fs::{self, File},
+    io::{BufReader, Read},
+    path::{Path, PathBuf},
+    sync::LazyLock,
+};
 
-#[derive(Debug,PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct ParsedArguments {
     /// The full commandline, with all parsed arguments
     arguments: Vec<Argument<ArgData>>,
@@ -366,8 +374,6 @@ ArgData! {
 
 use self::ArgData::*;
 
-
-
 // These are taken from https://github.com/rust-lang/rust/blob/b671c32ddc8c36d50866428d83b7716233356721/src/librustc/session/config.rs#L1186
 counted_array!(static ARGS: [ArgInfo<ArgData>; _] = [
     flag!("-", TooHardFlag),
@@ -446,10 +452,14 @@ pub struct ExpandResponseFile<'a> {
 impl<'a> ExpandResponseFile<'a> {
     pub fn new(cwd: &'a Path, args: &[OsString]) -> Self {
         ExpandResponseFile {
-            stack: args.iter().rev().map(|arg| ResponseArgument {
-                value: arg.to_owned(),
-                literal: false,
-            }).collect(),
+            stack: args
+                .iter()
+                .rev()
+                .map(|arg| ResponseArgument {
+                    value: arg.to_owned(),
+                    literal: false,
+                })
+                .collect(),
             cwd,
             shell_argfiles: false,
             next_is_unstable_option: false,
@@ -480,7 +490,10 @@ impl Iterator for ExpandResponseFile<'_> {
 
     fn next(&mut self) -> Option<OsString> {
         loop {
-            let ResponseArgument { value: arg, literal } = self.stack.pop()?;
+            let ResponseArgument {
+                value: arg,
+                literal,
+            } = self.stack.pop()?;
             if literal {
                 return Some(self.observed_argument(arg));
             }
@@ -496,7 +509,11 @@ impl Iterator for ExpandResponseFile<'_> {
                 let contents = match fs::read_to_string(&shell_file) {
                     Ok(contents) => contents,
                     Err(error) => {
-                        debug!("failed to read @shell-file `{}`: {}", shell_file.display(), error);
+                        debug!(
+                            "failed to read @shell-file `{}`: {}",
+                            shell_file.display(),
+                            error
+                        );
                         return Some(self.observed_argument(arg));
                     }
                 };
@@ -506,26 +523,28 @@ impl Iterator for ExpandResponseFile<'_> {
                 };
                 // rustc does not recursively expand @file tokens produced by
                 // an argfile. Keep those tokens literal in the execution argv.
-                self.stack.extend(arguments.into_iter().rev().map(|arg| ResponseArgument {
-                    value: arg,
-                    literal: true,
-                }));
+                self.stack
+                    .extend(arguments.into_iter().rev().map(|arg| ResponseArgument {
+                        value: arg,
+                        literal: true,
+                    }));
                 continue;
             }
 
             let file = self.cwd.join(path);
             let mut contents = String::new();
-            let res = fs::File::open(&file)
-                .and_then(|f| BufReader::new(f).read_to_string(&mut contents));
+            let res =
+                fs::File::open(&file).and_then(|f| BufReader::new(f).read_to_string(&mut contents));
             if let Err(e) = res {
                 debug!("failed to read @-file `{}`: {}", file.display(), e);
                 return Some(arg);
             }
             let new_args = split_rust_response_file_args(&contents);
-            self.stack.extend(new_args.into_iter().rev().map(|arg| ResponseArgument {
-                value: arg,
-                literal: false,
-            }));
+            self.stack
+                .extend(new_args.into_iter().rev().map(|arg| ResponseArgument {
+                    value: arg,
+                    literal: false,
+                }));
         }
     }
 }
@@ -787,21 +806,29 @@ pub fn parse_arguments(arguments: &[OsString], cwd: &Path) -> CompilerArguments<
     })
 }
 
-
 impl ParsedArguments {
     /// Returns expanded compiler arguments, preserving option values.
     pub fn command_args(&self, discovery: bool) -> Vec<OsString> {
-        self.arguments.iter().filter(|arg| !discovery || !matches!(arg.get_data(), Some(ArgData::Emit(_)) | Some(ArgData::OutDir(_))))
-            .flat_map(|arg| arg.iter_os_strings()).collect()
+        self.arguments
+            .iter()
+            .filter(|arg| {
+                !discovery
+                    || !matches!(
+                        arg.get_data(),
+                        Some(ArgData::Emit(_)) | Some(ArgData::OutDir(_))
+                    )
+            })
+            .flat_map(|arg| arg.iter_os_strings())
+            .collect()
     }
 }
 
 #[cfg(test)]
 mod test {
     use super::*;
-use itertools::Itertools;
-use std::ffi::OsStr;
-use std::io::{self,Write};
+    use itertools::Itertools;
+    use std::ffi::OsStr;
+    use std::io::{self, Write};
     fn _parse_arguments(arguments: &[String]) -> CompilerArguments<ParsedArguments> {
         let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
         parse_arguments(&arguments, ".".as_ref())
@@ -995,7 +1022,6 @@ use std::io::{self,Write};
         );
     }
 
-
     #[test]
     fn test_parse_arguments_incremental() {
         parses!(
@@ -1025,7 +1051,6 @@ use std::io::{self,Write};
         assert_eq!(r, CompilerArguments::CannotCache("incremental", None));
     }
 
-
     #[test]
     fn test_parse_arguments_dep_info_no_extra_filename() {
         let h = parses!(
@@ -1040,7 +1065,6 @@ use std::io::{self,Write};
         );
         assert_eq!(h.dep_info, Some("foo.d".into()));
     }
-
 
     #[test]
     fn test_parse_arguments_native_libs() {
@@ -1084,7 +1108,6 @@ use std::io::{self,Write};
             "out"
         );
     }
-
 
     #[test]
     fn test_parse_arguments_non_rlib_crate() {
@@ -1156,7 +1179,6 @@ use std::io::{self,Write};
         );
     }
 
-
     #[test]
     fn test_parse_arguments_color() {
         let h = parses!(
@@ -1212,7 +1234,6 @@ use std::io::{self,Write};
         assert_eq!(h.color_mode, ColorMode::Auto);
     }
 
-
     #[test]
     fn test_parse_arguments_multiple_inputs() {
         fails!(
@@ -1243,8 +1264,6 @@ use std::io::{self,Write};
         );
     }
 
-
-
     #[test]
     fn test_split_rust_response_file_args() {
         // Simple one arg per line.
@@ -1272,7 +1291,6 @@ use std::io::{self,Write};
         );
     }
 
-
     #[test]
     fn test_parse_arguments_response_file() {
         let td = tempfile::Builder::new()
@@ -1294,7 +1312,6 @@ use std::io::{self,Write};
         assert!(parsed.dep_info.is_some());
         assert!(parsed.externs.is_empty());
     }
-
 
     #[test]
     fn test_parse_shell_argfile_with_quoted_path() {
@@ -1321,7 +1338,6 @@ use std::io::{self,Write};
         }
     }
 
-
     #[test]
     fn test_parse_arguments_response_file_missing() {
         // When the @file cannot be read, the raw @-arg passes through.
@@ -1332,5 +1348,4 @@ use std::io::{self,Write};
         let result = parse_arguments(&args, cwd);
         assert!(matches!(result, CompilerArguments::CannotCache(..)));
     }
-
 }

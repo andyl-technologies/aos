@@ -252,8 +252,14 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(effects.inputs, BTreeSet::from([PathBuf::from("profile.txt")]));
-        assert_eq!(effects.outputs, BTreeSet::from([PathBuf::from("result.txt")]));
+        assert_eq!(
+            effects.inputs,
+            BTreeSet::from([PathBuf::from("profile.txt")])
+        );
+        assert_eq!(
+            effects.outputs,
+            BTreeSet::from([PathBuf::from("result.txt")])
+        );
     }
 
     #[test]

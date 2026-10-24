@@ -14,7 +14,7 @@
 
 // Adapted from sccache 8396f0209d74d496b7cb27cdf323cd3ff8d4a291.
 
-use std::ffi::{OsStr,OsString};
+use std::ffi::{OsStr, OsString};
 pub trait OsStrExt {
     fn starts_with(&self, s: &str) -> bool;
     fn split_prefix(&self, s: &str) -> Option<OsString>;
