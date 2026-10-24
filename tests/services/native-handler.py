@@ -157,6 +157,13 @@ def active_bus_manager(calls):
 
 
 class NativeHandlerTests(unittest.TestCase):
+    def setUp(self):
+        # Receipt tests own temporary files, not the builder's SELinux policy.
+        # Individual publication tests install their explicit label observer.
+        labeling = patch.object(handler_module, "label_systemd_unit")
+        labeling.start()
+        self.addCleanup(labeling.stop)
+
     def test_unit_label_failure_prevents_publication_and_manager_dispatch(self):
         with tempfile.TemporaryDirectory() as root:
             units = Path(root) / "units"

@@ -52,6 +52,7 @@ def isolated_network():
         stack.enter_context(patch.object(handler, "in_initrd", return_value=False))
         stack.enter_context(patch.object(handler, "Path", side_effect=lambda path: root if path == "/" else Path(path)))
         stack.enter_context(patch.object(handler, "units", return_value={}))
+        stack.enter_context(patch.object(handler, "label_systemd_unit"))
         commands = stack.enter_context(patch.object(handler, "command"))
         args = SimpleNamespace(action="apply", systemctl="fixture-systemctl")
         invocation = {
