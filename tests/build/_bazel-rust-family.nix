@@ -111,7 +111,8 @@ in rec {
         --output-base "$TMPDIR/editor/bazel" --nix-sandbox --batch \
         --rust-project-output "$PWD/rust-project.json" \
         ${pkgs.lib.escapeShellArgs (pkgs.lib.concatMap (directory: ["--rust-project-package" directory]) (pkgs.lib.optionals (dependencyPackages != {}) (builtins.attrValues packages)))} \
-        -- build ${pkgs.lib.escapeShellArgs targets}
+        -- build ${pkgs.lib.escapeShellArgs targets} \
+          --execution_log_json_file="$out/execution.json"
       # CARGO serves only immutable upstream-library metadata. Proc macros and
       # generated first-party inputs come from the configured Bazel graph above.
       CARGO=${workspace.toolchains}/bin/cargo \
@@ -119,7 +120,10 @@ in rec {
         ${workspace.toolchains}/developer/bin/rust-analyzer${pkgs.lib.optionalString editorDiagnosticContext " -v -v"} analysis-stats "$PWD" --output csv \
           --disable-build-scripts \
           --proc-macro-srv ${workspace.toolchains}/developer/bin/proc-macro-srv \
-          > "$out/${editorOutput}" 2> "$out/analysis.log"
+          > "$out/${editorOutput}" 2> "$out/analysis.log" || {
+        tail -n 80 "$out/analysis.log"
+        exit 1
+      }
       ${pkgs.lib.optionalString editorDiagnosticContext ''
         ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/normalize_editor_diagnostics.py} \
           --input "$out/analyzer-output.txt" --output "$out/diagnostics.csv" --analysis-log "$out/analysis.log"
@@ -201,13 +205,14 @@ in rec {
       cp source/.cargo/config.toml "$CARGO_HOME/config.toml"
       ${pkgs.lib.optionalString (editorCargoFlags != []) ''
         # analysis-stats has no Cargo feature flags. Forward the selected
-        # profile to its metadata and build-script checks through CARGO.
+        # profile only to application metadata and build-script checks. The
+        # analyzer also queries the standard library, which has its own features.
+        export AOS_EDITOR_CARGO_WORKSPACE="$PWD/source/crates"
         cat > "$TMPDIR/editor-cargo" <<'CARGO_WRAPPER'
         #!${pkgs.bash}/bin/bash
-        case "$1" in
-          metadata|check) exec ${pkgs.rust}/bin/cargo "$@" ${pkgs.lib.escapeShellArgs editorCargoFlags} ;;
-          *) exec ${pkgs.rust}/bin/cargo "$@" ;;
-        esac
+        exec ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/editor_cargo.py} \
+          --cargo ${pkgs.rust}/bin/cargo --workspace "$AOS_EDITOR_CARGO_WORKSPACE" \
+          --flags ${pkgs.lib.escapeShellArg (builtins.toJSON editorCargoFlags)} -- "$@"
         CARGO_WRAPPER
         chmod +x "$TMPDIR/editor-cargo"
       ''}
@@ -223,7 +228,10 @@ in rec {
         RUST_SRC_PATH=${workspace.toolchains}/developer/rust-src/library RAYON_NUM_THREADS=4 \
         ${workspace.toolchains}/developer/bin/rust-analyzer${pkgs.lib.optionalString editorDiagnosticContext " -v -v"} analysis-stats "$PWD/source/crates" --output csv \
           --proc-macro-srv ${workspace.toolchains}/developer/bin/proc-macro-srv \
-          > "$out/${editorOutput}" 2> "$out/analysis.log"
+          > "$out/${editorOutput}" 2> "$out/analysis.log" || {
+        tail -n 80 "$out/analysis.log"
+        exit 1
+      }
       ${pkgs.lib.optionalString editorDiagnosticContext ''
         ${pkgs.python3}/bin/python3 ${../../tools/bazel/tests/normalize_editor_diagnostics.py} \
           --input "$out/analyzer-output.txt" --output "$out/diagnostics.csv" --analysis-log "$out/analysis.log"

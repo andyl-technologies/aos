@@ -63,6 +63,35 @@ unit and integration compile gate, formatting, core evaluation, and 221 Python
 policy checks also pass. Bazel used the explicit local disk action cache;
 these results do not establish strict uncached qualification.
 
+The test configurations also expose `editor`, `editor-cargo-oracle`, and
+`editor-parity`. These compare the configured CLI library, integration tests,
+and selected binary harnesses with Cargo's editor model. Both retain the same
+connected dependency packages, native libraries, generated inputs, feature
+selection, and explicit test profile settings. The retained comparison passes
+for all 30 ordinary and 33 fleet roots, with 606 and 657 unique selected
+source diagnostics matching Cargo respectively. Both analyzers finish without
+panics; neither model achieves complete inference. Full reports retain
+unselected Cargo diagnostics and each model's different aggregate statistics
+and diagnostic multiplicities. These comparisons qualify the immutable
+pre-lint-cleanup sources recorded in
+`../tests/evidence/aos-cli-editor-parity.json`.
+
+The exporter preserves separate library and libtest environments when a test
+redirects compile-time paths to declared runfiles. Module discovery retains
+the actual selected package boundary. The Cargo feature wrapper forwards
+application features only to application metadata and check invocations;
+standard-library queries retain their own feature selection. The Bazel editor
+compiles without a shared action cache; retained execution logs record 1,184
+ordinary and 1,187 fleet actions with no action-cache hits. This does not
+qualify the entire family without caches: separate dependency derivations may
+still use the explicitly mounted local disk cache.
+
+Cargo test checkpoints also retain actual compiler invocations in
+`compiler-arguments.jsonl`, with a restricted Cargo environment. The wrapper
+preserves arguments, working directory, process output, and exit status.
+Compiler-option equivalence remains a separate gate; capturing invocations
+alone does not establish it.
+
 The production package exports nine CLI programs, five package-manager helpers,
 and the image metadata helper. Installation verifies its manifest and bytes,
 then uses ordinary AOS fixup with explicit shared-library runtime dependencies.
@@ -79,6 +108,6 @@ this metadata validation.
 
 The developer checkpoint currently exposes CLI Clippy failures,
 including host clock and entropy operations under the workspace policy. Those
-failures remain a required gate. Editor comparison, full compiler argument
-parity, strict uncached qualification, live service and VM checks, performance
+failures remain a required gate. Full compiler argument parity, strict uncached
+qualification, live service and VM checks, performance
 acceptance, and production migration also remain separate work.

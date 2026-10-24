@@ -140,11 +140,8 @@ def dependency_cycle(specs):
     return any(visit(identifier) for identifier in dependencies)
 
 
-def separate_cyclic_libtests(specs):
-    """Preserves separate libtest roots when merged development dependencies would cycle."""
-    if not dependency_cycle(specs):
-        return specs
-
+def separate_libtest_views(specs):
+    """Preserves libtest environments and avoids development dependency cycles."""
     libraries = {spec["crate_id"] for spec in specs if not spec.get("is_test")}
     tests = {spec["crate_id"] for spec in specs if spec.get("is_test")}
     shared = libraries & tests
@@ -153,6 +150,27 @@ def separate_cyclic_libtests(specs):
     for spec in specs:
         if not spec.get("is_test"):
             library_specs.setdefault(spec["crate_id"], []).append(spec)
+
+    if not dependency_cycle(specs):
+        # Tests can intentionally redirect env! paths to declared runfiles.
+        # Keep that view separate so dependents retain the library's actual
+        # compiler environment. Feature and platform conflicts still fail below.
+        distinct = set()
+        for test in specs:
+            if not test.get("is_test") or test["crate_id"] not in shared:
+                continue
+            for library in library_specs[test["crate_id"]]:
+                if any(library.get(field) != test.get(field) for field in ["edition", "target", "cfg"]):
+                    continue
+                environments = [
+                    {key: value for key, value in item["env"].items() if key != "ZERO_AR_DATE"}
+                    for item in [library, test]
+                ]
+                if environments[0] != environments[1]:
+                    distinct.add(test["crate_id"])
+        shared = distinct
+        if not shared:
+            return specs
 
     result = []
     for original in specs:
@@ -187,8 +205,8 @@ def separate_cyclic_libtests(specs):
 def assemble(specs, replacements, toolchain, workspace_packages=()):
     """Resolves configured crate specs, rejecting ambiguous feature variants."""
     crates = {}
-    for original in separate_cyclic_libtests(specs):
-        spec = compiler_metadata(original, replacements)
+    configured = [compiler_metadata(original, replacements) for original in specs]
+    for spec in separate_libtest_views(configured):
         identifier = spec["crate_id"]
         if identifier not in crates:
             crates[identifier] = spec
@@ -299,7 +317,11 @@ def assemble(specs, replacements, toolchain, workspace_packages=()):
             source_root = root.parent
             manifest = crate["env"].get("CARGO_MANIFEST_DIR")
             execution_root = replacements["__EXEC_ROOT__/"]
-            if manifest and Path(manifest).is_relative_to(execution_root):
+            if members and selected:
+                # A test can redirect CARGO_MANIFEST_DIR to repository data.
+                # Its source modules still belong to the selected package.
+                source_root = max(selected, key=lambda directory: len(directory.parts))
+            elif manifest and Path(manifest).is_relative_to(execution_root):
                 package = workspace / Path(manifest).relative_to(execution_root)
                 if root.is_relative_to(package):
                     source_root = package

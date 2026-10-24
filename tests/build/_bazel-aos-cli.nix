@@ -84,6 +84,17 @@
     cache = true;
   };
   lifecycleFixtures = import ./fixtures/apm-profile-lifecycle.nix {inherit pkgs;};
+  repositories =
+    pkgs.aosBazelRepositories
+    // pkgs.aosBazelRustRepositories.${profile}
+    // {
+      aos_native = pkgs.aosBazelHubServiceLibraries;
+      aos_codegen = pkgs.aosBazelCodegenTools;
+      aos_console_assets = pkgs.aosBazelConsoleAssets;
+      aos_cli_runtime = pkgs.aosBazelCrucibleCliRuntime;
+      aos_registry_runtime = tools;
+      aos_cli_test_sources = import ../../pkgs/build-support/_bazel/cli-test-sources.nix {inherit pkgs;};
+    };
   workspace = pkgs.mkAosBazelWorkspace {
     inherit root;
     # Repository architecture tests still read Cargo manifests. Keep this
@@ -92,22 +103,12 @@
       ["tools/bazel" "third_party/rust" "api/proto"]
       ++ builtins.attrValues packages ++ builtins.attrValues dependencyPackages;
     dependencyProfile = profile;
-    repositories =
-      pkgs.aosBazelRepositories
-      // pkgs.aosBazelRustRepositories.${profile}
-      // {
-        aos_native = pkgs.aosBazelHubServiceLibraries;
-        aos_codegen = pkgs.aosBazelCodegenTools;
-        aos_console_assets = pkgs.aosBazelConsoleAssets;
-        aos_cli_runtime = pkgs.aosBazelCrucibleCliRuntime;
-        aos_registry_runtime = tools;
-        aos_cli_test_sources = import ../../pkgs/build-support/_bazel/cli-test-sources.nix {inherit pkgs;};
-      };
+    inherit repositories;
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["${prefix}lib"];
   };
 in {
-  inherit packages dependencyPackages workspace;
+  inherit packages dependencyPackages repositories selectedBins workspace;
   compile = pkgs.mkAosBazelBuild {
     pname = "aos-bazel-${profile}-compile";
     inherit workspace;

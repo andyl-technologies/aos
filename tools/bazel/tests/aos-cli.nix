@@ -10,12 +10,14 @@
   testConfiguration = fleet: let
     candidate = import ../../../tests/build/_bazel-aos-cli.nix {inherit pkgs fleet;};
     cargo = import ../../../tests/build/_bazel-aos-cli-cargo.nix {inherit pkgs fleet;};
+    editor = import ../../../tests/build/_bazel-aos-cli-editor.nix {inherit pkgs fleet;};
     profile =
       if fleet
       then "fleet"
       else "default";
   in
     candidate
+    // editor
     // {
       inherit cargo;
       oracle = pkgs.runCommand "aos-bazel-aos-cli-${profile}-cargo-parity" {buildDeps = [pkgs.python3];} ''

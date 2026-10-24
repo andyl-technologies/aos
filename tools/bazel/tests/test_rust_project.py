@@ -84,6 +84,42 @@ class RustProjectTests(unittest.TestCase):
         self.assertEqual(test, original)
         self.assertEqual(next(crate for crate in crates if crate["display_name"] == "library")["env"], {})
 
+    def test_libtest_manifest_environment_does_not_replace_its_library_view(self):
+        library = spec("library", env={"CARGO_MANIFEST_DIR": "${pwd}/package", "ZERO_AR_DATE": "1"})
+        test = spec("library", is_test=True, crate_type="bin", deps=["dev"],
+                    env={"CARGO_MANIFEST_DIR": "${pwd}/runfiles/package"})
+        sources = [library, test, spec("dev"), spec("client", deps=["library"])]
+        original = copy.deepcopy(sources)
+
+        for ordered in [sources, list(reversed(sources))]:
+            crates = self.assemble(ordered)["crates"]
+            client = next(crate for crate in crates if crate["display_name"] == "client")
+            dependency = crates[client["deps"][0]["crate"]]
+            root = next(crate for crate in crates
+                        if crate["display_name"] == "library" and crate["is_workspace_member"])
+
+            self.assertEqual(dependency["env"]["CARGO_MANIFEST_DIR"], "/exec/package")
+            self.assertNotIn("test", dependency["cfg"])
+            self.assertEqual(root["env"]["CARGO_MANIFEST_DIR"], "/exec/runfiles/package")
+            self.assertIn("test", root["cfg"])
+            self.assertEqual([crates[item["crate"]]["display_name"] for item in root["deps"]], ["dev"])
+            self.assertEqual(sources, original)
+
+    def test_distinct_test_environments_still_reject_ambiguous_test_variants(self):
+        with self.assertRaisesRegex(ValueError, "ambiguous configured Rust variant.*env"):
+            self.assemble([
+                spec("library"),
+                spec("library", is_test=True, env={"LOCATION": "first"}),
+                spec("library", is_test=True, env={"LOCATION": "second"}),
+            ])
+
+    def test_test_environment_does_not_hide_a_feature_variant(self):
+        with self.assertRaisesRegex(ValueError, "ambiguous configured Rust variant"):
+            self.assemble([
+                spec("library"),
+                spec("library", is_test=True, env={"LOCATION": "tests"}, cfg=['feature="different"']),
+            ])
+
     def test_proc_macro_library_kind_survives_both_test_discovery_orders(self):
         macro = spec("macro", crate_type="proc-macro", proc_macro_dylib_path="__EXEC_ROOT__/macro.so")
         test = spec("macro", is_test=True, crate_type="bin")
@@ -182,6 +218,16 @@ class RustProjectTests(unittest.TestCase):
         )])
 
         self.assertEqual(project["crates"][0]["source"]["include_dirs"], ["/checkout/package/tests"])
+
+    def test_selected_package_sources_survive_a_test_manifest_redirect(self):
+        project = assemble([spec(
+            "integration", root_module="__WORKSPACE__/package/tests/integration.rs",
+            env={"CARGO_MANIFEST_DIR": "${pwd}/runfiles/package"}, is_test=True,
+        )], {"__WORKSPACE__/": Path("/checkout"), "__EXEC_ROOT__/": Path("/exec")},
+            Path("/toolchain"), ["package"])
+
+        self.assertEqual(project["crates"][0]["source"]["include_dirs"], ["/checkout/package"])
+        self.assertEqual(project["crates"][0]["env"]["CARGO_MANIFEST_DIR"], "/exec/runfiles/package")
 
     def test_build_script_cfg_and_environment_match_compiler_inputs(self):
         with tempfile.TemporaryDirectory() as temporary:
