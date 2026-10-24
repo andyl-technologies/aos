@@ -162,6 +162,8 @@ pub struct QemuLiveNodeStepGateConfig {
     slow_clamp_ack_poll: bool,
     unbounded_advance_completion: bool,
     console_capture: bool,
+    /// Sizes the TCG code buffer from guest RAM.
+    guest_derived_code_buffer: bool,
     rr_control_boundary_trace: bool,
     runtime_determinism_trace: bool,
     runtime_determinism_trace_budget_bytes: u64,
@@ -341,6 +343,7 @@ impl QemuLiveNodeStepGateConfig {
             slow_clamp_ack_poll: false,
             unbounded_advance_completion: false,
             console_capture: false,
+            guest_derived_code_buffer: false,
             rr_control_boundary_trace: false,
             runtime_determinism_trace: false,
             runtime_determinism_trace_budget_bytes:
@@ -405,6 +408,7 @@ impl QemuLiveNodeStepGateConfig {
             slow_clamp_ack_poll: false,
             unbounded_advance_completion: false,
             console_capture: false,
+            guest_derived_code_buffer: false,
             rr_control_boundary_trace: false,
             runtime_determinism_trace: false,
             runtime_determinism_trace_budget_bytes:
@@ -730,6 +734,16 @@ impl QemuLiveNodeStepGateConfig {
         }
         self.runtime_determinism_trace_budget_bytes = bytes;
         Ok(self)
+    }
+
+    /// Returns this configuration with a TCG code buffer sized from guest RAM.
+    ///
+    /// Production live nodes opt in so a forked child's code-buffer dirty
+    /// bound scales with its guest instead of QEMU's fixed 1 GiB default.
+    #[must_use]
+    pub const fn with_guest_derived_code_buffer(mut self) -> Self {
+        self.guest_derived_code_buffer = true;
+        self
     }
 
     /// Returns this configuration with fixed QMP monitor diagnostics.
@@ -1234,6 +1248,9 @@ fn build_live_node_with_authority(
     }
     if config.console_capture {
         command = command.with_console_capture();
+    }
+    if config.guest_derived_code_buffer {
+        command = command.with_guest_derived_code_buffer();
     }
     command = config.apply_diagnostic_trace(command);
     let command = command

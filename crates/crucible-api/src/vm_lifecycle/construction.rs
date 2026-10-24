@@ -467,6 +467,7 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
         .with_completion_timeout(config.completion_timeout)
         .with_unbounded_advance_completion(config.unbounded_advance_completion)
         .with_console_capture()
+        .with_guest_derived_code_buffer()
         .with_process_generation(generation)
         .with_fault_resource_limits(source.plan().fault_signals().resource_limits());
         if campaign_marker_parking {

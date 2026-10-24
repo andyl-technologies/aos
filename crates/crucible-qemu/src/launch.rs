@@ -125,6 +125,15 @@ const DEFAULT_MACHINE_TYPE: &str = "pc-q35-9.2";
 const DEFAULT_MEMORY_MIB: u32 = 512;
 const DEFAULT_ACCEL: &str = "sim,thread=single";
 const SIM_OFF_ACCEL: &str = "tcg,thread=single";
+/// Guest RAM divided by this is a production live node's TCG code buffer.
+///
+/// QEMU before 5.2 sized the system-mode code buffer at a quarter of guest
+/// RAM; current QEMU defaults to 1 GiB whatever the guest size, and a forked
+/// child may dirty every page of it. The buffer size is performance-only
+/// under icount: a full buffer flushes translations, which are retranslated
+/// on demand, while retirement accounting and event delivery stay keyed to
+/// guest instruction counts, so no guest-visible event moves.
+pub const CODE_BUFFER_GUEST_RAM_DIVISOR: u32 = 4;
 const DEFAULT_RTC_EPOCH_UTC: &str = "2026-01-01T00:00:00";
 const DEFAULT_KERNEL_CMDLINE: &str = "console=ttyS0 reboot=k panic=1 quiet";
 const DEFAULT_SCENARIO_SEED: u64 = 0x0010_c001;
@@ -637,6 +646,8 @@ pub struct QemuLaunchCommandBuilder {
     fault_capability_requirement: crate::QemuFaultCapabilityRequirement,
     allow_live_gate_manifest_discovery: bool,
     debug_guest_activation_endpoint: bool,
+    /// TCG code-buffer size in MiB, when derived from guest RAM.
+    code_buffer_mib: Option<u32>,
     rr_control_boundary_trace: bool,
     runtime_determinism_trace: bool,
     runtime_determinism_trace_budget_bytes: u64,
@@ -665,6 +676,7 @@ impl QemuLaunchCommandBuilder {
             fault_capability_requirement,
             allow_live_gate_manifest_discovery: false,
             debug_guest_activation_endpoint: false,
+            code_buffer_mib: None,
             rr_control_boundary_trace: false,
             runtime_determinism_trace: false,
             runtime_determinism_trace_budget_bytes: MAXIMUM_RUNTIME_DETERMINISM_TRACE_BYTES,
@@ -745,6 +757,20 @@ impl QemuLaunchCommandBuilder {
     #[must_use]
     pub const fn with_debug_guest_activation_endpoint(mut self) -> Self {
         self.debug_guest_activation_endpoint = true;
+        self
+    }
+
+    /// Sizes the TCG code buffer from guest RAM instead of QEMU's fixed default.
+    ///
+    /// The `sim` accelerator argument gains `tb-size=<guest MiB /
+    /// CODE_BUFFER_GUEST_RAM_DIVISOR>`, so the size is part of the recorded
+    /// argv and launch identity. It stays out of scenario hash material
+    /// because it cannot change guest-visible behavior (see
+    /// [`CODE_BUFFER_GUEST_RAM_DIVISOR`]).
+    #[must_use]
+    pub const fn with_guest_derived_code_buffer(mut self) -> Self {
+        let mebibytes = self.profile.memory_mib / CODE_BUFFER_GUEST_RAM_DIVISOR;
+        self.code_buffer_mib = Some(if mebibytes == 0 { 1 } else { mebibytes });
         self
     }
 
@@ -896,6 +922,13 @@ impl QemuLaunchCommandBuilder {
             vm_hash_material.push_str("\ndebug_guest_activation_endpoint=fixed-inert-v1");
         }
         let mut args = self.profile.canonical_qemu_args();
+        if let Some(mebibytes) = self.code_buffer_mib {
+            replace_option_value(
+                &mut args,
+                "-accel",
+                &format!("{DEFAULT_ACCEL},tb-size={mebibytes}"),
+            )?;
+        }
         if self.vm.kernel().is_none() {
             remove_option_with_value(&mut args, "-append")?;
         }
