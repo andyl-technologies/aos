@@ -5,6 +5,7 @@
 //! retains the raw response before decoding. An error cannot reset either slot.
 
 use super::*;
+use crucible_node_transport::client::OriginalFreshRestorePrepareInputs;
 use crucible_node_transport::reference_packet::service::fresh_restore_allocation::verify_fresh_restore_allocation_proof_data;
 
 impl PacketCompleteSemanticSource {
@@ -116,9 +117,11 @@ impl PacketCompleteSemanticSource {
                 emitter,
                 query,
                 binding_quote,
-                inputs.prepare_id.clone(),
-                baseline,
-                request,
+                OriginalFreshRestorePrepareInputs {
+                    request_id: inputs.prepare_id.clone(),
+                    baseline,
+                    request,
+                },
                 inputs.mapping,
             )
             .map_err(|_| RuntimeError::InvalidReceipt)?;

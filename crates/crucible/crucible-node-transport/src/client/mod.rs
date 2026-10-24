@@ -23,7 +23,8 @@ pub use controller::{
     OriginalCompleteRestoreInputUpload, OriginalCompleteRestoreInputUploadProspectiveStorageData,
     OriginalCompleteRestoreInputUploadStorageData, OriginalCompleteRestoreUploadBeforeMappingData,
     OriginalCompletedRestoredObservation17Data, OriginalFreshRestorePrepareBindingStorageData,
-    OriginalFreshRestoreQuery, OriginalFreshRestoreQueryStorageData,
+    OriginalFreshRestorePrepareInputs, OriginalFreshRestoreQuery,
+    OriginalFreshRestoreQueryStorageData,
 };
 pub use controller::{CompletedOriginalCanonicalAckAdmit, PreparedOriginalCanonicalAckAdmit};
 pub use controller::{

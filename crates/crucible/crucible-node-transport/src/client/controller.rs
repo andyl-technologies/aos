@@ -61,7 +61,7 @@ pub use assigned_admit::{CompletedOriginalCanonicalAckAdmit, PreparedOriginalCan
 pub use assigned_restore::{CompletedOriginalCompleteRestore, PreparedOriginalCompleteRestore};
 pub use assigned_transfer::{
     CompletedOriginalCompleteRestoreTransfer, OriginalFreshRestorePrepareBindingStorageData,
-    PreparedOriginalCompleteRestoreTransfer,
+    OriginalFreshRestorePrepareInputs, PreparedOriginalCompleteRestoreTransfer,
 };
 pub use fresh_restore_query::{OriginalFreshRestoreQuery, OriginalFreshRestoreQueryStorageData};
 pub use input_emitter::OriginalCanonicalRestoreInputEmitter;

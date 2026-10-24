@@ -21,6 +21,20 @@ use std::{
     rc::{Rc, Weak},
 };
 
+/// Owns the planned request inputs for one fresh-query Prepare assignment.
+///
+/// These fields are inert data. The controller independently authenticates the
+/// original emitter, completed query, binding quote and archived mapping before
+/// retaining an assigned original. This record supplies no Source permission.
+pub struct OriginalFreshRestorePrepareInputs {
+    /// Names the same unused request identity selected by the Source.
+    pub request_id: Id,
+    /// Retains the baseline Begin body for this same Prepare operation.
+    pub baseline: BeginRequest,
+    /// Retains the complete selected restoration request and mapping reference.
+    pub request: PacketCompleteRestorePrepareRequest,
+}
+
 /// Quotes added binding work on one actual completed query frontier.
 ///
 /// The nonconstructible association has no decoder or clone. Existing query,
@@ -122,6 +136,10 @@ impl CnpController {
             + size_of::<std::array::IntoIter<&str, 2>>()
             + size_of::<std::array::IntoIter<&String, 4>>()
             + size_of::<(&CnpController, &OriginalFreshRestoreQuery, &ContentRef)>()
+            // Full request backing remains in the separate Prepare row.
+            // Add both new ownership headers beside the earlier controls.
+            + 2 * size_of::<OriginalFreshRestorePrepareInputs>()
+            + size_of::<usize>()
     }
 
     /// Quotes additional binding work on this actual completed query.
@@ -220,11 +238,15 @@ impl CnpController {
         emitter: &OriginalCanonicalBlobAckEmitter,
         query: &OriginalFreshRestoreQuery,
         quote: &OriginalFreshRestorePrepareBindingStorageData,
-        request_id: Id,
-        baseline: BeginRequest,
-        request: PacketCompleteRestorePrepareRequest,
+        inputs: OriginalFreshRestorePrepareInputs,
         mapping: &PreparedArchivedProtocolMapping,
     ) -> Result<PreparedOriginalCompleteRestoreTransfer<'a>, ProviderError> {
+        let OriginalFreshRestorePrepareInputs {
+            request_id,
+            baseline,
+            request,
+        } = inputs;
+
         quote.authenticate(self, emitter, query)?;
         request.validate_data()?;
         if &request.host_protocol != mapping.archive_protocol()

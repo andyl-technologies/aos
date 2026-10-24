@@ -19,7 +19,9 @@ use serde_json::Map;
 mod construction_storage;
 mod fresh_prepare;
 mod held_prefix_storage;
-pub use fresh_prepare::OriginalFreshRestorePrepareBindingStorageData;
+pub use fresh_prepare::{
+    OriginalFreshRestorePrepareBindingStorageData, OriginalFreshRestorePrepareInputs,
+};
 
 /// Borrows one actual phase-assigned restore original without moving its owners.
 #[must_use = "the exact original remains in its controller when this loan ends"]
