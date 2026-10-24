@@ -152,6 +152,8 @@ where
         (!projected.fits(limits)).then(|| {
             ManagedQemuHotForkSourceWorldAdmissionError::AnchorChildCapacity {
                 pressure: HotCheckpointPressure::for_usage(projected, limits),
+                projected,
+                limits,
             }
         })
     }
@@ -381,9 +383,10 @@ fn settle_root_admission<E: std::error::Error + 'static>(
                     ManagedQemuHotForkSourceWorldAdmissionError::DuplicateSource => {
                         Some(QemuPublishedRootAdmission::AlreadyRetained)
                     }
+                    // The stable token leads; the dimensions follow for diagnosis.
                     ManagedQemuHotForkSourceWorldAdmissionError::AnchorChildCapacity { .. } => {
-                        Some(QemuPublishedRootAdmission::Rejected(String::from(
-                            "anchor-child-capacity",
+                        Some(QemuPublishedRootAdmission::Rejected(format!(
+                            "anchor-child-capacity {error}"
                         )))
                     }
                     ManagedQemuHotForkSourceWorldAdmissionError::UnusableSource => {

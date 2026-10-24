@@ -535,7 +535,7 @@ fn admit_anchor<FE, DE>(
             QemuAnchorRootOutcome::Admitted
         }
         QemuPublishedRootAdmission::Rejected(reason) => {
-            let token = if reason == "anchor-child-capacity" {
+            let token = if reason.starts_with("anchor-child-capacity") {
                 "anchor-child-capacity"
             } else {
                 "anchor-pool-rejected"

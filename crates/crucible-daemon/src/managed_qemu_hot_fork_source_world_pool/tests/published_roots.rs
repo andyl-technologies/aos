@@ -549,9 +549,15 @@ fn anchor_sink_names_capacity_refusals_and_reuses_an_equal_root() {
             tight,
         ))
         .expect("a refused anchor is retired");
-    assert_eq!(
-        refused,
-        QemuPublishedRootAdmission::Rejected(String::from("anchor-child-capacity"))
+    let QemuPublishedRootAdmission::Rejected(reason) = refused else {
+        panic!("a tight anchor must be refused: {refused:?}");
+    };
+    assert!(
+        reason.starts_with("anchor-child-capacity ")
+            && reason.contains("pressure=")
+            && reason.contains("projected=")
+            && reason.contains("limits="),
+        "the refusal names its capacity dimensions: {reason}"
     );
     pool.orderly_shutdown().expect("nothing retained");
 }
