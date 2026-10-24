@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 from verify_compiler_options import audit, compiler_options, pair_invocations
+from retain_compiler_inputs import command_digest
 
 
 class CompilerOptionsTests(unittest.TestCase):
@@ -85,7 +86,47 @@ class CompilerOptionsTests(unittest.TestCase):
 
             graph["actions"][0]["arguments"].append("-Cpanic=abort")
             graph_path.write_text(json.dumps(graph))
-            with self.assertRaisesRegex(ValueError, "parameter contents differ"):
+            with self.assertRaisesRegex(ValueError, "no unambiguous retained command"):
+                audit(root, root)
+
+    def test_audit_compares_generated_cfg_and_checks_its_executed_digest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            evidence = root / "evidence"
+            evidence.mkdir()
+            source = "crates/shared/example/src/lib.rs"
+            label = "//crates/shared/example:lib"
+            command = ["wrapper", "--arg-file", "generated", "--", "rustc", source, "--edition=2024"]
+            text = "--cfg=generated\n"
+            digest = hashlib.sha256(text.encode()).hexdigest()
+            graph = {"targets": [{"id": "1", "label": label}], "actions": [
+                {"targetId": "1", "mnemonic": "Rustc", "arguments": command},
+            ]}
+            event = {"targetLabel": label, "mnemonic": "Rustc", "commandArgs": command, "exitCode": 0,
+                     "cacheHit": False, "runner": "linux-sandbox", "environmentVariables": [],
+                     "inputs": [{"path": "generated", "digest": {"hash": digest}}]}
+            retained = {"schema_version": 1, "actions": [
+                {"target_label": label, "command_sha256": command_digest(command),
+                 "files": [{"flag": "--arg-file", "path": "generated"}]},
+            ], "files": {"generated": {"text": text, "size": len(text), "sha256": digest}}}
+            (evidence / "actions.json").write_text(json.dumps(graph))
+            (evidence / "execution.json").write_text(json.dumps(event))
+            retained_path = evidence / "compiler-inputs.json"
+            retained_path.write_text(json.dumps(retained))
+            (root / "compiler-arguments.jsonl").write_text(json.dumps({
+                "schema_version": 1, "directory": "/build/source/crates", "environment": {},
+                "arguments": ["rustc", source.removeprefix("crates/"), "--edition=2024", "--cfg=generated"],
+            }) + "\n")
+
+            report = audit(root, root)
+
+            self.assertIn("wrapper-expanded", report["status"])
+            self.assertEqual(report["pairs"][0]["bazel"]["options"]["cfg"], ["generated"])
+            self.assertIn("indirect_inputs", report["inputs_sha256"])
+
+            retained["files"]["generated"]["text"] = "--cfg=changed\n"
+            retained_path.write_text(json.dumps(retained))
+            with self.assertRaisesRegex(ValueError, "differs from execution digest"):
                 audit(root, root)
 
 

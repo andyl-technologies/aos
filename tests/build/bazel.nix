@@ -429,6 +429,7 @@ in
       cp -r ${unit}/evidence/tests "$out/tests"
     '';
     build-script-metadata = import ./_bazel-build-script-metadata.nix {inherit pkgs;};
+    compiler-wrapper = import ../../tools/bazel/tests/compiler-wrapper.nix {inherit pkgs;};
     policy =
       pkgs.runCommand "aos-bazel-policy-checks" {
         buildDeps = [pkgs.python3];
@@ -464,6 +465,7 @@ in
             policy
             shell-bootstrap
             build-script-metadata
+            compiler-wrapper
             source-selection
             source-catalog.all
             sysroot-metadata

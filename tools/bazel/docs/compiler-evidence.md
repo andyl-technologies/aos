@@ -21,10 +21,29 @@ builds retain their default materialization behavior. Virtual `FileWrite` inputs
 come from aquery's declared contents and undergo the same execution-digest check.
 
 The CLI library proof in `../tests/evidence/cli-compiler-input-retention.json`
-uses the frozen lint-qualified CLI workspace. It qualifies byte retention for
-that source snapshot; it does not qualify a later CLI source revision or expand
-the wrapper's file syntax, substitutions, or compiler defaults. Semantic option,
-native ABI, linker closure, and runtime comparisons remain independent gates.
+uses the frozen lint-qualified CLI workspace. That checkpoint qualifies byte
+retention for its source snapshot.
+
+Evidence builds also export `evidence/compiler-invocations.json`. Reconstruction
+rechecks the complete executed action inventory and every input digest before
+interpreting the pinned wrapper's file syntax, environment precedence, workspace
+status values, substitutions, and explicit unstable-feature policy. Repeated
+file flags retain every value in each group. Missing inputs, unknown wrapper
+flags, duplicate scalar flags, and unretained nested response files fail closed.
+
+Sandbox working-directory, output-base, and execution-root identities remain
+explicit symbolic roots. Compiler defaults, semantic equivalence between build
+profiles, native ABI, linker closure, and runtime comparisons remain independent
+gates. `../tests/evidence/cli-compiler-input-reconstruction.json` binds the
+reconstruction checkpoint to its exact source and execution inputs.
+
+The conformance check builds the pinned process wrapper from source with AOS
+Rust, then compares its actual child arguments and selected environment values
+with the reconstruction model. Run it with:
+
+```text
+nix-build -A checks.build.bazel.compiler-wrapper --no-out-link
+```
 
 The retained helper can also check an existing build while its execution root
 is still available:
@@ -33,4 +52,11 @@ is still available:
 python3 tools/bazel/tests/retain_compiler_inputs.py \
   --build BUILD_OUTPUT --execution-root PRIVATE_BASE/execroot/_main \
   --output compiler-inputs.json
+```
+
+Reconstruct an already retained build without its removed private execution tree:
+
+```text
+python3 tools/bazel/tests/reconstruct_compiler_inputs.py \
+  --build BUILD_OUTPUT --output compiler-invocations.json
 ```

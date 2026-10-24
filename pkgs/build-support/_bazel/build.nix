@@ -30,7 +30,7 @@
     path = ../../../tools/bazel/tests;
     name = "aos-bazel-compiler-evidence-tools";
     filter = path: type:
-      type == "regular" && builtins.elem (baseNameOf path) ["retain_compiler_inputs.py" "verify_cache.py" "verify_static_runtime.py"];
+      type == "regular" && builtins.elem (baseNameOf path) ["compiler_wrapper.py" "reconstruct_compiler_inputs.py" "retain_compiler_inputs.py" "verify_cache.py" "verify_static_runtime.py"];
   };
 in
   assert builtins.elem command ["build" "test"];
@@ -131,6 +131,8 @@ in
               ${pkgs.python3}/bin/python3 ${compilerEvidenceTools}/retain_compiler_inputs.py \
                 --build "$out" --execution-root "$TMPDIR/bazel/execroot/_main" \
                 --output "$out/evidence/compiler-inputs.json"
+              ${pkgs.python3}/bin/python3 ${compilerEvidenceTools}/reconstruct_compiler_inputs.py \
+                --build "$out" --output "$out/evidence/compiler-invocations.json"
             '';
         }
       ];

@@ -16,7 +16,7 @@ class CompilerInputRetentionTests(unittest.TestCase):
         ]}
 
     def event(self, contents):
-        command = ["process_wrapper", "--arg-file", "build/flags", "--env-file=build/environment",
+        command = ["process_wrapper", "--arg-file", "build/flags", "--env-file", "build/environment",
                    "--", "rustc", "source.rs"]
         return {"mnemonic": "Rustc", "targetLabel": "//crates/example:lib", "exitCode": 0,
                 "commandArgs": command, "inputs": [
@@ -64,7 +64,7 @@ class CompilerInputRetentionTests(unittest.TestCase):
 
     def test_wrapper_outputs_and_compiler_arguments_are_not_mistaken_for_inputs(self):
         command = ["wrapper", "--stdout-file", "output/log", "--touch-file", "output/touch",
-                   "--stable-status-file", "input/stable", "--volatile-status-file=input/volatile",
+                   "--stable-status-file", "input/stable", "--volatile-status-file", "input/volatile",
                    "--", "rustc", "--arg-file", "compiler-argument"]
         self.assertEqual(wrapper_files(command), [
             {"flag": "--stable-status-file", "path": "input/stable"},
@@ -108,6 +108,13 @@ class CompilerInputRetentionTests(unittest.TestCase):
 
     def test_command_identity_preserves_argument_boundaries(self):
         self.assertNotEqual(command_digest(["one two", "three"]), command_digest(["one", "two three"]))
+
+    def test_every_file_in_a_repeated_flag_group_is_retained(self):
+        command = ["wrapper", "--arg-file", "build/one", "build/two", "--env-file", "build/env-one", "build/env-two",
+                   "--arg-file", "build/three", "--", "rustc"]
+        self.assertEqual(wrapper_files(command), [
+            {"flag": "--arg-file", "path": path} for path in ["build/one", "build/two", "build/three"]
+        ] + [{"flag": "--env-file", "path": path} for path in ["build/env-one", "build/env-two"]])
 
     def test_virtual_filewrite_inputs_require_exact_execution_digests(self):
         contents = {"build/flags": b'--cfg=virtual\n', "build/environment": b''}

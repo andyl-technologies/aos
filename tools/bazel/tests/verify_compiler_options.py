@@ -1,8 +1,9 @@
 """Pairs retained first-party compile actions with captured Cargo invocations.
 
-This audit verifies direct cfg and edition arguments, then retains codegen and
-link options for review. Matching those selections is not a claim that Cargo
-and Bazel produce identical artifacts or use equivalent compiler profiles.
+This audit verifies cfg and edition arguments, expanding digest-checked wrapper
+inputs when retained and otherwise identifying the older direct-only scope.
+Codegen and link options remain available for review. Matching those selections
+does not establish identical artifacts or equivalent compiler profiles.
 """
 
 import argparse
@@ -11,7 +12,8 @@ import json
 from pathlib import Path
 
 from verify_cache import execution_events
-from verify_static_runtime import expanded_command
+from reconstruct_compiler_inputs import reconstruct
+from retain_compiler_inputs import action_candidates, command_digest, executed_command
 
 
 SCALAR_CODEGEN = {
@@ -107,17 +109,30 @@ def audit(build, cargo):
     graph_path = build / "evidence/actions.json"
     trace_path = cargo / "compiler-arguments.jsonl"
     graph = json.loads(graph_path.read_text())
+    events = execution_events(build)
+    candidates = action_candidates(graph)
+    indirect_path = build / "evidence/compiler-inputs.json"
+    reconstructed = None
+    if indirect_path.exists():
+        reconstructed = reconstruct(graph, events, json.loads(indirect_path.read_text()))
+    expanded = {
+        (action["target_label"], action["command_sha256"]): action
+        for action in reconstructed["actions"]
+    } if reconstructed is not None else {}
     bazel = []
-    for event in execution_events(build):
+    for event in events:
         if event["mnemonic"] != "Rustc" or not event["targetLabel"].startswith("//crates/"):
             continue
-        execution_command = expanded_command(graph, event)
+        execution_command = executed_command(candidates, event)
         arguments = execution_command
         # Ignore wrapper arguments, which may include unrelated file paths.
         # The source-built rules_rust wrapper has one literal compiler delimiter.
         if arguments.count("--") != 1:
             raise ValueError("unsupported Rust process-wrapper compiler boundary")
         arguments = arguments[arguments.index("--") + 1:]
+        reconstructed_action = expanded.get((event["targetLabel"], command_digest(execution_command)))
+        if reconstructed_action is not None:
+            arguments = reconstructed_action["arguments"]
         source = compilation_source(arguments, "crates/")
         if source is None:
             raise ValueError("first-party Rust action omitted its source")
@@ -125,7 +140,8 @@ def audit(build, cargo):
             raise ValueError("first-party Rust compiler action failed")
         bazel.append({"source": source, "arguments": arguments, "label": event["targetLabel"],
                       "cache_hit": event["cacheHit"], "runner": event["runner"],
-                      "execution_command": execution_command})
+                      "execution_command": execution_command,
+                      **({"environment": reconstructed_action["environment"]} if reconstructed_action is not None else {})})
 
     cargo_invocations = []
     for line in trace_path.read_text().splitlines():
@@ -136,15 +152,18 @@ def audit(build, cargo):
         if source:
             cargo_invocations.append({**invocation, "source": "crates/" + source})
     pairs = pair_invocations(bazel, cargo_invocations)
-    return {
+    result = {
         "schema_version": 1,
-        "status": "PASS: paired first-party invocations and matching direct cfg/edition arguments",
+        "status": "PASS: paired first-party invocations and matching "
+                  + ("wrapper-expanded" if reconstructed is not None else "direct") + " cfg/edition arguments",
         "build": str(build), "cargo": str(cargo), "units": len(pairs), "pairs": pairs,
         "inputs_sha256": {"actions": hashlib.sha256(graph_path.read_bytes()).hexdigest(),
                           "compiler_trace": hashlib.sha256(trace_path.read_bytes()).hexdigest(),
                           "execution": hashlib.sha256((build / "evidence/execution.json").read_bytes()).hexdigest()},
         "limits": [
-            "Bazel response files are bound to execution input digests. Additional rules_rust wrapper argument/environment files are retained by path in execution_command but their contents are not expanded here.",
+            ("Bazel response and indirect wrapper input files are bound to execution digests. Working-directory, output-base, and execution-root identities remain explicit symbolic roots."
+             if reconstructed is not None else
+             "Bazel response files are bound to execution input digests. Additional rules_rust wrapper argument/environment files are retained by path in execution_command but their contents are not expanded here."),
             "Compiler defaults and compiler/linker closure or ABI equivalence are not checked here.",
             "Codegen, target, linker, incremental, and artifact-identity differences are retained for explicit review; this audit does not establish semantic compiler-option equivalence.",
             "Scalar codegen options use their last explicit value. Repeated and unknown options remain in order; compiler defaults are not inferred.",
@@ -152,6 +171,10 @@ def audit(build, cargo):
             "Captured Cargo invocations prove compiler execution was requested, not that every request succeeded. Runtime and compilation results require their independent gates.",
         ],
     }
+    if reconstructed is not None:
+        result["inputs_sha256"]["indirect_inputs"] = hashlib.sha256(indirect_path.read_bytes()).hexdigest()
+        result["symbolic_execution_roots"] = reconstructed["symbolic_execution_roots"]
+    return result
 
 
 def main():

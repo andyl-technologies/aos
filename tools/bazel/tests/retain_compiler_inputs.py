@@ -11,6 +11,7 @@ import hashlib
 import json
 from pathlib import Path, PurePosixPath
 
+from compiler_wrapper import wrapper_options
 from verify_cache import execution_events
 from verify_static_runtime import expanded_command
 
@@ -81,27 +82,18 @@ def file_write_inputs(graph):
 
 def wrapper_files(command):
     """Selects input-file flags before the wrapper's literal compiler delimiter."""
-    if command.count("--") != 1:
-        raise ValueError("unsupported Rust wrapper compiler boundary")
-    wrapper = command[:command.index("--")]
+    options, _ = wrapper_options(command)
     result = []
-    index = 1
-    while index < len(wrapper):
-        argument = wrapper[index]
-        name, separator, value = argument.partition("=")
-        if name in INPUT_FLAGS:
-            if not separator:
-                index += 1
-                if index == len(wrapper):
-                    raise ValueError("missing Rust wrapper input-file value")
-                value = wrapper[index]
+    for name, values in options.items():
+        if name not in INPUT_FLAGS:
+            continue
+        for value in values:
             if not value or value.startswith("--"):
                 raise ValueError("empty or ambiguous Rust wrapper input-file value")
             path = PurePosixPath(value)
             if path.is_absolute() or value != path.as_posix() or any(part in {"", ".", ".."} for part in value.split("/")):
                 raise ValueError("Rust wrapper input must be a canonical execution-root path")
             result.append({"flag": name, "path": value})
-        index += 1
     return result
 
 

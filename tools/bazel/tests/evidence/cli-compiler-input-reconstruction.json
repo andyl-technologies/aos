@@ -1,0 +1,200 @@
+{
+  "cached_mount": "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel/rfc-722-hub-service-iteration",
+  "checks": {
+    "core_evaluation": "/nix/store/1rhi589amw8vjz46zd34mvrgslpkgacn-aos-native-evaluation-checks-0",
+    "python_cases": 282,
+    "python_policy": "/nix/store/02mxngzy09wwa5a0smgx18amlr4zhgn8-aos-bazel-policy-checks"
+  },
+  "cli_configurations": {
+    "default": {
+      "build": "/nix/store/bl4k9cb35ckxr7xcanymmfv549kvgb38-aos-bazel-cli-default-compiler-evidence-1",
+      "cargo": "/nix/store/2wkw6xf66dvnz6s56i0rfxh4pmd521yx-aos-bazel-aos-cli-cargo-1",
+      "command": "python3 tools/bazel/tests/verify_compiler_options.py --build /nix/store/bl4k9cb35ckxr7xcanymmfv549kvgb38-aos-bazel-cli-default-compiler-evidence-1 --cargo /nix/store/2wkw6xf66dvnz6s56i0rfxh4pmd521yx-aos-bazel-aos-cli-cargo-1 --output default-compiler-options.json",
+      "complete_rust_actions": 615,
+      "configuration": "/nix/store/w8558xn77m4l3db9rvqlk6v82r41a3sd-aos-bazel-configuration.json",
+      "derivation": "/nix/store/2p934f9kwplgfkmxhn0xzp881xfb0dhg-aos-bazel-cli-default-compiler-evidence-1.drv",
+      "differences_by_field": {
+        "codegen": 77,
+        "effective_scalar_codegen": 77,
+        "target": 77
+      },
+      "full_report_sha256": "3512ce8418d184c33881dd357cb49ea1f923fa7d0eec0a02e37d309cae63eb39",
+      "inputs_sha256": {
+        "actions": "6d5a87e69675d9e7e31ccb61ca8cb6e24ed33f41dde11dfab38885cda9aefcb7",
+        "compiler_trace": "9e22168186e99cb77a7321a61409fb0c0d60b32ffcfc4904c11b5b785c4c7738",
+        "execution": "53fe269e348df61bab5d501da5b0d47638eae342d5663619cd3a3addde1ec75f",
+        "indirect_inputs": "befb41d3c5d7ca7a1707771c6b7026a7a86c4f2b3b80458275839497cdd8a614"
+      },
+      "paired_first_party_units": 77,
+      "qualified_runtime_checkpoint": "tools/bazel/tests/evidence/aos-cli-architecture.json",
+      "source": "/nix/store/9q4ipn34m3654mjksyw2ydjf6ag5018a-aos-bazel-workspace"
+    },
+    "fleet": {
+      "build": "/nix/store/xrhd4c0z01rhci0v08bqk90f57bj1858-aos-bazel-cli-fleet-compiler-evidence-1",
+      "cargo": "/nix/store/ffcsw5vjrbk01l5v1dlzshxk9cmgk73q-aos-bazel-aos-cli-fleet-cargo-1",
+      "command": "python3 tools/bazel/tests/verify_compiler_options.py --build /nix/store/xrhd4c0z01rhci0v08bqk90f57bj1858-aos-bazel-cli-fleet-compiler-evidence-1 --cargo /nix/store/ffcsw5vjrbk01l5v1dlzshxk9cmgk73q-aos-bazel-aos-cli-fleet-cargo-1 --output fleet-compiler-options.json",
+      "complete_rust_actions": 621,
+      "configuration": "/nix/store/81247w4whp8d51gv6kg1dh7452x2p5is-aos-bazel-configuration.json",
+      "derivation": "/nix/store/as7hc0nbgdqgzqjqb8hv7qvs5fkaj11a-aos-bazel-cli-fleet-compiler-evidence-1.drv",
+      "differences_by_field": {
+        "codegen": 83,
+        "effective_scalar_codegen": 83,
+        "target": 83
+      },
+      "full_report_sha256": "f5fcc8893defebdccb7df4d141dd053ef05e0f8b035758000ca32626566d7a94",
+      "inputs_sha256": {
+        "actions": "68beb241c6e9cd658419a9d1d2b0b91612ac7b09fb7717750e89e5fc3645f6f8",
+        "compiler_trace": "3ec7dd94b33b30d5d377dcd1966b9b15d5ace7616b57be2f07007a7700483354",
+        "execution": "c97813abff48123346b24293ad24676666e84fd5b791bfe7e3b86b77460c7dbd",
+        "indirect_inputs": "c1765a8ad56c40eb5e6a8b86ad27aa4229182282095cff21135c8db0a3aba8bc"
+      },
+      "paired_first_party_units": 83,
+      "qualified_runtime_checkpoint": "tools/bazel/tests/evidence/aos-cli-architecture.json",
+      "source": "/nix/store/9q4ipn34m3654mjksyw2ydjf6ag5018a-aos-bazel-workspace"
+    }
+  },
+  "conformance": {
+    "cases": [
+      {
+        "arguments": 4,
+        "name": "literal-and-continued-inputs",
+        "selected_environment_variables": 3,
+        "status": "PASS"
+      },
+      {
+        "arguments": 4,
+        "name": "repeated-file-groups",
+        "selected_environment_variables": 2,
+        "status": "PASS"
+      },
+      {
+        "arguments": 1,
+        "name": "workspace-status-order",
+        "selected_environment_variables": 2,
+        "status": "PASS"
+      },
+      {
+        "arguments": 4,
+        "name": "execution-roots-and-out-dir",
+        "selected_environment_variables": 3,
+        "status": "PASS"
+      },
+      {
+        "arguments": 3,
+        "name": "ordered-substitutions",
+        "selected_environment_variables": 2,
+        "status": "PASS"
+      },
+      {
+        "arguments": 2,
+        "name": "explicit-unstable-policy",
+        "selected_environment_variables": 2,
+        "status": "PASS"
+      },
+      {
+        "arguments": 2,
+        "name": "existing-unstable-allowlist",
+        "selected_environment_variables": 2,
+        "status": "PASS"
+      },
+      {
+        "arguments": 2,
+        "name": "discarded-final-continuation",
+        "selected_environment_variables": 2,
+        "status": "PASS"
+      }
+    ],
+    "derivation": "/nix/store/a2z3dxxcb2z2ky5j6002svfvrc247kga-aos-bazel-compiler-wrapper-conformance.drv",
+    "output": "/nix/store/2rjwrgwmvp2jqqx239ck6kcbx1ldi5n0-aos-bazel-compiler-wrapper-conformance",
+    "rules_source": "/nix/store/yjmfqfq850dn6f45prdz8a3r2q5n447a-aos-bazel-module-rules_rust-0.71.2",
+    "rules_source_sha256": {
+      "flags.rs": "36ee42819bbd59e95547fcf26a4569f8cc4578d3aad709f4af0db70c68ab271c",
+      "main.rs": "62224d18bdaa01088bdfd887cabfe86bba23c753b9786e376d67c883ee827d01",
+      "options.rs": "b8a9208a3ced5be6cebd72a5fa82d19a85c64b0935585edff0e2546466c24b03",
+      "output.rs": "0ec4a269751a65d53ce0c9ad54385cad1abfe655278db98e411047f8689f2007",
+      "rustc.rs": "5fb0136c5bcc05d86758ccf74b780ec6376f4278c0e8f1ab66c9d193578ac94c",
+      "util.rs": "2365f126d9270c1c87419c9435c64cef0cce7c6bc9bd40235ee1f2048c6865f8"
+    }
+  },
+  "equal_cached_and_uncached_reconstructed_inputs": true,
+  "implementation_sha256": {
+    "pkgs/build-support/_bazel/build.nix": "2788e0faa517266b893f5f241ba6f9c2733f0ec4e167147192f8c80e5a6bc2ca",
+    "tests/build/bazel.nix": "4c4414589a0fad0dc409c447001015ce26eaf2e1b6af16ef7f4da34d0f987785",
+    "tools/bazel/tests/compiler-wrapper.nix": "32d5ce70189f7d7ba50c5402ad4970e7f5d922104d7910fdbb058e3a4c62b60c",
+    "tools/bazel/tests/compiler_wrapper.py": "202a3d74d0b86a2ed8e679f2fdf9b6b9d3b186098473805ffcd8d519336c9180",
+    "tools/bazel/tests/reconstruct_compiler_inputs.py": "b8b79f7684053c4e7db9bdd4c56d21ead889d1a09a5d53247c9dec95e17e3aea",
+    "tools/bazel/tests/retain_compiler_inputs.py": "407995e6a7b1c26742f4c18d0dec16b8bcb043a00bb27704c796c758ae57a766",
+    "tools/bazel/tests/test_compiler_input_reconstruction.py": "3e411716ff327a9fa137ce042a14d0e90b07b5d2a1e98a8c128b359ad9e6f6b8",
+    "tools/bazel/tests/test_compiler_input_retention.py": "a6b4608dee45fa303f6d396399f0a8ae17800250af6bf3de346c038632a7324b",
+    "tools/bazel/tests/test_compiler_options.py": "288ae76388fe96d5215704f801ea55369e606bd7bea49cd081a5cd44c9f2c3e5",
+    "tools/bazel/tests/test_compiler_wrapper.py": "7072a49817f3d582a857c0d2a3f33e0425a6453109f5eed2e6b731386a5eee2d",
+    "tools/bazel/tests/verify_compiler_options.py": "9a0209497c41513935ee6f81f32de1377fce858db282166eba66186eb4e05963",
+    "tools/bazel/tests/verify_compiler_wrapper.py": "80f0d4b70d63072a879bff2e50c2dfa9e5d960a7cd8dcdae4a9b79d3f477ba7c"
+  },
+  "library_cache_proof": {
+    "cached": {
+      "configuration": "/nix/store/glmkd55svgb3kblsdswvm3sks3wl0q1i-aos-bazel-configuration.json",
+      "derivation": "/nix/store/xpd7vi8x49wjjrlxxvr4g9qxsh90a0mj-aos-bazel-cli-compiler-input-proof-1.drv",
+      "evidence_sha256": {
+        "actions.json": "bab9c68c5692e0295ca244ea7c06841a8c80c69953fe948bcaf66e0f4a12cf99",
+        "compiler-inputs.json": "b8719e5e0e0d77cacd42c3b62b14a7aba9eaf38cc1cf6ca94dc30828d77f1971",
+        "compiler-invocations.json": "d1130587df772cc1d4395a9f29954d9241c108a2fca3355b1bcf3284eb27d991",
+        "execution.json": "29710cb845f069dae3a139b66b2a1d4170f3331e6f3878160854f5995837b822"
+      },
+      "file_references": 2003,
+      "first_party_actions": 35,
+      "output": "/nix/store/hw39ymsa9jrqbg85d66qzai7bbk8wy4a-aos-bazel-cli-compiler-input-proof-1",
+      "retained_bytes": 237749,
+      "retained_files": 696,
+      "runners": {
+        "disk cache hit": 523
+      },
+      "rust_actions": 523,
+      "source": "/nix/store/mffby9yps9va8rsj10jzbvlqq6rgygq1-aos-bazel-workspace"
+    },
+    "uncached": {
+      "configuration": "/nix/store/glmkd55svgb3kblsdswvm3sks3wl0q1i-aos-bazel-configuration.json",
+      "derivation": "/nix/store/r97492m8dhaxc1jvqk3jyvv9611i4zjs-aos-bazel-cli-compiler-input-uncached-proof-1.drv",
+      "evidence_sha256": {
+        "actions.json": "855cc4a4163447bc4e184a76032c93301e8fad268587699a0ae492d51bc4eb8f",
+        "compiler-inputs.json": "b8719e5e0e0d77cacd42c3b62b14a7aba9eaf38cc1cf6ca94dc30828d77f1971",
+        "compiler-invocations.json": "2801e9e8da981ab5b8d38aefd300280f846572d91b7179baa62e1e324fd3e39e",
+        "execution.json": "b947e039ecd3f7db256257d25de0d9093640fc8f9ad4036024fc241356bc1670"
+      },
+      "file_references": 2003,
+      "first_party_actions": 35,
+      "output": "/nix/store/f2ys8f3qf1k6l9sacz5v4a717gfb5v2y-aos-bazel-cli-compiler-input-uncached-proof-1",
+      "retained_bytes": 237749,
+      "retained_files": 696,
+      "runners": {
+        "linux-sandbox": 523
+      },
+      "rust_actions": 523,
+      "source": "/nix/store/mffby9yps9va8rsj10jzbvlqq6rgygq1-aos-bazel-workspace"
+    }
+  },
+  "limits": [
+    "The library proof uses the frozen lint-qualified CLI workspace. Its 523 cached Rust actions restored from the explicit local disk cache; 523 uncached actions executed in linux-sandbox without a requested shared cache mount.",
+    "The complete default/fleet capture builds the test binaries and selected production binaries from the exact architecture-qualified source snapshots. It does not rerun their runtime cases; the linked checkpoint retains those actual executions.",
+    "All indirect input files and response vectors are checked against actual execution digests. Sandbox path roots remain explicit symbolic values; no compiler defaults are inferred.",
+    "Only wrapper-expanded cfg and edition are compared with Cargo. Reconstructed Bazel and captured Cargo environments remain available for review. Semantic compiler-option, native ABI, linker closure, runtime closure, and performance equivalence are not established; explicit codegen and target differences remain in the reports.",
+    "Earlier byte-retention and direct-option checkpoints remain historical evidence of their identified implementations and sources."
+  ],
+  "nix_arguments": [
+    "--no-out-link",
+    "--max-jobs",
+    "4",
+    "--cores",
+    "4",
+    "--option",
+    "substitute",
+    "false"
+  ],
+  "recipes": {
+    "cli_captures": "let\n  pkgs = (import ./. {sharedBazelCacheDir = \"/aos-build-cache/bazel\";}).pkgs;\nin {\n  default = pkgs.mkAosBazelBuild {\n    pname = \"aos-bazel-cli-default-compiler-evidence\";\n    workspace = {\n      source = builtins.storePath \"/nix/store/9q4ipn34m3654mjksyw2ydjf6ag5018a-aos-bazel-workspace\";\n      configuration = builtins.storePath \"/nix/store/w8558xn77m4l3db9rvqlk6v82r41a3sd-aos-bazel-configuration.json\";\n      preparedLock = builtins.storePath \"/nix/store/ng2ay0fil9vv5dyi6n9lssnpn00fk47s-aos-bazel-prepared-lock-1\";\n      batch = false;\n    };\n    targets = builtins.fromJSON \"[\\\"//crates/aos/cli/aos-cli:lib\\\", \\\"//crates/aos/cli/aos-cli:aos\\\", \\\"//crates/aos/cli/aos-cli:apr\\\", \\\"//crates/aos/cli/aos-cli:apm\\\", \\\"//crates/aos/cli/aos-cli:aos-package-runtime\\\", \\\"//crates/aos/cli/aos-cli:aos-boot-configuration\\\", \\\"//crates/aos/cli/aos-cli:aos-provisioning-configuration-evaluator\\\", \\\"//crates/aos/cli/aos-cli:ability_check_compat_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:ability_inspect_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apm_profile_lifecycle_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apm_system_config_dir_binary\\\", \\\"//crates/aos/cli/aos-cli:apr_cache_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apr_create_host_identity_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apr_dry_run_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apr_keys_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apr_keys_generate_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apr_keys_register_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apr_origin_config_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apr_trust_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:bin_aos_binary\\\", \\\"//crates/aos/cli/aos-cli:bin_aos-boot-configuration_binary\\\", \\\"//crates/aos/cli/aos-cli:bin_aos-package-runtime_binary\\\", \\\"//crates/aos/cli/aos-cli:bin_aos-provisioning-configuration-evaluator_binary\\\", \\\"//crates/aos/cli/aos-cli:bin_apm_binary\\\", \\\"//crates/aos/cli/aos-cli:bin_apr_binary\\\", \\\"//crates/aos/cli/aos-cli:cli_separation_binary\\\", \\\"//crates/aos/cli/aos-cli:container_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:container_cli_transfer_binary\\\", \\\"//crates/aos/cli/aos-cli:container_native_publication_binary\\\", \\\"//crates/aos/cli/aos-cli:documentation_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:hub_retained_control_cli_contract_binary\\\", \\\"//crates/aos/cli/aos-cli:hub_topology_cutover_binary\\\", \\\"//crates/aos/cli/aos-cli:image_registry_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:registry_staging_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:release_inventory_nix_boundary_binary\\\", \\\"//crates/aos/cli/aos-cli:unit_binary\\\", \\\"//crates/aos/cli/aos-cli:workspace_architecture_binary\\\"]\";\n    retainActionGraph = true;\n  };\n  fleet = pkgs.mkAosBazelBuild {\n    pname = \"aos-bazel-cli-fleet-compiler-evidence\";\n    workspace = {\n      source = builtins.storePath \"/nix/store/9q4ipn34m3654mjksyw2ydjf6ag5018a-aos-bazel-workspace\";\n      configuration = builtins.storePath \"/nix/store/81247w4whp8d51gv6kg1dh7452x2p5is-aos-bazel-configuration.json\";\n      preparedLock = builtins.storePath \"/nix/store/rfyprf0dvvbj0fz81m28297mzwkksfm1-aos-bazel-prepared-lock-1\";\n      batch = false;\n    };\n    targets = builtins.fromJSON \"[\\\"//crates/aos/cli/aos-cli:lib\\\", \\\"//crates/aos/cli/aos-cli:aos\\\", \\\"//crates/aos/cli/aos-cli:apr\\\", \\\"//crates/aos/cli/aos-cli:apm\\\", \\\"//crates/aos/cli/aos-cli:aos-package-runtime\\\", \\\"//crates/aos/cli/aos-cli:aos-boot-configuration\\\", \\\"//crates/aos/cli/aos-cli:aos-provisioning-configuration-evaluator\\\", \\\"//crates/aos/cli/aos-cli:aos-release-fleet-fixture\\\", \\\"//crates/aos/cli/aos-cli:aos-ability-interruption-audit\\\", \\\"//crates/aos/cli/aos-cli:aos-ability-authority-audit\\\", \\\"//crates/aos/cli/aos-cli:ability_check_compat_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:ability_inspect_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apm_profile_lifecycle_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apm_system_config_dir_binary\\\", \\\"//crates/aos/cli/aos-cli:apr_cache_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apr_create_host_identity_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apr_dry_run_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apr_keys_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apr_keys_generate_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apr_keys_register_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apr_origin_config_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:apr_trust_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:bin_aos_binary\\\", \\\"//crates/aos/cli/aos-cli:bin_aos-ability-authority-audit_binary\\\", \\\"//crates/aos/cli/aos-cli:bin_aos-ability-interruption-audit_binary\\\", \\\"//crates/aos/cli/aos-cli:bin_aos-boot-configuration_binary\\\", \\\"//crates/aos/cli/aos-cli:bin_aos-package-runtime_binary\\\", \\\"//crates/aos/cli/aos-cli:bin_aos-provisioning-configuration-evaluator_binary\\\", \\\"//crates/aos/cli/aos-cli:bin_aos-release-fleet-fixture_binary\\\", \\\"//crates/aos/cli/aos-cli:bin_apm_binary\\\", \\\"//crates/aos/cli/aos-cli:bin_apr_binary\\\", \\\"//crates/aos/cli/aos-cli:cli_separation_binary\\\", \\\"//crates/aos/cli/aos-cli:container_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:container_cli_transfer_binary\\\", \\\"//crates/aos/cli/aos-cli:container_native_publication_binary\\\", \\\"//crates/aos/cli/aos-cli:documentation_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:hub_retained_control_cli_contract_binary\\\", \\\"//crates/aos/cli/aos-cli:hub_topology_cutover_binary\\\", \\\"//crates/aos/cli/aos-cli:image_registry_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:registry_staging_cli_binary\\\", \\\"//crates/aos/cli/aos-cli:release_inventory_nix_boundary_binary\\\", \\\"//crates/aos/cli/aos-cli:unit_binary\\\", \\\"//crates/aos/cli/aos-cli:workspace_architecture_binary\\\"]\";\n    retainActionGraph = true;\n  };\n}\n",
+    "library_cached": "let\n  pkgs = (import ./. {sharedBazelCacheDir = \"/aos-build-cache/bazel\";}).pkgs;\n  workspace = {\n    source = builtins.storePath \"/nix/store/mffby9yps9va8rsj10jzbvlqq6rgygq1-aos-bazel-workspace\";\n    configuration = builtins.storePath \"/nix/store/glmkd55svgb3kblsdswvm3sks3wl0q1i-aos-bazel-configuration.json\";\n    preparedLock = builtins.storePath \"/nix/store/12c1bvc984n1zfq6w0rdsrmh98iqrars-aos-bazel-prepared-lock-1\";\n    batch = false;\n  };\nin pkgs.mkAosBazelBuild {\n  pname = \"aos-bazel-cli-compiler-input-proof\";\n  inherit workspace;\n  targets = [\"//crates/aos/cli/aos-cli:lib\"];\n  retainActionGraph = true;\n}\n",
+    "library_uncached": "let\n  pkgs = (import ./. {sharedBazelCacheDir = \"/aos-build-cache/bazel\";}).pkgs;\n  workspace = {\n    source = builtins.storePath \"/nix/store/mffby9yps9va8rsj10jzbvlqq6rgygq1-aos-bazel-workspace\";\n    configuration = builtins.storePath \"/nix/store/glmkd55svgb3kblsdswvm3sks3wl0q1i-aos-bazel-configuration.json\";\n    preparedLock = builtins.storePath \"/nix/store/12c1bvc984n1zfq6w0rdsrmh98iqrars-aos-bazel-prepared-lock-1\";\n    batch = false;\n  };\nin pkgs.mkAosBazelBuild {\n  pname = \"aos-bazel-cli-compiler-input-uncached-proof\";\n  inherit workspace;\n  targets = [\"//crates/aos/cli/aos-cli:lib\"];\n  retainActionGraph = true;\n  sharedBuildCache = false;\n}\n"
+  },
+  "schema_version": 1,
+  "status": "PASS: execution-bound wrapper input reconstruction and complete CLI cfg/edition pairing"
+}
