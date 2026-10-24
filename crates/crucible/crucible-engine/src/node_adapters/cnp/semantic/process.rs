@@ -662,7 +662,11 @@ fn group_empty(group: u32) -> Result<bool, ProviderError> {
             Err(error) => return Err(error.into()),
         };
         let mut bytes = Vec::new();
-        file.take(65_537).read_to_end(&mut bytes)?;
+        if !complete_group_stat_read(file.take(65_537).read_to_end(&mut bytes))? {
+            // A task can disappear after stat was opened. Retry the entire
+            // census; this incomplete read cannot prove an empty private group.
+            return Ok(false);
+        }
         if bytes.len() > 65_536 {
             return Err(ProviderError::ResourceExhausted(
                 "generic kernel census row",
@@ -685,6 +689,22 @@ fn group_empty(group: u32) -> Result<bool, ProviderError> {
     }
     Ok(true)
 }
+
+// ESRCH identifies a task that exited during this already-open proc read. All
+// other read failures remain errors, including inaccessible or malformed rows.
+fn complete_group_stat_read(result: std::io::Result<usize>) -> Result<bool, ProviderError> {
+    match result {
+        Ok(_) => Ok(true),
+        Err(error) if error.raw_os_error() == Some(rustix::io::Errno::SRCH.raw_os_error()) => {
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(test)]
+#[path = "process/group_census_tests.rs"]
+mod group_census_tests;
 
 /// Retains complete original control journals when native attachment refuses.
 #[must_use = "retain rejected original control custody with its actual native owner"]
