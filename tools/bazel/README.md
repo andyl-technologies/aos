@@ -2826,3 +2826,9 @@ These uncached Linux-sandbox builds use previously built source-built AOS
 Bazel, Java, and compiler packages with current native libraries and dependency
 SDKs. The merged master default toolchain, fresh configured source inventories,
 editor checks, and complete compiler/linker equivalence remain separate gates.
+
+`tests/evidence/master-rust-test-target-compilation.json` records the passing
+ordinary `checks.rust.aos-test-targets` gate after the merge. It compiles unit
+and integration targets for all 58 selected application packages. All 3,857
+captured Rust files and Cargo manifests/locks match the current workspace.
+This gate compiles the targets without executing their cases.
