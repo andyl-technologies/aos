@@ -61,7 +61,6 @@ DEPENDENCIES = [
 DEVELOPMENT_DEPENDENCIES = [
     "//crates/packages/aos-build-client:lib",
     "//third_party/rust:core_tower",
-    "//third_party/rust:core_tempfile",
 ]
 
 rust_library(

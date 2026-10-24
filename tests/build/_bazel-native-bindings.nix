@@ -10,7 +10,14 @@
   };
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
-    sourceDirectories = ["tools/bazel" "third_party/rust" packagePath];
+    sourceDirectories = [
+      "tools/bazel/toolchains"
+      "tools/bazel/rules"
+      "tools/bazel/metadata"
+      "tools/bazel/testing"
+      "third_party/rust"
+      packagePath
+    ];
     dependencyProfile = "native-bindings";
     analysisTargets = ["${packageLabel}lib" "${packageLabel}unit" "${packageLabel}production_license_closure"];
     repositories =

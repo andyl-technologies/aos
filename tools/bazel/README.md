@@ -2812,3 +2812,17 @@ The report records the JavaScript, Wasm, CSS, and declaration file hashes.
 These baselines precede the Bazel conversion. Browser execution, immutable
 asset naming, generated-page loading, and deployment packaging require
 independent qualification.
+
+## Merged control and build-service iteration
+
+`tests/evidence/master-control-build-services-iteration.json` retains 116 control
+cases and 59 build-service cases after the master merge. The comparison checks
+all selected Cargo/Bazel test inventories and the exact upstream and first-party
+feature sets. The 24 existing generated API doctest ignores remain identical.
+The new transport-version, TLS trust, read-access, upload-resumption, and store
+integrity regressions are included.
+
+These uncached Linux-sandbox builds use previously built source-built AOS
+Bazel, Java, and compiler packages with current native libraries and dependency
+SDKs. The merged master default toolchain, fresh configured source inventories,
+editor checks, and complete compiler/linker equivalence remain separate gates.

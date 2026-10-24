@@ -33,7 +33,7 @@ DEPENDENCIES = [
 
 DEVELOPMENT_DEPENDENCIES = [
     "//third_party/rust:core_rustls_pemfile",
-    "//third_party/rust:core_webpki",
+    "//third_party/rust:core_rustls_webpki",
 ]
 
 rust_library(
