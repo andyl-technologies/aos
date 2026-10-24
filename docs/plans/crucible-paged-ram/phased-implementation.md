@@ -98,9 +98,10 @@ aggregate remains pending. Inventory
 requirements and zero qualifications. Engineering hygiene passes at
 `zcvijji792yblcv5r97p578pnwrl3izi`, with content-bound reviews of the merged
 sources.
-Merged-source Rust compilation, component execution and ABI execution remain
-pending; pre-merge passing checks do not qualify this merge. No native fixture
-execution or activation authority follows from these source and inventory checks.
+Current-toolchain application compilation, hermetic Store execution and ABI
+execution remain pending; pre-merge passing checks do not qualify this merge.
+No native fixture execution or activation authority follows from these source
+and inventory checks.
 
 #### Receiver transport acknowledgment custody
 
@@ -122,18 +123,38 @@ control fails: the caller's 8,773 prepaid bytes return while its error remains
 alive. With the correction, both controls pass and the actual typed revocation
 retains all caller prepayment until error close. The foreign account acquires no
 loan and closes independently. The initial focused shell inherited a host cache
-wrapper, so those observations remain provisional. A fresh target with explicit
-AOS tool paths, disabled compiler wrappers, retained AOS Rust 1.98.1, current AOS
-native libraries and verified merged vendor sources independently passes all
-780 ordinary Store tests, including both new controls, and all 95 policy
-controls. Three large stress cases are excluded from this ordinary run. This is
-supplemental component feedback, not current-toolchain hermetic qualification.
-Clean focused causal replay, control-server tests, strict Clippy, broader
-component execution and mandatory application compilation remain pending.
+wrapper. A fresh target with explicit AOS tool paths, disabled compiler wrappers,
+retained AOS Rust 1.98.1, current AOS
+native libraries and verified merged vendor sources independently reproduces
+the predecessor's one pass and one custody failure, then passes both corrected
+controls. The replay restores the committed receiver source byte-for-byte. The
+same clean environment passes all 780 ordinary Store tests, including both new
+controls, and all 95 policy
+controls, along with strict Store/RAM Clippy across all targets. Three large
+stress cases are excluded from this ordinary run. This is supplemental component
+feedback, not current-toolchain hermetic qualification.
+Hermetic component execution and mandatory application compilation remain pending.
 
 Inventory `w7rs8whryrz04653xc8dy7xd7szclyj0` validates 653 bindings across
 243 requirements, with 142 uncovered and none qualified. No whole-world
 readiness, Native activation, physical return or performance parity is implied.
+
+#### Merged TLS admission fixture
+
+The clean merged control-server suite initially passes 72 tests and fails
+`rejected_tls_handshakes_release_admission_for_authenticated_rpc` with
+`MissingClientOutputAuthority`. The upstream test's final authenticated client
+request lacks the explicit output account required by the RFC client contract.
+
+The fixture now supplies the existing tracked finite component account with a
+64 MiB allowance. It retains the eight rejected TLS handshakes, the authenticated
+HTTP/2 request and all connection limits. After the response and client close,
+the account's actual retained-byte counter must return to zero. All 73 server
+tests pass with explicit AOS tools and the retained AOS compiler. The test module's
+content-bound responsibility review includes this output ownership check. All
+95 policy controls, the source-bound hygiene gate and strict Store/RAM Clippy
+pass after the repair. Production client admission is unchanged, and no Native
+authority is issued.
 
 #### Isolated patched-libc build support
 

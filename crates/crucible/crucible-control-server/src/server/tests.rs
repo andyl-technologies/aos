@@ -269,12 +269,24 @@ async fn rejected_tls_handshakes_release_admission_for_authenticated_rpc()
         let _ = tokio::time::timeout(Duration::from_secs(1), rejected.read(&mut byte)).await?;
     }
 
+    let (output_budget, retained_output_bytes) =
+        crucible_control_api::admitted_output::test_support::tracked_fixture_budget(
+            64 * 1024 * 1024,
+        )?;
     let client = RpcControlClient::new_mtls(
         RpcEndpoint::http2(format!("https://{address}")),
         RpcMutualTlsConfig::from_pem(tls.ca_pem, tls.client_identity_pem),
-    )?;
+    )?
+    .with_decode_budget(output_budget);
     let sessions = tokio::time::timeout(Duration::from_secs(2), client.list_sessions()).await??;
     assert!(sessions.sessions.is_empty());
+
+    drop(sessions);
+    drop(client);
+    assert_eq!(
+        retained_output_bytes.load(std::sync::atomic::Ordering::SeqCst),
+        0
+    );
 
     let _ = shutdown_sender.send(());
     tokio::time::timeout(Duration::from_secs(1), server).await???;
