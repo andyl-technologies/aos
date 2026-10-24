@@ -208,6 +208,9 @@ def scenario(executable, directory, mode):
                         with (target / "b").open("rb", buffering=0) as second_handle:
                             require(first_handle.read(1) == second_handle.read(1) == b"a",
                                     "independent live handles did not retain their own cursors")
+                        # Require another actual FUSE READ on the surviving fh,
+                        # rather than satisfying this assertion from KEEP_CACHE.
+                        os.posix_fadvise(first_handle.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
                         require(first_handle.read() == b"bc",
                                 "closing one hard-link handle invalidated another live handle")
                     print("PASS original kernel handles survive peer RELEASE and repeated opens", flush=True)

@@ -126,6 +126,8 @@ fn main() -> Result {
             bytes: 4096,
         })?;
         let mut backing: Option<(u64, FallbackBacking)> = None;
+        let mut last_file_release: Option<(NonZeroU64, NonZeroU64)> = None;
+        let mut read_after_peer_release = false;
         let mut fetch: Option<Fetch> = None;
         let mut opens = fuse_open::Queue::new(fuse_open::Limits {
             nodes: 1,
@@ -256,6 +258,9 @@ fn main() -> Result {
                 },
                 result = stopped(&control) => {
                     result?;
+                    if mode == "read" && !read_after_peer_release {
+                        return Err("kernel never read an original handle after peer release".into());
+                    }
                     drop(connection);
                     notify(b"STOPPED")?;
                     return Ok(());
@@ -384,6 +389,13 @@ fn main() -> Result {
                         let read = fuse_read::Read::parse(request, node, handle)?;
                         let length =
                             file.read(read.offset(), read.length(), &mut directory_page)?;
+                        // Monotonic handle IDs distinguish a surviving original
+                        // handle from a later reopen served from cached pages.
+                        if last_file_release.is_some_and(|(released_node, released_handle)| {
+                            released_node == node && handle < released_handle
+                        }) {
+                            read_after_peer_release = true;
+                        }
                         (Some(&directory_page[..length]), 0)
                     }
                     (18 | 29, Some(_)) => {
@@ -395,11 +407,13 @@ fn main() -> Result {
                         } else {
                             HandleKind::Directory
                         };
-                        lifetime.close(
-                            NonZeroU64::new(request.body_u64(0)?).ok_or("zero released handle")?,
-                            node.ok_or("zero released node")?,
-                            kind,
-                        )?;
+                        let handle = NonZeroU64::new(request.body_u64(0)?)
+                            .ok_or("zero released handle")?;
+                        let node = node.ok_or("zero released node")?;
+                        lifetime.close(handle, node, kind)?;
+                        if kind == HandleKind::File {
+                            last_file_release = Some((node, handle));
+                        }
                         (Some([].as_slice()), 0)
                     }
                     (25, Some(_)) if mode == "read" => {
@@ -436,6 +450,9 @@ fn main() -> Result {
                 },
             };
             send(&mut connection, &mut output, request, body, errno).await?;
+        }
+        if mode == "read" && !read_after_peer_release {
+            return Err("kernel never read an original handle after peer release".into());
         }
         notify(b"STOPPED")?;
         Ok(())

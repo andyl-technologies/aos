@@ -16960,3 +16960,20 @@ owning gate. Its qualification remains pending. T-FUSE-1 remains open until the
 complete gate passes and its actual source, Cargo artifacts and native witnesses
 are reviewed. Worker/broker composition, passthrough and writable exposures remain
 separate obligations; accepted trunk tasks remain 27/64.
+
+
+The lifetime checkpoint `084435ec75` passes all 75 structural cases in 74.215
+seconds and its native FUSE guest in 222.297 seconds. Complete independent
+reviews bind 8,183 immutable files, 5,441 inputs and both actual Cargo ELFs.
+The native guest verifies coalescing, responsive metadata, original sealed READ
+bytes/cursor, distinct original handles, continued reading after peer release
+and original timeout/cancellation controls. Mandatory workspace compilation is
+still running.
+
+The peer-release control is strengthened further: the administrative driver
+discards clean FUSE page-cache pages before reading the surviving handle. The
+worker now requires an actual validated READ whose handle predates another
+released handle of that same canonical node before reporting successful teardown.
+This excludes a cache-only success or a later reopen from this native witness.
+Strict all-target Clippy passes; the strengthened native execution and mandatory
+workspace compilation remain pending. No task acceptance changes.
