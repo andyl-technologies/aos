@@ -11496,3 +11496,14 @@ pass with the AOS-built shell and tools: SELinux disabled, successful labeling,
 lookup failure, relabel failure and missing generator output. Failed labeling
 never submits reload or start, and staging directories are removed. Packaged
 checks and installed VM retries for this correction remain pending.
+
+The packaged verity substrate check, including all five publication cases
+against the installed helper, now passes at
+`/nix/store/vhbccwzmvagyskbgs1s61hkmb9ik2jwr-systemd-verity-check-0`.
+The rebuilt backend artifact check passes at
+`/nix/store/66qblsklrrjj3115i6j0hhdjw5md0wcg-aos-systemd-backend-policy-artifact-check`,
+and full native evaluation passes at
+`/nix/store/smp1g7vf4504y3a32nfsi2zq31aim9mx-aos-native-evaluation-checks-0`.
+The clean `b398b0d53e` Host, Root and offline vTPM retries remain pending;
+these package and evaluation results do not establish installed boot or
+protected lifecycle readiness.
