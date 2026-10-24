@@ -10,10 +10,10 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   model = import ./_crucible-model-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
-  determinismTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/event_log_determinism.rs;
-  replayOracleTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_replay_oracle.rs;
-  e2eDeterminismTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_e2e_determinism_concurrency.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  determinismTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/event_log_determinism.rs;
+  replayOracleTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_replay_oracle.rs;
+  e2eDeterminismTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_e2e_determinism_concurrency.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -31,7 +31,7 @@
         needle = "renumbered causal subsequence";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "causal projection entry type";
         needle = "pub struct EventLogCausalProjectionEntry";
@@ -77,7 +77,7 @@
         needle = "expected_raw_index";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "causal projection export";
         needle = "EventLogCausalProjection";
@@ -95,7 +95,7 @@
         needle = "event_log_causal_projection";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "trigger replay uses canonical comparison";
         needle = "compare_event_log_determinism(expected, reproduced).passes()";
@@ -105,13 +105,13 @@
         needle = "compare_event_log_determinism(&expected_entries, &reproduced_entries).passes()";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "replay oracle compares event-log offsets";
         needle = "fat_state.event_log != thin_state.event_log";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_log_determinism.rs" determinismTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/event_log_determinism.rs" determinismTest [
       {
         label = "renumbering test";
         needle = "causal_projection_renumbers_past_observational_interleaving";
@@ -137,7 +137,7 @@
         needle = "expected_raw_index";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_replay_oracle.rs" replayOracleTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/gate_replay_oracle.rs" replayOracleTest [
       {
         label = "replay-oracle imports comparison";
         needle = "compare_event_log_determinism";
@@ -151,7 +151,7 @@
         needle = "comparison.expected().canonical_bytes()";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_e2e_determinism_concurrency.rs" e2eDeterminismTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/gate_e2e_determinism_concurrency.rs" e2eDeterminismTest [
       {
         label = "e2e imports comparison";
         needle = "compare_event_log_determinism";

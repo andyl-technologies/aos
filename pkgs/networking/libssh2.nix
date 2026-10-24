@@ -12,8 +12,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -126,6 +142,7 @@ in
           script = ''
             tar xf $src
             cd libssh2-${version}
+            patch --fuzz=0 -p1 < ${./libssh2-validate-etm-packet-length.patch}
           '';
         }
       ]
@@ -161,6 +178,16 @@ in
           name = "build";
           script = ''
             make -j$NIX_BUILD_CORES
+          '';
+        }
+        {
+          name = "check";
+          script = ''
+            guard_line=$(grep -n -m1 'p->total_num < mac_len + 4 + (size_t)blocksize' src/transport.c | cut -d: -f1)
+            decrypt_line=$(grep -n -m1 'rc = decrypt(session, p->payload + 4' src/transport.c | cut -d: -f1)
+            test -n "$guard_line"
+            test -n "$decrypt_line"
+            test "$guard_line" -lt "$decrypt_line"
           '';
         }
         {

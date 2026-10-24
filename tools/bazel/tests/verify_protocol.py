@@ -9,7 +9,7 @@ from verify_pilot import cases, verify
 
 
 PACKAGE_PATHS = {
-    name: f"crates/crucible/protocol/{name}"
+    name: f"crates/crucible/{name}"
     for name in ["crucible-qemu-protocol", "crucible-qemu-shmem"]
 }
 

@@ -45,7 +45,7 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::ReportGatewayRequest,
     ) -> Result<pb::GatewayResponse, RpcError> {
-        self.require_controller_fence(
+        let claims = self.require_controller_fence(
             auth,
             &req.controller_lease_id,
             req.controller_generation,
@@ -54,6 +54,14 @@ impl RpcService {
         let current = self
             .authorized_gateway(auth, &req.stable_id, Permission::GatewayManage)
             .await?;
+        self.claim_controller_fence(
+            &claims,
+            "gateway",
+            &current.id,
+            &req.controller_lease_id,
+            req.controller_generation,
+        )
+        .await?;
         let expected = parse_resource_version(&req.expected_observation_version, 0)?;
         if expected <= 0 || expected != current.resource_version {
             return Err(RpcError::FailedPrecondition(
@@ -62,12 +70,19 @@ impl RpcService {
         }
         let record = self
             .db
-            .observe_gateway(
+            .observe_gateway_fenced(
                 &current.id,
                 req.observed_generation,
                 &req.state,
                 (!req.error.is_empty()).then_some(req.error.as_str()),
                 expected,
+                &aos_hub_db::db::ControllerLeaseFence {
+                    target_kind: "gateway",
+                    target_id: &current.id,
+                    lease_id: &req.controller_lease_id,
+                    generation: req.controller_generation,
+                    owner_service_account_id: claims.owner_id,
+                },
             )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;

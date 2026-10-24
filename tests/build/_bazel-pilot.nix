@@ -6,15 +6,15 @@
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
     inherit sourceInventory;
-    sourceDirectories = pkgs.lib.optionals (sourceInventory == null) ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/testing" "crates/aos/boot/aos-boot-identity" "crates/aos/boot/aos-recovery"];
-    analysisTargets = ["//crates/aos/boot/aos-boot-identity:package" "//crates/aos/boot/aos-recovery:package"];
+    sourceDirectories = pkgs.lib.optionals (sourceInventory == null) ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/testing" "crates/boot/aos-boot-identity" "crates/boot/aos-recovery"];
+    analysisTargets = ["//crates/boot/aos-boot-identity:package" "//crates/boot/aos-recovery:package"];
   };
   package = name: build:
     pkgs.mkAosBazelPackage {
       pname = name;
       version = "0.1.0";
       inherit build;
-      packageLabel = "//crates/aos/boot/${name}:package";
+      packageLabel = "//crates/boot/${name}:package";
       runtimeDeps = [pkgs.gcc-libs];
     };
 in rec {
@@ -23,22 +23,22 @@ in rec {
   build = pkgs.mkAosBazelBuild {
     pname = "aos-bazel-boot-pilot";
     inherit workspace;
-    targets = ["//crates/aos/boot/aos-boot-identity:package" "//crates/aos/boot/aos-recovery:package" "//crates/aos/boot/aos-recovery:test_artifacts"];
+    targets = ["//crates/boot/aos-boot-identity:package" "//crates/boot/aos-recovery:package" "//crates/boot/aos-recovery:test_artifacts"];
   };
   unit = pkgs.mkAosBazelCheck {
     pname = "aos-bazel-boot-pilot-tests";
     inherit workspace;
-    targets = ["//crates/aos/boot/aos-boot-identity:unit" "//crates/aos/boot/aos-boot-identity:uki_cli" "//crates/aos/boot/aos-boot-identity:doc" "//crates/aos/boot/aos-recovery:unit" "//crates/aos/boot/aos-recovery:doc"];
+    targets = ["//crates/boot/aos-boot-identity:unit" "//crates/boot/aos-boot-identity:uki_cli" "//crates/boot/aos-boot-identity:doc" "//crates/boot/aos-recovery:unit" "//crates/boot/aos-recovery:doc"];
   };
   developer-build = pkgs.mkAosBazelBuild {
     pname = "aos-bazel-boot-developer-tools";
     inherit workspace;
-    targets = ["//crates/aos/boot/aos-boot-identity:clippy" "//crates/aos/boot/aos-recovery:clippy" "//crates/aos/boot/aos-boot-identity:documentation" "//crates/aos/boot/aos-recovery:documentation"];
+    targets = ["//crates/boot/aos-boot-identity:clippy" "//crates/boot/aos-recovery:clippy" "//crates/boot/aos-boot-identity:documentation" "//crates/boot/aos-recovery:documentation"];
   };
   developer-tests = pkgs.mkAosBazelCheck {
     pname = "aos-bazel-boot-format";
     inherit workspace;
-    targets = ["//crates/aos/boot/aos-boot-identity:format" "//crates/aos/boot/aos-recovery:format"];
+    targets = ["//crates/boot/aos-boot-identity:format" "//crates/boot/aos-recovery:format"];
   };
   identity = package "aos-boot-identity" build;
   recovery = package "aos-recovery" build;
@@ -46,7 +46,7 @@ in rec {
     pname = "aos-recovery-tests";
     version = "0.1.0";
     inherit build;
-    packageLabel = "//crates/aos/boot/aos-recovery:test_artifacts";
+    packageLabel = "//crates/boot/aos-recovery:test_artifacts";
     runtimeDeps = [pkgs.gcc-libs];
   };
   native-manifest = pkgs.runCommand "aos-bazel-pilot-native-manifest" {} ''
@@ -59,12 +59,12 @@ in rec {
   '';
   parity = pkgs.runCommand "aos-bazel-boot-pilot-test-parity" {buildDeps = [pkgs.rust pkgs.python3];} ''
     rustc --edition=2024 --crate-name aos_boot_identity --crate-type rlib \
-      ${../../crates/aos/boot/aos-boot-identity}/src/lib.rs -o libaos_boot_identity.rlib
-    rustc --edition=2024 --test ${../../crates/aos/boot/aos-boot-identity}/src/lib.rs -o identity-tests
+      ${../../crates/boot/aos-boot-identity}/src/lib.rs -o libaos_boot_identity.rlib
+    rustc --edition=2024 --test ${../../crates/boot/aos-boot-identity}/src/lib.rs -o identity-tests
     env CARGO_BIN_EXE_aos-boot-identity=${pkgs.aos-boot-identity}/bin/aos-boot-identity \
-      rustc --edition=2024 --test ${../../crates/aos/boot/aos-boot-identity}/tests/uki_cli.rs \
+      rustc --edition=2024 --test ${../../crates/boot/aos-boot-identity}/tests/uki_cli.rs \
         --extern aos_boot_identity=libaos_boot_identity.rlib -o cli-tests
-    rustc --edition=2024 --test ${../../crates/aos/boot/aos-recovery}/src/lib.rs \
+    rustc --edition=2024 --test ${../../crates/boot/aos-recovery}/src/lib.rs \
       --extern aos_boot_identity=libaos_boot_identity.rlib -o recovery-tests
     # Run the integration oracle against the existing packaged command too.
     ./cli-tests
@@ -73,9 +73,9 @@ in rec {
     from pathlib import Path
 
     oracles = {
-        "//crates/aos/boot/aos-boot-identity:unit": str(Path("identity-tests").resolve()),
-        "//crates/aos/boot/aos-boot-identity:uki_cli": str(Path("cli-tests").resolve()),
-        "//crates/aos/boot/aos-recovery:unit": str(Path("recovery-tests").resolve()),
+        "//crates/boot/aos-boot-identity:unit": str(Path("identity-tests").resolve()),
+        "//crates/boot/aos-boot-identity:uki_cli": str(Path("cli-tests").resolve()),
+        "//crates/boot/aos-recovery:unit": str(Path("recovery-tests").resolve()),
     }
     Path("oracles.json").write_text(json.dumps(oracles))
     PY

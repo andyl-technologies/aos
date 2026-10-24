@@ -5,21 +5,21 @@
   testSourceInventory ? ../../tools/bazel/metadata/qemu-gateway-process-test-inventory.json,
 }: let
   root = ../..;
-  host = "//crates/crucible/control/crucible-control-server:";
-  gateway = "//crates/crucible/qemu/crucible-qemu-debug-gateway:";
-  protocol = "//crates/crucible/protocol/crucible-qemu-protocol:";
+  host = "//crates/crucible/crucible-control-server:";
+  gateway = "//crates/crucible/crucible-qemu-debug-gateway:";
+  protocol = "//crates/crucible/crucible-qemu-protocol:";
   hostPackages = {
-    crucible-control-server = "crates/crucible/control/crucible-control-server";
-    crucible-control-client = "crates/crucible/control/crucible-control-client";
-    crucible-control-api = "crates/crucible/control/crucible-control-api";
-    crucible-session = "crates/crucible/control/crucible-session";
-    crucible-engine = "crates/crucible/engine/crucible-engine";
-    crucible-determinism = "crates/crucible/engine/crucible-determinism";
-    crucible-device = "crates/crucible/engine/crucible-device";
-    crucible-campaign = "crates/crucible/engine/crucible-campaign";
-    crucible-store = "crates/crucible/storage/crucible-store";
-    crucible-qemu-protocol = "crates/crucible/protocol/crucible-qemu-protocol";
-    crucible-qemu-shmem = "crates/crucible/protocol/crucible-qemu-shmem";
+    crucible-control-server = "crates/crucible/crucible-control-server";
+    crucible-control-client = "crates/crucible/crucible-control-client";
+    crucible-control-api = "crates/crucible/crucible-control-api";
+    crucible-session = "crates/crucible/crucible-session";
+    crucible-engine = "crates/crucible/crucible-engine";
+    crucible-determinism = "crates/crucible/crucible-determinism";
+    crucible-device = "crates/crucible/crucible-device";
+    crucible-campaign = "crates/crucible/crucible-campaign";
+    crucible-store = "crates/crucible/crucible-store";
+    crucible-qemu-protocol = "crates/crucible/crucible-qemu-protocol";
+    crucible-qemu-shmem = "crates/crucible/crucible-qemu-shmem";
   };
   hostPackageOptions =
     pkgs.lib.concatMap
@@ -165,8 +165,8 @@ in rec {
     ${pkgs.python3}/bin/python3 ${parityTools}/verify_protocol.py \
       --tests ${tests}/evidence/tests --inventory ${testInventory}/inventory.json \
       --messages ${cargo}/gpl/cargo-messages.jsonl \
-      --package-path crucible-qemu-debug-gateway=crates/crucible/qemu/crucible-qemu-debug-gateway \
-      --dependency-package-path crucible-qemu-protocol=crates/crucible/protocol/crucible-qemu-protocol \
+      --package-path crucible-qemu-debug-gateway=crates/crucible/crucible-qemu-debug-gateway \
+      --dependency-package-path crucible-qemu-protocol=crates/crucible/crucible-qemu-protocol \
       --output "$out/tests.json"
     ${pkgs.python3}/bin/python3 ${parityTools}/verify_compiler_options.py \
       --build ${hostBuild} --cargo ${cargo}/host --output "$out/host-compiler.json"

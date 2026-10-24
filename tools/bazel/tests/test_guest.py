@@ -41,7 +41,7 @@ class GuestTests(unittest.TestCase):
             path.write_text("{}" if name == "closure.json" else name)
             inputs.append({"path": "external/aos_native/static/" + name,
                            "digest": {"hash": hashlib.sha256(path.read_bytes()).hexdigest()}})
-        self.event = {"targetLabel": "//crates/crucible/guest/crucible-guest:crucible-guest",
+        self.event = {"targetLabel": "//crates/crucible/crucible-guest:crucible-guest",
                       "mnemonic": "Rustc", "runner": "linux-sandbox", "inputs": inputs}
         (self.build / "evidence/actions.json").write_text("{}")
         self.command = ["rustc", "-Ctarget-feature=+crt-static", "-Crelocation-model=static"]

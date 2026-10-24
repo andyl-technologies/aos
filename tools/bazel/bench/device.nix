@@ -7,10 +7,10 @@
   pkgs = (import ../../.. {inherit system;}).pkgs;
   family = import ../../../tests/build/_bazel-device.nix {inherit pkgs;};
   packages = {
-    crucible-determinism = "crates/crucible/engine/crucible-determinism";
-    crucible-device = "crates/crucible/engine/crucible-device";
-    crucible-qemu-protocol = "crates/crucible/protocol/crucible-qemu-protocol";
-    crucible-qemu-shmem = "crates/crucible/protocol/crucible-qemu-shmem";
+    crucible-determinism = "crates/crucible/crucible-determinism";
+    crucible-device = "crates/crucible/crucible-device";
+    crucible-qemu-protocol = "crates/crucible/crucible-qemu-protocol";
+    crucible-qemu-shmem = "crates/crucible/crucible-qemu-shmem";
   };
   inventory = builtins.fromJSON (builtins.readFile ../metadata/device-inventory.json);
   targets = map (target: target.label) (builtins.filter

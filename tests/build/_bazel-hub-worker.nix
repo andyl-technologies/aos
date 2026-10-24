@@ -6,8 +6,8 @@
 }: let
   packages = {aos-hub-worker = "crates/hub/aos-hub-worker";};
   dependencyPackages = {
-    aos-artifact-evidence = "crates/shared/aos-artifact-evidence";
-    aos-core = "crates/shared/aos-core";
+    aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
+    aos-core = "crates/core/aos-core";
     aos-hub-api = "crates/hub/aos-hub-api";
     aos-hub-client = "crates/hub/aos-hub-client";
     aos-hub-db = "crates/hub/aos-hub-db";
@@ -15,14 +15,14 @@
     aos-hub-native = "crates/hub/aos-hub-native";
     aos-hub-service = "crates/hub/aos-hub-service";
     aos-hub-ui = "crates/hub/aos-hub-ui";
-    aos-module-docs = "crates/aos/modules/aos-module-docs";
-    aos-module-format = "crates/aos/modules/aos-module-format";
-    aos-nar = "crates/shared/aos-nar";
-    aos-oci-types = "crates/shared/aos-oci-types";
-    aos-registry-client = "crates/aos/registry/aos-registry-client";
-    aos-registry-format = "crates/aos/registry/aos-registry-format";
-    aos-release-format = "crates/aos/release/aos-release-format";
-    aos-transfer = "crates/shared/aos-transfer";
+    aos-module-docs = "crates/modules/aos-module-docs";
+    aos-module-format = "crates/modules/aos-module-format";
+    aos-nar = "crates/artifacts/aos-nar";
+    aos-oci-types = "crates/artifacts/aos-oci-types";
+    aos-registry-client = "crates/registry/aos-registry-client";
+    aos-registry-format = "crates/registry/aos-registry-format";
+    aos-release-format = "crates/release/aos-release-format";
+    aos-transfer = "crates/transfer/aos-transfer";
   };
   profile =
     if allFeatures

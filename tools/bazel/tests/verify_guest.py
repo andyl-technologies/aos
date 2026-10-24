@@ -26,7 +26,7 @@ def verify(build, package, libraries, cargo, source, system, readelf):
 
     events = execution_events(build)
     selected = [event for event in events if event["targetLabel"] ==
-                "//crates/crucible/guest/crucible-guest:crucible-guest" and event["mnemonic"] == "Rustc"]
+                "//crates/crucible/crucible-guest:crucible-guest" and event["mnemonic"] == "Rustc"]
     if len(selected) != 1 or "sandbox" not in selected[0]["runner"] or selected[0].get("cacheHit", False):
         raise ValueError("missing actual sandboxed guest link")
     event = selected[0]

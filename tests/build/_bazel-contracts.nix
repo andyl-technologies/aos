@@ -4,17 +4,17 @@
   sourceInventory ? ../../tools/bazel/metadata/contracts-inventory.json,
 }: let
   packages = {
-    aos-release-format = "crates/aos/release/aos-release-format";
-    aos-module-docs = "crates/aos/modules/aos-module-docs";
-    aos-deployment-format = "crates/aos/packages/aos-deployment-format";
-    aos-storage-layout = "crates/aos/boot/aos-storage-layout";
+    aos-release-format = "crates/release/aos-release-format";
+    aos-module-docs = "crates/modules/aos-module-docs";
+    aos-deployment-format = "crates/packages/aos-deployment-format";
+    aos-storage-layout = "crates/boot/aos-storage-layout";
   };
   dependencyPackages = {
-    aos-core = "crates/shared/aos-core";
-    aos-artifact-evidence = "crates/shared/aos-artifact-evidence";
-    aos-oci-types = "crates/shared/aos-oci-types";
-    aos-module-format = "crates/aos/modules/aos-module-format";
-    aos-registry-format = "crates/aos/registry/aos-registry-format";
+    aos-core = "crates/core/aos-core";
+    aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
+    aos-oci-types = "crates/artifacts/aos-oci-types";
+    aos-module-format = "crates/modules/aos-module-format";
+    aos-registry-format = "crates/registry/aos-registry-format";
   };
   rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
   family = import ./_bazel-rust-family.nix {
@@ -39,8 +39,8 @@ in
           map (target: "//${path}:${target}") ["unit" "doc" "license_closure" "clippy" "documentation" "format"])
         (builtins.attrValues packages)
         ++ [
-          "//crates/aos/release/aos-release-format:qualification"
-          "//crates/aos/release/aos-release-format:nix_inventory"
+          "//crates/release/aos-release-format:qualification"
+          "//crates/release/aos-release-format:nix_inventory"
         ];
     };
     all =

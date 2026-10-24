@@ -11,10 +11,10 @@
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   crateRoot = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+    entry = ../../crates/crucible/crucible-engine/src/lib.rs;
   };
-  observedStateTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/observed_state_materialization.rs;
-  deterministicConditionTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/deterministic_condition_evaluation.rs;
+  observedStateTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/observed_state_materialization.rs;
+  deterministicConditionTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/deterministic_condition_evaluation.rs;
   assertionDoc = builtins.readFile ../../docs/rfcs/0010-crucible/18-assertions-properties.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -36,7 +36,7 @@
         needle = "Completed by `checks.crucible.phase4.observedStateMaterialization`";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "observed state view";
         needle = "pub struct ObservedState<'log>";
@@ -114,13 +114,13 @@
         needle = "pub fn observed_state(&self) -> ObservedState<'_>";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "test-only typed event-log constructor";
         needle = "pub(crate) fn with_payload_for_test";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "observed state export";
         needle = "ObservedState";
@@ -138,7 +138,7 @@
         needle = "condition_payload_entry_for_test";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/observed_state_materialization.rs" observedStateTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/observed_state_materialization.rs" observedStateTest [
       {
         label = "internal fault evidence does not enter assertion state";
         needle = "fault_evidence_does_not_expose_internal_state_to_assertion_predicates";
@@ -172,7 +172,7 @@
         needle = "ConditionEvaluationError::FutureEventLogEntry";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/deterministic_condition_evaluation.rs" deterministicConditionTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/deterministic_condition_evaluation.rs" deterministicConditionTest [
       {
         label = "existing prefix-event-only regression";
         needle = "condition_evaluation_uses_checked_prefix_events_only";
@@ -188,7 +188,7 @@
         needle = "attrPath = \"checks.crucible.phase4.observedStateMaterialization\"";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/trigger.rs" (scrubCommentsAndStrings trigger) [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/trigger.rs" (scrubCommentsAndStrings trigger) [
       {
         label = "host wall-clock dependency";
         needle = "SystemTime";
@@ -210,7 +210,7 @@
         needle = "HashSet";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/observed_state_materialization.rs" observedStateTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/observed_state_materialization.rs" observedStateTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";

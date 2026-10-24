@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 from verify_protocol import compare, doctest_cases
 
 
-CLI_PATH = "crates/aos/cli/aos-cli"
+CLI_PATH = "crates/cli/aos-cli"
 
 
 def cargo_results(log, messages):

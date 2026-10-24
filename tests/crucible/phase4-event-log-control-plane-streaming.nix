@@ -10,7 +10,7 @@
   session = import ./_crucible-session-source.nix {inherit lib;};
   sessionGate = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/control/crucible-session/tests/gate_control_responsive.rs;
+    entry = ../../crates/crucible/crucible-session/tests/gate_control_responsive.rs;
   };
   apiLib = import ./_crucible-control-source.nix {
     inherit lib;
@@ -20,7 +20,7 @@
     inherit lib;
     component = "event_log_stream";
   };
-  apiGate = builtins.readFile ../../crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs;
+  apiGate = builtins.readFile ../../crates/crucible/crucible-control-server/tests/gate_control_responsive.rs;
   observabilityDoc = builtins.readFile ../../docs/rfcs/0010-crucible/19-observability-event-log.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -38,7 +38,7 @@
         needle = "including `Command`-sourced control correlations";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-session/src/lib.rs" session [
+    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" session [
       {
         label = "event-log cursor type";
         needle = "pub struct EventLogCursor";
@@ -104,7 +104,7 @@
         needle = "tokio::task::yield_now().await;";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-session/tests/gate_control_responsive.rs" sessionGate [
+    ++ failuresFor "crates/crucible/crucible-session/tests/gate_control_responsive.rs" sessionGate [
       {
         label = "live stream gate test";
         needle = "gate_control_plane_streams_event_log_entries_from_cursor_without_mutation";
@@ -150,7 +150,7 @@
         needle = "SchedulerEventLogPayload::Diagnostic";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-api/src/lib.rs" apiLib [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/lib.rs" apiLib [
       {
         label = "event-log stream module";
         needle = "pub mod event_log_stream;";
@@ -164,7 +164,7 @@
         needle = "EventLogCursor";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-api/src/event_log_stream.rs" apiStream [
+    ++ failuresFor "crates/crucible/crucible-control-api/src/event_log_stream.rs" apiStream [
       {
         label = "control-plane stream facade";
         needle = "pub struct ControlPlaneEventLog";
@@ -198,7 +198,7 @@
         needle = "SessionEventLogStreamError";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs" apiGate [
+    ++ failuresFor "crates/crucible/crucible-control-server/tests/gate_control_responsive.rs" apiGate [
       {
         label = "API stream test";
         needle = "gate_control_plane_event_log_stream_api_subscribes_without_mutation";

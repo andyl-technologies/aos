@@ -25,17 +25,17 @@
     export LIBSQLITE3_SYS_USE_PKG_CONFIG=1 ZSTD_SYS_USE_PKG_CONFIG=1
   '';
   packages = {
-    crucible-qemu-host = "crates/crucible/qemu/crucible-qemu-host";
+    crucible-qemu-host = "crates/crucible/crucible-qemu-host";
   };
   dependencyPackages = {
-    aos-linux-project-quota = "crates/shared/aos-linux-project-quota";
-    crucible-engine = "crates/crucible/engine/crucible-engine";
-    crucible-determinism = "crates/crucible/engine/crucible-determinism";
-    crucible-campaign = "crates/crucible/engine/crucible-campaign";
-    crucible-device = "crates/crucible/engine/crucible-device";
-    crucible-store = "crates/crucible/storage/crucible-store";
-    crucible-qemu-protocol = "crates/crucible/protocol/crucible-qemu-protocol";
-    crucible-qemu-shmem = "crates/crucible/protocol/crucible-qemu-shmem";
+    aos-linux-project-quota = "crates/linux/aos-linux-project-quota";
+    crucible-engine = "crates/crucible/crucible-engine";
+    crucible-determinism = "crates/crucible/crucible-determinism";
+    crucible-campaign = "crates/crucible/crucible-campaign";
+    crucible-device = "crates/crucible/crucible-device";
+    crucible-store = "crates/crucible/crucible-store";
+    crucible-qemu-protocol = "crates/crucible/crucible-qemu-protocol";
+    crucible-qemu-shmem = "crates/crucible/crucible-qemu-shmem";
   };
   packageOptions =
     pkgs.lib.concatMap
@@ -115,8 +115,8 @@ in
       pname = "aos-bazel-qemu-host-production-license";
       workspace = family.workspace;
       targets = [
-        "//crates/crucible/qemu/crucible-qemu-host:production_license_closure"
-        "//crates/crucible/qemu/crucible-qemu-host:production_license_closure_test_support"
+        "//crates/crucible/crucible-qemu-host:production_license_closure"
+        "//crates/crucible/crucible-qemu-host:production_license_closure_test_support"
       ];
     };
     all =

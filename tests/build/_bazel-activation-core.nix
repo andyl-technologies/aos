@@ -4,18 +4,18 @@
   sourceInventory ? ../../tools/bazel/metadata/activation-core-inventory.json,
 }: let
   packages = {
-    aos-activation = "crates/aos/activation/aos-activation";
-    aos-activation-config-files = "crates/aos/activation/aos-activation-config-files";
-    aos-activation-sysctl = "crates/aos/activation/aos-activation-sysctl";
-    aos-activation-bpf-lsm = "crates/aos/activation/aos-activation-bpf-lsm";
-    aos-activation-bpf-network = "crates/aos/activation/aos-activation-bpf-network";
-    aos-activation-kubernetes = "crates/aos/activation/aos-activation-kubernetes";
-    aos-activation-nftables = "crates/aos/activation/aos-activation-nftables";
+    aos-activation = "crates/activation/aos-activation";
+    aos-activation-config-files = "crates/activation/aos-activation-config-files";
+    aos-activation-sysctl = "crates/activation/aos-activation-sysctl";
+    aos-activation-bpf-lsm = "crates/activation/aos-activation-bpf-lsm";
+    aos-activation-bpf-network = "crates/activation/aos-activation-bpf-network";
+    aos-activation-kubernetes = "crates/activation/aos-activation-kubernetes";
+    aos-activation-nftables = "crates/activation/aos-activation-nftables";
   };
   dependencyPackages = {
-    aos-core = "crates/shared/aos-core";
-    aos-artifact-evidence = "crates/shared/aos-artifact-evidence";
-    aos-module-format = "crates/aos/modules/aos-module-format";
+    aos-core = "crates/core/aos-core";
+    aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
+    aos-module-format = "crates/modules/aos-module-format";
   };
   commands = {
     aos-activation-config-files = "aos-configuration-provider";

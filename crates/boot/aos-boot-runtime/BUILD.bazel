@@ -1,0 +1,292 @@
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
+load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+
+package(default_visibility = ["//crates:__subpackages__"])
+
+RUST_PACKAGE = aos_rust_package(
+    name = "aos-boot-runtime",
+    version = "0.1.0",
+    edition = "2024",
+    description = "Retained boot preparation, image staging, boot selection, and initrd store operations",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+)
+
+DEPENDENCIES = [
+    "//crates/activation/aos-activation:lib",
+    "//crates/core/aos-core:lib",
+    "//third_party/rust:core_anyhow",
+    "//third_party/rust:core_serde",
+    "//third_party/rust:core_serde_json",
+] + select({
+    "//tools/bazel/rules:boot_preparation_minimal_dependencies": [],
+    "//conditions:default": [
+        "//crates/boot/aos-boot-identity:lib",
+        "//crates/release/aos-release-format:lib",
+        "//crates/nix/aos-nix:lib",
+        "//third_party/rust:core_hex",
+        "//third_party/rust:core_rustix",
+        "//third_party/rust:core_sha2",
+        "//third_party/rust:core_tempfile",
+        "//third_party/rust:core_zstd",
+    ],
+})
+
+# The preparation provider also runs before the full image tooling is present.
+BOOT_FEATURES = select({
+    "//tools/bazel/rules:boot_preparation_minimal_dependencies": [],
+    "//conditions:default": ["default", "boot-tools"],
+})
+
+rust_library(
+    name = "lib",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_boot_runtime",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"], exclude = ["src/bin/**/*.rs"]),
+    crate_features = BOOT_FEATURES,
+    deps = DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "unit",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":lib",
+    crate_features = BOOT_FEATURES,
+    deps = ["//third_party/rust:core_tempfile"],
+    setup = "@aos_boot_tools//:test-setup",
+)
+
+rust_binary(
+    name = "aos-boot-preparation-provider",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_boot_preparation_provider",
+    crate_root = "src/bin/aos-boot-preparation-provider.rs",
+    srcs = ["src/bin/aos-boot-preparation-provider.rs"],
+    crate_features = BOOT_FEATURES,
+    deps = [":lib"] + DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "bin_aos-boot-preparation-provider",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_boot_preparation_provider",
+    crate_root = "src/bin/aos-boot-preparation-provider.rs",
+    srcs = ["src/bin/aos-boot-preparation-provider.rs"],
+    crate_features = BOOT_FEATURES,
+    deps = [":lib"] + DEPENDENCIES,
+    allow_empty = True,
+)
+
+rust_binary(
+    name = "aos-systemd-boot-platform",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_systemd_boot_platform",
+    crate_root = "src/bin/aos-systemd-boot-platform.rs",
+    srcs = ["src/bin/aos-systemd-boot-platform.rs"],
+    crate_features = BOOT_FEATURES,
+    deps = [":lib"] + DEPENDENCIES,
+    target_compatible_with = select({
+        "//tools/bazel/rules:boot_preparation_minimal_dependencies": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+)
+
+aos_rust_test(
+    name = "bin_aos-systemd-boot-platform",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_systemd_boot_platform",
+    crate_root = "src/bin/aos-systemd-boot-platform.rs",
+    srcs = ["src/bin/aos-systemd-boot-platform.rs"],
+    crate_features = BOOT_FEATURES,
+    deps = [":lib"] + DEPENDENCIES,
+    target_compatible_with = select({
+        "//tools/bazel/rules:boot_preparation_minimal_dependencies": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    allow_empty = True,
+)
+
+rust_binary(
+    name = "aos-systemd-image-evidence",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_systemd_image_evidence",
+    crate_root = "src/bin/aos-systemd-image-evidence.rs",
+    srcs = ["src/bin/aos-systemd-image-evidence.rs"],
+    crate_features = BOOT_FEATURES,
+    deps = [":lib"] + DEPENDENCIES,
+    target_compatible_with = select({
+        "//tools/bazel/rules:boot_preparation_minimal_dependencies": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+)
+
+aos_rust_test(
+    name = "bin_aos-systemd-image-evidence",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_systemd_image_evidence",
+    crate_root = "src/bin/aos-systemd-image-evidence.rs",
+    srcs = ["src/bin/aos-systemd-image-evidence.rs"],
+    crate_features = BOOT_FEATURES,
+    deps = [":lib"] + DEPENDENCIES,
+    target_compatible_with = select({
+        "//tools/bazel/rules:boot_preparation_minimal_dependencies": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    allow_empty = True,
+)
+
+rust_binary(
+    name = "aos-systemd-image-stage",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_systemd_image_stage",
+    crate_root = "src/bin/aos-systemd-image-stage.rs",
+    srcs = ["src/bin/aos-systemd-image-stage.rs"],
+    crate_features = BOOT_FEATURES,
+    deps = [":lib"] + DEPENDENCIES,
+    target_compatible_with = select({
+        "//tools/bazel/rules:boot_preparation_minimal_dependencies": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+)
+
+aos_rust_test(
+    name = "bin_aos-systemd-image-stage",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_systemd_image_stage",
+    crate_root = "src/bin/aos-systemd-image-stage.rs",
+    srcs = ["src/bin/aos-systemd-image-stage.rs"],
+    crate_features = BOOT_FEATURES,
+    deps = [":lib"] + DEPENDENCIES,
+    target_compatible_with = select({
+        "//tools/bazel/rules:boot_preparation_minimal_dependencies": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    allow_empty = True,
+)
+
+rust_binary(
+    name = "aos-systemd-initrd-store",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_systemd_initrd_store",
+    crate_root = "src/bin/aos-systemd-initrd-store.rs",
+    srcs = ["src/bin/aos-systemd-initrd-store.rs"],
+    crate_features = BOOT_FEATURES,
+    deps = [":lib"] + DEPENDENCIES,
+    target_compatible_with = select({
+        "//tools/bazel/rules:boot_preparation_minimal_dependencies": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+)
+
+aos_rust_test(
+    name = "bin_aos-systemd-initrd-store",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_systemd_initrd_store",
+    crate_root = "src/bin/aos-systemd-initrd-store.rs",
+    srcs = ["src/bin/aos-systemd-initrd-store.rs"],
+    crate_features = BOOT_FEATURES,
+    deps = [":lib"] + DEPENDENCIES,
+    target_compatible_with = select({
+        "//tools/bazel/rules:boot_preparation_minimal_dependencies": ["@platforms//:incompatible"],
+        "//conditions:default": [],
+    }),
+    allow_empty = True,
+)
+
+BOOT_COMMANDS = select({
+    "//tools/bazel/rules:boot_preparation_minimal_dependencies": [],
+    "//conditions:default": [":aos-systemd-boot-platform", ":aos-systemd-image-evidence", ":aos-systemd-image-stage", ":aos-systemd-initrd-store"],
+})
+
+BOOT_TEST_ARTIFACTS = select({
+    "//tools/bazel/rules:boot_preparation_minimal_dependencies": [],
+    "//conditions:default": [":bin_aos-systemd-boot-platform_binary", ":bin_aos-systemd-image-evidence_binary", ":bin_aos-systemd-image-stage_binary", ":bin_aos-systemd-initrd-store_binary"],
+})
+
+rust_doc_test(name = "doc", crate = ":lib", crate_features = BOOT_FEATURES)
+
+PRODUCTION_ARTIFACTS = [
+    ":lib",
+    ":aos-boot-preparation-provider",
+] + BOOT_COMMANDS
+
+DEVELOPER_ARTIFACTS = [
+    ":lib",
+    ":unit_binary",
+    ":aos-boot-preparation-provider",
+    ":bin_aos-boot-preparation-provider_binary",
+] + BOOT_COMMANDS + BOOT_TEST_ARTIFACTS
+
+rust_clippy(name = "clippy", testonly = True, deps = DEVELOPER_ARTIFACTS)
+rustfmt_test(name = "format", targets = DEVELOPER_ARTIFACTS)
+rust_doc(name = "documentation", crate = ":lib", crate_features = BOOT_FEATURES)
+
+aos_license_check(
+    name = "license_closure",
+    testonly = True,
+    roots = DEVELOPER_ARTIFACTS,
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_license_check(
+    name = "production_license_closure",
+    roots = PRODUCTION_ARTIFACTS,
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_source_package(
+    name = "source_package",
+    package = RUST_PACKAGE,
+    srcs = glob(["**/*.rs"]),
+    visibility = ["//visibility:public"],
+)
+
+# Early initrd orchestration deliberately has no Cargo dependency graph.
+rust_binary(
+    name = "standalone",
+    package = RUST_PACKAGE,
+    crate_name = "aos_initrd_preparation",
+    crate_root = "standalone/initrd_preparation.rs",
+    srcs = ["standalone/initrd_preparation.rs"],
+    rustc_env_files = ["@aos_boot_tools//:standalone.env"],
+    compile_data = ["@aos_boot_tools//:closure.json"],
+)
+
+aos_rust_test(
+    name = "standalone_unit",
+    package = RUST_PACKAGE,
+    crate_name = "aos_initrd_preparation",
+    crate_root = "standalone/initrd_preparation.rs",
+    srcs = ["standalone/initrd_preparation.rs"],
+    rustc_env_files = ["@aos_boot_tools//:standalone.env"],
+    compile_data = ["@aos_boot_tools//:closure.json"],
+)
+
+STANDALONE_ARTIFACTS = [":standalone", ":standalone_unit_binary"]
+
+rust_clippy(name = "standalone_clippy", testonly = True, deps = STANDALONE_ARTIFACTS)
+rustfmt_test(name = "standalone_format", targets = STANDALONE_ARTIFACTS)
+
+aos_license_check(
+    name = "standalone_license_closure",
+    testonly = True,
+    roots = STANDALONE_ARTIFACTS,
+    license_domain = RUST_PACKAGE.license_domain,
+)

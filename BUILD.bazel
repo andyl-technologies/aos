@@ -7,7 +7,7 @@ filegroup(
     name = "qemu_host_build_audit",
     testonly = True,
     srcs = ["pkgs/default.nix", "pkgs/emulation/qemu.nix"],
-    visibility = ["//crates/crucible/qemu/crucible-qemu-host:__pkg__"],
+    visibility = ["//crates/crucible/crucible-qemu-host:__pkg__"],
 )
 
 # QMP tests inspect checked-in patch text; no QEMU code is linked into the host.
@@ -15,15 +15,15 @@ filegroup(
     name = "qemu_host_patch_audit",
     testonly = True,
     srcs = ["pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch"],
-    visibility = ["//crates/crucible/qemu/crucible-qemu-host:__pkg__"],
+    visibility = ["//crates/crucible/crucible-qemu-host:__pkg__"],
 )
 
 aos_source_catalog(
     name = "source_catalog",
     packages = [
         "//crates:source_catalog",
-        "//tools/accache:source_package",
-        "//tools/accache/frontend:source_package",
+        "//crates/accache/accache:source_package",
+        "//crates/accache/accache-frontend:source_package",
     ],
     visibility = ["//visibility:public"],
 )
@@ -48,5 +48,5 @@ filegroup(
         "pkgs/emulation/qemu-patches/crucible-qemu-11.1.1.patch",
         "pkgs/emulation/qemu-patches/_atomic-patch.nix",
     ],
-    visibility = ["//crates/crucible/qemu/crucible-qemu-plugin:__pkg__"],
+    visibility = ["//crates/crucible/crucible-qemu-plugin:__pkg__"],
 )

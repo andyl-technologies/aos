@@ -9,5 +9,5 @@ filegroup(
         "16-guest-host-channel.md",
         "24-determinism-harness-testing.md",
     ],
-    visibility = ["//crates/crucible/qemu/crucible-qemu-plugin:__pkg__"],
+    visibility = ["//crates/crucible/crucible-qemu-plugin:__pkg__"],
 )

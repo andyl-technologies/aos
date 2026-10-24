@@ -39,11 +39,11 @@ config_setting(
 )
 
 DEPENDENCIES = [
-    "//crates/aos/modules/aos-module-docs:lib",
-    "//crates/aos/registry/aos-registry-format:lib",
-    "//crates/aos/release/aos-release-format:lib",
+    "//crates/modules/aos-module-docs:lib",
+    "//crates/registry/aos-registry-format:lib",
+    "//crates/release/aos-release-format:lib",
     "//crates/hub/aos-hub-model:lib",
-    "//crates/shared/aos-oci-types:lib",
+    "//crates/artifacts/aos-oci-types:lib",
     "//third_party/rust:core_anyhow",
     "//third_party/rust:core_base64",
     "//third_party/rust:core_ed25519_dalek",

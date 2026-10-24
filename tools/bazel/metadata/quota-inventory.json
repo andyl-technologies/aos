@@ -1,26 +1,26 @@
 {
   "configured_targets": [
     {
-      "build_file": "crates/shared/aos-linux-project-quota/BUILD.bazel",
+      "build_file": "crates/linux/aos-linux-project-quota/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-linux-project-quota:lib",
-        "//crates/shared/aos-linux-project-quota:project-quota-flight",
-        "//crates/shared/aos-linux-project-quota:unit_binary"
+        "//crates/linux/aos-linux-project-quota:lib",
+        "//crates/linux/aos-linux-project-quota:project-quota-flight",
+        "//crates/linux/aos-linux-project-quota:unit_binary"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-linux-project-quota/libaos_linux_project_quota-1835977960.rlib": "//crates/shared/aos-linux-project-quota:lib",
-        "crates/shared/aos-linux-project-quota/project-quota-flight": "//crates/shared/aos-linux-project-quota:project-quota-flight",
-        "crates/shared/aos-linux-project-quota/unit_binary": "//crates/shared/aos-linux-project-quota:unit_binary"
+        "crates/linux/aos-linux-project-quota/libaos_linux_project_quota-1835977960.rlib": "//crates/linux/aos-linux-project-quota:lib",
+        "crates/linux/aos-linux-project-quota/project-quota-flight": "//crates/linux/aos-linux-project-quota:project-quota-flight",
+        "crates/linux/aos-linux-project-quota/unit_binary": "//crates/linux/aos-linux-project-quota:unit_binary"
       },
       "kind": "rust_clippy",
-      "label": "//crates/shared/aos-linux-project-quota:clippy",
+      "label": "//crates/linux/aos-linux-project-quota:clippy",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -30,13 +30,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/shared/aos-linux-project-quota/BUILD.bazel",
+      "build_file": "crates/linux/aos-linux-project-quota/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-linux-project-quota:lib",
+        "//crates/linux/aos-linux-project-quota:lib",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
         "@@bazel_tools//tools/test:runtime",
@@ -53,10 +53,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-linux-project-quota/libaos_linux_project_quota-1835977960.rlib": "//crates/shared/aos-linux-project-quota:lib"
+        "crates/linux/aos-linux-project-quota/libaos_linux_project_quota-1835977960.rlib": "//crates/linux/aos-linux-project-quota:lib"
       },
       "kind": "rust_doc_test",
-      "label": "//crates/shared/aos-linux-project-quota:doc",
+      "label": "//crates/linux/aos-linux-project-quota:doc",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -66,13 +66,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/shared/aos-linux-project-quota/BUILD.bazel",
+      "build_file": "crates/linux/aos-linux-project-quota/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-linux-project-quota:lib",
+        "//crates/linux/aos-linux-project-quota:lib",
         "@@bazel_tools//tools/zip:zipper",
         "@@rules_rust+//rust/private/rustdoc/dir_zipper:dir_zipper",
         "@@rules_rust+//rust/settings:error_format",
@@ -82,10 +82,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-linux-project-quota/libaos_linux_project_quota-1835977960.rlib": "//crates/shared/aos-linux-project-quota:lib"
+        "crates/linux/aos-linux-project-quota/libaos_linux_project_quota-1835977960.rlib": "//crates/linux/aos-linux-project-quota:lib"
       },
       "kind": "rust_doc",
-      "label": "//crates/shared/aos-linux-project-quota:documentation",
+      "label": "//crates/linux/aos-linux-project-quota:documentation",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -95,22 +95,22 @@
       "version": ""
     },
     {
-      "build_file": "crates/shared/aos-linux-project-quota/BUILD.bazel",
+      "build_file": "crates/linux/aos-linux-project-quota/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-linux-project-quota:project-quota-flight"
+        "//crates/linux/aos-linux-project-quota:project-quota-flight"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-linux-project-quota/project-quota-flight": "//crates/shared/aos-linux-project-quota:project-quota-flight"
+        "crates/linux/aos-linux-project-quota/project-quota-flight": "//crates/linux/aos-linux-project-quota:project-quota-flight"
       },
       "kind": "_aos_package",
-      "label": "//crates/shared/aos-linux-project-quota:flight_package",
+      "label": "//crates/linux/aos-linux-project-quota:flight_package",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -120,15 +120,15 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/shared/aos-linux-project-quota/BUILD.bazel",
+      "build_file": "crates/linux/aos-linux-project-quota/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-linux-project-quota:lib",
-        "//crates/shared/aos-linux-project-quota:project-quota-flight",
-        "//crates/shared/aos-linux-project-quota:unit_binary",
+        "//crates/linux/aos-linux-project-quota:lib",
+        "//crates/linux/aos-linux-project-quota:project-quota-flight",
+        "//crates/linux/aos-linux-project-quota:unit_binary",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
         "@@bazel_tools//tools/test:runtime",
@@ -142,12 +142,12 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-linux-project-quota/libaos_linux_project_quota-1835977960.rlib": "//crates/shared/aos-linux-project-quota:lib",
-        "crates/shared/aos-linux-project-quota/project-quota-flight": "//crates/shared/aos-linux-project-quota:project-quota-flight",
-        "crates/shared/aos-linux-project-quota/unit_binary": "//crates/shared/aos-linux-project-quota:unit_binary"
+        "crates/linux/aos-linux-project-quota/libaos_linux_project_quota-1835977960.rlib": "//crates/linux/aos-linux-project-quota:lib",
+        "crates/linux/aos-linux-project-quota/project-quota-flight": "//crates/linux/aos-linux-project-quota:project-quota-flight",
+        "crates/linux/aos-linux-project-quota/unit_binary": "//crates/linux/aos-linux-project-quota:unit_binary"
       },
       "kind": "rustfmt_test",
-      "label": "//crates/shared/aos-linux-project-quota:format",
+      "label": "//crates/linux/aos-linux-project-quota:format",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -157,14 +157,14 @@
       "version": ""
     },
     {
-      "build_file": "crates/shared/aos-linux-project-quota/BUILD.bazel",
+      "build_file": "crates/linux/aos-linux-project-quota/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_linux_project_quota",
-      "crate_root": "crates/shared/aos-linux-project-quota/src/lib.rs",
+      "crate_root": "crates/linux/aos-linux-project-quota/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-linux-project-quota:src/lib.rs",
-        "//crates/shared/aos-linux-project-quota:src/linux_project_quota.rs",
+        "//crates/linux/aos-linux-project-quota:src/lib.rs",
+        "//crates/linux/aos-linux-project-quota:src/linux_project_quota.rs",
         "//tools/bazel/rules:workspace_lints",
         "@@+aos_tools_repository+aos_quota_crates__libc-0.2.186//:libc",
         "@@+aos_tools_repository+aos_quota_crates__rustix-1.1.4//:rustix",
@@ -189,7 +189,7 @@
       "features": [],
       "generated_inputs": {},
       "kind": "rust_library",
-      "label": "//crates/shared/aos-linux-project-quota:lib",
+      "label": "//crates/linux/aos-linux-project-quota:lib",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Pinned ext4 project-quota installation, verification, and release",
@@ -209,8 +209,8 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
-        "crates/shared/aos-linux-project-quota/src/lib.rs",
-        "crates/shared/aos-linux-project-quota/src/linux_project_quota.rs"
+        "crates/linux/aos-linux-project-quota/src/lib.rs",
+        "crates/linux/aos-linux-project-quota/src/linux_project_quota.rs"
       ],
       "tags": [
         "aos-license:apache-host"
@@ -219,26 +219,26 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/shared/aos-linux-project-quota/BUILD.bazel",
+      "build_file": "crates/linux/aos-linux-project-quota/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-linux-project-quota:lib",
-        "//crates/shared/aos-linux-project-quota:project-quota-flight",
-        "//crates/shared/aos-linux-project-quota:unit_binary"
+        "//crates/linux/aos-linux-project-quota:lib",
+        "//crates/linux/aos-linux-project-quota:project-quota-flight",
+        "//crates/linux/aos-linux-project-quota:unit_binary"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-linux-project-quota/libaos_linux_project_quota-1835977960.rlib": "//crates/shared/aos-linux-project-quota:lib",
-        "crates/shared/aos-linux-project-quota/project-quota-flight": "//crates/shared/aos-linux-project-quota:project-quota-flight",
-        "crates/shared/aos-linux-project-quota/unit_binary": "//crates/shared/aos-linux-project-quota:unit_binary"
+        "crates/linux/aos-linux-project-quota/libaos_linux_project_quota-1835977960.rlib": "//crates/linux/aos-linux-project-quota:lib",
+        "crates/linux/aos-linux-project-quota/project-quota-flight": "//crates/linux/aos-linux-project-quota:project-quota-flight",
+        "crates/linux/aos-linux-project-quota/unit_binary": "//crates/linux/aos-linux-project-quota:unit_binary"
       },
       "kind": "aos_license_check",
-      "label": "//crates/shared/aos-linux-project-quota:license_closure",
+      "label": "//crates/linux/aos-linux-project-quota:license_closure",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -248,14 +248,14 @@
       "version": ""
     },
     {
-      "build_file": "crates/shared/aos-linux-project-quota/BUILD.bazel",
+      "build_file": "crates/linux/aos-linux-project-quota/BUILD.bazel",
       "copts": [],
       "crate_name": "project_quota_flight",
-      "crate_root": "crates/shared/aos-linux-project-quota/examples/project-quota-flight.rs",
+      "crate_root": "crates/linux/aos-linux-project-quota/examples/project-quota-flight.rs",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-linux-project-quota:examples/project-quota-flight.rs",
-        "//crates/shared/aos-linux-project-quota:lib",
+        "//crates/linux/aos-linux-project-quota:examples/project-quota-flight.rs",
+        "//crates/linux/aos-linux-project-quota:lib",
         "//tools/bazel/rules:workspace_lints",
         "@@+aos_tools_repository+aos_quota_crates__libc-0.2.186//:libc",
         "@@+aos_tools_repository+aos_quota_crates__rustix-1.1.4//:rustix",
@@ -280,10 +280,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-linux-project-quota/libaos_linux_project_quota-1835977960.rlib": "//crates/shared/aos-linux-project-quota:lib"
+        "crates/linux/aos-linux-project-quota/libaos_linux_project_quota-1835977960.rlib": "//crates/linux/aos-linux-project-quota:lib"
       },
       "kind": "rust_binary",
-      "label": "//crates/shared/aos-linux-project-quota:project-quota-flight",
+      "label": "//crates/linux/aos-linux-project-quota:project-quota-flight",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Pinned ext4 project-quota installation, verification, and release",
@@ -303,7 +303,7 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
-        "crates/shared/aos-linux-project-quota/examples/project-quota-flight.rs"
+        "crates/linux/aos-linux-project-quota/examples/project-quota-flight.rs"
       ],
       "tags": [
         "aos-license:apache-host"
@@ -312,13 +312,13 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/shared/aos-linux-project-quota/BUILD.bazel",
+      "build_file": "crates/linux/aos-linux-project-quota/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-linux-project-quota:unit_binary",
+        "//crates/linux/aos-linux-project-quota:unit_binary",
         "//tools/bazel/testing:policy.json",
         "//tools/bazel/testing:runner.py",
         "@@+aos_tools_repository+aos_tools//:bash",
@@ -336,10 +336,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-linux-project-quota/unit_binary": "//crates/shared/aos-linux-project-quota:unit_binary"
+        "crates/linux/aos-linux-project-quota/unit_binary": "//crates/linux/aos-linux-project-quota:unit_binary"
       },
       "kind": "_libtest_test",
-      "label": "//crates/shared/aos-linux-project-quota:unit",
+      "label": "//crates/linux/aos-linux-project-quota:unit",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -352,13 +352,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/shared/aos-linux-project-quota/BUILD.bazel",
+      "build_file": "crates/linux/aos-linux-project-quota/BUILD.bazel",
       "copts": [],
       "crate_name": "",
-      "crate_root": "crates/shared/aos-linux-project-quota/src/lib.rs",
+      "crate_root": "crates/linux/aos-linux-project-quota/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-linux-project-quota:lib",
+        "//crates/linux/aos-linux-project-quota:lib",
         "//tools/bazel/rules:workspace_lints",
         "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
         "@@bazel_tools//tools/test:collect_coverage",
@@ -388,10 +388,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-linux-project-quota/libaos_linux_project_quota-1835977960.rlib": "//crates/shared/aos-linux-project-quota:lib"
+        "crates/linux/aos-linux-project-quota/libaos_linux_project_quota-1835977960.rlib": "//crates/linux/aos-linux-project-quota:lib"
       },
       "kind": "rust_test",
-      "label": "//crates/shared/aos-linux-project-quota:unit_binary",
+      "label": "//crates/linux/aos-linux-project-quota:unit_binary",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Pinned ext4 project-quota installation, verification, and release",
@@ -4396,7 +4396,7 @@
   "contracts": {
     "MODULE.bazel": "0c47c003c6b54911426e10c0345fa89d9f41c9892cc9ea5e006ae8d209d16d2c",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
-    "crates/shared/aos-linux-project-quota/BUILD.bazel": "a6d9b30f18d9f0bbaf9854bf062a951d77312f16585adcc503114953c359319b",
+    "crates/linux/aos-linux-project-quota/BUILD.bazel": "a6d9b30f18d9f0bbaf9854bf062a951d77312f16585adcc503114953c359319b",
     "third_party/rust/BUILD.bazel": "dc8a09cd11de7d1471888484d7c4940931f13b8154e71fe906fbae4235f82d2e",
     "third_party/rust/activation-core-tests/aliases.bzl": "a37ed2a8a4ffdb9ca159e670c736e43633c2aba8aa8aaa0330fbd94314e4db3e",
     "third_party/rust/activation-core-tests/repositories.MODULE.bazel": "52ad8bc43deb76ad60812f20cb89baf04ebfe32a9a6f3c64d4db42bb59ed606a",
@@ -4558,26 +4558,26 @@
   "generator_sha256": "4708a2aabd8ab317775d19281b37ddf92b7a1942f0d7280e419e6b5c14d47256",
   "schema_version": 1,
   "source_directories": [
-    "crates/shared/aos-linux-project-quota/src"
+    "crates/linux/aos-linux-project-quota/src"
   ],
   "source_files": [
-    "crates/shared/aos-linux-project-quota/examples/project-quota-flight.rs",
-    "crates/shared/aos-linux-project-quota/src/lib.rs",
-    "crates/shared/aos-linux-project-quota/src/linux_project_quota.rs",
+    "crates/linux/aos-linux-project-quota/examples/project-quota-flight.rs",
+    "crates/linux/aos-linux-project-quota/src/lib.rs",
+    "crates/linux/aos-linux-project-quota/src/linux_project_quota.rs",
     "tools/bazel/rules/rustfmt.toml",
     "tools/bazel/testing/policy.json",
     "tools/bazel/testing/runner.py"
   ],
   "targets": [
-    "//crates/shared/aos-linux-project-quota:clippy",
-    "//crates/shared/aos-linux-project-quota:doc",
-    "//crates/shared/aos-linux-project-quota:documentation",
-    "//crates/shared/aos-linux-project-quota:flight_package",
-    "//crates/shared/aos-linux-project-quota:format",
-    "//crates/shared/aos-linux-project-quota:lib",
-    "//crates/shared/aos-linux-project-quota:license_closure",
-    "//crates/shared/aos-linux-project-quota:project-quota-flight",
-    "//crates/shared/aos-linux-project-quota:unit",
-    "//crates/shared/aos-linux-project-quota:unit_binary"
+    "//crates/linux/aos-linux-project-quota:clippy",
+    "//crates/linux/aos-linux-project-quota:doc",
+    "//crates/linux/aos-linux-project-quota:documentation",
+    "//crates/linux/aos-linux-project-quota:flight_package",
+    "//crates/linux/aos-linux-project-quota:format",
+    "//crates/linux/aos-linux-project-quota:lib",
+    "//crates/linux/aos-linux-project-quota:license_closure",
+    "//crates/linux/aos-linux-project-quota:project-quota-flight",
+    "//crates/linux/aos-linux-project-quota:unit",
+    "//crates/linux/aos-linux-project-quota:unit_binary"
   ]
 }

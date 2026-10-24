@@ -5,7 +5,7 @@
     sourceDirectories = [
       "BUILD.bazel"
       "crates"
-      "tools/accache"
+      "crates/accache/accache"
       "tools/bazel/rules"
       "tools/bazel/metadata"
       "tools/bazel/toolchains"

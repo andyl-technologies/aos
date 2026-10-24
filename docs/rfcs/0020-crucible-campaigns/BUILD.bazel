@@ -1,9 +1,9 @@
 exports_files(
     ["schema-registry.tsv"],
-    visibility = ["//crates/crucible/protocol:__subpackages__", "//crates/crucible/engine/crucible-campaign:__pkg__", "//crates/crucible/qemu/crucible-qemu-host:__pkg__", "//crates/crucible/control/crucible-daemon:__pkg__"],
+    visibility = ["//crates/crucible:__subpackages__", "//crates/crucible/crucible-campaign:__pkg__", "//crates/crucible/crucible-qemu-host:__pkg__", "//crates/crucible/crucible-daemon:__pkg__"],
 )
 
 exports_files(
     ["11-implementation-plan.md"],
-    visibility = ["//crates/crucible/engine/crucible-campaign:__pkg__"],
+    visibility = ["//crates/crucible/crucible-campaign:__pkg__"],
 )

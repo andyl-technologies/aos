@@ -14,18 +14,18 @@
     aos-hub-worker = "crates/hub/aos-hub-worker";
   };
   dependencyPackages = {
-    aos-artifact-evidence = "crates/shared/aos-artifact-evidence";
-    aos-core = "crates/shared/aos-core";
+    aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
+    aos-core = "crates/core/aos-core";
     aos-hub-api = "crates/hub/aos-hub-api";
     aos-hub-db = "crates/hub/aos-hub-db";
     aos-hub-model = "crates/hub/aos-hub-model";
     aos-hub-service = "crates/hub/aos-hub-service";
     aos-hub-ui = "crates/hub/aos-hub-ui";
-    aos-module-docs = "crates/aos/modules/aos-module-docs";
-    aos-module-format = "crates/aos/modules/aos-module-format";
-    aos-oci-types = "crates/shared/aos-oci-types";
-    aos-registry-format = "crates/aos/registry/aos-registry-format";
-    aos-release-format = "crates/aos/release/aos-release-format";
+    aos-module-docs = "crates/modules/aos-module-docs";
+    aos-module-format = "crates/modules/aos-module-format";
+    aos-oci-types = "crates/artifacts/aos-oci-types";
+    aos-registry-format = "crates/registry/aos-registry-format";
+    aos-release-format = "crates/release/aos-release-format";
   };
   targets = [
     "//crates/hub/aos-hub-worker:lib"

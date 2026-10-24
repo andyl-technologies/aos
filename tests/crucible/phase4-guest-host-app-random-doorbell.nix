@@ -11,33 +11,33 @@
 
   pluginWhitebox = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+    entry = ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   };
-  pluginCargo = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml;
+  pluginCargo = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/Cargo.toml;
   engineDecision = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/engine/crucible-engine/src/decision.rs;
+    entry = ../../crates/crucible/crucible-engine/src/decision.rs;
   };
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
   protocolDoorbellFrame = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_frame.rs;
+    entry = ../../crates/crucible/crucible-qemu-protocol/src/doorbell_frame.rs;
   };
   protocolDoorbellMarker = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_marker.rs;
+    entry = ../../crates/crucible/crucible-qemu-protocol/src/doorbell_marker.rs;
   };
   protocolAppRandomTransport = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/protocol/crucible-qemu-protocol/src/app_random_transport.rs;
+    entry = ../../crates/crucible/crucible-qemu-protocol/src/app_random_transport.rs;
   };
   protocolAbiGate = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/protocol/crucible-qemu-protocol/tests/gate_abi_conformance.rs;
+    entry = ../../crates/crucible/crucible-qemu-protocol/tests/gate_abi_conformance.rs;
   };
   protocolGoldenTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/protocol/crucible-qemu-protocol/tests/golden_vectors.rs;
+    entry = ../../crates/crucible/crucible-qemu-protocol/tests/golden_vectors.rs;
   };
   phase2AppRandomGate = builtins.readFile ./phase2-plugin-app-random-doorbell.nix;
   virtualMemorySpikeGate = builtins.readFile ./phase4-guest-host-virtual-memory-spike.nix;
@@ -66,9 +66,9 @@
     else lib.toInt (builtins.head matched);
   protocolVersionFailures =
     if declaredProtocolVersion == null
-    then ["crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_frame.rs: missing declared white-box doorbell protocol version"]
+    then ["crates/crucible/crucible-qemu-protocol/src/doorbell_frame.rs: missing declared white-box doorbell protocol version"]
     else if declaredProtocolVersion != appRandomProtocolVersion
-    then ["crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_frame.rs: white-box doorbell protocol version ${builtins.toString declaredProtocolVersion} does not equal current version ${builtins.toString appRandomProtocolVersion}"]
+    then ["crates/crucible/crucible-qemu-protocol/src/doorbell_frame.rs: white-box doorbell protocol version ${builtins.toString declaredProtocolVersion} does not equal current version ${builtins.toString appRandomProtocolVersion}"]
     else [];
 
   failures =
@@ -91,13 +91,13 @@
       }
     ]
     ++ protocolVersionFailures
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_frame.rs" protocolDoorbellFrame [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/src/doorbell_frame.rs" protocolDoorbellFrame [
       {
         label = "bounded frame decoder";
         needle = "pub fn decode_bounded(";
       }
     ]
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_marker.rs" protocolDoorbellMarker [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/src/doorbell_marker.rs" protocolDoorbellMarker [
       {
         label = "random request kind 5";
         needle = "pub const WHITEBOX_DOORBELL_KIND_RANDOM_REQUEST: u16 = 5;";
@@ -127,7 +127,7 @@
         needle = "InvalidRandomWidth";
       }
     ]
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/gate_abi_conformance.rs" protocolAbiGate [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/tests/gate_abi_conformance.rs" protocolAbiGate [
       {
         label = "doorbell frame golden-vector test";
         needle = "protocol_doorbell_frame_golden_vectors_match_live_codec_bytes";
@@ -149,7 +149,7 @@
         needle = "(5, \"app_random_request\")";
       }
     ]
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/tests/golden_vectors.rs" protocolGoldenTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/tests/golden_vectors.rs" protocolGoldenTest [
       {
         label = "golden-vector corpus includes random request frame";
         needle = "\"random-request-kind-5\"";
@@ -159,7 +159,7 @@
         needle = "\"random-request\"";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/decision.rs" engineDecision [
+    ++ failuresFor "crates/crucible/crucible-engine/src/decision.rs" engineDecision [
       {
         label = "engine app-random records RNG draw";
         needle = "self.append_decision(Decision::RngDraw(RngDecision";
@@ -169,7 +169,7 @@
         needle = "let selection = selectable.normalize_sample(&decision, raw_value)?;";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" engineModel [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" engineModel [
       {
         label = "default name-hash stream constructor";
         needle = "pub fn from_name(name: impl Into<String>) -> Self";
@@ -183,7 +183,7 @@
         needle = "BackendRngEvidence";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml" pluginCargo [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/Cargo.toml" pluginCargo [
       {
         label = "test-only engine process boundary";
         needle = "Real engine cross-checks run in a separately linked Apache process.";
@@ -193,13 +193,13 @@
         needle = "crucible-qemu-protocol = { path = \"../../protocol/crucible-qemu-protocol\", features = [\"test-oracle\"] }";
       }
     ]
-    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml" pluginCargo [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-plugin/Cargo.toml" pluginCargo [
       {
         label = "linked Apache engine dependency";
         needle = "crucible-engine";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
         label = "app-random decision source trait";
         needle = "pub(crate) trait BackendRngEvidenceSource";
@@ -249,7 +249,7 @@
         needle = "whitebox_app_random_decoder_rejects_bad_magic_version_kind_and_utf8";
       }
     ]
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/app_random_transport.rs" protocolAppRandomTransport [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/src/app_random_transport.rs" protocolAppRandomTransport [
       {
         label = "canonical stream name includes node and stream tag";
         needle = "\"app-random/node:{}:{}/stream:{}:{}\"";
@@ -289,7 +289,7 @@
         needle = "phase0S5 = phase0.s5VirtualMemory;";
       }
     ]
-    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
         label = "host entropy in app-random path";
         needle = "thread_rng";

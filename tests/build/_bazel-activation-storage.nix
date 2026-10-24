@@ -4,16 +4,16 @@
   sourceInventory ? ../../tools/bazel/metadata/activation-storage-inventory.json,
 }: let
   packages = {
-    aos-activation-filesystem = "crates/aos/activation/aos-activation-filesystem";
-    aos-activation-nix-store = "crates/aos/activation/aos-activation-nix-store";
-    aos-activation-storage = "crates/aos/activation/aos-activation-storage";
+    aos-activation-filesystem = "crates/activation/aos-activation-filesystem";
+    aos-activation-nix-store = "crates/activation/aos-activation-nix-store";
+    aos-activation-storage = "crates/activation/aos-activation-storage";
   };
   dependencyPackages = {
-    aos-core = "crates/shared/aos-core";
-    aos-artifact-evidence = "crates/shared/aos-artifact-evidence";
-    aos-module-format = "crates/aos/modules/aos-module-format";
-    aos-activation = "crates/aos/activation/aos-activation";
-    aos-storage-layout = "crates/aos/boot/aos-storage-layout";
+    aos-core = "crates/core/aos-core";
+    aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
+    aos-module-format = "crates/modules/aos-module-format";
+    aos-activation = "crates/activation/aos-activation";
+    aos-storage-layout = "crates/boot/aos-storage-layout";
   };
   commands = {
     aos-activation-filesystem = ["aos-filesystem-provider"];

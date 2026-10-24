@@ -3,12 +3,12 @@
   pkgs,
   sourceInventory ? ../../tools/bazel/metadata/protocol-inventory.json,
 }: let
-  protocol = "//crates/crucible/protocol/crucible-qemu-protocol";
-  shmem = "//crates/crucible/protocol/crucible-qemu-shmem";
+  protocol = "//crates/crucible/crucible-qemu-protocol";
+  shmem = "//crates/crucible/crucible-qemu-shmem";
   integrationTargets = name: let
-    entries = builtins.readDir (../../crates/crucible/protocol + "/${name}/tests");
+    entries = builtins.readDir (../../crates/crucible + "/${name}/tests");
   in
-    map (file: "//crates/crucible/protocol/${name}:" + pkgs.lib.removeSuffix ".rs" file)
+    map (file: "//crates/crucible/${name}:" + pkgs.lib.removeSuffix ".rs" file)
     (builtins.filter (file: entries.${file} == "regular" && pkgs.lib.hasSuffix ".rs" file) (builtins.attrNames entries));
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
@@ -19,8 +19,8 @@
       "tools/bazel/metadata"
       "tools/bazel/testing"
       "third_party/rust"
-      "crates/crucible/protocol/crucible-qemu-protocol"
-      "crates/crucible/protocol/crucible-qemu-shmem"
+      "crates/crucible/crucible-qemu-protocol"
+      "crates/crucible/crucible-qemu-shmem"
       "docs/rfcs/0020-crucible-campaigns"
     ];
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.core;

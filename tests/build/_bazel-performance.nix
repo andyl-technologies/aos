@@ -6,7 +6,7 @@
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
     sourceInventory = ../../tools/bazel/metadata/boot-pilot-inventory.json;
-    analysisTargets = ["//crates/aos/boot/aos-boot-identity:package"];
+    analysisTargets = ["//crates/boot/aos-boot-identity:package"];
   };
   cargoSource = import ../../pkgs/tools/crucible/_cargo-source.nix {inherit (pkgs) lib;};
   compilerCache = pkgs.mkAccacheEnvironment {

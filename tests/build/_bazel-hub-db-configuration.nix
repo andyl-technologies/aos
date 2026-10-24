@@ -8,14 +8,14 @@
     aos-hub-db = "crates/hub/aos-hub-db";
   };
   dependencyPackages = {
-    aos-artifact-evidence = "crates/shared/aos-artifact-evidence";
-    aos-core = "crates/shared/aos-core";
+    aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
+    aos-core = "crates/core/aos-core";
     aos-hub-model = "crates/hub/aos-hub-model";
-    aos-module-docs = "crates/aos/modules/aos-module-docs";
-    aos-module-format = "crates/aos/modules/aos-module-format";
-    aos-oci-types = "crates/shared/aos-oci-types";
-    aos-registry-format = "crates/aos/registry/aos-registry-format";
-    aos-release-format = "crates/aos/release/aos-release-format";
+    aos-module-docs = "crates/modules/aos-module-docs";
+    aos-module-format = "crates/modules/aos-module-format";
+    aos-oci-types = "crates/artifacts/aos-oci-types";
+    aos-registry-format = "crates/registry/aos-registry-format";
+    aos-release-format = "crates/release/aos-release-format";
   };
   profile = "hub-db" + pkgs.lib.optionalString allFeatures "-all-features";
   cargoFlags = pkgs.lib.optional allFeatures "--all-features";

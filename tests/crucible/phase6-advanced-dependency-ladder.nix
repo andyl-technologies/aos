@@ -9,8 +9,8 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   advancedDoc = builtins.readFile ../../docs/rfcs/0010-crucible/22-advanced-features.md;
-  phasePlanRust = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/phase_plan.rs;
-  phasePlanTest = builtins.readFile ../../crates/crucible/testing/crucible-test-support/tests/phase_plan.rs;
+  phasePlanRust = builtins.readFile ../../crates/crucible/crucible-test-support/src/phase_plan.rs;
+  phasePlanTest = builtins.readFile ../../crates/crucible/crucible-test-support/tests/phase_plan.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -28,7 +28,7 @@
         needle = "exact-determinism →";
       }
     ]
-    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/phase_plan.rs" phasePlanRust [
+    ++ failuresFor "crates/crucible/crucible-test-support/src/phase_plan.rs" phasePlanRust [
       {
         label = "advanced rung enum";
         needle = "pub enum AdvancedFeatureRung";
@@ -62,7 +62,7 @@
         needle = ''required_task_ids: &["T-ADV-11", "T-ADV-19", "T-ADV-21"]'';
       }
     ]
-    ++ failuresFor "crates/crucible/testing/crucible-test-support/tests/phase_plan.rs" phasePlanTest [
+    ++ failuresFor "crates/crucible/crucible-test-support/tests/phase_plan.rs" phasePlanTest [
       {
         label = "canonical advanced ladder test";
         needle = "advanced_feature_ladder_keeps_fuzzing_above_search_and_coverage";

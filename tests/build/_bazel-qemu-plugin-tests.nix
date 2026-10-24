@@ -5,7 +5,7 @@
   testSourceInventory ? ../../tools/bazel/metadata/qemu-plugin-process-test-inventory.json,
 }: let
   root = ../..;
-  plugin = "//crates/crucible/qemu/crucible-qemu-plugin:";
+  plugin = "//crates/crucible/crucible-qemu-plugin:";
   gatewayChecks = import ./_bazel-qemu-gateway-tests.nix {inherit pkgs hostSourceInventory;};
   inherit (gatewayChecks) hostBuild hostPackage hostWorkspace hostInventory testTools hostPackageOptions;
   testTargets = [
@@ -78,9 +78,9 @@ in rec {
     ${pkgs.python3}/bin/python3 ${parityTools}/verify_protocol.py \
       --tests ${tests}/evidence/tests --inventory ${inventory}/inventory.json \
       --messages ${cargo}/gpl/cargo-messages.jsonl \
-      --package-path crucible-qemu-plugin=crates/crucible/qemu/crucible-qemu-plugin \
-      --dependency-package-path crucible-qemu-protocol=crates/crucible/protocol/crucible-qemu-protocol \
-      --dependency-package-path crucible-qemu-shmem=crates/crucible/protocol/crucible-qemu-shmem \
+      --package-path crucible-qemu-plugin=crates/crucible/crucible-qemu-plugin \
+      --dependency-package-path crucible-qemu-protocol=crates/crucible/crucible-qemu-protocol \
+      --dependency-package-path crucible-qemu-shmem=crates/crucible/crucible-qemu-shmem \
       --output "$out/tests.json"
     ${pkgs.python3}/bin/python3 ${parityTools}/verify_compiler_options.py \
       --build ${hostBuild} --cargo ${cargo}/host --output "$out/host-compiler.json"

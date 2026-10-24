@@ -4,16 +4,16 @@
   sourceInventory ? ../../tools/bazel/metadata/native-foundation-inventory.json,
 }: let
   packages = {
-    aos-nix = "crates/shared/aos-nix";
-    aos-transfer = "crates/shared/aos-transfer";
-    aos-oci = "crates/shared/aos-oci";
-    aos-systemd-client = "crates/shared/aos-systemd-client";
+    aos-nix = "crates/nix/aos-nix";
+    aos-transfer = "crates/transfer/aos-transfer";
+    aos-oci = "crates/artifacts/aos-oci";
+    aos-systemd-client = "crates/linux/aos-systemd-client";
   };
   dependencyPackages = {
-    aos-core = "crates/shared/aos-core";
-    aos-nar = "crates/shared/aos-nar";
-    aos-oci-types = "crates/shared/aos-oci-types";
-    aos-registry-format = "crates/aos/registry/aos-registry-format";
+    aos-core = "crates/core/aos-core";
+    aos-nar = "crates/artifacts/aos-nar";
+    aos-oci-types = "crates/artifacts/aos-oci-types";
+    aos-registry-format = "crates/registry/aos-registry-format";
   };
   rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
   nativeLibraries = [pkgs.openssl pkgs.libssh2 pkgs.zlib pkgs.zstdStaticMultithread];

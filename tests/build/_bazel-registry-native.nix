@@ -4,28 +4,28 @@
   sourceInventory ? ../../tools/bazel/metadata/registry-native-inventory.json,
 }: let
   packages = {
-    aos-nix-cache = "crates/aos/packages/aos-nix-cache";
-    aos-registry-authoring = "crates/aos/registry/aos-registry-authoring";
-    aos-registry-client = "crates/aos/registry/aos-registry-client";
+    aos-nix-cache = "crates/packages/aos-nix-cache";
+    aos-registry-authoring = "crates/registry/aos-registry-authoring";
+    aos-registry-client = "crates/registry/aos-registry-client";
   };
   dependencyPackages = {
-    aos-activation = "crates/aos/activation/aos-activation";
-    aos-artifact-evidence = "crates/shared/aos-artifact-evidence";
-    aos-cli-ui = "crates/aos/cli/aos-cli-ui";
-    aos-core = "crates/shared/aos-core";
-    aos-deployment = "crates/aos/packages/aos-deployment";
-    aos-deployment-format = "crates/aos/packages/aos-deployment-format";
+    aos-activation = "crates/activation/aos-activation";
+    aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
+    aos-cli-ui = "crates/cli/aos-cli-ui";
+    aos-core = "crates/core/aos-core";
+    aos-deployment = "crates/packages/aos-deployment";
+    aos-deployment-format = "crates/packages/aos-deployment-format";
     aos-hub-api = "crates/hub/aos-hub-api";
     aos-hub-client = "crates/hub/aos-hub-client";
-    aos-module-docs = "crates/aos/modules/aos-module-docs";
-    aos-module-format = "crates/aos/modules/aos-module-format";
-    aos-nar = "crates/shared/aos-nar";
-    aos-nix = "crates/shared/aos-nix";
-    aos-oci = "crates/shared/aos-oci";
-    aos-oci-types = "crates/shared/aos-oci-types";
-    aos-registry-format = "crates/aos/registry/aos-registry-format";
-    aos-release-format = "crates/aos/release/aos-release-format";
-    aos-transfer = "crates/shared/aos-transfer";
+    aos-module-docs = "crates/modules/aos-module-docs";
+    aos-module-format = "crates/modules/aos-module-format";
+    aos-nar = "crates/artifacts/aos-nar";
+    aos-nix = "crates/nix/aos-nix";
+    aos-oci = "crates/artifacts/aos-oci";
+    aos-oci-types = "crates/artifacts/aos-oci-types";
+    aos-registry-format = "crates/registry/aos-registry-format";
+    aos-release-format = "crates/release/aos-release-format";
+    aos-transfer = "crates/transfer/aos-transfer";
   };
   inputs = import ./_bazel-registry-native-inputs.nix {inherit pkgs;};
   repositories = profile:
@@ -83,8 +83,8 @@ in
           "//crates/hub/aos-hub-api:generated_sources_evidence"
           # These dependency packages declare nonempty integration-test globs.
           # Retain their discovery roots even when only their libraries compile.
-          "//crates/shared/aos-oci:source_package"
-          "//crates/aos/release/aos-release-format:source_package"
+          "//crates/artifacts/aos-oci:source_package"
+          "//crates/release/aos-release-format:source_package"
         ]
         ++ pkgs.lib.concatMap (name:
           map (file: "//${packages.${name}}:${file}")

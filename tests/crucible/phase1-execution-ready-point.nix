@@ -9,7 +9,7 @@
 
   model = import ./_crucible-model-source.nix {inherit lib;};
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
-  bakedGenesis = builtins.readFile ../../crates/crucible/control/crucible-daemon/src/qemu_baked_genesis.rs;
+  bakedGenesis = builtins.readFile ../../crates/crucible/crucible-daemon/src/qemu_baked_genesis.rs;
   defaultChecks = builtins.readFile ./default.nix;
   rfc = builtins.readFile ../../docs/rfcs/0010-crucible/05-execution-model.md;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
@@ -20,7 +20,7 @@
     failuresFor "docs/rfcs/0010-crucible/05-execution-model.md" rfc [
       {
         label = "T-EXEC-9 completion note";
-        needle = "Completed by `crates/crucible/engine/crucible-engine/src/model.rs`: `World::from_nodes` builds";
+        needle = "Completed by `crates/crucible/crucible-engine/src/model.rs`: `World::from_nodes` builds";
       }
     ]
     ++ failuresFor "docs/rfcs/0010-crucible/06-spatial-graph.md" spatialGraph [
@@ -37,7 +37,7 @@
         needle = "`checks.crucible.phase1.executionReadyPoint`";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "world nodes constructor";
         needle = "pub fn from_nodes(nodes: Vec<WorldNode>) -> Result<Self, EngineError>";
@@ -99,7 +99,7 @@
         needle = "world.validate_ready_point_policies()?;";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "canonical ready point hash test";
         needle = "world_ready_point_policies_are_hashed_canonically";
@@ -133,7 +133,7 @@
         needle = "ReadyPoint::AgentSignal";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-daemon/src/qemu_baked_genesis.rs" bakedGenesis [
+    ++ failuresFor "crates/crucible/crucible-daemon/src/qemu_baked_genesis.rs" bakedGenesis [
       {
         label = "production baked capture consumes a validated scenario form";
         needle = "source: &ScenarioDefForm,";

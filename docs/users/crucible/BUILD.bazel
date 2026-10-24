@@ -10,5 +10,5 @@ filegroup(
         "storage-node-faults.md",
         "topology.md",
     ],
-    visibility = ["//crates/crucible/engine/crucible-engine:__pkg__"],
+    visibility = ["//crates/crucible/crucible-engine:__pkg__"],
 )

@@ -35,7 +35,7 @@ def compiler_arguments(workspace, arguments):
 
 def platform_case_differences(expected):
     """Applies the reviewed shared-memory layout case only when that target exists."""
-    layout = "//crates/crucible/protocol/crucible-qemu-shmem:region_layout"
+    layout = "//crates/crucible/crucible-qemu-shmem:region_layout"
     if layout not in expected:
         return {}
 

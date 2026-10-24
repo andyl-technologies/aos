@@ -11,7 +11,7 @@
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.core // pkgs.aosBazelRustRepositories.device;
     targetPlatform = "//tools/bazel/toolchains:aarch64_linux";
     compileOnly = true;
-    analysisTargets = ["//crates/crucible/engine/crucible-device:unit"];
+    analysisTargets = ["//crates/crucible/crucible-device:unit"];
   };
   inventory = builtins.fromJSON (builtins.readFile ../../tools/bazel/metadata/device-inventory.json);
   targets = map (target: target.label) (builtins.filter

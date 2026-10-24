@@ -4,10 +4,10 @@
   sourceInventory ? ../../tools/bazel/metadata/qemu-gpl-production-inventory.json,
 }: let
   packages = {
-    crucible-qemu-plugin = "crates/crucible/qemu/crucible-qemu-plugin";
-    crucible-qemu-debug-gateway = "crates/crucible/qemu/crucible-qemu-debug-gateway";
-    crucible-qemu-protocol = "crates/crucible/protocol/crucible-qemu-protocol";
-    crucible-qemu-shmem = "crates/crucible/protocol/crucible-qemu-shmem";
+    crucible-qemu-plugin = "crates/crucible/crucible-qemu-plugin";
+    crucible-qemu-debug-gateway = "crates/crucible/crucible-qemu-debug-gateway";
+    crucible-qemu-protocol = "crates/crucible/crucible-qemu-protocol";
+    crucible-qemu-shmem = "crates/crucible/crucible-qemu-shmem";
   };
   packageOptions =
     pkgs.lib.concatMap
@@ -18,8 +18,8 @@
     name = "aos-qemu-gpl-parity-tools";
     filter = path: type: type == "directory" || pkgs.lib.hasSuffix ".py" path;
   };
-  plugin = "//crates/crucible/qemu/crucible-qemu-plugin:";
-  gateway = "//crates/crucible/qemu/crucible-qemu-debug-gateway:";
+  plugin = "//crates/crucible/crucible-qemu-plugin:";
+  gateway = "//crates/crucible/crucible-qemu-debug-gateway:";
   productionTargets = [
     "${plugin}plugin"
     "${plugin}production_license_closure"
@@ -50,10 +50,10 @@
     sourceDirectories = pkgs.lib.optionals (sourceInventory == null) [
       "tools/bazel"
       "third_party/rust"
-      "crates/crucible/qemu/crucible-qemu-plugin"
-      "crates/crucible/qemu/crucible-qemu-debug-gateway"
-      "crates/crucible/protocol/crucible-qemu-protocol"
-      "crates/crucible/protocol/crucible-qemu-shmem"
+      "crates/crucible/crucible-qemu-plugin"
+      "crates/crucible/crucible-qemu-debug-gateway"
+      "crates/crucible/crucible-qemu-protocol"
+      "crates/crucible/crucible-qemu-shmem"
     ];
     analysisTargets = productionTargets;
   };

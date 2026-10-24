@@ -162,7 +162,7 @@ in {
     }
     (lib.mkIf config.aos.services.smartd.enable {
       aos.abilities.configuration.operations.file.effects.smartd.input = {
-        path = "/etc/aos/packages/smartmontools/smartd.conf";
+        path = "/etc/packages/smartmontools/smartd.conf";
         content = smartdConfiguration;
         mode = "0444";
       };

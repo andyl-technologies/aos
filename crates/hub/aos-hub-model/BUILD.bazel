@@ -23,7 +23,7 @@ config_setting(
 )
 
 DEPENDENCIES = [
-    "//crates/aos/registry/aos-registry-format:lib",
+    "//crates/registry/aos-registry-format:lib",
     "//third_party/rust:core_aes_gcm",
     "//third_party/rust:core_zeroize",
     "//third_party/rust:core_anyhow",
@@ -38,7 +38,7 @@ DEPENDENCIES = [
     "//third_party/rust:core_thiserror",
     "//third_party/rust:core_url",
     "//third_party/rust:core_unicode_normalization",
-    "//crates/shared/aos-oci-types:lib",
+    "//crates/artifacts/aos-oci-types:lib",
     "//third_party/rust:core_password_hash",
 ] + select({
     ":wasm32": [

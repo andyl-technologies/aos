@@ -4,13 +4,13 @@
   sourceInventory ? ../../tools/bazel/metadata/store-s3-inventory.json,
 }: let
   packages = {
-    crucible-store-s3 = "crates/crucible/storage/crucible-store-s3";
+    crucible-store-s3 = "crates/crucible/crucible-store-s3";
   };
   family = import ./_bazel-rust-family.nix {
     inherit pkgs packages sourceInventory;
     pname = "aos-bazel-store-s3";
     dependencyPackages = {
-      crucible-store = "crates/crucible/storage/crucible-store";
+      crucible-store = "crates/crucible/crucible-store";
     };
     dependencyProfile = "store-s3";
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.store-s3 // {aos_native = pkgs.aosBazelStoreLibraries;};
@@ -33,7 +33,7 @@ in
       pname = "aos-bazel-store-s3-inventory";
       workspace = family.workspace;
       inventoryOnly = true;
-      targets = map (name: "//crates/crucible/storage/crucible-store-s3:${name}") [
+      targets = map (name: "//crates/crucible/crucible-store-s3:${name}") [
         "unit"
         "live_conformance"
         "doc"
@@ -47,7 +47,7 @@ in
     production-license = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-store-s3-production-license";
       workspace = family.workspace;
-      targets = ["//crates/crucible/storage/crucible-store-s3:production_license_closure"];
+      targets = ["//crates/crucible/crucible-store-s3:production_license_closure"];
     };
     all =
       pkgs.runCommand "aos-bazel-store-s3-qualified-checks" {

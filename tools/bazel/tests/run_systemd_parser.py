@@ -74,7 +74,7 @@ def main():
             raise ValueError("systemd parser artifact has no successful test inventory")
 
         results.append({
-            "identity": {"label": "//crates/aos/activation/aos-activation-systemd:bin_" + command + "_parser"},
+            "identity": {"label": "//crates/activation/aos-activation-systemd:bin_" + command + "_parser"},
             "status": "PASSED",
             "outputs": {"test.xml": xml_name, "test.log": log_name},
         })

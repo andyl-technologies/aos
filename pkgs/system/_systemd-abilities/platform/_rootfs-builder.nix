@@ -94,6 +94,7 @@
   firmwarePackages ? [],
   runtimeClosureAudit ? null,
 }: let
+  imageMetadata = import ../../../../lib/build/image-metadata.nix {inherit pkgs;};
   toplevel = system.config.system.build.toplevel;
   stageInputPaths = system.config.aos.boot.stageInputPaths;
   hostBundleDestination = lib.escapeShellArg ("rootfs" + stageInputPaths.host.bundle);
@@ -205,7 +206,7 @@
         exit 1
       fi
       ${prepareDestination}
-      cp -a ${source}/. ${destination}/
+      cp -a --no-preserve=links ${source}/. ${destination}/
     '') (
       if checkedManagerRootfsPlan == null
       then []
@@ -226,6 +227,7 @@ in
           pkgs.fakeroot
           pkgs.util-linux
           pkgs.erofs-utils
+          pkgs.python3
         ]
         ++ lib.optional (fsType == "erofs") pkgs.image-hardlink-tree
         # Verity sub-step tooling is gated so the non-verity path's
@@ -330,7 +332,9 @@ in
                   printf '\r    [%d/%d]' "$count" "$total"
                 fi
                 if [ -e "$p" ]; then
-                  cp -a "$p" rootfs/usr/lib/aos/nix/store/
+                  # NAR does not encode hardlinks. Discard topology introduced
+                  # by store optimization, retaining deliberate staging links.
+                  cp -a --no-preserve=links "$p" rootfs/usr/lib/aos/nix/store/
                 else
                   echo ""
                   echo "    WARN: store path does not exist: $p" >&2
@@ -374,11 +378,11 @@ in
               ${lib.optionalString (kernelModulePackages != []) ''
                 rm "rootfs/usr/lib/modules/$KERNEL_RELEASE"
                 mkdir -p "rootfs/usr/lib/modules/$KERNEL_RELEASE"
-                cp -a "$KERNEL_MODULE_TREE/." "rootfs/usr/lib/modules/$KERNEL_RELEASE/"
+                cp -a --no-preserve=links "$KERNEL_MODULE_TREE/." "rootfs/usr/lib/modules/$KERNEL_RELEASE/"
                 chmod -R u+w rootfs/usr/lib/modules
                 ${lib.concatMapStringsSep "\n" (package: ''
                     chmod -R u+w rootfs/usr/lib/modules
-                    cp -a ${package}/lib/modules/. rootfs/usr/lib/modules/
+                    cp -a --no-preserve=links ${package}/lib/modules/. rootfs/usr/lib/modules/
                   '')
                   kernelModulePackages}
                 for module_dir in rootfs/usr/lib/modules/*; do
@@ -392,7 +396,7 @@ in
 
               mkdir -p rootfs/usr/lib/firmware
               ${lib.concatMapStringsSep "\n" (package: ''
-                  cp -a ${package}/lib/firmware/. rootfs/usr/lib/firmware/
+                  cp -a --no-preserve=links ${package}/lib/firmware/. rootfs/usr/lib/firmware/
                 '')
                 firmwarePackages}
 
@@ -423,10 +427,10 @@ in
               # Both production and test images receive the bundles consumed
               # after switch-root, at the boot package's configured paths.
               mkdir -p ${hostBundleDestination}
-              cp -a "$TOPLEVEL/host-deployment/." ${hostBundleDestination}/
+              cp -a --no-preserve=links "$TOPLEVEL/host-deployment/." ${hostBundleDestination}/
               ${lib.optionalString system.config.aos.boot.initrd.abilityHandoff.enable ''
                 mkdir -p ${receivedInitrdParent}
-                cp -a "$TOPLEVEL/initrd-deployment" ${receivedInitrdDestination}
+                cp -a --no-preserve=links "$TOPLEVEL/initrd-deployment" ${receivedInitrdDestination}
               ''}
 
               # Host adoption reads this selected policy in every boot image,
@@ -461,109 +465,114 @@ in
           {
             name = "mkfs";
             script =
-              if fsType == "erofs"
-              then ''
-                set -eu
-
-                # Read-only, zstd-compressed root for the immutable production
-                # image. --all-root forces every file to uid/gid 0 (matching the
-                # ext4 path's fakeroot, so ownership-sensitive daemons start); the
-                # default xattr tolerance preserves SELinux labels; -T0 fixes
-                # timestamps and -U pins the UUID for a reproducible image. EROFS is
-                # content-sized, so there is no over-provisioning, journal, or
-                # shrink step.
-                #
-                # Compression tuning (measured on the server closure):
-                #   * -C262144 — 256 KiB compression cluster. The 4 KiB default is
-                #     far too small for zstd to find context; 256 KiB is the knee of
-                #     the size/read-amplification curve for a RAM-ample, read-mostly
-                #     server root (a cold page fault decompresses one 256 KiB cluster;
-                #     the hot path is served from the page cache regardless).
-                #   * -Eztailpacking — packs compressed tails into inode metadata
-                #     without sharing a fragment block between unrelated files.
-                #     Do not enable `fragments` with parallel compression here:
-                #     erofs-utils 1.8 can occasionally publish one small file at
-                #     another file's fragment offset. `fsck.erofs` validates that
-                #     structurally sound image, but the extracted bytes are corrupt.
-                # Identical files can occur in distinct store paths (including
-                # retained rollout executors). Share their inodes before mkfs:
-                # EROFS block dedupe would disable parallel compression.
-                #
-                # --workers parallelizes the otherwise single-threaded zstd-19
-                # compression (hours on one core for the whole server closure).
-                # erofs-utils splits the input into fixed 16 MiB segments and
-                # reaps them in deterministic on-disk order, so the image stays
-                # bit-reproducible regardless of the worker count — verified
-                # identical across worker counts and against the single-threaded
-                # build. $NIX_BUILD_CORES is the sandbox's core allotment.
-                #
-                # libgcc_s.so.1 must be loadable at runtime: glibc lazily
-                # dlopen()s it for worker-thread teardown unwinding, and a
-                # DT_RUNPATH on the binary doesn't satisfy a libc-initiated
-                # dlopen — so point LD_LIBRARY_PATH at gcc-libs (same approach
-                # as the kernel build in pkgs/kernel/linux.nix). Without it
-                # mkfs prints "libgcc_s.so.1 must be installed for pthread_exit
-                # to work" and risks aborting a worker.
-                export LD_LIBRARY_PATH="${pkgs.gcc-libs}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-                ${pkgs.image-hardlink-tree}/bin/aos-image-hardlink-tree rootfs
-                mkfs.erofs --all-root -T0 \
-                  -U bdfb6fc9-0000-4000-8000-000000000001 \
-                  --workers="$NIX_BUILD_CORES" \
-                  -z zstd,level=${toString erofsCompressionLevel} \
-                  -C262144 \
-                  -Eztailpacking \
-                  -L ${label} root.img rootfs
-                fsck.erofs root.img >/dev/null
-                final_bytes=$(stat -c %s root.img)
-                echo "==> root.img: $(( final_bytes / 1048576 )) MiB (erofs zstd-${toString erofsCompressionLevel}, 256K cluster, ztailpacking)"
-                echo "$final_bytes" > rootfs-size-bytes
+              imageMetadata.environment
+              + ''
+                IMAGE_UUID=$(${imageMetadata.command} tree ${lib.escapeShellArg "aos-rootfs:${label}"} rootfs)
               ''
-              else ''
-                set -eu
+              + (
+                if fsType == "erofs"
+                then ''
+                  set -eu
 
-                # Measure the populated tree. `du --apparent-size` is what
-                # matters for mkfs.ext4 -d because it does NOT preserve
-                # hardlinks (each hardlinked file becomes a separate copy).
-                apparent_kb=$(du -sk --apparent-size rootfs | cut -f1)
-                apparent_mib=$(( apparent_kb / 1024 ))
-                echo "==> rootfs apparent size: ''${apparent_mib} MiB"
-
-                # Over-provision during mkfs to allow the ext4 journal, inode
-                # table, and tree metadata to land alongside the data.
-                initial_mib=$(( apparent_mib * 3 / 2 + 256 ))
-                if [ "$initial_mib" -lt ${toString minSizeMiB} ]; then
-                  initial_mib=${toString minSizeMiB}
-                fi
-
-                # fakeroot makes every file in rootfs appear as uid/gid 0
-                # to mkfs.ext4, so the resulting image has root-owned files.
-                # Without this, daemons fail ownership checks (auditd refuses
-                # to start if /etc/audit/auditd.conf isn't owned by root).
-                fakeroot -- mkfs.ext4 -d rootfs -L ${label} -m 1 -q \
-                  root.img "''${initial_mib}M"
-
-                ${lib.optionalString shrinkToFit ''
-                  # Shrink to minimum, then grow by headroom + 1 MiB alignment.
-                  e2fsck -f -y root.img >/dev/null
-                  resize2fs -M root.img >/dev/null 2>&1
-                  blk_size=$(dumpe2fs -h root.img 2>/dev/null \
-                               | awk '/Block size:/{print $3}')
-                  min_blocks=$(dumpe2fs -h root.img 2>/dev/null \
-                                 | awk '/Block count:/{print $3}')
-                  headroom_blocks=$(( ${toString headroomMiB} * 1048576 / blk_size ))
-                  final_blocks=$(( min_blocks + headroom_blocks ))
-                  resize2fs root.img "$final_blocks" >/dev/null 2>&1
-                  final_bytes=$(( final_blocks * blk_size ))
-                  final_bytes=$(( ((final_bytes + 1048575) / 1048576) * 1048576 ))
-                  truncate -s "$final_bytes" root.img
-                  echo "==> root.img: $(( final_bytes / 1048576 )) MiB (shrunk+headroom)"
-                ''}
-                ${lib.optionalString (!shrinkToFit) ''
+                  # Read-only, zstd-compressed root for the immutable production
+                  # image. --all-root forces every file to uid/gid 0 (matching the
+                  # ext4 path's fakeroot, so ownership-sensitive daemons start); the
+                  # default xattr tolerance preserves SELinux labels; -T0 fixes
+                  # timestamps and -U pins the UUID for a reproducible image. EROFS is
+                  # content-sized, so there is no over-provisioning, journal, or
+                  # shrink step.
+                  #
+                  # Compression tuning (measured on the server closure):
+                  #   * -C262144 — 256 KiB compression cluster. The 4 KiB default is
+                  #     far too small for zstd to find context; 256 KiB is the knee of
+                  #     the size/read-amplification curve for a RAM-ample, read-mostly
+                  #     server root (a cold page fault decompresses one 256 KiB cluster;
+                  #     the hot path is served from the page cache regardless).
+                  #   * -Eztailpacking — packs compressed tails into inode metadata
+                  #     without sharing a fragment block between unrelated files.
+                  #     Do not enable `fragments` with parallel compression here:
+                  #     erofs-utils 1.8 can occasionally publish one small file at
+                  #     another file's fragment offset. `fsck.erofs` validates that
+                  #     structurally sound image, but the extracted bytes are corrupt.
+                  # Identical files can occur in distinct store paths (including
+                  # retained rollout executors). Share their inodes before mkfs:
+                  # EROFS block dedupe would disable parallel compression.
+                  #
+                  # --workers parallelizes the otherwise single-threaded zstd-19
+                  # compression (hours on one core for the whole server closure).
+                  # erofs-utils splits the input into fixed 16 MiB segments and
+                  # reaps them in deterministic on-disk order, so the image stays
+                  # bit-reproducible regardless of the worker count — verified
+                  # identical across worker counts and against the single-threaded
+                  # build. $NIX_BUILD_CORES is the sandbox's core allotment.
+                  #
+                  # libgcc_s.so.1 must be loadable at runtime: glibc lazily
+                  # dlopen()s it for worker-thread teardown unwinding, and a
+                  # DT_RUNPATH on the binary doesn't satisfy a libc-initiated
+                  # dlopen — so point LD_LIBRARY_PATH at gcc-libs (same approach
+                  # as the kernel build in pkgs/kernel/linux.nix). Without it
+                  # mkfs prints "libgcc_s.so.1 must be installed for pthread_exit
+                  # to work" and risks aborting a worker.
+                  export LD_LIBRARY_PATH="${pkgs.gcc-libs}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                  ${pkgs.image-hardlink-tree}/bin/aos-image-hardlink-tree rootfs
+                  mkfs.erofs --all-root -T0 \
+                    -U "$IMAGE_UUID" \
+                    --workers="$NIX_BUILD_CORES" \
+                    -z zstd,level=${toString erofsCompressionLevel} \
+                    -C262144 \
+                    -Eztailpacking \
+                    -L ${label} root.img rootfs
+                  fsck.erofs root.img >/dev/null
                   final_bytes=$(stat -c %s root.img)
-                  echo "==> root.img: $(( final_bytes / 1048576 )) MiB (unshrunk)"
-                ''}
-                echo "$final_bytes" > rootfs-size-bytes
-              '';
+                  echo "==> root.img: $(( final_bytes / 1048576 )) MiB (erofs zstd-${toString erofsCompressionLevel}, 256K cluster, ztailpacking)"
+                  echo "$final_bytes" > rootfs-size-bytes
+                ''
+                else ''
+                  set -eu
+
+                  # Count logical payload, preserving hardlink semantics while
+                  # excluding backing-filesystem directory sizes and allocation.
+                  apparent_bytes=$(${imageMetadata.command} size rootfs)
+                  apparent_mib=$(( apparent_bytes / 1048576 ))
+                  echo "==> rootfs apparent size: ''${apparent_mib} MiB"
+
+                  # Over-provision during mkfs to allow the ext4 journal, inode
+                  # table, and tree metadata to land alongside the data.
+                  initial_mib=$(( apparent_mib * 3 / 2 + 256 ))
+                  if [ "$initial_mib" -lt ${toString minSizeMiB} ]; then
+                    initial_mib=${toString minSizeMiB}
+                  fi
+
+                  # fakeroot makes every file in rootfs appear as uid/gid 0
+                  # to mkfs.ext4, so the resulting image has root-owned files.
+                  # Without this, daemons fail ownership checks (auditd refuses
+                  # to start if /etc/audit/auditd.conf isn't owned by root).
+                  fakeroot -- mkfs.ext4 ${imageMetadata.ext4Options} -d rootfs -L ${label} -m 1 -q \
+                    root.img "''${initial_mib}M"
+
+                  ${lib.optionalString shrinkToFit ''
+                    # Shrink to minimum, then grow by headroom + 1 MiB alignment.
+                    e2fsck -f -y root.img >/dev/null
+                    resize2fs -M root.img >/dev/null 2>&1
+                    blk_size=$(dumpe2fs -h root.img 2>/dev/null \
+                                 | awk '/Block size:/{print $3}')
+                    min_blocks=$(dumpe2fs -h root.img 2>/dev/null \
+                                   | awk '/Block count:/{print $3}')
+                    headroom_blocks=$(( ${toString headroomMiB} * 1048576 / blk_size ))
+                    final_blocks=$(( min_blocks + headroom_blocks ))
+                    resize2fs root.img "$final_blocks" >/dev/null 2>&1
+                    final_bytes=$(( final_blocks * blk_size ))
+                    final_bytes=$(( ((final_bytes + 1048575) / 1048576) * 1048576 ))
+                    truncate -s "$final_bytes" root.img
+                    echo "==> root.img: $(( final_bytes / 1048576 )) MiB (shrunk+headroom)"
+                  ''}
+                  ${lib.optionalString (!shrinkToFit) ''
+                    final_bytes=$(stat -c %s root.img)
+                    echo "==> root.img: $(( final_bytes / 1048576 )) MiB (unshrunk)"
+                  ''}
+                  echo "$final_bytes" > rootfs-size-bytes
+                ''
+              );
           }
         ]
         # Build a deterministic dm-verity hash tree over the finalized

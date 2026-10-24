@@ -18,7 +18,7 @@ use uuid::Uuid;
 use crate::backend::Statement;
 use crate::value::Row;
 
-use super::{unix_now, Database, SurfaceTarget};
+use super::{unix_now, ControllerLeaseFence, Database, SurfaceTarget};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -2361,6 +2361,52 @@ impl Database {
         error: Option<&str>,
         expected_resource_version: i64,
     ) -> Result<GatewayRecord> {
+        self.observe_gateway_inner(
+            gateway_id,
+            generation,
+            state,
+            error,
+            expected_resource_version,
+            None,
+        )
+        .await
+    }
+
+    /// Records gateway reconciliation under both lease and resource CAS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lease, gateway state, or expected resource
+    /// version is invalid, or when the database operation fails.
+    pub async fn observe_gateway_fenced(
+        &self,
+        gateway_id: &str,
+        generation: i64,
+        state: &str,
+        error: Option<&str>,
+        expected_resource_version: i64,
+        fence: &ControllerLeaseFence<'_>,
+    ) -> Result<GatewayRecord> {
+        self.observe_gateway_inner(
+            gateway_id,
+            generation,
+            state,
+            error,
+            expected_resource_version,
+            Some(fence),
+        )
+        .await
+    }
+
+    async fn observe_gateway_inner(
+        &self,
+        gateway_id: &str,
+        generation: i64,
+        state: &str,
+        error: Option<&str>,
+        expected_resource_version: i64,
+        fence: Option<&ControllerLeaseFence<'_>>,
+    ) -> Result<GatewayRecord> {
         if !matches!(state, "ready" | "failed") || (state == "ready" && error.is_some()) {
             bail!("gateway observation must be ready without error or failed");
         }
@@ -2378,40 +2424,43 @@ impl Database {
             "resource_version": expected_resource_version + 1,
             "state": state,
         }))?;
-        self.backend
-            .checked_batch(&[
-                Statement::new(
-                    "UPDATE gateways SET observed_generation = ?2,
+        let mut statements = Vec::with_capacity(3);
+        if let Some(fence) = fence {
+            statements.push(Self::controller_lease_guard_statement(fence)?);
+        }
+        statements.extend([
+            Statement::new(
+                "UPDATE gateways SET observed_generation = ?2,
                  reconciliation_state = ?3, reconciliation_error = ?4,
                  resource_version = resource_version + 1, updated_at = ?5
                  WHERE id = ?1 AND desired_generation = ?2 AND resource_version = ?6
                    AND EXISTS (SELECT 1 FROM gateway_revisions
                      WHERE gateway_id = ?1 AND generation = ?2)",
-                    vals![
-                        gateway_id,
-                        generation,
-                        state,
-                        error,
-                        now,
-                        expected_resource_version
-                    ],
-                )
-                .expecting(1),
-                Database::topology_event_statement(&crate::db::NewTopologyEvent {
-                    event_id: &event_id,
-                    event_name: "topology.gateway.reconciled",
-                    owner_scope_key: &affected.owner_scope_key,
-                    resource_kind: "gateway",
-                    resource_stable_id: gateway_id,
-                    resource_generation_key: generation,
-                    actor_kind: "system",
-                    actor_id: None,
-                    actor_label: "storage-gateway-controller",
-                    payload_json: &payload,
-                    occurred_at: now,
-                }),
-            ])
-            .await?;
+                vals![
+                    gateway_id,
+                    generation,
+                    state,
+                    error,
+                    now,
+                    expected_resource_version
+                ],
+            )
+            .expecting(1),
+            Database::topology_event_statement(&crate::db::NewTopologyEvent {
+                event_id: &event_id,
+                event_name: "topology.gateway.reconciled",
+                owner_scope_key: &affected.owner_scope_key,
+                resource_kind: "gateway",
+                resource_stable_id: gateway_id,
+                resource_generation_key: generation,
+                actor_kind: "system",
+                actor_id: None,
+                actor_label: "storage-gateway-controller",
+                payload_json: &payload,
+                occurred_at: now,
+            }),
+        ]);
+        self.backend.checked_batch(&statements).await?;
         self.gateway(gateway_id)
             .await?
             .context("observed gateway disappeared")

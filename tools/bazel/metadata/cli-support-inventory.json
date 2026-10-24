@@ -1,24 +1,24 @@
 {
   "configured_targets": [
     {
-      "build_file": "crates/aos/cli/aos-cli-ui/BUILD.bazel",
+      "build_file": "crates/cli/aos-cli-ui/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-cli-ui:lib",
-        "//crates/aos/cli/aos-cli-ui:unit_binary"
+        "//crates/cli/aos-cli-ui:lib",
+        "//crates/cli/aos-cli-ui:unit_binary"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-cli-ui/libaos_cli_ui-1155506808.rlib": "//crates/aos/cli/aos-cli-ui:lib",
-        "crates/aos/cli/aos-cli-ui/unit_binary": "//crates/aos/cli/aos-cli-ui:unit_binary"
+        "crates/cli/aos-cli-ui/libaos_cli_ui-1155506808.rlib": "//crates/cli/aos-cli-ui:lib",
+        "crates/cli/aos-cli-ui/unit_binary": "//crates/cli/aos-cli-ui:unit_binary"
       },
       "kind": "rust_clippy",
-      "label": "//crates/aos/cli/aos-cli-ui:clippy",
+      "label": "//crates/cli/aos-cli-ui:clippy",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -28,13 +28,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-cli-ui/BUILD.bazel",
+      "build_file": "crates/cli/aos-cli-ui/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-cli-ui:lib",
+        "//crates/cli/aos-cli-ui:lib",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
         "@@bazel_tools//tools/test:runtime",
@@ -51,10 +51,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-cli-ui/libaos_cli_ui-1155506808.rlib": "//crates/aos/cli/aos-cli-ui:lib"
+        "crates/cli/aos-cli-ui/libaos_cli_ui-1155506808.rlib": "//crates/cli/aos-cli-ui:lib"
       },
       "kind": "rust_doc_test",
-      "label": "//crates/aos/cli/aos-cli-ui:doc",
+      "label": "//crates/cli/aos-cli-ui:doc",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -64,13 +64,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-cli-ui/BUILD.bazel",
+      "build_file": "crates/cli/aos-cli-ui/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-cli-ui:lib",
+        "//crates/cli/aos-cli-ui:lib",
         "@@bazel_tools//tools/zip:zipper",
         "@@rules_rust+//rust/private/rustdoc/dir_zipper:dir_zipper",
         "@@rules_rust+//rust/settings:error_format",
@@ -80,10 +80,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-cli-ui/libaos_cli_ui-1155506808.rlib": "//crates/aos/cli/aos-cli-ui:lib"
+        "crates/cli/aos-cli-ui/libaos_cli_ui-1155506808.rlib": "//crates/cli/aos-cli-ui:lib"
       },
       "kind": "rust_doc",
-      "label": "//crates/aos/cli/aos-cli-ui:documentation",
+      "label": "//crates/cli/aos-cli-ui:documentation",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -93,14 +93,14 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-cli-ui/BUILD.bazel",
+      "build_file": "crates/cli/aos-cli-ui/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-cli-ui:lib",
-        "//crates/aos/cli/aos-cli-ui:unit_binary",
+        "//crates/cli/aos-cli-ui:lib",
+        "//crates/cli/aos-cli-ui:unit_binary",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
         "@@bazel_tools//tools/test:runtime",
@@ -114,11 +114,11 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-cli-ui/libaos_cli_ui-1155506808.rlib": "//crates/aos/cli/aos-cli-ui:lib",
-        "crates/aos/cli/aos-cli-ui/unit_binary": "//crates/aos/cli/aos-cli-ui:unit_binary"
+        "crates/cli/aos-cli-ui/libaos_cli_ui-1155506808.rlib": "//crates/cli/aos-cli-ui:lib",
+        "crates/cli/aos-cli-ui/unit_binary": "//crates/cli/aos-cli-ui:unit_binary"
       },
       "kind": "rustfmt_test",
-      "label": "//crates/aos/cli/aos-cli-ui:format",
+      "label": "//crates/cli/aos-cli-ui:format",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -128,16 +128,16 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-cli-ui/BUILD.bazel",
+      "build_file": "crates/cli/aos-cli-ui/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_cli_ui",
-      "crate_root": "crates/aos/cli/aos-cli-ui/src/lib.rs",
+      "crate_root": "crates/cli/aos-cli-ui/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-cli-ui:src/invocation.rs",
-        "//crates/aos/cli/aos-cli-ui:src/lib.rs",
-        "//crates/aos/cli/aos-cli-ui:src/output.rs",
-        "//crates/shared/aos-transfer:lib_without_transfer",
+        "//crates/cli/aos-cli-ui:src/invocation.rs",
+        "//crates/cli/aos-cli-ui:src/lib.rs",
+        "//crates/cli/aos-cli-ui:src/output.rs",
+        "//crates/transfer/aos-transfer:lib_without_transfer",
         "//tools/bazel/rules:workspace_lints",
         "@@+aos_tools_repository+aos_cli_support_crates__console-0.15.11//:console",
         "@@+aos_tools_repository+aos_cli_support_crates__indicatif-0.17.11//:indicatif",
@@ -161,10 +161,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-transfer/libaos_transfer-1495045353.rlib": "//crates/shared/aos-transfer:lib_without_transfer"
+        "crates/transfer/aos-transfer/libaos_transfer-1495045353.rlib": "//crates/transfer/aos-transfer:lib_without_transfer"
       },
       "kind": "rust_library",
-      "label": "//crates/aos/cli/aos-cli-ui:lib",
+      "label": "//crates/cli/aos-cli-ui:lib",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Terminal presentation, structured results, progress, and command hints",
@@ -184,9 +184,9 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
-        "crates/aos/cli/aos-cli-ui/src/invocation.rs",
-        "crates/aos/cli/aos-cli-ui/src/lib.rs",
-        "crates/aos/cli/aos-cli-ui/src/output.rs"
+        "crates/cli/aos-cli-ui/src/invocation.rs",
+        "crates/cli/aos-cli-ui/src/lib.rs",
+        "crates/cli/aos-cli-ui/src/output.rs"
       ],
       "tags": [
         "aos-license:apache-host"
@@ -195,24 +195,24 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/aos/cli/aos-cli-ui/BUILD.bazel",
+      "build_file": "crates/cli/aos-cli-ui/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-cli-ui:lib",
-        "//crates/aos/cli/aos-cli-ui:unit_binary"
+        "//crates/cli/aos-cli-ui:lib",
+        "//crates/cli/aos-cli-ui:unit_binary"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-cli-ui/libaos_cli_ui-1155506808.rlib": "//crates/aos/cli/aos-cli-ui:lib",
-        "crates/aos/cli/aos-cli-ui/unit_binary": "//crates/aos/cli/aos-cli-ui:unit_binary"
+        "crates/cli/aos-cli-ui/libaos_cli_ui-1155506808.rlib": "//crates/cli/aos-cli-ui:lib",
+        "crates/cli/aos-cli-ui/unit_binary": "//crates/cli/aos-cli-ui:unit_binary"
       },
       "kind": "aos_license_check",
-      "label": "//crates/aos/cli/aos-cli-ui:license_closure",
+      "label": "//crates/cli/aos-cli-ui:license_closure",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -222,13 +222,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-cli-ui/BUILD.bazel",
+      "build_file": "crates/cli/aos-cli-ui/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-cli-ui:unit_binary",
+        "//crates/cli/aos-cli-ui:unit_binary",
         "//tools/bazel/testing:policy.json",
         "//tools/bazel/testing:runner.py",
         "@@+aos_tools_repository+aos_tools//:bash",
@@ -246,10 +246,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-cli-ui/unit_binary": "//crates/aos/cli/aos-cli-ui:unit_binary"
+        "crates/cli/aos-cli-ui/unit_binary": "//crates/cli/aos-cli-ui:unit_binary"
       },
       "kind": "_libtest_test",
-      "label": "//crates/aos/cli/aos-cli-ui:unit",
+      "label": "//crates/cli/aos-cli-ui:unit",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -262,13 +262,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-cli-ui/BUILD.bazel",
+      "build_file": "crates/cli/aos-cli-ui/BUILD.bazel",
       "copts": [],
       "crate_name": "",
-      "crate_root": "crates/aos/cli/aos-cli-ui/src/lib.rs",
+      "crate_root": "crates/cli/aos-cli-ui/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-cli-ui:lib",
+        "//crates/cli/aos-cli-ui:lib",
         "//tools/bazel/rules:workspace_lints",
         "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
         "@@bazel_tools//tools/test:collect_coverage",
@@ -298,10 +298,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-cli-ui/libaos_cli_ui-1155506808.rlib": "//crates/aos/cli/aos-cli-ui:lib"
+        "crates/cli/aos-cli-ui/libaos_cli_ui-1155506808.rlib": "//crates/cli/aos-cli-ui:lib"
       },
       "kind": "rust_test",
-      "label": "//crates/aos/cli/aos-cli-ui:unit_binary",
+      "label": "//crates/cli/aos-cli-ui:unit_binary",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Terminal presentation, structured results, progress, and command hints",
@@ -330,24 +330,24 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/aos/cli/aos-closure-analysis/BUILD.bazel",
+      "build_file": "crates/cli/aos-closure-analysis/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-closure-analysis:lib",
-        "//crates/aos/cli/aos-closure-analysis:unit_binary"
+        "//crates/cli/aos-closure-analysis:lib",
+        "//crates/cli/aos-closure-analysis:unit_binary"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-closure-analysis/libaos_closure_analysis-2878959400.rlib": "//crates/aos/cli/aos-closure-analysis:lib",
-        "crates/aos/cli/aos-closure-analysis/unit_binary": "//crates/aos/cli/aos-closure-analysis:unit_binary"
+        "crates/cli/aos-closure-analysis/libaos_closure_analysis-2878959400.rlib": "//crates/cli/aos-closure-analysis:lib",
+        "crates/cli/aos-closure-analysis/unit_binary": "//crates/cli/aos-closure-analysis:unit_binary"
       },
       "kind": "rust_clippy",
-      "label": "//crates/aos/cli/aos-closure-analysis:clippy",
+      "label": "//crates/cli/aos-closure-analysis:clippy",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -357,13 +357,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-closure-analysis/BUILD.bazel",
+      "build_file": "crates/cli/aos-closure-analysis/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-closure-analysis:lib",
+        "//crates/cli/aos-closure-analysis:lib",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
         "@@bazel_tools//tools/test:runtime",
@@ -380,10 +380,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-closure-analysis/libaos_closure_analysis-2878959400.rlib": "//crates/aos/cli/aos-closure-analysis:lib"
+        "crates/cli/aos-closure-analysis/libaos_closure_analysis-2878959400.rlib": "//crates/cli/aos-closure-analysis:lib"
       },
       "kind": "rust_doc_test",
-      "label": "//crates/aos/cli/aos-closure-analysis:doc",
+      "label": "//crates/cli/aos-closure-analysis:doc",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -393,13 +393,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-closure-analysis/BUILD.bazel",
+      "build_file": "crates/cli/aos-closure-analysis/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-closure-analysis:lib",
+        "//crates/cli/aos-closure-analysis:lib",
         "@@bazel_tools//tools/zip:zipper",
         "@@rules_rust+//rust/private/rustdoc/dir_zipper:dir_zipper",
         "@@rules_rust+//rust/settings:error_format",
@@ -409,10 +409,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-closure-analysis/libaos_closure_analysis-2878959400.rlib": "//crates/aos/cli/aos-closure-analysis:lib"
+        "crates/cli/aos-closure-analysis/libaos_closure_analysis-2878959400.rlib": "//crates/cli/aos-closure-analysis:lib"
       },
       "kind": "rust_doc",
-      "label": "//crates/aos/cli/aos-closure-analysis:documentation",
+      "label": "//crates/cli/aos-closure-analysis:documentation",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -422,14 +422,14 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-closure-analysis/BUILD.bazel",
+      "build_file": "crates/cli/aos-closure-analysis/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-closure-analysis:lib",
-        "//crates/aos/cli/aos-closure-analysis:unit_binary",
+        "//crates/cli/aos-closure-analysis:lib",
+        "//crates/cli/aos-closure-analysis:unit_binary",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
         "@@bazel_tools//tools/test:runtime",
@@ -443,11 +443,11 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-closure-analysis/libaos_closure_analysis-2878959400.rlib": "//crates/aos/cli/aos-closure-analysis:lib",
-        "crates/aos/cli/aos-closure-analysis/unit_binary": "//crates/aos/cli/aos-closure-analysis:unit_binary"
+        "crates/cli/aos-closure-analysis/libaos_closure_analysis-2878959400.rlib": "//crates/cli/aos-closure-analysis:lib",
+        "crates/cli/aos-closure-analysis/unit_binary": "//crates/cli/aos-closure-analysis:unit_binary"
       },
       "kind": "rustfmt_test",
-      "label": "//crates/aos/cli/aos-closure-analysis:format",
+      "label": "//crates/cli/aos-closure-analysis:format",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -457,23 +457,23 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-closure-analysis/BUILD.bazel",
+      "build_file": "crates/cli/aos-closure-analysis/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_closure_analysis",
-      "crate_root": "crates/aos/cli/aos-closure-analysis/src/lib.rs",
+      "crate_root": "crates/cli/aos-closure-analysis/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-cli-ui:lib",
-        "//crates/aos/cli/aos-closure-analysis:src/closure.rs",
-        "//crates/aos/cli/aos-closure-analysis:src/lib.rs",
-        "//crates/aos/cli/aos-closure-analysis:src/report.rs",
-        "//crates/aos/cli/aos-closure-analysis:src/scan/classify.rs",
-        "//crates/aos/cli/aos-closure-analysis:src/scan/elf.rs",
-        "//crates/aos/cli/aos-closure-analysis:src/scan/mod.rs",
-        "//crates/aos/cli/aos-closure-analysis:src/target.rs",
-        "//crates/aos/cli/aos-closure-analysis:src/verdict.rs",
-        "//crates/shared/aos-core:lib",
-        "//crates/shared/aos-nix:lib",
+        "//crates/cli/aos-cli-ui:lib",
+        "//crates/cli/aos-closure-analysis:src/closure.rs",
+        "//crates/cli/aos-closure-analysis:src/lib.rs",
+        "//crates/cli/aos-closure-analysis:src/report.rs",
+        "//crates/cli/aos-closure-analysis:src/scan/classify.rs",
+        "//crates/cli/aos-closure-analysis:src/scan/elf.rs",
+        "//crates/cli/aos-closure-analysis:src/scan/mod.rs",
+        "//crates/cli/aos-closure-analysis:src/target.rs",
+        "//crates/cli/aos-closure-analysis:src/verdict.rs",
+        "//crates/core/aos-core:lib",
+        "//crates/nix/aos-nix:lib",
         "@@+aos_tools_repository+aos_cli_support_crates__anyhow-1.0.102//:anyhow",
         "@@+aos_tools_repository+aos_cli_support_crates__serde-1.0.228//:serde",
         "@@+aos_tools_repository+aos_cli_support_crates__serde_json-1.0.150//:serde_json",
@@ -495,12 +495,12 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-cli-ui/libaos_cli_ui-1155506808.rlib": "//crates/aos/cli/aos-cli-ui:lib",
-        "crates/shared/aos-core/libaos_core-2865302716.rlib": "//crates/shared/aos-core:lib",
-        "crates/shared/aos-nix/libaos_nix-531826648.rlib": "//crates/shared/aos-nix:lib"
+        "crates/cli/aos-cli-ui/libaos_cli_ui-1155506808.rlib": "//crates/cli/aos-cli-ui:lib",
+        "crates/core/aos-core/libaos_core-2865302716.rlib": "//crates/core/aos-core:lib",
+        "crates/nix/aos-nix/libaos_nix-531826648.rlib": "//crates/nix/aos-nix:lib"
       },
       "kind": "rust_library",
-      "label": "//crates/aos/cli/aos-closure-analysis:lib",
+      "label": "//crates/cli/aos-closure-analysis:lib",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "",
@@ -520,14 +520,14 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
-        "crates/aos/cli/aos-closure-analysis/src/closure.rs",
-        "crates/aos/cli/aos-closure-analysis/src/lib.rs",
-        "crates/aos/cli/aos-closure-analysis/src/report.rs",
-        "crates/aos/cli/aos-closure-analysis/src/scan/classify.rs",
-        "crates/aos/cli/aos-closure-analysis/src/scan/elf.rs",
-        "crates/aos/cli/aos-closure-analysis/src/scan/mod.rs",
-        "crates/aos/cli/aos-closure-analysis/src/target.rs",
-        "crates/aos/cli/aos-closure-analysis/src/verdict.rs"
+        "crates/cli/aos-closure-analysis/src/closure.rs",
+        "crates/cli/aos-closure-analysis/src/lib.rs",
+        "crates/cli/aos-closure-analysis/src/report.rs",
+        "crates/cli/aos-closure-analysis/src/scan/classify.rs",
+        "crates/cli/aos-closure-analysis/src/scan/elf.rs",
+        "crates/cli/aos-closure-analysis/src/scan/mod.rs",
+        "crates/cli/aos-closure-analysis/src/target.rs",
+        "crates/cli/aos-closure-analysis/src/verdict.rs"
       ],
       "tags": [
         "aos-license:apache-host"
@@ -536,24 +536,24 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/aos/cli/aos-closure-analysis/BUILD.bazel",
+      "build_file": "crates/cli/aos-closure-analysis/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-closure-analysis:lib",
-        "//crates/aos/cli/aos-closure-analysis:unit_binary"
+        "//crates/cli/aos-closure-analysis:lib",
+        "//crates/cli/aos-closure-analysis:unit_binary"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-closure-analysis/libaos_closure_analysis-2878959400.rlib": "//crates/aos/cli/aos-closure-analysis:lib",
-        "crates/aos/cli/aos-closure-analysis/unit_binary": "//crates/aos/cli/aos-closure-analysis:unit_binary"
+        "crates/cli/aos-closure-analysis/libaos_closure_analysis-2878959400.rlib": "//crates/cli/aos-closure-analysis:lib",
+        "crates/cli/aos-closure-analysis/unit_binary": "//crates/cli/aos-closure-analysis:unit_binary"
       },
       "kind": "aos_license_check",
-      "label": "//crates/aos/cli/aos-closure-analysis:license_closure",
+      "label": "//crates/cli/aos-closure-analysis:license_closure",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -563,13 +563,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-closure-analysis/BUILD.bazel",
+      "build_file": "crates/cli/aos-closure-analysis/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-closure-analysis:unit_binary",
+        "//crates/cli/aos-closure-analysis:unit_binary",
         "//tools/bazel/testing:policy.json",
         "//tools/bazel/testing:runner.py",
         "@@+aos_tools_repository+aos_tools//:bash",
@@ -587,10 +587,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-closure-analysis/unit_binary": "//crates/aos/cli/aos-closure-analysis:unit_binary"
+        "crates/cli/aos-closure-analysis/unit_binary": "//crates/cli/aos-closure-analysis:unit_binary"
       },
       "kind": "_libtest_test",
-      "label": "//crates/aos/cli/aos-closure-analysis:unit",
+      "label": "//crates/cli/aos-closure-analysis:unit",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -603,13 +603,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-closure-analysis/BUILD.bazel",
+      "build_file": "crates/cli/aos-closure-analysis/BUILD.bazel",
       "copts": [],
       "crate_name": "",
-      "crate_root": "crates/aos/cli/aos-closure-analysis/src/lib.rs",
+      "crate_root": "crates/cli/aos-closure-analysis/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-closure-analysis:lib",
+        "//crates/cli/aos-closure-analysis:lib",
         "@@+aos_tools_repository+aos_cli_support_crates__tempfile-3.27.0//:tempfile",
         "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
         "@@bazel_tools//tools/test:collect_coverage",
@@ -639,10 +639,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-closure-analysis/libaos_closure_analysis-2878959400.rlib": "//crates/aos/cli/aos-closure-analysis:lib"
+        "crates/cli/aos-closure-analysis/libaos_closure_analysis-2878959400.rlib": "//crates/cli/aos-closure-analysis:lib"
       },
       "kind": "rust_test",
-      "label": "//crates/aos/cli/aos-closure-analysis:unit_binary",
+      "label": "//crates/cli/aos-closure-analysis:unit_binary",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "",
@@ -671,24 +671,24 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/aos/cli/aos-nix-docs/BUILD.bazel",
+      "build_file": "crates/cli/aos-nix-docs/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-nix-docs:lib",
-        "//crates/aos/cli/aos-nix-docs:unit_binary"
+        "//crates/cli/aos-nix-docs:lib",
+        "//crates/cli/aos-nix-docs:unit_binary"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-nix-docs/libaos_nix_docs-2481055928.rlib": "//crates/aos/cli/aos-nix-docs:lib",
-        "crates/aos/cli/aos-nix-docs/unit_binary": "//crates/aos/cli/aos-nix-docs:unit_binary"
+        "crates/cli/aos-nix-docs/libaos_nix_docs-2481055928.rlib": "//crates/cli/aos-nix-docs:lib",
+        "crates/cli/aos-nix-docs/unit_binary": "//crates/cli/aos-nix-docs:unit_binary"
       },
       "kind": "rust_clippy",
-      "label": "//crates/aos/cli/aos-nix-docs:clippy",
+      "label": "//crates/cli/aos-nix-docs:clippy",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -698,13 +698,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-nix-docs/BUILD.bazel",
+      "build_file": "crates/cli/aos-nix-docs/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-nix-docs:lib",
+        "//crates/cli/aos-nix-docs:lib",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
         "@@bazel_tools//tools/test:runtime",
@@ -721,10 +721,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-nix-docs/libaos_nix_docs-2481055928.rlib": "//crates/aos/cli/aos-nix-docs:lib"
+        "crates/cli/aos-nix-docs/libaos_nix_docs-2481055928.rlib": "//crates/cli/aos-nix-docs:lib"
       },
       "kind": "rust_doc_test",
-      "label": "//crates/aos/cli/aos-nix-docs:doc",
+      "label": "//crates/cli/aos-nix-docs:doc",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -734,13 +734,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-nix-docs/BUILD.bazel",
+      "build_file": "crates/cli/aos-nix-docs/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-nix-docs:lib",
+        "//crates/cli/aos-nix-docs:lib",
         "@@bazel_tools//tools/zip:zipper",
         "@@rules_rust+//rust/private/rustdoc/dir_zipper:dir_zipper",
         "@@rules_rust+//rust/settings:error_format",
@@ -750,10 +750,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-nix-docs/libaos_nix_docs-2481055928.rlib": "//crates/aos/cli/aos-nix-docs:lib"
+        "crates/cli/aos-nix-docs/libaos_nix_docs-2481055928.rlib": "//crates/cli/aos-nix-docs:lib"
       },
       "kind": "rust_doc",
-      "label": "//crates/aos/cli/aos-nix-docs:documentation",
+      "label": "//crates/cli/aos-nix-docs:documentation",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -763,14 +763,14 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-nix-docs/BUILD.bazel",
+      "build_file": "crates/cli/aos-nix-docs/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-nix-docs:lib",
-        "//crates/aos/cli/aos-nix-docs:unit_binary",
+        "//crates/cli/aos-nix-docs:lib",
+        "//crates/cli/aos-nix-docs:unit_binary",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
         "@@bazel_tools//tools/test:runtime",
@@ -784,11 +784,11 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-nix-docs/libaos_nix_docs-2481055928.rlib": "//crates/aos/cli/aos-nix-docs:lib",
-        "crates/aos/cli/aos-nix-docs/unit_binary": "//crates/aos/cli/aos-nix-docs:unit_binary"
+        "crates/cli/aos-nix-docs/libaos_nix_docs-2481055928.rlib": "//crates/cli/aos-nix-docs:lib",
+        "crates/cli/aos-nix-docs/unit_binary": "//crates/cli/aos-nix-docs:unit_binary"
       },
       "kind": "rustfmt_test",
-      "label": "//crates/aos/cli/aos-nix-docs:format",
+      "label": "//crates/cli/aos-nix-docs:format",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -798,24 +798,24 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-nix-docs/BUILD.bazel",
+      "build_file": "crates/cli/aos-nix-docs/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_nix_docs",
-      "crate_root": "crates/aos/cli/aos-nix-docs/src/lib.rs",
+      "crate_root": "crates/cli/aos-nix-docs/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-cli-ui:lib",
-        "//crates/aos/cli/aos-nix-docs:src/cache.rs",
-        "//crates/aos/cli/aos-nix-docs:src/data/builtins.rs",
-        "//crates/aos/cli/aos-nix-docs:src/data/language.rs",
-        "//crates/aos/cli/aos-nix-docs:src/data/mod.rs",
-        "//crates/aos/cli/aos-nix-docs:src/extract.rs",
-        "//crates/aos/cli/aos-nix-docs:src/lib.rs",
-        "//crates/aos/cli/aos-nix-docs:src/model.rs",
-        "//crates/aos/cli/aos-nix-docs:src/nix_parser.rs",
-        "//crates/aos/cli/aos-nix-docs:src/search.rs",
-        "//crates/aos/cli/aos-nix-docs:src/tui.rs",
-        "//crates/shared/aos-nix:lib",
+        "//crates/cli/aos-cli-ui:lib",
+        "//crates/cli/aos-nix-docs:src/cache.rs",
+        "//crates/cli/aos-nix-docs:src/data/builtins.rs",
+        "//crates/cli/aos-nix-docs:src/data/language.rs",
+        "//crates/cli/aos-nix-docs:src/data/mod.rs",
+        "//crates/cli/aos-nix-docs:src/extract.rs",
+        "//crates/cli/aos-nix-docs:src/lib.rs",
+        "//crates/cli/aos-nix-docs:src/model.rs",
+        "//crates/cli/aos-nix-docs:src/nix_parser.rs",
+        "//crates/cli/aos-nix-docs:src/search.rs",
+        "//crates/cli/aos-nix-docs:src/tui.rs",
+        "//crates/nix/aos-nix:lib",
         "@@+aos_tools_repository+aos_cli_support_crates__anyhow-1.0.102//:anyhow",
         "@@+aos_tools_repository+aos_cli_support_crates__crossterm-0.28.1//:crossterm",
         "@@+aos_tools_repository+aos_cli_support_crates__glob-0.3.3//:glob",
@@ -843,11 +843,11 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-cli-ui/libaos_cli_ui-1155506808.rlib": "//crates/aos/cli/aos-cli-ui:lib",
-        "crates/shared/aos-nix/libaos_nix-531826648.rlib": "//crates/shared/aos-nix:lib"
+        "crates/cli/aos-cli-ui/libaos_cli_ui-1155506808.rlib": "//crates/cli/aos-cli-ui:lib",
+        "crates/nix/aos-nix/libaos_nix-531826648.rlib": "//crates/nix/aos-nix:lib"
       },
       "kind": "rust_library",
-      "label": "//crates/aos/cli/aos-nix-docs:lib",
+      "label": "//crates/cli/aos-nix-docs:lib",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "",
@@ -867,16 +867,16 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
-        "crates/aos/cli/aos-nix-docs/src/cache.rs",
-        "crates/aos/cli/aos-nix-docs/src/data/builtins.rs",
-        "crates/aos/cli/aos-nix-docs/src/data/language.rs",
-        "crates/aos/cli/aos-nix-docs/src/data/mod.rs",
-        "crates/aos/cli/aos-nix-docs/src/extract.rs",
-        "crates/aos/cli/aos-nix-docs/src/lib.rs",
-        "crates/aos/cli/aos-nix-docs/src/model.rs",
-        "crates/aos/cli/aos-nix-docs/src/nix_parser.rs",
-        "crates/aos/cli/aos-nix-docs/src/search.rs",
-        "crates/aos/cli/aos-nix-docs/src/tui.rs"
+        "crates/cli/aos-nix-docs/src/cache.rs",
+        "crates/cli/aos-nix-docs/src/data/builtins.rs",
+        "crates/cli/aos-nix-docs/src/data/language.rs",
+        "crates/cli/aos-nix-docs/src/data/mod.rs",
+        "crates/cli/aos-nix-docs/src/extract.rs",
+        "crates/cli/aos-nix-docs/src/lib.rs",
+        "crates/cli/aos-nix-docs/src/model.rs",
+        "crates/cli/aos-nix-docs/src/nix_parser.rs",
+        "crates/cli/aos-nix-docs/src/search.rs",
+        "crates/cli/aos-nix-docs/src/tui.rs"
       ],
       "tags": [
         "aos-license:apache-host"
@@ -885,24 +885,24 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/aos/cli/aos-nix-docs/BUILD.bazel",
+      "build_file": "crates/cli/aos-nix-docs/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-nix-docs:lib",
-        "//crates/aos/cli/aos-nix-docs:unit_binary"
+        "//crates/cli/aos-nix-docs:lib",
+        "//crates/cli/aos-nix-docs:unit_binary"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-nix-docs/libaos_nix_docs-2481055928.rlib": "//crates/aos/cli/aos-nix-docs:lib",
-        "crates/aos/cli/aos-nix-docs/unit_binary": "//crates/aos/cli/aos-nix-docs:unit_binary"
+        "crates/cli/aos-nix-docs/libaos_nix_docs-2481055928.rlib": "//crates/cli/aos-nix-docs:lib",
+        "crates/cli/aos-nix-docs/unit_binary": "//crates/cli/aos-nix-docs:unit_binary"
       },
       "kind": "aos_license_check",
-      "label": "//crates/aos/cli/aos-nix-docs:license_closure",
+      "label": "//crates/cli/aos-nix-docs:license_closure",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -912,13 +912,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-nix-docs/BUILD.bazel",
+      "build_file": "crates/cli/aos-nix-docs/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-nix-docs:unit_binary",
+        "//crates/cli/aos-nix-docs:unit_binary",
         "//tools/bazel/testing:policy.json",
         "//tools/bazel/testing:runner.py",
         "@@+aos_tools_repository+aos_tools//:bash",
@@ -936,10 +936,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-nix-docs/unit_binary": "//crates/aos/cli/aos-nix-docs:unit_binary"
+        "crates/cli/aos-nix-docs/unit_binary": "//crates/cli/aos-nix-docs:unit_binary"
       },
       "kind": "_libtest_test",
-      "label": "//crates/aos/cli/aos-nix-docs:unit",
+      "label": "//crates/cli/aos-nix-docs:unit",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -952,13 +952,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/cli/aos-nix-docs/BUILD.bazel",
+      "build_file": "crates/cli/aos-nix-docs/BUILD.bazel",
       "copts": [],
       "crate_name": "",
-      "crate_root": "crates/aos/cli/aos-nix-docs/src/lib.rs",
+      "crate_root": "crates/cli/aos-nix-docs/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/aos/cli/aos-nix-docs:lib",
+        "//crates/cli/aos-nix-docs:lib",
         "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
@@ -987,10 +987,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/cli/aos-nix-docs/libaos_nix_docs-2481055928.rlib": "//crates/aos/cli/aos-nix-docs:lib"
+        "crates/cli/aos-nix-docs/libaos_nix_docs-2481055928.rlib": "//crates/cli/aos-nix-docs:lib"
       },
       "kind": "rust_test",
-      "label": "//crates/aos/cli/aos-nix-docs:unit_binary",
+      "label": "//crates/cli/aos-nix-docs:unit_binary",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "",
@@ -1019,17 +1019,17 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/shared/aos-core/BUILD.bazel",
+      "build_file": "crates/core/aos-core/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_core",
-      "crate_root": "crates/shared/aos-core/src/lib.rs",
+      "crate_root": "crates/core/aos-core/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-core:src/digest.rs",
-        "//crates/shared/aos-core:src/identity.rs",
-        "//crates/shared/aos-core:src/json.rs",
-        "//crates/shared/aos-core:src/lib.rs",
-        "//crates/shared/aos-core:src/limits.rs",
+        "//crates/core/aos-core:src/digest.rs",
+        "//crates/core/aos-core:src/identity.rs",
+        "//crates/core/aos-core:src/json.rs",
+        "//crates/core/aos-core:src/lib.rs",
+        "//crates/core/aos-core:src/limits.rs",
         "//tools/bazel/rules:workspace_lints",
         "@@+aos_tools_repository+aos_cli_support_crates__anyhow-1.0.102//:anyhow",
         "@@+aos_tools_repository+aos_cli_support_crates__serde-1.0.228//:serde",
@@ -1055,7 +1055,7 @@
       "features": [],
       "generated_inputs": {},
       "kind": "rust_library",
-      "label": "//crates/shared/aos-core:lib",
+      "label": "//crates/core/aos-core:lib",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Portable strict JSON, content identities, decoding limits, and scoped names",
@@ -1075,11 +1075,11 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
-        "crates/shared/aos-core/src/digest.rs",
-        "crates/shared/aos-core/src/identity.rs",
-        "crates/shared/aos-core/src/json.rs",
-        "crates/shared/aos-core/src/lib.rs",
-        "crates/shared/aos-core/src/limits.rs"
+        "crates/core/aos-core/src/digest.rs",
+        "crates/core/aos-core/src/identity.rs",
+        "crates/core/aos-core/src/json.rs",
+        "crates/core/aos-core/src/lib.rs",
+        "crates/core/aos-core/src/limits.rs"
       ],
       "tags": [
         "aos-license:apache-host"
@@ -1088,18 +1088,18 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/shared/aos-nar/BUILD.bazel",
+      "build_file": "crates/artifacts/aos-nar/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_nar",
-      "crate_root": "crates/shared/aos-nar/src/lib.rs",
+      "crate_root": "crates/artifacts/aos-nar/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-nar:src/cache.rs",
-        "//crates/shared/aos-nar:src/export.rs",
-        "//crates/shared/aos-nar:src/info.rs",
-        "//crates/shared/aos-nar:src/lib.rs",
-        "//crates/shared/aos-nar:src/pack.rs",
-        "//crates/shared/aos-nar:src/verify.rs",
+        "//crates/artifacts/aos-nar:src/cache.rs",
+        "//crates/artifacts/aos-nar:src/export.rs",
+        "//crates/artifacts/aos-nar:src/info.rs",
+        "//crates/artifacts/aos-nar:src/lib.rs",
+        "//crates/artifacts/aos-nar:src/pack.rs",
+        "//crates/artifacts/aos-nar:src/verify.rs",
         "//tools/bazel/rules:workspace_lints",
         "@@+aos_tools_repository+aos_cli_support_crates__anyhow-1.0.102//:anyhow",
         "@@+aos_tools_repository+aos_cli_support_crates__base64-0.22.1//:base64",
@@ -1127,7 +1127,7 @@
       ],
       "generated_inputs": {},
       "kind": "rust_library",
-      "label": "//crates/shared/aos-nar:lib",
+      "label": "//crates/artifacts/aos-nar:lib",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Nix archive formats, binary-cache metadata, and content signing",
@@ -1147,12 +1147,12 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
-        "crates/shared/aos-nar/src/cache.rs",
-        "crates/shared/aos-nar/src/export.rs",
-        "crates/shared/aos-nar/src/info.rs",
-        "crates/shared/aos-nar/src/lib.rs",
-        "crates/shared/aos-nar/src/pack.rs",
-        "crates/shared/aos-nar/src/verify.rs"
+        "crates/artifacts/aos-nar/src/cache.rs",
+        "crates/artifacts/aos-nar/src/export.rs",
+        "crates/artifacts/aos-nar/src/info.rs",
+        "crates/artifacts/aos-nar/src/lib.rs",
+        "crates/artifacts/aos-nar/src/pack.rs",
+        "crates/artifacts/aos-nar/src/verify.rs"
       ],
       "tags": [
         "aos-license:apache-host"
@@ -1161,23 +1161,23 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/shared/aos-nix/BUILD.bazel",
+      "build_file": "crates/nix/aos-nix/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_nix",
-      "crate_root": "crates/shared/aos-nix/src/lib.rs",
+      "crate_root": "crates/nix/aos-nix/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-core:lib",
-        "//crates/shared/aos-nar:lib",
-        "//crates/shared/aos-nix:src/drv.rs",
-        "//crates/shared/aos-nix:src/env.rs",
-        "//crates/shared/aos-nix:src/error.rs",
-        "//crates/shared/aos-nix:src/executable.rs",
-        "//crates/shared/aos-nix:src/identity.rs",
-        "//crates/shared/aos-nix:src/lib.rs",
-        "//crates/shared/aos-nix:src/runner.rs",
-        "//crates/shared/aos-nix:src/runner/derivation_outputs.rs",
-        "//crates/shared/aos-nix:src/store.rs",
+        "//crates/core/aos-core:lib",
+        "//crates/artifacts/aos-nar:lib",
+        "//crates/nix/aos-nix:src/drv.rs",
+        "//crates/nix/aos-nix:src/env.rs",
+        "//crates/nix/aos-nix:src/error.rs",
+        "//crates/nix/aos-nix:src/executable.rs",
+        "//crates/nix/aos-nix:src/identity.rs",
+        "//crates/nix/aos-nix:src/lib.rs",
+        "//crates/nix/aos-nix:src/runner.rs",
+        "//crates/nix/aos-nix:src/runner/derivation_outputs.rs",
+        "//crates/nix/aos-nix:src/store.rs",
         "//tools/bazel/rules:workspace_lints",
         "@@+aos_tools_repository+aos_cli_support_crates__anyhow-1.0.102//:anyhow",
         "@@+aos_tools_repository+aos_cli_support_crates__rustix-1.1.4//:rustix",
@@ -1203,11 +1203,11 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-core/libaos_core-2865302716.rlib": "//crates/shared/aos-core:lib",
-        "crates/shared/aos-nar/libaos_nar-1046734488.rlib": "//crates/shared/aos-nar:lib"
+        "crates/core/aos-core/libaos_core-2865302716.rlib": "//crates/core/aos-core:lib",
+        "crates/artifacts/aos-nar/libaos_nar-1046734488.rlib": "//crates/artifacts/aos-nar:lib"
       },
       "kind": "rust_library",
-      "label": "//crates/shared/aos-nix:lib",
+      "label": "//crates/nix/aos-nix:lib",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Nix process integration, derivation parsing, and store-tool validation",
@@ -1227,15 +1227,15 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
-        "crates/shared/aos-nix/src/drv.rs",
-        "crates/shared/aos-nix/src/env.rs",
-        "crates/shared/aos-nix/src/error.rs",
-        "crates/shared/aos-nix/src/executable.rs",
-        "crates/shared/aos-nix/src/identity.rs",
-        "crates/shared/aos-nix/src/lib.rs",
-        "crates/shared/aos-nix/src/runner.rs",
-        "crates/shared/aos-nix/src/runner/derivation_outputs.rs",
-        "crates/shared/aos-nix/src/store.rs"
+        "crates/nix/aos-nix/src/drv.rs",
+        "crates/nix/aos-nix/src/env.rs",
+        "crates/nix/aos-nix/src/error.rs",
+        "crates/nix/aos-nix/src/executable.rs",
+        "crates/nix/aos-nix/src/identity.rs",
+        "crates/nix/aos-nix/src/lib.rs",
+        "crates/nix/aos-nix/src/runner.rs",
+        "crates/nix/aos-nix/src/runner/derivation_outputs.rs",
+        "crates/nix/aos-nix/src/store.rs"
       ],
       "tags": [
         "aos-license:apache-host"
@@ -1244,32 +1244,32 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/shared/aos-transfer/BUILD.bazel",
+      "build_file": "crates/transfer/aos-transfer/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_transfer",
-      "crate_root": "crates/shared/aos-transfer/src/lib.rs",
+      "crate_root": "crates/transfer/aos-transfer/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-transfer:src/auth.rs",
-        "//crates/shared/aos-transfer:src/bandwidth.rs",
-        "//crates/shared/aos-transfer:src/hash.rs",
-        "//crates/shared/aos-transfer:src/lib.rs",
-        "//crates/shared/aos-transfer:src/managed.rs",
-        "//crates/shared/aos-transfer:src/multipart.rs",
-        "//crates/shared/aos-transfer:src/pool.rs",
-        "//crates/shared/aos-transfer:src/progress.rs",
-        "//crates/shared/aos-transfer:src/protocol/conditional.rs",
-        "//crates/shared/aos-transfer:src/protocol/fs.rs",
-        "//crates/shared/aos-transfer:src/protocol/http.rs",
-        "//crates/shared/aos-transfer:src/protocol/mod.rs",
-        "//crates/shared/aos-transfer:src/protocol/s3.rs",
-        "//crates/shared/aos-transfer:src/protocol/s3/conditional_tests.rs",
-        "//crates/shared/aos-transfer:src/protocol/s3/resume.rs",
-        "//crates/shared/aos-transfer:src/protocol/sftp.rs",
-        "//crates/shared/aos-transfer:src/protocol/sftp/atomic.rs",
-        "//crates/shared/aos-transfer:src/retry.rs",
-        "//crates/shared/aos-transfer:src/transfer.rs",
-        "//crates/shared/aos-transfer:src/types.rs",
+        "//crates/transfer/aos-transfer:src/auth.rs",
+        "//crates/transfer/aos-transfer:src/bandwidth.rs",
+        "//crates/transfer/aos-transfer:src/hash.rs",
+        "//crates/transfer/aos-transfer:src/lib.rs",
+        "//crates/transfer/aos-transfer:src/managed.rs",
+        "//crates/transfer/aos-transfer:src/multipart.rs",
+        "//crates/transfer/aos-transfer:src/pool.rs",
+        "//crates/transfer/aos-transfer:src/progress.rs",
+        "//crates/transfer/aos-transfer:src/protocol/conditional.rs",
+        "//crates/transfer/aos-transfer:src/protocol/fs.rs",
+        "//crates/transfer/aos-transfer:src/protocol/http.rs",
+        "//crates/transfer/aos-transfer:src/protocol/mod.rs",
+        "//crates/transfer/aos-transfer:src/protocol/s3.rs",
+        "//crates/transfer/aos-transfer:src/protocol/s3/conditional_tests.rs",
+        "//crates/transfer/aos-transfer:src/protocol/s3/resume.rs",
+        "//crates/transfer/aos-transfer:src/protocol/sftp.rs",
+        "//crates/transfer/aos-transfer:src/protocol/sftp/atomic.rs",
+        "//crates/transfer/aos-transfer:src/retry.rs",
+        "//crates/transfer/aos-transfer:src/transfer.rs",
+        "//crates/transfer/aos-transfer:src/types.rs",
         "@@+aos_tools_repository+aos_cli_support_crates__anyhow-1.0.102//:anyhow",
         "@@+aos_tools_repository+aos_cli_support_crates__serde_json-1.0.150//:serde_json",
         "@@rules_rust+//ffi/rs:empty_allocator_libraries",
@@ -1291,7 +1291,7 @@
       "features": [],
       "generated_inputs": {},
       "kind": "rust_library",
-      "label": "//crates/shared/aos-transfer:lib_without_transfer",
+      "label": "//crates/transfer/aos-transfer:lib_without_transfer",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "",
@@ -1311,26 +1311,26 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
-        "crates/shared/aos-transfer/src/auth.rs",
-        "crates/shared/aos-transfer/src/bandwidth.rs",
-        "crates/shared/aos-transfer/src/hash.rs",
-        "crates/shared/aos-transfer/src/lib.rs",
-        "crates/shared/aos-transfer/src/managed.rs",
-        "crates/shared/aos-transfer/src/multipart.rs",
-        "crates/shared/aos-transfer/src/pool.rs",
-        "crates/shared/aos-transfer/src/progress.rs",
-        "crates/shared/aos-transfer/src/protocol/conditional.rs",
-        "crates/shared/aos-transfer/src/protocol/fs.rs",
-        "crates/shared/aos-transfer/src/protocol/http.rs",
-        "crates/shared/aos-transfer/src/protocol/mod.rs",
-        "crates/shared/aos-transfer/src/protocol/s3.rs",
-        "crates/shared/aos-transfer/src/protocol/s3/conditional_tests.rs",
-        "crates/shared/aos-transfer/src/protocol/s3/resume.rs",
-        "crates/shared/aos-transfer/src/protocol/sftp.rs",
-        "crates/shared/aos-transfer/src/protocol/sftp/atomic.rs",
-        "crates/shared/aos-transfer/src/retry.rs",
-        "crates/shared/aos-transfer/src/transfer.rs",
-        "crates/shared/aos-transfer/src/types.rs"
+        "crates/transfer/aos-transfer/src/auth.rs",
+        "crates/transfer/aos-transfer/src/bandwidth.rs",
+        "crates/transfer/aos-transfer/src/hash.rs",
+        "crates/transfer/aos-transfer/src/lib.rs",
+        "crates/transfer/aos-transfer/src/managed.rs",
+        "crates/transfer/aos-transfer/src/multipart.rs",
+        "crates/transfer/aos-transfer/src/pool.rs",
+        "crates/transfer/aos-transfer/src/progress.rs",
+        "crates/transfer/aos-transfer/src/protocol/conditional.rs",
+        "crates/transfer/aos-transfer/src/protocol/fs.rs",
+        "crates/transfer/aos-transfer/src/protocol/http.rs",
+        "crates/transfer/aos-transfer/src/protocol/mod.rs",
+        "crates/transfer/aos-transfer/src/protocol/s3.rs",
+        "crates/transfer/aos-transfer/src/protocol/s3/conditional_tests.rs",
+        "crates/transfer/aos-transfer/src/protocol/s3/resume.rs",
+        "crates/transfer/aos-transfer/src/protocol/sftp.rs",
+        "crates/transfer/aos-transfer/src/protocol/sftp/atomic.rs",
+        "crates/transfer/aos-transfer/src/retry.rs",
+        "crates/transfer/aos-transfer/src/transfer.rs",
+        "crates/transfer/aos-transfer/src/types.rs"
       ],
       "tags": [
         "aos-license:apache-host"
@@ -16772,13 +16772,13 @@
   "contracts": {
     "MODULE.bazel": "0c47c003c6b54911426e10c0345fa89d9f41c9892cc9ea5e006ae8d209d16d2c",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
-    "crates/aos/cli/aos-cli-ui/BUILD.bazel": "997802f589de9b34d41ab35e76781a971720c7d56ebf3f11a0b92ea93438d93e",
-    "crates/aos/cli/aos-closure-analysis/BUILD.bazel": "532176c3a1a6709ee8cddf986f9c8adefde11edda422f5766157ed28ea8abb66",
-    "crates/aos/cli/aos-nix-docs/BUILD.bazel": "2d58e8b887cb538acba20a878b0a3c324068328ec209c032a062c4b346821619",
-    "crates/shared/aos-core/BUILD.bazel": "a49b29a61592b961c92007a1fa773a08b486c461b30ffa698d42c79f946d6bd4",
-    "crates/shared/aos-nar/BUILD.bazel": "97f74f5bba59424970fd7f6029300800495e1da8ced8dcbef8e6dd08133870ce",
-    "crates/shared/aos-nix/BUILD.bazel": "d43d61abe4c6d0dc112a0630801e821f5ee27c9aee2acf265d8a3f9ba02a41bd",
-    "crates/shared/aos-transfer/BUILD.bazel": "a74006b907258f3e0aefac40d6ed27a5d4c0a5cd035fa5f7959308243b18ae81",
+    "crates/cli/aos-cli-ui/BUILD.bazel": "997802f589de9b34d41ab35e76781a971720c7d56ebf3f11a0b92ea93438d93e",
+    "crates/cli/aos-closure-analysis/BUILD.bazel": "532176c3a1a6709ee8cddf986f9c8adefde11edda422f5766157ed28ea8abb66",
+    "crates/cli/aos-nix-docs/BUILD.bazel": "2d58e8b887cb538acba20a878b0a3c324068328ec209c032a062c4b346821619",
+    "crates/core/aos-core/BUILD.bazel": "a49b29a61592b961c92007a1fa773a08b486c461b30ffa698d42c79f946d6bd4",
+    "crates/artifacts/aos-nar/BUILD.bazel": "97f74f5bba59424970fd7f6029300800495e1da8ced8dcbef8e6dd08133870ce",
+    "crates/nix/aos-nix/BUILD.bazel": "d43d61abe4c6d0dc112a0630801e821f5ee27c9aee2acf265d8a3f9ba02a41bd",
+    "crates/transfer/aos-transfer/BUILD.bazel": "a74006b907258f3e0aefac40d6ed27a5d4c0a5cd035fa5f7959308243b18ae81",
     "third_party/rust/BUILD.bazel": "dc8a09cd11de7d1471888484d7c4940931f13b8154e71fe906fbae4235f82d2e",
     "third_party/rust/activation-core-tests/aliases.bzl": "a37ed2a8a4ffdb9ca159e670c736e43633c2aba8aa8aaa0330fbd94314e4db3e",
     "third_party/rust/activation-core-tests/repositories.MODULE.bazel": "52ad8bc43deb76ad60812f20cb89baf04ebfe32a9a6f3c64d4db42bb59ed606a",
@@ -16940,98 +16940,98 @@
   "generator_sha256": "4708a2aabd8ab317775d19281b37ddf92b7a1942f0d7280e419e6b5c14d47256",
   "schema_version": 1,
   "source_directories": [
-    "crates/aos/cli/aos-cli-ui/src",
-    "crates/aos/cli/aos-closure-analysis/src",
-    "crates/aos/cli/aos-nix-docs/src",
-    "crates/shared/aos-core/src",
-    "crates/shared/aos-nar/src",
-    "crates/shared/aos-nix/src",
-    "crates/shared/aos-transfer/src"
+    "crates/cli/aos-cli-ui/src",
+    "crates/cli/aos-closure-analysis/src",
+    "crates/cli/aos-nix-docs/src",
+    "crates/core/aos-core/src",
+    "crates/artifacts/aos-nar/src",
+    "crates/nix/aos-nix/src",
+    "crates/transfer/aos-transfer/src"
   ],
   "source_files": [
-    "crates/aos/cli/aos-cli-ui/src/invocation.rs",
-    "crates/aos/cli/aos-cli-ui/src/lib.rs",
-    "crates/aos/cli/aos-cli-ui/src/output.rs",
-    "crates/aos/cli/aos-closure-analysis/src/closure.rs",
-    "crates/aos/cli/aos-closure-analysis/src/lib.rs",
-    "crates/aos/cli/aos-closure-analysis/src/report.rs",
-    "crates/aos/cli/aos-closure-analysis/src/scan/classify.rs",
-    "crates/aos/cli/aos-closure-analysis/src/scan/elf.rs",
-    "crates/aos/cli/aos-closure-analysis/src/scan/mod.rs",
-    "crates/aos/cli/aos-closure-analysis/src/target.rs",
-    "crates/aos/cli/aos-closure-analysis/src/verdict.rs",
-    "crates/aos/cli/aos-nix-docs/src/cache.rs",
-    "crates/aos/cli/aos-nix-docs/src/data/builtins.rs",
-    "crates/aos/cli/aos-nix-docs/src/data/language.rs",
-    "crates/aos/cli/aos-nix-docs/src/data/mod.rs",
-    "crates/aos/cli/aos-nix-docs/src/extract.rs",
-    "crates/aos/cli/aos-nix-docs/src/lib.rs",
-    "crates/aos/cli/aos-nix-docs/src/model.rs",
-    "crates/aos/cli/aos-nix-docs/src/nix_parser.rs",
-    "crates/aos/cli/aos-nix-docs/src/search.rs",
-    "crates/aos/cli/aos-nix-docs/src/tui.rs",
-    "crates/shared/aos-core/src/digest.rs",
-    "crates/shared/aos-core/src/identity.rs",
-    "crates/shared/aos-core/src/json.rs",
-    "crates/shared/aos-core/src/lib.rs",
-    "crates/shared/aos-core/src/limits.rs",
-    "crates/shared/aos-nar/src/cache.rs",
-    "crates/shared/aos-nar/src/export.rs",
-    "crates/shared/aos-nar/src/info.rs",
-    "crates/shared/aos-nar/src/lib.rs",
-    "crates/shared/aos-nar/src/pack.rs",
-    "crates/shared/aos-nar/src/verify.rs",
-    "crates/shared/aos-nix/src/drv.rs",
-    "crates/shared/aos-nix/src/env.rs",
-    "crates/shared/aos-nix/src/error.rs",
-    "crates/shared/aos-nix/src/executable.rs",
-    "crates/shared/aos-nix/src/identity.rs",
-    "crates/shared/aos-nix/src/lib.rs",
-    "crates/shared/aos-nix/src/runner.rs",
-    "crates/shared/aos-nix/src/runner/derivation_outputs.rs",
-    "crates/shared/aos-nix/src/store.rs",
-    "crates/shared/aos-transfer/src/auth.rs",
-    "crates/shared/aos-transfer/src/bandwidth.rs",
-    "crates/shared/aos-transfer/src/hash.rs",
-    "crates/shared/aos-transfer/src/lib.rs",
-    "crates/shared/aos-transfer/src/managed.rs",
-    "crates/shared/aos-transfer/src/multipart.rs",
-    "crates/shared/aos-transfer/src/pool.rs",
-    "crates/shared/aos-transfer/src/progress.rs",
-    "crates/shared/aos-transfer/src/protocol/conditional.rs",
-    "crates/shared/aos-transfer/src/protocol/fs.rs",
-    "crates/shared/aos-transfer/src/protocol/http.rs",
-    "crates/shared/aos-transfer/src/protocol/mod.rs",
-    "crates/shared/aos-transfer/src/protocol/s3.rs",
-    "crates/shared/aos-transfer/src/protocol/s3/conditional_tests.rs",
-    "crates/shared/aos-transfer/src/protocol/s3/resume.rs",
-    "crates/shared/aos-transfer/src/protocol/sftp.rs",
-    "crates/shared/aos-transfer/src/protocol/sftp/atomic.rs",
-    "crates/shared/aos-transfer/src/retry.rs",
-    "crates/shared/aos-transfer/src/transfer.rs",
-    "crates/shared/aos-transfer/src/types.rs",
+    "crates/cli/aos-cli-ui/src/invocation.rs",
+    "crates/cli/aos-cli-ui/src/lib.rs",
+    "crates/cli/aos-cli-ui/src/output.rs",
+    "crates/cli/aos-closure-analysis/src/closure.rs",
+    "crates/cli/aos-closure-analysis/src/lib.rs",
+    "crates/cli/aos-closure-analysis/src/report.rs",
+    "crates/cli/aos-closure-analysis/src/scan/classify.rs",
+    "crates/cli/aos-closure-analysis/src/scan/elf.rs",
+    "crates/cli/aos-closure-analysis/src/scan/mod.rs",
+    "crates/cli/aos-closure-analysis/src/target.rs",
+    "crates/cli/aos-closure-analysis/src/verdict.rs",
+    "crates/cli/aos-nix-docs/src/cache.rs",
+    "crates/cli/aos-nix-docs/src/data/builtins.rs",
+    "crates/cli/aos-nix-docs/src/data/language.rs",
+    "crates/cli/aos-nix-docs/src/data/mod.rs",
+    "crates/cli/aos-nix-docs/src/extract.rs",
+    "crates/cli/aos-nix-docs/src/lib.rs",
+    "crates/cli/aos-nix-docs/src/model.rs",
+    "crates/cli/aos-nix-docs/src/nix_parser.rs",
+    "crates/cli/aos-nix-docs/src/search.rs",
+    "crates/cli/aos-nix-docs/src/tui.rs",
+    "crates/core/aos-core/src/digest.rs",
+    "crates/core/aos-core/src/identity.rs",
+    "crates/core/aos-core/src/json.rs",
+    "crates/core/aos-core/src/lib.rs",
+    "crates/core/aos-core/src/limits.rs",
+    "crates/artifacts/aos-nar/src/cache.rs",
+    "crates/artifacts/aos-nar/src/export.rs",
+    "crates/artifacts/aos-nar/src/info.rs",
+    "crates/artifacts/aos-nar/src/lib.rs",
+    "crates/artifacts/aos-nar/src/pack.rs",
+    "crates/artifacts/aos-nar/src/verify.rs",
+    "crates/nix/aos-nix/src/drv.rs",
+    "crates/nix/aos-nix/src/env.rs",
+    "crates/nix/aos-nix/src/error.rs",
+    "crates/nix/aos-nix/src/executable.rs",
+    "crates/nix/aos-nix/src/identity.rs",
+    "crates/nix/aos-nix/src/lib.rs",
+    "crates/nix/aos-nix/src/runner.rs",
+    "crates/nix/aos-nix/src/runner/derivation_outputs.rs",
+    "crates/nix/aos-nix/src/store.rs",
+    "crates/transfer/aos-transfer/src/auth.rs",
+    "crates/transfer/aos-transfer/src/bandwidth.rs",
+    "crates/transfer/aos-transfer/src/hash.rs",
+    "crates/transfer/aos-transfer/src/lib.rs",
+    "crates/transfer/aos-transfer/src/managed.rs",
+    "crates/transfer/aos-transfer/src/multipart.rs",
+    "crates/transfer/aos-transfer/src/pool.rs",
+    "crates/transfer/aos-transfer/src/progress.rs",
+    "crates/transfer/aos-transfer/src/protocol/conditional.rs",
+    "crates/transfer/aos-transfer/src/protocol/fs.rs",
+    "crates/transfer/aos-transfer/src/protocol/http.rs",
+    "crates/transfer/aos-transfer/src/protocol/mod.rs",
+    "crates/transfer/aos-transfer/src/protocol/s3.rs",
+    "crates/transfer/aos-transfer/src/protocol/s3/conditional_tests.rs",
+    "crates/transfer/aos-transfer/src/protocol/s3/resume.rs",
+    "crates/transfer/aos-transfer/src/protocol/sftp.rs",
+    "crates/transfer/aos-transfer/src/protocol/sftp/atomic.rs",
+    "crates/transfer/aos-transfer/src/retry.rs",
+    "crates/transfer/aos-transfer/src/transfer.rs",
+    "crates/transfer/aos-transfer/src/types.rs",
     "tools/bazel/rules/rustfmt.toml",
     "tools/bazel/testing/policy.json",
     "tools/bazel/testing/runner.py"
   ],
   "targets": [
-    "//crates/aos/cli/aos-cli-ui:clippy",
-    "//crates/aos/cli/aos-cli-ui:doc",
-    "//crates/aos/cli/aos-cli-ui:documentation",
-    "//crates/aos/cli/aos-cli-ui:format",
-    "//crates/aos/cli/aos-cli-ui:license_closure",
-    "//crates/aos/cli/aos-cli-ui:unit",
-    "//crates/aos/cli/aos-closure-analysis:clippy",
-    "//crates/aos/cli/aos-closure-analysis:doc",
-    "//crates/aos/cli/aos-closure-analysis:documentation",
-    "//crates/aos/cli/aos-closure-analysis:format",
-    "//crates/aos/cli/aos-closure-analysis:license_closure",
-    "//crates/aos/cli/aos-closure-analysis:unit",
-    "//crates/aos/cli/aos-nix-docs:clippy",
-    "//crates/aos/cli/aos-nix-docs:doc",
-    "//crates/aos/cli/aos-nix-docs:documentation",
-    "//crates/aos/cli/aos-nix-docs:format",
-    "//crates/aos/cli/aos-nix-docs:license_closure",
-    "//crates/aos/cli/aos-nix-docs:unit"
+    "//crates/cli/aos-cli-ui:clippy",
+    "//crates/cli/aos-cli-ui:doc",
+    "//crates/cli/aos-cli-ui:documentation",
+    "//crates/cli/aos-cli-ui:format",
+    "//crates/cli/aos-cli-ui:license_closure",
+    "//crates/cli/aos-cli-ui:unit",
+    "//crates/cli/aos-closure-analysis:clippy",
+    "//crates/cli/aos-closure-analysis:doc",
+    "//crates/cli/aos-closure-analysis:documentation",
+    "//crates/cli/aos-closure-analysis:format",
+    "//crates/cli/aos-closure-analysis:license_closure",
+    "//crates/cli/aos-closure-analysis:unit",
+    "//crates/cli/aos-nix-docs:clippy",
+    "//crates/cli/aos-nix-docs:doc",
+    "//crates/cli/aos-nix-docs:documentation",
+    "//crates/cli/aos-nix-docs:format",
+    "//crates/cli/aos-nix-docs:license_closure",
+    "//crates/cli/aos-nix-docs:unit"
   ]
 }

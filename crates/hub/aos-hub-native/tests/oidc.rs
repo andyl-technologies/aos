@@ -6,7 +6,7 @@
 //! JWKS endpoint exposing the RSA public key — using a baked 2048-bit RSA test
 //! keypair (`TEST_RSA_PEM` / `TEST_JWK_N`). The tests drive `begin_login` →
 //! fake authorize → callback → `complete_login` and assert the identity is
-//! created, linked (JIT keyed on `(iss, sub)`), and mapped to roles, plus the
+//! created, linked (JIT keyed on verifier and subject), and mapped to roles, plus the
 //! negative cases (bad nonce/state, expired flow, aud/iss mismatch, tampered
 //! signature, JIT disabled).
 
@@ -24,6 +24,8 @@ use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{get, post};
 use jsonwebtoken::{Algorithm, EncodingKey, Header};
 use serde::Serialize;
+
+const TEST_BROWSER_BINDING: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 /// A baked 2048-bit RSA private key (PKCS#8 PEM) for signing test id_tokens.
 const TEST_RSA_PEM: &str = "-----BEGIN PRIVATE KEY-----
@@ -63,6 +65,7 @@ const TEST_JWK_E: &str = "AQAB";
 
 /// The test IdP's key id.
 const TEST_KID: &str = "test-key-1";
+const TEST_VERIFIER_ID: &str = "test-verifier";
 
 /// Claims the fake IdP mints into the id_token, controllable per test.
 #[derive(Clone, Serialize)]
@@ -90,7 +93,7 @@ struct IdpState {
     /// token; the nonce is taken from the authorize redirect.
     sub: Arc<Mutex<String>>,
     email: Arc<Mutex<Option<String>>>,
-    email_verified: Arc<Mutex<bool>>,
+    email_verified: Arc<Mutex<Option<bool>>>,
     groups: Arc<Mutex<Vec<String>>>,
     aud_override: Arc<Mutex<Option<String>>>,
     iss_override: Arc<Mutex<Option<String>>>,
@@ -105,7 +108,7 @@ impl IdpState {
             issuer: issuer.to_string(),
             sub: Arc::new(Mutex::new("idp-subject-1".into())),
             email: Arc::new(Mutex::new(Some("alice@acme.com".into()))),
-            email_verified: Arc::new(Mutex::new(true)),
+            email_verified: Arc::new(Mutex::new(Some(true))),
             groups: Arc::new(Mutex::new(Vec::new())),
             aud_override: Arc::new(Mutex::new(None)),
             iss_override: Arc::new(Mutex::new(None)),
@@ -151,7 +154,7 @@ async fn token(State(idp): State<IdpState>) -> Response {
         iat: now,
         nonce: idp.last_nonce.lock().unwrap().clone(),
         email: idp.email.lock().unwrap().clone(),
-        email_verified: Some(*idp.email_verified.lock().unwrap()),
+        email_verified: *idp.email_verified.lock().unwrap(),
         groups: idp.groups.lock().unwrap().clone(),
     };
     let mut header = Header::new(Algorithm::RS256);
@@ -270,6 +273,20 @@ async fn run_flow(
     org_id: i64,
 ) -> anyhow::Result<aos_hub_native::auth::oidc::OidcLogin> {
     let redirect = begin_login(db, external_url, org_id, Some("/account")).await?;
+    let params = authorize_redirect(&redirect).await?;
+
+    complete_login(
+        db,
+        dev_sealer().as_ref(),
+        http,
+        external_url,
+        &params,
+        &redirect.browser_binding,
+    )
+    .await
+}
+
+async fn authorize_redirect(redirect: &oidc::AuthRedirect) -> anyhow::Result<CallbackParams> {
     // Hit the IdP authorize endpoint *without following redirects*: it 302s
     // back to the hub callback (which is not a real server here), so we read
     // the Location to recover the code + state the hub would have received.
@@ -294,14 +311,8 @@ async fn run_flow(
             _ => {}
         }
     }
-    complete_login(
-        db,
-        dev_sealer().as_ref(),
-        http,
-        external_url,
-        &CallbackParams { code, state },
-    )
-    .await
+
+    Ok(CallbackParams { code, state })
 }
 
 #[tokio::test]
@@ -319,8 +330,12 @@ async fn jit_creates_user_and_identity_keyed_on_iss_sub() {
     assert!(login.provisioned, "first login should provision a user");
     assert_eq!(login.email.as_deref(), Some("alice@acme.com"));
 
-    // The identity is keyed on (iss, sub).
-    let user = db.identity_user(&idp_base, "idp-subject-1").await.unwrap();
+    let config = db.idp_config(org_id).await.unwrap().unwrap();
+    let verifier_id = aos_hub_model::identity::oidc_verifier_id(&config);
+    let user = db
+        .identity_user(&verifier_id, "idp-subject-1")
+        .await
+        .unwrap();
     assert_eq!(user, Some(login.user_id));
 }
 
@@ -337,7 +352,7 @@ async fn second_login_same_iss_sub_does_not_create_new_user() {
         .await
         .unwrap();
 
-    // Same (iss, sub) but a different (recycled) email: must resolve to the
+    // Same verifier and subject but a different email: resolve to the
     // same user, not a fresh one.
     *idp.email.lock().unwrap() = Some("alice-new@acme.com".into());
     let second = run_flow(&db, &http, "http://hub.example.com", org_id)
@@ -416,6 +431,7 @@ async fn forged_or_replayed_state_is_rejected() {
             code: "test-code".into(),
             state: "forged-state".into(),
         },
+        TEST_BROWSER_BINDING,
     )
     .await;
     assert!(err.is_err());
@@ -442,9 +458,82 @@ async fn forged_or_replayed_state_is_rejected() {
             code: "test-code".into(),
             state,
         },
+        &redirect.browser_binding,
     )
     .await;
     assert!(replay.is_err());
+}
+
+#[tokio::test]
+async fn callback_requires_the_browser_that_started_the_flow() {
+    let (idp_base, _idp) = spawn_idp().await;
+    let db = Database::open_in_memory().await.unwrap();
+    seed_org(&db, &idp_base, false, true, "{}").await;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
+    let http = test_http();
+
+    let redirect = begin_login(&db, "http://hub.example.com", org_id, None)
+        .await
+        .unwrap();
+    let params = authorize_redirect(&redirect).await.unwrap();
+    assert_ne!(redirect.browser_binding, TEST_BROWSER_BINDING);
+
+    let transferred = complete_login(
+        &db,
+        dev_sealer().as_ref(),
+        &http,
+        "http://hub.example.com",
+        &params,
+        TEST_BROWSER_BINDING,
+    )
+    .await;
+    assert!(transferred.is_err());
+
+    let login = complete_login(
+        &db,
+        dev_sealer().as_ref(),
+        &http,
+        "http://hub.example.com",
+        &params,
+        &redirect.browser_binding,
+    )
+    .await
+    .unwrap();
+    assert_eq!(login.email.as_deref(), Some("alice@acme.com"));
+}
+
+#[tokio::test]
+async fn concurrent_login_tabs_keep_independent_flows() {
+    let (idp_base, _idp) = spawn_idp().await;
+    let db = Database::open_in_memory().await.unwrap();
+    seed_org(&db, &idp_base, false, true, "{}").await;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
+
+    let first = begin_login(&db, "http://hub.example.com", org_id, None)
+        .await
+        .unwrap();
+    let second = begin_login(&db, "http://hub.example.com", org_id, None)
+        .await
+        .unwrap();
+    assert_ne!(first.state, second.state);
+    assert_ne!(first.browser_binding, second.browser_binding);
+    assert_ne!(
+        oidc::browser_binding_cookie_name(&first.state).unwrap(),
+        oidc::browser_binding_cookie_name(&second.state).unwrap()
+    );
+
+    let second_hash = oidc::browser_binding_digest(&second.browser_binding).unwrap();
+    let first_hash = oidc::browser_binding_digest(&first.browser_binding).unwrap();
+    assert!(db
+        .take_oidc_flow(&second.state, &second_hash)
+        .await
+        .unwrap()
+        .is_some());
+    assert!(db
+        .take_oidc_flow(&first.state, &first_hash)
+        .await
+        .unwrap()
+        .is_some());
 }
 
 #[tokio::test]
@@ -452,10 +541,24 @@ async fn expired_flow_is_rejected() {
     let db = Database::open_in_memory().await.unwrap();
     let org_id = db.create_org("acme", "Acme").await.unwrap();
     // Stage a flow that is already expired (negative TTL).
-    db.create_oidc_flow("st", org_id, "nn", "verifier", None, -1)
+    let binding_hash = "0".repeat(64);
+    db.create_oidc_flow(
+        "st",
+        org_id,
+        TEST_VERIFIER_ID,
+        "nn",
+        "verifier",
+        &binding_hash,
+        None,
+        -1,
+    )
         .await
         .unwrap();
-    assert!(db.take_oidc_flow("st").await.unwrap().is_none());
+    assert!(db
+        .take_oidc_flow("st", &binding_hash)
+        .await
+        .unwrap()
+        .is_none());
 }
 
 #[tokio::test]
@@ -489,6 +592,7 @@ async fn bad_nonce_is_rejected() {
             code: "test-code".into(),
             state,
         },
+        &redirect.browser_binding,
     )
     .await;
     assert!(err.is_err(), "a mismatched nonce must be rejected");
@@ -599,7 +703,12 @@ async fn begin_login_sets_pkce_s256_and_records_flow() {
     );
     let state = q.get("state").unwrap();
     // The recorded flow's verifier hashes to the sent challenge.
-    let flow = db.take_oidc_flow(state).await.unwrap().unwrap();
+    let binding_hash = oidc::browser_binding_digest(&redirect.browser_binding).unwrap();
+    let flow = db
+        .take_oidc_flow(state, &binding_hash)
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         &code_challenge_s256(&flow.code_verifier),
         q.get("code_challenge").unwrap()
@@ -635,7 +744,7 @@ fn idp_config_from_record_parses_role_map() {
 
 #[tokio::test]
 async fn identity_link_existing_then_link_paths() {
-    // (iss, sub) keying: existing identity wins; verified email on a captured
+    // Verifier-subject keying: existing identity wins; verified email on a captured
     // domain links to an existing user; otherwise JIT.
     let db = Database::open_in_memory().await.unwrap();
     let org_id = db.create_org("acme", "Acme").await.unwrap();
@@ -646,6 +755,7 @@ async fn identity_link_existing_then_link_paths() {
     let existing = db.create_user("bob@acme.com", None).await.unwrap();
     let link = db
         .link_or_create_identity(
+            TEST_VERIFIER_ID,
             "https://idp",
             "sub-bob",
             Some("bob@acme.com"),
@@ -661,6 +771,7 @@ async fn identity_link_existing_then_link_paths() {
     // Same identity again resolves as Existing.
     let again = db
         .link_or_create_identity(
+            TEST_VERIFIER_ID,
             "https://idp",
             "sub-bob",
             Some("bob@acme.com"),
@@ -677,6 +788,7 @@ async fn identity_link_existing_then_link_paths() {
     // returns None for a new identity.
     let none = db
         .link_or_create_identity(
+            TEST_VERIFIER_ID,
             "https://idp",
             "sub-new",
             Some("carol@acme.com"),
@@ -693,65 +805,92 @@ async fn identity_link_existing_then_link_paths() {
 }
 
 #[tokio::test]
-async fn jit_refuses_to_graft_onto_existing_account_by_email() {
-    // Security (H2): a self-hosted IdP asserts a victim's address with a brand
-    // new (iss, sub). Step 1 (existing identity) and step 2 (verified captured
-    // domain) do not apply — the attacker's org never captured the victim's
-    // domain — so JIT is reached. JIT must REFUSE rather than reconcile onto
-    // the victim's pre-existing user row by email.
+async fn provider_profile_does_not_replace_an_existing_mailbox_owner() {
     let db = Database::open_in_memory().await.unwrap();
-    let attacker_org = db.create_org("attacker", "Attacker Inc").await.unwrap();
+    let org_id = db.create_org("external", "External").await.unwrap();
 
-    // Victim user already exists (e.g. created via a different org's SSO).
-    let victim = db.create_user("ceo@othercorp.com", None).await.unwrap();
+    let mailbox_owner = db.create_user("owner@othercorp.com", None).await.unwrap();
 
-    let denied = db
+    let link = db
         .link_or_create_identity(
-            "https://attacker-idp",
-            "sub-attacker",
-            Some("ceo@othercorp.com"),
-            // Even a *claimed*-verified email must not link: the attacker controls
-            // the IdP and the email_verified flag, and never captured othercorp.com.
+            TEST_VERIFIER_ID,
+            "https://external-idp",
+            "external-subject",
+            Some("owner@othercorp.com"),
             true,
-            attacker_org,
-            true, // allow_jit on
+            org_id,
+            true,
         )
-        .await;
+        .await
+        .unwrap()
+        .unwrap();
+    let provider_user = link.user_id();
 
-    assert!(
-        denied.is_err(),
-        "JIT must refuse to link an asserted email belonging to another user"
-    );
-    // No identity row was grafted onto the victim, and the victim's id was not
-    // returned — no session could have been minted as them.
+    assert_ne!(provider_user, mailbox_owner);
     assert_eq!(
-        db.identity_user("https://attacker-idp", "sub-attacker")
+        db.identity_user(TEST_VERIFIER_ID, "external-subject")
             .await
             .unwrap(),
-        None,
-        "a denied JIT must not create an (iss, sub) identity row"
+        Some(provider_user)
     );
-    // The victim's account is untouched and still resolves only by its email.
     assert_eq!(
-        db.user_by_email("ceo@othercorp.com").await.unwrap(),
-        Some(victim)
+        db.user_by_email("owner@othercorp.com").await.unwrap(),
+        Some(mailbox_owner)
     );
+    db.set_user_password(provider_user, "profile-hash")
+        .await
+        .unwrap();
+    assert_eq!(
+        db.user_for_password("owner@othercorp.com").await.unwrap(),
+        None
+    );
+
+    let org = db.org_by_id(org_id).await.unwrap().unwrap();
+    db.create_invitation(
+        org_id,
+        "owner@othercorp.com",
+        &org.stable_id,
+        "viewer",
+        "mailbox-invitation",
+        i64::MAX,
+    )
+    .await
+    .unwrap();
+    assert!(db
+        .accept_invitation(
+            "mailbox-invitation",
+            org_id,
+            provider_user,
+            "owner@othercorp.com",
+        )
+        .await
+        .unwrap()
+        .is_none());
+    assert!(db
+        .accept_invitation(
+            "mailbox-invitation",
+            org_id,
+            mailbox_owner,
+            "owner@othercorp.com",
+        )
+        .await
+        .unwrap()
+        .is_some());
 }
 
 #[tokio::test]
-async fn jit_provisions_a_fresh_user_for_a_new_email() {
-    // Regression: a genuinely new SSO user (no pre-existing account) still
-    // provisions a fresh user + identity when allow_jit is on.
+async fn unverified_email_remains_profile_metadata() {
     let db = Database::open_in_memory().await.unwrap();
     let org_id = db.create_org("acme", "Acme").await.unwrap();
 
     assert_eq!(db.user_by_email("dana@newcomer.com").await.unwrap(), None);
     let link = db
         .link_or_create_identity(
+            TEST_VERIFIER_ID,
             "https://idp",
             "sub-dana",
             Some("dana@newcomer.com"),
-            true,
+            false,
             org_id,
             true,
         )
@@ -762,13 +901,237 @@ async fn jit_provisions_a_fresh_user_for_a_new_email() {
         IdentityLink::Created(id) => id,
         other => panic!("expected a freshly created user, got {other:?}"),
     };
-    // The fresh user and its (iss, sub) identity both exist.
+    // The provider profile exists without claiming the supplied mailbox.
+    assert_eq!(db.user_by_email("dana@newcomer.com").await.unwrap(), None);
     assert_eq!(
-        db.user_by_email("dana@newcomer.com").await.unwrap(),
+        db.identity_user(TEST_VERIFIER_ID, "sub-dana")
+            .await
+            .unwrap(),
         Some(new_user)
     );
+
+    let mailbox_owner = db.find_or_create_user("dana@newcomer.com").await.unwrap();
+    assert_ne!(mailbox_owner, new_user);
     assert_eq!(
-        db.identity_user("https://idp", "sub-dana").await.unwrap(),
+        db.identity_user(TEST_VERIFIER_ID, "sub-dana")
+            .await
+            .unwrap(),
         Some(new_user)
     );
+}
+
+#[tokio::test]
+async fn captured_verified_email_creates_a_mailbox_owner() {
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db.create_org("captured", "Captured").await.unwrap();
+    db.add_org_domain(org_id, "captured.example").await.unwrap();
+    db.verify_org_domain("captured.example").await.unwrap();
+
+    let link = db
+        .link_or_create_identity(
+            TEST_VERIFIER_ID,
+            "https://idp.example",
+            "captured-subject",
+            Some("user@captured.example"),
+            true,
+            org_id,
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        db.user_by_email("user@captured.example").await.unwrap(),
+        Some(link.user_id())
+    );
+}
+
+#[tokio::test]
+async fn missing_email_verification_remains_profile_metadata() {
+    let (idp_base, idp) = spawn_idp().await;
+    *idp.email_verified.lock().unwrap() = None;
+    let db = Database::open_in_memory().await.unwrap();
+    seed_org(&db, &idp_base, false, true, "{}").await;
+    let org_id = db.org_by_slug("acme").await.unwrap().unwrap().id;
+
+    let login = run_flow(&db, &test_http(), "http://hub.example.com", org_id)
+        .await
+        .unwrap();
+
+    assert!(login.provisioned);
+    assert_eq!(db.user_by_email("alice@acme.com").await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn identical_issuers_remain_bound_to_their_verifiers() {
+    let db = Database::open_in_memory().await.unwrap();
+    let first_org = db.create_org("first", "First").await.unwrap();
+    let second_org = db.create_org("second", "Second").await.unwrap();
+
+    let mut first_config = verifier_config(first_org, "https://idp.example/keys-one");
+    let second_config = verifier_config(second_org, "https://idp.example/keys-two");
+    db.upsert_idp_config(&first_config).await.unwrap();
+    db.upsert_idp_config(&second_config).await.unwrap();
+
+    let first_verifier = aos_hub_model::identity::oidc_verifier_id(&first_config);
+    let second_verifier = aos_hub_model::identity::oidc_verifier_id(&second_config);
+    assert_ne!(first_verifier, second_verifier);
+
+    let first_user = db
+        .link_or_create_identity(
+            &first_verifier,
+            &first_config.issuer,
+            "shared-subject",
+            Some("first@example.test"),
+            true,
+            first_org,
+            true,
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .user_id();
+
+    let disabled = db
+        .link_or_create_identity(
+            &second_verifier,
+            &second_config.issuer,
+            "shared-subject",
+            Some("second@example.test"),
+            true,
+            second_org,
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(disabled, None);
+    assert_eq!(
+        db.identity_user(&second_verifier, "shared-subject")
+            .await
+            .unwrap(),
+        None
+    );
+
+    first_config.org_id = second_org;
+    assert_eq!(
+        aos_hub_model::identity::oidc_verifier_id(&first_config),
+        first_verifier
+    );
+    assert_eq!(
+        db.identity_user(&first_verifier, "shared-subject")
+            .await
+            .unwrap(),
+        Some(first_user)
+    );
+}
+
+#[tokio::test]
+async fn login_flow_rejects_a_changed_verifier() {
+    let db = Database::open_in_memory().await.unwrap();
+    let org_id = db.create_org("flow-change", "Flow Change").await.unwrap();
+    let initial = verifier_config(org_id, "https://idp.example/keys-one");
+    db.upsert_idp_config(&initial).await.unwrap();
+
+    let redirect = begin_login(&db, "https://hub.example", org_id, None)
+        .await
+        .unwrap();
+    let state = url::Url::parse(&redirect.url)
+        .unwrap()
+        .query_pairs()
+        .find_map(|(key, value)| (key == "state").then(|| value.into_owned()))
+        .unwrap();
+
+    let changed = verifier_config(org_id, "https://idp.example/keys-two");
+    db.upsert_idp_config(&changed).await.unwrap();
+
+    let result = complete_login(
+        &db,
+        dev_sealer().as_ref(),
+        &test_http(),
+        "https://hub.example",
+        &CallbackParams {
+            code: "unused-code".into(),
+            state,
+        },
+        &redirect.browser_binding,
+    )
+    .await;
+    assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn legacy_identity_adoption_requires_one_verifier() {
+    let db = Database::open_in_memory().await.unwrap();
+    let first_org = db.create_org("legacy-first", "Legacy First").await.unwrap();
+    let first_config = verifier_config(first_org, "https://idp.example/keys-one");
+    db.upsert_idp_config(&first_config).await.unwrap();
+    let first_verifier = aos_hub_model::identity::oidc_verifier_id(&first_config);
+
+    let adopted_user = db.create_user("adopted@example.test", None).await.unwrap();
+    db.seed_legacy_oidc_identity(adopted_user, &first_config.issuer, "legacy-one")
+        .await
+        .unwrap();
+    let adopted = db
+        .link_or_create_identity(
+            &first_verifier,
+            &first_config.issuer,
+            "legacy-one",
+            None,
+            false,
+            first_org,
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(adopted, Some(IdentityLink::Existing(adopted_user)));
+
+    let second_org = db
+        .create_org("legacy-second", "Legacy Second")
+        .await
+        .unwrap();
+    let second_config = verifier_config(second_org, "https://idp.example/keys-two");
+    db.upsert_idp_config(&second_config).await.unwrap();
+
+    let ambiguous_user = db
+        .create_user("ambiguous@example.test", None)
+        .await
+        .unwrap();
+    db.seed_legacy_oidc_identity(ambiguous_user, &first_config.issuer, "legacy-ambiguous")
+        .await
+        .unwrap();
+    let ambiguous = db
+        .link_or_create_identity(
+            &first_verifier,
+            &first_config.issuer,
+            "legacy-ambiguous",
+            None,
+            false,
+            first_org,
+            false,
+        )
+        .await
+        .unwrap();
+    assert_eq!(ambiguous, None);
+}
+
+fn verifier_config(org_id: i64, jwks_uri: &str) -> IdpConfigRecord {
+    IdpConfigRecord {
+        org_id,
+        issuer: "https://idp.example".into(),
+        authorization_endpoint: "https://idp.example/authorize".into(),
+        token_endpoint: "https://idp.example/token".into(),
+        jwks_uri: jwks_uri.into(),
+        client_id: "hub-client".into(),
+        client_secret_enc: None,
+        scopes: "openid email".into(),
+        groups_claim: None,
+        role_map_json: "{}".into(),
+        allow_jit: true,
+        enforce_sso: false,
+        default_role: "viewer".into(),
+        resource_version: 1,
+        incarnation_id: None,
+        mutation_plan_id: None,
+    }
 }

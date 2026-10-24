@@ -44,7 +44,7 @@ in
     architecture_target = output / "source" / (architecture_name + ".aos-source")
     architecture_target.parent.mkdir(parents=True, exist_ok=True)
     architecture_target.write_bytes(architecture)
-    if not {"MODULE.bazel", "default.nix", "crates/aos/cli/aos-cli/src/lib.rs"}.issubset(files):
+    if not {"MODULE.bazel", "default.nix", "crates/cli/aos-cli/src/lib.rs"}.issubset(files):
         raise ValueError("CLI repository inputs are incomplete")
     (output / "manifest.json").write_text(json.dumps({
         "schema_version": 1, "files": files,

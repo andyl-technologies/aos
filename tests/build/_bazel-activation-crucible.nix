@@ -3,26 +3,26 @@
   pkgs,
   sourceInventory ? ../../tools/bazel/metadata/activation-crucible-inventory.json,
 }: let
-  packagePath = "crates/aos/activation/aos-activation-crucible";
+  packagePath = "crates/activation/aos-activation-crucible";
   label = "//${packagePath}";
   packages.aos-activation-crucible = packagePath;
   productionDependencies = {
-    aos-core = "crates/shared/aos-core";
-    aos-artifact-evidence = "crates/shared/aos-artifact-evidence";
-    aos-module-format = "crates/aos/modules/aos-module-format";
-    aos-activation = "crates/aos/activation/aos-activation";
-    crucible-guest = "crates/crucible/guest/crucible-guest";
-    crucible-qemu-protocol = "crates/crucible/protocol/crucible-qemu-protocol";
+    aos-core = "crates/core/aos-core";
+    aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
+    aos-module-format = "crates/modules/aos-module-format";
+    aos-activation = "crates/activation/aos-activation";
+    crucible-guest = "crates/crucible/crucible-guest";
+    crucible-qemu-protocol = "crates/crucible/crucible-qemu-protocol";
   };
   dependencyPackages =
     productionDependencies
     // {
-      crucible-engine = "crates/crucible/engine/crucible-engine";
-      crucible-determinism = "crates/crucible/engine/crucible-determinism";
-      crucible-campaign = "crates/crucible/engine/crucible-campaign";
-      crucible-device = "crates/crucible/engine/crucible-device";
-      crucible-store = "crates/crucible/storage/crucible-store";
-      crucible-qemu-shmem = "crates/crucible/protocol/crucible-qemu-shmem";
+      crucible-engine = "crates/crucible/crucible-engine";
+      crucible-determinism = "crates/crucible/crucible-determinism";
+      crucible-campaign = "crates/crucible/crucible-campaign";
+      crucible-device = "crates/crucible/crucible-device";
+      crucible-store = "crates/crucible/crucible-store";
+      crucible-qemu-shmem = "crates/crucible/crucible-qemu-shmem";
     };
   triple = pkgs.stdenv.hostPlatform.config;
   targetFlagsVariable = "CARGO_TARGET_${pkgs.lib.toUpper (builtins.replaceStrings ["-"] ["_"] triple)}_RUSTFLAGS";

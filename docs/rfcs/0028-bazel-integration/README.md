@@ -86,7 +86,7 @@ At the proposal baseline, AOS already has:
   Bazel disk action cache.
 - A Workerd-specific [Rust toolchain repository](../../../pkgs/tools/workerd/_rust-repository.nix)
   and [source-built dependency generator](../../../pkgs/tools/workerd/_cargo-bazel.nix).
-- [accache](../../../tools/accache/README.md), including explicit compiler
+- [accache](../../../crates/accache/accache/README.md), including explicit compiler
   closure identity and extensive invalidation fixtures.
 - [Cargo workspace source selection](../../../pkgs/tools/aos/_workspace-slice.nix),
   [artifact families](../0015-hermetic-cargo-artifacts.md), and established
@@ -101,7 +101,7 @@ output contracts below rather than copying those phases into each package.
 ## Scope boundaries
 
 The primary migration is the Rust workspace, with shared infrastructure for
-first-party native code. Standalone first-party tools such as `tools/accache/`
+first-party native code. Standalone first-party tools such as `crates/accache/accache/`
 join after their bootstrap dependencies have been checked.
 
 Upstream packages may keep Cargo, Make, CMake, Meson, or their existing Bazel

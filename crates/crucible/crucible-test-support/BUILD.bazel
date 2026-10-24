@@ -1,0 +1,38 @@
+load("//tools/bazel/rules:compile.bzl", "rust_library")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+
+RUST_PACKAGE = aos_rust_package(
+    name = "crucible-test-support",
+    version = "0.1.0",
+    edition = "2024",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+)
+
+rust_library(
+    name = "lib",
+    package = RUST_PACKAGE,
+    testonly = True,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible_test_support",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = [
+        "//crates/crucible/crucible-qemu-shmem:src/abi_version.in",
+        "//crates/crucible/crucible-qemu-protocol:src/control_protocol_version.in",
+    ],
+    visibility = ["//crates/crucible:__subpackages__"],
+)
+
+exports_files(
+    ["tests/support/workspace.rs"],
+    visibility = ["//crates/crucible/crucible-engine:__pkg__"],
+)
+
+aos_source_package(
+    name = "source_package",
+    package = RUST_PACKAGE,
+    srcs = glob(["**/*.rs"]),
+    visibility = ["//visibility:public"],
+)

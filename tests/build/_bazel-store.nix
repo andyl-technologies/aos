@@ -3,11 +3,11 @@
   pkgs,
   sourceInventory ? ../../tools/bazel/metadata/store-inventory.json,
 }: let
-  store = "//crates/crucible/storage/crucible-store";
-  campaign = "//crates/crucible/engine/crucible-campaign";
+  store = "//crates/crucible/crucible-store";
+  campaign = "//crates/crucible/crucible-campaign";
   packages = {
-    crucible-store = "crates/crucible/storage/crucible-store";
-    crucible-campaign = "crates/crucible/engine/crucible-campaign";
+    crucible-store = "crates/crucible/crucible-store";
+    crucible-campaign = "crates/crucible/crucible-campaign";
   };
   nativeLibraries = [pkgs.sqlite];
   nativeTools = [pkgs.pkg-config];
@@ -57,8 +57,8 @@
       ${pkgs.python3}/bin/python3 verify_protocol.py \
         --tests ${tests}/evidence/tests --inventory ${tests}/inventory.json \
         --messages ${cargo}/cargo-messages.jsonl --cargo-log ${cargo}/cargo-tests.log \
-        --package-path crucible-store=crates/crucible/storage/crucible-store \
-        --package-path crucible-campaign=crates/crucible/engine/crucible-campaign \
+        --package-path crucible-store=crates/crucible/crucible-store \
+        --package-path crucible-campaign=crates/crucible/crucible-campaign \
         --target-suffix ${suffix} --output "$out/parity.json"
       cp ${tests}/inventory.json "$out/inventory.json"
     '';

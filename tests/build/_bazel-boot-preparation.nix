@@ -4,25 +4,25 @@
   sourceInventory ? ../../tools/bazel/metadata/boot-preparation-inventory.json,
 }: let
   packages = {
-    aos-boot-runtime = "crates/aos/boot/aos-boot-runtime";
-    aos-configuration-image = "crates/aos/boot/aos-configuration-image";
-    aos-platform-metadata = "crates/aos/boot/aos-platform-metadata";
+    aos-boot-runtime = "crates/boot/aos-boot-runtime";
+    aos-configuration-image = "crates/boot/aos-configuration-image";
+    aos-platform-metadata = "crates/boot/aos-platform-metadata";
   };
   commonDependencies = {
-    aos-activation = "crates/aos/activation/aos-activation";
-    aos-artifact-evidence = "crates/shared/aos-artifact-evidence";
-    aos-core = "crates/shared/aos-core";
-    aos-module-format = "crates/aos/modules/aos-module-format";
-    aos-nar = "crates/shared/aos-nar";
-    aos-nix = "crates/shared/aos-nix";
-    aos-storage-layout = "crates/aos/boot/aos-storage-layout";
-    aos-transfer = "crates/shared/aos-transfer";
+    aos-activation = "crates/activation/aos-activation";
+    aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
+    aos-core = "crates/core/aos-core";
+    aos-module-format = "crates/modules/aos-module-format";
+    aos-nar = "crates/artifacts/aos-nar";
+    aos-nix = "crates/nix/aos-nix";
+    aos-storage-layout = "crates/boot/aos-storage-layout";
+    aos-transfer = "crates/transfer/aos-transfer";
   };
   bootToolDependencies = {
-    aos-boot-identity = "crates/aos/boot/aos-boot-identity";
-    aos-oci-types = "crates/shared/aos-oci-types";
-    aos-registry-format = "crates/aos/registry/aos-registry-format";
-    aos-release-format = "crates/aos/release/aos-release-format";
+    aos-boot-identity = "crates/boot/aos-boot-identity";
+    aos-oci-types = "crates/artifacts/aos-oci-types";
+    aos-registry-format = "crates/registry/aos-registry-format";
+    aos-release-format = "crates/release/aos-release-format";
   };
   commands = {
     aos-boot-runtime = ["aos-boot-preparation-provider"];
@@ -106,7 +106,7 @@
           ++ productionTargets
           ++ pkgs.lib.optionals (!minimal) [
             # Retain the dependency's nonempty integration-source discovery glob.
-            "//crates/aos/release/aos-release-format:source_package"
+            "//crates/release/aos-release-format:source_package"
           ];
       };
       production-inventory = pkgs.mkAosBazelBuild {

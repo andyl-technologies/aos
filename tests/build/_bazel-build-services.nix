@@ -4,14 +4,14 @@
   sourceInventory ? ../../tools/bazel/metadata/build-services-inventory.json,
 }: let
   packages = {
-    aos-build-api = "crates/aos/packages/aos-build-api";
-    aos-build-client = "crates/aos/packages/aos-build-client";
-    aos-build-server = "crates/aos/packages/aos-build-server";
+    aos-build-api = "crates/packages/aos-build-api";
+    aos-build-client = "crates/packages/aos-build-client";
+    aos-build-server = "crates/packages/aos-build-server";
   };
   dependencyPackages = {
-    aos-core = "crates/shared/aos-core";
-    aos-nar = "crates/shared/aos-nar";
-    aos-nix = "crates/shared/aos-nix";
+    aos-core = "crates/core/aos-core";
+    aos-nar = "crates/artifacts/aos-nar";
+    aos-nix = "crates/nix/aos-nix";
   };
   repositories =
     pkgs.aosBazelRepositories
@@ -42,10 +42,10 @@
     dependencyProfile = "build-services";
     extraSourceDirectories = builtins.attrValues dependencyPackages ++ ["api/proto"];
     emptyTests = [
-      "//crates/aos/packages/aos-build-api:unit"
-      "//crates/aos/packages/aos-build-client:unit"
+      "//crates/packages/aos-build-api:unit"
+      "//crates/packages/aos-build-client:unit"
     ];
-    extraEditorTargets = ["//crates/aos/packages/aos-build-api:build_script_program"];
+    extraEditorTargets = ["//crates/packages/aos-build-api:build_script_program"];
     generatedDoctests.aos-build-api = "build_script.out_dir";
     editorComparisonScope = "selected-packages";
     editorRustcFlags = rustcFlags;
@@ -55,7 +55,7 @@
     pkgs.lib.concatMap (path:
       map (target: "//${path}:${target}") ["lib" "production_license_closure"])
     (builtins.attrValues packages)
-    ++ ["//crates/aos/packages/aos-build-api:generated_sources_evidence"];
+    ++ ["//crates/packages/aos-build-api:generated_sources_evidence"];
   productionWorkspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
     inherit sourceInventory rustcFlags repositories;
@@ -78,10 +78,10 @@ in
           map (target: "//${path}:${target}") ["license_closure" "unit" "doc" "clippy" "documentation" "format"])
         (builtins.attrValues packages)
         ++ [
-          "//crates/aos/packages/aos-build-api:decode_limits"
-          "//crates/aos/packages/aos-build-server:rpc_roundtrip"
-          "//crates/aos/packages/aos-build-api:build_script_program"
-          "//crates/aos/packages/aos-build-api:generated_sources_evidence"
+          "//crates/packages/aos-build-api:decode_limits"
+          "//crates/packages/aos-build-server:rpc_roundtrip"
+          "//crates/packages/aos-build-api:build_script_program"
+          "//crates/packages/aos-build-api:generated_sources_evidence"
         ]
         ++ productionTargets;
     };
@@ -125,7 +125,7 @@ in
             events = [json.loads(line) for line in (output / "cargo-messages.jsonl").read_text().splitlines()]
             identities = {event["package_id"] for event in events
                           if event.get("reason") == "compiler-artifact"
-                          and event["manifest_path"].endswith("/crates/aos/packages/aos-build-api/Cargo.toml")}
+                          and event["manifest_path"].endswith("/crates/packages/aos-build-api/Cargo.toml")}
             scripts = [event for event in events
                        if event.get("reason") == "build-script-executed"
                        and event["package_id"] in identities]
@@ -167,7 +167,7 @@ in
 
       packages, cargo, output = map(Path, sys.argv[1:])
       index = json.loads((packages / "index.json").read_text())
-      label = "//crates/aos/packages/aos-build-api:generated_sources_evidence"
+      label = "//crates/packages/aos-build-api:generated_sources_evidence"
       bazel = json.loads((packages / index[label] / "files/generated-api.json").read_text())
       expected = ["_connectrpc.rs"] + [
           "aos." + service + ".v1." + filename + ".rs"

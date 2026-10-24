@@ -1,26 +1,26 @@
 {
   "configured_targets": [
     {
-      "build_file": "crates/aos/modules/aos-module-format/BUILD.bazel",
+      "build_file": "crates/modules/aos-module-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/modules/aos-module-format:lib",
-        "//crates/aos/modules/aos-module-format:unit_binary",
-        "//crates/aos/modules/aos-module-format:unit_compression_binary"
+        "//crates/modules/aos-module-format:lib",
+        "//crates/modules/aos-module-format:unit_binary",
+        "//crates/modules/aos-module-format:unit_compression_binary"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/aos/modules/aos-module-format:lib",
-        "crates/aos/modules/aos-module-format/unit_binary": "//crates/aos/modules/aos-module-format:unit_binary",
-        "crates/aos/modules/aos-module-format/unit_compression_binary": "//crates/aos/modules/aos-module-format:unit_compression_binary"
+        "crates/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/modules/aos-module-format:lib",
+        "crates/modules/aos-module-format/unit_binary": "//crates/modules/aos-module-format:unit_binary",
+        "crates/modules/aos-module-format/unit_compression_binary": "//crates/modules/aos-module-format:unit_compression_binary"
       },
       "kind": "rust_clippy",
-      "label": "//crates/aos/modules/aos-module-format:clippy",
+      "label": "//crates/modules/aos-module-format:clippy",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -30,13 +30,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/modules/aos-module-format/BUILD.bazel",
+      "build_file": "crates/modules/aos-module-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/modules/aos-module-format:lib",
+        "//crates/modules/aos-module-format:lib",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
         "@@bazel_tools//tools/test:runtime",
@@ -53,10 +53,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/aos/modules/aos-module-format:lib"
+        "crates/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/modules/aos-module-format:lib"
       },
       "kind": "rust_doc_test",
-      "label": "//crates/aos/modules/aos-module-format:doc",
+      "label": "//crates/modules/aos-module-format:doc",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -66,13 +66,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/modules/aos-module-format/BUILD.bazel",
+      "build_file": "crates/modules/aos-module-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/modules/aos-module-format:lib",
+        "//crates/modules/aos-module-format:lib",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
         "@@bazel_tools//tools/test:runtime",
@@ -89,10 +89,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/aos/modules/aos-module-format:lib"
+        "crates/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/modules/aos-module-format:lib"
       },
       "kind": "rust_doc_test",
-      "label": "//crates/aos/modules/aos-module-format:doc_compression",
+      "label": "//crates/modules/aos-module-format:doc_compression",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -102,13 +102,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/modules/aos-module-format/BUILD.bazel",
+      "build_file": "crates/modules/aos-module-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/modules/aos-module-format:lib",
+        "//crates/modules/aos-module-format:lib",
         "@@bazel_tools//tools/zip:zipper",
         "@@rules_rust+//rust/private/rustdoc/dir_zipper:dir_zipper",
         "@@rules_rust+//rust/settings:error_format",
@@ -118,10 +118,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/aos/modules/aos-module-format:lib"
+        "crates/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/modules/aos-module-format:lib"
       },
       "kind": "rust_doc",
-      "label": "//crates/aos/modules/aos-module-format:documentation",
+      "label": "//crates/modules/aos-module-format:documentation",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -131,15 +131,15 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/modules/aos-module-format/BUILD.bazel",
+      "build_file": "crates/modules/aos-module-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/modules/aos-module-format:lib",
-        "//crates/aos/modules/aos-module-format:unit_binary",
-        "//crates/aos/modules/aos-module-format:unit_compression_binary",
+        "//crates/modules/aos-module-format:lib",
+        "//crates/modules/aos-module-format:unit_binary",
+        "//crates/modules/aos-module-format:unit_compression_binary",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
         "@@bazel_tools//tools/test:runtime",
@@ -153,12 +153,12 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/aos/modules/aos-module-format:lib",
-        "crates/aos/modules/aos-module-format/unit_binary": "//crates/aos/modules/aos-module-format:unit_binary",
-        "crates/aos/modules/aos-module-format/unit_compression_binary": "//crates/aos/modules/aos-module-format:unit_compression_binary"
+        "crates/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/modules/aos-module-format:lib",
+        "crates/modules/aos-module-format/unit_binary": "//crates/modules/aos-module-format:unit_binary",
+        "crates/modules/aos-module-format/unit_compression_binary": "//crates/modules/aos-module-format:unit_compression_binary"
       },
       "kind": "rustfmt_test",
-      "label": "//crates/aos/modules/aos-module-format:format",
+      "label": "//crates/modules/aos-module-format:format",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -168,27 +168,27 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/modules/aos-module-format/BUILD.bazel",
+      "build_file": "crates/modules/aos-module-format/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_module_format",
-      "crate_root": "crates/aos/modules/aos-module-format/src/lib.rs",
+      "crate_root": "crates/modules/aos-module-format/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/aos/modules/aos-module-format:src/diagnostic.rs",
-        "//crates/aos/modules/aos-module-format:src/graph/mod.rs",
-        "//crates/aos/modules/aos-module-format:src/graph/resolution.rs",
-        "//crates/aos/modules/aos-module-format:src/graph/tests.rs",
-        "//crates/aos/modules/aos-module-format:src/graph/validation.rs",
-        "//crates/aos/modules/aos-module-format:src/graph/validation/tests.rs",
-        "//crates/aos/modules/aos-module-format:src/identity.rs",
-        "//crates/aos/modules/aos-module-format:src/lib.rs",
-        "//crates/aos/modules/aos-module-format:src/limits.rs",
-        "//crates/aos/modules/aos-module-format:src/option.rs",
-        "//crates/aos/modules/aos-module-format:src/schema.rs",
-        "//crates/aos/modules/aos-module-format:src/transaction_blob.rs",
-        "//crates/aos/modules/aos-module-format:src/value.rs",
-        "//crates/shared/aos-artifact-evidence:lib",
-        "//crates/shared/aos-core:lib",
+        "//crates/modules/aos-module-format:src/diagnostic.rs",
+        "//crates/modules/aos-module-format:src/graph/mod.rs",
+        "//crates/modules/aos-module-format:src/graph/resolution.rs",
+        "//crates/modules/aos-module-format:src/graph/tests.rs",
+        "//crates/modules/aos-module-format:src/graph/validation.rs",
+        "//crates/modules/aos-module-format:src/graph/validation/tests.rs",
+        "//crates/modules/aos-module-format:src/identity.rs",
+        "//crates/modules/aos-module-format:src/lib.rs",
+        "//crates/modules/aos-module-format:src/limits.rs",
+        "//crates/modules/aos-module-format:src/option.rs",
+        "//crates/modules/aos-module-format:src/schema.rs",
+        "//crates/modules/aos-module-format:src/transaction_blob.rs",
+        "//crates/modules/aos-module-format:src/value.rs",
+        "//crates/artifacts/aos-artifact-evidence:lib",
+        "//crates/core/aos-core:lib",
         "//tools/bazel/rules:workspace_lints",
         "@@+aos_tools_repository+aos_formats_crates__anyhow-1.0.102//:anyhow",
         "@@+aos_tools_repository+aos_formats_crates__regex-1.12.4//:regex",
@@ -214,11 +214,11 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-artifact-evidence/libaos_artifact_evidence-580599240.rlib": "//crates/shared/aos-artifact-evidence:lib",
-        "crates/shared/aos-core/libaos_core-2865302716.rlib": "//crates/shared/aos-core:lib"
+        "crates/artifacts/aos-artifact-evidence/libaos_artifact_evidence-580599240.rlib": "//crates/artifacts/aos-artifact-evidence:lib",
+        "crates/core/aos-core/libaos_core-2865302716.rlib": "//crates/core/aos-core:lib"
       },
       "kind": "rust_library",
-      "label": "//crates/aos/modules/aos-module-format:lib",
+      "label": "//crates/modules/aos-module-format:lib",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Portable module options, declarations, and checked activation graphs",
@@ -238,19 +238,19 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
-        "crates/aos/modules/aos-module-format/src/diagnostic.rs",
-        "crates/aos/modules/aos-module-format/src/graph/mod.rs",
-        "crates/aos/modules/aos-module-format/src/graph/resolution.rs",
-        "crates/aos/modules/aos-module-format/src/graph/tests.rs",
-        "crates/aos/modules/aos-module-format/src/graph/validation.rs",
-        "crates/aos/modules/aos-module-format/src/graph/validation/tests.rs",
-        "crates/aos/modules/aos-module-format/src/identity.rs",
-        "crates/aos/modules/aos-module-format/src/lib.rs",
-        "crates/aos/modules/aos-module-format/src/limits.rs",
-        "crates/aos/modules/aos-module-format/src/option.rs",
-        "crates/aos/modules/aos-module-format/src/schema.rs",
-        "crates/aos/modules/aos-module-format/src/transaction_blob.rs",
-        "crates/aos/modules/aos-module-format/src/value.rs"
+        "crates/modules/aos-module-format/src/diagnostic.rs",
+        "crates/modules/aos-module-format/src/graph/mod.rs",
+        "crates/modules/aos-module-format/src/graph/resolution.rs",
+        "crates/modules/aos-module-format/src/graph/tests.rs",
+        "crates/modules/aos-module-format/src/graph/validation.rs",
+        "crates/modules/aos-module-format/src/graph/validation/tests.rs",
+        "crates/modules/aos-module-format/src/identity.rs",
+        "crates/modules/aos-module-format/src/lib.rs",
+        "crates/modules/aos-module-format/src/limits.rs",
+        "crates/modules/aos-module-format/src/option.rs",
+        "crates/modules/aos-module-format/src/schema.rs",
+        "crates/modules/aos-module-format/src/transaction_blob.rs",
+        "crates/modules/aos-module-format/src/value.rs"
       ],
       "tags": [
         "aos-license:apache-host"
@@ -259,24 +259,24 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/aos/modules/aos-module-format/BUILD.bazel",
+      "build_file": "crates/modules/aos-module-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/modules/aos-module-format:lib",
-        "//crates/aos/modules/aos-module-format:unit_binary"
+        "//crates/modules/aos-module-format:lib",
+        "//crates/modules/aos-module-format:unit_binary"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/aos/modules/aos-module-format:lib",
-        "crates/aos/modules/aos-module-format/unit_binary": "//crates/aos/modules/aos-module-format:unit_binary"
+        "crates/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/modules/aos-module-format:lib",
+        "crates/modules/aos-module-format/unit_binary": "//crates/modules/aos-module-format:unit_binary"
       },
       "kind": "aos_license_check",
-      "label": "//crates/aos/modules/aos-module-format:license_closure",
+      "label": "//crates/modules/aos-module-format:license_closure",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -286,24 +286,24 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/modules/aos-module-format/BUILD.bazel",
+      "build_file": "crates/modules/aos-module-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/modules/aos-module-format:lib",
-        "//crates/aos/modules/aos-module-format:unit_compression_binary"
+        "//crates/modules/aos-module-format:lib",
+        "//crates/modules/aos-module-format:unit_compression_binary"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/aos/modules/aos-module-format:lib",
-        "crates/aos/modules/aos-module-format/unit_compression_binary": "//crates/aos/modules/aos-module-format:unit_compression_binary"
+        "crates/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/modules/aos-module-format:lib",
+        "crates/modules/aos-module-format/unit_compression_binary": "//crates/modules/aos-module-format:unit_compression_binary"
       },
       "kind": "aos_license_check",
-      "label": "//crates/aos/modules/aos-module-format:license_closure_compression",
+      "label": "//crates/modules/aos-module-format:license_closure_compression",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -313,13 +313,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/modules/aos-module-format/BUILD.bazel",
+      "build_file": "crates/modules/aos-module-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/modules/aos-module-format:unit_binary",
+        "//crates/modules/aos-module-format:unit_binary",
         "//tools/bazel/testing:policy.json",
         "//tools/bazel/testing:runner.py",
         "@@+aos_tools_repository+aos_tools//:bash",
@@ -337,10 +337,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/modules/aos-module-format/unit_binary": "//crates/aos/modules/aos-module-format:unit_binary"
+        "crates/modules/aos-module-format/unit_binary": "//crates/modules/aos-module-format:unit_binary"
       },
       "kind": "_libtest_test",
-      "label": "//crates/aos/modules/aos-module-format:unit",
+      "label": "//crates/modules/aos-module-format:unit",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -353,13 +353,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/modules/aos-module-format/BUILD.bazel",
+      "build_file": "crates/modules/aos-module-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
-      "crate_root": "crates/aos/modules/aos-module-format/src/lib.rs",
+      "crate_root": "crates/modules/aos-module-format/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/aos/modules/aos-module-format:lib",
+        "//crates/modules/aos-module-format:lib",
         "//tools/bazel/rules:workspace_lints",
         "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
         "@@bazel_tools//tools/test:collect_coverage",
@@ -389,10 +389,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/aos/modules/aos-module-format:lib"
+        "crates/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/modules/aos-module-format:lib"
       },
       "kind": "rust_test",
-      "label": "//crates/aos/modules/aos-module-format:unit_binary",
+      "label": "//crates/modules/aos-module-format:unit_binary",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Portable module options, declarations, and checked activation graphs",
@@ -421,13 +421,13 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/aos/modules/aos-module-format/BUILD.bazel",
+      "build_file": "crates/modules/aos-module-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/modules/aos-module-format:unit_compression_binary",
+        "//crates/modules/aos-module-format:unit_compression_binary",
         "//tools/bazel/testing:policy.json",
         "//tools/bazel/testing:runner.py",
         "@@+aos_tools_repository+aos_tools//:bash",
@@ -445,10 +445,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/modules/aos-module-format/unit_compression_binary": "//crates/aos/modules/aos-module-format:unit_compression_binary"
+        "crates/modules/aos-module-format/unit_compression_binary": "//crates/modules/aos-module-format:unit_compression_binary"
       },
       "kind": "_libtest_test",
-      "label": "//crates/aos/modules/aos-module-format:unit_compression",
+      "label": "//crates/modules/aos-module-format:unit_compression",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -461,13 +461,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/modules/aos-module-format/BUILD.bazel",
+      "build_file": "crates/modules/aos-module-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
-      "crate_root": "crates/aos/modules/aos-module-format/src/lib.rs",
+      "crate_root": "crates/modules/aos-module-format/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/aos/modules/aos-module-format:lib",
+        "//crates/modules/aos-module-format:lib",
         "//tools/bazel/rules:workspace_lints",
         "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
         "@@bazel_tools//tools/test:collect_coverage",
@@ -497,10 +497,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/aos/modules/aos-module-format:lib"
+        "crates/modules/aos-module-format/libaos_module_format-450645276.rlib": "//crates/modules/aos-module-format:lib"
       },
       "kind": "rust_test",
-      "label": "//crates/aos/modules/aos-module-format:unit_compression_binary",
+      "label": "//crates/modules/aos-module-format:unit_compression_binary",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Portable module options, declarations, and checked activation graphs",
@@ -529,26 +529,26 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/aos/registry/aos-registry-format/BUILD.bazel",
+      "build_file": "crates/registry/aos-registry-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/registry/aos-registry-format:lib",
-        "//crates/aos/registry/aos-registry-format:unit_binary",
-        "//crates/aos/registry/aos-registry-format:unit_compression_binary"
+        "//crates/registry/aos-registry-format:lib",
+        "//crates/registry/aos-registry-format:unit_binary",
+        "//crates/registry/aos-registry-format:unit_compression_binary"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/aos/registry/aos-registry-format:lib",
-        "crates/aos/registry/aos-registry-format/unit_binary": "//crates/aos/registry/aos-registry-format:unit_binary",
-        "crates/aos/registry/aos-registry-format/unit_compression_binary": "//crates/aos/registry/aos-registry-format:unit_compression_binary"
+        "crates/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/registry/aos-registry-format:lib",
+        "crates/registry/aos-registry-format/unit_binary": "//crates/registry/aos-registry-format:unit_binary",
+        "crates/registry/aos-registry-format/unit_compression_binary": "//crates/registry/aos-registry-format:unit_compression_binary"
       },
       "kind": "rust_clippy",
-      "label": "//crates/aos/registry/aos-registry-format:clippy",
+      "label": "//crates/registry/aos-registry-format:clippy",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -558,13 +558,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/registry/aos-registry-format/BUILD.bazel",
+      "build_file": "crates/registry/aos-registry-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/registry/aos-registry-format:lib",
+        "//crates/registry/aos-registry-format:lib",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
         "@@bazel_tools//tools/test:runtime",
@@ -581,10 +581,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/aos/registry/aos-registry-format:lib"
+        "crates/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/registry/aos-registry-format:lib"
       },
       "kind": "rust_doc_test",
-      "label": "//crates/aos/registry/aos-registry-format:doc",
+      "label": "//crates/registry/aos-registry-format:doc",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -594,13 +594,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/registry/aos-registry-format/BUILD.bazel",
+      "build_file": "crates/registry/aos-registry-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/registry/aos-registry-format:lib",
+        "//crates/registry/aos-registry-format:lib",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
         "@@bazel_tools//tools/test:runtime",
@@ -617,10 +617,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/aos/registry/aos-registry-format:lib"
+        "crates/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/registry/aos-registry-format:lib"
       },
       "kind": "rust_doc_test",
-      "label": "//crates/aos/registry/aos-registry-format:doc_compression",
+      "label": "//crates/registry/aos-registry-format:doc_compression",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -630,13 +630,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/registry/aos-registry-format/BUILD.bazel",
+      "build_file": "crates/registry/aos-registry-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/registry/aos-registry-format:lib",
+        "//crates/registry/aos-registry-format:lib",
         "@@bazel_tools//tools/zip:zipper",
         "@@rules_rust+//rust/private/rustdoc/dir_zipper:dir_zipper",
         "@@rules_rust+//rust/settings:error_format",
@@ -646,10 +646,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/aos/registry/aos-registry-format:lib"
+        "crates/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/registry/aos-registry-format:lib"
       },
       "kind": "rust_doc",
-      "label": "//crates/aos/registry/aos-registry-format:documentation",
+      "label": "//crates/registry/aos-registry-format:documentation",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -659,15 +659,15 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/registry/aos-registry-format/BUILD.bazel",
+      "build_file": "crates/registry/aos-registry-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/registry/aos-registry-format:lib",
-        "//crates/aos/registry/aos-registry-format:unit_binary",
-        "//crates/aos/registry/aos-registry-format:unit_compression_binary",
+        "//crates/registry/aos-registry-format:lib",
+        "//crates/registry/aos-registry-format:unit_binary",
+        "//crates/registry/aos-registry-format:unit_compression_binary",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
         "@@bazel_tools//tools/test:runtime",
@@ -681,12 +681,12 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/aos/registry/aos-registry-format:lib",
-        "crates/aos/registry/aos-registry-format/unit_binary": "//crates/aos/registry/aos-registry-format:unit_binary",
-        "crates/aos/registry/aos-registry-format/unit_compression_binary": "//crates/aos/registry/aos-registry-format:unit_compression_binary"
+        "crates/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/registry/aos-registry-format:lib",
+        "crates/registry/aos-registry-format/unit_binary": "//crates/registry/aos-registry-format:unit_binary",
+        "crates/registry/aos-registry-format/unit_compression_binary": "//crates/registry/aos-registry-format:unit_compression_binary"
       },
       "kind": "rustfmt_test",
-      "label": "//crates/aos/registry/aos-registry-format:format",
+      "label": "//crates/registry/aos-registry-format:format",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -696,39 +696,39 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/registry/aos-registry-format/BUILD.bazel",
+      "build_file": "crates/registry/aos-registry-format/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_registry_format",
-      "crate_root": "crates/aos/registry/aos-registry-format/src/lib.rs",
+      "crate_root": "crates/registry/aos-registry-format/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/aos/registry/aos-registry-format:src/channel.rs",
-        "//crates/aos/registry/aos-registry-format:src/consumer.rs",
-        "//crates/aos/registry/aos-registry-format:src/keymap.rs",
-        "//crates/aos/registry/aos-registry-format:src/lib.rs",
-        "//crates/aos/registry/aos-registry-format:src/manifest.rs",
-        "//crates/aos/registry/aos-registry-format:src/measurement.rs",
-        "//crates/aos/registry/aos-registry-format:src/native_dependencies.rs",
-        "//crates/aos/registry/aos-registry-format:src/object.rs",
-        "//crates/aos/registry/aos-registry-format:src/object_bundle.rs",
-        "//crates/aos/registry/aos-registry-format:src/pack_index.rs",
-        "//crates/aos/registry/aos-registry-format:src/package_version.rs",
-        "//crates/aos/registry/aos-registry-format:src/platform.rs",
-        "//crates/aos/registry/aos-registry-format:src/provenance.rs",
-        "//crates/aos/registry/aos-registry-format:src/publication.rs",
-        "//crates/aos/registry/aos-registry-format:src/refs.rs",
-        "//crates/aos/registry/aos-registry-format:src/release.rs",
-        "//crates/aos/registry/aos-registry-format:src/sshsig.rs",
-        "//crates/aos/registry/aos-registry-format:src/stack.rs",
-        "//crates/aos/registry/aos-registry-format:src/staging.rs",
-        "//crates/aos/registry/aos-registry-format:src/staging/wire.rs",
-        "//crates/aos/registry/aos-registry-format:src/store.rs",
-        "//crates/aos/registry/aos-registry-format:src/support.rs",
-        "//crates/aos/registry/aos-registry-format:src/tag.rs",
-        "//crates/aos/registry/aos-registry-format:src/tagobject.rs",
-        "//crates/aos/registry/aos-registry-format:src/tuf.rs",
-        "//crates/shared/aos-core:lib",
-        "//crates/shared/aos-oci-types:lib",
+        "//crates/registry/aos-registry-format:src/channel.rs",
+        "//crates/registry/aos-registry-format:src/consumer.rs",
+        "//crates/registry/aos-registry-format:src/keymap.rs",
+        "//crates/registry/aos-registry-format:src/lib.rs",
+        "//crates/registry/aos-registry-format:src/manifest.rs",
+        "//crates/registry/aos-registry-format:src/measurement.rs",
+        "//crates/registry/aos-registry-format:src/native_dependencies.rs",
+        "//crates/registry/aos-registry-format:src/object.rs",
+        "//crates/registry/aos-registry-format:src/object_bundle.rs",
+        "//crates/registry/aos-registry-format:src/pack_index.rs",
+        "//crates/registry/aos-registry-format:src/package_version.rs",
+        "//crates/registry/aos-registry-format:src/platform.rs",
+        "//crates/registry/aos-registry-format:src/provenance.rs",
+        "//crates/registry/aos-registry-format:src/publication.rs",
+        "//crates/registry/aos-registry-format:src/refs.rs",
+        "//crates/registry/aos-registry-format:src/release.rs",
+        "//crates/registry/aos-registry-format:src/sshsig.rs",
+        "//crates/registry/aos-registry-format:src/stack.rs",
+        "//crates/registry/aos-registry-format:src/staging.rs",
+        "//crates/registry/aos-registry-format:src/staging/wire.rs",
+        "//crates/registry/aos-registry-format:src/store.rs",
+        "//crates/registry/aos-registry-format:src/support.rs",
+        "//crates/registry/aos-registry-format:src/tag.rs",
+        "//crates/registry/aos-registry-format:src/tagobject.rs",
+        "//crates/registry/aos-registry-format:src/tuf.rs",
+        "//crates/core/aos-core:lib",
+        "//crates/artifacts/aos-oci-types:lib",
         "//tools/bazel/rules:workspace_lints",
         "@@+aos_tools_repository+aos_formats_crates__anyhow-1.0.102//:anyhow",
         "@@+aos_tools_repository+aos_formats_crates__base64-0.22.1//:base64",
@@ -759,11 +759,11 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-core/libaos_core-2865302716.rlib": "//crates/shared/aos-core:lib",
-        "crates/shared/aos-oci-types/libaos_oci_types-519098664.rlib": "//crates/shared/aos-oci-types:lib"
+        "crates/core/aos-core/libaos_core-2865302716.rlib": "//crates/core/aos-core:lib",
+        "crates/artifacts/aos-oci-types/libaos_oci_types-519098664.rlib": "//crates/artifacts/aos-oci-types:lib"
       },
       "kind": "rust_library",
-      "label": "//crates/aos/registry/aos-registry-format:lib",
+      "label": "//crates/registry/aos-registry-format:lib",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Pure-Rust, no-IO reader for the AOS registry wire surface (RFC-0004): loose git objects, SSHSIG verification, signed tags, and refs \u2014 compiles to wasm32 for in-browser verification",
@@ -783,31 +783,31 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
-        "crates/aos/registry/aos-registry-format/src/channel.rs",
-        "crates/aos/registry/aos-registry-format/src/consumer.rs",
-        "crates/aos/registry/aos-registry-format/src/keymap.rs",
-        "crates/aos/registry/aos-registry-format/src/lib.rs",
-        "crates/aos/registry/aos-registry-format/src/manifest.rs",
-        "crates/aos/registry/aos-registry-format/src/measurement.rs",
-        "crates/aos/registry/aos-registry-format/src/native_dependencies.rs",
-        "crates/aos/registry/aos-registry-format/src/object.rs",
-        "crates/aos/registry/aos-registry-format/src/object_bundle.rs",
-        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
-        "crates/aos/registry/aos-registry-format/src/package_version.rs",
-        "crates/aos/registry/aos-registry-format/src/platform.rs",
-        "crates/aos/registry/aos-registry-format/src/provenance.rs",
-        "crates/aos/registry/aos-registry-format/src/publication.rs",
-        "crates/aos/registry/aos-registry-format/src/refs.rs",
-        "crates/aos/registry/aos-registry-format/src/release.rs",
-        "crates/aos/registry/aos-registry-format/src/sshsig.rs",
-        "crates/aos/registry/aos-registry-format/src/stack.rs",
-        "crates/aos/registry/aos-registry-format/src/staging.rs",
-        "crates/aos/registry/aos-registry-format/src/staging/wire.rs",
-        "crates/aos/registry/aos-registry-format/src/store.rs",
-        "crates/aos/registry/aos-registry-format/src/support.rs",
-        "crates/aos/registry/aos-registry-format/src/tag.rs",
-        "crates/aos/registry/aos-registry-format/src/tagobject.rs",
-        "crates/aos/registry/aos-registry-format/src/tuf.rs"
+        "crates/registry/aos-registry-format/src/channel.rs",
+        "crates/registry/aos-registry-format/src/consumer.rs",
+        "crates/registry/aos-registry-format/src/keymap.rs",
+        "crates/registry/aos-registry-format/src/lib.rs",
+        "crates/registry/aos-registry-format/src/manifest.rs",
+        "crates/registry/aos-registry-format/src/measurement.rs",
+        "crates/registry/aos-registry-format/src/native_dependencies.rs",
+        "crates/registry/aos-registry-format/src/object.rs",
+        "crates/registry/aos-registry-format/src/object_bundle.rs",
+        "crates/registry/aos-registry-format/src/pack_index.rs",
+        "crates/registry/aos-registry-format/src/package_version.rs",
+        "crates/registry/aos-registry-format/src/platform.rs",
+        "crates/registry/aos-registry-format/src/provenance.rs",
+        "crates/registry/aos-registry-format/src/publication.rs",
+        "crates/registry/aos-registry-format/src/refs.rs",
+        "crates/registry/aos-registry-format/src/release.rs",
+        "crates/registry/aos-registry-format/src/sshsig.rs",
+        "crates/registry/aos-registry-format/src/stack.rs",
+        "crates/registry/aos-registry-format/src/staging.rs",
+        "crates/registry/aos-registry-format/src/staging/wire.rs",
+        "crates/registry/aos-registry-format/src/store.rs",
+        "crates/registry/aos-registry-format/src/support.rs",
+        "crates/registry/aos-registry-format/src/tag.rs",
+        "crates/registry/aos-registry-format/src/tagobject.rs",
+        "crates/registry/aos-registry-format/src/tuf.rs"
       ],
       "tags": [
         "aos-license:apache-host"
@@ -816,24 +816,24 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/aos/registry/aos-registry-format/BUILD.bazel",
+      "build_file": "crates/registry/aos-registry-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/registry/aos-registry-format:lib",
-        "//crates/aos/registry/aos-registry-format:unit_binary"
+        "//crates/registry/aos-registry-format:lib",
+        "//crates/registry/aos-registry-format:unit_binary"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/aos/registry/aos-registry-format:lib",
-        "crates/aos/registry/aos-registry-format/unit_binary": "//crates/aos/registry/aos-registry-format:unit_binary"
+        "crates/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/registry/aos-registry-format:lib",
+        "crates/registry/aos-registry-format/unit_binary": "//crates/registry/aos-registry-format:unit_binary"
       },
       "kind": "aos_license_check",
-      "label": "//crates/aos/registry/aos-registry-format:license_closure",
+      "label": "//crates/registry/aos-registry-format:license_closure",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -843,24 +843,24 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/registry/aos-registry-format/BUILD.bazel",
+      "build_file": "crates/registry/aos-registry-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/registry/aos-registry-format:lib",
-        "//crates/aos/registry/aos-registry-format:unit_compression_binary"
+        "//crates/registry/aos-registry-format:lib",
+        "//crates/registry/aos-registry-format:unit_compression_binary"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/aos/registry/aos-registry-format:lib",
-        "crates/aos/registry/aos-registry-format/unit_compression_binary": "//crates/aos/registry/aos-registry-format:unit_compression_binary"
+        "crates/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/registry/aos-registry-format:lib",
+        "crates/registry/aos-registry-format/unit_compression_binary": "//crates/registry/aos-registry-format:unit_compression_binary"
       },
       "kind": "aos_license_check",
-      "label": "//crates/aos/registry/aos-registry-format:license_closure_compression",
+      "label": "//crates/registry/aos-registry-format:license_closure_compression",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -870,13 +870,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/registry/aos-registry-format/BUILD.bazel",
+      "build_file": "crates/registry/aos-registry-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/registry/aos-registry-format:unit_binary",
+        "//crates/registry/aos-registry-format:unit_binary",
         "//tools/bazel/testing:policy.json",
         "//tools/bazel/testing:runner.py",
         "@@+aos_tools_repository+aos_tools//:bash",
@@ -894,10 +894,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/registry/aos-registry-format/unit_binary": "//crates/aos/registry/aos-registry-format:unit_binary"
+        "crates/registry/aos-registry-format/unit_binary": "//crates/registry/aos-registry-format:unit_binary"
       },
       "kind": "_libtest_test",
-      "label": "//crates/aos/registry/aos-registry-format:unit",
+      "label": "//crates/registry/aos-registry-format:unit",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -910,13 +910,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/registry/aos-registry-format/BUILD.bazel",
+      "build_file": "crates/registry/aos-registry-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
-      "crate_root": "crates/aos/registry/aos-registry-format/src/lib.rs",
+      "crate_root": "crates/registry/aos-registry-format/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/aos/registry/aos-registry-format:lib",
+        "//crates/registry/aos-registry-format:lib",
         "//tools/bazel/rules:workspace_lints",
         "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
         "@@bazel_tools//tools/test:collect_coverage",
@@ -946,10 +946,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/aos/registry/aos-registry-format:lib"
+        "crates/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/registry/aos-registry-format:lib"
       },
       "kind": "rust_test",
-      "label": "//crates/aos/registry/aos-registry-format:unit_binary",
+      "label": "//crates/registry/aos-registry-format:unit_binary",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Pure-Rust, no-IO reader for the AOS registry wire surface (RFC-0004): loose git objects, SSHSIG verification, signed tags, and refs \u2014 compiles to wasm32 for in-browser verification",
@@ -978,13 +978,13 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/aos/registry/aos-registry-format/BUILD.bazel",
+      "build_file": "crates/registry/aos-registry-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/aos/registry/aos-registry-format:unit_compression_binary",
+        "//crates/registry/aos-registry-format:unit_compression_binary",
         "//tools/bazel/testing:policy.json",
         "//tools/bazel/testing:runner.py",
         "@@+aos_tools_repository+aos_tools//:bash",
@@ -1002,10 +1002,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/registry/aos-registry-format/unit_compression_binary": "//crates/aos/registry/aos-registry-format:unit_compression_binary"
+        "crates/registry/aos-registry-format/unit_compression_binary": "//crates/registry/aos-registry-format:unit_compression_binary"
       },
       "kind": "_libtest_test",
-      "label": "//crates/aos/registry/aos-registry-format:unit_compression",
+      "label": "//crates/registry/aos-registry-format:unit_compression",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -1018,13 +1018,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/aos/registry/aos-registry-format/BUILD.bazel",
+      "build_file": "crates/registry/aos-registry-format/BUILD.bazel",
       "copts": [],
       "crate_name": "",
-      "crate_root": "crates/aos/registry/aos-registry-format/src/lib.rs",
+      "crate_root": "crates/registry/aos-registry-format/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/aos/registry/aos-registry-format:lib",
+        "//crates/registry/aos-registry-format:lib",
         "//tools/bazel/rules:workspace_lints",
         "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
         "@@bazel_tools//tools/test:collect_coverage",
@@ -1054,10 +1054,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/aos/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/aos/registry/aos-registry-format:lib"
+        "crates/registry/aos-registry-format/libaos_registry_format-3468310744.rlib": "//crates/registry/aos-registry-format:lib"
       },
       "kind": "rust_test",
-      "label": "//crates/aos/registry/aos-registry-format:unit_compression_binary",
+      "label": "//crates/registry/aos-registry-format:unit_compression_binary",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Pure-Rust, no-IO reader for the AOS registry wire surface (RFC-0004): loose git objects, SSHSIG verification, signed tags, and refs \u2014 compiles to wasm32 for in-browser verification",
@@ -1086,20 +1086,20 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/shared/aos-artifact-evidence/BUILD.bazel",
+      "build_file": "crates/artifacts/aos-artifact-evidence/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_artifact_evidence",
-      "crate_root": "crates/shared/aos-artifact-evidence/src/lib.rs",
+      "crate_root": "crates/artifacts/aos-artifact-evidence/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-artifact-evidence:src/consumption.rs",
-        "//crates/shared/aos-artifact-evidence:src/diagnostic.rs",
-        "//crates/shared/aos-artifact-evidence:src/document.rs",
-        "//crates/shared/aos-artifact-evidence:src/identity.rs",
-        "//crates/shared/aos-artifact-evidence:src/lib.rs",
-        "//crates/shared/aos-artifact-evidence:src/limits.rs",
-        "//crates/shared/aos-artifact-evidence:src/model.rs",
-        "//crates/shared/aos-core:lib",
+        "//crates/artifacts/aos-artifact-evidence:src/consumption.rs",
+        "//crates/artifacts/aos-artifact-evidence:src/diagnostic.rs",
+        "//crates/artifacts/aos-artifact-evidence:src/document.rs",
+        "//crates/artifacts/aos-artifact-evidence:src/identity.rs",
+        "//crates/artifacts/aos-artifact-evidence:src/lib.rs",
+        "//crates/artifacts/aos-artifact-evidence:src/limits.rs",
+        "//crates/artifacts/aos-artifact-evidence:src/model.rs",
+        "//crates/core/aos-core:lib",
         "//tools/bazel/rules:workspace_lints",
         "@@+aos_tools_repository+aos_formats_crates__anyhow-1.0.102//:anyhow",
         "@@+aos_tools_repository+aos_formats_crates__serde-1.0.228//:serde",
@@ -1123,10 +1123,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-core/libaos_core-2865302716.rlib": "//crates/shared/aos-core:lib"
+        "crates/core/aos-core/libaos_core-2865302716.rlib": "//crates/core/aos-core:lib"
       },
       "kind": "rust_library",
-      "label": "//crates/shared/aos-artifact-evidence:lib",
+      "label": "//crates/artifacts/aos-artifact-evidence:lib",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Portable immutable artifact identities and checked consumption evidence",
@@ -1146,13 +1146,13 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
-        "crates/shared/aos-artifact-evidence/src/consumption.rs",
-        "crates/shared/aos-artifact-evidence/src/diagnostic.rs",
-        "crates/shared/aos-artifact-evidence/src/document.rs",
-        "crates/shared/aos-artifact-evidence/src/identity.rs",
-        "crates/shared/aos-artifact-evidence/src/lib.rs",
-        "crates/shared/aos-artifact-evidence/src/limits.rs",
-        "crates/shared/aos-artifact-evidence/src/model.rs"
+        "crates/artifacts/aos-artifact-evidence/src/consumption.rs",
+        "crates/artifacts/aos-artifact-evidence/src/diagnostic.rs",
+        "crates/artifacts/aos-artifact-evidence/src/document.rs",
+        "crates/artifacts/aos-artifact-evidence/src/identity.rs",
+        "crates/artifacts/aos-artifact-evidence/src/lib.rs",
+        "crates/artifacts/aos-artifact-evidence/src/limits.rs",
+        "crates/artifacts/aos-artifact-evidence/src/model.rs"
       ],
       "tags": [
         "aos-license:apache-host"
@@ -1161,17 +1161,17 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/shared/aos-core/BUILD.bazel",
+      "build_file": "crates/core/aos-core/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_core",
-      "crate_root": "crates/shared/aos-core/src/lib.rs",
+      "crate_root": "crates/core/aos-core/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-core:src/digest.rs",
-        "//crates/shared/aos-core:src/identity.rs",
-        "//crates/shared/aos-core:src/json.rs",
-        "//crates/shared/aos-core:src/lib.rs",
-        "//crates/shared/aos-core:src/limits.rs",
+        "//crates/core/aos-core:src/digest.rs",
+        "//crates/core/aos-core:src/identity.rs",
+        "//crates/core/aos-core:src/json.rs",
+        "//crates/core/aos-core:src/lib.rs",
+        "//crates/core/aos-core:src/limits.rs",
         "//tools/bazel/rules:workspace_lints",
         "@@+aos_tools_repository+aos_formats_crates__anyhow-1.0.102//:anyhow",
         "@@+aos_tools_repository+aos_formats_crates__serde-1.0.228//:serde",
@@ -1197,7 +1197,7 @@
       "features": [],
       "generated_inputs": {},
       "kind": "rust_library",
-      "label": "//crates/shared/aos-core:lib",
+      "label": "//crates/core/aos-core:lib",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Portable strict JSON, content identities, decoding limits, and scoped names",
@@ -1217,11 +1217,11 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
-        "crates/shared/aos-core/src/digest.rs",
-        "crates/shared/aos-core/src/identity.rs",
-        "crates/shared/aos-core/src/json.rs",
-        "crates/shared/aos-core/src/lib.rs",
-        "crates/shared/aos-core/src/limits.rs"
+        "crates/core/aos-core/src/digest.rs",
+        "crates/core/aos-core/src/identity.rs",
+        "crates/core/aos-core/src/json.rs",
+        "crates/core/aos-core/src/lib.rs",
+        "crates/core/aos-core/src/limits.rs"
       ],
       "tags": [
         "aos-license:apache-host"
@@ -1230,28 +1230,28 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/shared/aos-nar/BUILD.bazel",
+      "build_file": "crates/artifacts/aos-nar/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-nar:lib",
-        "//crates/shared/aos-nar:lib_compression",
-        "//crates/shared/aos-nar:unit_binary",
-        "//crates/shared/aos-nar:unit_compression_binary"
+        "//crates/artifacts/aos-nar:lib",
+        "//crates/artifacts/aos-nar:lib_compression",
+        "//crates/artifacts/aos-nar:unit_binary",
+        "//crates/artifacts/aos-nar:unit_compression_binary"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-nar/libaos_nar-1046734488.rlib": "//crates/shared/aos-nar:lib",
-        "crates/shared/aos-nar/libaos_nar-351048241.rlib": "//crates/shared/aos-nar:lib_compression",
-        "crates/shared/aos-nar/unit_binary": "//crates/shared/aos-nar:unit_binary",
-        "crates/shared/aos-nar/unit_compression_binary": "//crates/shared/aos-nar:unit_compression_binary"
+        "crates/artifacts/aos-nar/libaos_nar-1046734488.rlib": "//crates/artifacts/aos-nar:lib",
+        "crates/artifacts/aos-nar/libaos_nar-351048241.rlib": "//crates/artifacts/aos-nar:lib_compression",
+        "crates/artifacts/aos-nar/unit_binary": "//crates/artifacts/aos-nar:unit_binary",
+        "crates/artifacts/aos-nar/unit_compression_binary": "//crates/artifacts/aos-nar:unit_compression_binary"
       },
       "kind": "rust_clippy",
-      "label": "//crates/shared/aos-nar:clippy",
+      "label": "//crates/artifacts/aos-nar:clippy",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -1261,13 +1261,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/shared/aos-nar/BUILD.bazel",
+      "build_file": "crates/artifacts/aos-nar/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-nar:lib",
+        "//crates/artifacts/aos-nar:lib",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
         "@@bazel_tools//tools/test:runtime",
@@ -1284,10 +1284,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-nar/libaos_nar-1046734488.rlib": "//crates/shared/aos-nar:lib"
+        "crates/artifacts/aos-nar/libaos_nar-1046734488.rlib": "//crates/artifacts/aos-nar:lib"
       },
       "kind": "rust_doc_test",
-      "label": "//crates/shared/aos-nar:doc",
+      "label": "//crates/artifacts/aos-nar:doc",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -1297,13 +1297,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/shared/aos-nar/BUILD.bazel",
+      "build_file": "crates/artifacts/aos-nar/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-nar:lib_compression",
+        "//crates/artifacts/aos-nar:lib_compression",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
         "@@bazel_tools//tools/test:runtime",
@@ -1320,10 +1320,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-nar/libaos_nar-351048241.rlib": "//crates/shared/aos-nar:lib_compression"
+        "crates/artifacts/aos-nar/libaos_nar-351048241.rlib": "//crates/artifacts/aos-nar:lib_compression"
       },
       "kind": "rust_doc_test",
-      "label": "//crates/shared/aos-nar:doc_compression",
+      "label": "//crates/artifacts/aos-nar:doc_compression",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -1333,13 +1333,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/shared/aos-nar/BUILD.bazel",
+      "build_file": "crates/artifacts/aos-nar/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-nar:lib",
+        "//crates/artifacts/aos-nar:lib",
         "@@bazel_tools//tools/zip:zipper",
         "@@rules_rust+//rust/private/rustdoc/dir_zipper:dir_zipper",
         "@@rules_rust+//rust/settings:error_format",
@@ -1349,10 +1349,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-nar/libaos_nar-1046734488.rlib": "//crates/shared/aos-nar:lib"
+        "crates/artifacts/aos-nar/libaos_nar-1046734488.rlib": "//crates/artifacts/aos-nar:lib"
       },
       "kind": "rust_doc",
-      "label": "//crates/shared/aos-nar:documentation",
+      "label": "//crates/artifacts/aos-nar:documentation",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -1362,16 +1362,16 @@
       "version": ""
     },
     {
-      "build_file": "crates/shared/aos-nar/BUILD.bazel",
+      "build_file": "crates/artifacts/aos-nar/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-nar:lib",
-        "//crates/shared/aos-nar:lib_compression",
-        "//crates/shared/aos-nar:unit_binary",
-        "//crates/shared/aos-nar:unit_compression_binary",
+        "//crates/artifacts/aos-nar:lib",
+        "//crates/artifacts/aos-nar:lib_compression",
+        "//crates/artifacts/aos-nar:unit_binary",
+        "//crates/artifacts/aos-nar:unit_compression_binary",
         "@@bazel_tools//tools/test:collect_coverage",
         "@@bazel_tools//tools/test:coverage_support",
         "@@bazel_tools//tools/test:runtime",
@@ -1385,13 +1385,13 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-nar/libaos_nar-1046734488.rlib": "//crates/shared/aos-nar:lib",
-        "crates/shared/aos-nar/libaos_nar-351048241.rlib": "//crates/shared/aos-nar:lib_compression",
-        "crates/shared/aos-nar/unit_binary": "//crates/shared/aos-nar:unit_binary",
-        "crates/shared/aos-nar/unit_compression_binary": "//crates/shared/aos-nar:unit_compression_binary"
+        "crates/artifacts/aos-nar/libaos_nar-1046734488.rlib": "//crates/artifacts/aos-nar:lib",
+        "crates/artifacts/aos-nar/libaos_nar-351048241.rlib": "//crates/artifacts/aos-nar:lib_compression",
+        "crates/artifacts/aos-nar/unit_binary": "//crates/artifacts/aos-nar:unit_binary",
+        "crates/artifacts/aos-nar/unit_compression_binary": "//crates/artifacts/aos-nar:unit_compression_binary"
       },
       "kind": "rustfmt_test",
-      "label": "//crates/shared/aos-nar:format",
+      "label": "//crates/artifacts/aos-nar:format",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -1401,18 +1401,18 @@
       "version": ""
     },
     {
-      "build_file": "crates/shared/aos-nar/BUILD.bazel",
+      "build_file": "crates/artifacts/aos-nar/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_nar",
-      "crate_root": "crates/shared/aos-nar/src/lib.rs",
+      "crate_root": "crates/artifacts/aos-nar/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-nar:src/cache.rs",
-        "//crates/shared/aos-nar:src/export.rs",
-        "//crates/shared/aos-nar:src/info.rs",
-        "//crates/shared/aos-nar:src/lib.rs",
-        "//crates/shared/aos-nar:src/pack.rs",
-        "//crates/shared/aos-nar:src/verify.rs",
+        "//crates/artifacts/aos-nar:src/cache.rs",
+        "//crates/artifacts/aos-nar:src/export.rs",
+        "//crates/artifacts/aos-nar:src/info.rs",
+        "//crates/artifacts/aos-nar:src/lib.rs",
+        "//crates/artifacts/aos-nar:src/pack.rs",
+        "//crates/artifacts/aos-nar:src/verify.rs",
         "//tools/bazel/rules:workspace_lints",
         "@@+aos_tools_repository+aos_formats_crates__anyhow-1.0.102//:anyhow",
         "@@+aos_tools_repository+aos_formats_crates__base64-0.22.1//:base64",
@@ -1440,7 +1440,7 @@
       ],
       "generated_inputs": {},
       "kind": "rust_library",
-      "label": "//crates/shared/aos-nar:lib",
+      "label": "//crates/artifacts/aos-nar:lib",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Nix archive formats, binary-cache metadata, and content signing",
@@ -1460,12 +1460,12 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
-        "crates/shared/aos-nar/src/cache.rs",
-        "crates/shared/aos-nar/src/export.rs",
-        "crates/shared/aos-nar/src/info.rs",
-        "crates/shared/aos-nar/src/lib.rs",
-        "crates/shared/aos-nar/src/pack.rs",
-        "crates/shared/aos-nar/src/verify.rs"
+        "crates/artifacts/aos-nar/src/cache.rs",
+        "crates/artifacts/aos-nar/src/export.rs",
+        "crates/artifacts/aos-nar/src/info.rs",
+        "crates/artifacts/aos-nar/src/lib.rs",
+        "crates/artifacts/aos-nar/src/pack.rs",
+        "crates/artifacts/aos-nar/src/verify.rs"
       ],
       "tags": [
         "aos-license:apache-host"
@@ -1474,18 +1474,18 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/shared/aos-nar/BUILD.bazel",
+      "build_file": "crates/artifacts/aos-nar/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_nar",
-      "crate_root": "crates/shared/aos-nar/src/lib.rs",
+      "crate_root": "crates/artifacts/aos-nar/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-nar:src/cache.rs",
-        "//crates/shared/aos-nar:src/export.rs",
-        "//crates/shared/aos-nar:src/info.rs",
-        "//crates/shared/aos-nar:src/lib.rs",
-        "//crates/shared/aos-nar:src/pack.rs",
-        "//crates/shared/aos-nar:src/verify.rs",
+        "//crates/artifacts/aos-nar:src/cache.rs",
+        "//crates/artifacts/aos-nar:src/export.rs",
+        "//crates/artifacts/aos-nar:src/info.rs",
+        "//crates/artifacts/aos-nar:src/lib.rs",
+        "//crates/artifacts/aos-nar:src/pack.rs",
+        "//crates/artifacts/aos-nar:src/verify.rs",
         "//tools/bazel/rules:workspace_lints",
         "@@+aos_tools_repository+aos_formats_crates__anyhow-1.0.102//:anyhow",
         "@@+aos_tools_repository+aos_formats_crates__base64-0.22.1//:base64",
@@ -1516,7 +1516,7 @@
       ],
       "generated_inputs": {},
       "kind": "rust_library",
-      "label": "//crates/shared/aos-nar:lib_compression",
+      "label": "//crates/artifacts/aos-nar:lib_compression",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Nix archive formats, binary-cache metadata, and content signing",
@@ -1536,12 +1536,12 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
-        "crates/shared/aos-nar/src/cache.rs",
-        "crates/shared/aos-nar/src/export.rs",
-        "crates/shared/aos-nar/src/info.rs",
-        "crates/shared/aos-nar/src/lib.rs",
-        "crates/shared/aos-nar/src/pack.rs",
-        "crates/shared/aos-nar/src/verify.rs"
+        "crates/artifacts/aos-nar/src/cache.rs",
+        "crates/artifacts/aos-nar/src/export.rs",
+        "crates/artifacts/aos-nar/src/info.rs",
+        "crates/artifacts/aos-nar/src/lib.rs",
+        "crates/artifacts/aos-nar/src/pack.rs",
+        "crates/artifacts/aos-nar/src/verify.rs"
       ],
       "tags": [
         "aos-license:apache-host"
@@ -1550,24 +1550,24 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/shared/aos-nar/BUILD.bazel",
+      "build_file": "crates/artifacts/aos-nar/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-nar:lib",
-        "//crates/shared/aos-nar:unit_binary"
+        "//crates/artifacts/aos-nar:lib",
+        "//crates/artifacts/aos-nar:unit_binary"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-nar/libaos_nar-1046734488.rlib": "//crates/shared/aos-nar:lib",
-        "crates/shared/aos-nar/unit_binary": "//crates/shared/aos-nar:unit_binary"
+        "crates/artifacts/aos-nar/libaos_nar-1046734488.rlib": "//crates/artifacts/aos-nar:lib",
+        "crates/artifacts/aos-nar/unit_binary": "//crates/artifacts/aos-nar:unit_binary"
       },
       "kind": "aos_license_check",
-      "label": "//crates/shared/aos-nar:license_closure",
+      "label": "//crates/artifacts/aos-nar:license_closure",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -1577,24 +1577,24 @@
       "version": ""
     },
     {
-      "build_file": "crates/shared/aos-nar/BUILD.bazel",
+      "build_file": "crates/artifacts/aos-nar/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-nar:lib_compression",
-        "//crates/shared/aos-nar:unit_compression_binary"
+        "//crates/artifacts/aos-nar:lib_compression",
+        "//crates/artifacts/aos-nar:unit_compression_binary"
       ],
       "edition": "",
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-nar/libaos_nar-351048241.rlib": "//crates/shared/aos-nar:lib_compression",
-        "crates/shared/aos-nar/unit_compression_binary": "//crates/shared/aos-nar:unit_compression_binary"
+        "crates/artifacts/aos-nar/libaos_nar-351048241.rlib": "//crates/artifacts/aos-nar:lib_compression",
+        "crates/artifacts/aos-nar/unit_compression_binary": "//crates/artifacts/aos-nar:unit_compression_binary"
       },
       "kind": "aos_license_check",
-      "label": "//crates/shared/aos-nar:license_closure_compression",
+      "label": "//crates/artifacts/aos-nar:license_closure_compression",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -1604,13 +1604,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/shared/aos-nar/BUILD.bazel",
+      "build_file": "crates/artifacts/aos-nar/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-nar:unit_binary",
+        "//crates/artifacts/aos-nar:unit_binary",
         "//tools/bazel/testing:policy.json",
         "//tools/bazel/testing:runner.py",
         "@@+aos_tools_repository+aos_tools//:bash",
@@ -1628,10 +1628,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-nar/unit_binary": "//crates/shared/aos-nar:unit_binary"
+        "crates/artifacts/aos-nar/unit_binary": "//crates/artifacts/aos-nar:unit_binary"
       },
       "kind": "_libtest_test",
-      "label": "//crates/shared/aos-nar:unit",
+      "label": "//crates/artifacts/aos-nar:unit",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -1644,13 +1644,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/shared/aos-nar/BUILD.bazel",
+      "build_file": "crates/artifacts/aos-nar/BUILD.bazel",
       "copts": [],
       "crate_name": "",
-      "crate_root": "crates/shared/aos-nar/src/lib.rs",
+      "crate_root": "crates/artifacts/aos-nar/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-nar:lib",
+        "//crates/artifacts/aos-nar:lib",
         "//tools/bazel/rules:workspace_lints",
         "@@+aos_tools_repository+aos_formats_crates__tempfile-3.27.0//:tempfile",
         "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
@@ -1683,10 +1683,10 @@
         "default"
       ],
       "generated_inputs": {
-        "crates/shared/aos-nar/libaos_nar-1046734488.rlib": "//crates/shared/aos-nar:lib"
+        "crates/artifacts/aos-nar/libaos_nar-1046734488.rlib": "//crates/artifacts/aos-nar:lib"
       },
       "kind": "rust_test",
-      "label": "//crates/shared/aos-nar:unit_binary",
+      "label": "//crates/artifacts/aos-nar:unit_binary",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Nix archive formats, binary-cache metadata, and content signing",
@@ -1715,13 +1715,13 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/shared/aos-nar/BUILD.bazel",
+      "build_file": "crates/artifacts/aos-nar/BUILD.bazel",
       "copts": [],
       "crate_name": "",
       "crate_root": "",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-nar:unit_compression_binary",
+        "//crates/artifacts/aos-nar:unit_compression_binary",
         "//tools/bazel/testing:policy.json",
         "//tools/bazel/testing:runner.py",
         "@@+aos_tools_repository+aos_tools//:bash",
@@ -1739,10 +1739,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-nar/unit_compression_binary": "//crates/shared/aos-nar:unit_compression_binary"
+        "crates/artifacts/aos-nar/unit_compression_binary": "//crates/artifacts/aos-nar:unit_compression_binary"
       },
       "kind": "_libtest_test",
-      "label": "//crates/shared/aos-nar:unit_compression",
+      "label": "//crates/artifacts/aos-nar:unit_compression",
       "rustc_env": {},
       "rustc_flags": [],
       "schema_version": 1,
@@ -1755,13 +1755,13 @@
       "version": ""
     },
     {
-      "build_file": "crates/shared/aos-nar/BUILD.bazel",
+      "build_file": "crates/artifacts/aos-nar/BUILD.bazel",
       "copts": [],
       "crate_name": "",
-      "crate_root": "crates/shared/aos-nar/src/lib.rs",
+      "crate_root": "crates/artifacts/aos-nar/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-nar:lib_compression",
+        "//crates/artifacts/aos-nar:lib_compression",
         "//tools/bazel/rules:workspace_lints",
         "@@+aos_tools_repository+aos_formats_crates__tempfile-3.27.0//:tempfile",
         "@@bazel_tools//tools/allowlists/function_transition_allowlist:function_transition_allowlist",
@@ -1795,10 +1795,10 @@
         "default"
       ],
       "generated_inputs": {
-        "crates/shared/aos-nar/libaos_nar-351048241.rlib": "//crates/shared/aos-nar:lib_compression"
+        "crates/artifacts/aos-nar/libaos_nar-351048241.rlib": "//crates/artifacts/aos-nar:lib_compression"
       },
       "kind": "rust_test",
-      "label": "//crates/shared/aos-nar:unit_compression_binary",
+      "label": "//crates/artifacts/aos-nar:unit_compression_binary",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Nix archive formats, binary-cache metadata, and content signing",
@@ -1827,27 +1827,27 @@
       "version": "0.1.0"
     },
     {
-      "build_file": "crates/shared/aos-oci-types/BUILD.bazel",
+      "build_file": "crates/artifacts/aos-oci-types/BUILD.bazel",
       "copts": [],
       "crate_name": "aos_oci_types",
-      "crate_root": "crates/shared/aos-oci-types/src/lib.rs",
+      "crate_root": "crates/artifacts/aos-oci-types/src/lib.rs",
       "defines": [],
       "dependencies": [
-        "//crates/shared/aos-core:lib",
-        "//crates/shared/aos-oci-types:src/annotations.rs",
-        "//crates/shared/aos-oci-types:src/canonical.rs",
-        "//crates/shared/aos-oci-types:src/digest.rs",
-        "//crates/shared/aos-oci-types:src/distribution.rs",
-        "//crates/shared/aos-oci-types:src/error.rs",
-        "//crates/shared/aos-oci-types:src/lib.rs",
-        "//crates/shared/aos-oci-types:src/limits.rs",
-        "//crates/shared/aos-oci-types:src/media_type.rs",
-        "//crates/shared/aos-oci-types:src/model/config.rs",
-        "//crates/shared/aos-oci-types:src/model/descriptor.rs",
-        "//crates/shared/aos-oci-types:src/model/manifest.rs",
-        "//crates/shared/aos-oci-types:src/model/mod.rs",
-        "//crates/shared/aos-oci-types:src/reference.rs",
-        "//crates/shared/aos-oci-types:src/release.rs",
+        "//crates/core/aos-core:lib",
+        "//crates/artifacts/aos-oci-types:src/annotations.rs",
+        "//crates/artifacts/aos-oci-types:src/canonical.rs",
+        "//crates/artifacts/aos-oci-types:src/digest.rs",
+        "//crates/artifacts/aos-oci-types:src/distribution.rs",
+        "//crates/artifacts/aos-oci-types:src/error.rs",
+        "//crates/artifacts/aos-oci-types:src/lib.rs",
+        "//crates/artifacts/aos-oci-types:src/limits.rs",
+        "//crates/artifacts/aos-oci-types:src/media_type.rs",
+        "//crates/artifacts/aos-oci-types:src/model/config.rs",
+        "//crates/artifacts/aos-oci-types:src/model/descriptor.rs",
+        "//crates/artifacts/aos-oci-types:src/model/manifest.rs",
+        "//crates/artifacts/aos-oci-types:src/model/mod.rs",
+        "//crates/artifacts/aos-oci-types:src/reference.rs",
+        "//crates/artifacts/aos-oci-types:src/release.rs",
         "//tools/bazel/rules:workspace_lints",
         "@@+aos_tools_repository+aos_formats_crates__base64-0.22.1//:base64",
         "@@+aos_tools_repository+aos_formats_crates__serde-1.0.228//:serde",
@@ -1871,10 +1871,10 @@
       "external": false,
       "features": [],
       "generated_inputs": {
-        "crates/shared/aos-core/libaos_core-2865302716.rlib": "//crates/shared/aos-core:lib"
+        "crates/core/aos-core/libaos_core-2865302716.rlib": "//crates/core/aos-core:lib"
       },
       "kind": "rust_library",
-      "label": "//crates/shared/aos-oci-types:lib",
+      "label": "//crates/artifacts/aos-oci-types:lib",
       "rustc_env": {
         "CARGO_PKG_AUTHORS": "",
         "CARGO_PKG_DESCRIPTION": "Wasm-friendly OCI image and Distribution contracts for AOS",
@@ -1894,20 +1894,20 @@
       "rustc_flags": [],
       "schema_version": 1,
       "sources": [
-        "crates/shared/aos-oci-types/src/annotations.rs",
-        "crates/shared/aos-oci-types/src/canonical.rs",
-        "crates/shared/aos-oci-types/src/digest.rs",
-        "crates/shared/aos-oci-types/src/distribution.rs",
-        "crates/shared/aos-oci-types/src/error.rs",
-        "crates/shared/aos-oci-types/src/lib.rs",
-        "crates/shared/aos-oci-types/src/limits.rs",
-        "crates/shared/aos-oci-types/src/media_type.rs",
-        "crates/shared/aos-oci-types/src/model/config.rs",
-        "crates/shared/aos-oci-types/src/model/descriptor.rs",
-        "crates/shared/aos-oci-types/src/model/manifest.rs",
-        "crates/shared/aos-oci-types/src/model/mod.rs",
-        "crates/shared/aos-oci-types/src/reference.rs",
-        "crates/shared/aos-oci-types/src/release.rs"
+        "crates/artifacts/aos-oci-types/src/annotations.rs",
+        "crates/artifacts/aos-oci-types/src/canonical.rs",
+        "crates/artifacts/aos-oci-types/src/digest.rs",
+        "crates/artifacts/aos-oci-types/src/distribution.rs",
+        "crates/artifacts/aos-oci-types/src/error.rs",
+        "crates/artifacts/aos-oci-types/src/lib.rs",
+        "crates/artifacts/aos-oci-types/src/limits.rs",
+        "crates/artifacts/aos-oci-types/src/media_type.rs",
+        "crates/artifacts/aos-oci-types/src/model/config.rs",
+        "crates/artifacts/aos-oci-types/src/model/descriptor.rs",
+        "crates/artifacts/aos-oci-types/src/model/manifest.rs",
+        "crates/artifacts/aos-oci-types/src/model/mod.rs",
+        "crates/artifacts/aos-oci-types/src/reference.rs",
+        "crates/artifacts/aos-oci-types/src/release.rs"
       ],
       "tags": [
         "aos-license:apache-host"
@@ -14025,12 +14025,12 @@
   "contracts": {
     "MODULE.bazel": "0c47c003c6b54911426e10c0345fa89d9f41c9892cc9ea5e006ae8d209d16d2c",
     "MODULE.bazel.lock": "d20d3945b6b74f8752950bd7369d3d601684a19a541a12b32313780d3b0f9e40",
-    "crates/aos/modules/aos-module-format/BUILD.bazel": "15ce27c666bdf85b3f89107cf13a852e85bf1ec2e7285447f449a5c321e5b963",
-    "crates/aos/registry/aos-registry-format/BUILD.bazel": "7601cae6d5d67df77f1b90370f6cd7cf29a365bcabd58ae8eef0444c86d36536",
-    "crates/shared/aos-artifact-evidence/BUILD.bazel": "8f1ca56b86b15b6be53f1fbb328a64c56fce79c6e588cb5f69f338b1e3a4ee4e",
-    "crates/shared/aos-core/BUILD.bazel": "a49b29a61592b961c92007a1fa773a08b486c461b30ffa698d42c79f946d6bd4",
-    "crates/shared/aos-nar/BUILD.bazel": "97f74f5bba59424970fd7f6029300800495e1da8ced8dcbef8e6dd08133870ce",
-    "crates/shared/aos-oci-types/BUILD.bazel": "5b386fc4a204e026e86cdc508c4f3ec367c84da11ff0ec8ae61ccd42be472d5f",
+    "crates/modules/aos-module-format/BUILD.bazel": "15ce27c666bdf85b3f89107cf13a852e85bf1ec2e7285447f449a5c321e5b963",
+    "crates/registry/aos-registry-format/BUILD.bazel": "7601cae6d5d67df77f1b90370f6cd7cf29a365bcabd58ae8eef0444c86d36536",
+    "crates/artifacts/aos-artifact-evidence/BUILD.bazel": "8f1ca56b86b15b6be53f1fbb328a64c56fce79c6e588cb5f69f338b1e3a4ee4e",
+    "crates/core/aos-core/BUILD.bazel": "a49b29a61592b961c92007a1fa773a08b486c461b30ffa698d42c79f946d6bd4",
+    "crates/artifacts/aos-nar/BUILD.bazel": "97f74f5bba59424970fd7f6029300800495e1da8ced8dcbef8e6dd08133870ce",
+    "crates/artifacts/aos-oci-types/BUILD.bazel": "5b386fc4a204e026e86cdc508c4f3ec367c84da11ff0ec8ae61ccd42be472d5f",
     "third_party/rust/BUILD.bazel": "dc8a09cd11de7d1471888484d7c4940931f13b8154e71fe906fbae4235f82d2e",
     "third_party/rust/activation-core-tests/aliases.bzl": "a37ed2a8a4ffdb9ca159e670c736e43633c2aba8aa8aaa0330fbd94314e4db3e",
     "third_party/rust/activation-core-tests/repositories.MODULE.bazel": "52ad8bc43deb76ad60812f20cb89baf04ebfe32a9a6f3c64d4db42bb59ed606a",
@@ -14192,115 +14192,115 @@
   "generator_sha256": "4708a2aabd8ab317775d19281b37ddf92b7a1942f0d7280e419e6b5c14d47256",
   "schema_version": 1,
   "source_directories": [
-    "crates/aos/modules/aos-module-format/src",
-    "crates/aos/registry/aos-registry-format/src",
-    "crates/shared/aos-artifact-evidence/src",
-    "crates/shared/aos-core/src",
-    "crates/shared/aos-nar/src",
-    "crates/shared/aos-oci-types/src"
+    "crates/modules/aos-module-format/src",
+    "crates/registry/aos-registry-format/src",
+    "crates/artifacts/aos-artifact-evidence/src",
+    "crates/core/aos-core/src",
+    "crates/artifacts/aos-nar/src",
+    "crates/artifacts/aos-oci-types/src"
   ],
   "source_files": [
-    "crates/aos/modules/aos-module-format/src/diagnostic.rs",
-    "crates/aos/modules/aos-module-format/src/graph/mod.rs",
-    "crates/aos/modules/aos-module-format/src/graph/resolution.rs",
-    "crates/aos/modules/aos-module-format/src/graph/tests.rs",
-    "crates/aos/modules/aos-module-format/src/graph/validation.rs",
-    "crates/aos/modules/aos-module-format/src/graph/validation/tests.rs",
-    "crates/aos/modules/aos-module-format/src/identity.rs",
-    "crates/aos/modules/aos-module-format/src/lib.rs",
-    "crates/aos/modules/aos-module-format/src/limits.rs",
-    "crates/aos/modules/aos-module-format/src/option.rs",
-    "crates/aos/modules/aos-module-format/src/schema.rs",
-    "crates/aos/modules/aos-module-format/src/transaction_blob.rs",
-    "crates/aos/modules/aos-module-format/src/value.rs",
-    "crates/aos/registry/aos-registry-format/src/channel.rs",
-    "crates/aos/registry/aos-registry-format/src/consumer.rs",
-    "crates/aos/registry/aos-registry-format/src/keymap.rs",
-    "crates/aos/registry/aos-registry-format/src/lib.rs",
-    "crates/aos/registry/aos-registry-format/src/manifest.rs",
-    "crates/aos/registry/aos-registry-format/src/measurement.rs",
-    "crates/aos/registry/aos-registry-format/src/native_dependencies.rs",
-    "crates/aos/registry/aos-registry-format/src/object.rs",
-    "crates/aos/registry/aos-registry-format/src/object_bundle.rs",
-    "crates/aos/registry/aos-registry-format/src/pack_index.rs",
-    "crates/aos/registry/aos-registry-format/src/package_version.rs",
-    "crates/aos/registry/aos-registry-format/src/platform.rs",
-    "crates/aos/registry/aos-registry-format/src/provenance.rs",
-    "crates/aos/registry/aos-registry-format/src/publication.rs",
-    "crates/aos/registry/aos-registry-format/src/refs.rs",
-    "crates/aos/registry/aos-registry-format/src/release.rs",
-    "crates/aos/registry/aos-registry-format/src/sshsig.rs",
-    "crates/aos/registry/aos-registry-format/src/stack.rs",
-    "crates/aos/registry/aos-registry-format/src/staging.rs",
-    "crates/aos/registry/aos-registry-format/src/staging/wire.rs",
-    "crates/aos/registry/aos-registry-format/src/store.rs",
-    "crates/aos/registry/aos-registry-format/src/support.rs",
-    "crates/aos/registry/aos-registry-format/src/tag.rs",
-    "crates/aos/registry/aos-registry-format/src/tagobject.rs",
-    "crates/aos/registry/aos-registry-format/src/tuf.rs",
-    "crates/shared/aos-artifact-evidence/src/consumption.rs",
-    "crates/shared/aos-artifact-evidence/src/diagnostic.rs",
-    "crates/shared/aos-artifact-evidence/src/document.rs",
-    "crates/shared/aos-artifact-evidence/src/identity.rs",
-    "crates/shared/aos-artifact-evidence/src/lib.rs",
-    "crates/shared/aos-artifact-evidence/src/limits.rs",
-    "crates/shared/aos-artifact-evidence/src/model.rs",
-    "crates/shared/aos-core/src/digest.rs",
-    "crates/shared/aos-core/src/identity.rs",
-    "crates/shared/aos-core/src/json.rs",
-    "crates/shared/aos-core/src/lib.rs",
-    "crates/shared/aos-core/src/limits.rs",
-    "crates/shared/aos-nar/src/cache.rs",
-    "crates/shared/aos-nar/src/export.rs",
-    "crates/shared/aos-nar/src/info.rs",
-    "crates/shared/aos-nar/src/lib.rs",
-    "crates/shared/aos-nar/src/pack.rs",
-    "crates/shared/aos-nar/src/verify.rs",
-    "crates/shared/aos-oci-types/src/annotations.rs",
-    "crates/shared/aos-oci-types/src/canonical.rs",
-    "crates/shared/aos-oci-types/src/digest.rs",
-    "crates/shared/aos-oci-types/src/distribution.rs",
-    "crates/shared/aos-oci-types/src/error.rs",
-    "crates/shared/aos-oci-types/src/lib.rs",
-    "crates/shared/aos-oci-types/src/limits.rs",
-    "crates/shared/aos-oci-types/src/media_type.rs",
-    "crates/shared/aos-oci-types/src/model/config.rs",
-    "crates/shared/aos-oci-types/src/model/descriptor.rs",
-    "crates/shared/aos-oci-types/src/model/manifest.rs",
-    "crates/shared/aos-oci-types/src/model/mod.rs",
-    "crates/shared/aos-oci-types/src/reference.rs",
-    "crates/shared/aos-oci-types/src/release.rs",
+    "crates/modules/aos-module-format/src/diagnostic.rs",
+    "crates/modules/aos-module-format/src/graph/mod.rs",
+    "crates/modules/aos-module-format/src/graph/resolution.rs",
+    "crates/modules/aos-module-format/src/graph/tests.rs",
+    "crates/modules/aos-module-format/src/graph/validation.rs",
+    "crates/modules/aos-module-format/src/graph/validation/tests.rs",
+    "crates/modules/aos-module-format/src/identity.rs",
+    "crates/modules/aos-module-format/src/lib.rs",
+    "crates/modules/aos-module-format/src/limits.rs",
+    "crates/modules/aos-module-format/src/option.rs",
+    "crates/modules/aos-module-format/src/schema.rs",
+    "crates/modules/aos-module-format/src/transaction_blob.rs",
+    "crates/modules/aos-module-format/src/value.rs",
+    "crates/registry/aos-registry-format/src/channel.rs",
+    "crates/registry/aos-registry-format/src/consumer.rs",
+    "crates/registry/aos-registry-format/src/keymap.rs",
+    "crates/registry/aos-registry-format/src/lib.rs",
+    "crates/registry/aos-registry-format/src/manifest.rs",
+    "crates/registry/aos-registry-format/src/measurement.rs",
+    "crates/registry/aos-registry-format/src/native_dependencies.rs",
+    "crates/registry/aos-registry-format/src/object.rs",
+    "crates/registry/aos-registry-format/src/object_bundle.rs",
+    "crates/registry/aos-registry-format/src/pack_index.rs",
+    "crates/registry/aos-registry-format/src/package_version.rs",
+    "crates/registry/aos-registry-format/src/platform.rs",
+    "crates/registry/aos-registry-format/src/provenance.rs",
+    "crates/registry/aos-registry-format/src/publication.rs",
+    "crates/registry/aos-registry-format/src/refs.rs",
+    "crates/registry/aos-registry-format/src/release.rs",
+    "crates/registry/aos-registry-format/src/sshsig.rs",
+    "crates/registry/aos-registry-format/src/stack.rs",
+    "crates/registry/aos-registry-format/src/staging.rs",
+    "crates/registry/aos-registry-format/src/staging/wire.rs",
+    "crates/registry/aos-registry-format/src/store.rs",
+    "crates/registry/aos-registry-format/src/support.rs",
+    "crates/registry/aos-registry-format/src/tag.rs",
+    "crates/registry/aos-registry-format/src/tagobject.rs",
+    "crates/registry/aos-registry-format/src/tuf.rs",
+    "crates/artifacts/aos-artifact-evidence/src/consumption.rs",
+    "crates/artifacts/aos-artifact-evidence/src/diagnostic.rs",
+    "crates/artifacts/aos-artifact-evidence/src/document.rs",
+    "crates/artifacts/aos-artifact-evidence/src/identity.rs",
+    "crates/artifacts/aos-artifact-evidence/src/lib.rs",
+    "crates/artifacts/aos-artifact-evidence/src/limits.rs",
+    "crates/artifacts/aos-artifact-evidence/src/model.rs",
+    "crates/core/aos-core/src/digest.rs",
+    "crates/core/aos-core/src/identity.rs",
+    "crates/core/aos-core/src/json.rs",
+    "crates/core/aos-core/src/lib.rs",
+    "crates/core/aos-core/src/limits.rs",
+    "crates/artifacts/aos-nar/src/cache.rs",
+    "crates/artifacts/aos-nar/src/export.rs",
+    "crates/artifacts/aos-nar/src/info.rs",
+    "crates/artifacts/aos-nar/src/lib.rs",
+    "crates/artifacts/aos-nar/src/pack.rs",
+    "crates/artifacts/aos-nar/src/verify.rs",
+    "crates/artifacts/aos-oci-types/src/annotations.rs",
+    "crates/artifacts/aos-oci-types/src/canonical.rs",
+    "crates/artifacts/aos-oci-types/src/digest.rs",
+    "crates/artifacts/aos-oci-types/src/distribution.rs",
+    "crates/artifacts/aos-oci-types/src/error.rs",
+    "crates/artifacts/aos-oci-types/src/lib.rs",
+    "crates/artifacts/aos-oci-types/src/limits.rs",
+    "crates/artifacts/aos-oci-types/src/media_type.rs",
+    "crates/artifacts/aos-oci-types/src/model/config.rs",
+    "crates/artifacts/aos-oci-types/src/model/descriptor.rs",
+    "crates/artifacts/aos-oci-types/src/model/manifest.rs",
+    "crates/artifacts/aos-oci-types/src/model/mod.rs",
+    "crates/artifacts/aos-oci-types/src/reference.rs",
+    "crates/artifacts/aos-oci-types/src/release.rs",
     "tools/bazel/rules/rustfmt.toml",
     "tools/bazel/testing/policy.json",
     "tools/bazel/testing/runner.py"
   ],
   "targets": [
-    "//crates/aos/modules/aos-module-format:clippy",
-    "//crates/aos/modules/aos-module-format:doc",
-    "//crates/aos/modules/aos-module-format:doc_compression",
-    "//crates/aos/modules/aos-module-format:documentation",
-    "//crates/aos/modules/aos-module-format:format",
-    "//crates/aos/modules/aos-module-format:license_closure",
-    "//crates/aos/modules/aos-module-format:license_closure_compression",
-    "//crates/aos/modules/aos-module-format:unit",
-    "//crates/aos/modules/aos-module-format:unit_compression",
-    "//crates/aos/registry/aos-registry-format:clippy",
-    "//crates/aos/registry/aos-registry-format:doc",
-    "//crates/aos/registry/aos-registry-format:doc_compression",
-    "//crates/aos/registry/aos-registry-format:documentation",
-    "//crates/aos/registry/aos-registry-format:format",
-    "//crates/aos/registry/aos-registry-format:license_closure",
-    "//crates/aos/registry/aos-registry-format:license_closure_compression",
-    "//crates/aos/registry/aos-registry-format:unit",
-    "//crates/aos/registry/aos-registry-format:unit_compression",
-    "//crates/shared/aos-nar:clippy",
-    "//crates/shared/aos-nar:doc",
-    "//crates/shared/aos-nar:doc_compression",
-    "//crates/shared/aos-nar:documentation",
-    "//crates/shared/aos-nar:format",
-    "//crates/shared/aos-nar:license_closure",
-    "//crates/shared/aos-nar:license_closure_compression",
-    "//crates/shared/aos-nar:unit",
-    "//crates/shared/aos-nar:unit_compression"
+    "//crates/modules/aos-module-format:clippy",
+    "//crates/modules/aos-module-format:doc",
+    "//crates/modules/aos-module-format:doc_compression",
+    "//crates/modules/aos-module-format:documentation",
+    "//crates/modules/aos-module-format:format",
+    "//crates/modules/aos-module-format:license_closure",
+    "//crates/modules/aos-module-format:license_closure_compression",
+    "//crates/modules/aos-module-format:unit",
+    "//crates/modules/aos-module-format:unit_compression",
+    "//crates/registry/aos-registry-format:clippy",
+    "//crates/registry/aos-registry-format:doc",
+    "//crates/registry/aos-registry-format:doc_compression",
+    "//crates/registry/aos-registry-format:documentation",
+    "//crates/registry/aos-registry-format:format",
+    "//crates/registry/aos-registry-format:license_closure",
+    "//crates/registry/aos-registry-format:license_closure_compression",
+    "//crates/registry/aos-registry-format:unit",
+    "//crates/registry/aos-registry-format:unit_compression",
+    "//crates/artifacts/aos-nar:clippy",
+    "//crates/artifacts/aos-nar:doc",
+    "//crates/artifacts/aos-nar:doc_compression",
+    "//crates/artifacts/aos-nar:documentation",
+    "//crates/artifacts/aos-nar:format",
+    "//crates/artifacts/aos-nar:license_closure",
+    "//crates/artifacts/aos-nar:license_closure_compression",
+    "//crates/artifacts/aos-nar:unit",
+    "//crates/artifacts/aos-nar:unit_compression"
   ]
 }

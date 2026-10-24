@@ -198,8 +198,8 @@ follow-up design. They do not gate local caching or the Rust/native migration.
 - [Bazel caching](https://bazel.build/remote/caching) distinguishes action
   results, CAS contents, and execution; [remote execution](https://bazel.build/remote/rbe)
   is a separate extension.
-- [accache storage](../../../tools/accache/README.md) and its
-  [backend](../../../tools/accache/src/backend.rs) document the existing local
+- [accache storage](../../../crates/accache/accache/README.md) and its
+  [backend](../../../crates/accache/accache/src/backend.rs) document the existing local
   Bazel-format cache and compiler identity/invalidation contracts.
 - [RFC-0015](../0015-hermetic-cargo-artifacts.md) is the existing artifact and
   test contract to preserve or explicitly replace during migration.

@@ -480,7 +480,7 @@ in {
           scope = "stack-prepared";
         };
         configuration.operations.file.effects.mariadb-server.input = {
-          path = "/etc/aos/packages/mariadb/my.cnf";
+          path = "/etc/packages/mariadb/my.cnf";
           fragments = serverFragments;
           mode = "0640";
           owner = account;
@@ -495,7 +495,7 @@ in {
     })
     (lib.mkIf (anyServiceEnabled && credentials.bootstrapCredentials != []) {
       aos.abilities.configuration.operations.file.effects.mariadb-bootstrap.input = {
-        path = "/etc/aos/packages/mariadb/bootstrap.sql";
+        path = "/etc/packages/mariadb/bootstrap.sql";
         fragments = bootstrapFragments;
         mode = "0600";
         owner = account;

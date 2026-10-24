@@ -419,17 +419,17 @@ in {
         };
         configuration.operations.file.effects = {
           krb5-client.input = {
-            path = "/etc/aos/packages/krb5-kdc/krb5.conf";
+            path = "/etc/packages/krb5-kdc/krb5.conf";
             content = clientContent;
             mode = "0444";
           };
           krb5-acl.input = {
-            path = "/etc/aos/packages/krb5-kdc/kadm5.acl";
+            path = "/etc/packages/krb5-kdc/kadm5.acl";
             content = lib.concatStringsSep "\n" cfg.acl + "\n";
             mode = "0444";
           };
           krb5-kdc.input = {
-            path = "/etc/aos/packages/krb5-kdc/kdc.conf";
+            path = "/etc/packages/krb5-kdc/kdc.conf";
             fragments = kdcFragments;
             mode = "0444";
           };

@@ -37,16 +37,16 @@ config_setting(
 )
 
 DEPENDENCIES = [
-    "//crates/aos/modules/aos-module-docs:lib",
-    "//crates/aos/modules/aos-module-format:lib",
-    "//crates/aos/registry/aos-registry-format:lib",
-    "//crates/aos/release/aos-release-format:lib",
+    "//crates/modules/aos-module-docs:lib",
+    "//crates/modules/aos-module-format:lib",
+    "//crates/registry/aos-registry-format:lib",
+    "//crates/release/aos-release-format:lib",
     "//crates/hub/aos-hub-api:lib",
     "//crates/hub/aos-hub-db:lib",
     "//crates/hub/aos-hub-model:lib",
     "//crates/hub/aos-hub-ui:lib",
-    "//crates/shared/aos-core:lib",
-    "//crates/shared/aos-oci-types:lib",
+    "//crates/core/aos-core:lib",
+    "//crates/artifacts/aos-oci-types:lib",
     "//third_party/rust:core_anyhow",
     "//third_party/rust:core_axum",
     "//third_party/rust:core_base64",
@@ -127,7 +127,7 @@ rust_library(
 )
 
 TEST_DEPENDENCIES = [
-    "//crates/aos/registry/aos-registry-authoring:lib",
+    "//crates/registry/aos-registry-authoring:lib",
     "//third_party/rust:core_tempfile",
 ]
 

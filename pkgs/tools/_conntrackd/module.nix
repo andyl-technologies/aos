@@ -307,7 +307,7 @@ in {
           };
         };
         configuration.operations.file.effects.conntrackd.input = {
-          path = "/etc/aos/packages/conntrack-tools/conntrackd.conf";
+          path = "/etc/packages/conntrack-tools/conntrackd.conf";
           fragments = configurationFragments;
           mode = "0444";
         };

@@ -4,7 +4,7 @@
   sourceInventory ? ../../tools/bazel/metadata/package-manager-inventory.json,
 }: let
   packages = {
-    aos-package-manager = "crates/aos/packages/aos-package-manager";
+    aos-package-manager = "crates/packages/aos-package-manager";
   };
   label = target: "//${packages.aos-package-manager}:${target}";
   commands = [
@@ -18,37 +18,37 @@
   commandTestLabels = map (name: label "bin_${name}") commands;
   # These packages declare nonempty discovery globs, including loading fixtures.
   sourceLoadingPackages = [
-    "crates/aos/boot/aos-platform-metadata"
-    "crates/aos/packages/aos-nix-cache"
-    "crates/aos/registry/aos-registry-authoring"
-    "crates/aos/registry/aos-registry-client"
-    "crates/aos/release/aos-release-format"
-    "crates/shared/aos-oci"
-    "crates/shared/aos-oci-types"
+    "crates/boot/aos-platform-metadata"
+    "crates/packages/aos-nix-cache"
+    "crates/registry/aos-registry-authoring"
+    "crates/registry/aos-registry-client"
+    "crates/release/aos-release-format"
+    "crates/artifacts/aos-oci"
+    "crates/artifacts/aos-oci-types"
   ];
   dependencyPackages = {
-    aos-activation = "crates/aos/activation/aos-activation";
-    aos-artifact-evidence = "crates/shared/aos-artifact-evidence";
-    aos-cli-ui = "crates/aos/cli/aos-cli-ui";
-    aos-core = "crates/shared/aos-core";
-    aos-deployment = "crates/aos/packages/aos-deployment";
-    aos-deployment-format = "crates/aos/packages/aos-deployment-format";
+    aos-activation = "crates/activation/aos-activation";
+    aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
+    aos-cli-ui = "crates/cli/aos-cli-ui";
+    aos-core = "crates/core/aos-core";
+    aos-deployment = "crates/packages/aos-deployment";
+    aos-deployment-format = "crates/packages/aos-deployment-format";
     aos-hub-api = "crates/hub/aos-hub-api";
     aos-hub-client = "crates/hub/aos-hub-client";
-    aos-module-docs = "crates/aos/modules/aos-module-docs";
-    aos-module-format = "crates/aos/modules/aos-module-format";
-    aos-nar = "crates/shared/aos-nar";
-    aos-nix = "crates/shared/aos-nix";
-    aos-nix-cache = "crates/aos/packages/aos-nix-cache";
-    aos-oci = "crates/shared/aos-oci";
-    aos-oci-types = "crates/shared/aos-oci-types";
-    aos-platform-metadata = "crates/aos/boot/aos-platform-metadata";
-    aos-registry-authoring = "crates/aos/registry/aos-registry-authoring";
-    aos-registry-client = "crates/aos/registry/aos-registry-client";
-    aos-registry-format = "crates/aos/registry/aos-registry-format";
-    aos-release-format = "crates/aos/release/aos-release-format";
-    aos-storage-layout = "crates/aos/boot/aos-storage-layout";
-    aos-transfer = "crates/shared/aos-transfer";
+    aos-module-docs = "crates/modules/aos-module-docs";
+    aos-module-format = "crates/modules/aos-module-format";
+    aos-nar = "crates/artifacts/aos-nar";
+    aos-nix = "crates/nix/aos-nix";
+    aos-nix-cache = "crates/packages/aos-nix-cache";
+    aos-oci = "crates/artifacts/aos-oci";
+    aos-oci-types = "crates/artifacts/aos-oci-types";
+    aos-platform-metadata = "crates/boot/aos-platform-metadata";
+    aos-registry-authoring = "crates/registry/aos-registry-authoring";
+    aos-registry-client = "crates/registry/aos-registry-client";
+    aos-registry-format = "crates/registry/aos-registry-format";
+    aos-release-format = "crates/release/aos-release-format";
+    aos-storage-layout = "crates/boot/aos-storage-layout";
+    aos-transfer = "crates/transfer/aos-transfer";
   };
   inputs = import ./_bazel-registry-native-inputs.nix {inherit pkgs;};
   repositories = profile:

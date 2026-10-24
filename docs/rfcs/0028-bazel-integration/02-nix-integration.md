@@ -59,7 +59,7 @@ mkAosBazelPackage {
   pname = "aos";
   version = "0.1.0";
   workspace = aosBazelWorkspace;
-  target = "//crates/aos/cli/aos-cli:package";
+  target = "//crates/cli/aos-cli:package";
 }
 ```
 

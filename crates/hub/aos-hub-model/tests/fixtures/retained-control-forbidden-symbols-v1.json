@@ -70,7 +70,7 @@
       "category": "cli",
       "symbol": "HubConfigCmd::Revert",
       "targets": [
-        "crates/aos/cli/aos-cli/src/commands/hub"
+        "crates/cli/aos-cli/src/commands/hub"
       ]
     },
     {
@@ -78,8 +78,8 @@
       "category": "cli",
       "symbol": "HubIdentityCmd",
       "targets": [
-        "crates/aos/cli/aos-cli/src/cli/hub.rs",
-        "crates/aos/cli/aos-cli/src/commands/hub"
+        "crates/cli/aos-cli/src/cli/hub.rs",
+        "crates/cli/aos-cli/src/commands/hub"
       ]
     },
     {
@@ -87,9 +87,9 @@
       "category": "cli",
       "symbol": "HubRegistryToken",
       "targets": [
-        "crates/aos/cli/aos-cli/src/cli/hub.rs",
-        "crates/aos/cli/aos-cli/src/cli/hub_retained_control.rs",
-        "crates/aos/cli/aos-cli/src/commands/hub"
+        "crates/cli/aos-cli/src/cli/hub.rs",
+        "crates/cli/aos-cli/src/cli/hub_retained_control.rs",
+        "crates/cli/aos-cli/src/commands/hub"
       ]
     },
     {

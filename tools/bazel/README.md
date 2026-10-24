@@ -418,7 +418,7 @@ source archives, package identities, and parity comparisons retain the exact
 original versions.
 
 ```sh
-aos-dev bazel test //crates/crucible/engine/crucible-device:unit \
+aos-dev bazel test //crates/crucible/crucible-device:unit \
   --//tools/bazel/rules:dependency_profile=device
 aos-dev build check build.bazel.device.all --no-out-link
 ```
@@ -568,8 +568,8 @@ The ABI and fingerprint integration tests read declared repository inputs;
 they do not discover a Cargo manifest or an old package-builder implementation.
 
 ```sh
-aos-dev bazel --family guest build //crates/crucible/guest/crucible-guest:package
-aos-dev bazel --family guest rust-project //crates/crucible/guest/crucible-guest:lib
+aos-dev bazel --family guest build //crates/crucible/crucible-guest:package
+aos-dev bazel --family guest rust-project //crates/crucible/crucible-guest:lib
 aos-dev bazel update-deps guest
 nix-build tools/bazel/tests/guest.nix -A conservative.inventory --no-out-link
 ```
@@ -628,8 +628,8 @@ have explicit empty-test allowances; parity requires the corresponding Cargo
 artifacts to exist and to list no cases. Other zero-case selections still fail.
 
 ```sh
-aos-dev bazel --family engine test //crates/crucible/engine/crucible-engine:unit
-aos-dev bazel --family engine rust-project //crates/crucible/engine/crucible-engine:lib
+aos-dev bazel --family engine test //crates/crucible/crucible-engine:unit
+aos-dev bazel --family engine rust-project //crates/crucible/crucible-engine:lib
 aos-dev bazel update-deps engine
 nix-build tools/bazel/tests/engine.nix -A all \
   --no-out-link --max-jobs 4 --cores 4 --option substitute false
@@ -712,9 +712,9 @@ fixture has a runnable doctest, and its evidence check requires one passing
 case rather than accepting an empty doctest suite.
 
 ```sh
-aos-dev bazel build //crates/crucible/protocol/crucible-qemu-protocol:clippy
-aos-dev bazel test //crates/crucible/protocol/crucible-qemu-protocol:format
-aos-dev bazel build //crates/crucible/protocol/crucible-qemu-protocol:documentation
+aos-dev bazel build //crates/crucible/crucible-qemu-protocol:clippy
+aos-dev bazel test //crates/crucible/crucible-qemu-protocol:format
+aos-dev bazel build //crates/crucible/crucible-qemu-protocol:documentation
 nix develop --file bazel-shell.nix
 aos-dev bazel rust-project //tools/bazel/tests/fixture:rust_app
 ```
@@ -1156,7 +1156,7 @@ only the disposable ext4 VM flight executes it with quota authority.
 
 ```sh
 aos-dev bazel update-deps quota
-aos-dev bazel --family quota test //crates/shared/aos-linux-project-quota:unit
+aos-dev bazel --family quota test //crates/linux/aos-linux-project-quota:unit
 nix-build tools/bazel/tests/quota.nix -A all --no-out-link
 nix-build tools/bazel/tests/quota.nix -A vm --no-out-link
 nix-build tools/bazel/tests/quota.nix -A cross-linux --no-out-link
@@ -1198,8 +1198,8 @@ both crates' doctest results.
 
 ```sh
 aos-dev bazel update-deps session
-aos-dev bazel --family session test //crates/crucible/control/crucible-session:unit
-aos-dev bazel --family session rust-project //crates/crucible/control/crucible-session:lib_for_tests //crates/crucible/control/crucible-session:unit_binary //crates/crucible/control/crucible-control-api:lib_for_tests //crates/crucible/control/crucible-control-api:unit_binary
+aos-dev bazel --family session test //crates/crucible/crucible-session:unit
+aos-dev bazel --family session rust-project //crates/crucible/crucible-session:lib_for_tests //crates/crucible/crucible-session:unit_binary //crates/crucible/crucible-control-api:lib_for_tests //crates/crucible/crucible-control-api:unit_binary
 nix-build tools/bazel/tests/session.nix -A all --no-out-link --max-jobs 4 --cores 4
 ```
 
@@ -1245,7 +1245,7 @@ inputs supplied by Nix; repository setup and compilation stay offline.
 
 ```sh
 aos-dev bazel update-deps control
-aos-dev bazel --family control test //crates/crucible/control/crucible-control-client:unit //crates/crucible/control/crucible-control-server:unit
+aos-dev bazel --family control test //crates/crucible/crucible-control-client:unit //crates/crucible/crucible-control-server:unit
 nix-build tools/bazel/tests/control.nix -A all --no-out-link --max-jobs 4 --cores 4
 ```
 
@@ -1296,7 +1296,7 @@ Default and `test-support` configurations have separate qualification oracles.
 
 ```sh
 aos-dev bazel update-deps qemu-host
-aos-dev bazel --family qemu-host test //crates/crucible/qemu/crucible-qemu-host:unit
+aos-dev bazel --family qemu-host test //crates/crucible/crucible-qemu-host:unit
 nix-build tools/bazel/tests/qemu-host.nix -A all --no-out-link --max-jobs 4 --cores 4
 ```
 
@@ -1344,7 +1344,7 @@ features; the development graph enables the existing conformance API.
 
 ```sh
 aos-dev bazel update-deps store-s3
-aos-dev bazel --family store-s3 test //crates/crucible/storage/crucible-store-s3:unit
+aos-dev bazel --family store-s3 test //crates/crucible/crucible-store-s3:unit
 nix-build tools/bazel/tests/store-s3.nix -A all --no-out-link --max-jobs 4 --cores 4
 ```
 
@@ -1406,7 +1406,7 @@ and Cargo manifests; differences between source snapshots are Bazel metadata.
 
 ```sh
 aos-dev bazel update-deps daemon
-aos-dev bazel --family daemon test //crates/crucible/control/crucible-daemon:unit
+aos-dev bazel --family daemon test //crates/crucible/crucible-daemon:unit
 nix-build tools/bazel/tests/daemon.nix -A all --no-out-link --max-jobs 4 --cores 4
 ```
 
@@ -1451,7 +1451,7 @@ Cargo inventories; execution still belongs to the dedicated VM gates.
 
 ```sh
 aos-dev bazel update-deps crucible-cli
-aos-dev bazel --family crucible-cli test //crates/crucible/control/crucible-cli:bin_crucible
+aos-dev bazel --family crucible-cli test //crates/crucible/crucible-cli:bin_crucible
 nix-build tools/bazel/tests/crucible-cli.nix -A all --no-out-link --max-jobs 4 --cores 4
 ```
 
@@ -1503,7 +1503,7 @@ with exact-version guards for libc and indexmap.
 
 ```sh
 aos-dev bazel update-deps formats
-aos-dev bazel --family formats test //crates/shared/aos-nar:unit_compression
+aos-dev bazel --family formats test //crates/artifacts/aos-nar:unit_compression
 nix-build tools/bazel/tests/formats.nix -A all --no-out-link --max-jobs 4 --cores 4
 ```
 
@@ -1554,7 +1554,7 @@ artifact, doctest, license check, and developer target.
 
 ```sh
 aos-dev bazel update-deps formats
-aos-dev bazel --family contracts test //crates/aos/release/aos-release-format:qualification
+aos-dev bazel --family contracts test //crates/release/aos-release-format:qualification
 nix-build tools/bazel/tests/contracts.nix -A all --no-out-link --max-jobs 4 --cores 4
 ```
 

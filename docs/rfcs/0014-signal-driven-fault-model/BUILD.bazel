@@ -4,5 +4,5 @@ filegroup(
         "04-fault-taxonomy.md",
         "08-executable-effect-contracts.md",
     ],
-    visibility = ["//crates/crucible/engine/crucible-engine:__pkg__"],
+    visibility = ["//crates/crucible/crucible-engine:__pkg__"],
 )

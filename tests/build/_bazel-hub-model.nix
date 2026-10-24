@@ -7,10 +7,10 @@
     aos-hub-model = "crates/hub/aos-hub-model";
   };
   dependencyPackages = {
-    aos-core = "crates/shared/aos-core";
+    aos-core = "crates/core/aos-core";
     aos-hub-api = "crates/hub/aos-hub-api";
-    aos-oci-types = "crates/shared/aos-oci-types";
-    aos-registry-format = "crates/aos/registry/aos-registry-format";
+    aos-oci-types = "crates/artifacts/aos-oci-types";
+    aos-registry-format = "crates/registry/aos-registry-format";
   };
   repositories =
     pkgs.aosBazelRepositories

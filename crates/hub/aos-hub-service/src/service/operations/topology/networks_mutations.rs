@@ -9,7 +9,7 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::CompleteNetworkPolicyRevisionProbeRequest,
     ) -> Result<pb::NetworkPolicyRevisionResponse, RpcError> {
-        self.require_controller_fence(
+        let claims = self.require_controller_fence(
             auth,
             &req.controller_lease_id,
             req.controller_generation,
@@ -28,6 +28,15 @@ impl RpcService {
             "network policy",
         )
         .await?;
+        let lease_target = format!("{}:{}", req.boundary_id, req.revision);
+        self.claim_controller_fence(
+            &claims,
+            "network_policy_revision",
+            &lease_target,
+            &req.controller_lease_id,
+            req.controller_generation,
+        )
+        .await?;
         let revision = self
             .db
             .network_policy_revision(&req.boundary_id, req.revision)
@@ -36,8 +45,12 @@ impl RpcService {
             .ok_or_else(|| RpcError::not_found("network policy revision"))?;
         let operation_id = hex::encode(Sha256::digest(
             format!(
-                "network-boundary-probe-v1\0{}\0{}\0{}",
-                revision.boundary_id, revision.revision, revision.content_digest
+                "network-boundary-probe-v1\0{}\0{}\0{}\0{}\0{}",
+                revision.boundary_id,
+                revision.revision,
+                revision.content_digest,
+                req.controller_lease_id,
+                req.controller_generation
             )
             .as_bytes(),
         ));
@@ -66,7 +79,7 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::ReportNetworkPolicyRevisionRequest,
     ) -> Result<pb::NetworkPolicyRevisionResponse, RpcError> {
-        self.require_controller_fence(
+        let claims = self.require_controller_fence(
             auth,
             &req.controller_lease_id,
             req.controller_generation,
@@ -85,6 +98,15 @@ impl RpcService {
             "network policy",
         )
         .await?;
+        let lease_target = format!("{}:{}", req.boundary_id, req.revision);
+        self.claim_controller_fence(
+            &claims,
+            "network_policy_revision",
+            &lease_target,
+            &req.controller_lease_id,
+            req.controller_generation,
+        )
+        .await?;
         let observation = req
             .observation
             .ok_or_else(|| RpcError::invalid("observation is required"))?;
@@ -94,7 +116,7 @@ impl RpcService {
         }
         let record = self
             .db
-            .reconcile_network_policy_revision(
+            .reconcile_network_policy_revision_fenced(
                 &req.boundary_id,
                 req.revision,
                 &observation.state,
@@ -102,6 +124,13 @@ impl RpcService {
                 &observation.trusted_ingress_observed,
                 (!observation.error.is_empty()).then_some(observation.error.as_str()),
                 expected,
+                &aos_hub_db::db::ControllerLeaseFence {
+                    target_kind: "network_policy_revision",
+                    target_id: &lease_target,
+                    lease_id: &req.controller_lease_id,
+                    generation: req.controller_generation,
+                    owner_service_account_id: claims.owner_id,
+                },
             )
             .await
             .map_err(RpcError::internal)?;

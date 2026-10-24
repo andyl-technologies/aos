@@ -13,9 +13,9 @@
   temporalGraph = import ./_crucible-model-source.nix {inherit lib;};
   engineLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/engine/crucible-engine/src/lib.rs;
+    entry = ../../crates/crucible/crucible-engine/src/lib.rs;
   };
-  timeTravelTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/gate_debug_time_travel.rs;
+  timeTravelTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/gate_debug_time_travel.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -52,7 +52,7 @@
         needle = "`T-DBG-5` is green through `checks.crucible.phase6.debugScopedTimeTravel`";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" temporalGraph [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" temporalGraph [
       {
         label = "per-node API";
         needle = "pub fn debug_per_node_time_travel";
@@ -122,7 +122,7 @@
         needle = "is_performance_only_cache_decision";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" engineLib [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" engineLib [
       {
         label = "per-node request export";
         needle = "DebugPerNodeTimeTravelRequest";
@@ -152,7 +152,7 @@
         needle = "DebugCheckpointCadenceReport";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/gate_debug_time_travel.rs" timeTravelTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/gate_debug_time_travel.rs" timeTravelTest [
       {
         label = "scoped time-travel test";
         needle = "debug_per_node_and_whole_world_time_travel_land_coherently";
@@ -212,7 +212,7 @@
         needle = "phase6.debugTimeTravel";
       }
     ]
-    ++ forbiddenFailuresFor "crates/crucible/engine/crucible-engine/tests/gate_debug_time_travel.rs" timeTravelTest [
+    ++ forbiddenFailuresFor "crates/crucible/crucible-engine/tests/gate_debug_time_travel.rs" timeTravelTest [
       {
         label = "ignored red placeholder";
         needle = "#[ignore";

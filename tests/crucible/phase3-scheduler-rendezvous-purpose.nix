@@ -8,8 +8,8 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
-  rendezvousPurposeTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_rendezvous_purpose.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  rendezvousPurposeTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_rendezvous_purpose.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -51,7 +51,7 @@
         needle = "active rendezvous set";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "rendezvous purpose enum";
         needle = "pub enum SchedulerRendezvousPurpose";
@@ -97,13 +97,13 @@
         needle = "rendezvous requires zero skew";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "event delivery rendezvous purpose";
         needle = "EventDelivery";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "purpose exported";
         needle = "SchedulerRendezvousPurpose";
@@ -113,7 +113,7 @@
         needle = "SchedulerRendezvousRecord";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_rendezvous_purpose.rs" rendezvousPurposeTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_rendezvous_purpose.rs" rendezvousPurposeTest [
       {
         label = "fixed rendezvous is not delivery test";
         needle = "fixed_rendezvous_caps_do_not_deliver_future_event";
@@ -143,7 +143,7 @@
         needle = "node.virtual_time == activation_time";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_rendezvous_purpose.rs" rendezvousPurposeTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/scheduler_rendezvous_purpose.rs" rendezvousPurposeTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";

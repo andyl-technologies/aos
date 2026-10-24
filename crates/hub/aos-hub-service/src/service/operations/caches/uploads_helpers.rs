@@ -150,11 +150,7 @@ impl RpcService {
                 clock::now_unix_secs(),
             )
             .await
-            .map_err(|holder| {
-                RpcError::FailedPrecondition(format!(
-                    "registry publication lease is held by {holder}"
-                ))
-            })?;
+            .map_err(RpcError::publish_lease)?;
         if publication.state == "preparing" {
             let advanced = self
                 .db

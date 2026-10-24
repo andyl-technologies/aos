@@ -20,7 +20,7 @@
     };
   };
   packages = [
-    "crates/crucible/storage/crucible-store-s3"
+    "crates/crucible/crucible-store-s3"
   ];
   # Preserve both the ordinary unit tests and the ignored live-service suite.
   # A foreign build does not provision external S3 resources.

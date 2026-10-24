@@ -3,16 +3,16 @@
   pkgs,
   sourceInventory ? ../../tools/bazel/metadata/activation-systemd-inventory.json,
 }: let
-  packagePath = "crates/aos/activation/aos-activation-systemd";
+  packagePath = "crates/activation/aos-activation-systemd";
   packages = {aos-activation-systemd = packagePath;};
   dependencyPackages = {
-    aos-core = "crates/shared/aos-core";
-    aos-artifact-evidence = "crates/shared/aos-artifact-evidence";
-    aos-module-format = "crates/aos/modules/aos-module-format";
-    aos-activation = "crates/aos/activation/aos-activation";
-    aos-nar = "crates/shared/aos-nar";
-    aos-nix = "crates/shared/aos-nix";
-    aos-systemd-client = "crates/shared/aos-systemd-client";
+    aos-core = "crates/core/aos-core";
+    aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
+    aos-module-format = "crates/modules/aos-module-format";
+    aos-activation = "crates/activation/aos-activation";
+    aos-nar = "crates/artifacts/aos-nar";
+    aos-nix = "crates/nix/aos-nix";
+    aos-systemd-client = "crates/linux/aos-systemd-client";
   };
   commands = ["aos-systemd-native-resource-provider" "aos-systemd-credential-encrypt"];
   commandTargets = targetName: map (command: "//${packagePath}:${targetName command}") commands;
@@ -127,7 +127,7 @@ in
         ++ commandTargets (command: "bin_${command}")
         # Bazel loads the client's test globs while parsing its library package.
         # Retain their declared sources without selecting dependency test runs.
-        ++ ["//crates/shared/aos-systemd-client:source_package"];
+        ++ ["//crates/linux/aos-systemd-client:source_package"];
     };
     parser-build = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-activation-systemd-parser-artifacts";

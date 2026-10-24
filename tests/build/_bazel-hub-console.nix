@@ -7,14 +7,14 @@
     aos-hub-console = "crates/hub/aos-hub-console";
   };
   dependencyPackages = {
-    aos-artifact-evidence = "crates/shared/aos-artifact-evidence";
-    aos-core = "crates/shared/aos-core";
+    aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
+    aos-core = "crates/core/aos-core";
     aos-hub-api = "crates/hub/aos-hub-api";
     aos-hub-ui = "crates/hub/aos-hub-ui";
-    aos-module-docs = "crates/aos/modules/aos-module-docs";
-    aos-module-format = "crates/aos/modules/aos-module-format";
-    aos-oci-types = "crates/shared/aos-oci-types";
-    aos-registry-format = "crates/aos/registry/aos-registry-format";
+    aos-module-docs = "crates/modules/aos-module-docs";
+    aos-module-format = "crates/modules/aos-module-format";
+    aos-oci-types = "crates/artifacts/aos-oci-types";
+    aos-registry-format = "crates/registry/aos-registry-format";
   };
   repositories =
     pkgs.aosBazelRepositories

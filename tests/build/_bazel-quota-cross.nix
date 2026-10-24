@@ -12,7 +12,7 @@
     targetPlatform = "//tools/bazel/toolchains:aarch64_linux";
     compileOnly = true;
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/shared/aos-linux-project-quota:unit"];
+    analysisTargets = ["//crates/linux/aos-linux-project-quota:unit"];
   };
   inventory = builtins.fromJSON (builtins.readFile ../../tools/bazel/metadata/quota-inventory.json);
   targets = map (target: target.label) (builtins.filter

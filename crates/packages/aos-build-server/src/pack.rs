@@ -1,0 +1,441 @@
+//! The AOS pack wire format ("AOSP") and pack import.
+//!
+//! A *pack* batches multiple NAR-serialized store paths into one upload so
+//! a client can push a whole closure in a single
+//! `POST /{view}/upload-pack` request instead of one PUT per path.
+//!
+//! # Wire format (version 1, all integers big-endian)
+//!
+//! ```text
+//! header:   "AOSP" magic (4) | version u32 (4) | entry count u32 (4)
+//! entry *N: store hash, 32 hex ASCII bytes | NAR size u64 (8) | NAR data
+//! trailer:  SHA-256 digest of everything before it (32)
+//! ```
+//!
+//! [`create_pack`] and [`parse_pack`] round-trip this format;
+//! [`import_pack`] feeds each entry to `nix-store --import` and then
+//! security-screens the resulting paths with [`validate_imported_path`],
+//! which only admits `.drv` files and content-addressed (fixed-output)
+//! paths — anything else could smuggle arbitrary binaries into the store
+//! under an input-addressed name.
+
+use sha2::{Digest, Sha256};
+use std::process::Stdio;
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
+
+use aos_nix::aos_nix_env;
+
+const MAGIC: &[u8; 4] = b"AOSP";
+const VERSION: u32 = 1;
+const HEADER_SIZE: usize = 4 + 4 + 4; // magic + version + entry count
+const HASH_HEX_LEN: usize = 32;
+const NAR_SIZE_LEN: usize = 8;
+const MIN_ENTRY_SIZE: usize = HASH_HEX_LEN + NAR_SIZE_LEN;
+const TRAILER_SIZE: usize = 32; // SHA-256 digest
+
+/// A single entry in the pack wire format.
+#[derive(Debug, Clone)]
+pub struct PackEntry {
+    /// 32-character hex store path hash.
+    pub hash: String,
+    /// Raw NAR data (as produced by `nix-store --export`).
+    pub nar_data: Vec<u8>,
+}
+
+/// Parses a pack from its wire format into its entries.
+///
+/// The trailing SHA-256 checksum is verified before any entry is parsed,
+/// so a corrupted upload is rejected wholesale. `maximum_entries` applies the
+/// caller's upload policy before the parser reserves entry storage.
+///
+/// # Errors
+///
+/// Returns a descriptive message if the data is too short, the checksum
+/// does not match, the magic or version is wrong, the declared entry count
+/// exceeds the format policy or available payload, an entry is truncated or
+/// has a non-UTF-8 hash, memory cannot be reserved, or unconsumed bytes remain
+/// after the last entry.
+pub fn parse_pack(data: &[u8], maximum_entries: usize) -> Result<Vec<PackEntry>, String> {
+    if data.len() < HEADER_SIZE + TRAILER_SIZE {
+        return Err("data too short for pack header and trailer".into());
+    }
+
+    // Verify trailing SHA-256 checksum.
+    let payload = &data[..data.len() - TRAILER_SIZE];
+    let trailer = &data[data.len() - TRAILER_SIZE..];
+    let digest = Sha256::digest(payload);
+    if digest.as_slice() != trailer {
+        return Err("SHA-256 trailer mismatch".into());
+    }
+
+    if &payload[..MAGIC.len()] != MAGIC {
+        return Err(format!(
+            "bad magic: expected {:?}, got {:?}",
+            MAGIC,
+            &payload[..MAGIC.len()]
+        ));
+    }
+
+    let version = u32::from_be_bytes(
+        payload[MAGIC.len()..MAGIC.len() + 4]
+            .try_into()
+            .map_err(|_| "failed to read version")?,
+    );
+    if version != VERSION {
+        return Err(format!("unsupported pack version: {version}"));
+    }
+    let declared_count = u32::from_be_bytes(
+        payload[MAGIC.len() + 4..HEADER_SIZE]
+            .try_into()
+            .map_err(|_| "failed to read entry count")?,
+    );
+    let count = usize::try_from(declared_count)
+        .map_err(|_| format!("entry count {declared_count} does not fit this platform"))?;
+
+    if count > maximum_entries {
+        return Err(format!(
+            "entry count {count} exceeds limit of {maximum_entries}"
+        ));
+    }
+
+    let minimum_entry_bytes = count
+        .checked_mul(MIN_ENTRY_SIZE)
+        .ok_or_else(|| format!("entry count {count} overflows minimum payload size"))?;
+    let minimum_payload_size = HEADER_SIZE
+        .checked_add(minimum_entry_bytes)
+        .ok_or_else(|| format!("entry count {count} overflows minimum payload size"))?;
+    if payload.len() < minimum_payload_size {
+        return Err(format!(
+            "entry count {count} requires at least {minimum_payload_size} payload bytes, have {}",
+            payload.len()
+        ));
+    }
+
+    let mut entries = Vec::new();
+    entries
+        .try_reserve_exact(count)
+        .map_err(|error| format!("cannot reserve storage for {count} pack entries: {error}"))?;
+
+    let mut pos = HEADER_SIZE;
+
+    for i in 0..count {
+        let hash_end = pos
+            .checked_add(HASH_HEX_LEN)
+            .ok_or_else(|| format!("entry {i}: hash offset overflow"))?;
+        let hash_text = std::str::from_utf8(
+            payload
+                .get(pos..hash_end)
+                .ok_or_else(|| format!("entry {i}: unexpected end of data reading hash"))?,
+        )
+        .map_err(|_| format!("entry {i}: hash is not valid UTF-8"))?;
+        let mut hash = String::new();
+        hash.try_reserve_exact(HASH_HEX_LEN)
+            .map_err(|error| format!("entry {i}: cannot reserve hash storage: {error}"))?;
+        hash.push_str(hash_text);
+        pos = hash_end;
+
+        let size_end = pos
+            .checked_add(NAR_SIZE_LEN)
+            .ok_or_else(|| format!("entry {i}: NAR size offset overflow"))?;
+        let nar_size = u64::from_be_bytes(
+            payload
+                .get(pos..size_end)
+                .ok_or_else(|| format!("entry {i}: unexpected end of data reading NAR size"))?
+                .try_into()
+                .map_err(|_| format!("entry {i}: failed to read NAR size"))?,
+        );
+        let nar_size = usize::try_from(nar_size)
+            .map_err(|_| format!("entry {i}: NAR size does not fit this platform"))?;
+        pos = size_end;
+
+        let nar_end = pos
+            .checked_add(nar_size)
+            .ok_or_else(|| format!("entry {i}: NAR data offset overflow"))?;
+        let nar_bytes = payload.get(pos..nar_end).ok_or_else(|| {
+            format!(
+                "entry {i}: NAR data extends past payload (need {nar_size} bytes at offset {pos}, have {})",
+                payload.len().saturating_sub(pos)
+            )
+        })?;
+        let mut nar_data = Vec::new();
+        nar_data
+            .try_reserve_exact(nar_size)
+            .map_err(|error| format!("entry {i}: cannot reserve NAR storage: {error}"))?;
+        nar_data.extend_from_slice(nar_bytes);
+        pos = nar_end;
+
+        entries.push(PackEntry { hash, nar_data });
+    }
+
+    if pos != payload.len() {
+        return Err(format!(
+            "trailing data: {pos} bytes consumed but payload is {} bytes",
+            payload.len()
+        ));
+    }
+
+    Ok(entries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{HEADER_SIZE, PackEntry, TRAILER_SIZE, create_pack, parse_pack};
+    use sha2::{Digest, Sha256};
+
+    fn replace_trailer(pack: &mut [u8]) {
+        let payload_len = pack.len() - TRAILER_SIZE;
+        let digest = Sha256::digest(&pack[..payload_len]);
+        pack[payload_len..].copy_from_slice(&digest);
+    }
+
+    #[test]
+    fn valid_pack_round_trips() {
+        let entries = vec![
+            PackEntry {
+                hash: "0123456789abcdef0123456789abcdef".into(),
+                nar_data: vec![0xde, 0xad],
+            },
+            PackEntry {
+                hash: "fedcba9876543210fedcba9876543210".into(),
+                nar_data: Vec::new(),
+            },
+        ];
+
+        let parsed = parse_pack(&create_pack(&entries), entries.len()).unwrap();
+
+        assert_eq!(parsed.len(), entries.len());
+        assert_eq!(parsed[0].hash, entries[0].hash);
+        assert_eq!(parsed[0].nar_data, entries[0].nar_data);
+        assert_eq!(parsed[1].hash, entries[1].hash);
+        assert_eq!(parsed[1].nar_data, entries[1].nar_data);
+    }
+
+    #[test]
+    fn tiny_pack_rejects_entry_count_above_policy() {
+        let mut pack = create_pack(&[]);
+        let declared_count = 2u32;
+        pack[8..HEADER_SIZE].copy_from_slice(&declared_count.to_be_bytes());
+        replace_trailer(&mut pack);
+
+        let error = parse_pack(&pack, 1).unwrap_err();
+
+        assert!(error.contains("entry count"), "{error}");
+        assert!(error.contains("exceeds limit"), "{error}");
+    }
+
+    #[test]
+    fn tiny_pack_rejects_count_that_cannot_fit_payload() {
+        let mut pack = create_pack(&[]);
+        pack[8..HEADER_SIZE].copy_from_slice(&2u32.to_be_bytes());
+        replace_trailer(&mut pack);
+
+        let error = parse_pack(&pack, 2).unwrap_err();
+
+        assert!(error.contains("requires at least"), "{error}");
+    }
+
+    #[test]
+    fn tiny_pack_rejects_overflowing_nar_length() {
+        let entries = [PackEntry {
+            hash: "0123456789abcdef0123456789abcdef".into(),
+            nar_data: Vec::new(),
+        }];
+        let mut pack = create_pack(&entries);
+        pack[HEADER_SIZE + 32..HEADER_SIZE + 40].copy_from_slice(&u64::MAX.to_be_bytes());
+        replace_trailer(&mut pack);
+
+        let error = parse_pack(&pack, 1).unwrap_err();
+
+        assert!(
+            error.contains("does not fit this platform") || error.contains("offset overflow"),
+            "{error}"
+        );
+    }
+}
+
+/// Serializes entries into the pack wire format, including the header and
+/// SHA-256 trailer.
+///
+/// The output round-trips through [`parse_pack`].
+pub fn create_pack(entries: &[PackEntry]) -> Vec<u8> {
+    let mut buf = Vec::new();
+
+    // Header.
+    buf.extend_from_slice(MAGIC);
+    buf.extend_from_slice(&VERSION.to_be_bytes());
+    buf.extend_from_slice(&(entries.len() as u32).to_be_bytes());
+
+    // Entries.
+    for entry in entries {
+        buf.extend_from_slice(entry.hash.as_bytes());
+        buf.extend_from_slice(&(entry.nar_data.len() as u64).to_be_bytes());
+        buf.extend_from_slice(&entry.nar_data);
+    }
+
+    // SHA-256 trailer.
+    let digest = Sha256::digest(&buf);
+    buf.extend_from_slice(&digest);
+
+    buf
+}
+
+/// Validates that an imported store path is safe to accept.
+///
+/// Only two classes of path are admitted:
+///
+/// - `.drv` files — build recipes, not binaries, so always safe; and
+/// - content-addressed (fixed-output) paths, detected by the presence of a
+///   `ca` field in `nix path-info --json` output — their store hash is
+///   derived from their contents, so a client cannot substitute malicious
+///   bytes under a trusted name.
+///
+/// Everything else (regular input-addressed build outputs) is rejected;
+/// such paths must be produced by the server's own builds instead of being
+/// uploaded directly.
+///
+/// Note this consults the Nix store, so the path must already be imported
+/// when called (it is used post-import to vet `nix-store --import` results).
+///
+/// # Errors
+///
+/// Returns a reason string if the path is neither a `.drv` nor
+/// content-addressed, or if `nix path-info` cannot be run or its output
+/// cannot be parsed.
+pub async fn validate_imported_path(store_path: &str) -> Result<(), String> {
+    // .drv files are always safe (they're build recipes, not binaries)
+    if store_path.ends_with(".drv") {
+        return Ok(());
+    }
+
+    // Check if the path is content-addressed by querying nix path-info.
+    // Content-addressed paths have a "ca" field in their narinfo.
+    //
+    // `nix path-info` is part of the "new" CLI and only runs when the
+    // `nix-command` experimental feature is enabled — without it the
+    // process exits non-zero with `error: experimental Nix feature
+    // 'nix-command' is disabled` on stderr. The aos rootfs ships no
+    // system-wide `nix.conf`, so we have to opt in per-invocation.
+    let output = tokio::process::Command::new("nix")
+        .envs(aos_nix_env())
+        .args([
+            "--extra-experimental-features",
+            "nix-command",
+            "path-info",
+            "--json",
+            store_path,
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .output()
+        .await
+        .map_err(|e| format!("failed to query path info: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "nix path-info failed for {store_path}: {}",
+            stderr.trim()
+        ));
+    }
+
+    let json_str = String::from_utf8_lossy(&output.stdout);
+    // nix path-info --json returns an array of objects or {path: {info}} format
+    let parsed: serde_json::Value =
+        serde_json::from_str(&json_str).map_err(|e| format!("failed to parse path info: {e}"))?;
+
+    // Check for "ca" field which indicates content-addressed / fixed-output
+    let has_ca = if let Some(arr) = parsed.as_array() {
+        arr.first().and_then(|obj| obj.get("ca")).is_some()
+    } else if let Some(obj) = parsed.as_object() {
+        // Some versions return {path: {info}} format
+        obj.values().next().and_then(|v| v.get("ca")).is_some()
+    } else {
+        false
+    };
+
+    if has_ca {
+        Ok(())
+    } else {
+        tracing::warn!(path = %store_path, "imported path rejected: not .drv or content-addressed");
+        Err(format!(
+            "rejected: {store_path} is neither a .drv nor a content-addressed path"
+        ))
+    }
+}
+
+/// Imports pack entries into the Nix store via `nix-store --import`.
+///
+/// Entries are imported sequentially; every resulting store path is vetted
+/// with [`validate_imported_path`] before being included in the returned
+/// list. The import stops at the first failure, so earlier entries may
+/// already be in the store when an error is returned.
+///
+/// # Errors
+///
+/// Returns a reason string if spawning or waiting on `nix-store --import`
+/// fails, the import exits non-zero, or an imported path fails validation.
+pub async fn import_pack(entries: &[PackEntry]) -> Result<Vec<String>, String> {
+    tracing::info!(count = entries.len(), "importing pack entries");
+    let mut paths = Vec::with_capacity(entries.len());
+
+    for (i, entry) in entries.iter().enumerate() {
+        let mut child = Command::new("nix-store")
+            .envs(aos_nix_env())
+            .arg("--import")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .map_err(|e| format!("entry {i}: failed to spawn nix-store --import: {e}"))?;
+
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| format!("entry {i}: no stdin on child process"))?;
+
+        let nar_data = entry.nar_data.clone();
+        let write_stdin = async move {
+            stdin.write_all(&nar_data).await?;
+            stdin.shutdown().await?;
+            Ok::<(), std::io::Error>(())
+        };
+
+        let wait_for_output = child.wait_with_output();
+        let (stdin_result, output_result) = tokio::join!(write_stdin, wait_for_output);
+        let output =
+            output_result.map_err(|e| format!("entry {i}: waiting for nix-store --import: {e}"))?;
+
+        match stdin_result {
+            Err(e) => {
+                tracing::warn!(entry = i, hash = %entry.hash, error = %e, "stdin write error during pack import");
+            }
+            Ok(()) => {}
+        }
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::error!(entry = i, hash = %entry.hash, stderr = %stderr, "pack entry import failed");
+            return Err(format!(
+                "entry {i} ({}): nix-store --import failed: {stderr}",
+                entry.hash
+            ));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let trimmed = line.trim();
+            if !trimmed.is_empty() {
+                // Validate the imported path
+                if let Err(reason) = validate_imported_path(trimmed).await {
+                    return Err(format!("entry {i} ({}): {reason}", entry.hash));
+                }
+                paths.push(trimmed.to_string());
+            }
+        }
+    }
+
+    Ok(paths)
+}

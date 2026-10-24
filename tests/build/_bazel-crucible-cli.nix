@@ -4,26 +4,26 @@
   sourceInventory ? ../../tools/bazel/metadata/crucible-cli-inventory.json,
 }: let
   root = ../..;
-  packagePath = "crates/crucible/control/crucible-cli";
+  packagePath = "crates/crucible/crucible-cli";
   packages = {crucible-cli = packagePath;};
   dependencyPackages = {
-    crucible-control-client = "crates/crucible/control/crucible-control-client";
-    crucible-control-server = "crates/crucible/control/crucible-control-server";
-    crucible-control-api = "crates/crucible/control/crucible-control-api";
-    crucible-daemon = "crates/crucible/control/crucible-daemon";
-    crucible-session = "crates/crucible/control/crucible-session";
-    crucible-qemu-host = "crates/crucible/qemu/crucible-qemu-host";
-    crucible-store-s3 = "crates/crucible/storage/crucible-store-s3";
-    crucible-guest = "crates/crucible/guest/crucible-guest";
-    crucible-test-support = "crates/crucible/testing/crucible-test-support";
-    aos-linux-project-quota = "crates/shared/aos-linux-project-quota";
-    crucible-engine = "crates/crucible/engine/crucible-engine";
-    crucible-determinism = "crates/crucible/engine/crucible-determinism";
-    crucible-campaign = "crates/crucible/engine/crucible-campaign";
-    crucible-device = "crates/crucible/engine/crucible-device";
-    crucible-store = "crates/crucible/storage/crucible-store";
-    crucible-qemu-protocol = "crates/crucible/protocol/crucible-qemu-protocol";
-    crucible-qemu-shmem = "crates/crucible/protocol/crucible-qemu-shmem";
+    crucible-control-client = "crates/crucible/crucible-control-client";
+    crucible-control-server = "crates/crucible/crucible-control-server";
+    crucible-control-api = "crates/crucible/crucible-control-api";
+    crucible-daemon = "crates/crucible/crucible-daemon";
+    crucible-session = "crates/crucible/crucible-session";
+    crucible-qemu-host = "crates/crucible/crucible-qemu-host";
+    crucible-store-s3 = "crates/crucible/crucible-store-s3";
+    crucible-guest = "crates/crucible/crucible-guest";
+    crucible-test-support = "crates/crucible/crucible-test-support";
+    aos-linux-project-quota = "crates/linux/aos-linux-project-quota";
+    crucible-engine = "crates/crucible/crucible-engine";
+    crucible-determinism = "crates/crucible/crucible-determinism";
+    crucible-campaign = "crates/crucible/crucible-campaign";
+    crucible-device = "crates/crucible/crucible-device";
+    crucible-store = "crates/crucible/crucible-store";
+    crucible-qemu-protocol = "crates/crucible/crucible-qemu-protocol";
+    crucible-qemu-shmem = "crates/crucible/crucible-qemu-shmem";
   };
   cargoSource = import (root + "/pkgs/tools/crucible/_cargo-source.nix") {
     inherit (pkgs) lib;

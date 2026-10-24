@@ -147,6 +147,15 @@
     if stdenv.isCross
     then buildPackages.bash
     else bash;
+  # Ninja otherwise launches commands through the absent host /bin/sh.
+  # Scope the compatibility tool to QEMU so compiler identities stay stable.
+  buildNinja =
+    (
+      if stdenv.isCross
+      then buildPackages.ninja
+      else ninja
+    ).passthru.withCommandShell
+    buildBash;
   buildPerl =
     if stdenv.isCross
     then buildPackages.perl
@@ -235,8 +244,8 @@
     builtins.filter (name: name != "")
     (lib.splitString "\n" (builtins.readFile thoroughTestInventory))
   );
-  shmemLib = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs;
-  shmemGeneratedHeader = ../../crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h;
+  shmemLib = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/lib.rs;
+  shmemGeneratedHeader = ../../crates/crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h;
   shmemHeaderInstallPath = "include/aos/crucible/crucible_shmem_abi.h";
   shmemHeaderHash = builtins.hashFile "sha256" shmemGeneratedHeader;
   qemuSimCapability =
@@ -651,7 +660,7 @@ in
             buildPackages.gnumake
             buildPackages.pkg-config
             buildMeson
-            buildPackages.ninja
+            buildNinja
             buildBinutils
             buildPython
             buildSetuptools
@@ -666,7 +675,7 @@ in
             gnumake
             pkg-config
             meson
-            ninja
+            buildNinja
             buildBinutils
             python3
             setuptools
@@ -753,6 +762,13 @@ in
                 sed -i "1s|#!/usr/bin/python3|#!${buildPython}/bin/python3|" "$f"
               fi
             done
+            # Meson executes these generators directly, so their interpreters
+            # must also be available without host /bin paths.
+            find scripts -type f -exec sed -i \
+              -e "1s|^#![[:space:]]*/bin/sh\(.*\)|#!${buildBash}/bin/bash\1|" \
+              -e "1s|^#![[:space:]]*/bin/bash\(.*\)|#!${buildBash}/bin/bash\1|" \
+              -e "1s|^#![[:space:]]*/usr/bin/env sh\(.*\)|#!${buildBash}/bin/bash\1|" \
+              -e "1s|^#![[:space:]]*/usr/bin/env bash\(.*\)|#!${buildBash}/bin/bash\1|" {} +
             # Rewriting the generator's shebang makes it newer than the
             # release tarball's matching generated option table. Make would
             # otherwise rerun Meson introspection without configure's feature
@@ -805,7 +821,9 @@ in
               else ""
             }
 
-            ./configure \
+            # configure re-executes itself after entering build/.
+            sed -i "1s|^#!.*|#!$CONFIG_SHELL|" configure
+            "$CONFIG_SHELL" ./configure \
               --prefix=$out \
               --extra-cflags='-DQEMU_CRUCIBLE_BUILD_ID="${qemuBuildIdentity}" -DQEMU_CRUCIBLE_ATOMIC_PATCH_HASH="${atomicPatchHash}" -DQEMU_CRUCIBLE_SHMEM_HEADER_HASH="${shmemHeaderHash}"' \
               ${qemuConfigureFlagsScript}
@@ -839,7 +857,7 @@ in
             ${
               if focusedUpstreamTest != null
               then ''
-                ${ninja}/bin/ninja -C build -j$NIX_BUILD_CORES \
+                ${buildNinja}/bin/ninja -C build -j$NIX_BUILD_CORES \
                   qemu-img qemu-io qemu-nbd \
                   storage-daemon/qemu-storage-daemon qemu-system-x86_64
                 make -C build Makefile.mtest

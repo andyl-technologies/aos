@@ -1,0 +1,8 @@
+{
+  "schema": "aos.advisory-snapshot/v1",
+  "generated_on": "2026-10-22",
+  "maximum_age_days": 31,
+  "rustsec_revision": "640bf5a9f06e66d8721e8772766531fe77c8630d",
+  "native_findings": [
+  ]
+}

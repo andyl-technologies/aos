@@ -373,6 +373,30 @@ fn browse_page_response(rendered: Rendered) -> Response {
     }
 }
 
+/// Prevents credential-dependent browse responses from entering shared caches.
+fn apply_browse_cache_policy(headers: &HeaderMap, response: Response) -> Response {
+    let credentialed = headers.contains_key(header::AUTHORIZATION)
+        || crate::web::session::session_secret_from_headers(headers).is_some();
+    if credentialed {
+        private_control_response(response)
+    } else {
+        response
+    }
+}
+
+/// Applies the resolved resource visibility before considering credentials.
+fn apply_browse_resource_cache_policy(
+    headers: &HeaderMap,
+    response: Response,
+    restricted: bool,
+) -> Response {
+    if restricted {
+        private_control_response(response)
+    } else {
+        apply_browse_cache_policy(headers, response)
+    }
+}
+
 /// Dispatch a `GET` browse request under `/{slug}/-/{*rest}` to the matching
 /// session-aware [`browse`] handler.
 ///
@@ -418,11 +442,12 @@ async fn browse_dispatch(
                 }
             },
         };
-        return if rest.starts_with("api/") {
+        let response = if rest.starts_with("api/") {
             browse_response(rendered)
         } else {
             browse_page_response(rendered)
         };
+        return apply_browse_cache_policy(&headers, response);
     }
     let api_auth = auth_header(&headers);
     let api_rest = rest
@@ -576,7 +601,7 @@ async fn browse_dispatch(
             }
         },
     };
-    if api_rest.is_some() {
+    let response = if api_rest.is_some() {
         let mut response = browse_response(rendered);
         if api_auth.is_some() {
             // Exact document identity never grants another caller read access.
@@ -593,7 +618,8 @@ async fn browse_dispatch(
         response
     } else {
         browse_page_response(rendered)
-    }
+    };
+    apply_browse_cache_policy(&headers, response)
 }
 
 fn documentation_selection<'a>(path: &'a str, prefix: &str) -> Option<(&'a str, &'a str, &'a str)> {
@@ -1596,6 +1622,7 @@ async fn serve_resolved_delivery(
                 (header::LOCATION, location),
                 (header::CACHE_CONTROL, "private, no-store".to_owned()),
                 (header::REFERRER_POLICY, "no-referrer".to_owned()),
+                (header::VARY, "Authorization, Cookie".to_owned()),
             ],
         )
             .into_response();
@@ -4258,9 +4285,10 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
                     send_bridge(async move {
                         let q = browse::BrowseQuery::parse(uri.query());
                         let host_routes = host_routes.map(|Extension(routes)| routes);
-                        browse_page_response(
+                        let response = browse_page_response(
                             browse::home(&svc, &headers, &q, host_routes.as_ref()).await,
-                        )
+                        );
+                        apply_browse_cache_policy(&headers, response)
                     })
                 },
             ),
@@ -4269,23 +4297,35 @@ fn build(service: Arc<RpcService>, mount_browse: bool) -> Router {
         // the registry root has one canonical, slash-terminated URL.
         r = r.route(
             "/{slug}",
-            get(|Path(slug): Path<String>| {
-                send_bridge(async move { browse_response(Rendered::Redirect(format!("/{slug}/"))) })
+            get(|headers: HeaderMap, Path(slug): Path<String>| {
+                send_bridge(async move {
+                    let response = browse_response(Rendered::Redirect(format!("/{slug}/")));
+                    apply_browse_cache_policy(&headers, response)
+                })
             }),
         );
         r = r.route(
             "/{org}/{registry}",
             get(
                 |State(state): State<SharedState>,
+                 headers: HeaderMap,
                  Path((org, registry)): Path<(String, String)>| {
                     let svc = from_state(state);
                     send_bridge(async move {
                         let slug = format!("{org}/{registry}");
-                        match svc.db.registry_by_slug(&slug).await {
-                            Ok(Some(_)) => browse_response(Rendered::Redirect(format!("/{slug}/"))),
-                            Ok(None) => StatusCode::NOT_FOUND.into_response(),
-                            Err(_) => StatusCode::SERVICE_UNAVAILABLE.into_response(),
-                        }
+                        let (response, restricted) = match svc.db.registry_by_slug(&slug).await {
+                            Ok(Some(registry)) => {
+                                let response =
+                                    browse_response(Rendered::Redirect(format!("/{slug}/")));
+                                (
+                                    response,
+                                    registry.visibility != "public" && registry.org_id.is_some(),
+                                )
+                            }
+                            Ok(None) => (StatusCode::NOT_FOUND.into_response(), false),
+                            Err(_) => (StatusCode::SERVICE_UNAVAILABLE.into_response(), false),
+                        };
+                        apply_browse_resource_cache_policy(&headers, response, restricted)
                     })
                 },
             ),
@@ -4654,6 +4694,59 @@ mod tests {
         assert_eq!(
             response.headers().get(header::VARY),
             Some(&HeaderValue::from_static("Authorization, Cookie"))
+        );
+    }
+
+    #[test]
+    fn credentialed_browse_responses_are_never_shared_cached() {
+        let mut session_headers = HeaderMap::new();
+        session_headers.insert(
+            header::COOKIE,
+            HeaderValue::from_static("__Host-aos_session=session-secret"),
+        );
+        let page = apply_browse_cache_policy(
+            &session_headers,
+            browse_response(Rendered::Html("<p>account home</p>".into())),
+        );
+        assert_eq!(page.headers()[header::CACHE_CONTROL], "private, no-store");
+        assert_eq!(page.headers()[header::VARY], "Authorization, Cookie");
+
+        let mut bearer_headers = HeaderMap::new();
+        bearer_headers.insert(
+            header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer token"),
+        );
+        for rendered in [
+            Rendered::NotFound,
+            Rendered::TemporaryRedirect("/private/-/docs?release=1.0.0".into()),
+        ] {
+            let response = apply_browse_cache_policy(&bearer_headers, browse_response(rendered));
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                "private, no-store"
+            );
+            assert_eq!(response.headers()[header::VARY], "Authorization, Cookie");
+        }
+
+        let public = apply_browse_cache_policy(
+            &HeaderMap::new(),
+            browse_response(Rendered::Html("<p>public home</p>".into())),
+        );
+        assert!(!public.headers().contains_key(header::CACHE_CONTROL));
+        assert!(!public.headers().contains_key(header::VARY));
+
+        let restricted_redirect = apply_browse_resource_cache_policy(
+            &HeaderMap::new(),
+            browse_response(Rendered::Redirect("/private/".into())),
+            true,
+        );
+        assert_eq!(
+            restricted_redirect.headers()[header::CACHE_CONTROL],
+            "private, no-store"
+        );
+        assert_eq!(
+            restricted_redirect.headers()[header::VARY],
+            "Authorization, Cookie"
         );
     }
 

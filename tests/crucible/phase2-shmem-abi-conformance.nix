@@ -12,30 +12,30 @@
   # conformance needles resolve against the whole ABI surface.
   shmemLib =
     import ./_crucible-shmem-source.nix {inherit lib;}
-    + builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/region.rs
+    + builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/region.rs
     + import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node.rs;
+      entry = ../../crates/crucible/crucible-qemu-shmem/src/shmem/frame_node.rs;
     }
-    + builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node/frame_entry.rs
-    + builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node/futex.rs
-    + builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/frame_node/preemption_mailbox.rs
-    + builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_coverage.rs
-    + builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_guest_introspection.rs
-    + builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/ring_whitebox_marker.rs
-    + builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/src/shmem/fingerprint_sample.rs;
+    + builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/frame_node/frame_entry.rs
+    + builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/frame_node/futex.rs
+    + builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/frame_node/preemption_mailbox.rs
+    + builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/ring_coverage.rs
+    + builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/ring_guest_introspection.rs
+    + builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/ring_whitebox_marker.rs
+    + builtins.readFile ../../crates/crucible/crucible-qemu-shmem/src/shmem/fingerprint_sample.rs;
   shmemGate =
-    builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/tests/gate_abi_conformance.rs
-    + builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/tests/gate_abi_conformance/gate_cases.rs;
+    builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/gate_abi_conformance.rs
+    + builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/gate_abi_conformance/gate_cases.rs;
   preemptionMailboxGate =
-    builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/tests/preemption_mailbox.rs;
-  setupValidation = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/tests/setup_validation.rs;
-  goldenFixture = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/tests/fixtures/shmem_abi_golden.fixture;
-  generatedHeader = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h;
-  interfaceManifest = builtins.readFile ../../crates/crucible/protocol/crucible-qemu-shmem/interface/crucible-shmem-abi.toml;
+    builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/preemption_mailbox.rs;
+  setupValidation = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/setup_validation.rs;
+  goldenFixture = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/tests/fixtures/shmem_abi_golden.fixture;
+  generatedHeader = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h;
+  interfaceManifest = builtins.readFile ../../crates/crucible/crucible-qemu-shmem/interface/crucible-shmem-abi.toml;
   shmemSpec = builtins.readFile ../../docs/rfcs/0010-crucible/13-shmem-abi.md;
   defaultChecks = builtins.readFile ./default.nix;
-  gateTargets = builtins.readFile ../../crates/crucible/testing/crucible-test-support/src/gate_targets.rs;
+  gateTargets = builtins.readFile ../../crates/crucible/crucible-test-support/src/gate_targets.rs;
   gateTargetMapping = builtins.readFile ./phase1-gate-target-mapping.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -43,7 +43,7 @@
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor forbiddenFor;
 
   failures =
-    failuresFor "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs" shmemLib [
+    failuresFor "crates/crucible/crucible-qemu-shmem/src/lib.rs" shmemLib [
       {
         label = "region header magic Rust static assertion";
         needle = "const _: () = assert!(REGION_HEADER_MAGIC_OFFSET == 0);";
@@ -417,7 +417,7 @@
         needle = "pub use abi_header::generated_c_header;";
       }
     ]
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_abi_conformance.rs" shmemGate [
+    ++ failuresFor "crates/crucible/crucible-qemu-shmem/tests/gate_abi_conformance.rs" shmemGate [
       {
         label = "gate test aggregator";
         needle = "gate_abi_conformance_checks_generated_header_and_golden_vectors";
@@ -471,7 +471,7 @@
         needle = "include_str!(\"fixtures/shmem_abi_golden.fixture\")";
       }
     ]
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/setup_validation.rs" setupValidation [
+    ++ failuresFor "crates/crucible/crucible-qemu-shmem/tests/setup_validation.rs" setupValidation [
       {
         label = "current ABI explicitly rejects an unsupported region header";
         needle = "abi_version: u32::MAX";
@@ -489,7 +489,7 @@
         needle = "hot-fork-ring-image-open-or-active-header";
       }
     ]
-    ++ forbiddenFor "crates/crucible/protocol/crucible-qemu-shmem/tests/gate_abi_conformance.rs" shmemGate [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-shmem/tests/gate_abi_conformance.rs" shmemGate [
       {
         label = "ignored ABI conformance test";
         needle = "#[ignore";
@@ -503,7 +503,7 @@
         needle = "Red placeholder";
       }
     ]
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/preemption_mailbox.rs" preemptionMailboxGate [
+    ++ failuresFor "crates/crucible/crucible-qemu-shmem/tests/preemption_mailbox.rs" preemptionMailboxGate [
       {
         label = "preemption mailbox round-trip";
         needle = "preemption_mailbox_round_trips_switch_interrupt_and_acknowledgement";
@@ -513,7 +513,7 @@
         needle = "preemption_mailbox_rejects_overwrite_wrong_ack_and_invalid_window";
       }
     ]
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
+    ++ failuresFor "crates/crucible/crucible-qemu-shmem/tests/fixtures/shmem_abi_golden.fixture" goldenFixture [
       {
         label = "ABI version";
         needle = "abi_version=30";
@@ -555,7 +555,7 @@
         needle = "10032=4352474901";
       }
     ]
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/interface/crucible-shmem-abi.toml" interfaceManifest [
+    ++ failuresFor "crates/crucible/crucible-qemu-shmem/interface/crucible-shmem-abi.toml" interfaceManifest [
       {
         label = "machine-readable ABI version";
         needle = "abi_version = 30";
@@ -569,7 +569,7 @@
         needle = "selectable_reply_queue_capacity = 1";
       }
     ]
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h" generatedHeader [
+    ++ failuresFor "crates/crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h" generatedHeader [
       {
         label = "selectable reply capacity constant";
         needle = "#define CRUCIBLE_SHMEM_SELECTABLE_REPLY_QUEUE_CAPACITY 1u";
@@ -887,7 +887,7 @@
         needle = "#define CRUCIBLE_SHMEM_PREEMPTION_KIND_INTERRUPT_AT 2u";
       }
     ]
-    ++ failuresFor "crates/crucible/testing/crucible-test-support/src/gate_targets.rs" gateTargets [
+    ++ failuresFor "crates/crucible/crucible-test-support/src/gate_targets.rs" gateTargets [
       {
         label = "shmem ABI gate target implemented";
         needle = ''
@@ -1003,7 +1003,7 @@ in
               --quiet \
               > "$TMPDIR/crucible_shmem_abi.generated.h"
             diff -u \
-              crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h \
+              crates/crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h \
               "$TMPDIR/crucible_shmem_abi.generated.h"
 
             cat > "$TMPDIR/crucible-shmem-golden-expand.rs" <<'RS_EOF'
@@ -1076,7 +1076,7 @@ in
             rustc "$TMPDIR/crucible-shmem-golden-expand.rs" \
               -o "$TMPDIR/crucible-shmem-golden-expand"
             "$TMPDIR/crucible-shmem-golden-expand" \
-              crates/crucible/protocol/crucible-qemu-shmem/tests/fixtures/shmem_abi_golden.fixture \
+              crates/crucible/crucible-qemu-shmem/tests/fixtures/shmem_abi_golden.fixture \
               "$TMPDIR/shmem_abi_golden.bin"
 
             cat > "$TMPDIR/crucible-shmem-c-encode.c" <<'C_EOF'
@@ -1319,7 +1319,7 @@ in
             }
             C_EOF
             cc -std=c11 -Wall -Wextra -Werror \
-              -I crates/crucible/protocol/crucible-qemu-shmem/include \
+              -I crates/crucible/crucible-qemu-shmem/include \
               "$TMPDIR/crucible-shmem-c-encode.c" \
               -o "$TMPDIR/crucible-shmem-c-encode"
             "$TMPDIR/crucible-shmem-c-encode" "$TMPDIR/shmem_abi_c_encoded.bin"
@@ -1590,7 +1590,7 @@ in
             }
             C_EOF
             cc -std=c11 -Wall -Wextra -Werror \
-              -I crates/crucible/protocol/crucible-qemu-shmem/include \
+              -I crates/crucible/crucible-qemu-shmem/include \
               "$TMPDIR/crucible-shmem-c-roundtrip.c" \
               -o "$TMPDIR/crucible-shmem-c-roundtrip"
             "$TMPDIR/crucible-shmem-c-roundtrip" \
@@ -1604,8 +1604,8 @@ in
           script = ''
             set -eu
             mkdir -p "$out"
-            cp crates/crucible/protocol/crucible-qemu-shmem/include/crucible_shmem_abi.h "$out/crucible_shmem_abi.h"
-            cp crates/crucible/protocol/crucible-qemu-shmem/tests/fixtures/shmem_abi_golden.fixture "$out/shmem_abi_golden.fixture"
+            cp crates/crucible/crucible-qemu-shmem/include/crucible_shmem_abi.h "$out/crucible_shmem_abi.h"
+            cp crates/crucible/crucible-qemu-shmem/tests/fixtures/shmem_abi_golden.fixture "$out/shmem_abi_golden.fixture"
             cat > "$out/result" <<'RESULT'
             PASS
             check=${attrPath}

@@ -1,0 +1,27 @@
+[package]
+name = "crucible-qemu-plugin"
+version = "0.1.0"
+edition = "2024"
+license = "GPL-2.0-only"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[lints]
+workspace = true
+
+[dependencies]
+blake3 = { workspace = true }
+crucible-qemu-protocol = { path = "../crucible-qemu-protocol" }
+crucible-qemu-shmem = { path = "../crucible-qemu-shmem" }
+hex = { workspace = true }
+libc = { workspace = true }
+sha2 = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Real engine cross-checks run in a separately linked Apache process.
+crucible-qemu-protocol = { path = "../crucible-qemu-protocol", features = ["test-oracle"] }
+sha2 = { workspace = true }

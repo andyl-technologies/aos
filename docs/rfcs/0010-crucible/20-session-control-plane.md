@@ -1048,7 +1048,7 @@ pub enum SessionError {
   inter-quantum mailbox polls and a quanta-measured acknowledgement bound; wire
   `gate:control-responsive`. — satisfies [SESS-2], [SESS-3], [SESS-9];
   spec §3.
-  - Completed by `crates/crucible/control/crucible-session/src/lib.rs`: `SessionActor::run`
+  - Completed by `crates/crucible/crucible-session/src/lib.rs`: `SessionActor::run`
     delegates to a bounded `run_once` loop that polls
     `mpsc::Receiver::try_recv` before each running quantum, applies at most one
     mailbox command or calls `Engine::step_quantum` once, publishes the
@@ -1258,11 +1258,11 @@ pub enum SessionError {
   node crash — instead of entering `Stopped` with a fixed verdict, and forbid any
   surface from synthesizing a terminal status the engine did not produce.
   — satisfies [ASRT-23], [SESS-6]; spec §4, §9 of 18.
-  - Defect (audit 2026-07-28): `crucible/control/crucible-session/src/session/engine.rs` has one
+  - Defect (audit 2026-07-28): `crucible/crucible-session/src/session/engine.rs` has one
     production site that supplies a terminal outcome other than `Stopped`, and it
     is hardcoded `Outcome::Passed`; `Outcome::Failed`, `Outcome::Timeout`, and
     `Outcome::Crashed` are unreachable outside tests. The CLI compensates in
-    `crucible/control/crucible-cli/src/cli/control.rs` by reporting `Failed` when the observed
+    `crucible/crucible-cli/src/cli/control.rs` by reporting `Failed` when the observed
     outcome is `Passed` under `--until property-violation`, and by deriving
     `Timeout` from a CLI-side budget comparison. A harness whose purpose is
     finding failures therefore cannot report one from its engine.

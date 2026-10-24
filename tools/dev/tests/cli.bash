@@ -214,47 +214,47 @@ bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family guest build //exa
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:guest>"
 grep -Fq -- '-A pkgs.aosBazelGuestLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family guest rust-project //example:guest
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/guest/crucible-guest><--><build><//example:guest>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/crucible-guest><--><build><//example:guest>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family engine build //example:engine
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:engine>"
 grep -Fq -- '-A pkgs.aosBazelEngineLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family engine rust-project //example:engine
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/engine/crucible-engine><--><build><//example:engine>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/crucible-engine><--><build><//example:engine>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family quota build //example:quota
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:quota>"
 grep -Fq -- '-A pkgs.aosBazelQuotaLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family quota rust-project //example:quota
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/shared/aos-linux-project-quota><--><build><//example:quota>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/linux/aos-linux-project-quota><--><build><//example:quota>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family session build //example:session
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:session>"
 grep -Fq -- '-A pkgs.aosBazelSessionLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family session rust-project //example:session
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/control/crucible-session><--rust-project-package><crates/crucible/control/crucible-control-api><--><build><//example:session>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/crucible-session><--rust-project-package><crates/crucible/crucible-control-api><--><build><//example:session>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family control build //example:control
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:control>"
 grep -Fq -- '-A pkgs.aosBazelControlLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family control rust-project //example:control
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/control/crucible-control-client><--rust-project-package><crates/crucible/control/crucible-control-server><--><build><//example:control>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/crucible-control-client><--rust-project-package><crates/crucible/crucible-control-server><--><build><//example:control>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family qemu-host build //example:qemu-host
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:qemu-host>"
 grep -Fq -- '-A pkgs.aosBazelQemuHostLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family qemu-host rust-project //example:qemu-host
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/qemu/crucible-qemu-host><--><build><//example:qemu-host>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/crucible-qemu-host><--><build><//example:qemu-host>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family store-s3 build //example:store-s3
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:store-s3>"
 grep -Fq -- '-A pkgs.aosBazelStoreS3Launcher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family store-s3 rust-project //example:store-s3
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/storage/crucible-store-s3><--><build><//example:store-s3>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/crucible-store-s3><--><build><//example:store-s3>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family daemon build //example:daemon
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:daemon>"
 grep -Fq -- '-A pkgs.aosBazelDaemonLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family daemon rust-project //example:daemon
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/control/crucible-daemon><--><build><//example:daemon>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/crucible-daemon><--><build><//example:daemon>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family crucible-cli build //example:crucible-cli
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:crucible-cli>"
 grep -Fq -- '-A pkgs.aosBazelCrucibleCliLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family crucible-cli rust-project //example:crucible-cli
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/control/crucible-cli><--><build><//example:crucible-cli>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/crucible/crucible-cli><--><build><//example:crucible-cli>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family hub-worker build //example:hub-worker
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:hub-worker>"
 
@@ -330,30 +330,30 @@ test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/ru
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family package-manager build //example:package-manager
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:package-manager>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family package-manager rust-project //example:package-manager
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/aos/packages/aos-package-manager><--><build><//example:package-manager>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/packages/aos-package-manager><--><build><//example:package-manager>"
 
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family boot-preparation build //example:boot-preparation
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:boot-preparation>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family boot-preparation rust-project //example:boot-preparation
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/aos/boot/aos-boot-runtime><--rust-project-package><crates/aos/boot/aos-configuration-image><--rust-project-package><crates/aos/boot/aos-platform-metadata><--><build><//example:boot-preparation>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/boot/aos-boot-runtime><--rust-project-package><crates/boot/aos-configuration-image><--rust-project-package><crates/boot/aos-platform-metadata><--><build><//example:boot-preparation>"
 
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family release-coordination build //example:release-coordination
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:release-coordination>"
 
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family release-coordination rust-project //example:release-coordination
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/aos/release/aos-release-coordinator><--><build><//example:release-coordination>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/release/aos-release-coordinator><--><build><//example:release-coordination>"
 
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family registry-native build //example:registry-native
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:registry-native>"
 
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family registry-native rust-project //example:registry-native
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/aos/packages/aos-nix-cache><--rust-project-package><crates/aos/registry/aos-registry-authoring><--rust-project-package><crates/aos/registry/aos-registry-client><--><build><//example:registry-native>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/packages/aos-nix-cache><--rust-project-package><crates/registry/aos-registry-authoring><--rust-project-package><crates/registry/aos-registry-client><--><build><//example:registry-native>"
 
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family release-preparation build //example:release-preparation
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:release-preparation>"
 
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family release-preparation rust-project //example:release-preparation
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/aos/release/aos-image-finalizer><--rust-project-package><crates/aos/release/aos-package-maintenance><--rust-project-package><crates/aos/release/aos-release-signer><--><build><//example:release-preparation>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/release/aos-image-finalizer><--rust-project-package><crates/release/aos-package-maintenance><--rust-project-package><crates/release/aos-release-signer><--><build><//example:release-preparation>"
 
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family hub-client build //example:hub-client
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:hub-client>"
@@ -377,54 +377,54 @@ bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family deployment build 
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:deployment>"
 
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family deployment rust-project //example:deployment
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/aos/packages/aos-deployment><--><build><//example:deployment>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/packages/aos-deployment><--><build><//example:deployment>"
 
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family build-services build //example:build-services
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:build-services>"
 
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family build-services rust-project //example:build-services
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/aos/packages/aos-build-api><--rust-project-package><crates/aos/packages/aos-build-client><--rust-project-package><crates/aos/packages/aos-build-server><--><build><//example:build-services>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/packages/aos-build-api><--rust-project-package><crates/packages/aos-build-client><--rust-project-package><crates/packages/aos-build-server><--><build><//example:build-services>"
 
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family cli-support build //example:cli-support
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:cli-support>"
 grep -Fq -- '-A pkgs.aosBazelCliSupportLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family cli-support rust-project //example:cli-support
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/aos/cli/aos-cli-ui><--rust-project-package><crates/aos/cli/aos-closure-analysis><--rust-project-package><crates/aos/cli/aos-nix-docs><--><build><//example:cli-support>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/cli/aos-cli-ui><--rust-project-package><crates/cli/aos-closure-analysis><--rust-project-package><crates/cli/aos-nix-docs><--><build><//example:cli-support>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family activation-crucible build //example:activation-crucible
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:activation-crucible>"
 grep -Fq -- '-A pkgs.aosBazelActivationCrucibleLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family activation-crucible rust-project //example:activation-crucible
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/aos/activation/aos-activation-crucible><--><build><//example:activation-crucible>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/activation/aos-activation-crucible><--><build><//example:activation-crucible>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family activation-systemd build //example:activation-systemd
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:activation-systemd>"
 grep -Fq -- '-A pkgs.aosBazelActivationSystemdLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family activation-systemd rust-project //example:activation-systemd
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/aos/activation/aos-activation-systemd><--><build><//example:activation-systemd>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/activation/aos-activation-systemd><--><build><//example:activation-systemd>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family activation-storage build //example:activation-storage
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:activation-storage>"
 grep -Fq -- '-A pkgs.aosBazelActivationStorageLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family activation-storage rust-project //example:activation-storage
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/aos/activation/aos-activation-filesystem><--rust-project-package><crates/aos/activation/aos-activation-nix-store><--rust-project-package><crates/aos/activation/aos-activation-storage><--><build><//example:activation-storage>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/activation/aos-activation-filesystem><--rust-project-package><crates/activation/aos-activation-nix-store><--rust-project-package><crates/activation/aos-activation-storage><--><build><//example:activation-storage>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family activation-core build //example:activation-core
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:activation-core>"
 grep -Fq -- '-A pkgs.aosBazelActivationCoreLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family activation-core rust-project //example:activation-core
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/aos/activation/aos-activation><--rust-project-package><crates/aos/activation/aos-activation-config-files><--rust-project-package><crates/aos/activation/aos-activation-sysctl><--rust-project-package><crates/aos/activation/aos-activation-bpf-lsm><--rust-project-package><crates/aos/activation/aos-activation-bpf-network><--rust-project-package><crates/aos/activation/aos-activation-kubernetes><--rust-project-package><crates/aos/activation/aos-activation-nftables><--><build><//example:activation-core>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/activation/aos-activation><--rust-project-package><crates/activation/aos-activation-config-files><--rust-project-package><crates/activation/aos-activation-sysctl><--rust-project-package><crates/activation/aos-activation-bpf-lsm><--rust-project-package><crates/activation/aos-activation-bpf-network><--rust-project-package><crates/activation/aos-activation-kubernetes><--rust-project-package><crates/activation/aos-activation-nftables><--><build><//example:activation-core>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family native-foundation build //example:native-foundation
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:native-foundation>"
 grep -Fq -- '-A pkgs.aosBazelNativeFoundationLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family native-foundation rust-project //example:native-foundation
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/shared/aos-nix><--rust-project-package><crates/shared/aos-transfer><--rust-project-package><crates/shared/aos-oci><--rust-project-package><crates/shared/aos-systemd-client><--><build><//example:native-foundation>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/nix/aos-nix><--rust-project-package><crates/transfer/aos-transfer><--rust-project-package><crates/artifacts/aos-oci><--rust-project-package><crates/linux/aos-systemd-client><--><build><//example:native-foundation>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family contracts build //example:contracts
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:contracts>"
 grep -Fq -- '-A pkgs.aosBazelContractsLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family contracts rust-project //example:contracts
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/aos/release/aos-release-format><--rust-project-package><crates/aos/modules/aos-module-docs><--rust-project-package><crates/aos/packages/aos-deployment-format><--rust-project-package><crates/aos/boot/aos-storage-layout><--><build><//example:contracts>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/release/aos-release-format><--rust-project-package><crates/modules/aos-module-docs><--rust-project-package><crates/packages/aos-deployment-format><--rust-project-package><crates/boot/aos-storage-layout><--><build><//example:contracts>"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family formats build //example:formats
 test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--><build><//example:formats>"
 grep -Fq -- '-A pkgs.aosBazelFormatsLauncher ' "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-bazel-cache bazel --family formats rust-project //example:formats
-test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/shared/aos-nar><--rust-project-package><crates/aos/modules/aos-module-format><--rust-project-package><crates/aos/registry/aos-registry-format><--><build><//example:formats>"
+test "$(cat "$AOS_DEV_TEST_BAZEL_ARGS_LOG")" = "<--rust-project-output><$root/rust-project.json><--rust-project-package><crates/artifacts/aos-nar><--rust-project-package><crates/modules/aos-module-format><--rust-project-package><crates/registry/aos-registry-format><--><build><//example:formats>"
 if bash "$root/tools/dev/aos-dev" bazel --family unknown build //example:guest 2>/dev/null; then
   echo 'Bazel accepted an unknown target configuration' >&2
   exit 1
@@ -490,7 +490,7 @@ test "$(grep -Fxc -- '<--help><argument with spaces><>' "$AOS_DEV_TEST_TOOL_ARGS
 test "$(grep -Fxc -- '--version' "$AOS_DEV_TEST_RELEASE_LOG")" = 3
 grep -Fq -- '-A pkgs.aos.apm --no-out-link' "$AOS_DEV_TEST_LOG"
 grep -Fq -- '-A pkgs.aos.apr --no-out-link' "$AOS_DEV_TEST_LOG"
-if grep -Eq 'shared(Go|Bazel|Rust|Accache)|extra-sandbox-paths' "$AOS_DEV_TEST_LOG"; then
+if grep -Eq 'shared(Go|Bazel|Rust|Accache|Image)|extra-sandbox-paths' "$AOS_DEV_TEST_LOG"; then
   echo 'tool execution changed production derivation identities' >&2
   exit 1
 fi
@@ -507,6 +507,7 @@ grep -Fxq 'fallback = true' "$AOS_DEV_TEST_NIX_CONFIG_LOG"
   aos_dev_bazel_cache=true
   aos_dev_rust_target_cache=true
   aos_dev_rust_incremental=true
+  aos_dev_image_cache=true
   source "$root/tools/dev/lib/common.bash"
   source "$root/tools/dev/lib/cache.bash"
   source "$root/tools/dev/lib/cache-report.bash"
@@ -515,6 +516,7 @@ grep -Fxq 'fallback = true' "$AOS_DEV_TEST_NIX_CONFIG_LOG"
   aos_dev_cache_prepare() { :; }
   aos_dev_nix_build -A pkgs.alpha --no-out-link >/dev/null
 )
+grep -Fq -- '--argstr sharedImageCacheDir /aos-build-cache/images' "$AOS_DEV_TEST_LOG"
 grep -Fq -- '--argstr sharedGoCacheDir /aos-build-cache/go' "$AOS_DEV_TEST_LOG"
 grep -Fq -- '--argstr sharedBazelCacheDir /aos-build-cache/bazel' "$AOS_DEV_TEST_LOG"
 grep -Fq -- '--argstr sharedRustTargetDir /aos-build-cache/rust' "$AOS_DEV_TEST_LOG"
@@ -523,8 +525,8 @@ grep -Fq -- '--option extra-sandbox-paths /aos-build-cache/go=' "$AOS_DEV_TEST_L
 
 : > "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-go-cache --no-bazel-cache --no-rust-target-cache \
-  --no-accache --rust-incremental build package alpha --no-out-link >/dev/null
-if grep -Eq -- 'shared(GoCacheDir|BazelCacheDir|RustTargetDir|AccacheDir|AccacheStateDir)' "$AOS_DEV_TEST_LOG"; then
+  --no-image-cache --no-accache --rust-incremental build package alpha --no-out-link >/dev/null
+if grep -Eq -- 'shared(GoCacheDir|BazelCacheDir|RustTargetDir|AccacheDir|AccacheStateDir|ImageCacheDir)' "$AOS_DEV_TEST_LOG"; then
   echo 'disabled directory cache received a Nix path' >&2
   exit 1
 fi
@@ -536,8 +538,8 @@ fi
 
 : > "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-go-cache --no-bazel-cache --no-rust-target-cache \
-  --no-accache --no-rust-incremental build package alpha --no-out-link >/dev/null
-if grep -Eq -- 'shared(GoCacheDir|BazelCacheDir|RustTargetDir|AccacheDir|AccacheStateDir)|sharedRustIncremental|extra-sandbox-paths' "$AOS_DEV_TEST_LOG"; then
+  --no-image-cache --no-accache --no-rust-incremental build package alpha --no-out-link >/dev/null
+if grep -Eq -- 'shared(GoCacheDir|BazelCacheDir|RustTargetDir|AccacheDir|AccacheStateDir|ImageCacheDir)|sharedRustIncremental|extra-sandbox-paths' "$AOS_DEV_TEST_LOG"; then
   echo 'all-disabled build changed ordinary Nix arguments' >&2
   exit 1
 fi
@@ -546,13 +548,13 @@ fi
 AOS_DEV_GO_CACHE_DIR=/custom/go-cache \
   AOS_DEV_CACHE_DIR="$scratch/custom-cache" \
   bash "$root/tools/dev/aos-dev" --no-bazel-cache --no-rust-target-cache \
-    --no-accache --no-rust-incremental build package alpha --no-out-link >/dev/null
+    --no-image-cache --no-accache --no-rust-incremental build package alpha --no-out-link >/dev/null
 grep -Fq -- '--argstr sharedGoCacheDir /custom/go-cache' "$AOS_DEV_TEST_LOG"
 grep -Fq -- "/custom/go-cache=$scratch/custom-cache/go" "$AOS_DEV_TEST_LOG"
 
 : > "$AOS_DEV_TEST_LOG"
-bash "$root/tools/dev/aos-dev" --release --go-cache build package alpha --no-out-link >/dev/null
-if grep -Fq -- 'sharedGoCacheDir' "$AOS_DEV_TEST_LOG"; then
+bash "$root/tools/dev/aos-dev" --release --go-cache --image-cache build package alpha --no-out-link >/dev/null
+if grep -Eq -- 'shared(Go|Image)CacheDir' "$AOS_DEV_TEST_LOG"; then
   echo 'release mode allowed an enabling cache flag' >&2
   exit 1
 fi
@@ -568,6 +570,15 @@ grep -Fq -- '--argstr sharedAccacheDir /custom/actions' "$AOS_DEV_TEST_LOG"
 grep -Fq -- '--argstr sharedAccacheStateDir /custom/action-state' "$AOS_DEV_TEST_LOG"
 grep -Fq -- "/custom/actions=$scratch/compiler-cache/accache" "$AOS_DEV_TEST_LOG"
 grep -Fq -- '--arg sharedRustIncremental true' "$AOS_DEV_TEST_LOG"
+
+# Image storage cannot alias any other enabled sandbox cache.
+for duplicate in /aos-build-cache/go /aos-build-cache/bazel /aos-build-cache/rust /aos-build-cache/accache /aos-build-cache/accache-state; do
+  if AOS_DEV_IMAGE_CACHE_DIR=$duplicate bash "$root/tools/dev/aos-dev" build package alpha --no-out-link >"$scratch/duplicate.log" 2>&1; then
+    echo 'duplicate image cache path was accepted' >&2
+    exit 1
+  fi
+  grep -Fq 'sandbox cache paths must be distinct' "$scratch/duplicate.log"
+done
 
 # The broad enable flag restores every backend after individual opt-outs.
 : > "$AOS_DEV_TEST_LOG"

@@ -52,6 +52,9 @@
     "control"
     "qemu-host"
     "qemu-gpl-production"
+    "qemu-gpl-tests"
+    "qemu-gpl-plugin-tests"
+    "qemu-test-oracle-host"
     "store-s3"
     "daemon"
     "crucible-cli"
@@ -101,16 +104,16 @@ in rec {
     pname = "aos-bazel-external-rust-pilot";
     workspace = pkgs.mkAosBazelWorkspace {
       root = ../..;
-      sourceDirectories = ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/testing" "third_party/rust" "crates/crucible/engine/crucible-determinism"];
+      sourceDirectories = ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/testing" "third_party/rust" "crates/crucible/crucible-determinism"];
       repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.core;
-      analysisTargets = ["//crates/crucible/engine/crucible-determinism:unit"];
+      analysisTargets = ["//crates/crucible/crucible-determinism:unit"];
     };
     targets = [
-      "//crates/crucible/engine/crucible-determinism:unit"
-      "//crates/crucible/engine/crucible-determinism:doc"
-      "//crates/crucible/engine/crucible-determinism:clippy"
-      "//crates/crucible/engine/crucible-determinism:format"
-      "//crates/crucible/engine/crucible-determinism:documentation"
+      "//crates/crucible/crucible-determinism:unit"
+      "//crates/crucible/crucible-determinism:doc"
+      "//crates/crucible/crucible-determinism:clippy"
+      "//crates/crucible/crucible-determinism:format"
+      "//crates/crucible/crucible-determinism:documentation"
     ];
   };
   all = pkgs.runCommand "aos-bazel-external-rust-checks" {buildDeps = [specifications core];} ''

@@ -46,12 +46,13 @@ async fn deployment_reports_require_the_exact_live_enrollment() {
         .await
         .unwrap();
     let other_token = JwtKeys::from_secret(b"injected-write-flow-test-key")
-        .mint(
+        .mint_browser_session(
             &TokenAuth {
                 token_id: "other-reporter".into(),
                 owner: Principal::user(other_user),
                 scope: Scope::root(),
                 permissions: Vec::new(),
+                expires_at: None,
             },
             3600,
         )
@@ -176,6 +177,7 @@ fn streamed_producer_document_is_inert() {
             strong_etag: None,
             snapshot_lease_id: None,
         },
+        true,
     )
     .unwrap();
     assert_eq!(
@@ -191,6 +193,62 @@ fn streamed_producer_document_is_inert() {
             .get(axum::http::header::CONTENT_DISPOSITION)
             .and_then(|value| value.to_str().ok()),
         Some("attachment")
+    );
+}
+
+#[test]
+fn private_machine_objects_disable_shared_cache_storage() {
+    for path in [
+        "HEAD",
+        "nar/example.nar",
+        "example.narinfo",
+        "nix-cache-info",
+    ] {
+        let response = RpcService::streamed_surface_response(
+            path,
+            StreamedRead {
+                body: axum::body::Body::from("data"),
+                total: 4,
+                range: None,
+                strong_etag: None,
+                snapshot_lease_id: None,
+            },
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            response.headers()[axum::http::header::CACHE_CONTROL],
+            "private, no-store",
+            "private response for {path}"
+        );
+        assert_eq!(
+            response.headers()[axum::http::header::VARY],
+            "Authorization, Cookie",
+            "credential variance for {path}"
+        );
+    }
+
+    let partial = RpcService::streamed_surface_response(
+        "nar/example.nar",
+        StreamedRead {
+            body: axum::body::Body::from("da"),
+            total: 4,
+            range: Some((0, 1)),
+            strong_etag: None,
+            snapshot_lease_id: None,
+        },
+        false,
+    )
+    .unwrap();
+    assert_eq!(partial.status(), axum::http::StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        partial.headers()[axum::http::header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    assert_eq!(
+        partial.headers()[axum::http::header::VARY],
+        "Authorization, Cookie"
     );
 }
 
@@ -324,12 +382,13 @@ async fn signing_usage_enforces_authz_cas_and_apply_replay() {
         .unwrap()
         .unwrap();
     let token = jwt_keys
-        .mint(
+        .mint_browser_session(
             &TokenAuth {
                 token_id: "keys-manager".into(),
                 owner: Principal::user(user_id),
                 scope: Scope::root(),
                 permissions: vec![Permission::KeysManage],
+                expires_at: None,
             },
             3600,
         )

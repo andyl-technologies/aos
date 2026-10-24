@@ -1,7 +1,7 @@
 ##! Builds the complete fifteen-program CLI suite before production cutover.
 {pkgs}: let
   declarations = import ./_bazel-aos-cli.nix {inherit pkgs;};
-  prefix = "//crates/aos/cli/aos-cli:";
+  prefix = "//crates/cli/aos-cli:";
   targets = map (name: prefix + name) ["production_binaries" "production_suite_license_closure"];
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../..;

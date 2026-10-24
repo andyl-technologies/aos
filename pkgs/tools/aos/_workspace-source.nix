@@ -38,7 +38,7 @@ in
     filter = path: type: let
       pathString = toString path;
       base = baseNameOf path;
-      daemonRunState = "${cratesRoot}/crucible/control/crucible-daemon/run-state";
+      daemonRunState = "${cratesRoot}/crucible/crucible-daemon/run-state";
       generatedDir =
         type
         == "directory"

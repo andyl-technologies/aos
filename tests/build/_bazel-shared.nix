@@ -4,9 +4,14 @@
   sourceInventory ? ../../tools/bazel/metadata/shared-inventory.json,
 }: let
   packages = ["aos-core" "aos-artifact-evidence" "aos-oci-types"];
-  label = name: "//crates/shared/${name}";
+  packagePaths = {
+    aos-core = "crates/core/aos-core";
+    aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
+    aos-oci-types = "crates/artifacts/aos-oci-types";
+  };
+  label = name: "//${packagePaths.${name}}";
   integrationTargets = name: let
-    directory = ../../crates/shared + "/${name}/tests";
+    directory = ../.. + "/${packagePaths.${name}}/tests";
     entries =
       if builtins.pathExists directory
       then builtins.readDir directory
@@ -24,7 +29,7 @@
         "tools/bazel/testing"
         "third_party/rust"
       ]
-      ++ map (name: "crates/shared/${name}") packages);
+      ++ map (name: packagePaths.${name}) packages);
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.core;
     analysisTargets = map (name: "${label name}:unit") packages;
   };
@@ -59,7 +64,7 @@ in rec {
       name = "aos-shared-parity-tools";
       filter = path: type: type == "regular" && builtins.elem (baseNameOf path) ["verify_protocol.py" "verify_pilot.py"];
     };
-    packageOptions = pkgs.lib.concatMap (name: ["--package-path" "${name}=crates/shared/${name}"]) packages;
+    packageOptions = pkgs.lib.concatMap (name: ["--package-path" "${name}=${packagePaths.${name}}"]) packages;
   in
     pkgs.runCommand "aos-bazel-shared-cargo-parity" {buildDeps = [pkgs.python3];} ''
       mkdir -p "$out"

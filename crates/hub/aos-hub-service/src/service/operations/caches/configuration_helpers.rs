@@ -483,7 +483,12 @@ impl RpcService {
             return Ok(Some(SurfaceObjectResponse {
                 bytes: body.into_bytes(),
                 content_type: keymap::content_type(path),
-                cache_control: keymap::cache_control(path),
+                cache_control: if cache.visibility == "public" {
+                    keymap::cache_control(path)
+                } else {
+                    "private, no-store"
+                },
+                vary: (cache.visibility != "public").then_some("Authorization, Cookie"),
                 redirect: None,
             }));
         }
@@ -499,7 +504,12 @@ impl RpcService {
             PlacementReadOutcome::Found(read) => Ok(Some(SurfaceObjectResponse {
                 bytes: read.value,
                 content_type: keymap::content_type(path),
-                cache_control: keymap::cache_control(path),
+                cache_control: if cache.visibility == "public" {
+                    keymap::cache_control(path)
+                } else {
+                    "private, no-store"
+                },
+                vary: (cache.visibility != "public").then_some("Authorization, Cookie"),
                 redirect: None,
             })),
             PlacementReadOutcome::NotFound => Ok(None),

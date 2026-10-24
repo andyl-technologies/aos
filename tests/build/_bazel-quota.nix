@@ -3,11 +3,11 @@
   pkgs,
   sourceInventory ? ../../tools/bazel/metadata/quota-inventory.json,
 }: let
-  label = "//crates/shared/aos-linux-project-quota";
+  label = "//crates/linux/aos-linux-project-quota";
   family = import ./_bazel-rust-family.nix {
     inherit pkgs sourceInventory;
     pname = "aos-bazel-quota";
-    packages.aos-linux-project-quota = "crates/shared/aos-linux-project-quota";
+    packages.aos-linux-project-quota = "crates/linux/aos-linux-project-quota";
     dependencyProfile = "quota";
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.quota;
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];

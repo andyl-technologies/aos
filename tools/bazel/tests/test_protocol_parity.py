@@ -17,7 +17,7 @@ class ProtocolParityTests(unittest.TestCase):
         self.root = Path(self.scratch.name)
         self.messages = self.root / "messages.jsonl"
         self.inventory = self.root / "inventory.json"
-        self.label = "//crates/crucible/protocol/crucible-qemu-protocol:unit"
+        self.label = "//crates/crucible/crucible-qemu-protocol:unit"
         self.events = [
             {
                 "reason": "compiler-artifact",
@@ -64,7 +64,7 @@ class ProtocolParityTests(unittest.TestCase):
         self.inventory.write_text(json.dumps({"configured_targets": self.reports}))
         return verify_protocol.compare_features(
             self.inventory, self.messages,
-            {"crucible-qemu-protocol": "crates/crucible/protocol/crucible-qemu-protocol"},
+            {"crucible-qemu-protocol": "crates/crucible/crucible-qemu-protocol"},
             required_packages=required_packages,
         )
 
@@ -132,7 +132,7 @@ class ProtocolParityTests(unittest.TestCase):
             "manifest_path": "/source/crucible-qemu-shmem/Cargo.toml",
         })
         self.events.append(second)
-        other_label = "//crates/crucible/protocol/crucible-qemu-shmem:unit"
+        other_label = "//crates/crucible/crucible-qemu-shmem:unit"
         self.results.append({"identity": {"label": other_label}})
         self.reports.append({
             "label": other_label.removesuffix(":unit") + ":lib",
@@ -331,7 +331,7 @@ class ProtocolParityTests(unittest.TestCase):
         self.compare()
         log = self.root / "cargo-tests.log"
         log.write_text("running 1 test\ntest probe ... ok\n")
-        packages = {"crucible-qemu-protocol": "crates/crucible/protocol/crucible-qemu-protocol"}
+        packages = {"crucible-qemu-protocol": "crates/crucible/crucible-qemu-protocol"}
 
         result = verify_protocol.compare(
             self.root, self.inventory, self.messages, packages, cargo_log=log,
@@ -404,14 +404,14 @@ class ProtocolParityTests(unittest.TestCase):
     def test_other_package_locations_use_the_same_parity_rules(self):
         self.events[0]["package_id"] = "path+file:///source/aos-core#0.1.0"
         self.events[0]["manifest_path"] = "/source/aos-core/Cargo.toml"
-        label = "//crates/shared/aos-core:unit"
+        label = "//crates/core/aos-core:unit"
         self.results[0]["identity"]["label"] = label
-        self.reports[1]["label"] = "//crates/shared/aos-core:lib"
+        self.reports[1]["label"] = "//crates/core/aos-core:lib"
         # Write the same fixture inputs, then select the other package root.
         self.messages.write_text("".join(json.dumps(event) + "\n" for event in self.events))
         self.inventory.write_text(json.dumps({"configured_targets": self.reports}))
         (self.root / "index.json").write_text(json.dumps({"results": self.results}))
-        result = verify_protocol.compare(self.root, self.inventory, self.messages, {"aos-core": "crates/shared/aos-core"})
+        result = verify_protocol.compare(self.root, self.inventory, self.messages, {"aos-core": "crates/core/aos-core"})
         self.assertEqual(result["first_party_features"], {"aos-core": [()]})
 
     def test_omitted_cargo_example_fails(self):
@@ -487,7 +487,7 @@ class ProtocolParityTests(unittest.TestCase):
         self.reports.append({
             "label": self.label.replace(":unit", ":example") + suffix,
             "kind": "rust_binary", "features": [],
-            "sources": ["crates/crucible/protocol/crucible-qemu-protocol/examples/example.rs"],
+            "sources": ["crates/crucible/crucible-qemu-protocol/examples/example.rs"],
         })
         self.results[0]["identity"]["label"] += suffix
         self.messages.write_text("".join(json.dumps(event) + "\n" for event in self.events))
@@ -529,11 +529,11 @@ class DoctestParityTests(unittest.TestCase):
                 )
 
     def test_item_qualified_doctests_preserve_the_item_and_compile_status(self):
-        cargo = "test crucible/engine/crucible-device/src/ninep/tree.rs - ninep::tree::qid_path (line 398) - compile ... ok\n"
-        bazel = "test /build/workspace/crates/crucible/engine/crucible-device/src/ninep/tree.rs - ninep::tree::qid_path (line 398) - compile ... ok\n"
+        cargo = "test crucible/crucible-device/src/ninep/tree.rs - ninep::tree::qid_path (line 398) - compile ... ok\n"
+        bazel = "test /build/workspace/crates/crucible/crucible-device/src/ninep/tree.rs - ninep::tree::qid_path (line 398) - compile ... ok\n"
         summary = "test result: ok. 1 passed; 0 failed; 0 ignored;\n"
         expected = {"src/ninep/tree.rs - ninep::tree::qid_path (line 398) - compile": "ok"}
-        package = "crates/crucible/engine/crucible-device"
+        package = "crates/crucible/crucible-device"
         self.assertEqual(verify_protocol.doctest_cases(cargo + summary, package), expected)
         self.assertEqual(verify_protocol.doctest_cases(bazel + summary, package), expected)
 

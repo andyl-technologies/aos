@@ -7,7 +7,7 @@ filegroup(
         "aos/cache/v1/cache.proto",
         "aos/gc/v1/gc.proto",
     ],
-    visibility = ["//crates/aos/packages/aos-build-api:__pkg__"],
+    visibility = ["//crates/packages/aos-build-api:__pkg__"],
 )
 
 filegroup(

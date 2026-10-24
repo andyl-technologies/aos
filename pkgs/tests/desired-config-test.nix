@@ -70,7 +70,7 @@ in
             "argv" = [
               "@python@"
               "-c"
-              "import pathlib, sys\nif pathlib.Path(\"@out@/etc/aos/packages/desired-config-test/config.env\").exists():\n    raise SystemExit(2)\nsys.stderr.write(\"desired-config-test rejected invalid input\\n\")\nraise SystemExit(7)\n"
+              "import pathlib, sys\nif pathlib.Path(\"@out@/etc/packages/desired-config-test/config.env\").exists():\n    raise SystemExit(2)\nsys.stderr.write(\"desired-config-test rejected invalid input\\n\")\nraise SystemExit(7)\n"
             ];
             "exit_code" = 7;
             "observes_rejection" = true;

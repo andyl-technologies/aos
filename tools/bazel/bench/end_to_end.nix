@@ -29,24 +29,24 @@
   workspace = pkgs.mkAosBazelWorkspace {
     root = rootPath;
     sourceInventory = rootPath + "/tools/bazel/metadata/boot-pilot-inventory.json";
-    analysisTargets = ["//crates/aos/boot/aos-boot-identity:package" "//crates/aos/boot/aos-boot-identity:unit"];
+    analysisTargets = ["//crates/boot/aos-boot-identity:package" "//crates/boot/aos-boot-identity:unit"];
   };
   build = measureBuilder (pkgs.mkAosBazelBuild {
     pname = "aos-bazel-boot-measurement-build";
     inherit workspace cacheNamespace;
-    targets = ["//crates/aos/boot/aos-boot-identity:package"];
+    targets = ["//crates/boot/aos-boot-identity:package"];
   });
   tests = measureBuilder (pkgs.mkAosBazelCheck {
     pname = "aos-bazel-boot-measurement-tests";
     inherit workspace cacheNamespace;
-    targets = ["//crates/aos/boot/aos-boot-identity:unit"];
+    targets = ["//crates/boot/aos-boot-identity:unit"];
   });
   package = pkgs.mkAosBazelPackage {
     pname = "aos-boot-identity";
     version = "0.1.0";
     inherit build;
     runtimeDeps = [pkgs.gcc-libs];
-    packageLabel = "//crates/aos/boot/aos-boot-identity:package";
+    packageLabel = "//crates/boot/aos-boot-identity:package";
   };
   candidate = pkgs.aos-boot-identity.overrideAttrs (previous: {
     buildDeps = previous.buildDeps ++ [package tests pkgs.python3];

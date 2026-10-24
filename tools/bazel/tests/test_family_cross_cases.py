@@ -8,7 +8,7 @@ from verify_family_cross import platform_case_differences
 
 class PlatformCaseTests(unittest.TestCase):
     def test_quota_family_keeps_its_exact_native_cases(self):
-        expected = {"//crates/shared/aos-linux-project-quota:unit": {
+        expected = {"//crates/linux/aos-linux-project-quota:unit": {
             "executed": ["kernel_abi_layout_and_project_commands_are_frozen"], "ignored": [],
         }}
         original = copy.deepcopy(expected)
@@ -19,7 +19,7 @@ class PlatformCaseTests(unittest.TestCase):
         self.assertEqual(expected, original)
 
     def test_protocol_family_retains_the_foreign_rejection_contract(self):
-        label = "//crates/crucible/protocol/crucible-qemu-shmem:region_layout"
+        label = "//crates/crucible/crucible-qemu-shmem:region_layout"
         native = "region_allocation_initializes_slots_rings_and_storage"
         foreign = "region_allocation_rejects_unpinned_developer_targets"
         expected = {label: {"executed": [native, "stable_case"], "ignored": ["ignored_case"]}}
@@ -31,7 +31,7 @@ class PlatformCaseTests(unittest.TestCase):
         self.assertEqual(differences, {label: {"native_only": [native], "foreign_only": [foreign]}})
 
     def test_protocol_drift_requires_review(self):
-        label = "//crates/crucible/protocol/crucible-qemu-shmem:region_layout"
+        label = "//crates/crucible/crucible-qemu-shmem:region_layout"
         native = "region_allocation_initializes_slots_rings_and_storage"
         foreign = "region_allocation_rejects_unpinned_developer_targets"
         for cases in [[], [native, native], [native, foreign], ["renamed_case"]]:

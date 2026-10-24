@@ -420,15 +420,15 @@
     repositories = aosBazelRepositories // aosBazelRustRepositories.guest // {aos_native = aosBazelGuestLibraries;};
     dependencyProfile = "guest";
     rustcFlags = ["-Copt-level=3" "-Cdebuginfo=0" "-Ctarget-feature=+crt-static" "-Crelocation-model=static"];
-    analysisTargets = ["//crates/crucible/guest/crucible-guest:unit"];
+    analysisTargets = ["//crates/crucible/crucible-guest:unit"];
   };
   aosBazelQuotaWorkspace = mkAosBazelWorkspace {
     root = ../../..;
-    sourceDirectories = ["tools/bazel" "third_party/rust" "crates/shared/aos-linux-project-quota"];
+    sourceDirectories = ["tools/bazel" "third_party/rust" "crates/linux/aos-linux-project-quota"];
     repositories = aosBazelRepositories // aosBazelRustRepositories.quota;
     dependencyProfile = "quota";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/shared/aos-linux-project-quota:unit"];
+    analysisTargets = ["//crates/linux/aos-linux-project-quota:unit"];
   };
   aosBazelEngineWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -436,7 +436,7 @@
     repositories = aosBazelRepositories // aosBazelRustRepositories.engine // {aos_native = aosBazelStoreLibraries;};
     dependencyProfile = "engine";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/crucible/engine/crucible-engine:unit"];
+    analysisTargets = ["//crates/crucible/crucible-engine:unit"];
   };
   aosBazelSessionWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -444,7 +444,7 @@
     repositories = aosBazelRepositories // aosBazelRustRepositories.session // {aos_native = aosBazelStoreLibraries;};
     dependencyProfile = "session";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/crucible/control/crucible-session:unit" "//crates/crucible/control/crucible-control-api:unit"];
+    analysisTargets = ["//crates/crucible/crucible-session:unit" "//crates/crucible/crucible-control-api:unit"];
   };
   aosBazelControlWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -452,7 +452,7 @@
     repositories = aosBazelRepositories // aosBazelRustRepositories.control // {aos_native = aosBazelStoreLibraries;};
     dependencyProfile = "control";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/crucible/control/crucible-control-client:unit" "//crates/crucible/control/crucible-control-server:unit"];
+    analysisTargets = ["//crates/crucible/crucible-control-client:unit" "//crates/crucible/crucible-control-server:unit"];
   };
   aosBazelHubWorkerWorkspace =
     (import ../../../tests/build/_bazel-hub-worker.nix {
@@ -496,7 +496,7 @@
     }).workspace;
   aosBazelHubConsoleWorkspace = mkAosBazelWorkspace {
     root = ../../..;
-    sourceDirectories = ["tools/bazel" "third_party/rust" "api/proto" "crates/shared/aos-artifact-evidence" "crates/shared/aos-core" "crates/hub/aos-hub-api" "crates/hub/aos-hub-console" "crates/hub/aos-hub-ui" "crates/aos/modules/aos-module-docs" "crates/aos/modules/aos-module-format" "crates/shared/aos-oci-types" "crates/aos/registry/aos-registry-format"];
+    sourceDirectories = ["tools/bazel" "third_party/rust" "api/proto" "crates/artifacts/aos-artifact-evidence" "crates/core/aos-core" "crates/hub/aos-hub-api" "crates/hub/aos-hub-console" "crates/hub/aos-hub-ui" "crates/modules/aos-module-docs" "crates/modules/aos-module-format" "crates/artifacts/aos-oci-types" "crates/registry/aos-registry-format"];
     repositories =
       aosBazelRepositories
       // aosBazelRustRepositories.hub-console
@@ -509,7 +509,7 @@
   };
   aosBazelHubConsoleWasmWorkspace = mkAosBazelWorkspace {
     root = ../../..;
-    sourceDirectories = ["tools/bazel" "third_party/rust" "api/proto" "crates/shared/aos-artifact-evidence" "crates/shared/aos-core" "crates/hub/aos-hub-api" "crates/hub/aos-hub-console" "crates/hub/aos-hub-ui" "crates/aos/modules/aos-module-docs" "crates/aos/modules/aos-module-format" "crates/shared/aos-oci-types" "crates/aos/registry/aos-registry-format"];
+    sourceDirectories = ["tools/bazel" "third_party/rust" "api/proto" "crates/artifacts/aos-artifact-evidence" "crates/core/aos-core" "crates/hub/aos-hub-api" "crates/hub/aos-hub-console" "crates/hub/aos-hub-ui" "crates/modules/aos-module-docs" "crates/modules/aos-module-format" "crates/artifacts/aos-oci-types" "crates/registry/aos-registry-format"];
     repositories =
       aosBazelRepositories
       // aosBazelRustRepositories.hub-console-wasm
@@ -528,15 +528,15 @@
     sourceDirectories = [
       "tools/bazel"
       "third_party/rust"
-      "crates/aos/modules/aos-module-docs"
-      "crates/aos/modules/aos-module-format"
-      "crates/aos/registry/aos-registry-format"
-      "crates/aos/release/aos-release-format"
+      "crates/modules/aos-module-docs"
+      "crates/modules/aos-module-format"
+      "crates/registry/aos-registry-format"
+      "crates/release/aos-release-format"
       "crates/hub/aos-hub-db"
       "crates/hub/aos-hub-model"
-      "crates/shared/aos-artifact-evidence"
-      "crates/shared/aos-core"
-      "crates/shared/aos-oci-types"
+      "crates/artifacts/aos-artifact-evidence"
+      "crates/core/aos-core"
+      "crates/artifacts/aos-oci-types"
     ];
     repositories = aosBazelRepositories // aosBazelRustRepositories.hub-db-tests // {aos_native = aosBazelStoreLibraries;};
     dependencyProfile = "hub-db-tests";
@@ -548,15 +548,15 @@
     sourceDirectories = [
       "tools/bazel"
       "third_party/rust"
-      "crates/aos/modules/aos-module-docs"
-      "crates/aos/modules/aos-module-format"
-      "crates/aos/registry/aos-registry-format"
-      "crates/aos/release/aos-release-format"
+      "crates/modules/aos-module-docs"
+      "crates/modules/aos-module-format"
+      "crates/registry/aos-registry-format"
+      "crates/release/aos-release-format"
       "crates/hub/aos-hub-db"
       "crates/hub/aos-hub-model"
-      "crates/shared/aos-artifact-evidence"
-      "crates/shared/aos-core"
-      "crates/shared/aos-oci-types"
+      "crates/artifacts/aos-artifact-evidence"
+      "crates/core/aos-core"
+      "crates/artifacts/aos-oci-types"
     ];
     repositories = aosBazelRepositories // aosBazelRustRepositories.hub-db-all-features-tests // {aos_native = aosBazelStoreLibraries;};
     dependencyProfile = "hub-db-all-features-tests";
@@ -570,29 +570,29 @@
       "third_party/rust"
       "api/proto"
       "crates/hub/aos-hub-native"
-      "crates/aos/activation/aos-activation"
-      "crates/aos/boot/aos-platform-metadata"
-      "crates/aos/boot/aos-storage-layout"
-      "crates/aos/cli/aos-cli-ui"
-      "crates/aos/modules/aos-module-docs"
-      "crates/aos/modules/aos-module-format"
-      "crates/aos/packages/aos-deployment"
-      "crates/aos/packages/aos-deployment-format"
-      "crates/aos/packages/aos-nix-cache"
-      "crates/aos/packages/aos-package-manager"
-      "crates/aos/registry/aos-registry-authoring"
-      "crates/aos/registry/aos-registry-client"
-      "crates/aos/registry/aos-registry-format"
-      "crates/aos/release/aos-release-format"
+      "crates/activation/aos-activation"
+      "crates/boot/aos-platform-metadata"
+      "crates/boot/aos-storage-layout"
+      "crates/cli/aos-cli-ui"
+      "crates/modules/aos-module-docs"
+      "crates/modules/aos-module-format"
+      "crates/packages/aos-deployment"
+      "crates/packages/aos-deployment-format"
+      "crates/packages/aos-nix-cache"
+      "crates/packages/aos-package-manager"
+      "crates/registry/aos-registry-authoring"
+      "crates/registry/aos-registry-client"
+      "crates/registry/aos-registry-format"
+      "crates/release/aos-release-format"
       "crates/hub/aos-hub-api"
       "crates/hub/aos-hub-client"
-      "crates/shared/aos-artifact-evidence"
-      "crates/shared/aos-core"
-      "crates/shared/aos-nar"
-      "crates/shared/aos-nix"
-      "crates/shared/aos-oci"
-      "crates/shared/aos-oci-types"
-      "crates/shared/aos-transfer"
+      "crates/artifacts/aos-artifact-evidence"
+      "crates/core/aos-core"
+      "crates/artifacts/aos-nar"
+      "crates/nix/aos-nix"
+      "crates/artifacts/aos-oci"
+      "crates/artifacts/aos-oci-types"
+      "crates/transfer/aos-transfer"
     ];
     repositories =
       aosBazelRepositories
@@ -605,28 +605,28 @@
       };
     dependencyProfile = "package-manager-tests";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/aos/packages/aos-package-manager:unit"];
+    analysisTargets = ["//crates/packages/aos-package-manager:unit"];
   };
   aosBazelBootPreparationWorkspace = mkAosBazelWorkspace {
     root = ../../..;
     sourceDirectories = [
       "tools/bazel"
       "third_party/rust"
-      "crates/aos/activation/aos-activation"
-      "crates/aos/boot/aos-boot-identity"
-      "crates/aos/boot/aos-boot-runtime"
-      "crates/aos/boot/aos-configuration-image"
-      "crates/aos/boot/aos-platform-metadata"
-      "crates/aos/boot/aos-storage-layout"
-      "crates/aos/modules/aos-module-format"
-      "crates/aos/registry/aos-registry-format"
-      "crates/aos/release/aos-release-format"
-      "crates/shared/aos-artifact-evidence"
-      "crates/shared/aos-core"
-      "crates/shared/aos-nar"
-      "crates/shared/aos-nix"
-      "crates/shared/aos-oci-types"
-      "crates/shared/aos-transfer"
+      "crates/activation/aos-activation"
+      "crates/boot/aos-boot-identity"
+      "crates/boot/aos-boot-runtime"
+      "crates/boot/aos-configuration-image"
+      "crates/boot/aos-platform-metadata"
+      "crates/boot/aos-storage-layout"
+      "crates/modules/aos-module-format"
+      "crates/registry/aos-registry-format"
+      "crates/release/aos-release-format"
+      "crates/artifacts/aos-artifact-evidence"
+      "crates/core/aos-core"
+      "crates/artifacts/aos-nar"
+      "crates/nix/aos-nix"
+      "crates/artifacts/aos-oci-types"
+      "crates/transfer/aos-transfer"
     ];
     repositories =
       aosBazelRepositories
@@ -637,7 +637,7 @@
       };
     dependencyProfile = "boot-preparation";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/aos/boot/aos-boot-runtime:unit" "//crates/aos/boot/aos-configuration-image:unit" "//crates/aos/boot/aos-platform-metadata:unit"];
+    analysisTargets = ["//crates/boot/aos-boot-runtime:unit" "//crates/boot/aos-configuration-image:unit" "//crates/boot/aos-platform-metadata:unit"];
   };
   aosBazelReleaseCoordinationWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -645,25 +645,25 @@
       "tools/bazel"
       "third_party/rust"
       "api/proto"
-      "crates/aos/boot/aos-boot-identity"
-      "crates/aos/cli/aos-cli-ui"
-      "crates/aos/modules/aos-module-docs"
-      "crates/aos/modules/aos-module-format"
-      "crates/aos/packages/aos-deployment-format"
-      "crates/aos/packages/aos-nix-cache"
-      "crates/aos/registry/aos-registry-client"
-      "crates/aos/registry/aos-registry-format"
-      "crates/aos/release/aos-image-finalizer"
-      "crates/aos/release/aos-release-coordinator"
-      "crates/aos/release/aos-release-format"
+      "crates/boot/aos-boot-identity"
+      "crates/cli/aos-cli-ui"
+      "crates/modules/aos-module-docs"
+      "crates/modules/aos-module-format"
+      "crates/packages/aos-deployment-format"
+      "crates/packages/aos-nix-cache"
+      "crates/registry/aos-registry-client"
+      "crates/registry/aos-registry-format"
+      "crates/release/aos-image-finalizer"
+      "crates/release/aos-release-coordinator"
+      "crates/release/aos-release-format"
       "crates/hub/aos-hub-api"
       "crates/hub/aos-hub-client"
-      "crates/shared/aos-artifact-evidence"
-      "crates/shared/aos-core"
-      "crates/shared/aos-nar"
-      "crates/shared/aos-nix"
-      "crates/shared/aos-oci-types"
-      "crates/shared/aos-transfer"
+      "crates/artifacts/aos-artifact-evidence"
+      "crates/core/aos-core"
+      "crates/artifacts/aos-nar"
+      "crates/nix/aos-nix"
+      "crates/artifacts/aos-oci-types"
+      "crates/transfer/aos-transfer"
     ];
     repositories =
       aosBazelRepositories
@@ -675,7 +675,7 @@
       };
     dependencyProfile = "release-coordination";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/aos/release/aos-release-coordinator:unit"];
+    analysisTargets = ["//crates/release/aos-release-coordinator:unit"];
   };
   aosBazelRegistryNativeWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -684,26 +684,26 @@
       "third_party/rust"
       "api/proto"
       "crates/hub/aos-hub-native"
-      "crates/aos/activation/aos-activation"
-      "crates/shared/aos-artifact-evidence"
-      "crates/aos/cli/aos-cli-ui"
-      "crates/shared/aos-core"
-      "crates/aos/packages/aos-deployment"
-      "crates/aos/packages/aos-deployment-format"
+      "crates/activation/aos-activation"
+      "crates/artifacts/aos-artifact-evidence"
+      "crates/cli/aos-cli-ui"
+      "crates/core/aos-core"
+      "crates/packages/aos-deployment"
+      "crates/packages/aos-deployment-format"
       "crates/hub/aos-hub-api"
       "crates/hub/aos-hub-client"
-      "crates/aos/modules/aos-module-docs"
-      "crates/aos/modules/aos-module-format"
-      "crates/shared/aos-nar"
-      "crates/shared/aos-nix"
-      "crates/aos/packages/aos-nix-cache"
-      "crates/shared/aos-oci"
-      "crates/shared/aos-oci-types"
-      "crates/aos/registry/aos-registry-authoring"
-      "crates/aos/registry/aos-registry-client"
-      "crates/aos/registry/aos-registry-format"
-      "crates/aos/release/aos-release-format"
-      "crates/shared/aos-transfer"
+      "crates/modules/aos-module-docs"
+      "crates/modules/aos-module-format"
+      "crates/artifacts/aos-nar"
+      "crates/nix/aos-nix"
+      "crates/packages/aos-nix-cache"
+      "crates/artifacts/aos-oci"
+      "crates/artifacts/aos-oci-types"
+      "crates/registry/aos-registry-authoring"
+      "crates/registry/aos-registry-client"
+      "crates/registry/aos-registry-format"
+      "crates/release/aos-release-format"
+      "crates/transfer/aos-transfer"
     ];
     repositories =
       aosBazelRepositories
@@ -717,9 +717,9 @@
     dependencyProfile = "registry-native-tests";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = [
-      "//crates/aos/packages/aos-nix-cache:unit"
-      "//crates/aos/registry/aos-registry-authoring:unit"
-      "//crates/aos/registry/aos-registry-client:unit"
+      "//crates/packages/aos-nix-cache:unit"
+      "//crates/registry/aos-registry-authoring:unit"
+      "//crates/registry/aos-registry-client:unit"
     ];
   };
   aosBazelReleasePreparationWorkspace = mkAosBazelWorkspace {
@@ -727,26 +727,26 @@
     sourceDirectories = [
       "tools/bazel"
       "third_party/rust"
-      "crates/shared/aos-artifact-evidence"
-      "crates/aos/boot/aos-boot-identity"
-      "crates/shared/aos-core"
-      "crates/aos/packages/aos-deployment-format"
-      "crates/aos/release/aos-image-finalizer"
-      "crates/aos/modules/aos-module-docs"
-      "crates/aos/modules/aos-module-format"
-      "crates/shared/aos-oci-types"
-      "crates/aos/release/aos-package-maintenance"
-      "crates/aos/registry/aos-registry-format"
-      "crates/aos/release/aos-release-format"
-      "crates/aos/release/aos-release-signer"
+      "crates/artifacts/aos-artifact-evidence"
+      "crates/boot/aos-boot-identity"
+      "crates/core/aos-core"
+      "crates/packages/aos-deployment-format"
+      "crates/release/aos-image-finalizer"
+      "crates/modules/aos-module-docs"
+      "crates/modules/aos-module-format"
+      "crates/artifacts/aos-oci-types"
+      "crates/release/aos-package-maintenance"
+      "crates/registry/aos-registry-format"
+      "crates/release/aos-release-format"
+      "crates/release/aos-release-signer"
     ];
     repositories = aosBazelRepositories // aosBazelRustRepositories.release-preparation;
     dependencyProfile = "release-preparation";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = [
-      "//crates/aos/release/aos-package-maintenance:unit"
-      "//crates/aos/release/aos-image-finalizer:unit"
-      "//crates/aos/release/aos-release-signer:bin_aos-release-signer"
+      "//crates/release/aos-package-maintenance:unit"
+      "//crates/release/aos-image-finalizer:unit"
+      "//crates/release/aos-release-signer:bin_aos-release-signer"
     ];
   };
   aosBazelHubClientWorkspace = mkAosBazelWorkspace {
@@ -775,11 +775,11 @@
       "third_party/rust"
       "api/proto"
       "docs/rfcs/0012-hub-surface-topology"
-      "crates/aos/registry/aos-registry-format"
+      "crates/registry/aos-registry-format"
       "crates/hub/aos-hub-api"
       "crates/hub/aos-hub-model"
-      "crates/shared/aos-core"
-      "crates/shared/aos-oci-types"
+      "crates/core/aos-core"
+      "crates/artifacts/aos-oci-types"
     ];
     repositories =
       aosBazelRepositories
@@ -819,18 +819,18 @@
     sourceDirectories = [
       "tools/bazel"
       "third_party/rust"
-      "crates/aos/activation/aos-activation"
-      "crates/aos/modules/aos-module-docs"
-      "crates/aos/modules/aos-module-format"
-      "crates/aos/packages/aos-deployment"
-      "crates/aos/packages/aos-deployment-format"
-      "crates/aos/registry/aos-registry-format"
-      "crates/aos/release/aos-release-format"
-      "crates/shared/aos-artifact-evidence"
-      "crates/shared/aos-core"
-      "crates/shared/aos-nar"
-      "crates/shared/aos-nix"
-      "crates/shared/aos-oci-types"
+      "crates/activation/aos-activation"
+      "crates/modules/aos-module-docs"
+      "crates/modules/aos-module-format"
+      "crates/packages/aos-deployment"
+      "crates/packages/aos-deployment-format"
+      "crates/registry/aos-registry-format"
+      "crates/release/aos-release-format"
+      "crates/artifacts/aos-artifact-evidence"
+      "crates/core/aos-core"
+      "crates/artifacts/aos-nar"
+      "crates/nix/aos-nix"
+      "crates/artifacts/aos-oci-types"
     ];
     repositories =
       aosBazelRepositories
@@ -840,11 +840,11 @@
       };
     dependencyProfile = "deployment";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/aos/packages/aos-deployment:unit"];
+    analysisTargets = ["//crates/packages/aos-deployment:unit"];
   };
   aosBazelBuildServicesWorkspace = mkAosBazelWorkspace {
     root = ../../..;
-    sourceDirectories = ["crates/aos/packages/aos-build-api" "crates/aos/packages/aos-build-client" "crates/aos/packages/aos-build-server" "crates/shared/aos-core" "crates/shared/aos-nar" "crates/shared/aos-nix" "api/proto" "tools/bazel" "third_party/rust"];
+    sourceDirectories = ["crates/packages/aos-build-api" "crates/packages/aos-build-client" "crates/packages/aos-build-server" "crates/core/aos-core" "crates/artifacts/aos-nar" "crates/nix/aos-nix" "api/proto" "tools/bazel" "third_party/rust"];
     repositories =
       aosBazelRepositories
       // aosBazelRustRepositories.build-services
@@ -854,39 +854,39 @@
       };
     dependencyProfile = "build-services";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/aos/packages/aos-build-api:unit" "//crates/aos/packages/aos-build-client:unit" "//crates/aos/packages/aos-build-server:unit"];
+    analysisTargets = ["//crates/packages/aos-build-api:unit" "//crates/packages/aos-build-client:unit" "//crates/packages/aos-build-server:unit"];
   };
   aosBazelCliSupportWorkspace = mkAosBazelWorkspace {
     root = ../../..;
-    sourceDirectories = ["crates/aos/cli/aos-cli-ui" "crates/aos/cli/aos-closure-analysis" "crates/aos/cli/aos-nix-docs" "crates/shared/aos-core" "crates/shared/aos-nar" "crates/shared/aos-nix" "crates/shared/aos-transfer" "tools/bazel" "third_party/rust"];
+    sourceDirectories = ["crates/cli/aos-cli-ui" "crates/cli/aos-closure-analysis" "crates/cli/aos-nix-docs" "crates/core/aos-core" "crates/artifacts/aos-nar" "crates/nix/aos-nix" "crates/transfer/aos-transfer" "tools/bazel" "third_party/rust"];
     repositories = aosBazelRepositories // aosBazelRustRepositories.cli-support;
     dependencyProfile = "cli-support";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/aos/cli/aos-cli-ui:unit" "//crates/aos/cli/aos-closure-analysis:unit" "//crates/aos/cli/aos-nix-docs:unit"];
+    analysisTargets = ["//crates/cli/aos-cli-ui:unit" "//crates/cli/aos-closure-analysis:unit" "//crates/cli/aos-nix-docs:unit"];
   };
   aosBazelActivationCrucibleWorkspace = mkAosBazelWorkspace {
     root = ../../..;
-    sourceDirectories = ["crates/aos/activation" "crates/aos/modules/aos-module-format" "crates/shared/aos-core" "crates/shared/aos-artifact-evidence" "crates/crucible" "tools/bazel" "third_party/rust"];
+    sourceDirectories = ["crates/activation" "crates/modules/aos-module-format" "crates/core/aos-core" "crates/artifacts/aos-artifact-evidence" "crates/crucible" "tools/bazel" "third_party/rust"];
     repositories = aosBazelRepositories // aosBazelRustRepositories.activation-crucible-tests // {aos_native = aosBazelGuestLibraries;};
     dependencyProfile = "activation-crucible-tests";
     rustcFlags = ["-Copt-level=3" "-Cdebuginfo=0" "-Ctarget-feature=+crt-static" "-Crelocation-model=static"];
-    analysisTargets = ["//crates/aos/activation/aos-activation-crucible:unit"];
+    analysisTargets = ["//crates/activation/aos-activation-crucible:unit"];
   };
   aosBazelActivationSystemdWorkspace = mkAosBazelWorkspace {
     root = ../../..;
-    sourceDirectories = ["crates/aos/activation" "crates/aos/modules/aos-module-format" "crates/shared" "tools/bazel" "third_party/rust"];
+    sourceDirectories = ["crates/activation" "crates/modules/aos-module-format" "crates/core" "crates/artifacts" "crates/linux" "crates/nix" "crates/transfer" "tools/bazel" "third_party/rust"];
     repositories = aosBazelRepositories // aosBazelRustRepositories.activation-systemd;
     dependencyProfile = "activation-systemd";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/aos/activation/aos-activation-systemd:bin_aos-systemd-native-resource-provider"];
+    analysisTargets = ["//crates/activation/aos-activation-systemd:bin_aos-systemd-native-resource-provider"];
   };
   aosBazelActivationStorageWorkspace = mkAosBazelWorkspace {
     root = ../../..;
-    sourceDirectories = ["crates/aos/activation" "crates/aos/boot/aos-storage-layout" "crates/aos/modules/aos-module-format" "crates/shared/aos-core" "crates/shared/aos-artifact-evidence" "tools/bazel" "third_party/rust"];
+    sourceDirectories = ["crates/activation" "crates/boot/aos-storage-layout" "crates/modules/aos-module-format" "crates/core/aos-core" "crates/artifacts/aos-artifact-evidence" "tools/bazel" "third_party/rust"];
     repositories = aosBazelRepositories // aosBazelRustRepositories.activation-storage;
     dependencyProfile = "activation-storage";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = map (name: "//crates/aos/activation/${name}:unit") [
+    analysisTargets = map (name: "//crates/activation/${name}:unit") [
       "aos-activation-filesystem"
       "aos-activation-nix-store"
       "aos-activation-storage"
@@ -894,11 +894,11 @@
   };
   aosBazelActivationCoreWorkspace = mkAosBazelWorkspace {
     root = ../../..;
-    sourceDirectories = ["crates/aos/activation" "crates/aos/modules/aos-module-format" "crates/shared/aos-core" "crates/shared/aos-artifact-evidence" "tools/bazel" "third_party/rust"];
+    sourceDirectories = ["crates/activation" "crates/modules/aos-module-format" "crates/core/aos-core" "crates/artifacts/aos-artifact-evidence" "tools/bazel" "third_party/rust"];
     repositories = aosBazelRepositories // aosBazelRustRepositories.activation-core-tests;
     dependencyProfile = "activation-core-tests";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = map (name: "//crates/aos/activation/${name}:unit") [
+    analysisTargets = map (name: "//crates/activation/${name}:unit") [
       "aos-activation"
       "aos-activation-config-files"
       "aos-activation-sysctl"
@@ -910,7 +910,7 @@
   };
   aosBazelNativeFoundationWorkspace = mkAosBazelWorkspace {
     root = ../../..;
-    sourceDirectories = ["crates/shared" "crates/aos/registry/aos-registry-format" "tools/bazel" "third_party/rust"];
+    sourceDirectories = ["crates/core" "crates/artifacts" "crates/linux" "crates/nix" "crates/transfer" "crates/registry/aos-registry-format" "tools/bazel" "third_party/rust"];
     repositories =
       aosBazelRepositories
       // aosBazelRustRepositories.native-foundation-tests
@@ -920,23 +920,23 @@
       };
     dependencyProfile = "native-foundation-tests";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = map (name: "//crates/shared/${name}:unit") ["aos-nix" "aos-transfer" "aos-oci" "aos-systemd-client"];
+    analysisTargets = ["//crates/nix/aos-nix:unit" "//crates/transfer/aos-transfer:unit" "//crates/artifacts/aos-oci:unit" "//crates/linux/aos-systemd-client:unit"];
   };
   aosBazelContractsWorkspace = mkAosBazelWorkspace {
     root = ../../..;
-    sourceDirectories = ["crates/shared" "crates/aos/modules" "crates/aos/registry/aos-registry-format" "crates/aos/release/aos-release-format" "crates/aos/packages/aos-deployment-format" "crates/aos/boot/aos-storage-layout" "tools/bazel" "third_party/rust"];
+    sourceDirectories = ["crates/core" "crates/artifacts" "crates/linux" "crates/nix" "crates/transfer" "crates/modules" "crates/registry/aos-registry-format" "crates/release/aos-release-format" "crates/packages/aos-deployment-format" "crates/boot/aos-storage-layout" "tools/bazel" "third_party/rust"];
     repositories = aosBazelRepositories // aosBazelRustRepositories.formats // {aos_native = aosBazelStoreLibraries;};
     dependencyProfile = "formats";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/aos/release/aos-release-format:unit" "//crates/aos/modules/aos-module-docs:unit" "//crates/aos/packages/aos-deployment-format:unit" "//crates/aos/boot/aos-storage-layout:unit"];
+    analysisTargets = ["//crates/release/aos-release-format:unit" "//crates/modules/aos-module-docs:unit" "//crates/packages/aos-deployment-format:unit" "//crates/boot/aos-storage-layout:unit"];
   };
   aosBazelFormatsWorkspace = mkAosBazelWorkspace {
     root = ../../..;
-    sourceDirectories = ["crates/shared" "crates/aos/modules/aos-module-format" "crates/aos/registry/aos-registry-format" "tools/bazel" "third_party/rust"];
+    sourceDirectories = ["crates/core" "crates/artifacts" "crates/linux" "crates/nix" "crates/transfer" "crates/modules/aos-module-format" "crates/registry/aos-registry-format" "tools/bazel" "third_party/rust"];
     repositories = aosBazelRepositories // aosBazelRustRepositories.formats // {aos_native = aosBazelStoreLibraries;};
     dependencyProfile = "formats";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/shared/aos-nar:unit" "//crates/aos/modules/aos-module-format:unit" "//crates/aos/registry/aos-registry-format:unit"];
+    analysisTargets = ["//crates/artifacts/aos-nar:unit" "//crates/modules/aos-module-format:unit" "//crates/registry/aos-registry-format:unit"];
   };
   aosBazelCrucibleCliWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -950,7 +950,7 @@
       };
     dependencyProfile = "crucible-cli";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/crucible/control/crucible-cli:bin_crucible"];
+    analysisTargets = ["//crates/crucible/crucible-cli:bin_crucible"];
   };
   aosBazelDaemonWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -958,7 +958,7 @@
     repositories = aosBazelRepositories // aosBazelRustRepositories.daemon // {aos_native = aosBazelStoreLibraries;};
     dependencyProfile = "daemon";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/crucible/control/crucible-daemon:unit"];
+    analysisTargets = ["//crates/crucible/crucible-daemon:unit"];
   };
   aosBazelStoreS3Workspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -966,7 +966,7 @@
     repositories = aosBazelRepositories // aosBazelRustRepositories.store-s3 // {aos_native = aosBazelStoreLibraries;};
     dependencyProfile = "store-s3";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/crucible/storage/crucible-store-s3:unit"];
+    analysisTargets = ["//crates/crucible/crucible-store-s3:unit"];
   };
   aosBazelQemuHostWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -985,7 +985,7 @@
     repositories = aosBazelRepositories // aosBazelRustRepositories.qemu-host // {aos_native = aosBazelStoreLibraries;};
     dependencyProfile = "qemu-host";
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
-    analysisTargets = ["//crates/crucible/qemu/crucible-qemu-host:unit"];
+    analysisTargets = ["//crates/crucible/crucible-qemu-host:unit"];
   };
   mkAosBazelShell = {workspace ? aosBazelWorkspace}:
     (import ./development.nix {inherit pkgs lib workspace;}).shell;

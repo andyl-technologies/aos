@@ -4,20 +4,20 @@
   sourceInventory ? ../../tools/bazel/metadata/deployment-inventory.json,
 }: let
   packages = {
-    aos-deployment = "crates/aos/packages/aos-deployment";
+    aos-deployment = "crates/packages/aos-deployment";
   };
   dependencyPackages = {
-    aos-activation = "crates/aos/activation/aos-activation";
-    aos-artifact-evidence = "crates/shared/aos-artifact-evidence";
-    aos-core = "crates/shared/aos-core";
-    aos-deployment-format = "crates/aos/packages/aos-deployment-format";
-    aos-module-docs = "crates/aos/modules/aos-module-docs";
-    aos-module-format = "crates/aos/modules/aos-module-format";
-    aos-nar = "crates/shared/aos-nar";
-    aos-nix = "crates/shared/aos-nix";
-    aos-oci-types = "crates/shared/aos-oci-types";
-    aos-registry-format = "crates/aos/registry/aos-registry-format";
-    aos-release-format = "crates/aos/release/aos-release-format";
+    aos-activation = "crates/activation/aos-activation";
+    aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
+    aos-core = "crates/core/aos-core";
+    aos-deployment-format = "crates/packages/aos-deployment-format";
+    aos-module-docs = "crates/modules/aos-module-docs";
+    aos-module-format = "crates/modules/aos-module-format";
+    aos-nar = "crates/artifacts/aos-nar";
+    aos-nix = "crates/nix/aos-nix";
+    aos-oci-types = "crates/artifacts/aos-oci-types";
+    aos-registry-format = "crates/registry/aos-registry-format";
+    aos-release-format = "crates/release/aos-release-format";
   };
   repositories =
     pkgs.aosBazelRepositories
@@ -67,8 +67,8 @@ in
         # This dependency's BUILD evaluates an integration-test glob even when
         # only its library is compiled. Retain that declaration's source inputs.
         ++ [
-          "//crates/aos/release/aos-release-format:qualification"
-          "//crates/aos/release/aos-release-format:nix_inventory"
+          "//crates/release/aos-release-format:qualification"
+          "//crates/release/aos-release-format:nix_inventory"
         ];
     };
     production = pkgs.mkAosBazelBuild {

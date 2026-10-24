@@ -9,7 +9,7 @@ filegroup(
     name = "qemu_host_gate_audit",
     testonly = True,
     srcs = ["default.nix", "phase2-qemu-inert.nix", "phase2-patch-microtests.nix"],
-    visibility = ["//crates/crucible/qemu/crucible-qemu-host:__pkg__"],
+    visibility = ["//crates/crucible/crucible-qemu-host:__pkg__"],
 )
 
 filegroup(
@@ -22,19 +22,19 @@ filegroup(
         "fixtures/nginx-curl-http-200.scenario.toml",
         "fixtures/happy-path.scenario.toml",
     ],
-    visibility = ["//crates/crucible/engine/crucible-engine:__pkg__"],
+    visibility = ["//crates/crucible/crucible-engine:__pkg__"],
 )
 
 filegroup(
     name = "daemon_fixture_inputs",
     srcs = ["fixtures/e2e-determinism.scenario.toml"],
-    visibility = ["//crates/crucible/control/crucible-daemon:__pkg__"],
+    visibility = ["//crates/crucible/crucible-daemon:__pkg__"],
 )
 
 filegroup(
     name = "cli_fixture_inputs",
     srcs = ["fixtures/live-qemu-fuzz.family.toml"],
-    visibility = ["//crates/crucible/control/crucible-cli:__pkg__"],
+    visibility = ["//crates/crucible/crucible-cli:__pkg__"],
 )
 
 # Source-only gate inputs are inspected as data, never linked into the plugin.
@@ -50,5 +50,5 @@ filegroup(
         "phase2-abi-conformance.nix",
         "phase4-guest-host-doorbell-abi.nix",
     ],
-    visibility = ["//crates/crucible/qemu/crucible-qemu-plugin:__pkg__"],
+    visibility = ["//crates/crucible/crucible-qemu-plugin:__pkg__"],
 )

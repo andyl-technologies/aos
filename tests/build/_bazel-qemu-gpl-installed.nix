@@ -19,7 +19,7 @@ in {
         script = ''
           ${pkgs.python3}/bin/python3 ${installer} \
             --build ${build} \
-            --label //crates/crucible/qemu/crucible-qemu-plugin:compiler_artifact \
+            --label //crates/crucible/crucible-qemu-plugin:compiler_artifact \
             --name crucible-qemu-plugin --version 0.1.0 --output "$out"
           ${pkgs.python3}/bin/python3 ${../../tools/bazel/metadata/install_qemu_plugin_metadata.py} \
             --output "$out" --abi ${pkgs.aosBazelQemuPluginAbi} \
@@ -44,7 +44,7 @@ in {
         script = ''
           ${pkgs.python3}/bin/python3 ${installer} \
             --build ${build} \
-            --label //crates/crucible/qemu/crucible-qemu-debug-gateway:compiler_artifact \
+            --label //crates/crucible/crucible-qemu-debug-gateway:compiler_artifact \
             --name crucible-qemu-debug-gateway --version 0.1.0 --output "$out"
           mkdir -p "$out/share/licenses/crucible-debug-gateway"
           cp ${../../LICENSES/GPL-2.0-only.txt} \

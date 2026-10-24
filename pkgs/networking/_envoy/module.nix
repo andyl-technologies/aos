@@ -498,7 +498,7 @@ in {
           })
           configuredCredentials);
         configuration.operations.file.effects.envoy.input = {
-          path = "/etc/aos/packages/envoy/bootstrap.json";
+          path = "/etc/packages/envoy/bootstrap.json";
           format = "json";
           value = renderedBootstrap;
           mode = "0444";

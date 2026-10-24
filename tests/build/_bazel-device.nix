@@ -8,10 +8,10 @@
     pname = "aos-bazel-device";
     dependencyProfile = "device";
     packages = {
-      crucible-determinism = "crates/crucible/engine/crucible-determinism";
-      crucible-device = "crates/crucible/engine/crucible-device";
-      crucible-qemu-protocol = "crates/crucible/protocol/crucible-qemu-protocol";
-      crucible-qemu-shmem = "crates/crucible/protocol/crucible-qemu-shmem";
+      crucible-determinism = "crates/crucible/crucible-determinism";
+      crucible-device = "crates/crucible/crucible-device";
+      crucible-qemu-protocol = "crates/crucible/crucible-qemu-protocol";
+      crucible-qemu-shmem = "crates/crucible/crucible-qemu-shmem";
     };
     extraSourceDirectories = ["docs/rfcs/0020-crucible-campaigns"];
   };
@@ -54,7 +54,7 @@
     if ${pkgs.python3}/bin/python3 ${../../tools/bazel/launcher.py} \
       --config "$TMPDIR/core-profile.json" --workspace "$PWD/workspace" \
       --output-base "$TMPDIR/wrong-profile/bazel" --nix-sandbox --batch \
-      -- build //crates/crucible/engine/crucible-device:license_closure --nobuild \
+      -- build //crates/crucible/crucible-device:license_closure --nobuild \
       > "$out/wrong-profile.log" 2>&1; then
       echo 'device dependencies accepted the core feature profile' >&2
       exit 1

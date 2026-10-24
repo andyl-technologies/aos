@@ -15,6 +15,10 @@ aos_dev_bazel() (
       $1 == session ||
       $1 == control ||
       $1 == qemu-host ||
+      $1 == qemu-gpl-production ||
+      $1 == qemu-gpl-tests ||
+      $1 == qemu-gpl-plugin-tests ||
+      $1 == qemu-test-oracle-host ||
       $1 == store-s3 ||
       $1 == daemon ||
       $1 == crucible-cli ||
@@ -60,7 +64,7 @@ aos_dev_bazel() (
       $1 == hub-client ||
       $1 == hub-model ||
       $1 == hub-model-tests
-    ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device|store|guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|native-foundation|native-foundation-tests|native-foundation-minimal|activation-core|activation-core-tests|activation-storage|activation-systemd|activation-crucible|activation-crucible-tests|cli-support|build-services|deployment|hub-portable|hub-model|hub-model-tests|hub-client|release-preparation|registry-native|registry-native-tests|release-coordination|boot-preparation|boot-preparation-minimal|package-manager|package-manager-tests|hub-db|hub-db-tests|hub-db-all-features|hub-db-all-features-tests|hub-console|hub-console-wasm|hub-service|hub-service-tests|hub-service-all-features|hub-service-all-features-tests|hub-native-postgres|hub-native-tests|hub-worker-tests|hub-worker-all-features-tests|hub-worker-wasm|hub-worker-wasm-do-e2e|hub-worker-wasm-all-features>'
+    ) ]] || aos_dev_error 'usage: aos-dev bazel update-deps <core|device|store|guest|engine|quota|session|control|qemu-host|qemu-gpl-production|qemu-gpl-tests|qemu-gpl-plugin-tests|qemu-test-oracle-host|store-s3|daemon|crucible-cli|formats|native-foundation|native-foundation-tests|native-foundation-minimal|activation-core|activation-core-tests|activation-storage|activation-systemd|activation-crucible|activation-crucible-tests|cli-support|build-services|deployment|hub-portable|hub-model|hub-model-tests|hub-client|release-preparation|registry-native|registry-native-tests|release-coordination|boot-preparation|boot-preparation-minimal|package-manager|package-manager-tests|hub-db|hub-db-tests|hub-db-all-features|hub-db-all-features-tests|hub-console|hub-console-wasm|hub-service|hub-service-tests|hub-service-all-features|hub-service-all-features-tests|hub-native-postgres|hub-native-tests|hub-worker-tests|hub-worker-all-features-tests|hub-worker-wasm|hub-worker-wasm-do-e2e|hub-worker-wasm-all-features>'
     local updater specifications family=$1
     updater=$(aos_dev_nix_build_ordinary -A pkgs.aosBazelDependencyUpdater --no-out-link)
     specifications=$(aos_dev_nix_build_ordinary -A "checks.build.bazel.dependencies.specification-packages.$family" --no-out-link)
@@ -73,7 +77,7 @@ aos_dev_bazel() (
 
   local launcher_attribute=pkgs.aosBazelLauncher
   if [[ $1 == --family ]]; then
-    [[ $# -ge 3 ]] || aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client|release-preparation|registry-native|release-coordination|boot-preparation|package-manager|hub-db|hub-db-all-features|hub-console|hub-console-wasm|hub-service|hub-service-all-features|hub-native|hub-worker|hub-worker-all-features|hub-worker-wasm|hub-worker-wasm-do-e2e|hub-worker-wasm-all-features> <command> [labels]'
+    [[ $# -ge 3 ]] || aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|qemu-gpl-production|qemu-gpl-tests|qemu-gpl-plugin-tests|qemu-test-oracle-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client|release-preparation|registry-native|release-coordination|boot-preparation|package-manager|hub-db|hub-db-all-features|hub-console|hub-console-wasm|hub-service|hub-service-all-features|hub-native|hub-worker|hub-worker-all-features|hub-worker-wasm|hub-worker-wasm-do-e2e|hub-worker-wasm-all-features> <command> [labels]'
     case $2 in
       guest) launcher_attribute=pkgs.aosBazelGuestLauncher ;;
       engine) launcher_attribute=pkgs.aosBazelEngineLauncher ;;
@@ -114,7 +118,7 @@ aos_dev_bazel() (
       activation-systemd) launcher_attribute=pkgs.aosBazelActivationSystemdLauncher ;;
       formats) launcher_attribute=pkgs.aosBazelFormatsLauncher ;;
       crucible-cli) launcher_attribute=pkgs.aosBazelCrucibleCliLauncher ;;
-      *) aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client|release-preparation|registry-native|release-coordination|boot-preparation|package-manager|hub-db|hub-db-all-features|hub-console|hub-console-wasm|hub-service|hub-service-all-features|hub-native|hub-worker|hub-worker-all-features|hub-worker-wasm|hub-worker-wasm-do-e2e|hub-worker-wasm-all-features> <command> [labels]' ;;
+      *) aos_dev_error 'usage: aos-dev bazel --family <guest|engine|quota|session|control|qemu-host|qemu-gpl-production|qemu-gpl-tests|qemu-gpl-plugin-tests|qemu-test-oracle-host|store-s3|daemon|crucible-cli|formats|contracts|native-foundation|activation-core|activation-storage|activation-systemd|activation-crucible|cli-support|build-services|deployment|hub-portable|hub-model|hub-client|release-preparation|registry-native|release-coordination|boot-preparation|package-manager|hub-db|hub-db-all-features|hub-console|hub-console-wasm|hub-service|hub-service-all-features|hub-native|hub-worker|hub-worker-all-features|hub-worker-wasm|hub-worker-wasm-do-e2e|hub-worker-wasm-all-features> <command> [labels]' ;;
     esac
     shift 2
   fi
@@ -126,9 +130,9 @@ aos_dev_bazel() (
     (( $# > 0 )) || aos_dev_error 'usage: aos-dev bazel rust-project <Rust labels>'
     project_options=(--rust-project-output "$aos_dev_root/rust-project.json")
     if [[ $launcher_attribute == pkgs.aosBazelGuestLauncher ]]; then
-      project_options+=(--rust-project-package crates/crucible/guest/crucible-guest)
+      project_options+=(--rust-project-package crates/crucible/crucible-guest)
     elif [[ $launcher_attribute == pkgs.aosBazelQuotaLauncher ]]; then
-      project_options+=(--rust-project-package crates/shared/aos-linux-project-quota)
+      project_options+=(--rust-project-package crates/linux/aos-linux-project-quota)
     elif [[ $launcher_attribute == pkgs.aosBazelHubWorker*Launcher ]]; then
       project_options+=(--rust-project-package crates/hub/aos-hub-worker)
     elif [[ $launcher_attribute == pkgs.aosBazelHubNativeLauncher ]]; then
@@ -140,21 +144,21 @@ aos_dev_bazel() (
     elif [[ $launcher_attribute == pkgs.aosBazelHubConsoleLauncher || $launcher_attribute == pkgs.aosBazelHubConsoleWasmLauncher ]]; then
       project_options+=(--rust-project-package crates/hub/aos-hub-console)
     elif [[ $launcher_attribute == pkgs.aosBazelPackageManagerLauncher ]]; then
-      project_options+=(--rust-project-package crates/aos/packages/aos-package-manager)
+      project_options+=(--rust-project-package crates/packages/aos-package-manager)
     elif [[ $launcher_attribute == pkgs.aosBazelBootPreparationLauncher ]]; then
-      project_options+=(--rust-project-package crates/aos/boot/aos-boot-runtime)
-      project_options+=(--rust-project-package crates/aos/boot/aos-configuration-image)
-      project_options+=(--rust-project-package crates/aos/boot/aos-platform-metadata)
+      project_options+=(--rust-project-package crates/boot/aos-boot-runtime)
+      project_options+=(--rust-project-package crates/boot/aos-configuration-image)
+      project_options+=(--rust-project-package crates/boot/aos-platform-metadata)
     elif [[ $launcher_attribute == pkgs.aosBazelReleaseCoordinationLauncher ]]; then
-      project_options+=(--rust-project-package crates/aos/release/aos-release-coordinator)
+      project_options+=(--rust-project-package crates/release/aos-release-coordinator)
     elif [[ $launcher_attribute == pkgs.aosBazelRegistryNativeLauncher ]]; then
-      project_options+=(--rust-project-package crates/aos/packages/aos-nix-cache)
-      project_options+=(--rust-project-package crates/aos/registry/aos-registry-authoring)
-      project_options+=(--rust-project-package crates/aos/registry/aos-registry-client)
+      project_options+=(--rust-project-package crates/packages/aos-nix-cache)
+      project_options+=(--rust-project-package crates/registry/aos-registry-authoring)
+      project_options+=(--rust-project-package crates/registry/aos-registry-client)
     elif [[ $launcher_attribute == pkgs.aosBazelReleasePreparationLauncher ]]; then
-      project_options+=(--rust-project-package crates/aos/release/aos-image-finalizer)
-      project_options+=(--rust-project-package crates/aos/release/aos-package-maintenance)
-      project_options+=(--rust-project-package crates/aos/release/aos-release-signer)
+      project_options+=(--rust-project-package crates/release/aos-image-finalizer)
+      project_options+=(--rust-project-package crates/release/aos-package-maintenance)
+      project_options+=(--rust-project-package crates/release/aos-release-signer)
     elif [[ $launcher_attribute == pkgs.aosBazelHubClientLauncher ]]; then
       project_options+=(--rust-project-package crates/hub/aos-hub-client)
     elif [[ $launcher_attribute == pkgs.aosBazelHubModelLauncher ]]; then
@@ -163,61 +167,61 @@ aos_dev_bazel() (
       project_options+=(--rust-project-package crates/hub/aos-hub-api)
       project_options+=(--rust-project-package crates/hub/aos-hub-ui)
     elif [[ $launcher_attribute == pkgs.aosBazelDeploymentLauncher ]]; then
-      project_options+=(--rust-project-package crates/aos/packages/aos-deployment)
+      project_options+=(--rust-project-package crates/packages/aos-deployment)
     elif [[ $launcher_attribute == pkgs.aosBazelBuildServicesLauncher ]]; then
-      project_options+=(--rust-project-package crates/aos/packages/aos-build-api)
-      project_options+=(--rust-project-package crates/aos/packages/aos-build-client)
-      project_options+=(--rust-project-package crates/aos/packages/aos-build-server)
+      project_options+=(--rust-project-package crates/packages/aos-build-api)
+      project_options+=(--rust-project-package crates/packages/aos-build-client)
+      project_options+=(--rust-project-package crates/packages/aos-build-server)
     elif [[ $launcher_attribute == pkgs.aosBazelCliSupportLauncher ]]; then
-      project_options+=(--rust-project-package crates/aos/cli/aos-cli-ui)
-      project_options+=(--rust-project-package crates/aos/cli/aos-closure-analysis)
-      project_options+=(--rust-project-package crates/aos/cli/aos-nix-docs)
+      project_options+=(--rust-project-package crates/cli/aos-cli-ui)
+      project_options+=(--rust-project-package crates/cli/aos-closure-analysis)
+      project_options+=(--rust-project-package crates/cli/aos-nix-docs)
     elif [[ $launcher_attribute == pkgs.aosBazelActivationCrucibleLauncher ]]; then
-      project_options+=(--rust-project-package crates/aos/activation/aos-activation-crucible)
+      project_options+=(--rust-project-package crates/activation/aos-activation-crucible)
     elif [[ $launcher_attribute == pkgs.aosBazelActivationSystemdLauncher ]]; then
-      project_options+=(--rust-project-package crates/aos/activation/aos-activation-systemd)
+      project_options+=(--rust-project-package crates/activation/aos-activation-systemd)
     elif [[ $launcher_attribute == pkgs.aosBazelActivationStorageLauncher ]]; then
-      project_options+=(--rust-project-package crates/aos/activation/aos-activation-filesystem)
-      project_options+=(--rust-project-package crates/aos/activation/aos-activation-nix-store)
-      project_options+=(--rust-project-package crates/aos/activation/aos-activation-storage)
+      project_options+=(--rust-project-package crates/activation/aos-activation-filesystem)
+      project_options+=(--rust-project-package crates/activation/aos-activation-nix-store)
+      project_options+=(--rust-project-package crates/activation/aos-activation-storage)
     elif [[ $launcher_attribute == pkgs.aosBazelActivationCoreLauncher ]]; then
-      project_options+=(--rust-project-package crates/aos/activation/aos-activation)
-      project_options+=(--rust-project-package crates/aos/activation/aos-activation-config-files)
-      project_options+=(--rust-project-package crates/aos/activation/aos-activation-sysctl)
-      project_options+=(--rust-project-package crates/aos/activation/aos-activation-bpf-lsm)
-      project_options+=(--rust-project-package crates/aos/activation/aos-activation-bpf-network)
-      project_options+=(--rust-project-package crates/aos/activation/aos-activation-kubernetes)
-      project_options+=(--rust-project-package crates/aos/activation/aos-activation-nftables)
+      project_options+=(--rust-project-package crates/activation/aos-activation)
+      project_options+=(--rust-project-package crates/activation/aos-activation-config-files)
+      project_options+=(--rust-project-package crates/activation/aos-activation-sysctl)
+      project_options+=(--rust-project-package crates/activation/aos-activation-bpf-lsm)
+      project_options+=(--rust-project-package crates/activation/aos-activation-bpf-network)
+      project_options+=(--rust-project-package crates/activation/aos-activation-kubernetes)
+      project_options+=(--rust-project-package crates/activation/aos-activation-nftables)
     elif [[ $launcher_attribute == pkgs.aosBazelNativeFoundationLauncher ]]; then
-      project_options+=(--rust-project-package crates/shared/aos-nix)
-      project_options+=(--rust-project-package crates/shared/aos-transfer)
-      project_options+=(--rust-project-package crates/shared/aos-oci)
-      project_options+=(--rust-project-package crates/shared/aos-systemd-client)
+      project_options+=(--rust-project-package crates/nix/aos-nix)
+      project_options+=(--rust-project-package crates/transfer/aos-transfer)
+      project_options+=(--rust-project-package crates/artifacts/aos-oci)
+      project_options+=(--rust-project-package crates/linux/aos-systemd-client)
     elif [[ $launcher_attribute == pkgs.aosBazelContractsLauncher ]]; then
-      project_options+=(--rust-project-package crates/aos/release/aos-release-format)
-      project_options+=(--rust-project-package crates/aos/modules/aos-module-docs)
-      project_options+=(--rust-project-package crates/aos/packages/aos-deployment-format)
-      project_options+=(--rust-project-package crates/aos/boot/aos-storage-layout)
+      project_options+=(--rust-project-package crates/release/aos-release-format)
+      project_options+=(--rust-project-package crates/modules/aos-module-docs)
+      project_options+=(--rust-project-package crates/packages/aos-deployment-format)
+      project_options+=(--rust-project-package crates/boot/aos-storage-layout)
     elif [[ $launcher_attribute == pkgs.aosBazelFormatsLauncher ]]; then
-      project_options+=(--rust-project-package crates/shared/aos-nar)
-      project_options+=(--rust-project-package crates/aos/modules/aos-module-format)
-      project_options+=(--rust-project-package crates/aos/registry/aos-registry-format)
+      project_options+=(--rust-project-package crates/artifacts/aos-nar)
+      project_options+=(--rust-project-package crates/modules/aos-module-format)
+      project_options+=(--rust-project-package crates/registry/aos-registry-format)
     elif [[ $launcher_attribute == pkgs.aosBazelCrucibleCliLauncher ]]; then
-      project_options+=(--rust-project-package crates/crucible/control/crucible-cli)
+      project_options+=(--rust-project-package crates/crucible/crucible-cli)
     elif [[ $launcher_attribute == pkgs.aosBazelDaemonLauncher ]]; then
-      project_options+=(--rust-project-package crates/crucible/control/crucible-daemon)
+      project_options+=(--rust-project-package crates/crucible/crucible-daemon)
     elif [[ $launcher_attribute == pkgs.aosBazelStoreS3Launcher ]]; then
-      project_options+=(--rust-project-package crates/crucible/storage/crucible-store-s3)
+      project_options+=(--rust-project-package crates/crucible/crucible-store-s3)
     elif [[ $launcher_attribute == pkgs.aosBazelQemuHostLauncher ]]; then
-      project_options+=(--rust-project-package crates/crucible/qemu/crucible-qemu-host)
+      project_options+=(--rust-project-package crates/crucible/crucible-qemu-host)
     elif [[ $launcher_attribute == pkgs.aosBazelControlLauncher ]]; then
-      project_options+=(--rust-project-package crates/crucible/control/crucible-control-client)
-      project_options+=(--rust-project-package crates/crucible/control/crucible-control-server)
+      project_options+=(--rust-project-package crates/crucible/crucible-control-client)
+      project_options+=(--rust-project-package crates/crucible/crucible-control-server)
     elif [[ $launcher_attribute == pkgs.aosBazelSessionLauncher ]]; then
-      project_options+=(--rust-project-package crates/crucible/control/crucible-session)
-      project_options+=(--rust-project-package crates/crucible/control/crucible-control-api)
+      project_options+=(--rust-project-package crates/crucible/crucible-session)
+      project_options+=(--rust-project-package crates/crucible/crucible-control-api)
     elif [[ $launcher_attribute == pkgs.aosBazelEngineLauncher ]]; then
-      project_options+=(--rust-project-package crates/crucible/engine/crucible-engine)
+      project_options+=(--rust-project-package crates/crucible/crucible-engine)
     fi
     set -- build "$@"
   fi

@@ -18,24 +18,24 @@
     export LIBSQLITE3_SYS_USE_PKG_CONFIG=1 ZSTD_SYS_USE_PKG_CONFIG=1
   '';
   packages = {
-    crucible-daemon = "crates/crucible/control/crucible-daemon";
+    crucible-daemon = "crates/crucible/crucible-daemon";
   };
   dependencyPackages = {
-    crucible-control-client = "crates/crucible/control/crucible-control-client";
-    crucible-control-server = "crates/crucible/control/crucible-control-server";
-    crucible-control-api = "crates/crucible/control/crucible-control-api";
-    crucible-session = "crates/crucible/control/crucible-session";
-    crucible-qemu-host = "crates/crucible/qemu/crucible-qemu-host";
-    crucible-store-s3 = "crates/crucible/storage/crucible-store-s3";
-    crucible-guest = "crates/crucible/guest/crucible-guest";
-    aos-linux-project-quota = "crates/shared/aos-linux-project-quota";
-    crucible-engine = "crates/crucible/engine/crucible-engine";
-    crucible-determinism = "crates/crucible/engine/crucible-determinism";
-    crucible-campaign = "crates/crucible/engine/crucible-campaign";
-    crucible-device = "crates/crucible/engine/crucible-device";
-    crucible-store = "crates/crucible/storage/crucible-store";
-    crucible-qemu-protocol = "crates/crucible/protocol/crucible-qemu-protocol";
-    crucible-qemu-shmem = "crates/crucible/protocol/crucible-qemu-shmem";
+    crucible-control-client = "crates/crucible/crucible-control-client";
+    crucible-control-server = "crates/crucible/crucible-control-server";
+    crucible-control-api = "crates/crucible/crucible-control-api";
+    crucible-session = "crates/crucible/crucible-session";
+    crucible-qemu-host = "crates/crucible/crucible-qemu-host";
+    crucible-store-s3 = "crates/crucible/crucible-store-s3";
+    crucible-guest = "crates/crucible/crucible-guest";
+    aos-linux-project-quota = "crates/linux/aos-linux-project-quota";
+    crucible-engine = "crates/crucible/crucible-engine";
+    crucible-determinism = "crates/crucible/crucible-determinism";
+    crucible-campaign = "crates/crucible/crucible-campaign";
+    crucible-device = "crates/crucible/crucible-device";
+    crucible-store = "crates/crucible/crucible-store";
+    crucible-qemu-protocol = "crates/crucible/crucible-qemu-protocol";
+    crucible-qemu-shmem = "crates/crucible/crucible-qemu-shmem";
   };
   packageOptions =
     pkgs.lib.concatMap
@@ -116,10 +116,10 @@ in
       pname = "aos-bazel-daemon-production-license";
       workspace = family.workspace;
       targets = [
-        "//crates/crucible/control/crucible-daemon:production_license_closure"
-        "//crates/crucible/control/crucible-daemon:production_license_closure_test_support"
-        "//crates/crucible/control/crucible-daemon:production_license_closure_recovery_faults"
-        "//crates/crucible/control/crucible-daemon:production_license_closure_all_features"
+        "//crates/crucible/crucible-daemon:production_license_closure"
+        "//crates/crucible/crucible-daemon:production_license_closure_test_support"
+        "//crates/crucible/crucible-daemon:production_license_closure_recovery_faults"
+        "//crates/crucible/crucible-daemon:production_license_closure_all_features"
       ];
     };
     all =

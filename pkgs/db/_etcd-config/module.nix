@@ -463,7 +463,7 @@ in {
           scope = "stack-prepared";
         };
         configuration.operations.file.effects.etcd.input = {
-          path = "/etc/aos/packages/etcd/etcd.json";
+          path = "/etc/packages/etcd/etcd.json";
           format = "json";
           value = serverConfigFor cfg.client.tls.enable cfg.peer.tls.enable;
           mode = "0440";

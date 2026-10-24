@@ -8,45 +8,45 @@
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
-  engineOracle = builtins.readFile ../../crates/crucible/control/crucible-control-server/src/bin/qemu_test_oracle/engine.rs;
+  engineOracle = builtins.readFile ../../crates/crucible/crucible-control-server/src/bin/qemu_test_oracle/engine.rs;
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
   markerObservabilityTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/engine/crucible-engine/tests/guest_host_marker_observability.rs;
+    entry = ../../crates/crucible/crucible-engine/tests/guest_host_marker_observability.rs;
   };
   eventLogDeterminismTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/engine/crucible-engine/tests/event_log_determinism.rs;
+    entry = ../../crates/crucible/crucible-engine/tests/event_log_determinism.rs;
   };
   pluginWhitebox = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+    entry = ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   };
   pluginWhiteboxTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
+    entry = ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs;
   };
   pluginRuntime = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/runtime.rs;
+    entry = ../../crates/crucible/crucible-qemu-plugin/src/runtime.rs;
   };
   pluginLiveWhitebox = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox.rs;
+    entry = ../../crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox.rs;
   };
   pluginLiveWhiteboxApi = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs;
+    entry = ../../crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs;
   };
   mappedQuantum = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum.rs;
+    entry = ../../crates/crucible/crucible-qemu-host/src/mapped_quantum.rs;
   };
   mappedQuantumTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/qemu/crucible-qemu-host/tests/mapped_quantum.rs;
+    entry = ../../crates/crucible/crucible-qemu-host/tests/mapped_quantum.rs;
   };
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   defaultChecks = builtins.readFile ./default.nix;
@@ -66,7 +66,7 @@
         needle = "`guest_host_marker_observability`";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/trigger.rs" trigger [
+    ++ failuresFor "crates/crucible/crucible-engine/src/trigger.rs" trigger [
       {
         label = "whitebox marker semantic mapper";
         needle = "pub fn observable_event_from_whitebox_marker_payload";
@@ -84,7 +84,7 @@
         needle = "WhiteboxMarkerPayload::RandomRequest(_) => None";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "guest marker icount stamp";
         needle = "ObservableEventPayload::GuestMarker {\n            retired_icount,\n            node,\n            ..\n        }";
@@ -106,7 +106,7 @@
         needle = "entry.class == SchedulerEventLogClass::Causal";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhitebox [
       {
         label = "plugin stamps marker with trap icount";
         needle = "marker_icount: event.current_icount()";
@@ -120,7 +120,7 @@
         needle = "sink.record_whitebox_marker(&marker)";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs" pluginWhiteboxTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell/tests.rs" pluginWhiteboxTest [
       {
         label = "plugin engine event-log sink test";
         needle = "whitebox_doorbell_records_decoded_marker_into_engine_event_log_sink";
@@ -138,7 +138,7 @@
         needle = "assert!(sink.causal_projection_empty)";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-server/src/bin/qemu_test_oracle/engine.rs" engineOracle [
+    ++ failuresFor "crates/crucible/crucible-control-server/src/bin/qemu_test_oracle/engine.rs" engineOracle [
       {
         label = "Apache helper maps decoded marker payload";
         needle = "observable_event_from_whitebox_marker_payload(icount, node, &marker)";
@@ -152,13 +152,13 @@
         needle = "event_log_causal_projection(&self.entries).is_empty()";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/runtime.rs" pluginRuntime [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/runtime.rs" pluginRuntime [
       {
         label = "mapped live marker ring binding";
         needle = "LiveWhiteboxError::MappedMarkerQueue";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox.rs" pluginLiveWhitebox [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox.rs" pluginLiveWhitebox [
       {
         label = "live callback marker shmem enqueue";
         needle = ".enqueue_whitebox_marker(entries, entry)";
@@ -188,7 +188,7 @@
         needle = "WHITEBOX_DOORBELL_X86_64_OUT_IMM8_AL_BYTES";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs" pluginLiveWhiteboxApi [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/runtime/live_whitebox/api.rs" pluginLiveWhiteboxApi [
       {
         label = "upstream QEMU execution callback binding";
         needle = "qemu_plugin_register_vcpu_insn_exec_cb";
@@ -198,7 +198,7 @@
         needle = "qemu_plugin_register_vcpu_tb_exec_cb";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum.rs" mappedQuantum [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/mapped_quantum.rs" mappedQuantum [
       {
         label = "host marker shmem dequeue";
         needle = ".dequeue_whitebox_marker(ring.entries)";
@@ -216,7 +216,7 @@
         needle = "events.sort_by_key(ObservableEvent::at)";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/tests/mapped_quantum.rs" mappedQuantumTest [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/tests/mapped_quantum.rs" mappedQuantumTest [
       {
         label = "mapped marker event-log admission test";
         needle = "mapped_quantum_merges_whitebox_markers_into_the_unified_event_log";
@@ -226,7 +226,7 @@
         needle = "mapped_quantum_rejects_invalid_marker_timing_and_non_observational_kinds";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/guest_host_marker_observability.rs" markerObservabilityTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/guest_host_marker_observability.rs" markerObservabilityTest [
       {
         label = "observational icount stamp test";
         needle = "whitebox_marker_payloads_append_as_observational_icount_stamped_entries";
@@ -272,7 +272,7 @@
         needle = "WhiteboxRandomRequestBody";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/event_log_determinism.rs" eventLogDeterminismTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/event_log_determinism.rs" eventLogDeterminismTest [
       {
         label = "existing observational comparison proof";
         needle = "observational_verbosity_changes_do_not_change_causal_projection";

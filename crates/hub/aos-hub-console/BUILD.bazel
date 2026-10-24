@@ -26,8 +26,8 @@ config_setting(
 DEPENDENCIES = [
     "//crates/hub/aos-hub-api:lib",
     "//crates/hub/aos-hub-ui:lib",
-    "//crates/aos/modules/aos-module-docs:lib",
-    "//crates/aos/registry/aos-registry-format:lib",
+    "//crates/modules/aos-module-docs:lib",
+    "//crates/registry/aos-registry-format:lib",
     "//third_party/rust:core_serde",
     "//third_party/rust:core_serde_json",
     "//third_party/rust:core_thiserror",

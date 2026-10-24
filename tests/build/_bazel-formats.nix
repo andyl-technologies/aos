@@ -4,14 +4,14 @@
   sourceInventory ? ../../tools/bazel/metadata/formats-inventory.json,
 }: let
   packages = {
-    aos-nar = "crates/shared/aos-nar";
-    aos-module-format = "crates/aos/modules/aos-module-format";
-    aos-registry-format = "crates/aos/registry/aos-registry-format";
+    aos-nar = "crates/artifacts/aos-nar";
+    aos-module-format = "crates/modules/aos-module-format";
+    aos-registry-format = "crates/registry/aos-registry-format";
   };
   dependencyPackages = {
-    aos-core = "crates/shared/aos-core";
-    aos-artifact-evidence = "crates/shared/aos-artifact-evidence";
-    aos-oci-types = "crates/shared/aos-oci-types";
+    aos-core = "crates/core/aos-core";
+    aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
+    aos-oci-types = "crates/artifacts/aos-oci-types";
   };
   rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
   family = compression:

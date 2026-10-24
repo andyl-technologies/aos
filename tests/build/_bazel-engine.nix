@@ -3,7 +3,7 @@
   pkgs,
   sourceInventory ? ../../tools/bazel/metadata/engine-inventory.json,
 }: let
-  label = "//crates/crucible/engine/crucible-engine";
+  label = "//crates/crucible/crucible-engine";
   sourceCatalog = import ./_bazel-source-catalog.nix {inherit pkgs;};
   inputPaths = [
     "tests/crucible/engineering-hygiene-baseline.txt"
@@ -42,15 +42,15 @@
     export AOS_SOURCE_CATALOG="$aos_engine_cargo_source/crates/source_catalog.json"
     export LIBSQLITE3_SYS_USE_PKG_CONFIG=1 ZSTD_SYS_USE_PKG_CONFIG=1
   '';
-  packages.crucible-engine = "crates/crucible/engine/crucible-engine";
+  packages.crucible-engine = "crates/crucible/crucible-engine";
   dependencyPackages = {
-    crucible-determinism = "crates/crucible/engine/crucible-determinism";
-    crucible-campaign = "crates/crucible/engine/crucible-campaign";
-    crucible-device = "crates/crucible/engine/crucible-device";
-    crucible-store = "crates/crucible/storage/crucible-store";
-    crucible-qemu-protocol = "crates/crucible/protocol/crucible-qemu-protocol";
-    crucible-qemu-shmem = "crates/crucible/protocol/crucible-qemu-shmem";
-    crucible-test-support = "crates/crucible/testing/crucible-test-support";
+    crucible-determinism = "crates/crucible/crucible-determinism";
+    crucible-campaign = "crates/crucible/crucible-campaign";
+    crucible-device = "crates/crucible/crucible-device";
+    crucible-store = "crates/crucible/crucible-store";
+    crucible-qemu-protocol = "crates/crucible/crucible-qemu-protocol";
+    crucible-qemu-shmem = "crates/crucible/crucible-qemu-shmem";
+    crucible-test-support = "crates/crucible/crucible-test-support";
   };
   dependencyOptions =
     pkgs.lib.concatMap
@@ -73,7 +73,7 @@
     extraSourceDirectories = ["BUILD.bazel" "crates" "tests/crucible" "docs/rfcs/0014-signal-driven-fault-model" "docs/rfcs/0020-crucible-campaigns" "docs/users/crucible"];
   };
   variantTargets = suffix: features: let
-    files = builtins.readDir (root + "/crates/crucible/engine/crucible-engine/tests");
+    files = builtins.readDir (root + "/crates/crucible/crucible-engine/tests");
     names = map (pkgs.lib.removeSuffix ".rs") (builtins.filter (name: files.${name} == "regular" && pkgs.lib.hasSuffix ".rs" name) (builtins.attrNames files));
     selected = builtins.filter (name: builtins.elem "test-double" features || !(builtins.elem name excludedTests)) names;
   in
@@ -97,7 +97,7 @@
       PYTHONDONTWRITEBYTECODE=1 ${pkgs.python3}/bin/python3 ${parityTools}/verify_protocol.py \
         --tests ${tests}/evidence/tests --inventory ${tests}/inventory.json \
         --messages ${cargo}/cargo-messages.jsonl --cargo-log ${cargo}/cargo-tests.log \
-        --package-path crucible-engine=crates/crucible/engine/crucible-engine \
+        --package-path crucible-engine=crates/crucible/crucible-engine \
         ${pkgs.lib.escapeShellArgs dependencyOptions} \
         ${pkgs.lib.escapeShellArgs (pkgs.lib.concatMap (name: ["--allow-empty-test" "${label}:${name}${suffix}"]) (pkgs.lib.optionals (!(builtins.elem "test-double" features)) emptyTests))} \
         --target-suffix ${suffix} --output "$out/parity.json"

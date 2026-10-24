@@ -15,7 +15,7 @@ import subprocess
 
 def artifact(build, component, destination):
     """Selects a completed, digest-checked artifact by its declared package label."""
-    label = f"//crates/crucible/qemu/{component}:compiler_artifact"
+    label = f"//crates/crucible/{component}:compiler_artifact"
     identifier = json.loads((build / "packages/index.json").read_text())[label]
     if identifier != hashlib.sha256(label.encode()).hexdigest():
         raise ValueError("invalid compiler artifact package identity")

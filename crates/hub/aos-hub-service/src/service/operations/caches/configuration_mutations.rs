@@ -63,7 +63,7 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::ReportCacheNarinfosRequest,
     ) -> Result<pb::CacheNarinfoRegistrationResponse, RpcError> {
-        self.require_controller_fence(
+        let claims = self.require_controller_fence(
             auth,
             &req.controller_lease_id,
             req.controller_generation,
@@ -71,6 +71,14 @@ impl RpcService {
         )?;
         let cache = self.binary_cache_or_not_found(&req.cache_id).await?;
         self.require_cache_admin(auth, &cache).await?;
+        self.claim_controller_fence(
+            &claims,
+            "cache_narinfos",
+            &req.cache_id,
+            &req.controller_lease_id,
+            req.controller_generation,
+        )
+        .await?;
         self.register_cache_narinfos_authorized(&cache, &req.narinfos)
             .await
     }
@@ -214,7 +222,10 @@ impl RpcService {
                 ],
                 body,
             ));
-            return Ok(Some(resp));
+            return Ok(Some(Self::apply_machine_cache_policy(
+                resp,
+                cache.visibility == "public",
+            )));
         }
 
         let requested = parse_byte_range(range_header);
@@ -228,9 +239,11 @@ impl RpcService {
         .await
         .map_err(RpcError::surface_read)?
         {
-            PlacementReadOutcome::Found(read) => {
-                Ok(Some(Self::streamed_surface_response(path, read.value)?))
-            }
+            PlacementReadOutcome::Found(read) => Ok(Some(Self::streamed_surface_response(
+                path,
+                read.value,
+                cache.visibility == "public",
+            )?)),
             PlacementReadOutcome::NotFound => Ok(None),
         }
     }

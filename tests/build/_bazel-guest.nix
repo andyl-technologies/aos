@@ -3,7 +3,7 @@
   pkgs,
   sourceInventory ? ../../tools/bazel/metadata/guest-inventory.json,
 }: let
-  label = "//crates/crucible/guest/crucible-guest";
+  label = "//crates/crucible/crucible-guest";
   inputPaths = [
     "MODULE.bazel"
     "tests/build/_bazel-guest.nix"
@@ -25,11 +25,11 @@
   family = import ./_bazel-rust-family.nix {
     inherit pkgs sourceInventory cargoSource cargoSetup;
     pname = "aos-bazel-guest";
-    packages.crucible-guest = "crates/crucible/guest/crucible-guest";
+    packages.crucible-guest = "crates/crucible/crucible-guest";
     dependencyPackages = {
-      crucible-qemu-protocol = "crates/crucible/protocol/crucible-qemu-protocol";
-      crucible-campaign = "crates/crucible/engine/crucible-campaign";
-      crucible-store = "crates/crucible/storage/crucible-store";
+      crucible-qemu-protocol = "crates/crucible/crucible-qemu-protocol";
+      crucible-campaign = "crates/crucible/crucible-campaign";
+      crucible-store = "crates/crucible/crucible-store";
     };
     editorComparisonScope = "selected-packages";
     dependencyProfile = "guest";
@@ -46,9 +46,9 @@
         "tests/crucible/BUILD.bazel"
         "docs/rfcs/0010-crucible/BUILD.bazel"
         "docs/rfcs/0020-crucible-campaigns"
-        "crates/crucible/protocol/crucible-qemu-protocol"
-        "crates/crucible/storage/crucible-store"
-        "crates/crucible/engine/crucible-campaign"
+        "crates/crucible/crucible-qemu-protocol"
+        "crates/crucible/crucible-store"
+        "crates/crucible/crucible-campaign"
       ];
     extraTests = ["${label}:bin_crucible-guest"];
     extraEditorTargets = ["${label}:crucible-guest" "${label}:bin_crucible-guest_binary"];
@@ -106,7 +106,7 @@ in
         ${pkgs.python3}/bin/python3 verify_guest.py \
           --build ${build} --package ${package} --libraries ${pkgs.aosBazelGuestLibraries} \
           --cargo ${family.cargo} --system ${pkgs.lib.escapeShellArg pkgs.stdenv.hostPlatform.system} \
-          --source ${../../crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs} \
+          --source ${../../crates/crucible/crucible-qemu-protocol/src/doorbell_abi.rs} \
           --readelf ${pkgs.binutils}/bin/readelf --output "$out/runtime.json"
         ${pkgs.python3}/bin/python3 - "$out/closure.json" <<'PYTHON'
         import json

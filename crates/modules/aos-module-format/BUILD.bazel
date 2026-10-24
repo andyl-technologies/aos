@@ -1,0 +1,102 @@
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
+load("//tools/bazel/rules:compile.bzl", "rust_library")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+
+package(default_visibility = ["//crates:__subpackages__"])
+
+RUST_PACKAGE = aos_rust_package(
+    name = "aos-module-format",
+    version = "0.1.0",
+    edition = "2024",
+    description = "Portable module options, declarations, and checked activation graphs",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+)
+
+DEPENDENCIES = [
+    "//crates/artifacts/aos-artifact-evidence:lib",
+    "//crates/core/aos-core:lib",
+    "//third_party/rust:core_anyhow",
+    "//third_party/rust:core_schemars",
+    "//third_party/rust:core_regex",
+    "//third_party/rust:core_serde",
+    "//third_party/rust:core_serde_json",
+    "//third_party/rust:core_thiserror",
+]
+
+rust_library(
+    name = "lib",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "aos_module_format",
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = [],
+    deps = DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "unit",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":lib",
+)
+
+rust_doc_test(
+    name = "doc",
+    crate = ":lib",
+)
+
+aos_license_check(
+    name = "license_closure",
+    testonly = True,
+    roots = [":lib", ":unit_binary"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+# The connected compression qualification keeps these portable libraries
+# unchanged while selecting NAR's optional native compression dependency.
+alias(name = "lib_compression", actual = ":lib")
+
+aos_rust_test(
+    name = "unit_compression",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":lib",
+)
+
+rust_doc_test(name = "doc_compression", crate = ":lib")
+aos_license_check(
+    name = "license_closure_compression",
+    testonly = True,
+    roots = [":lib", ":unit_compression_binary"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+DEVELOPER_ARTIFACTS = [":lib", ":unit_binary", ":unit_compression_binary"]
+
+rust_clippy(
+    name = "clippy",
+    testonly = True,
+    deps = DEVELOPER_ARTIFACTS,
+)
+
+rustfmt_test(
+    name = "format",
+    targets = DEVELOPER_ARTIFACTS,
+)
+
+rust_doc(
+    name = "documentation",
+    crate = ":lib",
+)
+
+aos_source_package(
+    name = "source_package",
+    package = RUST_PACKAGE,
+    srcs = glob(["**/*.rs"]),
+    visibility = ["//visibility:public"],
+)

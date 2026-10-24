@@ -23,7 +23,7 @@ pkgs.mkDerivation {
         ${pkgs.python3}/bin/python3 - <<'PYTHON'
         from pathlib import Path
 
-        path = Path("workspace/crates/aos/registry/aos-registry-authoring/src/registry/staging.rs")
+        path = Path("workspace/crates/registry/aos-registry-authoring/src/registry/staging.rs")
         source = path.read_text()
         unlock = "let _ = rustix::fs::flock(&self.file, rustix::fs::FlockOperation::Unlock);"
         if source.count(unlock) != 1:
@@ -36,7 +36,7 @@ pkgs.mkDerivation {
         if ${pkgs.python3}/bin/python3 ${../../tools/bazel/launcher.py} \
           --batch --config ${workspace.configuration} --workspace "$PWD/workspace" \
           --output-base "$TMPDIR/bazel" --nix-sandbox -- test \
-          //crates/aos/registry/aos-registry-authoring:unit \
+          //crates/registry/aos-registry-authoring:unit \
           --test_filter=preview_releases_its_lock_while_an_inherited_description_remains_open \
           --build_event_json_file="$out/events.json" > "$out/without-unlock.log" 2>&1; then
           echo "close-only preview release unexpectedly passed its regression" >&2

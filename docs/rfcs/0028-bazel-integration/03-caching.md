@@ -71,10 +71,10 @@ that tradeoff in the edit benchmarks before cutting over large crates.
 
 ## Relationship to accache
 
-The current [accache backend](../../../tools/accache/src/backend.rs) stores
+The current [accache backend](../../../crates/accache/accache/src/backend.rs) stores
 SHA-256 CAS blobs and REAPI `ActionResult` messages in Bazel's disk-cache
-layout. Its [protocol subset](../../../tools/accache/src/proto.rs) and
-[storage documentation](../../../tools/accache/README.md) explicitly describe
+layout. Its [protocol subset](../../../crates/accache/accache/src/proto.rs) and
+[storage documentation](../../../crates/accache/accache/README.md) explicitly describe
 a local backend, with a compiler-input inventory rather than a remote-executor
 filesystem tree. There is no existing remote transport or execution service
 to assume in this RFC.

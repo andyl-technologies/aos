@@ -20,8 +20,8 @@
     };
   };
   packages = [
-    "crates/crucible/control/crucible-control-client"
-    "crates/crucible/control/crucible-control-server"
+    "crates/crucible/crucible-control-client"
+    "crates/crucible/crucible-control-server"
   ];
   # Compile the default family's exact artifacts; feature variants have their
   # own native oracles and do not silently widen this foreign test inventory.

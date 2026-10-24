@@ -18,15 +18,15 @@ DAEMON_VARIANTS = {
 }
 
 _PACKAGE_PATHS = {
-    "engine": "//crates/crucible/engine/crucible-engine",
-    "session": "//crates/crucible/control/crucible-session",
-    "api": "//crates/crucible/control/crucible-control-api",
-    "client": "//crates/crucible/control/crucible-control-client",
-    "server": "//crates/crucible/control/crucible-control-server",
-    "qemu": "//crates/crucible/qemu/crucible-qemu-host",
-    "s3": "//crates/crucible/storage/crucible-store-s3",
-    "campaign": "//crates/crucible/engine/crucible-campaign",
-    "store": "//crates/crucible/storage/crucible-store",
+    "engine": "//crates/crucible/crucible-engine",
+    "session": "//crates/crucible/crucible-session",
+    "api": "//crates/crucible/crucible-control-api",
+    "client": "//crates/crucible/crucible-control-client",
+    "server": "//crates/crucible/crucible-control-server",
+    "qemu": "//crates/crucible/crucible-qemu-host",
+    "s3": "//crates/crucible/crucible-store-s3",
+    "campaign": "//crates/crucible/crucible-campaign",
+    "store": "//crates/crucible/crucible-store",
 }
 
 _LIBRARY_EDGES = {
@@ -77,7 +77,7 @@ def daemon_dependency_libraries(component, package, sources, common_deps, compil
                 crate_features = _features(component, features, development, session_test_double)
                 extra_deps = []
                 if component == "engine" and "test-double" in crate_features:
-                    extra_deps = ["//crates/crucible/protocol/crucible-qemu-shmem:lib"]
+                    extra_deps = ["//crates/crucible/crucible-qemu-shmem:lib"]
                 rust_library(
                     name = _library_target(suffix, development, session_test_double),
                     testonly = development,

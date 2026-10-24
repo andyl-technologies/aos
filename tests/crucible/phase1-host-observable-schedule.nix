@@ -10,11 +10,11 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   simBackend = import ./_crucible-local-and-test-backends-source.nix;
-  crateRoot = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
-  pluginManifest = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml;
-  engineOracle = builtins.readFile ../../crates/crucible/control/crucible-control-server/src/bin/qemu_test_oracle/engine.rs;
-  pluginNetworkRx = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_rx.rs;
-  pluginNetworkTx = builtins.readFile ../../crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs;
+  crateRoot = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  pluginManifest = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/Cargo.toml;
+  engineOracle = builtins.readFile ../../crates/crucible/crucible-control-server/src/bin/qemu_test_oracle/engine.rs;
+  pluginNetworkRx = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/network_rx.rs;
+  pluginNetworkTx = builtins.readFile ../../crates/crucible/crucible-qemu-plugin/src/network_tx.rs;
   pluginTimeControl = import ./_qemu-plugin-time-control-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
   harnessTesting = builtins.readFile ../../docs/rfcs/0010-crucible/24-determinism-harness-testing.md;
@@ -28,13 +28,13 @@
         needle = "Completed by `checks.crucible.phase1.hostObservableSchedule`";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "host schedule event export";
         needle = "SimDoubleHostScheduleEvent";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/sim_backend.rs" simBackend [
+    ++ failuresFor "crates/crucible/crucible-engine/src/sim_backend.rs" simBackend [
       {
         label = "host schedule event type";
         needle = "pub enum SimDoubleHostScheduleEvent";
@@ -92,20 +92,20 @@
         needle = "sim_double_rejects_outbound_sequence_overflow_like_real_plugin_tx";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml" pluginManifest [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/Cargo.toml" pluginManifest [
       {
         label = "test-only process boundary comment";
         needle = "Real engine cross-checks run in a separately linked Apache process.";
       }
       {
         label = "test-only process protocol dependency";
-        needle = "crucible-qemu-protocol = { path = \"../../protocol/crucible-qemu-protocol\", features = [\"test-oracle\"] }";
+        needle = "crucible-qemu-protocol = { path = \"../crucible-qemu-protocol\", features = [\"test-oracle\"] }";
       }
     ]
     ++ lib.optionals (hasInfix "crucible-engine" pluginManifest) [
       "GPL plugin manifest must not link the Apache engine, including in tests"
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-server/src/bin/qemu_test_oracle/engine.rs" engineOracle [
+    ++ failuresFor "crates/crucible/crucible-control-server/src/bin/qemu_test_oracle/engine.rs" engineOracle [
       {
         label = "actual engine schedule source";
         needle = "self.double()?.host_observable_schedule()";
@@ -115,7 +115,7 @@
         needle = ".advance_scripted_quantum(horizon, &authorization)?";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/network_rx.rs" pluginNetworkRx [
       {
         label = "focused HARN-16 cross-check test";
         needle = "host_observable_schedule_cross_checks_sim_double_against_plugin_projection";
@@ -185,7 +185,7 @@
         needle = "SimDoubleHostScheduleEvent";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/network_tx.rs" pluginNetworkTx [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/network_tx.rs" pluginNetworkTx [
       {
         label = "safe TX callback body";
         needle = "pub fn handle_network_tx_callback";
@@ -195,7 +195,7 @@
         needle = "pub struct NetworkTxEnqueue";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/time_control.rs" pluginTimeControl [
       {
         label = "plugin virtual clock";
         needle = "pub struct PluginVirtualClock";

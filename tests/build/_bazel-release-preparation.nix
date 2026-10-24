@@ -4,20 +4,20 @@
   sourceInventory ? ../../tools/bazel/metadata/release-preparation-inventory.json,
 }: let
   packages = {
-    aos-image-finalizer = "crates/aos/release/aos-image-finalizer";
-    aos-package-maintenance = "crates/aos/release/aos-package-maintenance";
-    aos-release-signer = "crates/aos/release/aos-release-signer";
+    aos-image-finalizer = "crates/release/aos-image-finalizer";
+    aos-package-maintenance = "crates/release/aos-package-maintenance";
+    aos-release-signer = "crates/release/aos-release-signer";
   };
   dependencyPackages = {
-    aos-artifact-evidence = "crates/shared/aos-artifact-evidence";
-    aos-boot-identity = "crates/aos/boot/aos-boot-identity";
-    aos-core = "crates/shared/aos-core";
-    aos-deployment-format = "crates/aos/packages/aos-deployment-format";
-    aos-module-docs = "crates/aos/modules/aos-module-docs";
-    aos-module-format = "crates/aos/modules/aos-module-format";
-    aos-oci-types = "crates/shared/aos-oci-types";
-    aos-registry-format = "crates/aos/registry/aos-registry-format";
-    aos-release-format = "crates/aos/release/aos-release-format";
+    aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
+    aos-boot-identity = "crates/boot/aos-boot-identity";
+    aos-core = "crates/core/aos-core";
+    aos-deployment-format = "crates/packages/aos-deployment-format";
+    aos-module-docs = "crates/modules/aos-module-docs";
+    aos-module-format = "crates/modules/aos-module-format";
+    aos-oci-types = "crates/artifacts/aos-oci-types";
+    aos-registry-format = "crates/registry/aos-registry-format";
+    aos-release-format = "crates/release/aos-release-format";
   };
   rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
   family = import ./_bazel-rust-family.nix {
@@ -40,10 +40,10 @@
         doctest = null;
       };
     };
-    extraTests = ["//crates/aos/release/aos-image-finalizer:bin_aos-image-metadata"];
+    extraTests = ["//crates/release/aos-image-finalizer:bin_aos-image-metadata"];
     extraEditorTargets = [
-      "//crates/aos/release/aos-image-finalizer:aos-image-metadata"
-      "//crates/aos/release/aos-image-finalizer:bin_aos-image-metadata_binary"
+      "//crates/release/aos-image-finalizer:aos-image-metadata"
+      "//crates/release/aos-image-finalizer:bin_aos-image-metadata_binary"
     ];
     dependencyProfile = "release-preparation";
     repositories = pkgs.aosBazelRepositories // pkgs.aosBazelRustRepositories.release-preparation;
@@ -91,10 +91,10 @@ in
             )))
         (builtins.attrNames packages)
         ++ [
-          "//crates/aos/release/aos-image-finalizer:bin_aos-image-metadata"
+          "//crates/release/aos-image-finalizer:bin_aos-image-metadata"
           # Preserve the dependency package's nonempty integration-source glob
           # when its BUILD file loads in the strict compilation workspace.
-          "//crates/aos/release/aos-release-format:qualification_binary"
+          "//crates/release/aos-release-format:qualification_binary"
         ]
         ++ productionTargets;
     };

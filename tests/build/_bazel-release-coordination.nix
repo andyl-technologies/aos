@@ -4,27 +4,27 @@
   sourceInventory ? ../../tools/bazel/metadata/release-coordination-inventory.json,
 }: let
   packages = {
-    aos-release-coordinator = "crates/aos/release/aos-release-coordinator";
+    aos-release-coordinator = "crates/release/aos-release-coordinator";
   };
   dependencyPackages = {
-    aos-artifact-evidence = "crates/shared/aos-artifact-evidence";
-    aos-boot-identity = "crates/aos/boot/aos-boot-identity";
-    aos-cli-ui = "crates/aos/cli/aos-cli-ui";
-    aos-core = "crates/shared/aos-core";
-    aos-deployment-format = "crates/aos/packages/aos-deployment-format";
+    aos-artifact-evidence = "crates/artifacts/aos-artifact-evidence";
+    aos-boot-identity = "crates/boot/aos-boot-identity";
+    aos-cli-ui = "crates/cli/aos-cli-ui";
+    aos-core = "crates/core/aos-core";
+    aos-deployment-format = "crates/packages/aos-deployment-format";
     aos-hub-api = "crates/hub/aos-hub-api";
     aos-hub-client = "crates/hub/aos-hub-client";
-    aos-image-finalizer = "crates/aos/release/aos-image-finalizer";
-    aos-module-docs = "crates/aos/modules/aos-module-docs";
-    aos-module-format = "crates/aos/modules/aos-module-format";
-    aos-nar = "crates/shared/aos-nar";
-    aos-nix = "crates/shared/aos-nix";
-    aos-nix-cache = "crates/aos/packages/aos-nix-cache";
-    aos-oci-types = "crates/shared/aos-oci-types";
-    aos-registry-client = "crates/aos/registry/aos-registry-client";
-    aos-registry-format = "crates/aos/registry/aos-registry-format";
-    aos-release-format = "crates/aos/release/aos-release-format";
-    aos-transfer = "crates/shared/aos-transfer";
+    aos-image-finalizer = "crates/release/aos-image-finalizer";
+    aos-module-docs = "crates/modules/aos-module-docs";
+    aos-module-format = "crates/modules/aos-module-format";
+    aos-nar = "crates/artifacts/aos-nar";
+    aos-nix = "crates/nix/aos-nix";
+    aos-nix-cache = "crates/packages/aos-nix-cache";
+    aos-oci-types = "crates/artifacts/aos-oci-types";
+    aos-registry-client = "crates/registry/aos-registry-client";
+    aos-registry-format = "crates/registry/aos-registry-format";
+    aos-release-format = "crates/release/aos-release-format";
+    aos-transfer = "crates/transfer/aos-transfer";
   };
   repositories =
     pkgs.aosBazelRepositories
@@ -92,8 +92,8 @@ in
           "//crates/hub/aos-hub-api:build_script_program"
           "//crates/hub/aos-hub-api:generated_sources_evidence"
           # Retain dependencies' nonempty integration-test discovery globs.
-          "//crates/aos/packages/aos-nix-cache:source_package"
-          "//crates/aos/release/aos-release-format:source_package"
+          "//crates/packages/aos-nix-cache:source_package"
+          "//crates/release/aos-release-format:source_package"
         ]
         ++ productionTargets;
     };

@@ -21,7 +21,7 @@ from export_packages import completed_manifests
 from verify_cache import execution_events
 
 
-PACKAGE = "crates/aos/boot/aos-boot-identity"
+PACKAGE = "crates/boot/aos-boot-identity"
 LABEL = "//" + PACKAGE + ":package"
 MODES = ["cargo-incremental", "bazel", "cargo-nonincremental-accache", "cargo-incremental-debug0", "bazel-server"]
 

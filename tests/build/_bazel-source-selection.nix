@@ -9,7 +9,7 @@
   };
   cargoSource = import ../../pkgs/tools/aos/_workspace-source.nix {
     lib = pkgs.lib;
-    selectedCrates = ["crucible/control/crucible-daemon"];
+    selectedCrates = ["crucible/crucible-daemon"];
   };
   fixture = ../../tools/bazel/tests/source-selection;
   workspace = name:
@@ -35,7 +35,7 @@
     sourceDirectories = ["crates/exam"];
   };
 in
-  assert builtins.pathExists (cargoSource + "/crates/crucible/control/crucible-daemon/src/executor_worker/result/operations.rs");
+  assert builtins.pathExists (cargoSource + "/crates/crucible/crucible-daemon/src/executor_worker/result/operations.rs");
   assert original.sourceSelection == "configured-inventory";
   assert original.source == editedDocs.source;
   assert addedSource.source != original.source;

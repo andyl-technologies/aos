@@ -35,7 +35,7 @@ class FamilyMeasurementTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             log = Path(temporary) / "command.log"
             output = Path(temporary) / "cargo-compiler-commands.txt"
-            command = '/tools/accache /tools/rustc --crate-name library -C codegen-units=256 -C incremental=/target "literal$(value)"'
+            command = '/crates/accache/accache /tools/rustc --crate-name library -C codegen-units=256 -C incremental=/target "literal$(value)"'
             log.write_text('   Compiling library v1.0.0\n     Running `' + command + '`\n'
                            '     Running `/target/build-script-build`\n'
                            '{"reason":"compiler-artifact"}\n')

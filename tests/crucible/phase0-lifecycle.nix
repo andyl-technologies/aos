@@ -4,15 +4,14 @@
 }: let
   fcLib = import ../../lib/testing/firecracker.nix {inherit pkgs lib;};
   crashRootfs = fcLib.mkFirecrackerRootfs {
-    pname = "crucible-phase0-lifecycle-crash";
     rootfsDeps = [];
-    testScript = ''
-      echo "CRUCIBLE_LIFECYCLE_GUEST_CRASH"
-      echo 1 > /proc/sys/kernel/sysrq
-      echo c > /proc/sysrq-trigger
-      sleep 60
-    '';
   };
+  crashInput = fcLib.mkFirecrackerTestInput ''
+    echo "CRUCIBLE_LIFECYCLE_GUEST_CRASH"
+    echo 1 > /proc/sys/kernel/sysrq
+    echo c > /proc/sysrq-trigger
+    sleep 60
+  '';
   lifecycleSource = builtins.readFile ./phase0-lifecycle.c;
   hangPluginSource = builtins.readFile ./phase0-lifecycle-hang-plugin.c;
 in
@@ -38,7 +37,7 @@ in
 
     QEMU = "${pkgs.qemu-crucible}/bin/qemu-system-x86_64";
     KERNEL = builtins.toString pkgs.linux;
-    ROOTFS = builtins.toString crashRootfs;
+    ROOTFS = "${crashRootfs}/root.img";
 
     phases = [
       {
@@ -59,13 +58,14 @@ in
         script = ''
           mkdir -p "$out"
           vmlinuz=$(ls "$KERNEL"/boot/vmlinuz-* | head -1)
-          cp "$ROOTFS" "$TMPDIR/lifecycle-crash-rootfs.img"
+          cp --reflink=auto --sparse=always "$ROOTFS" "$TMPDIR/lifecycle-crash-rootfs.img"
           chmod u+w "$TMPDIR/lifecycle-crash-rootfs.img"
           set +e
           timeout 120 ./phase0-lifecycle \
             "$QEMU" \
             "$vmlinuz" \
             "$TMPDIR/lifecycle-crash-rootfs.img" \
+            "${crashInput}/test.img" \
             "$PWD/phase0-lifecycle-hang-plugin.so" \
             "$TMPDIR" \
             > "$out/result"

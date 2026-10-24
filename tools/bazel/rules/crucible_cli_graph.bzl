@@ -30,7 +30,7 @@ def cli_dependencies(names, features, development = False):
     if "daemon" in names:
         target = "lib_for_tests" if development else "lib"
         target += ("_session_test_double" if session_test_double else "") + suffix
-        result.append("//crates/crucible/control/crucible-daemon:" + target)
+        result.append("//crates/crucible/crucible-daemon:" + target)
     return result
 
 def cli_integration_sources(source):

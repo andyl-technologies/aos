@@ -133,8 +133,8 @@ in
 
     preBuild = import ./_crucible-qemu-plugin-abi.nix {
       inherit lib glib qemu-crucible;
-      pluginAbiSource = "crucible/qemu/crucible-qemu-plugin/src/abi.rs";
-      shmemAbiSource = "crucible/protocol/crucible-qemu-shmem/src/lib.rs";
+      pluginAbiSource = "crucible/crucible-qemu-plugin/src/abi.rs";
+      shmemAbiSource = "crucible/crucible-qemu-shmem/src/lib.rs";
     };
 
     postInstall = ''
@@ -165,7 +165,7 @@ in
             qemu_plugin_api_version=''${qemu_plugin_api_version%;}
             ;;
         esac
-      done < crucible/qemu/crucible-qemu-plugin/src/abi.rs
+      done < crucible/crucible-qemu-plugin/src/abi.rs
       test -n "$qemu_plugin_api_version"
 
       shmem_abi_version=
@@ -176,7 +176,7 @@ in
             shmem_abi_version=''${shmem_abi_version%;}
             ;;
         esac
-      done < crucible/protocol/crucible-qemu-shmem/src/lib.rs
+      done < crucible/crucible-qemu-shmem/src/lib.rs
       test -n "$shmem_abi_version"
 
       mkdir -p "$out/nix-support"

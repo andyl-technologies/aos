@@ -13,7 +13,7 @@ from verify_cache import execution_events
 
 def verify(build, package, libraries, readelf, graph):
     """Requires selected SQLite/zstd bytes, shared SQLite, and static zstd."""
-    label = "//crates/crucible/storage/crucible-store:crucible-fleet-store"
+    label = "//crates/crucible/crucible-store:crucible-fleet-store"
     actions = [event for event in execution_events(build)
                if event["targetLabel"] == label and event["mnemonic"] == "Rustc"]
     if len(actions) != 1 or "sandbox" not in actions[0]["runner"]:

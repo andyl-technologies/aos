@@ -7,8 +7,8 @@
   pkgs = (import ../../.. {inherit system;}).pkgs;
   family = import ../../../tests/build/_bazel-store.nix {inherit pkgs;};
   packages = {
-    crucible-store = "crates/crucible/storage/crucible-store";
-    crucible-campaign = "crates/crucible/engine/crucible-campaign";
+    crucible-store = "crates/crucible/crucible-store";
+    crucible-campaign = "crates/crucible/crucible-campaign";
   };
   inventory = builtins.fromJSON (builtins.readFile ../metadata/store-inventory.json);
   targets = map (target: target.label) (builtins.filter

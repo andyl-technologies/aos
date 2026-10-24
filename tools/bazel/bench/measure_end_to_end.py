@@ -71,7 +71,7 @@ def measure_series(options, helper, mode, repetition):
     root = options.scratch / identity
     workspace = root / "first-worktree"
     copy_source(options.root, workspace)
-    package = Path("crates/aos/boot/aos-boot-identity")
+    package = Path("crates/boot/aos-boot-identity")
     salt = hashlib.sha256(f"{options.trial}:{repetition}".encode()).hexdigest()[:16]
     with (workspace / package / "src/lib.rs").open("a") as source:
         source.write(f"\n/// Identifies this fresh measurement source.\npub fn measurement_trial_{salt}() -> u32 {{ 17 }}\n")

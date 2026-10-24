@@ -1,7 +1,7 @@
 ##! Rejects either Rust ABI version drifting from the packaged QEMU headers.
 {pkgs}: let
-  pluginAbiSource = ../../crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs;
-  shmemAbiSource = ../../crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs;
+  pluginAbiSource = ../../crates/crucible/crucible-qemu-plugin/src/abi.rs;
+  shmemAbiSource = ../../crates/crucible/crucible-qemu-shmem/src/lib.rs;
   check = pluginSource: shmemSource:
     import ../../pkgs/emulation/_crucible-qemu-plugin-abi.nix {
       inherit (pkgs) lib glib qemu-crucible;

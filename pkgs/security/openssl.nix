@@ -8,7 +8,7 @@
   perl,
   stdenv,
 }: let
-  version = "4.0.2";
+  version = "4.0.3";
   isDarwin = stdenv.hostPlatform.isDarwin;
   configureTarget =
     if isDarwin
@@ -22,8 +22,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -31,9 +47,9 @@ in
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
-        "expected" = "The digest matches the standard SHA-256 vector.";
+        "expected" = "The headers report 4.0.3 and the digest matches the standard SHA-256 vector.";
         "files" = {
-          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"openssl primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"openssl rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <string.h>\n#include <openssl/sha.h>\nint main(void) {\n    static const unsigned char expected[32] = {0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad};\n    unsigned char digest[SHA256_DIGEST_LENGTH];\n    if (SHA256((const unsigned char *)\"abc\", 3, digest) == NULL) return 2;\n    return memcmp(digest, expected, sizeof(digest)) == 0 ? pass() : 3;\n}\n\n";
+          "primary.c" = "#include <stdio.h>\nstatic int pass(void) { return puts(\"openssl primary passed\") == EOF; }\nstatic int reject(void) {\n    fputs(\"openssl rejected invalid input\\n\", stderr);\n    return 7;\n}\n#include <string.h>\n#include <openssl/opensslv.h>\n#include <openssl/sha.h>\nint main(void) {\n    static const unsigned char expected[32] = {0xba,0x78,0x16,0xbf,0x8f,0x01,0xcf,0xea,0x41,0x41,0x40,0xde,0x5d,0xae,0x22,0x23,0xb0,0x03,0x61,0xa3,0x96,0x17,0x7a,0x9c,0xb4,0x10,0xff,0x61,0xf2,0x00,0x15,0xad};\n    unsigned char digest[SHA256_DIGEST_LENGTH];\n    if (OPENSSL_VERSION_MAJOR != 4 || OPENSSL_VERSION_MINOR != 0 || OPENSSL_VERSION_PATCH != 3) return 2;\n    if (SHA256((const unsigned char *)\"abc\", 3, digest) == NULL) return 3;\n    return memcmp(digest, expected, sizeof(digest)) == 0 ? pass() : 4;\n}\n\n";
         };
         "input" = "The ASCII string abc for SHA-256 hashing.";
         "operation" = "Hash the bytes through OpenSSL's SHA256 API.";
@@ -116,7 +132,7 @@ in
       urls = [
         "https://www.openssl.org/source/openssl-${version}.tar.gz"
       ];
-      hash = "sha256-c2tGdTD5FnN7cDExDMsh2CGMYinmHo4WDNHTRYzVQ6g=";
+      hash = "sha256-MltcgGFnwTtAsf/q3+AkgZfADszEzxI+weKNLS/SFtk=";
     };
 
     buildDeps = [

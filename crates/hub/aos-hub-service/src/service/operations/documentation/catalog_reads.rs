@@ -121,51 +121,60 @@ impl RpcService {
             ));
         }
         let terms = aos_module_docs::tokenize(&req.query);
-        let mut results = Vec::new();
-        let mut seen = std::collections::BTreeSet::new();
-        for release in self
+        if terms.len() > MAX_DOCUMENTATION_SEARCH_TERMS {
+            return Err(RpcError::ResourceExhausted(
+                "documentation search has too many terms".into(),
+            ));
+        }
+        let documents = self
             .db
-            .list_releases(registry.id)
+            .bounded_native_documentation_search(registry.id, MAX_DOCUMENTATION_SEARCH_DOCUMENTS)
             .await
             .map_err(RpcError::internal)?
-        {
-            let documents = self
-                .db
-                .native_documentation_at_release(registry.id, &release.semver)
-                .await
-                .map_err(RpcError::internal)?;
-            for document in documents {
-                if !seen.insert((
-                    document.package.clone(),
-                    document.version.clone(),
-                    document.platform.clone(),
-                    document.document_sha256.clone(),
-                )) {
+            .ok_or_else(|| {
+                RpcError::ResourceExhausted(
+                    "documentation search exceeds the registry work limit".into(),
+                )
+            })?;
+        let mut results = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for indexed in documents {
+            let document = indexed.document;
+            if !seen.insert((
+                document.package.clone(),
+                document.version.clone(),
+                document.platform.clone(),
+                document.document_sha256.clone(),
+            )) {
+                continue;
+            }
+            for row in document.search {
+                if kind.is_some_and(|kind| row.kind != kind)
+                    || !terms.iter().all(|term| row.terms.contains_key(term))
+                {
                     continue;
                 }
-                for row in document.search {
-                    if kind.is_some_and(|kind| row.kind != kind)
-                        || !terms.iter().all(|term| row.terms.contains_key(term))
-                    {
-                        continue;
-                    }
-                    let score = terms
-                        .iter()
-                        .map(|term| u64::from(row.terms.get(term).copied().unwrap_or_default()))
-                        .sum();
-                    results.push(pb::PackageDocumentationSearchResult {
-                        package: document.package.clone(),
-                        version: document.version.clone(),
-                        platform: document.platform.clone(),
-                        kind: row.kind,
-                        key: row.key,
-                        title: row.title,
-                        summary: row.summary,
-                        score,
-                        release: release.semver.clone(),
-                        registry_commit: release.commit_oid.clone(),
-                        document_sha256: document.document_sha256.clone(),
-                    });
+                let score = terms
+                    .iter()
+                    .map(|term| u64::from(row.terms.get(term).copied().unwrap_or_default()))
+                    .sum();
+                results.push(pb::PackageDocumentationSearchResult {
+                    package: document.package.clone(),
+                    version: document.version.clone(),
+                    platform: document.platform.clone(),
+                    kind: row.kind,
+                    key: row.key,
+                    title: row.title,
+                    summary: row.summary,
+                    score,
+                    release: indexed.release.clone(),
+                    registry_commit: indexed.commit.clone(),
+                    document_sha256: document.document_sha256.clone(),
+                });
+                if results.len() > MAX_DOCUMENTATION_RESULTS {
+                    return Err(RpcError::ResourceExhausted(
+                        "documentation search exceeds the result work limit".into(),
+                    ));
                 }
             }
         }
@@ -187,7 +196,6 @@ impl RpcService {
                     ))
             })
         });
-        results.truncate(MAX_DOCUMENTATION_RESULTS);
         let (results, next_page_token) = paginate(results, req.page_size, &req.page_token)?;
         Ok(pb::SearchPackageDocumentationResponse {
             results,
@@ -210,50 +218,29 @@ impl RpcService {
         }
         let registry = self.registry_or_not_found(&req.registry).await?;
         self.require_read(auth, &registry).await?;
-        for release in self
+        let locator = self
             .db
-            .list_releases(registry.id)
+            .native_documentation_locator_by_digest(registry.id, &req.document_sha256)
             .await
             .map_err(RpcError::internal)?
-        {
-            let documents = self
-                .db
-                .native_documentation_at_release(registry.id, &release.semver)
-                .await
-                .map_err(RpcError::internal)?;
-            if let Some(document) = documents
-                .iter()
-                .find(|document| document.document_sha256 == req.document_sha256)
-            {
-                let (locator, _) = self
-                    .load_native_documentation_for_registry(
-                        registry.id,
-                        &document.package,
-                        &document.version,
-                        &document.platform,
-                        Some(&release.semver),
-                    )
-                    .await?;
-                let fetch = self
-                    .topology_surface_fetcher(aos_hub_db::db::SurfaceTarget::Registry(registry.id));
-                let (canonical_json, _) =
-                    crate::indexer::native_documentation::fetch_native_documentation_content(
-                        fetch.as_ref(),
-                        &locator.package,
-                        &locator.version,
-                        &locator.platform,
-                        &locator.artifact,
-                    )
-                    .await
-                    .map_err(RpcError::internal)?;
-                return Ok(pb::GetPackageDocumentationResponse {
-                    identity: Some(native_documentation_identity(&locator)),
-                    canonical_json,
-                    etag: locator.artifact.document_sha256,
-                });
-            }
-        }
-        Err(RpcError::not_found("native documentation artifact"))
+            .ok_or_else(|| RpcError::not_found("native documentation artifact"))?;
+        let fetch =
+            self.topology_surface_fetcher(aos_hub_db::db::SurfaceTarget::Registry(registry.id));
+        let (canonical_json, _) =
+            crate::indexer::native_documentation::fetch_native_documentation_content(
+                fetch.as_ref(),
+                &locator.package,
+                &locator.version,
+                &locator.platform,
+                &locator.artifact,
+            )
+            .await
+            .map_err(RpcError::internal)?;
+        Ok(pb::GetPackageDocumentationResponse {
+            identity: Some(native_documentation_identity(&locator)),
+            canonical_json,
+            etag: locator.artifact.document_sha256,
+        })
     }
 
     /// Returns the exact checked native package reference used by tooling.

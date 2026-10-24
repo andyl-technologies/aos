@@ -2498,6 +2498,62 @@ impl Database {
         error: Option<&str>,
         expected_version: i64,
     ) -> Result<NetworkPolicyRevisionRecord> {
+        self.reconcile_network_policy_revision_inner(
+            boundary_id,
+            revision,
+            state,
+            protected_transport_observed,
+            trusted_ingress_observed,
+            error,
+            expected_version,
+            None,
+        )
+        .await
+    }
+
+    /// Records one boundary-revision observation under both lease and lifecycle CAS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lease, observation, or expected lifecycle
+    /// version is invalid, or when the database operation fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn reconcile_network_policy_revision_fenced(
+        &self,
+        boundary_id: &str,
+        revision: i64,
+        state: &str,
+        protected_transport_observed: bool,
+        trusted_ingress_observed: &str,
+        error: Option<&str>,
+        expected_version: i64,
+        fence: &super::ControllerLeaseFence<'_>,
+    ) -> Result<NetworkPolicyRevisionRecord> {
+        self.reconcile_network_policy_revision_inner(
+            boundary_id,
+            revision,
+            state,
+            protected_transport_observed,
+            trusted_ingress_observed,
+            error,
+            expected_version,
+            Some(fence),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn reconcile_network_policy_revision_inner(
+        &self,
+        boundary_id: &str,
+        revision: i64,
+        state: &str,
+        protected_transport_observed: bool,
+        trusted_ingress_observed: &str,
+        error: Option<&str>,
+        expected_version: i64,
+        fence: Option<&super::ControllerLeaseFence<'_>>,
+    ) -> Result<NetworkPolicyRevisionRecord> {
         if !matches!(
             state,
             "unknown" | "declared" | "probing" | "verified" | "degraded" | "failed"
@@ -2527,36 +2583,39 @@ impl Database {
             bail!("verified observation must exactly match the desired boundary posture");
         }
         let now = unix_now();
-        self.backend
-            .checked_batch(&[
-                Statement::new(
-                    "UPDATE network_policy_observations SET state = ?3,
+        let mut statements = Vec::with_capacity(3);
+        if let Some(fence) = fence {
+            statements.push(Self::controller_lease_guard_statement(fence)?);
+        }
+        statements.extend([
+            Statement::new(
+                "UPDATE network_policy_observations SET state = ?3,
                      protected_transport_observed = ?4, trusted_ingress_observed = ?5,
                      observed_at = CASE WHEN observed_at >= ?6 THEN observed_at + 1 ELSE ?6 END,
                      error = ?7 WHERE boundary_id = ?1 AND revision = ?2
                        AND EXISTS (SELECT 1 FROM network_policy_revision_lifecycle
                          WHERE boundary_id = ?1 AND revision = ?2 AND resource_version = ?8)",
-                    vals![
-                        boundary_id,
-                        revision,
-                        state,
-                        protected_transport_observed,
-                        trusted_ingress_observed,
-                        now,
-                        error,
-                        expected_version
-                    ],
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE network_policy_revision_lifecycle
+                vals![
+                    boundary_id,
+                    revision,
+                    state,
+                    protected_transport_observed,
+                    trusted_ingress_observed,
+                    now,
+                    error,
+                    expected_version
+                ],
+            )
+            .expecting(1),
+            Statement::new(
+                "UPDATE network_policy_revision_lifecycle
                      SET resource_version = resource_version + 1
                      WHERE boundary_id = ?1 AND revision = ?2 AND resource_version = ?3",
-                    vals![boundary_id, revision, expected_version],
-                )
-                .expecting(1),
-            ])
-            .await?;
+                vals![boundary_id, revision, expected_version],
+            )
+            .expecting(1),
+        ]);
+        self.backend.checked_batch(&statements).await?;
         let observed = self
             .network_policy_revision(boundary_id, revision)
             .await?
@@ -4727,6 +4786,66 @@ impl Database {
         error: Option<&str>,
         expected_version: i64,
     ) -> Result<EndpointObservationRecord> {
+        self.reconcile_endpoint_inner(
+            endpoint_id,
+            observed_generation,
+            boundary_revision,
+            state,
+            listener_observed,
+            tls_observed,
+            error,
+            expected_version,
+            None,
+        )
+        .await
+    }
+
+    /// Records one endpoint observation under both lease and resource CAS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lease, observation, or expected resource
+    /// version is invalid, or when the database operation fails.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn reconcile_endpoint_fenced(
+        &self,
+        endpoint_id: &str,
+        observed_generation: i64,
+        boundary_revision: i64,
+        state: &str,
+        listener_observed: bool,
+        tls_observed: bool,
+        error: Option<&str>,
+        expected_version: i64,
+        fence: &super::ControllerLeaseFence<'_>,
+    ) -> Result<EndpointObservationRecord> {
+        self.reconcile_endpoint_inner(
+            endpoint_id,
+            observed_generation,
+            boundary_revision,
+            state,
+            listener_observed,
+            tls_observed,
+            error,
+            expected_version,
+            Some(fence),
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn reconcile_endpoint_inner(
+        &self,
+        endpoint_id: &str,
+        observed_generation: i64,
+        boundary_revision: i64,
+        state: &str,
+        listener_observed: bool,
+        tls_observed: bool,
+        error: Option<&str>,
+        expected_version: i64,
+        fence: Option<&super::ControllerLeaseFence<'_>>,
+    ) -> Result<EndpointObservationRecord> {
         if !matches!(
             state,
             "declared" | "probing" | "healthy" | "degraded" | "failed"
@@ -4753,10 +4872,13 @@ impl Database {
             "resource_version": expected_version + 1,
             "state": state,
         }))?;
-        self.backend
-            .checked_batch(&[
-                Statement::new(
-                    "INSERT INTO endpoint_generation_observations
+        let mut statements = Vec::with_capacity(5);
+        if let Some(fence) = fence {
+            statements.push(Self::controller_lease_guard_statement(fence)?);
+        }
+        statements.extend([
+            Statement::new(
+                "INSERT INTO endpoint_generation_observations
                      (endpoint_id, observed_generation, boundary_id, boundary_revision,
                       state, listener_observed, tls_observed, observed_at, error)
                      SELECT e.id, ?2, e.network_policy_id, ?3, ?4, ?5, ?6, ?7, ?8
@@ -4776,21 +4898,21 @@ impl Database {
                          THEN endpoint_generation_observations.observed_at + 1
                          ELSE excluded.observed_at END,
                        error = excluded.error",
-                    vals![
-                        endpoint_id,
-                        observed_generation,
-                        boundary_revision,
-                        state,
-                        listener_observed,
-                        tls_observed,
-                        now,
-                        error,
-                        expected_version
-                    ],
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE endpoint_observations SET observed_generation = ?2,
+                vals![
+                    endpoint_id,
+                    observed_generation,
+                    boundary_revision,
+                    state,
+                    listener_observed,
+                    tls_observed,
+                    now,
+                    error,
+                    expected_version
+                ],
+            )
+            .expecting(1),
+            Statement::new(
+                "UPDATE endpoint_observations SET observed_generation = ?2,
                  boundary_revision = ?3, state = ?4, listener_observed = ?5,
                  tls_observed = ?6,
                  observed_at = CASE WHEN observed_at >= ?7 THEN observed_at + 1 ELSE ?7 END,
@@ -4799,42 +4921,42 @@ impl Database {
                      JOIN endpoint_revisions r ON r.endpoint_id = e.id
                        AND r.generation = ?2 AND r.boundary_revision = ?3
                      WHERE e.id = ?1 AND e.resource_version = ?9)",
-                    vals![
-                        endpoint_id,
-                        observed_generation,
-                        boundary_revision,
-                        state,
-                        listener_observed,
-                        tls_observed,
-                        now,
-                        error,
-                        expected_version
-                    ],
-                )
-                .expecting(1),
-                Statement::new(
-                    "UPDATE endpoints SET resource_version = resource_version + 1,
+                vals![
+                    endpoint_id,
+                    observed_generation,
+                    boundary_revision,
+                    state,
+                    listener_observed,
+                    tls_observed,
+                    now,
+                    error,
+                    expected_version
+                ],
+            )
+            .expecting(1),
+            Statement::new(
+                "UPDATE endpoints SET resource_version = resource_version + 1,
                  updated_at = ?3 WHERE id = ?1 AND resource_version = ?2
                    AND EXISTS (SELECT 1 FROM endpoint_observations
                      WHERE endpoint_id = ?1 AND observed_generation IS NOT NULL)",
-                    vals![endpoint_id, expected_version, now],
-                )
-                .expecting(1),
-                Database::topology_event_statement(&crate::db::NewTopologyEvent {
-                    event_id: &topology_event_id,
-                    event_name: "topology.endpoint.reconciled",
-                    owner_scope_key: &current.owner_scope_key,
-                    resource_kind: "endpoint",
-                    resource_stable_id: endpoint_id,
-                    resource_generation_key: observed_generation,
-                    actor_kind: "system",
-                    actor_id: None,
-                    actor_label: "delivery-endpoint-controller",
-                    payload_json: &topology_event_payload,
-                    occurred_at: now,
-                }),
-            ])
-            .await?;
+                vals![endpoint_id, expected_version, now],
+            )
+            .expecting(1),
+            Database::topology_event_statement(&crate::db::NewTopologyEvent {
+                event_id: &topology_event_id,
+                event_name: "topology.endpoint.reconciled",
+                owner_scope_key: &current.owner_scope_key,
+                resource_kind: "endpoint",
+                resource_stable_id: endpoint_id,
+                resource_generation_key: observed_generation,
+                actor_kind: "system",
+                actor_id: None,
+                actor_label: "delivery-endpoint-controller",
+                payload_json: &topology_event_payload,
+                occurred_at: now,
+            }),
+        ]);
+        self.backend.checked_batch(&statements).await?;
         let endpoint = self
             .endpoint(endpoint_id)
             .await?

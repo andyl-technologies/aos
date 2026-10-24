@@ -244,7 +244,7 @@ in {
       system.checks.dnsmasq = import ./runtime-tests.nix {inherit cfg;};
       aos.abilities = {
         configuration.operations.file.effects.dnsmasq.input = {
-          path = "/etc/aos/packages/dnsmasq/dnsmasq.conf";
+          path = "/etc/packages/dnsmasq/dnsmasq.conf";
           fragments = configurationFragments;
           mode = "0444";
         };

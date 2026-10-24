@@ -1299,7 +1299,45 @@ impl Database {
         expected_version: i64,
         desired_generation: i64,
     ) -> Result<SurfaceWriteAuthorityRecord> {
-        let affected = self.backend.execute(
+        self.confirm_surface_write_authority_inner(
+            authority_id,
+            expected_version,
+            desired_generation,
+            None,
+        )
+        .await
+    }
+
+    /// Confirms write authority under both lease and authority CAS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lease, authority generation, or expected
+    /// version is invalid, or when the database operation fails.
+    pub async fn confirm_surface_write_authority_fenced(
+        &self,
+        authority_id: i64,
+        expected_version: i64,
+        desired_generation: i64,
+        fence: &ControllerLeaseFence<'_>,
+    ) -> Result<SurfaceWriteAuthorityRecord> {
+        self.confirm_surface_write_authority_inner(
+            authority_id,
+            expected_version,
+            desired_generation,
+            Some(fence),
+        )
+        .await
+    }
+
+    async fn confirm_surface_write_authority_inner(
+        &self,
+        authority_id: i64,
+        expected_version: i64,
+        desired_generation: i64,
+        fence: Option<&ControllerLeaseFence<'_>>,
+    ) -> Result<SurfaceWriteAuthorityRecord> {
+        let mutation = Statement::new(
             "UPDATE surface_write_authorities
              SET observed_placement_id = desired_placement_id,
                  observed_write_spec_version = desired_write_spec_version,
@@ -1333,14 +1371,19 @@ impl Database {
                    AND (t.active_cache_slot = 1 OR
                      (t.state = 'completed' AND t.covered_inventory_generation IS NULL)))
                ",
-            &vals![authority_id, expected_version, desired_generation, unix_now()],
-        ).await?;
-        if affected != 1 {
-            return Err(SurfaceWriteAuthorityMutationFailure::new(
+            vals![authority_id, expected_version, desired_generation, unix_now()],
+        )
+        .expecting(1);
+        let mut statements = Vec::with_capacity(2);
+        if let Some(fence) = fence {
+            statements.push(Self::controller_lease_guard_statement(fence)?);
+        }
+        statements.push(mutation);
+        self.backend.checked_batch(&statements).await.map_err(|_| {
+            SurfaceWriteAuthorityMutationFailure::new(
                 "write authority reconciliation CAS is stale or no longer eligible",
             )
-            .into());
-        }
+        })?;
         self.surface_write_authority_by_id(authority_id)
             .await?
             .context("confirmed write authority disappeared")
@@ -1359,33 +1402,75 @@ impl Database {
         desired_generation: i64,
         error: &str,
     ) -> Result<SurfaceWriteAuthorityRecord> {
+        self.fail_surface_write_authority_inner(
+            authority_id,
+            expected_version,
+            desired_generation,
+            error,
+            None,
+        )
+        .await
+    }
+
+    /// Records failed reconciliation under both lease and authority CAS.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the lease, authority generation, error, or
+    /// expected version is invalid, or when the database operation fails.
+    pub async fn fail_surface_write_authority_fenced(
+        &self,
+        authority_id: i64,
+        expected_version: i64,
+        desired_generation: i64,
+        error: &str,
+        fence: &ControllerLeaseFence<'_>,
+    ) -> Result<SurfaceWriteAuthorityRecord> {
+        self.fail_surface_write_authority_inner(
+            authority_id,
+            expected_version,
+            desired_generation,
+            error,
+            Some(fence),
+        )
+        .await
+    }
+
+    async fn fail_surface_write_authority_inner(
+        &self,
+        authority_id: i64,
+        expected_version: i64,
+        desired_generation: i64,
+        error: &str,
+        fence: Option<&ControllerLeaseFence<'_>>,
+    ) -> Result<SurfaceWriteAuthorityRecord> {
         if error.trim().is_empty() || error.len() > 4 * 1024 {
             bail!("write-authority reconciliation error must contain 1-4096 UTF-8 bytes");
         }
-        let affected = self
-            .backend
-            .execute(
-                "UPDATE surface_write_authorities
+        let mutation = Statement::new(
+            "UPDATE surface_write_authorities
              SET reconciliation_state = 'failed', reconciliation_error = ?4,
                  resource_version = resource_version + 1, updated_at = ?5
              WHERE id = ?1 AND resource_version = ?2 AND desired_generation = ?3
                AND reconciliation_state = 'pending'
                AND (observed_generation IS NULL OR desired_generation > observed_generation)",
-                &vals![
-                    authority_id,
-                    expected_version,
-                    desired_generation,
-                    error,
-                    unix_now()
-                ],
-            )
-            .await?;
-        if affected != 1 {
-            return Err(SurfaceWriteAuthorityMutationFailure::new(
-                "write authority reconciliation CAS is stale",
-            )
-            .into());
+            vals![
+                authority_id,
+                expected_version,
+                desired_generation,
+                error,
+                unix_now()
+            ],
+        )
+        .expecting(1);
+        let mut statements = Vec::with_capacity(2);
+        if let Some(fence) = fence {
+            statements.push(Self::controller_lease_guard_statement(fence)?);
         }
+        statements.push(mutation);
+        self.backend.checked_batch(&statements).await.map_err(|_| {
+            SurfaceWriteAuthorityMutationFailure::new("write authority reconciliation CAS is stale")
+        })?;
         self.surface_write_authority_by_id(authority_id)
             .await?
             .context("failed write authority disappeared")

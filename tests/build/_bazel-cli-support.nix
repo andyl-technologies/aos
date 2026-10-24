@@ -4,15 +4,15 @@
   sourceInventory ? ../../tools/bazel/metadata/cli-support-inventory.json,
 }: let
   packages = {
-    aos-cli-ui = "crates/aos/cli/aos-cli-ui";
-    aos-closure-analysis = "crates/aos/cli/aos-closure-analysis";
-    aos-nix-docs = "crates/aos/cli/aos-nix-docs";
+    aos-cli-ui = "crates/cli/aos-cli-ui";
+    aos-closure-analysis = "crates/cli/aos-closure-analysis";
+    aos-nix-docs = "crates/cli/aos-nix-docs";
   };
   dependencyPackages = {
-    aos-core = "crates/shared/aos-core";
-    aos-nar = "crates/shared/aos-nar";
-    aos-nix = "crates/shared/aos-nix";
-    aos-transfer = "crates/shared/aos-transfer";
+    aos-core = "crates/core/aos-core";
+    aos-nar = "crates/artifacts/aos-nar";
+    aos-nix = "crates/nix/aos-nix";
+    aos-transfer = "crates/transfer/aos-transfer";
   };
   rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
   family = import ./_bazel-rust-family.nix {

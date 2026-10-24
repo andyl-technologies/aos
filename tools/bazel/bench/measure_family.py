@@ -116,8 +116,8 @@ def validate_server_lifetime(metrics, scenario):
 def apply_edit(workspace, configuration, scenario):
     """Changes a declared first-party input without allowing paths outside it."""
     defaults = {
-        "implementation-edit": "crates/crucible/engine/crucible-device/src/lib.rs",
-        "public-api-edit": "crates/crucible/engine/crucible-determinism/src/lib.rs",
+        "implementation-edit": "crates/crucible/crucible-device/src/lib.rs",
+        "public-api-edit": "crates/crucible/crucible-determinism/src/lib.rs",
     }
     relative = Path(configuration.get("edits", defaults)[scenario])
     if relative.is_absolute() or ".." in relative.parts:

@@ -24,6 +24,7 @@
 //! browse_search           client IP                 BROWSE_SEARCH / window (loose)
 //! create_org              JWT principal id          CREATE_ORG_PER_OWNER / window
 //! device_activate         session user + client IP  DEVICE_ACTIVATE / window
+//! oidc_login              organization + client IP  OIDC_LOGIN / window
 //! ```
 //!
 //! The magic-link issuance surface is rate-limited on **both** the target
@@ -110,6 +111,9 @@ pub const CREATE_ORG_PER_OWNER: u32 = 5;
 /// barriers.
 pub const DEVICE_ACTIVATE: u32 = 30;
 
+/// Default OIDC login starts allowed per organization and source IP per window.
+pub const OIDC_LOGIN: u32 = 10;
+
 /// Default anonymous browse/search requests allowed per IP per window (loose).
 pub const BROWSE_SEARCH: u32 = 300;
 
@@ -177,6 +181,8 @@ pub enum RateClass {
     /// **session user combined with source IP**, bounding `user_code`
     /// enumeration of other users' in-flight device grants.
     DeviceActivate,
+    /// OIDC login starts, keyed per **organization combined with source IP**.
+    OidcLogin,
 }
 
 impl RateClass {
@@ -193,6 +199,7 @@ impl RateClass {
             RateClass::BrowseSearch => BROWSE_SEARCH,
             RateClass::CreateOrg => CREATE_ORG_PER_OWNER,
             RateClass::DeviceActivate => DEVICE_ACTIVATE,
+            RateClass::OidcLogin => OIDC_LOGIN,
         }
     }
 }
@@ -489,6 +496,27 @@ mod tests {
             allowed, DEVICE_AUTH_PER_IP,
             "forged XFF must not mint fresh per-IP buckets"
         );
+    }
+
+    #[test]
+    fn forged_forwarded_for_does_not_evade_oidc_org_limit() {
+        let limiter = RateLimiter::new();
+        let peer = "198.51.100.8:5000";
+        let mut allowed = 0;
+
+        for i in 0..(OIDC_LOGIN + 5) {
+            let forged = format!("{i}.{i}.{i}.{i}");
+            let client_ip = client_ip(Some(&forged), peer, false);
+            let org_and_ip = format!("42:{client_ip}");
+            if limiter
+                .check(RateClass::OidcLogin, &org_and_ip, 0)
+                .is_allowed()
+            {
+                allowed += 1;
+            }
+        }
+
+        assert_eq!(allowed, OIDC_LOGIN);
     }
 
     #[test]

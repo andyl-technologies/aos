@@ -25,7 +25,7 @@ def verify(build, package, libraries, cargo, readelf):
 
     selected = [
         event for event in execution_events(build)
-        if event["targetLabel"] == "//crates/aos/activation/aos-activation-crucible:aos-ability-crucible"
+        if event["targetLabel"] == "//crates/activation/aos-activation-crucible:aos-ability-crucible"
         and event["mnemonic"] == "Rustc"
     ]
     if len(selected) != 1 or "sandbox" not in selected[0]["runner"] or selected[0].get("cacheHit", False):

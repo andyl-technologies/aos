@@ -3,7 +3,7 @@
 //! This module implements RFC-0004's "Per-org OIDC SSO": each org may
 //! configure one OpenID Connect identity provider; an email-first login on a
 //! captured domain routes to that IdP, and a successful round-trip provisions
-//! or links a hub user keyed on `(issuer, subject)` — never bare email.
+//! or links a hub user keyed on the token verifier and subject.
 //!
 //! # Runtime-neutral by construction (RFC-0004 Phase 5, console-dedup stage F)
 //!
@@ -32,16 +32,16 @@
 //! # The flow
 //!
 //! ```text
-//! begin_login(org).await                         complete_login(code, state).await
-//! ─────────────────                        ───────────────────────────
-//! 1. load org IdP config                   1. take_oidc_flow(state).await  ← single-use
-//! 2. verifier = random 43..128 chars          (validates + consumes; expiry)
+//! begin_login(org).await                   complete_login(code, state, binding).await
+//! ─────────────────                        ─────────────────────────────────────
+//! 1. load org IdP config                   1. take_oidc_flow(state, binding_hash)
+//! 2. verifier = random 43..128 chars           (matches browser, consumes, checks expiry)
 //!    challenge = b64url(sha256(verifier))   2. POST token_endpoint:
-//!    state, nonce = random                       grant_type=authorization_code
+//!    state, nonce, binding = random              grant_type=authorization_code
 //! 3. create_oidc_flow(state, nonce,             code, redirect_uri, client_id,
-//!                     verifier).await                  client_secret (unsealed),
-//! 4. redirect to authorization_endpoint?         code_verifier   ← PKCE proof
-//!      response_type=code                    3. fetch JWKS, find kid
+//!                     verifier,                  client_secret (unsealed),
+//!                     sha256(binding)).await      code_verifier   ← PKCE proof
+//! 4. redirect to authorization_endpoint?     3. fetch JWKS, find kid
 //!      client_id, redirect_uri, scope        4. verify id_token (RS256):
 //!      state, nonce                              iss == config.issuer
 //!      code_challenge=b64url(sha256(v))          aud == client_id, exp
@@ -125,7 +125,7 @@ pub struct IdpConfig {
     pub groups_claim: Option<String>,
     /// The parsed `group -> role` mapping applied on every login.
     pub role_map: BTreeMap<String, Role>,
-    /// Whether an unknown `(iss, sub)` may be JIT-provisioned.
+    /// Whether an unknown verifier and subject may be JIT-provisioned.
     pub allow_jit: bool,
     /// Whether the org forces members through SSO.
     pub enforce_sso: bool,
@@ -177,6 +177,10 @@ fn parse_role_map(json: &str) -> BTreeMap<String, Role> {
 pub struct AuthRedirect {
     /// The fully-formed authorization URL to redirect the browser to.
     pub url: String,
+    /// The flow state used to derive this flow's browser-cookie name.
+    pub state: String,
+    /// The random browser proof stored only in the HttpOnly flow cookie.
+    pub browser_binding: String,
 }
 
 /// The result of a completed login: the resolved hub user and email.
@@ -184,6 +188,8 @@ pub struct AuthRedirect {
 pub struct OidcLogin {
     /// The resolved (linked or provisioned) hub user id.
     pub user_id: i64,
+    /// Issuer that authenticated the completed login.
+    pub issuer: String,
     /// The user's email as asserted by the IdP, if any.
     pub email: Option<String>,
     /// Whether a brand-new user was provisioned (vs. linked/existing).
@@ -228,6 +234,42 @@ fn new_opaque() -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
 }
 
+/// Returns the host-only cookie name for one canonical OIDC flow state.
+///
+/// # Errors
+///
+/// Returns an error unless `state` is a canonical base64url-encoded 256-bit
+/// value.
+pub fn browser_binding_cookie_name(state: &str) -> Result<String> {
+    validate_opaque_256(state, "OIDC state")?;
+    Ok(format!("__Host-aos_oidc_{state}"))
+}
+
+/// Returns the SHA-256 identity stored for a canonical browser-binding secret.
+///
+/// # Errors
+///
+/// Returns an error unless `binding` is a canonical base64url-encoded 256-bit
+/// value.
+pub fn browser_binding_digest(binding: &str) -> Result<String> {
+    let bytes = validate_opaque_256(binding, "OIDC browser binding")?;
+
+    Ok(hex::encode(Sha256::digest(bytes)))
+}
+
+fn validate_opaque_256(value: &str, label: &str) -> Result<Vec<u8>> {
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value)
+        .with_context(|| format!("{label} is not canonical base64url"))?;
+    anyhow::ensure!(
+        bytes.len() == 32
+            && base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&bytes) == value,
+        "{label} is not a canonical 256-bit value"
+    );
+
+    Ok(bytes)
+}
+
 /// The redirect URI the IdP returns to, derived from the hub's external URL.
 #[must_use]
 pub fn redirect_uri(external_url: &str) -> String {
@@ -237,10 +279,11 @@ pub fn redirect_uri(external_url: &str) -> String {
 /// Begin an OIDC login: stage the flow and build the authorization redirect.
 ///
 /// Loads the org's IdP config, generates the PKCE verifier/challenge and the
-/// `state`/`nonce`, records the flow via
+/// `state`/`nonce` and a browser-binding proof, records the flow via
 /// [`Database::create_oidc_flow`], and returns the authorization-endpoint URL
-/// to redirect the browser to. `redirect_after` is where the browser lands
-/// after a successful callback (defaulting to the instance home).
+/// and proof. The web layer places the proof in an HttpOnly cookie.
+/// `redirect_after` is where the browser lands after a successful callback
+/// (defaulting to the instance home).
 ///
 /// # Errors
 ///
@@ -257,18 +300,23 @@ pub async fn begin_login(
         .await?
         .with_context(|| format!("org {org_id} has no OIDC identity provider configured"))?;
     validate_idp_config_record(&record)?;
+    let verifier_id = aos_hub_model::identity::oidc_verifier_id(&record);
     let config = IdpConfig::from_record(record);
 
     let verifier = new_code_verifier();
     let challenge = code_challenge_s256(&verifier);
     let state = new_opaque();
     let nonce = new_opaque();
+    let browser_binding = new_opaque();
+    let browser_binding_hash = browser_binding_digest(&browser_binding)?;
 
     db.create_oidc_flow(
         &state,
         org_id,
+        &verifier_id,
         &nonce,
         &verifier,
+        &browser_binding_hash,
         redirect_after,
         FLOW_TTL_SECS,
     )
@@ -288,6 +336,8 @@ pub async fn begin_login(
 
     Ok(AuthRedirect {
         url: url.to_string(),
+        state,
+        browser_binding,
     })
 }
 
@@ -307,14 +357,7 @@ fn validate_callback_params(params: &CallbackParams) -> Result<()> {
             && !params.code.chars().any(char::is_control),
         "OIDC authorization code is empty, oversized, or contains controls"
     );
-    let state = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(&params.state)
-        .context("OIDC state is not canonical base64url")?;
-    anyhow::ensure!(
-        state.len() == 32
-            && base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&state) == params.state,
-        "OIDC state is not a canonical 256-bit value"
-    );
+    validate_opaque_256(&params.state, "OIDC state")?;
     Ok(())
 }
 
@@ -366,8 +409,8 @@ struct IdTokenClaims {
 ///
 /// Steps, fail-closed at every network and parse boundary:
 ///
-/// 1. [`Database::take_oidc_flow`] consumes the `state` (single-use; expiry
-///    enforced) — a forged or replayed `state` is rejected here.
+/// 1. [`Database::take_oidc_flow`] matches the `state` and browser-binding
+///    digest, then consumes the flow (single-use; expiry enforced).
 /// 2. POST the token endpoint with the code, PKCE `code_verifier`, and the
 ///    **unsealed** client secret; read the `id_token`. The HTTP call goes
 ///    through the [`HttpClient`] port, which applies the deployment's body cap
@@ -378,14 +421,15 @@ struct IdTokenClaims {
 /// 4. Check `nonce == flow.nonce` (replay defense).
 /// 5. Extract `sub`, `email`/`email_verified`, and the configured groups
 ///    claim; reconcile the user via [`Database::link_or_create_identity`]
-///    (keyed on `(iss, sub)`), then map groups → roles and grant the
+///    (keyed on the verifier and subject), then map groups → roles and grant the
 ///    memberships at the org scope.
 ///
 /// # Errors
 ///
-/// Returns an error when the flow is unknown/expired, the token exchange or
-/// JWKS fetch fails, the id_token fails verification (signature, `iss`, `aud`,
-/// `exp`, or `nonce`), or — when `allow_jit` is false and the `(iss, sub)`
+/// Returns an error when the flow is unknown or expired, the browser binding
+/// does not match, the token exchange or JWKS fetch fails, the id_token fails
+/// verification (signature, `iss`, `aud`, `exp`, or `nonce`), or — when
+/// `allow_jit` is false and the verifier-subject
 /// identity is unknown — the login is not permitted.
 pub async fn complete_login(
     db: &Database,
@@ -393,19 +437,26 @@ pub async fn complete_login(
     http: &dyn HttpClient,
     external_url: &str,
     params: &CallbackParams,
+    browser_binding: &str,
 ) -> Result<OidcLogin> {
     validate_callback_params(params)?;
+    let browser_binding_hash = browser_binding_digest(browser_binding)?;
     // 1. Consume the flow (single-use, expiry-checked).
     let flow = db
-        .take_oidc_flow(&params.state)
+        .take_oidc_flow(&params.state, &browser_binding_hash)
         .await?
-        .ok_or_else(|| anyhow!("unknown, expired, or replayed login state"))?;
+        .ok_or_else(|| anyhow!("unknown, expired, replayed, or unbound login state"))?;
 
     let record = db
         .idp_config(flow.org_id)
         .await?
         .with_context(|| format!("org {} has no OIDC identity provider", flow.org_id))?;
     validate_idp_config_record(&record)?;
+    let verifier_id = aos_hub_model::identity::oidc_verifier_id(&record);
+    anyhow::ensure!(
+        verifier_id == flow.verifier_id,
+        "OIDC verifier changed after login began"
+    );
     let config = IdpConfig::from_record(record);
 
     // 2. Exchange the authorization code (with PKCE proof) for tokens. The
@@ -456,11 +507,12 @@ pub async fn complete_login(
     // 3/4. Verify the id_token against the JWKS and the flow's nonce.
     let claims = verify_id_token(http, &config, &token.id_token, &flow.nonce).await?;
 
-    // 5. Reconcile the user, keyed on (iss, sub).
+    // 5. Reconcile the user within the current verifier namespace.
     let email = claims.email.clone();
     let email_verified = claims.email_verified.unwrap_or(false);
     let link = db
         .link_or_create_identity(
+            &verifier_id,
             &config.issuer,
             &claims.sub,
             email.as_deref(),
@@ -478,10 +530,11 @@ pub async fn complete_login(
     // on every login; full deprovisioning/sync (revoking SSO-granted roles no
     // longer mapped) is a later phase — here we ensure the mapped roles are
     // granted, plus the default role so a JIT user is never left with nothing.
-    grant_mapped_roles(db, &config, &claims).await?;
+    grant_mapped_roles(db, &config, &verifier_id, &claims).await?;
 
     Ok(OidcLogin {
         user_id,
+        issuer: config.issuer,
         email,
         provisioned: matches!(link, aos_hub_db::db::IdentityLink::Created(_)),
         redirect_after: flow.redirect_after.clone(),
@@ -714,6 +767,7 @@ fn validate_jwt_components(token: &str) -> Result<()> {
 async fn grant_mapped_roles(
     db: &Database,
     config: &IdpConfig,
+    verifier_id: &str,
     claims: &IdTokenClaims,
 ) -> Result<()> {
     let org = db
@@ -722,7 +776,7 @@ async fn grant_mapped_roles(
         .with_context(|| format!("org {} vanished mid-login", config.org_id))?;
     let scope = Scope::parse(&org.stable_id);
     let user_id = db
-        .identity_user(&config.issuer, &claims.sub)
+        .identity_user(verifier_id, &claims.sub)
         .await?
         .with_context(|| "identity vanished mid-login")?;
     let principal = Principal::user(user_id);

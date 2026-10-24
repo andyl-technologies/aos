@@ -9,7 +9,7 @@
     if fleet
     then "aos-cli-fleet-tests"
     else "aos-cli-tests";
-  prefix = "//crates/aos/cli/aos-cli:";
+  prefix = "//crates/cli/aos-cli:";
   rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
   family = import ./_bazel-rust-family.nix {
     inherit pkgs rustcFlags;

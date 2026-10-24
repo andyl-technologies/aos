@@ -1,0 +1,235 @@
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
+load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
+load("//tools/bazel/rules:daemon_graph.bzl", "daemon_dependency_libraries")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+
+package(default_visibility = ["//crates/crucible:__subpackages__"])
+
+RUST_PACKAGE = aos_rust_package(
+    name = "crucible-control-server",
+    version = "0.1.0",
+    edition = "2024",
+    description = "Crucible lifecycle dispatch, actor adapters, and authenticated HTTP/2 servers",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+)
+
+ENGINE = "//crates/crucible/crucible-engine"
+SESSION = "//crates/crucible/crucible-session"
+API = "//crates/crucible/crucible-control-api"
+CLIENT = "//crates/crucible/crucible-control-client"
+
+PRODUCTION_LIBRARIES = [
+    ENGINE + ":lib",
+    SESSION + ":lib",
+    API + ":lib",
+    CLIENT + ":lib",
+]
+
+TEST_LIBRARIES = [
+    ENGINE + ":lib_all_features",
+    SESSION + ":lib_for_tests_test_support",
+    API + ":lib_for_tests_test_support",
+    CLIENT + ":lib_for_tests",
+]
+
+COMMON_DEPENDENCIES = [
+    "//crates/crucible/crucible-qemu-protocol:lib",
+    "//third_party/rust:core_thiserror",
+    "//third_party/rust:core_axum",
+    "//third_party/rust:core_bytes",
+    "//third_party/rust:core_futures_util",
+    "//third_party/rust:core_hyper_util",
+    "//third_party/rust:core_rustix",
+    "//third_party/rust:core_rustls",
+    "//third_party/rust:core_rustls_pemfile",
+    "//third_party/rust:core_rustls_pki_types",
+    "//third_party/rust:core_sha2",
+    "//third_party/rust:core_tempfile",
+    "//third_party/rust:core_tokio",
+    "//third_party/rust:core_tokio_rustls",
+    "//third_party/rust:core_uuid",
+] + select({
+    "//tools/bazel/rules:qemu_test_oracle_host_dependencies": [
+        "//crates/crucible/crucible-determinism:lib",
+        "//third_party/rust:core_serde_json",
+    ],
+    "//conditions:default": [],
+})
+
+DEVELOPMENT_DEPENDENCIES = [
+    "//crates/crucible/crucible-qemu-shmem:lib",
+]
+
+VARIANTS = {
+    "": ["default"],
+    "_test_support": ["default", "test-support"],
+}
+
+SOURCES = glob(["src/**/*.rs"])
+# A dependency-only source slice does not retain unrelated integration roots.
+INTEGRATIONS = glob(["tests/*.rs"], allow_empty = True)
+
+rust_library(
+    name = "lib",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "crucible_control_server",
+    crate_root = "src/lib.rs",
+    srcs = SOURCES,
+    crate_features = ["default"],
+    deps = COMMON_DEPENDENCIES + PRODUCTION_LIBRARIES,
+)
+
+# The GPL lifecycle tests execute this Apache client as a separate process.
+rust_binary(
+    name = "crucible-qemu-test-oracle",
+    testonly = True,
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_root = "src/bin/qemu_test_oracle.rs",
+    srcs = ["src/bin/qemu_test_oracle.rs"] + glob(["src/bin/qemu_test_oracle/**/*.rs"]),
+    crate_features = ["default", "qemu-test-oracle", "test-support"],
+    deps = [
+        ":lib_for_daemon_tests_test_support",
+        ENGINE + ":lib_for_daemon_tests_test_support",
+        "//crates/crucible/crucible-determinism:lib",
+        "//crates/crucible/crucible-qemu-protocol:lib",
+        "//third_party/rust:core_serde_json",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+aos_package(
+    name = "qemu_test_oracle_artifact",
+    testonly = True,
+    package = RUST_PACKAGE,
+    artifacts = {":crucible-qemu-test-oracle": "bin/crucible-qemu-test-oracle"},
+    executables = ["bin/crucible-qemu-test-oracle"],
+)
+
+rust_clippy(name = "qemu_test_oracle_clippy", testonly = True, deps = [":crucible-qemu-test-oracle"])
+rustfmt_test(name = "qemu_test_oracle_format", targets = [":crucible-qemu-test-oracle"])
+
+aos_license_check(
+    name = "qemu_test_oracle_license_closure",
+    testonly = True,
+    roots = [":crucible-qemu-test-oracle"],
+    license_domain = "apache-host",
+)
+
+# Test libraries preserve the selected Cargo development-dependency features
+# while production libraries keep their default engine and session graphs.
+[
+    rust_library(
+        name = "lib_for_tests" + suffix,
+        testonly = True,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_name = "crucible_control_server",
+        crate_root = "src/lib.rs",
+        srcs = SOURCES,
+        crate_features = features,
+        deps = COMMON_DEPENDENCIES + TEST_LIBRARIES,
+    )
+    for suffix, features in VARIANTS.items()
+]
+
+[
+    aos_rust_test(
+        name = "unit" + suffix,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate = ":lib_for_tests" + suffix,
+        crate_features = features,
+        deps = DEVELOPMENT_DEPENDENCIES,
+    )
+    for suffix, features in VARIANTS.items()
+]
+
+[
+    aos_rust_test(
+        name = source.removeprefix("tests/").removesuffix(".rs") + suffix,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_root = source,
+        srcs = [source] + glob([source.removesuffix(".rs") + "/**/*.rs"], allow_empty = True),
+        crate_features = features,
+        deps = [":lib_for_tests" + suffix] + COMMON_DEPENDENCIES + TEST_LIBRARIES + DEVELOPMENT_DEPENDENCIES,
+    )
+    for source in INTEGRATIONS
+    for suffix, features in VARIANTS.items()
+]
+
+[
+    rust_doc_test(
+        name = "doc" + suffix,
+        crate = ":lib_for_tests" + suffix,
+    )
+    for suffix in VARIANTS
+]
+
+TEST_ARTIFACTS = [":unit_binary"] + [
+    ":" + source.removeprefix("tests/").removesuffix(".rs") + "_binary"
+    for source in INTEGRATIONS
+]
+
+rust_clippy(
+    name = "clippy",
+    testonly = True,
+    deps = [":lib_for_tests"] + TEST_ARTIFACTS,
+)
+
+rustfmt_test(
+    name = "format",
+    targets = [":lib_for_tests"] + TEST_ARTIFACTS,
+)
+
+rust_doc(
+    name = "documentation",
+    testonly = True,
+    crate = ":lib_for_tests",
+)
+
+[
+    aos_license_check(
+        name = "license_closure" + suffix,
+        testonly = True,
+        roots = [":lib_for_tests" + suffix, ":unit" + suffix + "_binary"] + [
+            ":" + source.removeprefix("tests/").removesuffix(".rs") + suffix + "_binary"
+            for source in INTEGRATIONS
+        ],
+        license_domain = RUST_PACKAGE.license_domain,
+    )
+    for suffix in VARIANTS
+]
+
+aos_license_check(
+    name = "production_license_closure",
+    roots = [":lib"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_source_package(
+    name = "source_package",
+    package = RUST_PACKAGE,
+    srcs = glob(["**/*.rs"]),
+    visibility = ["//visibility:public"],
+)
+
+# Daemon-selected features remain separate from this package's own test graph.
+daemon_dependency_libraries(
+    component = "server",
+    package = RUST_PACKAGE,
+    sources = SOURCES,
+    common_deps = COMMON_DEPENDENCIES,
+    compile_data = [],
+    extra_features = select({
+        "//tools/bazel/rules:qemu_test_oracle_host_dependencies": ["qemu-test-oracle"],
+        "//conditions:default": [],
+    }),
+)

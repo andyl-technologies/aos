@@ -2,6 +2,7 @@
 
 use super::*;
 
+mod authentication_policy_reads;
 mod credentials_mutations;
 mod membership_helpers;
 mod membership_mutations;

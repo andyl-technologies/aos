@@ -9,8 +9,8 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
-  libSource = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
-  rrSubdivisionTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/scheduler_rr_subdivision.rs;
+  libSource = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  rrSubdivisionTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/scheduler_rr_subdivision.rs;
   schedulingDoc = builtins.readFile ../../docs/rfcs/0010-crucible/08-scheduling.md;
   defaultChecks = builtins.readFile ./default.nix;
 
@@ -40,7 +40,7 @@
         needle = "single-vCPU";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/scheduler.rs" scheduler [
+    ++ failuresFor "crates/crucible/crucible-engine/src/scheduler.rs" scheduler [
       {
         label = "RR subdivision policy";
         needle = "pub struct SchedulerRunSubdivisionPolicy";
@@ -86,7 +86,7 @@
         needle = "self.scheduler.publish_run_ceiling(";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" libSource [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" libSource [
       {
         label = "policy exported";
         needle = "SchedulerRunSubdivisionPolicy";
@@ -104,7 +104,7 @@
         needle = "scheduler_rr_run_subdivision";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/scheduler_rr_subdivision.rs" rrSubdivisionTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/scheduler_rr_subdivision.rs" rrSubdivisionTest [
       {
         label = "focused scheduler RR subdivision test";
         needle = "scheduler RR subdivision inside RUN";
@@ -146,7 +146,7 @@
         needle = "assert_eq!(&record.ceiling, ceiling)";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/tests/scheduler_rr_subdivision.rs" rrSubdivisionTest [
+    ++ forbiddenFor "crates/crucible/crucible-engine/tests/scheduler_rr_subdivision.rs" rrSubdivisionTest [
       {
         label = "ignored placeholder";
         needle = "#[ignore";

@@ -15,19 +15,19 @@
     export LIBSQLITE3_SYS_USE_PKG_CONFIG=1 ZSTD_SYS_USE_PKG_CONFIG=1
   '';
   packages = {
-    crucible-control-client = "crates/crucible/control/crucible-control-client";
-    crucible-control-server = "crates/crucible/control/crucible-control-server";
+    crucible-control-client = "crates/crucible/crucible-control-client";
+    crucible-control-server = "crates/crucible/crucible-control-server";
   };
   dependencyPackages = {
-    crucible-session = "crates/crucible/control/crucible-session";
-    crucible-control-api = "crates/crucible/control/crucible-control-api";
-    crucible-engine = "crates/crucible/engine/crucible-engine";
-    crucible-determinism = "crates/crucible/engine/crucible-determinism";
-    crucible-campaign = "crates/crucible/engine/crucible-campaign";
-    crucible-device = "crates/crucible/engine/crucible-device";
-    crucible-store = "crates/crucible/storage/crucible-store";
-    crucible-qemu-protocol = "crates/crucible/protocol/crucible-qemu-protocol";
-    crucible-qemu-shmem = "crates/crucible/protocol/crucible-qemu-shmem";
+    crucible-session = "crates/crucible/crucible-session";
+    crucible-control-api = "crates/crucible/crucible-control-api";
+    crucible-engine = "crates/crucible/crucible-engine";
+    crucible-determinism = "crates/crucible/crucible-determinism";
+    crucible-campaign = "crates/crucible/crucible-campaign";
+    crucible-device = "crates/crucible/crucible-device";
+    crucible-store = "crates/crucible/crucible-store";
+    crucible-qemu-protocol = "crates/crucible/crucible-qemu-protocol";
+    crucible-qemu-shmem = "crates/crucible/crucible-qemu-shmem";
   };
   packageOptions =
     pkgs.lib.concatMap
