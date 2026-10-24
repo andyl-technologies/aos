@@ -1,8 +1,9 @@
 //! Checks failed original15 decoding and claims over an inherited parent socket.
 //!
 //! Prefix and boot fixtures are inert DATA. The child never constructs a Source,
-//! opaque Recipe/Initial or admitted native authority. Installed boot owners stay
-//! incomplete; the wrong key forces refusal before native readiness.
+//! opaque Recipe/Initial or admitted native authority. The wrong key forces
+//! refusal while the inline attempt retains its children, before a shared native
+//! boot may be allocated.
 
 use super::*;
 use crate::reference_packet::service::native_startup::{
@@ -144,7 +145,8 @@ fn inherited_boot_refusal_child() -> TestResult {
     );
 
     assert!(result.is_err());
-    let installed = matches!(case.as_str(), "claim" | "literal" | "schema");
+    assert!(completed.is_none(), "unadmitted native boot allocation");
+    let decoded = matches!(case.as_str(), "claim" | "literal" | "schema");
     let claimed = matches!(case.as_str(), "claim" | "literal");
     if claimed {
         assert!(matches!(
@@ -165,40 +167,30 @@ fn inherited_boot_refusal_child() -> TestResult {
     assert!(startup.ensure_original().is_err());
     assert_eq!(startup.native_issued, claimed);
 
-    let source_pointer = if installed {
-        assert!(attempt.is_none());
-        let owner = completed.as_ref().ok_or("native owner absent")?.borrow();
-        assert_eq!(owner.launch_body.as_ptr(), launch_pointer);
-        assert_eq!(owner.launch_body, b"retained launch payload");
-        assert_eq!(owner.data.private_key.as_slice(), &[29; 32]);
+    let retained = attempt.as_ref().ok_or("boot attempt absent")?;
+    assert_eq!(retained.launch_body.as_ptr(), launch_pointer);
+    assert_eq!(retained.launch_body, b"retained launch payload");
+    let source_pointer = if decoded {
+        let data = retained.data.as_ref().ok_or("decoded boot absent")?;
+        assert_eq!(data.private_key.as_slice(), &[29; 32]);
         assert_eq!(
-            owner.data.expected_host_registration["incomplete"],
+            data.expected_host_registration["incomplete"],
             "retained host payload"
         );
-        assert_eq!(
-            owner.data.source_birth["incomplete"],
-            "retained source payload"
-        );
-        assert!(!owner.ready);
-        assert!(!owner.verified);
-        assert!(owner.startup.is_none());
+        assert_eq!(data.source_birth["incomplete"], "retained source payload");
         if case == "literal" {
             assert_eq!(
-                owner.data.source_birth["nested"]["$serde_json::private::RawValue"],
+                data.source_birth["nested"]["$serde_json::private::RawValue"],
                 "not JSON"
             );
         }
         Some(
-            owner.data.source_birth["incomplete"]
+            data.source_birth["incomplete"]
                 .as_str()
                 .ok_or("source payload absent")?
                 .as_ptr(),
         )
     } else {
-        assert!(completed.is_none());
-        let retained = attempt.as_ref().ok_or("boot attempt absent")?;
-        assert_eq!(retained.launch_body.as_ptr(), launch_pointer);
-        assert_eq!(retained.launch_body, b"retained launch payload");
         assert!(retained.data.is_none());
         None
     };
@@ -237,27 +229,19 @@ fn inherited_boot_refusal_child() -> TestResult {
         switched,
         Err(ProviderError::Conflict("native ACK boot already attempted"))
     ));
+    assert!(completed.is_none());
+    let retained = attempt.as_ref().ok_or("retry replaced attempt")?;
+    assert_eq!(retained.launch_body.as_ptr(), launch_pointer);
     if let Some(source_pointer) = source_pointer {
-        assert!(attempt.is_none());
-        let owner = completed
-            .as_ref()
-            .ok_or("retry lost native owner")?
-            .borrow();
-        assert_eq!(owner.launch_body.as_ptr(), launch_pointer);
+        let data = retained.data.as_ref().ok_or("retry lost decoded boot")?;
         assert_eq!(
-            owner.data.source_birth["incomplete"]
+            data.source_birth["incomplete"]
                 .as_str()
                 .ok_or("retry lost source payload")?
                 .as_ptr(),
             source_pointer
         );
-        assert!(!owner.ready);
-        assert!(!owner.verified);
-        assert!(owner.startup.is_none());
     } else {
-        assert!(completed.is_none());
-        let retained = attempt.as_ref().ok_or("retry replaced attempt")?;
-        assert_eq!(retained.launch_body.as_ptr(), launch_pointer);
         assert!(retained.data.is_none());
     }
     assert!(startup.failed);

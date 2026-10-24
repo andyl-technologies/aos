@@ -237,8 +237,8 @@ fn inherited_body_child() -> TestResult {
     assert!(startup.failed);
     assert!(startup.native_issued);
     assert!(owner.boot_value.is_some());
-    assert_eq!(owner.startup_attempt.is_some(), invocation != "true");
-    assert_eq!(owner.boot.is_some(), invocation == "true");
+    assert!(owner.startup_attempt.is_some());
+    assert!(owner.boot.is_none(), "unadmitted native boot allocation");
     let (pointer, length) = {
         let retained = owner.literals.try_borrow()?;
         let frame = retained.frame(1).ok_or("retained boot literal absent")?;

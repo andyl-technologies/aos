@@ -23,6 +23,11 @@ pub(super) const fn attempt_counter_scratch_data() -> usize {
         + 2 * size_of::<Vec<u8>>()
         + 2 * size_of::<Result<(), ProviderError>>()
         + 2 * size_of::<bool>()
+        // Borrow decoded children from the retained inline attempt until the
+        // full native row is authenticated; no shared boot exists before it.
+        + size_of::<&BootData>()
+        + size_of::<Option<&BootData>>()
+        + size_of::<Result<&BootData, ProviderError>>()
 }
 
 impl NativeAckBoot {
@@ -91,35 +96,32 @@ impl NativeAckBoot {
         crate::connection::serialized_credit(value.value, startup.maximum_boot_bytes)?;
         let shape = shape::inspect_data(value.value)?;
         attempt.data = Some(shape.copy_data()?);
-        let data = attempt.data.take().ok_or(ProviderError::Correlation(
+        let data = attempt.data.as_ref().ok_or(ProviderError::Correlation(
             "native invocation decoded boot absent",
         ))?;
-        let original = Self::retain_boot_data_into(
-            data,
-            std::mem::take(&mut attempt.launch_body),
-            None,
-            completed,
-        );
-
-        {
-            let mut owner = original
-                .try_borrow_mut()
-                .map_err(|_| ProviderError::Conflict("native invocation boot borrowed"))?;
-            owner.ensure_origin()?;
-            if owner.data.schema != PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA {
-                return Err(ProviderError::Correlation(
-                    "native invocation private boot class",
-                ));
-            }
-            let admitted = startup.claim_invocation_birth_data(
-                owner
-                    .data
-                    .claim_inputs_data(launch, &owner.launch_body, value.body),
-                &purpose,
-            )?;
-            owner.startup = Some(admitted);
+        if data.schema != PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA {
+            return Err(ProviderError::Correlation(
+                "native invocation private boot class",
+            ));
         }
-        Self::prepare_retained_data(&original, launch, Some(purpose))
+        // The decoded children stay in the original attempt across any claim
+        // refusal. Its independent private funding cannot pay for a premature
+        // Rc-owned NativeAckBoot before the native row authenticates.
+        let admitted = startup.claim_invocation_birth_data(
+            data.claim_inputs_data(launch, &attempt.launch_body, value.body),
+            &purpose,
+        )?;
+        let data = attempt.data.take().ok_or(ProviderError::Correlation(
+            "native invocation decoded boot transferred",
+        ))?;
+        Self::prepare_data_into(
+            data,
+            launch,
+            std::mem::take(&mut attempt.launch_body),
+            Some(admitted),
+            Some(purpose),
+            completed,
+        )
     }
 
     // A private, already constructed boot selects the decoder. A decoded schema
