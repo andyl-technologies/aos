@@ -3,10 +3,7 @@
   lib,
   policy,
 }: let
-  selection = builtins.path {
-    path = ./_selinux-initrd-policy.nix;
-    name = "aos-selinux-initrd-policy.nix";
-  };
+  selection = import ./_selinux-initrd-policy.nix;
 
   # PID 1 opens a userspace labeling handle as soon as SELinux is detected.
   # Copy the exact selected text and substitutions without evaluation-time
@@ -35,12 +32,13 @@
       };
     })
     contextFiles);
+  configurationData = lib.recursiveUpdate selection {
+    aos.abilities.configuration.operations.file.effects = contextEffects;
+  };
+  # Runtime evaluation admits this module by its own fixed NAR. Embed the
+  # static selection so replay never imports an unadmitted absolute store path.
   configuration = builtins.toFile "aos-selinux-initrd-policy.nix" ''
-    {
-      imports = [${selection}];
-      aos.abilities.configuration.operations.file.effects =
-        builtins.fromJSON ${builtins.toJSON (builtins.unsafeDiscardStringContext (builtins.toJSON contextEffects))};
-    }
+    builtins.fromJSON ${builtins.toJSON (builtins.unsafeDiscardStringContext (builtins.toJSON configurationData))}
   '';
 in {
   configuration = [configuration];
