@@ -49,6 +49,14 @@ INODE_CASES = [
     "reserved_first_touch_and_checked_metadata_operations_allocate_nothing",
     "directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch",
 ]
+DISPATCH_PREFIX = "fuse_dispatch::tests::"
+DISPATCH_CASES = [
+    'raw_lookup_getattr_and_readlink_share_one_original_namespace',
+    'malformed_supported_requests_never_assign_inodes_or_change_scratch',
+    'operation_errnos_and_unhandled_records_preserve_permanent_state',
+    'absence_and_xattr_policy_remain_distinct_from_protocol_faults',
+    'directory_pages_obey_original_handles_cookies_and_complete_record_bounds',
+]
 READ_PREFIX = "fuse_read::tests::"
 READ_CASES = [
     'open_keeps_cache_without_passthrough_or_direct_io_and_preserves_unused_bytes',
@@ -137,6 +145,7 @@ def main():
                                  (METADATA_PREFIX, METADATA_CASES, "metadata"),
                                  (NAMESPACE_PREFIX, NAMESPACE_CASES, "namespace"),
                                  (XATTR_PREFIX, XATTR_CASES, "xattr"),
+                                 (DISPATCH_PREFIX, DISPATCH_CASES, "dispatch"),
                                  (READ_PREFIX, READ_CASES, "read")]:
         expected = [prefix + name for name in names]
         inventory = captured([prefix, "--list", "--format", "terse"], label + "-inventory.log")

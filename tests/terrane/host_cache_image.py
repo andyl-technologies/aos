@@ -177,11 +177,17 @@ PACKAGE_PATHS = {
 
 # The all-feature guest adds these cases without replacing the base inventory.
 FUSE_UNIT_PREFIXES = (
-    "fuse_read::", "fuse_xattr::", "fuse_namespace::", "fuse_metadata::", "fuse_directory::",
+    "fuse_dispatch::", "fuse_read::", "fuse_xattr::", "fuse_namespace::", "fuse_metadata::", "fuse_directory::",
     "fuse_protocol::", "inode_policy::", "maintenance_channel::",
     "structural_index::", "worker_channel::",
 )
 FUSE_UNIT_TESTS = (
+    'fuse_dispatch::tests::raw_lookup_getattr_and_readlink_share_one_original_namespace',
+    'fuse_dispatch::tests::malformed_supported_requests_never_assign_inodes_or_change_scratch',
+    'fuse_dispatch::tests::operation_errnos_and_unhandled_records_preserve_permanent_state',
+    'fuse_dispatch::tests::absence_and_xattr_policy_remain_distinct_from_protocol_faults',
+    'fuse_dispatch::tests::directory_pages_obey_original_handles_cookies_and_complete_record_bounds',
+
     'fuse_read::tests::open_keeps_cache_without_passthrough_or_direct_io_and_preserves_unused_bytes',
     'fuse_read::tests::positioned_ranges_clamp_only_at_prepared_eof_without_offset_overflow',
     'fuse_read::tests::invalid_limits_sizes_and_short_output_are_refused_before_io',
@@ -327,6 +333,7 @@ def source_unit_inventory(workspace):
     gated = [
         ("structural_index", "lib.rs", "pub mod structural_index;"),
         ("inode_policy", "lib.rs", "pub mod inode_policy;"),
+        ("fuse_dispatch", "lib.rs", "pub mod fuse_dispatch;"),
         ("fuse_directory", "lib.rs", "pub mod fuse_directory;"),
         ("fuse_metadata", "lib.rs", "pub mod fuse_metadata;"),
         ("fuse_namespace", "lib.rs", "pub mod fuse_namespace;"),

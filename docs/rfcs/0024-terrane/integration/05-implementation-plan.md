@@ -16740,3 +16740,46 @@ At `6e7364c413`, all 56 pure structural cases pass in 81.103 seconds; complete
 review and native transport execution are pending at this checkpoint. Mandatory
 workspace target compilation at `19081df704` also passes in 1,469.327 seconds;
 complete source/artifact review remains required. Accepted trunk tasks are 27/64.
+
+
+### Shared bounded metadata request dispatch
+
+The FUSE metadata dispatcher now owns one original namespace and its permanent,
+startup-reserved presented-inode table. LOOKUP, GETATTR, READLINK, READDIR,
+GETXATTR and LISTXATTR use the existing checked encoders through one reusable
+request path. Supported requests reject invalid fields, zero response IDs and
+mismatched directory handles; unknown nodes and normal type/absence/xattr
+refusals retain their native errno behavior. Unhandled operations remain with
+the surrounding worker, including no-reply FORGET records. The caller still
+owns the authenticated index mapping, schema-resolved presentation, actual
+handle lifetime, connection framing and exposure authority.
+
+The actual kernel fixture uses this production dispatcher instead of a second
+metadata implementation. Five pure composition cases pass, covering raw names,
+shared inode presentation, unchanged malformed-request output and inode state,
+operation errno and no-reply boundaries, pinned versus revalidated absence,
+xattr policy and complete bounded directory pages. The instrumented first-touch
+fixture covers all six dispatch paths without allocation. Strict all-feature,
+all-target Clippy passes. Closed structural selection now contains 61 cases;
+fresh kernel execution and mandatory workspace target compilation remain pending.
+
+At frozen checkpoint `29e7a87284`, all three required native cache scenario
+guests pass in 1,374.434 seconds total. Independent review verifies the original
+three successful guest outputs, all 224 selected cases (219 ordinary and five
+creator-root), all 8,176 immutable source files, 5,451 bound inputs and all four
+actual Cargo ELF bindings. Existing recovery, corruption, quarantine and custody
+controls pass with unchanged actor and 870-second per-guest bounds. The broader
+feature-matrix request remains pending. The prior monolithic feature-matrix
+request at `46d` fails in 3,485.732 seconds after both native dependencies hit
+the enforced guest limit; that failure remains recorded.
+
+At `3f831728a0`, actual scoped-worker and network-boundary guests pass in
+658.800 and 660.419 seconds respectively. Complete independent reviews bind all
+8,177 immutable source files, 5,452 base and 5,435 surface inputs and the actual
+base and worker ELFs. The original signed-root descriptor remains readable
+through draining, while new grants are refused; the confined child uses the
+same fallback reader. At `6e7364c413`, the actual worker-channel guest passes in
+219.434 seconds with complete source and ELF review. Workspace target
+compilation at `a71768a0c8` passes in 1,465.042 seconds with complete review of
+8,175 immutable source files, 190 test executables and 59 packages. None of
+these results accepts a production worker or changes trunk acceptance (27/64).

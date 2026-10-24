@@ -22,12 +22,10 @@ use terrane_format::{
 };
 use terrane_linux::{
     fuse_connection::Connection,
-    fuse_directory,
-    fuse_metadata::{self, CachePolicy, Presentation},
-    fuse_namespace::Namespace,
+    fuse_dispatch::{Limits as MetadataLimits, Metadata, Response},
+    fuse_metadata::{CachePolicy, Presentation},
     fuse_protocol::{self, Reply, Request},
-    fuse_xattr::{self, Policy as XattrPolicy},
-    inode_policy::InodeTable,
+    fuse_xattr::Policy as XattrPolicy,
     quota_confinement,
     structural_index::{self, Index, Kind},
 };
@@ -83,8 +81,21 @@ fn main() -> Result {
         // It exercises the production encoder against actual kernel READDIR.
         let directory_bytes = metadata_bytes(mode == "metadata")?;
         let directory = Index::open(&directory_bytes)?;
-        let namespace = Namespace::new(directory, 16, 4096)?;
-        let mut inodes = InodeTable::with_reserved_capacity(16, 65536)?;
+        let mut metadata = Metadata::new(
+            directory,
+            MetadataLimits {
+                namespace_entries: 16,
+                namespace_bytes: 4096,
+                inodes: 16,
+                inode_bytes: 65536,
+            },
+            CachePolicy::Revalidate,
+            if mode == "metadata" {
+                XattrPolicy::Recorded
+            } else {
+                XattrPolicy::Disabled
+            },
+        )?;
 
         // Invalid arguments must fail before accepting or consuming real INIT.
         let error = connection
@@ -172,101 +183,24 @@ fn main() -> Result {
             if matches!(request.opcode(), 2 | 42) {
                 continue;
             }
-            let mut attributes = [0; 128];
             let mut opened = [0; 16];
-            let entry = namespace.entry(request.node());
-            let (body, errno) = match (request.opcode(), entry) {
-                (1, Some(_)) => match namespace.lookup(request.node(), request.name(0, 255)?)? {
-                    Some(child) => (
-                        Some(fuse_metadata::lookup(
-                            child,
-                            Presentation::default(),
-                            CachePolicy::Revalidate,
-                            &mut inodes,
-                            &mut attributes,
-                        )?),
-                        0,
-                    ),
-                    None => (
-                        Some(fuse_metadata::negative_lookup(
-                            CachePolicy::Revalidate,
-                            &mut attributes,
-                        )?),
-                        0,
-                    ),
+            let entry = metadata.entry(request.node());
+            let (body, errno) = match metadata.dispatch(
+                request,
+                |_| Presentation::default(),
+                &mut directory_page,
+            )? {
+                Response::Payload(body) => (Some(body), 0),
+                Response::Errno(errno) => (None, errno),
+                Response::Unhandled => match (request.opcode(), entry) {
+                    (27, Some(entry)) if matches!(entry.kind(), Kind::Directory { .. }) => {
+                        opened[..8].copy_from_slice(&request.node().to_ne_bytes());
+                        (Some(opened.as_slice()), 0)
+                    }
+                    (29 | 34, Some(_)) | (38, _) => (Some([].as_slice()), 0),
+                    (_, None) => (None, libc::ESTALE),
+                    _ => (None, libc::ENOSYS),
                 },
-                (3, Some(entry)) => (
-                    Some(fuse_metadata::getattr(
-                        entry,
-                        Presentation::default(),
-                        CachePolicy::Revalidate,
-                        &mut inodes,
-                        &mut attributes,
-                    )?),
-                    0,
-                ),
-                (5, Some(entry)) => (Some(fuse_metadata::readlink(entry)?), 0),
-                (22 | 23, Some(entry)) => {
-                    if request.body_u32(4)? != 0 {
-                        return Err("actual xattr request has nonzero padding".into());
-                    }
-                    let policy = if mode == "metadata" {
-                        XattrPolicy::Recorded
-                    } else {
-                        XattrPolicy::Disabled
-                    };
-                    let requested = request.body_u32(0)?;
-                    let result = if request.opcode() == 22 {
-                        let name = request
-                            .body()
-                            .get(8..)
-                            .and_then(|name| name.strip_suffix(&[0]))
-                            .ok_or("actual GETXATTR lacks a terminated name")?;
-                        fuse_xattr::get(entry, policy, name, requested, &mut directory_page)
-                    } else {
-                        if request.body().len() != 8 {
-                            return Err("actual LISTXATTR body has unexpected length".into());
-                        }
-                        fuse_xattr::list(entry, policy, requested, &mut directory_page)
-                    };
-                    match result {
-                        Ok(body) => (Some(body), 0),
-                        Err(error) => (
-                            None,
-                            match error {
-                                fuse_xattr::Error::Disabled => libc::EOPNOTSUPP,
-                                fuse_xattr::Error::NoData => libc::ENODATA,
-                                fuse_xattr::Error::Name => libc::EINVAL,
-                                fuse_xattr::Error::Range => libc::ERANGE,
-                                fuse_xattr::Error::TooLarge => libc::E2BIG,
-                                _ => libc::EIO,
-                            },
-                        ),
-                    }
-                }
-                (27, Some(entry)) if matches!(entry.kind(), Kind::Directory { .. }) => {
-                    opened[..8].copy_from_slice(&request.node().to_ne_bytes());
-                    (Some(opened.as_slice()), 0)
-                }
-                (28, Some(entry)) => {
-                    if request.body().len() != 40 {
-                        return Err("actual READDIR body has unexpected length".into());
-                    }
-                    let cookie = request.body_u64(8)?;
-                    let requested = request.body_u32(16)? as usize;
-                    let capacity = requested.min(directory_page.len());
-                    let length = fuse_directory::read(
-                        directory,
-                        entry.path(),
-                        cookie,
-                        &mut inodes,
-                        &mut directory_page[..capacity],
-                    )?;
-                    (Some(&directory_page[..length]), 0)
-                }
-                (29 | 34, Some(_)) | (38, _) => (Some([].as_slice()), 0),
-                (_, None) => (None, libc::ESTALE),
-                _ => (None, libc::ENOSYS),
             };
             send(&mut connection, &mut output, request, body, errno).await?;
         }

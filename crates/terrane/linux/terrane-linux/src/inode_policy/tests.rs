@@ -42,10 +42,62 @@ fn directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch() {
     let mut table = InodeTable::with_reserved_capacity(2, 4096).unwrap();
     let mut limited = InodeTable::with_reserved_capacity(1, 4096).unwrap();
     let mut metadata_table = InodeTable::with_reserved_capacity(2, 4096).unwrap();
+    let mut dispatch = crate::fuse_dispatch::Metadata::new(
+        index,
+        crate::fuse_dispatch::Limits {
+            namespace_entries: 2,
+            namespace_bytes: 4096,
+            inodes: 2,
+            inode_bytes: 4096,
+        },
+        crate::fuse_metadata::CachePolicy::Pinned,
+        crate::fuse_xattr::Policy::Recorded,
+    )
+    .unwrap();
+    let mut lookup = [0; 45];
+    lookup[..4].copy_from_slice(&45u32.to_ne_bytes());
+    lookup[4..8].copy_from_slice(&1u32.to_ne_bytes());
+    lookup[8..16].copy_from_slice(&1u64.to_ne_bytes());
+    lookup[16..24].copy_from_slice(&1u64.to_ne_bytes());
+    lookup[40..].copy_from_slice(b"link\0");
+    let lookup = crate::fuse_protocol::Request::parse(&lookup, 4096).unwrap();
+    let link = index.lookup(b"link").unwrap();
+    let link_node = NodeIdentity::new(link.governing_root().unwrap(), link.path())
+        .unwrap()
+        .node_id();
+    let record = |opcode: u32, node: u64, body: &[u8]| {
+        let mut bytes = vec![0; 40];
+        bytes.extend_from_slice(body);
+        let length = bytes.len() as u32;
+        bytes[..4].copy_from_slice(&length.to_ne_bytes());
+        bytes[4..8].copy_from_slice(&opcode.to_ne_bytes());
+        bytes[8..16].copy_from_slice(&1u64.to_ne_bytes());
+        bytes[16..24].copy_from_slice(&node.to_ne_bytes());
+        bytes
+    };
+    let mut directory_read = [0; 40];
+    directory_read[..8].copy_from_slice(&1u64.to_ne_bytes());
+    directory_read[16..20].copy_from_slice(&512u32.to_ne_bytes());
+    let requests = [
+        (record(3, link_node, &[0; 16]), 104),
+        (record(5, link_node, &[]), 12),
+        (record(28, 1, &directory_read), 96),
+        (record(22, link_node, b"\0\0\0\0\0\0\0\0user.raw\0"), 8),
+        (record(23, link_node, &[0; 8]), 8),
+    ];
     let mut output = [0; 512];
 
     let ((), allocations) = allocation::measure(|| {
         for _ in 0..3 {
+            assert!(
+                matches!(dispatch.dispatch(lookup, |_| crate::fuse_metadata::Presentation::default(), &mut output).unwrap(), crate::fuse_dispatch::Response::Payload(bytes) if bytes.len() == 128)
+            );
+            for (bytes, length) in &requests {
+                let request = crate::fuse_protocol::Request::parse(bytes, 4096).unwrap();
+                assert!(
+                    matches!(dispatch.dispatch(request, |_| crate::fuse_metadata::Presentation::default(), &mut output).unwrap(), crate::fuse_dispatch::Response::Payload(bytes) if bytes.len() == *length)
+                );
+            }
             let entry = namespace.lookup(1, b"link").unwrap().unwrap();
             assert_eq!(namespace.entry(1).unwrap().path(), b"");
             assert!(namespace.lookup(1, b"absent").unwrap().is_none());
