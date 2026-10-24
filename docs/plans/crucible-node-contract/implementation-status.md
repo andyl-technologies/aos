@@ -10,6 +10,35 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Receipt correspondence and retained Prepare quote inputs
+
+Commit `841b2727e8` groups the original request/response pair and Import18's
+independently selected schema/context into borrowed receipt inputs. The full
+validation, normalization and MAC calculations remain unchanged. Both codec
+modes pass all eight existing receipt controls and their complete Transport
+suites: 2,115 passes, zero failures, twenty ignored and no filtering.
+
+Commit `3e0509176d` makes Prepare and prospective seven-bank upload quotes
+borrow the same retained input record later moved into the assignment. The
+identity and allocation calculations remain unchanged. All earlier scratch
+terms remain, with six caller/callee input-record views added explicitly.
+Thirty SDK controls and the eight receipt controls pass in the standard codec
+mode at this later checkpoint; the preceding full suites qualify the receipt
+checkpoint separately.
+
+All-feature Transport/Engine/Daemon target checking, six architecture checks
+and scoped formatting pass at both checkpoints. Both application gates pass
+with 185 test artifacts across 58 packages, including 76 integration targets.
+For each checkpoint, all 563 frozen owned Rust/Cargo inputs match its commit
+and actual application source capture. The preceding funded-Source VM result
+remains a separate qualification snapshot.
+
+Strict Transport Clippy improves from 29 errors to 22 after the receipt change
+and nineteen after the quote change, retaining 1,734 warnings. No lint allowance
+is added; strict qualification still fails. These input views create no Source,
+Recipe, Initial funding, native lease, readiness or completed import witness.
+The funded runtime handoff, Native18 adoption and full RFC remain unfinished.
+
 ## Complete native reply credit and runtime handoff
 
 Commit `4b6d8cad28` reserves both separately transferred Complete evidence
