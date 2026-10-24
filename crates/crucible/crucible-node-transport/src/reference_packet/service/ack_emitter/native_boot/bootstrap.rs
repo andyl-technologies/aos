@@ -287,6 +287,11 @@ impl<S: AsFd> Bootstrap<S> {
                 ));
             }
         }
+        if let Some(startup) = self.startup.as_mut()
+            && startup.has_invocation_prefix()?
+        {
+            startup.admit_invocation_boot_parser_data(launch)?;
+        }
         self.boot_value = Some(
             if let Some(startup) = self.startup.as_ref().filter(|_| pre_dom_selected) {
                 startup.ensure_original()?;

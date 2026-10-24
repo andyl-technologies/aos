@@ -19,15 +19,26 @@ const CHILD_TEST: &str = "reference_packet::service::ack_emitter::native_boot::b
 
 #[test]
 fn startup_claim_checks_original_canonical_child_literals() -> TestResult {
-    exercise_claim(false)
+    exercise_claim(
+        false,
+        &["canonical", "source_whitespace", "registration_whitespace"],
+    )
 }
 
 #[test]
 fn invocation_claim_checks_original_canonical_child_literals() -> TestResult {
-    exercise_claim(true)
+    exercise_claim(
+        true,
+        &["canonical", "source_whitespace", "registration_whitespace"],
+    )
 }
 
-fn exercise_claim(invocation: bool) -> TestResult {
+#[test]
+fn invocation_private_read_funds_the_actual_carried_launch() -> TestResult {
+    exercise_claim(true, &["carry_exact", "carry_short", "carry_missing"])
+}
+
+fn exercise_claim(invocation: bool, cases: &[&str]) -> TestResult {
     let mut selected = crate::reference_packet::service::complete_restore::import18::inert_bootstrap_fixtures::initial_selected_launch(false);
     selected["launch"]["controller_pid"] = json!(std::process::id().to_string());
     selected["launch"]["controller_uid"] = json!(rustix::process::geteuid().as_raw().to_string());
@@ -41,6 +52,17 @@ fn exercise_claim(invocation: bool) -> TestResult {
         launch_value
     };
     let launch_body = canonical::canonical_json(&launch_value)?;
+    assert!(launch_body.len() <= 512 * 1024);
+
+    // Match the child's borrowed SDK decode, including its actual capacities.
+    let parsed_launch = canonical::parse_json(&launch_body, usize::MAX)?;
+    let carried_launch = PacketNative5SourceLaunch::deserialize(if invocation {
+        &parsed_launch["launch"]
+    } else {
+        &parsed_launch
+    })?;
+    let carried_backing = original_private_launch_backing_data(&carried_launch)?;
+
     let mut source = crate::reference_packet::service::complete_restore::import18::inert_bootstrap_fixtures::source_birth(&launch);
     for name in [
         "complete_restore_selection",
@@ -85,9 +107,26 @@ fn exercise_claim(invocation: bool) -> TestResult {
             + if invocation { original_native_invocation_counter_scratch_data() } else { 0 }) as u64),
     };
 
-    for case in ["canonical", "source_whitespace", "registration_whitespace"] {
+    for &case in cases {
+        let before_boot = matches!(case, "carry_short" | "carry_missing");
+        let mut private_row = row;
+        if case.starts_with("carry_") {
+            let raw = crate::retained_metadata::serialization_storage::original_json_value_storage_extent_data(
+                (512 * 1024).max(launch_body.len()),
+            )?.canonical_pass_requested_bytes()?;
+            let complete = raw
+                .checked_add(carried_backing)
+                .ok_or("carried budget overflow")?;
+            let transient = match case {
+                "carry_exact" => complete,
+                "carry_short" => complete.checked_sub(1).ok_or("carried budget empty")?,
+                "carry_missing" => raw,
+                _ => return Err("unknown carried launch case".into()),
+            };
+            private_row.maximum_simultaneous_transient_bytes = U64::new(u64::try_from(transient)?);
+        }
         let mut body = canonical_boot.clone();
-        if case != "canonical" {
+        if matches!(case, "source_whitespace" | "registration_whitespace") {
             let key = if case == "source_whitespace" {
                 b"\"source_birth\":".as_slice()
             } else {
@@ -101,8 +140,8 @@ fn exercise_claim(invocation: bool) -> TestResult {
             assert_eq!(body[offset], b'{');
             body.insert(offset + 1, b' ');
         }
-        // The strict parsed DTO and its canonical digests are identical. Only
-        // the actual retained child literal differs in the negative controls.
+        // Whitespace controls change only the original child literal. Carry
+        // controls instead vary its independent private transient grant.
         assert_eq!(canonical::parse_json(&body, usize::MAX)?, boot);
         let data = PacketNativeStartupPreambleData {
             controller_pid: u64::from(std::process::id()),
@@ -115,7 +154,7 @@ fn exercise_claim(invocation: bool) -> TestResult {
             registration_digest: *blake3::hash(&canonical::canonical_json(&registration)?)
                 .as_bytes(),
             private_launch_digest: *blake3::hash(b"private-data").as_bytes(),
-            private_bootstrap: row,
+            private_bootstrap: private_row,
             native_birth: row,
             restore_prepare: None,
         };
@@ -131,7 +170,7 @@ fn exercise_claim(invocation: bool) -> TestResult {
                     source_digest: data.source_digest,
                     registration_digest: data.registration_digest,
                     private_launch_digest: data.private_launch_digest,
-                    private_bootstrap: row,
+                    private_bootstrap: private_row,
                     native_birth: row,
                     restore_prepare: None,
                 },
@@ -153,7 +192,9 @@ fn exercise_claim(invocation: bool) -> TestResult {
 
         let write_result = (|| -> TestResult {
             parent.write_all(&prefix)?;
-            for frame in [&launch_body, &body] {
+            let frames = [&launch_body, &body];
+            let count = if before_boot { 1 } else { 2 };
+            for frame in &frames[..count] {
                 parent.write_all(&u32::try_from(frame.len())?.to_be_bytes())?;
                 parent.write_all(frame)?;
             }
@@ -210,7 +251,26 @@ fn inherited_body_child() -> TestResult {
     };
 
     let result = owner.prepare(Path::new("/not-opened-by-private-refusal-flight"));
-    if case == "canonical" {
+    let before_boot = matches!(case, "carry_short" | "carry_missing");
+    if before_boot {
+        assert!(
+            matches!(
+                result,
+                Err(ProviderError::ResourceExhausted(
+                    "native invocation private carried launch"
+                ))
+            ),
+            "{:?}",
+            result.as_ref().err()
+        );
+        assert!(owner.launch_value.is_some());
+        assert!(!owner.launch_bytes.is_empty());
+        assert!(owner.launch.is_some());
+        assert!(
+            !owner.reader.original_owned11_facts(&owner.literals)?.failed,
+            "unfunded second read attempted"
+        );
+    } else if matches!(case, "canonical" | "carry_exact") {
         assert!(
             matches!(
                 result,
@@ -235,13 +295,17 @@ fn inherited_body_child() -> TestResult {
     }
     let startup = owner.startup.as_ref().ok_or("startup absent")?;
     assert!(startup.failed);
-    assert!(startup.native_issued);
-    assert!(owner.boot_value.is_some());
-    assert!(owner.startup_attempt.is_some());
+    assert_eq!(startup.native_issued, !before_boot);
+    assert_eq!(owner.boot_value.is_some(), !before_boot);
+    assert_eq!(owner.startup_attempt.is_some(), !before_boot);
     assert!(owner.boot.is_none(), "unadmitted native boot allocation");
+    let frame_index = if before_boot { 0 } else { 1 };
     let (pointer, length) = {
         let retained = owner.literals.try_borrow()?;
-        let frame = retained.frame(1).ok_or("retained boot literal absent")?;
+        assert_eq!(retained.frames().count(), frame_index + 1);
+        let frame = retained
+            .frame(frame_index)
+            .ok_or("retained private literal absent")?;
         assert!(frame.complete);
         assert_eq!(frame.transferred, frame.bytes.len());
         (frame.bytes.as_ptr(), frame.bytes.len())
@@ -253,7 +317,9 @@ fn inherited_body_child() -> TestResult {
             .is_err()
     );
     let retained = owner.literals.try_borrow()?;
-    let frame = retained.frame(1).ok_or("retry lost boot literal")?;
+    let frame = retained
+        .frame(frame_index)
+        .ok_or("retry lost private literal")?;
     assert_eq!(frame.bytes.as_ptr(), pointer);
     assert_eq!(frame.bytes.len(), length);
     assert!(owner.startup.as_ref().ok_or("retry lost startup")?.failed);

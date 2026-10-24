@@ -15,8 +15,9 @@ use crate::reference_packet::service::native_startup::{
     decode_original_native_invocation_preamble_data,
     original_native_invocation_baseline_storage_data,
     original_native_invocation_construction_storage_data,
-    original_native_invocation_counter_scratch_data,
+    original_native_invocation_counter_scratch_data, original_private_launch_backing_data,
 };
+use crate::retained_metadata::serialization_storage::original_json_value_storage_extent_data;
 use crucible_node_format::U64;
 
 impl OriginalNativeStartupBootstrap {
@@ -125,6 +126,61 @@ impl OriginalNativeStartupBootstrap {
             native_issued: false,
             failed: false,
         })
+    }
+
+    /// Checks the second private parser and its independently live typed launch.
+    ///
+    /// The original private row funds both owners together. A refusal spends
+    /// this scope before the reader can construct the next raw or Value bank.
+    ///
+    /// # Errors
+    /// Refuses another edition, an unavailable original cut, overflow, or a
+    /// combined parser/carry extent above the original private transient grant.
+    pub(in crate::reference_packet::service::ack_emitter::native_boot) fn admit_invocation_boot_parser_data(
+        &mut self,
+        launch: &PacketNative5SourceLaunch,
+    ) -> Result<(), ProviderError> {
+        let result = self.check_invocation_boot_parser_data(launch);
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+
+    fn check_invocation_boot_parser_data(
+        &self,
+        launch: &PacketNative5SourceLaunch,
+    ) -> Result<(), ProviderError> {
+        self.ensure_original()?;
+        if !self.has_invocation_prefix()? {
+            return Err(ProviderError::Correlation(
+                "native invocation parser edition",
+            ));
+        }
+
+        let incoming = original_json_value_storage_extent_data(self.maximum_boot_bytes)?;
+        let carry = original_private_launch_backing_data(launch)?;
+        let requested = incoming
+            .canonical_pass_requested_bytes()?
+            .checked_add(carry)
+            .ok_or(ProviderError::ResourceExhausted(
+                "native invocation private carried launch",
+            ))?;
+        let requested = u64::try_from(requested).map_err(|_| {
+            ProviderError::ResourceExhausted("native invocation private carried launch")
+        })?;
+        if requested
+            > self
+                .private_bootstrap
+                .maximum_simultaneous_transient_bytes
+                .get()
+        {
+            return Err(ProviderError::ResourceExhausted(
+                "native invocation private carried launch",
+            ));
+        }
+
+        self.ensure_original()
     }
 
     // Edition routing comes from the actual retained, already authenticated

@@ -1,10 +1,12 @@
 //! Constructs boot7 only after its actual inherited invocation claim is spent.
 
+use super::super::bootstrap::admitted::OriginalNativeStartupBootstrap;
 use super::*;
 use crate::reference_packet::service::native_startup::{
     PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA, PACKET_NATIVE_INVOCATION_SOURCE_BINDING_SCHEMA,
     PacketNativeInvocationPurposeData,
 };
+use crate::retained_metadata::serialization_storage::OriginalJsonValueStorageExtentData;
 
 /// Counts additional invocation attempt/helper views beside the original window.
 ///
@@ -14,7 +16,7 @@ pub(super) const fn attempt_counter_scratch_data() -> usize {
     2 * size_of::<&serde_json::Value>()
         + 2 * size_of::<&PacketNative5SourceLaunch>()
         + 2 * size_of::<PacketNativeInvocationPurposeData>()
-        + 2 * size_of::<&mut super::super::bootstrap::admitted::OriginalNativeStartupBootstrap>()
+        + 2 * size_of::<&mut OriginalNativeStartupBootstrap>()
         + size_of::<&mut Option<OriginalNativeStartupBootAttempt>>()
         + size_of::<&mut OriginalNativeStartupBootAttempt>()
         + 2 * size_of::<&mut Option<Rc<RefCell<NativeAckBoot>>>>()
@@ -23,11 +25,31 @@ pub(super) const fn attempt_counter_scratch_data() -> usize {
         + 2 * size_of::<Vec<u8>>()
         + 2 * size_of::<Result<(), ProviderError>>()
         + 2 * size_of::<bool>()
-        // Borrow decoded children from the retained inline attempt until the
-        // full native row is authenticated; no shared boot exists before it.
+        // Keep the earlier decoded-child loan windows conservative. No shared
+        // boot exists before the independent native row authenticates.
         + size_of::<&BootData>()
         + size_of::<Option<&BootData>>()
         + size_of::<Result<&BootData, ProviderError>>()
+        + private_boot_parser_counter_scratch_data()
+}
+
+// The raw extent projector and exhaustive launch observer retain their original
+// windows. These are the new caller, checked-sum and refusal-control views.
+const fn private_boot_parser_counter_scratch_data() -> usize {
+    2 * size_of::<&mut OriginalNativeStartupBootstrap>()
+        + 2 * size_of::<&OriginalNativeStartupBootstrap>()
+        + 3 * size_of::<&PacketNative5SourceLaunch>()
+        + size_of::<Option<&mut OriginalNativeStartupBootstrap>>()
+        + 2 * size_of::<OriginalJsonValueStorageExtentData>()
+        + size_of::<Result<OriginalJsonValueStorageExtentData, ProviderError>>()
+        + 5 * size_of::<usize>()
+        + size_of::<u64>()
+        + 2 * size_of::<Result<usize, ProviderError>>()
+        + size_of::<Option<usize>>()
+        + size_of::<Result<u64, std::num::TryFromIntError>>()
+        + size_of::<Result<u64, ProviderError>>()
+        + 4 * size_of::<Result<(), ProviderError>>()
+        + 4 * size_of::<bool>()
 }
 
 impl NativeAckBoot {
@@ -56,7 +78,7 @@ impl NativeAckBoot {
         launch: &PacketNative5SourceLaunch,
         original_launch_body: Vec<u8>,
         purpose: PacketNativeInvocationPurposeData,
-        startup: &mut super::super::bootstrap::admitted::OriginalNativeStartupBootstrap,
+        startup: &mut OriginalNativeStartupBootstrap,
         attempt: &mut Option<OriginalNativeStartupBootAttempt>,
         completed: &mut Option<Rc<RefCell<Self>>>,
     ) -> Result<(), ProviderError> {
@@ -89,7 +111,7 @@ impl NativeAckBoot {
         value: OriginalNativeBootValue<'_>,
         launch: &PacketNative5SourceLaunch,
         purpose: PacketNativeInvocationPurposeData,
-        startup: &mut super::super::bootstrap::admitted::OriginalNativeStartupBootstrap,
+        startup: &mut OriginalNativeStartupBootstrap,
         attempt: &mut OriginalNativeStartupBootAttempt,
         completed: &mut Option<Rc<RefCell<Self>>>,
     ) -> Result<(), ProviderError> {
