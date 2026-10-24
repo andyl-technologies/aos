@@ -10,6 +10,34 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Boot child copies after authenticated native funding
+
+Commit `6da8b3494a` retains scalar decoding in the original startup14/invocation15
+attempt and borrows Source and registration children from the original parsed
+private frame. Their independent trees are copied only after the full native
+allocation claim succeeds. Schema, key/birth widths and the selected controller
+reference are checked before that claim. Failed attempts retain scalar backing
+and their original caller-owned child trees, create no shared native boot and
+cannot retry. Fixed scalar construction and scratch views are independently
+counted; earlier storage terms remain conservative.
+
+Both inherited-parent regressions first reproduce premature child copies.
+The corrected twenty refusal flights and six canonical-child flights pass in
+both codec modes. Both complete Transport suites pass 2,100 tests with zero
+failures, 20 ignored and no filtering. Both complete Engine suites pass 2,048
+tests with zero failures, 34 ignored and no filtering, plus fourteen custody and
+five actual rebuilt-provider controls each. All-feature Transport/Engine/Daemon
+targets, six architecture checks and formatting pass. Production Transport
+Clippy remains at 37 errors and 1,733 warnings.
+
+The merged-toolchain application and funded-Source VM gates pass. The compiler
+records 185 test artifacts across 58 packages, including 76 integration targets.
+All 538 owned Rust/Cargo inputs match the commit and the actual application and
+three funded-VM Rust component captures. The negative inherited-channel
+controls construct no Source, Recipe/Initial or native readiness. Full private
+preclaim funding, Native18 successor construction, strict production lint and
+full RFC completion remain open.
+
 ## Invocation boot allocation after full row authentication
 
 Commit `a5b129cf64` retains invocation15's decoded children in the original
