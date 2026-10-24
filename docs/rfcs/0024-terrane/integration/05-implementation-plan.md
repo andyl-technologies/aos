@@ -17171,3 +17171,24 @@ source files, 5,443 bound inputs and the exact retained Cargo test ELF.
 The queued-submission refinement passes the four pure transition cases,
 zero-allocation instrument, exact metadata-only fixture-preparation test and
 strict all-feature/all-target Clippy. Its new kernel scenario remains pending.
+
+
+The backing-table checkpoint `6b7fe376fb` passes the complete native kernel
+guest in 394.596 seconds. Complete independent review verifies all 15 exact
+native witnesses, 8,186 immutable files, 5,443 bound inputs, the retained Cargo
+ELF and the hermetic pure preparation case. The later scheduler checkpoint
+`e60a701e1d` passes all 82 structural cases in 81.819 seconds with complete
+source and actual-ELF review. Its distinct-node native scenario and mandatory
+workspace compilation are still pending.
+
+The mount-broker dependency PR #232 remains open and unmerged on this review.
+Production mount and passthrough integration remain outstanding; no separate
+privileged Terrane mount service is introduced. Trunk acceptance remains 27/64.
+
+
+The queued-backing checkpoint `e60a701e1d` passes the complete actual kernel
+guest in 396.124 seconds, including the new distinct-node scenario. Complete
+independent review verifies all 17 exact native witnesses, 8,186 immutable files,
+5,443 bound inputs, the retained Cargo ELF and the hermetic pure preparation
+case. All nine kernel scenarios pass. Mandatory workspace compilation and the
+older owning aggregates remain pending, and no task acceptance changes.
