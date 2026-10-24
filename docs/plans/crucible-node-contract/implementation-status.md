@@ -10,6 +10,29 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Borrowed restoration metadata traversal
+
+Commit `90e5eb65d1` uses borrowed flatten iterators for the actual retained
+activation and upload slots. Order, origin checks and shared-owner alias checks
+remain unchanged. Their fixed iterator views are added beside earlier scratch
+terms. Session correlation and the nonzero upload chunk grid use their direct
+standard-library operations. The existing session responsibility review remains
+applicable and its content-bound digest is refreshed.
+
+Both complete Transport codec modes pass 2,104 tests with zero failures,
+20 ignored and no filtering; both Engine modes pass 2,048 with zero failures,
+34 ignored and no filtering, plus fourteen custody and five rebuilt-provider
+controls each. All-feature Transport/Engine/Daemon targets, six architecture
+checks and formatting pass. Production Transport Clippy decreases from 37 to
+33 errors, retaining 1,733 warnings; strict acceptance remains open.
+
+The merged-toolchain application and funded-Source VM gates pass. Actual
+compiler metadata records 185 test artifacts across 58 packages, including
+76 integration targets. All 544 owned Rust/Cargo inputs match the commit and
+actual application and three funded-VM Rust component captures. These results
+do not establish Native18 production, complete preservation or full RFC-0025
+completion.
+
 ## Actual completed private retained banks
 
 Commit `c71f532c30` checks completed private ownership after the first parsed
