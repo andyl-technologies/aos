@@ -68,6 +68,20 @@ mod tests {
     /// Far above the schedule's retries over [`HOLD`], far below a spin's.
     const MAX_ATTEMPTS_WHILE_HELD: u32 = 1_000;
 
+    /// Measures only how long a test reader stayed parked, never modeled state.
+    // crucible-lint: allow clippy-disallowed-method -- host time checks an isolated test park and never enters modeled state.
+    #[allow(clippy::disallowed_methods)]
+    fn host_elapsed_since(started: Instant) -> Duration {
+        started.elapsed()
+    }
+
+    /// Starts the host-time measurement for [`host_elapsed_since`].
+    // crucible-lint: allow clippy-disallowed-method -- host time checks an isolated test park and never enters modeled state.
+    #[allow(clippy::disallowed_methods)]
+    fn test_host_now() -> Instant {
+        Instant::now()
+    }
+
     #[test]
     fn spins_first_and_then_sleeps_with_a_capped_doubling_delay() {
         let mut backoff = ContentionBackoff::new();
@@ -96,7 +110,7 @@ mod tests {
         assert!(slot.try_snapshot().is_none());
 
         let mut backoff = ContentionBackoff::new();
-        let started = Instant::now();
+        let started = test_host_now();
         let snapshot = std::thread::scope(|scope| {
             let reader = scope.spawn(|| slot.snapshot_with(&mut backoff));
             std::thread::sleep(HOLD);
@@ -106,7 +120,7 @@ mod tests {
                 .unwrap_or_else(|_| panic!("reader should not panic"))
         });
 
-        assert!(started.elapsed() >= HOLD);
+        assert!(host_elapsed_since(started) >= HOLD);
         assert_eq!(snapshot.publish_gen, slot.snapshot().publish_gen);
         assert!(backoff.attempts() > SPIN_ATTEMPTS);
         assert!(backoff.attempts() < MAX_ATTEMPTS_WHILE_HELD);
