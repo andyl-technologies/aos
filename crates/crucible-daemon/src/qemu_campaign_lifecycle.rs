@@ -2199,7 +2199,11 @@ fn replay_decision_window(
                     format!("order@{}:{keys}", order.at.ticks)
                 }
                 Decision::RngDraw(draw) => {
-                    format!("rng:{}", draw.stream.name.replace('\n', ";"))
+                    format!(
+                        "rng:{}={:x}",
+                        draw.stream.name.replace('\n', ";"),
+                        draw.value
+                    )
                 }
                 Decision::Override(_) => String::from("override"),
                 Decision::Preemption(_) => String::from("preemption"),

@@ -693,6 +693,8 @@ struct DriveStats {
     max_set: usize,
     /// Largest gap between node clocks after any dispatched RUN set.
     max_clock_spread: u64,
+    /// Live network choices offered and settled by their default branch.
+    choices: u64,
 }
 
 fn node_id(name: &str) -> NodeId {
@@ -900,6 +902,8 @@ struct Faults {
     /// Host worker bound; `None` admits one worker per node.
     workers: Option<usize>,
     threaded_delays: bool,
+    /// Admits network outputs one route at a time, as campaigns do.
+    choice_pause: bool,
 }
 
 fn drive(
@@ -962,6 +966,7 @@ fn drive_scenario(
     };
     let time_limit = scenario.time_limit;
     let mut adapter = BackendQuantumLoop::new(scheduler(scenario, schedule), backend);
+    adapter.set_live_network_choice_pause(faults.choice_pause);
     let mut next_attempt = schedule
         .attempt_caps
         .map(|(interval, offset)| interval + offset);
@@ -971,6 +976,7 @@ fn drive_scenario(
     let mut resolved = Vec::new();
     let mut decisions = Vec::new();
     let mut max_set = 0;
+    let mut choices = 0;
 
     for _ in 0..1_000_000 {
         refresh_caps(
@@ -993,6 +999,16 @@ fn drive_scenario(
         for outcome in round.outcomes {
             resolved.extend(outcome.resolved_events);
             decisions.extend(outcome.decisions);
+        }
+        // A campaign with no selection to make takes the default branch of
+        // every offered choice; the settled suffix follows the offered prefix.
+        // Settlement resumes held peer publication, which may offer the next.
+        while adapter.live_network_preselection().is_some() {
+            for settled in adapter.settle_host_live_network_preselection()? {
+                resolved.extend(settled.resolved_events);
+                decisions.extend(settled.decisions);
+            }
+            choices += 1;
         }
         if !progressed && adapter.loop_impl().frontier().ticks >= time_limit {
             break;
@@ -1048,6 +1064,7 @@ fn drive_scenario(
         idle_parks: backend.idle_parks,
         max_set,
         max_clock_spread: backend.max_clock_spread,
+        choices,
     };
     Ok((trajectory, stats))
 }
@@ -1945,4 +1962,122 @@ fn seeded_random_ceiling_schedules_match_on_different_graph_horizons() {
         let (trajectory, _) = drive_graph(&scenario, &schedule, Faults::default());
         assert_same_trajectory(&baseline, &trajectory, &format!("case {case} {schedule:?}"));
     }
+}
+
+// T1: an Envoy-like five-node mesh under seeded execution variants
+
+const MESH_TIME_LIMIT: u64 = 250 * MICROSECOND;
+const MESH_CASES: u64 = 200;
+
+/// Draws one costed program whose emissions land within microseconds of
+/// its peers' deliveries.
+fn mesh_program(rng: &mut Xorshift) -> Program {
+    let costs = (0..rng.between(1, 4))
+        .map(|_| rng.between(20, 90))
+        .collect::<Vec<_>>();
+    Program {
+        costs,
+        timer_phase: rng.between(MICROSECOND, 9 * MICROSECOND),
+        timer_period: rng.between(4 * MICROSECOND, 15 * MICROSECOND),
+        emit_every: rng.between(60_000, 400_000),
+        halt_every: rng.between(2, 6),
+    }
+}
+
+/// Three routers and two traffic nodes linked like the Envoy flight.
+///
+/// Router `a` reaches router `c` both directly and through `b`, and each
+/// traffic node hangs off one router, so deliveries and emissions on
+/// different nodes interleave at nearby virtual times.
+fn mesh_scenario(rng: &mut Xorshift) -> Scenario {
+    let nodes = [
+        ("router-a", "router-c"),
+        ("router-b", "router-a"),
+        ("router-c", "router-a"),
+        ("traffic-east", "router-c"),
+        ("traffic-west", "router-a"),
+    ]
+    .into_iter()
+    .map(|(name, peer)| NodeSpec {
+        name,
+        peer,
+        program: mesh_program(rng),
+    })
+    .collect();
+    let links = [
+        ("router-a", "traffic-west"),
+        ("router-a", "router-b"),
+        ("router-b", "router-c"),
+        ("router-a", "router-c"),
+        ("router-c", "traffic-east"),
+    ]
+    .into_iter()
+    .map(|(left, right)| (left, right, rng.between(10 * MICROSECOND, 60 * MICROSECOND)))
+    .collect();
+    Scenario {
+        nodes,
+        links,
+        time_limit: MESH_TIME_LIMIT,
+        fault: None,
+        noise: Some(LinkNoise {
+            jitter: rng.between(MICROSECOND, 8 * MICROSECOND),
+            loss_millionths: 100_000,
+        }),
+    }
+}
+
+#[test]
+fn an_envoy_like_mesh_publishes_decisions_independent_of_execution_across_seeds() {
+    let mut rng = Xorshift(0x3e7f_a51c_9d02_b84b);
+    let mut decisions = 0;
+    let mut choices = 0;
+    for case in 0..MESH_CASES {
+        let scenario = mesh_scenario(&mut rng);
+        let serial = Faults {
+            workers: Some(1),
+            ..Faults::default()
+        };
+        let (baseline, _) = drive_graph(&scenario, &CeilingSchedule::unconstrained(), serial);
+        decisions += baseline.decisions.len();
+
+        // RFC-0010 section 8: publication order is a pure function of world
+        // state. Neither the RUN partition a ceiling schedule imposes, nor
+        // worker count, host completion order, or a default-settled choice
+        // stop may move a decision.
+        let schedule = random_schedule(&mut rng);
+        let varied = Faults {
+            workers: Some(usize::try_from(rng.between(2, 5)).unwrap()),
+            threaded_delays: rng.next().is_multiple_of(2),
+            choice_pause: rng.next().is_multiple_of(2),
+            ..serial
+        };
+        let context = format!(
+            "case {case} {schedule:?} workers {:?} pause {}",
+            varied.workers, varied.choice_pause
+        );
+        let (concurrent, stats) = drive_graph(&scenario, &schedule, varied);
+        choices += stats.choices;
+        assert_same_trajectory(&baseline, &concurrent, &format!("{context} concurrent"));
+
+        let (serialized, _) = drive_graph(
+            &scenario,
+            &schedule,
+            Faults {
+                choice_pause: varied.choice_pause,
+                ..serial
+            },
+        );
+        assert!(
+            serialized.event_log == concurrent.event_log,
+            "{context}: event log diverges between serial and concurrent execution"
+        );
+    }
+    assert!(
+        decisions > 100 * MESH_CASES as usize,
+        "the mesh must publish link draws and delivery orders ({decisions})"
+    );
+    assert!(
+        choices > MESH_CASES,
+        "paused runs must settle offered choices"
+    );
 }
