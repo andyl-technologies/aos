@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -15,6 +16,60 @@ def require(condition, message):
     """Refuses missing evidence rather than manufacturing native authority."""
     if not condition:
         raise RuntimeError(message)
+
+
+def report_failed_namespace(root, children):
+    """Reports bounded VM metadata after failure without retaining backings."""
+    print("CLOSURE_ADMIN_DIAGNOSTIC phase=after-actor-exit", flush=True)
+    pending = [(root, 0)]
+    remaining = 4096
+    device = root.stat().st_dev
+    while pending and remaining:
+        path, depth = pending.pop()
+        remaining -= 1
+        try:
+            metadata = path.lstat()
+            print("CLOSURE_ADMIN_DIAGNOSTIC " + json.dumps({
+                "path": str(path), "device": metadata.st_dev,
+                "inode": metadata.st_ino, "mode": oct(metadata.st_mode),
+                "links": metadata.st_nlink, "size": metadata.st_size,
+                "allocated": metadata.st_blocks * 512,
+            }, sort_keys=True), flush=True)
+            if stat.S_ISDIR(metadata.st_mode) and depth < 16:
+                # Directory enumeration opens no original file backing. Never
+                # follow a symlink or cross the fixture filesystem boundary.
+                if metadata.st_dev == device:
+                    for entry in path.iterdir():
+                        if len(pending) >= remaining:
+                            print("CLOSURE_ADMIN_DIAGNOSTIC namespace-bound-exhausted", flush=True)
+                            break
+                        pending.append((entry, depth + 1))
+        except OSError as error:
+            print(f"CLOSURE_ADMIN_DIAGNOSTIC unavailable path={path!s}: {error}", flush=True)
+    if pending:
+        print("CLOSURE_ADMIN_DIAGNOSTIC namespace-bound-exhausted", flush=True)
+
+    for child in children:
+        descriptors = Path("/proc") / str(child.pid) / "fd"
+        try:
+            for number, descriptor in enumerate(descriptors.iterdir()):
+                if number == 512:
+                    print("CLOSURE_ADMIN_DIAGNOSTIC descriptor-bound-exhausted", flush=True)
+                    break
+                try:
+                    metadata = descriptor.stat()
+                    if metadata.st_dev == device:
+                        print("CLOSURE_ADMIN_DIAGNOSTIC " + json.dumps({
+                            "pid": child.pid, "descriptor": descriptor.name,
+                            "target": os.readlink(descriptor),
+                            "device": metadata.st_dev, "inode": metadata.st_ino,
+                            "links": metadata.st_nlink, "size": metadata.st_size,
+                        }, sort_keys=True), flush=True)
+                except OSError:
+                    # A live helper may close a descriptor during inspection.
+                    continue
+        except OSError as error:
+            print(f"CLOSURE_ADMIN_DIAGNOSTIC unavailable pid={child.pid}: {error}", flush=True)
 
 
 def verify_surface(image, source):
@@ -149,6 +204,14 @@ def main():
                 "cold-retired-file": "PASS funded recovery retains already-unlinked original file as draining custody without adoption; new Resume preserves readable descriptor and exact charges until authenticated final closure",
             }
             result = actor("pin", scenario, timeout=120)
+            if result.returncode != 0:
+                # The actor has already failed under its original deadline.
+                # Administrator visibility can explain protected namespace or
+                # helper custody; these observations grant no closure proof.
+                try:
+                    report_failed_namespace(support.root("pin"), children)
+                except OSError as error:
+                    print(f"CLOSURE_ADMIN_DIAGNOSTIC unavailable: {error}", flush=True)
             require(result.returncode == 0 and result.stdout.splitlines() == [
                 "PASS surface admission requires actual recovery and acknowledged Resume",
                 witnesses[scenario]], "actual cold file recovery actor failed: " + scenario)

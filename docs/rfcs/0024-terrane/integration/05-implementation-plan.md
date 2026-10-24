@@ -8706,8 +8706,10 @@ The `31ad51a2f6` surface aggregate fails: owner and already-unlinked-file
 controls pass, but named retained-file reconciliation remains blocked after
 the exact final-close physical charge releases. Its application compilation
 and complete source review pass (185 targets, 59 packages). The diagnostic
-refinement at `3a06af1c39` and the complete 209-case native feature run at
-`2b1e0f8832` remain under qualification. No component result accepts an
+refinement at `3a06af1c39` reproduces the named-file failure; its owner and
+already-unlinked-file controls pass. The corrected complete 209-case native
+feature run at `02b6596fcf` remains under qualification. Master is merged at
+`3bd16933a5`; that revision requires its own native qualification. No component result accepts an
 additional task or supplies the remaining deployed role composition.
 
 The eleven-component T2 request at `5c427bfc16` passes in 6,872.816 seconds;
@@ -16416,3 +16418,33 @@ The same checkpoint's independent base guest fails its original thirty-second
 `scoped-file` bound after the `manifest-selection` stage. This is a separate
 failed prerequisite, with no established cause and no relaxed deadline. Its
 whole matrix cannot be accepted from either failed guest.
+
+
+#### Master integration and protected namespace diagnostics
+
+Merge `3bd16933a5` incorporates `origin/master` at `b04bda7d9a`, including
+the workspace directory migration and dependency updates. Cargo regenerates
+the lockfile with every master package version preserved and the five Terrane
+members registered. Actual lockfile-only vendor staging and assembly pass with
+hash `sha256-neOV6fURUJN0JAFqF5Wmg3rTHHOyX+xByG+2UlZ7KVA=`. Core evaluation,
+strict all-feature/all-target Terrane Linux Clippy, Nix formatting and Python
+syntax checks pass. Required workspace application-target compilation is
+running separately; previous immutable passes do not qualify this merge.
+
+At immutable `3a06af1c39`, the surface aggregate fails in 1,348.301 seconds.
+The named-file actor again observes exact physical release on final close but
+not authenticated exposure reconciliation. The census remains 13 named versus
+15 charged inodes, including one known owner probe. The policy file is actual
+device 1792/inode 50, distinct from original index 49 and inline backing 51.
+The unprivileged diagnostic cannot inspect four protected directories and finds
+no matching accessible name. This does not establish inode reuse or any other
+remaining-charge cause. Its owner and already-unlinked-file sibling guests
+pass; the aggregate remains failed.
+
+The VM supervisor now emits a bounded metadata-only namespace and helper-FD
+observation after a failed cold actor exits, before helper cleanup. This uses
+the supervisor's existing administrative visibility in the disposable VM to
+inspect protected fixture paths. It opens no original file backing, changes no
+production authority or state, and preserves the original actor failure, all
+deadlines and all closure assertions. Post-exit observations are diagnostic,
+not proof of the charge present while the actor was alive. No task is accepted.
