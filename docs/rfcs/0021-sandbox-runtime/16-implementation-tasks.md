@@ -11189,8 +11189,13 @@ The restored file is byte-for-byte the pre-migration source (Git blob
 selection now restrict generated Nix `result` exclusions to the checkout root.
 The source-selection check reads the actual immutable operations module and
 compares its bytes, while continuing to reject checkout-root build outputs.
-That check and the native workspace target check pass. Independent executable
-role checks are in progress; combining role features is not a substitute.
+That check and the native workspace target check pass. All 15 independently
+selected executable role checks also pass: Controller, Git, Entitlement, Policy,
+key-pin, Cache signer, Source signer, Host, Storage, Network, Mount, Ownership,
+Source provider, runtime Publisher and offline Nix provisioner. These are
+separate `cargo check --all-targets --no-default-features` invocations in the
+same AOS diagnostic shell; they do not combine role features or establish
+installed authority and resource fit.
 
 The kernel-contract-era production policy also completes at
 `/nix/store/b7mgnfpvrjnc2my7sfcy3f60nd7z43j0-aos-selinux-production-policy-1`,
@@ -11200,3 +11205,23 @@ current-head release checks and installed qualification remain pending. Root's
 isolated pre-merge startup run passes Secure Boot enrollment and reaches the
 vTPM guest test agent. Neither that progress nor these compilation checks closes
 the public lifecycle, native history or physical-floor admission gates.
+
+
+### Installed startup retries after the narrowed Root policy
+
+The pre-merge Root retry (`aymjd6hcq9gd5hnh510dvfqc45shay4s`) passes enrollment
+and boots the enforcing vTPM guest, but fails before `multi-user.target`.
+Native activation is denied `start/status` on `auditd_unit_t`; the Cache view
+preparer and recovery listener exit with status 127. The focused diagnostic
+`/nix/store/3zhlbd1h8466y6yrgvjfgrz95bk528c6-aos-rfc21-narrow-root-audit-0`
+reproduces those exits on the same image. Its successful diagnostic wrapper is
+not a successful Root-startup receipt. The kernel audit queue overflows before
+preserving their underlying access denials, so those failures remain under
+investigation rather than authorizing a generic loader grant.
+
+The offline hardware retry (`lws84hrcbvq3hw7h9swr4fd336wy3iwd`) now reaches
+and passes the intentional journal-socket refusal with status 209, then fails
+at key preparation because the loader cannot open `libm.so.6` (permission
+denied, status 127). It has not reached hardware initialization or the later
+power-loss cases. Current-head release checks remain queued behind the
+source-built toolchain changed by master.
