@@ -10,6 +10,61 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Retained original claim input loans
+
+Commit `e106ee9523` groups original14/original15's seven immutable claim inputs
+in one borrowed view built from the actual retained boot DTO and launch bank.
+The DTO remains private; the view neither copies child storage nor issues a
+claim. Each claim exhaustively destructures the same inputs, and its complete
+authentication/claim body remains byte-for-byte unchanged. The original counter
+keeps every earlier operand term and adds both getters' loans and each edition's
+initializer, return and claim-parameter headers.
+
+Both raw-JSON inherited-parent controls pass the six original14 and seven
+original15 refusal flights. Raw shape and containment controls also pass.
+All-feature/all-target Transport/Engine/Daemon checking and all six architecture
+gates pass. Workspace-enforced production Transport Clippy falls from 41 to 39
+errors, with 1,733 warnings and no error at either changed claim definition.
+Complete raw/standard suites and the current-toolchain application, boundary
+and funded Source/Birth VM gates remain pending. All 493 frozen owned Rust/Cargo
+inputs match this commit, its working revision, the actual application source
+and all three funded-VM Rust source captures. This scoped interface repair does
+not complete native failed-prefix custody, genuine Recipe/Initial production
+or RFC-0025.
+
+## Unavailable kernel groups and complete gem5 reclamation
+
+Linux's [`do_task_stat`](https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux.git/+/master/fs/proc/array.c)
+can leave the process group unavailable when an exiting task's signal state
+cannot be retained. Commit `6a5bc8c24a` treats that exact `-1` spelling as incomplete
+observation. It keeps known members and the bounded first diagnostic, and never
+uses an incomplete empty member list to issue a reclamation receipt. A fresh
+complete census remains mandatory. Other negative spellings, malformed rows,
+overflow and existing census limits still refuse.
+
+The already-reaped leader path repeats incomplete scans under its same original
+quarantine deadline before accepting an empty group. Ordinary reclamation polls
+remain pending on incomplete observations and retain their original deadline.
+No changed/recycled process group is signaled, and no new native output or state
+permission follows from a kernel census.
+
+All ten focused containment controls pass in both raw-JSON and standard modes,
+including actual child waitability, original identity, auxiliary reaping and
+failed-readiness custody. The thirteen inherited-socket boot refusal flights
+also pass in both modes. Each complete suite passes 2,093 tests with zero
+failures, 18 ignored tests and no filtering. All-feature/all-target
+Transport/Engine/Daemon checking and all six architecture gates pass.
+Workspace-enforced production Transport Clippy remains at 41 errors and 1,733
+warnings, with no diagnostics in the census changes. All 493 frozen owned
+Rust/Cargo inputs match this commit and its captured application and three
+funded-VM Rust sources. Application/boundary/Source-Birth VM qualification now
+continues against the subsequent claim-input revision; the superseded census
+build clients were canceled without qualifying those gates.
+
+This fixes the independently verified unavailable group case; the earlier
+failed flight did not retain its exact token and is not retrospectively claimed
+to have reproduced this case.
+
 ## Original invocation attempt retention
 
 Commit `761dde3d2c` installs original15's actual launch copy in Bootstrap's
