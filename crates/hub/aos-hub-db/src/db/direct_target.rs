@@ -77,9 +77,10 @@ impl Database {
             values.push(Value::Text(credential.secret_version_ref.clone()));
             values.push(Value::Text(credential.credential_fingerprint.clone()));
         }
-        Ok(Statement::new(
-            "UPDATE surface_placements SET resource_version = resource_version
-             WHERE id = ?1 AND resource_version = ?2 AND write_spec_version = ?3
+        Ok(CheckedStatement::row_lock(
+            "surface_placements",
+            "resource_version",
+            "id = ?1 AND resource_version = ?2 AND write_spec_version = ?3
                AND binding_id = ?4 AND desired_state = 'active'
                AND EXISTS (SELECT 1 FROM bindings binding WHERE binding.id = ?4
                  AND binding.resource_version = ?5)
@@ -111,7 +112,8 @@ impl Database {
                    AND credential.generation = ?12 AND credential.validation_state = 'valid'
                    AND credential.secret_version_ref = ?18 AND credential.credential_fingerprint = ?19))",
             values,
-        ).expecting(1))
+            1,
+        ))
     }
 
     /// Checks whether exact cache content has an authenticated committed direct source.
@@ -229,9 +231,10 @@ impl Database {
             !publication.is_empty(),
             "direct publication identity absent"
         );
-        Ok(Statement::new(
-            format!("UPDATE registry_publications SET state = state
-             WHERE publication_id = ?1
+        Ok(CheckedStatement::row_lock(
+            "registry_publications",
+            "state",
+            format!("publication_id = ?1
                AND ((?2 = 0 AND state = 'preparing') OR (?2 = 1 AND state = 'writing_pointers'
                  AND {barrier}
                  AND NOT EXISTS (SELECT 1 FROM registry_publication_placements required
@@ -240,7 +243,8 @@ impl Database {
                        WHERE watermark.placement_id = required.placement_id
                          AND watermark.pending_publication_id = ?1 AND watermark.mutable_publication_id IS NULL))))", barrier = super::mirror_publication::IMMUTABLE_BARRIER),
             vals![publication, i64::from(pointer)],
-        ).expecting(1))
+            1,
+        ))
     }
 
     /// Builds an atomic fence for the exact live credential, account and IAM grant.
@@ -311,8 +315,7 @@ impl Database {
             }
         }
         let sql = format!(
-            "UPDATE authorization_scopes SET retired_at = retired_at
-             WHERE scope_key = ?1 AND retired_at IS NULL
+            "scope_key = ?1 AND retired_at IS NULL
                AND (org_id IS NULL OR EXISTS (SELECT 1 FROM orgs org
                  WHERE org.id = authorization_scopes.org_id AND org.deleted_at IS NULL))
                AND ?7 > ?6
@@ -344,7 +347,9 @@ impl Database {
                    WHERE session.id_hash = ?9 AND session.user_id = ?3 AND session.owner_incarnation = ?4
                      AND session.expires_at > ?6 AND session.last_seen_at >= ?12 AND session.created_at >= ?13)))"
         );
-        Ok(Statement::new(
+        Ok(CheckedStatement::row_lock(
+            "authorization_scopes",
+            "retired_at",
             sql,
             vals![
                 scope,
@@ -361,8 +366,8 @@ impl Database {
                 now.saturating_sub(aos_hub_model::auth::session::IDLE_TIMEOUT_SECS),
                 now.saturating_sub(aos_hub_model::auth::session::ABSOLUTE_LIFETIME_SECS)
             ],
-        )
-        .expecting(1))
+            1,
+        ))
     }
 }
 

@@ -1,7 +1,8 @@
 //! Per-original row locks for direct authorization under read-committed SQL.
 //!
 //! Eligibility predicates run after these checked no-op updates. Referenced
-//! authority rows remain locked until the target and its terminal receipt commit.
+//! authority rows remain locked through commit. Session progress shares reads;
+//! target and accounting mutations acquire exclusive locks from the outset.
 //! Sorted distinct keys bound the work to the original, rather than its parts.
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -25,6 +26,18 @@ fn lock(table: &str, column: &str, predicate: &str, values: Vec<Value>) -> Check
     } else {
         CheckedStatement::point_lock(table, column, predicate, values)
     }
+}
+
+/// Locks an optional authority row without inventing an existence requirement.
+fn optional_lock(
+    table: &str,
+    column: &str,
+    predicate: &str,
+    values: Vec<Value>,
+) -> CheckedStatement {
+    let mut statement = CheckedStatement::row_lock(table, column, predicate, values, 0);
+    statement.expected_rows = None;
+    statement
 }
 
 impl Database {
@@ -156,8 +169,10 @@ impl Database {
                 vals![id],
             ));
             result.push(lock("org_quotas", "max_bytes", "org_id = ?1", vals![id]));
-            result.push(CheckedStatement::unchecked(
-                "UPDATE org_usage SET used_bytes = used_bytes WHERE org_id = ?1",
+            result.push(optional_lock(
+                "org_usage",
+                "used_bytes",
+                "org_id = ?1",
                 vals![id],
             ));
         }
@@ -272,8 +287,10 @@ impl Database {
             .map(|(binding, _)| *binding)
             .collect::<BTreeSet<_>>()
         {
-            result.push(CheckedStatement::unchecked(
-                "UPDATE binding_write_state SET updated_at = updated_at WHERE binding_id = ?1",
+            result.push(optional_lock(
+                "binding_write_state",
+                "updated_at",
+                "binding_id = ?1",
                 vals![binding],
             ));
         }
@@ -329,7 +346,25 @@ pub(crate) struct DirectAuthorityBatch<'a> {
 }
 
 impl DirectAuthorityBatch<'_> {
+    /// Retains per-session progress while sharing publication authority reads.
+    ///
+    /// No target or accounting mutation may be supplied. A publication's rows
+    /// remain protected against every writer through commit; independent upload
+    /// sessions can hold the same read authority concurrently. Other target
+    /// adapters retain their existing exclusive transaction path.
+    pub(crate) async fn checked_session_batch(
+        &self,
+        statements: &[CheckedStatement],
+    ) -> Result<()> {
+        let shared = matches!(self.record.owner, super::super::DirectSqlOwner::Publication);
+        self.run(statements, shared).await
+    }
+
     pub(crate) async fn checked_batch(&self, statements: &[CheckedStatement]) -> Result<()> {
+        self.run(statements, false).await
+    }
+
+    async fn run(&self, statements: &[CheckedStatement], shared: bool) -> Result<()> {
         let mut locks = self
             .db
             .direct_owner_locks(
@@ -344,10 +379,16 @@ impl DirectAuthorityBatch<'_> {
                 .await?,
         );
         locks.extend(self.db.direct_target_dependency_locks(self.record).await?);
+        let mut statements = statements.to_vec();
+        if shared {
+            for statement in locks.iter_mut().chain(&mut statements) {
+                statement.share_postgres_authority();
+            }
+        }
         let mut plan = locks.clone();
         // Native authority plans use these same lock builders. Keep each exact
         // row lock once, but never deduplicate eligibility or target mutations.
-        for statement in statements {
+        for statement in &statements {
             if !locks.iter().any(|held| {
                 held.statement.sql == statement.statement.sql
                     && held.statement.params == statement.statement.params

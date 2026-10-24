@@ -170,7 +170,7 @@ impl Database {
             let checkpoint =
                 Pending::admission(deployment, &existing, now, true, authority_statements.len());
             self.direct_batch(&existing)
-                .checked_batch(
+                .checked_session_batch(
                     &[
                         native_oci_owner_exclusion(&existing.admission.intent.target),
                         vec![current_guard(&existing, now)?],
@@ -285,7 +285,11 @@ impl Database {
         statements.extend(authority_statements.clone());
         let checkpoint =
             Pending::admission(deployment, &record, now, false, authority_statements.len());
-        if let Err(error) = self.direct_batch(&record).checked_batch(&statements).await {
+        if let Err(error) = self
+            .direct_batch(&record)
+            .checked_session_batch(&statements)
+            .await
+        {
             // A concurrent exact admission may win; a business uniqueness conflict
             // with another session or immutable original remains a hard refusal.
             if let Some(existing) = self
@@ -304,7 +308,7 @@ impl Database {
                         authority_statements.len(),
                     );
                     self.direct_batch(&existing)
-                        .checked_batch(
+                        .checked_session_batch(
                             &[
                                 native_oci_owner_exclusion(&existing.admission.intent.target),
                                 vec![current_guard(&existing, now)?],
@@ -355,7 +359,7 @@ impl Database {
                 }
             );
             self.direct_batch(&record)
-                .checked_batch(&[current_guard(&record, now)?])
+                .checked_session_batch(&[current_guard(&record, now)?])
                 .await?;
             return Ok(record);
         }
@@ -367,7 +371,7 @@ impl Database {
             }
         );
         self.direct_batch(&record)
-            .checked_batch(&[
+            .checked_session_batch(&[
                 current_guard(&record, now)?,
                 Statement::new(
                     "INSERT INTO direct_upload_completion_intents
@@ -421,7 +425,7 @@ impl Database {
             "direct positive recovery original absent or changed"
         );
         self.direct_batch(&record)
-            .checked_batch(&[current_guard_with_recovery(&record, now, true)?])
+            .checked_session_batch(&[current_guard_with_recovery(&record, now, true)?])
             .await?;
         Ok(record)
     }
@@ -451,7 +455,7 @@ impl Database {
                 }
             );
             self.direct_batch(&record)
-                .checked_batch(&[current_guard(record, now)?])
+                .checked_session_batch(&[current_guard(record, now)?])
                 .await?;
             return Ok(());
         }
@@ -463,7 +467,7 @@ impl Database {
             .checked_add(1)
             .context("direct resource version exhausted")?;
         self.direct_batch(&record)
-            .checked_batch(&[
+            .checked_session_batch(&[
                 current_guard(record, now)?,
                 Statement::new(
                     "INSERT INTO direct_upload_stage_receipts

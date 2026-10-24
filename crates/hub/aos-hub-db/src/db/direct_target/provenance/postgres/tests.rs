@@ -126,24 +126,28 @@ fn fence(sql: String, values: Vec<Value>) -> CheckedStatement {
 }
 
 async fn check_each_pin(backend: &SqlxBackend, sql: String, values: &[Value]) -> Result<()> {
-    backend
-        .checked_batch(&[fence(sql.clone(), values.to_vec())])
-        .await?;
-    for index in 0..values.len() {
-        let mut changed = values.to_vec();
-        changed[index] = match &values[index] {
-            Value::Int(value) => Value::Int(value + 100),
-            Value::Text(value) => Value::Text(format!("{value}-different")),
-            Value::Null => Value::Text("unexpected-version".into()),
-            _ => panic!("tuple fixture uses only text, integers and null"),
+    for shared in [false, true] {
+        let checked = |values| {
+            let mut statement = fence(sql.clone(), values);
+            if shared {
+                statement.share_postgres_authority();
+            }
+            statement
         };
-        assert!(
-            backend
-                .checked_batch(&[fence(sql.clone(), changed)])
-                .await
-                .is_err(),
-            "changed tuple pin {index} must refuse"
-        );
+        backend.checked_batch(&[checked(values.to_vec())]).await?;
+        for index in 0..values.len() {
+            let mut changed = values.to_vec();
+            changed[index] = match &values[index] {
+                Value::Int(value) => Value::Int(value + 100),
+                Value::Text(value) => Value::Text(format!("{value}-different")),
+                Value::Null => Value::Text("unexpected-version".into()),
+                _ => panic!("tuple fixture uses only text, integers and null"),
+            };
+            assert!(
+                backend.checked_batch(&[checked(changed)]).await.is_err(),
+                "changed tuple pin {index} must refuse with shared={shared}"
+            );
+        }
     }
     Ok(())
 }

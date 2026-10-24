@@ -140,6 +140,7 @@ pub struct CheckedStatement {
 pub struct PostgresLockSql {
     inner: std::sync::Arc<PostgresLockSqlInner>,
     groupable_point: bool,
+    shared_read: bool,
 }
 
 #[derive(Debug)]
@@ -147,11 +148,15 @@ struct PostgresLockSqlInner {
     source: String,
     #[cfg(not(target_arch = "wasm32"))]
     translated: std::sync::OnceLock<String>,
+    #[cfg(not(target_arch = "wasm32"))]
+    shared_translated: std::sync::OnceLock<String>,
 }
 
 impl PartialEq for PostgresLockSql {
     fn eq(&self, other: &Self) -> bool {
-        self.inner.source == other.inner.source && self.groupable_point == other.groupable_point
+        self.inner.source == other.inner.source
+            && self.groupable_point == other.groupable_point
+            && self.shared_read == other.shared_read
     }
 }
 
@@ -166,22 +171,42 @@ impl PostgresLockSql {
                 source: source.into(),
                 #[cfg(not(target_arch = "wasm32"))]
                 translated: std::sync::OnceLock::new(),
+                #[cfg(not(target_arch = "wasm32"))]
+                shared_translated: std::sync::OnceLock::new(),
             }),
             groupable_point: false,
+            shared_read: false,
         }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     fn translated_sql(&self) -> Result<&str> {
-        if self.inner.translated.get().is_none() {
-            let translated = Dialect::Postgres.translate(&self.inner.source)?.sql;
-            // Concurrent first users may derive the same immutable SQL. Only the
-            // first stores it; no transaction result or parameter is retained.
-            let _ = self.inner.translated.set(translated);
+        let slot = if self.shared_read {
+            &self.inner.shared_translated
+        } else {
+            &self.inner.translated
+        };
+        if slot.get().is_none() {
+            let source = if self.shared_read {
+                let (query, target) = self
+                    .inner
+                    .source
+                    .rsplit_once(" FOR UPDATE")
+                    .context("shared PostgreSQL authority query has no row-lock clause")?;
+                anyhow::ensure!(
+                    target.is_empty() || target.starts_with(" OF "),
+                    "shared PostgreSQL authority query has an unsupported lock clause"
+                );
+                format!("{query} FOR SHARE{target}")
+            } else {
+                self.inner.source.clone()
+            };
+            let translated = Dialect::Postgres.translate(&source)?.sql;
+            // Concurrent first users derive SQL only. Parameters, authorization
+            // and transaction results are never cached.
+            let _ = slot.set(translated);
         }
-        self.inner
-            .translated
-            .get()
+        slot.get()
             .map(String::as_str)
             .context("translated PostgreSQL row-lock query absent")
     }
@@ -231,6 +256,18 @@ impl CheckedStatement {
             "SELECT 1 FROM {table} WHERE {predicate} FOR UPDATE"
         )));
         checked
+    }
+
+    /// Shares an authority read without allowing concurrent updates or deletion.
+    ///
+    /// Only session-progress transactions may use this mode: they must not
+    /// mutate any of these authority rows or upgrade their locks. Target and
+    /// accounting commits acquire exclusive locks from the outset. Other SQL
+    /// engines retain the original checked no-op update.
+    pub(crate) fn share_postgres_authority(&mut self) {
+        if let Some(lock) = &mut self.postgres_lock_sql {
+            lock.shared_read = true;
+        }
     }
 
     /// Builds a statement that must affect exactly `expected_rows`.

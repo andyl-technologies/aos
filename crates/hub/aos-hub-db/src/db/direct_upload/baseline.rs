@@ -93,7 +93,9 @@ impl Database {
             );
             return self
                 .direct_batch(record)
-                .checked_batch(&[vec![current_guard(record, now)?], authority_statements].concat())
+                .checked_session_batch(
+                    &[vec![current_guard(record, now)?], authority_statements].concat(),
+                )
                 .await;
         }
         if matches!(record.owner, DirectSqlOwner::Cache { .. }) {
@@ -126,7 +128,14 @@ impl Database {
                 .expecting(1),
             );
         }
+        let session_only = activation_statements.is_empty();
         statements.append(&mut activation_statements);
-        self.direct_batch(record).checked_batch(&statements).await
+        if session_only {
+            self.direct_batch(record)
+                .checked_session_batch(&statements)
+                .await
+        } else {
+            self.direct_batch(record).checked_batch(&statements).await
+        }
     }
 }

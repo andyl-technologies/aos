@@ -20,6 +20,9 @@ use aos_hub_model::auth::jwt::AUTHORIZATION_CLAIMS_VERSION;
 use aos_hub_model::domain::Permission;
 use aos_hub_model::domain::Principal;
 
+#[path = "concurrency_tests/progress.rs"]
+mod progress;
+
 const SCOPE: &str = "cache:00000000000000000000000000000001";
 const GATE: i64 = 923715;
 
@@ -639,14 +642,12 @@ async fn open_publication_database(path: &std::path::Path, postgres_url: Option<
     Database::open(path).await.unwrap()
 }
 
-async fn direct_publication_accounting_contract(postgres_url: Option<String>) {
-    use crate::storage_authority::GuardIncarnation;
-    use crate::storage_authority::StorageGuardStamp;
-    let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("nonversioned.sqlite");
-    let db = open_publication_database(&path, postgres_url.as_deref()).await;
-    let cache = external_original(&db).await;
-    let object = publication(&db).await;
+/// Admits a real publication session with the external writer fixture.
+async fn publication_original(
+    db: &Database,
+    cache: &DirectUploadSessionRecord,
+    object: i64,
+) -> DirectUploadSessionRecord {
     db.backend
         .execute("UPDATE registry_publications SET state = 'preparing'", &[])
         .await
@@ -678,16 +679,27 @@ async fn direct_publication_accounting_contract(postgres_url: Option<String>) {
         cohort.admitted_prefix = "registry".into();
     }
     admission.logical_fingerprint = admission.fingerprint("deployment").unwrap();
-    let record = db
-        .admit_direct_upload(
-            "deployment",
-            &admission,
-            "registry:00000000000000000000000000000001",
-            &DirectSqlOwner::Publication,
-            10,
-        )
-        .await
-        .unwrap();
+    db.admit_direct_upload(
+        "deployment",
+        &admission,
+        "registry:00000000000000000000000000000001",
+        &DirectSqlOwner::Publication,
+        10,
+    )
+    .await
+    .unwrap()
+}
+
+async fn direct_publication_accounting_contract(postgres_url: Option<String>) {
+    use crate::storage_authority::GuardIncarnation;
+    use crate::storage_authority::StorageGuardStamp;
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("nonversioned.sqlite");
+    let db = open_publication_database(&path, postgres_url.as_deref()).await;
+    let cache = external_original(&db).await;
+    let object = publication(&db).await;
+    let record = publication_original(&db, &cache, object).await;
+    let admission = record.admission.clone();
     let complete = super::complete(&record);
     let record = db
         .retain_direct_complete("deployment", &admission.session_id, &complete, 11)
