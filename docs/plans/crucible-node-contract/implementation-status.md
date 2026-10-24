@@ -10,6 +10,27 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Reconstructible current action DATA
+
+Commit `e0b74bc7ed` expresses the historical reader's existing owning restriction
+in its private type: only Input/Reactive DATA can be reconstructed. Capture and
+upload reconstruction remain refused. The operational writer, metadata order,
+wire format and allocation behavior are unchanged. Actual writer controls cover
+raw and failed Input prefixes, all three upload methods and the existing Capture
+refusal; they create no live Source or native authority.
+
+Both complete Transport codec modes pass 2,117 tests with zero failures, twenty
+ignored and no filtering. Both Engine modes pass 2,064 tests and the existing
+custody and installed standard-provider controls. All-feature Transport/Engine/
+Daemon targets, six architecture checks, scoped formatting and application
+test-target compilation pass. Actual compiler metadata records 185 test
+artifacts across 58 packages, including 76 integration targets. All 606 frozen
+owned Rust/Cargo inputs match the commit and actual application source.
+No new VM qualification is claimed. Strict Transport Clippy remains failed with
+four serialized owning-enum errors and 1,733 warnings, without new allowances.
+The separately reproduced Capture writer/reader mismatch, runtime funding
+handoff, Native18 adoption and full RFC completion remain unfinished here.
+
 ## Process-group census during task exit
 
 Commit `9767b3b20c` treats `ESRCH` from an already opened process-stat file as
