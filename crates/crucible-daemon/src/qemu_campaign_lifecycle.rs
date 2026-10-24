@@ -1965,6 +1965,65 @@ impl QemuFreshStartMaterialization {
     }
 }
 
+/// A stable hot-fork refusal token and, when a check failed to run, its error.
+///
+/// Diagnostic rows render it as `reason=<token>` followed by
+/// ` detail="<error>"` only when the error exists, so rows for ordinary
+/// refusals and admissions keep their exact shape.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct HotForkRefusal {
+    reason: &'static str,
+    detail: Option<String>,
+}
+
+impl HotForkRefusal {
+    /// Longest error text one diagnostic row carries.
+    const DETAIL_CHARS: usize = 1024;
+
+    /// Pairs a refusal token with the error that produced it.
+    pub(crate) fn with_detail(reason: &'static str, detail: impl std::fmt::Display) -> Self {
+        Self {
+            reason,
+            detail: Some(
+                detail
+                    .to_string()
+                    .chars()
+                    .take(Self::DETAIL_CHARS)
+                    .collect(),
+            ),
+        }
+    }
+
+    /// Returns the stable refusal token.
+    pub(crate) const fn reason(&self) -> &'static str {
+        self.reason
+    }
+
+    /// Returns the error text of a check that failed to run, if any.
+    pub(crate) fn detail(&self) -> Option<&str> {
+        self.detail.as_deref()
+    }
+}
+
+impl From<&'static str> for HotForkRefusal {
+    fn from(reason: &'static str) -> Self {
+        Self {
+            reason,
+            detail: None,
+        }
+    }
+}
+
+impl std::fmt::Display for HotForkRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "reason={}", self.reason)?;
+        if let Some(detail) = &self.detail {
+            write!(f, " detail={detail:?}")?;
+        }
+        Ok(())
+    }
+}
+
 /// Failure while reconstructing one exact fresh-QEMU start configuration.
 #[derive(Debug, Error)]
 pub enum QemuFreshStartReplayError {

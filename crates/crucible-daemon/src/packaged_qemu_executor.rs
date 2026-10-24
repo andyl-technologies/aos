@@ -49,8 +49,8 @@ use crate::qemu_campaign_lifecycle::{
     QemuAttemptExecutionEvidence, QemuObservedFreshAttemptLifecycleFactory,
     QemuTerminalEvidenceExecutionRunner,
 };
-use crate::qemu_hot_fork_world_factory::AttemptWorkerFailureExt;
 use crate::qemu_hot_fork_world_factory::QemuHotForkSourceWorldProvider;
+use crate::qemu_hot_fork_world_factory::{AttemptWorkerFailureExt, note_hot_fork_decline_with};
 use crate::qemu_resource_guard::QemuAttemptSelectedHostResourceFactory;
 use crate::{
     AssignmentLedgerError, AttemptAdmissionValidator, AttemptExecutionContext,

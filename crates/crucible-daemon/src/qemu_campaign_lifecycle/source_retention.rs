@@ -39,8 +39,8 @@ use crucible_campaign::{
     ExecutorCompatibilityProfile,
 };
 
-use super::AppRandomLaunchWindow;
 use super::continuation::production_lifecycle_config_for_start;
+use super::{AppRandomLaunchWindow, HotForkRefusal};
 use super::{
     AttemptExecutionContext, AttemptExecutionProduct, AttemptWorkerFailure,
     CrucibleAttemptExecution, CrucibleResolvedAttemptStart, QemuFreshAttemptDriver,
@@ -264,14 +264,20 @@ pub(super) fn prepare_production_retained_source(
     ) {
         Ok(config) => config.with_unbounded_advance_completion(),
         Err(error) => {
-            note_source_preparation_decline(&format!("config: {error}"));
+            note_source_preparation_decline(&HotForkRefusal::with_detail(
+                "source-config-unavailable",
+                error,
+            ));
             return QemuRetainedSourcePreparation::Recovered(lifecycle);
         }
     };
     match lifecycle.prepare_hot_fork_source_world_with_config(config) {
         Ok(world) => QemuRetainedSourcePreparation::Prepared(Box::new(world)),
         Err(failure) => {
-            note_source_preparation_decline(&failure.to_string());
+            note_source_preparation_decline(&HotForkRefusal::with_detail(
+                "source-preparation-failed",
+                &failure,
+            ));
             match failure.into_recovered_lifecycle() {
                 Ok(lifecycle) => QemuRetainedSourcePreparation::Recovered(lifecycle),
                 // Dropping the failure quarantines every source whose rollback
@@ -283,13 +289,10 @@ pub(super) fn prepare_production_retained_source(
 }
 
 /// Writes why a drained world could not become a retained source.
-fn note_source_preparation_decline(detail: &str) {
-    use std::io::Write as _;
-
-    let detail = detail.chars().take(2048).collect::<String>();
+fn note_source_preparation_decline(refusal: &HotForkRefusal) {
     let _ = writeln!(
         std::io::stderr().lock(),
-        "CRUCIBLE-HOT-FORK-SOURCE-PREPARATION-V1 detail={detail:?}"
+        "CRUCIBLE-HOT-FORK-SOURCE-PREPARATION-V1 {refusal}"
     );
 }
 
@@ -324,8 +327,8 @@ where
         let (lineage, boundary, proof) =
             match self.published_root_boundary(input, context, continuation_free, pending) {
                 Ok(eligible) => eligible,
-                Err(reason) => {
-                    record_retention_decision("skipped", reason);
+                Err(refusal) => {
+                    record_retention_refusal("skipped", &refusal);
                     return None;
                 }
             };
@@ -350,7 +353,7 @@ where
         context: &AttemptExecutionContext,
         continuation_free: bool,
         pending: &D::Pending,
-    ) -> Result<(CampaignLineageId, Configuration, QemuSavepointReplayProof), &'static str> {
+    ) -> Result<(CampaignLineageId, Configuration, QemuSavepointReplayProof), HotForkRefusal> {
         let ordinary_start = matches!(
             input.start(),
             CrucibleResolvedAttemptStart::Discover { .. }
@@ -369,22 +372,27 @@ where
         .into_iter()
         .find_map(|(refused, reason)| refused.then_some(reason));
         if let Some(reason) = start_refusal {
-            return Err(reason);
+            return Err(reason.into());
         }
         // An assertion check that cannot run refuses retention as a failure.
         match self.driver.has_terminal_assertion_failure(pending) {
             Ok(false) => {}
-            Ok(true) => return Err("terminal-assertion-failure"),
-            Err(_error) => return Err("assertion-check-unavailable"),
+            Ok(true) => return Err("terminal-assertion-failure".into()),
+            Err(error) => {
+                return Err(HotForkRefusal::with_detail(
+                    "assertion-check-unavailable",
+                    error,
+                ));
+            }
         }
 
         let lineage = input
             .lineage()
             .id()
-            .map_err(|_| "lineage-identity-unavailable")?;
+            .map_err(|error| HotForkRefusal::with_detail("lineage-identity-unavailable", error))?;
         let basis = context.runtime_basis().ok_or("runtime-basis-absent")?;
         if basis.key().lineage() != lineage {
-            return Err("runtime-basis-lineage-mismatch");
+            return Err("runtime-basis-lineage-mismatch".into());
         }
         let (boundary, proof) = self.driver.retention_boundary(pending)?;
         Ok((lineage, boundary, proof))
@@ -445,22 +453,23 @@ where
         let published = match &product {
             AttemptExecutionProduct::PreparedSemantic(result) => {
                 match published_child_mismatch(result, &plan, input) {
-                    Some(reason) => Err(reason),
-                    None => result
-                        .observation()
-                        .child()
-                        .id()
-                        .map_err(|_| "child configuration artifact identity failed"),
+                    Some(reason) => Err(reason.into()),
+                    None => result.observation().child().id().map_err(|error| {
+                        HotForkRefusal::with_detail(
+                            "child configuration artifact identity failed",
+                            error,
+                        )
+                    }),
                 }
             }
             AttemptExecutionProduct::ExactCheckpoint(_) => {
-                Err("sealed product is not a semantic observation")
+                Err("sealed product is not a semantic observation".into())
             }
         };
         let published = match published {
             Ok(published) => published,
-            Err(reason) => {
-                record_retention_decision("declined", reason);
+            Err(refusal) => {
+                record_retention_refusal("declined", &refusal);
                 return QemuPublishedRootAttempt::Finished(shut_down_unretained(
                     lifecycle, product,
                 ));
@@ -659,5 +668,17 @@ fn record_retention_decision(decision: &str, reason: &str) {
     let _ = writeln!(
         std::io::stderr().lock(),
         "CRUCIBLE-HOT-FORK-RETENTION-V1 decision={decision} reason={reason:?}"
+    );
+}
+
+/// Writes a retention refusal, with the error text of a check that failed.
+fn record_retention_refusal(decision: &str, refusal: &HotForkRefusal) {
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "CRUCIBLE-HOT-FORK-RETENTION-V1 decision={decision} reason={:?}{}",
+        refusal.reason(),
+        refusal
+            .detail()
+            .map_or_else(String::new, |detail| format!(" detail={detail:?}"))
     );
 }

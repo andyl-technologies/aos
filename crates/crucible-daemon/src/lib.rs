@@ -578,19 +578,19 @@ pub use qemu_campaign_driver::{
     DEFAULT_MAXIMUM_EVENT_LOG_BYTES, QemuAttemptStartReplayProof, QemuFreshModeledDriver,
     QemuFreshModeledDriverError, QemuModeledAttemptLifecycle, QemuSavepointReplayProof,
 };
+pub(crate) use qemu_campaign_lifecycle::{
+    HotForkRefusal, QemuAnchorRootMaterializer, QemuAnchorRootOutcome,
+    QemuAttemptProductionVmLifecycleFactory, QemuFreshAttemptLifecycleFactory,
+    QemuFreshAttemptLifecycleOwner, QemuFreshExecutionRunner, QemuPublishedRootAdmission,
+    QemuPublishedRootRetirementError, QemuPublishedRootSink, QemuPublishedRootState,
+    QemuRetainedSourcePreparation, capture_fresh_genesis_checkpoint_candidate,
+};
 pub use qemu_campaign_lifecycle::{
     InteractiveQemuSessionError, QemuAttemptContinuation, QemuAttemptProductionVmLifecycleError,
     QemuFinalBoundaryDrain, QemuFreshAttemptDriver, QemuFreshAttemptLifecycle,
     QemuFreshDriveOutcome, QemuFreshExecutionRunnerError, QemuFreshGenesisCheckpointCandidate,
     QemuFreshGenesisCheckpointError, QemuFreshStartMaterialization, QemuFreshStartReplayError,
     build_guarded_interactive_qemu_session,
-};
-pub(crate) use qemu_campaign_lifecycle::{
-    QemuAnchorRootMaterializer, QemuAnchorRootOutcome, QemuAttemptProductionVmLifecycleFactory,
-    QemuFreshAttemptLifecycleFactory, QemuFreshAttemptLifecycleOwner, QemuFreshExecutionRunner,
-    QemuPublishedRootAdmission, QemuPublishedRootRetirementError, QemuPublishedRootSink,
-    QemuPublishedRootState, QemuRetainedSourcePreparation,
-    capture_fresh_genesis_checkpoint_candidate,
 };
 #[cfg(test)]
 pub(crate) use qemu_campaign_resume::QemuProductionExactResumeExecutionRunnerError;

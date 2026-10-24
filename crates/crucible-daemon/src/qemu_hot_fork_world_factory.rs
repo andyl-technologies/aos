@@ -747,13 +747,24 @@ where
 ///
 /// A decline is not a failure: the router falls back to an anchored or thin
 /// replay. The row tells an operator which replay ran and why.
-fn note_hot_fork_decline(reason: &str) {
+/// Writes one hot-fork decline with its stable reason and optional error text.
+///
+/// ```text
+/// CRUCIBLE-HOT-FORK-DECLINE-V1 reason=<token>[ detail="<error>"]
+/// ```
+pub(crate) fn note_hot_fork_decline(refusal: impl Into<crate::HotForkRefusal>) {
     use std::io::Write as _;
 
+    let refusal = refusal.into();
     let _ = writeln!(
         std::io::stderr().lock(),
-        "CRUCIBLE-HOT-FORK-DECLINE-V1 reason={reason}"
+        "CRUCIBLE-HOT-FORK-DECLINE-V1 {refusal}"
     );
+}
+
+/// Writes one hot-fork decline caused by `detail`, an error a check returned.
+pub(crate) fn note_hot_fork_decline_with(reason: &'static str, detail: impl std::fmt::Display) {
+    note_hot_fork_decline(crate::HotForkRefusal::with_detail(reason, detail));
 }
 
 fn launch_concurrent_node<G>(
@@ -909,14 +920,22 @@ where
                 )));
             }
         };
+        let source_configuration = source.continuation().configuration().id();
         let source_matches = source.continuation().configuration().def.id()
             == source_key.scenario()
-            && source.continuation().configuration().id() == source_key.configuration();
+            && source_configuration == source_key.configuration();
         if !source_matches {
             drop(source);
             drop(source_world);
             self.sources.restore(source_lease);
-            note_hot_fork_decline("source-configuration-mismatch");
+            note_hot_fork_decline(crate::HotForkRefusal::with_detail(
+                "source-configuration-mismatch",
+                format!(
+                    "source={} key={}",
+                    source_configuration.to_hex(),
+                    source_key.configuration().to_hex()
+                ),
+            ));
             return Ok(QemuHotForkWorldLifecycleStart::Declined);
         }
         let continuation = match source.fork_continuation() {

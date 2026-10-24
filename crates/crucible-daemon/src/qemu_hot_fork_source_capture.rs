@@ -267,6 +267,16 @@ where
             })?;
         let requested_configuration = exact_source_configuration(input);
         if boundary.configuration().id() != requested_configuration.id() {
+            crate::qemu_hot_fork_world_factory::note_hot_fork_decline(
+                crate::HotForkRefusal::with_detail(
+                    "exact-capture-configuration-mismatch",
+                    format!(
+                        "checkpoint={} requested={}",
+                        boundary.configuration().id().to_hex(),
+                        requested_configuration.id().to_hex()
+                    ),
+                ),
+            );
             return Ok(None);
         }
 

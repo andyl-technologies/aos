@@ -78,8 +78,8 @@ pub(crate) trait QemuAnchorRootMaterializer: CrucibleExecutionRunner {
         input: &CrucibleAttemptExecution,
         context: &AttemptExecutionContext,
     ) -> Result<QemuAnchorRootOutcome, AttemptWorkerFailure<Self::Error>> {
-        let _ = (input, context);
-        Ok(QemuAnchorRootOutcome::Declined("anchor-runner-unsupported"))
+        let _ = context;
+        Ok(declined(input, None, "anchor-runner-unsupported"))
     }
 }
 
@@ -118,7 +118,7 @@ where
     ) -> Result<QemuAnchorRootOutcome, AnchorFailure<F, D>> {
         // Anchoring is part of published-root retention and off without it.
         let Some(sink) = self.published_root_retention.clone() else {
-            return Ok(QemuAnchorRootOutcome::Declined("anchor-retention-disabled"));
+            return Ok(declined(input, None, "anchor-retention-disabled"));
         };
         let plan = match anchor_plan(sink, input, context) {
             Ok(plan) => plan,
@@ -150,7 +150,7 @@ where
                     input,
                     Some(&plan.anchor),
                     "admitted",
-                    "anchor-root-retained",
+                    &"anchor-root-retained".into(),
                 );
                 return Ok(QemuAnchorRootOutcome::Admitted);
             }
@@ -195,8 +195,14 @@ where
                     if matches!(failure, AttemptWorkerFailure::Canceled(_)) {
                         return Err(failure);
                     }
-                    note_anchor_replay_failure(&failure);
-                    return Ok(declined(input, Some(&plan.anchor), "anchor-replay-failed"));
+                    return Ok(declined(
+                        input,
+                        Some(&plan.anchor),
+                        HotForkRefusal::with_detail(
+                            "anchor-replay-failed",
+                            anchor_replay_failure_detail(&failure),
+                        ),
+                    ));
                 }
             };
 
@@ -237,7 +243,7 @@ where
                         input,
                         Some(&plan.anchor),
                         "quarantined",
-                        "anchor-source-preparation-failed",
+                        &"anchor-source-preparation-failed".into(),
                     );
                     return Ok(QemuAnchorRootOutcome::Declined(
                         "anchor-source-preparation-failed",
@@ -262,18 +268,18 @@ fn anchor_plan(
     sink: Arc<dyn QemuPublishedRootSink>,
     input: &CrucibleAttemptExecution,
     context: &AttemptExecutionContext,
-) -> Result<QemuAnchorPlan, &'static str> {
+) -> Result<QemuAnchorPlan, HotForkRefusal> {
     let CrucibleResolvedAttemptStart::Branch {
         parent, selected, ..
     } = input.start()
     else {
-        return Err("anchor-not-branch-start");
+        return Err("anchor-not-branch-start".into());
     };
     let crucible_campaign::AttemptStart::Branch {
         parent: published, ..
     } = input.attempt().start()
     else {
-        return Err("anchor-not-branch-start");
+        return Err("anchor-not-branch-start".into());
     };
     let continuation_free = input.attempt().continuation_input().is_none()
         && validated_attempt_continuations(input)
@@ -297,7 +303,7 @@ fn anchor_plan(
     .into_iter()
     .find_map(|(refused, reason)| refused.then_some(reason));
     if let Some(reason) = refusal {
-        return Err(reason);
+        return Err(reason.into());
     }
 
     // Only the recorded network fault branch at the parent leaves a joined,
@@ -313,7 +319,7 @@ fn anchor_plan(
         .ok_or("anchor-parent-not-network-branch")?
         .clone();
     if unsupported_fresh_replay_decision(selected, input.signal_fault_replay()).is_some() {
-        return Err("anchor-unsupported-replay-decision");
+        return Err("anchor-unsupported-replay-decision".into());
     }
     // The attempt will run as a child of the root, so its edge must pass the
     // very predicate the hot factory applies to children of published roots.
@@ -325,18 +331,17 @@ fn anchor_plan(
     )
     .is_some()
     {
-        return Err("anchor-edge-not-replayable");
+        return Err("anchor-edge-not-replayable".into());
     }
 
-    let lineage = input
-        .lineage()
-        .id()
-        .map_err(|_| "anchor-lineage-identity-unavailable")?;
+    let lineage = input.lineage().id().map_err(|error| {
+        HotForkRefusal::with_detail("anchor-lineage-identity-unavailable", error)
+    })?;
     let basis = context
         .runtime_basis()
         .ok_or("anchor-runtime-basis-absent")?;
     if basis.key().lineage() != lineage {
-        return Err("anchor-runtime-basis-lineage-mismatch");
+        return Err("anchor-runtime-basis-lineage-mismatch".into());
     }
 
     Ok(QemuAnchorPlan {
@@ -357,15 +362,16 @@ fn anchor_plan(
 
 /// Replays from genesis to the anchor and seals its boundary proof.
 ///
-/// Returns a refusal token when replay reached the anchor but its boundary is
-/// not the exact, quiet park a root may keep.
+/// Returns a refusal when replay reached the anchor but its boundary is not
+/// the exact, quiet park a root may keep. A check that could not run carries
+/// its error text.
 fn replay_to_anchor<F, D>(
     lifecycle: &mut dyn QemuFreshAttemptLifecycleOwner,
     input: &CrucibleAttemptExecution,
     context: &AttemptExecutionContext,
     plan: &QemuAnchorPlan,
 ) -> Result<
-    Result<QemuSavepointReplayProof, &'static str>,
+    Result<QemuSavepointReplayProof, HotForkRefusal>,
     AttemptWorkerFailure<QemuFreshExecutionRunnerError<F, D>>,
 > {
     let start = QemuFreshStartMaterialization::at_quanta(lifecycle.completed_quanta())
@@ -379,59 +385,83 @@ fn replay_to_anchor<F, D>(
         start,
     )?;
     if !replay.anchor_reached() || replay.restored_configuration() != Some(&plan.anchor) {
-        return Ok(Err("anchor-boundary-not-reached"));
+        return Ok(Err("anchor-boundary-not-reached".into()));
     }
     if lifecycle.completed_quanta() != replay.completed_quanta {
-        return Ok(Err("anchor-quantum-coordinate-mismatch"));
+        return Ok(Err("anchor-quantum-coordinate-mismatch".into()));
     }
 
     // Thin replay never checks these at a crossed park; a kept world must
     // hold every VM parked at an exact-ready boundary with quiet queues,
     // exactly as the modeled driver requires before it offers the choice.
-    if !every_vm_parked_for::<F, D>(lifecycle, input, &plan.branch).unwrap_or(false) {
-        return Ok(Err("anchor-boundary-not-parked"));
+    match every_vm_parked_for::<F, D>(lifecycle, input, &plan.branch) {
+        Ok(true) => {}
+        Ok(false) => return Ok(Err("anchor-boundary-not-parked".into())),
+        Err(failure) => {
+            return Ok(Err(HotForkRefusal::with_detail(
+                "anchor-boundary-not-parked",
+                anchor_replay_failure_detail(&failure),
+            )));
+        }
     }
-    let exact_ready = lifecycle.exact_checkpoint_ready().unwrap_or(false)
-        && lifecycle.campaign_network_queues_empty().unwrap_or(false);
-    if !exact_ready {
-        return Ok(Err("anchor-boundary-not-exact-ready"));
+    let exact_ready = lifecycle
+        .exact_checkpoint_ready()
+        .and_then(|ready| Ok(ready && lifecycle.campaign_network_queues_empty()?));
+    match exact_ready {
+        Ok(true) => {}
+        Ok(false) => return Ok(Err("anchor-boundary-not-exact-ready".into())),
+        Err(error) => {
+            return Ok(Err(HotForkRefusal::with_detail(
+                "anchor-boundary-not-exact-ready",
+                error,
+            )));
+        }
     }
     // RUN grouping is identical with or without the choice-free boot mark.
     // Anchors still stay outside the audited boot prefix, whose replay
     // re-arms that mark's fail-closed choice check.
-    if crate::qemu_campaign_driver::envoy_choice_free_boot_replay_eligible(input, &replay.event_log)
-        .unwrap_or(true)
-    {
-        return Ok(Err("anchor-parallel-boot-active"));
+    match crate::qemu_campaign_driver::envoy_choice_free_boot_replay_eligible(
+        input,
+        &replay.event_log,
+    ) {
+        Ok(false) => {}
+        Ok(true) => return Ok(Err("anchor-parallel-boot-active".into())),
+        Err(error) => {
+            return Ok(Err(HotForkRefusal::with_detail(
+                "anchor-parallel-boot-active",
+                error,
+            )));
+        }
     }
 
-    let offset = lifecycle.event_log_offset();
-    let retained = QemuSavepointReplayProof::from_retained_boundary(
+    // The scheduler's segment chain and the replay's retained log must count
+    // the same events; a refusal names both sides.
+    let offset = match lifecycle.event_log_offset() {
+        Ok(offset) => offset,
+        Err(error) => {
+            return Ok(Err(HotForkRefusal::with_detail(
+                "anchor-replay-proof-unavailable",
+                format!("offset: {error}"),
+            )));
+        }
+    };
+    let proof = QemuSavepointReplayProof::from_retained_boundary(
         &plan.anchor,
         replay.completed_quanta,
         replay.frontier,
         &replay.event_log,
-    );
-    let proof = match (&offset, retained) {
-        (Ok(offset), Ok(proof)) => proof.with_event_log_offset(*offset).ok(),
-        _ => None,
-    };
-    if proof.is_none() {
-        // The scheduler's segment chain and the replay's retained log must
-        // count the same events; name both sides when they do not.
-        let _ = writeln!(
-            std::io::stderr().lock(),
-            "CRUCIBLE-HOT-FORK-ANCHOR-PROOF-V1 offset={} retained_events={} quanta={} frontier_ps={}",
-            offset.map_or_else(
-                |error| format!("error:{error}"),
-                |offset| offset.events.to_string()
+    )
+    .and_then(|proof| proof.with_event_log_offset(offset));
+    Ok(proof.map_err(|error| {
+        HotForkRefusal::with_detail(
+            "anchor-replay-proof-unavailable",
+            format!(
+                "{error}; offset_events={} retained_events={}",
+                offset.events,
+                replay.event_log.len()
             ),
-            replay.event_log.len(),
-            replay.completed_quanta,
-            replay.frontier.ticks,
-        );
-    }
-    Ok(proof.ok_or("anchor-replay-proof-unavailable"))
+        )
+    }))
 }
 
 /// Returns why a prepared world differs from the replayed anchor boundary.
@@ -487,7 +517,12 @@ fn admit_anchor<FE, DE>(
     })?;
     Ok(match admission {
         QemuPublishedRootAdmission::Admitted => {
-            record_anchor_decision(input, Some(&plan.anchor), "admitted", "anchor-admitted");
+            record_anchor_decision(
+                input,
+                Some(&plan.anchor),
+                "admitted",
+                &"anchor-admitted".into(),
+            );
             QemuAnchorRootOutcome::Admitted
         }
         QemuPublishedRootAdmission::AlreadyRetained => {
@@ -495,7 +530,7 @@ fn admit_anchor<FE, DE>(
                 input,
                 Some(&plan.anchor),
                 "admitted",
-                "anchor-duplicate-root",
+                &"anchor-duplicate-root".into(),
             );
             QemuAnchorRootOutcome::Admitted
         }
@@ -505,7 +540,12 @@ fn admit_anchor<FE, DE>(
             } else {
                 "anchor-pool-rejected"
             };
-            record_anchor_decision(input, Some(&plan.anchor), "rejected", token);
+            record_anchor_decision(
+                input,
+                Some(&plan.anchor),
+                "rejected",
+                &HotForkRefusal::with_detail(token, reason),
+            );
             QemuAnchorRootOutcome::Declined(token)
         }
     })
@@ -528,49 +568,47 @@ where
         })
 }
 
-/// Writes the swallowed anchor replay failure, which thin replay may not repeat.
-fn note_anchor_replay_failure<FE, DE>(
+/// Describes an anchor replay failure that the decline would otherwise hide.
+fn anchor_replay_failure_detail<FE, DE>(
     failure: &AttemptWorkerFailure<QemuFreshExecutionRunnerError<FE, DE>>,
-) {
+) -> String {
     let (AttemptWorkerFailure::Retryable(error)
     | AttemptWorkerFailure::Terminal(error)
     | AttemptWorkerFailure::Canceled(error)) = failure;
     // Lifecycle and driver errors carry no formatting bound here; the start
     // replay error is the one that names a divergence.
-    let detail = match error {
-        QemuFreshExecutionRunnerError::StartReplay(replay) => format!("start-replay {replay:?}"),
-        QemuFreshExecutionRunnerError::Lifecycle(_) => String::from("lifecycle"),
-        QemuFreshExecutionRunnerError::Driver(_) => String::from("driver"),
-        QemuFreshExecutionRunnerError::Cleanup(error) => format!("cleanup {error}"),
-        _ => String::from("other"),
-    };
-    let detail = detail.chars().take(4096).collect::<String>();
-    let _ = writeln!(
-        std::io::stderr().lock(),
-        "CRUCIBLE-HOT-FORK-ANCHOR-FAILURE-V1 detail={detail}"
-    );
+    match error {
+        QemuFreshExecutionRunnerError::StartReplay(replay) => format!("start-replay: {replay}"),
+        QemuFreshExecutionRunnerError::Lifecycle(_) => String::from("lifecycle failure"),
+        QemuFreshExecutionRunnerError::Driver(_) => String::from("driver failure"),
+        QemuFreshExecutionRunnerError::Cleanup(error) => format!("cleanup: {error}"),
+        _ => String::from("runner failure"),
+    }
 }
 
 /// Records one decline and returns it as the outcome.
 fn declined(
     input: &CrucibleAttemptExecution,
     anchor: Option<&Configuration>,
-    reason: &'static str,
+    refusal: impl Into<HotForkRefusal>,
 ) -> QemuAnchorRootOutcome {
-    record_anchor_decision(input, anchor, "declined", reason);
-    QemuAnchorRootOutcome::Declined(reason)
+    let refusal = refusal.into();
+    record_anchor_decision(input, anchor, "declined", &refusal);
+    QemuAnchorRootOutcome::Declined(refusal.reason())
 }
 
 /// Writes one bounded operational anchor diagnostic.
 ///
+/// A refusal whose check failed to run appends its error text:
+///
 /// ```text
-/// CRUCIBLE-HOT-FORK-ANCHOR-V1 attempt=<id> anchor=<configuration-hex> decision=<decision> reason=<token>
+/// CRUCIBLE-HOT-FORK-ANCHOR-V1 attempt=<id> anchor=<configuration-hex> decision=<decision> reason=<token>[ detail="<error>"]
 /// ```
 fn record_anchor_decision(
     input: &CrucibleAttemptExecution,
     anchor: Option<&Configuration>,
     decision: &str,
-    reason: &str,
+    refusal: &HotForkRefusal,
 ) {
     let attempt = input
         .attempt()
@@ -579,6 +617,6 @@ fn record_anchor_decision(
     let anchor = anchor.map_or_else(|| String::from("none"), |anchor| anchor.id().to_hex());
     let _ = writeln!(
         std::io::stderr().lock(),
-        "CRUCIBLE-HOT-FORK-ANCHOR-V1 attempt={attempt} anchor={anchor} decision={decision} reason={reason}"
+        "CRUCIBLE-HOT-FORK-ANCHOR-V1 attempt={attempt} anchor={anchor} decision={decision} {refusal}"
     );
 }

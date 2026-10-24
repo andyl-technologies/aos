@@ -382,6 +382,7 @@ where
                 ));
             }
             retire_managed_demanded_source(candidate)?;
+            note_hot_fork_decline_with("exact-admission-refused", &error);
             return Ok(None);
         }
 
