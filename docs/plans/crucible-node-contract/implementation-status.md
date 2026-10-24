@@ -10,6 +10,30 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Original Control dispatch permissions
+
+Commit `eac4a27bdd` groups the six actual optional dispatch permissions, including
+the exclusive Observe preparation. All four callers retain their original
+operands and evaluation order. The complete authentication, cache, callback,
+publication and failed-prefix body is unchanged. Each separately funded endpoint
+phase retains its previous scratch terms and counts both permission headers.
+
+Both complete Transport suites pass 2,115 tests with zero failures, twenty
+ignored and no filtering. Both Engine modes pass 2,062 tests and the existing
+custody and installed standard-provider controls. The first standard full run
+failed during process reclamation with `ESRCH`; the preserved repeat passes,
+and the separately committed census fix addresses a reproduced source of that
+error. The same measured standard provider serves both codec modes.
+
+All-feature Transport/Engine/Daemon targets, six architecture checks, scoped
+formatting and application test-target compilation pass. Actual compiler
+metadata records 185 test artifacts across 58 packages, including 76 integration
+targets. All 602 frozen owned Rust/Cargo inputs match the commit and actual
+application source. No new VM qualification is claimed at this checkpoint.
+Strict Transport Clippy has five large-enum errors and 1,734 warnings, without
+added allowances. The runtime handoff, Native18 adoption and full RFC remain
+unfinished.
+
 ## Original endpoint context inputs
 
 Commit `e688765201` groups the actual borrowed handshake, existing deadline and
