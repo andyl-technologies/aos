@@ -11064,6 +11064,10 @@ grant sample reads or access to another domain's events.
 
 Effective-policy checks require the grant and reject perf events for confined
 Sandbox roles, cross-domain manager access, and manager sample reads. The
-focused missing-grant and forbidden-grant regressions pass. Full compiled
-policy validation and installed Host readiness remain pending; the preceding
-Host test is a failure, not a readiness receipt.
+focused missing-grant and forbidden-grant regressions pass. The full compiled
+policy builds successfully at
+`/nix/store/yyqmjr6zxrx0igi97kwapslwh67wgzlg-aos-selinux-production-policy-1`,
+including all 155 checker tests, the normal merged-policy scan, deliberately
+unsafe policy variants and the selected kernel's ordered class-map checks.
+Installed Host readiness remains pending; the preceding Host test is a failure,
+not a readiness receipt.
