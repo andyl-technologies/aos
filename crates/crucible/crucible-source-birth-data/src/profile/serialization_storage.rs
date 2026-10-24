@@ -13,6 +13,13 @@ pub use json_extent::{
     original_json_value_storage_extent_data,
 };
 
+#[path = "serialization_storage/json_forest.rs"]
+mod json_forest;
+pub use json_forest::{
+    original_json_value_storage_forest_counter_scratch_data,
+    original_json_value_storage_forest_data,
+};
+
 #[path = "serialization_storage/report.rs"]
 mod report;
 pub use report::OriginalSerializationStorageData;

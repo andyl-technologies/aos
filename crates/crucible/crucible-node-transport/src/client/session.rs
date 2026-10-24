@@ -24,6 +24,7 @@ pub(in crate::client) use assigned_publication::OriginalAssignedPublicationData;
 
 mod bootstrap_cut;
 mod fresh_restore_query;
+mod journal_storage;
 #[path = "session/original_conflict.rs"]
 pub(super) mod original_conflict;
 #[path = "session/resend.rs"]
