@@ -1,7 +1,7 @@
 //! Counts and retains the original collecting-node admission beneath its real graph.
 //!
 //! Requested data describes new node/route/request/hash/boxed-preparation
-//! ownership and the actual provider-receiver reservation. Source, graph, registry
+//! ownership and the actual provider-receiver and internal content reservations. Source, graph, registry
 //! and native validation and oracle callbacks are
 //! independently admitted by the enclosing same-holder construction action.
 
@@ -11,7 +11,10 @@ use crate::node_adapters::cnp::semantic::{
     packet_connected_source::PacketConnectedSemanticSource, packet_source::PacketSemanticSource,
 };
 use crate::node_contract::{NodeRuntime, RuntimeError, RuntimeOwnedStorage};
-use crucible_node_transport::{ProviderError, client::OriginalObservationReceiveStorageData};
+use crucible_node_transport::{
+    ProviderError,
+    client::{OriginalClientContentGrowthStorageData, OriginalObservationReceiveStorageData},
+};
 use std::{
     any::Any,
     mem::size_of,
@@ -33,7 +36,7 @@ impl CnpConformanceNodeConstructionStorageData {
         self.retained
     }
 
-    /// Returns future provider-receiver backing at the actual unchanged SDK ceilings.
+    /// Returns provider-receiver and internal content backing at unchanged SDK ceilings.
     ///
     /// The enclosing Core member retains this charge after node construction.
     /// Existing owners, controller-origin journals, transient work and observation
@@ -142,12 +145,18 @@ impl CnpSemanticPreparation {
             size_of::<blake3::Hasher>(), size_of::<blake3::Hash>(),
             returned_layout(|| blake3::Hash::from([0; 32]).to_hex()),
             super::super::initial_lifecycle_diagnostics::OriginalInitialLifecycleDiagnostics::requested_bytes()], maximum)?;
-        let retained_receiver_reservation = native
-            .controller()
-            .ok_or(RuntimeError::OwnerUnavailable)?
+        let controller = native.controller().ok_or(RuntimeError::OwnerUnavailable)?;
+        let receiver = controller
             .original_observation_receive_storage_data(maximum)
             .map_err(|_| RuntimeError::ResourceLimit)?
             .retained_requested_bytes_data();
+        let content = controller
+            .original_content_internal_growth_storage_data(maximum)
+            .map_err(|_| RuntimeError::ResourceLimit)?
+            .retained_requested_bytes_data();
+        // These are prospective persistent owners, never a refund against the
+        // actual census. Their overlap deliberately supplies no alias discount.
+        let retained_receiver_reservation = sum(&[receiver, content], maximum)?;
         let scratch = Self::original_conformance_node_construction_counter_scratch_data();
         sum(
             &[retained, retained_receiver_reservation, transient, scratch],
@@ -164,6 +173,13 @@ impl CnpSemanticPreparation {
     /// Counts fixed original-node projection and diagnostic headers.
     pub fn original_conformance_node_construction_counter_scratch_data() -> usize {
         CnpController::original_observation_receive_counter_scratch_data()
+            + CnpController::original_content_internal_growth_counter_scratch_data()
+            + size_of::<OriginalClientContentGrowthStorageData>()
+            + size_of::<Result<OriginalClientContentGrowthStorageData, ProviderError>>()
+            + size_of::<&CnpController>()
+            + size_of::<Result<&CnpController, RuntimeError>>()
+            + size_of::<[usize; 3]>()
+            + size_of::<[usize; 2]>()
             + size_of::<OriginalObservationReceiveStorageData>()
             + size_of::<Result<OriginalObservationReceiveStorageData, ProviderError>>()
             + size_of::<Option<&CnpController>>()
