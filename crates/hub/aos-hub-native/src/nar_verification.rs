@@ -7,6 +7,10 @@
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
+// Decoder dictionaries need an independent bound because they are not part of
+// the archive's signed uncompressed size.
+const MAX_NAR_DECOMPRESSION_MEMORY_BYTES: u64 = 256 * 1024 * 1024;
+
 /// Verifies that a narinfo carries a valid Ed25519 signature by a trusted key.
 ///
 /// A narinfo signature covers the Nix fingerprint formed from its store path,
@@ -96,47 +100,55 @@ pub fn verify_narinfo_signature(narinfo: &str, trusted_keys: &[String]) -> Resul
     )
 }
 
-/// Verifies downloaded NAR bytes against a narinfo's signed `NarHash`.
+/// Verifies downloaded NAR bytes against a narinfo's signed identity.
 ///
 /// The downloaded bytes are decompressed according to `Compression` before
-/// hashing because `NarHash` authenticates the uncompressed archive. A present
-/// `FileHash` is also checked as an early consistency test, but it is never the
-/// authoritative check because the narinfo signature does not cover it.
+/// hashing because `NarHash` authenticates the uncompressed archive. The
+/// decoded length must exactly match the signed `NarSize`. A present `FileHash`
+/// is also checked as an early consistency test, but it is never authoritative
+/// because the narinfo signature does not cover it.
 ///
 /// # Errors
 ///
 /// Returns an error when a required field is absent or unsupported, a declared
-/// hash is malformed or mismatched, decompression fails, or decompressed output
-/// exceeds the NAR size limit.
+/// hash is malformed or mismatched, the signed size exceeds policy,
+/// decompression fails, or the decoded size differs from the signed size.
 pub fn verify_nar_against_narinfo(narinfo: &str, bytes: &[u8]) -> Result<()> {
-    let nar_hash =
-        narinfo_field(narinfo, "NarHash").context("narinfo has no signed NarHash to verify")?;
+    let info = aos_nar::info::parse(narinfo).context("parsing narinfo for NAR verification")?;
+    let policy_limit = crate::fetch::MAX_NAR_BYTES;
+    if info.nar_size > policy_limit {
+        anyhow::bail!("signed NarSize exceeds the {policy_limit}-byte NAR size limit");
+    }
+    let expected_size = usize::try_from(info.nar_size).context("signed NarSize is unsupported")?;
 
-    if let Some(file_hash) = narinfo_field(narinfo, "FileHash") {
+    if let Some(file_hash) = info.file_hash {
         let compressed_digest = Sha256::digest(bytes);
         if sha256_hash_matches(&file_hash, &compressed_digest) != Some(true) {
             anyhow::bail!("NAR bytes do not match the narinfo FileHash");
         }
     }
 
-    let compression = nar_compression(narinfo)
+    let compression = nar_compression(&info.compression)
         .context("narinfo has a missing or unsupported Compression value")?;
-    let plain = decompress_nar_bounded(bytes, compression, crate::fetch::MAX_NAR_BYTES as usize)?;
+    let plain = decompress_nar_bounded(
+        bytes,
+        compression,
+        expected_size,
+        MAX_NAR_DECOMPRESSION_MEMORY_BYTES,
+    )?;
+    if plain.len() != expected_size {
+        anyhow::bail!(
+            "decoded NAR size {} differs from signed NarSize {expected_size}",
+            plain.len()
+        );
+    }
     let digest = Sha256::digest(&plain);
 
-    if sha256_hash_matches(&nar_hash, &digest) != Some(true) {
+    if sha256_hash_matches(&info.nar_hash, &digest) != Some(true) {
         anyhow::bail!("NAR bytes do not match the narinfo's signed NarHash");
     }
 
     Ok(())
-}
-
-fn narinfo_field(text: &str, name: &str) -> Option<String> {
-    let prefix = format!("{name}:");
-    text.lines()
-        .find_map(|line| line.strip_prefix(&prefix))
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -144,15 +156,17 @@ enum NarCompression {
     None,
     Zstd,
     Xz,
+    Lzma,
     Bzip2,
     Gzip,
 }
 
-fn nar_compression(narinfo: &str) -> Option<NarCompression> {
-    match narinfo_field(narinfo, "Compression")?.as_str() {
+fn nar_compression(compression: &str) -> Option<NarCompression> {
+    match compression {
         "none" => Some(NarCompression::None),
         "zstd" => Some(NarCompression::Zstd),
-        "xz" | "lzma" => Some(NarCompression::Xz),
+        "xz" => Some(NarCompression::Xz),
+        "lzma" => Some(NarCompression::Lzma),
         "bzip2" => Some(NarCompression::Bzip2),
         "gzip" | "gz" => Some(NarCompression::Gzip),
         _ => None,
@@ -162,38 +176,37 @@ fn nar_compression(narinfo: &str) -> Option<NarCompression> {
 fn decompress_nar_bounded(
     bytes: &[u8],
     compression: NarCompression,
-    size_limit: usize,
+    output_limit: usize,
+    memory_limit: u64,
 ) -> Result<Vec<u8>> {
     match compression {
         NarCompression::None => {
-            if bytes.len() > size_limit {
-                anyhow::bail!("NAR exceeds the {size_limit}-byte size limit");
+            if bytes.len() > output_limit {
+                anyhow::bail!("NAR exceeds the {output_limit}-byte size limit");
             }
             Ok(bytes.to_vec())
         }
         NarCompression::Zstd => {
             let decoder = zstd::Decoder::new(bytes).context("opening zstd NAR decoder")?;
-            read_to_end_bounded(decoder, size_limit)
+            read_to_end_bounded(decoder, output_limit)
         }
         NarCompression::Xz => {
-            let mut output = Vec::new();
-            let mut input = std::io::Cursor::new(bytes);
-            if lzma_rs::xz_decompress(&mut input, &mut output).is_err() {
-                output.clear();
-                let mut input = std::io::Cursor::new(bytes);
-                lzma_rs::lzma_decompress(&mut input, &mut output)
-                    .context("decompressing xz/lzma NAR")?;
-            }
-            if output.len() > size_limit {
-                anyhow::bail!("decompressed NAR exceeds the {size_limit}-byte size limit");
-            }
-            Ok(output)
+            let stream = xz2::stream::Stream::new_stream_decoder(memory_limit, 0)
+                .context("opening bounded xz NAR decoder")?;
+            let decoder = xz2::read::XzDecoder::new_stream(bytes, stream);
+            read_to_end_bounded(decoder, output_limit)
+        }
+        NarCompression::Lzma => {
+            let stream = xz2::stream::Stream::new_lzma_decoder(memory_limit)
+                .context("opening bounded lzma NAR decoder")?;
+            let decoder = xz2::read::XzDecoder::new_stream(bytes, stream);
+            read_to_end_bounded(decoder, output_limit)
         }
         NarCompression::Bzip2 => {
-            read_to_end_bounded(bzip2_rs::DecoderReader::new(bytes), size_limit)
+            read_to_end_bounded(bzip2_rs::DecoderReader::new(bytes), output_limit)
         }
         NarCompression::Gzip => {
-            read_to_end_bounded(flate2::read::GzDecoder::new(bytes), size_limit)
+            read_to_end_bounded(flate2::read::GzDecoder::new(bytes), output_limit)
         }
     }
 }
@@ -254,6 +267,32 @@ mod tests {
 
     use base64::Engine as _;
 
+    fn compress_xz(bytes: &[u8]) -> Vec<u8> {
+        let mut output = Vec::new();
+        lzma_rs::xz_compress(&mut std::io::Cursor::new(bytes), &mut output)
+            .expect("xz fixture compression succeeds");
+        output
+    }
+
+    fn compress_lzma(bytes: &[u8]) -> Vec<u8> {
+        let mut output = Vec::new();
+        lzma_rs::lzma_compress(&mut std::io::Cursor::new(bytes), &mut output)
+            .expect("lzma fixture compression succeeds");
+        output
+    }
+
+    fn narinfo_for(compression: &str, plain: &[u8], encoded: &[u8], nar_size: u64) -> String {
+        let nar_hash = format!("sha256:{}", hex::encode(Sha256::digest(plain)));
+        let file_hash = format!("sha256:{}", hex::encode(Sha256::digest(encoded)));
+
+        format!(
+            "StorePath: /var/lib/store/abc123-pkg\nURL: nar/abc.nar\n\
+             Compression: {compression}\nFileHash: {file_hash}\nFileSize: {}\n\
+             NarHash: {nar_hash}\nNarSize: {nar_size}\n",
+            encoded.len()
+        )
+    }
+
     fn signed_narinfo(nar_bytes: &[u8]) -> (String, String) {
         let key = ed25519_dalek::SigningKey::from_bytes(&[9_u8; 32]);
         let trusted_key =
@@ -294,6 +333,54 @@ mod tests {
 
         verify_nar_against_narinfo(&narinfo, bytes).expect("matching archive verifies");
         assert!(verify_nar_against_narinfo(&narinfo, b"tampered").is_err());
+    }
+
+    #[test]
+    fn xz_and_lzma_archives_match_their_signed_size() {
+        let plain = b"bounded native archive";
+        for (compression, encoded) in [("xz", compress_xz(plain)), ("lzma", compress_lzma(plain))] {
+            let narinfo = narinfo_for(compression, plain, &encoded, plain.len() as u64);
+            verify_nar_against_narinfo(&narinfo, &encoded)
+                .expect("matching compressed archive verifies");
+
+            let wrong_size = narinfo_for(compression, plain, &encoded, plain.len() as u64 + 1);
+            assert!(verify_nar_against_narinfo(&wrong_size, &encoded).is_err());
+        }
+    }
+
+    #[test]
+    fn signed_size_is_checked_before_decompression() {
+        let policy_limit = crate::fetch::MAX_NAR_BYTES;
+        let narinfo = narinfo_for("xz", b"small", b"not xz", policy_limit + 1);
+        let error = verify_nar_against_narinfo(&narinfo, b"not xz")
+            .expect_err("oversized signed archive is rejected");
+
+        assert!(error.to_string().contains("signed NarSize exceeds"));
+    }
+
+    #[test]
+    fn xz_and_lzma_stop_at_the_output_limit() {
+        const LIMIT: usize = 64 * 1024;
+        const MEMORY_LIMIT: u64 = 64 * 1024 * 1024;
+
+        let plain = vec![b'x'; LIMIT + 1];
+        let xz = compress_xz(&plain);
+        let lzma = compress_lzma(&plain);
+
+        assert!(decompress_nar_bounded(&xz, NarCompression::Xz, LIMIT, MEMORY_LIMIT).is_err());
+        assert!(decompress_nar_bounded(&lzma, NarCompression::Lzma, LIMIT, MEMORY_LIMIT).is_err());
+    }
+
+    #[test]
+    fn xz_input_is_not_retried_as_legacy_lzma() {
+        let lzma = compress_lzma(b"legacy payload");
+
+        assert!(decompress_nar_bounded(&lzma, NarCompression::Xz, 1024, 64 * 1024 * 1024).is_err());
+        assert_eq!(
+            decompress_nar_bounded(&lzma, NarCompression::Lzma, 1024, 64 * 1024 * 1024)
+                .expect("declared lzma payload decodes"),
+            b"legacy payload"
+        );
     }
 
     #[test]
