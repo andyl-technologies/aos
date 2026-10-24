@@ -10,6 +10,31 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Original private birth-cut backing
+
+Commit `535970e671` separately charges the original birth-cut Rc and its nested
+deadline Rc to the initial private floor and complete private calculation.
+Their later transfer to the native service cannot fund their earlier private
+lifetime. Both compiled payload/header queries and additional fixed scalar,
+result and checked-add views remain independent of the previous terms.
+
+A live operational-cut test observes both actual shared owners and matches the
+private calculation. Both complete Transport modes pass 2,101 tests with zero
+failures, 20 ignored and no filtering. Both complete Engine modes pass 2,048
+tests with zero failures, 34 ignored and no filtering, plus fourteen custody and
+five rebuilt-provider controls each. Independent private formulas, boot refusal
+and canonical-child flights, all-feature Transport/Engine/Daemon targets, six
+architecture checks and formatting pass. Production Transport Clippy remains
+at 37 errors and 1,733 warnings.
+
+The merged-toolchain application and funded-Source VM gates pass. The compiler
+records 185 test artifacts across 58 packages, including 76 integration targets.
+All 540 owned Rust/Cargo inputs match the commit and actual application and
+three funded-VM Rust component captures. The new cut test constructs only an
+operational deadline, without Source, Recipe/Initial or native readiness. Full
+private preclaim funding, Native18 successor construction, strict production
+lint and full RFC completion remain open.
+
 ## Boot child copies after authenticated native funding
 
 Commit `6da8b3494a` retains scalar decoding in the original startup14/invocation15
