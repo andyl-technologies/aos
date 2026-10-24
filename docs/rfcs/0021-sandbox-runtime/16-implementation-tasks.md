@@ -11335,3 +11335,26 @@ including every unsafe variant and the selected kernel's ordered class-map
 checks. Its evidence file is also identical to the prior production result.
 This is offline checker evidence; installed Root, Host and offline TPM
 qualification and the public lifecycle gate remain open.
+
+### Final installed backend artifact bytes
+
+The next isolated Host retry (`jpfnzwy2s0sqys9db3akmyds749iw9k1`) boots,
+reaches the real managed-userns target and passes the package artifact's
+permission checks. The inspector then rejects a nspawn digest mismatch.
+The retained systemd package hashes nspawn before the builder strips it, so
+the public artifact describes earlier bytes. The new output-level check
+reproduces that exact mismatch on the immutable package.
+
+The recipe now installs policy source and exported filters during its ordinary
+phases, then measures PID 1, nspawn and the filter source in `postFinalize`,
+after fixup and reference scrubbing. The artifact format and live-byte checks
+are unchanged. The independent build check reads the published package and
+compares every artifact field without executing target binaries. The rebuilt
+package passes at
+`/nix/store/vll60msl8gx5w1fk7g8ayq7q80xxkqdm-systemd-261.2`, and its independent
+output check passes at
+`/nix/store/6d3z8aka9hxb2278bgcw142rvvkbrcrz-aos-systemd-backend-policy-artifact-check`.
+Core evaluation also passes at
+`/nix/store/p0dcd4r7i1xmwbd0byjs53q3kybpd8s2-aos-eval-core-checks-0`.
+The installed Host retry remains pending; this does not qualify backend
+readiness or public Create.

@@ -1917,6 +1917,14 @@ in rec {
       gcc-config-shell = import ./tests/build/mk-gcc-config-shell.nix {inherit pkgs lib;};
       hardening-probe = import ./tests/build/hardening-probe.nix {inherit pkgs lib;};
       kernel-config = import ./tests/build/kernel-config.nix {inherit pkgs lib;};
+      systemd-backend-policy-artifact =
+        if hostPlatform.isLinux
+        then
+          import ./tests/build/systemd-backend-policy-artifact.nix {
+            pkgs = buildPackages;
+            systemd = pkgs.systemd;
+          }
+        else null;
       sandbox-linux-uapi = import ./tests/build/sandbox-linux-uapi.nix {inherit pkgs;};
       sandbox-kernel-report-ingress = import ./tests/build/sandbox-kernel-report-ingress.nix {
         inherit pkgs lib;

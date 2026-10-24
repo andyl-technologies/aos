@@ -900,10 +900,7 @@ in
         '';
       }
       {
-        name = "measure-aos-payload-policy";
-        # This public artifact binds the reviewed compiler policy to the exact
-        # final PID 1 and nspawn binaries. Host still verifies live PID 1 and
-        # the protected readiness claims before using it.
+        name = "install-aos-payload-policy";
         script = ''
           test -x "$out/lib/systemd/systemd"
           test -x "$out/bin/systemd-nspawn"
@@ -927,19 +924,6 @@ in
               test "$program_bytes" -le 98504
             ''
           }
-          pid1_digest=$(sha256sum "$out/lib/systemd/systemd")
-          nspawn_digest=$(sha256sum "$out/bin/systemd-nspawn")
-          payload_filter_digest=$(sha256sum "$out/share/aos/nspawn-seccomp-source-v1")
-          pid1_digest=''${pid1_digest%% *}
-          nspawn_digest=''${nspawn_digest%% *}
-          payload_filter_digest=''${payload_filter_digest%% *}
-          {
-            printf 'AOSBPA02\n'
-            printf '%s\n' "$pid1_digest"
-            printf '%s\n' "$nspawn_digest"
-            cat "$out/share/aos/payload-root-policy-v1"
-            printf '%s\n' "$payload_filter_digest"
-          } > "$out/share/aos/backend-policy-artifact-v2"
         '';
       }
       {
@@ -1133,6 +1117,26 @@ in
         '';
       }
     ];
+
+    # Fixup strips nspawn and adjusts RPATHs; reference scrubbing can change
+    # either executable afterward. Bind the public artifact only once their
+    # installed bytes are final. Host independently verifies the live manager
+    # and executable; this metadata cannot grant backend readiness.
+    postFinalize = ''
+      pid1_digest=$(sha256sum "$out/lib/systemd/systemd")
+      nspawn_digest=$(sha256sum "$out/bin/systemd-nspawn")
+      payload_filter_digest=$(sha256sum "$out/share/aos/nspawn-seccomp-source-v1")
+      pid1_digest=''${pid1_digest%% *}
+      nspawn_digest=''${nspawn_digest%% *}
+      payload_filter_digest=''${payload_filter_digest%% *}
+      {
+        printf 'AOSBPA02\n'
+        printf '%s\n' "$pid1_digest"
+        printf '%s\n' "$nspawn_digest"
+        cat "$out/share/aos/payload-root-policy-v1"
+        printf '%s\n' "$payload_filter_digest"
+      } > "$out/share/aos/backend-policy-artifact-v2"
+    '';
 
     meta = {
       description = "systemd — system and service manager for Linux";
