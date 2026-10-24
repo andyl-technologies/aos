@@ -53,34 +53,35 @@ in
             vm.succeed(f"systemctl start {unit}")
             return wait_for_original_accept()
 
-        vm.succeed("${command} external-source-credentials-bootstrap")
-        first = start_source()
-        vm.succeed(f"systemctl restart {unit}")
-        second = wait_for_original_accept()
-        assert first != second, (first, second)
+        with startup_diagnostics(vm, unit):
+            vm.succeed("${command} external-source-credentials-bootstrap")
+            first = start_source()
+            vm.succeed(f"systemctl restart {unit}")
+            second = wait_for_original_accept()
+            assert first != second, (first, second)
 
-        # Rotate the external input, never PID 1's read-only credential mount.
-        # The same genuine unit must refuse a private seed/public pin mismatch.
-        vm.succeed(f"systemctl stop {unit}")
-        change = f"from pathlib import Path; Path({seed!r}).write_bytes(bytes([7]) * 32)"
-        vm.succeed(f"{python} -c {shlex.quote(change)}")
-        vm.execute(f"systemctl start {unit}")
-        vm.wait_until_succeeds(
-            f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 6",
-            timeout=60,
-        )
-        vm.succeed(f"systemctl stop {unit}")
-        vm.succeed(f"test ! -e {source_journal}")
+            # Rotate the external input, never PID 1's read-only credential mount.
+            # The same genuine unit must refuse a private seed/public pin mismatch.
+            vm.succeed(f"systemctl stop {unit}")
+            change = f"from pathlib import Path; Path({seed!r}).write_bytes(bytes([7]) * 32)"
+            vm.succeed(f"{python} -c {shlex.quote(change)}")
+            vm.execute(f"systemctl start {unit}")
+            vm.wait_until_succeeds(
+                f"test $(systemctl show {unit} --property=ExecMainStatus --value) = 6",
+                timeout=60,
+            )
+            vm.succeed(f"systemctl stop {unit}")
+            vm.succeed(f"test ! -e {source_journal}")
 
-        change = f"from pathlib import Path; Path({seed!r}).write_bytes(bytes([8]) * 32)"
-        vm.succeed(f"{python} -c {shlex.quote(change)}")
-        start_source()
+            change = f"from pathlib import Path; Path({seed!r}).write_bytes(bytes([8]) * 32)"
+            vm.succeed(f"{python} -c {shlex.quote(change)}")
+            start_source()
 
-        # Volatile external credentials disappear on reboot. Reprovision only
-        # those inputs and require a new genuine startup over the same image.
-        vm.reboot()
-        vm.wait_for_unit("multi-user.target", timeout=300)
-        vm.succeed("${command} external-source-credentials-bootstrap")
-        start_source()
+            # Volatile external credentials disappear on reboot. Reprovision only
+            # those inputs and require a new genuine startup over the same image.
+            vm.reboot()
+            vm.wait_for_unit("multi-user.target", timeout=300)
+            vm.succeed("${command} external-source-credentials-bootstrap")
+            start_source()
       '';
   }

@@ -71,46 +71,47 @@ in
 
         # The history listener must enter its own confined role before any
         # normal Root credentials exist, and survive normal Root's lifecycle.
-        history = wait_for_history_accept()
-        vm.succeed("${command} external-root-credentials-bootstrap")
-        first = start_root()
-        assert wait_for_history_accept() == history
-        vm.succeed(f"systemctl restart {unit}")
-        second = wait_for_root_accept()
-        assert first != second, (first, second)
-        assert wait_for_history_accept() == history
+        with startup_diagnostics(vm, unit, history_unit):
+            history = wait_for_history_accept()
+            vm.succeed("${command} external-root-credentials-bootstrap")
+            first = start_root()
+            assert wait_for_history_accept() == history
+            vm.succeed(f"systemctl restart {unit}")
+            second = wait_for_root_accept()
+            assert first != second, (first, second)
+            assert wait_for_history_accept() == history
 
-        # Change the external pin while PID 1's prior credential mount is gone.
-        # The real startup must reject the same signed source under another key.
-        vm.succeed(f"systemctl stop {unit}")
-        vm.succeed(f"cp {project_key} {original_project_key}")
-        change = (
-            "import hashlib; from pathlib import Path; "
-            f"path = Path({project_key!r}); pin = bytearray(path.read_bytes()); "
-            "assert len(pin) == 80 and pin[:8] == b'AOSPPK01'; "
-            "pin[16:48] = bytes.fromhex('d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a'); "
-            "pin[48:] = hashlib.sha256(b'aos.sandbox.policy-project-verifier.v1\\0' + pin[:48]).digest(); "
-            "path.write_bytes(pin)"
-        )
-        vm.succeed(f"{python} -c {shlex.quote(change)}")
-        vm.execute(f"systemctl start {unit}")
-        vm.wait_until_succeeds(
-            f"test $(systemctl show {unit} --property=ExecMainStatus --value) -ne 0",
-            timeout=60,
-        )
-        assert wait_for_history_accept() == history
-        vm.succeed(f"systemctl stop {unit}")
-        vm.succeed(f"cp {original_project_key} {project_key}")
-        start_root()
+            # Change the external pin while PID 1's prior credential mount is gone.
+            # The real startup must reject the same signed source under another key.
+            vm.succeed(f"systemctl stop {unit}")
+            vm.succeed(f"cp {project_key} {original_project_key}")
+            change = (
+                "import hashlib; from pathlib import Path; "
+                f"path = Path({project_key!r}); pin = bytearray(path.read_bytes()); "
+                "assert len(pin) == 80 and pin[:8] == b'AOSPPK01'; "
+                "pin[16:48] = bytes.fromhex('d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a'); "
+                "pin[48:] = hashlib.sha256(b'aos.sandbox.policy-project-verifier.v1\\0' + pin[:48]).digest(); "
+                "path.write_bytes(pin)"
+            )
+            vm.succeed(f"{python} -c {shlex.quote(change)}")
+            vm.execute(f"systemctl start {unit}")
+            vm.wait_until_succeeds(
+                f"test $(systemctl show {unit} --property=ExecMainStatus --value) -ne 0",
+                timeout=60,
+            )
+            assert wait_for_history_accept() == history
+            vm.succeed(f"systemctl stop {unit}")
+            vm.succeed(f"cp {original_project_key} {project_key}")
+            start_root()
 
-        # Reboot removes only the volatile inputs. The installed startup and
-        # persistent owner state must still admit the freshly delivered pins.
-        vm.reboot()
-        vm.wait_for_unit("multi-user.target", timeout=300)
-        wait_for_history_accept()
-        vm.succeed("${command} external-source-credentials-bootstrap")
-        vm.succeed("systemctl start aos-sandbox-source-signerd.service")
-        vm.succeed("${command} external-root-credentials-bootstrap")
-        start_root()
+            # Reboot removes only the volatile inputs. The installed startup and
+            # persistent owner state must still admit the freshly delivered pins.
+            vm.reboot()
+            vm.wait_for_unit("multi-user.target", timeout=300)
+            wait_for_history_accept()
+            vm.succeed("${command} external-source-credentials-bootstrap")
+            vm.succeed("systemctl start aos-sandbox-source-signerd.service")
+            vm.succeed("${command} external-root-credentials-bootstrap")
+            start_root()
       '';
   }
