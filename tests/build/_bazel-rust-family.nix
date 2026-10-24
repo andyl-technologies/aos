@@ -143,30 +143,27 @@ in rec {
       chmod -R u+w source
       export CARGO_HOME="$TMPDIR/cargo" CARGO_TARGET_DIR="$TMPDIR/target" CARGO_NET_OFFLINE=true
       mkdir -p "$CARGO_HOME" source/.cargo "$out"
+      cp ${../../tools/bazel/tests/select_cargo_workspace.py} select_cargo_workspace.py
       ${pkgs.python3}/bin/python3 - source ${builtins.toFile "${pname}-packages.json" (builtins.toJSON packages)} ${pkgs.aos.passthru.cargoDeps} ${builtins.toFile "${pname}-editor-dependencies.json" (builtins.toJSON editorDependencyPackages)} <<'PYTHON'
       import json
       import os
       from pathlib import Path
-      import re
       import subprocess
       import sys
       import tomllib
+
+      from select_cargo_workspace import select_workspace
 
       root, packages, vendor, dependencies = map(Path, sys.argv[1:])
       # Select the same connected family, rather than analyzing unrelated workspace
       # members. Retain package metadata, dependency versions and all lint settings.
       manifest = root / "crates/Cargo.toml"
       members = [path.removeprefix("crates/") for path in json.loads(packages.read_text()).values()]
-      source, count = re.subn(r"(?m)^members = \[[\s\S]*?^\]", "members = " + json.dumps(members), manifest.read_text())
-      if count != 1:
-          raise ValueError("Cargo editor oracle workspace selection no longer applies")
       excluded = [path.removeprefix("crates/") for path in json.loads(dependencies.read_text()).values()]
+      source = select_workspace(manifest.read_text(), members, excluded)
       if excluded:
           # Cargo otherwise automatically adds path dependencies as members,
           # enabling their unselected integration and library test targets.
-          if re.search(r"(?m)^exclude\s*=", source):
-              raise ValueError("Cargo editor workspace exclusions require review")
-          source = source.replace("[workspace]\n", "[workspace]\nexclude = " + json.dumps(excluded) + "\n", 1)
           for directory in excluded:
               dependency = root / "crates" / directory / "Cargo.toml"
               original = tomllib.loads(dependency.read_text())
