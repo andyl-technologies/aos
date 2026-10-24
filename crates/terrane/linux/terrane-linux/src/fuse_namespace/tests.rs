@@ -215,3 +215,101 @@ fn startup_budgets_include_every_original_path_and_the_synthesized_root() {
         Err(Error::Budget)
     ));
 }
+
+#[test]
+fn touched_nodes_bound_storage_independently_of_paths_and_share_hardlink_records() {
+    let file = |path: &[u8], link_id| LeafItem {
+        key: path.to_vec(),
+        entry: TreeEntry {
+            kind: EntryKind::File {
+                mode: 0o444,
+                size: 3,
+                content: ContentRef::Inline([2; 32]),
+                link_id,
+            },
+            attrs: Vec::new(),
+            attrs_present: false,
+            xattrs: Vec::new(),
+            xattrs_present: false,
+            provenance: None,
+        },
+    };
+    let tree = Tree::build(
+        vec![
+            file(b"a", Some(b"a")),
+            file(b"b", Some(b"a")),
+            file(b"c", None),
+        ],
+        None,
+        4096,
+        TreeUse::Ordinary,
+    )
+    .unwrap();
+    let bytes = compile_tree(&tree, &BTreeMap::new(), 16, 65536).unwrap();
+    let index = Index::open(&bytes).unwrap();
+    let budget = 2 * size_of::<Node>();
+    assert!(matches!(
+        Namespace::new(index, 2, budget),
+        Err(Error::Budget)
+    ));
+    let mut namespace = Namespace::with_touched_nodes(index, 2, budget).unwrap();
+    let capacity = namespace.nodes.capacity();
+    assert_eq!(namespace.nodes.len(), 1);
+    let a = index.lookup(b"a").unwrap();
+    let b = index.lookup(b"b").unwrap();
+    let c = index.lookup(b"c").unwrap();
+    assert!(namespace.entry(node(a)).is_none());
+
+    assert_eq!(namespace.remember(b.position()).unwrap(), node(a));
+    assert_eq!(namespace.remember(a.position()).unwrap(), node(a));
+    assert_eq!(namespace.entry(node(b)).unwrap().path(), b"a");
+    assert_eq!(namespace.nodes.len(), 2);
+    assert!(matches!(
+        namespace.remember(c.position()),
+        Err(Error::Budget)
+    ));
+    assert!(namespace.entry(node(c)).is_none());
+    assert_eq!(namespace.entry(node(a)).unwrap().path(), b"a");
+    assert_eq!(namespace.entry(1).unwrap().path(), b"");
+    assert_eq!(namespace.nodes.capacity(), capacity);
+}
+
+#[test]
+fn touched_node_refusals_preserve_existing_mappings_and_reserved_capacity() {
+    let bytes = compile([7; 32], &records(), 16, 65536).unwrap();
+    let index = Index::open(&bytes).unwrap();
+    assert!(matches!(
+        Namespace::with_touched_nodes(index, 0, usize::MAX),
+        Err(Error::Budget)
+    ));
+    assert!(matches!(
+        Namespace::with_touched_nodes(index, 2, size_of::<Node>()),
+        Err(Error::Budget)
+    ));
+    let mut namespace = Namespace::with_touched_nodes(index, 3, 4096).unwrap();
+    let directory = index.lookup(b"dir").unwrap();
+    let other = index.lookup(b"other").unwrap();
+    let id = namespace.remember(directory.position()).unwrap();
+    let capacity = namespace.nodes.capacity();
+    assert!(matches!(
+        namespace.remember(index.len()),
+        Err(Error::Index(_))
+    ));
+    assert_eq!(namespace.nodes.len(), 2);
+    assert_eq!(namespace.entry(id).unwrap().path(), b"dir");
+
+    // Inject the otherwise impractical hash collision at the reverse-table boundary.
+    let position = namespace
+        .nodes
+        .binary_search_by_key(&id, |entry| entry.id)
+        .unwrap();
+    namespace.nodes[position].position = other.position();
+    assert!(matches!(
+        namespace.remember(directory.position()),
+        Err(Error::Collision)
+    ));
+    assert_eq!(namespace.entry(id).unwrap().path(), b"other");
+    assert_eq!(namespace.nodes.len(), 2);
+    assert_eq!(namespace.nodes.capacity(), capacity);
+    assert_eq!(namespace.entry(1).unwrap().path(), b"");
+}

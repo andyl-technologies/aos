@@ -182,6 +182,9 @@ FUSE_UNIT_PREFIXES = (
     "structural_index::", "worker_channel::",
 )
 FUSE_UNIT_TESTS = (
+    'fuse_namespace::tests::touched_nodes_bound_storage_independently_of_paths_and_share_hardlink_records',
+    'fuse_namespace::tests::touched_node_refusals_preserve_existing_mappings_and_reserved_capacity',
+    'fuse_dispatch::tests::worker_lookup_retains_only_touched_nodes_and_faults_at_the_original_bound',
     'fuse_lifetime::tests::forget_waits_for_every_original_handle_and_pending_work_pin',
     'fuse_lifetime::tests::released_handles_never_alias_reopened_nodes_or_directory_handles',
     'fuse_lifetime::tests::batch_duplicates_are_summed_before_any_forget_changes_state',

@@ -1,9 +1,11 @@
 //! Resolves kernel node IDs and child names within one immutable checked index.
 //!
-//! Startup builds a bounded sorted reverse table without assigning presented
-//! inode numbers. Lookups borrow original index bytes and perform no allocation,
-//! IO, path joining or content fetch. The caller separately retains the original
-//! authenticated mapping, authorizes the prepared view and owns its connection.
+//! Startup reserves a bounded sorted reverse table without assigning presented
+//! inode numbers. Workers retain only touched canonical nodes; complete tables
+//! remain available for offline projection checks. Lookups borrow original index
+//! bytes and perform no allocation, IO, path joining or content fetch. The caller
+//! separately retains the original authenticated mapping, authorizes the prepared
+//! view and owns its connection.
 
 use crate::{
     inode_policy::{self, NodeIdentity},
@@ -15,7 +17,7 @@ use terrane_format::tree_format::MAX_COMPONENT;
 /// Refuses unavailable startup storage or invalid immutable namespace requests.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Error {
-    /// The complete index exceeds its explicit reverse-table budget.
+    /// Startup storage or touched nodes exceed the explicit reverse-table budget.
     Budget,
     /// Startup cannot reserve the complete bounded table.
     Allocation,
@@ -73,6 +75,7 @@ struct Node {
 pub struct Namespace<'a> {
     index: Index<'a>,
     nodes: Vec<Node>,
+    limit: usize,
 }
 
 impl<'a> Namespace<'a> {
@@ -106,24 +109,7 @@ impl<'a> Namespace<'a> {
             return Err(Error::Budget);
         }
         for position in 0..index.len() {
-            let original = index
-                .entry(position)
-                .ok_or(Error::Index(structural_index::Error::Tree))?;
-            let canonical = original.canonical_inode().map_err(Error::Index)?;
-            let id = if original.path().is_empty() {
-                1
-            } else {
-                NodeIdentity::new(
-                    canonical.governing_root().map_err(Error::Index)?,
-                    canonical.path(),
-                )
-                .map_err(Error::Inode)?
-                .node_id()
-            };
-            nodes.push(Node {
-                id,
-                position: canonical.position(),
-            });
+            nodes.push(original_node(index, position)?);
         }
         nodes.sort_unstable_by_key(|node| node.id);
         if nodes
@@ -133,7 +119,82 @@ impl<'a> Namespace<'a> {
             return Err(Error::Collision);
         }
         nodes.dedup_by_key(|node| node.id);
-        Ok(Self { index, nodes })
+        Ok(Self {
+            index,
+            nodes,
+            limit: count,
+        })
+    }
+
+    /// Reserves a worker reverse table that initially contains only root.
+    ///
+    /// The configured node budget includes root and canonical hard-link sets,
+    /// independently of how many paths the immutable mapped index contains.
+    /// [`Self::remember`] records successful touches without further allocation.
+    /// The reservation is capped at the original index length. Collisions are
+    /// refused when an identity is first touched, before it can alias a node.
+    ///
+    /// # Errors
+    /// Refuses zero limits, insufficient bytes, allocation failure and an invalid
+    /// original root. Untouched paths do not consume node records or inode IDs.
+    pub fn with_touched_nodes(
+        index: Index<'a>,
+        max_nodes: u32,
+        max_bytes: usize,
+    ) -> Result<Self, Error> {
+        let count = usize::try_from(max_nodes.min(index.len())).map_err(|_| Error::Budget)?;
+        if count == 0
+            || count
+                .checked_mul(size_of::<Node>())
+                .is_none_or(|bytes| bytes > max_bytes || bytes > isize::MAX as usize)
+        {
+            return Err(Error::Budget);
+        }
+        let mut nodes = Vec::new();
+        nodes
+            .try_reserve_exact(count)
+            .map_err(|_| Error::Allocation)?;
+        if nodes
+            .capacity()
+            .checked_mul(size_of::<Node>())
+            .is_none_or(|bytes| bytes > max_bytes)
+        {
+            return Err(Error::Budget);
+        }
+        nodes.push(original_node(index, 0)?);
+        Ok(Self {
+            index,
+            nodes,
+            limit: count,
+        })
+    }
+
+    /// Retains one touched canonical entry from this original index by position.
+    ///
+    /// The caller validates and encodes a positive LOOKUP before exposing its
+    /// returned node ID. Hard-link aliases reuse the same record. Retained node
+    /// identities are never recycled while the connection lives, independently
+    /// of its separate kernel reference counts and presented inode numbers.
+    ///
+    /// # Errors
+    /// Refuses invalid positions, reserved or colliding identities and exhausted
+    /// touched-node capacity. Every refusal leaves existing mappings unchanged.
+    pub fn remember(&mut self, position: u32) -> Result<u64, Error> {
+        let node = original_node(self.index, position)?;
+        match self.nodes.binary_search_by_key(&node.id, |entry| entry.id) {
+            Ok(position) => {
+                if self.nodes[position].position != node.position {
+                    return Err(Error::Collision);
+                }
+            }
+            Err(position) => {
+                if self.nodes.len() >= self.limit {
+                    return Err(Error::Budget);
+                }
+                self.nodes.insert(position, node);
+            }
+        }
+        Ok(node.id)
     }
 
     /// Finds an original canonical entry by its deterministic kernel node ID.
@@ -204,6 +265,27 @@ impl<'a> Namespace<'a> {
         }
         Ok(None)
     }
+}
+
+fn original_node(index: Index<'_>, position: u32) -> Result<Node, Error> {
+    let original = index
+        .entry(position)
+        .ok_or(Error::Index(structural_index::Error::Tree))?;
+    let canonical = original.canonical_inode().map_err(Error::Index)?;
+    let id = if original.path().is_empty() {
+        1
+    } else {
+        NodeIdentity::new(
+            canonical.governing_root().map_err(Error::Index)?,
+            canonical.path(),
+        )
+        .map_err(Error::Inode)?
+        .node_id()
+    };
+    Ok(Node {
+        id,
+        position: canonical.position(),
+    })
 }
 
 #[cfg(test)]

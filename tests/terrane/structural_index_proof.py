@@ -69,6 +69,7 @@ OPEN_CASES = [
 ]
 DISPATCH_PREFIX = "fuse_dispatch::tests::"
 DISPATCH_CASES = [
+    'worker_lookup_retains_only_touched_nodes_and_faults_at_the_original_bound',
     'raw_lookup_getattr_and_readlink_share_one_original_namespace',
     'malformed_supported_requests_never_assign_inodes_or_change_scratch',
     'operation_errnos_and_unhandled_records_preserve_permanent_state',
@@ -94,6 +95,8 @@ XATTR_CASES = [
 ]
 NAMESPACE_PREFIX = "fuse_namespace::tests::"
 NAMESPACE_CASES = [
+    'touched_nodes_bound_storage_independently_of_paths_and_share_hardlink_records',
+    'touched_node_refusals_preserve_existing_mappings_and_reserved_capacity',
     'child_lookup_resolves_only_direct_names_and_namespace_dot_components',
     'reverse_lookup_preserves_canonical_hardlinks_and_distinct_equal_content',
     'graft_reverse_nodes_and_dotdot_keep_original_namespace_prefixes',

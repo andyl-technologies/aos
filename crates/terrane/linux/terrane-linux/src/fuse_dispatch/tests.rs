@@ -33,7 +33,7 @@ fn bytes() -> Vec<u8> {
 }
 
 fn metadata(index: Index<'_>, cache: CachePolicy, xattrs: XattrPolicy) -> Metadata<'_> {
-    Metadata::new(
+    let mut metadata = Metadata::new(
         index,
         Limits {
             namespace_entries: 3,
@@ -44,7 +44,13 @@ fn metadata(index: Index<'_>, cache: CachePolicy, xattrs: XattrPolicy) -> Metada
         cache,
         xattrs,
     )
-    .unwrap()
+    .unwrap();
+    // These codec fixtures address nodes directly. The production constructor
+    // starts with root alone; its LOOKUP-driven behavior is tested separately.
+    for position in 0..index.len() {
+        metadata.namespace.remember(position).unwrap();
+    }
+    metadata
 }
 
 fn record(opcode: u32, node: u64, body: &[u8]) -> Vec<u8> {
@@ -280,4 +286,63 @@ fn directory_pages_obey_original_handles_cookies_and_complete_record_bounds() {
         Err(Error::Directory(fuse_directory::Error::BufferTooSmall))
     ));
     assert_eq!(metadata.inodes.len(), 1);
+}
+
+#[test]
+fn worker_lookup_retains_only_touched_nodes_and_faults_at_the_original_bound() {
+    let bytes = bytes();
+    let index = Index::open(&bytes).unwrap();
+    let mut metadata = Metadata::new(
+        index,
+        Limits {
+            namespace_entries: 2,
+            namespace_bytes: 4096,
+            inodes: 3,
+            inode_bytes: 4096,
+        },
+        CachePolicy::Pinned,
+        XattrPolicy::Recorded,
+    )
+    .unwrap();
+    let directory = node(index.lookup(b"dir").unwrap());
+    let link = node(index.lookup(b"dir/link\xff").unwrap());
+    let mut scratch = [0; 256];
+    assert!(metadata.entry(directory).is_none());
+    let getattr = record(3, directory, &[0; 16]);
+    assert!(matches!(
+        metadata
+            .dispatch(request(&getattr), |_| Presentation::default(), &mut scratch)
+            .unwrap(),
+        Response::Errno(libc::ESTALE)
+    ));
+    assert!(metadata.inodes.is_empty());
+
+    let lookup = record(1, 1, b"dir\0");
+    let encoded = payload(
+        metadata
+            .dispatch(request(&lookup), |_| Presentation::default(), &mut scratch)
+            .unwrap(),
+    );
+    assert_eq!(
+        u64::from_ne_bytes(encoded[..8].try_into().unwrap()),
+        directory
+    );
+    assert_eq!(metadata.entry(directory).unwrap().path(), b"dir");
+    assert!(metadata.entry(link).is_none());
+    let missing = record(1, directory, b"missing\0");
+    payload(
+        metadata
+            .dispatch(request(&missing), |_| Presentation::default(), &mut scratch)
+            .unwrap(),
+    );
+    assert_eq!(metadata.inodes.len(), 1);
+
+    let child = record(1, directory, b"link\xff\0");
+    assert!(matches!(
+        metadata.dispatch(request(&child), |_| Presentation::default(), &mut scratch),
+        Err(Error::Namespace(fuse_namespace::Error::Budget))
+    ));
+    assert!(metadata.entry(link).is_none());
+    assert_eq!(metadata.entry(directory).unwrap().path(), b"dir");
+    assert_eq!(metadata.entry(1).unwrap().path(), b"");
 }

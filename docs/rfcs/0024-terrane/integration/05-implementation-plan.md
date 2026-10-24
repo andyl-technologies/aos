@@ -16977,3 +16977,43 @@ released handle of that same canonical node before reporting successful teardown
 This excludes a cache-only success or a later reopen from this native witness.
 Strict all-target Clippy passes; the strengthened native execution and mandatory
 workspace compilation remain pending. No task acceptance changes.
+
+
+### Touched-node namespace storage
+
+The worker metadata constructor now reserves a configured touched-node reverse
+map and initially retains only root. Positive LOOKUP records the original
+canonical entry before exposing its node ID. Untouched paths in the immutable
+index need no reverse records; hard-link aliases share one record. Exhaustion,
+invalid positions and identity collisions refuse without replacing existing
+mappings. Retained identities remain permanent for the connection, independently
+of lookup/handle counts and presented inode numbers. The complete reverse-map
+constructor remains available for offline projection checks.
+
+Seven namespace cases, six metadata dispatch cases and nine inode-policy cases
+pass through the AOS Cargo shell. First-touch metadata and lifecycle operations
+still measure zero allocations; strict all-feature, all-target Clippy passes.
+The closed structural inventory grows from 75 to 78 cases and the all-feature
+native inventory adds those same three cases. Native worker execution and
+mandatory workspace compilation of this change remain pending. This bounds the
+worker resolver component of FUSE-5; production launch, broker/view authority,
+passthrough and writable exposure composition remain open.
+
+The strengthened peer-release checkpoint `ed960ad688` passes its actual kernel
+guest in 205.022 seconds. Full source and actual Cargo ELF review verifies all
+11 original native witnesses, including a validated READ through an older live
+handle after a peer handle closes. Its mandatory application-target compilation
+passes in 841.169 seconds; full review binds 8,184 immutable source files, 190
+test executables and 59 workspace packages. The lifetime checkpoint
+`084435ec75` also passes its mandatory compilation in 1,414.326 seconds, with
+8,183 files and the same executable/package counts. The readiness checkpoint
+`6a121e5cc3` passes mandatory compilation in 1,429.848 seconds, with 8,181 files
+and the same executable/package counts. These are compilation checks, not
+executions of the workspace test targets.
+
+Master merge `5f7cd3aff5` includes `b82df2e832` and the bounded native NAR
+expansion change. The combined vendor closure is rebuilt and verified, and all
+seven pure in-memory NAR verification cases pass. Fresh merged-source mandatory
+compilation and the feature matrix are running. The structural-index owning gate
+at `35f86562ff` passes in 1,354.359 seconds; complete prerequisite evidence review
+is in progress. Accepted trunk tasks remain 27/64.

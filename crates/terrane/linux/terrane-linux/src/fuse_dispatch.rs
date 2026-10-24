@@ -19,9 +19,9 @@ use std::fmt;
 /// Bounds namespace and presented-inode storage before request processing.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
-    /// Maximum original index entries, including root and hard-link aliases.
+    /// Maximum retained touched canonical nodes, including root.
     pub namespace_entries: u32,
-    /// Maximum allocated reverse-table bytes before alias deduplication.
+    /// Maximum allocated touched-node reverse-table bytes.
     pub namespace_bytes: usize,
     /// Maximum distinct lazily presented inode numbers on this connection.
     pub inodes: u32,
@@ -93,15 +93,17 @@ impl<'index> Metadata<'index> {
     /// confers no view, mount, repository or connection authority.
     ///
     /// # Errors
-    /// Refuses invalid budgets, allocation failure and colliding node identities.
+    /// Refuses invalid budgets, allocation failure and invalid root metadata.
+    /// Other identities are checked when their entries are first touched.
     pub fn new(
         index: Index<'index>,
         limits: Limits,
         cache: CachePolicy,
         xattrs: XattrPolicy,
     ) -> Result<Self, Error> {
-        let namespace = Namespace::new(index, limits.namespace_entries, limits.namespace_bytes)
-            .map_err(Error::Namespace)?;
+        let namespace =
+            Namespace::with_touched_nodes(index, limits.namespace_entries, limits.namespace_bytes)
+                .map_err(Error::Namespace)?;
         let inodes = InodeTable::with_reserved_capacity(limits.inodes, limits.inode_bytes)
             .map_err(Error::Inode)?;
         Ok(Self {
@@ -158,13 +160,20 @@ impl<'index> Metadata<'index> {
                     Err(error) => return Err(Error::Namespace(error)),
                 };
                 match child {
-                    Some(child) => fuse_metadata::lookup(
-                        child,
-                        presentation(child),
-                        self.cache,
-                        &mut self.inodes,
-                        scratch,
-                    ),
+                    Some(child) => {
+                        let encoded = fuse_metadata::lookup(
+                            child,
+                            presentation(child),
+                            self.cache,
+                            &mut self.inodes,
+                            scratch,
+                        )
+                        .map_err(Error::Metadata)?;
+                        self.namespace
+                            .remember(child.position())
+                            .map_err(Error::Namespace)?;
+                        return Ok(Response::Payload(encoded));
+                    }
                     None => fuse_metadata::negative_lookup(self.cache, scratch),
                 }
                 .map_err(Error::Metadata)?
