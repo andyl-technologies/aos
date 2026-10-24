@@ -48,18 +48,27 @@
       export AOS_TPM2_FLUSHCONTEXT="${pkgs.tpm2-tools}/bin/tpm2_flushcontext"
       export RUST_TEST_THREADS="$NIX_BUILD_CORES"
     '';
+  cargoSource = import ../../pkgs/tools/aos/_workspace-source.nix {
+    inherit (pkgs) lib;
+    includeIntegrationInputs = true;
+  };
 in
-  import ./_bazel-cargo-oracle.nix {
+  (import ./_bazel-cargo-oracle.nix {
     inherit pkgs nativeLibraries nativeTools cargoSetup;
     pname = "aos-bazel-aos-cli-${
       if fleet
       then "fleet-"
       else ""
     }cargo";
-    cargoSource = import ../../pkgs/tools/aos/_workspace-source.nix {
-      inherit (pkgs) lib;
-      includeIntegrationInputs = true;
-    };
+    inherit cargoSource;
+    captureCompilerArguments = true;
     packages = ["aos-cli"];
     cargoFlags = pkgs.lib.optionals fleet ["--features" "release-fleet-fixture"];
-  }
+  })
+  .overrideAttrs (old: {
+    passthru =
+      (old.passthru or {})
+      // {
+        editorInputs = {inherit nativeLibraries nativeTools cargoSetup cargoSource;};
+      };
+  })

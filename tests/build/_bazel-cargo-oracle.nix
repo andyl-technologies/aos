@@ -9,6 +9,7 @@
   cargoFlags ? [],
   cargoSource ? import ../../pkgs/tools/crucible/_cargo-source.nix {inherit (pkgs) lib;},
   cargoSetup ? "",
+  captureCompilerArguments ? false,
 }: let
   packageFlags = pkgs.lib.escapeShellArgs (
     pkgs.lib.concatMap (name: ["-p" name]) packages
@@ -36,7 +37,13 @@ in
           mkdir -p "$CARGO_HOME" .cargo "$out"
           sed 's|@vendor@|${pkgs.aos.passthru.cargoDeps}|g' \
             ${pkgs.aos.passthru.cargoDeps}/.cargo/config.toml > .cargo/config.toml
-          ${cargoSetup}cargo test --frozen --offline --manifest-path crates/Cargo.toml \
+          ${pkgs.lib.optionalString captureCompilerArguments ''
+            printf '#!${pkgs.python3}/bin/python3\n' > "$TMPDIR/rustc-wrapper"
+            cat ${../../tools/bazel/tests/trace_cargo_rustc.py} >> "$TMPDIR/rustc-wrapper"
+            chmod +x "$TMPDIR/rustc-wrapper"
+            export RUSTC_WRAPPER="$TMPDIR/rustc-wrapper"
+            export AOS_CARGO_RUSTC_TRACE="$out/compiler-arguments.jsonl"
+          ''}${cargoSetup}cargo test --frozen --offline --manifest-path crates/Cargo.toml \
             ${packageFlags} \
             --jobs "$NIX_BUILD_CORES" --no-run --message-format=json > "$out/cargo-messages.jsonl" || {
             ${pkgs.python3}/bin/python3 - "$out/cargo-messages.jsonl" <<'PY'
