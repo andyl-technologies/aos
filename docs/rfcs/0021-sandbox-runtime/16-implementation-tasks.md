@@ -11540,5 +11540,23 @@ then admits the corrected module by its own fixed NAR in an isolated store and
 checks the exact policy selection, enforcing configuration and context inputs.
 It passes at
 `/nix/store/8282mzmz4q5mg6r1zb5p7335w8jx8r8n-selinux-initrd-pure-evaluation-check`;
-both native replay checks also pass. The fresh normal Host, Root and offline
-hardware retries remain pending. No admission or qualification gate is opened.
+both native replay checks also pass. The clean `86176c2a1e` Host, Root and
+offline hardware retries now pass pure initrd replay but fail before their test
+agents start: the network handler publishes `systemd-networkd.socket` under
+`/run/systemd/system` with `init_runtime_t`, and the manager refuses its start.
+The failed derivations are `b0zbb1609rhbhr40fxhn07797zr6zqk8`,
+`pf89dsywhvb3cp288gqvcp19qf1pm2p6` and
+`1msw7b6wkqk0jv1dm1h67fzaj608dry5`. The full lifecycle-enclosure retry
+`ak3z851f7lsgl4xr01hwfmkyq03b4l9g` fails at the same boundary.
+
+Commit `0a898c2921` applies the deployed policy's canonical unit context to
+staged network and service units before file synchronization and atomic
+publication. Failed lookup or relabeling preserves the previous destination
+and prevents manager commands. The existing manager relabel permissions cover
+this operation; no policy grant is added. All 36 network/helper tests and 109
+service-handler tests pass with AOS-built Python and the actual projected unit
+fixtures. Commit `a27fbc210a` isolates ordinary receipt fixtures from the
+builder's SELinux policy while retaining explicit publication-failure checks.
+The clean normal release batch, including all Rust test targets, full native
+evaluation and four installed startup profiles, remains pending. No admission
+or qualification gate is opened.
