@@ -9,27 +9,9 @@ use crucible_source_birth_data::profile::reference_packet::service::native5_poli
 
 impl Native5Policy {
     pub(in crate::reference_packet::service) fn from_original_launch_with_complete_restore(
-        selection: PacketControlSelection,
-        coordinator: InstalledContent,
-        profile: super::super::PacketNative5CaptureProfile,
-        confirmation: super::super::PacketNative5ConfirmationSelection,
-        emitter: super::super::PacketNative5AckEmitterSelection,
-        extent: crate::client::CanonicalAckCodecMetadataExtent,
-        metadata: super::super::PacketNative5ProtocolMetadataLimits,
-        restoration: PacketNative5CompleteRestoreSelection,
+        input: Native5CompleteRestorePolicyInput,
     ) -> Result<Self, ProviderError> {
-        match Native5PolicyData::from_original_launch_with_complete_restore(
-            Native5CompleteRestorePolicyInput {
-                selection,
-                coordinator,
-                profile,
-                confirmation,
-                emitter,
-                extent,
-                metadata,
-                restoration,
-            },
-        ) {
+        match Native5PolicyData::from_original_launch_with_complete_restore(input) {
             Ok(data) => Ok(Self { data }),
             Err(error) => Err(error),
         }

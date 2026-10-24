@@ -7,7 +7,9 @@
 #[cfg(test)]
 use crate::connection::serialized_credit;
 use crucible_node_format::*;
-use crucible_source_birth_data::profile::reference_packet::service::native5_policy::Native5PolicyData;
+use crucible_source_birth_data::profile::reference_packet::service::native5_policy::{
+    Native5CompleteRestorePolicyInput, Native5PolicyData,
+};
 use serde::Serialize;
 
 use super::super::{
@@ -973,5 +975,7 @@ impl Native5Policy {
         + std::mem::size_of::<&Self>() // immutable receiver
         + std::mem::size_of::<&Native5PolicyData>() // field loan
         + std::mem::size_of::<&Native5PolicyData>() // returned loan
-        + std::mem::size_of::<&Native5PolicyData>(); // exhaustive observer root loan
+        + std::mem::size_of::<&Native5PolicyData>() // exhaustive observer root loan
+        // The live wrapper forwards the same owned lower constructor record.
+        + std::mem::size_of::<Native5CompleteRestorePolicyInput>();
 }

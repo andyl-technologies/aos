@@ -148,11 +148,13 @@ impl OriginalImport18RawBootstrap {
             cut,
         );
         hello_registrar.admit_initial_data(
-            hello_envelope.data(cut)?,
-            hello_response.data(cut)?,
-            request,
-            result,
-            Id::new(NATIVE_IMPORT18_CONNECTION_ID)?,
+            hello_registrar::InitialHelloInputs {
+                request: hello_envelope.data(cut)?,
+                response: hello_response.data(cut)?,
+                hello: request,
+                result,
+                connection: Id::new(NATIVE_IMPORT18_CONNECTION_ID)?,
+            },
             &mut verifier,
             cut,
         )

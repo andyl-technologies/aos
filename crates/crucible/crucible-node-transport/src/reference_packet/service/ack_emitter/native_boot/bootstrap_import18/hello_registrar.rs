@@ -56,10 +56,21 @@ pub(super) use attempt::Attempt;
 pub(in super::super) use native::OriginalImport18HelloRegistrarAdmission;
 
 use crate::ProviderError;
+use crate::envelope::Envelope;
+use crate::handshake::{HelloRequest, HelloResult};
 use crate::reference_packet::service::PacketNative5SourceLaunch;
 use crate::reference_packet::service::complete_restore::import18::hello::native_import18_hello_declaration_data;
 use crucible_node_format::{Id, SchemaRef};
 use std::mem::size_of;
+
+/// Carries the original typed and literal Hello pair without copying its owners.
+pub(super) struct InitialHelloInputs<'a> {
+    pub(super) request: &'a Envelope,
+    pub(super) response: &'a Envelope,
+    pub(super) hello: &'a HelloRequest,
+    pub(super) result: &'a HelloResult,
+    pub(super) connection: Id,
+}
 
 /// Quotes the physical fresh registrar before any configuration is cloned.
 ///

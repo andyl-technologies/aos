@@ -12,6 +12,7 @@ use super::*;
 use crate::client::{ExchangeDeadline, OriginalNative5BirthCut, OriginalNative5BirthStream};
 use crate::connection::Native5ConnectionBirthRefusal;
 use crate::native_hello::{OriginalNativeHelloExchange, OriginalNativeHelloJournal};
+use crucible_source_birth_data::profile::reference_packet::service::native5_policy::Native5CompleteRestorePolicyInput;
 use std::any::Any;
 use std::os::unix::net::UnixStream;
 
@@ -468,16 +469,19 @@ impl CompleteBirth {
         }
         let policy = if let Some(restoration) = self.launch.complete_restore_selection {
             Native5Policy::from_original_launch_with_complete_restore(
-                self.launch.selection.clone(),
-                self.launch.initial_coordinator.clone(),
-                self.launch.capture_profile.clone(),
-                self.launch.confirmation_selection.ok_or_else(absent)?,
-                self.launch.ack_emitter_selection.ok_or_else(absent)?,
-                self.launch
-                    .native_codec_metadata_extent
-                    .ok_or_else(absent)?,
-                self.launch.protocol_metadata_limits.ok_or_else(absent)?,
-                restoration,
+                Native5CompleteRestorePolicyInput {
+                    selection: self.launch.selection.clone(),
+                    coordinator: self.launch.initial_coordinator.clone(),
+                    profile: self.launch.capture_profile.clone(),
+                    confirmation: self.launch.confirmation_selection.ok_or_else(absent)?,
+                    emitter: self.launch.ack_emitter_selection.ok_or_else(absent)?,
+                    extent: self
+                        .launch
+                        .native_codec_metadata_extent
+                        .ok_or_else(absent)?,
+                    metadata: self.launch.protocol_metadata_limits.ok_or_else(absent)?,
+                    restoration,
+                },
             )?
             .with_restore_input_emitter_selection(self.launch.restore_input_emitter_selection)?
         } else if let Some(metadata) = self.launch.protocol_metadata_limits {

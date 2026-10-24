@@ -212,11 +212,13 @@ impl Fixture {
 
     fn admit(&mut self, verifier: &mut ModelVerifier) -> Result<(), ProviderError> {
         self.attempt.admit_initial_data(
-            &self.request,
-            &self.response,
-            &self.hello,
-            &self.result,
-            Id::new(NATIVE_IMPORT18_CONNECTION_ID).unwrap(),
+            InitialHelloInputs {
+                request: &self.request,
+                response: &self.response,
+                hello: &self.hello,
+                result: &self.result,
+                connection: Id::new(NATIVE_IMPORT18_CONNECTION_ID).unwrap(),
+            },
             verifier,
             self.cut,
         )

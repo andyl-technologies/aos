@@ -5,6 +5,7 @@
 //! verifier. This primitive owns the resulting SDK lease and failure; it grants
 //! no Native18 policy, publication, ACK, model adoption or readiness.
 
+use super::super::InitialHelloInputs;
 use super::{Attempt, Stage, refused};
 use crate::ProviderError;
 use crate::envelope::Envelope;
@@ -36,6 +37,8 @@ impl Attempt {
             + size_of::<OperationalDeadline>() * 2
             + size_of::<Stage>()
             + size_of::<Result<(), ProviderError>>() * 4
+            // Keep earlier field views beside the caller and forwarded records.
+            + size_of::<InitialHelloInputs<'static>>() * 3
     }
 
     /// Spends initial admission and retains its actual lease or SDK failure.
@@ -50,11 +53,7 @@ impl Attempt {
     /// cut mismatch, actual SDK/verifier refusal or a failed terminal lease check.
     pub(in super::super::super) fn admit_initial_data(
         &mut self,
-        request: &Envelope,
-        response: &Envelope,
-        hello: &HelloRequest,
-        result: &HelloResult,
-        connection: Id,
+        inputs: InitialHelloInputs<'_>,
         verifier: &mut impl TrustedHandshakeVerifier,
         cut: OperationalDeadline,
     ) -> Result<(), ProviderError> {
@@ -64,8 +63,7 @@ impl Attempt {
         }
         self.admission_started = true;
 
-        let outcome =
-            self.admit_current_initial(request, response, hello, result, connection, verifier, cut);
+        let outcome = self.admit_current_initial(inputs, verifier, cut);
         let terminal = self.guard(cut);
         if let Err(error) = outcome.and(terminal) {
             self.admission_failure = Some(error);
@@ -79,15 +77,19 @@ impl Attempt {
 
     fn admit_current_initial(
         &mut self,
-        request: &Envelope,
-        response: &Envelope,
-        hello: &HelloRequest,
-        result: &HelloResult,
-        connection: Id,
+        inputs: InitialHelloInputs<'_>,
         verifier: &mut impl TrustedHandshakeVerifier,
         cut: OperationalDeadline,
     ) -> Result<(), ProviderError> {
         self.guard(cut)?;
+        let InitialHelloInputs {
+            request,
+            response,
+            hello,
+            result,
+            connection,
+        } = inputs;
+
         if self.stage != Stage::Complete
             || self.failure.is_some()
             || self.admission_failure.is_some()

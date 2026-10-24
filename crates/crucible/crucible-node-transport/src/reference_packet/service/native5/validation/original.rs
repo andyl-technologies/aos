@@ -6,6 +6,7 @@
 
 use super::*;
 use crate::reference_packet::Native5Policy;
+use crucible_source_birth_data::profile::reference_packet::service::native5_policy::Native5CompleteRestorePolicyInput;
 
 pub(super) fn validate(launch: &PacketNative5SourceLaunch) -> Result<(), ProviderError> {
     crate::connection::serialized_credit(launch, 1024 * 1024)?;
@@ -111,28 +112,30 @@ pub(super) fn validate(launch: &PacketNative5SourceLaunch) -> Result<(), Provide
         }
     if let Some(restoration) = launch.complete_restore_selection {
         Native5Policy::from_original_launch_with_complete_restore(
-            launch.selection.clone(),
-            launch.initial_coordinator.clone(),
-            launch.capture_profile.clone(),
-            launch
-                .confirmation_selection
-                .ok_or(ProviderError::Correlation(
-                    "restoring native confirmation absent",
-                ))?,
-            launch
-                .ack_emitter_selection
-                .ok_or(ProviderError::Correlation("restoring native ACK absent"))?,
-            launch
-                .native_codec_metadata_extent
-                .ok_or(ProviderError::Correlation(
-                    "restoring native codec extent absent",
-                ))?,
-            launch
-                .protocol_metadata_limits
-                .ok_or(ProviderError::Correlation(
-                    "restoring native metadata absent",
-                ))?,
-            restoration,
+            Native5CompleteRestorePolicyInput {
+                selection: launch.selection.clone(),
+                coordinator: launch.initial_coordinator.clone(),
+                profile: launch.capture_profile.clone(),
+                confirmation: launch
+                    .confirmation_selection
+                    .ok_or(ProviderError::Correlation(
+                        "restoring native confirmation absent",
+                    ))?,
+                emitter: launch
+                    .ack_emitter_selection
+                    .ok_or(ProviderError::Correlation("restoring native ACK absent"))?,
+                extent: launch
+                    .native_codec_metadata_extent
+                    .ok_or(ProviderError::Correlation(
+                        "restoring native codec extent absent",
+                    ))?,
+                metadata: launch
+                    .protocol_metadata_limits
+                    .ok_or(ProviderError::Correlation(
+                        "restoring native metadata absent",
+                    ))?,
+                restoration,
+            },
         )?
         .with_restore_input_emitter_selection(launch.restore_input_emitter_selection)?
         .with_capture_allocation_selection(launch.capture_allocation_selection)?
