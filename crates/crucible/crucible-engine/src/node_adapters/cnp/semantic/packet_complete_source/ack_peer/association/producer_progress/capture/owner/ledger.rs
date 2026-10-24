@@ -217,22 +217,23 @@ impl CaptureOnceOwner {
             prefix_frontier,
         };
         cut.authenticate_owner_data(source, self as *const Self as *const (), controller)?;
-        let mut encoder = CapturePrefixEncoder {
-            prefix: &mut self.prefix,
-            source,
-            controller,
-            claim,
-            maximum_checkpoint,
-            maximum_prefix,
-            recheck_read: &mut *recheck_read,
-            completed: false,
-        };
-        encode(&cut, &mut encoder)?;
-        if !encoder.completed {
-            return Err(RuntimeError::OutstandingObligations);
+        {
+            let mut encoder = CapturePrefixEncoder {
+                prefix: &mut self.prefix,
+                source,
+                controller,
+                claim,
+                maximum_checkpoint,
+                maximum_prefix,
+                recheck_read: &mut *recheck_read,
+                completed: false,
+            };
+            encode(&cut, &mut encoder)?;
+            if !encoder.completed {
+                return Err(RuntimeError::OutstandingObligations);
+            }
+            encoder.prefix.payload_data()?;
         }
-        encoder.prefix.payload_data()?;
-        drop(encoder);
         cut.authenticate_owner_data(source, self as *const Self as *const (), controller)?;
         claim.authenticate_current_data(source, controller as *const _)?;
         recheck_read()?;

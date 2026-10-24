@@ -761,7 +761,6 @@ impl PacketCompleteSemanticSource {
         // read. On any failure the consumed token's drop revokes its real owner.
         recheck()?;
         let result = result?;
-        drop(recheck);
         call.complete(scratch, || {
             claim.authenticate_terminal_member_data(self, controller)?;
             let owner = original

@@ -63,20 +63,20 @@ impl PacketCompleteSemanticSource {
         inspect: impl FnOnce(&Import18RecipeHistoryData<'_>) -> Result<R, RuntimeError>,
     ) -> Result<R, RuntimeError> {
         self.storage_origin_with_error::<RuntimeError>()?;
-        let owner = self
-            .native_import18_recipe
-            .try_borrow()
-            .map_err(|_| RuntimeError::OwnerBusy)?;
-        let view = Import18RecipeHistoryData {
-            started: owner.started,
-            completed: owner.completed,
-            failed: owner.failed,
-            recipe: owner.recipe.as_ref(),
-            initial: owner.initial.as_ref(),
+        let result = {
+            let owner = self
+                .native_import18_recipe
+                .try_borrow()
+                .map_err(|_| RuntimeError::OwnerBusy)?;
+            let view = Import18RecipeHistoryData {
+                started: owner.started,
+                completed: owner.completed,
+                failed: owner.failed,
+                recipe: owner.recipe.as_ref(),
+                initial: owner.initial.as_ref(),
+            };
+            inspect(&view)
         };
-        let result = inspect(&view);
-        drop(view);
-        drop(owner);
         self.storage_origin_with_error::<RuntimeError>()?;
         result
     }
