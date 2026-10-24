@@ -10,6 +10,26 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Source loan scopes and strict Engine diagnostics
+
+Commit `9472c155d2` ends the recipe-history owner borrow and Capture prefix
+encoder view in explicit lexical scopes before their terminal checks. The
+Capture recheck closure ends at its last use. Real owner guards, failure order,
+phase transitions and storage counters remain unchanged. This removes all
+three `drop_non_drop` errors without allowances; strict Engine Clippy now reports
+128 errors and 2,171 warnings. Its other error categories are unchanged.
+
+Both full Engine codec modes pass 2,068 tests with zero failures and 34 existing
+ignored tests, using each mode's actual source-built packet provider. The first
+runs omitted the required installed-provider environment variable and each
+failed five fixture lookups; both corrected complete runs pass. All-feature/
+all-target Transport/Engine/Daemon compilation, scoped formatting, six architecture
+checks and application test-target compilation pass. Actual application metadata
+records 185 test artifacts across 58 packages, including 76 integration targets.
+All 634 frozen owned Rust/Cargo inputs match the commit and actual application
+source. No new VM, native startup, first-Arm or Capture qualification is claimed.
+Full strict lint qualification and the full RFC remain unfinished.
+
 ## Bank pricing from the actual typed Prepare inputs
 
 Commit `e3ef09d06f` binds the shared native bank quote to the actual retained
