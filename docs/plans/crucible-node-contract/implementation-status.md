@@ -10,6 +10,35 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Native Capture and fresh-query Prepare inputs
+
+Commit `1b62165d54` groups the actual unpublished native14/15 Capture capacity
+inputs. Both complete owner/bank authentication bodies remain unchanged. The
+startup and invocation Source quotes retain every earlier scratch term and add
+both input headers and their actual fixed counter arrays. Both complete
+Transport suites pass 2,115 tests with zero failures, twenty ignored and no
+filtering. Both Engine modes pass 2,062 tests plus eighteen custody and five
+installed standard-provider controls; the same measured standard provider is
+used in both modes, without qualifying a raw-codec provider.
+
+Commit `e7fb2bfbda` groups the three existing owned fresh-query Prepare inputs.
+The genuine Source call and all emitter/query/mapping validation, signing,
+assignment and failed-prefix retention stay in place. Both new headers are
+included in the existing Source construction scratch quotes. Both complete
+Engine modes pass 2,062 tests plus the same custody and standard-provider
+controls. The preceding full Transport results qualify the Capture checkpoint
+separately; no later full Transport run is claimed here.
+
+Each checkpoint passes all-feature Transport/Engine/Daemon targets, six
+architecture checks, scoped formatting and application test-target compilation.
+Actual application metadata records 185 test artifacts across 58 packages,
+including 76 integration targets. All 575 and 578 respective frozen owned
+Rust/Cargo inputs match their commits and actual application captures.
+Strict Transport Clippy improves from sixteen to fourteen and then thirteen
+errors, retaining 1,734 warnings without allowances. The earlier funded-Source
+VM remains a separate snapshot. No runtime capacity, completed native Capture,
+Native18 adoption or full RFC completion is established by these interfaces.
+
 ## Assigned publication inputs
 
 Commit `ad4e60e34c` groups each assigned publication's borrowed original,
