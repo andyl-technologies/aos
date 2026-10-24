@@ -68,7 +68,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The subsequent daemon dependency check reports 622 host-library errors, predominantly large error carriers. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 651 bindings: 632 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 653 bindings: 634 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Integration with origin/master
 
@@ -91,7 +91,9 @@ also contains the complete lockfile. Its hash is recomputed from the matching
 registry archives and the merged lockfile; the pinned CBOR seed patch remains
 applied after archive verification.
 
-The crate migration check and focused Nix formatting checks pass. Inventory
+The crate migration check and focused Nix formatting checks pass. Core Nix
+evaluation passes at `p0dcd4r7i1xmwbd0byjs53q3kybpd8s2`; the broader evaluation
+aggregate remains pending. Inventory
 `yxhq4f1k81d99zk5xx52l3x3nhl3ks41` preserves all 651 bindings, 142 uncovered
 requirements and zero qualifications. Engineering hygiene passes at
 `zcvijji792yblcv5r97p578pnwrl3izi`, with content-bound reviews of the merged
@@ -99,6 +101,39 @@ sources.
 Merged-source Rust compilation, component execution and ABI execution remain
 pending; pre-merge passing checks do not qualify this merge. No native fixture
 execution or activation authority follows from these source and inventory checks.
+
+#### Receiver transport acknowledgment custody
+
+The receiver's transport scratch-reservation refusal now retains the explicit
+caller account. This matters at the final `ClosureStored` exchange, which runs
+after per-object scopes have closed. The change uses the existing original-aware
+admission conversion and does not introduce a whole-receiver decoding scope.
+
+Two portable transport controls use a real RAM sender, a seventeen-byte image,
+finite accounts and an independent foreign decoding scope. The healthy control
+stores three objects and completes the final acknowledgment. The adversarial
+control allows the post-retention live check, then irreversibly revokes the same
+caller at the acknowledgment's actual scratch reservation. The retained root
+exists, but neither an acknowledgment nor cancellation reaches the peer and no
+accepted result is returned.
+
+With the preceding implementation, the healthy control passes and the refusal
+control fails: the caller's 8,773 prepaid bytes return while its error remains
+alive. With the correction, both controls pass and the actual typed revocation
+retains all caller prepayment until error close. The foreign account acquires no
+loan and closes independently. The initial focused shell inherited a host cache
+wrapper, so those observations remain provisional. A fresh target with explicit
+AOS tool paths, disabled compiler wrappers, retained AOS Rust 1.98.1, current AOS
+native libraries and verified merged vendor sources independently passes all
+780 ordinary Store tests, including both new controls, and all 95 policy
+controls. Three large stress cases are excluded from this ordinary run. This is
+supplemental component feedback, not current-toolchain hermetic qualification.
+Clean focused causal replay, control-server tests, strict Clippy, broader
+component execution and mandatory application compilation remain pending.
+
+Inventory `w7rs8whryrz04653xc8dy7xd7szclyj0` validates 653 bindings across
+243 requirements, with 142 uncovered and none qualified. No whole-world
+readiness, Native activation, physical return or performance parity is implied.
 
 #### Isolated patched-libc build support
 

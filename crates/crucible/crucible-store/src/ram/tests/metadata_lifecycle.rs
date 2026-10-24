@@ -25,6 +25,7 @@ mod metadata_custody;
 mod proof_allocation;
 mod publication_receipt;
 mod receiver_allocation;
+mod receiver_transport;
 mod record_prepay;
 mod representation_domains;
 mod root_decode;

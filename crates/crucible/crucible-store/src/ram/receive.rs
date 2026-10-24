@@ -84,7 +84,7 @@ impl<'a> RamTransferReceiver<'a> {
             &mut |message| {
                 let _credit = original
                     .reserve_scratch_bytes(super::response::message_peak(&message.control)?)
-                    .map_err(admission)?;
+                    .map_err(|source| RamStoreError::from_admission(original, source))?;
                 super::response::check(original, &mut || (boundary.borrow_mut())())?;
                 message.write(transport)?;
                 RamTransferResponse::read_bounded(
