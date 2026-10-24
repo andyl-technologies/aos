@@ -667,7 +667,8 @@ pub(crate) fn original_restored_input_reactive17_ingress_row_data(
 }
 
 pub(super) fn counter_scratch_data() -> usize {
-    restored_input_reactive17_contract_counter_scratch_data()
+    crate::reference_packet::endpoint::original_endpoint_context_counter_scratch_data()
+        + restored_input_reactive17_contract_counter_scratch_data()
         // The real native17 constructor spends this ingress before its first
         // completed-ancestry/literal loan. Its fixed work is charged here,
         // independently of the later separately debited model/action phase.

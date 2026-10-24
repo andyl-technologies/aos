@@ -183,6 +183,8 @@ fn actual_schema_adapter_is_added_to_original_defining_counter() {
             + admit::adapter_counter_scratch_data()
             + super::super::super::private_backing::ADAPTER_COUNTER_SCRATCH_DATA
             + crucible_source_birth_data::profile::reference_packet::service::native_startup::hello_shapes::additional_counter_scratch_data()
+            // Endpoint dispatch retains both original borrowed context headers.
+            + crate::reference_packet::endpoint::original_endpoint_context_counter_scratch_data()
     );
     assert_eq!(
         counter_scratch_data(),

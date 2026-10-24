@@ -73,6 +73,9 @@ impl OriginalNativeCaptureContext<'_> {
         .into_iter()
         .try_fold(0usize, usize::checked_add)
         .unwrap_or(usize::MAX)
+        .saturating_add(
+            crate::reference_packet::endpoint::original_endpoint_context_counter_scratch_data(),
+        )
     }
 
     pub(crate) fn invocation_additional_counter_scratch_data() -> usize {

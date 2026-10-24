@@ -139,7 +139,8 @@ impl PacketNativeBirthStartupStorageData {
 /// and metadata walks, with no parser, erased callback or I/O. Known Bytes
 /// formatting temporaries are separately included in this declared window.
 pub fn original_native_birth_startup_counter_scratch_data() -> usize {
-    size_of::<crate::reference_packet::service::ack_emitter::OriginalNativeBirthReadScope<'static>>()
+    crate::reference_packet::endpoint::original_endpoint_context_counter_scratch_data()
+        + size_of::<crate::reference_packet::service::ack_emitter::OriginalNativeBirthReadScope<'static>>()
         + crate::reference_packet::control::PacketControl::original_native_birth_selection_counter_scratch_data()
         + super::data_equality::counter_scratch_data()
         + invocation_ingress_counter_scratch_data()

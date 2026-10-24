@@ -119,7 +119,8 @@ fn refused() -> ProviderError {
 pub(crate) fn original_restored_suffix_observation_endpoint_counter_scratch_data() -> usize {
     use std::mem::size_of;
     type NativeTransport = Transport<std::os::unix::net::UnixStream>;
-    size_of::<OriginalRestoredSuffixPostObservation>()
+    super::original_endpoint_context_counter_scratch_data()
+        + size_of::<OriginalRestoredSuffixPostObservation>()
         + size_of::<Option<OriginalRestoredSuffixPostObservation>>()
         + size_of::<Result<Option<OriginalRestoredSuffixPostObservation>, ProviderError>>()
         + size_of::<

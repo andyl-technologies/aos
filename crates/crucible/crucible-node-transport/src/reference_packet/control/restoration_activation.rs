@@ -374,7 +374,10 @@ impl PacketControl {
 /// Names the exact borrowed release/Observe cached-result and content views.
 pub(crate) fn original_restoration_released_counter_scratch_data() -> usize {
     use std::mem::size_of;
-    original_released_world_inputs_counter_scratch_data()
+    // The incoming step retains its original service-context headers while the
+    // separately admitted release or observation validates this same owner.
+    crate::reference_packet::endpoint::original_endpoint_context_counter_scratch_data()
+        + original_released_world_inputs_counter_scratch_data()
         + size_of::<&WorldActivateRequest>()
         + size_of::<&PacketControlReply>()
         + size_of::<Option<&PacketControlReply>>()

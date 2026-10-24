@@ -41,6 +41,9 @@ pub(crate) use fresh_publication::{
     original_fresh_report_startup_publication_data,
 };
 pub(crate) use fresh_restore::original_fresh_report_owner_layout_data;
+mod original_context;
+use original_context::OriginalEndpointContextData;
+pub(crate) use original_context::original_endpoint_context_counter_scratch_data;
 mod prefix;
 mod restoration_activation;
 mod restoration_observation;
@@ -351,7 +354,18 @@ impl<S: ProviderStream> PacketEndpoint<S> {
             &crate::client::ExchangeDeadline,
         )>,
     ) -> Result<(), ProviderError> {
-        self.step_with_original_context(context, None, None, None, None, None, None, None)
+        self.step_with_original_context(
+            OriginalEndpointContextData {
+                context,
+                selected_deadline: None,
+                service_context: None,
+            },
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
     }
 
     pub(crate) fn step_with_selected_context(
@@ -361,23 +375,35 @@ impl<S: ProviderStream> PacketEndpoint<S> {
     ) -> Result<(), ProviderError> {
         self.authenticate_selected_registration(handshake)?;
         deadline.remaining()?;
-        self.step_with_original_context(None, Some(deadline), None, None, None, None, None, None)
+        self.step_with_original_context(
+            OriginalEndpointContextData {
+                context: None,
+                selected_deadline: Some(deadline),
+                service_context: None,
+            },
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
     }
 
     fn step_with_original_context(
         &mut self,
-        context: Option<(
-            &crate::handshake::Handshake,
-            &crate::client::ExchangeDeadline,
-        )>,
-        selected_deadline: Option<&crate::client::ExchangeDeadline>,
-        service_context: Option<&super::service::OriginalNativeServiceCaptureContext<'_>>,
+        inputs: OriginalEndpointContextData<'_, '_>,
         selected_capture: Option<OriginalSelectedCapture<S>>,
         selected_restore: Option<OriginalSelectedRestore<S>>,
         selected_report: Option<OriginalSelectedReport<S>>,
         selected_next: Option<OriginalSelectedNext<S>>,
         selected_fresh_data: Option<OriginalSelectedFreshData<S>>,
     ) -> Result<(), ProviderError> {
+        let OriginalEndpointContextData {
+            context,
+            selected_deadline,
+            service_context,
+        } = inputs;
+
         self.ensure_complete_origin()?;
         if self.held {
             return Err(ProviderError::Conflict("packet endpoint held"));
@@ -979,9 +1005,11 @@ impl PacketEndpoint<crate::client::DeadlineStream> {
         self.authenticate_selected_registration(handshake)?;
         deadline.remaining()?;
         self.step_with_original_context(
-            None,
-            Some(deadline),
-            Some(service),
+            OriginalEndpointContextData {
+                context: None,
+                selected_deadline: Some(deadline),
+                service_context: Some(service),
+            },
             Some(Self::capture_original_owned11),
             Some(Self::restore_original_transfer),
             Some(Self::publish_original_capture_allocation_observe),

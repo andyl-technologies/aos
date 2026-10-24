@@ -174,7 +174,8 @@ fn refused() -> ProviderError {
 pub(crate) fn original_restored_producer_endpoint_counter_scratch_data() -> usize {
     use std::mem::size_of;
     type NativeTransport = Transport<std::os::unix::net::UnixStream>;
-    size_of::<ClosedProducerUpload<'static>>()
+    super::original_endpoint_context_counter_scratch_data()
+        + size_of::<ClosedProducerUpload<'static>>()
         + size_of::<Result<super::super::control::PacketControlReply, ProviderError>>()
         + size_of::<serde_json::Value>()
         + size_of::<Result<serde_json::Value, crucible_node_format::ContractError>>()
