@@ -319,7 +319,11 @@ pub(crate) fn materialize_start_from_tracked<F, D>(
             // decisions differently or produced different ones.
             eprintln!(
                 "CRUCIBLE-REPLAY-DIVERGENCE-V1 index={index} quantum_start={prior_len} quantum_end={next_len} expected=[{}] observed=[{}]",
-                replay_decision_window(target.schedule.decision_history(), index, target.schedule.len()),
+                replay_decision_window(
+                    target.schedule.decision_history(),
+                    index,
+                    target.schedule.len()
+                ),
                 replay_decision_window(next.schedule.decision_history(), index, next_len),
             );
             return Err(AttemptWorkerFailure::Terminal(

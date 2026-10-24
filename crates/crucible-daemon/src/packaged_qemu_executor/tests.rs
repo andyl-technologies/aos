@@ -1359,7 +1359,9 @@ fn packaged_status_lifecycle_delegates_execution_evidence_and_errors() {
     // An anchor root's replay proof binds the scheduler offset; a wrapper that
     // falls back to the trait's refusal disables every anchor root.
     assert_eq!(
-        lifecycle.event_log_offset().expect("delegated event-log offset"),
+        lifecycle
+            .event_log_offset()
+            .expect("delegated event-log offset"),
         controlled_event_log_offset()
     );
 
