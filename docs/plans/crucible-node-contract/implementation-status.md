@@ -10,6 +10,33 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Complete pending custody for unconsumed staged inputs
+
+Commit `0496aeb354` requires every unconsumed staged input to retain its exact
+original recipient queue entry. The comparison includes all payload, provenance
+and native fields after locating the original EventKey. The already-validated
+queue order supports borrowed binary search; no identifier clone, replacement
+input or extra child bank is constructed. Consumed-input replay rejection stays
+in place. The defining counter retains all earlier terms and adds the actual
+remaining-prefix, comparison and selected Rust slice-search controls. Both the
+cached and merged compilers select the same reviewed standard-library source.
+
+Both missing-input and changed-record regressions first fail against the old
+validator, while the three earlier custody controls pass. With the complete
+counter addition, both Engine suites pass 2,042 tests with zero failures,
+34 ignored tests and no filtering. Each mode separately passes eight input
+custody controls and five actual installed-provider controls. All-feature,
+all-target Transport/Engine/Daemon checking, formatting and all six architecture
+checks pass. Production Engine Clippy remains at 171 errors and 444 warnings;
+Daemon is not reached. The preceding global-identity commit has the same lint
+result. Neither result is passing strict lint qualification.
+
+All 526 frozen owned Rust/Cargo inputs match this commit, the actual application
+source and all three funded-VM Rust component captures. The mandatory merged
+application, boundary and funded-VM qualification remains pending on the source
+compiler chain; earlier clients are superseded. Native successor construction
+and full RFC-0025 qualification remain unfinished.
+
 ## Global staged-input and operation identities
 
 Commit `6c8755539e` rejects reuse of a staging operation across owners, reuse of
