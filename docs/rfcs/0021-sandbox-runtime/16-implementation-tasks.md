@@ -11295,8 +11295,16 @@ entry. All 28 Host readiness tests pass with the cached AOS-built compiler and
 the existing AOS test recipe's `RUST_MIN_STACK=33554432`, including the two new
 metadata-policy regressions. The first broader invocation used the default
 test-thread stack and overflowed in an existing boot-preparation constructor;
-no production stack or bank limit changes. All-target compilation and the
-installed retry are still running.
+no production stack or bank limit changes. All Host targets compile, and the
+three physical-fit tests plus the permanent native-file budget test pass in
+the same AOS diagnostic shell. The installed retry remains pending.
+
+The merged PR revision `d4f559b8a7` contains `origin/master` at
+`b82df2e832b2e02b8dcd78b38e44981b43177152`. Its core evaluation gate passes at
+`/nix/store/p0dcd4r7i1xmwbd0byjs53q3kybpd8s2-aos-eval-core-checks-0`.
+The full release Rust target, evaluation, Root, Host and offline TPM checks
+remain running behind the source-built toolchain changed by master. Public
+Create, the normal protected floor and held cross-owner handoff remain closed.
 
 The same immutable Host image separately passes the namespace-retirement-only
 diagnostic at
