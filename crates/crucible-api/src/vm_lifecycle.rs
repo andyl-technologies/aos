@@ -102,7 +102,7 @@ pub use hot_fork::{
     ProductionVmHotForkIoNodeKind, ProductionVmHotForkNodeBoundary,
     ProductionVmHotForkNodeServiceState, ProductionVmHotForkSourceWorld,
     ProductionVmHotForkSourceWorldPreparationFailure, ProductionVmHotForkSourceWorldResourceUsage,
-    ProductionVmHotForkWorldContinuation,
+    ProductionVmHotForkWorldContinuation, SourceMemoryRegions,
 };
 #[cfg(all(target_os = "linux", any(test, feature = "test-support")))]
 pub use hot_fork::{

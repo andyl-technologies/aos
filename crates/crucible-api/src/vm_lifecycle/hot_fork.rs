@@ -15,7 +15,7 @@ mod resource_usage;
 mod resume_boundary_source;
 use disk_basis::ProductionVmHotForkDiskBasis;
 use native_disk_seal::ProductionVmHotForkDiskCustody;
-pub use resource_usage::ProductionVmHotForkSourceWorldResourceUsage;
+pub use resource_usage::{ProductionVmHotForkSourceWorldResourceUsage, SourceMemoryRegions};
 
 const MAXIMUM_HOT_FORK_RING_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const MAXIMUM_HOT_FORK_ROLLBACK_POLLS_PER_NODE: usize = 100;

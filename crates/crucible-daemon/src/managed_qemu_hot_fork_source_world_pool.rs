@@ -167,6 +167,7 @@ impl ManagedQemuHotForkSourceWorld {
                 ));
             }
         };
+        note_source_measurement(&key, usage);
         let resources = match HotCheckpointResourceProfile::new(
             usage.template_bytes(),
             usage.expected_private_dirty_bytes(),
@@ -507,6 +508,24 @@ fn published_root_boundary_error(
         ));
     }
     None
+}
+
+/// Writes one source world's measured memory profile by QEMU region class.
+fn note_source_measurement(
+    key: &QemuHotForkSourceWorldKey,
+    usage: crucible_api::vm_lifecycle::ProductionVmHotForkSourceWorldResourceUsage,
+) {
+    use std::io::Write as _;
+
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "CRUCIBLE-HOT-FORK-SOURCE-MEASUREMENT-V1 configuration={:?} processes={} template_bytes={} expected_private_dirty_bytes={} regions={:?}",
+        key.configuration(),
+        usage.process_count(),
+        usage.template_bytes(),
+        usage.expected_private_dirty_bytes(),
+        usage.regions(),
+    );
 }
 
 fn is_canonical_genesis_event_log(offset: crucible::EventLogOffset) -> bool {

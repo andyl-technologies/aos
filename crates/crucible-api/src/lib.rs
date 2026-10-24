@@ -133,7 +133,7 @@ pub use vm_lifecycle::{
 pub use vm_lifecycle::{
     ProductionVmExactHotForkSourceBoundary, ProductionVmHotForkNodeAdoption,
     ProductionVmHotForkNodeServiceState, ProductionVmHotForkSourceWorld,
-    ProductionVmHotForkWorldContinuation,
+    ProductionVmHotForkWorldContinuation, SourceMemoryRegions,
     authenticate_production_vm_exact_hot_fork_source_boundary,
     build_production_vm_lifecycle_loop_from_hot_fork_with_launcher,
 };
