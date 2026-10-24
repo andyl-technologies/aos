@@ -324,3 +324,57 @@ fn pending_native_publication_cannot_name_two_distinct_events() {
         Err(SchedulingError::InvalidSnapshot)
     ));
 }
+
+fn changed_consumed_provenance_is_refused(external: bool) {
+    let (graph, original) = two_recipient_snapshot(true);
+    validate_saved_source(&graph, &original).unwrap();
+    let recipient = if external {
+        &graph.coordinator_policy().external_inputs[0].node_id
+    } else {
+        &graph.world().connections[0].consumer.node_id
+    };
+    let mutations: [fn(&mut crucible_node_format::ContentRef); 4] = [
+        |reference| reference.hash.algorithm = "unsupported".into(),
+        |reference| reference.hash.domain = "invalid domain".into(),
+        |reference| reference.hash.digest = "not-a-digest".into(),
+        |reference| reference.media_type = "invalid\nmedia".into(),
+    ];
+    for mutate in mutations {
+        let mut changed = original.clone();
+        let batch = changed
+            .input_batches
+            .iter_mut()
+            .find(|batch| &batch.node == recipient)
+            .unwrap();
+        assert_eq!(batch.consumed.len(), 1);
+        mutate(&mut batch.deliveries[0].provenance_ref);
+        assert!(batch.deliveries[0].provenance_ref.validate().is_err());
+
+        // Keep the inventory and ACK self-consistent. A strict JSON round trip
+        // ensures this control reaches the same typed reader as archive bytes.
+        let bytes = crucible_node_format::canonical::canonical_json(
+            &serde_json::to_value(&batch.deliveries).unwrap(),
+        )
+        .unwrap();
+        batch.inventory = crucible_node_format::canonical::content_ref(
+            &bytes,
+            "application/vnd.crucible.input-inventory+json",
+        )
+        .unwrap();
+        batch.acknowledgement.as_mut().unwrap().inventory = batch.inventory.clone();
+        let bytes = serde_json::to_vec(&changed).unwrap();
+        let decoded: SchedulingSnapshot = serde_json::from_slice(&bytes).unwrap();
+
+        assert!(validate_saved_source(&graph, &decoded).is_err());
+    }
+}
+
+#[test]
+fn consumed_external_input_requires_well_formed_original_provenance() {
+    changed_consumed_provenance_is_refused(true);
+}
+
+#[test]
+fn consumed_routed_input_requires_well_formed_original_provenance() {
+    changed_consumed_provenance_is_refused(false);
+}

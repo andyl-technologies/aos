@@ -120,6 +120,10 @@ pub(in crate::node_scheduling) const fn counter_scratch_data() -> usize {
         + source_history_counter_scratch_data()
         + consumed_identity_counter_scratch_data()
         + super::native_publications::counter_scratch_data()
+        // The staged provenance check borrows the original reference and
+        // preserves its typed failure under the existing error-backing bound.
+        + size_of::<&crucible_node_format::ContentRef>()
+        + size_of::<Result<(), crucible_node_format::ContractError>>()
 }
 
 // Names the actual borrowed index header, insertion and membership loans,

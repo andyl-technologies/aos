@@ -849,6 +849,9 @@ pub(crate) fn validate_structure(snapshot: &SchedulingSnapshot) -> Result<(), Sc
                 return Err(SchedulingError::InvalidSnapshot);
             }
             validate_delivery_lineage(delivery, snapshot.maximum_microsteps)?;
+            // Consumed inputs have left the pending queue's independent
+            // provenance check, but retain the same original reference syntax.
+            delivery.provenance_ref.validate()?;
             let payload = batch
                 .payloads
                 .iter()
