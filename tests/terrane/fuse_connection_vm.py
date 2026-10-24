@@ -110,7 +110,7 @@ def scenario(executable, directory, mode):
         require(supervisor.send(b"M") == 1, "mount-ready message was truncated")
         require(supervisor.recv(64) == b"READY", "actual kernel INIT did not complete")
 
-        if mode in {"serve", "metadata", "read", "late", "readiness"}:
+        if mode in {"serve", "metadata", "read", "late", "large", "readiness"}:
             metadata = target.stat()
             require(stat.S_ISDIR(metadata.st_mode) and metadata.st_mode & 0o7777 == 0o555
                     and metadata.st_ino == 16
@@ -131,8 +131,9 @@ def scenario(executable, directory, mode):
                     raise RuntimeError("disabled exposure served an extended attribute")
             else:
                 original = os.fsencode(target)
-                require(sorted(os.listdir(original)) == [b"a", b"b", b"directory", b"link", b"\xff"],
-                        "actual READDIR lost original direct-child names")
+                if mode != "large":
+                    require(sorted(os.listdir(original)) == [b"a", b"b", b"directory", b"link", b"\xff"],
+                            "actual READDIR lost original direct-child names")
                 left, right = (target / "a").stat(), (target / "b").stat()
                 require(left.st_ino == right.st_ino and left.st_nlink == right.st_nlink == 2
                         and left.st_size == right.st_size == 3
@@ -268,6 +269,8 @@ def scenario(executable, directory, mode):
                 raise RuntimeError("closed device connection unexpectedly serves metadata")
         require(child.wait(timeout=5) == 0,
                 "actual confined FUSE actor failed: " + child.stderr.read().decode(errors="replace"))
+        if mode == "large":
+            print("PASS large immutable index serves touched metadata within a smaller node budget", flush=True)
         print("PASS actual confined FUSE transport " + mode, flush=True)
     finally:
         for descriptor in descriptors:
@@ -298,5 +301,5 @@ def scenario(executable, directory, mode):
 
 if __name__ == "__main__":
     executable, directory = map(pathlib.Path, sys.argv[1:])
-    for selected in ["serve", "metadata", "read", "late", "readiness", "timeout", "cancel"]:
+    for selected in ["serve", "metadata", "read", "late", "large", "readiness", "timeout", "cancel"]:
         scenario(executable, directory, selected)

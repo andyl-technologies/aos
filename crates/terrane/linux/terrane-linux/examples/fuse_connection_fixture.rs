@@ -47,7 +47,7 @@ fn main() -> Result {
     let mode = std::env::args().nth(1).ok_or("missing fixture mode")?;
     if !matches!(
         mode.as_str(),
-        "serve" | "metadata" | "read" | "late" | "readiness" | "timeout" | "cancel"
+        "serve" | "metadata" | "read" | "late" | "large" | "readiness" | "timeout" | "cancel"
     ) {
         return Err("invalid fixture mode".into());
     }
@@ -91,8 +91,11 @@ fn main() -> Result {
         let mut directory_page = vec![0; LIMIT - 16];
         // This empty metadata fixture is not an authenticated repository view.
         // It exercises the production encoder against actual kernel READDIR.
-        let directory_bytes = metadata_bytes(matches!(mode.as_str(), "metadata" | "read" | "late"))?;
+        let directory_bytes = metadata_bytes(&mode)?;
         let directory = Index::open(&directory_bytes)?;
+        if mode == "large" && directory.len() <= 16 {
+            return Err("large immutable index does not exceed the worker node budget".into());
+        }
         let mut metadata = Metadata::new(
             directory,
             MetadataLimits {
@@ -102,7 +105,7 @@ fn main() -> Result {
                 inode_bytes: 65536,
             },
             CachePolicy::Revalidate,
-            if matches!(mode.as_str(), "metadata" | "read" | "late") {
+            if matches!(mode.as_str(), "metadata" | "read" | "late" | "large") {
                 XattrPolicy::Recorded
             } else {
                 XattrPolicy::Disabled
@@ -179,7 +182,7 @@ fn main() -> Result {
         }
         notify(b"READY")?;
 
-        if !matches!(mode.as_str(), "serve" | "metadata" | "read" | "late" | "readiness") {
+        if !matches!(mode.as_str(), "serve" | "metadata" | "read" | "late" | "large" | "readiness") {
             if mode == "timeout" {
                 let error = connection
                     .receive(&mut input, Duration::from_millis(100))
@@ -473,8 +476,8 @@ fn main() -> Result {
 }
 
 /// Builds synthetic metadata without a repository, content source or exposure.
-fn metadata_bytes(populated: bool) -> Result<Vec<u8>> {
-    if !populated {
+fn metadata_bytes(mode: &str) -> Result<Vec<u8>> {
+    if !matches!(mode, "metadata" | "read" | "late" | "large") {
         return Ok(structural_index::compile([7; 32], &[], 1, 4096)?);
     }
     let content: [u8; 32] = TERRANE_V1
@@ -533,23 +536,26 @@ fn metadata_bytes(populated: bool) -> Result<Vec<u8>> {
     symlink.entry.kind = EntryKind::Symlink {
         target: b"./directory/../a\xff",
     };
-    let tree = Tree::build(
-        vec![
-            file(b"a", Some(b"a")),
-            file(b"b", Some(b"a")),
-            directory,
-            file(b"directory/file", None),
-            symlink,
-            file(b"\xff", None),
-        ],
-        None,
-        4096,
-        TreeUse::Ordinary,
-    )?;
+    let mut entries = vec![
+        file(b"a", Some(b"a")),
+        file(b"b", Some(b"a")),
+        directory,
+        file(b"directory/file", None),
+        symlink,
+        file(b"\xff", None),
+    ];
+    if mode == "large" {
+        // These paths remain untouched; the worker still has only 16 node slots.
+        let untouched = (0..64)
+            .map(|number| format!("untouched-{number:02}").into_bytes())
+            .collect::<Vec<_>>();
+        entries.extend(untouched.iter().map(|path| file(path, None)));
+    }
+    let tree = Tree::build(entries, None, 4096, TreeUse::Ordinary)?;
     Ok(structural_index::compile_tree(
         &tree,
         &std::collections::BTreeMap::new(),
-        16,
+        if mode == "large" { 128 } else { 16 },
         65536,
     )?)
 }

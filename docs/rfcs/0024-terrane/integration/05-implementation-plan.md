@@ -17043,3 +17043,14 @@ The worker checks that the original fetch still exists when the expired response
 is sent. Native execution of this new scenario and its mandatory workspace
 compilation are pending. The guest and actor bounds are unchanged. This extends
 component qualification for FUSE-28 and FUSE-29; accepted trunk tasks remain 27/64.
+
+
+The next native namespace scenario compiles 64 additional untouched file paths,
+then starts the actual worker with the original 16-node reverse-map and inode
+budgets. The worker refuses this scenario unless its immutable index is larger
+than that bound. The kernel driver looks up and checks only the original few
+paths, including hard links, nested readdir, raw names, xattrs and symlinks;
+it deliberately does not enumerate the untouched root entries. Thus a complete
+reverse map would fail at startup while a bounded touched-node resolver can
+serve the requested metadata. Strict all-target Clippy and Python syntax checks
+pass; native execution and mandatory workspace compilation remain pending.
