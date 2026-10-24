@@ -1134,6 +1134,10 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
         0
     }
 
+    fn event_log_offset(&self) -> Result<crucible::EventLogOffset, SchedulerError> {
+        Ok(controlled_event_log_offset())
+    }
+
     fn terminal_verdict_for_stop(&mut self) -> Option<QuantumTerminalVerdict> {
         panic!("controlled lifecycle does not drive a guest")
     }
@@ -1305,6 +1309,11 @@ impl QemuFreshAttemptLifecycleOwner for ControlledLifecycle {
     }
 }
 
+/// A recognizable offset the controlled lifecycle reports as its scheduler's.
+fn controlled_event_log_offset() -> crucible::EventLogOffset {
+    crucible::EventLogOffset::new(ContentHash::from_bytes(b"controlled-event-log"), 4096, 43)
+}
+
 #[test]
 fn packaged_status_lifecycle_delegates_execution_evidence_and_errors() {
     let boundary = Arc::new(ControlledLifecycleBoundary::default());
@@ -1347,6 +1356,12 @@ fn packaged_status_lifecycle_delegates_execution_evidence_and_errors() {
     lifecycle.set_choice_free_parallel_boot(true);
     assert!(boundary.live_network_choice_pause.load(Ordering::Acquire));
     assert!(boundary.choice_free_parallel_boot.load(Ordering::Acquire));
+    // An anchor root's replay proof binds the scheduler offset; a wrapper that
+    // falls back to the trait's refusal disables every anchor root.
+    assert_eq!(
+        lifecycle.event_log_offset().expect("delegated event-log offset"),
+        controlled_event_log_offset()
+    );
 
     let marker_node = NodeId {
         name: String::from("marker-node"),

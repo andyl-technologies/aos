@@ -558,6 +558,10 @@ where
         self.inner.settle_live_network_preselection()
     }
 
+    fn event_log_offset(&self) -> Result<crucible::EventLogOffset, SchedulerError> {
+        self.inner.event_log_offset()
+    }
+
     fn handoff_live_network_preselection(
         &mut self,
         expected: &crucible::LiveNetworkPreselection,

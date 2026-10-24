@@ -269,6 +269,9 @@ pub trait QemuFreshAttemptLifecycleOwner {
 
     /// Returns the segmented event-log offset retained by the live scheduler.
     ///
+    /// Wrappers must forward this: falling back to the refusal silently
+    /// disables anchor roots, whose replay proof binds this offset.
+    ///
     /// # Errors
     ///
     /// Returns [`SchedulerError`] when this lifecycle cannot expose an exact
