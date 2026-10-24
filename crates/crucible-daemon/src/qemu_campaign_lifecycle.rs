@@ -2022,7 +2022,7 @@ impl std::fmt::Display for HotForkRefusal {
 }
 
 /// Refuses an exact event-log offset, for test lifecycles without a scheduler.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) fn refuse_event_log_offset() -> Result<crucible::EventLogOffset, SchedulerError> {
     Err(SchedulerError::BoundaryViolation {
         message: String::from("lifecycle has no exact event-log offset"),
