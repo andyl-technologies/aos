@@ -15,7 +15,7 @@ use serde_json::Value;
 
 use super::images::{Gem5ImageSource, sealed, validate_private_directory};
 use super::x86_root_installed::InstalledX86RootModel;
-use super::{Gem5LaunchArtifact, Gem5ProcessImageTools};
+use super::{Gem5LaunchArtifact, Gem5ProcessImageTools, Gem5RootLaunchDirectories};
 use crate::ProviderError;
 
 /// Retains the source-owned x86 root model and its measured capture machinery.
@@ -55,9 +55,11 @@ impl X86RootLaunch {
             owner,
             incarnation,
             generation,
-            resource_root,
-            image_root,
-            temporary_root,
+            Gem5RootLaunchDirectories {
+                resource_root,
+                image_root,
+                temporary_root,
+            },
             timeout,
             super::NativeCommandConstructionPolicy::default().reserve()?,
         )
@@ -71,12 +73,16 @@ impl X86RootLaunch {
         owner: Id,
         incarnation: Id,
         generation: U64,
-        resource_root: PathBuf,
-        image_root: PathBuf,
-        temporary_root: PathBuf,
+        directories: Gem5RootLaunchDirectories,
         timeout: Duration,
         command_budget: super::NativeCommandConstructionBudget,
     ) -> Result<Self, ProviderError> {
+        let Gem5RootLaunchDirectories {
+            resource_root,
+            image_root,
+            temporary_root,
+        } = directories;
+
         if generation.get() == 0 || timeout.is_zero() || timeout > Duration::from_secs(600) {
             return Err(ProviderError::Frame("x86 root launch fencing or deadline"));
         }

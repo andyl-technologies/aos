@@ -26,7 +26,9 @@ use crucible_engine::{
     node_state::{NativeArchiveRecord, PublicationKnowledge},
 };
 use crucible_node_format::{Id, Phase, Position};
-use crucible_node_transport::gem5::{X86RootLaunch, X86RootNativeProcess};
+use crucible_node_transport::gem5::{
+    Gem5RootLaunchDirectories, X86RootLaunch, X86RootNativeProcess,
+};
 
 use super::super::{NodeObservedError, measure_executable, refused};
 use super::{
@@ -127,9 +129,11 @@ impl X86RootInstalledEngine {
             root_owner.owner.clone(),
             root_owner.incarnation.clone(),
             root_owner.generation,
-            namespace.join("native"),
-            namespace.join("images"),
-            namespace.join("temporary"),
+            Gem5RootLaunchDirectories {
+                resource_root: namespace.join("native"),
+                image_root: namespace.join("images"),
+                temporary_root: namespace.join("temporary"),
+            },
             Duration::from_secs(120),
             self.command_policy.reserve().map_err(error)?,
         )
@@ -305,9 +309,11 @@ impl X86RootInstalledEngine {
             root.owner.clone(),
             root.incarnation.clone(),
             root.generation,
-            namespace.join("native"),
-            namespace.join("images"),
-            namespace.join("temporary"),
+            Gem5RootLaunchDirectories {
+                resource_root: namespace.join("native"),
+                image_root: namespace.join("images"),
+                temporary_root: namespace.join("temporary"),
+            },
             Duration::from_secs(120),
             self.command_policy.reserve().map_err(error)?,
         )

@@ -21,6 +21,9 @@ pub use protocol::*;
 #[cfg(test)]
 mod tests;
 
+mod root_launch;
+pub use root_launch::Gem5RootLaunchDirectories;
+
 mod arm_root_installed;
 mod arm_root_launch;
 pub use arm_root_installed::InstalledArmRootMechanism;
