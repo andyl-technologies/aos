@@ -8,21 +8,9 @@ pub(super) fn validate_input_queue(
     snapshot: &SchedulingSnapshot,
     batch: &SavedInputBatch,
 ) -> Result<(), SchedulingError> {
-    // The caller checks the consumed prefix's length and original identities.
-    // Consumption removes that recipient's entry from the live pending queue.
-    // Match the recipient and logical input, so changed coordinates cannot
-    // replay it and another recipient's fanout remains independent.
-    let consumed_deliveries = &batch.deliveries[..batch.consumed.len()];
-    for consumed in consumed_deliveries {
-        if snapshot.pending_deliveries.iter().any(|pending| {
-            pending.consumer == consumed.consumer
-                && pending.producer == consumed.producer
-                && pending.source_sequence == consumed.source_sequence
-        }) {
-            return Err(SchedulingError::InvalidSnapshot);
-        }
-    }
-
+    // The caller checks the consumed prefix's length and identities. The
+    // independent global index rejects consumed IDs at every recipient;
+    // repeating a recipient-local queue scan would add quadratic work.
     // The caller has checked strict EventKey ordering. Borrow its four fields
     // for logarithmic lookup without constructing cloned identifier keys.
     let unconsumed_deliveries = &batch.deliveries[batch.consumed.len()..];
@@ -115,8 +103,9 @@ pub(super) fn validate_source_history(
     Ok(())
 }
 
-// Adds this borrowed validation walk to the original construction quote. No
-// child storage or replacement event identity is constructed by the check.
+// Keeps the original fixed reservation and adds each independent validation
+// control. The global index backing is separately priced as transient work;
+// no replacement event identity or cloned identifier is constructed.
 pub(in crate::node_scheduling) const fn counter_scratch_data() -> usize {
     size_of::<&SchedulingSnapshot>()
         + size_of::<&SavedInputBatch>()

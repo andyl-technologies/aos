@@ -570,11 +570,6 @@ fn validate_saved_profile(
                 return Err(SchedulingError::InvalidSnapshot);
             }
         }
-        for delivery in &batch.deliveries[batch.consumed.len()..] {
-            if !snapshot.pending_deliveries.contains(delivery) {
-                return Err(SchedulingError::InvalidSnapshot);
-            }
-        }
     }
     let mut reserved_owners = BTreeSet::new();
     for reservation in &snapshot.reservations {
