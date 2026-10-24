@@ -258,8 +258,9 @@ impl Gem5NativeProcess {
 
     /// Polls actual child and auxiliary-group reclamation without servicing events.
     ///
-    /// Returns no receipt while any private-group PID remains. Original modeled
-    /// custody is retained even after the kernel has reclaimed every process.
+    /// Returns no receipt while any private-group PID remains or the kernel
+    /// census is incomplete. Original modeled custody remains retained even
+    /// after the kernel has reclaimed every process.
     ///
     /// # Errors
     /// Refuses polling before quarantine, changed native identity, kernel census
@@ -365,7 +366,7 @@ fn begin_quarantine(
             // A previously reaped leader no longer anchors a safe group signal.
             // Only a genuine cached Child status and complete empty census may
             // settle this case; never signal a potentially recycled group ID.
-            if !group_members(identity.pid)?.is_empty() {
+            if !group_members(identity.pid, deadline)?.is_empty() {
                 return Err(ProviderError::Conflict(
                     "gem5 reaped leader still has unresolved private group members",
                 ));
@@ -407,7 +408,7 @@ fn poll_reclamation<'a>(
             state.reaped = child.try_wait()?;
         }
         let members = group_members_with_diagnostic(state.pid, &mut state.census_diagnostic)?;
-        if let Some(status) = state.reaped.filter(|_| members.is_empty()) {
+        if let Some(status) = state.reaped.filter(|_| members.is_complete_and_empty()) {
             if state
                 .shutdown
                 .as_ref()
@@ -453,15 +454,62 @@ fn poll_reclamation<'a>(
     Ok(state.proof.as_ref())
 }
 
-fn group_members(group: u32) -> Result<Vec<u32>, ProviderError> {
-    group_members_with_diagnostic(group, &mut None)
+// An unavailable group is an incomplete census, never evidence of absence.
+// Keep known members even when another task exits during the same scan.
+struct GroupCensus {
+    members: Vec<u32>,
+    complete: bool,
+}
+
+impl GroupCensus {
+    fn new() -> Self {
+        Self {
+            members: Vec::new(),
+            complete: true,
+        }
+    }
+
+    fn observe(&mut self, pid: u32, actual: Option<u32>, group: u32) -> Result<(), ProviderError> {
+        let Some(actual) = actual else {
+            self.complete = false;
+            return Ok(());
+        };
+        if actual == group {
+            if self.members.len() >= 4096 {
+                return Err(ProviderError::ResourceExhausted(
+                    "gem5 private auxiliary process roster",
+                ));
+            }
+            self.members.push(pid);
+        }
+        Ok(())
+    }
+
+    fn is_complete_and_empty(&self) -> bool {
+        self.complete && self.members.is_empty()
+    }
+}
+
+fn group_members(group: u32, deadline: OperationalDeadline) -> Result<Vec<u32>, ProviderError> {
+    loop {
+        let census = group_members_with_diagnostic(group, &mut None)?;
+        if census.complete {
+            return Ok(census.members);
+        }
+        if deadline.is_expired() {
+            return Err(ProviderError::Conflict(
+                "gem5 private group census deadline expired",
+            ));
+        }
+        std::thread::yield_now();
+    }
 }
 
 fn group_members_with_diagnostic(
     group: u32,
     diagnostic: &mut Option<Gem5CensusDiagnostic>,
-) -> Result<Vec<u32>, ProviderError> {
-    let mut members = Vec::new();
+) -> Result<GroupCensus, ProviderError> {
+    let mut census = GroupCensus::new();
     let mut entries = 0usize;
     for entry in fs::read_dir("/proc")? {
         entries += 1;
@@ -487,17 +535,10 @@ fn group_members_with_diagnostic(
         };
         file.take(65537).read_to_end(&mut bytes)?;
         let pgrp = parse_census_group(pid, &bytes, diagnostic)?;
-        if pgrp == group {
-            if members.len() >= 4096 {
-                return Err(ProviderError::ResourceExhausted(
-                    "gem5 private auxiliary process roster",
-                ));
-            }
-            members.push(pid);
-        }
+        census.observe(pid, pgrp, group)?;
     }
-    members.sort_unstable();
-    Ok(members)
+    census.members.sort_unstable();
+    Ok(census)
 }
 
 /// Retains only bounded field facts before returning the original refusal.
@@ -505,7 +546,7 @@ fn parse_census_group(
     pid: u32,
     bytes: &[u8],
     diagnostic: &mut Option<Gem5CensusDiagnostic>,
-) -> Result<u32, ProviderError> {
+) -> Result<Option<u32>, ProviderError> {
     let text = std::str::from_utf8(bytes).map_err(|_| {
         Gem5CensusDiagnostic::retain_first(diagnostic, pid, "stat-encoding", &[], None);
         ProviderError::Frame("gem5 kernel process stat encoding")
@@ -527,7 +568,23 @@ fn parse_census_group(
         }
         ProviderError::Frame("gem5 kernel process group omitted")
     })?;
-    token.parse::<u32>().map_err(|error| {
+    // Linux do_task_stat leaves pgid at -1 when lock_task_sighand cannot
+    // retain an exiting task. Re-scan under the same deadline; neither skip
+    // that task nor interpret an unavailable group as an empty group.
+    if token == "-1" {
+        if diagnostic.is_none() {
+            let field_count = Some(text[close + 1..].split_ascii_whitespace().count());
+            Gem5CensusDiagnostic::retain_first(
+                diagnostic,
+                pid,
+                "pgrp-unavailable",
+                token.as_bytes(),
+                field_count,
+            );
+        }
+        return Ok(None);
+    }
+    token.parse::<u32>().map(Some).map_err(|error| {
         let site = match error.kind() {
             std::num::IntErrorKind::PosOverflow | std::num::IntErrorKind::NegOverflow => {
                 "pgrp-numeric-overflow"

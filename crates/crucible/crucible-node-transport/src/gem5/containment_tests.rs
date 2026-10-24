@@ -221,7 +221,7 @@ fn secondary_original_group_child_blocks_receipt_until_actual_reap() {
             .is_none()
     );
     assert!(
-        group_members(identity.pid)
+        group_members(identity.pid, deadline(Duration::from_secs(5)).unwrap())
             .unwrap()
             .contains(&auxiliary.0.id())
     );
@@ -394,7 +394,67 @@ fn census_diagnostic_distinguishes_omission_overflow_and_valid_membership() {
     let mut valid = None;
     assert_eq!(
         parse_census_group(17, b"17 (name ) x) R 1 17 0", &mut valid).unwrap(),
-        17
+        Some(17)
     );
     assert!(valid.is_none());
+}
+
+#[test]
+fn unavailable_kernel_group_keeps_an_empty_census_incomplete() {
+    let mut diagnostic = None;
+    let actual = parse_census_group(17, b"17 (exiting) X 0 -1 -1 0", &mut diagnostic).unwrap();
+    assert_eq!(actual, None);
+    let retained = diagnostic.as_ref().unwrap();
+    assert_eq!(retained.refusal_site(), "pgrp-unavailable");
+    assert_eq!(retained.pgrp_token(), b"-1");
+    assert_eq!(retained.original_token_length(), 2);
+
+    let mut incomplete = GroupCensus::new();
+    incomplete.observe(17, actual, 23).unwrap();
+    incomplete.observe(19, Some(19), 23).unwrap();
+    assert!(incomplete.members.is_empty());
+    assert!(!incomplete.is_complete_and_empty());
+
+    // Only an independently completed later scan can establish emptiness.
+    let mut complete = GroupCensus::new();
+    complete.observe(19, Some(19), 23).unwrap();
+    assert!(complete.is_complete_and_empty());
+    assert!(!incomplete.is_complete_and_empty());
+}
+
+#[test]
+fn incomplete_census_retains_known_members_in_both_observation_orders() {
+    for unavailable_first in [false, true] {
+        let mut census = GroupCensus::new();
+        for unavailable in [unavailable_first, !unavailable_first] {
+            let (pid, row) = if unavailable {
+                (17, b"17 (exiting) X 0 -1 -1 0".as_slice())
+            } else {
+                (23, b"23 (member) S 1 23 23 0".as_slice())
+            };
+            let group = parse_census_group(pid, row, &mut None).unwrap();
+            census.observe(pid, group, 23).unwrap();
+        }
+
+        assert_eq!(census.members, vec![23]);
+        assert!(!census.complete);
+        assert!(!census.is_complete_and_empty());
+    }
+}
+
+#[test]
+fn other_negative_group_spellings_keep_the_original_parse_refusal() {
+    for token in ["-2", "-0", "-01", "--1", "-1x", "-2147483648"] {
+        let row = format!("17 (name) X 0 {token} -1 0");
+        let mut diagnostic = None;
+
+        assert!(matches!(
+            parse_census_group(17, row.as_bytes(), &mut diagnostic),
+            Err(ProviderError::Frame("gem5 kernel process group invalid")),
+        ));
+        assert_eq!(
+            diagnostic.as_ref().unwrap().refusal_site(),
+            "pgrp-nondecimal"
+        );
+    }
 }
