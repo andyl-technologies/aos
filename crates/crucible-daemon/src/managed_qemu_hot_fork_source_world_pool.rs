@@ -73,6 +73,8 @@ pub use errors::{
 pub struct ManagedQemuHotForkSourceWorld {
     key: QemuHotForkSourceWorldKey,
     resources: HotCheckpointResourceProfile,
+    /// What one child forked from this source reserves while leased.
+    child_resources: HotCheckpointResourceProfile,
     source: Option<ProductionVmHotForkSourceWorld>,
     leased_source: Option<Arc<Mutex<ProductionVmHotForkSourceWorld>>>,
     invalidated: bool,
@@ -188,6 +190,7 @@ impl ManagedQemuHotForkSourceWorld {
         Ok(Self {
             key,
             resources,
+            child_resources: resources,
             source: Some(source),
             leased_source: None,
             invalidated: false,

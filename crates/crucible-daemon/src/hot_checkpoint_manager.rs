@@ -111,6 +111,28 @@ impl HotCheckpointManager {
         &self,
         candidate: HotCheckpointCandidate,
     ) -> Result<HotCheckpointAdmissionPlan, HotCheckpointAdmissionRejection> {
+        self.plan_admission_with_reservations(candidate, HotCheckpointUsage::default())
+    }
+
+    /// Builds an admission plan that also leaves room for `reservations`.
+    ///
+    /// Victims are chosen exactly as [`Self::plan_admission`] chooses them,
+    /// but the candidate counts as fitting only once the retained sources
+    /// left after demotion, the candidate, and `reservations` all fit. A
+    /// caller that must lease the candidate immediately, such as an anchor
+    /// root and its one child, reserves that lease here, so demoting colder
+    /// sources can make room before admission refuses.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same [`HotCheckpointAdmissionRejection`] values as
+    /// [`Self::plan_admission`], with pressure measured including
+    /// `reservations`.
+    pub fn plan_admission_with_reservations(
+        &self,
+        candidate: HotCheckpointCandidate,
+        reservations: HotCheckpointUsage,
+    ) -> Result<HotCheckpointAdmissionPlan, HotCheckpointAdmissionRejection> {
         self.generation
             .checked_add(1)
             .ok_or(HotCheckpointAdmissionRejection::GenerationExhausted)?;
@@ -136,10 +158,13 @@ impl HotCheckpointManager {
             .collect::<Vec<_>>();
         candidates.sort_by_key(|status| (status.score(), status.slot));
 
-        if projected
-            .add(candidate.resources)
-            .is_some_and(|usage| usage.fits(self.limits))
-        {
+        let fits = |usage: HotCheckpointUsage| {
+            usage
+                .add(candidate.resources)
+                .and_then(|usage| usage.add_reservations(reservations))
+                .is_some_and(|usage| usage.fits(self.limits))
+        };
+        if fits(projected) {
             return Ok(HotCheckpointAdmissionPlan {
                 manager: Arc::clone(&self.identity),
                 generation: self.generation,
@@ -156,10 +181,7 @@ impl HotCheckpointManager {
                 status,
                 reason: HotCheckpointDemotionReason::CapacityPressure,
             });
-            if projected
-                .add(candidate.resources)
-                .is_some_and(|usage| usage.fits(self.limits))
-            {
+            if fits(projected) {
                 return Ok(HotCheckpointAdmissionPlan {
                     manager: Arc::clone(&self.identity),
                     generation: self.generation,
@@ -169,7 +191,17 @@ impl HotCheckpointManager {
             }
         }
 
-        let combined = saturating_combined_usage(projected, candidate.resources);
+        let combined = saturating_combined_usage(projected, candidate.resources)
+            .add_reservations(reservations)
+            .unwrap_or(HotCheckpointUsage {
+                templates: usize::MAX,
+                template_bytes: u64::MAX,
+                expected_private_dirty_bytes: u64::MAX,
+                process_count: u32::MAX,
+                virtual_cpu_count: u32::MAX,
+                descriptor_count: u32::MAX,
+                overlay_count: u32::MAX,
+            });
         Err(
             HotCheckpointAdmissionRejection::InsufficientDemotableCapacity {
                 pressure: HotCheckpointPressure::for_usage(combined, self.limits),

@@ -166,6 +166,28 @@ where
         fallback: HotCheckpointFallback,
     ) -> Result<HotCheckpointAdmissionCommit, ManagedQemuHotForkSourceWorldAdmissionFailure<D::Error>>
     {
+        self.admit_source_reserving(world, signals, fallback, None)
+    }
+
+    /// Admits one source that must also leave room for one child lease.
+    ///
+    /// With `child`, victim planning reserves live leases and that child as
+    /// well as the candidate, so demoting colder sources can free the bytes
+    /// the child needs. A plan that still cannot fit them refuses with
+    /// [`ManagedQemuHotForkSourceWorldAdmissionError::AnchorChildCapacity`].
+    /// Without `child` this is [`Self::admit_source`].
+    ///
+    /// # Errors
+    ///
+    /// Returns the same failures as [`Self::admit_source`].
+    pub(crate) fn admit_source_reserving(
+        &mut self,
+        world: ManagedQemuHotForkSourceWorld,
+        signals: HotCheckpointHotnessSignals,
+        fallback: HotCheckpointFallback,
+        child: Option<HotCheckpointResourceProfile>,
+    ) -> Result<HotCheckpointAdmissionCommit, ManagedQemuHotForkSourceWorldAdmissionFailure<D::Error>>
+    {
         let semantic_key = world.key.template_key();
         let manager_key = manager_source_key(&world.key);
         let candidate =
@@ -177,8 +199,47 @@ where
                 ManagedQemuHotForkSourceWorldAdmissionError::DuplicateSource,
             ));
         }
-        let plan = match self.manager.plan_admission(candidate) {
+        let reservations = match child {
+            None => Some(HotCheckpointUsage::default()),
+            Some(child) => self.lease_usage.add_resource_reservation(child),
+        };
+        let Some(reservations) = reservations else {
+            return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
+                world,
+                None,
+                ManagedQemuHotForkSourceWorldAdmissionError::Rejected(
+                    crate::HotCheckpointAdmissionRejection::AccountingOverflow,
+                ),
+            ));
+        };
+        let plan = match self
+            .manager
+            .plan_admission_with_reservations(candidate, reservations)
+        {
             Ok(plan) => plan,
+            // A source that must also host its child reports capacity in
+            // terms of that child once no eligible demotion makes room.
+            Err(crate::HotCheckpointAdmissionRejection::InsufficientDemotableCapacity {
+                pressure,
+                ..
+            }) if child.is_some() => {
+                let limits = self.manager.limits();
+                let projected = self
+                    .manager
+                    .usage()
+                    .add(candidate.resources())
+                    .and_then(|usage| usage.add_reservations(reservations))
+                    .unwrap_or_default();
+                return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
+                    world,
+                    None,
+                    ManagedQemuHotForkSourceWorldAdmissionError::AnchorChildCapacity {
+                        pressure,
+                        projected,
+                        limits,
+                    },
+                ));
+            }
             Err(source) => {
                 return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
                     world,
@@ -214,26 +275,36 @@ where
                 ));
             }
         };
-        projected_usage = match projected_usage.add_reservations(self.lease_usage) {
-            Some(usage) => usage,
-            None => {
-                return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
-                    world,
-                    None,
-                    ManagedQemuHotForkSourceWorldAdmissionError::Rejected(
-                        crate::HotCheckpointAdmissionRejection::AccountingOverflow,
-                    ),
-                ));
-            }
+        let reserved = match child {
+            None => Some(self.lease_usage),
+            Some(_) => Some(reservations),
         };
+        projected_usage =
+            match reserved.and_then(|reserved| projected_usage.add_reservations(reserved)) {
+                Some(usage) => usage,
+                None => {
+                    return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
+                        world,
+                        None,
+                        ManagedQemuHotForkSourceWorldAdmissionError::Rejected(
+                            crate::HotCheckpointAdmissionRejection::AccountingOverflow,
+                        ),
+                    ));
+                }
+            };
         let limits = self.manager.limits();
         if !projected_usage.fits(limits) {
-            return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
-                world,
-                None,
-                ManagedQemuHotForkSourceWorldAdmissionError::LeaseCapacity {
-                    pressure: HotCheckpointPressure::for_usage(projected_usage, limits),
+            let pressure = HotCheckpointPressure::for_usage(projected_usage, limits);
+            let error = match child {
+                None => ManagedQemuHotForkSourceWorldAdmissionError::LeaseCapacity { pressure },
+                Some(_) => ManagedQemuHotForkSourceWorldAdmissionError::AnchorChildCapacity {
+                    pressure,
+                    projected: projected_usage,
+                    limits,
                 },
+            };
+            return Err(ManagedQemuHotForkSourceWorldAdmissionFailure::new(
+                world, None, error,
             ));
         }
         if let Err(source) = self
@@ -718,7 +789,7 @@ where
         // vCPU, descriptor, and writable-overlay counts bound the corresponding
         // child dimensions. Any future child-only resource class must extend
         // this profile explicitly before that configuration can be admitted.
-        let resources = world.resources;
+        let resources = world.child_resources;
         let projected_lease_usage = self
             .lease_usage
             .add_resource_reservation(resources)

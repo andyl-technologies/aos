@@ -442,6 +442,54 @@ fn anchor_root_with_room_for_one_child_persists_its_thin_fallback_and_leases() {
 }
 
 #[test]
+fn anchor_root_demotes_a_colder_root_to_make_room_for_its_child() {
+    let mut anchor = advanced_source("anchor.victim");
+    let anchor_key = published_key(&anchor);
+    // Two worlds fit, so a stop root and the anchor can both be retained, but
+    // the two plus the anchor's one child cannot.
+    let limits = scaled_limits(&mut anchor, 2, 5, 2);
+    let mut pool = ManagedQemuHotForkSourceWorldPool::open(
+        limits,
+        ReapingDemotionSink,
+        MemoryHotCheckpointFallbackRetentionStore::new(),
+    )
+    .expect("managed source-world pool");
+    let stop = advanced_source("anchor.victim-stop");
+    let stop_key = published_key(&stop);
+    assert_ne!(stop_key, anchor_key);
+    pool.admit_authenticated_published_root(
+        published_root(
+            stop_key.clone(),
+            published_artifact(b"anchor-victim-stop"),
+            stop,
+        ),
+        HotCheckpointHotnessSignals::new(),
+    )
+    .expect("the stop root fits alone");
+
+    // The anchor's pending retry outranks the idle stop root, whose demotion
+    // frees the bytes the child needs.
+    pool.admit_authenticated_anchor_root(
+        anchor_root(
+            anchor_key.clone(),
+            published_artifact(b"anchor-victim-parent"),
+            anchor,
+        ),
+        HotCheckpointHotnessSignals::new(),
+    )
+    .expect("the anchor demotes the colder root");
+
+    assert!(!pool.source_available(&stop_key));
+    assert!(pool.source_available(&anchor_key));
+    let lease = pool
+        .checkout_lease_for(1, &anchor_key)
+        .expect("child lease fits after demotion")
+        .expect("anchor root lease");
+    pool.restore_lease_for(1, lease);
+    pool.orderly_shutdown().expect("retire anchor root");
+}
+
+#[test]
 fn anchor_root_without_child_headroom_is_rejected_where_a_stop_root_fits() {
     let mut source = advanced_source("anchor.no-headroom");
     let key = published_key(&source);

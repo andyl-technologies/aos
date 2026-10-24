@@ -13,8 +13,10 @@
 //! Anchor roots, kept at a branch parent's network fault park so the branch
 //! itself can fork, are admitted only while the pool could also lease one
 //! child of them: a root its own attempt could not fork from would only hold
-//! a template slot. Only a live equal root counts as already retained; a
-//! coordinate held by an invalidated root refuses the anchor.
+//! a template slot. An anchor carries its pending retry, so it may demote
+//! colder sources to make that room. Only a live equal root counts as
+//! already retained; a coordinate held by an invalidated root refuses the
+//! anchor.
 
 use std::collections::{BTreeSet, VecDeque};
 
@@ -71,16 +73,20 @@ where
 
     /// Admits an anchor root only when one child of it would still fit.
     ///
-    /// The headroom check charges the root as a template and one child as a
-    /// lease reservation of the root's measured profile, the same reservation
-    /// checkout would make, on top of current templates and live leases.
-    /// Everything else is ordinary published-root admission.
+    /// The anchor carries one pending attempt, the retry it is kept for, so
+    /// it outranks equally signalled sources that serve no queued attempt.
+    /// Admission plans demotions of such colder, unpinned sources while
+    /// reserving the anchor as a template and one child lease of it on top
+    /// of live leases, the same reservation checkout would make. Only when
+    /// every eligible demotion still leaves too little room is the anchor
+    /// refused as [`ManagedQemuHotForkSourceWorldAdmissionError::AnchorChildCapacity`].
     ///
     /// # Errors
     ///
     /// Returns [`ManagedQemuHotForkAuthenticatedAdmissionFailure`] retaining
-    /// the complete source authority when binding fails, the child headroom
-    /// does not fit, or published-root admission fails.
+    /// the complete source authority when binding fails, the root and its
+    /// child do not fit after eligible demotions, or published-root admission
+    /// fails.
     pub(crate) fn admit_authenticated_anchor_root(
         &mut self,
         authenticated: AuthenticatedPublishedRootQemuHotForkSource,
@@ -102,7 +108,7 @@ where
             QemuPublishedRootState::Unusable => {
                 Some(ManagedQemuHotForkSourceWorldAdmissionError::UnusableSource)
             }
-            QemuPublishedRootState::Absent => self.anchor_child_refusal(world.resources),
+            QemuPublishedRootState::Absent => None,
         };
         if let Some(error) = refusal {
             return Err(ManagedQemuHotForkAuthenticatedAdmissionFailure::Admission(
@@ -110,8 +116,15 @@ where
             ));
         }
 
-        self.admit_source(world, signals, HotCheckpointFallback::Thin(published))
-            .map_err(ManagedQemuHotForkAuthenticatedAdmissionFailure::Admission)
+        let child = world.child_resources;
+        let signals = anchor_signals(signals);
+        self.admit_source_reserving(
+            world,
+            signals,
+            HotCheckpointFallback::Thin(published),
+            Some(child),
+        )
+        .map_err(ManagedQemuHotForkAuthenticatedAdmissionFailure::Admission)
     }
 
     /// Reports what occupies `key`'s coordinate.
@@ -130,32 +143,6 @@ where
             }
             Some(_) => QemuPublishedRootState::Unusable,
         }
-    }
-
-    /// Returns why a root with `resources` and one child of it cannot both fit.
-    fn anchor_child_refusal(
-        &self,
-        resources: HotCheckpointResourceProfile,
-    ) -> Option<ManagedQemuHotForkSourceWorldAdmissionError<D::Error>> {
-        let Some(projected) = self
-            .manager
-            .usage()
-            .add(resources)
-            .and_then(|usage| usage.add_reservations(self.lease_usage))
-            .and_then(|usage| usage.add_resource_reservation(resources))
-        else {
-            return Some(ManagedQemuHotForkSourceWorldAdmissionError::Rejected(
-                crate::HotCheckpointAdmissionRejection::AccountingOverflow,
-            ));
-        };
-        let limits = self.manager.limits();
-        (!projected.fits(limits)).then(|| {
-            ManagedQemuHotForkSourceWorldAdmissionError::AnchorChildCapacity {
-                pressure: HotCheckpointPressure::for_usage(projected, limits),
-                projected,
-                limits,
-            }
-        })
     }
 
     /// Reports whether the template-count limit leaves room for one more source.
@@ -339,6 +326,17 @@ where
             .admit_authenticated_anchor_root(root, self.signals);
         settle_root_admission(admitted, RootKind::Anchor)
     }
+}
+
+/// Returns an anchor's signals: the deployment's, plus its one pending retry.
+///
+/// A deployment already at the pending-attempt bound keeps its signals.
+fn anchor_signals(signals: HotCheckpointHotnessSignals) -> HotCheckpointHotnessSignals {
+    signals
+        .pending_attempts()
+        .checked_add(1)
+        .and_then(|pending| signals.with_pending_attempts(pending).ok())
+        .unwrap_or(signals)
 }
 
 /// Which admission path produced a root, for its refusal tokens.
