@@ -10,6 +10,36 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Derived Initial funding from actual bootstrap operands
+
+Commit `4aac9aca93` derives opaque Initial DATA from the shared physical
+Bootstrap18, parser, empty receiving-bank and Hello formula. The producer accepts
+actual borrowed operands and the independently derived opaque complete recipe,
+compares the same nonce, generation, executable and typed/private launch
+identities, and checks every axis against that recipe's own Prepare partition
+and escrow. A later phase cannot pay an undersized initial axis. Parent formatter,
+launch-identity and fixed-counter work have separately admitted construction
+rows. The worker bank remains opaque in the parent; native retains its actual
+semantic check. No caller-supplied row or parsed wire recipe creates this DATA.
+
+All five new controls pass in both codec modes, including comparison with the
+independent native operand path, exact and one-byte-short parent credit, foreign
+operands, changed registration demand, phase isolation and opaque-bank handling.
+The four existing initial-construction and four Source-correspondence controls
+also pass in both modes. These fixtures use explicitly inert complete-recipe
+DATA inside its private test module; they qualify no production Recipe issuer,
+Source authority, native process, Model or Hold.
+
+All-feature/all-target Transport/Engine/Daemon compilation, scoped formatting,
+six architecture checks and application test-target compilation pass. Actual
+application metadata records 185 test artifacts across 58 packages, including
+76 integration targets. All 630 frozen owned Rust/Cargo inputs match the commit
+and the actual application source capture. Strict Transport Clippy reports the
+same four owning-enum errors and 1,732 warnings, without new allowances. No new
+VM or native-runtime result is claimed for this checkpoint. Genuine Source
+integration, full Recipe production, Native18 adoption and the full RFC remain
+unfinished.
+
 ## Internal content growth retained by the original runtime
 
 Commits `c741d30fc0` and `26fa1db5d6` price internal content allocation at its
