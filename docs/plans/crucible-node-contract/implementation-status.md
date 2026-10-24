@@ -10,6 +10,29 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Shared seven-bank reservation pricing
+
+Commit `8ce7652cc9` exposes the native receiver's actual seven-reference and
+byte-bank backing formula to parent producers. Native reservation forwards to
+that same nonallocating quote. Each role's actual length and copied reference
+text determine retained storage; independent role ceilings only restrict it.
+Parent spare capacity remains separately retained. The row preserves the old
+retained/transient terms and adds the public forwarding controls to scratch.
+
+All 145 bootstrap controls and five Initial producer controls pass in each
+codec mode, with one existing bootstrap control ignored. The three new bank
+controls exercise real native reservation, exact/one-byte-short parent credit,
+all seven role restrictions, malformed references and uncopied parent spare
+capacity. All-feature/all-target Transport/Engine/Daemon compilation, scoped
+formatting, six architecture checks and application test-target compilation
+pass. Actual application metadata records 185 test artifacts across 58 packages,
+including 76 integration targets. All 632 frozen owned Rust/Cargo inputs match
+the commit and actual application source. Strict Transport Clippy retains the
+same four owning-enum errors and reports 1,726 warnings, without new allowances.
+No new VM result is claimed for this checkpoint. Full Prepare pricing and token
+issuance, complete Recipe production, live Native18 adoption and the full RFC
+remain unfinished.
+
 ## Initial funding under original Source and Birth custody
 
 Commit `672fcbb890` adds Initial producer quotes and derivation through the
