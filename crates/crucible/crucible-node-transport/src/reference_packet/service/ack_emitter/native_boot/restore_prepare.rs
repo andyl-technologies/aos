@@ -81,6 +81,28 @@ pub(super) struct NativeCompleteRestorePrepareAttempt {
     verified: bool,
 }
 
+/// Borrows the actual Prepare verifier inputs without granting startup credit.
+///
+/// The real boot and all three mutable failed-prefix destinations remain
+/// independent operands. No connection, original or startup owner is cloned.
+pub(crate) struct OriginalCompleteRestorePrepareInputsData<'a, S: ProviderStream> {
+    /// Borrows the actual retained native Hello journal.
+    pub(crate) hello: &'a OriginalNativeHelloJournal,
+    /// Borrows the actual incoming Prepare envelope.
+    pub(crate) original: &'a Envelope,
+    /// Borrows the same live admitted native connection.
+    pub(crate) connection: &'a Connection<S>,
+    /// Borrows the existing startup allocation, when this path requires it.
+    pub(crate) startup: Option<&'a OriginalNativePrepareStartupAllocation>,
+}
+
+/// Counts both verifier input headers before native Prepare construction.
+pub(super) const fn original_complete_restore_prepare_inputs_counter_scratch_data() -> usize {
+    2 * std::mem::size_of::<
+        OriginalCompleteRestorePrepareInputsData<'static, crate::client::DeadlineStream>,
+    >() + std::mem::size_of::<usize>()
+}
+
 pub(crate) struct VerifiedCompleteRestorePrepare {
     identity: OriginalNativeRestorationConnectionIdentity,
     boot: Rc<RefCell<NativeAckBoot>>,
@@ -104,10 +126,12 @@ impl NativeAckBoot {
         Self::authenticate_legacy_prepare_startup_data(boot)?;
         Self::verify_complete_restore_prepare_with_startup_into(
             boot,
-            hello,
-            original,
-            connection,
-            None,
+            OriginalCompleteRestorePrepareInputsData {
+                hello,
+                original,
+                connection,
+                startup: None,
+            },
             completed,
             service_quote,
             control_quote,
@@ -125,18 +149,27 @@ impl NativeAckBoot {
         Ok(())
     }
 
+    /// Verifies the same original Prepare while retaining all partial outputs.
+    ///
+    /// # Errors
+    /// Refuses changed startup, Hello, connection, policy or allocation inputs,
+    /// occupied output, malformed requests, failed authentication or exhausted credit.
     pub(crate) fn verify_complete_restore_prepare_with_startup_into<S: ProviderStream>(
         boot: &Rc<RefCell<Self>>,
-        hello: &OriginalNativeHelloJournal,
-        original: &Envelope,
-        connection: &Connection<S>,
-        startup: Option<&OriginalNativePrepareStartupAllocation>,
+        inputs: OriginalCompleteRestorePrepareInputsData<'_, S>,
         completed: &mut Option<VerifiedCompleteRestorePrepare>,
         service_quote: &mut Option<NativeRestoreServiceAllocationQuote>,
         control_quote: &mut Option<
             crate::reference_packet::control::PacketFreshRestoreControlAllocation,
         >,
     ) -> Result<(), ProviderError> {
+        let OriginalCompleteRestorePrepareInputsData {
+            hello,
+            original,
+            connection,
+            startup,
+        } = inputs;
+
         match startup {
             Some(startup) => startup.authenticate_header(connection, original)?,
             None => Self::authenticate_legacy_prepare_startup_data(boot)?,

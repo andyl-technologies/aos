@@ -53,7 +53,8 @@ pub use restore::{
 #[path = "restore_prepare.rs"]
 mod restore_prepare;
 pub(crate) use restore_prepare::{
-    VerifiedCanonicalRestoreInputAdmission, VerifiedCompleteRestorePrepare,
+    OriginalCompleteRestorePrepareInputsData, VerifiedCanonicalRestoreInputAdmission,
+    VerifiedCompleteRestorePrepare,
 };
 
 #[path = "report_startup.rs"]

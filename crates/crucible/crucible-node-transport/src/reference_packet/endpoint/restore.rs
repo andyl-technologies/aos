@@ -7,7 +7,7 @@ use super::*;
 use crate::client::{DeadlineStream, ExchangeDeadline};
 use crate::reference_packet::service::{
     OriginalNativeServiceCaptureContext,
-    ack_emitter::NativeAckBoot,
+    ack_emitter::{NativeAckBoot, OriginalCompleteRestorePrepareInputsData},
     complete_restore::{PacketNative5CompleteRestoreSelection, transfer::*},
 };
 use crate::retained_metadata::{MetadataObserver, RetainedProtocolMetadataFacts};
@@ -193,10 +193,12 @@ impl PacketEndpoint<DeadlineStream> {
                 let complete = self.complete.as_ref().ok_or_else(refused)?;
                 NativeAckBoot::verify_complete_restore_prepare_with_startup_into(
                     boot,
-                    &complete.hello,
-                    request,
-                    connection,
-                    Some(&original_loan.prepare),
+                    OriginalCompleteRestorePrepareInputsData {
+                        hello: &complete.hello,
+                        original: request,
+                        connection,
+                        startup: Some(&original_loan.prepare),
+                    },
                     &mut self.restore_prepare_admission,
                     &mut service_quote,
                     &mut control_quote,

@@ -332,6 +332,7 @@ pub fn original_native_prepare_startup_counter_scratch_data() -> usize {
         crate::reference_packet::service::complete_restore::transfer::complete_restore_fresh_prepare_digest_counter_scratch_data(),
         ConnectionAuthority::independent_clone_counter_scratch_data(),
         layout::counter_scratch_data(),
+        super::original_complete_restore_prepare_inputs_counter_scratch_data(),
         8 * size_of::<OriginalJsonValueStorageExtentData>(),
         size_of::<shapes::PrepareStartupShapes>(),
         size_of::<

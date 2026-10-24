@@ -100,10 +100,10 @@ pub(in crate::reference_packet::service) use bootstrap_import18::{
 
 pub(crate) use boot::{
     NativeAckBoot, NativeRestoredControlEvidence, OriginalCanonicalAckControlAdmit,
-    OriginalCompleteRestoreCommit, OriginalNativeBirthReadScope,
-    OriginalNativeReportStartupAllocation, VerifiedCanonicalAckAdmission,
-    VerifiedCanonicalRestoreInputAdmission, VerifiedCompleteRestoration,
-    VerifiedCompleteRestorationHeld, VerifiedCompleteRestorePrepare,
+    OriginalCompleteRestoreCommit, OriginalCompleteRestorePrepareInputsData,
+    OriginalNativeBirthReadScope, OriginalNativeReportStartupAllocation,
+    VerifiedCanonicalAckAdmission, VerifiedCanonicalRestoreInputAdmission,
+    VerifiedCompleteRestoration, VerifiedCompleteRestorationHeld, VerifiedCompleteRestorePrepare,
     original_native_ack_boot_layout, original_native_report_startup_scope_layout_data,
 };
 pub(crate) use bootstrap::{

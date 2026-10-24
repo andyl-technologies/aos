@@ -51,7 +51,8 @@ pub use native_boot::{
 
 pub(crate) use native_boot::{
     NativeAckBoot, NativeRestoredControlEvidence, OriginalCanonicalAckControlAdmit,
-    OriginalCompleteRestoreCommit, OriginalNativeBirthReadScope, OriginalNativeBootstrapOwned11,
+    OriginalCompleteRestoreCommit, OriginalCompleteRestorePrepareInputsData,
+    OriginalNativeBirthReadScope, OriginalNativeBootstrapOwned11,
     OriginalNativeReportStartupAllocation, VerifiedCanonicalAckAdmission,
     VerifiedCanonicalRestoreInputAdmission, VerifiedCompleteRestoration,
     VerifiedCompleteRestorationHeld, VerifiedCompleteRestorePrepare,

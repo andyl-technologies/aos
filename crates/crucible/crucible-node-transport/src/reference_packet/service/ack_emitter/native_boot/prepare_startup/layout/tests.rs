@@ -2,6 +2,7 @@
 
 use super::super::*;
 use super::{counter_scratch_data, original};
+use crate::client::DeadlineStream;
 use crucible_node_format::{Bytes, canonical};
 use serde_json::json;
 
@@ -64,12 +65,14 @@ fn actual_prepare_layout_consumer_preserves_original_components_and_prices_new_h
         let actual = original_native_prepare_startup_storage_data(&launch, &bank)?;
 
         assert_eq!(components(&actual), components(&old));
-        // One new defining counter term also adds one actual usize slot to
-        // that getter's own explicit aggregation array.
+        // The layout supplier and verifier each add an aggregation-array slot.
+        // The verifier additionally retains both input headers and its scalar
+        // counter result. Existing R/T components above must remain identical.
         let expected_counter = sum(&[
             original::counter_scratch_data(),
             counter_scratch_data(),
-            size_of::<usize>(),
+            2 * size_of::<OriginalCompleteRestorePrepareInputsData<'static, DeadlineStream>>(),
+            3 * size_of::<usize>(),
         ])?;
         assert_eq!(actual.declared_counter_scratch_bytes, expected_counter);
         assert_eq!(layout::counter_output_data(), expected_counter);
