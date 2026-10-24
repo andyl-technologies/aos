@@ -49,6 +49,14 @@ INODE_CASES = [
     "reserved_first_touch_and_checked_metadata_operations_allocate_nothing",
     "directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch",
 ]
+METADATA_PREFIX = "fuse_metadata::tests::"
+METADATA_CASES = [
+    'lookup_and_getattr_preserve_recorded_fields_and_hardlink_identity',
+    'root_and_symlink_replies_keep_kernel_root_separate_and_target_bytes_exact',
+    'canonical_overrides_ignore_recorded_ownership_and_keep_explicit_timestamps',
+    'refused_metadata_or_capacity_never_assigns_an_inode_or_changes_output',
+    'negative_lookup_caches_absence_only_for_pinned_views_and_clears_payload',
+]
 DIRECTORY_PREFIX = "fuse_directory::tests::"
 DIRECTORY_CASES = [
     "encodes_only_direct_children_with_exact_names_types_padding_and_parent",
@@ -67,7 +75,7 @@ def require(condition, message):
 
 
 def main():
-    """Checks one source-bound Linux artifact and three complete test inventories."""
+    """Checks one source-bound Linux artifact and four complete test inventories."""
     output = Path(os.environ["out"])
     source = Path(os.environ["src"])
     workspace = Path.cwd()
@@ -103,7 +111,8 @@ def main():
     cases = []
     for prefix, names, label in [(PREFIX, CASES, "structural"),
                                  (INODE_PREFIX, INODE_CASES, "inode"),
-                                 (DIRECTORY_PREFIX, DIRECTORY_CASES, "directory")]:
+                                 (DIRECTORY_PREFIX, DIRECTORY_CASES, "directory"),
+                                 (METADATA_PREFIX, METADATA_CASES, "metadata")]:
         expected = [prefix + name for name in names]
         inventory = captured([prefix, "--list", "--format", "terse"], label + "-inventory.log")
         actual = [line.removesuffix(": test") for line in inventory if line.endswith(": test")]
@@ -131,7 +140,7 @@ def main():
         "source": str(source), "input_sha256": inputs, "artifact": artifact,
         "executable_sha256": digest, "executed_cases": cases,
         "retained_artifact": str(retained.relative_to(output)),
-        "scope": "Structural codec, recorded metadata and bounded checked inode policy only; no sealed mapping, cache lease or FUSE worker authority",
+        "scope": "Structural codec, metadata reply encoders and bounded checked inode policy only; no sealed mapping, cache lease or FUSE worker authority",
     }, indent=2) + "\n")
 
 

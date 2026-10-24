@@ -17,6 +17,7 @@ use std::{
 use terrane_linux::{
     fuse_connection::Connection,
     fuse_directory,
+    fuse_metadata::{self, CachePolicy, Presentation},
     fuse_protocol::{self, Reply, Request},
     inode_policy::InodeTable,
     quota_confinement,
@@ -76,7 +77,6 @@ fn main() -> Result {
         let directory = Index::open(&directory_bytes)?;
         let mut inodes = InodeTable::with_reserved_capacity(1, 4096)?;
         let root = directory.lookup(b"").ok_or("empty index lost root")?;
-        let root_inode = u64::from(inodes.touch_entry(root)?.1.number());
 
         // Invalid arguments must fail before accepting or consuming real INIT.
         let error = connection
@@ -168,12 +168,14 @@ fn main() -> Result {
             let mut opened = [0; 16];
             let (body, errno) = match (request.opcode(), request.node()) {
                 (3, 1) => {
-                    // attr_out's validity header precedes the 88-byte fuse_attr.
-                    attributes[16..24].copy_from_slice(&root_inode.to_ne_bytes());
-                    attributes[76..80].copy_from_slice(&(libc::S_IFDIR | 0o555).to_ne_bytes());
-                    attributes[80..84].copy_from_slice(&2_u32.to_ne_bytes());
-                    attributes[96..100].copy_from_slice(&4096_u32.to_ne_bytes());
-                    (Some(attributes.as_slice()), 0)
+                    let encoded = fuse_metadata::getattr(
+                        root,
+                        Presentation::default(),
+                        CachePolicy::Revalidate,
+                        &mut inodes,
+                        &mut attributes,
+                    )?;
+                    (Some(encoded), 0)
                 }
                 (27, 1) => {
                     opened[..8].copy_from_slice(&1_u64.to_ne_bytes());

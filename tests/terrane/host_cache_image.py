@@ -176,9 +176,15 @@ PACKAGE_PATHS = {
 
 
 # The all-feature guest adds these cases without replacing the base inventory.
-FUSE_UNIT_PREFIXES = ("fuse_directory::", "fuse_protocol::", "inode_policy::",
+FUSE_UNIT_PREFIXES = ("fuse_metadata::", "fuse_directory::", "fuse_protocol::", "inode_policy::",
                       "maintenance_channel::", "structural_index::", "worker_channel::")
 FUSE_UNIT_TESTS = (
+    'fuse_metadata::tests::lookup_and_getattr_preserve_recorded_fields_and_hardlink_identity',
+    'fuse_metadata::tests::root_and_symlink_replies_keep_kernel_root_separate_and_target_bytes_exact',
+    'fuse_metadata::tests::canonical_overrides_ignore_recorded_ownership_and_keep_explicit_timestamps',
+    'fuse_metadata::tests::refused_metadata_or_capacity_never_assigns_an_inode_or_changes_output',
+    'fuse_metadata::tests::negative_lookup_caches_absence_only_for_pinned_views_and_clears_payload',
+
     'fuse_directory::tests::encodes_only_direct_children_with_exact_names_types_padding_and_parent',
     'fuse_directory::tests::hard_link_names_share_one_presented_inode_but_equal_content_keeps_distinct_inodes',
     'fuse_directory::tests::inode_exhaustion_never_writes_a_partial_record_or_recycles_a_number',
@@ -303,6 +309,7 @@ def source_unit_inventory(workspace):
         ("structural_index", "lib.rs", "pub mod structural_index;"),
         ("inode_policy", "lib.rs", "pub mod inode_policy;"),
         ("fuse_directory", "lib.rs", "pub mod fuse_directory;"),
+        ("fuse_metadata", "lib.rs", "pub mod fuse_metadata;"),
         ("fuse_protocol", "lib.rs", "pub mod fuse_protocol;"),
         ("host_cache/owner/surface_index", "host_cache/owner/mod.rs", "mod surface_index;"),
         ("host_cache/owner/recovery_namespace/surface", "host_cache/owner/recovery_namespace.rs", "mod surface;"),

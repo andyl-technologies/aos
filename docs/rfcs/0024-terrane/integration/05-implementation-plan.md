@@ -16542,3 +16542,37 @@ Strict all-feature, all-target native Clippy passes after the actual helper and
 original-descriptor fixture strengthening. Mandatory application targets and
 actual disposable-VM qualification remain required. No trunk task is accepted
 from these implementation or diagnostic results; accepted tasks remain 27 of 64.
+
+### Checked FUSE metadata payloads
+
+The original-inode census component at `feecd2d053` passes its actual disposable
+ext4 VM in 178.693 seconds. It observes a real inode-number replacement, counts
+that replacement under creation-time bindings and keeps the legacy raw census
+conservative. Original sealed mappings block closure through final unmap, and
+the zero-byte unlinked-inode control remains intact. Complete independent review
+matches 8,169 immutable source files, 5,428 bound inputs, the actual Cargo ELF,
+installed bytes and all eight required guest witnesses. This component does not
+prove authenticated exposure reconciliation; its separate surface request and
+mandatory application-target build remain in progress.
+
+A new optional metadata encoder supplies complete native FUSE LOOKUP and
+GETATTR payloads from checked structural entries and the original reserved
+inode table. Kernel root ID one remains separate from the presented 32-bit
+inode; hard links retain their canonical identity and counts. Recorded modes
+and registered ownership apply unless the prepared caller supplies canonical
+schema values. The caller resolves named timestamp policy before encoding;
+default presentation time remains Unix second one. Symlink targets are borrowed
+exactly. Pinned views use unbounded metadata validity, while follow/access-rule
+views require revalidation; only pinned views cache negative lookups.
+
+Five pure encoder cases check actual field layouts, canonical overrides,
+refused ownership/mode/output capacity, hard links, root identity, symlinks and
+cache policy. The existing instrumented first-touch test now also measures
+LOOKUP, GETATTR, READLINK and negative lookup at zero allocations. Structural
+qualification adds these five selectors to its closed inventory (43 total),
+and full native qualification adds them without replacing the base inventory.
+The actual FUSE connection fixture uses the encoder for GETATTR and requires
+mode, ownership, link count and canonical timestamps in the kernel result.
+Complete current application compilation and disposable FUSE qualification are
+required before accepting this component; no FUSE task or production worker
+composition is claimed. Accepted trunk tasks remain 27 of 64.

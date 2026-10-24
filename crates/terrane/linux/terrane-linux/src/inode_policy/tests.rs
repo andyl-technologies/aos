@@ -23,10 +23,48 @@ fn directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch() {
     let index = Index::open(&bytes).unwrap();
     let mut table = InodeTable::with_reserved_capacity(2, 4096).unwrap();
     let mut limited = InodeTable::with_reserved_capacity(1, 4096).unwrap();
+    let mut metadata_table = InodeTable::with_reserved_capacity(2, 4096).unwrap();
     let mut output = [0; 512];
 
     let ((), allocations) = allocation::measure(|| {
         for _ in 0..3 {
+            let entry = index.lookup(b"link").unwrap();
+            let presentation = crate::fuse_metadata::Presentation::default();
+            let cache = crate::fuse_metadata::CachePolicy::Pinned;
+            assert_eq!(
+                crate::fuse_metadata::lookup(
+                    entry,
+                    presentation,
+                    cache,
+                    &mut metadata_table,
+                    &mut output
+                )
+                .unwrap()
+                .len(),
+                128
+            );
+            assert_eq!(
+                crate::fuse_metadata::getattr(
+                    entry,
+                    presentation,
+                    cache,
+                    &mut metadata_table,
+                    &mut output
+                )
+                .unwrap()
+                .len(),
+                104
+            );
+            assert_eq!(
+                crate::fuse_metadata::readlink(entry).unwrap(),
+                b"exact target"
+            );
+            assert_eq!(
+                crate::fuse_metadata::negative_lookup(cache, &mut output)
+                    .unwrap()
+                    .len(),
+                128
+            );
             assert_eq!(
                 crate::fuse_directory::read(index, b"", 0, &mut table, &mut output),
                 Ok(96)
@@ -57,6 +95,7 @@ fn directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch() {
     assert_eq!(allocations, 0);
     assert_eq!(table.len(), 2);
     assert_eq!(limited.len(), 1);
+    assert_eq!(metadata_table.len(), 1);
 }
 
 type Constructor = fn(u32) -> Result<InodeTable, Error>;
