@@ -27,27 +27,35 @@
  
    Util::safeMkdir(tmpdir.c_str(), 0700);
    return tmpdir;
-@@ -438,14 +440,14 @@
+@@ -438,20 +440,19 @@
  #ifdef COPY_BINARY
  
    // cp /usr/bin/screen /tmp/dmtcp-USER@HOST/screen
 -  char cpCmdBuf[PATH_MAX * 2 + 8];
-+  char cpCmdBuf[PATH_MAX * 2 + sizeof(DMTCP_SOURCE_COMMAND_COPY) + 2];
  
    snprintf(newFilename, PATH_MAX, "%s/%s",
 -           dmtcp_get_tmpdir(),
 +           SharedData::getTmpDir(),
             jalib::Filesystem::BaseName(realFilename).c_str());
  
-   snprintf(cpCmdBuf, sizeof(cpCmdBuf),
+-  snprintf(cpCmdBuf, sizeof(cpCmdBuf),
 -           "/bin/cp %s %s", realFilename, newFilename);
-+           DMTCP_SOURCE_COMMAND_COPY " %s %s", realFilename, newFilename);
++  const std::string cpCommand = dmtcp_source_command::copyCommand(
++    DMTCP_SOURCE_COMMAND_COPY, realFilename, newFilename);
  
    // Remove any stale copy, just in case it's not right.
    JASSERT(unlink(newFilename) == 0 || errno == ENOENT) (newFilename);
+ 
+-  JASSERT(safeSystem(cpCmdBuf) == 0)(cpCmdBuf)
+-  .Text("call to system(cpCmdBuf) failed");
++  JASSERT(safeSystem(cpCommand.c_str()) == 0) (cpCommand)
++  .Text("call to executable copy command failed");
+ 
+   JASSERT(access(newFilename, X_OK) == 0) (newFilename) (JASSERT_ERRNO);
+ 
 --- /dev/null
 +++ b/src/dmtcp_source_command.h
-@@ -0,0 +1,211 @@
+@@ -0,0 +1,235 @@
 +// SPDX-License-Identifier: LGPL-3.0-or-later
 +// Copyright (c) 2026 Andyl, Inc.
 +#ifndef DMTCP_SOURCE_COMMAND_H
@@ -58,6 +66,7 @@
 +#include <dlfcn.h>
 +#include <pthread.h>
 +#include <spawn.h>
++#include <string>
 +#include <sys/wait.h>
 +#include <unistd.h>
 +
@@ -191,6 +200,29 @@
 +    scope.child = -1;
 +  }
 +  scope.release();
++}
++
++/** Encodes one literal shell operand, including embedded quotes or newlines. */
++inline std::string quoteArgument(const char *argument)
++{
++  std::string quoted = "'";
++  for (const char *cursor = argument; *cursor; ++cursor) {
++    if (*cursor == '\'') {
++      quoted += "'\\''";
++    } else {
++      quoted += *cursor;
++    }
++  }
++  quoted += "'";
++  return quoted;
++}
++
++/** Preserves literal executable paths and prevents copy-option interpretation. */
++inline std::string copyCommand(const char *copy, const char *source,
++                               const char *destination)
++{
++  return quoteArgument(copy) + " -- " + quoteArgument(source) + " " +
++      quoteArgument(destination);
 +}
 +
 +/** Returns the encoded helper wait status, or -1 for a parent-side error. */

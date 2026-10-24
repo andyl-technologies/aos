@@ -84,7 +84,8 @@ mkDerivation {
           ${./_dmtcp/source-command-controls.cpp} -o source-command-controls
         mkdir source-command-control
         ${coreutils}/bin/timeout 120 ./source-command-controls \
-          ${bash}/bin/bash ${coreutils}/bin/readlink "$PWD/source-command-control"
+          ${bash}/bin/bash ${coreutils}/bin/readlink "$PWD/source-command-control" \
+          ${coreutils}/bin/cp
 
         # Nix forbids setting setuid bits in its host build sandbox. Require
         # the real copied-executable control in a disposable guest instead.

@@ -173,6 +173,10 @@ source-built shell/copy paths. No file is removed. The nonworker launcher
 uses its already-created SharedData tmpdir instead of a worker-only API stub;
 ordinary worker access remains equivalent.
 
+The executable-copy command quotes each literal operand and separates options
+from paths. The launcher preserves spaces, quotes, substitutions, and hostname
+punctuation as path bytes instead of interpreting them as shell syntax.
+
 `source-command-controls.cpp` is an independently authored LGPL-3.0-or-later
 component source co-retained in the corresponding-source output. It observes
 the actual AOS shell ELF, encoded normal/signal/missing-shell outcomes,

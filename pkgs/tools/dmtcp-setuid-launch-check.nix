@@ -10,6 +10,7 @@
   diffutils,
   iproute2,
   bash,
+  tar,
   gcc-libs,
 }: let
   # Compile with the same checked-in controls as the ordinary launcher check.
@@ -17,6 +18,7 @@
   controls = mkDerivation {
     pname = "dmtcp-setuid-launch-controls";
     version = "1";
+    buildDeps = [tar];
     runtimeDeps = [gcc-libs];
     meta.license = "LGPL-3.0-or-later";
     phases = [
@@ -29,6 +31,11 @@
           $CXX -std=c++17 -Wall -Wextra -Werror -pedantic -UNDEBUG -O2 \
             -I${./_dmtcp} ${./_dmtcp/source-unselected-controls.cpp} \
             -o "$out/bin/source-unselected-controls"
+          ${tar}/bin/tar -xOf ${dmtcp-selected-writer-park.source}/dmtcp-patched-source.tar.gz \
+            ./src/dmtcp_source_command.h > dmtcp_source_command.h
+          $CXX -std=c++17 -Wall -Wextra -Werror -pedantic -UNDEBUG -O2 \
+            -I. -L${gcc-libs}/lib -Wl,-rpath,${gcc-libs}/lib -pthread -ldl \
+            ${./_dmtcp/source-command-controls.cpp} -o "$out/bin/source-command-controls"
           cp ${dmtcp-selected-writer-park.source}/licenses/COPYING.LESSER \
             "$out/share/licenses/dmtcp-setuid-launch-controls/LICENSE"
           cp ${./dmtcp-setuid-launch-check.nix} \
@@ -53,9 +60,8 @@ in
     testScript = ''
       set -eu
       test "$(id -u)" -eq 0
-      # DMTCP includes the hostname in its executable-copy directory. Give this
-      # minimal guest a normal hostname before exercising that launcher path.
-      printf '%s\n' dmtcp-launch-check > /proc/sys/kernel/hostname
+      # Punctuation in DMTCP's executable-copy directory must stay literal.
+      printf '%s\n' 'dmtcp-(copy)' > /proc/sys/kernel/hostname
       # Headless guests start without an active loopback interface. The real
       # coordinator connection stays within this disposable guest.
       ${iproute2}/sbin/ip link set lo up
@@ -77,23 +83,28 @@ in
       }
       trap report_failure EXIT
 
+      mkdir command-control
+      ${coreutils}/bin/timeout -k 5 60 ${controls}/bin/source-command-controls \
+        ${bash}/bin/bash ${coreutils}/bin/readlink "$PWD/command-control" ${coreutils}/bin/cp
+
       # Keep the ordinary route as an independent inverse, using real children.
       ${coreutils}/bin/timeout -k 5 60 ${controls}/bin/source-unselected-controls \
         ${dmtcp-selected-writer-park} ${controls}/bin/source-unselected-probe "$PWD/ordinary"
 
       # The real mode bit forces DMTCP's copied-executable route. Both launcher
       # and coordinator must still exit normally and be reaped by the control.
-      ${coreutils}/bin/cp ${controls}/bin/source-unselected-probe source-setuid-probe
-      ${coreutils}/bin/chmod 4755 source-setuid-probe
-      test "$(${coreutils}/bin/stat -c %a source-setuid-probe)" = 4755
+      probe="$PWD/source-setuid-probe (original)'"
+      ${coreutils}/bin/cp ${controls}/bin/source-unselected-probe "$probe"
+      ${coreutils}/bin/chmod 4755 "$probe"
+      test "$(${coreutils}/bin/stat -c %a "$probe")" = 4755
       ${coreutils}/bin/timeout -k 5 60 ${controls}/bin/source-unselected-controls \
-        ${dmtcp-selected-writer-park} "$PWD/source-setuid-probe" "$PWD/setuid"
+        ${dmtcp-selected-writer-park} "$probe" "$PWD/setuid"
 
-      copied=$(${findutils}/bin/find "$PWD/setuid" -type f -name source-setuid-probe)
+      copied=$(${findutils}/bin/find "$PWD/setuid" -type f -name "source-setuid-probe (original)'")
       test -n "$copied"
       test -f "$copied"
-      test ! "$copied" -ef "$PWD/source-setuid-probe"
-      ${diffutils}/bin/cmp "$PWD/source-setuid-probe" "$copied"
+      test ! "$copied" -ef "$probe"
+      ${diffutils}/bin/cmp "$probe" "$copied"
 
       echo actual_setuid_copied_launcher_exit_and_reaping=true
     '';

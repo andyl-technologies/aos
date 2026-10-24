@@ -28,7 +28,7 @@ static void *invoke(void *argument)
 
 int main(int argc, char **argv)
 {
-  assert(argc == 4);
+  assert(argc == 5);
   const char *shell = argv[1];
   struct sigaction original{};
   struct sigaction handler{};
@@ -49,6 +49,27 @@ int main(int argc, char **argv)
   const std::string command = std::string("test \"$(") + argv[2] +
       " /proc/$$/exe)\" = '" + shell + "'";
   assert(dmtcp_source_command::run(shell, command.c_str()) == 0);
+
+  // Exercise literal operands through the actual pinned copy program. Shell
+  // punctuation and newlines belong to the filenames, not the command grammar.
+  const std::string sourcePath = std::string(argv[3]) +
+      "/source ' \" $(false); (copy)\ninput";
+  const std::string destinationPath = std::string(argv[3]) +
+      "/destination ' \" $(false); (copy)\noutput";
+  const int source = open(sourcePath.c_str(), O_WRONLY | O_CREAT | O_EXCL, 0600);
+  assert(source >= 0);
+  assert(write(source, "literal copy\n", 13) == 13);
+  assert(close(source) == 0);
+
+  const std::string copyCommand = dmtcp_source_command::copyCommand(
+      argv[4], sourcePath.c_str(), destinationPath.c_str());
+  assert(dmtcp_source_command::run(shell, copyCommand.c_str()) == 0);
+  const int destination = open(destinationPath.c_str(), O_RDONLY | O_NOFOLLOW);
+  assert(destination >= 0);
+  char copied[14]{};
+  assert(read(destination, copied, sizeof(copied)) == 13);
+  assert(std::string(copied) == "literal copy\n");
+  assert(close(destination) == 0);
 
   Invocation first{shell, "exit 3"};
   Invocation second{shell, "exit 4"};
