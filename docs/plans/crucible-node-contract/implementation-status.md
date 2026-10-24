@@ -10,6 +10,34 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Released World and settled native constructor inputs
+
+Commit `a662f3b6be` groups the seven actual released-World validation inputs.
+Both complete authentication bodies and all five callers' original operands
+remain unchanged. Release, observation, suffix, Producer and checkpoint scratch
+quotes retain their prior terms and count both borrowed input headers.
+
+Commit `59df648469` groups the actual prefix17 boot and Capture-owner constructor
+inputs. The same nested launch bytes move at the same call boundary, while
+bootstrap custody, actual Boot identity and failed-prefix destinations remain
+separate. Complete constructor validation and input evaluation order stay
+unchanged. The initial native construction quote counts both input headers
+before admission; the later import quote includes that same fixed scratch.
+
+Each checkpoint passes all-feature Transport/Engine/Daemon targets, six
+architecture checks, scoped formatting and application test-target compilation.
+Both codec modes pass seven activation, eleven input/reactive, thirty suffix,
+one Producer and 51 settled-graph controls; these selectors overlap. Actual
+application metadata records 185 test artifacts across 58 packages, including
+76 integration targets. All respective 588 and 591 frozen owned Rust/Cargo
+inputs match their commits and actual application source captures. No new full
+library or VM qualification is claimed at these checkpoints.
+
+Strict Transport Clippy falls from twelve to ten and then eight errors, with
+1,734 warnings and no added allowance. These interfaces supply no runtime
+capacity, completed Capture, Native18 adoption or full RFC completion. The
+funded runtime handoff and strict qualification remain unfinished.
+
 ## Earlier Capture comparison inputs
 
 Commit `020f566438` groups the actual earlier Capture occurrence, signed inputs,
