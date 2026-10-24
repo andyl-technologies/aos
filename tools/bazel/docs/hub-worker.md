@@ -100,6 +100,8 @@ multipart and body-limit checks, and the shipped CLI download byte comparison.
 The minimal VM explicitly enables loopback with AOS iproute2, and the producer
 enables the Nix command feature needed for artifact closure queries. Its image
 page assertions check current provider contracts and download commands.
+The [required application Rust compile gate](../tests/evidence/registry-image-required-rust-targets.json)
+also passes for the image-validation source bytes used in this checkpoint.
 
 The frozen Cargo baseline records remain in `../tests/evidence/`. Full
 compiler-argument equivalence, performance acceptance and production-builder
