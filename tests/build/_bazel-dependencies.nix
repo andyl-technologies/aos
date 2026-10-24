@@ -15,6 +15,8 @@
     "hub-service-tests"
     "hub-service-all-features"
     "hub-service-all-features-tests"
+    "registry-web"
+    "registry-web-wasm"
     "hub-console"
     "hub-console-wasm"
     "hub-db"

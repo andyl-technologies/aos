@@ -32,6 +32,7 @@
         "crates/linux/aos-systemd-client/Cargo.toml"
         "crates/modules/aos-module-format/Cargo.toml"
         "crates/registry/aos-registry-format/Cargo.toml"
+        "crates/registry/aos-registry-web/Cargo.toml"
         "crates/release/aos-release-format/Cargo.toml"
         "crates/modules/aos-module-docs/Cargo.toml"
         "crates/packages/aos-deployment-format/Cargo.toml"
@@ -160,6 +161,8 @@ in
     boot-preparation = import ./_bazel-boot-preparation.nix {inherit pkgs;};
     release-coordination = import ./_bazel-release-coordination.nix {inherit pkgs;};
     registry-native = import ./_bazel-registry-native.nix {inherit pkgs;};
+    registry-web = import ./_bazel-registry-web.nix {inherit pkgs;};
+    registry-web-wasm = import ./_bazel-registry-web-wasm.nix {inherit pkgs;};
     release-preparation = import ./_bazel-release-preparation.nix {inherit pkgs;};
     hub-client = import ./_bazel-hub-client.nix {inherit pkgs;};
     hub-model = import ./_bazel-hub-model.nix {inherit pkgs;};
@@ -190,6 +193,7 @@ in
       cp ${precise}/inventory.json "$out/inventory.json"
     '';
     toolchains = pkgs.aosBazelToolchains;
+    rustdoc-runner = import ./_bazel-rustdoc-runner.nix {inherit pkgs;};
     shell-bootstrap = pkgs.runCommand "aos-bazel-bootstrap-shell-policy" {buildDeps = [pkgs.python3];} ''
       mkdir -p "$out"
       ${pkgs.python3}/bin/python3 - ${pkgs.aosBazelModules.rules_rust} "$out" <<'PYTHON'
@@ -390,6 +394,8 @@ in
         boot-preparation.standalone
         release-coordination.tests
         registry-native.tests
+        registry-web.tests
+        registry-web-wasm.build
         release-preparation.tests
         hub-client.tests
         hub-model.tests
@@ -469,6 +475,7 @@ in
             metadata-parity
             policy
             shell-bootstrap
+            rustdoc-runner
             build-script-metadata
             compiler-wrapper
             qemu-plugin-abi
@@ -519,6 +526,8 @@ in
             boot-preparation.all
             release-coordination.all
             registry-native.all
+            registry-web.all
+            registry-web-wasm.all
             release-preparation.all
             hub-client.all
             hub-model.all

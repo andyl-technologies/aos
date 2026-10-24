@@ -352,6 +352,18 @@ config_setting(
 )
 
 config_setting(
+    name = "registry_web_dependencies",
+    flag_values = {":dependency_profile": "registry-web"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "registry_web_wasm_dependencies",
+    flag_values = {":dependency_profile": "registry-web-wasm"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
     name = "hub_console_dependencies",
     flag_values = {":dependency_profile": "hub-console"},
     visibility = ["//visibility:public"],

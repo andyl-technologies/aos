@@ -164,6 +164,16 @@
       root = ../../..;
       family = "hub-service-all-features-tests";
     };
+    registry-web = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "registry-web";
+    };
+    registry-web-wasm = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "registry-web-wasm";
+    };
     hub-console = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;
@@ -498,6 +508,16 @@
       inherit pkgs;
       sourceInventory = null;
       allFeatures = true;
+    }).workspace;
+  aosBazelRegistryWebWorkspace =
+    (import ../../../tests/build/_bazel-registry-web.nix {
+      inherit pkgs;
+      sourceInventory = null;
+    }).workspace;
+  aosBazelRegistryWebWasmWorkspace =
+    (import ../../../tests/build/_bazel-registry-web-wasm.nix {
+      inherit pkgs;
+      sourceInventory = null;
     }).workspace;
   aosBazelHubConsoleWorkspace = mkAosBazelWorkspace {
     root = ../../..;
@@ -1063,6 +1083,16 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelHubServiceAllFeaturesWorkspace;
+    }).launcher;
+  aosBazelRegistryWebLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelRegistryWebWorkspace;
+    }).launcher;
+  aosBazelRegistryWebWasmLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelRegistryWebWasmWorkspace;
     }).launcher;
   aosBazelHubConsoleLauncher =
     (import ./development.nix {

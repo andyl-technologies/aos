@@ -8,9 +8,10 @@
   "limits": [
     "This Cargo compile gate compiles unit and integration test targets without executing their cases.",
     "Bazel declarations, dependency profile conversion, editor behavior, browser execution, and other hosts require their own qualification.",
-    "The source snapshot predates the registry web Bazel declaration changes. Those changes do not alter the compared Rust/Cargo inputs."
+    "The source snapshot and audit qualify commit 566fdd71aa before the registry web container change. Later Rust edits require a new compile gate."
   ],
   "output": "/nix/store/a39aprx46bkpfv1zpby4nlcng1wxlph8-aos-test-targets-0.1.0",
+  "qualified_commit": "566fdd71aa",
   "schema_version": 1,
   "selected_packages": [
     "aos-activation",
@@ -76,7 +77,7 @@
     "algorithm": "SHA-256 of compact key-sorted JSON mapping source-relative Rust files and Cargo manifests/locks to their SHA-256 digests",
     "canonical_sha256_map_digest": "75e5062e353112f232d6c6c7e938b0f11c07ca2f1e6aa1f052c46b8817b6d7df",
     "files": 3857,
-    "result": "All captured Rust files and Cargo manifests/locks match the current workspace; every current workspace-member Rust file is present in the captured source."
+    "result": "All captured Rust files and Cargo manifests/locks match the qualified merged checkpoint; every qualified merged checkpoint-member Rust file is present in the captured source."
   },
   "status": "PASS: ordinary native application unit and integration target compilation after the master merge"
 }

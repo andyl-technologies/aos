@@ -2830,5 +2830,66 @@ editor checks, and complete compiler/linker equivalence remain separate gates.
 `tests/evidence/master-rust-test-target-compilation.json` records the passing
 ordinary `checks.rust.aos-test-targets` gate after the merge. It compiles unit
 and integration targets for all 58 selected application packages. All 3,857
-captured Rust files and Cargo manifests/locks match the current workspace.
+captured Rust files and Cargo manifests/locks matched checkpoint `566fdd71aa`.
 This gate compiles the targets without executing their cases.
+
+## Registry web build graph
+
+The registry SPA has independent native and `wasm32-unknown-unknown`
+dependency profiles. Both retain Cargo's distinct target and execution feature
+units, including Serde, Syn, and IndexMap macro dependencies. Their source SDKs
+are generated from exported Bazel specifications and checked against the
+workspace lock's source identities and checksums.
+
+```sh
+aos-dev bazel --family registry-web test //crates/registry/aos-registry-web:unit //crates/registry/aos-registry-web:doc
+aos-dev bazel --family registry-web-wasm build //crates/registry/aos-registry-web:browser_dist
+nix-build tools/bazel/tests/registry-web.nix -A all --no-out-link
+nix-build tools/bazel/tests/registry-web-wasm.nix -A all --no-out-link
+```
+
+The browser graph compiles the actual `aos-registry-spa` binary, generates
+JavaScript/Wasm bindings and TypeScript declarations, and installs the raw
+module plus a `dist/` directory. The glue and its Wasm module share an immutable
+hash derived from the binding pair; CSS has its own content hash. The glue's
+relative Wasm URL names the packaged module, matching the static registry page
+generator's asset naming contract. A JavaScript-only change invalidates the
+pair's filenames.
+
+Native qualification compares unit cases, doctests, and exact dependency
+features with offline Cargo execution. Browser qualification compares exact
+dependency features, raw Wasm exports, binding export names and kinds,
+JavaScript module exports, and the stylesheet. Compiler crate identities
+embedded in generated closure trampoline names are normalized while preserving
+their complete signatures and collision suffixes. Wasm libtest artifacts are
+compiled for separate runtime qualification.
+
+The static integration check feeds the actual distribution into the packaged
+`apr web generate --spa-dist` command. It checks staged asset bytes, same-origin
+loader references, content-bearing index and browse pages, and unchanged package
+JSON snapshots without starting a service.
+
+Browser DOM mounting, generated-page execution, foreign hosts, complete compiler
+and linker equivalence, performance acceptance, and production cutover remain
+separate gates. The recorded iteration uses previously built source-built AOS
+execution tools; the merged default toolchain requires its own qualification.
+
+The checked [registry graph evidence](tests/evidence/registry-web-graph-iteration.json)
+records both source-selection modes, individual native cases, editor diagnostics,
+browser export contracts, artifact digests, and sandbox execution counts.
+
+The [application target compilation evidence](tests/evidence/registry-web-rust-test-target-compilation.json)
+records the required ordinary unit and integration target compile gate after
+the registry closure indexes switched to deterministic containers. Its source
+audit matches all 3,857 captured Rust/Cargo inputs and all 58 selected packages.
+
+The [merged source inventory evidence](tests/evidence/master-source-inventory-refresh.json)
+records 76 configured analysis outputs merged into 47 inventory families. Each
+family passes the current contracts and retains its previous source-file set.
+The metadata-only source catalog covers 80 packages and 3,773 Rust files.
+Analysis used batched source views, with a byte-for-byte and configured-inventory
+pilot against ordinary preparation; production source preparation is unchanged.
+
+The [standalone accache baseline](tests/evidence/accache-master-cargo-baseline.json)
+retains its 114 existing Cargo unit cases and the existing Bazel tool's bootstrap
+dependency audit before that workspace's compilation targets migrate.

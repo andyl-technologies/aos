@@ -21,7 +21,7 @@
 //!   "file_size": 1024, "refs": ["ef01"], "present": true }
 //! ```
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Deserialize;
 
@@ -125,11 +125,13 @@ pub fn human_size(bytes: i64) -> String {
 /// dropped.
 #[must_use]
 pub fn build_closure_view(root_hash: &str, nodes: &[ClosureNode], total_size: i64) -> ClosureView {
-    let by_hash: HashMap<&str, &ClosureNode> =
+    // These indexes use no process-random seed. Display order still follows
+    // the input nodes and reference edges rather than map iteration.
+    let by_hash: BTreeMap<&str, &ClosureNode> =
         nodes.iter().map(|n| (n.store_hash.as_str(), n)).collect();
 
     let mut rows = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
+    let mut seen: BTreeSet<String> = BTreeSet::new();
     walk(root_hash, &by_hash, &mut seen, &mut rows);
 
     // Surface any unreachable nodes (defensive: a well-formed closure has none).
@@ -163,8 +165,8 @@ pub fn build_closure_view(root_hash: &str, nodes: &[ClosureNode], total_size: i6
 /// as deeply as it is long — enough to overflow the small wasm stack.
 fn walk(
     root: &str,
-    by_hash: &HashMap<&str, &ClosureNode>,
-    seen: &mut HashSet<String>,
+    by_hash: &BTreeMap<&str, &ClosureNode>,
+    seen: &mut BTreeSet<String>,
     rows: &mut Vec<ClosureRow>,
 ) {
     // (hash, depth); children are pushed in reverse so they pop in list order.
@@ -192,7 +194,7 @@ fn push_row(
     rows: &mut Vec<ClosureRow>,
     depth: usize,
     hash: &str,
-    by_hash: &HashMap<&str, &ClosureNode>,
+    by_hash: &BTreeMap<&str, &ClosureNode>,
     repeat: bool,
 ) {
     match by_hash.get(hash) {
