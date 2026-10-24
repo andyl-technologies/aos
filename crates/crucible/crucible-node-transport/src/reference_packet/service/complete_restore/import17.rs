@@ -52,8 +52,9 @@ pub use contract::{
 pub use crypto::{native_import17_proof_data, verify_native_import17_proof_data};
 pub use receipt::{
     PacketNativeImport17CommitReceipt, PacketNativeImport17PrepareReceipt,
-    native_import17_commit_receipt_data, native_import17_prepare_receipt_data,
-    verify_native_import17_commit_receipt_data, verify_native_import17_prepare_receipt_data,
+    PacketNativeImportReceiptAssignmentData, native_import17_commit_receipt_data,
+    native_import17_prepare_receipt_data, verify_native_import17_commit_receipt_data,
+    verify_native_import17_prepare_receipt_data,
 };
 
 /// Names the independently selected full import contract and binding extension.

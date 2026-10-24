@@ -6,6 +6,20 @@
 
 use super::*;
 
+/// Borrows an assigned request/response pair and its negotiated wire extent.
+///
+/// These are input data for receipt correspondence, not a native lease,
+/// completed phase, Source permission or authenticated response. Receipt helpers
+/// independently validate the complete pair against their phase and context.
+pub struct PacketNativeImportReceiptAssignmentData<'a> {
+    /// Borrows the exact original request, including its assigned proof.
+    pub original: &'a Envelope,
+    /// Borrows the correlated original response, including its receipt extension.
+    pub response: &'a Envelope,
+    /// Bounds the complete assigned frames under the same negotiated connection.
+    pub maximum_frame_bytes: usize,
+}
+
 /// Retains the complete new-family input receipt without certifying installation.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -128,10 +142,14 @@ pub fn native_import17_prepare_receipt_data(
     binding: &PacketNativeImport17Binding,
     request: &PacketCompleteRestorePrepareRequest,
     context: &PacketNativeImport17Context,
-    original: &Envelope,
-    response: &Envelope,
-    maximum_frame_bytes: usize,
+    assignment: &PacketNativeImportReceiptAssignmentData<'_>,
 ) -> Result<PacketNativeImport17PrepareReceipt, ProviderError> {
+    let PacketNativeImportReceiptAssignmentData {
+        original,
+        response,
+        maximum_frame_bytes,
+    } = *assignment;
+
     context.authenticate_prepare_data(binding, request, original, maximum_frame_bytes)?;
     authenticate_original_proof(key, context, original)?;
     let assigned = native_import17_assigned_response_digest(
@@ -178,21 +196,12 @@ pub fn verify_native_import17_prepare_receipt_data(
     binding: &PacketNativeImport17Binding,
     request: &PacketCompleteRestorePrepareRequest,
     context: &PacketNativeImport17Context,
-    original: &Envelope,
-    response: &Envelope,
-    maximum_frame_bytes: usize,
+    assignment: &PacketNativeImportReceiptAssignmentData<'_>,
     receipt: &PacketNativeImport17PrepareReceipt,
 ) -> Result<(), ProviderError> {
     receipt.validate_data()?;
-    let expected = native_import17_prepare_receipt_data(
-        key,
-        binding,
-        request,
-        context,
-        original,
-        response,
-        maximum_frame_bytes,
-    )?;
+    let expected =
+        native_import17_prepare_receipt_data(key, binding, request, context, assignment)?;
     compare_receipt(receipt, &expected)
 }
 
@@ -209,11 +218,15 @@ pub fn native_import17_commit_receipt_data(
     binding: &PacketNativeImport17Binding,
     request: &PacketCompleteRestoreCommitRequest,
     context: &PacketNativeImport17Context,
-    original: &Envelope,
-    response: &Envelope,
+    assignment: &PacketNativeImportReceiptAssignmentData<'_>,
     normalization: &[u8],
-    maximum_frame_bytes: usize,
 ) -> Result<PacketNativeImport17CommitReceipt, ProviderError> {
+    let PacketNativeImportReceiptAssignmentData {
+        original,
+        response,
+        maximum_frame_bytes,
+    } = *assignment;
+
     context.authenticate_commit_data(
         binding,
         request,
@@ -268,10 +281,8 @@ pub fn verify_native_import17_commit_receipt_data(
     binding: &PacketNativeImport17Binding,
     request: &PacketCompleteRestoreCommitRequest,
     context: &PacketNativeImport17Context,
-    original: &Envelope,
-    response: &Envelope,
+    assignment: &PacketNativeImportReceiptAssignmentData<'_>,
     normalization: &[u8],
-    maximum_frame_bytes: usize,
     receipt: &PacketNativeImport17CommitReceipt,
 ) -> Result<(), ProviderError> {
     receipt.validate_data()?;
@@ -280,10 +291,8 @@ pub fn verify_native_import17_commit_receipt_data(
         binding,
         request,
         context,
-        original,
-        response,
+        assignment,
         normalization,
-        maximum_frame_bytes,
     )?;
     compare_receipt(receipt, &expected)
 }

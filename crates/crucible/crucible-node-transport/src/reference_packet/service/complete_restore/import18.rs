@@ -50,7 +50,7 @@ pub use super::import17::{
     MAXIMUM_NATIVE_IMPORT17_CONTEXT_BYTES, MAXIMUM_NATIVE_IMPORT17_RECEIPT_BYTES,
     PacketNativeImport17CommitReceipt, PacketNativeImport17Context, PacketNativeImport17Limits,
     PacketNativeImport17PeerContext, PacketNativeImport17PrepareReceipt, PacketNativeImport17Proof,
-    verify_native_import17_proof_data,
+    PacketNativeImportReceiptAssignmentData, verify_native_import17_proof_data,
 };
 pub use assigned::{
     native_import18_assigned_request_digest, native_import18_assigned_response_digest,
@@ -78,8 +78,9 @@ pub use prebirth_recipe::{
     native_import18_recipe_inputs_counter_scratch_data, native_import18_reference_identity_data,
 };
 pub use receipt::{
-    native_import18_commit_receipt_data, native_import18_prepare_receipt_data,
-    verify_native_import18_commit_receipt_data, verify_native_import18_prepare_receipt_data,
+    PacketNativeImport18ReceiptContextData, native_import18_commit_receipt_data,
+    native_import18_prepare_receipt_data, verify_native_import18_commit_receipt_data,
+    verify_native_import18_prepare_receipt_data,
 };
 
 pub use crucible_source_birth_data::profile::reference_packet::service::complete_restore::import18::definitions::NATIVE_IMPORT18_RESTORED_RECORD_SCHEMA;

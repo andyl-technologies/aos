@@ -160,11 +160,15 @@ impl PrepareFixture {
             &KEY,
             &self.binding,
             &self.request,
-            &self.request.restoration.backend_schema,
-            &self.context,
-            &self.original,
-            &self.response,
-            MAXIMUM_FRAME,
+            &PacketNativeImport18ReceiptContextData {
+                expected_backend_schema: &self.request.restoration.backend_schema,
+                context: &self.context,
+            },
+            &PacketNativeImportReceiptAssignmentData {
+                original: &self.original,
+                response: &self.response,
+                maximum_frame_bytes: MAXIMUM_FRAME,
+            },
         )
         .unwrap()
     }
@@ -178,11 +182,15 @@ impl PrepareFixture {
             key,
             &self.binding,
             &self.request,
-            &self.request.restoration.backend_schema,
-            &self.context,
-            &self.original,
-            &self.response,
-            MAXIMUM_FRAME,
+            &PacketNativeImport18ReceiptContextData {
+                expected_backend_schema: &self.request.restoration.backend_schema,
+                context: &self.context,
+            },
+            &PacketNativeImportReceiptAssignmentData {
+                original: &self.original,
+                response: &self.response,
+                maximum_frame_bytes: MAXIMUM_FRAME,
+            },
             receipt,
         )
     }
@@ -273,12 +281,16 @@ impl CommitFixture {
             &KEY,
             &self.binding,
             &self.request,
-            &self.request.prepare.restoration.backend_schema,
-            &self.context,
-            &self.original,
-            &self.response,
+            &PacketNativeImport18ReceiptContextData {
+                expected_backend_schema: &self.request.prepare.restoration.backend_schema,
+                context: &self.context,
+            },
+            &PacketNativeImportReceiptAssignmentData {
+                original: &self.original,
+                response: &self.response,
+                maximum_frame_bytes: MAXIMUM_FRAME,
+            },
             b"{}",
-            MAXIMUM_FRAME,
         )
         .unwrap()
     }
@@ -292,12 +304,16 @@ impl CommitFixture {
             key,
             &self.binding,
             &self.request,
-            &self.request.prepare.restoration.backend_schema,
-            &self.context,
-            &self.original,
-            &self.response,
+            &PacketNativeImport18ReceiptContextData {
+                expected_backend_schema: &self.request.prepare.restoration.backend_schema,
+                context: &self.context,
+            },
+            &PacketNativeImportReceiptAssignmentData {
+                original: &self.original,
+                response: &self.response,
+                maximum_frame_bytes: MAXIMUM_FRAME,
+            },
             b"{}",
-            MAXIMUM_FRAME,
             receipt,
         )
     }
@@ -446,12 +462,16 @@ fn commit_receipt_rejects_changed_token_mapping_and_prepare_chain() {
             &KEY,
             &fixture.binding,
             &fixture.request,
-            &fixture.request.prepare.restoration.backend_schema,
-            &fixture.context,
-            &fixture.original,
-            &fixture.response,
+            &PacketNativeImport18ReceiptContextData {
+                expected_backend_schema: &fixture.request.prepare.restoration.backend_schema,
+                context: &fixture.context,
+            },
+            &PacketNativeImportReceiptAssignmentData {
+                original: &fixture.original,
+                response: &fixture.response,
+                maximum_frame_bytes: MAXIMUM_FRAME,
+            },
             b"{ }",
-            MAXIMUM_FRAME,
             &receipt
         )
         .is_err()

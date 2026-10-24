@@ -1,10 +1,22 @@
-//! Binds distinct Native17 receipts to literal assigned pairs and phase contexts.
+//! Binds distinct Import18 receipts to literal assigned pairs and phase contexts.
 //!
 //! Receipt DATA is not an input lease or installation witness. The native issuer
 //! must own its original admitted banks and once state before publishing Prepare,
 //! and its installed model and held gate before publishing Commit.
 
 use super::*;
+
+/// Borrows the complete Import18 phase context and expected backend schema.
+///
+/// The expected schema remains an independent input to the full Import18
+/// binding check. This view creates no authenticated context, native owner,
+/// Prepare lease, Source budget or installation witness.
+pub struct PacketNativeImport18ReceiptContextData<'a> {
+    /// Borrows the independently selected backend continuation schema.
+    pub expected_backend_schema: &'a SchemaRef,
+    /// Borrows the full phase context that must match the assigned proof.
+    pub context: &'a PacketNativeImport17Context,
+}
 
 /// Computes input receipt DATA for the same actual signed Prepare assignment.
 ///
@@ -18,12 +30,19 @@ pub fn native_import18_prepare_receipt_data(
     key: &[u8; 32],
     binding: &PacketNativeImport18Binding,
     request: &PacketCompleteRestorePrepareRequest,
-    expected_backend_schema: &SchemaRef,
-    context: &PacketNativeImport17Context,
-    original: &Envelope,
-    response: &Envelope,
-    maximum_frame_bytes: usize,
+    context: &PacketNativeImport18ReceiptContextData<'_>,
+    assignment: &PacketNativeImportReceiptAssignmentData<'_>,
 ) -> Result<PacketNativeImport17PrepareReceipt, ProviderError> {
+    let PacketNativeImport18ReceiptContextData {
+        expected_backend_schema,
+        context,
+    } = *context;
+    let PacketNativeImportReceiptAssignmentData {
+        original,
+        response,
+        maximum_frame_bytes,
+    } = *assignment;
+
     context.authenticate_import18_prepare_data(
         binding,
         request,
@@ -76,24 +95,13 @@ pub fn verify_native_import18_prepare_receipt_data(
     key: &[u8; 32],
     binding: &PacketNativeImport18Binding,
     request: &PacketCompleteRestorePrepareRequest,
-    expected_backend_schema: &SchemaRef,
-    context: &PacketNativeImport17Context,
-    original: &Envelope,
-    response: &Envelope,
-    maximum_frame_bytes: usize,
+    context: &PacketNativeImport18ReceiptContextData<'_>,
+    assignment: &PacketNativeImportReceiptAssignmentData<'_>,
     receipt: &PacketNativeImport17PrepareReceipt,
 ) -> Result<(), ProviderError> {
     receipt.validate_data()?;
-    let expected = native_import18_prepare_receipt_data(
-        key,
-        binding,
-        request,
-        expected_backend_schema,
-        context,
-        original,
-        response,
-        maximum_frame_bytes,
-    )?;
+    let expected =
+        native_import18_prepare_receipt_data(key, binding, request, context, assignment)?;
     compare_receipt(receipt, &expected)
 }
 
@@ -109,13 +117,20 @@ pub fn native_import18_commit_receipt_data(
     key: &[u8; 32],
     binding: &PacketNativeImport18Binding,
     request: &PacketCompleteRestoreCommitRequest,
-    expected_backend_schema: &SchemaRef,
-    context: &PacketNativeImport17Context,
-    original: &Envelope,
-    response: &Envelope,
+    context: &PacketNativeImport18ReceiptContextData<'_>,
+    assignment: &PacketNativeImportReceiptAssignmentData<'_>,
     normalization: &[u8],
-    maximum_frame_bytes: usize,
 ) -> Result<PacketNativeImport17CommitReceipt, ProviderError> {
+    let PacketNativeImport18ReceiptContextData {
+        expected_backend_schema,
+        context,
+    } = *context;
+    let PacketNativeImportReceiptAssignmentData {
+        original,
+        response,
+        maximum_frame_bytes,
+    } = *assignment;
+
     context.authenticate_import18_commit_data(
         binding,
         request,
@@ -171,12 +186,9 @@ pub fn verify_native_import18_commit_receipt_data(
     key: &[u8; 32],
     binding: &PacketNativeImport18Binding,
     request: &PacketCompleteRestoreCommitRequest,
-    expected_backend_schema: &SchemaRef,
-    context: &PacketNativeImport17Context,
-    original: &Envelope,
-    response: &Envelope,
+    context: &PacketNativeImport18ReceiptContextData<'_>,
+    assignment: &PacketNativeImportReceiptAssignmentData<'_>,
     normalization: &[u8],
-    maximum_frame_bytes: usize,
     receipt: &PacketNativeImport17CommitReceipt,
 ) -> Result<(), ProviderError> {
     receipt.validate_data()?;
@@ -184,12 +196,9 @@ pub fn verify_native_import18_commit_receipt_data(
         key,
         binding,
         request,
-        expected_backend_schema,
         context,
-        original,
-        response,
+        assignment,
         normalization,
-        maximum_frame_bytes,
     )?;
     compare_receipt(receipt, &expected)
 }
