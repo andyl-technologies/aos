@@ -131,8 +131,9 @@ impl<'a> Namespace<'a> {
     /// The configured node budget includes root and canonical hard-link sets,
     /// independently of how many paths the immutable mapped index contains.
     /// [`Self::remember`] records successful touches without further allocation.
-    /// The reservation is capped at the original index length. Collisions are
-    /// refused when an identity is first touched, before it can alias a node.
+    /// The reservation depends only on the configured budget, including for
+    /// small trees. Collisions are refused when an identity is first touched,
+    /// before it can alias a node.
     ///
     /// # Errors
     /// Refuses zero limits, insufficient bytes, allocation failure and an invalid
@@ -142,7 +143,7 @@ impl<'a> Namespace<'a> {
         max_nodes: u32,
         max_bytes: usize,
     ) -> Result<Self, Error> {
-        let count = usize::try_from(max_nodes.min(index.len())).map_err(|_| Error::Budget)?;
+        let count = usize::try_from(max_nodes).map_err(|_| Error::Budget)?;
         if count == 0
             || count
                 .checked_mul(size_of::<Node>())

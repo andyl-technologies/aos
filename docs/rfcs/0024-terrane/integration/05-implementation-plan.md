@@ -17054,3 +17054,20 @@ it deliberately does not enumerate the untouched root entries. Thus a complete
 reverse map would fail at startup while a bounded touched-node resolver can
 serve the requested metadata. Strict all-target Clippy and Python syntax checks
 pass; native execution and mandatory workspace compilation remain pending.
+
+
+The late-open checkpoint `54e5dc56d6` passes its actual kernel fixture in
+240.319 seconds. Complete review binds 8,184 immutable files, 5,441 inputs,
+the actual Cargo ELF and 13 exact native witnesses. The first open receives
+EIO while its original fetch remains pending; a later hard-link open joins that
+fetch and subsequently reads the original sealed backing. Mandatory workspace
+compilation remains running.
+
+Namespace startup reservation is refined to depend solely on the configured
+node budget, including for a smaller immutable tree. The empty-tree regression
+requires the same reservation capacity as a larger tree under the same budget;
+only touched canonical nodes populate either map. All seven namespace, six
+dispatch and nine inode-policy cases pass again, including allocation measurements,
+as does strict all-feature/all-target Clippy. The structural inventory remains
+78 cases. Native and mandatory compilation qualification of this refinement
+remain pending; no task acceptance changes.

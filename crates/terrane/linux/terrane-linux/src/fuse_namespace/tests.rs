@@ -254,6 +254,11 @@ fn touched_nodes_bound_storage_independently_of_paths_and_share_hardlink_records
     ));
     let mut namespace = Namespace::with_touched_nodes(index, 2, budget).unwrap();
     let capacity = namespace.nodes.capacity();
+    let empty_bytes = compile([7; 32], &[], 1, 65536).unwrap();
+    let empty =
+        Namespace::with_touched_nodes(Index::open(&empty_bytes).unwrap(), 2, budget).unwrap();
+    assert_eq!(empty.nodes.capacity(), capacity);
+    assert_eq!(empty.nodes.len(), 1);
     assert_eq!(namespace.nodes.len(), 1);
     let a = index.lookup(b"a").unwrap();
     let b = index.lookup(b"b").unwrap();
