@@ -10,6 +10,30 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Borrowed canonical children at native startup claims
+
+Commit `f5b4571a26` validates canonical Source and registration children directly
+against their original retained private frame. The authoritative canonical writer
+compares bytes through a borrowed sink, eliminating two temporary output banks.
+The closed Boot grammar, MAC, ancestry, digests, row authentication and sticky
+failure ownership remain required. Independent lexical and writer controls are
+added to scratch; earlier storage terms remain conservative.
+
+Three focused controls cover exact original subranges, malformed or changed
+children and noncanonical numeric spelling. Both private editions also pass three
+real inherited-channel flights each: a canonical control reaches the independent
+allocation-row refusal, while equivalent noncanonical child literals refuse
+earlier. Failed attempts retain their original bodies and reject retry. These
+negative flights construct no Source, Recipe/Initial, native model or readiness.
+
+Both complete Transport modes pass 2,100 tests, with zero failures, 20 ignored
+and no filtering. All-feature Transport/Engine/Daemon targets, six architecture
+checks and formatting pass. All 535 owned Rust/Cargo inputs match the commit and
+actual application and three funded-VM Rust component captures. Production
+Transport Clippy remains at 37 errors and 1,733 warnings. The current checkpoint's
+merged-toolchain application/VM build remains in progress; full preclaim owner
+funding and native successor construction remain open.
+
 ## Merged-toolchain DMTCP and qualification source filters
 
 The registered `dmtcp-setuid-launch-check` and `dmtcp-source-owners-check` gates
@@ -23,9 +47,17 @@ The combined application/VM/boundary run subsequently fails in the production
 plugin-flight dependency: its source filter removes a checked-in `target/phase.rs`
 module. The production-flight and campaign-mode source filters now use the
 existing Cargo-directory classifier, preserving source modules while excluding
-Cargo output trees. Application/VM and boundary qualification are rerun
-independently so one failed dependency cannot cancel both clients. These gates
-remain pending until their actual outputs pass.
+Cargo output trees. The independent application and funded-Source VM gates pass
+for `94500db963` with the merged source-built toolchain. The application build
+compiles 185 test artifacts across 58 packages, including 76 integration targets;
+it does not run those tests. All 531 owned Rust/Cargo inputs match that commit
+and the actual application and three funded-VM Rust component captures.
+
+The independent boundary run passes the repaired source-filter stage, then fails
+strict production Transport compilation with 1,769 errors. Unused framework
+items and existing Clippy errors remain; no lint allowance is added. ABI and
+license-boundary qualification therefore remain incomplete. These results do
+not establish full RFC completion.
 
 ## Native scratch admission before private JSON parsing
 
