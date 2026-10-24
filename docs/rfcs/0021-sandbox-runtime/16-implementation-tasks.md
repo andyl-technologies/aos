@@ -11385,3 +11385,13 @@ source passes both checks at
 `/nix/store/hbxvz6skn47cgs70lfzvq30fnhz402b2-aos-native-stage-replay`.
 The rebuilt installed Root test remains pending; public lifecycle admission
 and the protected handoffs remain closed.
+
+The earlier offline hardware retry (`a72xb0l7yvaz57as3cwsbwgnzzfd0n37`)
+subsequently boots and passes its transient-owner rejection and missing-output
+negative checks. The genuine preparer then exits `127` because its loader
+cannot open `libm.so.6` (`Permission denied`), before the physical TPM operation
+tests. This is consistent with the unfixed overlay traversal failure, not a
+TPM provisioning receipt. The retry containing the initrd configuration fix
+remains pending. Separately, all 21 merged public-client unit tests pass in the
+cached AOS-built Cargo diagnostic shell; this is client validation, not an
+installed public lifecycle qualification.
