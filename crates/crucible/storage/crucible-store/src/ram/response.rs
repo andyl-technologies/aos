@@ -12,7 +12,6 @@ use crucible_ram::{Limits, RootRecord};
 
 use crate::owned_decode::{DecodeBudget, DecodeScratch};
 
-use super::codec_ownership::admission;
 use super::{RamStoreError, logical};
 
 /// Owns one immutable transfer message and its original allocation credit.
@@ -90,15 +89,15 @@ impl RamTransferResponse {
         }
         let credit = original
             .reserve_scratch_bytes(frame_peak(length + 4, offer)?)
-            .map_err(admission)?;
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         check(original, boundary)?;
         let mut frame = Vec::new();
-        frame
-            .try_reserve_exact(length + 4)
-            .map_err(|source| crate::content_store::StoreError::Allocation {
+        frame.try_reserve_exact(length + 4).map_err(|source| {
+            crate::content_store::StoreError::Allocation {
                 source,
                 custody: Some(original.custody()),
-            })?;
+            }
+        })?;
         frame.extend_from_slice(&prefix);
         frame.resize(length + 4, 0);
         reader
@@ -107,7 +106,9 @@ impl RamTransferResponse {
         check(original, boundary)?;
         let message = RamTransferMessage::decode(&frame)?;
         drop(frame);
-        original.verify_live().map_err(admission)?;
+        original
+            .verify_live()
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         Ok(Self::new(message, credit))
     }
 
@@ -143,7 +144,9 @@ impl RamTransferResponse {
         writer
             .flush()
             .map_err(crucible_qemu_protocol::ram_transfer::RamTransferCodecError::from)?;
-        original.verify_live().map_err(admission)
+        original
+            .verify_live()
+            .map_err(|source| RamStoreError::from_admission(original, source))
     }
 
     pub(super) fn with_encoded<T>(
@@ -151,7 +154,9 @@ impl RamTransferResponse {
         original: &DecodeBudget,
         consume: impl FnOnce(&[u8]) -> Result<T, RamStoreError>,
     ) -> Result<T, RamStoreError> {
-        original.verify_live().map_err(admission)?;
+        original
+            .verify_live()
+            .map_err(|source| RamStoreError::from_admission(original, source))?;
         if self.credit.is_none() {
             return consume(self.inline_frame()?.as_slice());
         }
@@ -160,7 +165,7 @@ impl RamTransferResponse {
             _ => Some(
                 original
                     .reserve_scratch_bytes(message_peak(&self.message.control)?)
-                    .map_err(admission)?,
+                    .map_err(|source| RamStoreError::from_admission(original, source))?,
             ),
         };
         let bytes = self.message.encode()?;
@@ -213,9 +218,13 @@ pub(super) fn check(
     original: &DecodeBudget,
     boundary: &mut dyn FnMut() -> Result<(), RamStoreError>,
 ) -> Result<(), RamStoreError> {
-    original.verify_live().map_err(admission)?;
+    original
+        .verify_live()
+        .map_err(|source| RamStoreError::from_admission(original, source))?;
     boundary()?;
-    original.verify_live().map_err(admission)
+    original
+        .verify_live()
+        .map_err(|source| RamStoreError::from_admission(original, source))
 }
 
 pub(super) fn frame_peak(length: usize, offer: bool) -> Result<u64, RamStoreError> {
@@ -266,13 +275,17 @@ pub(super) fn decode_local(
     source_original: &DecodeBudget,
     destination_original: &DecodeBudget,
 ) -> Result<RamTransferResponse, RamStoreError> {
-    destination_original.verify_live().map_err(admission)?;
+    destination_original
+        .verify_live()
+        .map_err(|source| RamStoreError::from_admission(destination_original, source))?;
     let credit = destination_original
         .reserve_scratch_bytes(message_peak(&response.message.control)?)
-        .map_err(admission)?;
+        .map_err(|source| RamStoreError::from_admission(destination_original, source))?;
     response.with_encoded(source_original, |bytes| {
         let message = RamTransferMessage::decode(bytes)?;
-        destination_original.verify_live().map_err(admission)?;
+        destination_original
+            .verify_live()
+            .map_err(|source| RamStoreError::from_admission(destination_original, source))?;
         Ok(RamTransferResponse::new(message, credit))
     })
 }

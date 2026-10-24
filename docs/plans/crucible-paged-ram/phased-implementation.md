@@ -68,7 +68,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The license-boundary gate remains blocked at strict controller Clippy; the latest direct check reports 674 host-library errors and 723 host-test errors. Its boundary assertions have no passing result for the current source. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 640 bindings: 621 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 644 bindings: 625 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -2963,7 +2963,7 @@ that review preserves the unchanged 1,623-line implementation allowance and
 the complete policy rerun passes. Daemon Clippy stops in the unchanged host
 dependency on 622 errors before checking the daemon; it does not pass.
 Required application
-compilation is running from immutable source
+compilation passes at `zpblfzqzf60sidq8jxph3z5plp6qr2a6`, from immutable source
 `jhin7x3fx9akk13jimw2vbcp2fld76pz`; all 5,419 committed Rust/TOML files and
 six required fixtures match before subsequent source edits. These archive controls qualify no
 native launch, whole-world restore readiness or execution ownership.
@@ -3108,15 +3108,43 @@ Inventory `6lvplgx5j1c55xjdhi9yxwzxi9q99ncm` validates 640 bindings across
 243 requirements: 596 model, 25 format and nineteen native bindings. There are
 still 142 uncovered requirements and zero fully qualified requirements. All
 767 ordinary storage tests, 95 policy controls and strict storage/portable-RAM
-Clippy pass. The expanded hermetic storage gate and final cumulative required
-application-target compilation are running from immutable source
-`a3vgq505px99d20slkwn6swplagy48iw`; committed source and fixture matching is
-required before subsequent source edits. Four earlier application check clients
+Clippy pass. Hermetic storage output `lwd8sj7a9pa9bkwnxlmapsi7ikb91zgz`
+passes all 117 selected cases and 138 independently checked successful nested
+summaries. Final cumulative required application-target compilation is running
+from immutable source `a3vgq505px99d20slkwn6swplagy48iw`; all 5,422 committed
+Rust/TOML files and six fixtures match `2db83d86d1` before subsequent source
+edits. Four earlier application check clients
 were deliberately stopped as superseded by this final cumulative check; their
 immutable input matches remain recorded above, without a compilation-pass
-claim. The already active receiver application check continues separately.
+claim. The earlier receiver application check now passes at
+`zpblfzqzf60sidq8jxph3z5plp6qr2a6`, with all 5,419 committed Rust/TOML files
+and six fixtures matching its frozen input.
 These controls establish finite storage-component custody, without admitting
 native physical resources or resolving the blocked native-provider work.
+
+Framed transfer admission failures now retain the explicitly supplied original
+through the existing inline admission-error bridge. This covers input and output
+boundary checks, scratch admission and local decoding. No additional loan,
+callback, clock check or wire-format change is introduced.
+
+Four genuine predecessor controls fail: read entry, read body admission, write
+entry and the check after an actual flush each release all 8,773 prepaid caller
+bytes while their returned error remains alive. The foreign ambient account
+closes normally; it is not charged by the predecessor either. After correction
+all six frame controls pass. Each refusal preserves its actual typed revocation
+cause and the caller's existing custody until error close, without borrowing
+the foreign account. Entry refusal performs no input or output. Body refusal
+stops after the four-byte prefix and two callbacks. Late flush refusal preserves
+the already written canonical 45-byte frame and its two original callbacks.
+
+Inventory `pm25lq4z5css91as35n27dcblvgqhnx6` validates 644 bindings across
+243 requirements: 600 model, 25 format and nineteen native bindings. There are
+still 142 uncovered requirements and zero fully qualified requirements. All
+771 ordinary storage tests, 95 policy controls and strict storage/portable-RAM
+Clippy pass. Hermetic storage and required application compilation are running;
+the latter uses immutable source `iixxwpz9k0jbgnb6pipsbj22dxz8qhaw`.
+These finite component checks supply no native resource or whole-world
+execution authority.
 
 The separate source-only exclusive-wait packet
 `19e87216653fbfae17415aef755b4cf25c90ec32651fc406e0a881f4f12edd70`
