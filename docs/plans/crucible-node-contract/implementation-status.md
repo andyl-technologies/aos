@@ -10,6 +10,25 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Actual reply ownership in packet-prefix validation
+
+Commit `3f44365e5e` lends the existing `PacketControlReply` to the prefix
+validator. The validator still observes full evidence-vector and payload
+capacities before planning; it retains every original correlation, authority,
+class and owning-requote check. The defining counter adds the two actual reply
+loans without discounting any prior term. Both saved counter controls retain
+their independent original formulas and add the same new loan headers.
+
+All 126 focused prefix-storage, endpoint and startup tests pass in each
+standard and raw-JSON mode. All-feature/all-target Transport/Engine/Daemon
+checking, scoped formatting and all six architecture gates pass. The required
+application gate compiles 180 test executables across 58 packages, including
+71 integration targets. All 468 frozen owned Rust/Cargo inputs match the
+committed revision and captured application source. Production Transport
+Clippy drops the `ptr_arg` error and remains at 46 errors and 1,733 warnings.
+These checks do not qualify opaque Recipe/Initial production, full Native18
+readiness or RFC-0025 completion.
+
 ## Original Bootstrap inputs and terminal claim custody
 
 Commit `736b16256e` groups the actual borrowed Hello, opaque Recipe and Initial
