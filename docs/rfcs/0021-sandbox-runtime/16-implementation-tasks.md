@@ -11161,8 +11161,10 @@ including target-specific tables, and every local dependency path exists.
 
 The current 713-package lockfile vendor build passes its expected staging hash
 and the complete frozen registry patch recipe using the cached AOS toolchain.
-An early check of the merged Rust targets is running in an AOS Nix development
-shell; this diagnostic does not replace release-toolchain qualification.
+The early `cargo check --all-targets --locked --offline` passes for the 124
+native default workspace members in an AOS Nix development shell. It uses the
+cached AOS Rust 1.98.1 compiler with current native libraries and the current
+vendor recipe; this diagnostic does not replace release-toolchain qualification.
 
 The merged fentry production policy at
 `/nix/store/j7kjwjz3d07w95f243visdfhb6169hdl-aos-selinux-production-policy-1`
@@ -11171,3 +11173,30 @@ unsafe variants and the selected kernel class-map checks. Its matrix explicitly
 rejects all six manager perf-event permissions. This receipt precedes the later
 kernel-compatibility checker commit; that commit's complete policy rebuild and
 the installed Root, Host and offline TPM runs remain pending.
+
+
+### Post-merge nested module retention
+
+The pinned-manager reference test remained under the former `shared` crate
+path while its test harness moved to `linux`. It now moves with that harness,
+without changing its contents. All three pinned-manager integration cases pass
+against a private AOS-built D-Bus broker, including inactive-unit retention and
+rejection of a replacement manager's reused job path.
+
+The merged Crucible daemon also lacked its nested `result/operations.rs`.
+The restored file is byte-for-byte the pre-migration source (Git blob
+`1c831f24706f2a2a5b982c17bbf7bcc70d20459d`). Both Git ignores and Cargo source
+selection now restrict generated Nix `result` exclusions to the checkout root.
+The source-selection check reads the actual immutable operations module and
+compares its bytes, while continuing to reject checkout-root build outputs.
+That check and the native workspace target check pass. Independent executable
+role checks are in progress; combining role features is not a substitute.
+
+The kernel-contract-era production policy also completes at
+`/nix/store/b7mgnfpvrjnc2my7sfcy3f60nd7z43j0-aos-selinux-production-policy-1`,
+including all 158 unit tests, the normal scan, every unsafe variant and selected
+kernel class-map checks. This component receipt precedes the workspace repairs;
+current-head release checks and installed qualification remain pending. Root's
+isolated pre-merge startup run passes Secure Boot enrollment and reaches the
+vTPM guest test agent. Neither that progress nor these compilation checks closes
+the public lifecycle, native history or physical-floor admission gates.
