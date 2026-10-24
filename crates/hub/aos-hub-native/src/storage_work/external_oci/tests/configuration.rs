@@ -78,12 +78,13 @@ pub(super) async fn operator(db: Arc<Database>) -> (Arc<RpcService>, String) {
     let session = db.validate_session(&session).await.unwrap().unwrap();
     let auth = format!(
         "Bearer {}",
-        jwt.mint(
+        jwt.mint_browser_session(
             &TokenAuth {
                 token_id: format!("browser-session-{user}"),
                 owner: Principal::user(user),
                 owner_incarnation: Some(session.owner_incarnation),
                 browser_session_id_hash: Some(session.session_id_hash),
+                expires_at: Some(session.expires_at),
                 scope: Scope::root(),
                 permissions: vec![
                     Permission::StorageManage,
