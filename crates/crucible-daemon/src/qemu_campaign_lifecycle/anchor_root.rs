@@ -195,6 +195,7 @@ where
                     if matches!(failure, AttemptWorkerFailure::Canceled(_)) {
                         return Err(failure);
                     }
+                    note_anchor_replay_failure(&failure);
                     return Ok(declined(input, Some(&plan.anchor), "anchor-replay-failed"));
                 }
             };
@@ -513,6 +514,29 @@ where
         .map_err(|error| {
             AttemptWorkerFailure::Terminal(QemuFreshExecutionRunnerError::Cleanup(error))
         })
+}
+
+/// Writes the swallowed anchor replay failure, which thin replay may not repeat.
+fn note_anchor_replay_failure<FE, DE>(
+    failure: &AttemptWorkerFailure<QemuFreshExecutionRunnerError<FE, DE>>,
+) {
+    let (AttemptWorkerFailure::Retryable(error)
+    | AttemptWorkerFailure::Terminal(error)
+    | AttemptWorkerFailure::Canceled(error)) = failure;
+    // Lifecycle and driver errors carry no formatting bound here; the start
+    // replay error is the one that names a divergence.
+    let detail = match error {
+        QemuFreshExecutionRunnerError::StartReplay(replay) => format!("start-replay {replay:?}"),
+        QemuFreshExecutionRunnerError::Lifecycle(_) => String::from("lifecycle"),
+        QemuFreshExecutionRunnerError::Driver(_) => String::from("driver"),
+        QemuFreshExecutionRunnerError::Cleanup(error) => format!("cleanup {error}"),
+        _ => String::from("other"),
+    };
+    let detail = detail.chars().take(4096).collect::<String>();
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "CRUCIBLE-HOT-FORK-ANCHOR-FAILURE-V1 detail={detail}"
+    );
 }
 
 /// Records one decline and returns it as the outcome.

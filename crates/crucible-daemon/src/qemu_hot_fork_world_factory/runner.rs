@@ -220,6 +220,7 @@ where
             input.start(),
             crate::CrucibleResolvedAttemptStart::AfterAttempt { .. }
         ) {
+            super::note_hot_fork_decline("runner-after-attempt-start");
             return Ok(QemuHotForkWorldExecutionAttempt::Declined);
         }
         let mut lifecycle = match self

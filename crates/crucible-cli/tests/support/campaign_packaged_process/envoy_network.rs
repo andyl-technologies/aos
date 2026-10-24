@@ -249,7 +249,7 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     assert_eq!(discovery["attempt"]["configuration"], genesis);
     require_bounded_primary_reached(&discovery, "next-choice")?;
     let materialization = guest_choice::capture_materialization_events(&service)?;
-    guest_choice::assert_materialization_tier(&materialization, discovery_attempt_id, "HotFork")?;
+    assert_hot_fork_tier(&service, &materialization, discovery_attempt_id)?;
     resource_audit.verify_source_dirty_growth()?;
     println!("envoy_five_node_hot_fork_resource_audit={resource_audit:?}");
     println!("envoy_five_node_hot_fork_resource_isolation_authenticated=true");
@@ -275,7 +275,7 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     )?;
     let disruption_id = json_string(&disruption["attempt"], "id")?;
     let materialization = guest_choice::capture_materialization_events(&service)?;
-    guest_choice::assert_materialization_tier(&materialization, &disruption_id, "HotFork")?;
+    assert_hot_fork_tier(&service, &materialization, &disruption_id)?;
     require_hot_fork_root_row(
         &service,
         ANCHOR_DIAGNOSTIC_PREFIX,
@@ -349,11 +349,7 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     )?;
     let followup_disruption_id = json_string(&followup_disruption["attempt"], "id")?;
     let materialization = guest_choice::capture_materialization_events(&service)?;
-    guest_choice::assert_materialization_tier(
-        &materialization,
-        &followup_disruption_id,
-        "HotFork",
-    )?;
+    assert_hot_fork_tier(&service, &materialization, &followup_disruption_id)?;
     require_hot_fork_root_row(
         &service,
         ANCHOR_DIAGNOSTIC_PREFIX,
@@ -383,7 +379,7 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     require_semantic_marker(&completion, "campaign.complete", "traffic-west")?;
     let completion_id = json_string(&completion["attempt"], "id")?;
     let materialization = guest_choice::capture_materialization_events(&service)?;
-    guest_choice::assert_materialization_tier(&materialization, &completion_id, "HotFork")?;
+    assert_hot_fork_tier(&service, &materialization, &completion_id)?;
     require_hot_fork_root_row(
         &service,
         ANCESTOR_DIAGNOSTIC_PREFIX,
@@ -412,6 +408,29 @@ const ANCESTOR_DIAGNOSTIC_PREFIX: &str = "CRUCIBLE-HOT-FORK-ANCESTOR-V1 ";
 /// Both row kinds open with `attempt=<id> anchor=<configuration>` and close
 /// with `decision=<decision> reason=<token>`; ancestor rows also carry a
 /// suffix length between them, which the flight does not pin.
+/// Requires a hot-fork materialization, naming the route rows when it is absent.
+fn assert_hot_fork_tier(
+    service: &CampaignServiceChild,
+    materialization: &[String],
+    attempt: impl std::fmt::Display,
+) -> Result<(), Box<dyn Error>> {
+    let Err(error) = guest_choice::assert_materialization_tier(materialization, attempt, "HotFork")
+    else {
+        return Ok(());
+    };
+    let mut rows = Vec::new();
+    for prefix in [
+        ANCHOR_DIAGNOSTIC_PREFIX,
+        ANCESTOR_DIAGNOSTIC_PREFIX,
+        "CRUCIBLE-HOT-FORK-DECLINE-V1 ",
+        "CRUCIBLE-HOT-FORK-ANCHOR-FAILURE-V1 ",
+        "CRUCIBLE-REPLAY-DIVERGENCE-V1 ",
+    ] {
+        rows.extend(service.stderr_lines_with_prefix(prefix, 32, 4096)?);
+    }
+    Err(format!("{error}; route_rows={rows:?}").into())
+}
+
 fn require_hot_fork_root_row(
     service: &CampaignServiceChild,
     prefix: &str,
