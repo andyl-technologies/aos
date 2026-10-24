@@ -10,6 +10,30 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Native admission input records
+
+Commit `ae866602ce` groups the original literal/typed Hello pair and connection
+ID without changing initial SDK admission order. The selected lease is still
+retained before terminal checks; refusal and expiry preserve and contain it.
+The native restoration policy forwards the existing lower constructor record.
+Both adapters add their concrete fixed headers beside existing scratch terms.
+
+All nine initial-admission custody controls and seven original-validator parity
+controls pass in both codec modes. Each complete Transport mode passes 2,104
+tests with zero failures, 20 ignored and no filtering. Each Engine mode passes
+2,048 with zero failures, 34 ignored and no filtering, plus fourteen custody and
+five rebuilt-provider controls. All-feature Transport/Engine/Daemon targets,
+six architecture checks and formatting pass. Production Transport Clippy falls
+from 33 to 30 errors. Its 1,734 warnings include the new private Hello record's
+unwired fields; no lint allowance or production wiring is claimed.
+
+The merged-toolchain application and funded-Source VM gates pass, with actual
+compiler metadata recording 185 test artifacts across 58 packages, including
+76 integration targets. All 548 owned Rust/Cargo inputs match the commit and
+actual application and three funded-VM Rust component captures. Complete
+Native18 production, strict acceptance, preservation and full RFC-0025 remain
+open.
+
 ## Borrowed restoration metadata traversal
 
 Commit `90e5eb65d1` uses borrowed flatten iterators for the actual retained
