@@ -78,7 +78,7 @@ impl PacketRestoredSettledCaptureUploadGeometryData {
         offset: usize,
     ) -> Result<usize, ProviderError> {
         let length = *self.content_bytes.get(ordinal).ok_or_else(invalid)?;
-        if offset >= length || offset % self.chunk_bytes != 0 {
+        if offset >= length || !offset.is_multiple_of(self.chunk_bytes) {
             return Err(invalid());
         }
         Ok((length - offset).min(self.chunk_bytes))

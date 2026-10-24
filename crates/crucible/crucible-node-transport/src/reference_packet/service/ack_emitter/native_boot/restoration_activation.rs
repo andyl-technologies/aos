@@ -31,6 +31,11 @@ pub(crate) use upload::{
     original_native_restoration_upload_counter_scratch_data,
 };
 
+// The defining metadata iterator borrows retained owners in their original order.
+type ActivationMetadataAttempts<'a> = std::iter::Flatten<
+    std::slice::Iter<'a, Option<Rc<RefCell<NativeRestorationActivationAttempt>>>>,
+>;
+
 pub(crate) struct NativeRestorationActivationAttempt {
     creator: u32,
     thread: ThreadId,
@@ -518,6 +523,10 @@ pub(crate) fn original_native_restoration_activation_counter_scratch_data() -> u
         + size_of::<Result<&'static [u8; 32], std::array::TryFromSliceError>>()
         + size_of::<std::array::IntoIter<usize, 2>>()
         + restoration_activation_protocol_counter_scratch_data()
+        // Keep earlier slice/loan windows; fund the new borrowed flatten views.
+        + 2 * size_of::<ActivationMetadataAttempts<'static>>()
+        + size_of::<Option<&Rc<RefCell<NativeRestorationActivationAttempt>>>>()
+        + size_of::<&Rc<RefCell<NativeRestorationActivationAttempt>>>()
         + original_native_restoration_upload_counter_scratch_data()
         + released::counter_scratch_data()
 }
@@ -708,48 +717,47 @@ impl NativeAckBoot {
         observer: &mut MetadataObserver<'_>,
     ) -> Result<(), ProviderError> {
         self.ensure_origin()?;
-        for slot in &self.restoration_activation {
-            if let Some(attempt) = slot {
-                observer.shared_original(
-                    crate::retained_metadata::aliases::MetadataSharedKind::NativeRestorationActivationAttempt,
-                    attempt.as_ref(),
-                )?;
-                let flight = attempt.try_borrow().map_err(|_| borrowed())?;
-                flight.ensure_origin()?;
-                let NativeRestorationActivationAttempt {
-                    creator,
-                    thread: _,
-                    phase,
-                    original,
-                    incoming_slot,
-                    artifact,
-                    context,
-                    coordinator,
-                    manifest,
-                    terminal,
-                    verified,
-                    dispatched,
-                    published,
-                } = &*flight;
-                observer.observe(creator)?;
-                observer.observe(phase)?;
-                observer.observe(original)?;
-                observer.observe(incoming_slot)?;
-                if let Some(artifact) = artifact {
-                    artifact.observe_owned_metadata_data(observer)?;
-                }
-                if let Some(context) = context {
-                    context.observe_owned_metadata_data(observer)?;
-                }
-                observer.observe(coordinator)?;
-                if let Some(manifest) = manifest {
-                    observe_manifest(manifest, observer)?;
-                }
-                observer.observe(terminal)?;
-                observer.observe(verified)?;
-                observer.observe(dispatched)?;
-                observer.observe(published)?;
+        let attempts: ActivationMetadataAttempts<'_> = self.restoration_activation.iter().flatten();
+        for attempt in attempts {
+            observer.shared_original(
+                crate::retained_metadata::aliases::MetadataSharedKind::NativeRestorationActivationAttempt,
+                attempt.as_ref(),
+            )?;
+            let flight = attempt.try_borrow().map_err(|_| borrowed())?;
+            flight.ensure_origin()?;
+            let NativeRestorationActivationAttempt {
+                creator,
+                thread: _,
+                phase,
+                original,
+                incoming_slot,
+                artifact,
+                context,
+                coordinator,
+                manifest,
+                terminal,
+                verified,
+                dispatched,
+                published,
+            } = &*flight;
+            observer.observe(creator)?;
+            observer.observe(phase)?;
+            observer.observe(original)?;
+            observer.observe(incoming_slot)?;
+            if let Some(artifact) = artifact {
+                artifact.observe_owned_metadata_data(observer)?;
             }
+            if let Some(context) = context {
+                context.observe_owned_metadata_data(observer)?;
+            }
+            observer.observe(coordinator)?;
+            if let Some(manifest) = manifest {
+                observe_manifest(manifest, observer)?;
+            }
+            observer.observe(terminal)?;
+            observer.observe(verified)?;
+            observer.observe(dispatched)?;
+            observer.observe(published)?;
         }
         Ok(())
     }

@@ -1828,9 +1828,9 @@ impl ClientSession {
                 ReceivedBody::Request(body) => {
                     {
                         prefix.authenticate_request(original, &frame.envelope, &body)?;
-                        let id = frame.envelope.request_id.0.as_ref().ok_or_else(|| {
-                            ProviderError::Correlation("selected restore prefix ID absent")
-                        })?;
+                        let id = frame.envelope.request_id.0.as_ref().ok_or(
+                            ProviderError::Correlation("selected restore prefix ID absent"),
+                        )?;
                         if custody.provider.contains_key(id) {
                             return Err(ProviderError::Conflict(
                                 "selected restore prefix ID reused",

@@ -11,6 +11,10 @@ use crate::bodies::RequestBody;
 use crate::reference_packet::service::complete_restore::activation::upload::*;
 use crucible_node_format::Validate;
 
+// The defining metadata iterator borrows retained owners in their original order.
+type UploadMetadataAttempts<'a> =
+    std::iter::Flatten<std::slice::Iter<'a, Option<Rc<RefCell<NativeRestorationUploadAttempt>>>>>;
+
 pub(crate) struct NativeRestorationUploadAttempt {
     creator: u32,
     thread: ThreadId,
@@ -822,6 +826,10 @@ pub(crate) fn original_native_restoration_upload_counter_scratch_data() -> usize
         + size_of::<crate::bodies::BlobBeginResult>()
         + size_of::<crate::bodies::BlobChunkResult>()
         + size_of::<crate::bodies::BlobFinishResult>()
+        // Keep earlier slice/loan windows; fund the new borrowed flatten views.
+        + 2 * size_of::<UploadMetadataAttempts<'static>>()
+        + size_of::<Option<&Rc<RefCell<NativeRestorationUploadAttempt>>>>()
+        + size_of::<&Rc<RefCell<NativeRestorationUploadAttempt>>>()
         + size_of::<[usize; 8]>()
 }
 
@@ -831,16 +839,15 @@ impl NativeAckBoot {
         observer: &mut MetadataObserver<'_>,
     ) -> Result<(), ProviderError> {
         self.ensure_origin()?;
-        for slot in &self.restoration_uploads {
-            if let Some(attempt) = slot {
-                observer.shared_original(
-                    crate::retained_metadata::aliases::MetadataSharedKind::NativeRestorationUploadAttempt,
-                    attempt.as_ref(),
-                )?;
-                let flight = attempt.try_borrow().map_err(|_| borrowed())?;
-                flight.ensure_origin()?;
-                flight.observe_settled_history_metadata_data(observer)?;
-            }
+        let attempts: UploadMetadataAttempts<'_> = self.restoration_uploads.iter().flatten();
+        for attempt in attempts {
+            observer.shared_original(
+                crate::retained_metadata::aliases::MetadataSharedKind::NativeRestorationUploadAttempt,
+                attempt.as_ref(),
+            )?;
+            let flight = attempt.try_borrow().map_err(|_| borrowed())?;
+            flight.ensure_origin()?;
+            flight.observe_settled_history_metadata_data(observer)?;
         }
         Ok(())
     }
