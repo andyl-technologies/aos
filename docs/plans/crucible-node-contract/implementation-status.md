@@ -10,6 +10,37 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Complete borrowed runtime construction scopes
+
+Commit `75049c45f1` authenticates a complete borrowed postconstruction scope
+rather than separately passing its original owners to two member methods.
+The scope remains inert DATA; the member checks its postconstruction flag,
+original phase, plan, Source roster and registered holder. The fixed counter
+preserves its prior controls and adds the new scope, nested loans and quote-array
+entries. No quota or allocation permission follows from the scope constructor.
+
+Both full Engine codec modes pass 2,068 tests with zero failures and 34 existing
+ignored tests. The ordinary Daemon suite passes 1,828 tests with zero failures
+and 165 ignored. All-feature/all-target checking, scoped formatting, six
+architecture checks and application test-target compilation pass. Actual
+application metadata records 185 test artifacts across 58 packages, including
+76 integration targets. All 634 frozen owned Rust/Cargo inputs match the commit
+and actual application source. Strict Engine Clippy reports 126 errors and
+2,171 warnings: exactly two argument-count errors were removed, without new
+allowances or other error-category changes.
+
+The genuine inactive startup control passes in 669.72 seconds with normal stack
+settings, construction and terminal growth rechecks, exact/one-byte-short
+censuses, retirement and child reclamation. Earlier attempts used a development-
+profile provider with stale compiler metadata, then a stripped copy, and failed
+during the third peer's initial lifecycle before runtime construction. The
+corrected run rebuilt the actual provider in the test profile used by the earlier
+passing control and captured fresh compiler metadata for both helpers and the
+unmodified Daemon. Temporary diagnostic sources were restored exactly and owned
+executable scratch was removed. This qualifies inactive construction only; no
+first-Arm, Capture, Native18 or performance qualification is claimed. The full
+RFC and strict lint qualification remain unfinished.
+
 ## Source loan scopes and strict Engine diagnostics
 
 Commit `9472c155d2` ends the recipe-history owner borrow and Capture prefix
