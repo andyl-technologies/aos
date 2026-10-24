@@ -11329,5 +11329,9 @@ versus stock comparisons, including numeric selector ranges and direct versus
 indirect attribute matching. Rechecking the retained production policy at
 `/nix/store/qqy8pir8a3j8ashsfqprj914mpx4g9xv-aos-selinux-production-policy-1`
 produces the identical 14,623-line evidence file. The complete negative-policy
-build is running. This is offline checker evidence; installed Root, Host and
-offline TPM qualification and the public lifecycle gate remain open.
+build subsequently passes at
+`/nix/store/pacagmlhi4k6cmi2d0yzp3k5wnfiirgx-aos-selinux-production-policy-1`,
+including every unsafe variant and the selected kernel's ordered class-map
+checks. Its evidence file is also identical to the prior production result.
+This is offline checker evidence; installed Root, Host and offline TPM
+qualification and the public lifecycle gate remain open.
