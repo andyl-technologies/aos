@@ -10,6 +10,34 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Invocation boot allocation after full row authentication
+
+Commit `a5b129cf64` retains invocation15's decoded children in the original
+inline attempt while authenticating the full private/native rows. A shared
+`NativeAckBoot` is allocated only after that claim succeeds. Earlier refusals
+retain the launch and decoded Source/registration owners, keep their original
+backing pointers and prohibit both same-edition and switched-edition retries.
+Schema, origin, purpose, MAC, body, clock and allocation guards remain required.
+New fixed borrow/result views are separately counted; earlier storage terms stay.
+
+The inherited-parent regression first reproduces an unadmitted shared boot.
+With the correction, both complete Transport modes pass 2,100 tests with zero
+failures, 20 ignored and no filtering. Both complete Engine modes pass 2,048
+tests with zero failures, 34 ignored and no filtering, plus 14 custody and five
+actual rebuilt-provider controls each. The thirteen boot refusal flights and
+six authenticated canonical-child flights preserve their original inputs and
+refuse without allocating the unadmitted shared boot. All-feature Transport/
+Engine/Daemon targets, six architecture checks and formatting pass. Production
+Transport Clippy remains at 37 errors and 1,733 warnings.
+
+The merged-toolchain application and funded-Source VM gates pass. The compiler
+records 185 test artifacts across 58 application packages, including 76
+integration targets. All 538 owned Rust/Cargo inputs match the commit and actual
+application and three funded-VM Rust component captures. Full private preclaim
+funding, Native18 successor construction, strict production lint and full RFC
+completion remain open. The negative inherited-channel controls construct no
+Source, Recipe/Initial or native readiness.
+
 ## Borrowed inherited stdin through native startup
 
 Commit `a7a4dd9d4c` retains safe borrowed fd0 through startup14 and invocation15
