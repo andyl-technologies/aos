@@ -10,6 +10,39 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## One canonical byte budget for fresh clone backing
+
+Commit `4d3bc17081` bounds cloned arrays, object nodes and decoded strings
+against their shared complete canonical encoding. Structural induction gives
+`L >= 1 + 2A + 5M + S`, for array elements A, object members M and decoded
+string/key bytes S. Pricing each canonical byte at the largest corresponding
+backing rate covers the whole forest, with separate root headers. Existing
+pinned layout guards, parser/cumulative-growth bounds, original owners and fixed
+counter terms remain intact. A new control checks nested mixed structures,
+escaped strings, minimal grammars and actual retained metadata.
+
+Both codec modes pass all five clone controls and three journal controls. Both
+complete Transport suites pass 2,151 tests with zero failures and twenty ignored;
+both complete Engine suites pass 2,068 with zero failures and 34 ignored. Fresh
+final-source Transport compiler artifacts are byte-identical to the immutable
+executables used for those complete runs. Both SourceBirth suites pass 62 tests,
+and strict SourceBirth Clippy passes. Strict Engine diagnostics retain exactly
+126 errors and 2,171 warnings without new categories or allowances.
+
+All-feature/all-target checking, scoped formatting, six architecture checks and
+application test-target compilation pass. Actual application metadata records
+185 test artifacts across 58 packages, including 76 integration targets. All
+636 frozen owned Rust/Cargo inputs match the commit and actual application
+source. This DATA-only change has no new native or VM qualification.
+
+An attempted Core reservation for full future journal backing refused original
+inactive construction under its unchanged 4 GiB ceiling. Diagnostics retained
+all earlier native/publication commitments and independently charged each Source
+and SDK; those commitments cannot be discarded merely because initialization
+completed. That runtime integration and its temporary diagnostics were not
+retained. Complete SDK R/T/S funding, owning-census growth, genuine runtime
+capacity handoff, live Native18 and the full RFC remain unfinished.
+
 ## Persistent journal backing from actual fresh clones
 
 Commit `5dba279da4` prices persistent SDK journal backing with a separate
