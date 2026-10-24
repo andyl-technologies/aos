@@ -136,6 +136,7 @@ in
           cp ${./_dmtcp/source-command-controls.cpp} "$source/build/source-command-controls.cpp"
           cp ${./_dmtcp/source-launch-peer-controls.h} "$source/build/source-launch-peer-controls.h"
           cp ${./dmtcp-source-owners-check.nix} "$source/build/source-owners-check.nix"
+          cp ${./dmtcp-setuid-launch-check.nix} "$source/build/setuid-launch-check.nix"
           # Retain the actual tree after all patches and hermetic substitutions,
           # before generated build objects or installed binaries enter it.
           tar --sort=name --mtime=@1 --owner=0 --group=0 --numeric-owner \
