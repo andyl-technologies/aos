@@ -2,9 +2,11 @@
 {
   mkDerivation,
   dmtcp-selected-writer-park,
+  dmtcp-setuid-launch-check,
   coreutils,
   tar,
   gzip,
+  grep,
   bash,
   readline,
   ncurses,
@@ -33,7 +35,7 @@ mkDerivation {
     role = "public-package";
   };
 
-  buildDeps = [coreutils bash tar gzip];
+  buildDeps = [coreutils bash tar gzip grep dmtcp-setuid-launch-check];
   runtimeDeps = [readline ncurses gcc-libs];
 
   phases = [
@@ -84,13 +86,11 @@ mkDerivation {
         ${coreutils}/bin/timeout 120 ./source-command-controls \
           ${bash}/bin/bash ${coreutils}/bin/readlink "$PWD/source-command-control"
 
-        # The launcher must retain its copied-executable feature rather than
-        # call a worker-only public tmpdir stub or a host cp implementation.
-        cp source-unselected-probe source-setuid-probe
-        chmod 4755 source-setuid-probe
-        mkdir setuid-launch
-        ${coreutils}/bin/timeout 120 ./source-unselected-controls \
-          ${dmtcp-selected-writer-park} "$PWD/source-setuid-probe" "$PWD/setuid-launch"
+        # Nix forbids setting setuid bits in its host build sandbox. Require
+        # the real copied-executable control in a disposable guest instead.
+        test "$(cat ${dmtcp-setuid-launch-check}/result)" = PASS
+        ${grep}/bin/grep -Eq '^actual_setuid_copied_launcher_exit_and_reaping=true[[:space:]]*$' \
+          ${dmtcp-setuid-launch-check}/serial.log
 
         mkdir -p "$out/share/checks" "$out/share/licenses/dmtcp-source-owners-check"
         printf '%s\n' 'Source-owned thread/shared-area controls and actual selected launcher/library exec observation passed; no whole-node issuance or readiness.' \
