@@ -39,8 +39,9 @@ in {
               "import os; "
               "expected = {'/etc': 'etc_t', '/nix': 'usr_t', '/nix/store': 'usr_t', "
               "'${pkgs.glibc}/lib/libm.so.6': 'lib_t'}; "
-              "assert all(os.getxattr(path, 'security.selinux').rstrip(b'\\0').decode().split(':')[2] == label "
-              "for path, label in expected.items())"
+              "observed = {path: os.getxattr(path, 'security.selinux').rstrip(b'\\0').decode().split(':')[2] "
+              "for path in expected}; "
+              "assert observed == expected, observed"
           )
           vm.succeed("${pkgs.python3}/bin/python3 -c \"" + root_labels + "\"")
           vm.wait_for_unit("multi-user.target", timeout=300)
