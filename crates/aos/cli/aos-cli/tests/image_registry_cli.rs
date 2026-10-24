@@ -1,5 +1,9 @@
 //! Image consumption from signed static Git/HTTP registries without a Hub or Nix.
 
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 #[path = "../../../packages/aos-package-manager/tests/common/mod.rs"]
 mod registry_fixture;
 
@@ -197,7 +201,7 @@ version = "{version}"
 }
 
 fn process(home: &Path, arguments: &[&str]) -> tokio::process::Command {
-    let mut command = tokio::process::Command::new(env!("CARGO_BIN_EXE_aos"));
+    let mut command = tokio::process::Command::new(cli_binary!("CARGO_BIN_EXE_aos"));
     command
         .args(arguments)
         .env_clear()
@@ -529,7 +533,7 @@ priority = 9999
         baseline_home.join(".config/apm/registries.d/images.toml"),
         format!(
             "{configuration}\n[registry.state]\n{}",
-            format!(
+            format_args!(
                 "last_commit = {:?}\nlast_roster_commit = {:?}\ntuf_root_version = {}\ntuf_targets_version = {}\ntuf_snapshot_version = {}\ntuf_timestamp_version = {}\n",
                 baseline.last_commit.as_deref().context("baseline commit")?,
                 baseline

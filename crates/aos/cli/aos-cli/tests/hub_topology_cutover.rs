@@ -1,5 +1,9 @@
 //! End-to-end tests for the authenticated Hub topology-cutover bundle.
 
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 use std::fs::{self, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -535,8 +539,9 @@ impl CutoverFixture {
 
         let docs = workspace_root().join("docs/rfcs/0012-hub-surface-topology");
         let recipe = root.path().join("bundle-generation.json");
-        fs::copy(
-            docs.join("hub-topology-cutover-bundle-generation-v1.fixture.json"),
+        copy_fixture(
+            &docs,
+            "hub-topology-cutover-bundle-generation-v1.fixture.json",
             &recipe,
         )?;
         let recipe_value: Value = serde_json::from_slice(&fs::read(&recipe)?)?;
@@ -611,7 +616,7 @@ impl CutoverFixture {
     }
 
     fn materialize_verifier_at(&self, bundle: &Path) -> Result<Output> {
-        Command::new(env!("CARGO_BIN_EXE_aos"))
+        Command::new(cli_binary!("CARGO_BIN_EXE_aos"))
             .args([
                 "hub",
                 "topology",
@@ -631,7 +636,7 @@ impl CutoverFixture {
     }
 
     fn generate_with_document_key(&self, document_signing_key: &Path) -> Result<Output> {
-        Command::new(env!("CARGO_BIN_EXE_aos"))
+        Command::new(cli_binary!("CARGO_BIN_EXE_aos"))
             .args(["hub", "topology", "cutover", "generate", "--bundle"])
             .arg(&self.bundle)
             .arg("--bundle-source")
@@ -716,6 +721,13 @@ fn workspace_root() -> PathBuf {
             candidate.join("default.nix").is_file() && candidate.join("crates/Cargo.toml").is_file()
         })
         .expect("Hub cutover fixtures must run from the AOS repository")
+        // Runfiles may expand a declared directory into individual symlinks.
+        // Resolve its marker to scan the verified materialized source tree.
+        .join("default.nix")
+        .canonicalize()
+        .expect("repository marker must resolve to declared test data")
+        .parent()
+        .expect("repository marker must have a parent")
         .to_path_buf()
 }
 
@@ -727,6 +739,22 @@ fn create_parent(path: &Path) -> Result<()> {
 fn copy_fixture(docs: &Path, fixture: &str, output: &Path) -> Result<()> {
     fs::copy(docs.join(fixture), output)
         .with_context(|| format!("copying {fixture} to {}", output.display()))?;
+    // Tampering tests must mutate their private copies of immutable runfiles.
+    let permissions = fs::metadata(output)?.permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(
+            output,
+            fs::Permissions::from_mode(permissions.mode() | 0o200),
+        )?;
+    }
+    #[cfg(not(unix))]
+    {
+        let mut permissions = permissions;
+        permissions.set_readonly(false);
+        fs::set_permissions(output, permissions)?;
+    }
     Ok(())
 }
 

@@ -2,19 +2,25 @@
 {
   pkgs,
   lib,
+  extraTools ? [],
+  extraEnvironment ? {},
+  extraInputs ? [],
+  exportNixEnvironment ? false,
 }: let
-  tools = [
-    pkgs.bash
-    pkgs.coreutils
-    pkgs.findutils
-    pkgs.grep
-    pkgs.sed
-    pkgs.git-minimal
-    pkgs.openssh
-    pkgs.zstd
-    pkgs.nix
-    pkgs.which
-  ];
+  tools =
+    [
+      pkgs.bash
+      pkgs.coreutils
+      pkgs.findutils
+      pkgs.grep
+      pkgs.sed
+      pkgs.git-minimal
+      pkgs.openssh
+      pkgs.zstd
+      pkgs.nix
+      pkgs.which
+    ]
+    ++ extraTools;
 in
   pkgs.mkDerivation {
     pname = "aos-bazel-registry-test-tools";
@@ -23,7 +29,7 @@ in
     sharedBuildCache = false;
     buildDeps = [pkgs.jq];
     outputChecks.out = {};
-    exportReferencesGraph.tools = tools;
+    exportReferencesGraph.tools = tools ++ extraInputs;
     dontStrip = true;
     dontPatchELF = true;
     dontNukeRefs = true;
@@ -40,6 +46,7 @@ in
           export PATH=${lib.escapeShellArg (lib.concatStringsSep ":" (map (tool: "${tool}/bin") tools))}
           export AOS_NIX_STORE=${pkgs.nix}/bin/nix-store
           export AOS_NIX_INSTANTIATE=${pkgs.nix}/bin/nix-instantiate
+          ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: value: "export ${name}=${lib.escapeShellArg value}") extraEnvironment)}
 
           # Each Bazel artifact gets its own database. Tests invoke the local
           # Nix tools as children; no daemon or cache service is started.
@@ -56,6 +63,16 @@ in
           export AOS_TEST_ABILITY_NIX_STATE_DIR="$registry_nix_root/state"
           export AOS_TEST_ABILITY_NIX_LOG_DIR="$registry_nix_root/log"
           export AOS_TEST_ABILITY_NIX_REMOTE="$registry_nix_remote"
+          ${lib.optionalString exportNixEnvironment ''
+            # Cache CLI fixtures dump paths as ordinary files. Give them a
+            # physical private store; native admission fixtures select their
+            # own rooted canonical store explicitly.
+            export NIX_STORE_DIR="$registry_nix_root/cli-store"
+            export NIX_STATE_DIR="$registry_nix_root/cli-state"
+            export NIX_LOG_DIR="$registry_nix_root/cli-log" NIX_REMOTE=local
+            mkdir -p "$NIX_STORE_DIR" "$NIX_STATE_DIR" "$NIX_LOG_DIR"
+            "$AOS_NIX_STORE" --init
+          ''}
           exec "$@"
           SETUP
           chmod +x "$out/setup"

@@ -26,12 +26,18 @@ DEPENDENCIES = [
 
 # Cargo unifies compression across package dispatch and registry consumers.
 LIBRARY_FEATURES = select({
+    "//tools/bazel/rules:aos_cli_tests_dependencies": ["compression", "default"],
+    "//tools/bazel/rules:aos_cli_fleet_tests_dependencies": ["compression", "default"],
+    "//tools/bazel/rules:aos_cli_production_dependencies": ["compression", "default"],
     "//tools/bazel/rules:package_manager_dependencies": ["compression", "default"],
     "//tools/bazel/rules:package_manager_tests_dependencies": ["compression", "default"],
     "//conditions:default": ["default"],
 })
 
 COMPRESSION_DEPENDENCIES = select({
+    "//tools/bazel/rules:aos_cli_tests_dependencies": ["//third_party/rust:core_thiserror", "//third_party/rust:core_zstd"],
+    "//tools/bazel/rules:aos_cli_fleet_tests_dependencies": ["//third_party/rust:core_thiserror", "//third_party/rust:core_zstd"],
+    "//tools/bazel/rules:aos_cli_production_dependencies": ["//third_party/rust:core_thiserror", "//third_party/rust:core_zstd"],
     "//tools/bazel/rules:package_manager_dependencies": ["//third_party/rust:core_thiserror", "//third_party/rust:core_zstd"],
     "//tools/bazel/rules:package_manager_tests_dependencies": ["//third_party/rust:core_thiserror", "//third_party/rust:core_zstd"],
     "//conditions:default": [],

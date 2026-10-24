@@ -1,5 +1,9 @@
 //! Process tests for native declarations and desired transaction inspection.
 
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 use aos_core::Sha256Digest;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -12,7 +16,7 @@ fn reference(description: &str) -> Value {
 }
 
 fn run(directory: &Path, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_aos"))
+    Command::new(cli_binary!("CARGO_BIN_EXE_aos"))
         .args(arguments)
         .current_dir(directory)
         .env_clear()

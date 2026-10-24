@@ -1,0 +1,84 @@
+# CLI conversion checkpoints
+
+The CLI has separate Bazel configurations for ordinary tests, fleet fixture
+features, and the shipped fifteen-program suite. Cargo remains the production
+builder while qualification continues.
+
+`tools/bazel/tests/aos-cli.nix` exposes `default`, `fleet`, and `production`.
+The test configurations provide `compile`, `tests`, `cargo`, `developer-build`,
+`format`, `oracle`, and `inventory`; production provides `build`, `installed`, `runtime-smoke`,
+`developer-build`, and `inventory`. These are explicit conversion checkpoints,
+not yet production selectors or ordinary `aos-dev` family routes.
+
+For example, from the repository root:
+
+```sh
+nix-build --expr '(import ./tools/bazel/tests/aos-cli.nix {}).default.tests' \
+  --no-out-link --max-jobs 4 --cores 4
+nix-build --expr '(import ./tools/bazel/tests/aos-cli.nix {}).fleet.tests' \
+  --no-out-link --max-jobs 4 --cores 4
+nix-build --expr '(import ./tools/bazel/tests/aos-cli.nix {}).production.runtime-smoke' \
+  --no-out-link --max-jobs 4 --cores 4
+```
+
+The test configurations retain all 23 integration targets, the library unit
+target, and their selected binary test harnesses. The fleet configuration also
+retains the three optional fixture binary harnesses. Binary paths are declared
+Bazel runfiles and become absolute before a test changes a child process's
+working directory. Cargo's already absolute binary paths retain their behavior.
+
+Repository-aware tests receive an audited, declared source tree. The imported
+files use a suffix until materialization so nested BUILD files cannot silently
+truncate a Bazel filegroup. The materializer verifies file hashes, lengths, and
+executable permissions before restoring their original paths. This remains a
+conservative snapshot: architecture tests still read Cargo manifests. Replacing
+that dependency with configured Bazel metadata is required before strict source
+qualification or Cargo removal.
+
+Profile lifecycle and cache installation tests use real immutable AOS packages,
+native deployment envelopes, private Nix databases, and signed registry
+releases. Cache installation uses distinct producer and consumer stores, signed
+NARs, and a pinned Nix cache key with signature enforcement enabled. Expected
+download counts come from the real closure graph. The helper's envelope and
+catalog entry are authenticated along with the explicitly installed tool.
+The cache tests also retain their raw store-path publication checks; a later
+native publication supplies the evaluator-owned metadata required for admission.
+No fixture fabricates a successful Nix validity result or deployment receipt.
+
+`default.cargo` and `fleet.cargo` run the temporary offline comparison with the
+same native libraries and fixture inputs. The Cargo environment explicitly
+selects the multithreaded AOS zstd archive before the ordinary zstd tool's
+pkg-config directory. `default.oracle` and `fleet.oracle` run the complete comparison. A successful
+compilation alone is insufficient: compare
+the retained results with `tools/bazel/tests/verify_cli.py`, passing the Bazel
+test output's `evidence/tests` directory, its `inventory.json`, and the Cargo
+output directory. The verifier requires exact feature units, test targets,
+executed case names, and empty doctest inventories. Failed or ignored Cargo
+cases and Bazel case output containing skip diagnostics fail the comparison.
+
+The retained development checkpoint passes all 540 ordinary and 548 fleet
+cases under both Cargo and Bazel. Each configuration matches 38 first-party
+and 439 external crate feature inventories. The required application Rust
+unit and integration compile gate, formatting, core evaluation, and 221 Python
+policy checks also pass. Bazel used the explicit local disk action cache;
+these results do not establish strict uncached qualification.
+
+The production package exports nine CLI programs, five package-manager helpers,
+and the image metadata helper. Installation verifies its manifest and bytes,
+then uses ordinary AOS fixup with explicit shared-library runtime dependencies.
+`runtime-smoke` resolves every executable's ELF imports through the AOS loader
+and executes help for the three public CLIs. Service helpers are inspected
+without entering their privileged command bodies. Split package outputs,
+private dispatch identities, runtime tool wrappers, and their closure policy
+still require production qualification.
+
+`../tests/evidence/aos-cli-source-graph.json` records the 57 frozen SDK exports
+and 41 configured source inventory families. The previous 54 SDKs preserve all
+13,060 existing lock and generated files. Runtime evidence is separate from
+this metadata validation.
+
+The developer checkpoint currently exposes CLI Clippy failures,
+including host clock and entropy operations under the workspace policy. Those
+failures remain a required gate. Editor comparison, full compiler argument
+parity, strict uncached qualification, live service and VM checks, performance
+acceptance, and production migration also remain separate work.

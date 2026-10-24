@@ -1,6 +1,9 @@
 ##! Dependency resolution is an explicit update; ordinary targets export specs.
 {pkgs}: let
   profiles = [
+    "aos-cli-tests"
+    "aos-cli-fleet-tests"
+    "aos-cli-production"
     "hub-worker-tests"
     "hub-worker-all-features-tests"
     "hub-worker-wasm"

@@ -20,6 +20,8 @@ RUST_PACKAGE = aos_rust_package(
 )
 
 LIBRARY_FEATURES = select({
+    "//tools/bazel/rules:aos_cli_tests_dependencies": ["default", "test-fixtures"],
+    "//tools/bazel/rules:aos_cli_fleet_tests_dependencies": ["default", "test-fixtures"],
     "//tools/bazel/rules:hub_worker_all_features_tests_dependencies": ["default", "do-e2e-test-support", "query-timing"],
     "//tools/bazel/rules:hub_worker_wasm_do_e2e_dependencies": ["default", "do-e2e-test-support"],
     "//tools/bazel/rules:hub_worker_wasm_all_features_dependencies": ["default", "do-e2e-test-support", "query-timing"],

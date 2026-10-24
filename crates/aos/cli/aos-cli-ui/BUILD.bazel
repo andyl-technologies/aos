@@ -19,6 +19,9 @@ RUST_PACKAGE = aos_rust_package(
 # Cargo unifies transfer features across registry acquisition and presentation.
 # Both users must share one crate instance for observer trait identity.
 DEPENDENCIES = select({
+    "//tools/bazel/rules:aos_cli_tests_dependencies": ["//crates/shared/aos-transfer:lib"],
+    "//tools/bazel/rules:aos_cli_fleet_tests_dependencies": ["//crates/shared/aos-transfer:lib"],
+    "//tools/bazel/rules:aos_cli_production_dependencies": ["//crates/shared/aos-transfer:lib"],
     "//tools/bazel/rules:hub_native_tests_dependencies": ["//crates/shared/aos-transfer:lib"],
     "//tools/bazel/rules:package_manager_dependencies": ["//crates/shared/aos-transfer:lib"],
     "//tools/bazel/rules:package_manager_tests_dependencies": ["//crates/shared/aos-transfer:lib"],

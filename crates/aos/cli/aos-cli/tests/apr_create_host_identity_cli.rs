@@ -17,6 +17,10 @@
 //! why the regression slipped through. These tests deliberately leave those
 //! variables unset so the host git config is the only identity source.
 
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -31,7 +35,7 @@ use tempfile::TempDir;
 /// resolves `~/.config/git/config` and writes the registry under
 /// `$HOME/.local/share`, both inside the test's temporary `HOME`.
 fn apr_create(home: &Path, name: &str) -> Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_apr"))
+    Command::new(cli_binary!("CARGO_BIN_EXE_apr"))
         .env("HOME", home)
         .env("USER", "host-identity-test")
         .env("LOGNAME", "host-identity-test")

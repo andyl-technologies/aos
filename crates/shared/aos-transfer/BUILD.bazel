@@ -18,6 +18,9 @@ RUST_PACKAGE = aos_rust_package(
 
 # These consumers explicitly opt in without enabling the Cargo default flag.
 TRANSFER_FEATURES = select({
+    "//tools/bazel/rules:aos_cli_tests_dependencies": ["transfer"],
+    "//tools/bazel/rules:aos_cli_fleet_tests_dependencies": ["transfer"],
+    "//tools/bazel/rules:aos_cli_production_dependencies": ["transfer"],
     "//tools/bazel/rules:hub_worker_tests_dependencies": ["transfer"],
     "//tools/bazel/rules:hub_worker_all_features_tests_dependencies": ["transfer"],
     "//tools/bazel/rules:hub_native_postgres_dependencies": ["transfer"],

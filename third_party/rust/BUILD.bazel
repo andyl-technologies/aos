@@ -29,6 +29,10 @@ load(":hub-worker-all-features-tests/aliases.bzl", HUB_WORKER_ALL_FEATURES_TESTS
 load(":hub-worker-wasm/aliases.bzl", HUB_WORKER_WASM_CRATES = "CRATES")
 load(":hub-worker-wasm-do-e2e/aliases.bzl", HUB_WORKER_WASM_DO_E2E_CRATES = "CRATES")
 load(":hub-worker-wasm-all-features/aliases.bzl", HUB_WORKER_WASM_ALL_FEATURES_CRATES = "CRATES")
+load(":aos-cli.bzl", "AOS_CLI_TESTS_PACKAGES", "AOS_CLI_TESTS_FEATURE_VARIANTS", "AOS_CLI_FLEET_TESTS_PACKAGES", "AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS", "AOS_CLI_PRODUCTION_PACKAGES", "AOS_CLI_PRODUCTION_FEATURE_VARIANTS")
+load(":aos-cli-tests/aliases.bzl", AOS_CLI_TESTS_CRATES = "CRATES")
+load(":aos-cli-fleet-tests/aliases.bzl", AOS_CLI_FLEET_TESTS_CRATES = "CRATES")
+load(":aos-cli-production/aliases.bzl", AOS_CLI_PRODUCTION_CRATES = "CRATES")
 load(":release-coordination.bzl", "RELEASE_COORDINATION_FEATURE_VARIANTS", "RELEASE_COORDINATION_PACKAGES")
 load(":release-coordination/aliases.bzl", RELEASE_COORDINATION_CRATES = "CRATES")
 load(":registry-native.bzl", "REGISTRY_NATIVE_FEATURE_VARIANTS", "REGISTRY_NATIVE_PACKAGES")
@@ -74,6 +78,9 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
     alias(
         name = "core_" + name.replace("-", "_"),
         actual = select({
+            "//tools/bazel/rules:aos_cli_tests_dependencies": AOS_CLI_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:aos_cli_fleet_tests_dependencies": AOS_CLI_FLEET_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
+            "//tools/bazel/rules:aos_cli_production_dependencies": AOS_CLI_PRODUCTION_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_worker_tests_dependencies": HUB_WORKER_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_worker_all_features_tests_dependencies": HUB_WORKER_ALL_FEATURES_TESTS_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
             "//tools/bazel/rules:hub_worker_wasm_dependencies": HUB_WORKER_WASM_CRATES.get(name, "//tools/bazel/rules:formats_profile_required"),
@@ -143,6 +150,9 @@ load(":native-foundation-minimal/aliases.bzl", NATIVE_FOUNDATION_MINIMAL_CRATES 
         + HUB_WORKER_WASM_CRATES.items()
         + HUB_WORKER_WASM_DO_E2E_CRATES.items()
         + HUB_WORKER_WASM_ALL_FEATURES_CRATES.items()
+        + AOS_CLI_TESTS_CRATES.items()
+        + AOS_CLI_FLEET_TESTS_CRATES.items()
+        + AOS_CLI_PRODUCTION_CRATES.items()
         + HUB_CONSOLE_CRATES.items()
         + HUB_CONSOLE_WASM_CRATES.items()
         + HUB_DB_CRATES.items()
@@ -979,6 +989,9 @@ NATIVE_FOUNDATION_FEATURE_VARIANTS = {
 }
 
 FAMILY_FEATURE_VARIANTS = {
+    "aos-cli-tests": AOS_CLI_TESTS_FEATURE_VARIANTS,
+    "aos-cli-fleet-tests": AOS_CLI_FLEET_TESTS_FEATURE_VARIANTS,
+    "aos-cli-production": AOS_CLI_PRODUCTION_FEATURE_VARIANTS,
     "hub-worker-tests": HUB_WORKER_TESTS_FEATURE_VARIANTS,
     "hub-worker-all-features-tests": HUB_WORKER_ALL_FEATURES_TESTS_FEATURE_VARIANTS,
     "hub-worker-wasm": HUB_WORKER_WASM_FEATURE_VARIANTS,
@@ -1759,6 +1772,9 @@ APPROVED_LICENSES = [
         family = family,
         definition = "BUILD.bazel",
         extra_definitions = {
+            "aos-cli-tests": ["aos-cli.bzl"],
+            "aos-cli-fleet-tests": ["aos-cli.bzl"],
+            "aos-cli-production": ["aos-cli.bzl"],
             "hub-worker-tests": ["hub-worker.bzl"],
             "hub-worker-all-features-tests": ["hub-worker.bzl"],
             "hub-worker-wasm": ["hub-worker.bzl"],
@@ -1825,6 +1841,9 @@ APPROVED_LICENSES = [
         ("hub-worker-wasm", HUB_WORKER_WASM_PACKAGES, {}, "apache-host"),
         ("hub-worker-wasm-do-e2e", HUB_WORKER_WASM_DO_E2E_PACKAGES, {}, "apache-host"),
         ("hub-worker-wasm-all-features", HUB_WORKER_WASM_ALL_FEATURES_PACKAGES, {}, "apache-host"),
+        ("aos-cli-tests", AOS_CLI_TESTS_PACKAGES, HUB_SERVICE_TEST_ANNOTATIONS, "apache-host"),
+        ("aos-cli-fleet-tests", AOS_CLI_FLEET_TESTS_PACKAGES, HUB_SERVICE_TEST_ANNOTATIONS, "apache-host"),
+        ("aos-cli-production", AOS_CLI_PRODUCTION_PACKAGES, HUB_SERVICE_TEST_ANNOTATIONS, "apache-host"),
         ("release-coordination", RELEASE_COORDINATION_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
         ("registry-native", REGISTRY_NATIVE_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
         ("registry-native-tests", REGISTRY_NATIVE_PACKAGES, NATIVE_FOUNDATION_ANNOTATIONS, "apache-host"),
@@ -1871,6 +1890,9 @@ APPROVED_LICENSES = [
         artifacts = {":" + family + "_specifications": "specifications.json"},
     )
     for family in [
+        "aos-cli-tests",
+        "aos-cli-fleet-tests",
+        "aos-cli-production",
         "hub-worker-tests",
         "hub-worker-all-features-tests",
         "hub-worker-wasm",

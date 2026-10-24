@@ -412,3 +412,21 @@ config_setting(
     flag_values = {":dependency_profile": "hub-worker-wasm-all-features"},
     visibility = ["//visibility:public"],
 )
+
+config_setting(
+    name = "aos_cli_tests_dependencies",
+    flag_values = {":dependency_profile": "aos-cli-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "aos_cli_fleet_tests_dependencies",
+    flag_values = {":dependency_profile": "aos-cli-fleet-tests"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "aos_cli_production_dependencies",
+    flag_values = {":dependency_profile": "aos-cli-production"},
+    visibility = ["//visibility:public"],
+)

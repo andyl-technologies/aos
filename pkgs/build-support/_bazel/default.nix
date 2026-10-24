@@ -84,6 +84,24 @@
     touch "$out/REPO.bazel"
   '';
   aosBazelRustRepositories = {
+    aos-cli-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "aos-cli-tests";
+    };
+
+    aos-cli-fleet-tests = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "aos-cli-fleet-tests";
+    };
+
+    aos-cli-production = import ./rust-sources.nix {
+      inherit pkgs lib;
+      root = ../../..;
+      family = "aos-cli-production";
+    };
+
     hub-worker-tests = import ./rust-sources.nix {
       inherit pkgs lib;
       root = ../../..;

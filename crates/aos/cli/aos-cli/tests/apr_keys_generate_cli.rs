@@ -1,5 +1,9 @@
 //! End-to-end coverage for `apr keys generate`.
 
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -224,7 +228,7 @@ fn init_registry(
 /// Spawn `apr` against an isolated `HOME`, with a committer identity in the
 /// environment: registry commits refuse to run without one.
 fn apr_command(home: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_apr"));
+    let mut cmd = Command::new(cli_binary!("CARGO_BIN_EXE_apr"));
     cmd.env("HOME", home)
         .env("USER", "registry-test")
         .env("LOGNAME", "registry-test")

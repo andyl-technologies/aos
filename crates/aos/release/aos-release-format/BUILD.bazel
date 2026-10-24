@@ -117,3 +117,11 @@ aos_source_package(
     srcs = glob(["**/*.rs"]),
     visibility = ["//visibility:public"],
 )
+
+# Shared source fixtures compile in the consuming integration test crate.
+filegroup(
+    name = "qualification_fixture_sources",
+    srcs = glob(["src/test_support/qualification/**/*.rs"]),
+    tags = ["aos-license:apache-host"],
+    visibility = ["//crates:__subpackages__"],
+)
