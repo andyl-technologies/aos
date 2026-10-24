@@ -25,6 +25,7 @@ pub(super) fn assert_hot_fork_tier(
         "CRUCIBLE-HOT-FORK-DECLINE-V1 ",
         "CRUCIBLE-HOT-FORK-RETENTION-V1 ",
         "CRUCIBLE-HOT-FORK-SOURCE-PREPARATION-V1 ",
+        "CRUCIBLE-HOT-FORK-SOURCE-MEASUREMENT-V1 ",
         "CRUCIBLE-REPLAY-DIVERGENCE-V1 ",
     ] {
         rows.extend(service.stderr_lines_with_prefix(prefix, 32, 4096)?);
