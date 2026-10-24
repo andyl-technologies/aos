@@ -10,6 +10,26 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Process-group census during task exit
+
+Commit `9767b3b20c` treats `ESRCH` from an already opened process-stat file as
+an incomplete census. Reclamation stays pending until a fresh census proves
+that the group is empty. Original-child custody, signaling, creator checks,
+parser bounds and all other I/O failures retain their previous behavior.
+A regression opens a live child's stat file, reaps that same child, and checks
+the resulting descriptor read; a second control preserves other I/O errors.
+
+Both complete Engine codec modes pass 2,064 tests with zero failures, 34 ignored
+and no filtering, plus the existing process, custody, publication and installed
+standard-provider controls. The same measured standard provider serves both
+modes. All-feature Transport/Engine/Daemon targets, six architecture checks,
+scoped formatting and application test-target compilation pass. Actual compiler
+metadata records 185 test artifacts across 58 packages, including 76 integration
+targets. All 604 frozen owned Rust/Cargo inputs match the commit and actual
+application source. No new full Transport suite or VM qualification is claimed
+for this Engine-only fix. The runtime funding handoff, Native18 adoption and
+full RFC remain unfinished.
+
 ## Original Control dispatch permissions
 
 Commit `eac4a27bdd` groups the six actual optional dispatch permissions, including
