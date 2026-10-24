@@ -119,6 +119,7 @@ fn inherited_boot_refusal_child() -> TestResult {
             "$serde_json::private::RawValue": "not JSON"
         });
     }
+    let raw_body = canonical::canonical_json(&value)?;
     let launch_body = b"retained launch payload".to_vec();
     let launch_pointer = launch_body.as_ptr();
     let mut attempt = None;
@@ -130,7 +131,10 @@ fn inherited_boot_refusal_child() -> TestResult {
 
     let purpose = PacketNativeInvocationPurposeData::original_execution_data(&launch)?;
     let result = NativeAckBoot::prepare_original_invocation_into(
-        &value,
+        OriginalNativeBootValue {
+            value: &value,
+            body: &raw_body,
+        },
         &launch,
         launch_body,
         purpose,
@@ -200,7 +204,10 @@ fn inherited_boot_refusal_child() -> TestResult {
     };
 
     let retry = NativeAckBoot::prepare_original_invocation_into(
-        &value,
+        OriginalNativeBootValue {
+            value: &value,
+            body: &raw_body,
+        },
         &launch,
         Vec::new(),
         purpose,
@@ -216,7 +223,10 @@ fn inherited_boot_refusal_child() -> TestResult {
         ))
     ));
     let switched = NativeAckBoot::prepare_original_startup_into(
-        &value,
+        OriginalNativeBootValue {
+            value: &value,
+            body: &raw_body,
+        },
         &launch,
         Vec::new(),
         &mut startup,

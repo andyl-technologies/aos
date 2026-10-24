@@ -158,6 +158,7 @@ impl OriginalNativeStartupBootstrap {
         let super::super::super::boot::OriginalNativeBootClaimInputs {
             launch,
             launch_body,
+            boot_body,
             source,
             registration,
             private_launch,
@@ -203,10 +204,15 @@ impl OriginalNativeStartupBootstrap {
                 "native invocation Source target differs",
             ));
         }
-        let source_body = crucible_node_format::canonical::canonical_json(source)?;
-        let host_body = crucible_node_format::canonical::canonical_json(registration)?;
-        if blake3::hash(&source_body).as_bytes() != &expected.source_digest
-            || blake3::hash(&host_body).as_bytes() != &expected.registration_digest
+        let children = super::super::super::boot::body::borrow_canonical_children_data(
+            boot_body,
+            source,
+            registration,
+        )?;
+        let source_body = children.source;
+        let host_body = children.registration;
+        if blake3::hash(source_body).as_bytes() != &expected.source_digest
+            || blake3::hash(host_body).as_bytes() != &expected.registration_digest
         {
             return Err(ProviderError::Correlation(
                 "native invocation bound child differs",
@@ -236,8 +242,8 @@ impl OriginalNativeStartupBootstrap {
                 launch,
                 private_launch,
                 encoded_launch: nested,
-                source_birth: &source_body,
-                host_registration: &host_body,
+                source_birth: source_body,
+                host_registration: host_body,
             },
             purpose,
             maximum,

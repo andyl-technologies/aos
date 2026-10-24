@@ -13,6 +13,10 @@ mod owned11;
 
 pub(crate) use owned11::OriginalNativeBootstrapOwned11;
 
+#[cfg(test)]
+#[path = "bootstrap_body_tests.rs"]
+mod body_tests;
+
 struct Bootstrap<S> {
     reader: FrameReader<super::owned_read::OriginalPrivateBootstrapStream<S>>,
     literals: Rc<RefCell<OriginalFrameReservation>>,
@@ -312,6 +316,31 @@ impl<S: AsFd> Bootstrap<S> {
             .as_ref()
             .ok_or(ProviderError::Frame("native boot slot absent"))?;
         if let Some(startup) = self.startup.as_mut() {
+            let literals = self
+                .literals
+                .try_borrow()
+                .map_err(|_| ProviderError::Conflict("native original boot literals borrowed"))?;
+            // This fresh two-slot bank contains launch then boot. FrameReader
+            // checked the framing length before marking this second slot complete.
+            let frame = literals
+                .frame(1)
+                .ok_or(ProviderError::Frame("native original boot literal absent"))?;
+            if frame.direction != crate::transport::original_frames::FrameDirection::Incoming
+                || !frame.complete
+                || frame.transferred != frame.bytes.len()
+            {
+                return Err(ProviderError::Frame(
+                    "native original boot literal incomplete",
+                ));
+            }
+            let body = frame
+                .bytes
+                .get(4..)
+                .ok_or(ProviderError::Frame("native original boot body absent"))?;
+            let boot_value = super::boot::OriginalNativeBootValue {
+                value: boot_value,
+                body,
+            };
             if startup.has_invocation_prefix()? {
                 let purpose = crate::reference_packet::service::native_startup::PacketNativeInvocationPurposeData::from_original_value_data(
                     self.launch_value.as_ref()

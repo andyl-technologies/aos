@@ -12,6 +12,9 @@ use std::{cell::RefCell, mem::size_of, rc::Rc, thread::ThreadId};
 #[path = "boot_shape.rs"]
 mod shape;
 
+#[path = "boot_body.rs"]
+pub(super) mod body;
+
 #[path = "owned11.rs"]
 mod owned11;
 
@@ -91,6 +94,8 @@ pub(super) struct OriginalNativeBootClaimInputs<'a> {
     pub(super) launch: &'a PacketNative5SourceLaunch,
     /// Borrows the complete original launch literal, including its edition.
     pub(super) launch_body: &'a [u8],
+    /// Borrows the complete original boot literal from its retained frame bank.
+    pub(super) boot_body: &'a [u8],
     /// Borrows the retained Source binding whose canonical digest is checked.
     pub(super) source: &'a serde_json::Value,
     /// Borrows the retained host registration whose canonical digest is checked.
@@ -103,15 +108,28 @@ pub(super) struct OriginalNativeBootClaimInputs<'a> {
     pub(super) birth_id: &'a [u8],
 }
 
+/// Borrows the parsed private frame and its original retained wire body.
+///
+/// This carrier supplies no provenance or admission. The inherited claimant
+/// independently checks the copied children against these original bytes.
+pub(super) struct OriginalNativeBootValue<'a> {
+    /// Borrows the strict parsed private frame retained by Bootstrap.
+    pub(super) value: &'a serde_json::Value,
+    /// Borrows the corresponding body inside Bootstrap's original literal bank.
+    pub(super) body: &'a [u8],
+}
+
 impl BootData {
     fn claim_inputs_data<'a>(
         &'a self,
         launch: &'a PacketNative5SourceLaunch,
         launch_body: &'a [u8],
+        boot_body: &'a [u8],
     ) -> OriginalNativeBootClaimInputs<'a> {
         OriginalNativeBootClaimInputs {
             launch,
             launch_body,
+            boot_body,
             source: &self.source_birth,
             registration: &self.expected_host_registration,
             private_launch: &self.private_launch,
@@ -151,6 +169,22 @@ pub(in crate::reference_packet::service) fn original_native_startup_attempt_coun
         + 2 * size_of::<&BootData>()
         + 2 * size_of::<&PacketNative5SourceLaunch>()
         + 2 * size_of::<&[u8]>()
+        // Both private editions carry their parsed/raw frame through the
+        // installed attempt and original claim without a new byte owner.
+        + 6 * size_of::<OriginalNativeBootValue<'static>>()
+        + 6 * size_of::<&[u8]>()
+        + size_of::<std::cell::Ref<'static, crate::transport::original_frames::OriginalFrameReservation>>()
+        + size_of::<Result<std::cell::Ref<'static, crate::transport::original_frames::OriginalFrameReservation>, std::cell::BorrowError>>()
+        + size_of::<Result<std::cell::Ref<'static, crate::transport::original_frames::OriginalFrameReservation>, ProviderError>>()
+        + size_of::<crate::transport::original_frames::OriginalFrame<'static>>()
+        + size_of::<Option<crate::transport::original_frames::OriginalFrame<'static>>>()
+        + size_of::<Result<crate::transport::original_frames::OriginalFrame<'static>, ProviderError>>()
+        + size_of::<Option<&[u8]>>()
+        + size_of::<Result<&[u8], ProviderError>>()
+        + size_of::<std::ops::RangeFrom<usize>>()
+        + 3 * size_of::<bool>()
+        + crate::transport::original_frames::original_frame_view_counter_scratch_data()
+        + body::counter_scratch_data()
 }
 
 // Counts the owned initializer and Option assignment separately from the
@@ -224,7 +258,7 @@ impl NativeAckBoot {
     // Only the actual selected inherited bootstrap owns the nonrenewing claim.
     // The ordinary boot5 entry cannot supply it or accept the new class.
     pub(super) fn prepare_original_startup_into(
-        value: &serde_json::Value,
+        value: OriginalNativeBootValue<'_>,
         launch: &PacketNative5SourceLaunch,
         original_launch_body: Vec<u8>,
         startup: &mut super::bootstrap::admitted::OriginalNativeStartupBootstrap,
@@ -254,24 +288,27 @@ impl NativeAckBoot {
     }
 
     fn prepare_original_startup_attempt_data(
-        value: &serde_json::Value,
+        value: OriginalNativeBootValue<'_>,
         launch: &PacketNative5SourceLaunch,
         startup: &mut super::bootstrap::admitted::OriginalNativeStartupBootstrap,
         attempt: &mut OriginalNativeStartupBootAttempt,
         completed: &mut Option<Rc<RefCell<Self>>>,
     ) -> Result<(), ProviderError> {
         startup.ensure_original()?;
-        crate::connection::serialized_credit(value, startup.maximum_boot_bytes)?;
+        crate::connection::serialized_credit(value.value, startup.maximum_boot_bytes)?;
         // Check every fallible DTO spelling while all inputs remain borrowed.
         // The subsequent copies cannot reject a later field after dropping an
         // earlier decoded child. This inspection grants no native row claim.
-        let shape = shape::inspect_data(value)?;
+        let shape = shape::inspect_data(value.value)?;
         attempt.data = Some(shape.copy_data()?);
         let data = attempt.data.as_ref().ok_or(ProviderError::Correlation(
             "native startup decoded boot absent",
         ))?;
-        let admitted =
-            startup.claim_birth_data(data.claim_inputs_data(launch, &attempt.launch_body))?;
+        let admitted = startup.claim_birth_data(data.claim_inputs_data(
+            launch,
+            &attempt.launch_body,
+            value.body,
+        ))?;
         let data = attempt.data.take().ok_or(ProviderError::Correlation(
             "native startup decoded boot transferred",
         ))?;

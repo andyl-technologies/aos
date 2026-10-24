@@ -47,7 +47,7 @@ impl NativeAckBoot {
     }
 
     pub(in crate::reference_packet::service::ack_emitter::native_boot) fn prepare_original_invocation_into(
-        value: &serde_json::Value,
+        value: OriginalNativeBootValue<'_>,
         launch: &PacketNative5SourceLaunch,
         original_launch_body: Vec<u8>,
         purpose: PacketNativeInvocationPurposeData,
@@ -80,7 +80,7 @@ impl NativeAckBoot {
     }
 
     fn prepare_original_invocation_attempt_data(
-        value: &serde_json::Value,
+        value: OriginalNativeBootValue<'_>,
         launch: &PacketNative5SourceLaunch,
         purpose: PacketNativeInvocationPurposeData,
         startup: &mut super::super::bootstrap::admitted::OriginalNativeStartupBootstrap,
@@ -88,8 +88,8 @@ impl NativeAckBoot {
         completed: &mut Option<Rc<RefCell<Self>>>,
     ) -> Result<(), ProviderError> {
         startup.ensure_original()?;
-        crate::connection::serialized_credit(value, startup.maximum_boot_bytes)?;
-        let shape = shape::inspect_data(value)?;
+        crate::connection::serialized_credit(value.value, startup.maximum_boot_bytes)?;
+        let shape = shape::inspect_data(value.value)?;
         attempt.data = Some(shape.copy_data()?);
         let data = attempt.data.take().ok_or(ProviderError::Correlation(
             "native invocation decoded boot absent",
@@ -112,7 +112,9 @@ impl NativeAckBoot {
                 ));
             }
             let admitted = startup.claim_invocation_birth_data(
-                owner.data.claim_inputs_data(launch, &owner.launch_body),
+                owner
+                    .data
+                    .claim_inputs_data(launch, &owner.launch_body, value.body),
                 &purpose,
             )?;
             owner.startup = Some(admitted);

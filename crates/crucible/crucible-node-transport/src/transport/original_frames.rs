@@ -859,5 +859,21 @@ pub(crate) const fn original_frames_iterator_counter_scratch_data() -> usize {
         + std::mem::size_of::<&OriginalFrameReservation>()
 }
 
+/// Counts the fixed views and checked offset in one retained frame lookup.
+///
+/// This quotes the defining `frame` method's headers without granting a bank
+/// borrow, constructing a frame, or authenticating its transport progress.
+pub(crate) const fn original_frame_view_counter_scratch_data() -> usize {
+    std::mem::size_of::<&OriginalFrameReservation>()
+        + std::mem::size_of::<&Slot>()
+        + std::mem::size_of::<Option<&Slot>>()
+        + 2 * std::mem::size_of::<usize>()
+        + std::mem::size_of::<Option<usize>>()
+        + std::mem::size_of::<Option<&[u8]>>()
+        + std::mem::size_of::<std::ops::Range<usize>>()
+        + std::mem::size_of::<OriginalFrame<'static>>()
+        + std::mem::size_of::<Option<OriginalFrame<'static>>>()
+}
+
 #[path = "original_frames/retained_reservation.rs"]
 mod retained_reservation;
