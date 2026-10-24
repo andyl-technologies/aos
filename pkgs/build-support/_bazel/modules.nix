@@ -67,6 +67,9 @@
               # DEP_* metadata crosses build-script actions. Its generated paths
               # must retain the producer directory when consumers expand them.
               patch -p1 < ${../../../third_party/bazel/patches/rules-rust-build-script-metadata.patch}
+              # Cargo metadata can contain apostrophes. Preserve it literally
+              # when the pinned rules generate executable doctest runners.
+              patch -p1 < ${../../../third_party/bazel/patches/rules-rust-rustdoc-shell-quoting.patch}
               ${pkgs.python3}/bin/python3 - ${lib.escapeShellArg "${pkgs.bash}/bin/bash"} <<'PY'
               from pathlib import Path
               import sys
