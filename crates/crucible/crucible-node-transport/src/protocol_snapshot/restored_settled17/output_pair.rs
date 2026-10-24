@@ -251,17 +251,19 @@ pub(super) fn authenticate_output_pair17_data(
     )?;
     earlier::authenticate(
         after,
-        before_occurrence.0,
-        artifact,
-        context,
-        registered,
-        arguments,
-        begin,
-        sdk.capture_terminal,
-        confirmation,
-        snapshot,
-        anchor_raw,
-        before.raw_current_graph17_data()?,
+        earlier::EarlierCapture17InputsData {
+            index: before_occurrence.0,
+            artifact,
+            context,
+            original: registered,
+            arguments,
+            begin,
+            terminal: sdk.capture_terminal,
+            confirmation,
+            snapshot,
+            anchor_raw,
+            before_body: before.raw_current_graph17_data()?,
+        },
     )?;
     crate::reference_packet::endpoint::authenticate_native17_retained_terminal_data(
         after,

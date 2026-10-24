@@ -217,7 +217,10 @@ fn sum(values: &[usize]) -> Result<usize, ProviderError> {
 }
 
 pub(in super::super) fn counter_scratch_data() -> usize {
-    size_of::<MetadataObserver<'static>>()
+    // Both borrowed input headers coexist with the previous field controls.
+    2 * size_of::<super::earlier::EarlierCapture17InputsData<'static, 'static>>()
+        + size_of::<usize>()
+        + size_of::<MetadataObserver<'static>>()
         + size_of::<RetainedProtocolMetadataFacts>()
         + size_of::<OriginalSerializationStorageData>()
         + size_of::<crate::bodies::BeginRequest>()

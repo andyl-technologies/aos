@@ -3,20 +3,59 @@
 use super::*;
 use crate::protocol_snapshot::compact_bytes::ValidatedCompactBytes;
 
+/// Borrows the original SDK Capture and the exact retained native output views.
+///
+/// The enclosing comparison authenticates both complete current graphs before
+/// assembling this inert input. Every earlier occurrence and bank check remains
+/// necessary; this view supplies no completion, registration or Capture right.
+pub(super) struct EarlierCapture17InputsData<'loan, 'plan> {
+    /// Selects the same earlier occurrence in the after graph's chronology.
+    pub(super) index: usize,
+    /// Borrows the actual independently verified signed Capture artifact.
+    pub(super) artifact: &'loan PacketRestoredSettledCaptureArtifact,
+    /// Borrows the same Source-selected Capture context.
+    pub(super) context: &'loan PacketRestoredSettledCaptureContext,
+    /// Borrows its registered original request.
+    pub(super) original: &'loan Envelope,
+    /// Borrows the original Capture arguments.
+    pub(super) arguments: &'loan CaptureArguments,
+    /// Borrows that occurrence's baseline Begin body.
+    pub(super) begin: &'loan BeginRequest,
+    /// Borrows its completed SDK terminal.
+    pub(super) terminal: &'loan Envelope,
+    /// Borrows the current confirmation's exact output references.
+    pub(super) confirmation: &'loan PacketRestoredSettledAfterConfirmationRequest,
+    /// Borrows the independently checked complete snapshot plan.
+    pub(super) snapshot: &'loan PacketNativeRestoredSettled17SnapshotPlan<'plan>,
+    /// Borrows the same independently authenticated anchor bytes.
+    pub(super) anchor_raw: &'loan [u8],
+    /// Borrows the exact complete before graph bytes.
+    pub(super) before_body: &'loan [u8],
+}
+
+/// Authenticates the exact earlier occurrence and all retained Capture outputs.
+///
+/// # Errors
+/// Refuses changed chronology, signed inputs, registration, cached terminal,
+/// output references, complete bank bytes or original snapshot correspondence.
 pub(super) fn authenticate(
     after: &NativeCurrentGraph17Data,
-    index: usize,
-    artifact: &PacketRestoredSettledCaptureArtifact,
-    context: &PacketRestoredSettledCaptureContext,
-    original: &Envelope,
-    arguments: &CaptureArguments,
-    begin: &BeginRequest,
-    terminal: &Envelope,
-    confirmation: &PacketRestoredSettledAfterConfirmationRequest,
-    snapshot: &PacketNativeRestoredSettled17SnapshotPlan<'_>,
-    anchor_raw: &[u8],
-    before_body: &[u8],
+    inputs: EarlierCapture17InputsData<'_, '_>,
 ) -> Result<(), ProviderError> {
+    let EarlierCapture17InputsData {
+        index,
+        artifact,
+        context,
+        original,
+        arguments,
+        begin,
+        terminal,
+        confirmation,
+        snapshot,
+        anchor_raw,
+        before_body,
+    } = inputs;
+
     let roots = after.raw_root_spans_data()?;
     let wrapper = action(roots.boot_data(), index)?;
     if unsigned(field(wrapper, "ordinal")?)?
