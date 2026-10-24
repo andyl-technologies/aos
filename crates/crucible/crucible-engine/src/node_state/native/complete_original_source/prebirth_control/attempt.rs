@@ -352,7 +352,7 @@ impl CompleteInitial15PrebirthControlAttempt {
             return Err(RuntimeError::OutstandingObligations);
         }
         owner.control_started = true;
-        if row.launch != launch as *const _ {
+        if !std::ptr::eq(row.launch, launch) {
             return Err(RuntimeError::ForeignAuthority);
         }
         let journal = owner
@@ -717,9 +717,9 @@ fn authenticate_row(
 ) -> Result<(), RuntimeError> {
     input.authenticate_origin_data()?;
     if row.work != work
-        || row.source != input.ticket.source.as_ref() as *const _
+        || !std::ptr::eq(row.source, input.ticket.source.as_ref())
         || row.owner_index != input.ticket.owner_index
-        || row.reference != reference as *const _
+        || !std::ptr::eq(row.reference, reference)
         || row.body != *blake3::hash(bytes).as_bytes()
     {
         return Err(RuntimeError::ForeignAuthority);

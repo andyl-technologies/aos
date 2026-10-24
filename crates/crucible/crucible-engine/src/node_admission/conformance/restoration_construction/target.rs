@@ -352,7 +352,7 @@ impl CompleteOriginalRestorationTransactionTarget {
         activation: &ActivationRecord,
     ) -> Result<(), RuntimeError> {
         self.origin()?;
-        if self.activation != activation as *const _
+        if !std::ptr::eq(self.activation, activation)
             || !self
                 .plan
                 .upgrade()

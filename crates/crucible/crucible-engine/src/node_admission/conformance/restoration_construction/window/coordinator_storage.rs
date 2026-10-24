@@ -117,7 +117,7 @@ impl OriginalRestorationCoordinatorConstructionData {
         archive: &CompleteOriginalRestorationSource,
         target: &ActivationRecord,
     ) -> Result<(), RuntimeError> {
-        if self.archive != Rc::as_ptr(&archive.inner).cast() || self.target != target as *const _ {
+        if self.archive != Rc::as_ptr(&archive.inner).cast() || !std::ptr::eq(self.target, target) {
             return Err(RuntimeError::ForeignAuthority);
         }
         Ok(())

@@ -318,7 +318,7 @@ impl Ledger<'_> {
             .try_borrow()
             .map_err(|_| RuntimeError::OwnerBusy)?;
         let original = association.as_ref().ok_or(RuntimeError::OwnerUnavailable)?;
-        if original.restored_capture.as_ptr() != self.owner as *const _ as *mut _ {
+        if !std::ptr::eq(original.restored_capture.as_ptr(), self.owner) {
             return Err(RuntimeError::ForeignAuthority);
         }
         self.emitter

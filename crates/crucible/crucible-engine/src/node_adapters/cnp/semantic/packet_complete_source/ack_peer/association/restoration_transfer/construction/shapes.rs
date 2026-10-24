@@ -6,14 +6,12 @@
 //! bounds the overlap of independently retained Source/SDK originals and local
 //! expected receipts. No encoded extent is converted into a typed heap factor.
 
+use super::super::super::typed_decoder_backing as typed_backing;
 use super::*;
 use crucible_node_transport::reference_packet::service::complete_restore::{
     PacketNativeRestoredCommitHold, maximum_complete_restore_held_evidence_bytes,
     maximum_complete_restore_held_evidence_counter_scratch_data,
 };
-
-#[path = "typed_backing.rs"]
-mod typed_backing;
 
 #[derive(Clone, Copy)]
 pub(super) struct Shape {

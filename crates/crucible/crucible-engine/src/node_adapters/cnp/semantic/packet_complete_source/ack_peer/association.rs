@@ -24,6 +24,9 @@ use crucible_node_transport::{
     },
 };
 
+#[path = "association/typed_decoder_backing.rs"]
+mod typed_decoder_backing;
+
 // These independent banks are reserved before Rc/Child. They bound encoded
 // source-owned copies only; parsed trees, canonical string scratch and SDK/native
 // originals remain separately charged at the complete allocation boundary.

@@ -5,6 +5,7 @@
 //! through failure. Neither World completion nor a portable observation DTO
 //! supplies observation credit, a current owner or a new execution permission.
 
+use super::typed_decoder_backing as typed_backing;
 use super::*;
 use crate::node_admission::{
     OriginalInstalledRestorationObservationClaim,
@@ -46,8 +47,6 @@ mod owner;
 mod projection;
 #[path = "restoration_observation/scheduling.rs"]
 mod scheduling;
-#[path = "restoration_transfer/construction/typed_backing.rs"]
-mod typed_backing;
 
 pub use construction_data::OriginalSourceRestorationObservationConstructionData;
 pub use evidence::OriginalSourceRestorationObservationVerifiedPhase;

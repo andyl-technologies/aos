@@ -502,7 +502,7 @@ impl CompleteOriginalRestorationWindow {
         self.origin()?;
         if !self.context_issued.get()
             || !Rc::ptr_eq(&self.archive.inner, &archive.inner)
-            || self.original_activation_slot != target as *const _
+            || !std::ptr::eq(self.original_activation_slot, target)
             || !matches!(
                 self.stage.get(),
                 WindowStage::TransactionAdmitted | WindowStage::TransactionChecking

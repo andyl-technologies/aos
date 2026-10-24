@@ -115,7 +115,7 @@ impl OriginalInitial15FutureControlAttempt {
     ) -> Result<T, RuntimeError> {
         if !self.verified
             || self.failed
-            || self.source != original.owner.source as *const _
+            || !std::ptr::eq(self.source, original.owner.source)
             || self.reference.as_ref() != Some(original.control)
             || self.raw.as_slice() != original.control_bytes
             || self.process != std::process::id()
@@ -235,8 +235,8 @@ impl OriginalRestorationColdGroup {
         });
         let attempt = output.as_mut().ok_or(RuntimeError::OwnerUnavailable)?;
         let original = self.original_initial15_future_control_data(index, source, ticket)?;
-        if row.source != original.owner.source as *const _
-            || row.control != original.control as *const _
+        if !std::ptr::eq(row.source, original.owner.source)
+            || !std::ptr::eq(row.control, original.control)
             || blake3::hash(original.control_bytes).as_bytes() != &row.identity
         {
             return Err(RuntimeError::ForeignAuthority);

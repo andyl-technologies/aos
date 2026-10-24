@@ -6,6 +6,7 @@
 //! Its independent owner preserves failed partials without widening legacy11
 //! or the existing Prepare/Inputs/Commit signer and without reusing their row.
 
+use super::typed_decoder_backing as typed_backing;
 use super::*;
 use crate::node_admission::{
     OriginalInstalledRestorationActivationClaim, OriginalInstalledRestorationActivationPhase,
@@ -40,8 +41,6 @@ mod projection;
 // Neither the legacy signer implementation nor its accounting is changed.
 #[path = "restoration_activation/request.rs"]
 mod request;
-#[path = "restoration_transfer/construction/typed_backing.rs"]
-mod typed_backing;
 #[path = "restoration_activation/world.rs"]
 mod world;
 use world::{authenticate_world_command, authenticate_world_manifest};

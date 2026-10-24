@@ -471,7 +471,7 @@ impl CompleteOriginalRestorationWindow {
             .map_err(|_| RuntimeError::ForeignAuthority)?
             .is_same_original_plan_data(plan)
             || !Rc::ptr_eq(&self.archive.inner, &inputs.archive.inner)
-            || self.original_activation_slot != inputs.activation as *const _
+            || !std::ptr::eq(self.original_activation_slot, inputs.activation)
             || (0..3).any(|index| !Rc::ptr_eq(&self.sources[index], &inputs.sources[index]))
         {
             return Err(RuntimeError::ForeignAuthority);
@@ -717,9 +717,9 @@ impl CompleteOriginalRestorationWindow {
         self.origin()?;
         if self.stage.get() != WindowStage::TransactionAdmitted
             || !Rc::ptr_eq(&self.archive.inner, &archive.inner)
-            || self.original_prepare_slots != prepare_ids as *const _
-            || self.original_commit_slots != commit_ids as *const _
-            || (0..3).any(|index| self.original_ticket_slots[index] != tickets[index] as *const _)
+            || !std::ptr::eq(self.original_prepare_slots, prepare_ids)
+            || !std::ptr::eq(self.original_commit_slots, commit_ids)
+            || (0..3).any(|index| !std::ptr::eq(self.original_ticket_slots[index], tickets[index]))
         {
             return Err(RuntimeError::ForeignAuthority);
         }
@@ -851,7 +851,7 @@ impl CompleteOriginalRestorationWindow {
     ) -> Result<(), RuntimeError> {
         self.origin()?;
         if self.stage.get() != WindowStage::TransactionAdmitted
-            || self.original_activation_slot != activation as *const _
+            || !std::ptr::eq(self.original_activation_slot, activation)
             || !self
                 .sources
                 .get(selected)
@@ -921,7 +921,7 @@ impl CompleteOriginalRestorationWindow {
         self.origin()?;
         let selected = target.selected_data();
         if self.stage.get() != WindowStage::TransactionAdmitted
-            || self.original_activation_slot != activation as *const _
+            || !std::ptr::eq(self.original_activation_slot, activation)
             || !self
                 .sources
                 .get(selected)

@@ -70,7 +70,7 @@ impl CompleteOriginalRestorationWindow {
             || self.context_started.get()
             || publisher.is_null()
             || self.producer_publication.get().is_some()
-            || self.original_activation_slot != target as *const _
+            || !std::ptr::eq(self.original_activation_slot, target)
             || !self
                 .plan
                 .upgrade()
@@ -194,7 +194,7 @@ impl CompleteOriginalRestorationWindow {
         self.origin()?;
         if self.stage.get() != WindowStage::TransactionAdmitted
             || self.phase_in_flight.get()
-            || self.original_activation_slot != target as *const _
+            || !std::ptr::eq(self.original_activation_slot, target)
             || !self
                 .plan
                 .upgrade()
