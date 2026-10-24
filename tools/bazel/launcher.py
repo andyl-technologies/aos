@@ -84,6 +84,7 @@ def main():
                         help="Bound private JVM idle time (1-3600 seconds).")
     parser.add_argument("--prepare-lock", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--nix-sandbox", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--materialize-action-outputs", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--shadow-workspace", action="store_true")
     parser.add_argument("--lock", type=Path)
     parser.add_argument("--metrics", type=Path)
@@ -209,6 +210,11 @@ def main():
             "--remote_cache=", "--remote_executor=",
         ])
         policy.append(f"--disk_cache={options.cache.resolve()}" if options.cache else "--disk_cache=")
+        if options.materialize_action_outputs:
+            # Disk-cache hits normally materialize only requested outputs.
+            # Evidence capture also needs intermediate build-script input bytes.
+            # The cache and executor endpoints above remain disabled.
+            policy.append("--remote_download_outputs=all")
         if not options.cache:
             policy.append("--nocache_test_results")
 

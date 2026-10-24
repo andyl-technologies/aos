@@ -26,6 +26,12 @@
     filter = path: type:
       type == "regular" && builtins.elem (baseNameOf path) ["declaration_query.py" "export_inventory.py"];
   };
+  compilerEvidenceTools = builtins.path {
+    path = ../../../tools/bazel/tests;
+    name = "aos-bazel-compiler-evidence-tools";
+    filter = path: type:
+      type == "regular" && builtins.elem (baseNameOf path) ["retain_compiler_inputs.py" "verify_cache.py" "verify_static_runtime.py"];
+  };
 in
   assert builtins.elem command ["build" "test"];
   assert !inventoryOnly || command == "build";
@@ -67,6 +73,7 @@ in
               ${pkgs.python3}/bin/python3 ${../../../tools/bazel/launcher.py} \
                 --config ${workspace.configuration} --workspace "$PWD/workspace" \
                 --output-base "$TMPDIR/bazel" --nix-sandbox \
+                ${lib.optionalString retainActionGraph "--materialize-action-outputs"} \
                 --metrics "$TMPDIR/metrics.json" \
                 ${lib.optionalString (cache != null) "--cache ${lib.escapeShellArg cache}"} \
                 -- ${command} ${lib.escapeShellArgs targets} \
@@ -84,6 +91,7 @@ in
               ${pkgs.python3}/bin/python3 ${../../../tools/bazel/launcher.py} \
                 --config ${workspace.configuration} --workspace "$PWD/workspace" \
                 --output-base "$TMPDIR/bazel" --nix-sandbox --metrics "$TMPDIR/configured-discovery-metrics.json" \
+                ${lib.optionalString retainActionGraph "--materialize-action-outputs"} \
                 -- cquery ${lib.escapeShellArg ("deps(set(" + lib.concatStringsSep " " targets + "))")} \
                 --output=label > "$TMPDIR/configured-labels.txt"
               ${pkgs.python3}/bin/python3 ${declarationTools}/declaration_query.py \
@@ -117,8 +125,12 @@ in
               ${pkgs.python3}/bin/python3 ${../../../tools/bazel/launcher.py} \
                 --config ${workspace.configuration} --workspace "$PWD/workspace" \
                 --output-base "$TMPDIR/bazel" --nix-sandbox \
+                --materialize-action-outputs \
                 -- aquery ${lib.escapeShellArg ("deps(set(" + lib.concatStringsSep " " targets + "))")} \
-                --include_param_files --output=jsonproto > "$out/evidence/actions.json"
+                --include_param_files --include_file_write_contents --output=jsonproto > "$out/evidence/actions.json"
+              ${pkgs.python3}/bin/python3 ${compilerEvidenceTools}/retain_compiler_inputs.py \
+                --build "$out" --execution-root "$TMPDIR/bazel/execroot/_main" \
+                --output "$out/evidence/compiler-inputs.json"
             '';
         }
       ];

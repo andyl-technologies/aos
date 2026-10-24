@@ -28,6 +28,8 @@ manifest with explicit files, destinations, modes, version, and license domain;
 Nix verifies exported bytes and package identity before ordinary fixup.
 Runtime dependencies remain explicit Nix package inputs. The fixture check
 executes the Rust, C++, and Rust/native programs after fixup.
+Evidence builds retain digest-checked indirect compiler inputs as described in
+[Compiler invocation evidence](docs/compiler-evidence.md).
 
 ```sh
 aos-dev --release build check build.bazel.all --no-out-link

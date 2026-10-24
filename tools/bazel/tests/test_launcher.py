@@ -76,6 +76,18 @@ class LauncherTests(unittest.TestCase):
         self.assertLess(arguments.index(f"--disk_cache={self.root / 'cache'}"), arguments.index("--"))
         self.assertEqual(arguments[-1], "argument with spaces")
 
+    def test_evidence_materialization_keeps_remote_endpoints_disabled(self):
+        for options in [[], ["--materialize-action-outputs"]]:
+            with self.subTest(options=options):
+                result = self.invoke(["build", "//:example"],
+                                     ["--cache", str(self.root / "cache"), *options])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                arguments = json.loads(self.capture.read_text())["args"]
+                self.assertEqual("--remote_download_outputs=all" in arguments, bool(options))
+                self.assertIn("--remote_cache=", arguments)
+                self.assertIn("--remote_executor=", arguments)
+                self.assertIn("--repository_disable_download", arguments)
+
     def test_configured_target_platform_applies_to_analysis_commands(self):
         configuration = json.loads(self.config.read_text())
         configuration["target_platform"] = "//tools/bazel/toolchains:wasm32"
