@@ -1,4 +1,4 @@
-//! Reads the complete spent Capture/InputReactive union without live rights.
+//! Validates spent actions and reconstructs Input/Reactive DATA without live rights.
 //!
 //! Each failed/raw/typed owner is independently retained. Source-order framing
 //! and actual source metadata ordering are separate and both remain exact.
@@ -227,10 +227,14 @@ impl HistoricalType for CurrentInputCheckpoint17 {
     }
 }
 
-pub(crate) enum CurrentSelectedAction17 {
-    Capture(CurrentCaptureAttempt17),
-    InputReactive(CurrentInputAttempt17),
+/// Retains the only action family this reader can reconstruct.
+///
+/// Capture and upload evidence remains borrowed-only. The operational writer's
+/// complete union and its metadata ordering are independent of this DATA type.
+pub(crate) struct CurrentSelectedAction17 {
+    input_reactive: CurrentInputAttempt17,
 }
+
 impl HistoricalType for CurrentSelectedAction17 {
     fn read(
         input: &[u8],
@@ -242,9 +246,14 @@ impl HistoricalType for CurrentSelectedAction17 {
         let raw = fields.named("data")?;
         fields.finish()?;
         match family {
-            "capture" => ledger
-                .read::<CurrentCaptureAttempt17>(raw, build)
-                .map(|value| value.map(Self::Capture)),
+            "capture" => {
+                // The Capture reader rejects reconstruction before touching its
+                // fields. Refuse any unexpected owning result as well.
+                match ledger.read::<CurrentCaptureAttempt17>(raw, build)? {
+                    None => Ok(None),
+                    Some(_) => Err(invalid()),
+                }
+            }
             "capture_upload17" => {
                 // The complete source is borrowed below; no operational upload
                 // enum payload or dummy owner is constructed by this reader.
@@ -256,7 +265,7 @@ impl HistoricalType for CurrentSelectedAction17 {
             }
             "input_reactive" => ledger
                 .read::<CurrentInputAttempt17>(raw, build)
-                .map(|value| value.map(Self::InputReactive)),
+                .map(|value| value.map(|input_reactive| Self { input_reactive })),
             _ => Err(invalid()),
         }
     }
@@ -306,3 +315,7 @@ mod observation17;
 pub(crate) use observation17::{
     CurrentObservationAction17, CurrentObservationCheckpoint17, CurrentObservationProduction17,
 };
+
+#[cfg(test)]
+#[path = "current_actions/tests.rs"]
+mod tests;
