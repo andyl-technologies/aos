@@ -2,15 +2,13 @@
 ##!
 ##! Declares the typed `systemd.*` option tree (services, timers, sockets,
 ##! targets, paths, slices, mounts, automounts, and global environment),
-##! derives the internal `systemd.units` rendering through the
-##! *-ToUnit rendering functions in `pkgs/system/_systemd-abilities/platform/render.nix`, and produces
-##! `system.build.systemdSystemUnits` — a derivation whose output is a
-##! directory matching `/etc/systemd/system/`.
+##! derives pure unit bodies, filesystem entries, job scripts and ownership
+##! through the sole platform/render.nix implementation. Explicit packaged
+##! base requests retain selected manager units beside authored drop-ins.
 ##!
-##! `generateUnits` returns a pure unit-data map. `modules/base/build.nix`
-##! folds its flattened `/etc` entries into the image filesystem projection, and
-##! the thin `materializeUnits` adapter reconstructs the builder-side unit
-##! directory from that manifest for `system.build.toplevel`.
+##! The canonical manager builder materializes these projections together with
+##! native bootstrap services in its single configuration output. The image
+##! builder installs that same final unit tree into `/etc/systemd/system/`.
 {
   config,
   lib,
@@ -66,6 +64,15 @@
     // lib.listToAttrs (builtins.map (withName systemdLib.automountToUnit) cfg.automounts);
 in {
   options.systemd = {
+    packagedBaseUnits = lib.mkOption {
+      type =
+        lib.types.addCheck
+        (lib.types.listOf (lib.types.strMatching "[A-Za-z0-9_@:-][A-Za-z0-9_.@:-]*\\.(service|socket|target|timer|path|slice|mount|automount|scope|swap)"))
+        (names: builtins.length names == builtins.length (lib.unique names));
+      default = [];
+      description = "Exact unit basenames retained unchanged from the selected manager package; duplicate names and path components are rejected.";
+    };
+
     globalEnvironment = lib.mkOption {
       type = with lib.types; attrsOf (nullOr (oneOf [str path package]));
       default = {};

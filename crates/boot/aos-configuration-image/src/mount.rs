@@ -22,14 +22,35 @@ fn paths(lower: &Lower) -> (PathBuf, PathBuf, PathBuf) {
 /// Determines whether the exact requested overlay is currently mounted at `/etc`.
 ///
 /// # Errors
-/// Returns an error when mount topology cannot be inspected.
+/// Returns an error when mount topology cannot be inspected or a labeled
+/// generation has lost its verified lower mount or selected root label.
 pub fn current(lower: &Lower) -> Result<bool> {
     let (configuration, _, _) = paths(lower);
-    mounted_at(
+    if !mounted_at(
         Path::new("/etc"),
         "overlay",
         &configuration.to_string_lossy(),
-    )
+    )? {
+        return Ok(false);
+    }
+    if let Some(expected) = configuration_root_context(lower, &configuration)? {
+        ensure!(
+            crate::selinux::root_context(Path::new("/etc"))? == expected,
+            "active configuration overlay root label differs from its lower"
+        );
+    }
+    Ok(true)
+}
+
+fn configuration_root_context(lower: &Lower, configuration: &Path) -> Result<Option<String>> {
+    if !crate::lower::selinux_labeled(lower)? {
+        return Ok(None);
+    }
+    ensure!(
+        mounted_at(configuration, "erofs", &lower.image)?,
+        "labeled configuration lower is not the requested EROFS mount"
+    );
+    Ok(Some(crate::selinux::root_context(configuration)?))
 }
 
 fn mounted_at(path: &Path, filesystem: &str, marker: &str) -> Result<bool> {
@@ -129,12 +150,18 @@ pub fn apply(lower: &Lower, mount: &Path, tools: &Tools) -> Result<()> {
             .status()?;
         ensure!(status.success(), "mounting staged lower failed: {status}");
     }
-    let options = format!(
+    let root_context = configuration_root_context(lower, &configuration)?;
+    let mut options = format!(
         "nodev,nosuid,metacopy=on,redirect_dir=on,lowerdir+=/var/etc,lowerdir+={},lowerdir+=/run/etc/system/metadata,datadir+=/run/etc/system/content,upperdir={},workdir={}",
         configuration.display(),
         upper.join("dir").display(),
         upper.join("work").display()
     );
+    if let Some(context) = &root_context {
+        // Quotes keep MLS category commas inside the single rootcontext option.
+        // Unlike context=, rootcontext= preserves every lower inode's label.
+        options.push_str(&format!(",rootcontext=\"{context}\""));
+    }
     if !mounted_at(&activation, "overlay", &configuration.to_string_lossy())? {
         preserve_user_upper(lower, &upper.join("dir"))?;
         let status = Command::new(mount)
@@ -145,6 +172,12 @@ pub fn apply(lower: &Lower, mount: &Path, tools: &Tools) -> Result<()> {
         ensure!(
             status.success(),
             "staging native /etc overlay failed: {status}"
+        );
+    }
+    if let Some(expected) = root_context {
+        ensure!(
+            crate::selinux::root_context(&activation)? == expected,
+            "staged configuration overlay root label differs from its lower"
         );
     }
     let status = Command::new(mount)

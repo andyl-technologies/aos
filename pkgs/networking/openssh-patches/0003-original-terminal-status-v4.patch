@@ -1,0 +1,65 @@
+# Original execution waitstatus, never relay status, on the fixed opt-in path.
+# Applied after 0001 and 0002 to the same pinned OpenSSH10.5p1 source.
+diff --git a/monitor.c b/monitor.c
+--- a/monitor.c
++++ b/monitor.c
+@@ -219,6 +219,7 @@
+ 
+ struct mon_table mon_dispatch_postauth20[] = {
+ 	{AOS_ATTACH_RELAY_REQUEST, MON_ONCE, aos_attach_monitor_relay},
++	{AOS_ATTACH_TERMINAL_REQUEST, MON_ONCE, aos_attach_monitor_terminal},
+     {MONITOR_REQ_STATE, MON_ONCE, mm_answer_state},
+ #ifdef WITH_OPENSSL
+     {MONITOR_REQ_MODULI, 0, mm_answer_moduli},
+@@ -435,6 +436,8 @@
+ 	mon_dispatch = mon_dispatch_postauth20;
+ 	monitor_permit(mon_dispatch, AOS_ATTACH_RELAY_REQUEST,
+ 	    options.aos_attach_monitor_v2);
++	monitor_permit(mon_dispatch, AOS_ATTACH_TERMINAL_REQUEST,
++	    options.aos_attach_monitor_v2);
+ 
+ 	/* Permit requests for moduli and signatures */
+ 	monitor_permit(mon_dispatch, MONITOR_REQ_STATE, 1);
+diff --git a/session.c b/session.c
+--- a/session.c
++++ b/session.c
+@@ -35,6 +35,7 @@
+ 
+ #include "includes.h"
+ #include "aos-attach-relay.h"
++#include "aos-attach-monitor.h"
+ 
+ #include <sys/types.h>
+ #include <sys/wait.h>
+@@ -2338,6 +2339,13 @@ session_exit_message(struct ssh *ssh, Session *s, int status)
+ 	Channel *c;
+ 	int r;
+ 	char *note = NULL;
++	char original_signal[32];
++	const char *signal_name;
++
++	/* Only the fixed private root monitor may report original Guest exit.
++	 * A failed relay or absent terminal receipt never supplies a fallback. */
++	if (options.aos_attach_monitor_v2)
++		status = aos_attach_original_waitstatus();
+ 
+ 	if ((c = channel_lookup(ssh, s->chanid)) == NULL)
+ 		fatal_f("session %d: no channel %d", s->self, s->chanid);
+@@ -2356,7 +2364,16 @@ session_exit_message(struct ssh *ssh, Session *s, int status)
+ #ifndef WCOREDUMP
+ # define WCOREDUMP(x) (0)
+ #endif
+-		if ((r = sshpkt_put_cstring(ssh, sig2name(WTERMSIG(status)))) != 0 ||
++		signal_name = sig2name(WTERMSIG(status));
++		if (options.aos_attach_monitor_v2 &&
++		    strcmp(signal_name, "SIG@openssh.com") == 0) {
++			/* RFC4254 section6.10 permits vendor signal names. Encode the
++			 * exact Linux number; no guessed POSIX name or shared sentinel. */
++			snprintf(original_signal, sizeof(original_signal),
++			    "LINUX%d@andyl.com", WTERMSIG(status));
++			signal_name = original_signal;
++		}
++		if ((r = sshpkt_put_cstring(ssh, signal_name)) != 0 ||
+ 		    (r = sshpkt_put_u8(ssh, WCOREDUMP(status)? 1 : 0)) != 0 ||
+ 		    (r = sshpkt_put_cstring(ssh, "")) != 0 ||
+ 		    (r = sshpkt_put_cstring(ssh, "")) != 0 ||

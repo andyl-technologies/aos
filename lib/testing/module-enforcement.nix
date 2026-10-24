@@ -8,6 +8,7 @@
 {
   pkgs,
   lib,
+  mkSystem,
 }: let
   # --- mkEnableOption -------------------------------------------------
   enableExplicitlySet =
@@ -914,6 +915,43 @@
     .observedOwners
     == ["@base"];
 
+  inactiveConditionalDependenciesRemainLazy = let
+    evaluated = lib.evalModules {
+      modules = [
+        ({
+          lib,
+          provenance,
+          ...
+        }: {
+          options = {
+            artifacts = lib.mkOption {
+              type = lib.types.attrsOf (lib.types.submodule {
+                options.serviceConfig = lib.mkOption {
+                  type = lib.types.anything;
+                  default = {};
+                };
+              });
+              default = {};
+              extensible = true;
+            };
+            observedOwners = lib.mkOption {type = lib.types.listOf lib.types.str;};
+          };
+          config = {
+            artifacts.guarded.serviceConfig = {
+              command = "active";
+              inactive = lib.mkIf false (lib.mkForce (throw "inactive dependency content was forced"));
+            };
+            observedOwners = provenance.dependencyOwnersOfAttr ["artifacts"] "guarded";
+          };
+        })
+      ];
+      inherit lib;
+    };
+  in
+    evaluated.config.observedOwners
+    == ["@base"]
+    && evaluated.config.artifacts.guarded.serviceConfig.command == "active";
+
   packageDefaultDependencyOwner =
     (lib.evalModules {
       modules = [
@@ -1391,6 +1429,25 @@
         message = "additional type predicates validate merged, default, and nested values";
       }
       {
+        ok = import ./component-parent-enclosure.nix {inherit lib;};
+        message = "nullable parent enclosure preserves absence and typed selected audit bounds";
+      }
+      {
+        ok =
+          (import ./controller-recovery-installation.nix {
+            inherit pkgs lib mkSystem;
+          }).incompleteAssertions;
+        message = "recovery-only Controller uses real module types and rejects absent bank/profile installation";
+      }
+      {
+        ok = import ./root-ownership-trust.nix {inherit lib;};
+        message = "selected Root installs its own existing public Ownership trust pair and refuses partial configuration";
+      }
+      {
+        ok = import ./root-delete-broker-trust.nix {inherit lib;};
+        message = "Root Delete installs independent fixed public broker manifests and rejects partial, foreign and unconfined configurations";
+      }
+      {
         ok = pathInStoreAccepts && pathInStoreRejectsHost && pathInStoreRejectsRelative && pathInStoreRejectsNumber;
         message = "pathInStore validation";
       }
@@ -1478,6 +1535,10 @@
       {
         ok = packageValuesAreAtomicForDependencyOwnership;
         message = "package values are atomic for dependency ownership";
+      }
+      {
+        ok = inactiveConditionalDependenciesRemainLazy;
+        message = "inactive conditional dependency content remains lazy";
       }
       {
         ok = packageDefaultDependencyOwner;

@@ -67,8 +67,24 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+        {
+          abi = ["darwin"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["darwin"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -314,7 +330,9 @@ in
               's|$(CC) $(LDDLFLAGS) -o $@ $(filter %$o,$^) $(LIBS)|$(CC) $(SHRPLDFLAGS) -o $@ $(filter %$o,$^) $(LIBS)|' \
               Makefile
 
-            make -j"$NIX_BUILD_CORES" \
+            # perl-cross's generated module graph races source generation
+            # against XS compilation under parallel make.
+            make -j1 \
               SHRPLDFLAGS='-dynamiclib -Wl,-compatibility_version,${version} -Wl,-current_version,${version} -Wl,-install_name,@rpath/libperl.dylib'
           ''
           else ''

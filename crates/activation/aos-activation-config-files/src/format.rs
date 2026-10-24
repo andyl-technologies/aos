@@ -1,4 +1,4 @@
-//! Encodes resolved text, credential fragments, and structured configuration.
+//! Encodes text, immutable files, credential fragments, and structured configuration.
 
 use std::io::Read as _;
 
@@ -23,23 +23,17 @@ pub(crate) fn contents(input: &Input) -> Result<Vec<u8>> {
             for fragment in &input.fragments {
                 match fragment {
                     crate::Fragment::Text(text) => contents.extend_from_slice(text.as_bytes()),
-                    crate::Fragment::Credential {
+                    crate::Fragment::File {
+                        store_path,
                         credential_path,
                         maximum_bytes,
                     } => {
-                        ensure!(
-                            (1..=1048576).contains(maximum_bytes),
-                            "credential byte limit is outside the operation bound"
-                        );
-                        let file = io::regular(io::absolute(credential_path)?)?
-                            .context("credential content source is absent")?;
-                        let mut bytes = Vec::new();
-                        file.take(maximum_bytes + 1).read_to_end(&mut bytes)?;
-                        ensure!(
-                            bytes.len() as u64 <= *maximum_bytes,
-                            "credential content exceeds configured limit"
-                        );
-                        contents.extend(bytes);
+                        let path = match (store_path, credential_path) {
+                            (Some(path), None) => immutable_source(path)?,
+                            (None, Some(path)) => io::absolute(path)?,
+                            _ => bail!("configuration fragment requires exactly one source"),
+                        };
+                        contents.extend(bounded_file(path, *maximum_bytes)?);
                     }
                 }
             }
@@ -47,6 +41,32 @@ pub(crate) fn contents(input: &Input) -> Result<Vec<u8>> {
         }
         _ => bail!("unsupported configuration format"),
     }
+}
+
+fn immutable_source(value: &str) -> Result<&std::path::Path> {
+    let path = io::absolute(value)?;
+    ensure!(
+        path.starts_with("/nix/store/")
+            && path.components().count() >= 4
+            && std::fs::canonicalize(path)? == path,
+        "immutable configuration source must be a canonical store path"
+    );
+    Ok(path)
+}
+
+fn bounded_file(path: &std::path::Path, maximum_bytes: u64) -> Result<Vec<u8>> {
+    ensure!(
+        (1..=1048576).contains(&maximum_bytes),
+        "configuration source byte limit is outside the operation bound"
+    );
+    let file = io::regular(path)?.context("configuration content source is absent")?;
+    let mut bytes = Vec::new();
+    file.take(maximum_bytes + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() as u64 <= maximum_bytes,
+        "configuration content exceeds configured limit"
+    );
+    Ok(bytes)
 }
 
 // JSON strings form valid TOML basic strings for the resolved JSON contract.

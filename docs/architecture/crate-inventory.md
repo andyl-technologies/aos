@@ -1,6 +1,9 @@
 # Active Rust crate inventory
 
-The workspace contains 77 Cargo packages, grouped by ownership. The full package
+The workspace contains 123 Cargo packages: the 77 base packages plus 45 migrated
+Sandbox packages and the new Sandbox API. Six Sandbox packages are nested test
+fixtures. The default-member set contains 121 packages; the optional coordinator
+and coordinator-protocol packages remain explicit selections. The full package
 name carries scope. Filesystem groups reduce the directory listing and do not
 change dependency identity. The authoritative membership is
 [`crates/Cargo.toml`](../../crates/Cargo.toml); the
@@ -86,6 +89,62 @@ change dependency identity. The authoritative membership is
 | `aos-systemd-client` | [linux/aos-systemd-client](../../crates/linux/aos-systemd-client/Cargo.toml) | Typed asynchronous client for the systemd D-Bus interface |
 | `aos-transfer` | [transfer/aos-transfer](../../crates/transfer/aos-transfer/Cargo.toml) | Reusable HTTP, streaming transfer, and transport utilities |
 
+## Sandbox packages
+
+These 46 packages are present on the RFC-0021 branch. Their source and package
+migration does not establish completion or runtime qualification of the RFC.
+The [Sandbox migration map](../../tools/dev/sandbox-crate-migration.json) records
+the former paths and names; base capability owners above remain unchanged.
+
+| Package | Directory | Responsibility |
+|---|---|---|
+| `aos-sandbox-client` | [sandbox/controller/aos-sandbox-client](../../crates/sandbox/controller/aos-sandbox-client/Cargo.toml) | Registered public clients, authenticated transport and local credential custody |
+| `aos-sandbox-controller-domain` | [sandbox/controller/aos-sandbox-controller-domain](../../crates/sandbox/controller/aos-sandbox-controller-domain/Cargo.toml) | Controller desired-state journal, operation models and reconciliation semantics |
+| `aos-sandbox-service-journal-probe` | [sandbox/controller/aos-sandbox-controller-domain/tests/fixtures/service-journal](../../crates/sandbox/controller/aos-sandbox-controller-domain/tests/fixtures/service-journal/Cargo.toml) | VM-selected unprivileged service-journal qualification fixture |
+| `aos-sandbox-controller-runtime` | [sandbox/controller/aos-sandbox-controller-runtime](../../crates/sandbox/controller/aos-sandbox-controller-runtime/Cargo.toml) | Protected Controller integration, effect exchanges and inventory custody |
+| `aos-sandbox-coordinator` | [sandbox/controller/aos-sandbox-coordinator](../../crates/sandbox/controller/aos-sandbox-coordinator/Cargo.toml) | Optional fleet placement, reconciliation and remote workflows |
+| `aos-sandbox-journal` | [sandbox/controller/aos-sandbox-journal](../../crates/sandbox/controller/aos-sandbox-journal/Cargo.toml) | Native journal framing, durability, geometry and replay-map mechanics |
+| `aos-sandbox-ledger-replay` | [sandbox/controller/aos-sandbox-ledger-replay](../../crates/sandbox/controller/aos-sandbox-ledger-replay/Cargo.toml) | Shared historical Source/Root models, codecs and complete replay comparisons |
+| `aos-sandbox-services` | [sandbox/controller/aos-sandbox-services](../../crates/sandbox/controller/aos-sandbox-services/Cargo.toml) | Role-selected daemon entry points and concrete service assembly |
+| `aos-sandbox-filesystem-format` | [sandbox/filesystem/aos-sandbox-filesystem-format](../../crates/sandbox/filesystem/aos-sandbox-filesystem-format/Cargo.toml) | Portable source-tree validation, indexes and filesystem presentation semantics |
+| `aos-sandbox-filesystem-fuse` | [sandbox/filesystem/aos-sandbox-filesystem-fuse](../../crates/sandbox/filesystem/aos-sandbox-filesystem-fuse/Cargo.toml) | Linux FUSE transport for authenticated immutable filesystem metadata |
+| `aos-sandbox-filesystem-fuse-kernel-worker` | [sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/kernel-worker](../../crates/sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/kernel-worker/Cargo.toml) | VM-only FUSE kernel qualification worker |
+| `aos-sandbox-filesystem-fuse-link-consumer` | [sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/link-consumer](../../crates/sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/link-consumer/Cargo.toml) | Downstream FUSE linkage fixture |
+| `aos-sandbox-filesystem-view` | [sandbox/filesystem/aos-sandbox-filesystem-view](../../crates/sandbox/filesystem/aos-sandbox-filesystem-view/Cargo.toml) | Backend-neutral compilation and bounded planning of immutable filesystem views |
+| `aos-sandbox-guest` | [sandbox/guest/aos-sandbox-guest](../../crates/sandbox/guest/aos-sandbox-guest/Cargo.toml) | Protected Guest-local process effects and durable operation handles |
+| `aos-sandbox-guest-root-measurement` | [sandbox/guest/aos-sandbox-guest-root-measurement](../../crates/sandbox/guest/aos-sandbox-guest-root-measurement/Cargo.toml) | Nonauthorizing Guest-root template and complete-tree measurement |
+| `aos-sandbox-guest-root-realization` | [sandbox/guest/aos-sandbox-guest-root-realization](../../crates/sandbox/guest/aos-sandbox-guest-root-realization/Cargo.toml) | Guest-root physical population, labeling and readback |
+| `aos-sandbox-broker` | [sandbox/host/aos-sandbox-broker](../../crates/sandbox/host/aos-sandbox-broker/Cargo.toml) | Privileged broker admission, receiving custody and durable records |
+| `aos-sandbox-host` | [sandbox/host/aos-sandbox-host](../../crates/sandbox/host/aos-sandbox-host/Cargo.toml) | Fixed-function privileged Host broker and runtime effects |
+| `aos-sandbox-linux` | [sandbox/host/aos-sandbox-linux](../../crates/sandbox/host/aos-sandbox-linux/Cargo.toml) | Linux descriptor, process, namespace and mount primitives for Sandbox |
+| `aos-sandbox-verity-backing-probe` | [sandbox/host/aos-sandbox-linux/tests/fixtures/verity-backing](../../crates/sandbox/host/aos-sandbox-linux/tests/fixtures/verity-backing/Cargo.toml) | VM-only fs-verity backing qualification fixture |
+| `aos-sandbox-mount` | [sandbox/host/aos-sandbox-mount](../../crates/sandbox/host/aos-sandbox-mount/Cargo.toml) | Privileged Mount request admission, fencing and durable replay |
+| `aos-sandbox-mount-native` | [sandbox/host/aos-sandbox-mount-native](../../crates/sandbox/host/aos-sandbox-mount-native/Cargo.toml) | Mount native journal, startup capture and private custody issuers |
+| `aos-sandbox-network` | [sandbox/host/aos-sandbox-network](../../crates/sandbox/host/aos-sandbox-network/Cargo.toml) | Network preparation, allocation, protected state and recovery |
+| `aos-sandbox-network-protected-store-fixture` | [sandbox/host/aos-sandbox-network/tests/fixtures/protected-store](../../crates/sandbox/host/aos-sandbox-network/tests/fixtures/protected-store/Cargo.toml) | Real-ext4 protected network-store qualification fixture |
+| `aos-sandbox-network-systemd-custody-fixture` | [sandbox/host/aos-sandbox-network/tests/fixtures/systemd-custody](../../crates/sandbox/host/aos-sandbox-network/tests/fixtures/systemd-custody/Cargo.toml) | Real-systemd network descriptor-store qualification fixture |
+| `aos-sandbox-publisher` | [sandbox/host/aos-sandbox-publisher](../../crates/sandbox/host/aos-sandbox-publisher/Cargo.toml) | Installed Publisher transport and native session custody |
+| `aos-sandbox-model` | [sandbox/model/aos-sandbox-model](../../crates/sandbox/model/aos-sandbox-model/Cargo.toml) | Portable Sandbox identities, lifecycle models, policy math and accounting |
+| `aos-sandbox-ownership` | [sandbox/model/aos-sandbox-ownership](../../crates/sandbox/model/aos-sandbox-ownership/Cargo.toml) | Protected local ownership issuance, history and contacted operations |
+| `aos-sandbox-policy` | [sandbox/model/aos-sandbox-policy](../../crates/sandbox/model/aos-sandbox-policy/Cargo.toml) | Bounded policy compilation and inert candidate data |
+| `aos-sandbox-api` | [sandbox/protocol/aos-sandbox-api](../../crates/sandbox/protocol/aos-sandbox-api/Cargo.toml) | Generated public, local broker and shared coordinator API contracts |
+| `aos-sandbox-broker-session-protocol` | [sandbox/protocol/aos-sandbox-broker-session-protocol](../../crates/sandbox/protocol/aos-sandbox-broker-session-protocol/Cargo.toml) | Local broker authentication, cryptographic records and wire contracts |
+| `aos-sandbox-coordinator-protocol` | [sandbox/protocol/aos-sandbox-coordinator-protocol](../../crates/sandbox/protocol/aos-sandbox-coordinator-protocol/Cargo.toml) | Coordinator/node transport contracts and dormant ConnectRPC bindings |
+| `aos-sandbox-guest-protocol` | [sandbox/protocol/aos-sandbox-guest-protocol](../../crates/sandbox/protocol/aos-sandbox-guest-protocol/Cargo.toml) | Portable Guest-agent wire contracts and launch proposals |
+| `aos-sandbox-ownership-protocol` | [sandbox/protocol/aos-sandbox-ownership-protocol](../../crates/sandbox/protocol/aos-sandbox-ownership-protocol/Cargo.toml) | Exclusive ownership-lease acquisition contracts |
+| `aos-sandbox-protocol` | [sandbox/protocol/aos-sandbox-protocol](../../crates/sandbox/protocol/aos-sandbox-protocol/Cargo.toml) | Hostile node-local request validation and shared Sandbox data recipes |
+| `aos-sandbox-source-provider-protocol` | [sandbox/protocol/aos-sandbox-source-provider-protocol](../../crates/sandbox/protocol/aos-sandbox-source-provider-protocol/Cargo.toml) | Transport-neutral signed SourceProvider process contracts |
+| `aos-sandbox-broker-session-security` | [sandbox/security/aos-sandbox-broker-session-security](../../crates/sandbox/security/aos-sandbox-broker-session-security/Cargo.toml) | Protected broker role credentials, peer identities and session custody |
+| `aos-sandbox-cache-signer` | [sandbox/security/aos-sandbox-cache-signer](../../crates/sandbox/security/aos-sandbox-cache-signer/Cargo.toml) | Independently confined Cache Current signing role |
+| `aos-sandbox-guardian` | [sandbox/security/aos-sandbox-guardian](../../crates/sandbox/security/aos-sandbox-guardian/Cargo.toml) | Assignment-bound ownership deadline validation and fail-stop enforcement |
+| `aos-sandbox-kernel-export-owner-peer` | [sandbox/security/aos-sandbox-kernel-export-owner-peer](../../crates/sandbox/security/aos-sandbox-kernel-export-owner-peer/Cargo.toml) | Storage-to-kernel-owner transport and independent physical/signature readbacks |
+| `aos-sandbox-source-provider-security` | [sandbox/security/aos-sandbox-source-provider-security](../../crates/sandbox/security/aos-sandbox-source-provider-security/Cargo.toml) | Protected SourceProvider credentials and process identity custody |
+| `aos-sandbox-source-signer` | [sandbox/security/aos-sandbox-source-signer](../../crates/sandbox/security/aos-sandbox-source-signer/Cargo.toml) | Independently confined Source readback signing role |
+| `aos-sandbox-source` | [sandbox/storage/aos-sandbox-source](../../crates/sandbox/storage/aos-sandbox-source/Cargo.toml) | Protected native Source role and construction custody |
+| `aos-sandbox-source-provider` | [sandbox/storage/aos-sandbox-source-provider](../../crates/sandbox/storage/aos-sandbox-source-provider/Cargo.toml) | Provider-owned durable source policy, acquisition and replay |
+| `aos-sandbox-source-provider-ledger` | [sandbox/storage/aos-sandbox-source-provider-ledger](../../crates/sandbox/storage/aos-sandbox-source-provider-ledger/Cargo.toml) | Pure canonical SourceProvider ledger codec and structural reduction |
+| `aos-sandbox-storage` | [sandbox/storage/aos-sandbox-storage](../../crates/sandbox/storage/aos-sandbox-storage/Cargo.toml) | Fixed-function Storage requests and bounded OpenZFS execution |
+
 The initrd preparation artifact is compiled directly by its Nix recipe from
 `boot/aos-boot-runtime/standalone/initrd_preparation.rs`. It deliberately is
 not a Cargo target: its existing `env!` tool paths bind the exact production
@@ -153,3 +212,28 @@ uncalled internal `container_distribution_origin` service helper is retained
 pending a behavior review. Proposed and scaffolded packages on unmerged branches
 are identified separately in the [open-PR inventory](unmerged-crates.md); their
 classification does not claim those features are complete.
+
+## Sandbox migration status
+
+Sandbox's generated public, local broker and shared coordinator contracts belong
+to `aos-sandbox-api`, with canonical inputs under `api/proto/aos/sandbox/`.
+`aos-build-api` retains build/cache/authentication/GC ownership, and `aos-hub-api`
+retains Hub ownership. Generated Sandbox namespaces remain
+`aos_sandbox_api::aos::sandbox::{v1,local::v1,coordinator::v1}`. The separate
+coordinator-protocol package compiles its transport schema and reuses the shared
+coordinator types from the API owner.
+
+The coordinator, ledger-replay, mount-native, Publisher and native Source packages
+were added after the original open-PR inventory. They retain their Sandbox scope.
+Ledger replay currently depends on Broker, Journal and SourceProvider owners;
+its historical DATA does not make the whole package a generic portable library.
+Sandbox journal and Linux descriptor promotion remain API-review decisions.
+The shared systemd client still has a Linux dependency on `aos-sandbox-linux` and
+Sandbox-specific custody APIs; separating that dependency remains extraction work.
+
+`aos-sandbox-cache` is not a member of this checkout. A separate RFC source
+proposal anticipates `crates/sandbox/storage/aos-sandbox-cache`; it is distinct
+from the implemented `aos-nix-cache` and is not counted above. Source organization,
+compiler checks, native qualification and RFC lifecycle completion are separate
+claims; the package migration alone establishes only the organization described
+here.

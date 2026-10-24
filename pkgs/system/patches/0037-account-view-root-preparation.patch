@@ -1,0 +1,13 @@
+Subject: [PATCH] core: enroll fixed view-root preparation in original F
+
+The authenticated setup launcher runs as a separate finite parent member.
+It retains the ordinary sandboxing and command checks; no privileged command
+flag exception is added for preparation inside a confined view service.
+
+--- a/src/core/aos-component-parent.c
++++ b/src/core/aos-component-parent.c
+@@ -58,3 +58,4 @@
+         "aos-sandbox-cache-journal-view.service",
++        "aos-sandbox-view-roots.service",
+         "aos-sandbox-policy-cache-recovery.service",
+         "systemd-journald.service",

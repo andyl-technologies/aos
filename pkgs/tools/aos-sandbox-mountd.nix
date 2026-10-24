@@ -1,0 +1,105 @@
+##! aos-sandbox-mountd — descriptor-only sandbox mount broker and helper
+{
+  lib,
+  mkCargoPackage,
+  mkCargoArtifacts,
+  mkCargoDummySource,
+  aosWorkspaceVendor,
+  protobuf,
+  elfutils,
+  stdenv,
+  buildPackages,
+}: let
+  version = "0.1.0";
+  isDarwinCross = stdenv.isCross && stdenv.hostPlatform.isDarwin;
+  buildProtobuf =
+    if isDarwinCross
+    then buildPackages.protobuf
+    else protobuf;
+  workspaceCargo = import ./aos/_workspace-cargo.nix {inherit lib aosWorkspaceVendor;};
+  inherit (workspaceCargo) src cargoDeps;
+  cargoEnv = {
+    PROTOC = "${buildProtobuf}/bin/protoc";
+    # Startup capture requires a GNU build ID in the exact running executable.
+    RUSTFLAGS = "-C link-arg=-Wl,--build-id=sha1";
+  };
+  cargoArtifactContract = {
+    family = "aos-sandbox-mountd-native";
+    checkType = "debug";
+    nativeInputs = map toString [buildProtobuf];
+  };
+  cargoArtifacts = mkCargoArtifacts {
+    pname = "aos-sandbox-mountd-artifacts";
+    inherit version cargoDeps cargoArtifactContract cargoEnv;
+    src = mkCargoDummySource {
+      srcRoot = ../../crates;
+      name = "aos-sandbox-mountd-cargo-dummy-source";
+      cargoRoot = "crates";
+    };
+    cargoRoot = "crates";
+    checkType = "debug";
+    cargoBuildCommands = [
+      "build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/mount -p aos-sandbox-services --bin aos-sandbox-mountd"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-mount --bin aos-sandbox-mount-helper"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-mount"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-mount-native"
+      "test --no-run --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/mount -p aos-sandbox-services"
+    ];
+    buildDeps = [buildProtobuf];
+    runtimeDeps = [];
+  };
+in
+  mkCargoPackage {
+    platformSupport = {
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
+      target = [];
+      role = "public-package";
+    };
+    pname = "aos-sandbox-mountd";
+    inherit version src cargoDeps cargoArtifacts cargoArtifactContract cargoEnv;
+    cargoRoot = "crates";
+    cargoBuildCommands = [
+      "build --release --frozen --offline -j$NIX_BUILD_CORES --no-default-features --features aos-sandbox-services/mount -p aos-sandbox-services --bin aos-sandbox-mountd"
+      "build --release --frozen --offline -j$NIX_BUILD_CORES -p aos-sandbox-mount --bin aos-sandbox-mount-helper"
+    ];
+    checkType = "debug";
+    cargoTestFlags = "--no-default-features --features aos-sandbox-services/mount -p aos-sandbox-services -p aos-sandbox-mount -p aos-sandbox-mount-native";
+    cargoNextest = true;
+    cargoNextestProfile = "nix-sandbox";
+    # Match the workspace native test runner; installed stack limits stay fixed.
+    RUST_MIN_STACK = "33554432";
+    doCheck = true;
+    buildDeps = [buildProtobuf elfutils];
+    runtimeDeps = [];
+
+    postInstall = ''
+      test -x "$out/bin/aos-sandbox-mountd"
+      test -x "$out/bin/aos-sandbox-mount-helper"
+      notes=$(${elfutils}/bin/eu-readelf --notes "$out/bin/aos-sandbox-mountd")
+      printf '%s\n' "$notes" | grep -Fq 'GNU_BUILD_ID'
+      printf '%s\n' "$notes" | grep -Eq 'Build ID: [0-9a-f]{40}$'
+    '';
+
+    passthru = {
+      inherit cargoArtifacts cargoDeps cargoEnv;
+    };
+
+    meta = {
+      description = "Descriptor-only sandbox mount broker and namespace helper";
+      homepage = "https://github.com/andyl/andyl-os";
+      license = "Apache-2.0";
+      platforms = ["x86_64-linux" "aarch64-linux"];
+    };
+  }

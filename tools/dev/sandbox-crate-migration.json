@@ -1,0 +1,390 @@
+{
+  "version": 1,
+  "scope": "Applied RFC-0021 Sandbox package/path migration; historical base map remains separate.",
+  "crates": [
+    {
+      "old": "aos-filesystem-fuse",
+      "new": "aos-sandbox-filesystem-fuse",
+      "source": "crates/aos-filesystem-fuse",
+      "target": "crates/sandbox/filesystem/aos-sandbox-filesystem-fuse",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-filesystem-fuse-kernel-worker",
+      "new": "aos-sandbox-filesystem-fuse-kernel-worker",
+      "source": "crates/aos-filesystem-fuse/tests/fixtures/kernel-worker",
+      "target": "crates/sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/kernel-worker",
+      "nested_fixture": true
+    },
+    {
+      "old": "aos-filesystem-fuse-link-consumer",
+      "new": "aos-sandbox-filesystem-fuse-link-consumer",
+      "source": "crates/aos-filesystem-fuse/tests/fixtures/link-consumer",
+      "target": "crates/sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/link-consumer",
+      "nested_fixture": true
+    },
+    {
+      "old": "aos-filesystem-view-core",
+      "new": "aos-sandbox-filesystem-format",
+      "source": "crates/aos-filesystem-view-core",
+      "target": "crates/sandbox/filesystem/aos-sandbox-filesystem-format",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-filesystem-view",
+      "new": "aos-sandbox-filesystem-view",
+      "source": "crates/aos-filesystem-view",
+      "target": "crates/sandbox/filesystem/aos-sandbox-filesystem-view",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-agent",
+      "new": "aos-sandbox-guest-protocol",
+      "source": "crates/aos-sandbox-agent",
+      "target": "crates/sandbox/protocol/aos-sandbox-guest-protocol",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-broker-session-protocol",
+      "new": "aos-sandbox-broker-session-protocol",
+      "source": "crates/aos-sandbox-broker-session-protocol",
+      "target": "crates/sandbox/protocol/aos-sandbox-broker-session-protocol",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-broker-session-security",
+      "new": "aos-sandbox-broker-session-security",
+      "source": "crates/aos-sandbox-broker-session-security",
+      "target": "crates/sandbox/security/aos-sandbox-broker-session-security",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-broker",
+      "new": "aos-sandbox-broker",
+      "source": "crates/aos-sandbox-broker",
+      "target": "crates/sandbox/host/aos-sandbox-broker",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-cache-signer",
+      "new": "aos-sandbox-cache-signer",
+      "source": "crates/aos-sandbox-cache-signer",
+      "target": "crates/sandbox/security/aos-sandbox-cache-signer",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-client",
+      "new": "aos-sandbox-client",
+      "source": "crates/aos-sandbox-client",
+      "target": "crates/sandbox/controller/aos-sandbox-client",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-controller-runtime",
+      "new": "aos-sandbox-controller-runtime",
+      "source": "crates/aos-sandbox-controller-runtime",
+      "target": "crates/sandbox/controller/aos-sandbox-controller-runtime",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-coordinator-protocol",
+      "new": "aos-sandbox-coordinator-protocol",
+      "source": "crates/aos-sandbox-coordinator-protocol",
+      "target": "crates/sandbox/protocol/aos-sandbox-coordinator-protocol",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-coordinator",
+      "new": "aos-sandbox-coordinator",
+      "source": "crates/aos-sandbox-coordinator",
+      "target": "crates/sandbox/controller/aos-sandbox-coordinator",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-core",
+      "new": "aos-sandbox-model",
+      "source": "crates/aos-sandbox-core",
+      "target": "crates/sandbox/model/aos-sandbox-model",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-guardian",
+      "new": "aos-sandbox-guardian",
+      "source": "crates/aos-sandbox-guardian",
+      "target": "crates/sandbox/security/aos-sandbox-guardian",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-guest-root-realization",
+      "new": "aos-sandbox-guest-root-realization",
+      "source": "crates/aos-sandbox-guest-root-realization",
+      "target": "crates/sandbox/guest/aos-sandbox-guest-root-realization",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-guest-root-tree",
+      "new": "aos-sandbox-guest-root-measurement",
+      "source": "crates/aos-sandbox-guest-root-tree",
+      "target": "crates/sandbox/guest/aos-sandbox-guest-root-measurement",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-guest",
+      "new": "aos-sandbox-guest",
+      "source": "crates/aos-sandbox-guest",
+      "target": "crates/sandbox/guest/aos-sandbox-guest",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-host",
+      "new": "aos-sandbox-host",
+      "source": "crates/aos-sandbox-host",
+      "target": "crates/sandbox/host/aos-sandbox-host",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-journal",
+      "new": "aos-sandbox-journal",
+      "source": "crates/aos-sandbox-journal",
+      "target": "crates/sandbox/controller/aos-sandbox-journal",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-kernel-export-owner-peer",
+      "new": "aos-sandbox-kernel-export-owner-peer",
+      "source": "crates/aos-sandbox-kernel-export-owner-peer",
+      "target": "crates/sandbox/security/aos-sandbox-kernel-export-owner-peer",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-ledger-replay",
+      "new": "aos-sandbox-ledger-replay",
+      "source": "crates/aos-sandbox-ledger-replay",
+      "target": "crates/sandbox/controller/aos-sandbox-ledger-replay",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-linux",
+      "new": "aos-sandbox-linux",
+      "source": "crates/aos-sandbox-linux",
+      "target": "crates/sandbox/host/aos-sandbox-linux",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-verity-backing-probe",
+      "new": "aos-sandbox-verity-backing-probe",
+      "source": "crates/aos-sandbox-linux/tests/fixtures/verity-backing",
+      "target": "crates/sandbox/host/aos-sandbox-linux/tests/fixtures/verity-backing",
+      "nested_fixture": true
+    },
+    {
+      "old": "aos-sandbox-mount-native",
+      "new": "aos-sandbox-mount-native",
+      "source": "crates/aos-sandbox-mount-native",
+      "target": "crates/sandbox/host/aos-sandbox-mount-native",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-mount",
+      "new": "aos-sandbox-mount",
+      "source": "crates/aos-sandbox-mount",
+      "target": "crates/sandbox/host/aos-sandbox-mount",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-network",
+      "new": "aos-sandbox-network",
+      "source": "crates/aos-sandbox-network",
+      "target": "crates/sandbox/host/aos-sandbox-network",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-network-protected-store-fixture",
+      "new": "aos-sandbox-network-protected-store-fixture",
+      "source": "crates/aos-sandbox-network/tests/fixtures/protected-store",
+      "target": "crates/sandbox/host/aos-sandbox-network/tests/fixtures/protected-store",
+      "nested_fixture": true
+    },
+    {
+      "old": "aos-sandbox-network-systemd-custody-fixture",
+      "new": "aos-sandbox-network-systemd-custody-fixture",
+      "source": "crates/aos-sandbox-network/tests/fixtures/systemd-custody",
+      "target": "crates/sandbox/host/aos-sandbox-network/tests/fixtures/systemd-custody",
+      "nested_fixture": true
+    },
+    {
+      "old": "aos-sandbox-ownership-protocol",
+      "new": "aos-sandbox-ownership-protocol",
+      "source": "crates/aos-sandbox-ownership-protocol",
+      "target": "crates/sandbox/protocol/aos-sandbox-ownership-protocol",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-ownership",
+      "new": "aos-sandbox-ownership",
+      "source": "crates/aos-sandbox-ownership",
+      "target": "crates/sandbox/model/aos-sandbox-ownership",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-policy",
+      "new": "aos-sandbox-policy",
+      "source": "crates/aos-sandbox-policy",
+      "target": "crates/sandbox/model/aos-sandbox-policy",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-protocol",
+      "new": "aos-sandbox-protocol",
+      "source": "crates/aos-sandbox-protocol",
+      "target": "crates/sandbox/protocol/aos-sandbox-protocol",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-publisher",
+      "new": "aos-sandbox-publisher",
+      "source": "crates/aos-sandbox-publisher",
+      "target": "crates/sandbox/host/aos-sandbox-publisher",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-services",
+      "new": "aos-sandbox-services",
+      "source": "crates/aos-sandbox-services",
+      "target": "crates/sandbox/controller/aos-sandbox-services",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-source-provider-ledger",
+      "new": "aos-sandbox-source-provider-ledger",
+      "source": "crates/aos-sandbox-source-provider-ledger",
+      "target": "crates/sandbox/storage/aos-sandbox-source-provider-ledger",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-source-provider-protocol",
+      "new": "aos-sandbox-source-provider-protocol",
+      "source": "crates/aos-sandbox-source-provider-protocol",
+      "target": "crates/sandbox/protocol/aos-sandbox-source-provider-protocol",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-source-provider-security",
+      "new": "aos-sandbox-source-provider-security",
+      "source": "crates/aos-sandbox-source-provider-security",
+      "target": "crates/sandbox/security/aos-sandbox-source-provider-security",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-source-provider",
+      "new": "aos-sandbox-source-provider",
+      "source": "crates/aos-sandbox-source-provider",
+      "target": "crates/sandbox/storage/aos-sandbox-source-provider",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-source-signer",
+      "new": "aos-sandbox-source-signer",
+      "source": "crates/aos-sandbox-source-signer",
+      "target": "crates/sandbox/security/aos-sandbox-source-signer",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-source",
+      "new": "aos-sandbox-source",
+      "source": "crates/aos-sandbox-source",
+      "target": "crates/sandbox/storage/aos-sandbox-source",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-storage",
+      "new": "aos-sandbox-storage",
+      "source": "crates/aos-sandbox-storage",
+      "target": "crates/sandbox/storage/aos-sandbox-storage",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox",
+      "new": "aos-sandbox-controller-domain",
+      "source": "crates/aos-sandbox",
+      "target": "crates/sandbox/controller/aos-sandbox-controller-domain",
+      "nested_fixture": false
+    },
+    {
+      "old": "aos-sandbox-service-journal-probe",
+      "new": "aos-sandbox-service-journal-probe",
+      "source": "crates/aos-sandbox/tests/fixtures/service-journal",
+      "target": "crates/sandbox/controller/aos-sandbox-controller-domain/tests/fixtures/service-journal",
+      "nested_fixture": true
+    }
+  ],
+  "added_packages": [
+    {
+      "name": "aos-sandbox-api",
+      "target": "crates/sandbox/protocol/aos-sandbox-api",
+      "responsibility": "Generated public, local broker and shared coordinator API contracts"
+    }
+  ],
+  "future_packages": [
+    {
+      "name": "aos-sandbox-cache",
+      "target": "crates/sandbox/storage/aos-sandbox-cache",
+      "status": "Not materialized or counted in the current workspace."
+    }
+  ],
+  "canonical_schema_moves": [
+    {
+      "from": "crates/aos-proto/src/proto/aos/sandbox/coordinator/v1/coordinator.proto",
+      "to": "api/proto/aos/sandbox/coordinator/v1/coordinator.proto",
+      "sha256": "7ad7a176c4ee8cac1684c01ebf285e045f1972487f579a8cf2abdfc843c1e00e"
+    },
+    {
+      "from": "crates/aos-proto/src/proto/aos/sandbox/local/v1/brokers.proto",
+      "to": "api/proto/aos/sandbox/local/v1/brokers.proto",
+      "sha256": "23cd20528f189e904f1b9ce7609ae36f7ef20ee73773dfeefc1d59c4a9cac81d"
+    },
+    {
+      "from": "crates/aos-proto/src/proto/aos/sandbox/local/v1/compatibility-v1.txt",
+      "to": "api/proto/aos/sandbox/local/v1/compatibility-v1.txt",
+      "sha256": "a6bf0fc143a976f414123882b495af4e5b27e76f01aa5a8fd6f6ee6ca21a8f1f"
+    },
+    {
+      "from": "crates/aos-proto/src/proto/aos/sandbox/v1/compatibility-v1.txt",
+      "to": "api/proto/aos/sandbox/v1/compatibility-v1.txt",
+      "sha256": "9d53c4a82f3673a042463d259ace0d027aeaf26b9c47896a4d95c381b8d93dfe"
+    },
+    {
+      "from": "crates/aos-proto/src/proto/aos/sandbox/v1/sandbox.proto",
+      "to": "api/proto/aos/sandbox/v1/sandbox.proto",
+      "sha256": "7aa8c4092a091e96c5f2e2ceffe044ea8b107031ec65a0be5ad565202a73c1c3"
+    },
+    {
+      "from": "crates/aos-sandbox-coordinator-protocol/src/proto/aos/sandbox/coordinator/v1/coordinator_transport.proto",
+      "to": "api/proto/aos/sandbox/coordinator/v1/coordinator_transport.proto",
+      "sha256": "6379c9c6316646341f6fa40b9a9b4352896a203f513b63a1138d52f8ef335916"
+    }
+  ],
+  "invariants": {
+    "base_capability_map": "docs/architecture/crate-renames.md",
+    "historical_base_plan": "tools/dev/crate-migration.json",
+    "reverse_path_mapping": "Each crates entry is a unique source/target prefix pair. Use the longest prefix in either direction; nested fixtures travel with their parent directory.",
+    "reverse_package_mapping": "Each crates entry maps one old Cargo package to one current package; added_packages have no former package.",
+    "current_manifest_check": "Each crates target/Cargo.toml declares its new package name; each added_packages target/Cargo.toml declares its name.",
+    "source_identity_check": "Only source/package references change. Executable names, protocol/schema bytes, persisted identities, systemd units and digest/signature domains remain stable.",
+    "alias_rule": "Explicit Cargo dependency aliases retain their Rust identifiers and feature keys.",
+    "api_namespace": "aos_sandbox_api::aos::sandbox::{v1,local::v1,coordinator::v1}",
+    "qualification": "Path/package migration does not establish compiler, portability, native, financial or RFC lifecycle completion."
+  },
+  "extraction_debt": [
+    "aos-systemd-client retains a Linux dependency on aos-sandbox-linux and Sandbox-specific resource/custody APIs.",
+    "Generic descriptor and journal promotion require separate API review.",
+    "aos-sandbox-ledger-replay retains Broker/Journal/SourceProvider dependencies; its DATA models do not make the whole package generic or portable."
+  ],
+  "counts": {
+    "migrated_packages": 45,
+    "physical_parent_moves": 39,
+    "nested_fixture_packages": 6,
+    "added_packages": 1,
+    "sandbox_workspace_packages": 46
+  }
+}

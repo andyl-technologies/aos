@@ -201,6 +201,16 @@ in {
           Other package roots and explicit runtime artifacts remain available.
         '';
       };
+
+      stage0 = lib.mkOption {
+        type = lib.types.nullOr lib.types.package;
+        default = null;
+        internal = true;
+        description = ''
+          Optional static PID 1 that admits a labeled inner initrd before
+          systemd. Null retains the legacy systemd-in-newc layout.
+        '';
+      };
     };
   };
 

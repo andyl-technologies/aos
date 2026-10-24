@@ -23,3 +23,34 @@ These observations identify investigation targets, not permanent concurrency
 ceilings. Preserve the failing command, inputs, logs, and available resource
 information. Temporary per-command limits can help distinguish resource
 exhaustion from repeatable build-graph or runtime defects.
+
+## Shared Cargo targets across worktrees
+
+Serializing Cargo jobs prevents concurrent writers, but does not by itself
+make a shared target directory safe across different worktree sources.
+Cargo's ordinary freshness checks can use relative dependency paths and
+source modification times. An older worktree's files can therefore appear
+fresh against artifacts built from a newer, different worktree. A compile
+error referring to a field absent from the current source is one possible
+symptom; a successful build or test run does not rule out stale dependencies.
+
+Before switching a shared local target to different workspace sources, stop
+its active Cargo jobs and identify every relevant local path package from that
+workspace's metadata, including any nonmember path dependencies. Invalidate
+those packages with the AOS-built Cargo. Check the selected package names:
+Cargo's package-scoped clean removes all versions of each selected name, even
+when given a qualified package ID. Keep registry dependency artifacts reusable.
+Do not clean another worker's
+active target, remove the whole shared cache, or change source code to match a
+stale dependency. A separate target directory is another isolation option.
+Re-run affected tests and binaries after establishing this freshness boundary;
+results obtained before discovering a mismatch are not final qualification
+evidence. Record the worktree commit, command, target directory, and logs.
+
+This local dev-shell workflow is distinct from `aos-dev` derivation builds.
+The shared Rust derivation cache holds a source lock and compares its source
+identity before building, refreshing copied source modification times when
+the identity changes. Direct `nix develop -c cargo ...` invocations do not
+automatically run that derivation configure phase. Do not assume its freshness
+protection applies to a manually shared local target. Cache maintenance and
+source invalidation must remain scoped to the relevant build lane.

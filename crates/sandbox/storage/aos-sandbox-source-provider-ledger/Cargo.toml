@@ -1,0 +1,22 @@
+[package]
+name = "aos-sandbox-source-provider-ledger"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+publish = false
+
+[dependencies]
+aos-sandbox-model.workspace = true
+aos-sandbox-source-provider-protocol.workspace = true
+sha2.workspace = true
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+aos-sandbox-source = { workspace = true, features = ["test-fixtures"] }
+aos-sandbox-protocol.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+ed25519-dalek.workspace = true
+
+[lints]
+workspace = true

@@ -258,8 +258,7 @@
           done
         '';
     };
-in
-  import ../lib/finalize-native.nix {
+  publicTools = import ../lib/finalize-native.nix {
     privateTools = scope // {inherit gccStage2;};
     directory = ./.;
     gccVersion = "16.2.0";
@@ -275,4 +274,41 @@ in
       then scope.perl
       else null;
     inherit buildPlatform hostPlatform targetPlatform;
+  };
+
+  # These public images are copied into the fixed view-preparer output. Keep
+  # their actual construction sources, not the similarly named target recipes.
+  toolRecipes = map (path:
+    builtins.path {
+      inherit path;
+      name = builtins.baseNameOf (toString path);
+    }) [
+    ./default.nix
+    ./manifest.nix
+    ../lib/mk-manifest-tools.nix
+    ../lib/mk-autotools-tool.nix
+    ../lib/finalize-native.nix
+    ../lib/with-runtime-shell.nix
+    ../lib/source-script-filter.nix
+    ../../tier-stdenv.nix
+    ../../phases.nix
+    ../../runtime-scripts.sh
+    ../../filter-output-scripts.pl
+    ../../filter-runtime-scripts.pl
+  ];
+  withToolSourceEvidence = package:
+    package
+    // {
+      passthru =
+        (package.passthru or {})
+        // {
+          evidenceSources = [package.src] ++ (package.passthru.appliedPatches or []) ++ toolRecipes;
+          sourceRecipes = toolRecipes;
+        };
+    };
+in
+  publicTools
+  // {
+    bash = withToolSourceEvidence publicTools.bash;
+    coreutils = withToolSourceEvidence publicTools.coreutils;
   }

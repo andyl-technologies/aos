@@ -9,7 +9,7 @@
 ##!
 ##! The AOS Rust toolchain and pinned workspace vendor output make this build
 ##! hermetic. Native inputs include `pkg-config`, `openssl`, `sqlite`, and
-##! `protobuf`; the `aos-proto` build script runs `protoc` to generate the
+##! `protobuf`; the `aos-hub-api` build script runs `protoc` to generate the
 ##! `aos.hub.v1` ConnectRPC stubs.
 {
   lib,

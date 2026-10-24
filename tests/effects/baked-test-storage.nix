@@ -19,7 +19,7 @@
       mac = "52:54:00:12:34:56";
       ip = "192.0.2.5";
       defaultAgentPackage = pkgs.aos-test-agent;
-      inherit (pkgs) writeTextFile;
+      inherit (pkgs.buildPackages) writeTextFile;
     }) {config.aos.packages = {};};
   sources = mode: provisioning: (machine mode provisioning).aos.activation.stages.host.configuration;
   evaluate = configuration:
@@ -44,6 +44,7 @@
   capture = arguments: arguments // {outPath = payload;};
   buildDisk = import ../../pkgs/system/_systemd-abilities/testing/disk.nix {
     inherit lib;
+    buildPackages = pkgs.buildPackages;
     closureInfoFor = _: {outPath = payload;};
     packages = {
       mkDerivation = capture;
@@ -58,7 +59,8 @@
   script =
     (builtins.head
       (buildDisk {
-        system = {};
+        system.config.aos.security.selinux.protectedSandboxNetworkRoots.enable = false;
+        guestArchitecture = pkgs.stdenv.hostPlatform.constraints.cpu;
         varSizeMiB = 2048;
       }).phases).script;
   contains = text: needle: builtins.length (lib.splitString needle text) > 1;

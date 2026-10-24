@@ -1,0 +1,1802 @@
+//! Builds lease-independent broker templates and lease-bound dispatch attempts.
+//!
+//! A [`BrokerDispatchTemplateV1`] freezes a signed plan, closed method,
+//! deadline-free protobuf body, descriptor roles, and portable semantic grant.
+//! A [`BrokerDispatchAttemptV1`] later injects one local BOOTTIME deadline and
+//! attaches one independently verified ownership lease. This split permits a
+//! lease renewal to reuse immutable operation semantics without reusing stale
+//! lease authority or an old local-clock value.
+//!
+//! These controller artifacts are non-authorizing. In particular, a semantic
+//! identity supplied by the controller does not prove that hostile protobuf
+//! bytes have that meaning, and [`RawPairedClockSample`] is explicitly an
+//! untrusted advisory observation. The privileged broker must decode the body,
+//! recompute semantics against its trusted catalog, verify both signatures,
+//! sample its protected local clock, and durably admit all fences before any
+//! effect.
+
+use aos_sandbox_api::aos::sandbox::local::v1::{BrokerDescriptorRole, BrokerMethod, RuntimeAction};
+use aos_sandbox_model::format::decode_broker_authorization_plan;
+use aos_sandbox_model::model::KeyReference;
+use aos_sandbox_model::{
+    BrokerArgumentCommitment, BrokerAudience, BrokerAuthorizationPlan, BrokerGrant,
+    BrokerGrantTarget, BrokerVerb, DecodeLimits, GuardianPlanBinding, LEASE_SAFETY_MARGIN_SECONDS,
+    ObjectDigest, OwnershipLease, ProtocolId, ProtocolVersion, RawPairedClockSample,
+};
+use aos_sandbox_protocol::{
+    AuthorizationArtifactBytes, MAXIMUM_PACKET_DESCRIPTORS, MAXIMUM_REQUEST_BYTES,
+    ProtocolValidationError, decode_host_guardian_companion_v1, decode_runtime_template_v1,
+    encode_authorized_request_envelope, encode_host_guardian_companion_v1,
+};
+use sha2::{Digest as _, Sha256};
+
+use crate::publication::{RecoveredBrokerDispatchTemplateV1, RecoveredOwnershipLeaseV1};
+use aos_sandbox_ownership_protocol::SignedOwnershipLease;
+use aos_sandbox_protocol::authorization_artifact::SignedBrokerPlan;
+
+pub use aos_sandbox_protocol::dispatch_template::{
+    BrokerDispatchSemanticIdentityV1, BrokerDispatchTemplateV1, BrokerDispatchTemplateError,
+};
+use aos_sandbox_protocol::dispatch_template::{match_plan_grant, inject_deadline};
+pub(crate) use aos_sandbox_protocol::dispatch_template::{
+    template_digest_from_parts, semantic_identity_digest, validate_durable_deadline_free_body,
+    validate_durable_attempt_body,
+};
+
+use aos_sandbox_protocol::domain_ledger::effect_history::BrokerDispatchAttemptHistoryV1;
+
+const NANOS_PER_SECOND: u64 = 1_000_000_000;
+
+/// Checks a fully formed selected wrapper without direct-header injection.
+/// Method57's field1 is an entire nested request, not the ordinary header.
+pub(crate) fn validate_nix_generation_plan_v1(
+    signed: &SignedBrokerPlan,
+    expected: &BrokerAuthorizationPlan,
+    body: &[u8],
+) -> Result<(), BrokerDispatchTemplateError> {
+    if signed.plan() != expected {
+        return Err(BrokerDispatchTemplateError::PlanGrantMismatch);
+    }
+    let bytes = u32::try_from(body.len())
+        .map_err(|_| BrokerDispatchTemplateError::BodyTooLarge)?;
+    match_plan_grant(
+        signed.plan(),
+        BrokerDispatchSemanticIdentityV1::new(
+            BrokerVerb::StoragePrepareCatalog,
+            BrokerGrantTarget::Assignment,
+            BrokerArgumentCommitment::for_canonical_bytes(body),
+        ),
+        bytes,
+        0,
+    )
+}
+
+/// Describes the exact post-lease Guardian plan a controller must sign.
+///
+/// This request is produced only after a current Host launch template and
+/// ownership lease have been selected. A returned [`SignedBrokerPlan`] is
+/// still checked against every field before its bytes enter a durable packet.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GuardianPlanRequestV1 {
+    assignment: aos_sandbox_model::BrokerAssignment,
+    node: aos_sandbox_model::NodeId,
+    ownership_authority: KeyReference,
+    policy_commitment: ObjectDigest,
+    revocation_scope: aos_sandbox_model::RevocationScopeId,
+    not_before_seconds: i64,
+    expires_seconds: i64,
+    host_boot_id: [u8; 16],
+    lease_generation: u64,
+    lease_digest: ObjectDigest,
+    commitment: BrokerArgumentCommitment,
+    request_bytes: u32,
+}
+
+impl GuardianPlanRequestV1 {
+    pub(crate) fn new(
+        host_plan: &BrokerAuthorizationPlan,
+        lease: &OwnershipLease,
+        lease_digest: ObjectDigest,
+        host_boot_id: [u8; 16],
+    ) -> Result<Self, BrokerDispatchAttemptError> {
+        validate_recovered_lease_context(host_plan, lease)?;
+        let binding = GuardianPlanBinding::new(
+            host_plan.assignment(),
+            host_plan.node(),
+            host_boot_id,
+            lease.lease_generation(),
+            lease_digest,
+        )
+        .map_err(|_| BrokerDispatchAttemptError::GuardianContextMismatch)?;
+        Ok(Self {
+            assignment: host_plan.assignment(),
+            node: host_plan.node(),
+            ownership_authority: host_plan.ownership_authority().clone(),
+            policy_commitment: host_plan.policy_commitment(),
+            revocation_scope: host_plan.revocation_scope(),
+            not_before_seconds: host_plan
+                .issued_seconds()
+                .max(lease.authority_issued_seconds()),
+            expires_seconds: host_plan
+                .expires_seconds()
+                .min(lease.authority_expires_seconds()),
+            host_boot_id,
+            lease_generation: lease.lease_generation(),
+            lease_digest,
+            commitment: binding.commitment(),
+            request_bytes: binding.encoded_len(),
+        })
+    }
+
+    /// Returns the exact assignment the Guardian plan must name.
+    #[must_use]
+    pub const fn assignment(&self) -> aos_sandbox_model::BrokerAssignment {
+        self.assignment
+    }
+
+    /// Returns the exact owning node the Guardian plan must name.
+    #[must_use]
+    pub const fn node(&self) -> aos_sandbox_model::NodeId {
+        self.node
+    }
+
+    /// Returns the ownership authority shared by the Host plan and lease.
+    #[must_use]
+    pub const fn ownership_authority(&self) -> &KeyReference {
+        &self.ownership_authority
+    }
+
+    /// Returns the current host boot committed by the arm grant.
+    #[must_use]
+    pub const fn host_boot_id(&self) -> &[u8; 16] {
+        &self.host_boot_id
+    }
+
+    /// Returns the exact ownership lease generation committed by the arm grant.
+    #[must_use]
+    pub const fn lease_generation(&self) -> u64 {
+        self.lease_generation
+    }
+
+    /// Returns the exact ownership lease digest committed by the arm grant.
+    #[must_use]
+    pub const fn lease_digest(&self) -> ObjectDigest {
+        self.lease_digest
+    }
+
+    /// Returns the exact semantic commitment required in the arm grant.
+    #[must_use]
+    pub const fn commitment(&self) -> BrokerArgumentCommitment {
+        self.commitment
+    }
+
+    /// Returns the exact request byte count matched by Guardian admission.
+    #[must_use]
+    pub const fn request_bytes(&self) -> u32 {
+        self.request_bytes
+    }
+
+    /// Constructs the sole Guardian arm plan for this selected lease and boot.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerDispatchAttemptError`] when the current wall time is
+    /// outside the intersected Host-plan and ownership-lease validity interval,
+    /// or the exact Guardian grant cannot be represented.
+    pub fn plan_at(
+        &self,
+        now_seconds: i64,
+    ) -> Result<BrokerAuthorizationPlan, BrokerDispatchAttemptError> {
+        if now_seconds < self.not_before_seconds || now_seconds >= self.expires_seconds {
+            return Err(BrokerDispatchAttemptError::GuardianContextMismatch);
+        }
+
+        aos_sandbox_protocol::authorization_artifact::guardian_arm_plan_data_v1(
+            self.assignment, self.node, self.ownership_authority.clone(),
+            self.commitment, self.request_bytes, self.policy_commitment,
+            self.revocation_scope, now_seconds, self.expires_seconds,
+        ).map_err(|_| BrokerDispatchAttemptError::GuardianPlanMismatch)
+    }
+}
+/// Retains an attempt from the fixed signed/current Native construction recipes.
+#[derive(Clone, Eq, PartialEq)]
+pub struct BrokerDispatchAttemptV1 {
+    history: BrokerDispatchAttemptHistoryV1,
+}
+
+impl std::fmt::Debug for BrokerDispatchAttemptV1 {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        std::fmt::Debug::fmt(&self.history, formatter)
+    }
+}
+
+impl BrokerDispatchAttemptV1 {
+    /// Binds a template to one current lease and advisory local deadline.
+    ///
+    /// `clock` is a [`RawPairedClockSample`], not protected broker evidence. Its
+    /// only purpose here is to shorten the controller's attempt window. The
+    /// resulting packet gains authority only if the receiving broker verifies
+    /// the signed lease with its own protected paired clock and durably admits
+    /// assignment, plan, lease-generation, and request fences.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerDispatchAttemptError`] for assignment or node
+    /// substitution, expired plan/lease authority, an unsafe deadline, wire
+    /// overflow, or failure to preserve the template's signed grant bounds.
+    pub(crate) fn new(
+        template: &BrokerDispatchTemplateV1,
+        lease: &SignedOwnershipLease,
+        deadline_boottime_nanoseconds: u64,
+        clock: RawPairedClockSample,
+    ) -> Result<Self, BrokerDispatchAttemptError> {
+        validate_context(template, lease)?;
+        let plan = template.signed_plan().plan();
+        if clock.wall_seconds() < plan.issued_seconds()
+            || clock.wall_seconds() >= plan.expires_seconds()
+        {
+            return Err(BrokerDispatchAttemptError::PlanExpired);
+        }
+        let maximum_deadline = conservative_lease_deadline(lease, clock)?;
+        if deadline_boottime_nanoseconds <= clock.boottime_nanoseconds()
+            || deadline_boottime_nanoseconds > maximum_deadline
+        {
+            return Err(BrokerDispatchAttemptError::UnsafeDeadline);
+        }
+
+        let body = inject_deadline(
+            template.body_without_deadline(),
+            deadline_boottime_nanoseconds,
+        )
+        .map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        let request_bytes =
+            u32::try_from(body.len()).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        let descriptor_count = u16::try_from(template.descriptor_roles().len())
+            .map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        match_plan_grant(
+            template.signed_plan().plan(),
+            template.semantics(),
+            request_bytes,
+            descriptor_count,
+        )
+        .map_err(|_| BrokerDispatchAttemptError::PlanGrantMismatch)?;
+
+        let packet = encode_authorized_request_envelope(
+            plan.protocol(),
+            template.method(),
+            &body,
+            template.descriptor_roles(),
+            AuthorizationArtifactBytes {
+                broker_plan: template.signed_plan().canonical_plan(),
+                broker_plan_signature: template.signed_plan().canonical_signature(),
+                ownership_lease: lease.canonical_lease(),
+                ownership_lease_signature: lease.canonical_signature(),
+            },
+        )?;
+        Ok(Self {
+            history: BrokerDispatchAttemptHistoryV1::from_durable_parts(
+                template.digest(),
+                lease.digest(),
+                lease.generation(),
+                deadline_boottime_nanoseconds,
+                body,
+                packet,
+            ),
+        })
+    }
+
+    /// Binds a Host 1.0 launch and its Guardian arm plan to one exact lease.
+    ///
+    /// The Guardian pair is inserted only after lease selection because its
+    /// sole grant commits the current host boot and that lease's generation
+    /// and digest. The outer Host envelope reuses the same exact lease bytes
+    /// and signature; no second lease representation is admitted.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BrokerDispatchAttemptError`] unless the template is a
+    /// companion-free Host 1.0 launch, both plans and the lease have one exact
+    /// assignment/node/ownership authority, the Guardian plan has one exact
+    /// boot-and-lease-bound arm grant, and all validity and size bounds hold.
+    #[cfg(test)]
+    pub(crate) fn new_host_launch_with_guardian(
+        template: &BrokerDispatchTemplateV1,
+        lease: &SignedOwnershipLease,
+        guardian_plan: &SignedBrokerPlan,
+        host_boot_id: [u8; 16],
+        deadline_boottime_nanoseconds: u64,
+        clock: RawPairedClockSample,
+    ) -> Result<Self, BrokerDispatchAttemptError> {
+        validate_context(template, lease)?;
+        let host_plan = template.signed_plan().plan();
+        let host_template = decode_runtime_template_v1(template.body_without_deadline())?;
+        if template.method() != BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+            || host_plan.audience() != BrokerAudience::Host
+            || host_plan.protocol() != ProtocolId::HostBroker
+            || host_plan.protocol_version() != ProtocolVersion::new(1, 0)
+            || host_template.action() != RuntimeAction::RUNTIME_ACTION_LAUNCH
+            || host_template.guardian_arm().is_some()
+        {
+            return Err(BrokerDispatchAttemptError::InvalidHostGuardianTemplate);
+        }
+        if host_boot_id != clock.host_boot_id() {
+            return Err(BrokerDispatchAttemptError::GuardianContextMismatch);
+        }
+        validate_guardian_context(host_plan, lease, guardian_plan.plan(), host_boot_id)?;
+        validate_current_plan(host_plan, clock)?;
+        validate_current_plan(guardian_plan.plan(), clock)?;
+
+        let maximum_deadline = conservative_lease_deadline(lease, clock)?.min(
+            conservative_guardian_plan_deadline(guardian_plan.plan(), clock)?,
+        );
+        if deadline_boottime_nanoseconds <= clock.boottime_nanoseconds()
+            || deadline_boottime_nanoseconds > maximum_deadline
+        {
+            return Err(BrokerDispatchAttemptError::UnsafeDeadline);
+        }
+
+        let deadline_body = inject_deadline(
+            template.body_without_deadline(),
+            deadline_boottime_nanoseconds,
+        )
+        .map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        let body = encode_host_guardian_companion_v1(
+            &deadline_body,
+            guardian_plan.canonical_plan(),
+            guardian_plan.canonical_signature(),
+        )?;
+        let request_bytes =
+            u32::try_from(body.len()).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        let descriptor_count = u16::try_from(template.descriptor_roles().len())
+            .map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        match_plan_grant(
+            host_plan,
+            template.semantics(),
+            request_bytes,
+            descriptor_count,
+        )
+        .map_err(|_| BrokerDispatchAttemptError::PlanGrantMismatch)?;
+
+        let packet = encode_authorized_request_envelope(
+            host_plan.protocol(),
+            template.method(),
+            &body,
+            template.descriptor_roles(),
+            AuthorizationArtifactBytes {
+                broker_plan: template.signed_plan().canonical_plan(),
+                broker_plan_signature: template.signed_plan().canonical_signature(),
+                ownership_lease: lease.canonical_lease(),
+                ownership_lease_signature: lease.canonical_signature(),
+            },
+        )?;
+        Ok(Self {
+            history: BrokerDispatchAttemptHistoryV1::from_durable_parts(
+                template.digest(),
+                lease.digest(),
+                lease.generation(),
+                deadline_boottime_nanoseconds,
+                body,
+                packet,
+            ),
+        })
+    }
+
+    /// Builds an attempt from artifacts recovered together as current.
+    ///
+    /// This crate-private path is reachable only through the publication store,
+    /// which selects the template from one exact current bundle. Recovery does
+    /// not re-establish signature trust, so the resulting packet remains
+    /// non-authorizing input that the privileged broker must fully verify.
+    pub(crate) fn from_recovered_current(
+        template: &RecoveredBrokerDispatchTemplateV1,
+        lease: &RecoveredOwnershipLeaseV1,
+        deadline_boottime_nanoseconds: u64,
+        clock: RawPairedClockSample,
+    ) -> Result<Self, BrokerDispatchAttemptError> {
+        Self::from_recovered_current_at(
+            template,
+            lease,
+            deadline_boottime_nanoseconds,
+            clock.wall_seconds(),
+            clock.boottime_nanoseconds(),
+        )
+    }
+
+    pub(crate) fn from_recovered_current_at(
+        template: &RecoveredBrokerDispatchTemplateV1,
+        lease: &RecoveredOwnershipLeaseV1,
+        deadline_boottime_nanoseconds: u64,
+        wall_seconds: i64,
+        boottime_nanoseconds: u64,
+    ) -> Result<Self, BrokerDispatchAttemptError> {
+        let plan = template.plan();
+        let recovered_lease = lease.lease();
+        if plan.assignment().sandbox() != recovered_lease.assignment().sandbox()
+            || plan.assignment().incarnation() != recovered_lease.assignment().incarnation()
+            || plan.assignment().epoch() != recovered_lease.assignment().epoch()
+            || plan.assignment().digest() != recovered_lease.assignment().digest()
+            || plan.node() != recovered_lease.node()
+        {
+            return Err(BrokerDispatchAttemptError::LeaseContextMismatch);
+        }
+        if wall_seconds < plan.issued_seconds() || wall_seconds >= plan.expires_seconds() {
+            return Err(BrokerDispatchAttemptError::PlanExpired);
+        }
+        let maximum_deadline = conservative_lease_deadline_scalar_fields(
+            recovered_lease.authority_issued_seconds(),
+            recovered_lease.authority_expires_seconds(),
+            recovered_lease.maximum_clock_skew_seconds(),
+            wall_seconds,
+            boottime_nanoseconds,
+        )?;
+        if deadline_boottime_nanoseconds <= boottime_nanoseconds
+            || deadline_boottime_nanoseconds > maximum_deadline
+        {
+            return Err(BrokerDispatchAttemptError::UnsafeDeadline);
+        }
+
+        let body = inject_deadline(
+            template.body_without_deadline(),
+            deadline_boottime_nanoseconds,
+        )
+        .map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        let request_bytes =
+            u32::try_from(body.len()).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        let descriptor_count = u16::try_from(template.descriptor_roles().len())
+            .map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        match_plan_grant(plan, template.semantics(), request_bytes, descriptor_count)
+            .map_err(|_| BrokerDispatchAttemptError::PlanGrantMismatch)?;
+
+        let packet = encode_authorized_request_envelope(
+            plan.protocol(),
+            template.method(),
+            &body,
+            template.descriptor_roles(),
+            AuthorizationArtifactBytes {
+                broker_plan: template.canonical_plan(),
+                broker_plan_signature: template.canonical_plan_signature(),
+                ownership_lease: lease.canonical_lease(),
+                ownership_lease_signature: lease.canonical_signature(),
+            },
+        )?;
+        Ok(Self {
+            history: BrokerDispatchAttemptHistoryV1::from_durable_parts(
+                template.digest(),
+                lease.digest(),
+                recovered_lease.lease_generation(),
+                deadline_boottime_nanoseconds,
+                body,
+                packet,
+            ),
+        })
+    }
+
+    pub(crate) fn from_recovered_current_with_guardian(
+        template: &RecoveredBrokerDispatchTemplateV1,
+        lease: &RecoveredOwnershipLeaseV1,
+        guardian_plan: &SignedBrokerPlan,
+        host_boot_id: [u8; 16],
+        deadline_boottime_nanoseconds: u64,
+        clock: RawPairedClockSample,
+    ) -> Result<Self, BrokerDispatchAttemptError> {
+        let deadline_body = inject_deadline(
+            template.body_without_deadline(),
+            deadline_boottime_nanoseconds,
+        )
+        .map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        let durable_body = encode_host_guardian_companion_v1(
+            &deadline_body,
+            guardian_plan.canonical_plan(),
+            guardian_plan.canonical_signature(),
+        )?;
+        Self::from_recovered_host_launch_with_guardian_at(
+            template,
+            lease,
+            &durable_body,
+            host_boot_id,
+            deadline_boottime_nanoseconds,
+            clock.wall_seconds(),
+            clock.boottime_nanoseconds(),
+        )
+    }
+
+    /// Reconstructs a durable Host 1.0 launch with its exact Guardian companion.
+    ///
+    /// The persisted body is input only: this method extracts its structurally
+    /// canonical Guardian pair, rederives the boot-and-lease grant, then
+    /// rebuilds both body and outer packet from the current publication. The
+    /// publication validator compares the returned whole attempt with the
+    /// persisted attempt, so a difference in either artifact fails recovery.
+    pub(crate) fn from_recovered_host_launch_with_guardian_at(
+        template: &RecoveredBrokerDispatchTemplateV1,
+        lease: &RecoveredOwnershipLeaseV1,
+        durable_body: &[u8],
+        host_boot_id: [u8; 16],
+        deadline_boottime_nanoseconds: u64,
+        wall_seconds: i64,
+        boottime_nanoseconds: u64,
+    ) -> Result<Self, BrokerDispatchAttemptError> {
+        let host_plan = template.plan();
+        let recovered_lease = lease.lease();
+        validate_recovered_host_launch_template(template)?;
+        validate_recovered_lease_context(host_plan, recovered_lease)?;
+
+        let companion = decode_host_guardian_companion_v1(durable_body)?;
+        let guardian_plan = decode_broker_authorization_plan(
+            companion.broker_plan(),
+            DecodeLimits {
+                maximum_bytes: MAXIMUM_REQUEST_BYTES,
+                ..DecodeLimits::default()
+            },
+        )
+        .map_err(|_| BrokerDispatchAttemptError::GuardianPlanMismatch)?;
+        validate_recovered_guardian_context(
+            host_plan,
+            recovered_lease,
+            lease.digest(),
+            &guardian_plan,
+            host_boot_id,
+        )?;
+        validate_current_plan_at(host_plan, wall_seconds)?;
+        validate_current_plan_at(&guardian_plan, wall_seconds)?;
+
+        let lease_deadline = conservative_lease_deadline_scalar_fields(
+            recovered_lease.authority_issued_seconds(),
+            recovered_lease.authority_expires_seconds(),
+            recovered_lease.maximum_clock_skew_seconds(),
+            wall_seconds,
+            boottime_nanoseconds,
+        )?;
+        let guardian_deadline = conservative_guardian_plan_deadline_at(
+            &guardian_plan,
+            wall_seconds,
+            boottime_nanoseconds,
+        )?;
+        if host_boot_id == [0; 16]
+            || deadline_boottime_nanoseconds <= boottime_nanoseconds
+            || deadline_boottime_nanoseconds > lease_deadline.min(guardian_deadline)
+        {
+            return Err(BrokerDispatchAttemptError::UnsafeDeadline);
+        }
+
+        let deadline_body = inject_deadline(
+            template.body_without_deadline(),
+            deadline_boottime_nanoseconds,
+        )
+        .map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        let body = encode_host_guardian_companion_v1(
+            &deadline_body,
+            companion.broker_plan(),
+            companion.broker_plan_signature(),
+        )?;
+        if body != durable_body {
+            return Err(BrokerDispatchAttemptError::GuardianPlanMismatch);
+        }
+        let request_bytes =
+            u32::try_from(body.len()).map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        let descriptor_count = u16::try_from(template.descriptor_roles().len())
+            .map_err(|_| BrokerDispatchAttemptError::BodyTooLarge)?;
+        match_plan_grant(
+            host_plan,
+            template.semantics(),
+            request_bytes,
+            descriptor_count,
+        )
+        .map_err(|_| BrokerDispatchAttemptError::PlanGrantMismatch)?;
+
+        let packet = encode_authorized_request_envelope(
+            host_plan.protocol(),
+            template.method(),
+            &body,
+            template.descriptor_roles(),
+            AuthorizationArtifactBytes {
+                broker_plan: template.canonical_plan(),
+                broker_plan_signature: template.canonical_plan_signature(),
+                ownership_lease: lease.canonical_lease(),
+                ownership_lease_signature: lease.canonical_signature(),
+            },
+        )?;
+        Ok(Self {
+            history: BrokerDispatchAttemptHistoryV1::from_durable_parts(
+                template.digest(),
+                lease.digest(),
+                recovered_lease.lease_generation(),
+                deadline_boottime_nanoseconds,
+                body,
+                packet,
+            ),
+        })
+    }
+
+    /// Returns the immutable template digest used for this attempt.
+    #[must_use]
+    pub const fn template_digest(&self) -> ObjectDigest {
+        self.history.template_digest()
+    }
+
+    /// Returns the exact signed lease digest used for this attempt.
+    #[must_use]
+    pub const fn lease_digest(&self) -> ObjectDigest {
+        self.history.lease_digest()
+    }
+
+    /// Returns the issuer-chosen lease generation used for this attempt.
+    #[must_use]
+    pub const fn lease_generation(&self) -> u64 {
+        self.history.lease_generation()
+    }
+
+    /// Returns the conservative attempt-local BOOTTIME deadline.
+    #[must_use]
+    pub const fn deadline_boottime_nanoseconds(&self) -> u64 {
+        self.history.deadline_boottime_nanoseconds()
+    }
+
+    /// Returns the exact protobuf body with the attempt deadline injected.
+    #[must_use]
+    pub fn body(&self) -> &[u8] {
+        self.history.body()
+    }
+
+    /// Returns the exact non-authorizing broker packet ready for transport.
+    #[must_use]
+    pub fn packet(&self) -> &[u8] {
+        self.history.packet()
+    }
+}
+
+impl BrokerDispatchAttemptV1 {
+    pub(crate) const fn history(&self) -> &BrokerDispatchAttemptHistoryV1 {
+        &self.history
+    }
+
+    pub(crate) fn into_history(self) -> BrokerDispatchAttemptHistoryV1 {
+        self.history
+    }
+}
+
+/// Reports a rejected lease-bound dispatch attempt.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum BrokerDispatchAttemptError {
+    /// Lease assignment or node differs from the immutable plan.
+    #[error("ownership lease does not match the dispatch template")]
+    LeaseContextMismatch,
+    /// Host template is not the sole companion-free Host 1.0 launch shape.
+    #[error("dispatch template cannot carry a Guardian arm companion")]
+    InvalidHostGuardianTemplate,
+    /// Guardian plan differs from the Host plan, lease, or current boot.
+    #[error("guardian plan does not match the Host launch context")]
+    GuardianContextMismatch,
+    /// Guardian plan does not contain exactly one lease-bound arm grant.
+    #[error("guardian plan is not narrowly bound to the current lease")]
+    GuardianPlanMismatch,
+    /// Broker plan is not current at the local paired-clock observation.
+    #[error("broker plan is outside its validity interval")]
+    PlanExpired,
+    /// Lease is not live after skew and safety-margin attenuation.
+    #[error("ownership lease is outside its conservative validity interval")]
+    LeaseExpired,
+    /// Requested BOOTTIME deadline is elapsed or exceeds lease authority.
+    #[error("attempt deadline exceeds conservative lease authority")]
+    UnsafeDeadline,
+    /// Deadline injection or the resulting body exceeded a fixed bound.
+    #[error("attempt body exceeds the fixed V1 bound")]
+    BodyTooLarge,
+    /// Request no longer matches the immutable signed grant.
+    #[error("attempt request is not committed by the signed plan")]
+    PlanGrantMismatch,
+    /// Exact envelope encoding rejected one bounded component.
+    #[error("broker envelope encoding failed: {0}")]
+    Protocol(#[from] ProtocolValidationError),
+}
+
+fn validate_context(
+    template: &BrokerDispatchTemplateV1,
+    lease: &SignedOwnershipLease,
+) -> Result<(), BrokerDispatchAttemptError> {
+    let assignment = template.signed_plan().plan().assignment();
+    let lease_assignment = lease.assignment();
+    if assignment.sandbox() != lease_assignment.sandbox()
+        || assignment.incarnation() != lease_assignment.incarnation()
+        || assignment.epoch() != lease_assignment.epoch()
+        || assignment.digest() != lease_assignment.digest()
+        || template.signed_plan().plan().node() != lease.node()
+        || template.signed_plan().plan().ownership_authority() != lease.signer()
+    {
+        return Err(BrokerDispatchAttemptError::LeaseContextMismatch);
+    }
+    Ok(())
+}
+
+fn validate_recovered_host_launch_template(
+    template: &RecoveredBrokerDispatchTemplateV1,
+) -> Result<(), BrokerDispatchAttemptError> {
+    let plan = template.plan();
+    let body = decode_runtime_template_v1(template.body_without_deadline())?;
+    if template.method() != BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+        || plan.audience() != BrokerAudience::Host
+        || plan.protocol() != ProtocolId::HostBroker
+        || plan.protocol_version() != ProtocolVersion::new(1, 0)
+        || body.action() != RuntimeAction::RUNTIME_ACTION_LAUNCH
+        || body.guardian_arm().is_some()
+    {
+        Err(BrokerDispatchAttemptError::InvalidHostGuardianTemplate)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_recovered_lease_context(
+    plan: &BrokerAuthorizationPlan,
+    lease: &OwnershipLease,
+) -> Result<(), BrokerDispatchAttemptError> {
+    let assignment = plan.assignment();
+    let lease_assignment = lease.assignment();
+    if assignment.sandbox() != lease_assignment.sandbox()
+        || assignment.incarnation() != lease_assignment.incarnation()
+        || assignment.epoch() != lease_assignment.epoch()
+        || assignment.digest() != lease_assignment.digest()
+        || plan.node() != lease.node()
+    {
+        Err(BrokerDispatchAttemptError::LeaseContextMismatch)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+fn validate_guardian_context(
+    host_plan: &BrokerAuthorizationPlan,
+    lease: &SignedOwnershipLease,
+    guardian_plan: &BrokerAuthorizationPlan,
+    host_boot_id: [u8; 16],
+) -> Result<(), BrokerDispatchAttemptError> {
+    if guardian_plan.audience() != BrokerAudience::Guardian
+        || guardian_plan.protocol() != ProtocolId::Guardian
+        || guardian_plan.protocol_version() != ProtocolVersion::new(1, 0)
+        || guardian_plan.assignment() != host_plan.assignment()
+        || guardian_plan.node() != host_plan.node()
+        || guardian_plan.ownership_authority() != host_plan.ownership_authority()
+        || guardian_plan.ownership_authority() != lease.signer()
+        || lease.desired_generation() != host_plan.assignment().desired_generation()
+    {
+        return Err(BrokerDispatchAttemptError::GuardianContextMismatch);
+    }
+
+    let binding = GuardianPlanBinding::new(
+        host_plan.assignment(),
+        host_plan.node(),
+        host_boot_id,
+        lease.generation(),
+        lease.digest(),
+    )
+    .map_err(|_| BrokerDispatchAttemptError::GuardianContextMismatch)?;
+    let grants = guardian_plan.grants();
+    if grants.len() != 1 {
+        return Err(BrokerDispatchAttemptError::GuardianPlanMismatch);
+    }
+    let grant = &grants[0];
+    if grant.verb() != BrokerVerb::GuardianArm
+        || grant.target() != BrokerGrantTarget::Assignment
+        || grant.argument_commitment() != binding.commitment()
+        || binding.encoded_len() > grant.maximum_request_bytes()
+    {
+        return Err(BrokerDispatchAttemptError::GuardianPlanMismatch);
+    }
+    Ok(())
+}
+
+fn validate_recovered_guardian_context(
+    host_plan: &BrokerAuthorizationPlan,
+    lease: &OwnershipLease,
+    lease_digest: ObjectDigest,
+    guardian_plan: &BrokerAuthorizationPlan,
+    host_boot_id: [u8; 16],
+) -> Result<(), BrokerDispatchAttemptError> {
+    if guardian_plan.audience() != BrokerAudience::Guardian
+        || guardian_plan.protocol() != ProtocolId::Guardian
+        || guardian_plan.protocol_version() != ProtocolVersion::new(1, 0)
+        || guardian_plan.assignment() != host_plan.assignment()
+        || guardian_plan.node() != host_plan.node()
+        || guardian_plan.ownership_authority() != host_plan.ownership_authority()
+    {
+        return Err(BrokerDispatchAttemptError::GuardianContextMismatch);
+    }
+
+    let binding = GuardianPlanBinding::new(
+        host_plan.assignment(),
+        host_plan.node(),
+        host_boot_id,
+        lease.lease_generation(),
+        lease_digest,
+    )
+    .map_err(|_| BrokerDispatchAttemptError::GuardianContextMismatch)?;
+    let grants = guardian_plan.grants();
+    if grants.len() != 1 {
+        return Err(BrokerDispatchAttemptError::GuardianPlanMismatch);
+    }
+    let grant = &grants[0];
+    if grant.verb() != BrokerVerb::GuardianArm
+        || grant.target() != BrokerGrantTarget::Assignment
+        || grant.argument_commitment() != binding.commitment()
+        || binding.encoded_len() > grant.maximum_request_bytes()
+    {
+        return Err(BrokerDispatchAttemptError::GuardianPlanMismatch);
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn validate_current_plan(
+    plan: &BrokerAuthorizationPlan,
+    clock: RawPairedClockSample,
+) -> Result<(), BrokerDispatchAttemptError> {
+    if clock.wall_seconds() < plan.issued_seconds()
+        || clock.wall_seconds() >= plan.expires_seconds()
+    {
+        Err(BrokerDispatchAttemptError::PlanExpired)
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_current_plan_at(
+    plan: &BrokerAuthorizationPlan,
+    wall_seconds: i64,
+) -> Result<(), BrokerDispatchAttemptError> {
+    if wall_seconds < plan.issued_seconds() || wall_seconds >= plan.expires_seconds() {
+        Err(BrokerDispatchAttemptError::PlanExpired)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+fn conservative_guardian_plan_deadline(
+    plan: &BrokerAuthorizationPlan,
+    clock: RawPairedClockSample,
+) -> Result<u64, BrokerDispatchAttemptError> {
+    conservative_guardian_plan_deadline_at(plan, clock.wall_seconds(), clock.boottime_nanoseconds())
+}
+
+// The caller retained these exact current signed bytes and the actual paired
+// origin. This computes only their original finite intersection; it neither
+// signs, verifies, renews nor authorizes an effect or receiving interval.
+pub(crate) fn current_host_stop_deadline_data_v4(
+    template: &RecoveredBrokerDispatchTemplateV1,
+    lease: &RecoveredOwnershipLeaseV1,
+    clock: RawPairedClockSample,
+) -> Result<u64, BrokerDispatchAttemptError> {
+    if template.audience() != BrokerAudience::Host
+        || template.method() != BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME
+        || template.semantics().verb() != BrokerVerb::HostStop
+        || !template.descriptor_roles().is_empty()
+    {
+        return Err(BrokerDispatchAttemptError::PlanGrantMismatch);
+    }
+    validate_recovered_lease_context(template.plan(), lease.lease())?;
+    validate_current_plan_at(template.plan(), clock.wall_seconds())?;
+    let lease = conservative_lease_deadline_fields(
+        lease.lease().authority_issued_seconds(), lease.lease().authority_expires_seconds(),
+        lease.lease().maximum_clock_skew_seconds(), clock,
+    )?;
+    let plan = conservative_guardian_plan_deadline_at(template.plan(),
+        clock.wall_seconds(), clock.boottime_nanoseconds())?;
+    Ok(lease.min(plan))
+}
+
+fn conservative_guardian_plan_deadline_at(
+    plan: &BrokerAuthorizationPlan,
+    wall_seconds: i64,
+    boottime_nanoseconds: u64,
+) -> Result<u64, BrokerDispatchAttemptError> {
+    // Guardian samples BOOTTIME before whole-second REALTIME. Reserving one
+    // wall tick keeps the controller deadline no later than Guardian expiry.
+    let remaining = plan
+        .expires_seconds()
+        .checked_sub(wall_seconds)
+        .and_then(|value| value.checked_sub(1))
+        .and_then(|value| u64::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .and_then(|value| value.checked_mul(NANOS_PER_SECOND))
+        .ok_or(BrokerDispatchAttemptError::PlanExpired)?;
+    boottime_nanoseconds
+        .checked_add(remaining)
+        .ok_or(BrokerDispatchAttemptError::PlanExpired)
+}
+
+/// Computes the existing dispatcher fail-stop bound from the retained lease.
+/// This comparison neither verifies the lease nor grants a dispatch interval.
+pub(crate) fn conservative_lease_deadline(
+    lease: &SignedOwnershipLease,
+    clock: RawPairedClockSample,
+) -> Result<u64, BrokerDispatchAttemptError> {
+    conservative_lease_deadline_fields(
+        lease.authority_issued_seconds(),
+        lease.authority_expires_seconds(),
+        lease.maximum_clock_skew_seconds(),
+        clock,
+    )
+}
+
+fn conservative_lease_deadline_fields(
+    authority_issued_seconds: i64,
+    authority_expires_seconds: i64,
+    maximum_clock_skew_seconds: u64,
+    clock: RawPairedClockSample,
+) -> Result<u64, BrokerDispatchAttemptError> {
+    conservative_lease_deadline_scalar_fields(
+        authority_issued_seconds,
+        authority_expires_seconds,
+        maximum_clock_skew_seconds,
+        clock.wall_seconds(),
+        clock.boottime_nanoseconds(),
+    )
+}
+
+fn conservative_lease_deadline_scalar_fields(
+    authority_issued_seconds: i64,
+    authority_expires_seconds: i64,
+    maximum_clock_skew_seconds: u64,
+    wall_seconds: i64,
+    boottime_nanoseconds: u64,
+) -> Result<u64, BrokerDispatchAttemptError> {
+    let skew = i64::try_from(maximum_clock_skew_seconds)
+        .map_err(|_| BrokerDispatchAttemptError::LeaseExpired)?;
+    let earliest = wall_seconds
+        .checked_sub(skew)
+        .ok_or(BrokerDispatchAttemptError::LeaseExpired)?;
+    if earliest < authority_issued_seconds {
+        return Err(BrokerDispatchAttemptError::LeaseExpired);
+    }
+    let guard = maximum_clock_skew_seconds
+        .checked_add(LEASE_SAFETY_MARGIN_SECONDS)
+        .and_then(|value| i64::try_from(value).ok())
+        .ok_or(BrokerDispatchAttemptError::LeaseExpired)?;
+    let remaining = authority_expires_seconds
+        .checked_sub(guard)
+        .and_then(|end| end.checked_sub(wall_seconds))
+        .filter(|remaining| *remaining > 0)
+        .and_then(|remaining| u64::try_from(remaining).ok())
+        .and_then(|remaining| remaining.checked_mul(NANOS_PER_SECOND))
+        .ok_or(BrokerDispatchAttemptError::LeaseExpired)?;
+    boottime_nanoseconds
+        .checked_add(remaining)
+        .ok_or(BrokerDispatchAttemptError::LeaseExpired)
+}
+
+#[cfg(test)]
+mod tests {
+    use aos_sandbox_api::aos::sandbox::local::v1::{
+        ApplyRuntimeRequest, Audience, Feature, ResourceLimit, RuntimeAction,
+    };
+    use aos_sandbox_model::format::{
+        decode_ownership_lease, encode_ownership_lease, encode_signature, encode_trust_policy,
+    };
+    use aos_sandbox_model::model::{
+        KeyReference, KeyUsage, SignaturePurpose, SignatureStatement, StableKeyId, TrustPolicy,
+    };
+    use aos_sandbox_model::{
+        AssignmentEpoch, BrokerAssignment, BrokerAudience, BrokerGrant, DecodeLimits,
+        DesiredGeneration, IncarnationId, LeaseAssignment, MediaType, NodeId, OwnershipLease,
+        OwnershipLeaseTrustAnchor, PortableMediaType, ProtocolVersion, RevocationScopeId,
+        SandboxId, TrustScopeId, descriptor_for_bytes, sign_statement,
+    };
+    use aos_sandbox_protocol::{
+        decode_host_guardian_companion_v1, decode_request_envelope, decode_runtime_template_v1,
+        semantics::host::canonical_host_template_semantics_v1,
+    };
+    use buffa::Message as _;
+    use ed25519_dalek::SigningKey;
+
+    use aos_sandbox_ownership_protocol::OwnershipAuthorityVerifier;
+    use aos_sandbox_protocol::authorization_artifact::{
+        BrokerPlanPreparation, ReturnedSignature, SigningAuthority,
+    };
+
+    use super::*;
+
+    struct Fixture {
+        template: BrokerDispatchTemplateV1,
+        assignment: BrokerAssignment,
+        node: NodeId,
+        lease_key: SigningKey,
+        lease_authority: KeyReference,
+        lease_scope: TrustScopeId,
+        lease_policy_descriptor: aos_sandbox_model::ObjectDescriptor,
+        lease_verifier: OwnershipAuthorityVerifier,
+    }
+
+    fn key_reference(name: &str, usage: KeyUsage, key: &SigningKey) -> KeyReference {
+        KeyReference::new(
+            StableKeyId::new(name.to_owned())
+                .unwrap_or_else(|error| panic!("test key ID failed: {error}")),
+            1,
+            ObjectDigest::from_bytes(Sha256::digest(key.verifying_key().as_bytes()).into()),
+            usage,
+        )
+    }
+
+    fn signing_authority(key: &SigningKey) -> SigningAuthority {
+        let signer = key_reference("controller", KeyUsage::BrokerAuthorization, key);
+        let scope = TrustScopeId::from_bytes([21; 16]);
+        let policy = TrustPolicy::new(
+            scope,
+            SignaturePurpose::BrokerAuthorization,
+            vec![signer.clone()],
+            Vec::new(),
+        )
+        .unwrap_or_else(|error| panic!("test policy failed: {error}"));
+        let canonical_policy = encode_trust_policy(&policy);
+        let media_type = MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned())
+            .unwrap_or_else(|error| panic!("test media type failed: {error}"));
+        let descriptor = descriptor_for_bytes(media_type, &canonical_policy);
+        SigningAuthority::new(
+            canonical_policy,
+            descriptor,
+            scope,
+            signer,
+            key.verifying_key().to_bytes(),
+            SignaturePurpose::BrokerAuthorization,
+            aos_sandbox_model::DecodeLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("test authority failed: {error}"))
+    }
+
+    fn fixture() -> Fixture {
+        let key = SigningKey::from_bytes(&[42; 32]);
+        let lease_key = SigningKey::from_bytes(&[43; 32]);
+        let lease_authority =
+            key_reference("ownership-authority", KeyUsage::OwnershipLease, &lease_key);
+        let assignment = BrokerAssignment::new(
+            SandboxId::from_bytes([1; 16]),
+            IncarnationId::from_bytes([2; 16]),
+            AssignmentEpoch::new(3),
+            DesiredGeneration::new(4),
+            ObjectDigest::from_bytes([5; 32]),
+        )
+        .unwrap_or_else(|error| panic!("test assignment failed: {error}"));
+        let node = NodeId::from_bytes([6; 16]);
+        let commitment = BrokerArgumentCommitment::for_canonical_bytes(b"mount-create");
+        let semantics = BrokerDispatchSemanticIdentityV1::new(
+            BrokerVerb::MountCreate,
+            BrokerGrantTarget::Assignment,
+            commitment,
+        );
+        let plan = aos_sandbox_model::BrokerAuthorizationPlan::new(
+            BrokerAudience::Mount,
+            ProtocolId::MountBroker,
+            ProtocolVersion::new(2, 0),
+            assignment,
+            node,
+            lease_authority.clone(),
+            vec![
+                BrokerGrant::new(
+                    semantics.verb(),
+                    semantics.target(),
+                    semantics.argument_commitment(),
+                    4096,
+                    2,
+                )
+                .unwrap_or_else(|error| panic!("test grant failed: {error}")),
+            ],
+            ObjectDigest::from_bytes([8; 32]),
+            RevocationScopeId::from_bytes([9; 16]),
+            100,
+            200,
+            Vec::new(),
+        )
+        .unwrap_or_else(|error| panic!("test plan failed: {error}"));
+        let preparation = BrokerPlanPreparation::new(plan, signing_authority(&key))
+            .unwrap_or_else(|error| panic!("test preparation failed: {error}"));
+        let signature = sign_statement(preparation.signing_request().statement().clone(), &key)
+            .unwrap_or_else(|error| panic!("test signing failed: {error}"));
+        let lease_scope = TrustScopeId::from_bytes([31; 16]);
+        let lease_policy = TrustPolicy::new(
+            lease_scope,
+            SignaturePurpose::OwnershipLease,
+            vec![lease_authority.clone()],
+            Vec::new(),
+        )
+        .unwrap_or_else(|error| panic!("test lease policy failed: {error}"));
+        let lease_policy_bytes = encode_trust_policy(&lease_policy);
+        let lease_policy_descriptor = descriptor_for_bytes(
+            MediaType::new(PortableMediaType::TrustPolicy.as_str().to_owned())
+                .unwrap_or_else(|error| panic!("test policy media type failed: {error}")),
+            &lease_policy_bytes,
+        );
+        let lease_anchor = OwnershipLeaseTrustAnchor::from_trusted_configuration(
+            lease_policy_bytes,
+            lease_policy_descriptor.clone(),
+            lease_scope,
+            lease_authority.clone(),
+            lease_key.verifying_key().to_bytes(),
+            DecodeLimits::default(),
+        )
+        .unwrap_or_else(|error| panic!("test lease anchor failed: {error}"));
+        let lease_verifier = OwnershipAuthorityVerifier::new(lease_anchor, lease_authority.clone());
+        let signed_plan = preparation
+            .complete(ReturnedSignature::Bytes(signature.signature()), 150)
+            .unwrap_or_else(|error| panic!("test completion failed: {error}"));
+
+        // Field 1 is a deadline-free common header; field 2 stands for the
+        // remainder of the method body and must survive injection byte-exactly.
+        let body = vec![0x0a, 0x02, 0x08, 0x01, 0x12, 0x02, 0xaa, 0xbb];
+        let template = BrokerDispatchTemplateV1::new(
+            signed_plan,
+            BrokerMethod::BROKER_METHOD_MOUNT_APPLY,
+            body,
+            vec![BrokerDescriptorRole::BROKER_DESCRIPTOR_ROLE_TARGET_ROOT],
+            semantics,
+        )
+        .unwrap_or_else(|error| panic!("test template failed: {error}"));
+        Fixture {
+            template,
+            assignment,
+            node,
+            lease_key,
+            lease_authority,
+            lease_scope,
+            lease_policy_descriptor,
+            lease_verifier,
+        }
+    }
+
+    fn lease_for(
+        fixture: &Fixture,
+        assignment: BrokerAssignment,
+        node: NodeId,
+        generation: u64,
+        expiry: i64,
+    ) -> SignedOwnershipLease {
+        let lease_assignment = LeaseAssignment::new(
+            assignment.sandbox(),
+            assignment.incarnation(),
+            assignment.epoch(),
+            assignment.digest(),
+        )
+        .unwrap_or_else(|error| panic!("test lease assignment failed: {error}"));
+        let lease = OwnershipLease::new(
+            lease_assignment,
+            node,
+            generation,
+            110,
+            expiry,
+            5,
+            [u8::try_from(generation).unwrap_or(u8::MAX); 16],
+        )
+        .unwrap_or_else(|error| panic!("test lease failed: {error}"));
+        let lease_bytes = encode_ownership_lease(&lease);
+        let lease_descriptor = descriptor_for_bytes(
+            MediaType::new(PortableMediaType::OwnershipLease.as_str().to_owned())
+                .unwrap_or_else(|error| panic!("test lease media type failed: {error}")),
+            &lease_bytes,
+        );
+        let lease_statement = SignatureStatement::new(
+            lease_descriptor,
+            fixture.lease_scope,
+            fixture.lease_authority.clone(),
+            SignaturePurpose::OwnershipLease,
+            110,
+            Some(expiry),
+            fixture.lease_policy_descriptor.clone(),
+        )
+        .unwrap_or_else(|error| panic!("test lease statement failed: {error}"));
+        let lease_signature = sign_statement(lease_statement, &fixture.lease_key)
+            .unwrap_or_else(|error| panic!("test lease signature failed: {error}"));
+        let claim = OwnershipClaimV1::acquire(
+            [u8::try_from(generation).unwrap_or(u8::MAX).max(1); 16],
+            lease_assignment,
+            assignment.desired_generation(),
+            node,
+            100,
+        )
+        .unwrap_or_else(|error| panic!("test ownership claim failed: {error}"));
+        let receipt = OwnershipTransactionReceiptV1::new(
+            fixture.lease_authority.clone(),
+            &claim,
+            &lease_bytes,
+        )
+        .unwrap_or_else(|error| panic!("test ownership receipt failed: {error}"));
+        let receipt_descriptor = descriptor_for_bytes(
+            MediaType::new(
+                PortableMediaType::OwnershipTransactionReceipt
+                    .as_str()
+                    .to_owned(),
+            )
+            .unwrap_or_else(|error| panic!("test receipt media type failed: {error}")),
+            receipt.canonical_bytes(),
+        );
+        let receipt_statement = SignatureStatement::new(
+            receipt_descriptor,
+            fixture.lease_scope,
+            fixture.lease_authority.clone(),
+            SignaturePurpose::OwnershipLease,
+            110,
+            Some(expiry),
+            fixture.lease_policy_descriptor.clone(),
+        )
+        .unwrap_or_else(|error| panic!("test receipt statement failed: {error}"));
+        let receipt_signature = sign_statement(receipt_statement, &fixture.lease_key)
+            .unwrap_or_else(|error| panic!("test receipt signature failed: {error}"));
+        let response = UnverifiedOwnershipLeaseResponse::from_transport(
+            lease_bytes,
+            encode_signature(&lease_signature),
+            receipt.canonical_bytes().to_vec(),
+            encode_signature(&receipt_signature),
+        )
+        .unwrap_or_else(|error| panic!("test response failed: {error}"));
+        fixture
+            .lease_verifier
+            .verify_response(&claim, response, &clock(150, 1_000))
+            .unwrap_or_else(|error| panic!("test response verification failed: {error}"))
+    }
+
+    fn lease(fixture: &Fixture, generation: u64, expiry: i64) -> SignedOwnershipLease {
+        lease_for(
+            fixture,
+            fixture.assignment,
+            fixture.node,
+            generation,
+            expiry,
+        )
+    }
+
+    fn signed_plan(plan: BrokerAuthorizationPlan, key: &SigningKey) -> SignedBrokerPlan {
+        let preparation = BrokerPlanPreparation::new(plan, signing_authority(key))
+            .unwrap_or_else(|error| panic!("test preparation failed: {error}"));
+        let signature = sign_statement(preparation.signing_request().statement().clone(), key)
+            .unwrap_or_else(|error| panic!("test plan signature failed: {error}"));
+        preparation
+            .complete(ReturnedSignature::Bytes(signature.signature()), 150)
+            .unwrap_or_else(|error| panic!("test plan completion failed: {error}"))
+    }
+
+    fn host_guardian_fixture() -> (
+        Fixture,
+        BrokerDispatchTemplateV1,
+        SignedOwnershipLease,
+        SignedBrokerPlan,
+    ) {
+        let fixture = fixture();
+        let lease = lease(&fixture, 1, 190);
+        let mut request = ApplyRuntimeRequest::default();
+        let header = request.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 0;
+        header.request_id = vec![1; 16];
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.maximum_response_bytes = 4096;
+        let fence = request.fence.get_or_insert_default();
+        fence.sandbox_id = fixture.assignment.sandbox().as_bytes().to_vec();
+        fence.incarnation_id = fixture.assignment.incarnation().as_bytes().to_vec();
+        fence.assignment_epoch = fixture.assignment.epoch().get();
+        fence.desired_generation = fixture.assignment.desired_generation().get();
+        fence.assignment_digest = fixture.assignment.digest().as_bytes().to_vec();
+        request.action = RuntimeAction::RUNTIME_ACTION_LAUNCH.into();
+        let runtime = request.launch_plan.get_or_insert_default();
+        let root = runtime.root_image.get_or_insert_default();
+        root.media_type = "application/vnd.aos.sandbox.view.v1+cbor".to_owned();
+        root.sha256 = vec![10; 32];
+        root.encoded_size = 1;
+        runtime.workspace_handle = vec![11; 32];
+        runtime.network_handle = vec![12; 32];
+        runtime.uid_range_start = 65_536;
+        runtime.uid_range_size = 65_536;
+        runtime.limits = vec![
+            ResourceLimit {
+                dimension: 2,
+                value: 128,
+                ..Default::default()
+            },
+            ResourceLimit {
+                dimension: 3,
+                value: 1 << 30,
+                ..Default::default()
+            },
+            ResourceLimit {
+                dimension: 4,
+                value: 100,
+                ..Default::default()
+            },
+        ];
+        runtime.attachment_handles.push(vec![13; 32]);
+        runtime.attachment_anchor_handle = vec![14; 32];
+        runtime.required_features.push(Feature {
+            namespace: "aos.sandbox.runtime.linux-systemd".to_owned(),
+            major: 1,
+            minor: 0,
+            ..Default::default()
+        });
+        let body = request.encode_to_vec();
+        let validated = decode_runtime_template_v1(&body)
+            .unwrap_or_else(|error| panic!("Host template failed: {error}"));
+        let host_semantics = canonical_host_template_semantics_v1(&validated)
+            .unwrap_or_else(|error| panic!("Host semantics failed: {error}"));
+        let semantics = BrokerDispatchSemanticIdentityV1::new(
+            host_semantics.verb(),
+            host_semantics.target(),
+            host_semantics.commitment(),
+        );
+        let host_plan = BrokerAuthorizationPlan::new(
+            BrokerAudience::Host,
+            ProtocolId::HostBroker,
+            ProtocolVersion::new(1, 0),
+            fixture.assignment,
+            fixture.node,
+            fixture.lease_authority.clone(),
+            vec![
+                BrokerGrant::new(
+                    semantics.verb(),
+                    semantics.target(),
+                    semantics.argument_commitment(),
+                    u32::try_from(MAXIMUM_REQUEST_BYTES).unwrap_or(u32::MAX),
+                    0,
+                )
+                .unwrap_or_else(|error| panic!("Host grant failed: {error}")),
+            ],
+            ObjectDigest::from_bytes([15; 32]),
+            RevocationScopeId::from_bytes([16; 16]),
+            100,
+            200,
+            Vec::new(),
+        )
+        .unwrap_or_else(|error| panic!("Host plan failed: {error}"));
+        let host_key = SigningKey::from_bytes(&[44; 32]);
+        let template = BrokerDispatchTemplateV1::new(
+            signed_plan(host_plan, &host_key),
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+            body,
+            Vec::new(),
+            semantics,
+        )
+        .unwrap_or_else(|error| panic!("Host dispatch template failed: {error}"));
+
+        let binding = GuardianPlanBinding::new(
+            fixture.assignment,
+            fixture.node,
+            clock(150, 1_000).host_boot_id(),
+            lease.generation(),
+            lease.digest(),
+        )
+        .unwrap_or_else(|error| panic!("Guardian binding failed: {error}"));
+        let guardian_plan = BrokerAuthorizationPlan::new(
+            BrokerAudience::Guardian,
+            ProtocolId::Guardian,
+            ProtocolVersion::new(1, 0),
+            fixture.assignment,
+            fixture.node,
+            fixture.lease_authority.clone(),
+            vec![
+                BrokerGrant::new(
+                    BrokerVerb::GuardianArm,
+                    BrokerGrantTarget::Assignment,
+                    binding.commitment(),
+                    binding.encoded_len(),
+                    4,
+                )
+                .unwrap_or_else(|error| panic!("Guardian grant failed: {error}")),
+            ],
+            ObjectDigest::from_bytes([17; 32]),
+            RevocationScopeId::from_bytes([18; 16]),
+            100,
+            180,
+            Vec::new(),
+        )
+        .unwrap_or_else(|error| panic!("Guardian plan failed: {error}"));
+        let guardian_key = SigningKey::from_bytes(&[45; 32]);
+
+        (
+            fixture,
+            template,
+            lease,
+            signed_plan(guardian_plan, &guardian_key),
+        )
+    }
+
+    fn clock(wall: i64, boottime: u64) -> RawPairedClockSample {
+        RawPairedClockSample::new_untrusted(
+            aos_sandbox_model::RawClockProvenance::new_untrusted([7; 16])
+                .unwrap_or_else(|error| panic!("test provenance failed: {error}")),
+            [8; 16],
+            wall,
+            boottime,
+        )
+        .unwrap_or_else(|error| panic!("test clock failed: {error}"))
+    }
+
+    #[test]
+    fn renewal_reuses_template_but_binds_exact_lease_artifacts() {
+        let fixture = fixture();
+        let first = lease(&fixture, 1, 190);
+        let renewed = lease(&fixture, 2, 195);
+        let attempt_one =
+            BrokerDispatchAttemptV1::new(&fixture.template, &first, 2_000, clock(150, 1_000))
+                .unwrap_or_else(|error| panic!("first attempt failed: {error}"));
+        let attempt_two =
+            BrokerDispatchAttemptV1::new(&fixture.template, &renewed, 3_000, clock(150, 1_000))
+                .unwrap_or_else(|error| panic!("renewed attempt failed: {error}"));
+
+        assert_eq!(attempt_one.template_digest(), attempt_two.template_digest());
+        assert_ne!(attempt_one.lease_digest(), attempt_two.lease_digest());
+        assert_ne!(attempt_one.packet(), attempt_two.packet());
+        assert_eq!(
+            fixture.template.body_without_deadline(),
+            [0x0a, 0x02, 0x08, 0x01, 0x12, 0x02, 0xaa, 0xbb]
+        );
+        assert_eq!(
+            &attempt_one.body()[..6],
+            [0x0a, 0x05, 0x08, 0x01, 0x28, 0xd0]
+        );
+        assert!(attempt_one.body().ends_with(&[0x12, 0x02, 0xaa, 0xbb]));
+    }
+
+    #[test]
+    fn guardian_plan_request_reuses_host_policy_and_ends_with_selected_lease() {
+        let (_fixture, template, lease, _) = host_guardian_fixture();
+        let host_plan = template.signed_plan().plan();
+        let lease_model = decode_ownership_lease(lease.canonical_lease(), DecodeLimits::default())
+            .unwrap_or_else(|error| panic!("selected lease failed to decode: {error}"));
+        let request = GuardianPlanRequestV1::new(host_plan, &lease_model, lease.digest(), [8; 16])
+            .unwrap_or_else(|error| panic!("Guardian request failed: {error}"));
+        let plan = request
+            .plan_at(150)
+            .unwrap_or_else(|error| panic!("Guardian plan failed: {error}"));
+
+        assert_eq!(plan.audience(), BrokerAudience::Guardian);
+        assert_eq!(plan.assignment(), host_plan.assignment());
+        assert_eq!(plan.node(), host_plan.node());
+        assert_eq!(plan.ownership_authority(), host_plan.ownership_authority());
+        assert_eq!(plan.policy_commitment(), host_plan.policy_commitment());
+        assert_eq!(plan.revocation_scope(), host_plan.revocation_scope());
+        assert_eq!(plan.issued_seconds(), 150);
+        assert_eq!(plan.expires_seconds(), lease.authority_expires_seconds());
+        assert_eq!(plan.grants().len(), 1);
+        assert_eq!(plan.grants()[0].argument_commitment(), request.commitment());
+        assert_eq!(plan.grants()[0].maximum_descriptors(), 0);
+        assert!(request.plan_at(99).is_err());
+        assert!(request.plan_at(lease.authority_expires_seconds()).is_err());
+    }
+
+    #[test]
+    fn host_launch_carries_one_crypto_valid_exact_lease_bound_guardian_plan() {
+        let (_fixture, template, lease, guardian_plan) = host_guardian_fixture();
+        let attempt = BrokerDispatchAttemptV1::new_host_launch_with_guardian(
+            &template,
+            &lease,
+            &guardian_plan,
+            [8; 16],
+            2_000,
+            clock(150, 1_000),
+        )
+        .unwrap_or_else(|error| panic!("Host/Guardian attempt failed: {error}"));
+        let companion = decode_host_guardian_companion_v1(attempt.body())
+            .unwrap_or_else(|error| panic!("companion failed: {error}"));
+        assert_eq!(companion.broker_plan(), guardian_plan.canonical_plan());
+        assert_eq!(
+            companion.broker_plan_signature(),
+            guardian_plan.canonical_signature(),
+        );
+
+        let envelope = decode_request_envelope(attempt.packet(), ProtocolId::HostBroker, 0)
+            .unwrap_or_else(|error| panic!("Host envelope failed: {error}"));
+        let authorization = envelope
+            .authorization()
+            .unwrap_or_else(|| panic!("Host authorization missing"));
+        assert_eq!(
+            authorization.broker_plan(),
+            template.signed_plan().canonical_plan()
+        );
+        assert_eq!(authorization.ownership_lease(), lease.canonical_lease());
+        assert_eq!(
+            authorization.ownership_lease_signature(),
+            lease.canonical_signature(),
+        );
+    }
+
+    #[test]
+    fn host_launch_rejects_boot_substitution_and_guardian_expiry_overrun() {
+        let (_fixture, template, lease, guardian_plan) = host_guardian_fixture();
+
+        assert!(matches!(
+            BrokerDispatchAttemptV1::new_host_launch_with_guardian(
+                &template,
+                &lease,
+                &guardian_plan,
+                [9; 16],
+                2_000,
+                clock(150, 1_000),
+            ),
+            Err(BrokerDispatchAttemptError::GuardianContextMismatch)
+        ));
+        assert!(matches!(
+            BrokerDispatchAttemptV1::new_host_launch_with_guardian(
+                &template,
+                &lease,
+                &guardian_plan,
+                [8; 16],
+                29_000_001_001,
+                clock(150, 1_000),
+            ),
+            Err(BrokerDispatchAttemptError::UnsafeDeadline)
+        ));
+    }
+
+    #[test]
+    fn packet_preserves_all_four_canonical_authority_artifacts() {
+        let fixture = fixture();
+        let lease = lease(&fixture, 1, 190);
+        let attempt =
+            BrokerDispatchAttemptV1::new(&fixture.template, &lease, 2_000, clock(150, 1_000))
+                .unwrap_or_else(|error| panic!("attempt failed: {error}"));
+        let decoded = decode_request_envelope(attempt.packet(), ProtocolId::MountBroker, 1)
+            .unwrap_or_else(|error| panic!("packet decode failed: {error}"));
+        let artifacts = decoded
+            .authorization()
+            .unwrap_or_else(|| panic!("missing artifacts"));
+        assert_eq!(
+            artifacts.broker_plan(),
+            fixture.template.signed_plan().canonical_plan()
+        );
+        assert_eq!(
+            artifacts.broker_plan_signature(),
+            fixture.template.signed_plan().canonical_signature()
+        );
+        assert_eq!(artifacts.ownership_lease(), lease.canonical_lease());
+        assert_eq!(
+            artifacts.ownership_lease_signature(),
+            lease.canonical_signature()
+        );
+        assert_eq!(decoded.body(), attempt.body());
+    }
+
+    #[test]
+    fn lease_context_expiry_and_deadline_are_fail_closed() {
+        let base = fixture();
+        let current = lease(&base, 1, 190);
+        assert_eq!(
+            BrokerDispatchAttemptV1::new(&base.template, &current, 1_000, clock(150, 1_000)),
+            Err(BrokerDispatchAttemptError::UnsafeDeadline)
+        );
+        assert_eq!(
+            BrokerDispatchAttemptV1::new(
+                &base.template,
+                &current,
+                40_000_001_001,
+                clock(150, 1_000),
+            ),
+            Err(BrokerDispatchAttemptError::UnsafeDeadline)
+        );
+        assert_eq!(
+            BrokerDispatchAttemptV1::new(&base.template, &current, 2_000, clock(185, 1_000)),
+            Err(BrokerDispatchAttemptError::LeaseExpired)
+        );
+        assert_eq!(
+            BrokerDispatchAttemptV1::new(&base.template, &current, 2_000, clock(200, 1_000)),
+            Err(BrokerDispatchAttemptError::PlanExpired)
+        );
+
+        let other = Fixture {
+            node: NodeId::from_bytes([99; 16]),
+            ..fixture()
+        };
+        let wrong_node = lease(&other, 1, 190);
+        assert_eq!(
+            BrokerDispatchAttemptV1::new(&base.template, &wrong_node, 2_000, clock(150, 1_000),),
+            Err(BrokerDispatchAttemptError::LeaseContextMismatch)
+        );
+
+        let other_assignment = LeaseAssignment::new(
+            SandboxId::from_bytes([98; 16]),
+            base.assignment.incarnation(),
+            base.assignment.epoch(),
+            base.assignment.digest(),
+        )
+        .unwrap_or_else(|error| panic!("test other assignment failed: {error}"));
+        let other_assignment = BrokerAssignment::new(
+            other_assignment.sandbox(),
+            other_assignment.incarnation(),
+            other_assignment.epoch(),
+            base.assignment.desired_generation(),
+            other_assignment.digest(),
+        )
+        .unwrap_or_else(|error| panic!("test broker assignment failed: {error}"));
+        let wrong_assignment = lease_for(&base, other_assignment, base.node, 1, 190);
+        assert_eq!(
+            BrokerDispatchAttemptV1::new(
+                &base.template,
+                &wrong_assignment,
+                2_000,
+                clock(150, 1_000),
+            ),
+            Err(BrokerDispatchAttemptError::LeaseContextMismatch)
+        );
+    }
+
+    #[test]
+    fn root_intersection_preserves_the_real_dispatcher_fail_stop_bound() {
+        let fixture = fixture();
+        let current = lease(&fixture, 1, 190);
+        let opening = clock(150, 1_000);
+        let source_cutoff = 60_000_001_000;
+        let effective = source_cutoff.min(conservative_lease_deadline(&current, opening).unwrap());
+
+        // The fixture's five-second skew and five-second safety margin both
+        // shorten the signed authority's remaining forty seconds.
+        assert_eq!(effective, 30_000_001_000);
+        assert_eq!(BrokerDispatchAttemptV1::new(&fixture.template, &current, source_cutoff, opening),
+            Err(BrokerDispatchAttemptError::UnsafeDeadline));
+        let attempt = BrokerDispatchAttemptV1::new(&fixture.template, &current, effective, opening).unwrap();
+        assert_eq!(attempt.deadline_boottime_nanoseconds(), effective);
+
+        // A later wall step can make the same old D unsafe. Computing the Root
+        // intersection is not a waiver of the actual dispatcher's fresh check.
+        assert_eq!(BrokerDispatchAttemptV1::new(&fixture.template, &current, effective,
+            clock(152, 1_000_001_000)), Err(BrokerDispatchAttemptError::UnsafeDeadline));
+        assert_eq!(source_cutoff, 60_000_001_000);
+    }
+
+    #[test]
+    fn stop_cleanup_root_grant_enters_the_real_template_and_dispatcher() {
+        use aos_sandbox_model::model::{AssignmentManifestV1, SandboxAncestry};
+        use aos_sandbox_model::{
+            CanonicalAssignmentManifestV1, NamespaceGeneration,
+            ObjectDescriptor, ProjectId, ResourceVector,
+        };
+        use aos_sandbox_protocol::authorization_artifact::host_stop_cleanup_plan::{
+            host_stop_cleanup_request_body_data_v1, prepare_host_stop_cleanup_plan_v1,
+        };
+        use aos_sandbox_protocol::{
+            host_stop_cleanup::HostStopCleanupSubjectDataV1,
+            host_stopped_namespace::HostStoppedNamespaceDataV4,
+        };
+
+        let base = fixture();
+        let descriptor = |kind: PortableMediaType, byte: u8| {
+            ObjectDescriptor::new(
+                MediaType::new(kind.as_str()).unwrap(),
+                ObjectDigest::from_bytes([byte; 32]),
+                1,
+            )
+        };
+        let manifest = CanonicalAssignmentManifestV1::new(
+            AssignmentManifestV1::new(
+                base.assignment.sandbox(),
+                ProjectId::from_bytes([17; 16]),
+                SandboxAncestry::new(base.assignment.sandbox(), Vec::new()).unwrap(),
+                base.assignment.incarnation(),
+                base.node,
+                base.assignment.epoch(),
+                DesiredGeneration::new(4),
+                NamespaceGeneration::new(1),
+                descriptor(PortableMediaType::SandboxSpec, 18),
+                descriptor(PortableMediaType::Policy, 19),
+                descriptor(PortableMediaType::Environment, 20),
+                descriptor(PortableMediaType::View, 21),
+                Vec::new(),
+                ObjectDigest::from_bytes([22; 32]),
+                ResourceVector::ZERO,
+                Vec::new(),
+            )
+            .unwrap(),
+        );
+        let assignment = manifest.broker_assignment().unwrap();
+        let lease = lease_for(&base, assignment, base.node, 1, 190);
+        let sample = clock(150, 1_000);
+        let cutoff = 20_000_001_000;
+        let mut old_request = ApplyRuntimeRequest::default();
+        let header = old_request.header.get_or_insert_default();
+        header.protocol_major = 1;
+        header.protocol_minor = 0;
+        header.audience = Audience::AUDIENCE_NODE_CONTROLLER.into();
+        header.request_id = vec![28; 16];
+        header.maximum_response_bytes = 4096;
+        let fence = old_request.fence.get_or_insert_default();
+        fence.sandbox_id = assignment.sandbox().as_bytes().to_vec();
+        fence.incarnation_id = assignment.incarnation().as_bytes().to_vec();
+        fence.assignment_epoch = assignment.epoch().get();
+        fence.desired_generation = 4;
+        fence.assignment_digest = assignment.digest().as_bytes().to_vec();
+        old_request.action = RuntimeAction::RUNTIME_ACTION_STOP.into();
+        let old_template = aos_sandbox_protocol::decode_runtime_template_v1(
+            &old_request.encode_to_vec()).unwrap();
+        let historical = HostStoppedNamespaceDataV4::from_data_v4(
+            [23; 16],
+            *old_template.fence(),
+            [24; 32],
+            ([25; 16], [26; 32], [27; 32]),
+            ([28; 16], [29; 32], [30; 32]),
+        )
+        .unwrap();
+        let subject = HostStopCleanupSubjectDataV1::from_data_v1(
+            historical,
+            [31; 16],
+            [32; 16],
+            [33; 32],
+            sample.host_boot_id(),
+            [34; 32],
+            cutoff,
+        )
+        .unwrap();
+        let body = host_stop_cleanup_request_body_data_v1(&manifest, 7, subject).unwrap();
+        let key = SigningKey::from_bytes(&[42; 32]);
+        let prepared = prepare_host_stop_cleanup_plan_v1(
+            &body,
+            &manifest,
+            7,
+            subject,
+            manifest.manifest().policy().digest(),
+            &lease,
+            sample,
+            cutoff,
+            190,
+            185,
+            signing_authority(&key),
+            RevocationScopeId::from_bytes([9; 16]),
+        )
+        .unwrap();
+        let maximum =
+            aos_sandbox_protocol::dispatch_template::deadline_free_template_request_bytes_v1(&body)
+                .unwrap();
+        assert_eq!(
+            prepared.preparation.plan_data_v1().grants()[0].maximum_request_bytes(),
+            maximum
+        );
+        assert!(prepared.request_body.len() < maximum as usize);
+        let live_body = prepared.request_body;
+        let signature = sign_statement(
+            prepared.preparation.signing_request().statement().clone(),
+            &key,
+        )
+        .unwrap();
+        let signed = prepared
+            .preparation
+            .complete(ReturnedSignature::Bytes(signature.signature()), 150)
+            .unwrap();
+        let template_data = aos_sandbox_protocol::decode_runtime_template_v1(&body).unwrap();
+        let semantics = canonical_host_template_semantics_v1(&template_data).unwrap();
+        assert!(matches!(semantics.target(), BrokerGrantTarget::Resource(_)));
+        assert_eq!(signed.plan().grants()[0].target(), semantics.target());
+        assert_eq!(signed.plan().expires_seconds(), 169);
+        let template = BrokerDispatchTemplateV1::new(
+            signed.clone(),
+            BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+            body,
+            Vec::new(),
+            BrokerDispatchSemanticIdentityV1::new(
+                semantics.verb(),
+                semantics.target(),
+                semantics.commitment(),
+            ),
+        )
+        .unwrap();
+
+        let attempt = BrokerDispatchAttemptV1::new(&template, &lease, cutoff, sample).unwrap();
+
+        assert_eq!(attempt.body(), live_body);
+        assert_eq!(template_data.fence().desired_generation(), 7);
+        assert_eq!(
+            subject
+                .historical_scope_v1()
+                .fence_v4()
+                .desired_generation(),
+            4
+        );
+        assert!(
+            BrokerDispatchTemplateV1::new(
+                signed,
+                BrokerMethod::BROKER_METHOD_HOST_APPLY_RUNTIME,
+                live_body,
+                Vec::new(),
+                BrokerDispatchSemanticIdentityV1::new(
+                    semantics.verb(),
+                    semantics.target(),
+                    semantics.commitment()
+                )
+            )
+            .is_err()
+        );
+    }
+}
+
+use aos_sandbox_ownership_protocol::{OwnershipAuthority, OwnershipClaimV1, OwnershipTransactionReceiptV1, UnverifiedOwnershipLeaseResponse};

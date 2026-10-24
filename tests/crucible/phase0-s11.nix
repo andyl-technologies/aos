@@ -87,6 +87,7 @@
           CONFIG_MODULES=n
           CONFIG_DEBUG_INFO_NONE=y
           CONFIG_DEBUG_INFO_BTF=n
+          CONFIG_DEBUG_WX=n
           KCONFIG
           scripts/kconfig/merge_config.sh -m .config .s11.config
           make ARCH=x86_64 LLVM=1 HOSTCC=cc HOSTCXX=c++ olddefconfig

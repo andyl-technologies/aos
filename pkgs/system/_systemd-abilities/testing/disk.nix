@@ -5,13 +5,14 @@
 ##! state seed, service-manager units, and partition scheme needed to boot that
 ##! system through the systemd platform.
 {
+  buildPackages,
   closureInfoFor,
   lib,
   packages,
   mkImageRecipe ? null,
 }: let
-  pkgs = packages;
-  imageMetadata = import ../../../../lib/build/image-metadata.nix {inherit pkgs;};
+  pkgs = packages // {inherit buildPackages;};
+  imageMetadata = import ../../../../lib/build/image-metadata.nix {pkgs = buildPackages;};
 
   buildRootfs = import ../platform/_rootfs-builder.nix;
   buildSystemdTestRootfs = arguments:
@@ -78,6 +79,7 @@
   # which lets fleet tests share disks where their machine images match.
   mkTestDisk = {
     system,
+    guestArchitecture,
     name ? "aos-disk",
     # Extra derivations whose full closures land in /nix/store on the
     # rootfs, over and above `system`'s own closure. Upgrade tests pass
@@ -115,6 +117,24 @@
       else throw "mkTestDisk provisioningSource must be operator or fallback";
     storageLayout = import ./storage-layout.nix {inherit varProvisioning varSizeMiB;};
     bakeVar = builtins.seq checkedProvisioningSource storageLayout.baked;
+    protectedVar = system.config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
+    varRootContext = system.config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
+
+    # The root label changes filesystem metadata without changing staging bytes.
+    varIdentity =
+      if protectedVar
+      then "aos-fleet-var:selinux:${varRootContext}"
+      else "aos-fleet-var";
+
+    dpsRootPartitionTypes = {
+      x86_64 = "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709";
+      aarch64 = "B921B045-1DF0-41C3-AF44-4C6F280D3FAE";
+      i686 = "44479540-F297-41B2-9AF7-D131D5F0458A";
+      riscv64 = "72EC70A6-CF74-40E6-BD49-4BDA08E8F224";
+    };
+    rootPartitionType =
+      dpsRootPartitionTypes.${guestArchitecture}
+      or (throw "vm: no DPS root partition type for '${guestArchitecture}'");
 
     # rootfsPost — shell fragment spliced into the shared rootfs
     # helper's populate phase after tree population, before mkfs.
@@ -354,6 +374,7 @@
       kernel = system.config.aos.kernel.selected;
       managerConfiguration = system.config.system.build.managerConfiguration;
       managerRootfsPlan = system.config.aos.manager.selected.configuration.rootfs;
+      firmwarePackages = system.config.aos.kernel.firmwarePackages;
       pname = "vm-disk-${name}-rootfs";
       label = "aos-root";
       # Leave the image at its initial over-provisioned size — tests
@@ -400,15 +421,18 @@
       src = null;
 
       buildDeps = [
-        pkgs.e2fsprogs
-        pkgs.coreutils
-        pkgs.fakeroot
-        pkgs.util-linux # sfdisk
-        pkgs.python3
+        buildPackages.e2fsprogs
+        buildPackages.coreutils
+        buildPackages.fakeroot
+        buildPackages.jq
+        buildPackages.util-linux # sfdisk
+        buildPackages.python3
       ];
 
       ROOT_IMG = "${rootfs}/root.img";
       ROOT_SIZE_FILE = "${rootfs}/rootfs-size-bytes";
+
+      passthru = {inherit rootfs rootPartitionType;};
 
       phases = [
         {
@@ -428,8 +452,17 @@
               ${varSeed}
 
               # fakeroot so the var partition's files land as uid/gid 0.
-              IMAGE_UUID=$(${imageMetadata.command} tree aos-fleet-var var)
-              fakeroot -- mkfs.ext4 ${imageMetadata.ext4Options} -d var -L aos-var -m 0 -q var.img "''${VAR_SIZE_MIB}M"
+              IMAGE_UUID=$(${imageMetadata.command} tree ${lib.escapeShellArg varIdentity} var)
+              fakeroot -- mkfs.ext4 ${imageMetadata.ext4Options}${lib.optionalString protectedVar ",root_selinux=${varRootContext}"} \
+                -d var -L aos-var -m 0 -q \
+                var.img "''${VAR_SIZE_MIB}M"
+              ${lib.optionalString protectedVar ''
+                var_label=$(debugfs -R 'ea_get / security.selinux' var.img 2>/dev/null)
+                if [ "$var_label" != 'security.selinux (23) = "${varRootContext}"' ]; then
+                  echo "baked /var root lacks its durable exact SELinux label" >&2
+                  exit 1
+                fi
+              ''}
             ''}
             # ── Root image from the shared rootfs helper ────────────────
             cp --reflink=auto --sparse=always "$ROOT_IMG" root.img
@@ -482,7 +515,7 @@
 
             # ESP isolates the boot stub from linux-generic /var matching;
             # repart selects existing partitions by type, not the new label.
-            # The x86-64 DPS root GUID isolates root-a from operator
+            # The guest architecture's DPS root GUID isolates root-a from operator
             # linux-generic data. The reserved AOS GUID marks a baked /var
             # disk as provisioned out-of-band. The partlabel `var` is what
             # mount-var.service binds to via /dev/disk/by-partlabel/var.
@@ -493,8 +526,8 @@
               echo "label: gpt"
               echo "label-id: $disk_uuid"
               echo "size=$BOOT_SECTORS, uuid=$(cat boot.uuid), type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B, name=boot"
-              echo "size=$ROOT_SECTORS, uuid=$(cat root-a.uuid), type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=root-a"
-              echo "size=$ROOT_SECTORS, uuid=$(cat root-b.uuid), type=4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709, name=root-b"
+              echo "size=$ROOT_SECTORS, uuid=$(cat root-a.uuid), type=${rootPartitionType}, name=root-a"
+              echo "size=$ROOT_SECTORS, uuid=$(cat root-b.uuid), type=${rootPartitionType}, name=root-b"
               echo "size=$SWAP_SECTORS, uuid=$(cat swap.uuid), type=0657FD6D-A4AB-43C4-84E5-0933C84B4F4F, name=swap"
               ${lib.optionalString bakeVar ''echo "size=$SENTINEL_SECTORS, uuid=$(cat provenance.uuid), type=163BEA60-58C7-46E7-B69A-6846A5A688AF, name=aos-provenance-${checkedProvisioningSource}-v1"''}
               ${lib.optionalString bakeVar ''echo "size=$VAR_SECTORS, uuid=$(cat var.uuid), type=0FC63DAF-8483-4772-8E79-3D69D8477DE4, name=var"''}

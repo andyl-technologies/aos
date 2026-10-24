@@ -90,6 +90,8 @@ in
           name = "check";
           script = ''
             set -eu
+            # Unselected enrollment still authenticates the immutable parent.
+            test -d ${imageContent}/aos
             # Verify positive retention as well as refusal of incidental
             # catalog references: an allowlist alone cannot detect omissions.
             ${pkgs.jq}/bin/jq -r --arg root ${lib.escapeShellArg (builtins.toString initrd)} '
@@ -117,6 +119,9 @@ in
             ${pkgs.libarchive}/bin/bsdtar -xpf initrd.tar -C initrd-tree
             ${pkgs.python3}/bin/python3 ${./_initrd-module-hardlinks.py} initrd-tree ${lib.escapeShellArg system.config.aos.kernel.selected.configuration.moduleTree}
             ${pkgs.erofs-utils}/bin/fsck.erofs --extract=root-tree ${assembly}/inputs/root.img
+            # PID 1 must authenticate the same direct image tree the builder ships.
+            test "$(readlink root-tree/usr/lib/aos/toplevel)" = ${lib.escapeShellArg (builtins.toString system.config.system.build.toplevel)}
+            test -d root-tree/usr/lib/aos/nix/store/${baseNameOf (builtins.toString imageContent)}/aos
             # Commands from both bin and sbin belong to the selected immutable
             # system profile. Verify the exported link and its retained bytes.
             test "$(readlink root-tree/usr/sbin)" = bin

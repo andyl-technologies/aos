@@ -38,6 +38,7 @@ let
           ../../pkgs/system/_aos-host-policy/networking.nix
           ../../pkgs/networking/_nftables/module.nix
           ../../pkgs/security/_audit/module.nix
+          ../../pkgs/security/_linux-pam/module.nix
           ({lib, ...}: {
             options.aos.homes = {
               enable = lib.mkOption {
@@ -76,6 +77,12 @@ let
   evaluate = evaluateWithHostPolicy true;
   primitive = evaluateWithHostPolicy false {};
   defaults = evaluate {};
+  initrd = evaluate ({lib, ...}: {
+    options.aos.boot.stage = lib.mkOption {
+      type = lib.types.enum ["initrd" "host"];
+      default = "initrd";
+    };
+  });
   disabled = evaluate {
     aos.security.audit.enable = false;
     aos.networkPolicy.enable = false;
@@ -164,6 +171,34 @@ let
   explicitLink = builtins.head (links explicit);
   graph = defaults.config.aos.activation.graph;
 in {
+  pamFilesMaterializeOnlyOnHost = let
+    pamEffects = evaluated:
+      lib.filterAttrs (name: _: lib.hasPrefix "pam-" name)
+      evaluated.config.aos.abilities.configuration.operations.file.effects;
+  in
+    initrd.config.aos.pam.files
+    == defaults.config.aos.pam.files
+    && defaults.config.aos.pam.files ? "pam.d/other"
+    && defaults.config.aos.pam.files ? "pam/environment"
+    && builtins.length (builtins.attrNames (pamEffects defaults)) == builtins.length (builtins.attrNames defaults.config.aos.pam.files)
+    && pamEffects initrd == {};
+
+  initrdPreservesKernelHardeningWithoutHostFileMutation =
+    builtins.all (
+      name: (initrd.config.aos.kernel.sysctl.${name} or null) == defaults.config.aos.security.hardening.sysctl.${name}
+    ) (builtins.attrNames defaults.config.aos.security.hardening.sysctl)
+    && !(initrd.config.aos.security.hardening.files ? "security/limits.d/aos-hardening.conf")
+    && !(initrd.config.aos.abilities.configuration.operations.file.effects ? hardening-limits)
+    && initrd.config.aos.kernel.sysctl."kernel.core_pattern" == defaults.config.aos.kernel.sysctl."kernel.core_pattern"
+    && initrd.config.aos.security.hardening.crashFiles == {}
+    && !(initrd.config.aos.abilities.configuration.operations.file.effects ? coredump-policy)
+    && !(initrd.config.aos.abilities.configuration.operations.file.effects ? audit-daemon)
+    && !(initrd.config.aos.abilities.configuration.operations.file.effects ? audit-rules)
+    && !initrd.config.aos.services."audit.auditd".enable
+    && !initrd.config.aos.services."audit.audit-rules".enable
+    && initrd.config.aos.kernel.commandLineParts.audit == ["audit=1"]
+    && builtins.deepSeq initrd.config.aos.activation.graph true;
+
   hostIdentityDefaultsUnchanged =
     builtins.attrNames defaults.config.aos.users.users
     == ["nobody" "root"]

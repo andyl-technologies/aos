@@ -1,0 +1,407 @@
+//! Complete private Controller effect owner and unchanged custody graph.
+//!
+//! Admission, lifecycle progress, snapshot coordination and concrete execution
+//! are implementations on one retained executor. Its fields and constructor
+//! moves keep their original order; the parent still owns shared broker sessions.
+//! These private leaves add no authority factory or alternate effect engine.
+
+use super::*;
+
+pub(in crate::controller_service) mod resident_geometry;
+
+mod delete_planning;
+mod admission;
+mod execution;
+mod operator_create_recovery;
+#[cfg(target_os = "linux")]
+mod reconciliation;
+mod cold_launch_publication;
+mod lifecycle;
+mod lifecycle_stop;
+mod snapshot_coordination;
+
+use admission::is_lifecycle_mutation;
+use lifecycle::{lifecycle_plan_transaction_id, lifecycle_progress_resource_id};
+use snapshot_coordination::auxiliary_publication_disposition;
+
+pub(super) use execution::{
+    current_boot_and_boottime, current_lifecycle_time, missing_broker_session,
+    production_authority_effect_timing,
+};
+pub(super) use lifecycle::{lifecycle_plan_resource_id, lifecycle_progress_transaction_id};
+
+/// Retains the original concrete effect owner and its ordered custody slots.
+///
+/// The child implementations borrow this same owner; no leaf creates a second
+/// state graph or changes the original field and native-result drop order.
+pub(super) struct ProductionEffectExecutor {
+    pub(in crate::controller_service) resource_bank:
+        Option<Arc<Mutex<aos_sandbox_controller_domain::ControllerResourceBankOpeningV1>>>,
+    pub(in crate::controller_service) execution_profile:
+        Option<Arc<aos_sandbox_controller_domain::normal_root::ProductionControllerNormalRootProfileV1>>,
+    pub(in crate::controller_service) execution_credential_directory: Option<std::ffi::OsString>,
+    pub(in crate::controller_service) execution_original:
+        Option<super::execution_output_effect::ControllerExecutionOriginalV1>,
+    // Initial claim and the genuine post-Recover handoff retain the same D
+    // owner here. No new claim is made when the recovered original is present.
+    pub(in crate::controller_service) delete_original:
+        Option<aos_sandbox_controller_domain::ControllerDeleteAuthorizationOriginalV1>,
+    delete_claim: Option<Result<(), aos_sandbox_controller_domain::ResourceReservationErrorV1>>,
+    lifecycle_stop: Option<lifecycle_stop::LifecycleStopOriginalV4>,
+    pub(in crate::controller_service) first_global_prefix:
+        Option<aos_sandbox_controller_domain::ControllerFirstGlobalPrefixAttemptV1>,
+
+    pub(in crate::controller_service) snapshot_ownership: Option<SnapshotOwnershipDonationV3>,
+    pub(in crate::controller_service) pending_snapshot_derivative:
+        Option<storage_snapshot::authorization::SnapshotDerivativeAttemptV3>,
+    #[cfg(feature = "online-nix")]
+    pub(in crate::controller_service) nix_start: Option<Arc<ControllerNixStartRecipeSelectorV2>>,
+    #[cfg(feature = "online-nix")]
+    pub(in crate::controller_service) nix_generation_enabled: bool,
+    #[cfg(feature = "online-nix")]
+    pub(in crate::controller_service) nix_generation_profile:
+        Option<Arc<aos_sandbox_controller_domain::normal_root::ProductionControllerNormalRootProfileV1>>,
+    pub(in crate::controller_service) sessions: SharedControllerBrokerSessions,
+    pub(in crate::controller_service) request_scope: ControllerRequestScopeV1,
+    pub(in crate::controller_service) broker_plan_signer: Option<ControllerBrokerPlanSignerV1>,
+    pub(in crate::controller_service) attachment_host:
+        Option<aos_sandbox_controller_domain::runtime_scope::HostServiceIdentity>,
+    pub(in crate::controller_service) attachment_mount:
+        Option<aos_sandbox_controller_domain::mount_preparation::MountServiceIdentity>,
+    pub(in crate::controller_service) pending_attachment_slot_attempt:
+        Option<aos_sandbox_controller_domain::destination_slot_effect::DurableCurrentDestinationSlotAttemptV1>,
+    pub(in crate::controller_service) pending_attachment_catalog_query:
+        Option<attachment_physical::PendingAttachmentCatalogQueryV1>,
+    pub(in crate::controller_service) pending_attachment_mount_attempt:
+        Option<aos_sandbox_controller_domain::attachment_mount::DurableCurrentAttachmentMountAttemptV1>,
+    pub(in crate::controller_service) pending_attachment_source_attempt:
+        Option<aos_sandbox_controller_domain::attachment_source::DurableCurrentAttachmentSourceDispatchV1>,
+    pub(in crate::controller_service) pending_attachment_source_consume:
+        Option<aos_sandbox_controller_domain::attachment_mount::CompletedCurrentAttachmentMountAttemptV1>,
+    pub(in crate::controller_service) source_domains: ProtectedSourceDomainJournalOwnerV1,
+    #[cfg(target_os = "linux")]
+    cold_create_observer: aos_sandbox_controller_domain::journal::CreateStoppedColdObserverOriginalV1,
+    #[cfg(target_os = "linux")]
+    cold_create_observer_result: Option<Result<(), aos_sandbox_controller_domain::journal::CreateStoppedColdObserverClosedV1>>,
+    #[cfg(target_os = "linux")]
+    operator_recover: operator_create_recovery::OperatorRecoverObservationsV1,
+    #[cfg(target_os = "linux")]
+    first_local_reconciliation: reconciliation::FirstLocalReconciliationV2,
+    #[cfg(target_os = "linux")]
+    first_local_enrollment: aos_sandbox_controller_domain::OperatorFirstLocalOrdinaryEnrollmentOriginalV2,
+    lifecycle_stop_intake: Option<aos_sandbox_broker::controller_receiving::bank_launch::ControllerOperationIntakeOriginalV1>,
+    #[cfg(target_os = "linux")]
+    recovered_sessions: Option<Result<aos_sandbox_broker::controller_receiving::bank_launch::ControllerRecoveredOrdinarySessionsOriginalV2, aos_sandbox_controller_domain::ResourceReservationErrorV1>>,
+    pub(in crate::controller_service) cache_inventory: Option<CacheResidencyProtectedOwnerV1>,
+    pub(in crate::controller_service) cache_resident_usage:
+        aos_sandbox_controller_domain::CacheResidentInitializationV1,
+    pub(in crate::controller_service) cache_mutation: cache_mutation::ControllerCacheMutationV1,
+    pub(in crate::controller_service) cache_physical: Option<DormantCacheOwnerV1>,
+    pub(in crate::controller_service) cache_physical_limits: Option<CacheOwnerLimitsV1>,
+    pub(in crate::controller_service) pending_cache_pin:
+        Option<cache_pin::PendingControllerCachePinV1>,
+    pub(in crate::controller_service) pending_cache_unpin:
+        Option<cache_unpin::PendingControllerCacheUnpinV1>,
+    pub(in crate::controller_service) controller_uid: u32,
+    transfer_inventory: Option<aos_sandbox_controller_domain::local_inventory::ProtectedMultiNodeAuthorityOwnerV1>,
+    pub(in crate::controller_service) node: NodeId,
+    process_start: Option<([u8; 16], u64)>,
+    pending_source_commit: Option<PendingSourceCommit>,
+    pending_snapshot_coordination: Option<PendingSnapshotCoordinationV2>,
+    pub(in crate::controller_service) pending_atomic_snapshot:
+        Option<storage_snapshot::PendingAtomicSnapshotV1>,
+    create_provisioning: cold_launch_publication::OriginalCreateProvisioningIssuerV1,
+    start_entry: Option<aos_sandbox_controller_domain::AcceptedStartEntryOriginalV1>,
+    start_entry_preparation: Option<Result<(), aos_sandbox_controller_domain::ResourceReservationErrorV1>>,
+    start_resources: cold_launch_publication::OriginalStartResourcesV2,
+    pub(in crate::controller_service) q04: Option<create_q04::OriginalQ04ControllerSelectionV1>,
+}
+
+struct PendingSourceCommit {
+    operation_id: OperationId,
+    receipt: Option<EffectReceipt>,
+    pending: LifecycleProgressOutcomeUnknownV1,
+}
+
+/// Retains the actual selected result; legacy retry custody is independent.
+struct PendingSnapshotCoordinationV2 {
+    operation_id: OperationId,
+    outcome: Result<LifecycleProgressCommitOutcomeV1, LifecycleProtectedJournalErrorV1>,
+    readback_debt: Option<LifecycleProtectedJournalErrorV1>,
+}
+
+enum AuxiliaryPublicationDisposition {
+    Current,
+    OutcomeUnknown(LifecycleProgressOutcomeUnknownV1),
+    Diverged(LifecycleProgressOutcomeUnknownV1),
+}
+
+struct ProductionCancellationRequest {
+    target_operation: OperationId,
+    idempotency: LifecycleCancelIdempotencyDigestV1,
+    requested_at: LifecycleTimeV1,
+}
+
+impl ProductionEffectExecutor {
+    /// Quotes every distinct fixed heap destination before startup allocates it.
+    pub(in crate::controller_service) fn inactive_receiving_bytes_v1() -> Option<usize> {
+        let (source_turns, namespace_entries) =
+            aos_sandbox_controller_domain::controller_lifecycle_stop::ControllerLifecycleStopOriginalV4::
+                inactive_receiving_footprint_v4()?;
+        // Ordinary Stop and recovered Stop22 retain distinct Core originals.
+        if namespace_entries != 0 { return None; }
+        resident_geometry::sum_bytes([
+            operator_create_recovery::OperatorRecoverObservationsV1::inactive_receiving_bytes_v1(),
+            reconciliation::FirstLocalReconciliationV2::inactive_receiving_bytes_v1(),
+            cold_launch_publication::OriginalStartResourcesV2::inactive_receiving_bytes_v1(),
+            aos_sandbox_controller_domain::AcceptedStartEntryOriginalV1::inactive_receiving_bytes_v2(),
+            super::execution_output_effect::ControllerExecutionOriginalV1::inactive_receiving_bytes_v1(),
+            lifecycle_stop::LifecycleStopOriginalV4::inactive_receiving_bytes_v1(),
+            source_turns.checked_mul(2),
+        ])
+    }
+
+
+    /// Opens and recovers the original fixed Source owner before executor assembly.
+    ///
+    /// # Errors
+    ///
+    /// Returns the original credential, protected opening, replay or project-recovery error.
+    pub(in crate::controller_service) fn open(
+        journal: &mut Journal,
+        sessions: SharedControllerBrokerSessions,
+        request_scope: ControllerRequestScopeV1,
+        controller_uid: u32,
+        node: NodeId,
+        attachment_host: Option<aos_sandbox_controller_domain::runtime_scope::HostServiceIdentity>,
+        attachment_mount: Option<aos_sandbox_controller_domain::mount_preparation::MountServiceIdentity>,
+    ) -> Result<Self, ControllerRuntimeError> {
+        let broker_plan_signer = ControllerBrokerPlanSignerV1::from_process_credentials_optional()
+            .map_err(|_| ControllerRuntimeError::InvalidBrokerPlanCredential)?;
+        validate_process_cache_readback_credentials_v1(
+            broker_plan_signer
+                .as_ref()
+                .map(ControllerBrokerPlanSignerV1::verifying_key_bytes),
+        )
+        .map_err(|_| ControllerRuntimeError::InvalidCacheReadbackCredential)?;
+        validate_process_controller_hold_credentials_v1(
+            broker_plan_signer
+                .as_ref()
+                .map(ControllerBrokerPlanSignerV1::verifying_key_bytes),
+        )
+        .map_err(|_| ControllerRuntimeError::InvalidControllerHoldCredential)?;
+        let (mut source_domains, _) =
+            ProtectedSourceDomainJournalOwnerV1::open_fixed_protected_for_uid(controller_uid)?;
+        aos_sandbox_controller_domain::lifecycle::LifecycleProtectedJournalOwnerV1::claim(&mut source_domains)?
+            .replay()?;
+        crate::controller_service::project_admission::recover_source_project_admission_v1(
+            journal,
+            &mut source_domains,
+            request_scope,
+        )
+        .map_err(ControllerRuntimeError::ProjectAdmissionRecovery)?;
+
+        Ok(Self::from_retained_source(
+            sessions,
+            request_scope,
+            broker_plan_signer,
+            attachment_host,
+            attachment_mount,
+            source_domains,
+            controller_uid,
+            node,
+            current_boot_and_boottime(),
+        ))
+    }
+
+    // All fallible admission precedes this infallible move. Ordinary opening
+    // retains its old checks/order; issue mode supplies its parked SAME owner.
+    /// Moves the already retained original Source owner into the same executor slots.
+    pub(in crate::controller_service) fn from_retained_source(
+        sessions: SharedControllerBrokerSessions,
+        request_scope: ControllerRequestScopeV1,
+        broker_plan_signer: Option<ControllerBrokerPlanSignerV1>,
+        attachment_host: Option<aos_sandbox_controller_domain::runtime_scope::HostServiceIdentity>,
+        attachment_mount: Option<aos_sandbox_controller_domain::mount_preparation::MountServiceIdentity>,
+        source_domains: ProtectedSourceDomainJournalOwnerV1,
+        controller_uid: u32,
+        node: NodeId,
+        process_start: Option<([u8; 16], u64)>,
+    ) -> Self {
+        Self {
+            resource_bank: None,
+            execution_profile: None,
+            execution_credential_directory: None,
+            execution_original: None,
+            delete_original: None,
+            delete_claim: None,
+            lifecycle_stop: None,
+            first_global_prefix: None,
+            snapshot_ownership: None,
+            pending_snapshot_derivative: None,
+            #[cfg(feature = "online-nix")]
+            nix_start: None,
+            #[cfg(feature = "online-nix")]
+            nix_generation_enabled: false,
+            #[cfg(feature = "online-nix")]
+            nix_generation_profile: None,
+            sessions,
+            request_scope,
+            broker_plan_signer,
+            attachment_host,
+            attachment_mount,
+            pending_attachment_slot_attempt: None,
+            pending_attachment_catalog_query: None,
+            pending_attachment_mount_attempt: None,
+            pending_attachment_source_attempt: None,
+            pending_attachment_source_consume: None,
+            source_domains,
+            #[cfg(target_os = "linux")]
+            cold_create_observer: aos_sandbox_controller_domain::journal::CreateStoppedColdObserverOriginalV1::new(),
+            #[cfg(target_os = "linux")]
+            cold_create_observer_result: None,
+            #[cfg(target_os = "linux")]
+            operator_recover: operator_create_recovery::OperatorRecoverObservationsV1::default(),
+            #[cfg(target_os = "linux")]
+            first_local_reconciliation: reconciliation::FirstLocalReconciliationV2::default(),
+            #[cfg(target_os = "linux")]
+            first_local_enrollment: aos_sandbox_controller_domain::OperatorFirstLocalOrdinaryEnrollmentOriginalV2::default(),
+            lifecycle_stop_intake: None,
+            #[cfg(target_os = "linux")]
+            recovered_sessions: None,
+            cache_inventory: None,
+            cache_resident_usage: aos_sandbox_controller_domain::CacheResidentInitializationV1::new(),
+            cache_mutation: cache_mutation::ControllerCacheMutationV1::default(),
+            cache_physical: None,
+            cache_physical_limits: None,
+            pending_cache_pin: None,
+            pending_cache_unpin: None,
+            controller_uid,
+            transfer_inventory: None,
+            node,
+            process_start,
+            pending_source_commit: None,
+            pending_snapshot_coordination: None,
+            pending_atomic_snapshot: None,
+            q04: None,
+            create_provisioning: cold_launch_publication::OriginalCreateProvisioningIssuerV1::new(),
+            start_entry: None, start_entry_preparation: None,
+            start_resources: cold_launch_publication::OriginalStartResourcesV2::new(),
+        }
+    }
+
+    fn ensure_cache_inventory_owner(&mut self) -> Result<(), EffectFailure> {
+        if self.q04.is_some() {
+            return Err(EffectFailure::Permanent(
+                "original Q04 Cache writers cannot be reopened or used by ordinary mutation".to_owned(),
+            ));
+        }
+        if self.cache_resident_usage.started() {
+            self.cache_resident_usage.native_original_v1().fence_unsupported_transition();
+            return Err(EffectFailure::Permanent(
+                "legacy Cache transition is unsupported under resident custody".to_owned(),
+            ));
+        }
+        let (mut cache_source, _) =
+            CacheReplayControllerBootstrapOwnerV1::open_fixed_protected_for_uid(
+                self.controller_uid,
+            )
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        if self.cache_inventory.is_none() {
+            let owner = match CacheResidencyProtectedOwnerV1::open_fixed_protected_for_uid(
+                self.controller_uid,
+            ) {
+                Ok((owner, _)) => owner,
+                Err(open_error) => {
+                    let first = cache_source.partitions().next().ok_or_else(|| {
+                        EffectFailure::Permanent(
+                            "controller Cache bootstrap source has no partitions".to_owned(),
+                        )
+                    })?;
+                    let (owner, _) = cache_source
+                        .bootstrap_fixed_cache(first)
+                        .map_err(|error| {
+                            EffectFailure::Permanent(format!(
+                                "protected Cache replay failed: {open_error}; clean bootstrap failed: {error}"
+                            ))
+                        })?;
+                    owner
+                }
+            };
+            self.cache_inventory = Some(owner);
+        }
+        let cache = self.cache_inventory.as_mut().ok_or_else(|| {
+            EffectFailure::Permanent("protected Cache inventory is unavailable".to_owned())
+        })?;
+        cache_source
+            .reconcile_fixed_cache(cache)
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        Ok(())
+    }
+
+    /// Reconciles the original Cache envelope before acquiring its physical owner.
+    ///
+    /// # Errors
+    ///
+    /// Retains the original resident refusal, quota, inventory or physical-opening failure.
+    pub(in crate::controller_service) fn ensure_cache_physical_owner(
+        &mut self,
+    ) -> Result<(), EffectFailure> {
+        if self.cache_resident_usage.started() {
+            let protected = self.cache_inventory.as_mut().ok_or_else(|| {
+                EffectFailure::Permanent("resident protected Cache inventory is unavailable".to_owned())
+            })?;
+            return self.cache_resident_usage.native_original_v1().prepare_existing_physical_owner(
+                protected, &mut self.cache_physical, self.node, CACHE_OWNER_MEMORY_BYTES,
+            ).map_err(|_| self.resident_cache_failure());
+        }
+        self.ensure_cache_inventory_owner()?;
+        let quotas = self
+            .cache_inventory
+            .as_mut()
+            .ok_or_else(|| {
+                EffectFailure::Permanent("protected Cache inventory is unavailable".to_owned())
+            })?
+            .reconstructed_node_quotas()
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        if quotas
+            .iter()
+            .any(|quota| quota.partition.node().as_bytes() != self.node.as_bytes())
+        {
+            return Err(EffectFailure::Permanent(
+                "protected Cache partition belongs to another controller node".to_owned(),
+            ));
+        }
+        let limits = CacheOwnerLimitsV1::from_node_quotas(CACHE_OWNER_MEMORY_BYTES, quotas)
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        if self.cache_physical_limits == Some(limits) && self.cache_physical.is_some() {
+            return Ok(());
+        }
+
+        // A changed protected partition set changes the owner-wide envelope.
+        // Release the old lock before reopening and validating that manifest.
+        self.cache_physical = None;
+        self.cache_physical_limits = None;
+        let physical = DormantCacheOwnerV1::open_fixed(limits)
+            .map_err(|error| EffectFailure::Permanent(error.to_string()))?;
+        self.cache_physical = Some(physical);
+        self.cache_physical_limits = Some(limits);
+        Ok(())
+    }
+
+    fn ensure_lifecycle_inventory_owners(&mut self) -> Result<(), EffectFailure> {
+        self.ensure_cache_inventory_owner()?;
+
+        // Default local lifecycle collection may not initialize the deferred
+        // remote authority graph merely to obtain an empty Transfer inventory.
+        // A genuinely already-opened local owner can still be consumed here.
+        // The new Delete path joins its sealed no-remote-open Runtime original
+        // with Root's independent exact Transfer-name absence observation.
+        if self.transfer_inventory.is_none() {
+            return Err(EffectFailure::Permanent(
+                "Transfer inventory requires its existing protected owner or the qualified local absence path".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}

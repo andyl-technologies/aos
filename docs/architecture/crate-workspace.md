@@ -21,8 +21,10 @@ local checks, baseline failures, and unresolved qualification.
 - `aos-core` contains small portable primitives. It does not own terminal output,
   command dispatch, Nix execution, or application policy.
 - Generic suffixes such as `model`, `api`, and `runtime` require an explicit owner.
-- Each crate directory matches its full Cargo package name. Rust library names
-  use the corresponding underscore spelling.
+- Production crate directories match their full Cargo package names. Rust
+  library names use the corresponding underscore spelling. Nested test fixture
+  packages retain descriptive directories beside their owning tests and explicit
+  full Cargo names.
 
 Extract a crate when independent consumers, dependencies, platforms, packaging,
 licensing, or a stable public boundary justify it. Otherwise organize related code
@@ -52,6 +54,15 @@ crates/
   registry/   registry formats, clients, authoring, and static web application
   release/    release formats, coordination, image finalization, and signing
   transfer/   transfer protocols and progress reporting
+  sandbox/
+    model/      Sandbox models, ownership, and policy compilation
+    protocol/   generated APIs, guest/broker/source contracts, and request data
+    controller/ domain, runtime, services, client, journals, replay, and coordinator
+    host/       broker, Linux primitives, Mount, Network, and Publisher
+    guest/      guest effects, root realization, and root measurement
+    storage/    Storage and Source/SourceProvider owners
+    security/   session custody, ownership deadlines, peers, and signing roles
+    filesystem/ portable filesystem formats, views, and FUSE transport
 ```
 
 A shared domain format can remain under its owning project's directory while
@@ -64,6 +75,8 @@ without resolving the application workspace or enabling its shared caches.
 Small Cargo workspaces under test fixtures remain isolated for the artifact
 contracts they exercise. These independent workspaces are outside the application
 inventory.
+The six Sandbox fixture packages, however, are explicit members of the main
+workspace and remain nested beside their owning tests.
 
 The [active inventory](crate-inventory.md) lists every package and the implemented
 merge and extraction boundaries. Future packages in open PRs are classified in
@@ -97,8 +110,9 @@ track package moves explicitly.
 
 The migration is implemented in reviewable stages: names and locations; small
 merges; reusable library extraction; application separation; and large project
-refactors. Open pull requests receive separate handoff instructions rather than
-edits to their owning checkouts.
+refactors. The RFC-0021 branch now carries the Sandbox path/package migration
+and separate generated API owner. Other open pull requests receive separate
+handoff instructions; their proposed packages are not workspace members.
 
 ## Portable data and native effects
 
@@ -125,3 +139,26 @@ and descriptor wrappers require API review before promotion to shared libraries.
 Prefer direct dependencies on the owning crate. Compatibility facades that retain
 an application dependency undermine extraction and should not become permanent.
 Large coherent domains use capability modules and focused tests within their crate.
+
+## Sandbox migration boundaries
+
+The current Sandbox package map is
+[`sandbox-crate-migration.json`](../../tools/dev/sandbox-crate-migration.json).
+It records 45 existing package moves, including six nested fixture packages, and
+the separately created `aos-sandbox-api`. The older
+[`crate-migration.json`](../../tools/dev/crate-migration.json) remains the initial
+base migration plan; replaying it does not perform the base capability splits
+or the Sandbox migration.
+
+The Sandbox controller domain, portable model, Guest protocol and Guest-root
+measurement now have explicit package names. Coordinator, native Mount,
+Publisher, Source and ledger-replay owners remain within Sandbox. This placement
+does not promote native owners into shared libraries or enable dormant flows.
+A proposed native Cache package is not materialized in this checkout.
+
+The shared systemd client currently retains a Linux dependency on Sandbox's
+Linux wrapper and Sandbox-specific resource/custody APIs. That dependency is
+recorded extraction debt against the direction rule above. Generic descriptor
+and journal extraction require their own API review; a directory move does not
+resolve those boundaries. The RFC's compiler, native, portability and lifecycle
+qualification remain separate from this source-organization change.

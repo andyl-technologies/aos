@@ -1,0 +1,109 @@
+diff --git a/src/core/dbus-manager.c b/src/core/dbus-manager.c
+--- a/src/core/dbus-manager.c
++++ b/src/core/dbus-manager.c
+@@ -7,4 +7,7 @@
+ #include "alloc-util.h"
+ #include "aos-fuse-worker.h"
++#include "bus-message.h"
++#include "selinux-util.h"
++
+ #include "architecture.h"
+ #include "bitfield.h"
+@@ -1153,1 +1156,51 @@
++static int aos_fuse_worker_private_transport(Manager *m, sd_bus_message *message) {
++        sd_bus *bus = sd_bus_message_get_bus(message);
++        const char *sender;
++        int r;
++
++        /* Only this accepted direct connection may carry worker roles.
++         * System-bus monitors can otherwise retain copies of their FDs. */
++        if (!set_contains(m->private_buses, bus))
++                return -EPERM;
++        r = sd_bus_get_sender(bus, &sender);
++        if (r < 0 || !streq_ptr(sender, ":1.0"))
++                return -EPERM;
++        return aos_fuse_worker_require_host(message);
++}
++
++static int method_open_aos_fuse_worker_private_transport_v1(sd_bus_message *message, void *userdata, sd_bus_error *error) {
++        Manager *m = ASSERT_PTR(userdata);
++        sd_bus *bus = sd_bus_message_get_bus(message);
++        int r;
++
++        /* Even unreferenced ancillary FDs are forbidden during setup. */
++        if (message->n_fds != 0 || sd_bus_message_at_end(message, true) <= 0)
++                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS,
++                                         "Worker transport setup accepts no body or descriptors");
++        if (!set_contains(m->private_buses, bus) || getpid_cached() != 1)
++                return sd_bus_error_setf(error, SD_BUS_ERROR_ACCESS_DENIED,
++                                         "Worker transport requires the original private PID 1 connection");
++        r = aos_fuse_worker_require_host(message);
++        if (r < 0)
++                return sd_bus_error_setf(error, SD_BUS_ERROR_ACCESS_DENIED,
++                                         "Worker transport requires the pinned Host service");
++#if HAVE_SELINUX
++        _cleanup_freecon_ char *context = NULL;
++        if (dlopen_libselinux(LOG_ERR) < 0 ||
++            sym_security_getenforce() != 1 || sym_getcon(&context) < 0 ||
++            !streq_ptr(context, "system_u:system_r:init_t"))
++                return sd_bus_error_setf(error, SD_BUS_ERROR_ACCESS_DENIED,
++                                         "Worker transport requires enforcing PID 1");
++#else
++        return -EOPNOTSUPP;
++#endif
++        /* Upstream's well-known private sender is rejected by the pinned
++         * zbus UniqueName parser. Change only this authenticated role's
++         * connection, before replying; all other peers stay unchanged. */
++        r = sd_bus_set_sender(bus, ":1.0");
++        if (r < 0)
++                return r;
++        return sd_bus_reply_method_return(message, "");
++}
++
+ static int method_launch_aos_fuse_worker_v1(sd_bus_message *message, void *userdata, sd_bus_error *reterr_error) {
+@@ -1156,9 +1209,9 @@
+         Manager *m = ASSERT_PTR(userdata);
+         Unit *u;
+         int r;
+ 
+-        r = aos_fuse_worker_require_host(message);
++        r = aos_fuse_worker_private_transport(m, message);
+         if (r < 0)
+                 return sd_bus_error_setf(reterr_error, SD_BUS_ERROR_ACCESS_DENIED,
+                                          "Fixed FUSE launch requires the pinned Host service");
+         r = sd_bus_message_read(message, "s", &instance);
+@@ -3204,1 +3257,4 @@
++        SD_BUS_METHOD_WITH_ARGS("OpenAosFuseWorkerPrivateTransportV1",
++                                SD_BUS_NO_ARGS, SD_BUS_NO_RESULT,
++                                method_open_aos_fuse_worker_private_transport_v1, SD_BUS_VTABLE_UNPRIVILEGED),
+         SD_BUS_METHOD_WITH_ARGS("LaunchAosFuseWorkerV1",
+diff --git a/src/shared/selinux-util.h b/src/shared/selinux-util.h
+--- a/src/shared/selinux-util.h
++++ b/src/shared/selinux-util.h
+@@ -25,6 +25,7 @@
+ extern DLSYM_PROTOTYPE(fini_selinuxmnt);
+ extern DLSYM_PROTOTYPE(freecon);
++extern DLSYM_PROTOTYPE(getcon);
+ extern DLSYM_PROTOTYPE(getcon_raw);
+ extern DLSYM_PROTOTYPE(getfilecon_raw);
+ extern DLSYM_PROTOTYPE(getpeercon_raw);
+ extern DLSYM_PROTOTYPE(getpidcon_raw);
+diff --git a/src/shared/selinux-util.c b/src/shared/selinux-util.c
+--- a/src/shared/selinux-util.c
++++ b/src/shared/selinux-util.c
+@@ -64,6 +64,7 @@
+ DLSYM_PROTOTYPE(fini_selinuxmnt) = NULL;
+ DLSYM_PROTOTYPE(freecon) = NULL;
++DLSYM_PROTOTYPE(getcon) = NULL;
+ DLSYM_PROTOTYPE(getcon_raw) = NULL;
+ DLSYM_PROTOTYPE(getfilecon_raw) = NULL;
+ DLSYM_PROTOTYPE(getpeercon_raw) = NULL;
+ DLSYM_PROTOTYPE(getpidcon_raw) = NULL;
+@@ -110,6 +111,7 @@
+                         DLSYM_ARG(fini_selinuxmnt),
+                         DLSYM_ARG(freecon),
++                        DLSYM_ARG(getcon),
+                         DLSYM_ARG(getcon_raw),
+                         DLSYM_ARG(getfilecon_raw),
+                         DLSYM_ARG(getpeercon_raw),
+                         DLSYM_ARG(getpidcon_raw),

@@ -10,6 +10,8 @@
     max_retention_seconds = cfg.maxRetentionSeconds;
     max_use_bytes = cfg.maxUseBytes;
     max_file_bytes = cfg.maxFileSizeBytes;
+    runtime_max_use_bytes = cfg.runtimeMaxUse;
+    runtime_max_file_bytes = cfg.runtimeMaxFileSize;
     rate_limit_interval_millis = cfg.rateLimitIntervalMillis;
     rate_limit_burst = cfg.rateLimitBurst;
     forward_to_syslog = cfg.forwardToSyslog;

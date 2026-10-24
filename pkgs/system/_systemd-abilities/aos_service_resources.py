@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import stat
+import subprocess
 import sys
 import tempfile
 
@@ -55,8 +56,35 @@ def durable_unlink(path):
     synchronize_directory(path.parent)
 
 
-def durable_write(path, contents, permissions=0o644):
-    """Publishes fully synchronized contents without following a destination link."""
+def label_systemd_unit(path, name, matchpathcon, setfilecon):
+    """Labels a staged unit from its canonical vendor path before publication."""
+    if not os.path.exists("/sys/fs/selinux/enforce"):
+        return
+    if not name or name in {".", ".."} or Path(name).name != name:
+        raise ValueError("systemd unit label requires a single unit name")
+    if not matchpathcon or not setfilecon:
+        raise ValueError("SELinux unit labeling requires pinned policy tools")
+
+    canonical = "/usr/lib/systemd/system/" + name
+    lookup = subprocess.run(
+        [matchpathcon, "-n", "-m", "file", canonical],
+        check=True, capture_output=True, text=True, timeout=45,
+    )
+    context = lookup.stdout.strip()
+    if not context or context == "<<none>>" or any(character.isspace() for character in context):
+        raise ValueError("canonical systemd unit has no usable SELinux context")
+    subprocess.run(
+        [setfilecon, context, str(path)],
+        check=True, capture_output=True, text=True, timeout=45,
+    )
+
+
+def durable_write(path, contents, permissions=0o644, *, prepare=None):
+    """Publishes synchronized contents after optional staged-file preparation.
+
+    Preparation runs before the final file sync and rename. A failed callback
+    leaves the prior destination intact and removes only the staged file.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, temporary = tempfile.mkstemp(prefix=".aos-native-", dir=path.parent)
@@ -65,6 +93,8 @@ def durable_write(path, contents, permissions=0o644):
             os.fchmod(output.fileno(), permissions)
             output.write(contents)
             output.flush()
+            if prepare is not None:
+                prepare(Path(temporary))
             os.fsync(output.fileno())
         os.replace(temporary, path)
         synchronize_directory(path.parent)

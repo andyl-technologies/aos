@@ -4,17 +4,34 @@ version = "0.1.0"
 edition = "2024"
 license.workspace = true
 
+[package.metadata.aos]
+test_source_inputs = ["pkgs/system/payload-root-policy-v1"]
+
+[features]
+# Exposes same-stream peer construction solely for the integration harness.
+exact-unit-test-util = []
+
 [dependencies]
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 futures-util = { workspace = true }
+libc.workspace = true
 serde = { workspace = true }
-zbus = { workspace = true }
+sha2.workspace = true
+zbus = { workspace = true, features = ["p2p"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+aos-linux-descriptors.workspace = true
+rustix = { workspace = true, features = ["fs", "process", "time"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+rustix = { workspace = true, features = ["event", "net"] }
 
 [dev-dependencies]
 # p2p + bus-impl let the unit tests stand up an in-process FakeSystemd over a
 # UnixStream pair (no real D-Bus daemon). test-util keeps tokio timers fast.
+tempfile.workspace = true
 zbus = { version = "5", default-features = false, features = ["tokio", "p2p", "bus-impl"] }
 tokio = { workspace = true, features = ["test-util"] }

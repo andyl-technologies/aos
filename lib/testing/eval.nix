@@ -6,6 +6,49 @@
   mkSystem,
   mkDeployableSystem,
 }: let
+  containsStr = lib.hasInfix;
+  finalizationProbeArgs = {
+    pname = "derivation-finalization-probe";
+    version = "0";
+    src = null;
+    phases = [
+      {
+        name = "install";
+        script = ''mkdir -p "$out"'';
+      }
+    ];
+  };
+  defaultFinalizationProbe = pkgs.mkDerivation finalizationProbeArgs;
+  explicitEmptyFinalizationProbe = pkgs.mkDerivation (
+    finalizationProbeArgs // {postFinalize = "";}
+  );
+  hookedFinalizationProbe = pkgs.mkDerivation (
+    finalizationProbeArgs
+    // {
+      postFinalize = ''echo AOS_POST_FINALIZE_PROBE > "$out/post-finalize"'';
+    }
+  );
+  hookedFinalizationBuilder = builtins.elemAt hookedFinalizationProbe.args 1;
+  builderAfter = marker: builder: let
+    pieces = lib.splitString marker builder;
+  in
+    if builtins.length pieces != 2
+    then throw "derivation finalization builder must contain exactly one ${marker} marker"
+    else builtins.elemAt pieces 1;
+  builderAfterFixup = builderAfter ">>> Phase: fixup" hookedFinalizationBuilder;
+  builderAfterScrub = builderAfter ">>> Phase: scrub" builderAfterFixup;
+  builderAfterMetadata = builderAfter ">>> Phase: target-platform-metadata" builderAfterScrub;
+  derivationFinalizationContract =
+    if defaultFinalizationProbe.drvPath != explicitEmptyFinalizationProbe.drvPath
+    then throw "an empty postFinalize hook must not change the default derivation"
+    else if !(containsStr ">>> Phase: post-finalize" builderAfterMetadata)
+    then throw "postFinalize must run after fixup, scrub, and target-platform metadata"
+    else if !(containsStr "AOS_POST_FINALIZE_PROBE" builderAfterMetadata)
+    then throw "postFinalize must preserve the caller's script"
+    else true;
+
+  selinuxKernelPolicyReadback = import ./selinux-kernel-policy-readback.nix {inherit lib;};
+
   verify = name: value:
     if builtins.isAttrs value
     then builtins.all (key: verify "${name}.${key}" value.${key}) (builtins.attrNames value)
@@ -43,14 +86,16 @@ in {
   # Image assembly, ELF and rendered unit validation have their own artifact
   # checks. These fixtures exercise the actual authored policy and native stage
   # composition without repeatedly resolving entire server/edge images.
-  rendered-system = check "rendered-system" [
-    ../../tests/effects/build-invariants.nix
-    ../../tests/effects/stages.nix
-    ../../tests/effects/boot-consumers.nix
-    ../../tests/effects/init-system.nix
-    ../../tests/effects/systemd-resources.nix
-    ../../tests/effects/configuration-policy.nix
-  ];
+  rendered-system = assert derivationFinalizationContract;
+  assert builtins.isString selinuxKernelPolicyReadback;
+    check "rendered-system" [
+      ../../tests/effects/build-invariants.nix
+      ../../tests/effects/stages.nix
+      ../../tests/effects/boot-consumers.nix
+      ../../tests/effects/init-system.nix
+      ../../tests/effects/systemd-resources.nix
+      ../../tests/effects/configuration-policy.nix
+    ];
 
   # Preserve the public target name while checking source/library contracts.
   # The native library derives its schema from declarations, with no ABI counter.

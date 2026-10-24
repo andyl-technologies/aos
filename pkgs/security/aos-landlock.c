@@ -116,6 +116,9 @@ struct path_list {
 static const __u64 FS_READ_ACCESS = LANDLOCK_ACCESS_FS_EXECUTE
     | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR;
 
+static const __u64 FS_READ_NOEXEC_ACCESS = LANDLOCK_ACCESS_FS_READ_FILE
+    | LANDLOCK_ACCESS_FS_READ_DIR;
+
 static const __u64 FS_WRITE_ACCESS = LANDLOCK_ACCESS_FS_WRITE_FILE
     | LANDLOCK_ACCESS_FS_REMOVE_DIR | LANDLOCK_ACCESS_FS_REMOVE_FILE
     | LANDLOCK_ACCESS_FS_MAKE_CHAR | LANDLOCK_ACCESS_FS_MAKE_DIR
@@ -128,7 +131,8 @@ static void usage(FILE *stream)
 {
     fprintf(stream,
         "usage: aos-landlock --print-abi\n"
-        "       aos-landlock [--require-abi N] [--fs-ro PATH] [--fs-rw PATH] "
+        "       aos-landlock [--require-abi N] [--fs-read PATH] "
+        "[--fs-ro PATH] [--fs-rw PATH] "
         "[--network-unrestricted | --tcp-bind PORT | --tcp-connect PORT] "
         "-- COMMAND [ARG...]\n");
 }
@@ -422,6 +426,13 @@ int main(int argc, char **argv)
             if (++i >= argc || parse_u32(argv[i], &require_abi) != 0
                 || require_abi == 0) {
                 fprintf(stderr, "aos-landlock: invalid --require-abi value\n");
+                usage(stderr);
+                return 2;
+            }
+        } else if (strcmp(argv[i], "--fs-read") == 0) {
+            if (++i >= argc
+                || add_path(&paths, argv[i], FS_READ_NOEXEC_ACCESS) != 0) {
+                fprintf(stderr, "aos-landlock: invalid --fs-read value\n");
                 usage(stderr);
                 return 2;
             }

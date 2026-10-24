@@ -433,6 +433,7 @@ in {
       [ -f "$out/bin/bash" ] && [ ! -f "$out/bin/sh" ] && ln -sf bash "$out/bin/sh"
       rm -f "$out/bin/bashbug"
     '';
+    passthru.appliedPatches = bashPatches;
     meta = gnuMeta "GNU Bourne-Again SHell 5.3 patch level 15" "https://www.gnu.org/software/bash/" "GPL-3.0-or-later";
   };
 

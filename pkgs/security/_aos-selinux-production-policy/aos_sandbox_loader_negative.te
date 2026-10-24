@@ -1,0 +1,14 @@
+module aos_sandbox_loader_negative 1.0;
+
+require {
+    type aos_filesystem_fuse_worker_t;
+    type textrel_shlib_t;
+
+    class file execmod;
+}
+
+# An indirect loader grant must still be rejected after the production base
+# excludes the fixed worker from its blanket library interfaces.
+attribute aos_sandbox_negative_loader;
+typeattribute aos_filesystem_fuse_worker_t aos_sandbox_negative_loader;
+allow aos_sandbox_negative_loader textrel_shlib_t:file execmod;

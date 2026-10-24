@@ -162,6 +162,27 @@
         '';
       };
 
+      firmwareVars = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        description = ''
+          Image-boot machines only: immutable OVMF variable-store seed. When
+          absent, the harness uses the stock Setup-Mode template from edk2.
+          Tests that require firmware enforcement may supply a variable store
+          whose enrollment was qualified by an earlier fleet derivation.
+        '';
+      };
+
+      exportFirmwareVars = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Preserve this image-boot machine's stopped, flushed OVMF variable
+          store as a test output. The harness exports it only after the test
+          succeeds, for use by dependent authenticated-boot fixtures.
+        '';
+      };
+
       imageDiskMiB = mkOption {
         type = positiveInt;
         default = 40960;
@@ -231,6 +252,17 @@
           launches a swtpm process per machine and wires QEMU's
           `tpm-tis` device to it over a control socket. Needed by
           measured-boot tests (RFC-0006 phase 3); harmless otherwise.
+        '';
+      };
+
+      vcpuCount = mkOption {
+        type = positiveInt;
+        default = 2;
+        description = ''
+          Number of virtual CPUs handed to QEMU (`-smp`). Funded-resource
+          tests must provide the physical CPU capacity declared by their bank.
+          Both the sandboxed driver and the interactive launcher honor this
+          value.
         '';
       };
 

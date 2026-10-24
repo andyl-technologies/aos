@@ -463,6 +463,7 @@ mod tests {
             removed_paths: Vec::new(),
             baseline_paths: Vec::new(),
             baseline_inventory: None,
+            selinux_file_contexts_sha256: None,
             ownership: Ownership {
                 etc_trees: BTreeMap::new(),
                 files: BTreeMap::from([("app/config".into(), "app".into())]),

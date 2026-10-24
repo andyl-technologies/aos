@@ -56,8 +56,19 @@
 in
   mkDerivation {
     platformSupport = {
-      build = [{abi = ["gnu"]; os = ["linux"];}];
-      host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];}];
+      build = [
+        {
+          abi = ["gnu"];
+          os = ["linux"];
+        }
+      ];
+      host = [
+        {
+          abi = ["gnu"];
+          cpu = ["x86_64" "aarch64"];
+          os = ["linux"];
+        }
+      ];
       target = [];
       role = "public-package";
     };
@@ -166,6 +177,15 @@ in
         '';
       }
       {
+        name = "patch-source";
+        script = ''
+          # Updating syscalls.csv regenerates the perfect hash through this
+          # release script. AOS has no FHS /bin/bash. The resolver checks below
+          # keep the upstream open_tree_attr table entry fail-closed.
+          sed -i "1s|^#!/bin/bash$|#!$CONFIG_SHELL|" src/arch-gperf-generate
+        '';
+      }
+      {
         name = "configure";
         script = ''
           ./configure \
@@ -184,6 +204,28 @@ in
         name = "install";
         script = ''
           make install
+        '';
+      }
+      {
+        name = "check";
+        script = ''
+          required_syscalls="clone clone3 mount umount umount2 pivot_root setns unshare bpf init_module finit_module delete_module perf_event_open ptrace fsopen fsconfig fsmount fspick open_tree open_tree_attr move_mount mount_setattr"
+
+          for architecture in x86_64 aarch64; do
+            for syscall_name in $required_syscalls; do
+              resolved="$($out/bin/scmp_sys_resolver -a "$architecture" "$syscall_name")"
+              if [ "$resolved" = "-1" ]; then
+                echo "ERROR: libseccomp cannot resolve $syscall_name on $architecture" >&2
+                exit 1
+              fi
+            done
+
+            resolved="$($out/bin/scmp_sys_resolver -a "$architecture" open_tree_attr)"
+            if [ "$resolved" != "467" ]; then
+              echo "ERROR: open_tree_attr resolved to $resolved on $architecture, expected 467" >&2
+              exit 1
+            fi
+          done
         '';
       }
     ];

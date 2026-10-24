@@ -38,6 +38,11 @@ in {
         phase = "startup";
       };
       input = {config, ...}: {
+        options.retain_image_definition = lib.mkOption {
+          type = lib.types.bool;
+          default = systemConfig.aos.servicesRetainImageDefinitions;
+          description = "Retain the selected immutable slice definition without replacing it or reloading the manager.";
+        };
         options.bootstrap = lib.mkOption {
           type = lib.types.bool;
           internal = true;

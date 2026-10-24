@@ -59,6 +59,8 @@ class MountVarTests(unittest.TestCase):
             probe_log = root / "probe-arguments"
             environment = dict(
                 os.environ, PATH="", LC_ALL="C",
+                # These cases exercise the module's unprotected /var policy.
+                AOS_PROTECTED_VAR="false",
                 AOS_ZFS_STATE=str(zfs).lower(), AOS_ZFS_POOL="tank",
                 TEST_DEVICES=devices, TEST_DELAY=str(delay),
                 TEST_TYPE=filesystem, TEST_MOUNTED=str(mounted).lower(),

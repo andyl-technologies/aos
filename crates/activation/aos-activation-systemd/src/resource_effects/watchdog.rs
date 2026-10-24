@@ -14,7 +14,7 @@ use aos_systemd_client::PinnedSystemdManager;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{STATE_ROOT, atomic_write, read_regular, reject_symlink_ancestors};
+use super::{atomic_write, read_regular, reject_symlink_ancestors, state_root};
 
 const CONFIGURATION: &str = "/etc/systemd/system.conf.d/50-aos-watchdog.conf";
 
@@ -120,7 +120,7 @@ pub(super) async fn execute(invocation: &Invocation, action: &str) -> Result<Val
     let desired = settings.render()?;
     // The manager has one watchdog configuration. A singleton ownership
     // receipt prevents equal bytes from authorizing two independent effects.
-    let path = Path::new(STATE_ROOT).join("manager-watchdog.json");
+    let path = state_root().join("manager-watchdog.json");
     let previous: Option<Receipt> = read_regular(&path, 65_536)?
         .map(|bytes| serde_json::from_slice(&bytes))
         .transpose()?;
@@ -193,7 +193,7 @@ pub(super) async fn execute(invocation: &Invocation, action: &str) -> Result<Val
         }
         reexecute().await?;
         fs::remove_file(&path)?;
-        File::open(STATE_ROOT)?.sync_all()?;
+        File::open(state_root())?.sync_all()?;
         return Ok(json!({}));
     }
 

@@ -2,7 +2,9 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read as _, Write as _};
-use std::os::unix::fs::{DirBuilderExt as _, OpenOptionsExt as _, PermissionsExt as _};
+use std::os::unix::fs::{
+    DirBuilderExt as _, MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _,
+};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -11,6 +13,7 @@ use rustix::fs::{FlockOperation, Mode, OFlags, flock, openat};
 use sha2::{Digest as _, Sha256};
 
 static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const EROFS_SUPER_MAGIC: u32 = 0xe0f5_e1e2;
 
 pub(crate) fn digest(contents: &[u8]) -> String {
     format!("{:x}", Sha256::digest(contents))
@@ -75,6 +78,10 @@ pub(crate) fn read_digest(path: &Path) -> Result<Option<String>> {
     let Some(mut file) = regular(path)? else {
         return Ok(None);
     };
+    Ok(Some(file_digest(&mut file)?))
+}
+
+fn file_digest(file: &mut File) -> Result<String> {
     let mut hash = Sha256::new();
     let mut buffer = [0_u8; 65536];
     loop {
@@ -84,7 +91,43 @@ pub(crate) fn read_digest(path: &Path) -> Result<Option<String>> {
         }
         hash.update(&buffer[..count]);
     }
-    Ok(Some(format!("{:x}", hash.finalize())))
+    Ok(format!("{:x}", hash.finalize()))
+}
+
+/// Checks bytes and requested metadata on the same actual read-only file.
+pub(crate) fn matches_readonly(
+    path: &Path,
+    expected: &str,
+    permissions: u32,
+    uid: Option<u32>,
+    gid: Option<u32>,
+) -> Result<bool> {
+    let Some(mut file) = regular(path)? else {
+        return Ok(false);
+    };
+    let mount = rustix::fs::fstatvfs(&file)?;
+    if !mount.f_flag.contains(rustix::fs::StatVfsMountFlags::RDONLY) {
+        return Ok(false);
+    }
+
+    let metadata = file.metadata()?;
+    if metadata.mode() & 0o7777 != permissions
+        || uid.is_some_and(|uid| metadata.uid() != uid)
+        || gid.is_some_and(|gid| metadata.gid() != gid)
+        || file_digest(&mut file)? != expected
+    {
+        return Ok(false);
+    }
+
+    // EROFS has no fsync operation: its contents were published by the image
+    // installer, and this filesystem cannot acquire an in-place file write.
+    // Read-only binds of writable filesystems still need durability barriers
+    // because another namespace can write their backing files.
+    if rustix::fs::fstatfs(&file)?.f_type as u32 != EROFS_SUPER_MAGIC {
+        file.sync_all()?;
+        synchronize_parent(path)?;
+    }
+    Ok(true)
 }
 
 pub(crate) fn synchronize_parent(path: &Path) -> Result<()> {
@@ -142,6 +185,15 @@ fn temporary(parent: &Path) -> Result<(std::path::PathBuf, File)> {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn matching_mutable_file_requires_the_ordinary_publication_path() {
+        let root = TempDir::new().unwrap();
+        let path = root.path().join("configuration");
+        write(&path, b"desired", 0o444).unwrap();
+
+        assert!(!matches_readonly(&path, &digest(b"desired"), 0o444, None, None).unwrap());
+    }
 
     #[test]
     fn stale_temporaries_are_preserved_while_publication_recovers() {

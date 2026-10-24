@@ -11,16 +11,26 @@
       operatorModules = [operator];
     }).config;
   seed = config:
-    import ../../pkgs/system/_systemd-abilities/platform/_identity-bootstrap.nix {
+    import ../../pkgs/system/_systemd-abilities/platform/_initrd-account-seed.nix {
       inherit lib shells;
-      identities = config.aos.abilities.identity.operations;
-      accounts = config.aos.users;
-      principalReferences = lib.unique (builtins.concatMap (effect: effect.input.accounts)
-        (builtins.attrValues (lib.filterAttrs (_: effect: effect.enable)
-            config.aos.abilities.network.operations.configure.effects)));
+      inherit config;
     };
   baseline = evaluate {};
   baselineSeed = seed baseline;
+  initrdDbus = operator:
+    (lib.evalPackageModules {
+      scope = ["system" "initrd"];
+      packages = [pkgs.systemd pkgs.dbus];
+      operatorModules = [operator];
+    }).config;
+  initrdDbusSeed = seed (initrdDbus {});
+  initrdDbusDisabledSeed = seed (initrdDbus {aos.services.dbus.enable = false;});
+  initrdDbusRuntimeOnlySeed = seed (initrdDbus {aos.services.dbus.bootstrap = false;});
+  initrdDbusService =
+    (initrdDbus {
+      options.aos.boot.stage = lib.mkOption {type = lib.types.enum ["host" "initrd"];};
+      config.aos.boot.stage = "initrd";
+    }).aos.services.dbus;
   host = operator:
     (lib.evalPackageModules {
       scope = ["system"];
@@ -194,6 +204,13 @@ in {
     ["systemd-network" "systemd-resolve"];
     hostSeedUsesExactPolicy = row "systemd-resolve" hostAccounts.passwd.text == [(expected "systemd-resolve")];
     earlyServiceUsesDeclaredPrincipal = row "messagebus" hostAccounts.passwd.text == ["messagebus:x:81:81:D-Bus Message Bus:/var/run/dbus:${shells.nologin}"] && row "messagebus" hostAccounts.group.text == ["messagebus:x:81:"];
+    initrdEarlyServiceUsesDeclaredPrincipal = row "messagebus" initrdDbusSeed.passwd == row "messagebus" hostAccounts.passwd.text && row "messagebus" initrdDbusSeed.group == row "messagebus" hostAccounts.group.text && row "messagebus" initrdDbusSeed.shadow == row "messagebus" hostAccounts.shadow.text;
+    initrdDbusNeedsOnlyRuntimeDirectory = map (directory: directory.purpose) initrdDbusService.directories.managed == ["runtime"] && initrdDbusService.dependencies.prerequisites == ["/run/dbus"];
+    initrdDbusMountsOnlyRuntimeState = map (mount: mount.source) initrdDbusService.storage.mounts == ["/run/dbus"];
+    hostDbusRetainsPersistentDirectory = map (directory: directory.purpose) hostBaseline.aos.services.dbus.directories.managed == ["runtime" "state"] && hostBaseline.aos.services.dbus.dependencies.prerequisites == ["/run/dbus" "/var/lib/dbus"];
+    hostDbusRetainsPersistentMount = map (mount: mount.source) hostBaseline.aos.services.dbus.storage.mounts == ["/run/dbus" "/var/lib/dbus"];
+    disabledInitrdServiceHasNoSeed = row "messagebus" initrdDbusDisabledSeed.passwd == [] && row "messagebus" initrdDbusDisabledSeed.group == [];
+    runtimeOnlyInitrdServiceHasNoSeed = row "messagebus" initrdDbusRuntimeOnlySeed.passwd == [] && row "messagebus" initrdDbusRuntimeOnlySeed.group == [];
     disabledEarlyServiceHasNoSeed = row "messagebus" hostDbusDisabled.passwd.text == [] && row "messagebus" hostDbusDisabled.group.text == [];
     runtimeOnlyServiceHasNoSeed = row "messagebus" hostDbusRuntimeOnly.passwd.text == [] && row "messagebus" hostDbusRuntimeOnly.group.text == [];
     networkRequestDoesNotControlEarlyServices = row "messagebus" hostDisabled.passwd.text == row "messagebus" hostAccounts.passwd.text;

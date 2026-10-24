@@ -12,6 +12,8 @@
   packageModulesAvailable ? false,
   ...
 }: let
+  cfg = config.aos.kernel;
+  extraConfig = builtins.concatStringsSep "\n" cfg._extraConfigFragments;
   contributedPackages =
     lib.concatLists
     (builtins.attrValues config.aos.kernel.externalPackages);
@@ -66,9 +68,27 @@ in {
         separately with aos.boot.initrd.firmwarePackages.
       '';
     };
+
+    _extraConfigFragments = lib.mkOption {
+      type = lib.types.listOf lib.types.lines;
+      default = [];
+      internal = true;
+      description = ''
+        Ordered deployment kernel configuration fragments. Security features
+        contribute here so lockdown, module-signing, and immutable SELinux
+        requirements are resolved by one linuxWith invocation.
+      '';
+    };
   };
 
   config = {
+    # Select one native kernel artifact after composing all security fragments.
+    # The selected provider remains the source for initrd, external modules,
+    # recovery, and image construction.
+    aos.kernel.packageRoot = lib.mkIf (cfg._extraConfigFragments != []) (
+      lib.mkForce (pkgs.linuxWith extraConfig)
+    );
+
     aos.kernel = {
       modulePackages = kernelPackages;
     };

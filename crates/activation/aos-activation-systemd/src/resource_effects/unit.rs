@@ -17,15 +17,15 @@ use aos_systemd_client::PinnedSystemdManager;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use super::{atomic_write, key, normalized_path, private_directory, read_regular, state_path};
+use super::{
+    atomic_write, key, normalized_path, private_directory, read_regular, state_path, unit_root,
+};
 
 #[cfg(all(test, feature = "systemd-parser-tests"))]
 mod parser_tests;
 mod resource_group;
 
 pub(crate) use resource_group::render_resource_groups;
-
-const UNIT_ROOT: &str = "/etc/systemd/system";
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -103,6 +103,8 @@ struct ResourceGroup {
     description: String,
     #[serde(default)]
     bootstrap: bool,
+    #[serde(default)]
+    retain_image_definition: bool,
     // The checked graph resolves this provider-owned ordering input before
     // invocation. It does not alter the rendered group's manager definition.
     #[serde(default, rename = "bootstrapResource")]
@@ -377,10 +379,11 @@ fn definition_for(id: &str, revision: &str, ability: &str, input: &Value) -> Res
 }
 
 fn unit_path(definition: &Definition) -> PathBuf {
-    Path::new(UNIT_ROOT).join(&definition.unit)
+    unit_root().join(&definition.unit)
 }
+
 fn link_path(definition: &Definition) -> PathBuf {
-    Path::new(UNIT_ROOT)
+    unit_root()
         .join(format!("{}.wants", definition.target))
         .join(&definition.unit)
 }
@@ -418,6 +421,9 @@ fn check_link(definition: &Definition) -> Result<bool> {
 }
 
 async fn owned_identity(manager: &PinnedSystemdManager, definition: &Definition) -> Result<String> {
+    // A newly published inactive mount can otherwise be collected between
+    // LoadUnit and these reads. This invocation owns the manager connection.
+    manager.load_referenced_unit(&definition.unit).await?;
     let identity = manager
         .unit_identity_at_revision(&definition.unit, &definition.revision)
         .await?;
@@ -453,6 +459,7 @@ async fn image_manager_owned(
     manager: &PinnedSystemdManager,
     desired: &Definition,
 ) -> Result<String> {
+    manager.load_referenced_unit(&desired.unit).await?;
     let identity = manager.unit_identity(&desired.unit).await?;
     let (fragment, dropins) = manager
         .unit_definition_paths_exact(&desired.unit, &identity)
@@ -519,7 +526,12 @@ async fn retire(manager: &PinnedSystemdManager, definition: &Definition) -> Resu
 /// # Errors
 /// Returns an error for malformed inputs, foreign resource state, lost manager
 /// identity, or unsuccessful unit jobs.
-pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str) -> Result<Value> {
+pub(super) async fn execute(
+    invocation: &Invocation,
+    action: &str,
+    ability: &str,
+    label_tools: Option<(&str, &str)>,
+) -> Result<Value> {
     let desired = definition(invocation, ability)?;
     let path = state_path(invocation, "unit");
     let previous: Option<Receipt> = read_regular(&path, 1_048_576)?
@@ -536,6 +548,18 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
     } else {
         None
     };
+    if let Some(input) = group.as_ref().filter(|input| input.retain_image_definition) {
+        return resource_group::retain(
+            invocation,
+            action,
+            input,
+            &desired,
+            previous.as_ref(),
+            &path,
+            &manager,
+        )
+        .await;
+    }
     let seed = group.as_ref().map(resource_group::seed_text).transpose()?;
     if let Some(receipt) = &previous {
         if let Some(image) = &receipt.image {
@@ -613,7 +637,7 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
                 if enabled {
                     fs::remove_file(link_path(&desired))?;
                 }
-                fs::File::open(UNIT_ROOT)?.sync_all()?;
+                fs::File::open(unit_root())?.sync_all()?;
                 manager.daemon_reload().await?;
                 fs::remove_file(path)?;
                 return Ok(json!({}));
@@ -692,7 +716,7 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
             // Pending custody is durable before the alias disappears. A crash
             // in this gap is recoverable; installing uses no-clobber below.
             fs::remove_file(unit_path(&desired))?;
-            fs::File::open(UNIT_ROOT)?.sync_all()?;
+            fs::File::open(unit_root())?.sync_all()?;
         }
     }
     if let Some(retiring) = &receipt.retiring {
@@ -701,17 +725,7 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
         atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
     }
     if !owned_file(&desired)? {
-        let mut temporary = tempfile::NamedTempFile::new_in(UNIT_ROOT)?;
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
-        temporary
-            .as_file()
-            .set_permissions(fs::Permissions::from_mode(0o644))?;
-        temporary.write_all(desired.text.as_bytes())?;
-        temporary.as_file().sync_all()?;
-        temporary
-            .persist_noclobber(unit_path(&desired))
-            .map_err(|error| error.error)?;
+        super::unit_label::publish(unit_root(), &desired.unit, &desired.text, label_tools).await?;
     }
     let enabled = check_link(&desired)?;
     if desired.enabled && !enabled {
@@ -725,10 +739,9 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
         fs::remove_file(link_path(&desired))?;
     }
     manager.daemon_reload().await?;
-    manager.load_unit(&desired.unit).await?;
     let identity = owned_identity(&manager, &desired).await?;
     if receipt.image.take().is_some() {
-        fs::File::open(UNIT_ROOT)?.sync_all()?;
+        fs::File::open(unit_root())?.sync_all()?;
         atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
     }
     let source_missing = optional_mount_source_missing(&desired)?;

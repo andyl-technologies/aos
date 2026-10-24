@@ -5,7 +5,7 @@ pkgs.mkDerivation {
   pname = "native-image-metadata-check";
   version = "0";
   src = null;
-  buildDeps = [pkgs.aos pkgs.coreutils pkgs.util-linux pkgs.dosfstools pkgs.mtools pkgs.systemd pkgs.erofs-utils pkgs.cryptsetup pkgs.openssl pkgs.sbsigntools pkgs.jq pkgs.zstd];
+  buildDeps = [pkgs.aos pkgs.coreutils pkgs.diffutils pkgs.util-linux pkgs.dosfstools pkgs.mtools pkgs.systemd pkgs.erofs-utils pkgs.cryptsetup pkgs.openssl pkgs.sbsigntools pkgs.jq pkgs.zstd];
   phases = [
     {
       name = "check";
@@ -14,8 +14,24 @@ pkgs.mkDerivation {
         mkdir -p "$out" tree
         printf '%s\n' 'actual source-built filesystem fixture' > tree/identity
         ${pkgs.erofs-utils}/bin/mkfs.erofs root.img tree
-        ${pkgs.cryptsetup}/sbin/veritysetup format root.img root.verity --root-hash-file root.roothash
+        # Pinned salt and UUID make the same finalized filesystem produce the
+        # same verity tree, as required by the selected image provider.
+        verity_salt=03e071f1f8e5731ce3101d05a56be8c881d15b2628d86a76cd1664a44105b559
+        verity_uuid=3f66fe32-d92e-47b8-85bc-e6ab4f167ee0
+        ${pkgs.cryptsetup}/sbin/veritysetup format root.img root.verity \
+          --salt "$verity_salt" --uuid "$verity_uuid" --root-hash-file root.roothash
+        ${pkgs.cryptsetup}/sbin/veritysetup format root.img repeated.verity \
+          --salt "$verity_salt" --uuid "$verity_uuid" --root-hash-file repeated.roothash
+        cmp root.verity repeated.verity
+        cmp root.roothash repeated.roothash
         ${pkgs.cryptsetup}/sbin/veritysetup verify root.img root.verity "$(cat root.roothash)"
+
+        cp root.img tampered.img
+        printf X | dd of=tampered.img bs=1 seek=0 conv=notrunc status=none
+        if ${pkgs.cryptsetup}/sbin/veritysetup verify tampered.img root.verity "$(cat root.roothash)"; then
+          echo 'dm-verity accepted a modified filesystem' >&2
+          exit 1
+        fi
         truncate -s 12M image.raw
         ${pkgs.util-linux}/sbin/sfdisk image.raw <<'TABLE'
         label: gpt
@@ -31,6 +47,20 @@ pkgs.mkDerivation {
         ${pkgs.util-linux}/sbin/sfdisk --json image.raw > table.json
         ${pkgs.openssl}/bin/openssl req -new -x509 -newkey rsa:2048 -nodes \
           -subj /CN=AOS-metadata-protocol-fixture -keyout key.pem -out cert.pem -days 1
+        for signature in root.roothash.p7s repeated.roothash.p7s; do
+          ${pkgs.openssl}/bin/openssl cms -sign -binary -nosmimecap -noattr \
+            -in root.roothash -signer cert.pem -inkey key.pem \
+            -outform DER -out "$signature"
+        done
+        cmp root.roothash.p7s repeated.roothash.p7s
+        ${pkgs.openssl}/bin/openssl cms -verify -binary -inform DER \
+          -in root.roothash.p7s -content root.roothash -CAfile cert.pem -out /dev/null
+        printf '%064d' 0 > incorrect.roothash
+        if ${pkgs.openssl}/bin/openssl cms -verify -binary -inform DER \
+          -in root.roothash.p7s -content incorrect.roothash -CAfile cert.pem -out /dev/null; then
+          echo 'detached signature accepted a different root hash' >&2
+          exit 1
+        fi
         ${pkgs.sbsigntools}/bin/sbsign --key key.pem --cert cert.pem \
           --output uki-a.efi ${pkgs.systemd}/lib/systemd/boot/efi/linuxx64.efi.stub
         cp uki-a.efi uki-b.efi

@@ -59,6 +59,7 @@
         aos
         (artifact "mdadm")
         (artifact "e2fsprogs")
+        (artifact "coreutils")
         (artifact "xfsprogs")
       ];
       moduleDeps = [metadata store service storage];

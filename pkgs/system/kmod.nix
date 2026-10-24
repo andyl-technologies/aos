@@ -6,6 +6,7 @@
   meson,
   ninja,
   pkg-config,
+  buildPackages,
   openssl,
   jansson,
   zlib,
@@ -14,6 +15,15 @@
   stdenv,
 }: let
   version = "34";
+  runtimeLibraries = [
+    openssl
+    zlib
+    xz
+    zstd
+  ];
+  runtimeLibraryPath = builtins.concatStringsSep ":" (
+    map (dependency: "${dependency}/lib") runtimeLibraries
+  );
 in
   mkDerivation {
     platformSupport = {
@@ -134,21 +144,21 @@ in
     buildDeps = [
       meson
       ninja
+      buildPackages.patchelf
       pkg-config
     ];
-    runtimeDeps = [
-      openssl
-      jansson
-      zlib
-      xz
-      zstd
-    ];
-    propagatedDeps = [
-      openssl
-      zlib
-      xz
-      zstd
-    ];
+    runtimeDeps = runtimeLibraries ++ [jansson];
+    propagatedDeps = runtimeLibraries;
+
+    # Meson removes its managed dependency RPATHs during install after the
+    # linker deduplicates the wrapper-provided copies. Restore the declared
+    # runtime paths before the standard fixup prunes entries not in DT_NEEDED.
+    postInstall = ''
+      for binary in "$out/bin/kmod" "$out/lib/libkmod.so.2.5.1"; do
+        test -f "$binary"
+        ${buildPackages.patchelf}/bin/patchelf --add-rpath "${runtimeLibraryPath}" "$binary"
+      done
+    '';
 
     module = ./_kmod-abilities;
 

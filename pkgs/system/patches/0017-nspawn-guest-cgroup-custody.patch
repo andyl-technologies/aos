@@ -1,0 +1,127 @@
+diff --git a/src/nspawn/nspawn-root-fd.c b/src/nspawn/nspawn-root-fd.c
+--- a/src/nspawn/nspawn-root-fd.c
++++ b/src/nspawn/nspawn-root-fd.c
+@@ -7,2 +7,3 @@
+ #include <sys/stat.h>
++#include <sys/statfs.h>
+ #include <unistd.h>
+@@ -12,11 +13,13 @@
+ #include "alloc-util.h"
+ #include "fd-util.h"
++#include "memfd-util.h"
+ #include "namespace-util.h"
+ #include "nspawn-root-fd.h"
+ #include "pidref.h"
+ #include "process-util.h"
+ #include "socket-util.h"
+ #include "string-util.h"
+ #include "strv.h"
++#include "unaligned.h"
+ 
+ int aos_root_directory_from_fd(int fd, int *ret_root_fd, int *ret_lock_fd, char **ret_path) {
+@@ -178,6 +181,50 @@
+         return 0;
+ }
+ 
++int aos_guest_cgroup_custody(int provisioning, int ret_fds[2]) {
++        _cleanup_close_ int root = -EBADF, binding = -EBADF, root_copy = -EBADF, binding_copy = -EBADF;
++        struct stat credential, directory;
++        struct statfs filesystem;
++        uint8_t record[AOS_GUEST_CGROUP_CUSTODY_BYTES] = "AOSGCG01";
++        int seals;
++
++        /* This is the already-mounted payload hierarchy after barrier #4,
++         * never the Host's outer cgroup. No broader root is chmod/chowned.
++         * The record joins actual retained inodes, not paths or authority. */
++        root = open("/sys/fs/cgroup", O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
++        if (root < 0 || fstat(root, &directory) < 0 || fstatfs(root, &filesystem) < 0 ||
++            fstat(provisioning, &credential) < 0)
++                return -errno;
++        if (sizeof(ino_t) != 8 || filesystem.f_type != 0x63677270 ||
++            !S_ISDIR(directory.st_mode) || directory.st_uid != 0 ||
++            (directory.st_mode & 0022) != 0 || directory.st_ino == 0 ||
++            !S_ISREG(credential.st_mode) || credential.st_size != 258)
++                return -EINVAL;
++        seals = fcntl(provisioning, F_GET_SEALS);
++        if (seals < 0)
++                return -errno;
++        if ((seals & (F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_GROW|F_SEAL_WRITE)) !=
++            (F_SEAL_SEAL|F_SEAL_SHRINK|F_SEAL_GROW|F_SEAL_WRITE))
++                return -EPERM;
++
++        unaligned_write_be64(record + 8, credential.st_dev);
++        unaligned_write_be64(record + 16, credential.st_ino);
++        unaligned_write_be64(record + 24, credential.st_size);
++        unaligned_write_be64(record + 32, directory.st_dev);
++        unaligned_write_be64(record + 40, directory.st_ino);
++        binding = memfd_new_and_seal("aos-guest-cgroup-custody-v1", record, sizeof(record));
++        if (binding < 0)
++                return binding;
++        /* Sources stay above all five fixed targets during final delivery. */
++        root_copy = fcntl(root, F_DUPFD_CLOEXEC, 16);
++        binding_copy = fcntl(binding, F_DUPFD_CLOEXEC, 16);
++        if (root_copy < 0 || binding_copy < 0)
++                return -errno;
++        ret_fds[0] = TAKE_FD(root_copy);
++        ret_fds[1] = TAKE_FD(binding_copy);
++        return 0;
++}
++
+ static int aos_guest_agent_descriptor_validate(int fd, int role) {
+         struct stat st;
+ 
+diff --git a/src/nspawn/nspawn-root-fd.h b/src/nspawn/nspawn-root-fd.h
+--- a/src/nspawn/nspawn-root-fd.h
++++ b/src/nspawn/nspawn-root-fd.h
+@@ -9,4 +9,7 @@
+ #define AOS_GUEST_ATTACH_TRUST_FD_NAME "aos-sandbox-guest-attach-trust-v1"
+ #define AOS_GUEST_AGENT_FD_NAMES AOS_GUEST_AGENT_CHANNEL_FD_NAME ":" AOS_GUEST_AGENT_PROVISIONING_FD_NAME ":" AOS_GUEST_ATTACH_TRUST_FD_NAME
++#define AOS_GUEST_CGROUP_CUSTODY_BYTES 48
++
++int aos_guest_cgroup_custody(int provisioning, int ret_fds[2]);
+ 
+ int aos_root_directory_from_fd(int fd, int *ret_root_fd, int *ret_lock_fd, char **ret_path);
+diff --git a/src/nspawn/nspawn.c b/src/nspawn/nspawn.c
+--- a/src/nspawn/nspawn.c
++++ b/src/nspawn/nspawn.c
+@@ -3418,2 +3418,3 @@ static int inner_child(
+         _cleanup_free_ char *home = NULL;
++        int aos_cgroup_fds[2] = { -EBADF, -EBADF };
+         size_t n_env = 1;
+@@ -3523,6 +3524,23 @@ static int inner_child(
+         if (r < 0)
+                 return r;
+ 
++        if (arg_aos_guest_agent_fds) {
++                r = aos_guest_cgroup_custody(arg_aos_guest_fds[1], aos_cgroup_fds);
++                if (r < 0)
++                        return log_error_errno(r, "Failed to retain AOS Guest cgroup custody: %m");
++                r = fdset_put(fds, aos_cgroup_fds[0]);
++                if (r < 0) {
++                        safe_close(aos_cgroup_fds[0]);
++                        safe_close(aos_cgroup_fds[1]);
++                        return r;
++                }
++                r = fdset_put(fds, aos_cgroup_fds[1]);
++                if (r < 0) {
++                        safe_close(aos_cgroup_fds[1]);
++                        return r;
++                }
++        }
++
+         r = setup_boot_id();
+         if (r < 0)
+                 return r;
+@@ -3762,6 +3780,9 @@
+         if (arg_aos_guest_agent_fds) {
+-                for (int i = 0; i < 3; i++)
+-                        if (!fdset_contains(fds, arg_aos_guest_fds[i]) ||
+-                            dup3(arg_aos_guest_fds[i], SD_LISTEN_FDS_START + i, 0) < 0)
++                int sources[5] = { arg_aos_guest_fds[0], arg_aos_guest_fds[1], arg_aos_guest_fds[2],
++                                   aos_cgroup_fds[0], aos_cgroup_fds[1] };
++
++                for (int i = 0; i < 5; i++)
++                        if (!fdset_contains(fds, sources[i]) ||
++                            dup3(sources[i], SD_LISTEN_FDS_START + i, 0) < 0)
+                                 return log_error_errno(errno, "Failed to deliver AOS guest agent descriptor: %m");
+         }

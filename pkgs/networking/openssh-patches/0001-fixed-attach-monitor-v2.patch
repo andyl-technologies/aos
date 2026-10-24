@@ -1,0 +1,149 @@
+# Fixed Linux-only AOS attach root-monitor custody prerequisite.
+# Applied only to the hash-pinned OpenSSH 10.5p1 source; default remains off.
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -130,7 +130,7 @@
+ 	auth2-chall.o groupaccess.o \
+ 	auth-bsdauth.o auth2-hostbased.o auth2-kbdint.o \
+ 	auth2-none.o auth2-passwd.o auth2-pubkey.o auth2-pubkeyfile.o \
+-	monitor.o monitor_wrap.o auth-krb5.o \
++	monitor.o monitor_wrap.o aos-attach-monitor.o auth-krb5.o \
+ 	auth2-gss.o gss-serv.o gss-serv-krb5.o \
+ 	loginrec.o auth-pam.o auth-shadow.o auth-sia.o \
+ 	sftp-server.o sftp-common.o \
+--- a/servconf.h
++++ b/servconf.h
+@@ -229,6 +229,7 @@
+ SSHCONF_STRARRAY(auth_methods, num_auth_methods, AuthenticationMethods, SSHCFG_ALL, SSHCFG_COPY_MATCH) \
+ SSHCONF_INT(fingerprint_hash, FingerprintHash, SSHCFG_GLOBAL, NULL, SSH_FP_HASH_DEFAULT, SSHCFG_COPY_NONE) \
+ SSHCONF_INTFLAG(expose_userauth_info, ExposeAuthInfo, SSHCFG_ALL, 0, SSHCFG_COPY_MATCH) \
++SSHCONF_INTFLAG(aos_attach_monitor_v2, AosAttachMonitorV2, SSHCFG_GLOBAL, 0, SSHCFG_COPY_NONE) \
+ SSHCONF_STRING(sk_provider, SecurityKeyProvider, SSHCFG_GLOBAL, SSHCFG_COPY_NONE) \
+ SSHCONF_INT(required_rsa_size, RequiredRSASize, SSHCFG_ALL, NULL, SSH_RSA_MINIMUM_MODULUS_SIZE, SSHCFG_COPY_MATCH) \
+ SSHCONF_STRARRAY(channel_timeouts, num_channel_timeouts, ChannelTimeout, SSHCFG_ALL, SSHCFG_COPY_MATCH) \
+--- a/servconf.c
++++ b/servconf.c
+@@ -2475,6 +2475,10 @@
+ 		intptr = &options->expose_userauth_info;
+ 		goto parse_flag;
+ 
++	case sAosAttachMonitorV2:
++		intptr = &options->aos_attach_monitor_v2;
++		goto parse_flag;
++
+ 	case sRDomain:
+ #if !defined(__OpenBSD__) && !defined(HAVE_SYS_SET_PROCESS_RDOMAIN)
+ 		fatal("%s line %d: setting RDomain not supported on this "
+@@ -4242,6 +4246,7 @@
+ 	dump_cfg_fmtint(sStreamLocalBindUnlink, o->fwd_opts.streamlocal_bind_unlink);
+ 	dump_cfg_fmtint(sFingerprintHash, o->fingerprint_hash);
+ 	dump_cfg_fmtint(sExposeAuthInfo, o->expose_userauth_info);
++	dump_cfg_fmtint(sAosAttachMonitorV2, o->aos_attach_monitor_v2);
+ 	dump_cfg_fmtint(sRefuseConnection, o->refuse_connection);
+ 
+ 	/* string arguments */
+--- a/monitor.c
++++ b/monitor.c
+@@ -26,6 +26,7 @@
+  */
+ 
+ #include "includes.h"
++#include "aos-attach-monitor.h"
+ 
+ #include <sys/types.h>
+ #include <sys/wait.h>
+@@ -359,6 +360,11 @@
+ 	if (strcmp(auth_method, "unknown") == 0)
+ 		fatal_f("authentication method name unknown");
+ 
++	/* Candidate signatures become usable only after full methods/account checks. */
++	if (options.aos_attach_monitor_v2 && authctxt->force_pwchange)
++		fatal("AOS attach password-change restriction rejected");
++	aos_attach_monitor_complete();
++
+ 	debug_f("user %s authenticated by privileged process", authctxt->user);
+ 	auth_attempted = 0;
+ 	ssh->authctxt = NULL;
+@@ -413,6 +419,9 @@
+ 	close(pmonitor->m_recvfd);
+ 	pmonitor->m_recvfd = -1;
+ 
++	/* The new private socket and our own fork identify the post-auth child. */
++	aos_attach_monitor_parent(pmonitor->m_pid, pmonitor->m_sendfd);
++
+ 	monitor_set_child_handler(pmonitor->m_pid);
+ 	ssh_signal(SIGHUP, &monitor_child_handler);
+ 	ssh_signal(SIGTERM, &monitor_child_handler);
+@@ -1615,6 +1624,15 @@
+ 
+ 	if (key_blobtype == MM_USERKEY && ret == 0)
+ 		auth_activate_options(ssh, key_opts);
++	if (key_blobtype == MM_USERKEY && ret == 0 &&
++	    key->type == KEY_ED25519_CERT) {
++		if (options.aos_attach_monitor_v2 &&
++		    (ssh->compat & SSH_OLD_SESSIONID) != 0)
++			fatal("AOS attach requires canonical session binding");
++		aos_attach_monitor_capture(blob, bloblen, data, datalen,
++		    signature, signaturelen, session_id2, session_id2_len,
++		    authctxt->pw->pw_uid, authctxt->pw->pw_gid);
++	}
+ 	monitor_reset_key_state();
+ 
+ 	sshbuf_reset(m);
+--- a/sshd-session.c
++++ b/sshd-session.c
+@@ -28,6 +28,7 @@
+  */
+ 
+ #include "includes.h"
++#include "aos-attach-monitor.h"
+ 
+ #include <sys/types.h>
+ #include <sys/ioctl.h>
+@@ -373,6 +374,13 @@
+ {
+ 	int skip_privdrop = 0;
+ 
++#ifdef USE_PAM
++	/* Upstream may restrict rather than terminate after PAM session failure. */
++	if (options.aos_attach_monitor_v2 && options.use_pam &&
++	    (!is_pam_session_open() || !is_pam_credential_established()))
++		fatal("AOS attach PAM credentials/session rejected");
++#endif
++
+ 	/*
+ 	 * Hack for systems that don't support FD passing: retain privileges
+ 	 * in the post-auth privsep process so it can allocate PTYs directly.
+@@ -424,6 +432,7 @@
+ 	 * this information is not part of the key state.
+ 	 */
+ 	ssh_packet_set_authenticated(ssh);
++	aos_attach_monitor_child(pmonitor->m_recvfd);
+ }
+ 
+ static struct sshkey *
+--- a/auth-pam.h
++++ b/auth-pam.h
+@@ -42,6 +42,7 @@
+ int sshpam_get_maxtries_reached(void);
+ void sshpam_set_maxtries_reached(int);
+ int is_pam_session_open(void);
++int is_pam_credential_established(void);
+ int sshpam_priv_kbdint_authdone(void *ctxtp);
+ 
+ #endif /* USE_PAM */
+--- a/auth-pam.c
++++ b/auth-pam.c
+@@ -1139,6 +1139,12 @@
+ 	return sshpam_session_open;
+ }
+ 
++int
++is_pam_credential_established(void)
++{
++	return sshpam_cred_established;
++}
++
+ /*
+  * Set a PAM environment string. We need to do this so that the session
+  * modules can handle things like Kerberos/GSI credentials that appear

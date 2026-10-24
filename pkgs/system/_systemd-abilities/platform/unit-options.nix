@@ -54,7 +54,6 @@
   inherit
     (lib)
     any
-    concatMap
     isList
     mergeEqualOption
     mkIf
@@ -88,9 +87,21 @@
 in rec {
   unitOption = mkOptionType {
     name = "systemd option";
-    merge = loc: defs:
-      if any (def: isList def.value) defs
-      then concatMap (def: toList def.value) defs
+    merge = loc: defs: let
+      isOrdered = value: builtins.isAttrs value && (value._type or null) == "order";
+      listDefinition = def:
+        def
+        // {
+          value =
+            if isOrdered def.value
+            then def.value // {_value = toList def.value._value;}
+            else toList def.value;
+        };
+    in
+      # Nested directives retain their order markers after override selection.
+      # Use the ordinary list merger so markers never reach unit rendering.
+      if any (def: isList def.value || isOrdered def.value) defs
+      then (types.listOf types.anything).merge loc (map listDefinition defs)
       else mergeEqualOption loc defs;
   };
 

@@ -1,7 +1,7 @@
 //! Runs the portable native configuration handler with bounded JSON input.
 
 use std::io::{self, Read as _, Write as _};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, bail, ensure};
 
@@ -14,7 +14,13 @@ fn main() {
 
 fn run() -> Result<()> {
     let mut arguments = std::env::args_os().skip(1);
-    let mut state_directory = PathBuf::from("/var/lib/aos/native-service-effects");
+    // File and service effects share ownership claims within the same stage.
+    // Initrd receipts precede /var and belong to this boot's runtime state.
+    let mut state_directory = PathBuf::from(if Path::new("/etc/initrd-release").is_file() {
+        "/run/aos/initrd-native-service-effects"
+    } else {
+        "/var/lib/aos/native-service-effects"
+    });
     let mut action = None;
     while let Some(argument) = arguments.next() {
         if argument == "--help" || argument == "-h" {

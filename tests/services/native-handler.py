@@ -157,6 +157,82 @@ def active_bus_manager(calls):
 
 
 class NativeHandlerTests(unittest.TestCase):
+    def setUp(self):
+        # Receipt tests own temporary files, not the builder's SELinux policy.
+        # Individual publication tests install their explicit label observer.
+        labeling = patch.object(handler_module, "label_systemd_unit")
+        labeling.start()
+        self.addCleanup(labeling.stop)
+
+    def test_unit_label_failure_prevents_publication_and_manager_dispatch(self):
+        with tempfile.TemporaryDirectory() as root:
+            units = Path(root) / "units"
+            state = Path(root) / "state"
+            instance = handler_module.Handler(
+                invocation("serviceManagement", "realize", service()), "unused", units, state,
+            )
+            calls = []
+            instance.manager = active_bus_manager(calls)
+
+            def label(staged, name, lookup, setter):
+                self.assertEqual(name, "example.service")
+                self.assertIn("[Service]", staged.read_text())
+                self.assertFalse((units / name).exists())
+                self.assertEqual(calls, [])
+                raise ValueError("label refused")
+
+            with patch.object(handler_module, "label_systemd_unit", side_effect=label) as labeling:
+                with self.assertRaisesRegex(ValueError, "label refused"):
+                    instance.service("apply")
+
+            labeling.assert_called_once()
+            self.assertEqual(calls, [])
+            self.assertFalse((units / "example.service").exists())
+            self.assertEqual(list(units.iterdir()), [])
+            self.assertTrue(instance.receipt["pending"])
+
+    def test_immutable_initrd_uses_runtime_service_ownership(self):
+        document = invocation("serviceManagement", "realize", service())
+        document["input"].update(activation_owner="image", auto_start=False)
+        document["effect"]["identity"] = [
+            "test", "initrd", "service-management", "serviceManagement", "realize", "main",
+        ]
+        original_handler = handler_module.Handler
+        original_dispatch = handler_module.locked_dispatch
+
+        with tempfile.TemporaryDirectory() as temporary:
+            runtime = Path(temporary) / "run"
+            state = runtime / "aos/initrd-native-service-effects"
+            units = runtime / "systemd/system"
+            calls = []
+
+            def dispatch(directory, operation):
+                self.assertEqual(directory, "/run/aos/initrd-native-service-effects")
+                return original_dispatch(state, operation)
+
+            def handler(value, manager, unit_directory, state_directory, image_directory):
+                self.assertEqual(unit_directory, "/run/systemd/system")
+                selected = original_handler(value, manager, units, state_directory, image_directory)
+                selected.manager = active_bus_manager(calls)
+                return selected
+
+            with (
+                patch.object(handler_module.Path, "is_file", return_value=True),
+                patch.object(handler_module, "read_invocation", return_value=document),
+                patch.object(handler_module, "locked_dispatch", side_effect=dispatch),
+                patch.object(handler_module, "Handler", side_effect=handler),
+                patch.object(sys, "argv", ["handler", "--systemctl", "/pinned/systemctl", "apply"]),
+            ):
+                handler_module.main()
+
+            receipt_path = state / (handler_module.digest(document["id"].encode()) + ".json")
+            receipt = json.loads(receipt_path.read_text())
+            self.assertFalse(receipt["pending"])
+            self.assertEqual(receipt["id"], document["id"])
+            self.assertTrue((units / "example.service").is_file())
+            self.assertIn(("daemon-reload",), calls)
+            self.assertFalse((Path(temporary) / "var").exists())
+
     def test_host_activator_publishes_mounts_in_the_manager_namespace(self):
         self.assertIsNotNone(host_activation_input, "requires the actual host activator projection")
         value = json.loads(host_activation_input.read_text())
@@ -225,6 +301,90 @@ class NativeHandlerTests(unittest.TestCase):
         instance.manager = active_bus_manager(calls)
         return value, rendered, instance, calls, originals
 
+    def test_retained_image_service_preserves_alias_inodes_without_manager_reload(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, instance, calls, originals = self.projected_service(root)
+            value["retain_image_definition"] = True
+            instance.image_unit_directory = projected_service_units
+            identities = {
+                name: (instance.unit_directory / name).lstat().st_ino
+                for name in rendered["units"]
+            }
+
+            instance.service("apply")
+
+            self.assertNotIn(("daemon-reload",), calls)
+            self.assertEqual(instance.service("observe")["status"], "current")
+            for name in rendered["units"]:
+                leaf = instance.unit_directory / name
+                self.assertTrue(leaf.is_symlink())
+                self.assertEqual(leaf.lstat().st_ino, identities[name])
+                self.assertEqual(leaf.read_bytes(), originals[name])
+                self.assertEqual(instance.receipt["image_units"][name]["target"], os.readlink(leaf))
+
+            with self.assertRaisesRegex(ValueError, "image transition for removal"):
+                instance.service("remove")
+            self.assertNotIn(("daemon-reload",), calls)
+
+    def test_retained_image_service_rejects_changed_definition_before_dispatch(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, instance, calls, originals = self.projected_service(root)
+            value["retain_image_definition"] = True
+            instance.image_unit_directory = projected_service_units
+            value["lifecycle"]["description"] = "Changed image service"
+
+            with self.assertRaisesRegex(ValueError, "conflicts with authenticated rendered content"):
+                instance.service("apply")
+
+            self.assertEqual(calls, [])
+            for name in rendered["units"]:
+                self.assertTrue((instance.unit_directory / name).is_symlink())
+                self.assertEqual((instance.unit_directory / name).read_bytes(), originals[name])
+
+    def test_retained_ordinary_service_defers_target_links_until_activation(self):
+        value = service()
+        value.update(retain_image_definition=True, bootstrap=False)
+        value["dependencies"] = {"wanted_by": ["multi-user.target"]}
+        rendered = handler_module.realize_service(value)
+        self.assertTrue(rendered["links"])
+
+        with tempfile.TemporaryDirectory() as root:
+            handler_module.render_services({"example": value}, root)
+
+            for name, text in rendered["units"].items():
+                self.assertEqual((Path(root) / name).read_text(), text)
+            for name in rendered["links"]:
+                self.assertFalse((Path(root) / name).is_symlink())
+
+    def test_retained_image_activation_installs_missing_links_without_reload(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, instance, calls, originals = self.projected_service(root)
+            value["retain_image_definition"] = True
+            instance.image_unit_directory = projected_service_units
+            self.assertTrue(rendered["links"])
+            for name in rendered["links"]:
+                (instance.unit_directory / name).unlink()
+
+            instance.service("apply")
+
+            self.assertTrue(instance.links_match(rendered["links"]))
+            self.assertNotIn(("daemon-reload",), calls)
+            for name in rendered["units"]:
+                self.assertTrue((instance.unit_directory / name).is_symlink())
+
+    def test_retained_image_service_rejects_missing_selected_projection(self):
+        with tempfile.TemporaryDirectory() as root:
+            value, rendered, instance, calls, originals = self.projected_service(root)
+            value["retain_image_definition"] = True
+            instance.image_unit_directory = Path(root) / "unselected-image"
+
+            self.assertEqual(instance.service("observe")["status"], "indeterminate")
+            with self.assertRaises((ValueError, FileNotFoundError)):
+                instance.service("apply")
+
+            self.assertEqual(calls, [])
+            self.assertFalse(instance.receipt_path.exists())
+
     def test_image_projection_converts_exact_aliases_then_removes_only_namespace_entries(self):
         with tempfile.TemporaryDirectory() as root:
             value, rendered, instance, calls, originals = self.projected_service(root)
@@ -260,8 +420,8 @@ class NativeHandlerTests(unittest.TestCase):
             updated.manager = active_bus_manager(calls)
             original_write = handler_module.durable_write
 
-            def interrupted_write(path, contents, *args):
-                original_write(path, contents, *args)
+            def interrupted_write(path, contents, *args, **kwargs):
+                original_write(path, contents, *args, **kwargs)
                 if Path(path).parent == updated.unit_directory:
                     raise RuntimeError("interrupted after durable unit replacement")
 
@@ -289,10 +449,10 @@ class NativeHandlerTests(unittest.TestCase):
             value, rendered, instance, calls, originals = self.projected_service(root)
             original_write = handler_module.durable_write
 
-            def interrupted_write(path, contents, *args):
+            def interrupted_write(path, contents, *args, **kwargs):
                 if Path(path).parent == instance.unit_directory:
                     raise RuntimeError("interrupted before unit conversion")
-                return original_write(path, contents, *args)
+                return original_write(path, contents, *args, **kwargs)
 
             with patch.object(handler_module, "durable_write", interrupted_write):
                 with self.assertRaisesRegex(RuntimeError, "before unit conversion"):
@@ -580,6 +740,50 @@ class NativeHandlerTests(unittest.TestCase):
             "SystemCallFilter=@clock @chown",
         ])
         self.assertNotIn("SystemCallErrorNumber=", rendered)
+
+    def test_image_dependency_addresses_match_resolved_runtime_unit_bytes(self):
+        template = {"image_service_identity": {
+            "instance": "producer", "service": "unused",
+            "instantiation": {"kind": "template", "template": "worker"},
+        }}
+        instance = {"image_service_identity": {
+            "instance": "selected", "service": "unused",
+            "instantiation": {"kind": "instance", "template_resource": template, "instance": "a/b-\u00e9"},
+        }}
+        singleton = {"image_service_identity": {
+            "instance": "producer", "service": "unused",
+            "manager_identity": {"name": "declared-producer", "aliases": []},
+        }}
+        projected = service()
+        projected["dependencies"] = {
+            "after": [singleton, instance, "systemd-networkd.service"],
+            "requires": [singleton],
+            "wants": ["sysinit.target"],
+        }
+        projected["activation"] = {"bindings": [{
+            "resource": singleton, "relationship": "service-member-of-resource",
+        }]}
+        resolved = dict(projected, dependencies={
+            "after": ["declared-producer.service", "worker@a\\x2fb\\x2d\\xc3\\xa9.service", "systemd-networkd.service"],
+            "requires": ["declared-producer.service"], "wants": ["sysinit.target"],
+        }, activation={"bindings": [{
+            "resource": "declared-producer.service", "relationship": "service-member-of-resource",
+        }]})
+
+        for own_instance in [False, True]:
+            if own_instance:
+                projected["instantiation"] = instance["image_service_identity"]["instantiation"]
+                resolved["instantiation"] = dict(projected["instantiation"], template_resource="worker@.service")
+
+            with self.subTest(own_instance=own_instance), tempfile.TemporaryDirectory() as root:
+                handler_module.render_services({"example": projected}, root)
+
+                for name, text in handler_module.realize_service(resolved)["units"].items():
+                    self.assertEqual((Path(root) / name).read_bytes(), text.encode())
+        with self.assertRaises(ValueError):
+            handler_module.realize_service(projected)
+        with self.assertRaises(ValueError):
+            handler_module.image_unit_reference({"_type": "aos-effect-output"})
 
     def test_manager_observer_projection_preserves_native_units_and_enablement_links(self):
         services = {

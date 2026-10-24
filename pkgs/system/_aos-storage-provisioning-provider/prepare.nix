@@ -31,6 +31,9 @@
     mdadm = "${dependencies.mdadm}/sbin/mdadm";
     mkfs_ext4 = "${dependencies.e2fsprogs}/sbin/mkfs.ext4";
     mkfs_xfs = "${dependencies.xfsprogs}/sbin/mkfs.xfs";
+    debugfs = "${dependencies.e2fsprogs}/sbin/debugfs";
+    sync = "${dependencies.coreutils}/bin/sync";
+    protected_var_context = cfg.protectedVarContext;
   };
   metadataTools = {
     inherit (tools) blkid;
@@ -39,6 +42,12 @@
   };
 in {
   options.aos.storageProvisioning = {
+    protectedVarContext = lib.mkOption {
+      type = lib.types.nullOr (lib.types.enum ["system_u:object_r:var_t"]);
+      default = null;
+      description = "Exact durable label established only on newly created /var and verified before native storage commit.";
+    };
+
     enable = lib.mkOption {
       type = lib.types.bool;
       default = (config.aos.boot.stage or "host") == "initrd";

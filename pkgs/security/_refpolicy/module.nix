@@ -122,33 +122,14 @@
     };
   };
 in {
-  options.aos.security.selinux = {
-    enable = (lib.mkEnableOption "SELinux mandatory access control") // {extensible = true;};
-    mode = lib.mkOption {
-      type = lib.types.enum ["enforcing" "permissive" "disabled"];
-      default = "enforcing";
-      description = "SELinux operating mode.";
-    };
-    policy = lib.mkOption {
-      type = lib.types.strMatching "[A-Za-z0-9][A-Za-z0-9._-]*";
-      default = "refpolicy";
-      description = "SELinux policy store name to load.";
-    };
-    autorelabel = lib.mkOption {
-      type = lib.types.bool;
-      default = true;
-      description = "Relabel the root filesystem when /.autorelabel exists.";
-    };
-  };
-
   config = lib.mkMerge [
     {
       aos.services = {
-        "selinux.selinux-policy-load" = policyLoad // {enable = cfg.enable;};
-        "selinux.selinux-autorelabel" = autorelabel // {enable = cfg.enable;};
+        "selinux.selinux-policy-load" = policyLoad // {enable = cfg.enable && cfg.bootMode == "legacy";};
+        "selinux.selinux-autorelabel" = autorelabel // {enable = cfg.enable && cfg.bootMode == "legacy";};
       };
     }
-    (lib.mkIf cfg.enable {
+    (lib.mkIf (cfg.enable && cfg.bootMode == "legacy") {
       aos.kernel.commandLineParts.refpolicy = ["enforcing=0" "security=selinux" "selinux=1"];
       aos.filesystems.etcTrees = [
         {

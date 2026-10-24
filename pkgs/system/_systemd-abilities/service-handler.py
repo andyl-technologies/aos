@@ -18,7 +18,7 @@ import sys
 
 from aos_service_resources import (
     ResourceHandler, absolute, checked_text, digest,
-    durable_unlink, durable_write, locked_dispatch, mode, read_digest,
+    durable_unlink, durable_write, label_systemd_unit, locked_dispatch, mode, read_digest,
     read_invocation, synchronize_directory,
 )
 
@@ -28,6 +28,8 @@ from aos_service_storage import complete_handoff, handoff_state, plan_handoffs, 
 TRUE_EXECUTABLE = None
 FLOCK_EXECUTABLE = None
 MAC_CONDITION_EXECUTABLE = None
+MATCHPATHCON_EXECUTABLE = None
+SETFILECON_EXECUTABLE = None
 
 
 CAPABILITIES = {
@@ -602,7 +604,11 @@ class Handler(ResourceHandler):
         receipt = self.receipt or {}
         custody = dict(receipt.get("image_units", {}))
         owned_names = set(receipt.get("units", {})) | set(receipt.get("previous_units", {}))
-        eligible = self.value.get("bootstrap", False) or self.value.get("activation_owner", "ability") != "ability"
+        eligible = (
+            self.value.get("bootstrap", False)
+            or self.value.get("retain_image_definition", False)
+            or self.value.get("activation_owner", "ability") != "ability"
+        )
         if action == "remove" or self.invocation.get("action") == "remove":
             eligible = False
         for name, expected in desired.items():
@@ -688,6 +694,12 @@ class Handler(ResourceHandler):
         return fields
 
     def service(self, action):
+        retain_image = self.value.get("retain_image_definition", False)
+        if retain_image and (action == "remove" or self.invocation.get("action") == "remove"):
+            if action == "observe":
+                return {"status": "indeterminate"}
+            raise ValueError("image-owned service definitions require an image transition for removal")
+
         start_mode = self.value["lifecycle"].get("start_mode", "wait")
         if start_mode not in {"wait", "enqueue"}:
             raise ValueError("unsupported service startup dispatch mode")
@@ -756,8 +768,33 @@ class Handler(ResourceHandler):
             if action == "observe":
                 return {"status": "indeterminate"}
             raise
-        expected = all(self.unit_digest(name, custody) == value for name, value in desired.items())
-        expected = expected and self.links_match(realization["links"])
+        definitions_match = all(self.unit_digest(name, custody) == value for name, value in desired.items())
+        expected = definitions_match and self.links_match(realization["links"])
+        if retain_image:
+            # No mutable definition or arbitrary equal-byte alias substitutes
+            # for the image projection that PID 1 already loaded and sealed.
+            try:
+                selected = all(
+                    name in custody
+                    and self.selected_image_unit(name, custody[name]["target"])
+                    for name in desired
+                )
+            except OSError as error:
+                if action == "observe":
+                    return {"status": "indeterminate"}
+                raise ValueError("selected image service projection is unavailable") from error
+            retired_units = prior_units.keys() - desired.keys()
+            retired_links = prior_links.keys() - realization["links"].keys()
+            if (
+                not definitions_match
+                or not selected
+                or retired_units
+                or retired_links
+                or not self.links_safe(realization["links"])
+            ):
+                if action == "observe":
+                    return {"status": "indeterminate"}
+                raise ValueError("service definition differs from the retained image projection")
         if action == "observe" and self.invocation.get("action") == "remove":
             if self.receipt is None:
                 absent = all(not (self.unit_directory / name).exists() and not (self.unit_directory / name).is_symlink() for name in desired)
@@ -871,13 +908,24 @@ class Handler(ResourceHandler):
         receipt["private_storage"] = sorted(set(private_storage_sources(self.value)) | set((self.receipt or {}).get("private_storage", [])))
         old_resource = (self.receipt or {}).get("resource")
         self.save(receipt)
-        for name, text in realization["units"].items():
-            # Adopt the mutable /etc entry as a regular owned file. Pending
-            # custody authenticates a projected alias only until this conversion.
-            durable_write(self.unit_directory / name, text.encode())
-        self.remove_links({name: target for name, target in prior_links.items() if realization["links"].get(name) != target})
-        self.install_links(realization["links"])
-        self.manager("daemon-reload")
+        if not retain_image:
+            for name, text in realization["units"].items():
+                # Pending custody permits converting this exact projected alias
+                # to an owned regular definition on mutable installations.
+                durable_write(
+                    self.unit_directory / name, text.encode(),
+                    prepare=lambda temporary, name=name: label_systemd_unit(
+                        temporary, name, MATCHPATHCON_EXECUTABLE, SETFILECON_EXECUTABLE,
+                    ),
+                )
+            self.remove_links({name: target for name, target in prior_links.items() if realization["links"].get(name) != target})
+            self.install_links(realization["links"])
+            self.manager("daemon-reload")
+        else:
+            # Ordinary services enter the image without target installation
+            # links. Publish those only after activation realized prerequisites;
+            # explicit lifecycle dispatch uses the already selected definitions.
+            self.install_links(realization["links"])
         if old_resource and old_resource != unit_name and owner == "ability":
             self.manager("stop", old_resource)
         if owner == "ability" and not self.value["enabled"]:
@@ -911,7 +959,7 @@ class Handler(ResourceHandler):
         for name in prior_units.keys() - desired.keys():
             if self.unit_digest(name, custody) == prior_units[name]:
                 durable_unlink(self.unit_directory / name)
-        self.save(dict(receipt, pending=False, dispatching=False, previous_units={}, previous_links={}, previous_configuration={}, image_units={}))
+        self.save(dict(receipt, pending=False, dispatching=False, previous_units={}, previous_links={}, previous_configuration={}, image_units=custody if retain_image else {}))
         return result
 
     def retire_private_storage(self):
@@ -977,6 +1025,22 @@ class Handler(ResourceHandler):
         return {"resource": path}
 
 
+def image_unit_reference(value):
+    """Encodes a build-time producer identity using the runtime name rules."""
+    if not isinstance(value, dict):
+        return value
+    if set(value) != {"image_service_identity"}:
+        raise ValueError("unresolved or foreign image unit dependency")
+
+    identity = dict(value["image_service_identity"])
+    selection = identity.get("instantiation")
+    if selection and selection["kind"] == "instance":
+        identity["instantiation"] = dict(
+            selection, template_resource=image_unit_reference(selection["template_resource"]),
+        )
+    return service_identity(identity)
+
+
 def render_services(services, directory):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
@@ -985,13 +1049,41 @@ def render_services(services, directory):
         if not value.get("enable", value.get("enabled", False)):
             continue
         value = dict(value, instance=name, service=value.get("service", name))
+        selection = value.get("instantiation")
+        if selection and selection["kind"] == "instance":
+            value["instantiation"] = dict(
+                selection, template_resource=image_unit_reference(selection["template_resource"]),
+            )
+        activation = value.get("activation")
+        if activation:
+            value["activation"] = dict(activation, bindings=[
+                dict(binding, resource=image_unit_reference(binding["resource"]))
+                for binding in activation["bindings"]
+            ])
+        # Only image rendering accepts declared producer identities. Runtime
+        # reconciliation continues to require actual resolved effect outputs.
+        relationships = {"after", "before", "requires", "wants", "requisite", "conflicts", "binds_to", "part_of", "upholds"}
+        value["dependencies"] = {
+            field: [image_unit_reference(item) for item in items] if field in relationships else items
+            for field, items in (value.get("dependencies") or {}).items()
+        }
         realization = realize_service(value)
         if identities.intersection(realization["units"]):
             raise ValueError("service manager identities collide")
         identities.update(realization["units"])
         for unit_name, contents in realization["units"].items():
             durable_write(directory / unit_name, contents.encode())
+        owner = value.get("activation_owner", value.get("activationOwner", "ability"))
+        defer_target_links = (
+            value.get("retain_image_definition", False)
+            and not value.get("bootstrap", False)
+            and owner == "ability"
+        )
         for link, target in realization["links"].items():
+            if defer_target_links and "/" in link:
+                # Keep aliases addressable, but do not pull ordinary services
+                # into early targets before their activation inputs exist.
+                continue
             path = directory / link
             path.parent.mkdir(parents=True, exist_ok=True)
             if path.is_symlink() and os.readlink(path) == target:
@@ -1001,13 +1093,16 @@ def render_services(services, directory):
 
 def main():
     global TRUE_EXECUTABLE, FLOCK_EXECUTABLE, MAC_CONDITION_EXECUTABLE
+    global MATCHPATHCON_EXECUTABLE, SETFILECON_EXECUTABLE
     parser = argparse.ArgumentParser()
     parser.add_argument("--systemctl")
     parser.add_argument("--true-executable")
     parser.add_argument("--flock-executable")
     parser.add_argument("--mac-condition-executable")
-    parser.add_argument("--unit-directory", default="/etc/systemd/system")
-    parser.add_argument("--state-directory", default="/var/lib/aos/native-service-effects")
+    parser.add_argument("--unit-directory")
+    parser.add_argument("--matchpathcon")
+    parser.add_argument("--setfilecon")
+    parser.add_argument("--state-directory")
     parser.add_argument("--image-unit-directory", default="/usr/lib/aos/toplevel/systemd-units")
     parser.add_argument("action", choices=["apply", "remove", "observe", "render", "check-mac"])
     parser.add_argument("--output-dir")
@@ -1016,6 +1111,8 @@ def main():
     TRUE_EXECUTABLE = args.true_executable
     FLOCK_EXECUTABLE = args.flock_executable
     MAC_CONDITION_EXECUTABLE = args.mac_condition_executable
+    MATCHPATHCON_EXECUTABLE = args.matchpathcon
+    SETFILECON_EXECUTABLE = args.setfilecon
     if args.action == "check-mac":
         try:
             enforcing = Path("/sys/fs/selinux/enforce").read_text().strip() == "1"
@@ -1031,14 +1128,27 @@ def main():
         return
     if not args.systemctl:
         raise ValueError("native service manager executable must be pinned")
+
+    # The immutable initrd runs before persistent /var and the host /etc
+    # overlay exist. Its same-boot receipts and unit overrides belong in /run;
+    # the host keeps its independent persistent ownership records after pivot.
+    initrd = Path("/etc/initrd-release").is_file()
+    unit_directory = args.unit_directory or (
+        "/run/systemd/system" if initrd else "/etc/systemd/system"
+    )
+    state_directory = args.state_directory or (
+        "/run/aos/initrd-native-service-effects" if initrd
+        else "/var/lib/aos/native-service-effects"
+    )
+
     identity = document["effect"]["identity"]
     ability, operation = identity[-3:-1]
     def dispatch(state_directory):
-        handler = Handler(document, args.systemctl, args.unit_directory, state_directory, args.image_unit_directory)
+        handler = Handler(document, args.systemctl, unit_directory, state_directory, args.image_unit_directory)
         operations = {("serviceManagement", "realize"): handler.service, ("device", "present"): handler.device}
         return operations[(ability, operation)](args.action)
 
-    result = locked_dispatch(args.state_directory, dispatch)
+    result = locked_dispatch(state_directory, dispatch)
     print(json.dumps(result, separators=(",", ":")))
 
 

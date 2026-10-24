@@ -8,6 +8,10 @@
 }: let
   managerArtifacts = pkgs;
   systemdPackage = pkgs.systemd;
+  bootstrapServices = import ./bootstrap-services.nix {
+    inherit config lib;
+    pkgs = managerArtifacts;
+  };
   bootstrapConfiguration = import ./bootstrap-config.nix {inherit config lib;};
   rendererPackages = buildContext: {
     inherit (buildContext) runCommand writeTextFile;
@@ -27,22 +31,51 @@
       etc = config.system.build.systemdEtcEntries;
       jobScripts = config.system.build.systemdJobScripts;
     };
-    bootstrapServices = import ./bootstrap-services.nix {
-      inherit config lib;
-      pkgs = managerArtifacts;
-    };
     bootstrapJSON = builtins.toJSON bootstrapServices;
     bootstrapGroupsJSON = builtins.toJSON (lib.mapAttrsToList (_: group: group.input) (import ./bootstrap-resource-groups.nix {inherit config lib;}));
-    units =
+    nativeUnits =
       runCommand "systemd-native-bootstrap-units" {
         inherit bootstrapJSON bootstrapGroupsJSON;
         passAsFile = ["bootstrapJSON" "bootstrapGroupsJSON"];
       } ''
         ${pkgs.buildPackages.systemd.handlers}/bin/aos-service-handler render --output-dir "$out" < "$bootstrapJSONPath"
         ${pkgs.buildPackages.systemd.handlers}/bin/aos-systemd-native-resources render-resource-groups --output-dir "$out" < "$bootstrapGroupsJSONPath"
-        # Keep the new output writable for its own metadata finalization.
-        cp -a --no-preserve=mode ${baseUnits}/. "$out/"
       '';
+    units = runCommand "systemd-image-units" {} ''
+      mkdir -p "$out"
+      cp -a --no-preserve=mode ${nativeUnits}/. "$out/"
+      # Package metadata belongs to this combined output, not the unit inventory.
+      rm -rf "$out/nix-support"
+      # Immutable enrollment authenticates each unit through a direct store
+      # symlink. Retain native bytes in their own output, just like typed units.
+      ${pkgs.findutils}/bin/find ${nativeUnits} -path ${nativeUnits}/nix-support -prune -o -type f -print | while IFS= read -r source; do
+        destination="$out/''${source#${nativeUnits}/}"
+        ln -sfn "$source" "$destination"
+      done
+
+      # Native and typed declarations may contribute distinct drop-ins, but
+      # neither may silently replace the other's actual unit or install link.
+      ${pkgs.findutils}/bin/find ${baseUnits} -mindepth 1 \( -type f -o -type l \) -print | while IFS= read -r source; do
+        destination="$out/''${source#${baseUnits}/}"
+        if [ -e "$destination" ] || [ -L "$destination" ]; then
+          echo "Native and typed manager entries collide: $destination" >&2
+          exit 1
+        fi
+      done
+      # Keep the new output writable for its own metadata finalization.
+      cp -a --no-preserve=mode ${baseUnits}/. "$out/"
+
+      # Explicit requests retain unchanged selected-package bases beside
+      # authored drop-ins. Ordinary images request none; every collision fails.
+      ${lib.concatMapStringsSep "\n" (name: ''
+          if [ -e "$out/${name}" ] || [ -L "$out/${name}" ]; then
+            echo "The requested package base collides with another manager entry: ${name}" >&2
+            exit 1
+          fi
+          ln -s ${systemdPackage}/lib/systemd/system/${name} "$out/${name}"
+        '')
+        config.systemd.packagedBaseUnits}
+    '';
     presets =
       runCommand "systemd-system-preset" {
         presetRules = config.system.build.systemdPresetText;
@@ -56,9 +89,16 @@
       '';
   in
     runCommand "systemd-manager-configuration" {} ''
-      mkdir -p "$out"
+      mkdir -p "$out/systemd-vendor-units"
       ln -s ${units} "$out/systemd-units"
       ln -s ${presets} "$out/systemd-presets"
+
+      # PID 1 already searches this exact package's vendor directory. Publish
+      # its unchanged inodes under the conventional policy paths as well, so
+      # image labeling assigns unit types instead of generic store-data types.
+      for unit in ${systemdPackage}/lib/systemd/system/*; do
+        ln -s "$unit" "$out/systemd-vendor-units/$(basename "$unit")"
+      done
     '';
   buildInitrd = import ./platform/build-initrd.nix {
     inherit config initrdAbilityEvaluation lib;
@@ -68,7 +108,7 @@
   authoredManager = {
     _type = "aos-selected-manager";
     name = "systemd";
-    package = systemdPackage;
+    package = toString systemdPackage;
     configuration = {
       inherit buildInitrd;
       buildOutput = buildManagerConfiguration;
@@ -86,6 +126,11 @@
         trees = [
           {
             collision = "reject";
+            destination = "/usr/lib/systemd/system";
+            source = "systemd-vendor-units";
+          }
+          {
+            collision = "reject";
             destination = "/usr/lib/systemd/system-preset";
             source = "systemd-presets";
           }
@@ -96,5 +141,36 @@
 in {
   imports = [./platform/account-seed.nix];
 
-  config.aos.manager.selected = authoredManager;
+  options.system.build = {
+    systemdBootstrapServices = lib.mkOption {
+      type = lib.types.attrsOf lib.types.attrs;
+      readOnly = true;
+      internal = true;
+      description = "Exact enabled service inputs consumed by the native bootstrap renderer.";
+    };
+    systemdBootstrapServiceOwners = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      readOnly = true;
+      internal = true;
+      description = "Authenticated effect owner of each native bootstrap service input.";
+    };
+    systemdPackagedUnitOwners = lib.mkOption {
+      type = lib.types.attrsOf lib.types.str;
+      readOnly = true;
+      internal = true;
+      description = "Selected package output supplying each unchanged manager base unit.";
+    };
+  };
+
+  config = {
+    aos.manager.selected = authoredManager;
+    system.build = {
+      systemdBootstrapServices = bootstrapServices;
+      systemdBootstrapServiceOwners =
+        builtins.mapAttrs
+        (name: _: config.aos.abilities.serviceManagement.operations.realize.effects.${name}.contract.owner)
+        bootstrapServices;
+      systemdPackagedUnitOwners = lib.genAttrs config.systemd.packagedBaseUnits (_: toString systemdPackage);
+    };
+  };
 }

@@ -28,6 +28,7 @@
 ##!   pkgs                 — AOS package set
 ##!   lib                  — AOS library
 ##!   system               — evaluated AOS system (provides toplevel + kernel)
+##!   kernel               — authenticated selected kernel projection.
 ##!   pname                — derivation name prefix (default "aos-rootfs")
 ##!   label                — filesystem label (default "aos-root")
 ##!   shrinkToFit          — resize2fs -M + grow by `headroomMiB` (production
@@ -49,6 +50,8 @@
 ##!   erofsCompressionLevel — zstd level for EROFS images (default 19).
 ##!                           Test variants may select a faster level without
 ##!                           weakening production image compression.
+##!   erofsDeduplication   — opt-in compressed data extent reuse across separate
+##!                          inodes; uses serial compression, never fragments.
 ##!
 ##! Output: `$out/root.img` (the ext4 image) and `$out/rootfs-size-bytes`
 ##! (the final image byte count, so the caller can size the partition).
@@ -74,6 +77,7 @@
   # roughly a third the size — for the immutable production boot image.
   fsType ? "ext4",
   erofsCompressionLevel ? 19,
+  erofsDeduplication ? false,
   # When true, format a deterministic dm-verity Merkle hash tree
   # over the finalized root.img and emit `root.verity` + `root.roothash`
   # (+ `root.roothash.p7s` when an SB db key is supplied) + `root-verity-size-
@@ -94,8 +98,33 @@
   firmwarePackages ? [],
   runtimeClosureAudit ? null,
 }: let
-  imageMetadata = import ../../../../lib/build/image-metadata.nix {inherit pkgs;};
+  erofsCompressionWorkers =
+    if erofsDeduplication
+    then "0"
+    else "$NIX_BUILD_CORES";
+  erofsExtendedOptions = lib.concatStringsSep "," (
+    ["ztailpacking"] ++ lib.optional erofsDeduplication "dedupe"
+  );
+
+  imageMetadata = import ../../../../lib/build/image-metadata.nix {pkgs = buildPackages;};
   toplevel = system.config.system.build.toplevel;
+  immutableSelinuxPolicy = system.config.system.build.immutableSelinuxPolicy or null;
+  labelImmutableRoot = fsType == "erofs" && immutableSelinuxPolicy != null;
+  erofsSource =
+    if labelImmutableRoot
+    then "rootfs-labeled.tar"
+    else "rootfs";
+  immutableStage0 = lib.attrByPath ["aos" "boot" "initrd" "stage0"] null system.config;
+  rootHandoff = labelImmutableRoot && immutableStage0 != null;
+  policySupport = ../../../security/_aos-selinux-production-policy;
+  policyRoot =
+    if immutableSelinuxPolicy == null
+    then null
+    else "${immutableSelinuxPolicy}/etc/selinux/aos";
+  buildPackages = pkgs.buildPackages;
+  nativeLibselinux = buildPackages.libselinux;
+  nativePatchelf = buildPackages.patchelf;
+  nativePython = buildPackages.python3;
   stageInputPaths = system.config.aos.boot.stageInputPaths;
   hostBundleDestination = lib.escapeShellArg ("rootfs" + stageInputPaths.host.bundle);
   receivedInitrdDestination = lib.escapeShellArg ("rootfs" + stageInputPaths.receivedInitrd.bundle);
@@ -141,7 +170,14 @@
   # duplicate the payload and can pull kernel SDKs into the immutable image.
   # Callers compose capability roots with harness roots; both may retain the
   # same output. Form their union before the strict reference-graph boundary.
-  allClosures = lib.unique (map builtins.toString ([toplevel kernelPackage] ++ managerClosureRoots ++ extraClosures));
+  allClosures = lib.unique (
+    map builtins.toString (
+      [toplevel kernelPackage]
+      ++ managerClosureRoots
+      ++ lib.optionals rootHandoff [immutableStage0]
+      ++ extraClosures
+    )
+  );
 
   regInfo = closureInfoFor {
     rootPaths = allClosures;
@@ -150,7 +186,7 @@
   # Identify the active system separately from additional stored closures.
   # Upgrade candidates and test packages must not install their udev rules.
   activeSystemInfo = closureInfoFor {
-    rootPaths = [toplevel];
+    rootPaths = [toplevel] ++ managerClosureRoots;
   };
 
   # Symlink-farm script fragment — one block per package. Ordering
@@ -220,23 +256,29 @@ in
 
       buildDeps =
         [
-          pkgs.coreutils
-          pkgs.findutils
-          pkgs.tar
-          pkgs.e2fsprogs
-          pkgs.fakeroot
-          pkgs.util-linux
-          pkgs.erofs-utils
-          pkgs.python3
+          buildPackages.coreutils
+          buildPackages.diffutils
+          buildPackages.findutils
+          buildPackages.tar
+          buildPackages.e2fsprogs
+          buildPackages.fakeroot
+          buildPackages.util-linux
+          buildPackages.erofs-utils
+          buildPackages.python3
         ]
-        ++ lib.optional (fsType == "erofs") pkgs.image-hardlink-tree
+        ++ lib.optional (fsType == "erofs") buildPackages.image-hardlink-tree
         # Verity sub-step tooling is gated so the non-verity path's
         # build environment (and thus its derivation hash) is unchanged.
         ++ lib.optionals verity [
-          pkgs.cryptsetup
-          pkgs.openssl
-          pkgs.gawk
-          pkgs.grep
+          buildPackages.cryptsetup
+          buildPackages.openssl
+          buildPackages.gawk
+          buildPackages.grep
+        ]
+        ++ lib.optionals labelImmutableRoot [
+          nativeLibselinux
+          nativePatchelf
+          nativePython
         ];
 
       TOPLEVEL = toString toplevel;
@@ -249,6 +291,12 @@ in
         if runtimeClosureAudit == null
         then ""
         else toString runtimeClosureAudit;
+      SELECTED_INIT =
+        if !labelImmutableRoot
+        then ""
+        else if checkedManagerRootfsPlan == null
+        then throw "labeled rootfs requires the selected manager's init executable"
+        else toString checkedManagerRootfsPlan.initExecutable;
       COREUTILS = toString pkgs.coreutils;
       # `$BASH` is a bash built-in pointing at the bash executable
       # currently running the script — setting it as a derivation env
@@ -256,6 +304,10 @@ in
       # so the ln -sfn targets resolve to the package directory, not
       # to the already-executable path.
       AOS_BASH = toString pkgs.bash;
+      AOS_SELINUX_STAGE0 =
+        if rootHandoff
+        then toString immutableStage0
+        else "";
 
       phases =
         [
@@ -288,6 +340,15 @@ in
                 chmod 0444 rootfs/usr/lib/aos/configuration-lower-effect
               ''}
               mkdir -p rootfs/nix
+              ${lib.optionalString labelImmutableRoot ''
+                # Native /etc generations read the selected contexts from a
+                # direct signed-root inode, independently of either overlay.
+                install -m 0444 \
+                  ${policyRoot}/contexts/files/file_contexts \
+                  rootfs/usr/lib/aos/selinux-file-contexts
+                cmp ${policyRoot}/contexts/files/file_contexts \
+                  rootfs/usr/lib/aos/selinux-file-contexts
+              ''}
               mkdir -p rootfs/usr/bin rootfs/usr/lib
               ln -sfn bin rootfs/usr/sbin
               ln -sfn usr/bin rootfs/bin
@@ -347,27 +408,45 @@ in
               # but udev does not discover rule directories through PATH.
               # In particular, device-mapper's rules publish /dev/mapper/*
               # nodes to systemd after dm-verity and dm-crypt activation.
-              mkdir -p rootfs/usr/lib/udev/rules.d
-              cp "$ACTIVE_SYSTEM_INFO/store-paths" active-system-paths
-              while IFS= read -r rule_root; do
-                rules_dir="$rule_root/lib/udev/rules.d"
-                [ -d "$rules_dir" ] || continue
-                for rule in "$rules_dir"/*.rules; do
-                  [ -e "$rule" ] || continue
-                  name=$(basename "$rule")
-                  if [ -e "rootfs/usr/lib/udev/rules.d/$name" ]; then
-                    echo "rootfs-builder: duplicate udev rule $name" >&2
-                    exit 1
-                  fi
-                  ln -s "$rule" "rootfs/usr/lib/udev/rules.d/$name"
-                done
-              done < active-system-paths
+              ${lib.optionalString (checkedManagerRootfsPlan != null) ''
+                $CONFIG_SHELL ${./collect-udev-rules.sh} "$PWD/rootfs" \
+                  ${system.config.aos.manager.selected.package} /usr/lib/aos \
+                  "$ACTIVE_SYSTEM_INFO/store-paths"
+              ''}
 
               # ── 3. Selected init and compat symlinks ────────────────────────
               ${managerInitScript}
               ln -sfn "$AOS_BASH/bin/bash" rootfs/usr/bin/bash
               ln -sfn "$AOS_BASH/bin/sh" rootfs/usr/bin/sh
               ln -sfn "$COREUTILS/bin/env" rootfs/usr/bin/env
+
+              ${lib.optionalString rootHandoff ''
+                # The warm switch-root guard must be a direct EROFS inode. A
+                # symlink here would make the handoff depend on overlay path
+                # resolution before the guard has pinned the runtime closure.
+                mkdir -p rootfs/usr/lib/systemd
+                install -m 0555 \
+                  "rootfs/usr/lib/aos/nix''${AOS_SELINUX_STAGE0#/nix}/bin/aos-selinux-stage0" \
+                  rootfs/usr/lib/systemd/aos-selinux-root-handoff
+                cmp \
+                  "$AOS_SELINUX_STAGE0/bin/aos-selinux-stage0" \
+                  rootfs/usr/lib/systemd/aos-selinux-root-handoff
+
+                # A separate inode permits an executable-only domain handoff
+                # without giving the provisioner use of init_t-owned FDs.
+                install -m 0555 \
+                  "rootfs/usr/lib/aos/nix''${AOS_SELINUX_STAGE0#/nix}/bin/aos-selinux-stage0" \
+                  rootfs/usr/lib/systemd/aos-selinux-runtime-roots-handoff
+                cmp \
+                  "$AOS_SELINUX_STAGE0/bin/aos-selinux-stage0" \
+                  rootfs/usr/lib/systemd/aos-selinux-runtime-roots-handoff
+
+                # glibc consults this path before starting PID 1. The guard
+                # pins this authenticated empty inode over the runtime /etc
+                # view before executing the dynamic systemd binary.
+                : > rootfs/usr/lib/systemd/aos-empty-ld-so-preload
+                chmod 0444 rootfs/usr/lib/systemd/aos-empty-ld-so-preload
+              ''}
 
               # ── 4. Kernel modules ───────────────────────────────────────────
               # kmod looks up modules at /lib/modules/$(uname -r); the
@@ -390,7 +469,7 @@ in
                   # directory's read-only store mode while merging modules.
                   chmod u+w rootfs/usr/lib/modules "$module_dir"
                   rm -f "$module_dir/build" "$module_dir/source"
-                  ${pkgs.kmod}/sbin/depmod -b rootfs "$(basename "$module_dir")"
+                  ${buildPackages.kmod}/sbin/depmod -b rootfs "$(basename "$module_dir")"
                 done
               ''}
 
@@ -412,7 +491,7 @@ in
               # Keep the on-disk tree correct for image inspection and boot
               # paths that do not preserve the initrd's /run. Normal boots
               # republish this link in the initrd-owned /run before switch-root.
-              ln -s "$TOPLEVEL" rootfs/run/current-system
+              ln -sfnT "$TOPLEVEL" rootfs/run/current-system
 
               # ── 8. /usr/lib/aos/toplevel seed pointer ──────────────────────────────
               # First-boot bootstrap: aos-seed-profiles.service reads this
@@ -460,6 +539,49 @@ in
 
               # ── 10. Caller-supplied postPopulate hook ───────────────────────
               ${postPopulate}
+
+              ${lib.optionalString labelImmutableRoot ''
+                # Derive labels only after every caller-supplied inode exists.
+                # The image retains the selected init beneath its immutable
+                # closure root; ELF interpreters keep runtime /nix/store names.
+                physical_systemd="rootfs/usr/lib/aos/nix''${SELECTED_INIT#/nix}"
+                systemd_interpreter=$(
+                  ${nativePatchelf}/bin/patchelf --print-interpreter \
+                    "$physical_systemd"
+                )
+                case "$systemd_interpreter" in
+                  /nix/store/*) ;;
+                  *)
+                    echo "rootfs-builder: systemd has a non-store ELF interpreter" >&2
+                    exit 1
+                    ;;
+                esac
+                physical_interpreter="/usr/lib/aos/nix''${systemd_interpreter#/nix}"
+                if [ ! -f "rootfs$physical_interpreter" ]; then
+                  echo "rootfs-builder: staged systemd interpreter is absent" >&2
+                  exit 1
+                fi
+                printf '%s\n' "$physical_interpreter" > rootfs-selinux-loader-path
+
+                ${nativePython}/bin/python3 -B ${./plan-rootfs-contexts.py} \
+                  --planner ${policySupport}/context_plan.py \
+                  --etc-dump ${system.config.system.build.etcDump} \
+                  --root rootfs \
+                  --file-contexts ${policyRoot}/contexts/files/file_contexts \
+                  --libselinux ${nativeLibselinux}/lib/libselinux.so.1 \
+                  --dynamic-loader "$physical_interpreter" \
+                  --output-file-contexts rootfs-file-contexts \
+                  --output-map rootfs-selinux-contexts.json
+                ${nativeLibselinux}/sbin/sefcontext_compile \
+                  -p ${policyRoot}/policy/policy.33 \
+                  -o rootfs-file-contexts.bin \
+                  rootfs-file-contexts
+                ${nativePython}/bin/python3 -B \
+                  ${policySupport}/verify_context_lookups.py \
+                  --file-contexts rootfs-file-contexts \
+                  --libselinux ${nativeLibselinux}/lib/libselinux.so.1 \
+                  --expected rootfs-selinux-contexts.json
+              ''}
             '';
           }
           {
@@ -494,9 +616,14 @@ in
                   #     erofs-utils 1.8 can occasionally publish one small file at
                   #     another file's fragment offset. `fsck.erofs` validates that
                   #     structurally sound image, but the extracted bytes are corrupt.
-                  # Identical files can occur in distinct store paths (including
-                  # retained rollout executors). Share their inodes before mkfs:
-                  # EROFS block dedupe would disable parallel compression.
+                  # Global data dedupe is opt-in: nested guest templates can copy
+                  # the same store bytes beneath separate names and inodes. It
+                  # shares only compressed extents, not inode metadata or xattrs.
+                  # erofs-utils 1.9.4 disables MT for dedupe; select serial mode
+                  # explicitly rather than advertising unused worker parallelism.
+                  # Unlabeled images also share identical inodes before mkfs.
+                  # Labeled images retain separate inodes: the planned contexts
+                  # can differ even when staging bytes and xattrs are identical.
                   #
                   # --workers parallelizes the otherwise single-threaded zstd-19
                   # compression (hours on one core for the whole server closure).
@@ -513,16 +640,41 @@ in
                   # as the kernel build in pkgs/kernel/linux.nix). Without it
                   # mkfs prints "libgcc_s.so.1 must be installed for pthread_exit
                   # to work" and risks aborting a worker.
-                  export LD_LIBRARY_PATH="${pkgs.gcc-libs}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-                  ${pkgs.image-hardlink-tree}/bin/aos-image-hardlink-tree rootfs
-                  mkfs.erofs --all-root -T0 \
+                  export LD_LIBRARY_PATH="${buildPackages.gcc-libs}/lib''${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+                  ${lib.optionalString (!labelImmutableRoot) ''
+                    ${buildPackages.image-hardlink-tree}/bin/aos-image-hardlink-tree rootfs
+                  ''}
+                  ${lib.optionalString labelImmutableRoot ''
+                    ${nativePython}/bin/python3 -B \
+                      ${policySupport}/labeled_erofs_tar.py \
+                      --root rootfs \
+                      --map rootfs-selinux-contexts.json \
+                      --output rootfs-labeled.tar
+                  ''}
+                  mkfs.erofs --all-root ${lib.optionalString labelImmutableRoot "--tar=f"} \
+                    -T0 \
                     -U "$IMAGE_UUID" \
-                    --workers="$NIX_BUILD_CORES" \
+                    --workers="${erofsCompressionWorkers}" \
                     -z zstd,level=${toString erofsCompressionLevel} \
                     -C262144 \
-                    -Eztailpacking \
-                    -L ${label} root.img rootfs
+                    -E${erofsExtendedOptions} \
+                    -L ${label} root.img ${erofsSource}
                   fsck.erofs root.img >/dev/null
+                  ${lib.optionalString erofsDeduplication ''
+                    # Structural checks alone do not prove decompressed bytes.
+                    # Compare all names, file contents, and symlink targets;
+                    # the independent native xattr reader below still checks
+                    # every labeled inode against the image-owned context map.
+                    fsck.erofs --extract=rootfs-data-readback root.img
+                    diff --recursive --no-dereference rootfs rootfs-data-readback
+                  ''}
+                  ${lib.optionalString labelImmutableRoot ''
+                    ${nativePython}/bin/python3 -B \
+                      ${policySupport}/verify_erofs_contexts.py \
+                      --dump-erofs ${buildPackages.erofs-utils}/bin/dump.erofs \
+                      --image root.img \
+                      --expected rootfs-selinux-contexts.json
+                  ''}
                   final_bytes=$(stat -c %s root.img)
                   echo "==> root.img: $(( final_bytes / 1048576 )) MiB (erofs zstd-${toString erofsCompressionLevel}, 256K cluster, ztailpacking)"
                   echo "$final_bytes" > rootfs-size-bytes
@@ -651,6 +803,12 @@ in
                 mv root.verity-uuid $out/root.verity-uuid
                 mv root.roothash.p7s $out/root.roothash.p7s
                 mv root-verity-size-bytes $out/root-verity-size-bytes
+              ''
+              + lib.optionalString labelImmutableRoot ''
+                mv rootfs-file-contexts $out/rootfs-file-contexts
+                mv rootfs-file-contexts.bin $out/rootfs-file-contexts.bin
+                mv rootfs-selinux-loader-path $out/rootfs-selinux-loader-path
+                mv rootfs-selinux-contexts.json $out/rootfs-selinux-contexts.json
               '';
           }
         ];

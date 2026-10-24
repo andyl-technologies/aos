@@ -77,7 +77,7 @@
     then "/nonexistent/aos-secure-boot-auth"
     else cfg._effectiveEnrollAuthDir;
 
-  # Lockdown deployment kernel (phase 2). The reproducible base kernel
+  # Lockdown deployment kernel configuration (phase 2). The reproducible base kernel
   # deliberately omits lockdown + module signing (they require a
   # non-public key — pkgs/kernel/config/security.config). Here we build
   # a deployment variant via the kernel's extraConfig hook: lockdown LSM
@@ -86,9 +86,9 @@
   # kernel hot-reload path keeps working under lockdown. The store-path
   # in CONFIG_MODULE_SIG_KEY carries string context, so the key
   # derivation becomes a build input automatically.
-  # pkgs.linuxWith (not pkgs.linux.override) — extraConfig is a linux.nix
-  # function arg the inherited override can't reach (see pkgs/default.nix).
-  lockdownKernel = pkgs.linuxWith ''
+  # modules/base/kernel.nix combines this with any other deployment fragment
+  # and calls pkgs.linuxWith exactly once.
+  lockdownKernelConfig = ''
     CONFIG_SECURITY_LOCKDOWN_LSM=y
     CONFIG_SECURITY_LOCKDOWN_LSM_EARLY=y
     CONFIG_LOCK_DOWN_IN_EFI_SECURE_BOOT=y
@@ -345,7 +345,10 @@ in {
           else cfg.enrollAuthDir;
         lockdown._effectiveModuleSigningCert =
           if externalFinalization
-          then "${configArtifacts.module-signing-certificate-public}/certificate.pem"
+          then
+            if frozenArtifacts ? "module-signing-certificate-public"
+            then "${configArtifacts.module-signing-certificate-public}/certificate.pem"
+            else "${moduleCertificateSource}/certificate.pem"
           else cfg.lockdown.moduleSigningCert;
       };
       assertions = [
@@ -413,10 +416,9 @@ in {
         }
       ];
 
-      # Select the package variant through the same kernel-provider input as
-      # every other system. Its native module then projects the exact artifact
-      # into the checked ability fixed point used by the initrd and image.
-      aos.kernel.packageRoot = lib.mkForce lockdownKernel;
+      # The kernel module composes every deployment fragment into one build,
+      # so immutable SELinux cannot be lost behind a competing mkForce.
+      aos.kernel._extraConfigFragments = [lockdownKernelConfig];
 
       # Belt-and-suspenders cmdline: lockdown auto-engages under SB but
       # this pins the mode; module.sig_enforce reinforces MODULE_SIG_FORCE.
@@ -427,6 +429,14 @@ in {
     })
 
     (lib.mkIf cfg.measuredBoot.enable {
+      aos.security.measuredVar.protectedVarContext =
+        lib.mkIf (
+          config.aos.security.selinux.protectedSandboxNetworkRoots.enable
+          || config.aos.sandbox.controllerService.method46TpmFloor.required
+          || config.aos.sandbox.storageBroker.method46TpmFloor.required
+        )
+        config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
+
       aos.config._artifactSources.pcr-public-key = pcrKeyForInitrd;
       aos.activation.stages.host.configurationBuilders = [retainPcrPolicy];
       aos.activation.stages.initrd.configurationBuilders = [retainPcrPolicy];

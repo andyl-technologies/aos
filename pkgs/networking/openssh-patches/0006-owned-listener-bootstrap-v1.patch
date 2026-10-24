@@ -1,0 +1,137 @@
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -117,7 +117,7 @@
+ SSHOBJS= ssh.o readconf.o clientloop.o sshtty.o \
+ 	sshconnect.o sshconnect2.o mux.o ssh-pkcs11.o $(SKOBJS)
+ 
+-SSHDOBJS=sshd.o \
++SSHDOBJS=sshd.o aos-attach-bootstrap.o \
+ 	platform-listen.o \
+ 	servconf.o sshpty.o srclimit.o groupaccess.o auth2-methods.o \
+ 	dns.o fatal.o compat.o utf8.o authfd.o canohost.o \
+@@ -225,6 +225,11 @@
+ 
+ sshd$(EXEEXT): libssh.a	$(LIBCOMPAT) $(SSHDOBJS)
+ 	$(LD) -o $@ $(SSHDOBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(SSHDLIBS) $(LIBS) $(CHANNELLIBS)
++
++# Pure wire fixture links the real provider; native root/Guest qualification is
++# separate. This target is not an installed daemon or another bootstrap route.
++aos-attach-bootstrap-test$(EXEEXT): libssh.a $(LIBCOMPAT) aos-attach-bootstrap-test.o aos-attach-bootstrap.o fatal.o
++	$(LD) -o $@ aos-attach-bootstrap-test.o aos-attach-bootstrap.o fatal.o $(LDFLAGS) -lssh -lopenbsd-compat $(LIBS)
+ 
+ sshd-session$(EXEEXT): libssh.a	$(LIBCOMPAT) $(SSHD_SESSION_OBJS)
+ 	$(LD) -o $@ $(SSHD_SESSION_OBJS) $(LDFLAGS) -lssh -lopenbsd-compat $(SSHDLIBS) $(LIBS) $(GSSLIBS) $(K5LIBS) $(CHANNELLIBS) $(LIBWTMPDB)
+--- a/servconf.c
++++ b/servconf.c
+@@ -2479,6 +2479,10 @@
+ 		intptr = &options->aos_attach_monitor_v2;
+ 		goto parse_flag;
+ 
++	case sAosAttachBootstrapV1:
++		intptr = &options->aos_attach_bootstrap_v1;
++		goto parse_flag;
++
+ 	case sRDomain:
+ #if !defined(__OpenBSD__) && !defined(HAVE_SYS_SET_PROCESS_RDOMAIN)
+ 		fatal("%s line %d: setting RDomain not supported on this "
+@@ -4247,6 +4251,7 @@
+ 	dump_cfg_fmtint(sFingerprintHash, o->fingerprint_hash);
+ 	dump_cfg_fmtint(sExposeAuthInfo, o->expose_userauth_info);
+ 	dump_cfg_fmtint(sAosAttachMonitorV2, o->aos_attach_monitor_v2);
++	dump_cfg_fmtint(sAosAttachBootstrapV1, o->aos_attach_bootstrap_v1);
+ 	dump_cfg_fmtint(sRefuseConnection, o->refuse_connection);
+ 
+ 	/* string arguments */
+--- a/servconf.h
++++ b/servconf.h
+@@ -230,6 +230,7 @@
+ SSHCONF_INT(fingerprint_hash, FingerprintHash, SSHCFG_GLOBAL, NULL, SSH_FP_HASH_DEFAULT, SSHCFG_COPY_NONE) \
+ SSHCONF_INTFLAG(expose_userauth_info, ExposeAuthInfo, SSHCFG_ALL, 0, SSHCFG_COPY_MATCH) \
+ SSHCONF_INTFLAG(aos_attach_monitor_v2, AosAttachMonitorV2, SSHCFG_GLOBAL, 0, SSHCFG_COPY_NONE) \
++SSHCONF_INTFLAG(aos_attach_bootstrap_v1, AosAttachBootstrapV1, SSHCFG_GLOBAL, 0, SSHCFG_COPY_NONE) \
+ SSHCONF_STRING(sk_provider, SecurityKeyProvider, SSHCFG_GLOBAL, SSHCFG_COPY_NONE) \
+ SSHCONF_INT(required_rsa_size, RequiredRSASize, SSHCFG_ALL, NULL, SSH_RSA_MINIMUM_MODULUS_SIZE, SSHCFG_COPY_MATCH) \
+ SSHCONF_STRARRAY(channel_timeouts, num_channel_timeouts, ChannelTimeout, SSHCFG_ALL, SSHCFG_COPY_MATCH) \
+--- a/sshd.c
++++ b/sshd.c
+@@ -25,6 +25,7 @@
+  */
+ 
+ #include "includes.h"
++#include "aos-attach-bootstrap.h"
+ 
+ #include <sys/types.h>
+ #include <sys/ioctl.h>
+@@ -824,6 +825,7 @@
+ 			continue;
+ 		}
+ 		/* Create socket for listening. */
++		aos_attach_bootstrap_current_v1();
+ 		listen_sock = socket(ai->ai_family, ai->ai_socktype,
+ 		    ai->ai_protocol);
+ 		if (listen_sock == -1) {
+@@ -831,16 +833,19 @@
+ 			verbose("socket: %.100s", strerror(errno));
+ 			continue;
+ 		}
++		aos_attach_bootstrap_current_v1();
+ 		if (set_nonblock(listen_sock) == -1) {
+ 			close(listen_sock);
+ 			continue;
+ 		}
++		aos_attach_bootstrap_current_v1();
+ 		if (fcntl(listen_sock, F_SETFD, FD_CLOEXEC) == -1) {
+ 			verbose("socket: CLOEXEC: %s", strerror(errno));
+ 			close(listen_sock);
+ 			continue;
+ 		}
+ 		/* Socket options */
++		aos_attach_bootstrap_current_v1();
+ 		set_reuseaddr(listen_sock);
+ 		if (la->rdomain != NULL &&
+ 		    set_rdomain(listen_sock, la->rdomain) == -1) {
+@@ -849,12 +854,15 @@
+ 		}
+ 
+ 		/* Only communicate in IPv6 over AF_INET6 sockets. */
+-		if (ai->ai_family == AF_INET6)
++		if (ai->ai_family == AF_INET6) {
++			aos_attach_bootstrap_current_v1();
+ 			sock_set_v6only(listen_sock);
++		}
+ 
+ 		debug("Bind to port %s on %s.", strport, ntop);
+ 
+ 		/* Bind the socket to the desired port. */
++		aos_attach_bootstrap_current_v1();
+ 		if (bind(listen_sock, ai->ai_addr, ai->ai_addrlen) == -1) {
+ 			error("Bind to port %s on %s failed: %.200s.",
+ 			    strport, ntop, strerror(errno));
+@@ -865,6 +873,7 @@
+ 		num_listen_socks++;
+ 
+ 		/* Start listening on the port. */
++		aos_attach_bootstrap_current_v1();
+ 		if (listen(listen_sock, SSH_LISTEN_BACKLOG) == -1)
+ 			fatal("listen on [%s]:%s: %.100s",
+ 			    ntop, strport, strerror(errno));
+@@ -1455,6 +1464,11 @@
+ 		fatal("sshd requires execution with an absolute path");
+ 
+ 	closefrom(STDERR_FILENO + 1);
++	/* The selected child consumes its private original parent record here.
++	 * Its owning caller must complete cgroup-at-birth and the child helper's
++	 * hard limit before this exec; these bytes cannot grant either authority. */
++	aos_attach_bootstrap_prepare_v1(options.aos_attach_bootstrap_v1,
++	    options.aos_attach_monitor_v2, no_daemon_flag, inetd_flag);
+ 
+ 	/* Reserve fds we'll need later for reexec things */
+ 	if ((devnull = open(_PATH_DEVNULL, O_RDWR)) == -1)
+@@ -1838,6 +1852,7 @@
+ 	} else {
+ 		platform_pre_listen();
+ 		server_listen();
++		aos_attach_bootstrap_listeners_v1(listen_socks, num_listen_socks);
+ 
+ 		ssh_signal(SIGHUP, sighup_handler);
+ 		ssh_signal(SIGCHLD, main_sigchld_handler);

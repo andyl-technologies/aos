@@ -24,10 +24,13 @@
 ##!      ToUnit renderers.
 ##!   9. The exact native initrd transaction, selected package closure, and
 ##!      admission receipt authenticated by the verified image.
+##!  10. An optional, preverified Mount executable carrier inside the signed
+##!      immutable SELinux stage-1 EROFS image.
+##!
 ##! Arguments:
-##!   pkgs          — AOS package set
 ##!   lib           — AOS library
 ##!   kernel        — exact selected kernel projection
+##!   runtimePackages — selected runtime tools, including the exact PID 1.
 ##!   loadModules — list of module names for /etc/modules-load.d/initrd.conf
 ##!   initrdUnits   — derivation whose output is the rendered
 ##!                   /etc/systemd/system directory (from generateUnits)
@@ -36,6 +39,8 @@
 ##!   initrdNetworkDir — native network bootstrap directory containing
 ##!                   rendered systemd-networkd `.network` files; copied into
 ##!                   /etc/systemd/network/. Null/absent ⇒ no networkd config.
+##!   mountExecutableCarrier — optional derivation with carrier.ext4,
+##!                   carrier.hash, and carrier.root-hash outputs.
 ##!   deploymentBundle — immutable native transaction and admission inputs.
 ##!   registration — exact Nix registration stream for the copied closure.
 ##!
@@ -50,6 +55,7 @@
   firmwarePackages ? [],
   loadModules,
   initrdUnits,
+  initrdConfiguration ? null,
   initrdRuntimeRoots,
   initrdNetworkDir ? null,
   handoff,
@@ -58,6 +64,15 @@
   registration,
   maskedUnits ? [],
   validateBootIdentity ? false,
+  mountExecutableCarrier ? null,
+  stage0Init ? null,
+  immutableSelinuxPolicy ? null,
+  initrdExtraPackages ? [],
+  nativeErofsUtils ? null,
+  nativeLibselinux ? null,
+  nativePatchelf ? null,
+  nativePython ? null,
+  nativeCryptsetup ? null,
 }: let
   kernelPackage = kernel.package;
   kernelModuleTree =
@@ -65,6 +80,16 @@
     then throw "systemd initrd requires a selected kernel module tree"
     else kernel.configuration.moduleTree;
   kernelRelease = kernel.configuration.release;
+  immutableStage0 =
+    if stage0Init == null && immutableSelinuxPolicy == null
+    then false
+    else if stage0Init != null && immutableSelinuxPolicy != null
+    then true
+    else throw "initrd-builder: stage0Init and immutableSelinuxPolicy must be set together";
+  checkedMountExecutableCarrier =
+    if mountExecutableCarrier == null || immutableStage0
+    then mountExecutableCarrier
+    else throw "initrd-builder: Mount executable carrier requires immutable SELinux stage0";
   inherit
     (runtimePackages)
     bash
@@ -85,6 +110,12 @@
     util-linux
     zstd
     ;
+  policySupport = ../../../security/_aos-selinux-production-policy;
+  policyRoot =
+    if immutableSelinuxPolicy == null
+    then null
+    else "${immutableSelinuxPolicy}/etc/selinux/aos";
+  extraRuntimeRoots = initrdExtraPackages ++ lib.optional immutableStage0 stage0Init;
   dependencyRoots =
     [
       {
@@ -98,6 +129,11 @@
         available_stage = "build";
       }
     ]
+    ++ lib.optional (initrdConfiguration != null) {
+      kind = "file-configuration";
+      store_path = "${initrdConfiguration}";
+      available_stage = "build";
+    }
     ++ lib.optional (initrdNetworkDir != null) {
       kind = "network-configuration";
       store_path = "${initrdNetworkDir}";
@@ -120,7 +156,13 @@
       store_path = "${package}";
       available_stage = "build";
     })
-    firmwarePackages;
+    firmwarePackages
+    ++ map (package: {
+      kind = "runtime-package";
+      store_path = "${package}";
+      available_stage = "initrd";
+    })
+    extraRuntimeRoots;
 
   # Short /bin/<name> symlinks. A binary only needs to appear here if an
   # initrd unit (or a script invoked by one) references it as `/bin/foo`
@@ -357,8 +399,8 @@
 
   # Upstream unit symlinks go into /lib/systemd/system/ (not /etc/) so AOS's
   # explicit /etc masks and drop-ins retain higher priority. Production
-  # initrds deliberately omit systemd-debug-generator, so command-line masks
-  # cannot rewrite the stage-1 unit graph.
+  # initrds mask systemd-debug-generator, so command-line masks cannot rewrite
+  # the stage-1 unit graph.
   unitSymlinks =
     lib.concatMapStringsSep "\n" (u: ''
       if [ ! -e ${systemd}/lib/systemd/system/${u} ]; then
@@ -439,15 +481,23 @@
     name = "aos-initrd-archive";
     src = null;
 
-    buildDeps = [
-      cpio
-      zstd
-      coreutils
-      diffutils
-      findutils
-      gawk
-      jq
-    ];
+    buildDeps =
+      [
+        cpio
+        zstd
+        coreutils
+        diffutils
+        findutils
+        gawk
+        jq
+      ]
+      ++ lib.optionals immutableStage0 [
+        nativeErofsUtils
+        nativeLibselinux
+        nativePatchelf
+        nativePython
+      ]
+      ++ lib.optional (checkedMountExecutableCarrier != null) nativeCryptsetup;
 
     # Catalogs inside the compressed image name available outputs that are
     # not runtime roots. A compressed hash can accidentally survive Nix's
@@ -467,6 +517,12 @@
 
           # Copy exactly the same realized closure that the guest registers.
           cp ${registration}/store-paths closure-paths
+          # Additional immutable boot inputs must be registered alongside the
+          # selected runtime roots, never copied outside native admission.
+          ${lib.concatMapStringsSep "\n" (package: ''
+              ${grep}/bin/grep -Fx -- ${lib.escapeShellArg (toString package)} closure-paths >/dev/null
+            '')
+            extraRuntimeRoots}
           echo "    $(wc -l < closure-paths) unique store paths in initrd closure"
 
           # ── 1. Directory skeleton ───────────────────────────────────────
@@ -512,20 +568,7 @@
           # prefixes, so collect those rules into the initrd's vendor view.
           # Without 10-dm.rules/13-dm-disk.rules, veritysetup can create
           # /dev/dm-0 while systemd waits forever for dev-mapper-root.device.
-          mkdir -p root/lib/udev/rules.d
-          for rules_dir in root/nix/store/*/lib/udev/rules.d; do
-            [ -d "$rules_dir" ] || continue
-            for rule in "$rules_dir"/*.rules; do
-              [ -e "$rule" ] || continue
-              name=$(basename "$rule")
-              target="/''${rule#root/}"
-              if [ -e "root/lib/udev/rules.d/$name" ]; then
-                echo "initrd-builder: duplicate udev rule $name" >&2
-                exit 1
-              fi
-              ln -s "$target" "root/lib/udev/rules.d/$name"
-            done
-          done
+          $CONFIG_SHELL ${./collect-udev-rules.sh} "$PWD/root" ${systemd}
 
           # ── 3. Short /bin symlinks for the binaries we need by name ────
           ${binarySymlinks}
@@ -645,6 +688,13 @@
             cp -a ${initrdUnits}/. root/etc/systemd/system/ || true
           fi
 
+          ${lib.optionalString (initrdConfiguration != null) ''
+            # Preserve the exact provider-rendered files in the immutable root.
+            # Existing platform files cannot be silently replaced by an effect.
+            "$CONFIG_SHELL" ${./_install-initrd-configuration.sh} \
+              ${initrdConfiguration} root ${jq}/bin/jq
+          ''}
+
           # ── 7a. Network configuration rendered from native bootstrap policy.
           mkdir -p root/etc/systemd/network
           ${lib.optionalString (initrdNetworkDir != null) ''
@@ -679,6 +729,20 @@
             ${lib.escapeShellArg "ExecStartPre=${systemd}/bin/systemctl --quiet is-active ${completionUnit}"} \
             > root/etc/systemd/system/initrd-cleanup.service.d/50-aos-handoff.conf
 
+          # Admission authenticates complete immutable outputs. Restrict the
+          # initrd generator graph without deleting their installed binaries.
+          # systemd.generator gives /etc masks precedence over compiled-in
+          # vendor paths; the private verity copy remains manually gated.
+          mkdir -p root/etc/systemd/system-generators
+          for generator in systemd-debug-generator systemd-run-generator systemd-veritysetup-generator; do
+            ln -sfn /dev/null "root/etc/systemd/system-generators/$generator"
+            test "$(readlink "root/etc/systemd/system-generators/$generator")" = /dev/null
+          done
+          ${lib.optionalString validateBootIdentity ''
+            test ! -e root/lib/systemd/system-generators/systemd-veritysetup-generator
+            test -x root/lib/systemd/aos-systemd-veritysetup-generator
+          ''}
+
           # Upstream Wants links do not propagate failure to the actual service.
           # Guard both entry points, including direct target or service starts.
           for entrypoint in initrd-switch-root.target initrd-switch-root.service; do
@@ -698,7 +762,7 @@
           test -f root${lib.packageModuleLibrary}/default.nix
 
           # Stage admission invokes the exact selected package handlers.
-          # Resolve them from the sealed package documents after trimming.
+          # Resolve them from the sealed package documents after assembly.
           # A symlink could otherwise resolve against the build host's store
           # instead of an entry retained in the archive.
           ${jq}/bin/jq -r \
@@ -733,6 +797,154 @@
           set -euo pipefail
           mkdir -p $out
 
+          ${lib.optionalString immutableStage0 ''
+            echo "==> Building labeled immutable stage-1 EROFS"
+
+            ${lib.optionalString (checkedMountExecutableCarrier != null) ''
+              # The image and its Merkle tree enter the signed initrd together.
+              # The root hash is the fixed input for a later boot-time mapper;
+              # no executable authority is inferred from this build check.
+              carrier=${checkedMountExecutableCarrier}
+              if [ ! -d "$carrier" ] || [ -L "$carrier" ]; then
+                echo "initrd-builder: Mount carrier output is not a directory" >&2
+                exit 1
+              fi
+              for name in carrier.ext4 carrier.hash carrier.root-hash; do
+                if [ ! -f "$carrier/$name" ] || [ -L "$carrier/$name" ]; then
+                  echo "initrd-builder: Mount carrier $name is not a regular file" >&2
+                  exit 1
+                fi
+              done
+              test "$(stat -c %s "$carrier/carrier.ext4")" -gt 0
+              test "$(stat -c %s "$carrier/carrier.ext4")" -le 268435456
+              test "$(stat -c %s "$carrier/carrier.hash")" -gt 0
+              test "$(stat -c %s "$carrier/carrier.hash")" -le 8388608
+              test "$(stat -c %s "$carrier/carrier.root-hash")" -eq 65
+              LC_ALL=C ${grep}/bin/grep -Eq '^[0-9a-f]{64}$' \
+                "$carrier/carrier.root-hash"
+
+              ${nativeCryptsetup}/sbin/veritysetup dump \
+                "$carrier/carrier.hash" > carrier-verity-profile
+              LC_ALL=C ${grep}/bin/grep -Eq '^Hash type:[[:space:]]+1$' \
+                carrier-verity-profile
+              LC_ALL=C ${grep}/bin/grep -Eq '^Hash algorithm:[[:space:]]+sha256$' \
+                carrier-verity-profile
+              LC_ALL=C ${grep}/bin/grep -Eq '^Data block size:[[:space:]]+4096 \[bytes\]$' \
+                carrier-verity-profile
+              LC_ALL=C ${grep}/bin/grep -Eq '^Hash block size:[[:space:]]+4096 \[bytes\]$' \
+                carrier-verity-profile
+              data_blocks=$(${grep}/bin/grep '^Data blocks:' carrier-verity-profile \
+                | ${coreutils}/bin/tr -cd '0-9')
+              test -n "$data_blocks"
+              test "$data_blocks" -gt 0
+              test "$(stat -c %s "$carrier/carrier.ext4")" \
+                -eq "$((data_blocks * 4096))"
+
+              root_hash=$(${coreutils}/bin/cat "$carrier/carrier.root-hash")
+              ${nativeCryptsetup}/sbin/veritysetup verify \
+                "$carrier/carrier.ext4" "$carrier/carrier.hash" "$root_hash"
+
+              mkdir -p root/lib/aos/mount-executable-carrier
+              cp "$carrier/carrier.ext4" "$carrier/carrier.hash" \
+                "$carrier/carrier.root-hash" \
+                root/lib/aos/mount-executable-carrier/
+              chmod 0444 root/lib/aos/mount-executable-carrier/*
+            ''}
+
+            # Both conventional entry points resolve to the physical store
+            # objects that stage 0 verifies after loading the policy. Keep a
+            # /lib/systemd/systemd alias as an additional authoritative
+            # init_exec_t name while /usr remains the merged-/usr symlink.
+            ln -sfn ${stage0Init}/bin/aos-selinux-stage0 root/sbin/init
+            ln -sfn ${stage0Init}/bin/aos-selinux-stage0 root/init
+            ln -sfn ${systemd}/lib/systemd/systemd root/bin/systemd
+            ln -sfn ${systemd}/lib/systemd/systemd root/lib/systemd/systemd
+            mkdir -p root/sys/fs/selinux
+
+            systemd_interpreter=$(
+              ${nativePatchelf}/bin/patchelf --print-interpreter \
+                root${systemd}/lib/systemd/systemd
+            )
+            case "$systemd_interpreter" in
+              /nix/store/*) ;;
+              *)
+                echo "initrd-builder: systemd has a non-store ELF interpreter" >&2
+                exit 1
+                ;;
+            esac
+            if [ ! -f "root$systemd_interpreter" ]; then
+              echo "initrd-builder: staged systemd interpreter is absent" >&2
+              exit 1
+            fi
+
+            ${nativePython}/bin/python3 -B ${policySupport}/context_plan.py \
+              --root root \
+              --file-contexts ${policyRoot}/contexts/files/file_contexts \
+              --libselinux ${nativeLibselinux}/lib/libselinux.so.1 \
+              --dynamic-loader "$systemd_interpreter" \
+              --output-file-contexts exact-file-contexts \
+              --output-map expected-contexts.json
+            ${nativeLibselinux}/sbin/sefcontext_compile \
+              -p ${policyRoot}/policy/policy.33 \
+              -o exact-file-contexts.bin \
+              exact-file-contexts
+            ${nativePython}/bin/python3 -B \
+              ${policySupport}/verify_context_lookups.py \
+              --file-contexts exact-file-contexts \
+              --libselinux ${nativeLibselinux}/lib/libselinux.so.1 \
+              --expected expected-contexts.json
+
+            # The aliases above are useful only if the physical executable
+            # inodes received the exact label the PID-1 guard will demand.
+            ${nativePython}/bin/python3 -c '
+            import json, sys
+            expected = "system_u:object_r:init_exec_t"
+            entries = {
+                entry["path"]: entry for entry in
+                json.load(open(sys.argv[1], encoding="utf-8"))["entries"]
+            }
+            for path in sys.argv[2:]:
+                entry = entries.get(path)
+                if entry is None or entry["kind"] != "regular" or entry["context"] != expected:
+                    raise SystemExit(f"physical PID-1 executable is not exactly init_exec_t: {path}: {entry}")
+            ' \
+              expected-contexts.json \
+              ${stage0Init}/bin/aos-selinux-stage0 \
+              ${systemd}/lib/systemd/systemd
+
+            ${nativePython}/bin/python3 -B \
+              ${policySupport}/labeled_erofs_tar.py \
+              --root root \
+              --map expected-contexts.json \
+              --output stage1-labeled.tar
+            ${nativeErofsUtils}/bin/mkfs.erofs \
+              --all-root \
+              --tar=f \
+              -T0 \
+              -U bdfb6fc9-0000-4000-8000-000000000021 \
+              --workers=$NIX_BUILD_CORES \
+              -z zstd,level=19 \
+              aos-stage1.erofs \
+              stage1-labeled.tar
+            ${nativeErofsUtils}/bin/fsck.erofs aos-stage1.erofs
+            ${nativePython}/bin/python3 -B \
+              ${policySupport}/verify_erofs_contexts.py \
+              --dump-erofs ${nativeErofsUtils}/bin/dump.erofs \
+              --image aos-stage1.erofs \
+              --expected expected-contexts.json
+
+            # The outer newc archive is deliberately non-general: it contains
+            # only the static admission loader and the verified stage-1 image.
+            # No unlabeled stage-1 executable remains reachable before policy
+            # load and the kernel_t -> init_t transition.
+            mv root stage1-root
+            mkdir root
+            cp ${stage0Init}/bin/aos-selinux-stage0 root/init
+            cp aos-stage1.erofs root/aos-stage1.erofs
+            chmod 0555 root/init
+            chmod 0444 root/aos-stage1.erofs
+          ''}
+
           echo "==> Packing cpio archive"
           # Reproducible timestamps — every entry epoch 1.
           find root -exec touch -h -d '@1' '{}' +
@@ -761,8 +973,13 @@
 
           archive_size=$(stat -c %s "$out/initrd.img")
           archive_sha256=$(sha256sum "$out/initrd.img" | cut -d ' ' -f1)
+          configuration_root=${
+            if immutableStage0
+            then "stage1-root"
+            else "root"
+          }
           rendered_networks=$(
-            ${findutils}/bin/find root/etc/systemd/network \
+            ${findutils}/bin/find "$configuration_root/etc/systemd/network" \
               -maxdepth 1 -type f -printf '%f\n' \
               | LC_ALL=C ${coreutils}/bin/sort \
               | ${jq}/bin/jq -Rsc 'split("\n") | map(select(length > 0))'
@@ -770,7 +987,7 @@
           # Provider units are materialized after the pure option renderer, so
           # inventory the actual unit directory that enters the archive.
           rendered_units=$(
-            ${findutils}/bin/find root/etc/systemd/system \
+            ${findutils}/bin/find "$configuration_root/etc/systemd/system" \
               -maxdepth 1 \( -type f -o -type l \) -printf '%f\n' \
               | LC_ALL=C ${coreutils}/bin/sort \
               | ${jq}/bin/jq -Rsc 'split("\n") | map(select(length > 0))'
@@ -871,4 +1088,15 @@
     meta.description = "AOS initrd with explicit retained dependency roots";
   };
 in
-  initrdArtifact
+  if
+    immutableStage0
+    && builtins.any (tool: tool == null) [
+      nativeErofsUtils
+      nativeLibselinux
+      nativePatchelf
+      nativePython
+    ]
+  then throw "immutable initrd requires explicit native EROFS, SELinux, patchelf, and Python tools"
+  else if checkedMountExecutableCarrier != null && nativeCryptsetup == null
+  then throw "Mount executable carrier verification requires native cryptsetup"
+  else initrdArtifact

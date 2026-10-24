@@ -8,6 +8,7 @@
   ...
 }: let
   cfg = config.aos.services.dbus;
+  hostStage = (config.aos.boot.stage or "host") == "host";
   registrationConfigurationPath = config.aos.abilities.configuration.operations.file.effects.dbus.input.path;
   registrationConfigurationResource = config.aos.abilities.configuration.operations.file.effects.dbus.outputs.resource;
   command = entryPoint: arguments: {
@@ -22,20 +23,21 @@
     bootstrap = true;
     bootstrapPrincipals = [config.aos.abilities.identity.operations.principal.effects.dbus.outputs.name];
     activationInputs = [registrationConfigurationResource];
-    directories.managed = [
-      {
-        path = "dbus";
-        purpose = "runtime";
-        mode = "0755";
-        retention = "service-lifetime";
-      }
-      {
+    directories.managed =
+      [
+        {
+          path = "dbus";
+          purpose = "runtime";
+          mode = "0755";
+          retention = "service-lifetime";
+        }
+      ]
+      ++ lib.optional hostStage {
         path = "dbus";
         purpose = "state";
         mode = "0755";
         retention = "persistent";
-      }
-    ];
+      };
     policy.hardening = {
       allow_privilege_escalation = true;
       ambient_privileges = [];
@@ -92,10 +94,9 @@
       stop_timeout_millis = 90000;
     };
     dependencies = {
-      prerequisites = [
-        "/run/dbus"
-        "/var/lib/dbus"
-      ];
+      # The initrd reads its seeded /etc/machine-id before persistent /var is
+      # mounted. Only the host owns the legacy persistent D-Bus state path.
+      prerequisites = ["/run/dbus"] ++ lib.optional hostStage "/var/lib/dbus";
       after = [];
       before = [];
       requires = [];
@@ -135,18 +136,19 @@
         optional = false;
       }
     ];
-    storage.mounts = [
-      {
-        name = "runtime";
-        source = "/run/dbus";
-        access = "read-write";
-      }
-      {
+    storage.mounts =
+      [
+        {
+          name = "runtime";
+          source = "/run/dbus";
+          access = "read-write";
+        }
+      ]
+      ++ lib.optional hostStage {
         name = "state";
         source = "/var/lib/dbus";
         access = "read-write";
-      }
-    ];
+      };
     socket_activation.sockets = [
       {
         name = "system-bus";

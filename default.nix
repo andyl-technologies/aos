@@ -238,7 +238,39 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       else {};
     # A caller-provided package set binds the exact retained artifacts used by
     # both image construction and the native deployment descriptors.
-    effectivePkgs = specialArgs.pkgs or pkgs;
+    effectivePkgs = specialArgs.pkgs or systemPackages;
+    # Layout-consuming runtime libraries follow the selected image kernel.
+    # Kernel build tools retain the ordinary package fixed point to avoid a
+    # dependency cycle through Systemd's generated kernel layout.
+    systemPackages = import ./pkgs {
+      inherit
+        lib
+        stdenv
+        firmwarePackages
+        sharedGoCacheDir
+        sharedBazelCacheDir
+        sharedRustTargetDir
+        sharedRustIncremental
+        sharedAccacheDir
+        sharedAccacheStateDir
+        ordinaryToolchainPackages
+        ;
+      buildPackages =
+        if isCrossBuild
+        then buildPackages
+        else systemPackages;
+      releasePlatforms = selectedReleasePlatforms;
+      kernelPackages = pkgs;
+      systemdKernel = selectedRuntimeKernel;
+    };
+    needsKernelLayout = configuration:
+      configuration.aos.sandbox.networkWorker.enable
+      || (configuration.aos.sandbox.runtimeDeploymentPublisher.enable
+        && configuration.aos.sandbox.runtimeDeploymentPublisher.bootPreparation);
+    selectedRuntimeKernel =
+      if needsKernelLayout selectionEvaluation.config
+      then selectionEvaluation.config.system.build.kernel
+      else null;
     systemName =
       if builtins.isAttrs args && args ? systemName
       then args.systemName
@@ -296,7 +328,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
             ];
           }
         ];
-      inherit pkgs lib operatorModules runtimeModules packageModules;
+      inherit lib operatorModules runtimeModules packageModules;
+      pkgs = effectivePkgs;
       specialArgs = moduleSpecialArgs;
     };
     hostProjectionInput = lib.build.evaluationInput (
@@ -317,10 +350,10 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       };
     };
     abilityEvaluation = import ./lib/build/evaluate-stages.nix {
+      pkgs = effectivePkgs;
       stageSpecialArgsFor = evaluationInputFor;
       inherit
         lib
-        pkgs
         modules
         moduleList
         selectionEvaluation
@@ -348,17 +381,35 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       initrdScope
       initrdAbilityEvaluation
       ;
-  in let
     finalHostEvaluation = lib.evalModules {
+      # A stale budget name would otherwise be dropped before artifact builders
+      # see it, silently retaining a smaller default instead of the chosen limit.
+      checkDefinitionPaths = [["aos" "image" "budgets"]];
       modules =
         modules
         ++ moduleList
         ++ [
           {
             aos.activation.scope = hostScope;
+            assertions = [
+              {
+                assertion =
+                  specialArgs ? pkgs
+                  || (
+                    needsKernelLayout finalHostEvaluation.config
+                    == needsKernelLayout selectionEvaluation.config
+                    && (selectedRuntimeKernel
+                      == null
+                      || builtins.toString finalHostEvaluation.config.system.build.kernel
+                      == builtins.toString selectedRuntimeKernel)
+                  );
+                message = "package modules must preserve the kernel layout used to build the selected runtime libraries";
+              }
+            ];
           }
         ];
-      inherit pkgs lib runtimeModules;
+      inherit lib runtimeModules;
+      pkgs = effectivePkgs;
       operatorModules = operatorModules ++ hostConfigurationSources;
       packageModules = finalPackageModules;
       specialArgs =
@@ -377,6 +428,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     system =
       finalHostEvaluation
       // {
+        pkgs = effectivePkgs;
         qualificationProjection = abilityEvaluation.qualificationProjection;
         # Extensions are ephemeral evaluation overlays. Rebuild every
         # resolver stage while allowing the caller's inline module values.
@@ -455,7 +507,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
           # (e.g. the fleet harness, which bakes per-VM identity via
           # `environment.etc`) can overlay a fragment without rebuilding the
           # module list. Retains this variant's native stage sources.
-          inherit (evaluated) extendModules;
+          inherit (evaluated) extendModules pkgs;
           build = {
             toplevel = evaluated.config.system.build.toplevel;
             kernel = evaluated.config.system.build.kernel;
@@ -997,9 +1049,38 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
   # ---------------------------------------------------------------------------
   fleetHarness = import ./lib/testing/fleet.nix {inherit pkgs lib;};
 
-  discoverFleetTests = let
-    fleetSpec = import ./lib/testing/fleet-spec.nix {inherit lib pkgs;};
+  fleetSpec = import ./lib/testing/fleet-spec.nix {inherit lib pkgs;};
+  loadFleetSpec = filename: let
+    specModule = import (./tests/fleet + "/${filename}");
+    availableArgs = {
+      inherit lib pkgs mkAbilityQualificationProjection;
+      mkSystem = mkFixtureSystem;
+      inherit (testing) dataUrl mkDarlingFleetSpec mkDarlingFleetSuite;
+      systems = discoverSystems;
+      # Fleet checks consume the exact local-platform production subject and
+      # unsigned signing inputs without importing flake self recursively.
+      containerPublicationInputs =
+        if containerPublicationInputsOverride != null
+        then containerPublicationInputsOverride
+        else containerImages.aos.publicationInputs;
+    };
+    raw = specModule (
+      lib.filterAttrs (name: _: builtins.hasAttr name (builtins.functionArgs specModule))
+      availableArgs
+    );
+    eval = lib.evalModules {
+      modules = [
+        {options.spec = lib.mkOption {type = fleetSpec.fleetSpecType;};}
+        {config.spec = raw;}
+      ];
+    };
+  in
+    eval.config.spec;
 
+  mkFleetTestFromFile = filename:
+    fleetHarness.mkFleetTest (loadFleetSpec filename);
+
+  discoverFleetTests = let
     entries = builtins.readDir ./tests/fleet;
     fleetFiles = builtins.filter (
       n:
@@ -1008,38 +1089,11 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
         && builtins.match ".*\\.nix" n != null
         && builtins.substring 0 1 n != "_"
     ) (builtins.attrNames entries);
-
-    loadSpec = filename: let
-      specModule = import (./tests/fleet + "/${filename}");
-      availableArgs = {
-        inherit lib pkgs mkAbilityQualificationProjection;
-        mkSystem = mkFixtureSystem;
-        inherit (testing) dataUrl mkDarlingFleetSpec mkDarlingFleetSuite;
-        systems = discoverSystems;
-        # Fleet checks consume the exact local-platform production subject and
-        # unsigned signing inputs without importing flake self recursively.
-        containerPublicationInputs =
-          if containerPublicationInputsOverride != null
-          then containerPublicationInputsOverride
-          else containerImages.aos.publicationInputs;
-      };
-      raw = specModule (
-        lib.filterAttrs (name: _: builtins.hasAttr name (builtins.functionArgs specModule))
-        availableArgs
-      );
-      eval = lib.evalModules {
-        modules = [
-          {options.spec = lib.mkOption {type = fleetSpec.fleetSpecType;};}
-          {config.spec = raw;}
-        ];
-      };
-    in
-      eval.config.spec;
   in
     builtins.listToAttrs (
       map (filename: {
         name = lib.removeSuffix ".nix" filename;
-        value = fleetHarness.mkFleetTest (loadSpec filename);
+        value = mkFleetTestFromFile filename;
       })
       fleetFiles
     );
@@ -1610,7 +1664,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
       referenceIntegrity = crucibleReferenceIntegrity;
     };
 in rec {
-  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem mkAbilityQualificationProjection containerImages containerDefinitions releaseQualificationExecutor releaseTooling allPackages;
+  inherit lib pkgs stdenv buildStdenv buildPackages modules mkSystem mkAbilityQualificationProjection mkFleetTestFromFile containerImages containerDefinitions releaseQualificationExecutor releaseTooling allPackages;
   # nix-build does not descend through arbitrary nested check attrsets. An
   # explicit list reaches every gate while stopping at derivations, whose
   # passthru attributes are metadata rather than additional checks.
@@ -1728,6 +1782,7 @@ in rec {
       cargo-artifacts = import ./tests/cargo-artifacts {inherit pkgs;};
       aos = pkgs.aos.passthru.tests;
       aos-test-targets = pkgs.aos.passthru.testTargets;
+      aos-sandbox-coordinator-test-targets = pkgs.aos.passthru.coordinatorTestTargets;
       systemd-native-unit-parser = import ./tests/abilities/systemd-native-unit-parser.nix {inherit pkgs;};
       crucible-controller = pkgs.crucible-controller;
       crucible-qemu-plugin = pkgs.crucible-qemu-plugin;
@@ -1820,6 +1875,10 @@ in rec {
       native-sandbox-boundary = import ./tests/build/native-sandbox-boundary.nix {
         pkgs = buildPackages;
       };
+      native-acquire-v3-protocol = import ./tests/build/native-acquire-v3-protocol.nix {
+        pkgs = buildPackages;
+        inherit lib;
+      };
       aos-dev-cli = import ./tests/build/aos-dev-cli.nix {inherit pkgs;};
       aos-cloud-vm = import ./tests/build/aos-cloud-vm.nix {inherit pkgs;};
       accache = import ./tests/build/accache.nix {
@@ -1858,9 +1917,73 @@ in rec {
       gcc-config-shell = import ./tests/build/mk-gcc-config-shell.nix {inherit pkgs lib;};
       hardening-probe = import ./tests/build/hardening-probe.nix {inherit pkgs lib;};
       kernel-config = import ./tests/build/kernel-config.nix {inherit pkgs lib;};
+      systemd-backend-policy-artifact =
+        if hostPlatform.isLinux
+        then
+          import ./tests/build/systemd-backend-policy-artifact.nix {
+            pkgs = buildPackages;
+            systemd = pkgs.systemd;
+          }
+        else null;
+      sandbox-linux-uapi = import ./tests/build/sandbox-linux-uapi.nix {inherit pkgs;};
+      sandbox-kernel-report-ingress = import ./tests/build/sandbox-kernel-report-ingress.nix {
+        inherit pkgs lib;
+      };
+      sandbox-guest-root-template = import ./tests/build/sandbox-guest-root-template.nix {inherit pkgs;};
+      sandbox-controller-service = import ./tests/build/sandbox-controller-service.nix {
+        inherit pkgs lib;
+      };
+      sandbox-standalone-resource-bank =
+        if hostPlatform.isLinux && hostPlatform.is64bit
+        then import ./tests/build/sandbox-standalone-resource-bank.nix {inherit pkgs lib systems;}
+        else null;
+      sandbox-nix-method46-profile =
+        if hostPlatform.isLinux && hostPlatform.is64bit
+        then import ./tests/build/sandbox-nix-method46-profile.nix {inherit pkgs lib systems;}
+        else null;
+      sandbox-nix-offline-hardware-profile =
+        if hostPlatform.isLinux && hostPlatform.is64bit
+        then import ./tests/build/sandbox-nix-offline-hardware-profile.nix {inherit pkgs lib systems;}
+        else null;
+      sandbox-nix-offline-approval-delivery-profile =
+        if hostPlatform.isLinux && hostPlatform.is64bit
+        then import ./tests/build/sandbox-nix-offline-approval-delivery-profile.nix {inherit pkgs lib systems;}
+        else null;
+      sandbox-resource-unit-names = import ./tests/build/sandbox-resource-unit-names.nix {inherit pkgs;};
+      sandbox-policy-cache-recovery-service = import ./tests/build/sandbox-policy-cache-recovery-service.nix {
+        inherit pkgs lib;
+      };
+      sandbox-cache-signer-service = import ./tests/build/sandbox-cache-signer-service.nix {
+        inherit pkgs lib;
+        mkSystem = mkFixtureSystem;
+      };
+      sandbox-selected-manager-stage0 = import ./tests/build/sandbox-selected-manager-stage0.nix {
+        inherit lib pkgs systems;
+      };
+      sandbox-source-provider-activation = import ./tests/build/sandbox-source-provider-activation.nix {
+        inherit pkgs lib;
+      };
+      structured-attrs-scrub = import ./tests/build/structured-attrs-scrub.nix {inherit pkgs;};
+      selinux-erofs-labels = import ./tests/build/selinux-erofs-labels.nix {
+        inherit pkgs lib;
+        system = discoverSystems.server;
+      };
+      erofs-deduplication.measurement = import ./tests/build/erofs-deduplication.nix {
+        pkgs = buildPackages;
+      };
+      selinux-root-handoff = import ./tests/build/selinux-root-handoff.nix {
+        inherit pkgs lib;
+        system = discoverSystems.server;
+      };
       rootfs-kernel-modules = import ./tests/build/rootfs-kernel-modules.nix {inherit pkgs lib;};
       python-bytecode = import ./tests/build/python-bytecode.nix {pkgs = buildPackages;};
       linux-cross-smoke = import ./tests/build/linux-cross-smoke.nix {
+        pkgs = buildPackages;
+      };
+      linux-cross-llvm = import ./tests/build/linux-cross-llvm.nix {
+        pkgs = buildPackages;
+      };
+      linux-cross-runtime = import ./tests/build/linux-cross-runtime.nix {
         pkgs = buildPackages;
       };
       linux-hosted-toolchain = import ./tests/build/linux-hosted-toolchain.nix {
@@ -1907,7 +2030,14 @@ in rec {
         inherit pkgs lib;
         mkSystem = mkFixtureSystem;
       };
+      vm-rootfs-adapter = import ./lib/testing/vm-rootfs-adapter.nix {
+        inherit pkgs lib;
+        mkSystem = mkFixtureSystem;
+      };
       initrd-module-hardlinks = import ./tests/build/initrd-module-hardlinks.nix {inherit pkgs lib;};
+      initrd-configuration-store-files = import ./tests/build/initrd-configuration-store-files.nix {inherit pkgs lib;};
+      selinux-initrd-pure-evaluation = import ./tests/build/selinux-initrd-pure-evaluation.nix {inherit pkgs lib;};
+      initrd-udev-rules = import ./tests/build/initrd-udev-rules.nix {inherit pkgs;};
       esp-population = import ./tests/build/esp-population.nix {inherit pkgs;};
       initrd-stage-contract = import ./tests/build/initrd-stage-contract.nix {
         inherit pkgs lib;
@@ -1927,8 +2057,9 @@ in rec {
           };
       native-profile-replay = let
         checks = import ./tests/build/native-profile-replay.nix {
-          inherit lib;
+          inherit lib pkgs;
           system = serverSystem;
+          secureBootSystem = discoverSystems.server-secureboot-lockdown;
         };
         checkAll = value:
           if builtins.isAttrs value
@@ -1980,9 +2111,11 @@ in rec {
       golden-image-budgets = lib.mapAttrs (_: system: system.checks.image-budget) imageBudgetSystems;
     in
       {
-        inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache python-bytecode;
-        inherit image-reproducibility;
-        inherit vm-artifacts artifact-consumption native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell esp-population hardening-probe host-native-inputs initrd-native-inputs initrd-module-hardlinks initrd-stage-contract native-stage-replay native-profile-replay kernel-config rootfs-kernel-modules linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets;
+        inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache python-bytecode artifact-consumption native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell esp-population hardening-probe host-native-inputs initrd-native-inputs initrd-module-hardlinks initrd-udev-rules initrd-stage-contract native-stage-replay native-profile-replay kernel-config rootfs-kernel-modules linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets native-acquire-v3-protocol erofs-deduplication linux-cross-llvm linux-cross-runtime sandbox-guest-root-template sandbox-controller-service sandbox-selected-manager-stage0 sandbox-nix-method46-profile sandbox-nix-offline-hardware-profile sandbox-nix-offline-approval-delivery-profile sandbox-resource-unit-names sandbox-policy-cache-recovery-service sandbox-cache-signer-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-scrub vm-rootfs-adapter;
+        inherit sandbox-standalone-resource-bank;
+        inherit systemd-backend-policy-artifact;
+        inherit initrd-configuration-store-files selinux-initrd-pure-evaluation;
+        inherit image-reproducibility vm-artifacts;
         # These checks inspect realized closures, so keep them out of the pure evaluation layer.
         inherit config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness;
         config-manifest = config-manifest;
@@ -2002,7 +2135,15 @@ in rec {
               else []
             )
             ++ lib.optional (artifact-consumption != null) artifact-consumption
-            ++ [vm-artifacts toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache python-bytecode native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell esp-population initrd-module-hardlinks initrd-stage-contract native-stage-replay native-profile-replay kernel-config rootfs-kernel-modules linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness config-manifest configProvenanceChecks.all renderedEvalSuites.rendered-system]
+            ++ lib.optional (sandbox-standalone-resource-bank != null) sandbox-standalone-resource-bank
+            ++ lib.optional (sandbox-nix-method46-profile != null) sandbox-nix-method46-profile
+            ++ lib.optional (sandbox-nix-offline-hardware-profile != null) sandbox-nix-offline-hardware-profile
+            ++ lib.optional (sandbox-nix-offline-approval-delivery-profile != null) sandbox-nix-offline-approval-delivery-profile
+            ++ lib.optional (systemd-backend-policy-artifact != null) systemd-backend-policy-artifact
+            ++ [initrd-configuration-store-files selinux-initrd-pure-evaluation]
+            ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache python-bytecode native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell esp-population initrd-module-hardlinks initrd-udev-rules initrd-stage-contract native-stage-replay native-profile-replay kernel-config rootfs-kernel-modules linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness config-manifest configProvenanceChecks.all renderedEvalSuites.rendered-system]
+            ++ [native-acquire-v3-protocol sandbox-guest-root-template sandbox-controller-service sandbox-selected-manager-stage0 sandbox-resource-unit-names sandbox-policy-cache-recovery-service sandbox-cache-signer-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-scrub vm-rootfs-adapter]
+            ++ [vm-artifacts]
             ++ builtins.attrValues (builtins.removeAttrs renderedEvalSuites ["rendered-system"])
             ++ builtins.attrValues hardening-probe
             ++ builtins.attrValues linux-hosted-llvm
@@ -2016,6 +2157,8 @@ in rec {
                 # Retain the cross-built AArch64 smoke output without treating
                 # it as an executable build tool for this x86_64 aggregate.
                 test -e ${linux-cross-smoke}
+                test -e ${linux-cross-llvm}
+                test -e ${linux-cross-runtime}
                 mkdir -p $out
                 echo "PASS" > $out/result
               '';
@@ -2027,7 +2170,10 @@ in rec {
     tla = import ./lib/testing/tla.nix {inherit pkgs lib;};
     trivial-builders = import ./lib/testing/trivial-builders.nix {inherit pkgs lib;};
     module-args = import ./lib/testing/module-args.nix {inherit pkgs lib;};
-    module-enforcement = import ./lib/testing/module-enforcement.nix {inherit pkgs lib;};
+    module-enforcement = import ./lib/testing/module-enforcement.nix {
+      inherit pkgs lib;
+      mkSystem = mkFixtureSystem;
+    };
     package-documentation = import ./tests/packages/documentation.nix {
       inherit pkgs lib;
       system = serverSystem;
@@ -2047,6 +2193,18 @@ in rec {
     config-manifest = import ./lib/testing/config-manifest.nix {
       inherit pkgs lib;
       system = discoverSystems.server;
+    };
+    sandbox-broker-credentials = import ./lib/testing/sandbox-broker-credentials.nix {
+      inherit pkgs lib;
+      mkSystem = mkFixtureSystem;
+    };
+    sandbox-network-broker = import ./lib/testing/sandbox-network-broker.nix {
+      inherit pkgs lib;
+      mkSystem = mkFixtureSystem;
+    };
+    sandbox-network-inspector-guard = import ./lib/testing/sandbox-network-inspector-guard.nix {
+      inherit pkgs lib;
+      mkSystem = mkFixtureSystem;
     };
     config-provenance = configProvenanceChecks.all;
     nginx-config = import ./tests/packages/nginx-config.nix {
@@ -2145,6 +2303,7 @@ in rec {
           module-enforcement
           package-documentation
           registry-hub
+          sandbox-broker-credentials
           nginx-config
           integration.envoy-ability-module-contract
           integration.cloudcore-config
@@ -2216,6 +2375,51 @@ in rec {
         hub-native-operations = hubNativeOperationsTest;
         native-configuration-lower = import ./tests/vm/configuration-lower.nix {inherit pkgs testing;};
         hub-settings = hubSettingsTest;
+        sandbox-filesystem-capability = import ./tests/vm/sandbox-filesystem-capability.nix {
+          inherit testing pkgs lib;
+        };
+        sandbox-mount-executable-carrier = import ./tests/vm/sandbox-mount-executable-carrier.nix {
+          inherit testing pkgs lib;
+        };
+        sandbox-mount-carrier-reboot = import ./tests/vm/sandbox-mount-carrier-reboot.nix {
+          inherit testing pkgs;
+        };
+        sandbox-service-journal = import ./tests/vm/sandbox-service-journal.nix {
+          inherit testing pkgs lib;
+        };
+        sandbox-mount-journal-cold-replay = import ./tests/vm/sandbox-mount-journal-cold-replay.nix {
+          inherit testing pkgs lib;
+        };
+        sandbox-source-provider-native-recovery = import ./tests/vm/sandbox-source-provider-native-recovery.nix {
+          inherit testing pkgs lib;
+        };
+        sandbox-source-provider-detached-root = import ./tests/vm/sandbox-source-provider-detached-root.nix {
+          inherit testing pkgs lib;
+        };
+        sandbox-local-identity = import ./tests/vm/sandbox-local-identity.nix {
+          inherit testing pkgs lib;
+        };
+        sandbox-openssh-attach-profile = import ./tests/vm/sandbox-openssh-attach-profile.nix {
+          inherit testing pkgs lib;
+        };
+        sandbox-guest-owner-confinement = import ./tests/vm/sandbox-guest-owner-confinement.nix {
+          inherit testing pkgs;
+        };
+        sandbox-policy-negative = import ./tests/vm/sandbox-policy-negative.nix {
+          inherit testing pkgs lib;
+        };
+        sandbox-q04-held-writer-idmap = import ./tests/vm/sandbox-q04-held-writer-idmap.nix {
+          inherit testing pkgs;
+        };
+        sandbox-q04-protected-bootstrap = import ./tests/vm/sandbox-q04-protected-bootstrap.nix {
+          inherit testing pkgs lib;
+        };
+        sandbox-cache-journal-readonly-replay = import ./tests/vm/sandbox-cache-journal-readonly-replay.nix {
+          inherit testing pkgs lib;
+        };
+        sandbox-cache-physical-join = import ./tests/vm/sandbox-cache-physical-join.nix {
+          inherit testing pkgs lib;
+        };
         apm-install-at-boot = apmInstallAtBootCheck;
         homes-enabled = homesEnabledCheck;
         package-preset = packagePresetCheck;

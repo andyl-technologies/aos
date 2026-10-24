@@ -3,7 +3,7 @@
   config,
   lib,
 }: let
-  services = lib.filterAttrs (_: service: service.enable && (service.bootstrap || service.activationOwner != "ability")) config.aos.services;
+  services = lib.filterAttrs (_: service: service.enable && (service.bootstrap || (service.retain_image_definition or false) || service.activationOwner != "ability")) config.aos.services;
   effects = config.aos.abilities.serviceManagement.operations.resourceGroup.effects;
   references = builtins.filter builtins.isAttrs (builtins.map (service: (service.resources or {}).resource_group or null) (builtins.attrValues services));
   producerFor = reference: let

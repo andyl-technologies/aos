@@ -1,0 +1,406 @@
+--- a/src/owned_value.rs
++++ b/src/owned_value.rs
+@@ -20,6 +20,22 @@
+ pub struct OwnedValue(pub(crate) Value<'static>);
+ 
+ impl OwnedValue {
++    /// Wraps a value whose entire data already has a static lifetime.
++    ///
++    /// Moves the original container buffers and descriptors without walking,
++    /// cloning, or promoting their contents. Owned data remains owned; static
++    /// borrowed strings and descriptors remain static borrows. In particular,
++    /// this does not duplicate a file descriptor or convert a borrowed one to
++    /// ownership. The input lifetime guarantees that no borrow can expire
++    /// while the returned value exists.
++    ///
++    /// Use [`Value::try_into_owned`] instead when borrowed input does not have
++    /// a static lifetime and must be promoted to owned storage.
++    #[must_use]
++    pub fn from_static_value(value: Value<'static>) -> Self {
++        Self(value)
++    }
++
+     /// Attempt to clone the value.
+     pub fn try_clone(&self) -> Result<Self, crate::Error> {
+         self.0.try_clone().map(Self)
+@@ -353,3 +369,69 @@
+         Ok(())
+     }
+ }
++
++
++#[cfg(test)]
++mod static_value_tests {
++    use super::*;
++
++    #[test]
++    fn static_array_and_nested_structure_move_the_original_buffers() {
++        let value: Value<'static> = Value::from(vec![
++            (String::from("original"), vec![String::from("argument")], 7_u64),
++        ]);
++        let Value::Array(array) = &value else { panic!("array fixture") };
++        let outer = array.inner().as_ptr();
++        let Value::Structure(structure) = &array.inner()[0] else { panic!("structure fixture") };
++        let fields = structure.fields().as_ptr();
++        let Value::Str(text) = &structure.fields()[0] else { panic!("string fixture") };
++        let text_pointer = text.as_str().as_ptr();
++        let Value::Array(arguments) = &structure.fields()[1] else { panic!("argument fixture") };
++        let argument_cells = arguments.inner().as_ptr();
++
++        let owned = OwnedValue::from_static_value(value);
++
++        let Value::Array(array) = &*owned else { panic!("array output") };
++        assert_eq!(array.inner().as_ptr(), outer);
++        let Value::Structure(structure) = &array.inner()[0] else { panic!("structure output") };
++        assert_eq!(structure.fields().as_ptr(), fields);
++        let Value::Str(text) = &structure.fields()[0] else { panic!("string output") };
++        assert_eq!(text.as_str().as_ptr(), text_pointer);
++        let Value::Array(arguments) = &structure.fields()[1] else { panic!("argument output") };
++        assert_eq!(arguments.inner().as_ptr(), argument_cells);
++    }
++
++    #[test]
++    fn nested_static_borrow_remains_the_same_static_borrow() {
++        static ORIGINAL: &str = "static original";
++        let value: Value<'static> = Value::from((ORIGINAL, 17_u32));
++
++        let owned = OwnedValue::from_static_value(value);
++
++        let Value::Structure(structure) = &*owned else { panic!("structure output") };
++        let Value::Str(text) = &structure.fields()[0] else { panic!("static string output") };
++        assert_eq!(text.as_str().as_ptr(), ORIGINAL.as_ptr());
++        assert_eq!(text.as_str(), ORIGINAL);
++    }
++
++    #[cfg(unix)]
++    #[test]
++    fn nested_owned_descriptor_moves_without_duplication() {
++        use std::os::fd::{AsRawFd as _, OwnedFd};
++        use std::os::unix::net::UnixStream;
++
++        let (stream, peer) = UnixStream::pair().unwrap();
++        let descriptor: OwnedFd = stream.into();
++        let original = descriptor.as_raw_fd();
++        let value: Value<'static> = Value::from((7_u32, crate::Fd::Owned(descriptor)));
++
++        let owned = OwnedValue::from_static_value(value);
++
++        let Value::Structure(structure) = &*owned else { panic!("structure output") };
++        let Value::Fd(crate::Fd::Owned(descriptor)) = &structure.fields()[1] else {
++            panic!("original owned descriptor")
++        };
++        assert_eq!(descriptor.as_raw_fd(), original);
++        assert!(peer.peer_addr().is_ok());
++    }
++}
+--- a/src/ser.rs
++++ b/src/ser.rs
+@@ -85,7 +85,7 @@
+     #[cfg(unix)]
+     let size = match fds {
+         FdList::Number(n) => size.set_num_fds(n),
+-        FdList::Fds(_) => unreachable!("`Fds::Fds` is not possible here"),
++        FdList::Fds(_) | FdList::Retained { .. } => unreachable!("`Fds::Fds` is not possible here"),
+     };
+ 
+     Ok(size)
+@@ -166,10 +166,24 @@
+     S::Error: Into<Error>,
+     T: ?Sized + Serialize,
+ {
++    to_writer_for_signature_engine_v2(writer, ctxt, signature, value,
++        #[cfg(unix)] None)
++}
++
++fn to_writer_for_signature_engine_v2<W, S, T>(
++    writer: &mut W, ctxt: Context, signature: S, value: &T,
++    #[cfg(unix)] retained: Option<&mut FdList>,
++) -> Result<Written>
++where
++    W: Write + Seek,
++    S: TryInto<Signature>, S::Error: Into<Error>, T: ?Sized + Serialize,
++{
+     let signature = signature.try_into().map_err(Into::into)?;
+ 
+     #[cfg(unix)]
+-    let mut fds = FdList::Fds(vec![]);
++    let mut local_fds = FdList::Fds(vec![]);
++    #[cfg(unix)]
++    let fds = retained.unwrap_or(&mut local_fds);
+ 
+     let len = match ctxt.format() {
+         Format::DBus => {
+@@ -177,7 +191,7 @@
+                 &signature,
+                 writer,
+                 #[cfg(unix)]
+-                &mut fds,
++                &mut *fds,
+                 ctxt,
+             )?;
+             value.serialize(&mut ser)?;
+@@ -189,7 +203,7 @@
+                 &signature,
+                 writer,
+                 #[cfg(unix)]
+-                &mut fds,
++                &mut *fds,
+                 ctxt,
+             )?;
+             value.serialize(&mut ser)?;
+@@ -199,12 +213,80 @@
+ 
+     let written = Written::new(len, ctxt);
+     #[cfg(unix)]
+-    let written = match fds {
+-        FdList::Fds(fds) => written.set_fds(fds),
++    let written = match std::mem::replace(fds, FdList::Fds(vec![])) {
++        FdList::Fds(fds) | FdList::Retained { fds, .. } => written.set_fds(fds),
+         FdList::Number(_) => unreachable!("`Fds::Number` is not possible here"),
+     };
+ 
+     Ok(written)
++}
++
++/// Retains the same serializer's reached native FD duplicates through refusal.
++///
++/// This inert native destination supplies no role, budget, or authority. The
++/// actual caller owns the writer, input, and returned original error separately.
++#[cfg(unix)]
++pub struct FdWriteOriginalV2 {
++    fds: FdList,
++    entered: bool,
++}
++
++#[cfg(unix)]
++impl FdWriteOriginalV2 {
++    /// Allocates an already-admitted bounded descriptor table without native IO.
++    ///
++    /// # Panics
++    /// Panics if the requested descriptor table exceeds Rust's allocation limit.
++    #[must_use]
++    pub fn new(maximum_descriptors: usize) -> Self {
++        Self { fds: FdList::Retained { fds: Vec::with_capacity(maximum_descriptors),
++            maximum: maximum_descriptors }, entered: false }
++    }
++
++    /// Closes an actually empty table and physically releases its storage.
++    ///
++    /// # Errors
++    /// Refuses a reached descriptor prefix. Success permanently closes this
++    /// destination; it never rearms serialization or changes a resource ledger.
++    pub fn retire_empty_storage_v2(&mut self) -> Result<()> {
++        if self.retained_descriptor_count_v2() != 0 { return Err(Error::OutOfBounds); }
++        self.entered = true;
++        match &mut self.fds {
++            FdList::Fds(fds) | FdList::Retained { fds, .. } => drop(std::mem::take(fds)),
++            FdList::Number(_) => return Err(Error::IncorrectType),
++        }
++        Ok(())
++    }
++
++    /// Reports reached native descriptor slots without exposing or adopting them.
++    #[must_use]
++    pub fn retained_descriptor_count_v2(&self) -> usize {
++        match &self.fds { FdList::Fds(fds) | FdList::Retained { fds, .. } => fds.len(), FdList::Number(_) => 0 }
++    }
++}
++
++#[cfg(unix)]
++impl Default for FdWriteOriginalV2 { fn default() -> Self { Self::new(0) } }
++
++/// Serializes through the same engine into an already-owned native destination.
++///
++/// # Errors
++/// Refuses reentry or any original signature, serializer, write, or descriptor
++/// duplication failure. Every reached duplicate remains in `original` on Err;
++/// successful `Written` owns those same duplicates as in the ordinary function.
++///
++/// # Safety
++/// The caller must keep either the failed `original` or successful `Written`
++/// alive for as long as any serialized bytes may refer to its descriptors.
++#[cfg(unix)]
++pub unsafe fn to_writer_retaining_fds_v2<W, T>(
++    writer: &mut W, ctxt: Context, value: &T, original: &mut FdWriteOriginalV2,
++) -> Result<Written>
++where W: Write + Seek, T: ?Sized + Serialize + DynamicType,
++{
++    if original.entered { return Err(Error::Message("retained serializer reentry".to_owned())); }
++    original.entered = true;
++    to_writer_for_signature_engine_v2(writer, ctxt, value.signature(), value, Some(&mut original.fds))
+ }
+ 
+ /// Serialize `T` that has the given signature, to a new byte vector.
+@@ -255,6 +337,7 @@
+ #[cfg(unix)]
+ pub(crate) enum FdList {
+     Fds(Vec<OwnedFd>),
++    Retained { fds: Vec<OwnedFd>, maximum: usize },
+     Number(u32),
+ }
+ 
+@@ -266,12 +349,19 @@
+     pub(crate) fn add_fd(&mut self, fd: std::os::fd::RawFd) -> Result<u32> {
+         use std::os::fd::{AsRawFd, BorrowedFd};
+ 
++        let maximum = match &*self.fds {
++            FdList::Retained { maximum, .. } => Some(*maximum),
++            _ => None,
++        };
+         match self.fds {
+-            FdList::Fds(fds) => {
++            FdList::Fds(fds) | FdList::Retained { fds, .. } => {
+                 if let Some(idx) = fds.iter().position(|x| x.as_raw_fd() == fd) {
+                     return Ok(idx as u32);
+                 }
+                 let idx = fds.len();
++                if maximum.is_some_and(|maximum| idx >= maximum) {
++                    return Err(Error::OutOfBounds);
++                }
+                 // Cloning implies dup and is unfortunate but we need to return owned fds
+                 // and dup is not expensive (at least on Linux).
+                 let fd = unsafe { BorrowedFd::borrow_raw(fd) }.try_clone_to_owned()?;
+@@ -326,3 +416,87 @@
+         self.writer.flush()
+     }
+ }
++
++
++#[cfg(all(test, unix))]
++mod retained_fd_writer_tests {
++    use super::*;
++    use std::io::{Cursor, SeekFrom};
++    use std::os::fd::{AsFd, AsRawFd};
++
++    struct FailingWriter(Cursor<Vec<u8>>);
++
++    impl Write for FailingWriter {
++        fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
++            Err(std::io::Error::from_raw_os_error(28))
++        }
++        fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
++    }
++
++    impl Seek for FailingWriter {
++        fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> { self.0.seek(position) }
++    }
++
++    #[test]
++    fn failed_native_write_keeps_actual_fd_duplicate_and_original_errno() {
++        let file = std::fs::File::open("/dev/null").unwrap();
++        let value = crate::Fd::from(file.as_fd());
++        let mut original = FdWriteOriginalV2::new(1);
++        let mut writer = FailingWriter(Cursor::new(Vec::new()));
++        // SAFETY: The same failed original and writer remain resident together
++        // throughout every byte/descriptor assertion below.
++        let cause = unsafe { to_writer_retaining_fds_v2(&mut writer,
++            Context::new_dbus(crate::LE, 0), &value, &mut original) }.unwrap_err();
++        assert!(matches!(&cause, Error::InputOutput(cause) if cause.raw_os_error() == Some(28)));
++        assert_eq!(original.retained_descriptor_count_v2(), 1);
++        let descriptor = match &original.fds {
++            FdList::Retained { fds, .. } => fds[0].as_raw_fd(),
++            _ => panic!("same retained native table missing"),
++        };
++        assert_ne!(descriptor, file.as_raw_fd());
++        let path = format!("/proc/self/fd/{descriptor}");
++        assert!(std::fs::read_link(&path).is_ok());
++        // SAFETY: Same original/writer ownership as the first call; reentry
++        // must refuse before any second native duplicate or write.
++        assert!(unsafe { to_writer_retaining_fds_v2(&mut writer,
++            Context::new_dbus(crate::LE, 0), &value, &mut original) }.is_err());
++        assert_eq!(original.retained_descriptor_count_v2(), 1);
++        assert!(std::fs::read_link(path).is_ok());
++    }
++
++    #[test]
++    fn retained_fd_table_exhaustion_refuses_before_the_next_duplicate() {
++        let first = std::fs::File::open("/dev/null").unwrap();
++        let second = std::fs::File::open("/dev/null").unwrap();
++        let value = (crate::Fd::from(first.as_fd()), crate::Fd::from(second.as_fd()));
++        let mut original = FdWriteOriginalV2::new(1);
++        let mut writer = Cursor::new(Vec::new());
++        // SAFETY: Failed FD destination stays alive with its exact byte writer.
++        let cause = unsafe { to_writer_retaining_fds_v2(&mut writer,
++            Context::new_dbus(crate::LE, 0), &value, &mut original) }.unwrap_err();
++        assert!(matches!(cause, Error::OutOfBounds));
++        assert_eq!(original.retained_descriptor_count_v2(), 1);
++        assert_eq!(writer.get_ref().len(), 4);
++    }
++
++    #[test]
++    fn empty_native_table_storage_disposal_cannot_rearm_serialization() {
++        let mut original = FdWriteOriginalV2::new(11);
++        original.retire_empty_storage_v2().unwrap();
++        assert!(original.entered);
++        match &original.fds {
++            FdList::Retained { fds, maximum } => {
++                assert_eq!(fds.capacity(), 0);
++                assert_eq!(*maximum, 11);
++            }
++            _ => panic!("original spent bound missing"),
++        }
++        let mut writer = Cursor::new(Vec::new());
++        // SAFETY: No successful call can enter the permanently closed empty
++        // table, and the same writer/destination remain owned throughout.
++        assert!(unsafe { to_writer_retaining_fds_v2(&mut writer,
++            Context::new_dbus(crate::LE, 0), &7u32, &mut original) }.is_err());
++        assert!(writer.get_ref().is_empty());
++    }
++
++}
+--- a/src/serialized/data.rs
++++ b/src/serialized/data.rs
+@@ -61,6 +61,25 @@
+             range,
+             context,
+         }
++    }
++
++    /// Reports the actual shared byte/descriptor backing's strong and weak owners.
++    ///
++    /// The counts include this view and every clone or slice. They do not prove
++    /// any protocol, role, effect, or financial completion. A caller disposing
++    /// native descriptors must also establish exclusive ownership of the outer
++    /// object that contains this view before interpreting `(1, 0)`.
++    #[must_use]
++    pub fn backing_ownership_extent_v2(&self) -> (usize, usize) {
++        (Arc::strong_count(&self.inner), Arc::weak_count(&self.inner))
++    }
++
++    /// Compares the actual shared backing of two views without reading bytes.
++    ///
++    /// This mechanical identity predicate supplies no completion or authority.
++    #[must_use]
++    pub fn shares_backing_v2(&self, other: &Data<'_, '_>) -> bool {
++        Arc::ptr_eq(&self.inner, &other.inner)
+     }
+ 
+     /// The serialized bytes.
+@@ -417,3 +436,27 @@
+         self.deref().as_ref()
+     }
+ }
++
++
++#[cfg(test)]
++mod backing_ownership_tests {
++    use super::*;
++
++    #[test]
++    fn independent_clone_and_slice_retain_the_same_backing() {
++        let data = Data::new(vec![1, 2, 3], Context::new_dbus(crate::LE, 0));
++        assert_eq!(data.backing_ownership_extent_v2(), (1, 0));
++        let clone = data.clone();
++        let slice = data.slice(1..);
++        assert_eq!(data.backing_ownership_extent_v2(), (3, 0));
++        assert!(data.shares_backing_v2(&clone));
++        assert!(data.shares_backing_v2(&slice));
++        let separate = Data::new(vec![1, 2, 3], Context::new_dbus(crate::LE, 0));
++        assert!(!data.shares_backing_v2(&separate));
++        assert_eq!(slice.bytes(), &[2, 3]);
++        drop(clone);
++        assert_eq!(data.backing_ownership_extent_v2(), (2, 0));
++        drop(slice);
++        assert_eq!(data.backing_ownership_extent_v2(), (1, 0));
++    }
++}

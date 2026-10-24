@@ -1,0 +1,109 @@
+--- a/policy/modules/kernel/domain.te
++++ b/policy/modules/kernel/domain.te
+@@ -24,6 +24,10 @@ attribute aos_explicit_loader_domain;
+ # Keep ordinary domains' MLS/MCS translation and socket access unchanged.
+ attribute aos_no_context_translation_domain;
+ 
++# Private normal Root custody is not available through blanket domain access.
++# This marker grants nothing and does not remove domain/self membership.
++attribute aos_private_root_custody_domain;
++
+ # Transitions only allowed from domains to other domains
+ neverallow domain ~domain:process { dyntransition transition };
+ 
+@@ -178,25 +182,25 @@ optional_policy(`
+ allow unconfined_domain_type domain:bpf { map_create map_read map_write prog_load prog_run };
+ 
+ # Use/sendto/connectto sockets created by any domain.
+-allow unconfined_domain_type domain:{ socket_class_set socket key_socket } { create_stream_socket_perms lock map name_bind recvfrom relabelfrom relabelto sendto };
++allow unconfined_domain_type { domain -aos_private_root_custody_domain }:{ socket_class_set socket key_socket } { create_stream_socket_perms lock map name_bind recvfrom relabelfrom relabelto sendto };
+ allow unconfined_domain_type domain:rawip_socket node_bind;
+ allow unconfined_domain_type domain:sctp_socket node_bind;
+ allow unconfined_domain_type domain:icmp_socket node_bind;
+ allow unconfined_domain_type domain:udp_socket node_bind;
+ allow unconfined_domain_type domain:tcp_socket { name_connect node_bind };
+ allow unconfined_domain_type domain:tun_socket attach_queue;
+-allow unconfined_domain_type domain:unix_stream_socket connectto;
++allow unconfined_domain_type { domain -aos_private_root_custody_domain }:unix_stream_socket connectto;
+ allow unconfined_domain_type domain:netlink_audit_socket { nlmsg_read nlmsg_readpriv nlmsg_relay nlmsg_tty_audit nlmsg_write };
+ allow unconfined_domain_type domain:netlink_route_socket { nlmsg_read nlmsg_write };
+ allow unconfined_domain_type domain:netlink_tcpdiag_socket { nlmsg_read nlmsg_write };
+ allow unconfined_domain_type domain:netlink_xfrm_socket { nlmsg_read nlmsg_write };
+ 
+ # Use descriptors and pipes created by any domain.
+-allow unconfined_domain_type domain:fd use;
+-allow unconfined_domain_type domain:fifo_file rw_fifo_file_perms;
++allow unconfined_domain_type { domain -aos_private_root_custody_domain }:fd use;
++allow unconfined_domain_type { domain -aos_private_root_custody_domain }:fifo_file rw_fifo_file_perms;
+ 
+ # Act upon any other process.
+-allow unconfined_domain_type domain:process { fork getattr getcap getpgid getrlimit getsched getsession noatsecure ptrace rlimitinh setcap setcurrent setexec setfscreate setkeycreate setpgid setrlimit setsched setsockcreate share siginh signal_perms };
++allow unconfined_domain_type { domain -aos_private_root_custody_domain }:process { fork getattr getcap getpgid getrlimit getsched getsession noatsecure ptrace rlimitinh setcap setcurrent setexec setfscreate setkeycreate setpgid setrlimit setsched setsockcreate share siginh signal_perms };
+ 
+ # Create/access any System V IPC objects.
+ allow unconfined_domain_type domain:sem create_sem_perms;
+@@ -205,9 +209,9 @@ allow unconfined_domain_type domain:shm create_shm_perms;
+ allow unconfined_domain_type domain:msg { receive send };
+ 
+ # For /proc/pid
+-allow unconfined_domain_type domain:dir list_dir_perms;
+-allow unconfined_domain_type domain:file rw_file_perms;
+-allow unconfined_domain_type domain:lnk_file { ioctl lock read_lnk_file_perms };
++allow unconfined_domain_type { domain -aos_private_root_custody_domain }:dir list_dir_perms;
++allow unconfined_domain_type { domain -aos_private_root_custody_domain }:file rw_file_perms;
++allow unconfined_domain_type { domain -aos_private_root_custody_domain }:lnk_file { ioctl lock read_lnk_file_perms };
+ 
+ # act on all domains keys
+ allow unconfined_domain_type domain:key manage_key_perms;
+--- a/policy/modules/kernel/domain.if
++++ b/policy/modules/kernel/domain.if
+@@ -620,13 +620,13 @@ interface(`domain_dontaudit_search_all_domains_state',`
+ #
+ interface(`domain_read_all_domains_state',`
+ 	gen_require(`
+-		attribute domain;
++		attribute domain, aos_private_root_custody_domain;
+ 	')
+ 
+ 	kernel_search_proc($1)
+-	allow $1 domain:dir list_dir_perms;
+-	read_files_pattern($1, domain, domain)
+-	read_lnk_files_pattern($1, domain, domain)
++	allow $1 { domain -aos_private_root_custody_domain }:dir list_dir_perms;
++	read_files_pattern($1, { domain -aos_private_root_custody_domain }, { domain -aos_private_root_custody_domain })
++	read_lnk_files_pattern($1, { domain -aos_private_root_custody_domain }, { domain -aos_private_root_custody_domain })
+ ')
+ 
+ ########################################
+@@ -680,13 +680,13 @@ interface(`domain_dontaudit_getattr_all_domains',`
+ #
+ interface(`domain_read_confined_domains_state',`
+ 	gen_require(`
+-		attribute domain, unconfined_domain_type;
++		attribute domain, unconfined_domain_type, aos_private_root_custody_domain;
+ 	')
+ 
+ 	kernel_search_proc($1)
+-	allow $1 { domain -unconfined_domain_type }:dir list_dir_perms;
+-	read_files_pattern($1, { domain -unconfined_domain_type }, { domain -unconfined_domain_type })
+-	read_lnk_files_pattern($1, { domain -unconfined_domain_type }, { domain -unconfined_domain_type })
++	allow $1 { domain -unconfined_domain_type -aos_private_root_custody_domain }:dir list_dir_perms;
++	read_files_pattern($1, { domain -unconfined_domain_type -aos_private_root_custody_domain }, { domain -unconfined_domain_type -aos_private_root_custody_domain })
++	read_lnk_files_pattern($1, { domain -unconfined_domain_type -aos_private_root_custody_domain }, { domain -unconfined_domain_type -aos_private_root_custody_domain })
+ 
+ 	dontaudit $1 unconfined_domain_type:dir search_dir_perms;
+ 	dontaudit $1 unconfined_domain_type:file read_file_perms;
+@@ -725,10 +725,10 @@ interface(`domain_getattr_confined_domains',`
+ #
+ interface(`domain_ptrace_all_domains',`
+ 	gen_require(`
+-		attribute domain;
++		attribute domain, aos_private_root_custody_domain;
+ 	')
+ 
+-	allow $1 domain:process ptrace;
++	allow $1 { domain -aos_private_root_custody_domain }:process ptrace;
+ 	allow domain $1:process sigchld;
+ ')
+ 
+

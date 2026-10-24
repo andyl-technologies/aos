@@ -3,6 +3,7 @@
   lib = import ../../lib {system = pkgs.bash.system;};
   fixture = import ./deployment-fixture.nix {inherit pkgs lib;};
   initrdAccountSeed = import ./initrd-account-seed.nix {inherit pkgs;};
+  initrdConfiguration = import ./initrd-configuration.nix {inherit lib pkgs;};
   hostActivationNamespace = import ./host-activation-namespace.nix;
   hostActivationInput = builtins.toFile "host-activation-input.json" (builtins.toJSON hostActivationNamespace.input);
   projectedServiceInput = builtins.toFile "projected-service-input.json" (builtins.toJSON hostActivationNamespace.projectedInput);
@@ -43,7 +44,9 @@
     platformReplay = import ./platform-replay.nix;
     observerBootstrap = import ./observer-bootstrap.nix;
     bootstrapConfiguration = import ./bootstrap-configuration.nix;
+    bootstrapUnitReferences = import ./bootstrap-unit-references.nix;
     initrdAccountSeed = initrdAccountSeed.checks;
+    initrdConfiguration = initrdConfiguration.checks;
     nativeReleaseInventory = import ./release-native-inventory.nix {inherit pkgs;};
     releaseMaintenance = import ./release-maintenance.nix;
     fixtureConsumers = import ./fixture-consumers.nix;
@@ -93,13 +96,14 @@ in
       version = "0";
       src = null;
       buildDeps = [pkgs.python3 pkgs.systemd];
-      runtimeDeps = [fixture initrdAccountSeed.serialization];
+      runtimeDeps = [fixture initrdAccountSeed.serialization initrdConfiguration.serialization];
       phases = [
         {
           name = "check";
           script = ''
             export PYTHONDONTWRITEBYTECODE=1
             test -f ${initrdAccountSeed.serialization}/result
+            test -f ${initrdConfiguration.serialization}/result
             ${pkgs.python3}/bin/python3 ${../services/native-handler.py} ${../../pkgs/system/_systemd-abilities/service-handler.py} ${../../pkgs/system/_systemd-abilities/aos_service_resources.py} ${pkgs.aos-configuration-provider}/bin/aos-configuration-provider ${pkgs.systemd}/bin/systemd-analyze ${hostActivationInput} ${packageConvergenceInput} ${projectedServiceInput} ${projectedServiceUnits} ${../../pkgs/system/_systemd-abilities/aos_service_storage.py}
             ${pkgs.python3}/bin/python3 ${../../pkgs/system/_systemd-abilities/bootstrap-provider-tests.py} ${../../pkgs/system/_systemd-abilities/bootstrap-provider.py} ${../../pkgs/system/_systemd-abilities/aos_service_resources.py}
             ${pkgs.python3}/bin/python3 ${../services/native-flight-oracle.py} ${../fleet/native-reference-service-flights.py}
@@ -113,7 +117,7 @@ in
             ${pkgs.python3}/bin/python3 ${./mount-transaction-storage-test.py} ${pkgs.bash}/bin/bash ${../../pkgs/boot/_aos-boot-storage/mount-transaction-storage.sh.in}
             ${pkgs.python3}/bin/python3 ${./seal-transaction-storage-test.py} ${pkgs.bash}/bin/bash ${../../pkgs/boot/_aos-boot-storage/seal-transaction-storage.sh.in}
             ${pkgs.python3}/bin/python3 ${./seed-profile-reconciliation.py} ${pkgs.bash}/bin/bash ${../../pkgs/boot/_aos-boot-preparations/aos-seed-profiles.sh} ${pkgs.coreutils}/bin ${pkgs.jq}/bin
-            ${pkgs.python3}/bin/python3 ${./network-handler-test.py} ${../../pkgs/system/_systemd-abilities/network-handler.py} ${pkgs.systemd}/lib/tmpfiles.d/systemd-resolve.conf
+            ${pkgs.python3}/bin/python3 ${./network-handler-test.py} ${../../pkgs/system/_systemd-abilities/network-handler.py} ${pkgs.systemd}/lib/tmpfiles.d/systemd-resolve.conf ${../../pkgs/system/_systemd-abilities/aos_service_resources.py}
             ${pkgs.python3}/bin/python3 ${../abilities/reference-nginx}/test-binding-handler.py
             ${pkgs.python3}/bin/python3 ${../abilities/native-handler-interception}/self-test.py ${../abilities/native-handler-interception}/native-handler-interception.py
             ${pkgs.python3}/bin/python3 ${../abilities/native-dependency-barrier}/self-test.py ${../abilities/native-dependency-barrier}/native-dependency-barrier.py

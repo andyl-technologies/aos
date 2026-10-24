@@ -11,7 +11,7 @@ pkgs.mkDerivation {
   version = "0";
   src = null;
 
-  buildDeps = [pkgs.grep];
+  buildDeps = [pkgs.grep pkgs.python3];
 
   phases = [
     {
@@ -42,6 +42,10 @@ pkgs.mkDerivation {
           || fail "veritysetup.target is missing"
         test -f "$systemd/lib/systemd/system/remote-veritysetup.target" \
           || fail "remote-veritysetup.target is missing"
+
+        ${pkgs.python3}/bin/python3 -B ${./systemd-verity-publish.py} \
+          "$systemd/libexec/aos-systemd-verity-root-setup" \
+          ${pkgs.bash}/bin/bash ${pkgs.libselinux} ${pkgs.coreutils}/bin
 
         export SYSTEMD_COLORS=0 SYSTEMD_URLIFY=0
         "$cryptsetup/sbin/veritysetup" --help > veritysetup.help

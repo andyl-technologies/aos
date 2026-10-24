@@ -16,6 +16,7 @@
   earlyModule.aos.services.nginx.bootstrap = true;
   ordinary = evaluate "nginx" nginxSettings [];
   early = evaluate "nginx" nginxSettings [earlyModule];
+  retained = evaluate "nginx" nginxSettings [{aos.servicesRetainImageDefinitions = true;}];
   groups = evaluation:
     import ../../pkgs/system/_systemd-abilities/bootstrap-resource-groups.nix {
       inherit lib;
@@ -52,6 +53,16 @@ in {
   ordinaryServicesDoNotProjectGroups = groups ordinary == {} && !(producer ordinary).input.bootstrap;
   earlyServiceSelectsOneProducer = builtins.attrNames selected == ["nginx"] && (producer early).input.bootstrap;
   projectionResolvesDeclaredGroupName = (services early).nginx.resources.resource_group == (producer early).input.name;
+  retainedDefinitionsProjectWithoutEarlyStartupSelection =
+    !retained.config.aos.services.nginx.bootstrap
+    && retained.config.aos.services.nginx.retain_image_definition
+    && (services retained).nginx.retain_image_definition;
+  retainedDefinitionsKeepDeclaredGroup =
+    (groups retained).nginx.input
+    == {
+      inherit ((producer retained).input) name description;
+      bootstrap = true;
+    };
   seedUsesDeclaredIdentityAndDescription =
     selectedGroup.identity
     == (producer early).contract.identity

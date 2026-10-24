@@ -1,0 +1,882 @@
+--- a/src/codec.rs
++++ b/src/codec.rs
+@@ -151,7 +151,7 @@
+ /// requiring `M: serde::de::DeserializeOwned`.
+ #[cfg(feature = "json")]
+ pub fn decode_json<M: DeserializeOwned>(data: &[u8]) -> Result<M, ConnectError> {
+-    serde_json::from_slice(data)
++    decode_json_with_element_memory_limit(data, buffa::DEFAULT_ELEMENT_MEMORY_LIMIT)
+         .map_err(|e| ConnectError::invalid_argument(format!("failed to decode JSON: {e}")))
+ }
+ 
+@@ -159,6 +159,629 @@
+ #[cfg(not(feature = "json"))]
+ pub fn decode_json<M>(_data: &[u8]) -> Result<M, ConnectError> {
+     Err(ConnectError::unimplemented(JSON_FEATURE_DISABLED))
++}
++
++/// Decodes JSON with a conservative typed-carrier admission budget.
++///
++/// The budget covers reached typed cells, collection growth/reallocation and
++/// small collection floors. It is shared throughout this one synchronous parse.
++/// Nested visitor and seed roles are conservatively charged independently;
++/// this admission score can count the same typed representation more than once.
++/// Encoded input, string/byte contents, JSON scratch, allocator metadata and
++/// arbitrary allocations inside custom `Deserialize` implementations remain
++/// separate caller obligations. This does not parse through a JSON Value DOM.
++///
++/// # Errors
++/// Returns the original Serde JSON error, including trailing-input refusal,
++/// or a Serde custom error before a typed admission exceeds the budget.
++#[cfg(feature = "json")]
++pub fn decode_json_with_element_memory_limit<M: DeserializeOwned>(
++    data: &[u8],
++    maximum_element_memory: usize,
++) -> Result<M, serde_json::Error> {
++    json_carriers::decode(data, maximum_element_memory)
++}
++
++#[cfg(feature = "json")]
++pub(crate) fn decode_json_with_options<M: DeserializeOwned>(
++    data: &[u8],
++    options: &buffa::DecodeOptions,
++) -> Result<M, ConnectError> {
++    decode_json_with_element_memory_limit(data, options.element_memory_limit())
++        .map_err(|e| ConnectError::invalid_argument(format!("failed to decode JSON: {e}")))
++}
++
++#[cfg(not(feature = "json"))]
++pub(crate) fn decode_json_with_options<M>(
++    _data: &[u8],
++    _options: &buffa::DecodeOptions,
++) -> Result<M, ConnectError> {
++    Err(ConnectError::unimplemented(JSON_FEATURE_DISABLED))
++}
++
++#[cfg(feature = "json")]
++mod json_carriers {
++    use serde::de::{
++        self, DeserializeOwned, DeserializeSeed, EnumAccess, MapAccess, SeqAccess, VariantAccess,
++        Visitor,
++    };
++    use std::fmt;
++    use std::mem::{align_of, size_of};
++
++    // Sequence growth retains at most old+new capacity plus one in-flight
++    // element. Maps also need sparse hash buckets: four cells cover the
++    // old+new 7/8-load-factor tables. The fixed floor covers small collections
++    // and one in-flight typed value. Map links are separate from byte contents.
++    const GROWTH: usize = 3;
++    const MAP_GROWTH: usize = 4;
++    const FLOOR: usize = 8;
++    const MAP_LINK_BYTES: usize = 8 * size_of::<usize>();
++
++    struct Budget {
++        remaining: usize,
++    }
++
++    impl Budget {
++        fn admit<T, E: de::Error>(&mut self, factor: usize, links: bool) -> Result<(), E> {
++            let error = || E::custom("JSON element memory limit exceeded");
++            let width = size_of::<T>()
++                .checked_add(align_of::<T>())
++                .ok_or_else(error)?;
++            let width = if links {
++                width.checked_add(MAP_LINK_BYTES).ok_or_else(error)?
++            } else {
++                width
++            };
++            let bytes = width.checked_mul(factor).ok_or_else(error)?;
++            self.remaining = self.remaining.checked_sub(bytes).ok_or_else(error)?;
++            Ok(())
++        }
++    }
++
++    pub(super) fn decode<M: DeserializeOwned>(
++        data: &[u8],
++        maximum: usize,
++    ) -> Result<M, serde_json::Error> {
++        let mut decoder = serde_json::Deserializer::from_slice(data);
++        let mut budget = Budget { remaining: maximum };
++        let value = M::deserialize(Decoder {
++            inner: &mut decoder,
++            budget: &mut budget,
++        })?;
++        decoder.end()?;
++        Ok(value)
++    }
++
++    struct Decoder<'b, D> {
++        inner: D,
++        budget: &'b mut Budget,
++    }
++
++    struct GuardVisitor<'b, V> {
++        inner: V,
++        budget: &'b mut Budget,
++    }
++
++    macro_rules! plain_decoder {
++        ($($name:ident),* $(,)?) => { $(
++            fn $name<V: Visitor<'de>>(self, visitor: V) -> Result<V::Value, Self::Error> {
++                self.budget.admit::<V::Value, Self::Error>(1, false)?;
++                self.inner.$name(GuardVisitor { inner: visitor, budget: self.budget })
++            }
++        )* };
++    }
++
++    impl<'de, D: de::Deserializer<'de>> de::Deserializer<'de> for Decoder<'_, D> {
++        type Error = D::Error;
++        plain_decoder!(
++            deserialize_any,
++            deserialize_bool,
++            deserialize_i8,
++            deserialize_i16,
++            deserialize_i32,
++            deserialize_i64,
++            deserialize_i128,
++            deserialize_u8,
++            deserialize_u16,
++            deserialize_u32,
++            deserialize_u64,
++            deserialize_u128,
++            deserialize_f32,
++            deserialize_f64,
++            deserialize_char,
++            deserialize_str,
++            deserialize_string,
++            deserialize_bytes,
++            deserialize_byte_buf,
++            deserialize_option,
++            deserialize_unit,
++            deserialize_seq,
++            deserialize_map,
++            deserialize_identifier,
++            deserialize_ignored_any
++        );
++
++        fn deserialize_unit_struct<V: Visitor<'de>>(
++            self,
++            name: &'static str,
++            visitor: V,
++        ) -> Result<V::Value, Self::Error> {
++            self.budget.admit::<V::Value, Self::Error>(1, false)?;
++            self.inner.deserialize_unit_struct(
++                name,
++                GuardVisitor {
++                    inner: visitor,
++                    budget: self.budget,
++                },
++            )
++        }
++
++        fn deserialize_newtype_struct<V: Visitor<'de>>(
++            self,
++            name: &'static str,
++            visitor: V,
++        ) -> Result<V::Value, Self::Error> {
++            self.budget.admit::<V::Value, Self::Error>(1, false)?;
++            self.inner.deserialize_newtype_struct(
++                name,
++                GuardVisitor {
++                    inner: visitor,
++                    budget: self.budget,
++                },
++            )
++        }
++
++        fn deserialize_tuple<V: Visitor<'de>>(
++            self,
++            len: usize,
++            visitor: V,
++        ) -> Result<V::Value, Self::Error> {
++            self.budget.admit::<V::Value, Self::Error>(1, false)?;
++            self.inner.deserialize_tuple(
++                len,
++                GuardVisitor {
++                    inner: visitor,
++                    budget: self.budget,
++                },
++            )
++        }
++
++        fn deserialize_tuple_struct<V: Visitor<'de>>(
++            self,
++            name: &'static str,
++            len: usize,
++            visitor: V,
++        ) -> Result<V::Value, Self::Error> {
++            self.budget.admit::<V::Value, Self::Error>(1, false)?;
++            self.inner.deserialize_tuple_struct(
++                name,
++                len,
++                GuardVisitor {
++                    inner: visitor,
++                    budget: self.budget,
++                },
++            )
++        }
++
++        fn deserialize_struct<V: Visitor<'de>>(
++            self,
++            name: &'static str,
++            fields: &'static [&'static str],
++            visitor: V,
++        ) -> Result<V::Value, Self::Error> {
++            self.budget.admit::<V::Value, Self::Error>(1, false)?;
++            self.inner.deserialize_struct(
++                name,
++                fields,
++                GuardVisitor {
++                    inner: visitor,
++                    budget: self.budget,
++                },
++            )
++        }
++
++        fn deserialize_enum<V: Visitor<'de>>(
++            self,
++            name: &'static str,
++            variants: &'static [&'static str],
++            visitor: V,
++        ) -> Result<V::Value, Self::Error> {
++            self.budget.admit::<V::Value, Self::Error>(1, false)?;
++            self.inner.deserialize_enum(
++                name,
++                variants,
++                GuardVisitor {
++                    inner: visitor,
++                    budget: self.budget,
++                },
++            )
++        }
++
++        fn is_human_readable(&self) -> bool {
++            self.inner.is_human_readable()
++        }
++    }
++
++    macro_rules! primitive_visitor {
++        ($($name:ident($ty:ty)),* $(,)?) => { $(
++            fn $name<E: de::Error>(self, value: $ty) -> Result<Self::Value, E> {
++                self.inner.$name(value)
++            }
++        )* };
++    }
++
++    impl<'de, V: Visitor<'de>> Visitor<'de> for GuardVisitor<'_, V> {
++        type Value = V::Value;
++
++        fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
++            self.inner.expecting(formatter)
++        }
++        primitive_visitor!(
++            visit_bool(bool),
++            visit_i8(i8),
++            visit_i16(i16),
++            visit_i32(i32),
++            visit_i64(i64),
++            visit_i128(i128),
++            visit_u8(u8),
++            visit_u16(u16),
++            visit_u32(u32),
++            visit_u64(u64),
++            visit_u128(u128),
++            visit_f32(f32),
++            visit_f64(f64),
++            visit_char(char),
++            visit_str(&str),
++            visit_string(String),
++            visit_bytes(&[u8]),
++            visit_byte_buf(Vec<u8>)
++        );
++
++        fn visit_borrowed_str<E: de::Error>(self, value: &'de str) -> Result<Self::Value, E> {
++            self.inner.visit_borrowed_str(value)
++        }
++
++        fn visit_borrowed_bytes<E: de::Error>(self, value: &'de [u8]) -> Result<Self::Value, E> {
++            self.inner.visit_borrowed_bytes(value)
++        }
++
++        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
++            self.inner.visit_unit()
++        }
++
++        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
++            self.inner.visit_none()
++        }
++
++        fn visit_some<D: de::Deserializer<'de>>(self, decoder: D) -> Result<Self::Value, D::Error> {
++            self.inner.visit_some(Decoder {
++                inner: decoder,
++                budget: self.budget,
++            })
++        }
++
++        fn visit_newtype_struct<D: de::Deserializer<'de>>(
++            self,
++            decoder: D,
++        ) -> Result<Self::Value, D::Error> {
++            self.inner.visit_newtype_struct(Decoder {
++                inner: decoder,
++                budget: self.budget,
++            })
++        }
++
++        fn visit_seq<A: SeqAccess<'de>>(self, inner: A) -> Result<Self::Value, A::Error> {
++            self.inner.visit_seq(Sequence {
++                inner,
++                budget: self.budget,
++                first: true,
++            })
++        }
++
++        fn visit_map<A: MapAccess<'de>>(self, inner: A) -> Result<Self::Value, A::Error> {
++            self.inner.visit_map(Map {
++                inner,
++                budget: self.budget,
++                first_key: true,
++                first_value: true,
++            })
++        }
++
++        fn visit_enum<A: EnumAccess<'de>>(self, inner: A) -> Result<Self::Value, A::Error> {
++            self.inner.visit_enum(Enum {
++                inner,
++                budget: self.budget,
++            })
++        }
++    }
++
++    struct Seed<'b, S> {
++        inner: S,
++        budget: &'b mut Budget,
++        factor: usize,
++        links: bool,
++    }
++
++    impl<'de, S: DeserializeSeed<'de>> DeserializeSeed<'de> for Seed<'_, S> {
++        type Value = S::Value;
++
++        fn deserialize<D: de::Deserializer<'de>>(
++            self,
++            decoder: D,
++        ) -> Result<Self::Value, D::Error> {
++            // The actual parser checks a collection's closing delimiter before
++            // invoking this seed. An absent element never spends or refuses.
++            self.budget
++                .admit::<S::Value, D::Error>(self.factor, self.links)?;
++            self.inner.deserialize(Decoder {
++                inner: decoder,
++                budget: self.budget,
++            })
++        }
++    }
++
++    struct Sequence<'b, A> {
++        inner: A,
++        budget: &'b mut Budget,
++        first: bool,
++    }
++
++    impl<'de, A: SeqAccess<'de>> SeqAccess<'de> for Sequence<'_, A> {
++        type Error = A::Error;
++
++        fn next_element_seed<S: DeserializeSeed<'de>>(
++            &mut self,
++            seed: S,
++        ) -> Result<Option<S::Value>, Self::Error> {
++            let factor = GROWTH + if self.first { FLOOR } else { 0 };
++            self.first = false;
++            self.inner.next_element_seed(Seed {
++                inner: seed,
++                budget: self.budget,
++                factor,
++                links: false,
++            })
++        }
++
++        fn size_hint(&self) -> Option<usize> {
++            None
++        }
++    }
++
++    struct Map<'b, A> {
++        inner: A,
++        budget: &'b mut Budget,
++        first_key: bool,
++        first_value: bool,
++    }
++
++    impl<'de, A: MapAccess<'de>> MapAccess<'de> for Map<'_, A> {
++        type Error = A::Error;
++
++        fn next_key_seed<S: DeserializeSeed<'de>>(
++            &mut self,
++            seed: S,
++        ) -> Result<Option<S::Value>, Self::Error> {
++            let factor = MAP_GROWTH + if self.first_key { FLOOR } else { 0 };
++            self.first_key = false;
++            self.inner.next_key_seed(Seed {
++                inner: seed,
++                budget: self.budget,
++                factor,
++                links: true,
++            })
++        }
++
++        fn next_value_seed<S: DeserializeSeed<'de>>(
++            &mut self,
++            seed: S,
++        ) -> Result<S::Value, Self::Error> {
++            let factor = MAP_GROWTH + if self.first_value { FLOOR } else { 0 };
++            self.first_value = false;
++            self.inner.next_value_seed(Seed {
++                inner: seed,
++                budget: self.budget,
++                factor,
++                links: false,
++            })
++        }
++
++        fn size_hint(&self) -> Option<usize> {
++            None
++        }
++    }
++
++    struct Enum<'b, A> {
++        inner: A,
++        budget: &'b mut Budget,
++    }
++
++    struct Variant<'b, A> {
++        inner: A,
++        budget: &'b mut Budget,
++    }
++
++    impl<'de, 'b, A: EnumAccess<'de>> EnumAccess<'de> for Enum<'b, A> {
++        type Error = A::Error;
++        type Variant = Variant<'b, A::Variant>;
++
++        fn variant_seed<S: DeserializeSeed<'de>>(
++            self,
++            seed: S,
++        ) -> Result<(S::Value, Self::Variant), Self::Error> {
++            let (value, inner) = self.inner.variant_seed(Seed {
++                inner: seed,
++                budget: &mut *self.budget,
++                factor: 1,
++                links: false,
++            })?;
++            Ok((
++                value,
++                Variant {
++                    inner,
++                    budget: self.budget,
++                },
++            ))
++        }
++    }
++
++    impl<'de, A: VariantAccess<'de>> VariantAccess<'de> for Variant<'_, A> {
++        type Error = A::Error;
++
++        fn unit_variant(self) -> Result<(), Self::Error> {
++            self.inner.unit_variant()
++        }
++
++        fn newtype_variant_seed<S: DeserializeSeed<'de>>(
++            self,
++            seed: S,
++        ) -> Result<S::Value, Self::Error> {
++            self.inner.newtype_variant_seed(Seed {
++                inner: seed,
++                budget: self.budget,
++                factor: 1,
++                links: false,
++            })
++        }
++
++        fn tuple_variant<V: Visitor<'de>>(
++            self,
++            len: usize,
++            visitor: V,
++        ) -> Result<V::Value, Self::Error> {
++            self.budget.admit::<V::Value, Self::Error>(1, false)?;
++            self.inner.tuple_variant(
++                len,
++                GuardVisitor {
++                    inner: visitor,
++                    budget: self.budget,
++                },
++            )
++        }
++
++        fn struct_variant<V: Visitor<'de>>(
++            self,
++            fields: &'static [&'static str],
++            visitor: V,
++        ) -> Result<V::Value, Self::Error> {
++            self.budget.admit::<V::Value, Self::Error>(1, false)?;
++            self.inner.struct_variant(
++                fields,
++                GuardVisitor {
++                    inner: visitor,
++                    budget: self.budget,
++                },
++            )
++        }
++    }
++
++    #[cfg(test)]
++    mod tests {
++        use super::*;
++        use serde::Deserialize;
++        use std::cell::Cell;
++        use std::collections::BTreeMap;
++
++        thread_local! { static CONSTRUCTIONS: Cell<usize> = const { Cell::new(0) }; }
++
++        #[derive(Debug)]
++        struct Heavy {
++            padding: [u64; 32],
++        }
++
++        impl<'de> Deserialize<'de> for Heavy {
++            fn deserialize<D: de::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
++                CONSTRUCTIONS.with(|count| count.set(count.get() + 1));
++                de::IgnoredAny::deserialize(decoder)?;
++                Ok(Self { padding: [0; 32] })
++            }
++        }
++
++        #[test]
++        fn exact_scalar_boundary_and_empty_collection_end_are_not_false_elements() {
++            let scalar = size_of::<u64>() + align_of::<u64>();
++            assert_eq!(decode::<u64>(b"7", scalar).unwrap(), 7);
++            assert!(decode::<u64>(b"7", scalar - 1).is_err());
++
++            let empty = size_of::<Vec<Heavy>>() + align_of::<Vec<Heavy>>();
++            assert!(decode::<Vec<Heavy>>(b"[]", empty).unwrap().is_empty());
++            assert!(decode::<Vec<Heavy>>(b"[] trailing", empty).is_err());
++        }
++
++        #[test]
++        fn heavy_element_refuses_before_its_deserializer_constructs_any_value() {
++            CONSTRUCTIONS.with(|count| count.set(0));
++            assert!(decode::<Vec<Heavy>>(b"[{}]", 1024).is_err());
++            assert_eq!(CONSTRUCTIONS.with(Cell::get), 0);
++
++            let value = decode::<Vec<Heavy>>(b"[{}]", usize::MAX).unwrap();
++            assert_eq!(CONSTRUCTIONS.with(Cell::get), 1);
++            assert_eq!(value[0].padding, [0; 32]);
++        }
++
++        #[derive(Deserialize, Debug)]
++        enum Nested {
++            Values(Vec<Heavy>),
++            Named { values: Vec<Heavy> },
++            Unit,
++        }
++
++        #[test]
++        fn map_values_and_enum_payloads_share_the_original_checked_budget() {
++            CONSTRUCTIONS.with(|count| count.set(0));
++            assert!(decode::<BTreeMap<String, Heavy>>(br#"{"left":{}}"#, 1024).is_err());
++            assert_eq!(CONSTRUCTIONS.with(Cell::get), 0);
++            let map = decode::<BTreeMap<String, Heavy>>(br#"{"left":{}}"#, usize::MAX).unwrap();
++            assert_eq!(map["left"].padding, [0; 32]);
++
++            for input in [
++                br#"{"Values":[{}]}"#.as_slice(),
++                br#"{"Named":{"values":[{}]}}"#,
++            ] {
++                assert!(decode::<Nested>(input, 1024).is_err());
++                match decode::<Nested>(input, usize::MAX).unwrap() {
++                    Nested::Values(values) | Nested::Named { values } => {
++                        assert_eq!(values.len(), 1)
++                    }
++                    Nested::Unit => panic!("wrong variant"),
++                }
++            }
++            assert!(matches!(
++                decode::<Nested>(br#""Unit""#, 1024).unwrap(),
++                Nested::Unit
++            ));
++        }
++
++        struct AdvertisedHint;
++
++        impl<'de> SeqAccess<'de> for AdvertisedHint {
++            type Error = serde_json::Error;
++
++            fn next_element_seed<S: DeserializeSeed<'de>>(
++                &mut self,
++                _seed: S,
++            ) -> Result<Option<S::Value>, Self::Error> {
++                Ok(None)
++            }
++
++            fn size_hint(&self) -> Option<usize> {
++                Some(usize::MAX)
++            }
++        }
++
++        #[test]
++        fn collection_adapter_hides_untrusted_preallocation_hints() {
++            let mut budget = Budget { remaining: 0 };
++            let mut sequence = Sequence {
++                inner: AdvertisedHint,
++                budget: &mut budget,
++                first: true,
++            };
++            assert_eq!(sequence.size_hint(), None);
++            assert!(sequence.next_element::<Heavy>().unwrap().is_none());
++            assert_eq!(budget.remaining, 0);
++        }
++    }
+ }
+ 
+ /// Codec for binary protobuf encoding.
+@@ -374,3 +997,58 @@
+         ));
+     }
+ }
++
++#[cfg(all(test, feature = "json"))]
++mod json_codec_budget_tests {
++    use super::*;
++    use buffa_types::google::protobuf::{BytesValue, ListValue, Value};
++
++    #[test]
++    fn real_proto_json_heavy_tiny_elements_are_bounded_below_the_wire_limit() {
++        let count = crate::test_budget::elements_over_default_budget::<Value>();
++        let mut input = String::from("[");
++        for index in 0..count {
++            if index != 0 {
++                input.push(',');
++            }
++            input.push_str("{}");
++        }
++        input.push(']');
++        assert!(input.len() < 4 * 1024 * 1024);
++        assert!(decode_json::<ListValue>(input.as_bytes()).is_err());
++        let value =
++            decode_json_with_element_memory_limit::<ListValue>(input.as_bytes(), usize::MAX)
++                .unwrap();
++        assert_eq!(value.values.len(), count);
++    }
++
++    #[test]
++    fn small_json_preserves_null_base64_unknown_duplicate_and_trailing_rules() {
++        let list =
++            decode_json_with_element_memory_limit::<ListValue>(b"[null,{},7]", 64 * 1024).unwrap();
++        assert_eq!(
++            list,
++            serde_json::from_slice::<ListValue>(b"[null,{},7]").unwrap()
++        );
++        let bytes =
++            decode_json_with_element_memory_limit::<BytesValue>(br#""AQID""#, 64 * 1024).unwrap();
++        assert_eq!(bytes.value.as_slice(), &[1, 2, 3]);
++
++        #[derive(serde::Deserialize, Debug, PartialEq)]
++        struct Metadata {
++            value: u64,
++        }
++        let input = br#"{"value":7,"unknown":{"nested":[true,false]}}"#;
++        assert_eq!(
++            decode_json_with_element_memory_limit::<Metadata>(input, 64 * 1024).unwrap(),
++            serde_json::from_slice::<Metadata>(input).unwrap()
++        );
++        for input in [
++            br#"{"value":7,"value":8}"#.as_slice(),
++            br#"{"value":7} false"#,
++        ] {
++            assert!(serde_json::from_slice::<Metadata>(input).is_err());
++            assert!(decode_json_with_element_memory_limit::<Metadata>(input, 64 * 1024).is_err());
++        }
++    }
++}
+--- a/src/handler.rs
++++ b/src/handler.rs
+@@ -32,7 +32,7 @@
+ use futures::Stream;
+ 
+ use crate::codec::CodecFormat;
+-use crate::codec::decode_json;
++use crate::codec::decode_json_with_options;
+ use crate::codec::{JsonDeserialize, JsonSerialize};
+ use crate::error::ConnectError;
+ use crate::response::{
+@@ -69,7 +69,7 @@
+         CodecFormat::Proto => options
+             .decode_from_slice(&request[..])
+             .map_err(|e| decode_request_error(&e)),
+-        CodecFormat::Json => decode_json(&request[..]),
++        CodecFormat::Json => decode_json_with_options(&request[..], options),
+     }
+ }
+ 
+@@ -690,7 +690,7 @@
+     ReqView: MessageView<'static> + Send,
+     ReqView::Owned: Message + JsonDeserialize,
+ {
+-    let body = request_proto_bytes::<ReqView::Owned>(request, format)?;
++    let body = request_proto_bytes_with_options::<ReqView::Owned>(request, format, options)?;
+     OwnedView::<ReqView>::decode_with_options(body, options).map_err(|e| decode_request_error(&e))
+ }
+ 
+@@ -713,10 +713,23 @@
+ where
+     Req: Message + JsonDeserialize,
+ {
++    request_proto_bytes_with_options::<Req>(request, format, &buffa::DecodeOptions::new())
++}
++
++// Router-owned view paths forward their actual limits. The legacy public
++// codegen helper above intentionally uses the meaningful default budget.
++fn request_proto_bytes_with_options<Req>(
++    request: Bytes,
++    format: CodecFormat,
++    options: &buffa::DecodeOptions,
++) -> Result<Bytes, ConnectError>
++where
++    Req: Message + JsonDeserialize,
++{
+     match format {
+         CodecFormat::Proto => Ok(request),
+         CodecFormat::Json => {
+-            let owned: Req = decode_json(&request[..])?;
++            let owned: Req = decode_json_with_options(&request[..], options)?;
+             Ok(Bytes::from(owned.encode_to_vec()))
+         }
+     }
+@@ -1638,4 +1651,78 @@
+             "expected buffa's default element-memory budget, got {listing}"
+         );
+     }
+-}
++
++    #[cfg(feature = "json")]
++    #[test]
++    fn json_owned_payload_and_view_paths_forward_each_actual_decode_budget() {
++        use buffa_types::google::protobuf::{__buffa::view::ListValueView, ListValue};
++        let input = Bytes::from_static(b"[{},{}]");
++        let low = buffa::DecodeOptions::new().with_element_memory_limit(64);
++        let high = buffa::DecodeOptions::new().with_element_memory_limit(64 * 1024);
++        assert!(decode_request::<ListValue>(&input, CodecFormat::Json, &low).is_err());
++        assert_eq!(
++            decode_request::<ListValue>(&input, CodecFormat::Json, &high)
++                .unwrap()
++                .values
++                .len(),
++            2
++        );
++        assert!(decode_request_view::<ListValueView>(input.clone(), CodecFormat::Json, &low).is_err());
++        assert!(decode_request_view::<ListValueView>(input.clone(), CodecFormat::Json, &high).is_ok());
++
++        let refused = crate::Payload::new(input.clone(), CodecFormat::Json).with_decode_options(low);
++        assert!(refused.message::<ListValue>().is_err());
++        assert!(
++            refused
++                .try_clone()
++                .unwrap()
++                .take_message::<ListValue>()
++                .is_err()
++        );
++        let admitted = crate::Payload::new(input, CodecFormat::Json).with_decode_options(high);
++        assert_eq!(admitted.message::<ListValue>().unwrap().values.len(), 2);
++        assert_eq!(
++            admitted
++                .try_clone()
++                .unwrap()
++                .take_message::<ListValue>()
++                .unwrap()
++                .values
++                .len(),
++            2
++        );
++        assert_eq!(
++            admitted.take_message::<ListValue>().unwrap().values.len(),
++            2
++        );
++    }
++
++    #[cfg(feature = "json")]
++    #[tokio::test]
++    async fn json_request_streams_apply_configured_budget_to_each_parse() {
++        use buffa_types::google::protobuf::ListValue;
++        use futures::StreamExt as _;
++        let input = Bytes::from_static(b"[{},{}]");
++        let options = buffa::DecodeOptions::new().with_element_memory_limit(64 * 1024);
++        let source = Box::pin(futures::stream::iter([
++            Ok(input.clone()),
++            Ok(input.clone()),
++        ]));
++        let mut stream = crate::dispatcher::codegen::decode_message_request_stream::<ListValue>(
++            source,
++            CodecFormat::Json,
++            options,
++        );
++        assert!(stream.next().await.unwrap().is_ok());
++        assert!(stream.next().await.unwrap().is_ok());
++        assert!(stream.next().await.is_none());
++
++        let source = Box::pin(futures::stream::iter([Ok(input)]));
++        let mut stream = crate::dispatcher::codegen::decode_message_request_stream::<ListValue>(
++            source,
++            CodecFormat::Json,
++            buffa::DecodeOptions::new().with_element_memory_limit(64),
++        );
++        assert!(stream.next().await.unwrap().is_err());
++    }
++}
+--- a/src/payload.rs
++++ b/src/payload.rs
+@@ -28,8 +28,10 @@
+ use buffa::view::{MessageView, OwnedView};
+ use bytes::Bytes;
+ 
++#[cfg(all(test, feature = "json"))]
++use crate::codec::decode_json;
+ use crate::codec::{
+-    CodecFormat, JsonDeserialize, JsonSerialize, decode_json, decode_proto_with_options,
++    CodecFormat, JsonDeserialize, JsonSerialize, decode_json_with_options, decode_proto_with_options,
+     encode_json, encode_proto,
+ };
+ use crate::error::ConnectError;
+@@ -306,7 +308,7 @@
+         if self.decoded.get().is_none() {
+             let m: M = match self.format {
+                 CodecFormat::Proto => decode_proto_with_options(&self.bytes, &self.decode_options)?,
+-                CodecFormat::Json => decode_json(&self.bytes)?,
++                CodecFormat::Json => decode_json_with_options(&self.bytes, &self.decode_options)?,
+             };
+             let _ = self.decoded.set(Box::new(m));
+         }
+@@ -389,7 +391,7 @@
+         }
+         match self.format {
+             CodecFormat::Proto => decode_proto_with_options(&self.bytes, &self.decode_options),
+-            CodecFormat::Json => decode_json(&self.bytes),
++            CodecFormat::Json => decode_json_with_options(&self.bytes, &self.decode_options),
+         }
+     }
+ 
+--- a/src/service.rs
++++ b/src/service.rs
+@@ -572,6 +572,13 @@
+     /// each with its own allocation overhead, while staying well under the
+     /// message size limit. A single large payload is unaffected however big
+     /// it grows, because its contents are not charged.
++    ///
++    /// On JSON Router paths this is a conservative typed-carrier budget,
++    /// including collection growth, small capacity floors and map links.
++    /// String/byte contents and JSON parser scratch remain bounded separately
++    /// by message bytes. It is not an exact allocator or total heap limit.
++    /// Legacy monomorphic codegen JSON normalization uses the default budget;
++    /// its helper has no per-call decode-options parameter.
+     ///
+     /// Raise it for a trusted peer that legitimately sends messages with
+     /// very many small elements; lower it to tighten the defence.

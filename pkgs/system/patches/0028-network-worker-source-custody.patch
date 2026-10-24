@@ -1,0 +1,1214 @@
+diff --git a/src/core/aos-component-parent.c b/src/core/aos-component-parent.c
+--- a/src/core/aos-component-parent.c
++++ b/src/core/aos-component-parent.c
+@@ -1332,8 +1332,10 @@
+         case PARENT_SENDER_MOUNT:
+         case PARENT_SENDER_NETWORK:
+                 vector = purpose == PARENT_SENDER_MOUNT ? mount_sender_vector() : network_sender_vector();
+-                admission->memory = aos_resource_source_origin_memory();
+-                admission->files = aos_resource_source_origin_files();
++                admission->memory = purpose == PARENT_SENDER_NETWORK ?
++                        aos_resource_network_origin_memory() : aos_resource_source_origin_memory();
++                admission->files = purpose == PARENT_SENDER_NETWORK ?
++                        aos_resource_network_origin_files() : aos_resource_source_origin_files();
+                 break;
+         case PARENT_SENDER_CONTROLLER_SUCCESSOR:
+                 vector = controller_sender_vector();
+diff --git a/src/core/aos-network-worker-source.inc b/src/core/aos-network-worker-source.inc
+--- /dev/null
++++ b/src/core/aos-network-worker-source.inc
+@@ -0,0 +1,515 @@
++/* SPDX-License-Identifier: LGPL-2.1-or-later */
++
++/* Private Network source mechanics of aos-resource-enrollment.c.
++ *
++ * Both fixed socket activations borrow the same original admitted Network M
++ * account. Accepted OFDs, stable peer pins, partial Unit models and native
++ * cgroup observations remain in its two once-only owners. No decoded request,
++ * caller-selected Unit or count can select a payer or rearm these slots.
++ */
++
++static int network_worker_refuse(AosNetworkWorkerOriginal *original, int error) {
++        assert(error < 0);
++        if (original->first_error == 0)
++                original->first_error = error;
++        return aos_resource_parent_fail(original->first_error);
++}
++
++static int network_worker_socket_purpose(Socket *socket) {
++        if (!enrollment.parent.selected)
++                return -1;
++        if (streq_ptr(UNIT(socket)->id, "aos-sandbox-network-worker.socket"))
++                return 0;
++        if (streq_ptr(UNIT(socket)->id, "aos-sandbox-network-observation-worker.socket"))
++                return 1;
++        return -1;
++}
++
++static bool network_worker_name(const Unit *unit, unsigned purpose) {
++        const char *prefix = purpose == 0 ? "aos-sandbox-network-worker@" :
++                                           "aos-sandbox-network-observation-worker@";
++        return unit->type == UNIT_SERVICE && unit->id &&
++               startswith(unit->id, prefix) && endswith(unit->id, ".service");
++}
++
++static Service *network_worker_source(Manager *manager) {
++        Unit *unit = manager_get_unit(manager, "aos-netd.service");
++        AosSourceOrigin *origin = &enrollment.network_origin;
++
++        if (!enrollment.parent.selected || !enrollment.parent.installed ||
++            enrollment.parent.manager != manager || !unit || unit->type != UNIT_SERVICE ||
++            origin->transport.unit != unit || !origin->transport.entered ||
++            origin->transport.first_error < 0 || origin->exec_error < 0 ||
++            !origin->exec_complete || !origin->transport.delivered || !origin->exec_eof ||
++            !origin->bootstrap_closed || !origin->clone.attempted || origin->clone.spawn_result != 0 ||
++            origin->clone.pidfd < 0 || origin->transport.recipient.fd < 0 ||
++            sd_id128_is_null(origin->transport.invocation) ||
++            !sd_id128_equal(origin->transport.invocation, unit->invocation_id))
++                return NULL;
++        return SERVICE(unit);
++}
++
++/* All entered peer observations retain their actual Results. The after checks
++ * are independent of lookup, profile and identity failures. No PID reopening
++ * or pidref_equal error fallback participates in this comparison. */
++static int network_worker_observe_source(AosNetworkWorkerOriginal *original, unsigned phase) {
++        Service *source;
++        if (!UNIT_ISSET(original->source))
++                return network_worker_refuse(original, -EOWNERDEAD);
++        source = SERVICE(UNIT_DEREF(original->source));
++        AosSourceOrigin *origin = &enrollment.network_origin;
++        PidRef *subjects[3] = { &original->peer, &source->main_pid, &origin->transport.recipient };
++        int first = 0, r;
++
++        if (phase >= ELEMENTSOF(original->observed) || original->observed[phase])
++                return network_worker_refuse(original, -EALREADY);
++        original->observed[phase] = true;
++
++        for (unsigned i = 0; i < ELEMENTSOF(subjects); i++) {
++                original->verify_before[phase][i] = pidref_verify(subjects[i]);
++                if (first == 0 && original->verify_before[phase][i] < 0)
++                        first = original->verify_before[phase][i];
++        }
++
++        if (first == 0) {
++                for (unsigned i = 0; i < ELEMENTSOF(subjects); i++) {
++                        original->acquire_ids[phase][i] = pidref_acquire_pidfd_id(subjects[i]);
++                        original->pidfd_ids[phase][i] = subjects[i]->fd_id;
++                        if (first == 0 && original->acquire_ids[phase][i] < 0)
++                                first = original->acquire_ids[phase][i];
++                }
++                if (first == 0 && (original->pidfd_ids[phase][0] == 0 ||
++                    original->pidfd_ids[phase][0] != original->pidfd_ids[phase][1] ||
++                    original->pidfd_ids[phase][0] != original->pidfd_ids[phase][2]))
++                        first = -EOWNERDEAD;
++        }
++
++        if (first == 0) {
++                original->peer_unit[phase] = manager_get_unit_by_pidref_cgroup(UNIT(source)->manager, &original->peer);
++                if (original->peer_unit[phase] != UNIT(source) || !source->main_pid_known ||
++                    source->main_pid_alien || !IN_SET(source->state, SERVICE_START, SERVICE_RUNNING) ||
++                    source->main_command != source->exec_command[SERVICE_EXEC_START] ||
++                    source->main_command != origin->transport.main_command ||
++                    !source->main_command || source->main_command->command_next ||
++                    !sd_id128_equal(original->source_invocation, UNIT(source)->invocation_id))
++                        first = -EOWNERDEAD;
++        }
++
++        if (first == 0) {
++                original->parent_profile[phase] = aos_resource_parent_require_source_profile(
++                                source, origin->transport.main_command, origin->transport.main_flags);
++                if (original->parent_profile[phase] < 0)
++                        first = original->parent_profile[phase];
++        }
++        if (first == 0) {
++                original->parent_context[phase] = aos_resource_parent_context(UNIT(source), false);
++                if (original->parent_context[phase] < 0)
++                        first = original->parent_context[phase];
++        }
++        if (first == 0) {
++                original->parent_sender[phase] = aos_resource_parent_require_source_sender(source);
++                if (original->parent_sender[phase] < 0)
++                        first = original->parent_sender[phase];
++        }
++
++        for (unsigned i = 0; i < ELEMENTSOF(subjects); i++) {
++                original->verify_after[phase][i] = pidref_verify(subjects[i]);
++                if (first == 0 && original->verify_after[phase][i] < 0)
++                        first = original->verify_after[phase][i];
++        }
++        r = first;
++        return r < 0 ? network_worker_refuse(original, r) : 0;
++}
++
++/* The fixed listener is known before accept4. Enter the existing sender
++ * account before that native allocation, not after an accepted FD exists. */
++int aos_resource_network_worker_socket_scope(Socket *socket, SocketPort *port,
++                                               AllocationAccountScope *scope) {
++        int purpose = network_worker_socket_purpose(socket), r;
++        Service *source;
++        AosNetworkWorkerOriginal *original;
++        const char *path;
++
++        if (purpose < 0)
++                return 0;
++        source = network_worker_source(UNIT(socket)->manager);
++        if (!source)
++                return aos_resource_parent_fail(-EOWNERDEAD);
++        r = aos_resource_parent_source_exec_scope(source, scope);
++        if (r < 0)
++                return r;
++        original = &enrollment.network_workers[purpose];
++        original->purpose = (unsigned) purpose;
++        if (original->entered || original->first_error < 0)
++                return network_worker_refuse(original, original->first_error < 0 ? original->first_error : -EALREADY);
++        path = purpose == 0 ? "/run/aos/sandbox-network-worker/control.sock" :
++                              "/run/aos/sandbox-network-observation-worker/control.sock";
++        /* This closed profile reaches only PASSCRED and PASSPIDFD in the
++         * unchanged shared option engine. Observation also has its exact
++         * two configured1MiB buffers. No forked IP accept helper is entered. */
++        if (port->type != SOCKET_SOCKET || port->address.sockaddr.sa.sa_family != AF_UNIX ||
++            port->address.type != SOCK_SEQPACKET ||
++            !streq_ptr(port->address.sockaddr.un.sun_path, path) || !socket->accept ||
++            socket->max_connections != 1 || socket->max_connections_per_source != 0 ||
++            !socket->pass_cred || !socket->pass_pidfd || !socket->pass_rights ||
++            socket->keep_alive || timestamp_is_set(socket->keep_alive_time) ||
++            socket->keep_alive_interval > 0 || socket->keep_alive_cnt > 0 || socket->defer_accept > 0 ||
++            socket->no_delay || socket->broadcast || socket->pass_sec || socket->pass_pktinfo ||
++            socket->timestamping != SOCKET_TIMESTAMPING_OFF || socket->priority >= 0 ||
++            socket->receive_buffer != (purpose == 1 ? 1024U * 1024U : 0) ||
++            socket->send_buffer != (purpose == 1 ? 1024U * 1024U : 0) || socket->mark >= 0 ||
++            socket->ip_tos >= 0 || socket->ip_ttl >= 0 || socket->tcp_congestion ||
++            socket->smack_ip_in || socket->smack_ip_out)
++                return network_worker_refuse(original, -EPERM);
++        original->socket_fragment_result = aos_network_verify_loaded_fragment_retaining(UNIT(socket), &original->image);
++        if (original->socket_fragment_result < 0)
++                return network_worker_refuse(original, original->socket_fragment_result);
++        return 1;
++}
++
++void aos_resource_network_worker_accept_returned(Socket *socket, int result) {
++        int purpose = network_worker_socket_purpose(socket);
++        AosNetworkWorkerOriginal *original;
++
++        if (purpose < 0)
++                return;
++        original = &enrollment.network_workers[purpose];
++        original->accept_result = result;
++        if (result >= 0)
++                original->accepted_fd = result;
++        else {
++                original->entered = true;
++                (void) network_worker_refuse(original, result);
++        }
++}
++
++void aos_resource_network_worker_socket_option(AosNetworkWorkerOriginal *original, unsigned slot, int result) {
++        if (!original)
++                return;
++        assert(slot < ELEMENTSOF(original->socket_option_results));
++        if (original->socket_option_entered[slot]) {
++                if (original->first_error == 0)
++                        original->first_error = -EALREADY;
++                return;
++        }
++        original->socket_option_entered[slot] = true;
++        original->socket_option_results[slot] = result;
++        if (original->first_error == 0 && result < 0)
++                original->first_error = result;
++}
++
++int aos_resource_network_worker_socket_options_complete(AosNetworkWorkerOriginal *original) {
++        if (!original)
++                return 0;
++        if (original->first_error < 0)
++                return network_worker_refuse(original, original->first_error);
++        if (!original->socket_option_entered[0] || !original->socket_option_entered[1] ||
++            (original->purpose == 1 &&
++             (!original->socket_option_entered[2] || !original->socket_option_entered[3])))
++                return network_worker_refuse(original, -EOWNERDEAD);
++        return 0;
++}
++
++/* This scope precedes socket peer buckets, service model parsing and job
++ * construction. Their actual allocations belong to the same original M
++ * sender; the child's MemoryMax never pays for PID1's causative heap. */
++int aos_resource_network_worker_accept_begin(Socket *socket, int *accepted,
++                                             AllocationAccountScope *scope,
++                                             AosNetworkWorkerOriginal **ret) {
++        int purpose = network_worker_socket_purpose(socket), r;
++        AosNetworkWorkerOriginal *original;
++        Service *source;
++        Unit *root_scope;
++
++        *ret = NULL;
++        if (purpose < 0)
++                return 0;
++        source = network_worker_source(UNIT(socket)->manager);
++        if (!source)
++                return aos_resource_parent_fail(-EOWNERDEAD);
++        r = allocation_account_active() ? aos_resource_parent_require_source_sender(source) :
++                                         aos_resource_parent_source_exec_scope(source, scope);
++        if (r < 0)
++                return r;
++
++        original = &enrollment.network_workers[purpose];
++        *ret = original;
++        if (original->entered)
++                return network_worker_refuse(original, -EALREADY);
++        root_scope = manager_get_unit(UNIT(socket)->manager, "init.scope");
++        if (!root_scope)
++                return network_worker_refuse(original, -EOWNERDEAD);
++        original->entered = true;
++        original->purpose = (unsigned) purpose;
++        unit_ref_set(&original->socket, root_scope, UNIT(socket));
++        unit_ref_set(&original->source, root_scope, UNIT(source));
++        original->source_invocation = UNIT(source)->invocation_id;
++        if (*accepted < 0)
++                return network_worker_refuse(original, -EBADF);
++
++        /* Park the real accepted OFD before any duplication/adoption can fail. */
++        original->accepted_fd = TAKE_FD(*accepted);
++        original->peer_fd = getpeerpidfd(original->accepted_fd);
++        if (original->peer_fd < 0) {
++                int first = original->peer_fd;
++                original->first_error = first;
++                (void) network_worker_observe_source(original, 0);
++                return network_worker_refuse(original, first);
++        }
++        original->peer_adoption_result = pidref_set_pidfd_take(&original->peer, original->peer_fd);
++        if (original->peer_adoption_result < 0) {
++                int first = original->peer_adoption_result;
++                original->first_error = first;
++                (void) network_worker_observe_source(original, 0);
++                return network_worker_refuse(original, first);
++        }
++        original->peer_fd = -EBADF; /* Ownership moved only on real adoption success. */
++        r = network_worker_observe_source(original, 0);
++        if (r < 0)
++                return r;
++        original->delivery_result = fcntl(original->accepted_fd, F_DUPFD_CLOEXEC, 3);
++        if (original->delivery_result < 0) {
++                original->delivery_result = -errno;
++                return network_worker_refuse(original, original->delivery_result);
++        }
++        *accepted = original->delivery_result;
++        return 1;
++}
++
++int aos_resource_network_worker_accept_loaded(AosNetworkWorkerOriginal *original, Unit *worker, int load_result) {
++        Unit *slice;
++        Service *service;
++
++        if (!original)
++                return 0;
++        if (original->first_error < 0)
++                return original->first_error;
++        original->loaded_result = load_result;
++        if (UNIT_ISSET(original->worker))
++                return network_worker_refuse(original, -EALREADY);
++        /* The real returned partial Unit remains owned even on load error. */
++        if (worker)
++                unit_ref_set(&original->worker, original->source.source, worker);
++        if (load_result < 0)
++                return network_worker_refuse(original, load_result);
++        if (!worker || !network_worker_name(worker, original->purpose))
++                return network_worker_refuse(original, -EOWNERDEAD);
++        if (UNIT_IS_LOAD_ERROR(worker->load_state))
++                return network_worker_refuse(original, worker->load_error);
++        if (worker->load_state != UNIT_LOADED)
++                return network_worker_refuse(original, -EOWNERDEAD);
++        service = SERVICE(worker);
++        slice = UNIT_GET_SLICE(worker);
++        if (!slice || !streq_ptr(slice->id, "aoscomponents-network.slice") ||
++            !service->exec_command[SERVICE_EXEC_START] ||
++            service->exec_command[SERVICE_EXEC_START]->command_next)
++                return network_worker_refuse(original, -EPERM);
++        for (ServiceExecCommand command = 0; command < _SERVICE_EXEC_COMMAND_MAX; command++)
++                if (command != SERVICE_EXEC_START && service->exec_command[command])
++                        return network_worker_refuse(original, -EPERM);
++
++        original->fragment_result = aos_network_verify_loaded_fragment_retaining(worker, &original->image);
++        if (original->fragment_result < 0)
++                return network_worker_refuse(original, original->fragment_result);
++        return 0;
++}
++
++static AosNetworkWorkerOriginal *network_worker_for_service(Service *service) {
++        if (!enrollment.parent.selected)
++                return NULL;
++        FOREACH_ELEMENT(original, enrollment.network_workers)
++                if (UNIT_DEREF(original->worker) == UNIT(service))
++                        return original;
++        return NULL;
++}
++
++static bool network_worker_requires_original(Service *service) {
++        return enrollment.parent.selected &&
++               (network_worker_name(UNIT(service), 0) || network_worker_name(UNIT(service), 1));
++}
++
++static int network_worker_exec_scope(Service *service, ExecCommand *command, ExecFlags flags,
++                                       AllocationAccountScope *scope) {
++        AosNetworkWorkerOriginal *original = network_worker_for_service(service);
++        Service *source;
++        socklen_t size;
++        int r;
++
++        if (!original || !UNIT_ISSET(original->source) || !UNIT_ISSET(original->socket))
++                return aos_resource_parent_fail(-EOWNERDEAD);
++        source = SERVICE(UNIT_DEREF(original->source));
++        r = aos_resource_parent_source_exec_scope(source, scope);
++        if (r < 0)
++                return network_worker_refuse(original, r);
++        if (original->first_error < 0)
++                return original->first_error;
++        if (!original->entered || original->clone.attempted ||
++            command != service->exec_command[SERVICE_EXEC_START] || command->command_next ||
++            !FLAGS_SET(flags, EXEC_PASS_FDS) || service->socket_fd < 0 ||
++            UNIT_DEREF(service->accept_socket) != UNIT_DEREF(original->socket) ||
++            sd_id128_is_null(UNIT(service)->invocation_id))
++                return network_worker_refuse(original, -EOWNERDEAD);
++        if (original->invocation_bound &&
++            !sd_id128_equal(original->worker_invocation, UNIT(service)->invocation_id))
++                return network_worker_refuse(original, -EOWNERDEAD);
++        original->worker_invocation = UNIT(service)->invocation_id;
++        original->invocation_bound = true;
++
++        /* The service delivery must still be the same actual accepted OFD. */
++        for (unsigned i = 0; i < 2; i++) {
++                int fd = i == 0 ? original->accepted_fd : service->socket_fd;
++                size = sizeof(original->socket_cookies[i]);
++                original->socket_cookie_results[i] = getsockopt(fd, SOL_SOCKET, SO_COOKIE,
++                        &original->socket_cookies[i], &size) < 0 ? -errno :
++                        size == sizeof(original->socket_cookies[i]) ? 0 : -EBADMSG;
++        }
++        for (unsigned i = 0; i < 2; i++)
++                if (original->socket_cookie_results[i] < 0)
++                        return network_worker_refuse(original, original->socket_cookie_results[i]);
++        if (original->socket_cookies[0] == 0 || original->socket_cookies[0] != original->socket_cookies[1])
++                return network_worker_refuse(original, -EOWNERDEAD);
++
++        /* Selection comes from the accepted native source, independently of
++         * the loaded Slice. A wrong template/Slice cannot become ordinary. */
++        r = aos_network_verify_loaded_fragment_retaining(UNIT(service), &original->image);
++        return r < 0 ? network_worker_refuse(original, r) : 0;
++}
++
++/* unit_prepare_exec has already realized the unit's native controls. This
++ * held directory, not a later cgroup pathname or an after-READY observation,
++ * is passed directly to the existing atomic CLONE_INTO_CGROUP wrapper. */
++static int network_worker_capture_cgroup(AosNetworkWorkerOriginal *original, Service *service) {
++        static const char *const names[] = { "memory.max", "pids.max" };
++        static const char *const expected[] = { "268435456\n", "2\n" };
++        CGroupRuntime *runtime = unit_get_cgroup_runtime(UNIT(service));
++        CGroupContext *context = unit_get_cgroup_context(UNIT(service));
++        const struct rlimit *nofile = service->exec_context.rlimit[RLIMIT_NOFILE];
++        const char *expected_path;
++        int first = 0;
++
++        if (original->cgroup_attempted)
++                return network_worker_refuse(original, -EALREADY);
++        original->cgroup_attempted = true;
++        expected_path = strjoina("/aoscomponents.slice/aoscomponents-network.slice/", UNIT(service)->id);
++        if (!runtime || !runtime->cgroup_id || !streq_ptr(runtime->cgroup_path, expected_path) ||
++            !context || context->delegate || context->memory_max != 268435456U ||
++            !service->exec_context.no_new_privileges ||
++            (service->exec_context.capability_bounding_set & (UINT64_C(1) << CAP_SYS_RESOURCE)) ||
++            (context->startup_memory_max_set && context->startup_memory_max != context->memory_max) ||
++            context->tasks_max.value != 2 || context->tasks_max.scale != 0 ||
++            !nofile || nofile->rlim_cur != 128 || nofile->rlim_max != 128)
++                return original->cgroup_result = network_worker_refuse(original, -EPERM);
++
++        /* The trusted systemd executor also starts with this hard bound,
++         * before its normal per-command rlimit application. No wider inherited
++         * table is silently charged as the child's 128-entry source. */
++        original->inherited_nofile_result = getrlimit(RLIMIT_NOFILE, &original->inherited_nofile) < 0 ? -errno : 0;
++        if (original->inherited_nofile_result < 0)
++                return original->cgroup_result = network_worker_refuse(original, original->inherited_nofile_result);
++        if (original->inherited_nofile.rlim_cur != 128 || original->inherited_nofile.rlim_max != 128)
++                return original->cgroup_result = network_worker_refuse(original, -EPERM);
++
++        original->cgroup_native_path = strjoin("/sys/fs/cgroup", expected_path);
++        if (!original->cgroup_native_path)
++                return original->cgroup_result = network_worker_refuse(original, -ENOMEM);
++        original->cgroup_fd = cg_path_open(expected_path);
++        if (original->cgroup_fd < 0) {
++                first = original->cgroup_fd;
++                goto posts;
++        }
++        original->cgroup_stat_result = fstat(original->cgroup_fd, &original->cgroup_stat) < 0 ? -errno : 0;
++        original->cgroup_filesystem_result = fstatfs(original->cgroup_fd, &original->cgroup_filesystem) < 0 ? -errno : 0;
++        original->cgroup_id_result = fd_to_handle_u64(original->cgroup_fd, &original->cgroup_id);
++        original->named_directory_results[0] = fstatat(AT_FDCWD, original->cgroup_native_path,
++                &original->named_directory[0], AT_SYMLINK_NOFOLLOW) < 0 ? -errno : 0;
++        if (original->cgroup_stat_result < 0)
++                first = original->cgroup_stat_result;
++        else if (original->cgroup_filesystem_result < 0)
++                first = original->cgroup_filesystem_result;
++        else if (original->cgroup_id_result < 0)
++                first = original->cgroup_id_result;
++        else if (original->named_directory_results[0] < 0)
++                first = original->named_directory_results[0];
++        else if (!S_ISDIR(original->cgroup_stat.st_mode) ||
++                 original->cgroup_filesystem.f_type != CGROUP2_SUPER_MAGIC ||
++                 original->cgroup_id != runtime->cgroup_id ||
++                 original->named_directory[0].st_dev != original->cgroup_stat.st_dev ||
++                 original->named_directory[0].st_ino != original->cgroup_stat.st_ino)
++                first = -EOWNERDEAD;
++
++        if (first == 0)
++                for (unsigned i = 0; i < ELEMENTSOF(names); i++) {
++                        original->control_fds[i] = openat(original->cgroup_fd, names[i], O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
++                        if (original->control_fds[i] < 0) {
++                                original->control_fds[i] = -errno;
++                                if (first == 0)
++                                        first = original->control_fds[i];
++                                continue;
++                        }
++                        original->control_stat_results[i] = fstat(original->control_fds[i], &original->control_stats[i]) < 0 ? -errno : 0;
++                        if (original->control_stat_results[i] < 0) {
++                                if (first == 0)
++                                        first = original->control_stat_results[i];
++                                continue;
++                        }
++                        if (!S_ISREG(original->control_stats[i].st_mode) ||
++                            original->control_stats[i].st_dev != original->cgroup_stat.st_dev) {
++                                if (first == 0)
++                                        first = -EPERM;
++                                continue;
++                        }
++                        int r = aos_resource_control_readback(original->control_fds[i], expected[i],
++                                original->control_readback[i], sizeof(original->control_readback[i]),
++                                &original->control_read_lengths[i], &original->control_read_results[i]);
++                        if (first == 0 && r < 0)
++                                first = r;
++                }
++
++posts:
++        /* Both reached control names and the cgroup directory are owed posts,
++         * including after an earlier control open/readback failure. */
++        for (unsigned i = 0; i < ELEMENTSOF(names); i++) {
++                if (original->control_fds[i] < 0)
++                        continue;
++                original->named_controls_after_results[i] = fstatat(original->cgroup_fd, names[i],
++                        &original->named_controls_after[i], AT_SYMLINK_NOFOLLOW) < 0 ? -errno : 0;
++                if (first == 0 && original->named_controls_after_results[i] < 0)
++                        first = original->named_controls_after_results[i];
++                else if (first == 0 && (original->named_controls_after[i].st_dev != original->control_stats[i].st_dev ||
++                         original->named_controls_after[i].st_ino != original->control_stats[i].st_ino))
++                        first = -EOWNERDEAD;
++        }
++        original->named_directory_results[1] = fstatat(AT_FDCWD, original->cgroup_native_path,
++                &original->named_directory[1], AT_SYMLINK_NOFOLLOW) < 0 ? -errno : 0;
++        if (first == 0 && original->named_directory_results[1] < 0)
++                first = original->named_directory_results[1];
++        else if (first == 0 && (original->named_directory[1].st_dev != original->cgroup_stat.st_dev ||
++                 original->named_directory[1].st_ino != original->cgroup_stat.st_ino))
++                first = -EOWNERDEAD;
++        original->cgroup_result = first;
++        return first < 0 ? network_worker_refuse(original, first) : 0;
++}
++
++static int network_worker_spawn_original(Service *service, ExecCommand *command, ExecFlags flags,
++                                           FixedCgroupSpawnOriginal **ret, int *ret_cgroup_fd) {
++        AosNetworkWorkerOriginal *original = network_worker_for_service(service);
++        int primary, after;
++
++        if (!network_worker_requires_original(service))
++                return 0;
++        if (!original || !original->invocation_bound || original->clone.attempted ||
++            command != service->exec_command[SERVICE_EXEC_START] || !FLAGS_SET(flags, EXEC_PASS_FDS) ||
++            !sd_id128_equal(original->worker_invocation, UNIT(service)->invocation_id))
++                return aos_resource_parent_fail(-EOWNERDEAD);
++        if (original->first_error < 0)
++                return original->first_error;
++        primary = network_worker_capture_cgroup(original, service);
++        /* Source PIDFD posts are independent of failed cgroup observations. */
++        after = network_worker_observe_source(original, 1);
++        if (primary < 0 || after < 0)
++                return primary < 0 ? primary : after;
++        *ret = &original->clone;
++        *ret_cgroup_fd = original->cgroup_fd;
++        return 1;
++}
++
+diff --git a/src/core/aos-resource-enrollment.c b/src/core/aos-resource-enrollment.c
+--- a/src/core/aos-resource-enrollment.c
++++ b/src/core/aos-resource-enrollment.c
+@@ -1,6 +1,8 @@
+ /* SPDX-License-Identifier: LGPL-2.1-or-later */
+ 
+ #include <fcntl.h>
++#include <linux/magic.h>
++#include <linux/capability.h>
+ #include <sys/stat.h>
+ #include <sys/vfs.h>
+ #include <sys/wait.h>
+@@ -19,12 +21,14 @@
+ #include "cgroup-util.h"
+ #include "cgroup.h"
+ #include "fd-util.h"
++#include "mountpoint-util.h"
+ #include "initrd-util.h"
+ #include "load-fragment.h"
+ #include "memfd-util.h"
+ #include "parse-util.h"
+ #include "selinux-util.h"
+ #include "set.h"
++#include "socket.h"
+ #include "socket-util.h"
+ #include "sha256.h"
+ #include "string-util.h"
+@@ -181,6 +185,68 @@
+         AOS_SERVICE_LAUNCH_COMPONENT_ORIGIN,
+         AOS_SERVICE_LAUNCH_CONTROLLER_SUCCESSOR,
+ } AosServiceLaunchPurpose;
++
++/* These two owners are prospective native costs of the original Network M
++ * sender. Neither an accepted UID nor a decoded worker request creates one. */
++typedef struct AosNetworkWorkerOriginal {
++        bool entered;
++        int first_error;
++        unsigned purpose;
++        UnitRef socket;
++        UnitRef source;
++        UnitRef worker;
++        sd_id128_t source_invocation;
++        sd_id128_t worker_invocation;
++        int accepted_fd;
++        int accept_result;
++        int socket_fragment_result;
++        AosNetworkImageReadOriginal image;
++        int socket_option_results[4];
++        bool socket_option_entered[4];
++        int delivery_result;
++        int peer_fd;
++        int peer_adoption_result;
++        PidRef peer;
++        int verify_before[2][3];
++        int acquire_ids[2][3];
++        uint64_t pidfd_ids[2][3];
++        int verify_after[2][3];
++        bool observed[2];
++        Unit *peer_unit[2];
++        int parent_profile[2];
++        int parent_context[2];
++        int parent_sender[2];
++        int fragment_result;
++        int loaded_result;
++        int launch_result;
++        int watch_result;
++        bool invocation_bound;
++        int socket_cookie_results[2];
++        uint64_t socket_cookies[2];
++        int cgroup_fd;
++        char *cgroup_native_path;
++        uint64_t cgroup_id;
++        int cgroup_id_result;
++        struct stat cgroup_stat;
++        struct statfs cgroup_filesystem;
++        int cgroup_stat_result;
++        int cgroup_filesystem_result;
++        struct stat named_directory[2];
++        int named_directory_results[2];
++        int control_fds[2];
++        struct stat control_stats[2];
++        int control_stat_results[2];
++        uint8_t control_readback[2][128];
++        ssize_t control_read_lengths[2];
++        int control_read_results[2];
++        struct stat named_controls_after[2];
++        int named_controls_after_results[2];
++        int cgroup_result;
++        struct rlimit inherited_nofile;
++        int inherited_nofile_result;
++        bool cgroup_attempted;
++        FixedCgroupSpawnOriginal clone;
++} AosNetworkWorkerOriginal;
+ 
+ /* Each closed component service retains its own original transport and observations.
+  * Service cleanup releases only the delivery copy, never this origin owner. */
+@@ -359,6 +425,7 @@
+         AosSourceOrigin cache_origin;
+         AosSourceOrigin mount_origin;
+         AosSourceOrigin network_origin;
++        AosNetworkWorkerOriginal network_workers[2];
+         AosControllerRestart controller_restart;
+         AosResourceServiceCPU controller_cpu;
+         AosResourceServiceCPU storage_cpu;
+@@ -456,6 +523,14 @@
+         .cache_origin = AOS_COMPONENT_ORIGIN_EMPTY,
+         .mount_origin = AOS_COMPONENT_ORIGIN_EMPTY,
+         .network_origin = AOS_COMPONENT_ORIGIN_EMPTY,
++        .network_workers = {
++                { .accepted_fd = -EBADF, .peer_fd = -EBADF, .peer = PIDREF_NULL,
++                  .cgroup_fd = -EBADF, .control_fds = { -EBADF, -EBADF },
++                  .clone = { .pidfd = -EBADF, .duplicate_pidfd = -EBADF } },
++                { .accepted_fd = -EBADF, .peer_fd = -EBADF, .peer = PIDREF_NULL,
++                  .cgroup_fd = -EBADF, .control_fds = { -EBADF, -EBADF },
++                  .clone = { .pidfd = -EBADF, .duplicate_pidfd = -EBADF } },
++        },
+         .controller_restart = {
+                 .current_transport = { .sockets = { -EBADF, -EBADF }, .recipient = PIDREF_NULL },
+                 .pending_transport = { .sockets = { -EBADF, -EBADF }, .recipient = PIDREF_NULL },
+@@ -1743,6 +1818,8 @@
+         }
+ }
+ 
++#include "aos-network-worker-source.inc"
++
+ static bool source_origin_selected(Service *service) {
+         return source_origin_original(service) != NULL;
+ }
+@@ -1777,6 +1854,19 @@
+          * all20 installed Completion FDs, two exe opens and four native probes.
+          * The same M owner pays the full parent flight before any new growth. */
+         return 2U + 1U + 2U + 4U + 4U + 1U + 2U + 20U + 2U + 4U;
++}
++
++size_t aos_resource_network_origin_memory(void) {
++        return aos_resource_source_origin_memory() + sizeof(enrollment.network_workers);
++}
++
++unsigned aos_resource_network_origin_files(void) {
++        /* Prospective originals of the two fixed activations: accepted OFD +
++         * delivery, peer PIDFD, clone/recipient/watch pins, cgroup +2 controls.
++         * One failed image lookup holds all12 native leaves and prevents every
++         * later new primary. Positive image leaves close only after its full
++         * parser/path/identity conjunction. No financial charge is refunded. */
++        return aos_resource_source_origin_files() + 2U * (2U + 1U + 4U + 3U) + AOS_NETWORK_IMAGE_READ_FILES;
+ }
+ 
+ size_t aos_resource_ownership_origin_memory(void) {
+@@ -1906,7 +1996,8 @@
+                 uint8_t *payload = original->payloads[i];
+                 struct iovec iov = { .iov_base = payload, .iov_len = 128 };
+ 
+-                memcpy(payload, "AOSRSO01", 8);
++                memcpy(payload, source_origin_role(service) == AOS_FIXED_PROFILE_NETWORK ?
++                                "AOSRSO02" : "AOSRSO01", 8);
+                 payload[8] = i;
+                 payload[9] = source_origin_role(service); /* Same original fixed service, never request DATA. */
+                 memcpy(payload + 16, original->transport.invocation.bytes, 16);
+@@ -2653,6 +2744,8 @@
+ 
+ int aos_resource_begin_launch_exec_scope(Service *service, ExecCommand *command, ExecFlags flags,
+                                          AllocationAccountScope *scope) {
++        if (network_worker_requires_original(service))
++                return network_worker_exec_scope(service, command, flags, scope);
+         int r = aos_resource_parent_require_source_profile(service, command, flags);
+         if (r < 0)
+                 return r;
+@@ -2973,6 +3066,15 @@
+ 
+ int aos_resource_launch_spawn_returned(Service *service, ExecCommand *command, ExecFlags flags,
+                                        int spawn_result, const PidRef *recipient) {
++        AosNetworkWorkerOriginal *worker = network_worker_for_service(service);
++        if (worker) {
++                worker->launch_result = spawn_result;
++                if (spawn_result < 0)
++                        return network_worker_refuse(worker, spawn_result);
++                if (!worker->clone.attempted || worker->clone.spawn_result != 0 || worker->clone.pidfd < 0)
++                        return network_worker_refuse(worker, -EOWNERDEAD);
++                return spawn_result;
++        }
+         if (!controller_launch_selected(UNIT(service)) || command != service->exec_command[SERVICE_EXEC_START] ||
+             !FLAGS_SET(flags, EXEC_PASS_FDS))
+                 return aos_resource_source_spawn_returned(service, command, flags, spawn_result, recipient);
+@@ -2981,6 +3083,11 @@
+ }
+ 
+ int aos_resource_finish_launch_spawn(Service *service, ExecCommand *command, ExecFlags flags, int watch_result) {
++        AosNetworkWorkerOriginal *worker = network_worker_for_service(service);
++        if (worker) {
++                worker->watch_result = watch_result;
++                return watch_result < 0 ? network_worker_refuse(worker, watch_result) : watch_result;
++        }
+         if (controller_launch_selected(UNIT(service)))
+                 return controller_finish_spawn(service, command, flags, watch_result);
+         return aos_resource_finish_source_spawn(service, command, flags, watch_result);
+@@ -2995,6 +3102,8 @@
+ 
+         *ret = NULL;
+         *ret_cgroup_fd = -EBADF;
++        if (unit->type == UNIT_SERVICE && network_worker_requires_original(SERVICE(unit)))
++                return network_worker_spawn_original(SERVICE(unit), command, flags, ret, ret_cgroup_fd);
+         if (aos_resource_root_protected_unit(unit) && !root)
+                 return -EOWNERDEAD;
+         r = aos_resource_source_spawn_original(unit, command, flags, &source, &source_cgroup);
+diff --git a/src/core/aos-resource-enrollment.h b/src/core/aos-resource-enrollment.h
+--- a/src/core/aos-resource-enrollment.h
++++ b/src/core/aos-resource-enrollment.h
+@@ -6,6 +6,7 @@
+ #include "aos-component-parent.h"
+ #include "unit.h"
+ #include "service.h"
++#include "socket.h"
+ #include "process-util.h"
+ 
+ /* This is original PID1 custody, not a serialized reservation receipt. */
+@@ -73,3 +74,18 @@
+ /* Source F owns this genuine original implementation; no passive substitute. */
+ int aos_resource_source_spawn_original(Unit *unit, ExecCommand *command, ExecFlags flags,
+                                        FixedCgroupSpawnOriginal **ret, int *ret_cgroup_fd);
++
++/* Fixed socket selection borrows the actual private Network origin account. */
++typedef struct AosNetworkWorkerOriginal AosNetworkWorkerOriginal;
++int aos_resource_network_worker_accept_begin(Socket *socket, int *accepted,
++                                             AllocationAccountScope *scope,
++                                             AosNetworkWorkerOriginal **ret);
++int aos_resource_network_worker_accept_loaded(AosNetworkWorkerOriginal *original, Unit *worker, int load_result);
++
++int aos_resource_network_worker_socket_scope(Socket *socket, SocketPort *port, AllocationAccountScope *scope);
++void aos_resource_network_worker_accept_returned(Socket *socket, int result);
++void aos_resource_network_worker_socket_option(AosNetworkWorkerOriginal *original, unsigned slot, int result);
++int aos_resource_network_worker_socket_options_complete(AosNetworkWorkerOriginal *original);
++
++size_t aos_resource_network_origin_memory(void);
++unsigned aos_resource_network_origin_files(void);
+diff --git a/src/core/load-fragment.c b/src/core/load-fragment.c
+--- a/src/core/load-fragment.c
++++ b/src/core/load-fragment.c
+@@ -6135,6 +6135,10 @@
+             streq_ptr(name, "aos-sandbox-runtime-publisher.socket"))
+                 return true;
+         return streq_ptr(name, "aos-netd.service") ||
++               streq_ptr(name, "aos-sandbox-network-worker.socket") ||
++               streq_ptr(name, "aos-sandbox-network-observation-worker.socket") ||
++               (name && startswith(name, "aos-sandbox-network-worker@") && endswith(name, ".service")) ||
++               (name && startswith(name, "aos-sandbox-network-observation-worker@") && endswith(name, ".service")) ||
+                (name && startswith(name, "aos-sandbox-network-namespace-inspector@") && endswith(name, ".service")) ||
+                (name && startswith(name, "aos-sandbox-network-lifecycle-worker@") && endswith(name, ".service"));
+ }
+@@ -6176,8 +6180,13 @@
+          * path resolver is shared with the separately armed fixed FUSE role. */
+         if (aos_fuse_worker_valid_name(name))
+                 return "aos-view-worker@.service";
+-        if (streq(name, "aos-netd.service"))
++        if (STR_IN_SET(name, "aos-netd.service", "aos-sandbox-network-worker.socket",
++                             "aos-sandbox-network-observation-worker.socket"))
+                 return name;
++        if (startswith(name, "aos-sandbox-network-worker@") && endswith(name, ".service"))
++                return "aos-sandbox-network-worker@.service";
++        if (startswith(name, "aos-sandbox-network-observation-worker@") && endswith(name, ".service"))
++                return "aos-sandbox-network-observation-worker@.service";
+         if (startswith(name, "aos-sandbox-network-namespace-inspector@") && endswith(name, ".service"))
+                 return "aos-sandbox-network-namespace-inspector@.service";
+         if (startswith(name, "aos-sandbox-network-lifecycle-worker@") && endswith(name, ".service"))
+@@ -6188,24 +6197,51 @@
+         return NULL;
+ }
+ 
+-static int aos_network_open_image_path(const char *path, int flags) {
++typedef struct AosNetworkImageFd {
++        int fd;
++        AosNetworkImageReadOriginal *original;
++} AosNetworkImageFd;
++
++static void aos_network_image_fd_done(AosNetworkImageFd *fd) {
++        if (!fd->original)
++                safe_close(fd->fd);
++}
++
++static int aos_network_image_acquired(AosNetworkImageReadOriginal *original, int fd) {
++        if (original && fd >= 0) {
++                assert(original->count < AOS_NETWORK_IMAGE_READ_FILES);
++                original->fds[original->count++] = fd;
++        }
++        return fd;
++}
++
++static int aos_network_open_image_path_recipe(const char *path, int flags,
++                                                 AosNetworkImageReadOriginal *original) {
+         struct open_how how = {
+                 .flags = flags | O_CLOEXEC,
+                 .resolve = RESOLVE_BENEATH | RESOLVE_NO_MAGICLINKS |
+                            RESOLVE_NO_XDEV | RESOLVE_NO_SYMLINKS,
+         };
+-        _cleanup_close_ int root_fd = -EBADF;
++        _cleanup_(aos_network_image_fd_done) AosNetworkImageFd root = { .fd = -EBADF, .original = original };
+         int fd;
+ 
+         /* A bind mount over any image component must not substitute an inode
+          * even if its backing filesystem has the same device number. */
+         if (!path || path[0] != '/' || path[1] == 0)
+                 return -EINVAL;
+-        root_fd = open("/", O_PATH | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+-        if (root_fd < 0)
++        /* Two exact slots are admitted before either real descriptor exists. */
++        if (original && original->count > AOS_NETWORK_IMAGE_READ_FILES - 2U)
++                return -ENOSPC;
++        root.fd = open("/", O_PATH | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
++        if (root.fd < 0)
+                 return -errno;
+-        fd = syscall(SYS_openat2, root_fd, path + 1, &how, sizeof(how));
+-        return fd < 0 ? -errno : fd;
++        aos_network_image_acquired(original, root.fd);
++        fd = syscall(SYS_openat2, root.fd, path + 1, &how, sizeof(how));
++        return fd < 0 ? -errno : aos_network_image_acquired(original, fd);
++}
++
++static int aos_network_open_image_path(const char *path, int flags) {
++        return aos_network_open_image_path_recipe(path, flags, NULL);
+ }
+ 
+ typedef enum AosImageLinkMode {
+@@ -6218,23 +6254,24 @@
+                 const char *expected_suffix,
+                 dev_t image_device,
+                 AosImageLinkMode mode,
+-                char **ret_path) {
++                char **ret_path,
++                AosNetworkImageReadOriginal *original) {
+         static const char store_prefix[] = "/nix/store/";
+         _cleanup_free_ char *target = NULL;
+         const char *relative, *suffix;
+         struct stat st;
+-        _cleanup_close_ int fd = -EBADF;
+-        int r;
+-
+-        fd = aos_network_open_image_path(link_path, O_PATH | O_NOFOLLOW);
+-        if (fd < 0)
+-                return fd;
+-        if (fstat(fd, &st) < 0)
++        _cleanup_(aos_network_image_fd_done) AosNetworkImageFd file = { .fd = -EBADF, .original = original };
++        int r;
++
++        file.fd = aos_network_open_image_path_recipe(link_path, O_PATH | O_NOFOLLOW, original);
++        if (file.fd < 0)
++                return file.fd;
++        if (fstat(file.fd, &st) < 0)
+                 return -errno;
+         if (!S_ISLNK(st.st_mode) || st.st_uid != 0 || st.st_dev != image_device)
+                 return -EPERM;
+ 
+-        r = readlinkat_malloc(fd, "", &target);
++        r = readlinkat_malloc(file.fd, "", &target);
+         if (r < 0)
+                 return r;
+         relative = startswith(target, store_prefix);
+@@ -6256,20 +6293,23 @@
+                 const char *expected_suffix,
+                 dev_t image_device,
+                 char **ret_path) {
+-        return aos_network_image_link_internal(link_path, expected_suffix, image_device, AOS_IMAGE_LINK_EXACT, ret_path);
+-}
+-
+-static int aos_network_image_fragment(
++        return aos_network_image_link_internal(link_path, expected_suffix, image_device, AOS_IMAGE_LINK_EXACT, ret_path, NULL);
++}
++
++static int aos_network_image_fragment_recipe(
+                 const char *unit_name,
+                 char **ret_path,
+                 int *ret_fd,
+-                struct stat *ret_stat) {
++                struct stat *ret_stat,
++                AosNetworkImageReadOriginal *original) {
+         _cleanup_free_ char *top = NULL, *units = NULL, *unit_link = NULL, *suffix = NULL;
+         const char *template_name;
+         struct stat root_st, st;
+         struct statfs fs;
+         struct statvfs vfs;
+-        _cleanup_close_ int top_fd = -EBADF, units_fd = -EBADF, fd = -EBADF;
++        _cleanup_(aos_network_image_fd_done) AosNetworkImageFd top_file = { .fd = -EBADF, .original = original };
++        _cleanup_(aos_network_image_fd_done) AosNetworkImageFd units_file = { .fd = -EBADF, .original = original };
++        _cleanup_(aos_network_image_fd_done) AosNetworkImageFd file = { .fd = -EBADF, .original = original };
+         int r;
+ 
+         template_name = aos_network_template_name(unit_name);
+@@ -6284,13 +6324,13 @@
+             !FLAGS_SET(vfs.f_flag, ST_RDONLY | ST_NODEV))
+                 return -EPERM;
+ 
+-        r = aos_network_image_link("/aos-toplevel", NULL, root_st.st_dev, &top);
++        r = aos_network_image_link_internal("/aos-toplevel", NULL, root_st.st_dev, AOS_IMAGE_LINK_EXACT, &top, original);
+         if (r < 0)
+                 return r;
+-        top_fd = aos_network_open_image_path(top, O_PATH | O_DIRECTORY);
+-        if (top_fd < 0)
+-                return top_fd;
+-        if (fstat(top_fd, &st) < 0)
++        top_file.fd = aos_network_open_image_path_recipe(top, O_PATH | O_DIRECTORY, original);
++        if (top_file.fd < 0)
++                return top_file.fd;
++        if (fstat(top_file.fd, &st) < 0)
+                 return -errno;
+         if (!S_ISDIR(st.st_mode) || st.st_dev != root_st.st_dev || st.st_uid != 0)
+                 return -EPERM;
+@@ -6298,13 +6338,13 @@
+         unit_link = path_join(top, "systemd-units");
+         if (!unit_link)
+                 return -ENOMEM;
+-        r = aos_network_image_link(unit_link, NULL, root_st.st_dev, &units);
++        r = aos_network_image_link_internal(unit_link, NULL, root_st.st_dev, AOS_IMAGE_LINK_EXACT, &units, original);
+         if (r < 0)
+                 return r;
+-        units_fd = aos_network_open_image_path(units, O_PATH | O_DIRECTORY);
+-        if (units_fd < 0)
+-                return units_fd;
+-        if (fstat(units_fd, &st) < 0)
++        units_file.fd = aos_network_open_image_path_recipe(units, O_PATH | O_DIRECTORY, original);
++        if (units_file.fd < 0)
++                return units_file.fd;
++        if (fstat(units_file.fd, &st) < 0)
+                 return -errno;
+         if (!S_ISDIR(st.st_mode) || st.st_dev != root_st.st_dev || st.st_uid != 0)
+                 return -EPERM;
+@@ -6314,14 +6354,14 @@
+         suffix = strjoin("/", template_name);
+         if (!unit_link || !suffix)
+                 return -ENOMEM;
+-        r = aos_network_image_link(unit_link, suffix, root_st.st_dev, ret_path);
++        r = aos_network_image_link_internal(unit_link, suffix, root_st.st_dev, AOS_IMAGE_LINK_EXACT, ret_path, original);
+         if (r < 0)
+                 return r;
+ 
+-        fd = aos_network_open_image_path(*ret_path, O_RDONLY | O_NOFOLLOW | O_NOCTTY);
+-        if (fd < 0)
+-                return fd;
+-        if (fstat(fd, &st) < 0 || fstatfs(fd, &fs) < 0)
++        file.fd = aos_network_open_image_path_recipe(*ret_path, O_RDONLY | O_NOFOLLOW | O_NOCTTY, original);
++        if (file.fd < 0)
++                return file.fd;
++        if (fstat(file.fd, &st) < 0 || fstatfs(file.fd, &fs) < 0)
+                 return -errno;
+         if (!S_ISREG(st.st_mode) || st.st_uid != 0 || st.st_gid != 0 || st.st_dev != root_st.st_dev ||
+             (st.st_mode & 0222) != 0 || fs.f_type != EROFS_SUPER_MAGIC_V1)
+@@ -6329,13 +6369,17 @@
+         if (ret_stat)
+                 *ret_stat = st;
+         if (ret_fd)
+-                *ret_fd = TAKE_FD(fd);
+-        return 0;
++                *ret_fd = TAKE_FD(file.fd);
++        return 0;
++}
++
++static int aos_network_image_fragment(const char *unit_name, char **ret_path, int *ret_fd, struct stat *ret_stat) {
++        return aos_network_image_fragment_recipe(unit_name, ret_path, ret_fd, ret_stat, NULL);
+ }
+ 
+ /* Compare the original FILE seal through the one physical image resolver.
+  * Only the two fixed-name wrappers below enter this shared comparison. */
+-static int aos_verify_loaded_image_fragment(const Unit *u) {
++static int aos_verify_loaded_image_fragment_recipe(const Unit *u, AosNetworkImageReadOriginal *original) {
+         _cleanup_free_ char *expected = NULL;
+         struct stat st;
+         int r;
+@@ -6345,7 +6389,7 @@
+             !strv_isempty(u->dropin_paths) || !isempty(u->source_path))
+                 return -EPERM;
+ 
+-        r = aos_network_image_fragment(u->id, &expected, NULL, &st);
++        r = aos_network_image_fragment_recipe(u->id, &expected, NULL, &st, original);
+         if (r < 0)
+                 return r;
+         if (!u->aos_image_fragment_pinned ||
+@@ -6354,6 +6398,34 @@
+                 return -EPERM;
+         return streq_ptr(u->fragment_path,
+                          strjoina("/nix/store/", expected + strlen("/nix.lower/store/"))) ? 0 : -EPERM;
++}
++
++static int aos_verify_loaded_image_fragment(const Unit *u) {
++        return aos_verify_loaded_image_fragment_recipe(u, NULL);
++}
++
++int aos_network_verify_loaded_fragment_retaining(const Unit *u, AosNetworkImageReadOriginal *original) {
++        int r;
++
++        if (!original || original->entered || original->completed >= 3 || original->first_error < 0)
++                return original && original->first_error < 0 ? original->first_error : -EALREADY;
++        original->entered = true;
++        r = aos_network_protected_name(u->id) ? aos_verify_loaded_image_fragment_recipe(u, original) : -EPERM;
++        if (r < 0) {
++                original->first_error = r;
++                return r;
++        }
++
++        /* Every parser/identity/path predicate succeeded. None of these
++         * read-only temporaries is consumed by a later global post. Only this
++         * whole-positive native leaf disposal permits the next local sample;
++         * the sender's original financial charge remains unchanged. */
++        for (unsigned i = 0; i < original->count; i++)
++                original->fds[i] = safe_close(original->fds[i]);
++        original->count = 0;
++        original->completed++;
++        original->entered = false;
++        return 0;
+ }
+ 
+ static int aos_resource_open_image_resource(const char *name, bool *absent) {
+@@ -6475,7 +6547,7 @@
+         link = path_join(units, relative);
+         if (!link)
+                 return -ENOMEM;
+-        r = aos_network_image_link_internal(link, NULL, root_st.st_dev, AOS_IMAGE_LINK_PARENT_MEMBER, ret_path);
++        r = aos_network_image_link_internal(link, NULL, root_st.st_dev, AOS_IMAGE_LINK_PARENT_MEMBER, ret_path, NULL);
+         if (r < 0)
+                 return r;
+         /* One physical link result, then the exact canonical materializer
+diff --git a/src/core/load-fragment.h b/src/core/load-fragment.h
+--- a/src/core/load-fragment.h
++++ b/src/core/load-fragment.h
+@@ -194,3 +194,17 @@
+ 
+ int aos_resource_open_parent_config(bool selector, bool *absent);
+ int aos_resource_open_parent_member(const char *name, unsigned file, char **ret_path);
++
++/* Native leaves of the fixed Network source's shared image verification.
++ * Positive verification closes only its private read-only temporaries. A
++ * failed original retains every reached FD and cannot be retried or reset. */
++#define AOS_NETWORK_IMAGE_READ_FILES 12U
++typedef struct AosNetworkImageReadOriginal {
++        int fds[AOS_NETWORK_IMAGE_READ_FILES];
++        unsigned count;
++        unsigned completed;
++        bool entered;
++        int first_error;
++} AosNetworkImageReadOriginal;
++
++int aos_network_verify_loaded_fragment_retaining(const Unit *unit, AosNetworkImageReadOriginal *original);
+diff --git a/src/core/socket.c b/src/core/socket.c
+--- a/src/core/socket.c
++++ b/src/core/socket.c
+@@ -1034,7 +1034,8 @@
+                                 option);                                               \
+         })
+ 
+-static void socket_apply_socket_options(Socket *s, SocketPort *p, int fd) {
++static void socket_apply_socket_options_recipe(Socket *s, SocketPort *p, int fd,
++                                                 AosNetworkWorkerOriginal *original) {
+         int r;
+ 
+         assert(s);
+@@ -1091,12 +1092,14 @@
+ 
+         if (s->pass_cred) {
+                 r = setsockopt_int(fd, SOL_SOCKET, SO_PASSCRED, true);
++                aos_resource_network_worker_socket_option(original, 0, r);
+                 if (r < 0)
+                         log_socket_option_errno(s, r, "SO_PASSCRED");
+         }
+ 
+         if (s->pass_pidfd) {
+                 r = setsockopt_int(fd, SOL_SOCKET, SO_PASSPIDFD, true);
++                aos_resource_network_worker_socket_option(original, 1, r);
+                 if (r < 0)
+                         log_socket_option_errno(s, r, "SO_PASSPIDFD");
+         }
+@@ -1135,12 +1138,14 @@
+ 
+         if (s->receive_buffer > 0) {
+                 r = fd_set_rcvbuf(fd, s->receive_buffer, false);
++                aos_resource_network_worker_socket_option(original, 2, r);
+                 if (r < 0)
+                         log_socket_option_errno(s, r, "SO_RCVBUF/SO_RCVBUFFORCE");
+         }
+ 
+         if (s->send_buffer > 0) {
+                 r = fd_set_sndbuf(fd, s->send_buffer, false);
++                aos_resource_network_worker_socket_option(original, 3, r);
+                 if (r < 0)
+                         log_socket_option_errno(s, r, "SO_SNDBUF/SO_SNDBUFFORCE");
+         }
+@@ -1178,6 +1183,10 @@
+                 if (r < 0)
+                         log_unit_warning_errno(UNIT(s), r, "Failed to apply SMACK label for IP output, ignoring: %m");
+         }
++}
++
++static void socket_apply_socket_options(Socket *s, SocketPort *p, int fd) {
++        socket_apply_socket_options_recipe(s, p, fd, NULL);
+ }
+ 
+ static void socket_apply_fifo_options(Socket *s, int fd) {
+@@ -2453,7 +2462,7 @@
+         socket_set_state(s, SOCKET_DEFERRED);
+ }
+ 
+-static void socket_enter_running(Socket *s, int cfd_in) {
++static void socket_enter_running(Socket *s, int cfd_in, AosNetworkWorkerOriginal *network_worker) {
+         /* Note that this call takes possession of the connection fd passed. It either has to assign it
+          * somewhere or close it. */
+         _cleanup_close_ int cfd = cfd_in;
+@@ -2521,7 +2530,7 @@
+                 socket_set_state(s, SOCKET_RUNNING);
+         } else { /* Accept=yes case */
+                 _cleanup_(socket_peer_unrefp) SocketPeer *p = NULL;
+-                Unit *service;
++                Unit *service = NULL;
+ 
+                 if (s->n_connections >= s->max_connections) {
+                         log_unit_warning(UNIT(s), "Too many incoming connections (%u), dropping connection.",
+@@ -2552,6 +2561,11 @@
+                 }
+ 
+                 r = socket_load_service_unit(s, cfd, &service);
++                if (network_worker) {
++                        int selected = aos_resource_network_worker_accept_loaded(network_worker, service, r);
++                        if (selected < 0)
++                                goto fail;
++                }
+                 if (ERRNO_IS_NEG_DISCONNECT(r))
+                         return;
+                 if (r < 0 || UNIT_IS_LOAD_ERROR(service->load_state)) {
+@@ -3133,9 +3147,11 @@
+         assert(fd >= 0);
+ 
+         cfd = accept4(fd, NULL, NULL, SOCK_NONBLOCK|SOCK_CLOEXEC);
++        int accept_error = cfd < 0 ? errno : 0;
++        aos_resource_network_worker_accept_returned(s, cfd < 0 ? -accept_error : cfd);
+         if (cfd < 0)
+                 /* Convert transient network errors into clean and well-defined EAGAIN */
+-                return ERRNO_IS_ACCEPT_AGAIN(errno) ? -EAGAIN : -errno;
++                return ERRNO_IS_ACCEPT_AGAIN(accept_error) ? -EAGAIN : -accept_error;
+ 
+         return cfd;
+ }
+@@ -3216,8 +3232,10 @@
+ }
+ 
+ static int socket_dispatch_io(sd_event_source *source, int fd, uint32_t revents, void *userdata) {
++        _cleanup_(allocation_account_leave) AllocationAccountScope network_source_scope = {};
+         SocketPort *p = ASSERT_PTR(userdata);
+-        int cfd = -EBADF;
++        AosNetworkWorkerOriginal *network_worker = NULL;
++        int cfd = -EBADF, r;
+ 
+         assert(fd >= 0);
+ 
+@@ -3238,16 +3256,27 @@
+             p->type == SOCKET_SOCKET &&
+             socket_address_can_accept(&p->address)) {
+ 
++                r = aos_resource_network_worker_socket_scope(p->socket, p, &network_source_scope);
++                if (r < 0)
++                        goto fail;
+                 cfd = socket_accept_in_cgroup(p->socket, p, fd);
+                 if (cfd == -EAGAIN) /* Spurious accept() */
+                         return 0;
+                 if (cfd < 0)
+                         goto fail;
+ 
+-                socket_apply_socket_options(p->socket, p, cfd);
+-        }
+-
+-        socket_enter_running(p->socket, cfd);
++                r = aos_resource_network_worker_accept_begin(p->socket, &cfd, &network_source_scope, &network_worker);
++                if (r < 0)
++                        goto fail;
++                socket_apply_socket_options_recipe(p->socket, p, cfd, network_worker);
++                r = aos_resource_network_worker_socket_options_complete(network_worker);
++                if (r < 0) {
++                        cfd = safe_close(cfd); /* The owning accepted OFD remains held. */
++                        goto fail;
++                }
++        }
++
++        socket_enter_running(p->socket, cfd, network_worker);
+         return 0;
+ 
+ fail:

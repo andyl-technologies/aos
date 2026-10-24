@@ -16,7 +16,15 @@ in
       Storage=${storage}
       MaxRetentionSec=${toString policy.max_retention_seconds}s
       SystemMaxUse=${toString policy.max_use_bytes}
-      SystemMaxFileSize=${toString policy.max_file_bytes}
+      SystemMaxFileSize=${toString policy.max_file_bytes}${
+        if (policy.runtime_max_use_bytes or null) == null
+        then ""
+        else "\nRuntimeMaxUse=${toString policy.runtime_max_use_bytes}"
+      }${
+        if (policy.runtime_max_file_bytes or null) == null
+        then ""
+        else "\nRuntimeMaxFileSize=${toString policy.runtime_max_file_bytes}"
+      }
       RateLimitIntervalSec=${toString policy.rate_limit_interval_millis}ms
       RateLimitBurst=${toString policy.rate_limit_burst}
       ForwardToSyslog=${yesNo policy.forward_to_syslog}

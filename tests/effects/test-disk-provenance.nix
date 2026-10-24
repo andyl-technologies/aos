@@ -2,8 +2,24 @@
 let
   lib = import ../../lib {system = "x86_64-linux";};
   payload = toString (import ./_fixture-payload.nix "test-disk-tools");
+  nativePayload = toString (import ./_fixture-payload.nix "test-disk-native-tools");
   captureDerivation = arguments: arguments // {outPath = payload;};
+  buildPackages = {
+    mkDerivation = captureDerivation;
+    writeTextFile = captureDerivation;
+    coreutils = nativePayload;
+    e2fsprogs = nativePayload;
+    fakeroot = nativePayload;
+    jq = nativePayload;
+    python3 = nativePayload;
+    openssh = nativePayload;
+    swtpm = nativePayload;
+    util-linux = nativePayload;
+    runCommand = name: arguments: script: {outPath = nativePayload;};
+  };
   packages = {
+    inherit buildPackages;
+    stdenv.hostPlatform.constraints.cpu = "x86_64";
     mkDerivation = captureDerivation;
     e2fsprogs = payload;
     python3 = payload;
@@ -13,16 +29,31 @@ let
     runCommand = name: arguments: script: {outPath = payload;};
   };
   buildDisk = import ../../pkgs/system/_systemd-abilities/testing/disk.nix {
-    inherit lib packages;
+    inherit buildPackages lib packages;
     closureInfoFor = _: {outPath = payload;};
   };
-  assembly = arguments: (builtins.head (buildDisk ({system = {};} // arguments)).phases).script;
+  disk = arguments:
+    buildDisk ({
+        guestArchitecture = "x86_64";
+        system.config.aos.security.selinux.protectedSandboxNetworkRoots = {
+          enable = false;
+          _varRootContext = "system_u:object_r:var_t:s0";
+        };
+      }
+      // arguments);
+  assembly = arguments: (builtins.head (disk arguments).phases).script;
   contains = text: needle: builtins.length (lib.splitString needle text) > 1;
   operator = assembly {provisioningSource = "operator";};
   fallback = assembly {};
   uninitialized = assembly {
     varProvisioning = "repart";
     provisioningSource = "operator";
+  };
+  protected = assembly {
+    system.config.aos.security.selinux.protectedSandboxNetworkRoots = {
+      enable = true;
+      _varRootContext = "system_u:object_r:aos_var_t:s0";
+    };
   };
   partitionType = script: name: let
     matches =
@@ -52,16 +83,40 @@ let
       };
     };
   };
-  manifestFor = metadata: varProvisioning: let
+  manifestWith = machine: let
     test = fleet.mkFleetTest {
       name = "provenance-input";
       timeout = 1;
       testScript = "";
-      machines.machine = {inherit system metadata varProvisioning;};
+      machines.machine = {inherit system;} // machine;
     };
   in
     builtins.head (builtins.fromJSON (builtins.unsafeDiscardStringContext test.manifest.text)).machines;
+  manifestFor = metadata: varProvisioning: manifestWith {inherit metadata varProvisioning;};
 in {
+  nativeAssemblyTools =
+    (disk {}).buildDeps
+    == [
+      buildPackages.e2fsprogs
+      buildPackages.coreutils
+      buildPackages.fakeroot
+      buildPackages.jq
+      buildPackages.util-linux
+      buildPackages.python3
+    ];
+  architectureSpecificRootTypes =
+    partitionType operator "root-a"
+    == "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709"
+    && partitionType operator "root-b" == partitionType operator "root-a"
+    && partitionType (assembly {guestArchitecture = "aarch64";}) "root-a" == "B921B045-1DF0-41C3-AF44-4C6F280D3FAE"
+    && partitionType (assembly {guestArchitecture = "i686";}) "root-a" == "44479540-F297-41B2-9AF7-D131D5F0458A"
+    && partitionType (assembly {guestArchitecture = "riscv64";}) "root-a" == "72EC70A6-CF74-40E6-BD49-4BDA08E8F224";
+  unsupportedArchitectureRejected = !(builtins.tryEval (assembly {guestArchitecture = "unknown";})).success;
+  protectedVarLabel =
+    contains protected "-E hash_seed=\"$IMAGE_UUID\",lazy_itable_init=0,lazy_journal_init=0,root_selinux=system_u:object_r:aos_var_t:s0"
+    && contains protected "ea_get / security.selinux"
+    && contains protected "security.selinux (23) = \"system_u:object_r:aos_var_t:s0\""
+    && !(contains operator "root_selinux=");
   bootTypeCannotMatchVar =
     builtins.all (script: partitionType script "boot" == "C12A7328-F81F-11D2-BA4B-00A0C93EC93B") [operator fallback uninitialized]
     && partitionType operator "var" == "0FC63DAF-8483-4772-8E79-3D69D8477DE4"
@@ -71,8 +126,7 @@ in {
   repartRemainsUncommitted = !(contains uninitialized "name=aos-provenance-") && !(contains uninitialized "name=var");
   invalidBeforeDerivation =
     !(builtins.tryEval
-      (buildDisk {
-        system = {};
+      (disk {
         provisioningSource = "unknown";
       }).pname).success;
   invalidSourceRejected = !(builtins.tryEval (assembly {provisioningSource = "unknown";})).success;
@@ -90,4 +144,10 @@ in {
     == "${payload}/fallback-baked/disk.img";
   fleetEmptyFallback = (manifestFor {} "baked").disk == "${payload}/fallback-baked/disk.img";
   fleetUninitializedDisk = (manifestFor {"host.nix" = "{}";} "repart").disk == "${payload}/operator-repart/disk.img";
+  fleetDefaultVcpuCount = (manifestWith {}).vcpu_count == 2;
+  fleetConfiguredVcpuCount = (manifestWith {vcpuCount = 16;}).vcpu_count == 16;
+  fleetInvalidVcpuCountsRejected =
+    builtins.all
+    (vcpuCount: !(builtins.tryEval (manifestWith {inherit vcpuCount;}).vcpu_count).success)
+    [0 (-1) 1.5 "16"];
 }

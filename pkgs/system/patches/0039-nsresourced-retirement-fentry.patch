@@ -1,0 +1,27 @@
+Subject: [PATCH] nsresourced: attach namespace retirement through BTF fentry
+
+Secure Boot lockdown rejects kprobe perf events. Attach the same retirement
+notification to the same typed function through the BPF trampoline instead.
+Keep attachment failure fatal to managed user namespace availability; there
+is no kprobe fallback or change to the restriction maps and ring buffer.
+
+--- a/src/bpf/userns-restrict.bpf.c
++++ b/src/bpf/userns-restrict.bpf.c
+@@ -276,12 +276,13 @@ int BPF_PROG(userns_restrict_task_fix_setgroups, struct cred *new_cred, const struct
+         return 0;
+ }
+ 
+-SEC("kprobe/retire_userns_sysctls")
+-int BPF_KPROBE(userns_restrict_retire_userns_sysctls, struct user_namespace *userns) {
++SEC("fentry/retire_userns_sysctls")
++int BPF_PROG(userns_restrict_retire_userns_sysctls, struct user_namespace *userns) {
+         unsigned inode;
+ 
+-        /* Inform userspace that a user namespace just went away. I wish there was a nicer way to hook into
+-         * user namespaces being deleted than using kprobes, but couldn't find any. */
++        /* The selected kernel exposes this typed function in BTF. Unlike a kprobe perf event, its
++         * fentry attachment works with Secure Boot lockdown and retains the same notification point.
++         * Failure to load or attach still leaves managed user namespaces unavailable. */
+         userns = bpf_rdonly_cast(userns, bpf_core_type_id_kernel(struct user_namespace));
+         inode = userns->ns.inum;
+ 

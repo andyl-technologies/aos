@@ -1,0 +1,22 @@
+[package]
+name = "aos-linux-descriptors"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+
+[features]
+# Only shared mechanical fixture primitives used by the original native tests.
+test-fixtures = []
+
+[dependencies]
+libc.workspace = true
+rustix = { workspace = true, features = ["event", "fs", "net", "process"] }
+sha2.workspace = true
+thiserror.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

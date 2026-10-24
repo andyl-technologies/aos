@@ -6,6 +6,7 @@
   ...
 }: let
   cfg = config.aos.security.audit;
+  hostStage = (config.aos.boot.stage or "host") == "host";
   files = config.aos.abilities.configuration.operations.file.effects;
   services = config.aos.abilities.serviceManagement.operations.realize.effects;
 
@@ -34,8 +35,16 @@
     priority_boost = 4
     flush = INCREMENTAL_ASYNC
     freq = 50
-    num_logs = 5
-    max_log_file = 50
+    num_logs = ${toString (
+      if cfg.bounds == null
+      then 5
+      else cfg.bounds.numLogs
+    )}
+    max_log_file = ${toString (
+      if cfg.bounds == null
+      then 50
+      else cfg.bounds.maxLogFileMiB
+    )}
     max_log_file_action = ROTATE
     space_left = 75
     space_left_action = SYSLOG
@@ -143,57 +152,34 @@
     };
   };
 in {
-  options.aos.security.audit = {
-    enable = lib.mkOption {
-      extensible = true;
-      type = lib.types.bool;
-      default = true;
-      description = "Enable the Linux audit framework and its rule loader.";
-    };
-    rules = lib.mkOption {
-      type = lib.types.listOf lib.types.str;
-      default = [
-        "-a always,exit -F arch=b64 -S execve -k exec"
-        "-a always,exit -F arch=b64 -S init_module -S finit_module -S delete_module -k modules"
-        "-a always,exit -F arch=b64 -S mount -S umount2 -k mounts"
-        "-w /etc/passwd -p wa -k user_modification"
-        "-w /etc/group -p wa -k group_modification"
-        "-w /etc/shadow -p wa -k shadow_modification"
-        "-w /etc/gshadow -p wa -k gshadow_modification"
-        "-w /etc/selinux/ -p wa -k selinux_policy"
-        "-a always,exit -F arch=b64 -S sethostname -S setdomainname -k network_config"
-        "-w /etc/hostname -p wa -k network_config"
-        "-w /etc/ssh/sshd_config -p wa -k sshd_config"
-        "-w /var/log/audit/ -p wa -k audit_log"
-        "-w /etc/sudoers -p wa -k sudoers"
-        "-w /etc/sudoers.d/ -p wa -k sudoers"
-        "-a always,exit -F arch=b64 -S adjtimex -S settimeofday -k time_change"
-        "-w /etc/localtime -p wa -k time_change"
-      ];
-      description = "Audit rules in auditctl(8) format.";
-    };
-    backlogLimit = lib.mkOption {
-      type = lib.types.ints.between 1 9007199254740991;
-      default = 8192;
-      description = "Kernel audit backlog buffer size.";
-    };
-    failureMode = lib.mkOption {
-      type = lib.types.ints.between 0 2;
-      default = 1;
-      description = "Kernel audit failure action: silent, printk, or panic.";
-    };
-  };
+  imports = [./policy.nix];
 
   config = lib.mkMerge [
     {
       aos.services = {
-        "audit.auditd" = lib.mkMerge [(lib.mkDefault daemonService) {enable = lib.mkDefault cfg.enable;}];
-        "audit.audit-rules" = lib.mkMerge [(lib.mkDefault rulesService) {enable = lib.mkDefault cfg.enable;}];
+        "audit.auditd" = lib.mkMerge [(lib.mkDefault daemonService) {enable = lib.mkDefault (hostStage && cfg.enable);}];
+        "audit.audit-rules" = lib.mkMerge [(lib.mkDefault rulesService) {enable = lib.mkDefault (hostStage && cfg.enable);}];
       };
     }
     (lib.mkIf cfg.enable {
+      assertions = lib.optionals (cfg.bounds != null) [
+        {
+          assertion =
+            builtins.length cfg.rules
+            <= cfg.bounds.maximumRules
+            && builtins.all (rule: builtins.stringLength rule <= cfg.bounds.maximumRuleBytes) cfg.rules;
+          message = "Selected audit rules exceed the configured finite input bounds.";
+        }
+        {
+          assertion = cfg.backlogLimit > 0 && cfg.backlogLimit <= cfg.bounds.maximumBacklog;
+          message = "Selected audit backlog exceeds the configured finite queue bound.";
+        }
+      ];
+
       system.checks.audit = import ./runtime-tests.nix {};
-      aos.abilities.configuration.operations.file.effects = {
+      # Audit starts after the host's writable state and /etc lower are ready.
+      # The initrd still requests kernel auditing through the command line.
+      aos.abilities.configuration.operations.file.effects = lib.mkIf hostStage {
         audit-daemon.input = {
           path = "/etc/audit/auditd.conf";
           content = daemonConfigurationText;

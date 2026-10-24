@@ -29,6 +29,16 @@
       default = 52428800;
       description = "Maximum size of one event-log segment in bytes.";
     };
+    runtimeMaxUse = lib.mkOption {
+      type = lib.types.nullOr (lib.types.addCheck lib.types.int (value: value > 0));
+      default = null;
+      description = "Optional finite runtime journal retention target in bytes; not a filesystem quota or a reservation.";
+    };
+    runtimeMaxFileSize = lib.mkOption {
+      type = lib.types.nullOr (lib.types.addCheck lib.types.int (value: value > 0));
+      default = null;
+      description = "Optional finite runtime journal rotation target in bytes; active files and queued records require separate allowance.";
+    };
     rateLimitIntervalMillis = lib.mkOption {
       type = lib.types.ints.between 1 86400000;
       default = 30000;

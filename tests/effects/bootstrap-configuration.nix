@@ -106,6 +106,13 @@ in {
   sharedConsumerDoesNotDuplicateFile = repeatedReference == original;
   disabledConsumerDoesNotSeed = (project {aos.services.bus.enable = lib.mkForce false;}).filesystemEntries == {};
   ordinaryConsumerDoesNotSeed = (project {aos.services.bus.bootstrap = lib.mkForce false;}).filesystemEntries == {};
+  retainedOrdinaryConsumerDoesNotSeed =
+    (project {
+      aos.servicesRetainImageDefinitions = true;
+      aos.services.bus.bootstrap = lib.mkForce false;
+      aos.abilities.configuration.operations.file.effects.policy.input.owner = "runtime-principal";
+    }).filesystemEntries
+    == {};
   managerOwnedConsumerAlsoSeeds =
     project {
       aos.services.bus = {

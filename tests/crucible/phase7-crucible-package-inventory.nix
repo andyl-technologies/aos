@@ -36,7 +36,7 @@
     {
       label = "pkgs/kernel/linux-crucible.nix";
       content = linuxCrucibleNix;
-      builder = "linuxFixtureWith";
+      builder = "linuxFixtureWith extraConfig";
       pname = "pname = \"linux-crucible\";";
       needsBuildDeps = false;
       needsRuntimeDeps = false;
@@ -263,6 +263,10 @@
       {
         label = "package auto-discovery";
         needle = "discoverPackages ./.";
+      }
+      {
+        label = "QEMU package wrapper imports the source recipe";
+        needle = "package = callPackage ./emulation/qemu.nix args;";
       }
       {
         label = "qemu-crucible explicit override";
