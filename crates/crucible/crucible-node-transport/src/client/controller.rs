@@ -51,6 +51,7 @@ pub use restored_suffix_host::{
     OriginalRestoredSuffixHostHistoricalData, PreparedOriginalRestoredSuffixHostAttempt,
 };
 mod assigned_transfer;
+mod content_growth;
 mod fresh_restore_query;
 #[path = "controller/input_emitter.rs"]
 mod input_emitter;

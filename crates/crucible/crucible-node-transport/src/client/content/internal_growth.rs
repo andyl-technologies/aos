@@ -2,7 +2,8 @@
 //!
 //! Borrowed installation and incoming transfers allocate beneath these caps.
 //! Existing buffers remain separately charged, including caller-owned buffers
-//! and reference strings installed with spare capacity. This DATA grants no capacity or Source action.
+//! and reference strings installed with spare capacity. This DATA grants no
+//! capacity or Source action.
 
 use super::*;
 use std::mem::size_of;
@@ -34,6 +35,19 @@ impl OriginalClientContentGrowthStorageData {
     pub fn counter_scratch_bytes_data(self) -> usize {
         self.scratch
     }
+
+    /// Adds an enclosing DATA counter without issuing allocation permission.
+    pub(in crate::client) fn with_additional_counter_storage_data(
+        mut self,
+        additional: usize,
+        maximum: usize,
+    ) -> Result<Self, ProviderError> {
+        self.scratch = add(self.scratch, additional)?;
+        if sum(&[self.retained, self.transient, self.scratch])? > maximum {
+            return Err(exhausted());
+        }
+        Ok(self)
+    }
 }
 
 impl ClientContent {
@@ -46,7 +60,8 @@ impl ClientContent {
     ///
     /// This covers allocations made inside content custody. Caller-owned buffers
     /// and reference strings passed to `install` can have capacity beyond their
-    /// length; callers price those arguments separately. Wire decoders, caller iterators and DTOs,
+    /// length; callers price those arguments separately. Wire decoders, caller
+    /// iterators and DTOs,
     /// journals and conservative whole-Source observation growth also require
     /// independent funding. The fixed counter is admitted before this DATA walk.
     ///

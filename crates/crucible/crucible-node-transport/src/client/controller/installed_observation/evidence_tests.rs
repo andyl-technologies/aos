@@ -424,3 +424,105 @@ fn oversized_observation_roster_refuses_before_read_and_preserves_both_typed_roo
         matches!(peer.read(&mut byte),Err(error) if error.kind()==std::io::ErrorKind::WouldBlock)
     );
 }
+
+#[test]
+fn controller_content_growth_prices_actual_local_custody_and_its_own_counter() {
+    let (_handshake, controller, _peer) = fixture_with_receiver(4096, 8);
+    let before = controller.original_native5_custody_facts().unwrap();
+    let quote = controller
+        .original_content_internal_growth_storage_data(usize::MAX)
+        .unwrap();
+    let direct = controller
+        .custody
+        .content()
+        .original_internal_growth_storage_data(usize::MAX)
+        .unwrap();
+
+    assert_eq!(
+        quote.retained_requested_bytes_data(),
+        direct.retained_requested_bytes_data()
+    );
+    assert_eq!(
+        quote.maximum_simultaneous_transient_bytes_data(),
+        direct.maximum_simultaneous_transient_bytes_data()
+    );
+    assert!(quote.counter_scratch_bytes_data() > direct.counter_scratch_bytes_data());
+    assert_eq!(
+        quote.counter_scratch_bytes_data(),
+        CnpController::original_content_internal_growth_counter_scratch_data()
+    );
+    let peak = quote.retained_requested_bytes_data()
+        + quote.maximum_simultaneous_transient_bytes_data()
+        + quote.counter_scratch_bytes_data();
+    assert_eq!(
+        controller
+            .original_content_internal_growth_storage_data(peak)
+            .unwrap(),
+        quote
+    );
+    assert!(
+        controller
+            .original_content_internal_growth_storage_data(peak - 1)
+            .is_err()
+    );
+    assert_eq!(controller.original_native5_custody_facts().unwrap(), before);
+}
+
+#[test]
+fn controller_content_growth_preserves_fenced_partial_and_external_spare_capacity() {
+    let (_handshake, mut controller, _peer) = fixture_with_receiver(4096, 8);
+    let before = controller.original_native5_custody_facts().unwrap();
+    let quote = controller
+        .original_content_internal_growth_storage_data(usize::MAX)
+        .unwrap();
+    let mut bytes = Vec::with_capacity(1_048_576);
+    bytes.extend_from_slice(b"external original");
+    let reference = canonical::content_ref(&bytes, "application/json").unwrap();
+    controller
+        .custody
+        .content_mut()
+        .install(reference.clone(), bytes)
+        .unwrap();
+    let pending = canonical::content_ref(b"incomplete transfer", "application/json").unwrap();
+    let transfer_id = Id::new("controller-content-growth-partial").unwrap();
+    controller
+        .custody
+        .content_mut()
+        .begin(&BlobBeginRequest {
+            transfer_id: transfer_id.clone(),
+            content: pending.clone(),
+            extensions: Extensions::new(),
+        })
+        .unwrap();
+    controller
+        .custody
+        .content_mut()
+        .chunk(&BlobChunkRequest {
+            transfer_id,
+            offset: U64::new(0),
+            bytes: Bytes::new(b"incomplete".to_vec()),
+            extensions: Extensions::new(),
+        })
+        .unwrap();
+    controller.fence();
+
+    assert!(controller.fenced);
+    assert_eq!(
+        controller
+            .original_content_internal_growth_storage_data(usize::MAX)
+            .unwrap(),
+        quote
+    );
+    assert_eq!(
+        controller.custody.content().get(&reference).unwrap(),
+        b"external original"
+    );
+    assert!(controller.custody.content().get(&pending).is_err());
+    assert!(controller.original_native5_custody_facts().is_err());
+    assert_eq!(
+        controller
+            .custody
+            .original_native5_custody_facts(before.negotiated_journal_entries),
+        before
+    );
+}
