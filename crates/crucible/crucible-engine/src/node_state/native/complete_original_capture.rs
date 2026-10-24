@@ -188,13 +188,11 @@ impl NativeArchive {
         // loan/effect. Admit their owned banks now; the complete future peak
         // remains a separate named reservation, not this minimum check.
         let known_snapshot_storage =
-            crate::node_contract::NodeRuntime::capture_runtime_record_storage(&source)
+            crate::node_contract::NodeRuntime::capture_runtime_record_storage(source)
                 .map_err(schema)?
                 .checked_add(
-                    crate::node_contract::NodeRuntime::capture_scheduling_record_storage(
-                        &scheduler,
-                    )
-                    .map_err(schema)?,
+                    crate::node_contract::NodeRuntime::capture_scheduling_record_storage(scheduler)
+                        .map_err(schema)?,
                 )
                 .ok_or_else(|| refused("known core snapshot storage overflow"))?;
         if known_snapshot_storage > self.limits.state.maximum_total_content_bytes {
@@ -206,8 +204,8 @@ impl NativeArchive {
         // canonical source cache. These do not change any owning-node row.
         let factory_storage = factory.complete_original_capture_factory_storage(
             graph,
-            &source,
-            &scheduler,
+            source,
+            scheduler,
             self.limits,
         )?;
         factory_storage.validate(self.limits)?;
@@ -220,11 +218,11 @@ impl NativeArchive {
                     && *total <= self.limits.native.maximum_total_record_bytes
             })
             .ok_or_else(|| refused("complete factory preparation exceeds remaining credit"))?;
-        factory.authenticate_complete_original_lineage_capture(graph, &source, &scheduler)?;
+        factory.authenticate_complete_original_lineage_capture(graph, source, scheduler)?;
         let actual_factory = factory.complete_original_capture_factory_storage(
             graph,
-            &source,
-            &scheduler,
+            source,
+            scheduler,
             self.limits,
         )?;
         actual_factory.validate(self.limits)?;
@@ -237,7 +235,7 @@ impl NativeArchive {
             ));
         }
         if let Some(scope) = collecting {
-            scope.authenticate(&source, &scheduler, &capture_id, factory)?;
+            scope.authenticate(source, scheduler, &capture_id, factory)?;
         }
 
         let immutable_refs = if let Some(refs) = &graph_refs {
@@ -254,8 +252,8 @@ impl NativeArchive {
             .ok_or_else(|| refused("lineage immutable root credit exhausted"))?;
         let additional_roots = factory.original_lineage_capture_immutable_roots(
             graph,
-            &source,
-            &scheduler,
+            source,
+            scheduler,
             additional_maximum,
         )?;
         let immutable_refs =
@@ -340,8 +338,8 @@ impl NativeArchive {
         let mut native_limits = remaining_native(
             graph,
             &content,
-            [&runtime_object, &scheduler_object, &coordinator_object],
-            &scheduler,
+            [runtime_object, scheduler_object, coordinator_object],
+            scheduler,
             body_geometry,
             self.limits,
         )?;
@@ -517,9 +515,9 @@ impl NativeArchive {
         };
         let dependency_storage = factory.complete_original_capture_dependency_storage(
             graph,
-            &source,
-            &scheduler,
-            &runtime_object,
+            source,
+            scheduler,
+            runtime_object,
             dependency_limits,
         )?;
         dependency_storage.validate(dependency_limits)?;
@@ -535,8 +533,8 @@ impl NativeArchive {
         }
         let geometry = factory.complete_original_lineage_capture_geometry_from_preflight(
             graph,
-            &source,
-            &scheduler,
+            source,
+            scheduler,
             &preflight,
             NativeArchiveLimits {
                 native: native_limits,
@@ -635,8 +633,8 @@ impl NativeArchive {
         let core_metadata = super::core_future_metadata::CoreCaptureMetadataPeak::prepare(
             super::core_future_metadata::CoreCaptureMetadataGeometry {
                 graph,
-                runtime: &source,
-                scheduling: &scheduler,
+                runtime: source,
+                scheduling: scheduler,
                 runtime_bytes: &runtime_object.bytes,
                 scheduling_bytes: &scheduler_object.bytes,
                 lineage: lineage_limits,
@@ -784,8 +782,8 @@ impl NativeArchive {
                     graph,
                     activation,
                     &capture_id,
-                    &source,
-                    &runtime_object,
+                    source,
+                    runtime_object,
                     self.limits.state.maximum_total_content_bytes,
                 )
                 .map_err(schema)?,
@@ -816,9 +814,9 @@ impl NativeArchive {
             .map(|row| row.maximum_record_bytes)
             .max()
             .ok_or_else(|| refused("capture geometry owner roster absent"))?;
-        factory.authenticate_complete_original_lineage_capture(graph, &source, &scheduler)?;
+        factory.authenticate_complete_original_lineage_capture(graph, source, scheduler)?;
         if let Some(scope) = collecting {
-            scope.authenticate(&source, &scheduler, &capture_id, factory)?;
+            scope.authenticate(source, scheduler, &capture_id, factory)?;
         }
 
         // The factory check can inspect shared Source owners. Recheck the same
@@ -831,7 +829,7 @@ impl NativeArchive {
             .prepare_complete_capture_geometry_with_preflight(
                 activation,
                 &capture_id,
-                &runtime_object,
+                runtime_object,
                 geometry,
                 native_limits,
                 (preflight, allocation_budget),
@@ -883,16 +881,16 @@ impl NativeArchive {
         };
         restored17::authenticate_purpose(runtime, collecting, restored.as_ref())?;
         if let Some(scope) = collecting {
-            scope.authenticate(&source, &scheduler, &capture_id, factory)?;
+            scope.authenticate(source, scheduler, &capture_id, factory)?;
         }
         // The same source-side plans and factory association remain bounded
         // after producer effects, before the first returned dependency row is
         // allocated. Actual Source output already checked its born capacities.
         let observed_dependencies = factory.complete_original_capture_dependency_storage(
             graph,
-            &source,
-            &scheduler,
-            &runtime_object,
+            source,
+            scheduler,
+            runtime_object,
             dependency_limits,
         )?;
         observed_dependencies.validate(dependency_limits)?;
@@ -1144,14 +1142,14 @@ impl NativeArchive {
             // Source validation still precedes signing/persistence; this witness
             // is neither a load receipt nor native/source acceptance.
             let origin = super::storage::complete_original_validation_origin::CompleteArchiveValidationOrigin::original_write(
-                self, &record, &captures, runtime,
+                self, record, &captures, runtime,
             )?;
             if let Some(current) = &mut restored {
                 let admission = restored17::WriterTerminalAdmission17::new(
                     current.scope,
                     runtime,
                     &captures,
-                    &record,
+                    record,
                     &mut *current.after_owner,
                 );
                 record.authenticate_restored_settled_before_signing_data(
@@ -1164,7 +1162,7 @@ impl NativeArchive {
                 )?;
                 current
                     .scope
-                    .require_terminal_validation_completed_data(runtime, &captures, &record)
+                    .require_terminal_validation_completed_data(runtime, &captures, record)
                     .map_err(schema)?;
             } else {
                 record.complete_original_lineage_content_with_origin(
@@ -1179,7 +1177,7 @@ impl NativeArchive {
         // failure. Release neither drops original bodies nor renews lifetime IDs.
         restored17::authenticate_purpose(runtime, collecting, restored.as_ref())?;
         if let Some(scope) = collecting {
-            scope.authenticate(&source, &scheduler, &manifest.capture_id, factory)?;
+            scope.authenticate(source, scheduler, &manifest.capture_id, factory)?;
         }
         let durable = if let Some(current) = &restored {
             pending_record
