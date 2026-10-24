@@ -6,9 +6,7 @@
 
 use super::*;
 use aos_sandbox_model::{ResourceDimension as D, ResourceVector};
-use aos_sandbox_linux::protected_file::{
-    ReadinessAtomicWriteOriginalV2, ReadinessAtomicWritePurposeV2,
-};
+use aos_sandbox_linux::protected_file::{ReadinessAtomicWriteOriginalV2, ReadinessAtomicWritePurposeV2};
 use std::{error::Error, io, mem::size_of};
 
 /// Reports refusal while the actual watermark originals remain resident.
@@ -44,6 +42,12 @@ enum ReadFirst {
     Length,
 }
 
+#[derive(Clone, Copy)]
+enum ReadPermissions {
+    PrivateReadiness,
+    PackagedPolicy,
+}
+
 #[derive(Default)]
 pub(super) struct ProtectedReadOriginalV2 {
     file: Option<File>,
@@ -67,9 +71,19 @@ impl ProtectedReadOriginalV2 {
         let policy = b"backend readiness  is not a protected root-owned file"
             .len()
             .checked_add(name_bytes)?;
+        // Both entry wrappers transfer the same OFD. Price their argument and
+        // result planes and the permission policy's validation frames;
+        // neither path creates another descriptor or native observation.
+        let dispatch = size_of::<(&mut Self, OwnedFd, &'static str, usize, ReadPermissions)>()
+            .checked_mul(3)?
+            .checked_add(size_of::<ReadPermissions>().checked_mul(3)?)?
+            .checked_add(
+                size_of::<std::result::Result<(), ReadinessWatermarkClosedV2>>().checked_mul(3)?,
+            )?;
         let bytes = size_of::<Self>()
             .checked_add(reached.checked_mul(3)?)?
             .checked_add(size_of::<[u8; 32]>())?
+            .checked_add(dispatch)?
             .checked_add(policy)?;
         Some(
             ResourceVector::ZERO
@@ -97,6 +111,43 @@ impl ProtectedReadOriginalV2 {
         name: &'static str,
         maximum: usize,
     ) -> std::result::Result<(), ReadinessWatermarkClosedV2> {
+        self.observe_with_permissions_once_v2(
+            descriptor,
+            name,
+            maximum,
+            ReadPermissions::PrivateReadiness,
+        )
+    }
+
+    /// Reads a fixed public package artifact under its immutable-file policy.
+    ///
+    /// Only fixed package-artifact callers select this policy. Private
+    /// credentials and watermarks retain their separate permission checks.
+    ///
+    /// # Errors
+    /// Refuses reentry, invalid root-owned metadata, writable or nonpublic
+    /// modes, size violations, and incomplete or failed native reads.
+    pub(super) fn observe_packaged_once_v2(
+        &mut self,
+        descriptor: OwnedFd,
+        name: &'static str,
+        maximum: usize,
+    ) -> std::result::Result<(), ReadinessWatermarkClosedV2> {
+        self.observe_with_permissions_once_v2(
+            descriptor,
+            name,
+            maximum,
+            ReadPermissions::PackagedPolicy,
+        )
+    }
+
+    fn observe_with_permissions_once_v2(
+        &mut self,
+        descriptor: OwnedFd,
+        name: &'static str,
+        maximum: usize,
+        permissions: ReadPermissions,
+    ) -> std::result::Result<(), ReadinessWatermarkClosedV2> {
         if self.file.is_some() {
             // The private caller must fence its once slot before opening a
             // descriptor. An ownership-programming violation cannot drop
@@ -116,6 +167,7 @@ impl ProtectedReadOriginalV2 {
                 .ok_or(ReadinessWatermarkClosedV2)?,
             name,
             maximum,
+            permissions,
         ));
         let Some(Ok(declared)) = self.policy.as_ref() else {
             self.first = Some(ReadFirst::Policy);
@@ -486,11 +538,16 @@ fn validate_file_metadata_v2(
     metadata: &rustix::fs::Stat,
     name: &'static str,
     maximum: usize,
+    permissions: ReadPermissions,
 ) -> Result<usize> {
+    let protected_mode = match permissions {
+        ReadPermissions::PrivateReadiness => protected_file_permissions(metadata.st_mode),
+        ReadPermissions::PackagedPolicy => metadata.st_mode & 0o7777 == 0o444,
+    };
     if FileType::from_raw_mode(metadata.st_mode) != FileType::RegularFile
         || metadata.st_uid != 0
         || metadata.st_nlink != 1
-        || !protected_file_permissions(metadata.st_mode)
+        || !protected_mode
     {
         return Err(HostError::State(format!(
             "backend readiness {name} is not a protected root-owned file"
@@ -519,6 +576,70 @@ fn maximum_encoded_watermark_bytes_v2() -> Option<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn metadata(mode: u32) -> rustix::fs::Stat {
+        let file = tempfile::tempfile().unwrap();
+        let mut metadata = fstat(&file).unwrap();
+        metadata.st_uid = 0;
+        metadata.st_nlink = 1;
+        metadata.st_mode = (metadata.st_mode & !0o7777) | mode;
+        metadata.st_size = 269;
+        metadata
+    }
+
+    #[test]
+    fn public_package_modes_do_not_admit_public_readiness_credentials() {
+        for mode in [0o400, 0o600, 0o444, 0o644, 0o666] {
+            let metadata = metadata(mode);
+            let private = validate_file_metadata_v2(
+                &metadata,
+                "credential",
+                269,
+                ReadPermissions::PrivateReadiness,
+            );
+            let packaged = validate_file_metadata_v2(
+                &metadata,
+                "package",
+                269,
+                ReadPermissions::PackagedPolicy,
+            );
+
+            assert_eq!(
+                private.is_ok(),
+                matches!(mode, 0o400 | 0o600),
+                "private mode {mode:o}"
+            );
+            assert_eq!(packaged.is_ok(), mode == 0o444, "package mode {mode:o}");
+        }
+    }
+
+    #[test]
+    fn packaged_metadata_rejects_writes_links_foreign_owners_and_invalid_sizes() {
+        for (mode, uid, links, size) in [
+            (0o444, 1000, 1, 269),
+            (0o444, 0, 2, 269),
+            (0o464, 0, 1, 269),
+            (0o644, 0, 1, 269),
+            (0o555, 0, 1, 269),
+            (0o444, 0, 1, 0),
+            (0o444, 0, 1, 270),
+        ] {
+            let mut changed = metadata(mode);
+            changed.st_uid = uid;
+            changed.st_nlink = links;
+            changed.st_size = size;
+
+            assert!(
+                validate_file_metadata_v2(
+                    &changed,
+                    "package",
+                    269,
+                    ReadPermissions::PackagedPolicy,
+                )
+                .is_err()
+            );
+        }
+    }
 
     #[test]
     fn canonical_bound_and_native_names_have_no_field_fee() {

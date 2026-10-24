@@ -11267,3 +11267,42 @@ and `reload`; the manager-wide `system:start` prohibition remains. All 159
 policy unit tests and the normal compiled-policy scan pass. The complete unsafe
 variant matrix and installed retry are still running, so these checks do not
 establish successful native activation or Root startup.
+
+The complete audit-service policy build now passes at
+`/nix/store/qqy8pir8a3j8ashsfqprj914mpx4g9xv-aos-selinux-production-policy-1`,
+including all 159 unit tests, the normal scan, all unsafe variants and the
+selected kernel's ordered class-map checks. Installed activation remains a
+separate pending result.
+
+### Installed fentry attachment and public package metadata
+
+The isolated pre-merge Host retry (`6h41sbg3l46h7kw5f1z6qdqj2pk25nhb`) passes
+Secure Boot enrollment and starts the enforcing confidentiality-lockdown
+guest. Its actual namespace manager attaches all six BPF LSM programs and the
+`userns_restrict_retire_userns_sysctls` fentry program. The fixed managed-userns
+target starts. The privileged inspector then fails its retained deployment
+observation, before report publication or the cleanup-notification check.
+This is installed attachment evidence, not a passing Host or lifecycle test.
+
+Inspection of that exact EROFS image confirms the backend policy artifact and
+nspawn filter source are root-owned, single-link regular files with mode
+`0444`. The shared reader incorrectly applies private readiness-file modes
+`0400/0600` to them. Fixed package callers now select a separate exact `0444`
+policy; private credentials and watermarks retain their original modes.
+Ownership, link, size and bounded-read checks remain. The receiving quote
+includes the new dispatch argument planes without another OFD or namespace
+entry. All 28 Host readiness tests pass with the cached AOS-built compiler and
+the existing AOS test recipe's `RUST_MIN_STACK=33554432`, including the two new
+metadata-policy regressions. The first broader invocation used the default
+test-thread stack and overflowed in an existing boot-preparation constructor;
+no production stack or bank limit changes. All-target compilation and the
+installed retry are still running.
+
+The same immutable Host image separately passes the namespace-retirement-only
+diagnostic at
+`/nix/store/0h8qp0mp2393yc00mhp6f18hj2m38ayy-aos-rfc21-fentry-retirement-diagnostic-0`.
+It starts the real managed-userns target under enforcing SELinux and
+confidentiality lockdown, reads its actual user-namespace inode, stops the
+target and requires the exact inode's BPF ring-buffer death notification.
+The observed inode is `4026532554`. This confirms actual fentry cleanup without
+the inspector report; it does not qualify the full Host path or public Create.

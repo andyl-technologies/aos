@@ -112,7 +112,7 @@ impl PackagedNspawnOriginalV2 {
             return Err(closed());
         };
         self.artifact_read
-            .observe_once_v2(file, BACKEND_POLICY_ARTIFACT, BACKEND_POLICY_ARTIFACT_BYTES)
+            .observe_packaged_once_v2(file, BACKEND_POLICY_ARTIFACT, BACKEND_POLICY_ARTIFACT_BYTES)
             .map_err(|_| closed())?;
         self.artifact = Some(parse_backend_policy_artifact(
             self.artifact_read.bytes_v2().ok_or_else(closed)?,
@@ -593,7 +593,7 @@ impl PackagedRuntimeOriginalV2 {
             return Err(closed());
         };
         self.artifact_read
-            .observe_once_v2(file, BACKEND_POLICY_ARTIFACT, BACKEND_POLICY_ARTIFACT_BYTES)
+            .observe_packaged_once_v2(file, BACKEND_POLICY_ARTIFACT, BACKEND_POLICY_ARTIFACT_BYTES)
             .map_err(|_| closed())?;
         self.artifact = Some(parse_backend_policy_artifact(
             self.artifact_read.bytes_v2().ok_or_else(closed)?,
@@ -614,7 +614,7 @@ impl PackagedRuntimeOriginalV2 {
             return Err(closed());
         };
         self.source_read
-            .observe_once_v2(
+            .observe_packaged_once_v2(
                 file,
                 PAYLOAD_FILTER_SOURCE,
                 MAXIMUM_PAYLOAD_FILTER_SOURCE_BYTES,
