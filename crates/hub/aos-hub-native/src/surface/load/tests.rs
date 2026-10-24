@@ -35,7 +35,7 @@ async fn actual_large_packed_tree_reaches_native_as_complete_rows_without_body_f
     use aos_registry_format::pack_index::projection::PairReader;
 
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/large-tree.json"
+        "../../../../../registry/aos-registry-format/src/pack_index/fixtures/large-tree.json"
     ))
     .unwrap();
     let path = manifest["path"].as_str().unwrap();
@@ -43,12 +43,12 @@ async fn actual_large_packed_tree_reaches_native_as_complete_rows_without_body_f
     let mut reader = PairReader::new(path).unwrap();
     reader
         .feed_pack(include_bytes!(
-            "../../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/large-tree.pack"
+            "../../../../../registry/aos-registry-format/src/pack_index/fixtures/large-tree.pack"
         ))
         .unwrap();
     reader
         .feed_index(include_bytes!(
-            "../../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/large-tree.idx"
+            "../../../../../registry/aos-registry-format/src/pack_index/fixtures/large-tree.idx"
         ))
         .unwrap();
     let verified = reader

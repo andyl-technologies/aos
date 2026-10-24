@@ -13,7 +13,7 @@ pub(super) fn sources() -> serde_json::Map<String, serde_json::Value> {
     use sha2::{Digest as _, Sha256};
 
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
+        "../../../../../../../registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
     ))
     .unwrap();
     let index = manifest["ofs"]["path"].as_str().unwrap();
@@ -22,14 +22,14 @@ pub(super) fn sources() -> serde_json::Map<String, serde_json::Value> {
         (
             pack.clone(),
             include_bytes!(
-                "../../../../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/ofs.pack"
+                "../../../../../../../registry/aos-registry-format/src/pack_index/fixtures/ofs.pack"
             )
             .as_slice(),
         ),
         (
             index.into(),
             include_bytes!(
-                "../../../../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/ofs.idx"
+                "../../../../../../../registry/aos-registry-format/src/pack_index/fixtures/ofs.idx"
             )
             .as_slice(),
         ),
@@ -59,11 +59,11 @@ pub(super) fn sources() -> serde_json::Map<String, serde_json::Value> {
     .unwrap();
     let mut pair = aos_registry_format::pack_index::projection::PairReader::new(index).unwrap();
     pair.feed_pack(include_bytes!(
-        "../../../../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/ofs.pack"
+        "../../../../../../../registry/aos-registry-format/src/pack_index/fixtures/ofs.pack"
     ))
     .unwrap();
     pair.feed_index(include_bytes!(
-        "../../../../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/ofs.idx"
+        "../../../../../../../registry/aos-registry-format/src/pack_index/fixtures/ofs.idx"
     ))
     .unwrap();
     let selected = pair
@@ -96,7 +96,7 @@ pub(super) async fn run(
     origin: &str,
 ) {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
+        "../../../../../../../registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
     ))
     .unwrap();
     let index = manifest["ofs"]["path"].as_str().unwrap();

@@ -12,8 +12,8 @@ from pathlib import Path
 PAIRS = {
     'sdk': ('crates/hub/aos-hub-worker/src/direct_upload/managed.rs',
             'crates/hub/aos-hub-worker/src/direct_upload/sdk_observation.rs'),
-    'client': ('crates/shared/aos-transfer/src/direct_upload/provider.rs',
-               'crates/shared/aos-transfer/src/direct_upload/provider_observation.rs'),
+    'client': ('crates/transfer/aos-transfer/src/direct_upload/provider.rs',
+               'crates/transfer/aos-transfer/src/direct_upload/provider_observation.rs'),
 }
 MAX_SOURCE = 1024 * 1024
 

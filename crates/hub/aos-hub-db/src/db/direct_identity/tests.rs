@@ -228,11 +228,14 @@ async fn browser_provenance_requires_current_cookie_and_original_user_uuid() {
         owner: principal,
         owner_incarnation: Some(session.owner_incarnation),
         browser_session_id_hash: Some(session.session_id_hash),
+        expires_at: None,
         scope: Scope::parse("instance"),
         permissions: vec![Permission::Read],
     };
     let keys = JwtKeys::from_secret(b"test-only-browser-validation-key");
-    let claims = keys.verify(&keys.mint(&auth, 300).unwrap()).unwrap();
+    let claims = keys
+        .verify(&keys.mint_browser_session(&auth, 300).unwrap())
+        .unwrap();
     assert!(db
         .current_authenticated_actor(&claims)
         .await

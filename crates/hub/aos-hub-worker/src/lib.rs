@@ -148,6 +148,8 @@ pub(crate) mod binding_custody;
 pub mod bridge;
 #[cfg(target_arch = "wasm32")]
 pub mod consoleports;
+#[cfg(any(target_arch = "wasm32", test))]
+mod coordinator_protocol;
 #[cfg(target_arch = "wasm32")]
 pub mod coordinatorobj;
 #[cfg(target_arch = "wasm32")]
@@ -1806,6 +1808,11 @@ mod entry {
             .await
             .map_err(|error| {
                 worker::Error::RustError(format!("prune expired invitation credentials: {error:#}"))
+            })?;
+        db.prune_expired_oidc_flows(now, 1_000)
+            .await
+            .map_err(|error| {
+                worker::Error::RustError(format!("prune expired OIDC flows: {error:#}"))
             })?;
         let (_, newly_materialized_delivery_ids) = db
             .materialize_topology_events_with_delivery_ids()
@@ -3760,7 +3767,7 @@ mod entry {
                 .ok_or_else(|| worker::Error::RustError("e2e session validation failed".into()))?;
             let jwt = JwtKeys::from_secret(self.env.secret(HUB_JWT_SECRET)?.to_string().as_bytes());
             let token = jwt
-                .mint(
+                .mint_browser_session(
                     &TokenAuth {
                         token_id: format!("browser-session-{user_id}"),
                         owner: Principal::user(user_id),
@@ -3773,6 +3780,7 @@ mod entry {
                             Permission::Publish,
                             Permission::Read,
                         ],
+                        expires_at: None,
                     },
                     3_600,
                 )

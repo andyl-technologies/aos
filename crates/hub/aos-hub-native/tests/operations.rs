@@ -124,6 +124,21 @@ async fn machine_get(
     cookie: Option<&str>,
     bearer: Option<&str>,
 ) -> (StatusCode, axum::body::Bytes) {
+    let response = machine_response(app, uri, cookie, bearer).await;
+    let status = response.status();
+    let body = axum::body::to_bytes(response.into_body(), 1024)
+        .await
+        .unwrap();
+    (status, body)
+}
+
+/// GET one machine path and retain its response headers.
+async fn machine_response(
+    app: &axum::Router,
+    uri: &str,
+    cookie: Option<&str>,
+    bearer: Option<&str>,
+) -> axum::response::Response {
     let mut request = Request::builder()
         .uri(uri)
         .header(header::HOST, "127.0.0.1:8420");
@@ -133,16 +148,10 @@ async fn machine_get(
     if let Some(bearer) = bearer {
         request = request.header(header::AUTHORIZATION, format!("Bearer {bearer}"));
     }
-    let response = app
-        .clone()
+    app.clone()
         .oneshot(request.body(Body::empty()).unwrap())
         .await
-        .unwrap();
-    let status = response.status();
-    let body = axum::body::to_bytes(response.into_body(), 1024)
-        .await
-        .unwrap();
-    (status, body)
+        .unwrap()
 }
 
 /// Create org "acme", a `local_fs` binding over an empty dir, and a managed
@@ -269,6 +278,11 @@ async fn cache_route_serves_through_the_selected_placement() {
         .await
         .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        aos_hub_model::keymap::MUTABLE_CACHE_CONTROL
+    );
+    assert!(!response.headers().contains_key(header::VARY));
     let body = axum::body::to_bytes(response.into_body(), 64)
         .await
         .unwrap();
@@ -358,10 +372,22 @@ async fn native_cache_streams_preserve_session_and_bearer_authorization() {
         let (status, body) = machine_get(&app, uri, Some(&cookie), None).await;
         assert_eq!(status, StatusCode::OK, "session path {uri}");
         assert!(body.starts_with(expected));
+        let response = machine_response(&app, uri, Some(&cookie), None).await;
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "private, no-store"
+        );
+        assert_eq!(response.headers()[header::VARY], "Authorization, Cookie");
 
         let (status, body) = machine_get(&app, uri, None, Some(&token)).await;
         assert_eq!(status, StatusCode::OK, "bearer path {uri}");
         assert!(body.starts_with(expected));
+        let response = machine_response(&app, uri, None, Some(&token)).await;
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "private, no-store"
+        );
+        assert_eq!(response.headers()[header::VARY], "Authorization, Cookie");
 
         let (status, _) = machine_get(&app, uri, None, Some("invalid")).await;
         assert_eq!(

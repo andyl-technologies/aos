@@ -35,7 +35,7 @@ async fn release_ability_graph_authorizes_before_lookup() {
 
 #[tokio::test]
 async fn commit_advances_a_fully_reused_publication_without_uploads() {
-    let (service, db, _lease, auth) = injected_service(vec![], vec![]).await;
+    let (mut service, db, lease, auth) = injected_service(vec![], vec![]).await;
     let org_id = db.create_org("reuse-only", "Reuse only").await.unwrap();
     let registry_id = db
         .create_managed_registry(org_id, "", "main", "private", &[], false)
@@ -164,6 +164,35 @@ async fn commit_advances_a_fully_reused_publication_without_uploads() {
         .await
         .unwrap();
     }
+
+    service.lease = Arc::new(UnavailablePublishLease);
+    let unavailable = service
+        .commit_registry_publication(
+            Some(&auth),
+            pb::CommitRegistryPublicationRequest {
+                publication_id: publication_id.into(),
+            },
+        )
+        .await;
+    assert!(matches!(unavailable, Err(RpcError::Unavailable(_))));
+    assert_eq!(
+        db.registry_publication(publication_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        "preparing"
+    );
+    assert_eq!(
+        db.registry_publication_state(registry_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .current_publication_id,
+        None
+    );
+
+    service.lease = lease;
 
     let request = pb::CommitRegistryPublicationRequest {
         publication_id: publication_id.into(),

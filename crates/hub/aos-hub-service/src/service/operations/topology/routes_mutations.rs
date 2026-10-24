@@ -213,6 +213,14 @@ impl RpcService {
                 "disabled routes cannot be probed".to_string(),
             ));
         }
+        self.claim_controller_fence(
+            &claims,
+            "route",
+            &route.id,
+            &req.controller_lease_id,
+            req.controller_generation,
+        )
+        .await?;
         let generation = route.configuration_generation.ok_or_else(|| {
             RpcError::FailedPrecondition("route has no selected configuration".to_string())
         })?;
@@ -221,8 +229,12 @@ impl RpcService {
         })?;
         let operation_id = hex::encode(Sha256::digest(
             format!(
-                "delivery-route-probe-v1\0{}\0{}\0{}\0{}",
-                route.id, generation, configuration_digest, req.controller_lease_id
+                "delivery-route-probe-v1\0{}\0{}\0{}\0{}\0{}",
+                route.id,
+                generation,
+                configuration_digest,
+                req.controller_lease_id,
+                req.controller_generation
             )
             .as_bytes(),
         ));

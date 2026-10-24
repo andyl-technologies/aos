@@ -122,12 +122,13 @@ async fn fixture_with_database_and_purposes(db: Database, purposes: &[&str]) -> 
     let session = db.create_session(user, 3600, 1).await.unwrap();
     let session = db.validate_session(&session).await.unwrap().unwrap();
     let bearer = jwt
-        .mint(
+        .mint_browser_session(
             &TokenAuth {
                 token_id: format!("browser-session-{user}"),
                 owner: Principal::user(user),
                 owner_incarnation: Some(session.owner_incarnation),
                 browser_session_id_hash: Some(session.session_id_hash),
+                expires_at: Some(session.expires_at),
                 scope: Scope::root(),
                 permissions: vec![
                     Permission::StorageManage,

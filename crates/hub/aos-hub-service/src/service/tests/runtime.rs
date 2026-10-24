@@ -214,6 +214,7 @@ fn streamed_producer_document_is_inert() {
             strong_etag: None,
             snapshot_lease_id: None,
         },
+        true,
     )
     .unwrap();
     assert_eq!(
@@ -229,6 +230,62 @@ fn streamed_producer_document_is_inert() {
             .get(axum::http::header::CONTENT_DISPOSITION)
             .and_then(|value| value.to_str().ok()),
         Some("attachment")
+    );
+}
+
+#[test]
+fn private_machine_objects_disable_shared_cache_storage() {
+    for path in [
+        "HEAD",
+        "nar/example.nar",
+        "example.narinfo",
+        "nix-cache-info",
+    ] {
+        let response = RpcService::streamed_surface_response(
+            path,
+            StreamedRead {
+                body: axum::body::Body::from("data"),
+                total: 4,
+                range: None,
+                strong_etag: None,
+                snapshot_lease_id: None,
+            },
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            response.headers()[axum::http::header::CACHE_CONTROL],
+            "private, no-store",
+            "private response for {path}"
+        );
+        assert_eq!(
+            response.headers()[axum::http::header::VARY],
+            "Authorization, Cookie",
+            "credential variance for {path}"
+        );
+    }
+
+    let partial = RpcService::streamed_surface_response(
+        "nar/example.nar",
+        StreamedRead {
+            body: axum::body::Body::from("da"),
+            total: 4,
+            range: Some((0, 1)),
+            strong_etag: None,
+            snapshot_lease_id: None,
+        },
+        false,
+    )
+    .unwrap();
+    assert_eq!(partial.status(), axum::http::StatusCode::PARTIAL_CONTENT);
+    assert_eq!(
+        partial.headers()[axum::http::header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    assert_eq!(
+        partial.headers()[axum::http::header::VARY],
+        "Authorization, Cookie"
     );
 }
 

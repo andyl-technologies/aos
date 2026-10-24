@@ -17,6 +17,7 @@
   mkCargoArtifacts,
   mkCargoDummySource,
   aosWorkspaceVendor,
+  libssh2,
   openssl,
   perl,
   pkg-config,
@@ -55,6 +56,7 @@
     OPENSSL_INCLUDE_DIR = "${openssl}/include";
     OPENSSL_NO_VENDOR = "1";
     OPENSSL_STATIC = "0";
+    AOS_LIBSSH2_PREFIX = "${libssh2}";
     LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
     PROTOC = "${buildProtobuf}/bin/protoc";
     AOS_HUB_CONSOLE_JS = "${aos-hub-console-dist}/hub-console.js";
@@ -69,7 +71,7 @@
       lto = "thin";
       codegenUnits = 1;
     };
-    nativeInputs = map toString [openssl sqlite buildPkgConfig buildProtobuf aos-hub-console-dist];
+    nativeInputs = map toString [openssl sqlite libssh2 buildPkgConfig buildProtobuf aos-hub-console-dist];
   };
   cargoArtifacts = mkCargoArtifacts {
     pname = "aos-hub-native-postgres-artifacts";
@@ -82,7 +84,7 @@
     cargoRoot = "crates";
     cargoFlags = "-p aos-hub-native --features postgres --bin aos-hub --bin aos-hub-egress --bin aos-hub-authority --bin aos-hub-authority-bootstrap --bin aos-hub-direct-review --bin aos-hub-provider-conformance";
     buildDeps = [buildPerl buildPkgConfig openssl sqlite buildProtobuf aos-hub-console-dist];
-    runtimeDeps = [openssl sqlite zlib];
+    runtimeDeps = [openssl sqlite libssh2 zlib];
   };
 in
   mkAosCargoPackage {
@@ -182,7 +184,7 @@ in
 
     buildDeps = [buildPerl buildPkgConfig openssl sqlite buildProtobuf];
     # libgit2 still links zlib for compressed Git objects.
-    runtimeDeps = [openssl sqlite zlib];
+    runtimeDeps = [openssl sqlite libssh2 zlib];
 
     module = ./_aos-hub;
     moduleDeps = [service-management aos-filesystem-provider];

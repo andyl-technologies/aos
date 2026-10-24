@@ -869,6 +869,7 @@ mod tests {
             browser_session_id_hash: None,
             scope: scope.to_string(),
             perms: vec![Permission::CacheLeaseSelf.as_str().to_string()],
+            provenance: crate::auth::jwt::BearerProvenance::AccessToken,
             authz_version: crate::auth::jwt::AUTHORIZATION_CLAIMS_VERSION.to_string(),
             iat: 0,
             exp: i64::MAX,

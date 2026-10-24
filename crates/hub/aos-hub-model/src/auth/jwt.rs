@@ -26,7 +26,8 @@
 //!   "browser_session_id_hash": "f21a…",    validated cookie hash (browser only)
 //!   "scope":      "project:0123…",         stable scope the token is bound to
 //!   "perms":      ["read","publish"],      permission verbs (snake-case)
-//!   "authz_version": "stable-scope-1",     authorization-model epoch
+//!   "provenance": "access_token",          backing credential family
+//!   "authz_version": "stable-scope-2",     authorization-model epoch
 //!   "iat":        1718200000,              issued-at, Unix seconds
 //!   "exp":        1718200900               expiry, Unix seconds
 //! }
@@ -68,15 +69,25 @@ const OCI_HEADER_JSON: &[u8] = br#"{"alg":"HS256","typ":"application/vnd.aos.oci
 /// Verification rejects any other value, including tokens minted before the
 /// stable-scope cutover. Increment this whenever claim interpretation or the
 /// authorization graph changes incompatibly.
-pub const AUTHORIZATION_CLAIMS_VERSION: &str = "stable-scope-1";
+pub const AUTHORIZATION_CLAIMS_VERSION: &str = "stable-scope-2";
 
 /// Authorization-model epoch for repository-scoped Distribution tokens.
 pub const OCI_AUTHORIZATION_CLAIMS_VERSION: &str = "aos-oci-repository-grants-2";
 
+/// Identifies the credential family that produced a Hub bearer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BearerProvenance {
+    /// A database-backed access token whose lifecycle remains authoritative.
+    AccessToken,
+    /// A short-lived bearer derived from an authenticated browser session.
+    BrowserSession,
+}
+
 /// The HS256-signed claims carried by a hub access token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claims {
-    /// Token id (UUID) of the provisioning token this JWT was minted from.
+    /// Stable subject of the source credential, such as an access-token id.
     pub sub: String,
     /// Owning principal kind: `"user"` or `"service_account"`.
     pub owner_kind: String,
@@ -98,12 +109,39 @@ pub struct Claims {
     pub scope: String,
     /// Permission verbs the token grants, as snake-case wire names.
     pub perms: Vec<String>,
+    /// Credential family that produced this bearer.
+    pub provenance: BearerProvenance,
     /// Authorization-model epoch used to invalidate pre-cutover tokens.
     pub authz_version: String,
     /// Issued-at timestamp (Unix seconds).
     pub iat: i64,
     /// Expiry timestamp (Unix seconds).
     pub exp: i64,
+}
+
+impl Claims {
+    /// Returns whether these claims exactly describe a live parent token.
+    #[must_use]
+    pub fn matches_token_auth(&self, parent: &TokenAuth) -> bool {
+        let mut parent_permissions = parent
+            .permissions
+            .iter()
+            .map(|permission| permission.as_str())
+            .collect::<Vec<_>>();
+        let mut claimed_permissions = self.perms.iter().map(String::as_str).collect::<Vec<_>>();
+        parent_permissions.sort_unstable();
+        parent_permissions.dedup();
+        claimed_permissions.sort_unstable();
+        claimed_permissions.dedup();
+
+        parent.token_id == self.sub
+            && parent.owner.kind.as_str() == self.owner_kind
+            && parent.owner.id == self.owner_id
+            && parent.owner_incarnation == self.owner_incarnation
+            && parent.browser_session_id_hash == self.browser_session_id_hash
+            && parent.scope.as_str() == self.scope
+            && parent_permissions == claimed_permissions
+    }
 }
 
 /// One exact repository/action grant in an OCI Distribution token.
@@ -200,15 +238,44 @@ impl JwtKeys {
 
     /// Mints a signed access token for a validated provisioning token.
     ///
-    /// The claims copy the owner, scope, and permission verbs from `auth`;
-    /// the token is issued now and expires `ttl_secs` later.
+    /// The claims copy the owner, scope, and permission verbs from `auth`.
+    /// The bearer expires after `ttl_secs` or at the parent token's expiry,
+    /// whichever comes first.
     ///
     /// # Errors
     ///
-    /// Returns an error if the system clock is before the Unix epoch or
-    /// claim serialization fails.
+    /// Returns an error for an invalid lifetime, an expired parent token, a
+    /// clock failure, an expiry overflow, or claim serialization failure.
     pub fn mint(&self, auth: &TokenAuth, ttl_secs: i64) -> Result<String> {
+        self.mint_with_provenance(auth, ttl_secs, BearerProvenance::AccessToken)
+    }
+
+    /// Mints a short-lived bearer derived from a live browser session.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an invalid lifetime, an expired session, a clock
+    /// failure, an expiry overflow, or claim serialization failure.
+    pub fn mint_browser_session(&self, auth: &TokenAuth, ttl_secs: i64) -> Result<String> {
+        self.mint_with_provenance(auth, ttl_secs, BearerProvenance::BrowserSession)
+    }
+
+    fn mint_with_provenance(
+        &self,
+        auth: &TokenAuth,
+        ttl_secs: i64,
+        provenance: BearerProvenance,
+    ) -> Result<String> {
         let now = unix_now()?;
+        let requested_expiry = now
+            .checked_add(ttl_secs)
+            .context("access token lifetime overflow")?;
+        let exp = auth.expires_at.map_or(requested_expiry, |parent_expiry| {
+            parent_expiry.min(requested_expiry)
+        });
+        if exp <= now {
+            bail!("access token lifetime is invalid or expired");
+        }
         let claims = Claims {
             sub: auth.token_id.clone(),
             owner_kind: auth.owner.kind.as_str().to_string(),
@@ -221,9 +288,10 @@ impl JwtKeys {
                 .iter()
                 .map(|p| p.as_str().to_string())
                 .collect(),
+            provenance,
             authz_version: AUTHORIZATION_CLAIMS_VERSION.to_string(),
             iat: now,
-            exp: now + ttl_secs,
+            exp,
         };
         let claims_json = serde_json::to_vec(&claims).context("serializing JWT claims")?;
         let signing_input = format!("{}.{}", B64.encode(HEADER_JSON), B64.encode(claims_json));
@@ -488,6 +556,7 @@ mod tests {
             browser_session_id_hash: None,
             scope: Scope::parse(PROJECT_SCOPE),
             permissions: vec![Permission::Read, Permission::Publish],
+            expires_at: None,
         }
     }
 
@@ -501,6 +570,7 @@ mod tests {
         assert_eq!(claims.owner_id, 42);
         assert_eq!(claims.scope, PROJECT_SCOPE);
         assert_eq!(claims.perms, vec!["read", "publish"]);
+        assert_eq!(claims.provenance, BearerProvenance::AccessToken);
         assert_eq!(claims.authz_version, AUTHORIZATION_CLAIMS_VERSION);
         assert!(claims.exp > claims.iat);
     }
@@ -576,12 +646,21 @@ mod tests {
     }
 
     #[test]
-    fn expired_token_is_rejected() {
+    fn invalid_lifetime_is_rejected() {
         let keys = JwtKeys::random();
-        // A negative TTL yields an exp well in the past (beyond any
-        // residual leeway).
-        let token = keys.mint(&sample_auth(), -120).unwrap();
-        assert!(keys.verify(&token).is_err());
+        assert!(keys.mint(&sample_auth(), -120).is_err());
+    }
+
+    #[test]
+    fn bearer_expiry_is_capped_by_parent() {
+        let keys = JwtKeys::random();
+        let mut auth = sample_auth();
+        auth.expires_at = Some(unix_now().unwrap() + 30);
+
+        let token = keys.mint(&auth, 900).unwrap();
+        let claims = keys.verify(&token).unwrap();
+
+        assert_eq!(claims.exp, auth.expires_at.unwrap());
     }
 
     #[test]
@@ -596,6 +675,7 @@ mod tests {
             browser_session_id_hash: None,
             scope: PROJECT_SCOPE.to_string(),
             perms: vec!["read".to_string()],
+            provenance: BearerProvenance::AccessToken,
             authz_version: "obsolete-path-scope-v0".to_string(),
             iat: now,
             exp: now + 900,

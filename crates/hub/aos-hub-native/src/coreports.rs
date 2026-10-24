@@ -351,6 +351,7 @@ fn map_class(class: core_rl::RateClass) -> crate::ratelimit::RateClass {
         Core::BrowseSearch => Hub::BrowseSearch,
         Core::CreateOrg => Hub::CreateOrg,
         Core::DeviceActivate => Hub::DeviceActivate,
+        Core::OidcLogin => Hub::OidcLogin,
     }
 }
 

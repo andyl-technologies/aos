@@ -76,6 +76,21 @@ async fn get(
     cookie: Option<&str>,
     auth: Option<&str>,
 ) -> (StatusCode, String) {
+    let resp = get_response(app, uri, cookie, auth).await;
+    let status = resp.status();
+    let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
+        .await
+        .unwrap();
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
+/// GET a URL while retaining its response headers.
+async fn get_response(
+    app: &axum::Router,
+    uri: &str,
+    cookie: Option<&str>,
+    auth: Option<&str>,
+) -> axum::response::Response {
     let mut req = Request::builder()
         .uri(uri)
         .header(header::HOST, "127.0.0.1:8420");
@@ -85,16 +100,10 @@ async fn get(
     if let Some(auth) = auth {
         req = req.header(header::AUTHORIZATION, format!("Bearer {auth}"));
     }
-    let resp = app
-        .clone()
+    app.clone()
         .oneshot(req.body(Body::empty()).unwrap())
         .await
-        .unwrap();
-    let status = resp.status();
-    let body = axum::body::to_bytes(resp.into_body(), 1 << 20)
-        .await
-        .unwrap();
-    (status, String::from_utf8_lossy(&body).into_owned())
+        .unwrap()
 }
 
 /// POST a Connect-JSON RPC body, returning `(status, body)`.
@@ -370,6 +379,20 @@ async fn private_registry_hidden_anonymously_visible_to_member() {
     std::fs::create_dir_all(&surface).unwrap();
     let fixture = common::standard_registry(&surface);
     let db = serve_managed(&surface, &fixture, "private").await;
+    let registry = db
+        .registry_by_slug("acme/infra/prod/cdn")
+        .await
+        .unwrap()
+        .unwrap();
+    db.create_mirror_source(
+        registry.id,
+        "https://93.184.216.34/",
+        "pullthrough",
+        true,
+        3600,
+    )
+    .await
+    .unwrap();
 
     // A member user with Read on the org.
     let user = db.create_user("dev@acme.com", None).await.unwrap();
@@ -401,10 +424,26 @@ async fn private_registry_hidden_anonymously_visible_to_member() {
     let (status, body) = get(&app, "/acme/infra/prod/cdn/", Some(&cookie), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
     assert!(body.contains("Fixture registry"), "{body}");
+    for uri in [
+        "/acme/infra/prod/cdn/",
+        "/acme/infra/prod/cdn/-/docs",
+        "/acme/infra/prod/cdn/-/missing",
+    ] {
+        let response = get_response(&app, uri, Some(&cookie), None).await;
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "private, no-store",
+            "session browse response for {uri}"
+        );
+        assert_eq!(
+            response.headers()[header::VARY],
+            "Authorization, Cookie",
+            "session variance for {uri}"
+        );
+    }
 
     // A bearer token with Read on the registry scope also sees its browse
-    // surface. Successful private byte delivery after a typed publication is
-    // covered by the signed-image end-to-end suite.
+    // surface and machine objects.
     let token = bearer(
         &db,
         Principal::user(user),
@@ -420,6 +459,45 @@ async fn private_registry_hidden_anonymously_visible_to_member() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
+    let response = get_response(
+        &app,
+        "/acme/infra/prod/cdn/-/packages?release=1.0.0",
+        None,
+        Some(&token),
+    )
+    .await;
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    assert_eq!(response.headers()[header::VARY], "Authorization, Cookie");
+
+    for (cookie, bearer) in [(Some(cookie.as_str()), None), (None, Some(token.as_str()))] {
+        for method in ["GET", "HEAD"] {
+            let mut request = Request::builder()
+                .method(method)
+                .uri("/acme/infra/prod/cdn/HEAD")
+                .header(header::HOST, "127.0.0.1:8420");
+            if let Some(cookie) = cookie {
+                request = request.header(header::COOKIE, cookie);
+            }
+            if let Some(bearer) = bearer {
+                request = request.header(header::AUTHORIZATION, format!("Bearer {bearer}"));
+            }
+            let response = app
+                .clone()
+                .oneshot(request.body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::OK, "{method} private HEAD");
+            assert_eq!(
+                response.headers()[header::CACHE_CONTROL],
+                "private, no-store"
+            );
+            assert_eq!(response.headers()[header::VARY], "Authorization, Cookie");
+        }
+    }
 }
 
 #[tokio::test]
@@ -497,6 +575,9 @@ async fn instance_home_lists_only_visible_registries() {
         !body.contains(&private),
         "private must be hidden from anon: {body}"
     );
+    let response = get_response(&app, "/", None, None).await;
+    assert!(!response.headers().contains_key(header::CACHE_CONTROL));
+    assert!(!response.headers().contains_key(header::VARY));
 
     // The same hiding applies under the ?q= search.
     let (status, body) = get(&app, "/?q=acme", None, None).await;
@@ -518,6 +599,12 @@ async fn instance_home_lists_only_visible_registries() {
         "outsider hidden internal: {body}"
     );
     assert!(!body.contains(&private), "outsider hidden private: {body}");
+    let response = get_response(&app, "/", Some(&outsider_cookie), None).await;
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    assert_eq!(response.headers()[header::VARY], "Authorization, Cookie");
 
     // A member of acme (org Viewer grant): the org-scoped Read covers internal
     // and the private registry's sub-scope alike, so all three are listed.
@@ -537,6 +624,12 @@ async fn instance_home_lists_only_visible_registries() {
     assert!(body.contains(&public), "{body}");
     assert!(body.contains(&internal), "member sees internal: {body}");
     assert!(body.contains(&private), "org member sees private: {body}");
+    let response = get_response(&app, "/", Some(&cookie), None).await;
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    assert_eq!(response.headers()[header::VARY], "Authorization, Cookie");
 
     // A bearer token granting Read only on the private scope reveals exactly
     // that registry (plus the always-public one), not the internal one.
@@ -559,6 +652,12 @@ async fn instance_home_lists_only_visible_registries() {
         !body.contains(&internal),
         "registry-scoped token does not reveal internal: {body}"
     );
+    let response = get_response(&app, "/", None, Some(&token)).await;
+    assert_eq!(
+        response.headers()[header::CACHE_CONTROL],
+        "private, no-store"
+    );
+    assert_eq!(response.headers()[header::VARY], "Authorization, Cookie");
 }
 
 #[tokio::test]

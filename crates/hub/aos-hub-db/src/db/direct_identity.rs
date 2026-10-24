@@ -141,7 +141,8 @@ impl Database {
         }
 
         if let Some(hash) = &claims.browser_session_id_hash {
-            if kind != PrincipalKind::User
+            if claims.provenance != aos_hub_model::auth::jwt::BearerProvenance::BrowserSession
+                || kind != PrincipalKind::User
                 || hash.len() != 64
                 || !hash
                     .bytes()
@@ -180,6 +181,10 @@ impl Database {
                 return Ok(None);
             }
             return Ok(Some(actor));
+        }
+
+        if claims.provenance != aos_hub_model::auth::jwt::BearerProvenance::AccessToken {
+            return Ok(None);
         }
 
         // This lookup bypasses hot JWT/token caches and validates the original

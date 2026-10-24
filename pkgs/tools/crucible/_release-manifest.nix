@@ -21,9 +21,9 @@
       value = manifest;
     })
     workspaceMembers);
-  shmemLib = builtins.readFile (crateRoot + "/crucible/protocol/crucible-qemu-shmem/src/lib.rs");
-  doorbellAbi = builtins.readFile (crateRoot + "/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs");
-  apiRpcAbi = builtins.readFile (crateRoot + "/crucible/control/crucible-control-api/src/rpc_abi.rs");
+  shmemLib = builtins.readFile (crateRoot + "/crucible/crucible-qemu-shmem/src/lib.rs");
+  doorbellAbi = builtins.readFile (crateRoot + "/crucible/crucible-qemu-protocol/src/doorbell_abi.rs");
+  apiRpcAbi = builtins.readFile (crateRoot + "/crucible/crucible-control-api/src/rpc_abi.rs");
   firstLineWith = label: prefix: content: let
     matches = builtins.filter (line: lib.hasPrefix prefix line) (lib.splitString "\n" content);
   in

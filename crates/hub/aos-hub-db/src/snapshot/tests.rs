@@ -210,13 +210,13 @@ async fn contract_covers_the_actual_production_initializer() {
     let tables = sqlx::query("SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
         .fetch_all(&pool).await.unwrap();
     let contracts = contract().unwrap();
-    assert_eq!(contracts.len(), 291);
+    assert_eq!(contracts.len(), 294);
     assert_eq!(
         contracts
             .values()
             .map(|table| table.columns.len())
             .sum::<usize>(),
-        2836
+        2862
     );
     assert_eq!(tables.len(), contracts.len());
 
@@ -946,6 +946,12 @@ fn original_session_owner_pin_remains_excluded_as_authentication_transient_state
             "owner_incarnation",
             Value::Text("01234567-89ab-4def-8123-456789abcdef".into()),
         )],
+    );
+    // Replay the historical row width; current sessions append authentication evidence.
+    let input = Row::new(
+        (0..classifier.tables["sessions"].columns.len())
+            .map(|index| input.value(index).unwrap().clone())
+            .collect(),
     );
     assert!(matches!(
         classifier.classify("sessions", &input).unwrap(),

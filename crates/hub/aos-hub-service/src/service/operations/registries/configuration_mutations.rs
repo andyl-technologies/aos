@@ -375,7 +375,7 @@ impl RpcService {
             PlacementReadOutcome::Found(read) => read.value,
             PlacementReadOutcome::NotFound => return Ok(RegistryServeOutcome::NotFound),
         };
-        let response = Self::streamed_surface_response(path, read)?;
+        let response = Self::streamed_surface_response(path, read, cacheable)?;
         let response = if cacheable {
             response
         } else {
@@ -955,20 +955,14 @@ impl RpcService {
                 // request. Open its pointer phase here so reuse-only generations
                 // follow the same watermark protocol as generations that wrote a
                 // pointer body.
-                if let Some(holder) = self
-                    .lease
+                self.lease
                     .acquire(
                         registry.id,
                         &publication.publication_id,
                         clock::now_unix_secs(),
                     )
                     .await
-                    .map_err(RpcError::internal)?
-                {
-                    return Err(RpcError::FailedPrecondition(format!(
-                        "registry publication lease is held by {holder}"
-                    )));
-                }
+                    .map_err(RpcError::publish_lease)?;
                 if !self
                     .db
                     .advance_registry_publication(

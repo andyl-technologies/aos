@@ -193,6 +193,20 @@ impl Database {
         self.live_token_auth_by_id(&id, true).await
     }
 
+    /// Revalidates a previously resolved token against its current lifecycle.
+    ///
+    /// This is the authoritative follow-up for callers that cache the mapping
+    /// from a presented secret to a token id. It reloads expiry, retirement,
+    /// rotation grace, principal state, and effective grants, returning the
+    /// current [`TokenAuth`] rather than trusting the cached grant projection.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error on database failure or a malformed stored row.
+    pub async fn revalidate_token(&self, token_id: &str) -> Result<Option<TokenAuth>> {
+        self.live_token_auth_by_id(token_id, false).await
+    }
+
     /// Revoke a token by id, stamping `revoked_at = now`.
     ///
     /// A no-op when the id is unknown or already revoked.

@@ -1502,6 +1502,9 @@ async fn main() -> Result<()> {
                     )
                 };
             index_all(&app_state.db, index_surfaces.as_ref()).await;
+            prune_expired_invitation_secrets(&app_state.db).await;
+            prune_expired_oidc_flows(&app_state.db).await;
+
             if reindex_interval > 0 {
                 let db = Arc::clone(&app_state.db);
                 let index_surfaces = Arc::clone(&index_surfaces);
@@ -1520,6 +1523,7 @@ async fn main() -> Result<()> {
                         )
                         .await;
                         prune_expired_invitation_secrets(&db).await;
+                        prune_expired_oidc_flows(&db).await;
                         match aos_hub_native::export::purge_expired_orgs(&db, now_secs()).await {
                             Ok(purged) => {
                                 for slug in &purged {
@@ -2615,6 +2619,13 @@ async fn prune_expired_invitation_secrets(db: &Database) {
             error = %format!("{error:#}"),
             "expired invitation cleanup failed"
         );
+    }
+}
+
+/// Runs one bounded OIDC-flow retention pass.
+async fn prune_expired_oidc_flows(db: &Database) {
+    if let Err(error) = db.prune_expired_oidc_flows(now_secs(), 1_000).await {
+        tracing::warn!(error = %format!("{error:#}"), "expired OIDC flow cleanup failed");
     }
 }
 

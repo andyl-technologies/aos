@@ -428,7 +428,7 @@ os._exit(0)
                 sparse.assert_direct_changed_source_refusal(outcome, {"error": "refused"}, [{**counter, name: 1}], source)
 
     def current_client_summary(self):
-        producer = path.parents[2] / "crates/shared/aos-transfer/src/direct_upload/metrics.rs"
+        producer = path.parents[2] / "crates/transfer/aos-transfer/src/direct_upload/metrics.rs"
         formatter = re.search(r'"(caps=\{\} [^"\\\n]+)"', producer.read_text())
         self.assertIsNotNone(formatter)
         return "Direct upload client: " + formatter.group(1).replace("{}", "0")

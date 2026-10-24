@@ -103,13 +103,10 @@ use crate::storage_credential::StorageCredentialResolver;
 use crate::surface_write::SurfaceWrite;
 use crate::surface_write::SurfaceWriteProvider;
 use crate::topology_probe::TopologyProbeScheduler;
-use aos_hub_db::db::Database;
-use aos_hub_db::db::IndexStatus;
-use aos_hub_db::db::PlacementReadRequirement;
-use aos_hub_db::db::RegistryRecord;
-use aos_hub_db::db::SurfaceTarget;
-use aos_hub_model::auth::jwt::Claims;
-use aos_hub_model::auth::jwt::JwtKeys;
+use aos_hub_db::db::{
+    Database, IndexStatus, PlacementReadRequirement, RegistryRecord, SurfaceTarget,
+};
+use aos_hub_model::auth::jwt::{BearerProvenance, Claims, JwtKeys};
 use aos_hub_model::clock;
 use aos_hub_model::domain::iam;
 use aos_hub_model::domain::iam::claims_principal;
@@ -126,6 +123,10 @@ use aos_hub_model::storage::PartTag;
 const DEFAULT_PAGE_SIZE: u32 = 500;
 /// Maximum bounded documentation projection considered by one search request.
 const MAX_DOCUMENTATION_RESULTS: usize = 10_000;
+/// Maximum native documentation projections decoded by one search request.
+const MAX_DOCUMENTATION_SEARCH_DOCUMENTS: usize = 512;
+/// Maximum normalized terms accepted by one documentation search request.
+const MAX_DOCUMENTATION_SEARCH_TERMS: usize = 16;
 /// Hard ceiling on page size.
 const MAX_PAGE_SIZE: u32 = 1000;
 /// Maximum accepted reporter clock lead over Hub receipt time.
@@ -1171,6 +1172,8 @@ pub struct SurfaceObjectResponse {
     pub content_type: &'static str,
     /// The `Cache-Control` header value for the requested machine path.
     pub cache_control: &'static str,
+    /// The credential headers named by `Vary`, when the response is private.
+    pub vary: Option<&'static str>,
     /// When `Some`, the object is not served inline but as a temporary (`302`)
     /// redirect to this presigned origin URL — the authenticated-origin read of
     /// a private external binding (RFC-0004 "presigned GET → 302"). `302`
@@ -1711,6 +1714,10 @@ struct CachedSession {
     auth_level: i64,
     last_authenticated_at: i64,
     expires_at: i64,
+    #[serde(default)]
+    authentication: aos_hub_db::db::SessionAuthentication,
+    #[serde(default)]
+    reauthentication_generation: i64,
     email: String,
 }
 
@@ -1732,6 +1739,8 @@ impl CachedSession {
             auth_level: rs.auth.auth_level,
             last_authenticated_at: rs.auth.last_authenticated_at,
             expires_at: rs.auth.expires_at,
+            authentication: rs.auth.authentication.clone(),
+            reauthentication_generation: rs.auth.reauthentication_generation,
             email: rs.email.clone(),
         }
     }
@@ -1756,6 +1765,8 @@ impl CachedSession {
                 auth_level: self.auth_level,
                 last_authenticated_at: self.last_authenticated_at,
                 expires_at: self.expires_at,
+                authentication: self.authentication,
+                reauthentication_generation: self.reauthentication_generation,
             },
             email: self.email,
         })

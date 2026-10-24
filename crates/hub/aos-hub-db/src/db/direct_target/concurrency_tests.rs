@@ -211,6 +211,7 @@ async fn claims(db: &Database, record: &DirectUploadSessionRecord) -> Claims {
         browser_session_id_hash: None,
         scope: "instance".into(),
         perms: vec!["registry.configure".into()],
+        provenance: aos_hub_model::auth::jwt::BearerProvenance::AccessToken,
         authz_version: AUTHORIZATION_CLAIMS_VERSION.into(),
         iat: 1,
         exp: 1000,

@@ -49,7 +49,173 @@ pub struct NativeDocumentationLocator {
     pub artifact: aos_registry_format::manifest::NativeArtifactMeta,
 }
 
+/// Couples a bounded search projection to its authenticated release identity.
+#[derive(Debug)]
+pub struct NativeDocumentationSearchDocument {
+    /// Names the release that authenticates the projection.
+    pub release: String,
+    /// Identifies the release commit.
+    pub commit: String,
+    /// Contains the checked search projection.
+    pub document: NativeDocumentationIndex,
+}
+
 impl Database {
+    /// Resolves one native document by digest through a completed release snapshot.
+    ///
+    /// # Errors
+    /// Returns an error for damaged catalogs or database failures.
+    pub async fn native_documentation_locator_by_digest(
+        &self,
+        registry_id: i64,
+        document_sha256: &str,
+    ) -> Result<Option<NativeDocumentationLocator>> {
+        let row = self.backend.query_opt(
+            "SELECT rel.semver, rel.commit_oid, rel.tag_oid, snapshot.snapshot_id,
+                    docs.package_name, docs.package_version, docs.platform, docs.store_path
+             FROM release_native_documentation docs
+             JOIN releases rel
+               ON rel.registry_id = docs.registry_id AND rel.commit_oid = docs.source_commit
+             JOIN release_artifact_snapshot_heads head
+               ON head.registry_id = rel.registry_id AND head.release_id = rel.id
+             JOIN release_artifact_snapshots snapshot
+               ON snapshot.snapshot_id = head.complete_artifact_snapshot_id
+              AND snapshot.source_commit = rel.commit_oid AND snapshot.verified_tag_oid = rel.tag_oid
+              AND snapshot.state = 'complete'
+             JOIN release_artifacts artifact
+               ON artifact.snapshot_id = snapshot.snapshot_id
+              AND artifact.package_name = docs.package_name
+              AND artifact.package_version = docs.package_version
+              AND artifact.platform = docs.platform
+              AND artifact.artifact_kind = 'output' AND artifact.store_path = docs.store_path
+             WHERE docs.registry_id = ?1 AND docs.document_sha256 = ?2
+             ORDER BY rel.id DESC
+             LIMIT 1",
+            &vals![registry_id, document_sha256],
+        ).await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let release: String = row.get(0)?;
+        let package: String = row.get(4)?;
+        let version: String = row.get(5)?;
+        let platform: String = row.get(6)?;
+        let store_path: String = row.get(7)?;
+        let catalog = self
+            .release_browse_packages(registry_id, &release)
+            .await?
+            .context("native documentation release catalog is unavailable")?;
+        let artifact = native_documentation_artifact(&catalog, &package, &version, &platform)
+            .context("native documentation has no authenticated catalog locator")?;
+        ensure!(
+            artifact.document_sha256 == document_sha256 && artifact.store_path == store_path,
+            "native documentation identity differs"
+        );
+
+        Ok(Some(NativeDocumentationLocator {
+            release,
+            commit: row.get(1)?,
+            tag_oid: row.get(2)?,
+            snapshot_id: row.get(3)?,
+            package,
+            version,
+            platform,
+            artifact: artifact.clone(),
+        }))
+    }
+
+    /// Loads at most `limit` native projections from completed releases.
+    ///
+    /// A `None` result means the registry exceeds the caller's work budget.
+    ///
+    /// # Errors
+    /// Returns an error for damaged catalogs, projection corruption, or database failures.
+    pub async fn bounded_native_documentation_search(
+        &self,
+        registry_id: i64,
+        limit: usize,
+    ) -> Result<Option<Vec<NativeDocumentationSearchDocument>>> {
+        let query_limit = i64::try_from(limit)?.saturating_add(1);
+        let rows = self.backend.query(
+            "SELECT rel.semver, rel.commit_oid, docs.package_name, docs.package_version,
+                    docs.platform, docs.document_sha256, docs.store_path,
+                    docs.search_json, docs.content_digest
+             FROM release_native_documentation docs
+             JOIN releases rel
+               ON rel.registry_id = docs.registry_id AND rel.commit_oid = docs.source_commit
+             JOIN release_artifact_snapshot_heads head
+               ON head.registry_id = rel.registry_id AND head.release_id = rel.id
+             JOIN release_artifact_snapshots snapshot
+               ON snapshot.snapshot_id = head.complete_artifact_snapshot_id
+              AND snapshot.source_commit = rel.commit_oid AND snapshot.verified_tag_oid = rel.tag_oid
+              AND snapshot.state = 'complete'
+             JOIN release_artifacts artifact
+               ON artifact.snapshot_id = snapshot.snapshot_id
+              AND artifact.package_name = docs.package_name
+              AND artifact.package_version = docs.package_version
+              AND artifact.platform = docs.platform
+              AND artifact.artifact_kind = 'output' AND artifact.store_path = docs.store_path
+             WHERE docs.registry_id = ?1
+             ORDER BY rel.id DESC, docs.package_name, docs.package_version, docs.platform
+             LIMIT ?2",
+            &vals![registry_id, query_limit],
+        ).await?;
+        if rows.len() > limit {
+            return Ok(None);
+        }
+
+        let mut catalogs = std::collections::BTreeMap::new();
+        let mut documents = Vec::with_capacity(rows.len());
+        for row in rows {
+            let release: String = row.get(0)?;
+            if !catalogs.contains_key(&release) {
+                let catalog = self
+                    .release_browse_packages(registry_id, &release)
+                    .await?
+                    .context("native documentation release catalog is unavailable")?;
+                catalogs.insert(release.clone(), catalog);
+            }
+            let package: String = row.get(2)?;
+            let version: String = row.get(3)?;
+            let platform: String = row.get(4)?;
+            let document_sha256: String = row.get(5)?;
+            let store_path: String = row.get(6)?;
+            let search_json: String = row.get(7)?;
+            let content_digest: String = row.get(8)?;
+            ensure!(
+                hex::encode(Sha256::digest(search_json.as_bytes())) == content_digest,
+                "native search projection digest differs"
+            );
+            let artifact = native_documentation_artifact(
+                catalogs
+                    .get(&release)
+                    .context("release catalog disappeared")?,
+                &package,
+                &version,
+                &platform,
+            )
+            .context("native search projection has no authenticated catalog locator")?;
+            ensure!(
+                artifact.document_sha256 == document_sha256 && artifact.store_path == store_path,
+                "native search projection document identity differs"
+            );
+            documents.push(NativeDocumentationSearchDocument {
+                release,
+                commit: row.get(1)?,
+                document: NativeDocumentationIndex {
+                    package,
+                    version,
+                    platform,
+                    document_sha256,
+                    store_path,
+                    search: serde_json::from_str(&search_json)?,
+                },
+            });
+        }
+
+        Ok(Some(documents))
+    }
+
     /// Resolves native documentation only through completed authenticated releases.
     ///
     /// # Errors
@@ -246,12 +412,27 @@ impl Database {
     }
 }
 
+fn native_documentation_artifact<'a>(
+    catalog: &'a [aos_registry_format::manifest::PackageToml],
+    package: &str,
+    version: &str,
+    platform: &str,
+) -> Option<&'a aos_registry_format::manifest::NativeArtifactMeta> {
+    catalog
+        .iter()
+        .find(|entry| entry.package.name == package)
+        .and_then(|entry| entry.versions.iter().find(|entry| entry.version == version))
+        .and_then(|entry| entry.platforms.get(platform))
+        .and_then(|entry| entry.module_documentation.as_ref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::db::IndexSnapshot;
-    use crate::db::ReleaseArtifactSnapshot;
-    use crate::db::ReleaseRow;
+    use std::sync::atomic::Ordering;
+
+    use crate::db::fixtures::count_queries;
+    use crate::db::{IndexSnapshot, ReleaseArtifactSnapshot, ReleaseRow};
 
     #[tokio::test]
     async fn native_search_requires_complete_release_and_exact_projection_identity() {
@@ -349,9 +530,47 @@ source_nar_hash = ""
             .unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].package, "sample");
+
+        let (db, queries) = count_queries(db);
+        let locator = db
+            .native_documentation_locator_by_digest(registry, &documents[0].document_sha256)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(queries.load(Ordering::Relaxed), 2);
+        assert_eq!(locator.release, "1.0.0");
+        assert_eq!(locator.commit, "native-commit");
+
+        queries.store(0, Ordering::Relaxed);
+        assert!(db
+            .native_documentation_locator_by_digest(registry, "sha256:missing")
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(queries.load(Ordering::Relaxed), 1);
+
+        queries.store(0, Ordering::Relaxed);
+        let bounded = db
+            .bounded_native_documentation_search(registry, 1)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(queries.load(Ordering::Relaxed), 2);
+        assert_eq!(bounded.len(), 1);
+        assert_eq!(bounded[0].release, "1.0.0");
+        assert!(db
+            .bounded_native_documentation_search(registry, 0)
+            .await
+            .unwrap()
+            .is_none());
+
         db.backend.execute("UPDATE release_native_documentation SET document_sha256 = 'wrong' WHERE registry_id = ?1",&vals![registry]).await.unwrap();
         assert!(db
             .native_documentation_at_release(registry, "1.0.0")
+            .await
+            .is_err());
+        assert!(db
+            .bounded_native_documentation_search(registry, 1)
             .await
             .is_err());
     }

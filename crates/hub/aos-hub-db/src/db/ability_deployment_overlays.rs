@@ -396,7 +396,12 @@ mod tests {
 
     #[test]
     fn native_report_migration_creates_enrollment_with_a_replay_fence() {
-        let migration_index = super::super::MIGRATIONS.len() - 1;
+        let migration_index = super::super::MIGRATIONS
+            .iter()
+            .position(|script| {
+                *script == include_str!("migration-0008-native-deployment-report.sql")
+            })
+            .unwrap();
         let connection = rusqlite::Connection::open_in_memory().unwrap();
         for migration in &super::super::MIGRATIONS[..migration_index] {
             connection.execute_batch(migration).unwrap();

@@ -17,7 +17,8 @@ impl Database {
             .backend
             .query_opt(
                 "SELECT s.user_id, s.auth_level, s.last_authenticated_at, s.expires_at,
-                    s.created_at, s.last_seen_at, s.owner_incarnation
+                    s.created_at, s.last_seen_at, s.owner_incarnation,
+                    s.authentication_method, s.authentication_provider, s.reauthentication_generation
              FROM sessions s JOIN users u ON u.id = s.user_id
              WHERE s.id_hash = ?1 AND u.deleted_at IS NULL
                AND s.owner_incarnation IS NOT NULL
@@ -82,6 +83,11 @@ impl Database {
             auth_level: row.get(1)?,
             last_authenticated_at: row.get(2)?,
             expires_at,
+            authentication: SessionAuthentication::from_database(
+                &row.get::<String>(7)?,
+                row.get(8)?,
+            )?,
+            reauthentication_generation: row.get(9)?,
         };
         if !self.session_auth_is_current_at(&auth, now).await? {
             return Ok(None);

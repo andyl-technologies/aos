@@ -1,7 +1,7 @@
 {lib}: let
   repoRoot = ../../..;
   repoRootString = toString repoRoot;
-  daemonRunState = "${repoRootString}/crates/crucible/control/crucible-daemon/run-state";
+  daemonRunState = "${repoRootString}/crates/crucible/crucible-daemon/run-state";
 in
   builtins.path {
     path = repoRoot;

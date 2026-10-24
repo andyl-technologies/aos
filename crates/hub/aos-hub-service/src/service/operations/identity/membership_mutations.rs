@@ -54,34 +54,43 @@ impl RpcService {
                 "principal identity changed after planning".into(),
             ));
         }
-        let current_role = self
-            .db
-            .list_memberships_for(&input.principal_kind, principal_id)
-            .await
-            .map_err(RpcError::internal)?
-            .into_iter()
-            .find_map(|(candidate_scope, role)| (candidate_scope == input.scope).then_some(role));
-        if current_role != input.baseline_role {
-            return Err(RpcError::FailedPrecondition(
-                "membership changed after planning".into(),
-            ));
-        }
-        let result = if let Some(role) = input.desired_role.as_deref() {
-            self.db
-                .set_membership_role_owner_safe(
-                    &input.principal_kind,
-                    principal_id,
-                    &input.scope,
-                    role,
-                )
-                .await
-        } else {
-            self.db
-                .revoke_membership_owner_safe(&input.principal_kind, principal_id, &input.scope)
-                .await
+        let baseline = match (&input.baseline_role, input.baseline_membership_id) {
+            (Some(role), Some(id)) => Some(aos_hub_db::db::MembershipSnapshot {
+                id,
+                incarnation_id: input.baseline_membership_incarnation.clone(),
+                role: role.clone(),
+            }),
+            (None, None) => None,
+            _ => {
+                return Err(RpcError::FailedPrecondition(
+                    "membership plan does not identify its reviewed baseline".into(),
+                ));
+            }
         };
+        let actor = claims_principal(&claims)
+            .ok_or_else(|| RpcError::PermissionDenied("active principal required".into()))?;
+        let target_kind = aos_hub_model::domain::PrincipalKind::parse(&input.principal_kind)
+            .ok_or_else(|| RpcError::FailedPrecondition("principal kind changed".into()))?;
+        let target = aos_hub_model::domain::Principal {
+            kind: target_kind,
+            id: principal_id,
+        };
+        let result = self
+            .db
+            .replace_membership_if_current(
+                target,
+                &input.scope,
+                baseline.as_ref(),
+                input.desired_role.as_deref(),
+                actor,
+            )
+            .await;
         result.map_err(|error| {
-            if aos_hub_db::db::is_last_owner_error(&error) {
+            if aos_hub_db::db::is_membership_mutation_conflict(&error) {
+                RpcError::FailedPrecondition(
+                    "membership or actor authority changed after planning".into(),
+                )
+            } else if aos_hub_db::db::is_last_owner_error(&error) {
                 RpcError::FailedPrecondition(
                     "an organization must retain at least one human owner".to_string(),
                 )

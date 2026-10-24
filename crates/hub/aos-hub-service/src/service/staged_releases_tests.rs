@@ -373,7 +373,7 @@ async fn fixture() -> Fixture {
     let owner_incarnation = db.principal_incarnation(owner).await.unwrap();
     let read_token = service
         .jwt_keys
-        .mint(
+        .mint_browser_session(
             &TokenAuth {
                 token_id: "stage-read-only".into(),
                 owner,
@@ -381,6 +381,7 @@ async fn fixture() -> Fixture {
                 browser_session_id_hash: None,
                 scope: Scope::root(),
                 permissions: vec![Permission::Read],
+                expires_at: None,
             },
             3600,
         )

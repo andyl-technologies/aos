@@ -6,7 +6,7 @@ use aos_registry_format::pack_index::projection::{PairReader, Selection};
 
 fn projection() -> (MirrorPackProjection, Vec<MirrorPackSelection>) {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
+        "../../../../registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
     ))
     .unwrap();
     let path = manifest["ofs"]["path"].as_str().unwrap();
@@ -14,12 +14,12 @@ fn projection() -> (MirrorPackProjection, Vec<MirrorPackSelection>) {
     let mut reader = PairReader::new(path).unwrap();
     reader
         .feed_pack(include_bytes!(
-            "../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/ofs.pack"
+            "../../../../registry/aos-registry-format/src/pack_index/fixtures/ofs.pack"
         ))
         .unwrap();
     reader
         .feed_index(include_bytes!(
-            "../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/ofs.idx"
+            "../../../../registry/aos-registry-format/src/pack_index/fixtures/ofs.idx"
         ))
         .unwrap();
     let pair = reader
@@ -132,7 +132,7 @@ fn exact_source_and_whole_object_identity_refuse_substitution() {
 #[test]
 fn available_partition_cannot_omit_repeat_or_invent_an_oid() {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
+        "../../../../registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
     ))
     .unwrap();
     let path = manifest["ofs"]["path"].as_str().unwrap();
@@ -151,12 +151,12 @@ fn available_partition_cannot_omit_repeat_or_invent_an_oid() {
     let mut reader = PairReader::new(path).unwrap();
     reader
         .feed_pack(include_bytes!(
-            "../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/ofs.pack"
+            "../../../../registry/aos-registry-format/src/pack_index/fixtures/ofs.pack"
         ))
         .unwrap();
     reader
         .feed_index(include_bytes!(
-            "../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/ofs.idx"
+            "../../../../registry/aos-registry-format/src/pack_index/fixtures/ofs.idx"
         ))
         .unwrap();
     let available = reader
@@ -195,7 +195,7 @@ fn available_partition_cannot_omit_repeat_or_invent_an_oid() {
 #[test]
 fn large_packed_tree_returns_only_pages_bound_to_the_verified_pair() {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/large-tree.json"
+        "../../../../registry/aos-registry-format/src/pack_index/fixtures/large-tree.json"
     ))
     .unwrap();
     let path = manifest["path"].as_str().unwrap();
@@ -212,7 +212,7 @@ fn large_packed_tree_returns_only_pages_bound_to_the_verified_pair() {
     };
     let mut reader = PairReader::new(path).unwrap();
     for bytes in include_bytes!(
-        "../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/large-tree.pack"
+        "../../../../registry/aos-registry-format/src/pack_index/fixtures/large-tree.pack"
     )
     .chunks(64)
     {
@@ -220,7 +220,7 @@ fn large_packed_tree_returns_only_pages_bound_to_the_verified_pair() {
     }
     reader
         .feed_index(include_bytes!(
-            "../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/large-tree.idx"
+            "../../../../registry/aos-registry-format/src/pack_index/fixtures/large-tree.idx"
         ))
         .unwrap();
     let verified = reader

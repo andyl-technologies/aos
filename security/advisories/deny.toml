@@ -1,0 +1,8 @@
+[advisories]
+db-path = "$AOS_ADVISORY_DB_ROOT"
+db-urls = ["https://github.com/RustSec/advisory-db"]
+yanked = "allow"
+unmaintained = "none"
+unsound = "all"
+maximum-db-staleness = "P31D"
+unused-ignored-advisory = "deny"

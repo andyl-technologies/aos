@@ -25,7 +25,7 @@
         needle = "`LinkLossProbability` stores loss as fixed-point millionths";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "minimum link latency";
         needle = "pub const MIN_LINK_LATENCY: SimDuration";
@@ -103,7 +103,7 @@
         needle = "link_bandwidth_bps={}";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "loss type exported";
         needle = "LinkLossProbability";

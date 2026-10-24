@@ -33,7 +33,6 @@ bzip2-rs = { workspace = true }
 ed25519-dalek = { workspace = true }
 argon2 = { workspace = true }
 p256 = { workspace = true }
-rsa = { workspace = true }
 ciborium = { workspace = true }
 tokio = { workspace = true }
 tokio-util = { workspace = true }
@@ -90,6 +89,7 @@ tower = { workspace = true }
 http = { workspace = true }
 futures = { workspace = true }
 http-body-util = { workspace = true }
+rcgen = { workspace = true }
 
 [[bin]]
 name = "aos-hub"

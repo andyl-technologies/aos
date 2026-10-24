@@ -297,7 +297,7 @@ impl RpcService {
         auth: Option<&str>,
         req: pb::ReportBindingWriteRevisionRequest,
     ) -> Result<pb::BindingWriteRevisionResponse, RpcError> {
-        self.require_controller_fence(
+        let claims = self.require_controller_fence(
             auth,
             &req.controller_lease_id,
             req.controller_generation,
@@ -311,6 +311,15 @@ impl RpcService {
             .ok_or_else(|| RpcError::not_found("binding"))?;
         self.writable_storage_owner(auth, &binding.owner_scope_key)
             .await?;
+        let lease_target = format!("{}:{}", req.binding_id, req.revision);
+        self.claim_controller_fence(
+            &claims,
+            "binding_write_revision",
+            &lease_target,
+            &req.controller_lease_id,
+            req.controller_generation,
+        )
+        .await?;
         let observation = self
             .db
             .binding_write_observation(binding.id, req.revision)
@@ -340,12 +349,19 @@ impl RpcService {
         let expected = parse_resource_version(&req.expected_observation_version, current_version)?;
         let expected = (current_version > 0).then_some(expected);
         self.db
-            .observe_binding_write_revision(
+            .observe_binding_write_revision_fenced(
                 binding.id,
                 req.revision,
                 &req.state,
                 (!req.validation_error.is_empty()).then_some(req.validation_error.as_str()),
                 expected,
+                &aos_hub_db::db::ControllerLeaseFence {
+                    target_kind: "binding_write_revision",
+                    target_id: &lease_target,
+                    lease_id: &req.controller_lease_id,
+                    generation: req.controller_generation,
+                    owner_service_account_id: claims.owner_id,
+                },
             )
             .await
             .map_err(|error| RpcError::FailedPrecondition(format!("{error:#}")))?;

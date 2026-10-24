@@ -148,20 +148,14 @@ impl RpcService {
                 "all immutable objects must verify before pointer upload".into(),
             ));
         }
-        if let Some(holder) = self
-            .lease
+        self.lease
             .acquire(
                 registry.id,
                 &publication.publication_id,
                 clock::now_unix_secs(),
             )
             .await
-            .map_err(RpcError::internal)?
-        {
-            return Err(RpcError::FailedPrecondition(format!(
-                "registry publication lease is held by {holder}"
-            )));
-        }
+            .map_err(RpcError::publish_lease)?;
         if publication.state == "preparing" {
             let advanced = self
                 .db

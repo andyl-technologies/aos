@@ -131,11 +131,14 @@ async fn signed_browser_claim_cannot_supply_an_absent_original_session_pin() {
         owner: Principal::user(user),
         owner_incarnation: Some(session.owner_incarnation),
         browser_session_id_hash: Some(session.session_id_hash.clone()),
+        expires_at: None,
         scope: Scope::root(),
         permissions: vec![Permission::Read],
     };
     let keys = JwtKeys::from_secret(b"test-only-original-cookie-pin");
-    let claims = keys.verify(&keys.mint(&auth, 300).unwrap()).unwrap();
+    let claims = keys
+        .verify(&keys.mint_browser_session(&auth, 300).unwrap())
+        .unwrap();
     assert!(db
         .current_authenticated_actor(&claims)
         .await

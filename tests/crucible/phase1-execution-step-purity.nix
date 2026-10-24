@@ -19,7 +19,7 @@
   pureStepBody = "let next = Configuration {\n        def: config.def.clone(),\n        schedule: config.schedule.appended(decision),\n    };";
 
   failures =
-    failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
+    failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "checked step signature";
         needle = "pub fn try_step(config: &Configuration, decision: Decision) -> Result<Configuration, EngineError>";
@@ -29,7 +29,7 @@
         needle = pureStepBody;
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "parent immutability step test";
         needle = "try_step_appends_decision_without_mutating_parent";

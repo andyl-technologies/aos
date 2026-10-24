@@ -318,6 +318,8 @@
           aos.pkgs.pkg-config
           aos.pkgs.openssl
           aos.pkgs.sqlite
+          aos.pkgs.libssh2
+          aos.pkgs.zlib
           aos.pkgs.protobuf
         ];
         cargoTestPackages = [
@@ -343,11 +345,9 @@
         };
         mkDevShell = name: packages: let
           livePackageRuntime = name == "aos-cargo-dev";
-          requestedCheckout = builtins.getEnv "AOS_DEV_ROOT";
-          checkoutRoot =
-            if requestedCheckout != ""
-            then requestedCheckout
-            else ./.;
+          # A string fallback supports `nix develop --file /checkout/cargo-shell.nix`
+          # from another directory without importing that unfiltered checkout.
+          checkoutRoot = builtins.toString ./.;
           binPath = builtins.concatStringsSep ":" (map (p: "${p}/bin") ([devLauncher aos.pkgs.bash aos.pkgs.nix aos.pkgs.alejandra aos.pkgs.acl] ++ packages));
         in
           builtins.derivation {
@@ -372,9 +372,9 @@
                 else ""
               )
               + ''
-                # Prefer the live checkout so edits to the script are immediately
-                # visible. Explicit flake paths outside a checkout use the snapshot;
-                # AOS_DEV_ROOT can select a live checkout in that case.
+                # Resolve the live tree at shell entry. Interpolating a Nix path
+                # here would copy generated build outputs into the store.
+                # Explicit paths outside a checkout select AOS_DEV_ROOT at runtime.
                 if [ -z "''${AOS_DEV_ROOT:-}" ]; then
                   aos_dev_checkout=$(${aos.pkgs.git}/bin/git rev-parse --show-toplevel 2>/dev/null || true)
                   if [ -f "$aos_dev_checkout/tools/dev/aos-dev" ]; then
@@ -393,15 +393,16 @@
                 export RUST_SRC_PATH="${aos.pkgs.rust.dev}/lib/rustlib/src/rust/library"
                 export OPENSSL_DIR="${aos.pkgs.openssl}"
                 export OPENSSL_NO_VENDOR=1
+                export AOS_LIBSSH2_PREFIX="${aos.pkgs.libssh2}"
                 export LIBSQLITE3_SYS_USE_PKG_CONFIG=1
-                export PKG_CONFIG_PATH="${aos.pkgs.sqlite}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+                export PKG_CONFIG_PATH="${aos.pkgs.libssh2}/lib/pkgconfig:${aos.pkgs.openssl}/lib/pkgconfig:${aos.pkgs.sqlite}/lib/pkgconfig:${aos.pkgs.zlib}/lib/pkgconfig''${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
                 # OPENSSL_DIR above only lets `openssl-sys` *link* against the AOS
                 # OpenSSL and pkg-config above only let native crates link against
                 # the AOS libraries; the resulting binary still records SONAMEs.
                 # Bake both library directories into native cargo binaries so
                 # they run directly without an LD_LIBRARY_PATH that would poison
                 # the `nix` subprocesses they launch.
-                export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.sqlite}/lib"
+                export ${cargoHostRustflagsVar}="-C link-arg=-Wl,-rpath,${aos.pkgs.openssl}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.sqlite}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.libssh2}/lib -C link-arg=-Wl,-rpath,${aos.pkgs.zlib}/lib"
               '';
           };
       in {
@@ -471,6 +472,7 @@
           rust-crucible-controller = aos.checks.rust.crucible-controller;
           rust-crucible-qemu-plugin = aos.checks.rust.crucible-qemu-plugin;
           rust-crucible-guest = aos.checks.rust.crucible-guest;
+          advisories = aos.checks.advisories;
         }
         // flattenAttrs "eval" (builtins.removeAttrs aos.checks.eval-suites ["core"])
         // flattenAttrs "build" aos.checks.build

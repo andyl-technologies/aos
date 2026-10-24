@@ -1083,6 +1083,7 @@ pub async fn current_bearer(
             owner: principal,
             owner_incarnation: Some(session.owner_incarnation),
             browser_session_id_hash: Some(session.session_id_hash),
+            expires_at: None,
             scope: aos_hub_native::domain::Scope::root(),
             permissions: Vec::new(),
         }
@@ -1099,5 +1100,9 @@ pub async fn current_bearer(
             .unwrap();
         db.validate_token(&secret).await.unwrap().unwrap()
     };
-    keys.mint(&auth, 900).unwrap()
+    if auth.browser_session_id_hash.is_some() {
+        keys.mint_browser_session(&auth, 900).unwrap()
+    } else {
+        keys.mint(&auth, 900).unwrap()
+    }
 }

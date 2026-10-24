@@ -25,14 +25,14 @@ fn query(path: &str, oid: &str) -> MirrorTreeInventoryQuery {
 #[test]
 fn verified_large_pair_projects_every_row_once_without_source_bodies() {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/large-tree.json"
+        "../../../../registry/aos-registry-format/src/pack_index/fixtures/large-tree.json"
     ))
     .unwrap();
     let path = manifest["path"].as_str().unwrap();
     let oid = manifest["treeOid"].as_str().unwrap();
     let mut reader = PairReader::new(path).unwrap();
     for chunk in include_bytes!(
-        "../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/large-tree.pack"
+        "../../../../registry/aos-registry-format/src/pack_index/fixtures/large-tree.pack"
     )
     .chunks(64)
     {
@@ -40,7 +40,7 @@ fn verified_large_pair_projects_every_row_once_without_source_bodies() {
     }
     reader
         .feed_index(include_bytes!(
-            "../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/large-tree.idx"
+            "../../../../registry/aos-registry-format/src/pack_index/fixtures/large-tree.idx"
         ))
         .unwrap();
     let verified = reader

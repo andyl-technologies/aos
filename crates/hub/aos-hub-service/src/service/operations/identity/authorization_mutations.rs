@@ -3,6 +3,26 @@
 use super::*;
 
 impl RpcService {
+    pub(in crate::service) async fn claims_have_live_provenance(
+        &self,
+        claims: &Claims,
+    ) -> Result<bool, RpcError> {
+        match claims.provenance {
+            BearerProvenance::BrowserSession => Ok(true),
+            BearerProvenance::AccessToken => {
+                let Some(parent) = self
+                    .db
+                    .revalidate_token(&claims.sub)
+                    .await
+                    .map_err(RpcError::internal)?
+                else {
+                    return Ok(false);
+                };
+                Ok(claims.matches_token_auth(&parent))
+            }
+        }
+    }
+
     /// Verify the bearer JWT carried in a raw `Authorization` header value.
     ///
     /// `auth` is the verbatim header (e.g. `"Bearer eyJ…"`); the caller's
@@ -117,6 +137,11 @@ impl RpcService {
         perm: Permission,
         scope: &Scope,
     ) -> Result<(), RpcError> {
+        if !self.claims_have_live_provenance(claims).await? {
+            return Err(RpcError::Unauthenticated(
+                "bearer credential is no longer active".into(),
+            ));
+        }
         let denied =
             || RpcError::PermissionDenied(format!("{} permission required", perm.as_str()));
         let context = self

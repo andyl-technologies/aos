@@ -10,19 +10,19 @@ fn fixture() -> (
     Vec<MirrorObjectSummary>,
 ) {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
+        "../../../../registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
     ))
     .unwrap();
     let path = manifest["ofs"]["path"].as_str().unwrap();
     let mut reader = aos_registry_format::pack_index::projection::PairReader::new(path).unwrap();
     reader
         .feed_pack(include_bytes!(
-            "../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/ofs.pack"
+            "../../../../registry/aos-registry-format/src/pack_index/fixtures/ofs.pack"
         ))
         .unwrap();
     reader
         .feed_index(include_bytes!(
-            "../../../../aos/registry/aos-registry-format/src/pack_index/fixtures/ofs.idx"
+            "../../../../registry/aos-registry-format/src/pack_index/fixtures/ofs.idx"
         ))
         .unwrap();
     let verified = reader.finish_catalogue().unwrap();

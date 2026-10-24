@@ -18,6 +18,7 @@ use crate::fetch::SurfaceObjectEvidence;
 use crate::fetch::SurfaceProvider;
 use crate::fetch::{StreamedRead, SurfaceDeliveryHead};
 use crate::lease::InMemoryLease;
+use crate::lease::{LeaseAcquireError, PublishLease};
 use crate::ratelimit::CoordinatorRateLimiter;
 use crate::reindex::Reindexer;
 use crate::surface_write::SurfaceDeleteOutcome;
@@ -313,6 +314,24 @@ impl crate::topology_probe::IdentityDomainVerifier for UnavailableIdentityDomain
     async fn challenge_is_published(&self, _domain: &str, _challenge: &str) -> Result<bool> {
         bail!("injected DNS transport failure")
     }
+}
+
+struct UnavailablePublishLease;
+
+#[async_trait::async_trait]
+impl PublishLease for UnavailablePublishLease {
+    async fn acquire(
+        &self,
+        _registry_id: i64,
+        _token_id: &str,
+        _now: i64,
+    ) -> Result<(), LeaseAcquireError> {
+        Err(LeaseAcquireError::Unavailable(anyhow::anyhow!(
+            "injected lease storage failure"
+        )))
+    }
+
+    async fn release(&self, _registry_id: i64, _token_id: &str) {}
 }
 
 pub(super) async fn injected_service(

@@ -116,6 +116,7 @@ impl Database {
             browser_session_id_hash: None,
             scope: aos_hub_model::domain::Scope::parse(&scope),
             permissions,
+            expires_at,
         }))
     }
 }

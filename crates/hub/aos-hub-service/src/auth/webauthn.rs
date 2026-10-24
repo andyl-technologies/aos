@@ -623,9 +623,10 @@ pub struct RegistrationResponse {
 /// Begin a registration ceremony for `user`: stage a challenge and build the
 /// options the browser script needs.
 ///
-/// Stores a `kind = registration` challenge bound to the user (5-minute TTL),
-/// and returns the [`RegistrationChallenge`] including the user's existing
-/// credential ids so the authenticator excludes duplicates.
+/// Stores a `kind = registration` challenge bound to the user, browser session,
+/// and current reauthentication generation (5-minute TTL), and returns the
+/// [`RegistrationChallenge`] including the user's existing credential ids so
+/// the authenticator excludes duplicates.
 ///
 /// # Errors
 ///
@@ -637,13 +638,20 @@ pub async fn begin_registration(
     user_name: &str,
     rp_id: &str,
     rp_name: &str,
+    session_secret: &str,
+    reauthentication_generation: i64,
 ) -> Result<RegistrationChallenge> {
     let challenge = new_challenge();
+    let binding = aos_hub_db::db::WebauthnChallengeBinding::for_session(
+        session_secret,
+        reauthentication_generation,
+    );
     db.create_webauthn_challenge(
         &challenge,
         Some(user_id),
         KIND_REGISTRATION,
         CHALLENGE_TTL_SECS,
+        Some(&binding),
     )
     .await?;
     let exclude_credentials = db
@@ -694,14 +702,17 @@ struct AttestationObject {
 /// # Errors
 ///
 /// Returns an error when the challenge is unknown/expired/replayed, the
-/// challenge was not staged for this user, `fmt != "none"`, any `clientDataJSON`
-/// or `authenticatorData` check fails, the attested credential data is absent,
-/// or the credential cannot be persisted.
+/// challenge was not staged for this user and current session generation,
+/// `fmt != "none"`, any `clientDataJSON` or `authenticatorData` check fails,
+/// the attested credential data is absent, or the credential cannot be
+/// persisted.
 pub async fn finish_registration(
     db: &Database,
     user_id: i64,
     rp_id: &str,
     expected_origin: &str,
+    session_secret: &str,
+    reauthentication_generation: i64,
     response: &RegistrationResponse,
     label: Option<&str>,
 ) -> Result<String> {
@@ -715,6 +726,12 @@ pub async fn finish_registration(
         .ok_or_else(|| anyhow!("unknown, expired, or replayed registration challenge"))?;
     if staged.user_id != Some(user_id) {
         bail!("registration challenge was not staged for this user");
+    }
+    let binding = staged
+        .registration_binding
+        .ok_or_else(|| anyhow!("registration challenge has no browser-session binding"))?;
+    if !binding.matches_session(session_secret, reauthentication_generation) {
+        bail!("registration challenge browser-session binding changed");
     }
 
     // 2. Decode the attestation object; enforce the attestation: none policy.
@@ -802,7 +819,7 @@ pub struct AssertionResponse {
 /// Returns an error on database failure while staging the challenge.
 pub async fn begin_assertion(db: &Database, rp_id: &str) -> Result<AssertionChallenge> {
     let challenge = new_challenge();
-    db.create_webauthn_challenge(&challenge, None, KIND_ASSERTION, CHALLENGE_TTL_SECS)
+    db.create_webauthn_challenge(&challenge, None, KIND_ASSERTION, CHALLENGE_TTL_SECS, None)
         .await?;
     Ok(AssertionChallenge {
         challenge,
@@ -1070,18 +1087,38 @@ mod tests {
 
     const RP_ID: &str = "hub.example.com";
     const ORIGIN: &str = "https://hub.example.com";
+    const SESSION_SECRET: &str = "registration-session";
+    const REAUTHENTICATION_GENERATION: i64 = 7;
 
     async fn register(db: &Database, user: i64, auth: &SoftAuthenticator) -> Result<String> {
-        let challenge = begin_registration(db, user, "u@x.com", RP_ID, "Hub")
-            .await?
-            .challenge;
+        let challenge = begin_registration(
+            db,
+            user,
+            "u@x.com",
+            RP_ID,
+            "Hub",
+            SESSION_SECRET,
+            REAUTHENTICATION_GENERATION,
+        )
+        .await?
+        .challenge;
         let auth_data = auth.authenticator_data(RP_ID, 0, true);
         let cdj = client_data_json(TYPE_CREATE, &challenge, ORIGIN);
         let response = RegistrationResponse {
             client_data_json: cdj,
             attestation_object: attestation_object(&auth_data, "none"),
         };
-        finish_registration(db, user, RP_ID, ORIGIN, &response, Some("yubikey")).await
+        finish_registration(
+            db,
+            user,
+            RP_ID,
+            ORIGIN,
+            SESSION_SECRET,
+            REAUTHENTICATION_GENERATION,
+            &response,
+            Some("yubikey"),
+        )
+        .await
     }
 
     async fn assert_login(
@@ -1171,17 +1208,35 @@ mod tests {
         let db = Database::open_in_memory().await.unwrap();
         let user = db.create_user("u@x.com", None).await.unwrap();
         let auth = SoftAuthenticator::ed25519(b"ed-cred-4");
-        let challenge = begin_registration(&db, user, "u@x.com", RP_ID, "Hub")
-            .await
-            .unwrap()
-            .challenge;
+        let challenge = begin_registration(
+            &db,
+            user,
+            "u@x.com",
+            RP_ID,
+            "Hub",
+            SESSION_SECRET,
+            REAUTHENTICATION_GENERATION,
+        )
+        .await
+        .unwrap()
+        .challenge;
         let auth_data = auth.authenticator_data(RP_ID, 0, true);
         let cdj = client_data_json(TYPE_CREATE, &challenge, ORIGIN);
         let response = RegistrationResponse {
             client_data_json: cdj,
             attestation_object: attestation_object(&auth_data, "packed"),
         };
-        let err = finish_registration(&db, user, RP_ID, ORIGIN, &response, None).await;
+        let err = finish_registration(
+            &db,
+            user,
+            RP_ID,
+            ORIGIN,
+            SESSION_SECRET,
+            REAUTHENTICATION_GENERATION,
+            &response,
+            None,
+        )
+        .await;
         assert!(err.is_err());
     }
 
@@ -1203,7 +1258,7 @@ mod tests {
     #[tokio::test]
     async fn challenge_is_single_use() {
         let db = Database::open_in_memory().await.unwrap();
-        db.create_webauthn_challenge("abc", None, KIND_ASSERTION, CHALLENGE_TTL_SECS)
+        db.create_webauthn_challenge("abc", None, KIND_ASSERTION, CHALLENGE_TTL_SECS, None)
             .await
             .unwrap();
         assert!(db
@@ -1312,10 +1367,18 @@ mod tests {
         let db = Database::open_in_memory().await.unwrap();
         let user = db.create_user("u@x.com", None).await.unwrap();
         let auth = SoftAuthenticator::p256(b"p256-badalg");
-        let challenge = begin_registration(&db, user, "u@x.com", RP_ID, "Hub")
-            .await
-            .unwrap()
-            .challenge;
+        let challenge = begin_registration(
+            &db,
+            user,
+            "u@x.com",
+            RP_ID,
+            "Hub",
+            SESSION_SECRET,
+            REAUTHENTICATION_GENERATION,
+        )
+        .await
+        .unwrap()
+        .challenge;
         // Build attested authenticatorData, then rewrite the embedded COSE key's
         // alg to an inconsistent value (-8 EdDSA on an EC2 key). The COSE key is
         // the trailing bytes of the attested authData.
@@ -1330,7 +1393,17 @@ mod tests {
             client_data_json: cdj,
             attestation_object: attestation_object(&tampered, "none"),
         };
-        let err = finish_registration(&db, user, RP_ID, ORIGIN, &response, None).await;
+        let err = finish_registration(
+            &db,
+            user,
+            RP_ID,
+            ORIGIN,
+            SESSION_SECRET,
+            REAUTHENTICATION_GENERATION,
+            &response,
+            None,
+        )
+        .await;
         assert!(
             err.is_err(),
             "inconsistent-alg registration must be refused"

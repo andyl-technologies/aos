@@ -25,7 +25,7 @@
         needle = "endpoint order and rejects self-loops";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "world link accessor";
         needle = "pub fn links(&self) -> &[LinkDef]";
@@ -79,7 +79,7 @@
         needle = "DuplicateWorldLink";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "Icount exported";
         needle = "Icount,";

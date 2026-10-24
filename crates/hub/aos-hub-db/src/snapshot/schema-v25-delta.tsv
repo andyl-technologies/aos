@@ -1,0 +1,27 @@
+# Generation-twenty-five identity and controller state. Authentication and leases are transient.
+controller_leases	auth_transient	target_kind	text	no	1	retain
+controller_leases	auth_transient	target_id	text	no	2	retain
+controller_leases	auth_transient	lease_id	text	no	0	retain
+controller_leases	auth_transient	generation	integer	no	0	retain
+controller_leases	auth_transient	owner_service_account_id	integer	no	0	retain
+controller_leases	auth_transient	expires_at	integer	no	0	retain
+controller_leases	auth_transient	serial	integer	no	0	retain
+controller_leases	auth_transient	created_at	integer	no	0	retain
+controller_leases	auth_transient	updated_at	integer	no	0	retain
+memberships	retain	incarnation_id	text	yes	0	retain
+oidc_flows	auth_transient	verifier_id	text	yes	0	retain
+oidc_flows	auth_transient	browser_binding_hash	text	yes	0	retain
+oidc_identities	retain	user_id	integer	no	0	retain
+oidc_identities	retain	verifier_id	text	no	1	retain
+oidc_identities	retain	issuer	text	no	0	retain
+oidc_identities	retain	subject	text	no	2	retain
+oidc_identities	retain	email	text	yes	0	retain
+oidc_identities	retain	last_login	integer	yes	0	retain
+sessions	auth_transient	authentication_method	text	no	0	retain
+sessions	auth_transient	authentication_provider	text	yes	0	retain
+sessions	auth_transient	reauthentication_generation	integer	no	0	retain
+user_mailboxes	retain	email	text	no	1	retain
+user_mailboxes	retain	user_id	integer	no	0	retain
+user_mailboxes	retain	verified_at	integer	no	0	retain
+webauthn_challenges	auth_transient	session_id_hash	text	yes	0	retain
+webauthn_challenges	auth_transient	reauthentication_generation	integer	yes	0	retain

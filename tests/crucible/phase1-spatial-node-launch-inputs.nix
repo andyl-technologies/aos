@@ -25,7 +25,7 @@
         needle = "`checks.crucible.phase1.spatialNodeLaunchInputs`";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "VM architecture enum";
         needle = "pub enum VmArchitecture";
@@ -131,7 +131,7 @@
         needle = "ScenarioImageReferenceNotContentAddressed";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "VM architecture re-export";
         needle = "VmArchitecture";

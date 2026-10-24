@@ -57,10 +57,17 @@ const GENERATION8_CONTRACT: &str = include_str!("schema-v8.tsv");
 const GENERATION12_CONTRACT: &str = include_str!("schema-v12.tsv");
 static GENERATION13_CONTRACT: LazyLock<String> =
     LazyLock::new(|| [GENERATION12_CONTRACT, include_str!("schema-v13-delta.tsv")].concat());
-static CONTRACT: LazyLock<String> = LazyLock::new(|| {
+static GENERATION16_CONTRACT: LazyLock<String> = LazyLock::new(|| {
     [
         GENERATION13_CONTRACT.as_str(),
         include_str!("schema-v16-delta.tsv"),
+    ]
+    .concat()
+});
+static CONTRACT: LazyLock<String> = LazyLock::new(|| {
+    [
+        GENERATION16_CONTRACT.as_str(),
+        include_str!("schema-v25-delta.tsv"),
     ]
     .concat()
 });
@@ -131,11 +138,25 @@ static GENERATION13_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::n
     digests
 });
 
-static CONTRACT_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+static GENERATION16_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
     let mut digests = GENERATION13_MIGRATION_DIGESTS.clone();
     digests.push("15df8cc9b1ea3e4546c9c69c9f5f3d030af2adb925af1edba2cfebe86268783a");
     digests.push("c8685bb51efd8d56adedd391e802495da07c8402410137f791262c5611ee4727");
     digests.push("adbdf1c0eae8e3749ff314f1ebb7e5103e90e12a8e7e8814d6bc38ceb3eed66a");
+    digests
+});
+
+static CONTRACT_MIGRATION_DIGESTS: LazyLock<Vec<&'static str>> = LazyLock::new(|| {
+    let mut digests = GENERATION16_MIGRATION_DIGESTS.clone();
+    digests.push("c535b21cc2b0c00ddc67dfb2e19bc447e170b8082dc1f2fef0312cfa0cfc9c65");
+    digests.push("014663373e8fabce496c255045b466bec932f82e540b6e08faa0d643770a4e8b");
+    digests.push("389d2a2be629da462b651a3af76dfa42d64b57a04f9b7f3290f88b2a69c42c49");
+    digests.push("4bbfaae5df58628a223c749c1756f94e3a3a8c1b200cff9d19a4fa844f441fc8");
+    digests.push("5daf561a29cfaa51323d14ea80f7528f2c927351e22cb4ce9f6d7a729e63a451");
+    digests.push("90d5d2c436493a168761dbcb97ec0dbc3af577379bcc65ee0c62f502c842ab7e");
+    digests.push("66d27116ef60643425a40d9f68bea2965fae07483032b2c0b503a37fee1e196e");
+    digests.push("8518ff8179f062602a06562a7702852b261c9bdf8ee8d87721722f20900f057a");
+    digests.push("ce257919050039ada7aa717ce7e48bfed2cda6d93031db49f2c3174832721ec9");
     digests
 });
 
@@ -508,7 +529,11 @@ fn generation_contract(version: usize) -> Result<(&'static str, &'static [&'stat
             GENERATION13_CONTRACT.as_str(),
             GENERATION13_MIGRATION_DIGESTS.as_slice(),
         )),
-        16 => Ok((CONTRACT.as_str(), CONTRACT_MIGRATION_DIGESTS.as_slice())),
+        16 => Ok((
+            GENERATION16_CONTRACT.as_str(),
+            GENERATION16_MIGRATION_DIGESTS.as_slice(),
+        )),
+        25 => Ok((CONTRACT.as_str(), CONTRACT_MIGRATION_DIGESTS.as_slice())),
         _ => anyhow::bail!("snapshot generation is unsupported"),
     }
 }

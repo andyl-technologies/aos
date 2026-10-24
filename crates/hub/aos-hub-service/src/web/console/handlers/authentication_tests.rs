@@ -125,7 +125,7 @@ async fn browser_exchange_rejects_missing_csrf_and_live_bearer_checks_session_ex
     );
     headers.insert("x-aos-csrf", mint_csrf_token(&secret).parse().unwrap());
     let session = require_session(&deps, &headers).await.unwrap();
-    let token = deps.jwt_keys.mint(&session.access_auth(), 300).unwrap();
+    let token = deps.jwt_keys.mint_browser_session(&session.access_auth(), 300).unwrap();
     let claims = deps.jwt_keys.verify(&token).unwrap();
     assert!(deps
         .db
@@ -161,7 +161,7 @@ async fn browser_exchange_rejects_missing_csrf_and_live_bearer_checks_session_ex
 async fn deleted_browser_owner_slot_reuse_cannot_revive_retained_session_bearer() {
     let (deps, headers, secret) = fixture().await;
     let session = require_session(&deps, &headers).await.unwrap();
-    let token = deps.jwt_keys.mint(&session.access_auth(), 300).unwrap();
+    let token = deps.jwt_keys.mint_browser_session(&session.access_auth(), 300).unwrap();
     let old = deps.jwt_keys.verify(&token).unwrap();
     deps.db.delete_user(old.owner_id).await.unwrap();
     assert!(deps

@@ -79,6 +79,7 @@ pub(super) async fn browser_test_auth(
         owner: Principal::user(user),
         owner_incarnation: Some(session.owner_incarnation),
         browser_session_id_hash: Some(session.session_id_hash),
+        expires_at: None,
         scope: Scope::root(),
         permissions,
     }

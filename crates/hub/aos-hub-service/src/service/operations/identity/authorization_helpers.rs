@@ -144,6 +144,9 @@ impl RpcService {
         let Some(claims) = claims else {
             return false;
         };
+        if !matches!(self.claims_have_live_provenance(claims).await, Ok(true)) {
+            return false;
+        }
         let Ok(Some(context)) = self.db.authorization_context(scope.as_str()).await else {
             return false;
         };
@@ -341,6 +344,13 @@ impl RpcService {
         if controller_lease_id.trim().is_empty() {
             return Err(RpcError::invalid("controllerLeaseId is required"));
         }
+        if controller_lease_id.len() > 64
+            || !controller_lease_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._:-/".contains(&byte))
+        {
+            return Err(RpcError::invalid("controllerLeaseId is invalid"));
+        }
         if controller_generation <= 0 {
             return Err(RpcError::invalid("controllerGeneration must be positive"));
         }
@@ -353,5 +363,28 @@ impl RpcService {
             ));
         }
         Ok(claims)
+    }
+
+    /// Acquires or renews one principal-bound controller target lease.
+    pub(in crate::service) async fn claim_controller_fence(
+        &self,
+        claims: &Claims,
+        target_kind: &str,
+        target_id: &str,
+        controller_lease_id: &str,
+        controller_generation: i64,
+    ) -> Result<(), RpcError> {
+        self.db
+            .claim_controller_lease(&aos_hub_db::db::ControllerLeaseFence {
+                target_kind,
+                target_id,
+                lease_id: controller_lease_id,
+                generation: controller_generation,
+                owner_service_account_id: claims.owner_id,
+            })
+            .await
+            .map_err(|_| {
+                RpcError::FailedPrecondition("controller lease is not current".to_string())
+            })
     }
 }

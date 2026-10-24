@@ -9,8 +9,8 @@
 
   workloadDoc = builtins.readFile ../../docs/rfcs/0010-crucible/33-examples-and-workloads.md;
   engineModel = import ./_crucible-model-source.nix {inherit lib;};
-  engineLib = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/lib.rs;
-  loadPatternTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/workload_load_patterns.rs;
+  engineLib = builtins.readFile ../../crates/crucible/crucible-engine/src/lib.rs;
+  loadPatternTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/workload_load_patterns.rs;
   defaultChecks = builtins.readFile ./default.nix;
 
   taskList = builtins.concatStringsSep "," taskIds;
@@ -39,7 +39,7 @@
         needle = "never from host";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" engineModel [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" engineModel [
       {
         label = "time-source scenario parameter";
         needle = "pub const WORKLOAD_TIME_SOURCE_SCENARIO_PARAMETER: &str = \"load_time_source\";";
@@ -89,14 +89,14 @@
         needle = "Some(GuestWorkloadTimeSource::VirtualTime)";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/model.rs" engineModel (
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/model.rs" engineModel (
       builtins.map (needle: {
         label = "host wall-clock API in workload shape model";
         inherit needle;
       })
       forbiddenWallClockApis
     )
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" engineLib [
+    ++ failuresFor "crates/crucible/crucible-engine/src/lib.rs" engineLib [
       {
         label = "time-source type re-export";
         needle = "GuestWorkloadTimeSource";
@@ -114,7 +114,7 @@
         needle = "WORKLOAD_HOST_WALL_CLOCK_LOAD_SHAPES_ALLOWED";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/workload_load_patterns.rs" loadPatternTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/workload_load_patterns.rs" loadPatternTest [
       {
         label = "time-source parameter test";
         needle = "GuestWorkloadTimeSource::VirtualTime";

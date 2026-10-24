@@ -294,14 +294,14 @@ fn genuine_document_content_uses_its_operation_bound_and_signed_identity() {
 
 fn stored_pack_fixture() -> (StorageWorkPlan, StorageWorkResult) {
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../../crates/aos/registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
+        "../../../../../crates/registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
     ))
     .unwrap();
     let pack = include_bytes!(
-        "../../../../../crates/aos/registry/aos-registry-format/src/pack_index/fixtures/ofs.pack"
+        "../../../../../crates/registry/aos-registry-format/src/pack_index/fixtures/ofs.pack"
     );
     let index = include_bytes!(
-        "../../../../../crates/aos/registry/aos-registry-format/src/pack_index/fixtures/ofs.idx"
+        "../../../../../crates/registry/aos-registry-format/src/pack_index/fixtures/ofs.idx"
     );
     let index_path = manifest["ofs"]["path"].as_str().unwrap().to_owned();
     let pack_path = index_path.strip_suffix(".idx").unwrap().to_owned() + ".pack";
@@ -420,7 +420,7 @@ fn stored_tree_fixture() -> (StorageWorkPlan, StorageWorkResult) {
     };
     projection.objects.clear();
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../../crates/aos/registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
+        "../../../../../crates/registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
     ))
     .unwrap();
     let tree_oid = manifest["objects"]["tree"]["oid"]
@@ -573,7 +573,7 @@ fn mirror_tree_inventory_counts_exact_page_and_keeps_verified_absence_distinct()
         panic!("stored tree fixture outcome");
     };
     let manifest: serde_json::Value = serde_json::from_str(include_str!(
-        "../../../../../crates/aos/registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
+        "../../../../../crates/registry/aos-registry-format/src/pack_index/fixtures/manifest.json"
     ))
     .unwrap();
     let mut tree = Vec::new();

@@ -1,0 +1,6 @@
+{
+  "schema": "aos.advisory-exceptions/v1",
+  "exceptions": [
+    { "id": "RUSTSEC-2023-0071", "component": "rsa@0.9.10", "owner": "Hub identity maintainers", "reason": "No corrected stable rsa release is available in the pinned snapshot.", "remediation": "Remove private-key RSA operations from remotely observable paths or adopt a corrected stable implementation.", "expires_on": "2026-12-15" }
+  ]
+}

@@ -157,9 +157,9 @@ async fn current_compiled_catalogue_preserves_every_declared_check() {
 
     let checks = extract_compiled_checks(&objects).unwrap();
 
-    // This exact count binds the current sixteen-migration catalogue. A future
+    // This exact count binds the current twenty-five-migration catalogue. A future
     // constraint change requires reviewing extraction coverage alongside it.
-    assert_eq!(checks.values().map(Vec::len).sum::<usize>(), 704);
+    assert_eq!(checks.values().map(Vec::len).sum::<usize>(), 711);
     for name in checks.keys() {
         assert!(tables.iter().any(|table| &table.name == name));
     }
@@ -168,6 +168,7 @@ async fn current_compiled_catalogue_preserves_every_declared_check() {
     // This declaration uses `CHECK (` rather than the adjacent token spelling.
     assert_eq!(checks["delivery_workflows"].len(), 1);
     assert!(checks.contains_key("storage_authority_admission_revisions"));
+    assert_eq!(checks["controller_leases"].len(), 7);
     assert_eq!(checks["direct_upload_baselines"], ["activated_at > 0"]);
     assert_eq!(checks["direct_upload_abort_intents"].len(), 2);
     assert_eq!(checks["mirror_import_objects"].len(), 7);

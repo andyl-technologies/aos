@@ -536,30 +536,30 @@ listed below.
 resolver = "2"
 members = [
   # L0
-  "crucible/engine/crucible-determinism",
+  "crucible/crucible-determinism",
   # L1
-  "crucible/protocol/crucible-qemu-shmem",
-  "crucible/protocol/crucible-qemu-protocol",
-  "crucible/engine/crucible-device",
+  "crucible/crucible-qemu-shmem",
+  "crucible/crucible-qemu-protocol",
+  "crucible/crucible-device",
   # L2
-  "crucible/qemu/crucible-qemu-host",
-  "crucible/qemu/crucible-qemu-plugin",
-  "crucible/qemu/crucible-qemu-debug-gateway",
-  "crucible/guest/crucible-guest",
+  "crucible/crucible-qemu-host",
+  "crucible/crucible-qemu-plugin",
+  "crucible/crucible-qemu-debug-gateway",
+  "crucible/crucible-guest",
   # L3
-  "crucible/engine/crucible-engine",
-  "crucible/storage/crucible-store",
-  "crucible/engine/crucible-campaign",
+  "crucible/crucible-engine",
+  "crucible/crucible-store",
+  "crucible/crucible-campaign",
   # L4
-  "crucible/control/crucible-session",
-  "crucible/control/crucible-control-api",
-  "crucible/control/crucible-control-client",
-  "crucible/control/crucible-control-server",
-  "crucible/control/crucible-daemon",
-  "crucible/control/crucible-cli",
-  "crucible/storage/crucible-store-s3",
+  "crucible/crucible-session",
+  "crucible/crucible-control-api",
+  "crucible/crucible-control-client",
+  "crucible/crucible-control-server",
+  "crucible/crucible-daemon",
+  "crucible/crucible-cli",
+  "crucible/crucible-store-s3",
   # test-only harness (not a layer; spans crates)
-  "crucible/testing/crucible-test-support",
+  "crucible/crucible-test-support",
 ]
 
 [workspace.lints.rust]
@@ -576,16 +576,16 @@ edition = "2021"
 supporting `crucible-fleet-store` binary:
 
 ```toml
-# crates/crucible/qemu/crucible-qemu-plugin/Cargo.toml
+# crates/crucible/crucible-qemu-plugin/Cargo.toml
 [lib]
 crate-type = ["cdylib"]
 
-# crates/crucible/control/crucible-cli/Cargo.toml
+# crates/crucible/crucible-cli/Cargo.toml
 [[bin]]
 name = "crucible"
 path = "src/main.rs"
 
-# crates/crucible/storage/crucible-store/Cargo.toml
+# crates/crucible/crucible-store/Cargo.toml
 [[bin]]
 name = "crucible-fleet-store"
 path = "src/bin/crucible-fleet-store.rs"
@@ -746,7 +746,7 @@ primitives.
     `crucible-qemu-host` each depend on `crucible-engine` with `features = ["test-double"]`
     outside `[dev-dependencies]`, so the in-process double is compiled into the
     shipped closure and is reachable from production code paths. Separately
-    `crates/crucible/engine/crucible-engine/Cargo.toml` declares `qemu-backend = []` and no
+    `crates/crucible/crucible-engine/Cargo.toml` declares `qemu-backend = []` and no
     `#[cfg(feature = "qemu-backend")]` exists anywhere in the workspace — the
     feature is a label that suggests a compile-time backend split that does not
     exist.
