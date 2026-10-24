@@ -54,8 +54,11 @@ in
           == ".git"
           || base == ".direnv"
           || base == ".worktrees"
-          || base == "result"
-          || lib.hasPrefix "result-" base
+          # A nested result directory can own Rust source. Nix output links
+          # and directories are generated only at the checkout root.
+          || (builtins.dirOf pathString
+            == repoRootString
+            && (base == "result" || lib.hasPrefix "result-" base))
           || cargoOutputDirectory
         );
       # Cargo builds need the workspace, JSON fixtures included by Rust tests,

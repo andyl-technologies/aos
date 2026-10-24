@@ -267,6 +267,9 @@ in
   assert lib.all sharedVendorRetained rolePackages;
   assert builtins.pathExists (expectedWorkspaceSource + "/crates/sandbox/model/aos-sandbox-policy/src/native/target/opening.rs")
   == builtins.pathExists ../../crates/sandbox/model/aos-sandbox-policy/src/native/target/opening.rs;
+  assert builtins.readFile (expectedWorkspaceSource + "/crates/crucible/crucible-daemon/src/executor_worker/result/operations.rs")
+  == builtins.readFile ../../crates/crucible/crucible-daemon/src/executor_worker/result/operations.rs;
+  assert !(builtins.pathExists (expectedWorkspaceSource + "/result"));
   assert !(builtins.pathExists (expectedWorkspaceSource + "/crates/target"));
   assert builtins.readFile (expectedWorkspaceSource + "/tests/sandbox/network-kernel-plan-v1.cases")
   == builtins.readFile ../sandbox/network-kernel-plan-v1.cases;
