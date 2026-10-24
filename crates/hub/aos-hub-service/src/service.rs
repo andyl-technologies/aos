@@ -93,6 +93,10 @@ use aos_hub_model::keymap;
 const DEFAULT_PAGE_SIZE: u32 = 500;
 /// Maximum bounded documentation projection considered by one search request.
 const MAX_DOCUMENTATION_RESULTS: usize = 10_000;
+/// Maximum native documentation projections decoded by one search request.
+const MAX_DOCUMENTATION_SEARCH_DOCUMENTS: usize = 512;
+/// Maximum normalized terms accepted by one documentation search request.
+const MAX_DOCUMENTATION_SEARCH_TERMS: usize = 16;
 /// Hard ceiling on page size.
 const MAX_PAGE_SIZE: u32 = 1000;
 /// Maximum accepted reporter clock lead over Hub receipt time.
