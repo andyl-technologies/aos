@@ -355,6 +355,10 @@ pub fn logout_page(email: &str, csrf: &str, started: Instant) -> String {
 /// configured; the footer carries the surface commit, index freshness, the app
 /// version, and the render time.
 #[must_use]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 pub fn page_with_session(
     title: &str,
     crumbs: &[(String, String)],
@@ -867,10 +871,10 @@ pub fn reauth_page(
     // Passwordless accounts (SSO / magic-link) re-authenticate through the login
     // flow, which mints a fresh sudo session and honors `next`.
     let next_q: String = url::form_urlencoded::byte_serialize(return_to.as_bytes()).collect();
-    let _ = write!(
+    let _ = writeln!(
         body,
         "<p class=\"dim\">No password set? \
-         <a href=\"/login?next={next_q}\">re-authenticate with your sign-in provider →</a></p>\n",
+         <a href=\"/login?next={next_q}\">re-authenticate with your sign-in provider →</a></p>",
     );
     page_with_session(
         "confirm identity",
@@ -1192,7 +1196,7 @@ pub fn account_page(
         body.push_str("<div class=\"token-list\">\n");
         for (id, scope, permissions) in tokens {
             let short_id = id.chars().take(12).collect::<String>();
-            let suffix = (id.chars().count() > 12).then_some("…").unwrap_or("");
+            let suffix = if id.chars().count() > 12 { "…" } else { "" };
             let _ = writeln!(
                 body,
                 "<section class=\"token-item\"><div class=\"token-head\">\
@@ -1331,6 +1335,10 @@ pub fn invitation_acceptance_page(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Rendering fixtures use the portable Hub clock for request timing."
+)]
 mod tests {
     use super::*;
 

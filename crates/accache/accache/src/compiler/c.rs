@@ -32,7 +32,11 @@ pub(super) fn configure(
     let arguments: Vec<_> = args.iter().map(OsString::from).collect();
     let cwd = std::env::current_dir()?;
     let expanded = strings(gcc::ExpandIncludeFile::new(&cwd, &arguments))?;
-    if clang && expanded.iter().any(|arg| arg.starts_with("-parallel-jobs=")) {
+    if clang
+        && expanded
+            .iter()
+            .any(|arg| arg.starts_with("-parallel-jobs="))
+    {
         // This flag is unhashed by the pinned ROCm frontend, but AOS Clang
         // rejects it. A hit on a plain action would hide that compiler error.
         anyhow::bail!("AOS Clang does not support -parallel-jobs");
@@ -131,7 +135,9 @@ pub(super) fn configure(
                 ensure!(false, "Clang driver ignores -dependency-file");
             }
             ensure!(
-                expanded.get(index + 1).is_some_and(|next| next == "-Xclang"),
+                expanded
+                    .get(index + 1)
+                    .is_some_and(|next| next == "-Xclang"),
                 "Clang cc1 -dependency-file has no forwarded path"
             );
             let path = expanded
@@ -184,8 +190,7 @@ pub(super) fn configure(
         .extend(parsed.extra_hash_files.iter().cloned());
     if clang
         && expanded.iter().any(|arg| {
-            arg.starts_with("-foptimization-record-passes=")
-                || arg == "-fsave-optimization-record"
+            arg.starts_with("-foptimization-record-passes=") || arg == "-fsave-optimization-record"
         })
     {
         // Clang writes this file beside the object even when the selected
@@ -448,11 +453,7 @@ pub(super) fn configure(
         // The environment value alone does not identify a replaced executable.
         for directory in path.split(':') {
             // GCC treats an empty search segment as the working directory.
-            let directory = if directory.is_empty() {
-                "."
-            } else {
-                directory
-            };
+            let directory = if directory.is_empty() { "." } else { directory };
             if Path::new(directory).is_dir() {
                 invocation.read_dirs.insert(directory.into());
             }
@@ -483,8 +484,8 @@ pub(super) fn configure(
             .outputs
             .get("obj")
             .ok_or_else(|| anyhow::anyhow!("Clang mixed -Wp has no object output"))?;
-        let actual = gcc_driver_depfile(&expanded)
-            .unwrap_or_else(|| object.path.with_extension("d"));
+        let actual =
+            gcc_driver_depfile(&expanded).unwrap_or_else(|| object.path.with_extension("d"));
         let actual_name = super::output_name(&actual)?;
         if let Some(path) = parsed_depfile {
             let parsed_name = super::output_name(path)?;
@@ -538,7 +539,10 @@ pub(super) fn configure(
     let mut assembler_listing_file = false;
     while index < common.len() {
         let arg = &common[index];
-        if clang && let Some(value) = arg.strip_prefix("-z") && !value.is_empty() {
+        if clang
+            && let Some(value) = arg.strip_prefix("-z")
+            && !value.is_empty()
+        {
             // The pinned parser normalizes every two-letter option to a
             // joined spelling. Clang accepts `-z now` but rejects `-znow`,
             // so replay the original shape in the private dependency probe.
@@ -554,7 +558,10 @@ pub(super) fn configure(
             index += 1;
             continue;
         }
-        if clang && arg == "-fplugin" && let Some(path) = common.get(index + 1) {
+        if clang
+            && arg == "-fplugin"
+            && let Some(path) = common.get(index + 1)
+        {
             // The pinned frontend normalizes this joined Clang option into
             // two argv entries. Clang rejects that form, so reconstruct the
             // original spelling for the private dependency probe.
@@ -828,16 +835,16 @@ fn c_key_arguments(
             _ => 1,
         };
         let end = index + consumed;
-        ensure!(end <= expanded.len(), "C/C++ argument parser advanced past argv");
+        ensure!(
+            end <= expanded.len(),
+            "C/C++ argument parser advanced past argv"
+        );
 
         // The parser, not a string filter, identifies -pipe. AOS Clang rejects
         // its other unhashed option, -parallel-jobs=N; omitting that option
         // could turn a compiler error into a hit on a successful plain action.
         // A token spelled "-pipe" can also be a value or filename after "--".
-        if !matches!(
-            argument.get_data(),
-            Some(gcc::ArgData::UnhashedFlag)
-        ) {
+        if !matches!(argument.get_data(), Some(gcc::ArgData::UnhashedFlag)) {
             key_arguments.extend_from_slice(&expanded[index..end]);
         }
         index = end;
@@ -866,7 +873,11 @@ fn compiler_prefix_inputs(invocation: &mut Invocation, prefix: &str) -> Result<(
     }
     for entry in fs::read_dir(parent)? {
         let entry = entry?;
-        if !entry.file_name().to_string_lossy().starts_with(name.as_ref()) {
+        if !entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with(name.as_ref())
+        {
             continue;
         }
         let candidate = entry.path();
@@ -886,7 +897,10 @@ fn gcc_program_search_dirs(
 ) -> Result<()> {
     let args = ["-print-search-dirs".to_owned()];
     let output = model::command(compiler, &args, environment).output()?;
-    ensure!(output.status.success(), "GCC subprogram search probe failed");
+    ensure!(
+        output.status.success(),
+        "GCC subprogram search probe failed"
+    );
 
     let listing = String::from_utf8(output.stdout)?;
     let directories = listing

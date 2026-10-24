@@ -581,9 +581,11 @@ impl RpcService {
             cache_id: cache_id.to_string(),
             store_hash: root.store_hash.clone(),
             reason: root.reason.clone(),
-            created_by: include_actor
-                .then(|| root.created_by.clone())
-                .unwrap_or_default(),
+            created_by: if include_actor {
+                root.created_by.clone()
+            } else {
+                String::new()
+            },
             created_at: root.created_at,
             deleted_at: root.deleted_at,
             current_lease,

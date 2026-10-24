@@ -352,7 +352,7 @@ impl RpcService {
                                 )),
                             }),
                             access_policy: intent.access_policy.clone(),
-                            capabilities: intent.capabilities.clone(),
+                            capabilities: intent.capabilities,
                             enabled: true,
                         }),
                         idempotency_key: key,

@@ -428,6 +428,10 @@ static IDEMPOTENCY_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
 /// Generates a collision-resistant, non-secret browser idempotency key.
 #[cfg(target_arch = "wasm32")]
+#[allow(
+    clippy::float_arithmetic,
+    reason = "Non-secret browser request labels use JavaScript numeric APIs outside deterministic guest state."
+)]
 pub(crate) fn idempotency_key(action: &str) -> String {
     let time = js_sys::Date::now().to_bits();
     let random = (js_sys::Math::random() * u64::MAX as f64) as u64;
@@ -436,6 +440,11 @@ pub(crate) fn idempotency_key(action: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "Invalid test fixtures and missing asserted values must fail the case immediately."
+)]
 mod tests {
     use super::*;
 

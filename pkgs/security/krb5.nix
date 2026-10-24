@@ -336,7 +336,7 @@ in
           EXAMPLE.TEST = {
             database_name = /var/lib/aos-pkg-krb5-kdc/principal
             key_stash_file = /var/lib/aos-pkg-krb5-kdc/.k5.EXAMPLE.TEST
-            acl_file = /etc/aos/packages/krb5-kdc/kadm5.acl
+            acl_file = /etc/packages/krb5-kdc/kadm5.acl
             max_life = 10h
             max_renewable_life = 7d
           }
@@ -373,15 +373,15 @@ in
         testScript = ''
           ${pkgs.iproute2}/sbin/ip link set lo up
           mkdir -p \
-            /etc/aos/packages/krb5-kdc \
+            /etc/packages/krb5-kdc \
             /run/aos-pkg-krb5-kdc \
             /var/lib/aos-pkg-krb5-kdc \
             /var/log/krb5-kdc
-          cp ${krb5Conf} /etc/aos/packages/krb5-kdc/krb5.conf
-          cp ${kdcConf} /etc/aos/packages/krb5-kdc/kdc.conf
-          cp ${acl} /etc/aos/packages/krb5-kdc/kadm5.acl
-          export KRB5_CONFIG=/etc/aos/packages/krb5-kdc/krb5.conf
-          export KRB5_KDC_PROFILE=/etc/aos/packages/krb5-kdc/kdc.conf
+          cp ${krb5Conf} /etc/packages/krb5-kdc/krb5.conf
+          cp ${kdcConf} /etc/packages/krb5-kdc/kdc.conf
+          cp ${acl} /etc/packages/krb5-kdc/kadm5.acl
+          export KRB5_CONFIG=/etc/packages/krb5-kdc/krb5.conf
+          export KRB5_KDC_PROFILE=/etc/packages/krb5-kdc/kdc.conf
 
           printf '%s\n' aos-master-password > /tmp/krb5-master-password
           ${self}/bin/krb5-kdc-control prepare \

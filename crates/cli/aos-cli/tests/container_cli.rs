@@ -1,5 +1,9 @@
 //! Process-level admission checks for daemon-free container commands.
 
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 use std::process::Command;
 
 #[test]
@@ -25,7 +29,7 @@ fn local_artifact_commands_do_not_require_nix_or_a_checkout() {
             "fixture-secret".to_string(),
         ],
     ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_aos"))
+        let output = Command::new(cli_binary!("CARGO_BIN_EXE_aos"))
             .args(&arguments)
             .current_dir(workspace.path())
             .env_clear()
@@ -59,7 +63,7 @@ fn unrelated_expired_hub_profile_does_not_block_public_pull() {
     let workspace = tempfile::tempdir().expect("temporary workspace");
     let config = write_unrelated_expired_profile(workspace.path());
 
-    let output = Command::new(env!("CARGO_BIN_EXE_aos"))
+    let output = Command::new(cli_binary!("CARGO_BIN_EXE_aos"))
         .args([
             "container",
             "pull",
@@ -91,7 +95,7 @@ fn unrelated_expired_profile_does_not_block_explicit_hub_command() {
     let workspace = tempfile::tempdir().expect("temporary workspace");
     let config = write_unrelated_expired_profile(workspace.path());
 
-    let output = Command::new(env!("CARGO_BIN_EXE_aos"))
+    let output = Command::new(cli_binary!("CARGO_BIN_EXE_aos"))
         .args([
             "hub",
             "registry",

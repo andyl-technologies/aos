@@ -1,0 +1,472 @@
+{
+  "artifacts": {
+    "aos-ability-crucible": {
+      "binary_retained": false,
+      "kind": [
+        "bin"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 2,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": false
+      }
+    },
+    "aos_activation_crucible": {
+      "kind": [
+        "lib"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 2,
+        "opt_level": "0",
+        "overflow_checks": true,
+        "test": false
+      }
+    }
+  },
+  "command": "nix-build /tmp/aos-bazel-722/activation-crucible-production-cargo.nix --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "derivation": "/nix/store/pxmd0qpw5pzw5v0f26xqz04gfvmijnvd-aos-bazel-activation-crucible-production-cargo-baseline-1.drv",
+  "derivation_sha256": "107bcd0f87f002798ac5e7ac157c5ef91592682e91f7334df271845e1405b678",
+  "external_features": {
+    "aho-corasick@1.1.4": [
+      [
+        "perf-literal",
+        "std"
+      ]
+    ],
+    "anyhow@1.0.102": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "arrayref@0.3.9": [
+      []
+    ],
+    "arrayvec@0.7.7": [
+      []
+    ],
+    "bitflags@2.13.0": [
+      [
+        "std"
+      ]
+    ],
+    "blake3@1.8.5": [
+      [
+        "pure",
+        "std"
+      ]
+    ],
+    "block-buffer@0.10.4": [
+      []
+    ],
+    "cc@1.2.65": [
+      []
+    ],
+    "cfg-if@1.0.4": [
+      []
+    ],
+    "constant_time_eq@0.4.2": [
+      [
+        "std"
+      ]
+    ],
+    "cpufeatures@0.2.17": [
+      []
+    ],
+    "cpufeatures@0.3.0": [
+      []
+    ],
+    "crypto-common@0.1.7": [
+      [
+        "std"
+      ]
+    ],
+    "digest@0.10.7": [
+      [
+        "alloc",
+        "block-buffer",
+        "core-api",
+        "default",
+        "std"
+      ]
+    ],
+    "dyn-clone@1.0.20": [
+      []
+    ],
+    "find-msvc-tools@0.1.9": [
+      []
+    ],
+    "generic-array@0.14.7": [
+      [
+        "more_lengths"
+      ]
+    ],
+    "itoa@1.0.18": [
+      []
+    ],
+    "libc@0.2.186": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "linux-raw-sys@0.12.1": [
+      [
+        "auxvec",
+        "elf",
+        "errno",
+        "general",
+        "if_ether",
+        "ioctl",
+        "net",
+        "netlink",
+        "no_std",
+        "xdp"
+      ]
+    ],
+    "memchr@2.8.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "proc-macro2@1.0.106": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "quote@1.0.46": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "ref-cast-impl@1.0.27": [
+      []
+    ],
+    "ref-cast@1.0.27": [
+      []
+    ],
+    "regex-automata@0.4.14": [
+      [
+        "alloc",
+        "dfa-onepass",
+        "hybrid",
+        "meta",
+        "nfa-backtrack",
+        "nfa-pikevm",
+        "nfa-thompson",
+        "perf-inline",
+        "perf-literal",
+        "perf-literal-multisubstring",
+        "perf-literal-substring",
+        "std",
+        "syntax",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment",
+        "unicode-word-boundary"
+      ]
+    ],
+    "regex-syntax@0.8.11": [
+      [
+        "default",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "regex@1.12.4": [
+      [
+        "default",
+        "perf",
+        "perf-backtrack",
+        "perf-cache",
+        "perf-dfa",
+        "perf-inline",
+        "perf-literal",
+        "perf-onepass",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "rustix@1.1.4": [
+      [
+        "alloc",
+        "default",
+        "event",
+        "fs",
+        "net",
+        "std"
+      ]
+    ],
+    "schemars@1.2.2": [
+      [
+        "default",
+        "derive",
+        "schemars_derive",
+        "std"
+      ]
+    ],
+    "schemars_derive@1.2.2": [
+      []
+    ],
+    "serde@1.0.228": [
+      [
+        "alloc",
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std"
+      ]
+    ],
+    "serde_core@1.0.228": [
+      [
+        "alloc",
+        "rc",
+        "result",
+        "std"
+      ]
+    ],
+    "serde_derive@1.0.228": [
+      [
+        "default"
+      ]
+    ],
+    "serde_derive_internals@0.30.0": [
+      []
+    ],
+    "serde_json@1.0.150": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "sha2@0.10.9": [
+      [
+        "compress",
+        "default",
+        "std"
+      ]
+    ],
+    "shlex@2.0.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "syn@2.0.118": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "parsing",
+        "printing",
+        "proc-macro"
+      ]
+    ],
+    "syn@3.0.5": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "parsing",
+        "printing",
+        "proc-macro"
+      ]
+    ],
+    "thiserror-impl@2.0.18": [
+      []
+    ],
+    "thiserror@2.0.18": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "tinyvec@1.11.0": [
+      [
+        "alloc",
+        "default",
+        "tinyvec_macros"
+      ]
+    ],
+    "tinyvec_macros@0.1.1": [
+      []
+    ],
+    "typenum@1.20.1": [
+      []
+    ],
+    "unicode-ident@1.0.24": [
+      []
+    ],
+    "unicode-normalization@0.1.25": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "version_check@0.9.5": [
+      []
+    ],
+    "zmij@1.0.21": [
+      []
+    ]
+  },
+  "first_party_features": {
+    "aos-activation": [
+      []
+    ],
+    "aos-activation-crucible": [
+      []
+    ],
+    "aos-artifact-evidence": [
+      []
+    ],
+    "aos-core": [
+      []
+    ],
+    "aos-module-format": [
+      []
+    ],
+    "crucible-guest": [
+      []
+    ],
+    "crucible-qemu-protocol": [
+      []
+    ]
+  },
+  "limits": [
+    "The temporary production executable is not retained; Cargo compiler messages and frozen derivation/source identities establish compilation. Production compilation does not execute tests. The separate pre-conversion Cargo test baseline retains test-support dependencies and cases.",
+    "The production graph excludes engine test support and native SQLite/Zstandard dependencies. Bazel parity, runtime gates and production cutover remain pending."
+  ],
+  "output": "/nix/store/ml2p24jzzj95wcvnqqf3x1yd329i6hpi-aos-bazel-activation-crucible-production-cargo-baseline-1",
+  "recipe": "let\n  root = /home/dylan/src/aos/.worktrees/codex/bazel-integration-722;\n  pkgs = (import root {}).pkgs;\nin pkgs.mkDerivation {\n  pname = \"aos-bazel-activation-crucible-production-cargo-baseline\";\n  version = \"1\";\n  src = import (root + \"/pkgs/tools/crucible/_cargo-source.nix\") {inherit (pkgs) lib;};\n  buildDeps = [pkgs.rust pkgs.sed];\n  sharedBuildCache = false;\n  dontStrip = true;\n  dontPatchELF = true;\n  dontNukeRefs = true;\n  phases = [{\n    name = \"compile\";\n    script = ''\n      cp -R \"$src\" source\n      chmod -R u+w source\n      cd source\n      export CARGO_HOME=\"$TMPDIR/cargo\" CARGO_TARGET_DIR=\"$TMPDIR/target\"\n      mkdir -p \"$CARGO_HOME\" .cargo \"$out\"\n      sed 's|@vendor@|${pkgs.aos.passthru.cargoDeps}|g' \\\n        ${pkgs.aos.passthru.cargoDeps}/.cargo/config.toml > .cargo/config.toml\n      cargo build --frozen --offline --manifest-path crates/Cargo.toml --lib --bins \\\n        -p aos-activation-crucible --jobs \"$NIX_BUILD_CORES\" \\\n        --message-format=json > \"$out/cargo-messages.jsonl\"\n    '';\n  }];\n}\n",
+  "reports_sha256": {
+    "cargo-messages.jsonl": "f1455a2747d0fb99c764ea094338166791b38e302387e5befeb26dfc9a169529"
+  },
+  "schema_version": 1,
+  "source": "/nix/store/a3zdshajm52mwh74h7y0vfakvm3n9riw-crucible-cargo-src",
+  "source_sha256": {
+    "crates/Cargo.lock": "033bfad7de38812960028c5c2f69c2737eaa5a73dba2a810dfcf2f992268e6fd",
+    "crates/Cargo.toml": "8761ede65c4d2a37b93a130f16436aba18112776494133f86e026d2a9acb6aee",
+    "crates/aos/activation/aos-activation-crucible/Cargo.toml": "b312f73455445f17f63b05dae4621a6f80e1dce896993f6c42bdbde797316605",
+    "crates/aos/activation/aos-activation-crucible/src/lib.rs": "6bad42534a27fca276f46c8a0c83e2b925a0db97a027e25dfd92530fa1a9ddd8",
+    "crates/aos/activation/aos-activation-crucible/src/main.rs": "0f9967c34cd4227df2fc750aa1d2dc3b41fc3b3510c716f4204f70503a72b7f6",
+    "crates/aos/activation/aos-activation/Cargo.toml": "a573354dab88f40855642f005d86bab863cb6ebd2bddd68605bedfa9ea7f0410",
+    "crates/aos/activation/aos-activation/examples/module_graph_check.rs": "339b90a088ba42c184b53b5cc9bf306091c3fc093620b4921b719b3b5cd7ac5e",
+    "crates/aos/activation/aos-activation/src/activation/controller.rs": "1063cc82387771218c03179eaa1435e8d1796d2225fff0e8feebbe4791b5c0b0",
+    "crates/aos/activation/aos-activation/src/activation/inspection.rs": "870f7f70180951c4d7fb99b20270d696336e540984880fed546d81a5db0c1683",
+    "crates/aos/activation/aos-activation/src/activation/journal.rs": "959fd61843ee02e89cf8d214b8a330246e1dd73b4efaf02d341a53dea44f1b60",
+    "crates/aos/activation/aos-activation/src/activation/mod.rs": "c2b5170a67cc04c2d5567441bd53afba9a0436770aa20adc16187077e7f18b74",
+    "crates/aos/activation/aos-activation/src/activation/observer.rs": "c3b8be882375d5b6230be548f53e8772e07a7e6aacc729dcb29e3adefd8a4541",
+    "crates/aos/activation/aos-activation/src/activation/restoration.rs": "04d1daa6f24c6144cbb1e96cc45e8269f4438766fe29a70e2f43d25905427233",
+    "crates/aos/activation/aos-activation/src/activation/restoration_tests.rs": "8c4eb96ba83ffd5ff9b4ac424ef6cdb8fea0efad7ff38c6aac224fa03f335077",
+    "crates/aos/activation/aos-activation/src/activation/socket_observer.rs": "e12fa80f0d39e3a987e3ab6996c5273edb29f28cefbf7091fb9cacf1e75fdaa6",
+    "crates/aos/activation/aos-activation/src/activation/tests.rs": "cc9a83185e078414f8d06ced96db18d2561f1642c070215bac84587c21e196a0",
+    "crates/aos/activation/aos-activation/src/adapter.rs": "73a529a8347a8cd6ddadee73bb1e370c5412bb68258865f83c98fa29a79079d1",
+    "crates/aos/activation/aos-activation/src/journal/file.rs": "c128da759f8079fa8297ae29f2bd37d569575e9ac2fae58263b291d627b220a5",
+    "crates/aos/activation/aos-activation/src/journal/file/observation_tests.rs": "1536660dc936e1827b9817c289d54d74105fc06e3663072aac2dd6e50d79fd93",
+    "crates/aos/activation/aos-activation/src/journal/frame.rs": "f1dbdddeeafad6f90b955ee616e8c6ca19226e579d233b9fda033a854a1ba69b",
+    "crates/aos/activation/aos-activation/src/journal/mod.rs": "b003c030ee4de3d8dee9f9a7319e7dec34851d9f69e0a320f09727560104bd26",
+    "crates/aos/activation/aos-activation/src/lib.rs": "2f6586d523ad4ed2d61092e5967417173890a16dfbf42113a5a645f79b66be62",
+    "crates/aos/modules/aos-module-format/Cargo.toml": "865d3d1c001bd2e9316817361235bdb5bdf992514eec0e707fbcbfa093a59fda",
+    "crates/aos/modules/aos-module-format/src/diagnostic.rs": "16ce106d58218b8ba8431f8aa1baa693edf4a62500fc6309a969fdd56496069c",
+    "crates/aos/modules/aos-module-format/src/graph/mod.rs": "b2b11a93cbaed57681fbf9de632f0a1169a3d47aeb1d3cb1492b48a33b6f4468",
+    "crates/aos/modules/aos-module-format/src/graph/resolution.rs": "cc30d49ae23e651a8070fd79fae6ff9bbdb9826e7622897fba10b8269ef92d91",
+    "crates/aos/modules/aos-module-format/src/graph/tests.rs": "74b68a9bf925cf38a24ed4220804171651a28791e4ec22b0420ba3e02801a36f",
+    "crates/aos/modules/aos-module-format/src/graph/validation.rs": "fdcb8d545b0af2f001e9d19727798f2d2c531f8ccf63da161e432256b81761e4",
+    "crates/aos/modules/aos-module-format/src/graph/validation/tests.rs": "f5f1ad44802802fe675d7c278b677edb52e7d5bbc38240d2dc97a3a181a16543",
+    "crates/aos/modules/aos-module-format/src/identity.rs": "87a4198a21260e2de56626cc8300d52910470795a124dd5a62eab1f5f29da5cd",
+    "crates/aos/modules/aos-module-format/src/lib.rs": "8cd0b38729c0ea2a35cbbc283480932f7d294512d2608dd620d9b759943f4520",
+    "crates/aos/modules/aos-module-format/src/limits.rs": "6a5110b4981e4d0115910d826fe4b46f6c491e0fa8ef2babdab8032dfdbc2419",
+    "crates/aos/modules/aos-module-format/src/option.rs": "ae9b246770b273b25646c41efe661412622cbafdb6875405bf6f747b8dbe2cc4",
+    "crates/aos/modules/aos-module-format/src/schema.rs": "da5a2a78219883f2444de109e425d096253b2e7e4db6603c650fb22a5eacd60b",
+    "crates/aos/modules/aos-module-format/src/transaction_blob.rs": "c677b49f46370a4b1986d1232f939784b352e37382bbde507832fd2bb267a069",
+    "crates/aos/modules/aos-module-format/src/value.rs": "7fe4d3c24684ef8b95009b3e6cfa0efbb13da1cf9f7ae3aadae7fd7648382259",
+    "crates/crucible/guest/crucible-guest/Cargo.toml": "5e493f278da7566a203a9187f8efb38ec420c88ba100d321fc6867cdfc6f2baa",
+    "crates/crucible/guest/crucible-guest/src/group.rs": "530f8f6345785142bb6b7aeb44e4be3c049f50ea0eeaa892f2e2e6bfbf2dcd3f",
+    "crates/crucible/guest/crucible-guest/src/guest_introspection_agent.rs": "29f7c71d0e4e952507b6be6f287aba8f10bc5c6355870b399cb387547d36fbe2",
+    "crates/crucible/guest/crucible-guest/src/guest_introspection_agent/error.rs": "1767b956d388797f3b7d1a2f4db44718c465a0e7e1c213339a7dfad0d85ec25a",
+    "crates/crucible/guest/crucible-guest/src/guest_introspection_agent/failure_mapping.rs": "07f65055de2d16d7adf439438ae3102a39f829a2948d5b24ad7b2cd0dc27c9a9",
+    "crates/crucible/guest/crucible-guest/src/guest_introspection_agent/tests.rs": "ffb014a83e251990f33b081defe2f11d466901b26dfd28ff0399212ea381c793",
+    "crates/crucible/guest/crucible-guest/src/lib.rs": "028296af13d848dece54128932abb25fe7bc8fa894c6d4b585fcfa19ef11bb64",
+    "crates/crucible/guest/crucible-guest/src/main.rs": "cf60c3dd38f857da03f777f492de0895fd14e3eb6346266e86398232041b53a5",
+    "crates/crucible/guest/crucible-guest/src/selectable.rs": "093926d69c704ebc1f692d5b8758e4425a9d238285a04d37aaa01cfa3d72dc3e",
+    "crates/crucible/guest/crucible-guest/src/selectable/tests.rs": "0358abc3a57d76dc88864084cee1c511024e09cc160dbdfe8e102eba098c6923",
+    "crates/crucible/guest/crucible-guest/src/selectable_group.rs": "41a4916e4537779eb0fc048a545cf5dad454df3afe2053c88a6aa5976a9ab825",
+    "crates/crucible/guest/crucible-guest/tests/gate_abi_conformance.rs": "1dc2c6f76cf149145c028ab73812b47799f58440be62e58478596c1a9386ff31",
+    "crates/crucible/guest/crucible-guest/tests/gate_single_vm_fingerprint.rs": "9353a86c3762590533120c97a3269be1eaa3f5f7b1066239680586f4ac7d801f",
+    "crates/crucible/protocol/crucible-qemu-protocol/Cargo.toml": "2d1508f821ce81550f0fd07f9cabbf8083d7dfca4f74deda8570ea874883d8ec",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/app_random_branch_plan.rs": "22db2498b3354ba18ed9d2b68697b33f79d0a004e4141ee742bc9cc9d4f05f5b",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/app_random_transport.rs": "34452e7a7015d92d3e1a13abb9866e4eeba3deda77bc5c390b8f1f5de79e4c5c",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/choice.rs": "a1b5e612869ef1fc41daf32b74386d330808a3fd847fa6fc8b4bcc175c82ab82",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/choice/group.rs": "33511bc21ec25286bb0bb339e98c500ffb5ead89c381985fc04f5a531d1a2415",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/codec_fuzz.rs": "1b13c1e9eafd3ae56e17036584f773a6f9d23ac9cdaea66d9c4d1c581b4b1a81",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/debug_gateway.rs": "75c870e850dce4e2abf7ab02116dbc812bc7fef977ace2baa9e446b92157f57c",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/device_group_opportunity.rs": "f15e60edc73eecf9b7f88f62813e7693b1f6d25b48a9af3d2da0cb03b8030b25",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs": "7fba8fd49880548529dd4ede6e0255eac92027286295b338a77bcbaa8b3cb38e",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_frame.rs": "9451f37891036b7f138bb0467eaaf65520c46a3a574232abb707dc2be083e26d",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_marker.rs": "32abed4d1e5591ce9d963dca3551084db60f3e3a4bc0d3a3deaec3b4b05089b5",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/golden_vectors.rs": "1ecc4536f03c02381e198f719ada1ad6db90d25edbc75d21ed9b2f4ce321c582",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/guest_introspection.rs": "16e4b6f1caad903255fcf52aaab5b90ad01983663cc850f27d75621606f3b091",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/guest_introspection_doorbell.rs": "3c4b5aaa2ba2522ef62aaed6fc9a73fc4a90c57c02208bdb3484daa7c31a1515",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs": "97a8611857eb94be76feebc801c94b90f58bbcf6aa055ecbe825f8ec98cefe27",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/plugin_setup_plan.rs": "0ca0492c25b6735a237830572fb7d443cc3457a1d818bcc1ed2fa12f33d9534c",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/preemption.rs": "7a7a6c2ab7074bba8160f3e7175783b092f5d9a5b8219b9db975638313bd2f8a",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/selectable.rs": "7e8282d22de10fb7b7a1f828bc792be6b338849ae7b2a5e7e704290e27eec9ea",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/selectable/tests.rs": "e06a3a3bd4d1ff3acea229b8bf47273158661edcecbe0986a8cf1c1117c1c902",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/selectable_catalog_plan.rs": "c89f8c464226801be78c0e530412519063f7340daa3912048e78047e79dfa187",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/selectable_catalog_plan/tests.rs": "11235efd947e2d9b5156f14f3ff45de8fa176fdea7eaa5681911fb2f897e6445",
+    "crates/crucible/protocol/crucible-qemu-protocol/src/selectable_transport.rs": "70c4becc06f06232b15ba054590bd9101b57d3f0c0bc7c878a35507c2954c6d0",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/codec.rs": "88afd54e9c21d49abaf5d6e8f30e1abf4888d5bda585f6a453a7ef3859b4a1ef",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/codec_fuzz.rs": "698bb8436e36914e86a904adc8b3b7d5357dc9e9cea869a0f1d00587f4fffb64",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/descriptor_handover.rs": "e8b2c5215969fa44119a75ec6957ba4e9de1ff51e7dbbd60e7e172ce85100be6",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/frame_format.rs": "a02cadcd6722ce4eaa4ecbf0a1b6e003eca0f6e020134cdeb2ff1544f633e6ec",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/gate_abi_conformance.rs": "d48c630fb9ecd757f85efcd30971dafde046e9d7200d11e447a607938268fc5c",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/gate_layer1_injection.rs": "e158c24e29c18c44b59bc45ce0e99a8396b0981cc6b71f4dcc97a2c87ad61579",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/golden_vectors.rs": "5abc86991a3e88538af8d7db0c61e79aec84dc8aaa22e318c79af3bb8b1c8097",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/handshake.rs": "4e71dbcd3389f8cff9feb802842586ab20e5f94d5be32c071b13d6b4219d1837",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/lifecycle.rs": "ad273a898f8eb228b13103cd67dafb373e36403ae0ad3de677b7923553416467",
+    "crates/crucible/protocol/crucible-qemu-protocol/tests/setup_completion.rs": "3ae61dd7a5f25e408bc8ebadf03cab07d19856861324cc0cf724b0a43b4a5aa4",
+    "crates/shared/aos-artifact-evidence/Cargo.toml": "249f331d2c67207dc3d74d581105284273382b6278fb8186476f1ea353c9c329",
+    "crates/shared/aos-artifact-evidence/src/consumption.rs": "7e38f9f101fde359ad056e70f8ecba06c77137d561c29b609575eb5f8988862c",
+    "crates/shared/aos-artifact-evidence/src/diagnostic.rs": "1ad0a4401d80d32b31afdf0b16bf98e822449ff445a80191e1f827c512dfbf68",
+    "crates/shared/aos-artifact-evidence/src/document.rs": "b3223bef9a7dd87bb72f4afde800217a24317f64a45b2fb3413046c39af76078",
+    "crates/shared/aos-artifact-evidence/src/identity.rs": "a960256438697c76067c85c13c364da507ff8bdcad4fa098bea776a016915f5d",
+    "crates/shared/aos-artifact-evidence/src/lib.rs": "b96037a5a80f0563c3646bfb208cc7f5d44f979fff4cb166ae2dd0f466e15104",
+    "crates/shared/aos-artifact-evidence/src/limits.rs": "07d81f5fd738e4e3fe14613a1947f32beeeb9989b935f74b4242f56fc900950f",
+    "crates/shared/aos-artifact-evidence/src/model.rs": "6536a0109591d899397b86800199b262b8e427c460d3c5b301253850740f084d",
+    "crates/shared/aos-core/Cargo.toml": "a83ae101ada1471e2cf6e3592eff604b932b32bb6b9c08ca78e7f28a84386f0c",
+    "crates/shared/aos-core/src/digest.rs": "f2c3c762eaa35314f95fe60cc1a109083ceb2b4d1149d193243dc370a9f00403",
+    "crates/shared/aos-core/src/identity.rs": "d5b29def050947cd57a09ed3fec6c2e6af4ea3e13a1751fec2e7a4fe351f1686",
+    "crates/shared/aos-core/src/json.rs": "e4c9f02df4321930960b4c6586b8e93f0439c8f1eabe0b1e929ceb277c95fa45",
+    "crates/shared/aos-core/src/lib.rs": "14fadc5d679efeb8f0b7ea696886bbd44d5148f972fd0fedd8c030bae66c1198",
+    "crates/shared/aos-core/src/limits.rs": "d1071f9bbfe39c8cfde4b5bffb4e39e1e3ed935285d9eb7da3261151c9334c1b"
+  },
+  "status": "Production Crucible activation library and installed command compiled before Bazel conversion"
+}

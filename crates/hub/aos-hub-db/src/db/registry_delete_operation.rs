@@ -114,7 +114,7 @@ impl Database {
                 &vals![now],
             )
             .await?;
-        Ok(u64::try_from(released)?)
+        Ok(released)
     }
 
     /// Claims one due deletion operation under CAS.

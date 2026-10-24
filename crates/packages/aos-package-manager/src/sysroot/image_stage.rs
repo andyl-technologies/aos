@@ -592,6 +592,10 @@ async fn import_toplevel(
     Ok(())
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Exact image import keeps registry authority and payload identity explicit."
+)]
 async fn import_exact(
     config: &ApmConfig,
     registries: &RegistrySet,

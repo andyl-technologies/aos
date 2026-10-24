@@ -23,7 +23,7 @@ fn repository_root() -> Result<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .find(|directory| {
-            directory.join("default.nix").is_file() && directory.join("crates/Cargo.toml").is_file()
+            directory.join("default.nix").is_file() && directory.join("MODULE.bazel").is_file()
         })
         .context("application package has no enclosing AOS source checkout")?
         .canonicalize()

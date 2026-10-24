@@ -427,7 +427,7 @@ async fn verify_surface(
 /// Maximum number of objects collected from one upstream tree closure before
 /// the full-mirror sync aborts.
 ///
-/// [`collect_tree_objects`] walks the entire HEAD tree closure into an
+/// `collect_tree_objects` walks the entire HEAD tree closure into an
 /// in-memory [`BTreeSet`] (plus the immutable copy list). The tree is
 /// attacker-controlled: an upstream an operator chose to full-mirror can fan
 /// millions of tiny objects out under arbitrary paths, and the sync runs in the
@@ -460,7 +460,7 @@ async fn collect_tree_objects(
 /// Recursively collect every object oid reachable from a tree, aborting once
 /// `max` distinct oids have been collected.
 ///
-/// Split out from [`collect_tree_objects`] so the cap can be exercised with a
+/// Split out from `collect_tree_objects` so the cap can be exercised with a
 /// small bound in tests without materializing [`MAX_MIRROR_OBJECTS`] objects.
 ///
 /// # Errors
@@ -1089,6 +1089,10 @@ fn oid_from_loose_path(path: &str) -> Option<Oid> {
 }
 
 /// Current Unix time in seconds.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native service timestamps use the host clock outside Crucible state."
+)]
 fn unix_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

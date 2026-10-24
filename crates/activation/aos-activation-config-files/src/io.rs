@@ -138,6 +138,28 @@ fn temporary(parent: &Path) -> Result<(std::path::PathBuf, File)> {
     anyhow::bail!("configuration temporary names exhausted")
 }
 
+pub(crate) fn lock(directory: &Path) -> Result<File> {
+    if let Some(parent) = directory.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::DirBuilder::new().mode(0o700).create(directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            ensure!(directory.is_dir(), "configuration state is not a directory");
+        }
+        Err(error) => return Err(error).context("creating configuration state directory"),
+    }
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(directory.join(".lock"))?;
+    flock(&file, FlockOperation::LockExclusive)?;
+    Ok(file)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,26 +187,4 @@ mod tests {
             assert_eq!(fs::read_to_string(path).unwrap(), "prior interrupted write");
         }
     }
-}
-
-pub(crate) fn lock(directory: &Path) -> Result<File> {
-    if let Some(parent) = directory.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    match fs::DirBuilder::new().mode(0o700).create(directory) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            ensure!(directory.is_dir(), "configuration state is not a directory");
-        }
-        Err(error) => return Err(error).context("creating configuration state directory"),
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .mode(0o600)
-        .open(directory.join(".lock"))?;
-    flock(&file, FlockOperation::LockExclusive)?;
-    Ok(file)
 }

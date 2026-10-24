@@ -608,17 +608,16 @@ impl RpcService {
                         .min(aos_registry_format::pack_index::MAX_PUBLISHED_PACK_INDEX_BYTES,)
                 )));
             }
-            if keymap::is_git_pack_path(&object.path) {
-                if object.byte_size as u64
+            if keymap::is_git_pack_path(&object.path)
+                && object.byte_size as u64
                     > complete_upload_limit
                         .min(aos_registry_format::pack_index::MAX_PUBLISHED_PACK_BYTES)
-                {
-                    return Err(RpcError::invalid(format!(
-                        "Git pack exceeds the {}-byte whole-upload limit",
-                        complete_upload_limit
-                            .min(aos_registry_format::pack_index::MAX_PUBLISHED_PACK_BYTES)
-                    )));
-                }
+            {
+                return Err(RpcError::invalid(format!(
+                    "Git pack exceeds the {}-byte whole-upload limit",
+                    complete_upload_limit
+                        .min(aos_registry_format::pack_index::MAX_PUBLISHED_PACK_BYTES)
+                )));
             }
             if !publication_nar_path_matches_sha256(&object.path, &object.sha256) {
                 return Err(RpcError::invalid(
@@ -976,7 +975,7 @@ impl RpcService {
             .registry_publication_state(registry.id)
             .await
             .map_err(RpcError::internal)?
-            .ok_or_else(|| RpcError::Internal)?;
+            .ok_or(RpcError::Internal)?;
         self.db
             .set_current_registry_publication(
                 registry.id,

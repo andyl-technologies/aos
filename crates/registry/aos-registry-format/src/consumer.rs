@@ -376,13 +376,13 @@ pub fn validate_supported_package_meta_with(
     {
         bail!("native resolution catalog lacks an authenticated deployment document");
     }
-    if let Some(min_format) = meta.min_format {
-        if min_format > supported_format {
-            bail!(
-                "package '{}' requires package metadata format {min_format}, but this apm supports {supported_format}",
-                meta.name
-            );
-        }
+    if let Some(min_format) = meta.min_format
+        && min_format > supported_format
+    {
+        bail!(
+            "package '{}' requires package metadata format {min_format}, but this apm supports {supported_format}",
+            meta.name
+        );
     }
 
     for feature in &meta.requires_features {
@@ -403,10 +403,10 @@ pub fn validate_supported_package_meta_with(
         .requires_features
         .iter()
         .any(|feature| feature == FEATURE_NATIVE_PACKAGE_MODULES_V1);
-    if native_feature || meta.module_documentation.is_some() || meta.qualification.is_some() {
-        if meta.deployment.is_none() {
-            bail!("native package metadata is missing its deployment envelope");
-        }
+    if (native_feature || meta.module_documentation.is_some() || meta.qualification.is_some())
+        && meta.deployment.is_none()
+    {
+        bail!("native package metadata is missing its deployment envelope");
     }
     for artifact in [
         &meta.deployment,

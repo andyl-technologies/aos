@@ -679,7 +679,7 @@ impl RpcService {
             )
             .await
         {
-            Ok(attached) => return Ok(attached.ticket_id),
+            Ok(attached) => Ok(attached.ticket_id),
             Err(attach_error) => {
                 let current = self
                     .db

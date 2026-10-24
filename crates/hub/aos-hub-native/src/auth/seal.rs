@@ -53,6 +53,10 @@ pub fn instance_sealer(root: &Path) -> Result<Box<dyn SecretSealer>> {
 }
 
 /// Resolves the 32-byte instance key per the [module docs](self) ordering.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native instance encryption keys require operating-system entropy."
+)]
 fn load_or_create_key(root: &Path) -> Result<Vec<u8>> {
     if let Some(path) = std::env::var_os("AOS_HUB_SECRET_KEY_FILE") {
         let path = Path::new(&path);
@@ -111,7 +115,7 @@ pub fn read_secret_file(path: &Path) -> Result<Vec<u8>> {
 pub(crate) fn read_secret_file_zeroizing(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
     #[cfg(unix)]
     {
-        return read_secret_file_unix(path);
+        read_secret_file_unix(path)
     }
     #[cfg(not(unix))]
     {
@@ -123,6 +127,10 @@ pub(crate) fn read_secret_file_zeroizing(path: &Path) -> Result<Zeroizing<Vec<u8
 }
 
 #[cfg(unix)]
+#[allow(
+    clippy::useless_conversion,
+    reason = "Unix mode_t widths vary across supported targets."
+)]
 fn read_secret_file_unix(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
     let (parent_fd, name) = open_secure_secret_parent(path)?;
     let fd = rustix::fs::openat(
@@ -193,6 +201,10 @@ fn read_secret_file_unix(path: &Path) -> Result<Zeroizing<Vec<u8>>> {
 }
 
 #[cfg(unix)]
+#[allow(
+    clippy::useless_conversion,
+    reason = "Unix mode_t widths vary across supported targets."
+)]
 fn open_secure_secret_parent(path: &Path) -> Result<(std::os::fd::OwnedFd, &std::ffi::OsStr)> {
     let parent = path
         .parent()
@@ -332,7 +344,7 @@ fn write_key_0600(path: &Path, key: &[u8]) -> Result<()> {
         if result.is_err() {
             let _ = rustix::fs::unlinkat(&parent_fd, &temporary_name, rustix::fs::AtFlags::empty());
         }
-        return result;
+        result
     }
     #[cfg(not(unix))]
     {

@@ -17,7 +17,7 @@
 //! All tree builders deduplicate by store-path hash and break reference
 //! cycles by emitting a leaf node instead of recursing.
 
-use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -102,8 +102,8 @@ pub async fn depends(config: &ApmConfig, package: &str, printer: &Printer) -> Re
         .store_map_in(&registry_name)
         .filter(|m| m.is_present());
 
-    let mut visited = HashSet::new();
-    let mut ancestors = HashSet::new();
+    let mut visited = BTreeSet::new();
+    let mut ancestors = BTreeSet::new();
     let root = build_dep_tree(
         meta,
         &registry_name,
@@ -200,7 +200,7 @@ pub async fn rdepends(config: &ApmConfig, package: &str, printer: &Printer) -> R
             .filter(|m| m.is_present())
             .filter(|m| m.get(inst_hash).is_some())
         {
-            let mut seen = HashSet::new();
+            let mut seen = BTreeSet::new();
             let mut stack = vec![inst_hash.to_string()];
             let mut found = false;
             while let Some(h) = stack.pop() {
@@ -428,8 +428,8 @@ fn rdepends_target_hashes(
     package: &str,
     registries: &RegistrySet,
     installed: &[InstalledPackageRecord],
-) -> Result<(HashSet<String>, String)> {
-    let mut hashes = HashSet::new();
+) -> Result<(BTreeSet<String>, String)> {
+    let mut hashes = BTreeSet::new();
     let mut versions = BTreeSet::new();
 
     for inst in installed {
@@ -474,8 +474,8 @@ async fn depends_installed(
     let root_hash = store_path_hash(&root.store_path).to_string();
     let refs_by_hash = installed_direct_refs(&root_hash, &installed_by_hash).await?;
 
-    let mut visited = HashSet::new();
-    let mut ancestors = HashSet::new();
+    let mut visited = BTreeSet::new();
+    let mut ancestors = BTreeSet::new();
     let tree = build_installed_dep_tree(
         &root_hash,
         &refs_by_hash,
@@ -521,10 +521,10 @@ async fn depends_installed(
 /// belonging to installed packages are expanded further.
 async fn installed_direct_refs(
     root_hash: &str,
-    installed_by_hash: &HashMap<String, InstalledPackageRef>,
-) -> Result<HashMap<String, Vec<String>>> {
-    let mut refs_by_hash = HashMap::new();
-    let mut queued = HashSet::from([root_hash.to_string()]);
+    installed_by_hash: &BTreeMap<String, InstalledPackageRef>,
+) -> Result<BTreeMap<String, Vec<String>>> {
+    let mut refs_by_hash = BTreeMap::new();
+    let mut queued = BTreeSet::from([root_hash.to_string()]);
     let mut queue = VecDeque::from([root_hash.to_string()]);
 
     while let Some(hash) = queue.pop_front() {
@@ -554,7 +554,7 @@ async fn installed_direct_refs(
 /// of the target hashes — the last-resort rdepends membership check.
 async fn installed_closure_contains_any(
     installed: &InstalledPackageRecord,
-    target_hashes: &HashSet<String>,
+    target_hashes: &BTreeSet<String>,
 ) -> Result<bool> {
     let paths = store::closure_paths(&installed.store_path).await?;
     Ok(paths
@@ -566,7 +566,7 @@ async fn installed_closure_contains_any(
 /// Index installed packages (those with APM metadata) by store-path hash.
 fn installed_apm_by_hash(
     installed: &[InstalledPackageRecord],
-) -> HashMap<String, InstalledPackageRef> {
+) -> BTreeMap<String, InstalledPackageRef> {
     installed
         .iter()
         .filter_map(|inst| {
@@ -623,10 +623,10 @@ fn policy_installed_versions(
 /// as `unknown` nodes.
 fn build_installed_dep_tree(
     hash: &str,
-    refs_by_hash: &HashMap<String, Vec<String>>,
-    installed_by_hash: &HashMap<String, InstalledPackageRef>,
-    visited: &mut HashSet<String>,
-    ancestors: &mut HashSet<String>,
+    refs_by_hash: &BTreeMap<String, Vec<String>>,
+    installed_by_hash: &BTreeMap<String, InstalledPackageRef>,
+    visited: &mut BTreeSet<String>,
+    ancestors: &mut BTreeSet<String>,
 ) -> DepNode {
     visited.insert(hash.to_string());
     ancestors.insert(hash.to_string());
@@ -676,7 +676,7 @@ fn build_installed_dep_tree(
 /// Childless tree node for `hash`, named from installed metadata when known.
 fn installed_dep_leaf(
     hash: &str,
-    installed_by_hash: &HashMap<String, InstalledPackageRef>,
+    installed_by_hash: &BTreeMap<String, InstalledPackageRef>,
 ) -> DepNode {
     if let Some(installed) = installed_by_hash.get(hash) {
         DepNode {
@@ -722,7 +722,7 @@ fn policy_unavailable_installed(
     installed: &[InstalledPackageRecord],
     versions: &[(&super::registry::Registry, &PackageMeta)],
 ) -> Vec<(String, String)> {
-    let available_sources: HashSet<(String, String)> = versions
+    let available_sources: BTreeSet<(String, String)> = versions
         .iter()
         .map(|(reg, meta)| {
             (
@@ -765,8 +765,8 @@ fn build_dep_tree(
     registry_name: &str,
     registries: &RegistrySet,
     store_graph: Option<&aos_registry_client::registry::store::StoreMap>,
-    visited: &mut HashSet<String>,
-    ancestors: &mut HashSet<String>,
+    visited: &mut BTreeSet<String>,
+    ancestors: &mut BTreeSet<String>,
 ) -> DepNode {
     let hash = store_path_hash(&meta.store_path).to_string();
     visited.insert(hash.clone());
@@ -875,9 +875,9 @@ fn closure_contains_any(
     meta: &PackageMeta,
     registry_name: &str,
     registries: &RegistrySet,
-    target_hashes: &HashSet<String>,
+    target_hashes: &BTreeSet<String>,
 ) -> bool {
-    let mut visited = HashSet::new();
+    let mut visited = BTreeSet::new();
     closure_contains_any_inner(meta, registry_name, registries, target_hashes, &mut visited)
 }
 
@@ -887,8 +887,8 @@ fn closure_contains_any_inner(
     meta: &PackageMeta,
     registry_name: &str,
     registries: &RegistrySet,
-    target_hashes: &HashSet<String>,
-    visited: &mut HashSet<String>,
+    target_hashes: &BTreeSet<String>,
+    visited: &mut BTreeSet<String>,
 ) -> bool {
     for ref_hash in &meta.references {
         if target_hashes.contains(ref_hash) {
@@ -899,16 +899,16 @@ fn closure_contains_any_inner(
         }
         visited.insert(ref_hash.clone());
 
-        if let Some(ref_meta) = registries.resolve_hash_in(registry_name, ref_hash) {
-            if closure_contains_any_inner(
+        if let Some(ref_meta) = registries.resolve_hash_in(registry_name, ref_hash)
+            && closure_contains_any_inner(
                 ref_meta,
                 registry_name,
                 registries,
                 target_hashes,
                 visited,
-            ) {
-                return true;
-            }
+            )
+        {
+            return true;
         }
     }
     false
@@ -980,8 +980,8 @@ mod tests {
         let set = RegistrySet::new(vec![reg]);
 
         let (_, meta) = set.resolve("zlib").unwrap();
-        let mut visited = HashSet::new();
-        let mut ancestors = HashSet::new();
+        let mut visited = BTreeSet::new();
+        let mut ancestors = BTreeSet::new();
         let root = build_dep_tree(meta, "aos-core", &set, None, &mut visited, &mut ancestors);
 
         assert_eq!(root.name, "zlib");
@@ -1005,8 +1005,8 @@ mod tests {
         let set = RegistrySet::new(vec![reg]);
 
         let (_, meta) = set.resolve("curl").unwrap();
-        let mut visited = HashSet::new();
-        let mut ancestors = HashSet::new();
+        let mut visited = BTreeSet::new();
+        let mut ancestors = BTreeSet::new();
         let root = build_dep_tree(meta, "aos-core", &set, None, &mut visited, &mut ancestors);
 
         assert_eq!(root.name, "curl");
@@ -1041,8 +1041,8 @@ mod tests {
         let set = RegistrySet::new(vec![reg]);
 
         let (_, meta) = set.resolve("curl").unwrap();
-        let mut visited = HashSet::new();
-        let mut ancestors = HashSet::new();
+        let mut visited = BTreeSet::new();
+        let mut ancestors = BTreeSet::new();
         let _root = build_dep_tree(meta, "aos-core", &set, None, &mut visited, &mut ancestors);
 
         // curl's hash, zlib's hash, and the 3 unknown reference hashes are
@@ -1116,7 +1116,7 @@ mod tests {
 
         // Check if curl's closure contains zlib.
         let (_, curl_meta) = set.resolve("curl").unwrap();
-        let target_hashes = HashSet::from([target_hash]);
+        let target_hashes = BTreeSet::from([target_hash]);
         let contains = closure_contains_any(curl_meta, "aos-core", &set, &target_hashes);
         assert!(contains);
     }
@@ -1138,7 +1138,7 @@ mod tests {
         let target_hash = store_path_hash(&curl_meta.store_path).to_string();
 
         let (_, zlib_meta) = set.resolve("zlib").unwrap();
-        let target_hashes = HashSet::from([target_hash]);
+        let target_hashes = BTreeSet::from([target_hash]);
         let contains = closure_contains_any(zlib_meta, "aos-core", &set, &target_hashes);
         assert!(!contains);
     }
@@ -1484,7 +1484,7 @@ references = []
         let dep_hash = "dddddddddddddddddddddddddddddddd".to_string();
         let unknown_hash = "uuuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu".to_string();
 
-        let installed_by_hash = HashMap::from([
+        let installed_by_hash = BTreeMap::from([
             (
                 root_hash.clone(),
                 InstalledPackageRef {
@@ -1504,15 +1504,15 @@ references = []
                 },
             ),
         ]);
-        let refs_by_hash = HashMap::from([
+        let refs_by_hash = BTreeMap::from([
             (
                 root_hash.clone(),
                 vec![dep_hash.clone(), unknown_hash.clone()],
             ),
             (dep_hash.clone(), Vec::new()),
         ]);
-        let mut visited = HashSet::new();
-        let mut ancestors = HashSet::new();
+        let mut visited = BTreeSet::new();
+        let mut ancestors = BTreeSet::new();
 
         let tree = build_installed_dep_tree(
             &root_hash,

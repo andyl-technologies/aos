@@ -1,0 +1,68 @@
+{
+  "checks": {
+    "cache_invalidation": "/nix/store/kzb1q8r28ybarswq2jy8ishxdrprm8a3-aos-bazel-cache-invalidation-matrix",
+    "combined_all": "/nix/store/glq1m6qz5b7pjza79hry2nwr2fdv3mf1-aos-bazel-checks",
+    "concurrent_cache": "/nix/store/93zbj3amskx0g6azbrcqmyrw42dxmdn6-aos-bazel-concurrent-cache-proof",
+    "cross_derivation_cache": "/nix/store/s15mmlk3dxi7582clirpy0fc0kzw4clv-aos-bazel-cross-derivation-cache-proof",
+    "device_all": "/nix/store/ap6g17xmfa20d55nk694riq6ji3lknxp-aos-bazel-device-qualified-checks",
+    "fixture_editor": "/nix/store/wfxjl7alyg9ygn7lrmbmhw8jc33k5hig-aos-bazel-editor-check",
+    "manifest_extractor": "/nix/store/fm5r6f064cllxkxahccnxq636c6vj6iq-aos-bazel-manifest-extractor-0.71.2",
+    "upstream_environment_parity": "/nix/store/48w8x14pap2vxj2hmwnavcxnsks6rk7f-aos-bazel-manifest-extractor-parity"
+  },
+  "concurrent_overlap_seconds": 10.006386947,
+  "configuration_sha256": {
+    "pkgs/build-support/_bazel/modules.nix": "b1016c852724ee8f1a7c1d23cff1f4188a0f86d803f4e1f8c73474f68efeca90",
+    "pkgs/build-support/_bazel/rust-helper.nix": "4eafc40dc50c9391d14228a48602ed01e1c11feb913bef140468ec0f28a13ee4",
+    "tests/build/_bazel-manifest-extractor.nix": "f919a7abfcf08eb2fd640b39b65d132adde772334e2105355880a1b52190aba2",
+    "tests/build/bazel.nix": "5e8db05ce627d440cde86b8b3ddeb81b93a02ba2ec52d01faa459865deca7171",
+    "third_party/bazel/modules.json": "4b3885e8d240920ac042af6a88f6b2ea276af460da279d454ebfd96fdb3c9870",
+    "third_party/bazel/rule-inputs.json": "2f32f871687065781c4567849fc98a581b71e40db57ba99ab7caabdb47748883"
+  },
+  "editor_parity": {
+    "complete_inference": false,
+    "exprs": {
+      "partial": 0,
+      "total": 270504,
+      "unknown": 20
+    },
+    "panics": 0,
+    "pats": {
+      "partial": 0,
+      "total": 46719,
+      "unknown": 0
+    }
+  },
+  "invalidation_cases": [
+    "cpp-source",
+    "feature",
+    "generated-input",
+    "generator-environment",
+    "header",
+    "link-flags",
+    "rust-flags",
+    "rust-source",
+    "tool-closure"
+  ],
+  "limitations": [
+    "Only the unchanged upstream manifest helper is prebuilt; first-party compilation stays in Bazel.",
+    "Its Cargo build is third-party tooling, using only hash-pinned source archives and offline vendor resolution.",
+    "No performance improvement or production cutover is established by these correctness checks."
+  ],
+  "schema_version": 1,
+  "scope": "Source-built pinned rules_rust manifest extractor supplied once by Nix as an explicit Bazel executable input",
+  "source_parent_commit": "db3b9dc2e7",
+  "upstream_fixture_parity": {
+    "empty": {
+      "sha256": "2e74b30dfdb79a3dffff8383093cfa171eafa8163c4261f3037b8ff9e63d0078",
+      "variables": 14
+    },
+    "standalone": {
+      "sha256": "3974e6a1202234bb043089c1f381cb31433ce64cf37938751a1a1543afe128c3",
+      "variables": 14
+    },
+    "workspace/subcrate": {
+      "sha256": "9a7a20eb6c9134e1224adcabacd0c088908f6152b7a9594d994dafaa300a55aa",
+      "variables": 14
+    }
+  }
+}

@@ -1,0 +1,143 @@
+{
+  "checks": {
+    "all": "/nix/store/gridnc1l0l38sfd4m1hl876r0nm1kj23-aos-bazel-checks",
+    "concurrent": "/nix/store/myc8gzcpc7wdqyy42334sqmq6p3iv2zz-aos-bazel-concurrent-cache-proof",
+    "cross": "/nix/store/nnk627vaprk5zdf2rdnfxnjxvj49xcww-aos-bazel-aarch64-toolchain-check",
+    "cross_derivation": "/nix/store/l0r8ayk9ap028i4wxa1hldn823pp04yy-aos-bazel-cross-derivation-cache-proof",
+    "invalidation": "/nix/store/nn0m1giwxpz6cg85f31ixzd3nh55vq63-aos-bazel-cache-invalidation-matrix",
+    "wasm": "/nix/store/1ck1b7iiz8amvdi4kwcqpzkida47n9x2-aos-bazel-wasm-toolchain-check"
+  },
+  "configuration_sha256": {
+    "MODULE.bazel": "29716377174787cc0d4e286fa9335dcbfc0bc1e9b0371af24386a3d379b03776",
+    "pkgs/build-support/_bazel/cross-toolchains.nix": "2e704c45bc081b1f04ed8e24127f933ae30b346849941c40a390b494e7dbc45f",
+    "tests/build/_bazel-cross-linux.nix": "a49c2f68a3cf43c64d58e0fcf1865973c90d2af0094e91bddeef8a23cfa156a7",
+    "tools/bazel/tests/verify_cross_linux.py": "4e68c910de0485f38cdf6070532b70055f86cd1a312d39b49b623b74667e9c85",
+    "tools/bazel/toolchains/BUILD.bazel": "53b32d7edbd41d1537c11b068ed9d62f702b0059505b691385e948a4c18fe415",
+    "tools/bazel/toolchains/BUILD.cross.bazel": "5617d0599b38dbd4a5355dabf0871903ab27f2fa35f8f0676605eace0905ed71"
+  },
+  "cross": {
+    "actions": {
+      "cpp_app": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "917603866031bbac185b56e63526cd0158343bf4b72a66a6843d706bbe332e3f",
+        "runner": "linux-sandbox"
+      },
+      "cpp_library": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "a54dba1b8ddc40d1af078bae3f434b185f44bf00bc906c3695df556c7b766afc",
+        "runner": "linux-sandbox"
+      },
+      "fixture_macro": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "dc1ce993bf3eb16aba5fcbd3dd362f1141cab0eb3e834a8223237fd690841225",
+        "runner": "linux-sandbox"
+      },
+      "generated": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "85f0784705152423ba4421308f2130aa687602cf36c444560b66c61c98a90f72",
+        "runner": "linux-sandbox"
+      },
+      "generated_library": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "1f76e3165540365b340c9e594516a15afcd3977290e0f9fc6b85115dee3e3c98",
+        "runner": "linux-sandbox"
+      },
+      "native_app": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "3da11066a1203ee3f95e5cf34f3adfcd787b95c7daf2991dc5395736336b3a9e",
+        "runner": "linux-sandbox"
+      },
+      "rust_app": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "930afaa40f534670d9017dae1c479be0611754dfdb550c852f75e6a96cf40e33",
+        "runner": "linux-sandbox"
+      },
+      "rust_library": {
+        "action_digest": null,
+        "cache_hit": false,
+        "fingerprint": "a962732b94de812365c9762a1ea5880a32474432bd9bfb3d44eca31729b10a6d",
+        "runner": "linux-sandbox"
+      }
+    },
+    "artifacts": {
+      "bin/cpp-fixture": {
+        "sha256": "75a94d366dd6378a1b04eb7ef63235e4b6bdf5111e01d580da934322cc2824ca",
+        "stdout": "answer=42\n"
+      },
+      "bin/native-fixture": {
+        "sha256": "d1c6b653faf0acf318ccc946acdb4b28c897ae8fa96d1ba9aa293d5cc1240aec",
+        "stdout": "answer=84\n"
+      },
+      "bin/rust-fixture": {
+        "sha256": "e9aad1defe57c5c6c36327565111b39551d43b2fa6b467a02614184c020b74a6",
+        "stdout": "answer=42\n"
+      }
+    },
+    "build": "/nix/store/52ynnw3vgw5495iq0pbvhx40g0i6krr3-aos-bazel-aarch64-fixtures-1",
+    "runtime_execution": "AOS source-built QEMU linux-user",
+    "schema_version": 1,
+    "target": "aarch64-unknown-linux-gnu"
+  },
+  "execution_platform": "x86_64-linux",
+  "limitations": [
+    "Cross application families and editor/test workflows are not yet qualified.",
+    "Darwin and reverse Linux execution/target pairing are not qualified by this fixture.",
+    "No production builder cutover or performance acceptance is implied."
+  ],
+  "native_cache_requalification": {
+    "invalidation_cases": [
+      "cpp-source",
+      "feature",
+      "generated-input",
+      "generator-environment",
+      "header",
+      "link-flags",
+      "rust-flags",
+      "rust-source",
+      "tool-closure"
+    ],
+    "overlap_seconds": 8.866741258,
+    "summary": {
+      "consumer": {
+        "AosPythonGenerate:disk cache hit": 1,
+        "CppArchive:disk cache hit": 1,
+        "CppCompile:disk cache hit": 1,
+        "CppCompile:linux-sandbox": 1,
+        "CppLink:linux-sandbox": 1,
+        "Rustc:disk cache hit": 6,
+        "Rustc:linux-sandbox": 1
+      },
+      "producer": {
+        "AosPythonGenerate:linux-sandbox": 1,
+        "CppArchive:linux-sandbox": 1,
+        "CppCompile:linux-sandbox": 2,
+        "CppLink:linux-sandbox": 1,
+        "Rustc:linux-sandbox": 7
+      },
+      "uncached": {
+        "AosPythonGenerate:linux-sandbox": 1,
+        "CppArchive:linux-sandbox": 1,
+        "CppCompile:linux-sandbox": 2,
+        "CppLink:linux-sandbox": 1,
+        "Rustc:linux-sandbox": 7
+      }
+    },
+    "trials": {
+      "concurrent": "cross-linux-20261022-a",
+      "cross_derivation_and_invalidation": "cross-linux-20261022-b"
+    }
+  },
+  "negative_analysis": {
+    "log": "/nix/store/nnk627vaprk5zdf2rdnfxnjxvj49xcww-aos-bazel-aarch64-toolchain-check/rejected-native-fallback.log",
+    "native_only_rejected": true
+  },
+  "schema_version": 1,
+  "target_platform": "aarch64-linux"
+}

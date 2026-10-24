@@ -12,6 +12,8 @@ use anyhow::{Context as _, Result};
 use aos_cli_ui::output::Printer;
 use aos_hub_client::{hub_rpc as HubTopologyMethod, hub_types};
 
+// Validate mutually exclusive policy selectors before constructing the protobuf request.
+#[allow(clippy::too_many_arguments)]
 fn placement_policy_spec(
     kind: &str,
     members: &[String],

@@ -1,0 +1,29 @@
+{
+  "command": "nix-build /tmp/aos-bazel-722/crucible-engineering-hygiene-cargo.nix --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "derivation": "/nix/store/2npmch8mwg0pl7mfxhihrd0fri39palx-aos-bazel-crucible-engineering-hygiene-1.drv",
+  "derivation_sha256": "02d26b9770696c2e0c742e6319903bb19467fdc8945aefac328cf2234c948cca",
+  "fixture_change_commit": "26f1980a40",
+  "ledger_sha256": "4aee8a06cfd8f54ce3d6a4107c95b1045e569e4b144ecddf13ccfa127e9a3caf",
+  "limits": [
+    "The test responsibilities and shared-fixture cohesion remain intact. The reviewed changes make one private executable fixture writable and resolve the same process fixture through Bazel runfiles.",
+    "Only the two content-bound review digests, actual line counts and file-specific cohesion rationales changed; frozen debt caps and test assertions remain unchanged.",
+    "This focused check does not establish completion of the broader license-boundary, foreign runtime or production migration gates."
+  ],
+  "output": "/nix/store/yrmdq9z1c0m4jzw8yb7mzdbbacdhwhya-aos-bazel-crucible-engineering-hygiene-1",
+  "recipe": "let\n  root = /home/dylan/src/aos/.worktrees/codex/bazel-integration-722;\n  pkgs = (import root {}).pkgs;\nin import (root + \"/tests/build/_bazel-cargo-oracle.nix\") {\n  inherit pkgs;\n  pname = \"aos-bazel-crucible-engineering-hygiene\";\n  packages = [\"crucible-test-support\"];\n  cargoFlags = [\"--test\" \"engineering_hygiene\"];\n  cargoSource = import (root + \"/pkgs/tools/crucible/_source.nix\") { inherit (pkgs) lib; };\n}\n",
+  "report_sha256": {
+    "cargo-messages.jsonl": "f3619723787cbe3a16008a644a55866a3c6e2c5c1a50cd62010aafe8e0d35d28",
+    "cargo-tests.log": "b8ee000309617776266e2432f5acea8d7065b1464ec4bc748cb63576c3cab37f"
+  },
+  "reviewed_source_sha256": {
+    "crates/crucible/control/crucible-cli/src/tests/surface.rs": "2c480d52056b8ef3377bd5fccca70c75f96b8a1783cb09f3b419c51515a449a8",
+    "crates/crucible/control/crucible-cli/tests/campaign_store_process.rs": "2629c43b5589ac120f156f33991c8d8510593505207990a81e781303d644a0e3"
+  },
+  "schema_version": 1,
+  "source": "/nix/store/1hpys9na5z6gda0a5kbhrpkpis8nr1qr-crucible-workspace-src",
+  "source_review_records": [
+    "shape-review|crates/crucible/control/crucible-cli/src/tests/surface.rs|sha256:2c480d52056b8ef3377bd5fccca70c75f96b8a1783cb09f3b419c51515a449a8|tests|3480|CLI parsing, planning, backend selection, and run workflow tests.|Parsing, invocation planning, backend routing, output, and run workflow cases reuse one CLI operation recorder. Read-only executable mutation remains local to the discovery fixture.",
+    "shape-review|crates/crucible/control/crucible-cli/tests/campaign_store_process.rs|sha256:2629c43b5589ac120f156f33991c8d8510593505207990a81e781303d644a0e3|tests|1694|Public campaign store, composed storage, authenticated service, GC, archive, and restart process flights.|The mTLS service, composed store, packed archive, live S3, GC, restart, bounded connectable-socket and reaped-child shutdown checks reuse one public-process fixture and its command/status diagnostics. Runfiles resolution locates the same command fixture for Bazel process execution."
+  ],
+  "status": "All four engineering hygiene tests passed after reviewing the two earlier CLI fixture changes"
+}

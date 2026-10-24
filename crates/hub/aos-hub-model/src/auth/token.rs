@@ -46,6 +46,10 @@ pub const REFRESH_TOKEN_ABSOLUTE_TTL_SECS: i64 = 90 * 24 * 60 * 60;
 /// assert_eq!(hash, sha256_hex(&secret));
 /// ```
 #[must_use]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Hub credentials require unpredictable host entropy"
+)]
 pub fn generate_token() -> (String, String) {
     let random_bytes: [u8; 20] = rand::rng().random();
     let secret = format!("aos_{}", hex::encode(random_bytes));
@@ -59,6 +63,10 @@ pub fn generate_token() -> (String, String) {
 /// scoped access-token secret. The random portion contains 256 bits from the
 /// process CSPRNG. Only the returned hash may be persisted.
 #[must_use]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Hub credentials require unpredictable host entropy"
+)]
 pub fn generate_refresh_token() -> (String, String) {
     let random_bytes: [u8; 32] = rand::rng().random();
     let secret = format!("aosr_{}", hex::encode(random_bytes));
@@ -74,6 +82,10 @@ pub fn generate_refresh_token() -> (String, String) {
 /// invitation lifecycle may retain a copy only after sealing it with the
 /// runtime's durable at-rest key so an exact apply retry can recover it.
 #[must_use]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Hub credentials require unpredictable host entropy"
+)]
 pub fn generate_invitation_token() -> (String, String) {
     let random_bytes: [u8; 32] = rand::rng().random();
     let secret = format!("aosi_{}", hex::encode(random_bytes));

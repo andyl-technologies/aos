@@ -525,14 +525,19 @@ impl PreopenedTree {
 
 impl PinnedRoot {
     fn open(path: &Path, label: &str) -> Result<Self> {
-        let (handle, namespace_parent, namespace_name, ancestors, namespace) =
-            open_absolute_directory_pinned(path, label).map_err(|error| {
-                if error.downcast_ref::<super::CutoverError>().is_some() {
-                    error
-                } else {
-                    typed_error(CutoverErrorCode::FilesystemBoundaryInvalid, error)
-                }
-            })?;
+        let OpenedDirectoryWitnesses {
+            handle,
+            namespace_parent,
+            namespace_name,
+            ancestors,
+            namespace,
+        } = open_absolute_directory_pinned(path, label).map_err(|error| {
+            if error.downcast_ref::<super::CutoverError>().is_some() {
+                error
+            } else {
+                typed_error(CutoverErrorCode::FilesystemBoundaryInvalid, error)
+            }
+        })?;
         let metadata = File::from(handle.try_clone()?).metadata()?;
         if !metadata.is_dir() {
             return Err(typed_error(
@@ -994,6 +999,8 @@ fn rollback_generation(
     }
 }
 
+// Bind signing identity to the already pinned source, bundle, and executable handles.
+#[allow(clippy::too_many_arguments)]
 fn generate_document_stage(
     role: &str,
     signer_key_id: &str,
@@ -1487,7 +1494,7 @@ fn generated_output_paths(recipe: &GenerationRecipe) -> Result<Vec<String>> {
     ];
     let mut paths = node_ids
         .iter()
-        .map(|node_id| generation_layout(recipe, *node_id).map(|layout| layout.path.clone()))
+        .map(|node_id| generation_layout(recipe, node_id).map(|layout| layout.path.clone()))
         .collect::<Result<Vec<_>>>()?;
     for role in [
         "key_map_signature",
@@ -2581,7 +2588,7 @@ fn atomic_publish_fresh(
     let mut publication = None;
     let result = (|| -> Result<()> {
         let handle = openat(
-            &parent,
+            parent,
             &temporary,
             OFlags::RDWR | OFlags::CREATE | OFlags::EXCL | OFlags::NOFOLLOW | OFlags::CLOEXEC,
             mode,
@@ -2803,16 +2810,16 @@ fn open_absolute_parent_checked(
     Ok((current, (*name).to_owned(), identities))
 }
 
-fn open_absolute_directory_pinned(
-    path: &Path,
-    label: &str,
-) -> Result<(
-    OwnedFd,
-    OwnedFd,
-    OsString,
-    Vec<InodeIdentity>,
-    Vec<PinnedNamespaceStep>,
-)> {
+/// Owns a directory handle and the namespace witnesses used to revalidate it.
+struct OpenedDirectoryWitnesses {
+    handle: OwnedFd,
+    namespace_parent: OwnedFd,
+    namespace_name: OsString,
+    ancestors: Vec<InodeIdentity>,
+    namespace: Vec<PinnedNamespaceStep>,
+}
+
+fn open_absolute_directory_pinned(path: &Path, label: &str) -> Result<OpenedDirectoryWitnesses> {
     if !path.is_absolute() {
         bail!("{label} path must be absolute");
     }
@@ -2862,7 +2869,13 @@ fn open_absolute_directory_pinned(
     .with_context(|| format!("opening {label} without following links"))
     .map_err(|error| classify_error(error, CutoverErrorCode::FilesystemBoundaryInvalid))?;
     ancestors.push(inode_identity(&File::from(handle.try_clone()?).metadata()?));
-    Ok((handle, parent, (*name).to_owned(), ancestors, namespace))
+    Ok(OpenedDirectoryWitnesses {
+        handle,
+        namespace_parent: parent,
+        namespace_name: (*name).to_owned(),
+        ancestors,
+        namespace,
+    })
 }
 
 fn require_roots_disjoint(left: &PinnedRoot, right: &PinnedRoot) -> Result<()> {

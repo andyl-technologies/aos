@@ -25,7 +25,7 @@
 //!   types.
 //! - [`model`] owns descriptors, platforms, manifests, indexes, and image
 //!   configuration documents.
-//! - [`reference`] owns exact repository, tag, and manifest-reference parsing.
+//! - [`mod@reference`] owns exact repository, tag, and manifest-reference parsing.
 //! - [`release`] owns the strict signed `containers/v1/index.json` contract.
 
 #![forbid(unsafe_code)]

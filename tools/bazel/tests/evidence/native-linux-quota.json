@@ -1,0 +1,259 @@
+{
+  "aggregate_regression_checks": {
+    "checkpoint_commit": "7d188f29a40e8305358f7fbab6669e22ac8381bb",
+    "evidence": "native-linux-session-aggregate.json",
+    "outputs": [
+      "/nix/store/90m8m3fmjz9314q3qximj5zy9gqshsf6-aos-bazel-checks",
+      "/nix/store/aah8g2szam8h4ccl8dlj6fz67g2y2i8q-aos-native-evaluation-checks-0"
+    ],
+    "status": "passed"
+  },
+  "cli_checks": {
+    "output": "/nix/store/38ygpdy50sjxmnhsq7slpgc9p2x953aj-aos-dev-cli-check-0",
+    "scope": "Includes quota update, launcher selection, and editor export routing.",
+    "status": "passed"
+  },
+  "command": "nix-build tools/bazel/tests/quota.nix -A all -A vm --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "configuration": "/nix/store/6fbj4r76dx6c8n6wkg0xv1bqc5j0myls-aos-bazel-configuration.json",
+  "configuration_sha256": "6b7b0e79833465263974c9e1c28b91816ed3dc085b8c3c6874057d0029a73104",
+  "cross_linux_qualification": "aarch64-linux-quota.json",
+  "doctest_cases": 0,
+  "editor_parity": {
+    "analysis": {
+      "complete_inference": true,
+      "exprs": {
+        "partial": 0,
+        "total": 3711,
+        "unknown": 0
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 746,
+        "unknown": 0
+      }
+    },
+    "diagnostics": [],
+    "roots": {
+      "crates/shared/aos-linux-project-quota/examples/project-quota-flight.rs": [],
+      "crates/shared/aos-linux-project-quota/src/lib.rs": []
+    }
+  },
+  "executed_cases": 8,
+  "ext4_vm": {
+    "assertions": {
+      "bytes_quota_enforced=true": true,
+      "cleared_project_ids_reusable=true": true,
+      "inodes_quota_enforced=true": true,
+      "nonempty_release_retains_authority=true": true
+    },
+    "kernel": "/nix/store/q8rz0v5y5jl9z219bxbyrbz9066gji1w-linux-7.2.3",
+    "kernel_config_sha256": "de14b5a152d064abe4c96bee5c57a18652bf876f2b39b29448aa9eb1dc0f0685",
+    "output": "/nix/store/nvn7sd7p0i8imjqxzcdywcdq0nk2jalf-aos-vm-test-crucible-project-quota-0",
+    "scope": "Real ext4 project-quota installation, byte/inode enforcement, fail-closed nonempty release and project-ID reuse with unprivileged children in a disposable x86_64 KVM guest.",
+    "serial_sha256": "0b0dc5f8ba6cf2c577328572771259578a00783216707c545b951a021b450745",
+    "status": "passed"
+  },
+  "external_crate_identities": 10,
+  "file_sha256": {
+    "MODULE.bazel": "0269f2ddc249597b84c8572405e3d4293a53759d4354be7d4f450aabee1db596",
+    "crates/shared/aos-linux-project-quota/BUILD.bazel": "fe86dd5ad42b2b7f295e9b08f847f45c224c40722386f37988259706e999f1ca",
+    "pkgs/build-support/_bazel/default.nix": "66c2426c68e04ab1aac0c1e32a98273e3a78b3f7a182bc87b5a0fb7f25966db3",
+    "tests/build/_bazel-quota.nix": "26cf5ecec2bcdddabb40efced7dcd37fdf6086d4f3c9b810e8fdad97dc3d408d",
+    "tests/build/_bazel-rust-family.nix": "431c54bac9c9eb729d812fd3b1a7fe5f2b8b37c1b9395f6c2b93ebedd5ce3d4f",
+    "tests/crucible/phase4-project-quota-vm.nix": "15bd9a876a840f5e85e800c21c33f19eb1773edc135a121d576e1a26ebd7ee3a",
+    "third_party/bazel/modules.json": "922cafc3c1267988b307c865b7abdc89a3506035c06edab16d73e763973049dc",
+    "third_party/rust/BUILD.bazel": "e1acb506ba63e2db49858018bea400d87982cd397fffbc549df638cea37c895e",
+    "third_party/rust/quota/sources.json": "31e5186959449e7be15f8163c0b39186488b0e9f6230610bc5561c31c46e5073",
+    "tools/bazel/metadata/quota-inventory.json": "38d441b4dec0a495bf2971efec3ee5f41ea544cdf08956facc7eb313a35bfbac",
+    "tools/bazel/rules/BUILD.bazel": "15d0745ee7804b0540e852f6986550ebdc1e8c178cd92cecf23ab3c619e91a61",
+    "tools/bazel/rules/profiles.bzl": "915a81bfdeb5e77a2a69eb06bdc06c3e64c7fc32293785719d4f8df2d77057a8",
+    "tools/bazel/tests/verify_family_editor.py": "6c7022c9dd4ce424c3f1168948772d05e4d935fbb6e1b2d48b36470a724182d5",
+    "tools/bazel/tests/verify_protocol.py": "2f7f80d86871d3408ff8050ac84b05422cbb7fd35c54d15750fafe9eb2fd02c5",
+    "tools/dev/lib/bazel.bash": "899187721d848b1e7077abc1e52319b54f3edcaff9a3a87aa63010994e8e2b13",
+    "tools/dev/tests/cli.bash": "62de17212ec29b2dfff14cc30dcc90848b1ec4ca106e692800f7a8d864884d42"
+  },
+  "first_party_cargo_manifests_in_bazel_workspace": false,
+  "first_party_rust_sha256": {
+    "crates/shared/aos-linux-project-quota/examples/project-quota-flight.rs": "bcbd774f239609539de9794c9aba84c59ba82ba70497a0756d8c3e53a66b3ddc",
+    "crates/shared/aos-linux-project-quota/src/lib.rs": "56c76ae4a86980c9d2906df91532b92109d8863410a21dc0f0ba81ec57091f1e",
+    "crates/shared/aos-linux-project-quota/src/linux_project_quota.rs": "3154f652fceb7e42fa7e8491d31d56abef02fe1f45242e5e1e3394d2ab1a4f3c"
+  },
+  "flight_package": {
+    "artifacts": [
+      {
+        "destination": "bin/project-quota-flight",
+        "mode": "0755",
+        "sha256": "f58854d3d77c697abac54030965fd0228af9a0ee4981e7475395cd4cebe505ca"
+      }
+    ],
+    "label": "//crates/shared/aos-linux-project-quota:flight_package",
+    "license": "Apache-2.0",
+    "license_domain": "apache-host",
+    "name": "aos-linux-project-quota",
+    "schema_version": 1,
+    "version": "0.1.0"
+  },
+  "ignored_cases": 0,
+  "installation": {
+    "executable": "/nix/store/zrn2dfp5v5wz7qq81m9782hfs1wj4gky-aos-linux-project-quota-0.1.0/bin/project-quota-flight",
+    "gcc_runtime": "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+    "gcc_runtime_in_closure": true,
+    "interpreter": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2",
+    "needed": [
+      "libgcc_s.so.1",
+      "libc.so.6",
+      "ld-linux-x86-64.so.2"
+    ],
+    "rpath": [
+      "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib",
+      "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib"
+    ],
+    "sha256": "ea7b3cefc99d6a2af76be97af56f7f81f5bfc2cfbb35bc9789f7e32f066706f4"
+  },
+  "inventory_refresh": {
+    "existing_five_dependency_locks": "unchanged",
+    "outputs": [
+      "/nix/store/29hdrvwcr9n08d5kp6k980wv34n0ll5n-aos-bazel-boot-pilot-inventory-1",
+      "/nix/store/95rrff5vmrvpsds1l4f4r7715bz5x0zg-aos-bazel-device-inventory-1",
+      "/nix/store/pl7xd5jv5x7bsl41bjl6xzzqss387bma-aos-bazel-engine-inventory-1",
+      "/nix/store/hsrqn20sg1371ks2gbcd27kqgm8nrg0f-aos-bazel-fixture-inventory-1",
+      "/nix/store/vs2njp8v3fsfn6k5p08vyn3dk487w7ii-aos-bazel-guest-inventory-1",
+      "/nix/store/q13p9arxaf7i1d2gx7lwb8y9447sqm0m-aos-bazel-protocol-inventory-1",
+      "/nix/store/fjaxd5nna5yf9as1cn3v2wg84m4pqjx6-aos-bazel-quota-inventory-1",
+      "/nix/store/k9mih8xb4rq3slhfyz9agc1kr3hsqlwl-aos-bazel-shared-inventory-1",
+      "/nix/store/zgj22bnbqfbqiq59qj9ni7fadnpxn5c7-aos-bazel-source-catalog-checks",
+      "/nix/store/la9fnqsbhljfn3s3cykllr821qd9dcyx-aos-bazel-store-inventory-1"
+    ],
+    "status": "passed"
+  },
+  "libtest_targets": 1,
+  "limits": [
+    "The AArch64 record covers eight pure unit cases; privileged ext4 enforcement is qualified here only on x86_64.",
+    "Production consumers remain on Cargo; no performance budget is accepted."
+  ],
+  "output": "/nix/store/lvvbl40sizaai24ra5xng9hi1s1gk89y-aos-bazel-quota-qualified-checks",
+  "parity": {
+    "doctests": {
+      "//crates/shared/aos-linux-project-quota:doc": {}
+    },
+    "examples": [
+      "//crates/shared/aos-linux-project-quota:project-quota-flight"
+    ],
+    "features": {
+      "bitflags@2.13.0": [
+        [
+          "std"
+        ]
+      ],
+      "libc@0.2.186": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "linux-raw-sys@0.12.1": [
+        [
+          "auxvec",
+          "elf",
+          "errno",
+          "general",
+          "ioctl",
+          "no_std"
+        ]
+      ],
+      "proc-macro2@1.0.106": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "quote@1.0.46": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "rustix@1.1.4": [
+        [
+          "alloc",
+          "default",
+          "event",
+          "fs",
+          "std"
+        ]
+      ],
+      "syn@2.0.118": [
+        [
+          "clone-impls",
+          "default",
+          "derive",
+          "parsing",
+          "printing",
+          "proc-macro"
+        ]
+      ],
+      "thiserror-impl@2.0.18": [
+        []
+      ],
+      "thiserror@2.0.18": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "unicode-ident@1.0.24": [
+        []
+      ]
+    },
+    "first_party_features": {
+      "aos-linux-project-quota": [
+        []
+      ]
+    },
+    "schema_version": 1,
+    "targets": {
+      "//crates/shared/aos-linux-project-quota:unit": {
+        "executed": [
+          "linux_project_quota::tests::attribute_readback_ignores_only_kernel_owned_extent_count",
+          "linux_project_quota::tests::byte_limit_rounds_down_to_a_hard_kernel_ceiling",
+          "linux_project_quota::tests::kernel_abi_layout_and_project_commands_are_frozen",
+          "linux_project_quota::tests::project_identifier_fits_the_signed_quotactl_argument",
+          "linux_project_quota::tests::project_identifier_reuse_requires_a_completely_empty_quota_record",
+          "linux_project_quota::tests::quota_limits_reject_unenforceable_or_unbounded_profiles",
+          "linux_project_quota::tests::quota_record_sets_equal_hard_and_soft_bounds",
+          "linux_project_quota::tests::quota_release_clears_limits_and_reuse_blocking_grace_timers"
+        ],
+        "ignored": []
+      }
+    }
+  },
+  "policy_checks": {
+    "output": "/nix/store/bar8v65a6gj3a4j8qdhd3l9hn5d4vm3z-aos-bazel-policy-checks",
+    "status": "passed",
+    "tests": 133
+  },
+  "previous_vm_failure": {
+    "correction": "Declared AOS gcc-libs as a flight package runtime dependency; added installed interpreter/RPATH and runtime-closure validation before rerunning the same guest assertions.",
+    "derivation": "/nix/store/g89byhympzhxcfpr738gqfpzh8k13fr7-aos-vm-test-crucible-project-quota-0.drv",
+    "reason": "Missing explicit gcc-libs runtime dependency allowed ordinary reference scrubbing to erase its RPATH; the guest could not load libgcc_s.so.1."
+  },
+  "report_sha256": {
+    "editor-parity.json": "d0c4844ecaa2d986927ccd676e2c0631686e8c8b1bd0933e17c848a8c2e30e15",
+    "evidence/execution.json": "a587c4e5a1c7fb626978931d9847ab1f40577765f18e1ba40288cd9d6bc899fa",
+    "evidence/metrics.json": "7b4b44214752614e0fa32e86c42ef97d4b463514636dac6b5daefbace615393d",
+    "flight-package.json": "c2ef4640f2ef085b01e3806ace8c8b82d47bf57f1a7b2740d777a03273321859",
+    "installation.json": "a621b87f07ab189897fc9894524e3cb16ac155bfed3c61c37532d1be0d04c63b",
+    "parity.json": "1672e9b94d8d770966c57471d9173e8c3fe0860390ca07bd52245171c55c4328"
+  },
+  "rustc_flags": [
+    "-Copt-level=s",
+    "-Cdebuginfo=0",
+    "-Cdebug-assertions=yes",
+    "-Coverflow-checks=yes"
+  ],
+  "schema_version": 1,
+  "source": "/nix/store/z85y7yw8lmizbd4b95pbd51kp9ci9g6r-aos-bazel-workspace",
+  "status": "native, installed runtime, AArch64 unit, ext4 VM and corrected aggregate regression qualification passed",
+  "tested_tree_parent_commit": "feb900ad3fee8267373d7d3194672635d2ac65ad"
+}

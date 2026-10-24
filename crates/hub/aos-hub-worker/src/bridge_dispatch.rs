@@ -529,7 +529,12 @@ mod tests {
         let _presentation = SITE_PRESENTATION.lock().await;
 
         let backend = SqlxBackend::connect_sqlite(":memory:").await.unwrap();
-        let SqlxBackend::Sqlite(pool) = &backend else {
+        #[allow(
+            irrefutable_let_patterns,
+            reason = "Other workspace graphs also enable the PostgreSQL backend"
+        )]
+        let SqlxBackend::Sqlite(pool) = &backend
+        else {
             panic!("expected SQLite test backend");
         };
         let writer = SqlxBackend::Sqlite(pool.clone());
@@ -630,6 +635,10 @@ mod tests {
                 .plan_set_instance_settings(
                     Some(&bearer),
                     pb::PlanSetInstanceSettingsRequest {
+                        #[allow(
+                            clippy::disallowed_types,
+                            reason = "The generated protobuf map uses this type"
+                        )]
                         values: std::collections::HashMap::from([(
                             "site_title".into(),
                             "ambiguous".into(),
@@ -646,6 +655,10 @@ mod tests {
             ));
         }
 
+        #[allow(
+            clippy::disallowed_types,
+            reason = "The generated protobuf map uses this type"
+        )]
         let values = std::collections::HashMap::from([
             ("site_title".into(), "  Example <Hub>  ".into()),
             ("tagline".into(), "Packages & images".into()),

@@ -1,0 +1,1 @@
+exports_files(["_bazel-guest.nix"])

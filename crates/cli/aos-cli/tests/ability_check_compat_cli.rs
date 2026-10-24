@@ -1,5 +1,9 @@
 //! Process tests for the release-owner structural compatibility gate.
 
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 use serde_json::{Value, json};
 use std::path::Path;
 use std::process::{Command, Output};
@@ -28,7 +32,7 @@ fn write(directory: &Path, name: &str, document: &Value) {
 }
 
 fn run(directory: &Path, arguments: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_aos"))
+    Command::new(cli_binary!("CARGO_BIN_EXE_aos"))
         .args(arguments)
         .current_dir(directory)
         .env_clear()

@@ -1,0 +1,31 @@
+"""Generated direct dependency labels for this resolved family."""
+
+CRATES = {
+    "anyhow": "@aos_native_foundation_minimal_crates__anyhow-1.0.103//:anyhow",
+    "axum": "@aos_native_foundation_minimal_crates__axum-0.8.9//:axum",
+    "base64": "@aos_native_foundation_minimal_crates__base64-0.22.1//:base64",
+    "bytes": "@aos_native_foundation_minimal_crates__bytes-1.11.1//:bytes",
+    "crc32fast": "@aos_native_foundation_minimal_crates__crc32fast-1.5.0//:crc32fast",
+    "ed25519-dalek": "@aos_native_foundation_minimal_crates__ed25519-dalek-2.2.0//:ed25519_dalek",
+    "flate2": "@aos_native_foundation_minimal_crates__flate2-1.1.9//:flate2",
+    "futures-util": "@aos_native_foundation_minimal_crates__futures-util-0.3.32//:futures_util",
+    "hex": "@aos_native_foundation_minimal_crates__hex-0.4.3//:hex",
+    "reqwest": "@aos_native_foundation_minimal_crates__reqwest-0.12.28//:reqwest",
+    "rustix": "@aos_native_foundation_minimal_crates__rustix-1.1.4//:rustix",
+    "rustls-native-certs": "@aos_native_foundation_minimal_crates__rustls-native-certs-0.8.3//:rustls_native_certs",
+    "semver": "@aos_native_foundation_minimal_crates__semver-1.0.28//:semver",
+    "serde": "@aos_native_foundation_minimal_crates__serde-1.0.228//:serde",
+    "serde_json": "@aos_native_foundation_minimal_crates__serde_json-1.0.150//:serde_json",
+    "sha2": "@aos_native_foundation_minimal_crates__sha2-0.10.9//:sha2",
+    "tar": "@aos_native_foundation_minimal_crates__tar-0.4.46//:tar",
+    "tempfile": "@aos_native_foundation_minimal_crates__tempfile-3.27.0//:tempfile",
+    "thiserror": "@aos_native_foundation_minimal_crates__thiserror-2.0.18//:thiserror",
+    "tokio": "@aos_native_foundation_minimal_crates__tokio-1.52.3//:tokio",
+    "tokio-util": "@aos_native_foundation_minimal_crates__tokio-util-0.7.18//:tokio_util",
+    "toml": "@aos_native_foundation_minimal_crates__toml-0.8.23//:toml",
+    "tracing": "@aos_native_foundation_minimal_crates__tracing-0.1.44//:tracing",
+    "url": "@aos_native_foundation_minimal_crates__url-2.5.8//:url",
+    "zbus": "@aos_native_foundation_minimal_crates__zbus-5.15.0//:zbus",
+    "zeroize": "@aos_native_foundation_minimal_crates__zeroize-1.9.0//:zeroize",
+    "zstd": "@aos_native_foundation_minimal_crates__zstd-0.13.3//:zstd"
+}

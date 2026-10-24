@@ -15,6 +15,9 @@
 //! [`scan`](crate::scan) + [`verdict`](crate::verdict) layers confirm
 //! whether each one is genuinely load-bearing.
 
+// The index serves lookup only; node vectors define graph and report order.
+#![allow(clippy::disallowed_types)]
+
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
@@ -179,7 +182,7 @@ impl ClosureGraph {
                 })
             })
             .collect();
-        found.sort_by(|a, b| b.exclusive.cmp(&a.exclusive));
+        found.sort_by_key(|suspect| std::cmp::Reverse(suspect.exclusive));
         found
     }
 }

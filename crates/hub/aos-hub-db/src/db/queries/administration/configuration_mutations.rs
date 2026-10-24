@@ -251,7 +251,7 @@ impl Database {
                 &[],
             )
             .await?;
-        let mut values = std::collections::HashMap::<String, String>::new();
+        let mut values = std::collections::BTreeMap::<String, String>::new();
         for row in rows {
             values.insert(row.get(0)?, row.get(1)?);
         }

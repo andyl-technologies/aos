@@ -381,6 +381,8 @@ in
       pname = "crucible-phase2-abi-conformance";
       version = "0";
       LIBSQLITE3_SYS_USE_PKG_CONFIG = "1";
+      # Engine cross-checks execute the independently linked Apache helper.
+      CRUCIBLE_QEMU_TEST_ORACLE = "${pkgs.callPackage ../../pkgs/tools/crucible/_qemu-test-oracle.nix {}}/bin/crucible-qemu-test-oracle";
       runtimeDeps = [pkgs.sqlite];
       src = crucibleSrc;
       # Use Nix's realized graph because the sandbox has no store database.

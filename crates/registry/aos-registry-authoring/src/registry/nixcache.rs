@@ -158,6 +158,10 @@ struct CachePathInfo {
 /// span mixed store directories, a path is missing from the local Nix
 /// store, a `nix`/`nix-store` invocation fails, or an output file cannot be
 /// written.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep existing publication transaction inputs explicit without changing their API"
+)]
 pub async fn generate_static_cache(
     registry_dir: &Path,
     output_dir: &Path,
@@ -192,6 +196,10 @@ pub async fn generate_static_cache(
 ///
 /// Returns an error for mixed store directories, missing local paths, failed
 /// Nix invocations, or unwritable cache files.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep existing publication transaction inputs explicit without changing their API"
+)]
 pub async fn generate_static_cache_with_roots(
     registry_dir: &Path,
     output_dir: &Path,
@@ -308,7 +316,7 @@ pub async fn generate_static_cache_with_roots(
 
     // Largest first (LPT): big NARs start while permits are free, so their
     // long pole overlaps all the small work instead of stranding at the tail.
-    entries.sort_by(|a, b| b.info.nar_size.cmp(&a.info.nar_size));
+    entries.sort_by_key(|entry| std::cmp::Reverse(entry.info.nar_size));
 
     // Phase B: compress (or reuse) each NAR and write its narinfo, bounded by
     // a `workers`-permit budget. A dominant NAR acquires several permits and

@@ -1,0 +1,20 @@
+# Each generated API owns its complete schema input set.
+filegroup(
+    name = "build_api_definitions",
+    srcs = [
+        "aos/auth/v1/auth.proto",
+        "aos/build/v1/build.proto",
+        "aos/cache/v1/cache.proto",
+        "aos/gc/v1/gc.proto",
+    ],
+    visibility = ["//crates/packages/aos-build-api:__pkg__"],
+)
+
+filegroup(
+    name = "hub_api_definitions",
+    srcs = ["aos/hub/v1/hub.proto"],
+    visibility = [
+        "//crates/hub/aos-hub-api:__pkg__",
+        "//crates/hub/aos-hub-service:__pkg__",
+    ],
+)

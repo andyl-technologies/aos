@@ -1,10 +1,12 @@
-//! Manifest-driven workspace discovery for structural integration tests.
+//! Source ownership discovery for structural integration tests.
 //!
-//! Cargo package names establish ownership; member paths only organize readers.
+//! Bazel catalogs establish package ownership. Unmigrated test harnesses retain
+//! Cargo discovery until their declared runtime inputs include the catalog.
 
 // crucible-lint: allow rust-allow -- Each integration target imports the workspace helpers it needs.
 #![allow(dead_code)]
 
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
@@ -26,6 +28,41 @@ impl PackageEntry {
 }
 
 pub(crate) fn crates_directory() -> PathBuf {
+    if let Some(catalog) = std::env::var_os("AOS_SOURCE_CATALOG") {
+        let catalog = Path::new(&catalog);
+        assert!(
+            catalog.is_file(),
+            "declared workspace source catalog is absent"
+        );
+        assert_eq!(
+            catalog.file_name(),
+            Some(std::ffi::OsStr::new("source_catalog.json"))
+        );
+        return catalog
+            .parent()
+            .unwrap_or_else(|| panic!("source catalog has no workspace directory"))
+            .to_path_buf();
+    }
+
+    let manifest_directory = Path::new(env!("CARGO_MANIFEST_DIR"));
+    if let Some(directory) = manifest_directory
+        .ancestors()
+        .find(|directory| directory.join("source_catalog.json").is_file())
+    {
+        return directory.to_path_buf();
+    }
+
+    // Bazel test runfiles preserve workspace-relative paths, while the
+    // compile-time manifest directory may name a different action sandbox.
+    if let Ok(current) = std::env::current_dir()
+        && let Some(directory) = current
+            .ancestors()
+            .map(|directory| directory.join("crates"))
+            .find(|directory| directory.join("source_catalog.json").is_file())
+    {
+        return directory;
+    }
+
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .ancestors()
         .find(|directory| {
@@ -44,6 +81,13 @@ pub(crate) fn repository_root() -> PathBuf {
 }
 
 pub(crate) fn package_entries(crates: &Path) -> io::Result<Vec<io::Result<PackageEntry>>> {
+    let catalog = crates.join("source_catalog.json");
+    if catalog.exists() {
+        return catalog_entries(crates, &fs::read_to_string(catalog)?);
+    }
+
+    // This fallback serves Cargo-only harnesses during the staged migration.
+    // A present but invalid catalog always fails rather than changing owners.
     let manifest: toml::Value = fs::read_to_string(crates.join("Cargo.toml"))?
         .parse()
         .map_err(io::Error::other)?;
@@ -66,6 +110,53 @@ pub(crate) fn package_entries(crates: &Path) -> io::Result<Vec<io::Result<Packag
         entries.push(Ok(PackageEntry {
             name: name.to_owned(),
             directory,
+        }));
+    }
+
+    Ok(entries)
+}
+
+#[derive(serde::Deserialize)]
+struct SourceCatalog {
+    schema_version: u32,
+    packages: Vec<SourcePackage>,
+}
+
+#[derive(serde::Deserialize)]
+struct SourcePackage {
+    name: String,
+    directory: PathBuf,
+}
+
+fn catalog_entries(crates: &Path, contents: &str) -> io::Result<Vec<io::Result<PackageEntry>>> {
+    let catalog: SourceCatalog = serde_json::from_str(contents).map_err(io::Error::other)?;
+    if catalog.schema_version != 1 || catalog.packages.is_empty() {
+        return Err(io::Error::other("invalid workspace source catalog"));
+    }
+
+    let mut names = BTreeSet::new();
+    let mut directories = BTreeSet::new();
+    let mut entries = Vec::new();
+    for package in catalog.packages {
+        let relative = package
+            .directory
+            .strip_prefix("crates")
+            .map_err(io::Error::other)?;
+        if relative.as_os_str().is_empty()
+            || relative
+                .components()
+                .any(|component| !matches!(component, std::path::Component::Normal(_)))
+            || package.name.is_empty()
+            || !names.insert(package.name.clone())
+            || !directories.insert(relative.to_path_buf())
+        {
+            return Err(io::Error::other(
+                "invalid or duplicate source package ownership",
+            ));
+        }
+        entries.push(Ok(PackageEntry {
+            name: package.name,
+            directory: crates.join(relative),
         }));
     }
 

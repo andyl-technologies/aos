@@ -465,6 +465,10 @@ fn filter_query(query: &BrowseQuery) -> String {
 }
 
 /// Renders the registry-wide release directory.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 pub(crate) fn releases_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
@@ -553,6 +557,10 @@ pub(crate) fn releases_page(
 }
 
 /// Renders an individual release's contents and publication details.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 pub(crate) fn release_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,

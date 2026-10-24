@@ -51,7 +51,7 @@ pub(super) fn parse_sha256(value: &str, label: &str) -> Result<[u8; 32]> {
         bail!("{label} SHA-256 must contain exactly 64 hexadecimal digits");
     }
     let mut digest = [0_u8; 32];
-    for (index, chunk) in value.as_bytes().chunks_exact(2).enumerate() {
+    for (index, chunk) in value.as_bytes().as_chunks::<2>().0.iter().enumerate() {
         let pair = std::str::from_utf8(chunk).context("decoding SHA-256 text")?;
         digest[index] = u8::from_str_radix(pair, 16).context("decoding SHA-256 text")?;
     }
@@ -60,19 +60,18 @@ pub(super) fn parse_sha256(value: &str, label: &str) -> Result<[u8; 32]> {
 
 /// Parses raw, hexadecimal, base64, or PKCS#8 PEM Ed25519 public-key bytes.
 pub(super) fn parse_public_key(bytes: &[u8]) -> Result<VerifyingKey> {
-    if let Ok(text) = std::str::from_utf8(bytes) {
-        if text.trim_start().starts_with("-----BEGIN PUBLIC KEY-----") {
-            let encoded: String = text
-                .lines()
-                .filter(|line| !line.starts_with("-----"))
-                .map(str::trim)
-                .collect();
-            let der = base64::engine::general_purpose::STANDARD
-                .decode(encoded)
-                .context("invalid public-key PEM base64")?;
-            return VerifyingKey::from_public_key_der(&der)
-                .context("invalid Ed25519 public key DER");
-        }
+    if let Ok(text) = std::str::from_utf8(bytes)
+        && text.trim_start().starts_with("-----BEGIN PUBLIC KEY-----")
+    {
+        let encoded: String = text
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .map(str::trim)
+            .collect();
+        let der = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .context("invalid public-key PEM base64")?;
+        return VerifyingKey::from_public_key_der(&der).context("invalid Ed25519 public key DER");
     }
     let decoded = decode_fixed_material(bytes, 32, "Ed25519 public key")?;
     let key: [u8; 32] = decoded
@@ -83,18 +82,18 @@ pub(super) fn parse_public_key(bytes: &[u8]) -> Result<VerifyingKey> {
 
 /// Parses an Ed25519 PKCS#8 DER or PEM private key.
 pub(super) fn parse_signing_key(bytes: &[u8]) -> Result<SigningKey> {
-    if let Ok(text) = std::str::from_utf8(bytes) {
-        if text.trim_start().starts_with("-----BEGIN PRIVATE KEY-----") {
-            let encoded: String = text
-                .lines()
-                .filter(|line| !line.starts_with("-----"))
-                .map(str::trim)
-                .collect();
-            let der = base64::engine::general_purpose::STANDARD
-                .decode(encoded)
-                .context("invalid signing-key PEM base64")?;
-            return SigningKey::from_pkcs8_der(&der).context("invalid Ed25519 PKCS#8 signing key");
-        }
+    if let Ok(text) = std::str::from_utf8(bytes)
+        && text.trim_start().starts_with("-----BEGIN PRIVATE KEY-----")
+    {
+        let encoded: String = text
+            .lines()
+            .filter(|line| !line.starts_with("-----"))
+            .map(str::trim)
+            .collect();
+        let der = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .context("invalid signing-key PEM base64")?;
+        return SigningKey::from_pkcs8_der(&der).context("invalid Ed25519 PKCS#8 signing key");
     }
     SigningKey::from_pkcs8_der(bytes).context("invalid Ed25519 PKCS#8 signing key")
 }
@@ -108,7 +107,7 @@ fn decode_fixed_material(bytes: &[u8], length: usize, label: &str) -> Result<Vec
         .trim();
     if text.len() == length * 2 && text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         let mut decoded = Vec::with_capacity(length);
-        for chunk in text.as_bytes().chunks_exact(2) {
+        for chunk in text.as_bytes().as_chunks::<2>().0 {
             let pair = std::str::from_utf8(chunk).context("decoding hexadecimal key material")?;
             decoded.push(u8::from_str_radix(pair, 16).context("decoding key material")?);
         }
@@ -118,10 +117,10 @@ fn decode_fixed_material(bytes: &[u8], length: usize, label: &str) -> Result<Vec
         &base64::engine::general_purpose::STANDARD,
         &base64::engine::general_purpose::URL_SAFE_NO_PAD,
     ] {
-        if let Ok(decoded) = engine.decode(text) {
-            if decoded.len() == length {
-                return Ok(decoded);
-            }
+        if let Ok(decoded) = engine.decode(text)
+            && decoded.len() == length
+        {
+            return Ok(decoded);
         }
     }
     bail!("{label} does not contain exactly {length} bytes")

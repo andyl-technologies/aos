@@ -1,0 +1,280 @@
+{
+  "bazel_version": "9.2.0",
+  "checks": {
+    "all": "/nix/store/61svgd6vaiq5dzbxxx9jcdh398z3jyz2-aos-bazel-checks",
+    "metadata": "/nix/store/0jm0znwjz174nnjifi43cvnkkzczmskb-aos-bazel-package-metadata-parity",
+    "policy": "/nix/store/zl2wlzry9nnr0n7xvq2jhx3mv9p4vcsi-aos-bazel-policy-checks",
+    "protocol": "/nix/store/7vh0rygadc7p2rgadbzgwij7z8gsbn54-aos-bazel-protocol-checks",
+    "shared": "/nix/store/n9zdjciyincaavfhv5vmrm31919pq7ws-aos-bazel-shared-checks",
+    "sharedCargo": "/nix/store/fbkc3xkjr3kbchzszlg4jynn3rz4ryvf-aos-bazel-shared-cargo-oracle-1",
+    "sharedDeveloper": "/nix/store/qhpa4826mq3zwyqmfm8jq3bkf0nqdjvi-aos-bazel-shared-developer-tools-1",
+    "sharedFormat": "/nix/store/1zan8nkk22b7ixzi49pd1b81iqg404hq-aos-bazel-shared-format-1",
+    "sharedOracle": "/nix/store/5g2p1mf67ijwagj1nplvslibnn0kns6n-aos-bazel-shared-cargo-parity",
+    "sharedTests": "/nix/store/8lxm5ijclwgl8n0pvi3v06f5kk9i4ixq-aos-bazel-shared-tests-1"
+  },
+  "configuration_sha256": {
+    "crates/shared/aos-artifact-evidence/BUILD.bazel": "77a169cbaf404c899723359962e392e4bca1c98b0026d9c4326e093916b729bf",
+    "crates/shared/aos-core/BUILD.bazel": "a6c9e81e953cb7e3b8012c246c198b25b79cbfe4bf479e0c8fc2fc917985f918",
+    "crates/shared/aos-oci-types/BUILD.bazel": "304d9116e6790de63e96147397eded1ef624782cc016199eb0a33677b767e8ed",
+    "tests/build/_bazel-cargo-oracle.nix": "9a5c308557fd80ab2a954f7c258fde7424f56f08c3b7faed3592e059052e82f6",
+    "tests/build/_bazel-shared.nix": "179bc1740c8d45ecad92adf7c5a9765fbace1968cf59c387f9dd9368e41f316f",
+    "third_party/rust/BUILD.bazel": "52e1041bbdca24ebf2f49145fd19f8ef2b6b3e179670ee09d4d8da761c5fd5de",
+    "third_party/rust/core/sources.json": "5ab15730378d4843f1a418d633132debc7fa6d87d377406c0d4640ab6b4f1e0d",
+    "tools/bazel/tests/test_protocol_parity.py": "3b68611f7c0d9dd13bac29af7fa5516038ade8ad21329a32b2188e5d9b535f35",
+    "tools/bazel/tests/verify_protocol.py": "4cc7386f15fa37a33d4a48a57df0485c45e0fea4c0a6d6933786ea865b4d0aee"
+  },
+  "parity": {
+    "doctests": {
+      "//crates/shared/aos-artifact-evidence:doc": {
+        "src/lib.rs - (line 15) - compile": "ok"
+      },
+      "//crates/shared/aos-core:doc": {},
+      "//crates/shared/aos-oci-types:doc": {}
+    },
+    "examples": [],
+    "features": {
+      "anyhow@1.0.102": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "base64@0.22.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "block-buffer@0.10.4": [
+        []
+      ],
+      "cfg-if@1.0.4": [
+        []
+      ],
+      "cpufeatures@0.2.17": [
+        []
+      ],
+      "crypto-common@0.1.7": [
+        [
+          "std"
+        ]
+      ],
+      "digest@0.10.7": [
+        [
+          "alloc",
+          "block-buffer",
+          "core-api",
+          "default",
+          "std"
+        ]
+      ],
+      "generic-array@0.14.7": [
+        [
+          "more_lengths"
+        ]
+      ],
+      "itoa@1.0.18": [
+        []
+      ],
+      "memchr@2.8.2": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "proc-macro2@1.0.106": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "quote@1.0.46": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "serde@1.0.228": [
+        [
+          "default",
+          "derive",
+          "rc",
+          "serde_derive",
+          "std"
+        ]
+      ],
+      "serde_core@1.0.228": [
+        [
+          "rc",
+          "result",
+          "std"
+        ]
+      ],
+      "serde_derive@1.0.228": [
+        [
+          "default"
+        ]
+      ],
+      "serde_json@1.0.150": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "sha2@0.10.9": [
+        [
+          "compress",
+          "default",
+          "std"
+        ]
+      ],
+      "syn@2.0.118": [
+        [
+          "clone-impls",
+          "default",
+          "derive",
+          "parsing",
+          "printing",
+          "proc-macro"
+        ]
+      ],
+      "thiserror-impl@2.0.18": [
+        []
+      ],
+      "thiserror@2.0.18": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "typenum@1.20.1": [
+        []
+      ],
+      "unicode-ident@1.0.24": [
+        []
+      ],
+      "version_check@0.9.5": [
+        []
+      ],
+      "zmij@1.0.21": [
+        []
+      ]
+    },
+    "first_party_features": {
+      "aos-artifact-evidence": [
+        []
+      ],
+      "aos-core": [
+        []
+      ],
+      "aos-oci-types": [
+        []
+      ]
+    },
+    "schema_version": 1,
+    "targets": {
+      "//crates/shared/aos-artifact-evidence:unit": {
+        "executed": [
+          "consumption::tests::canonical_evidence_preserves_exact_encoding_and_rejects_duplicate_keys",
+          "consumption::tests::checked_evidence_accepts_selected_cross_platform_identity",
+          "consumption::tests::checked_evidence_answers_exact_consumer_and_provider_query",
+          "consumption::tests::checked_evidence_rejects_contract_observation_disagreement",
+          "consumption::tests::checked_evidence_rejects_search_entries_outside_the_store",
+          "consumption::tests::evidence_admission_honors_the_exact_effective_byte_bound",
+          "consumption::tests::exact_query_rejects_another_provider",
+          "consumption::tests::observed_helper_evidence_requires_access_output_and_retention",
+          "consumption::tests::observed_path_arguments_accept_empty_and_newline_values",
+          "consumption::tests::observed_path_arguments_reject_nul_values",
+          "identity::tests::artifact_closure_identity_excludes_locators_and_binds_bytes_and_topology",
+          "identity::tests::artifact_content_identity_depends_only_on_the_nar"
+        ],
+        "ignored": []
+      },
+      "//crates/shared/aos-core:unit": {
+        "executed": [
+          "digest::tests::digest_round_trips_strictly",
+          "identity::tests::local_keys_enforce_the_closed_grammar",
+          "json::tests::canonical_encoding_is_required_exactly",
+          "json::tests::member_order_is_stable",
+          "json::tests::parser_rejects_ambiguous_json",
+          "limits::tests::accepts_values_inside_every_limit",
+          "limits::tests::bounded_writer_counts_only_accepted_bytes",
+          "limits::tests::rejects_each_resource_boundary",
+          "limits::tests::retains_strict_and_closed_schema_behavior"
+        ],
+        "ignored": []
+      },
+      "//crates/shared/aos-oci-types:golden": {
+        "executed": [
+          "container_release_golden_vector",
+          "descriptor_golden_vector",
+          "distribution_error_golden_vector",
+          "image_config_golden_vector",
+          "manifest_and_index_golden_vectors"
+        ],
+        "ignored": []
+      },
+      "//crates/shared/aos-oci-types:reference_vectors": {
+        "executed": [
+          "nix_and_rust_reference_parsers_share_vectors"
+        ],
+        "ignored": []
+      },
+      "//crates/shared/aos-oci-types:unit": {
+        "executed": [
+          "annotations::tests::enforces_each_exact_byte_boundary",
+          "annotations::tests::enforces_the_aggregate_boundary_without_mutating_on_failure",
+          "annotations::tests::preserves_unknown_annotations_in_key_order",
+          "annotations::tests::rejects_duplicate_keys_before_map_collapse",
+          "canonical::tests::bounds_input_before_decoding",
+          "canonical::tests::rejects_floating_point_at_any_depth",
+          "canonical::tests::sorts_every_object_and_preserves_array_order",
+          "digest::tests::accepts_only_the_exact_canonical_wire_form",
+          "digest::tests::hashes_and_verifies_the_empty_vector",
+          "digest::tests::serde_uses_a_json_string",
+          "distribution::tests::rejects_unknown_codes_empty_envelopes_and_float_detail",
+          "distribution::tests::round_trips_every_frozen_code",
+          "media_type::tests::classifications_are_closed",
+          "media_type::tests::every_frozen_media_type_round_trips",
+          "media_type::tests::rejects_schema_one_and_unlisted_extensions",
+          "model::config::tests::accepts_a_bounded_exec_form_image_config",
+          "model::config::tests::empty_object_rejects_nonempty_map_values",
+          "model::config::tests::rejects_bad_runtime_strings_and_paths",
+          "model::config::tests::rejects_rootfs_and_history_count_mismatches",
+          "model::descriptor::tests::rejects_external_urls_and_nonartifact_type_extensions",
+          "model::descriptor::tests::validates_exact_content_and_embedded_data",
+          "model::descriptor::tests::validates_platform_tokens_and_reserved_features",
+          "model::manifest::tests::accepts_runnable_and_artifact_manifest_shapes",
+          "model::manifest::tests::enforces_layer_descriptor_and_platform_counts",
+          "model::manifest::tests::rejects_mixed_media_families_and_malformed_artifacts",
+          "model::manifest::tests::rejects_schema_one_before_graph_use",
+          "reference::tests::manifest_reference_never_falls_back_from_digest_syntax",
+          "reference::tests::repository_parser_accepts_each_canonical_separator",
+          "reference::tests::repository_parser_rejects_noncanonical_inputs",
+          "reference::tests::tag_parser_is_case_sensitive_and_bounded",
+          "release::tests::accepts_and_round_trips_the_complete_required_contract",
+          "release::tests::bounds_platform_collections_and_json_descriptor_sizes",
+          "release::tests::canonical_parsers_reject_semantically_equivalent_pretty_json",
+          "release::tests::definition_attribute_matching_is_closed_to_one_system_variant",
+          "release::tests::enforces_identity_and_nix_provenance_bounds",
+          "release::tests::rejects_unknown_fields_at_every_signed_schema_boundary",
+          "release::tests::reports_exact_schema_identity_and_media_errors",
+          "release::tests::requires_every_evidence_referrer_media_role",
+          "release::tests::requires_exact_oci_index_and_platform_manifest_roles",
+          "release::tests::signature_input_binds_every_unsigned_final_release_field",
+          "release::tests::strict_dsse_envelope_preserves_exact_canonical_input_and_pae",
+          "release::tests::strict_dsse_envelope_rejects_ambiguous_or_noncanonical_encoding"
+        ],
+        "ignored": []
+      }
+    }
+  },
+  "platform": "x86_64-linux",
+  "python_regressions": 48,
+  "rust_version": "1.98.1",
+  "schema_version": 1,
+  "scope": "native Linux shared-library graph before production cutover",
+  "source_archive_versions_and_checksums_match_cargo": true,
+  "source_archives": 36
+}

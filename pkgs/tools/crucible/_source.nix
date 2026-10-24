@@ -22,6 +22,11 @@ in
       && (
         pathString
         == repoRootString
+        # The guest ABI test reads its Bazel and Nix qualification contracts.
+        || pathString == "${repoRootString}/MODULE.bazel"
+        || pathString == "${repoRootString}/default.nix"
+        || pathString == "${repoRootString}/tests/build"
+        || pathString == "${repoRootString}/tests/build/_bazel-guest.nix"
         || pathString == "${repoRootString}/AGENTS.md"
         || pathString == "${repoRootString}/default.nix"
         || pathString == "${repoRootString}/LICENSE"

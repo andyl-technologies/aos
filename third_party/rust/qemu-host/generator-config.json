@@ -1,0 +1,120 @@
+{
+  "annotations": {
+    "libsqlite3-sys *": {
+      "additive_build_file": null,
+      "additive_build_file_content": null,
+      "alias_rule": null,
+      "build_script_compile_data": null,
+      "build_script_data": [
+        "@aos_native//:sqlite_files"
+      ],
+      "build_script_data_glob": null,
+      "build_script_deps": null,
+      "build_script_env": {
+        "LIBSQLITE3_SYS_USE_PKG_CONFIG": "1",
+        "PKG_CONFIG": "$(execpath @aos_native//:sqlite/pkg-config)",
+        "PKG_CONFIG_ALLOW_CROSS": "1"
+      },
+      "build_script_exec_properties": null,
+      "build_script_link_deps": null,
+      "build_script_proc_macro_deps": null,
+      "build_script_rundir": null,
+      "build_script_rustc_env": null,
+      "build_script_toolchains": null,
+      "build_script_tools": [
+        "@aos_native//:sqlite/pkg-config",
+        "@aos_native//:sqlite_pkg_config_tools"
+      ],
+      "build_script_use_default_shell_env": null,
+      "compile_data": null,
+      "compile_data_glob": null,
+      "compile_data_glob_excludes": null,
+      "crate_features": null,
+      "data": null,
+      "data_glob": null,
+      "deps": null,
+      "disable_pipelining": false,
+      "extra_aliased_targets": null,
+      "gen_binaries": null,
+      "gen_build_script": null,
+      "label_injections": null,
+      "link_deps": [
+        "@aos_native//:sqlite"
+      ],
+      "override_targets": null,
+      "patch_args": null,
+      "patch_tool": null,
+      "patches": null,
+      "proc_macro_deps": null,
+      "rustc_env": null,
+      "rustc_env_files": null,
+      "rustc_flags": null,
+      "shallow_since": null
+    },
+    "zstd-sys *": {
+      "additive_build_file": null,
+      "additive_build_file_content": null,
+      "alias_rule": null,
+      "build_script_compile_data": null,
+      "build_script_data": [
+        "@aos_native//:zstd_files"
+      ],
+      "build_script_data_glob": null,
+      "build_script_deps": null,
+      "build_script_env": {
+        "PKG_CONFIG": "$(execpath @aos_native//:zstd/pkg-config)",
+        "PKG_CONFIG_ALLOW_CROSS": "1",
+        "ZSTD_SYS_USE_PKG_CONFIG": "1"
+      },
+      "build_script_exec_properties": null,
+      "build_script_link_deps": null,
+      "build_script_proc_macro_deps": null,
+      "build_script_rundir": null,
+      "build_script_rustc_env": null,
+      "build_script_toolchains": null,
+      "build_script_tools": [
+        "@aos_native//:zstd/pkg-config",
+        "@aos_native//:zstd_pkg_config_tools"
+      ],
+      "build_script_use_default_shell_env": null,
+      "compile_data": null,
+      "compile_data_glob": null,
+      "compile_data_glob_excludes": null,
+      "crate_features": null,
+      "data": null,
+      "data_glob": null,
+      "deps": null,
+      "disable_pipelining": false,
+      "extra_aliased_targets": null,
+      "gen_binaries": null,
+      "gen_build_script": null,
+      "label_injections": null,
+      "link_deps": [
+        "@aos_native//:zstd"
+      ],
+      "override_targets": null,
+      "patch_args": null,
+      "patch_tool": null,
+      "patches": null,
+      "proc_macro_deps": null,
+      "rustc_env": null,
+      "rustc_env_files": null,
+      "rustc_flags": null,
+      "shallow_since": null
+    }
+  },
+  "generate_binaries": false,
+  "generate_build_scripts": true,
+  "rendering": {
+    "generate_cargo_toml_env_vars": true,
+    "generate_rules_license_metadata": false,
+    "generate_target_compatible_with": true,
+    "incompatible_no_root_alias_targets": false,
+    "regen_command": "aos-dev bazel update-deps qemu-host",
+    "repository_name": "aos_qemu_host_crates"
+  },
+  "supported_platform_triples": [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu"
+  ]
+}

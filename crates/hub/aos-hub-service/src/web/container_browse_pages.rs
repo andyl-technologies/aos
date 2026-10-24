@@ -46,6 +46,10 @@ fn tag_href(slug: &str, repository: &RepositoryName, tag: &str) -> String {
 }
 
 /// Renders containers from signed release roots, independently of mutable tags.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 pub(crate) fn release_index(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
@@ -331,6 +335,10 @@ fn manifest_summary(manifest: &OciAdminManifestRecord) -> String {
 
 /// Renders the public OCI repository index for one visible registry.
 #[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 pub fn repository_index(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
@@ -406,6 +414,10 @@ pub fn repository_index(
 
 /// Renders one public OCI repository and all current tag pointers.
 #[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 pub fn repository(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
@@ -485,6 +497,10 @@ pub fn repository(
 
 /// Renders one public tag with an immutable digest pull and platform matrix.
 #[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 pub fn tag(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
@@ -550,6 +566,10 @@ pub fn tag(
 
 /// Renders one immutable public manifest and its runnable platform matrix.
 #[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 pub fn manifest(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
@@ -621,6 +641,10 @@ pub fn manifest(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Rendering fixtures use the portable Hub clock for request timing."
+)]
 mod tests {
     use super::*;
     use aos_oci_types::{MediaType, Sha256Digest, Tag};

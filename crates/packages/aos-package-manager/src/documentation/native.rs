@@ -526,80 +526,6 @@ fn cache(command: &DocumentationCacheCommand, printer: &Printer) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn source() -> &'static [u8] {
-        br#"{ "schema":"aos.module.documentation", "scope":["package","sample"], "system":"x86_64-linux", "packages":[{"name":"sample","version":"1"}], "options":[], "abilities":{} }"#
-    }
-
-    #[test]
-    fn native_document_byte_binding_preserves_identity_and_rejects_modification() {
-        let locator = aos_registry_format::consumer::NativeArtifactMeta {
-            store_path: "/nix/store/00000000000000000000000000000000-native-docs".into(),
-            nar_hash: format!("sha256:{}", "0".repeat(64)),
-            nar_size: 512,
-            references: Vec::new(),
-            document_sha256: format!("sha256:{}", hex::encode(Sha256::digest(source()))),
-            document_size: source().len() as u64,
-        };
-
-        locator.validate().unwrap();
-        let bytes = source().to_vec();
-        aos_deployment::artifact::validate_document_bytes(&locator, &bytes).unwrap();
-        let document = RuntimeDocument::from_json(&bytes).unwrap();
-        document
-            .verify_package_identity("sample", "1", "x86_64-linux")
-            .unwrap();
-        assert_eq!(bytes, source());
-        assert!(
-            document
-                .verify_package_identity("sample", "2", "x86_64-linux")
-                .is_err()
-        );
-        assert!(
-            document
-                .verify_package_identity("sample", "1", "aarch64-linux")
-                .is_err()
-        );
-
-        assert!(aos_deployment::artifact::validate_document_bytes(&locator, b"{}").is_err());
-    }
-
-    #[test]
-    fn installed_browser_uses_shared_native_rendering_and_escapes_coordinates() {
-        let document = RuntimeDocument::from_json(source()).unwrap();
-        let documents = vec![InstalledReference {
-            name: "<sample>".into(),
-            version: "1".into(),
-            registry: "<private>".into(),
-            registry_commit: None,
-            bytes: source().to_vec(),
-            document,
-        }];
-
-        let index =
-            String::from_utf8(http_response(&documents, b"GET / HTTP/1.1\r\n\r\n")).unwrap();
-        assert!(index.contains("&lt;sample&gt;"));
-        assert!(index.contains("&lt;private&gt;"));
-        let detail = String::from_utf8(http_response(
-            &documents,
-            b"GET /documents/0 HTTP/1.1\r\n\r\n",
-        ))
-        .unwrap();
-        assert!(detail.contains("Runtime abilities"));
-        assert!(
-            String::from_utf8(http_response(
-                &documents,
-                b"GET /documents/9 HTTP/1.1\r\n\r\n"
-            ))
-            .unwrap()
-            .contains("404 Not Found")
-        );
-    }
-}
-
 /// Retrieves exact bytes and release identity from the authenticated native service.
 async fn remote(
     hub: &str,
@@ -709,4 +635,78 @@ pub(crate) async fn remote_schema(
 ) -> Result<()> {
     let document = remote(hub, registry, token, package, version, platform).await?;
     super::write_bytes(&document.bytes, None)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn source() -> &'static [u8] {
+        br#"{ "schema":"aos.module.documentation", "scope":["package","sample"], "system":"x86_64-linux", "packages":[{"name":"sample","version":"1"}], "options":[], "abilities":{} }"#
+    }
+
+    #[test]
+    fn native_document_byte_binding_preserves_identity_and_rejects_modification() {
+        let locator = aos_registry_format::consumer::NativeArtifactMeta {
+            store_path: "/nix/store/00000000000000000000000000000000-native-docs".into(),
+            nar_hash: format!("sha256:{}", "0".repeat(64)),
+            nar_size: 512,
+            references: Vec::new(),
+            document_sha256: format!("sha256:{}", hex::encode(Sha256::digest(source()))),
+            document_size: source().len() as u64,
+        };
+
+        locator.validate().unwrap();
+        let bytes = source().to_vec();
+        aos_deployment::artifact::validate_document_bytes(&locator, &bytes).unwrap();
+        let document = RuntimeDocument::from_json(&bytes).unwrap();
+        document
+            .verify_package_identity("sample", "1", "x86_64-linux")
+            .unwrap();
+        assert_eq!(bytes, source());
+        assert!(
+            document
+                .verify_package_identity("sample", "2", "x86_64-linux")
+                .is_err()
+        );
+        assert!(
+            document
+                .verify_package_identity("sample", "1", "aarch64-linux")
+                .is_err()
+        );
+
+        assert!(aos_deployment::artifact::validate_document_bytes(&locator, b"{}").is_err());
+    }
+
+    #[test]
+    fn installed_browser_uses_shared_native_rendering_and_escapes_coordinates() {
+        let document = RuntimeDocument::from_json(source()).unwrap();
+        let documents = vec![InstalledReference {
+            name: "<sample>".into(),
+            version: "1".into(),
+            registry: "<private>".into(),
+            registry_commit: None,
+            bytes: source().to_vec(),
+            document,
+        }];
+
+        let index =
+            String::from_utf8(http_response(&documents, b"GET / HTTP/1.1\r\n\r\n")).unwrap();
+        assert!(index.contains("&lt;sample&gt;"));
+        assert!(index.contains("&lt;private&gt;"));
+        let detail = String::from_utf8(http_response(
+            &documents,
+            b"GET /documents/0 HTTP/1.1\r\n\r\n",
+        ))
+        .unwrap();
+        assert!(detail.contains("Runtime abilities"));
+        assert!(
+            String::from_utf8(http_response(
+                &documents,
+                b"GET /documents/9 HTTP/1.1\r\n\r\n"
+            ))
+            .unwrap()
+            .contains("404 Not Found")
+        );
+    }
 }

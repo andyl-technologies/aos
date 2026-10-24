@@ -303,5 +303,6 @@ fn verify_file_closure(envelope: &ManifestEnvelopeV1, files: &[CapturedFile]) ->
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 #[path = "verify_tests.rs"]
 pub(crate) mod tests;

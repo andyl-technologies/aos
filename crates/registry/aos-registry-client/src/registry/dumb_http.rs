@@ -257,7 +257,7 @@ pub async fn fetch_with_optional_head(
             let reader = &reader;
             let budget = &budget;
             verified.invalidate();
-            stream::iter(missing.into_iter())
+            stream::iter(missing)
                 .map(|oid| async move {
                     fetch_loose(reader, base_url, objects_dir, &oid, progress, &budget).await
                 })

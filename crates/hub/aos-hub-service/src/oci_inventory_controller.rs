@@ -138,6 +138,10 @@ struct InventoryDispatchTracker {
 }
 
 impl InventoryDispatchTracker {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Uses the portable Hub clock for request timing and runtime budgets."
+    )]
     fn new(limits: OciInventoryDispatchBudget) -> Result<Self> {
         limits.validate()?;
         Ok(Self {
@@ -150,6 +154,10 @@ impl InventoryDispatchTracker {
         })
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Uses the portable Hub clock for request timing and runtime budgets."
+    )]
     fn remaining_duration(&self) -> Option<Duration> {
         self.limits
             .max_duration
@@ -654,6 +662,10 @@ impl OciProviderInventoryController {
             .map(Some)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keeps the existing transport and storage context explicit."
+    )]
     async fn process_generation(
         &self,
         placement: &aos_hub_db::db::SurfacePlacementRecord,
@@ -2052,6 +2064,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::assertions_on_constants,
+        reason = "Checks the configured inventory budget constants against their required bounds."
+    )]
     fn native_and_worker_use_the_same_strict_dispatch_contract() {
         NATIVE_OCI_INVENTORY_DISPATCH_BUDGET.validate().unwrap();
         WORKER_OCI_INVENTORY_DISPATCH_BUDGET.validate().unwrap();

@@ -262,6 +262,10 @@ impl RpcService {
         Ok(record)
     }
 
+    #[allow(
+        clippy::type_complexity,
+        reason = "The tuple preserves the existing normalized persistence field order."
+    )]
     pub(in crate::service) async fn plan_endpoint_mutation(
         &self,
         auth: Option<&str>,
@@ -873,6 +877,10 @@ impl RpcService {
     }
 
     /// Returns normalized endpoint columns for persistence.
+    #[allow(
+        clippy::type_complexity,
+        reason = "The tuple preserves the existing normalized persistence field order."
+    )]
     pub(in crate::service) fn storage_endpoint_parts(
         spec: &pb::BindingSpec,
     ) -> (

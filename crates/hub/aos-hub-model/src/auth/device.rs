@@ -35,6 +35,10 @@ const USER_CODE_ALPHABET: &[u8] = b"ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 /// This is the long secret the CLI polls with; only its SHA-256 hash is
 /// persisted.
 #[must_use]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Hub credentials require unpredictable host entropy"
+)]
 pub fn new_device_code() -> String {
     let bytes: [u8; 32] = rand::rng().random();
     hex::encode(bytes)
@@ -45,6 +49,10 @@ pub fn new_device_code() -> String {
 /// Each character is drawn from the `USER_CODE_ALPHABET`, which omits the
 /// confusable `0`/`O`/`1`/`I` so the human can read and type it reliably.
 #[must_use]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Hub credentials require unpredictable host entropy"
+)]
 pub fn new_user_code() -> String {
     let mut rng = rand::rng();
     let mut out = String::with_capacity(9);

@@ -650,7 +650,34 @@ fn require_store_executable_path(value: &str) -> Result<()> {
     Ok(())
 }
 
+/// Enumerates the complete captured native document set for one image stage.
+pub(crate) fn native_deployment_files(stage: &str) -> Vec<(AssemblyFileKind, &'static str)> {
+    use AssemblyFileKind::*;
+    match stage {
+        "initrd" => vec![
+            (InitrdTransaction, "transaction.json"),
+            (InitrdPackages, "packages.json"),
+            (InitrdAdmission, "admission.json"),
+            (InitrdAdmissionDigest, "admission-sha256"),
+            (InitrdEvaluation, "evaluation.json"),
+        ],
+        "host" => vec![
+            (HostTransaction, "transaction.json"),
+            (HostPackages, "packages.json"),
+            (HostAdmission, "admission.json"),
+            (HostAdmissionDigest, "admission-sha256"),
+            (HostEvaluation, "evaluation.json"),
+            (HostInstalled, "installed.json"),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Fixture decoding and construction failures must fail these tests"
+)]
 mod tests {
     use super::{ImageBudgetsV1, require_store_executable_path};
 
@@ -676,7 +703,7 @@ mod tests {
     fn rejects_unanchored_and_malformed_assembly_tool_paths() {
         for executable in [
             format!("/tmp/{STORE_HASH}-dosfstools/sbin/mkfs.vfat"),
-            format!("/nix/store/short-dosfstools/sbin/mkfs.vfat"),
+            "/nix/store/short-dosfstools/sbin/mkfs.vfat".to_owned(),
             format!("/nix/store/{STORE_HASH}-dosfstools"),
             format!("/nix/store/{STORE_HASH}-dosfstools/sbin"),
             format!("/nix/store/{STORE_HASH}-dosfstools/share/bin/mkfs.vfat"),
@@ -704,28 +731,5 @@ mod tests {
         let current: ImageBudgetsV1 = serde_json::from_str(updated).unwrap();
         assert_eq!(current.converted_download_limit_mib(), 896);
         assert_eq!(current.recovery_bundle_limit_mib(), 1024);
-    }
-}
-
-/// Enumerates the complete captured native document set for one image stage.
-pub(crate) fn native_deployment_files(stage: &str) -> Vec<(AssemblyFileKind, &'static str)> {
-    use AssemblyFileKind::*;
-    match stage {
-        "initrd" => vec![
-            (InitrdTransaction, "transaction.json"),
-            (InitrdPackages, "packages.json"),
-            (InitrdAdmission, "admission.json"),
-            (InitrdAdmissionDigest, "admission-sha256"),
-            (InitrdEvaluation, "evaluation.json"),
-        ],
-        "host" => vec![
-            (HostTransaction, "transaction.json"),
-            (HostPackages, "packages.json"),
-            (HostAdmission, "admission.json"),
-            (HostAdmissionDigest, "admission-sha256"),
-            (HostEvaluation, "evaluation.json"),
-            (HostInstalled, "installed.json"),
-        ],
-        _ => Vec::new(),
     }
 }

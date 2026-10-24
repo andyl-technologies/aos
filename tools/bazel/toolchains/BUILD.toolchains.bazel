@@ -1,0 +1,214 @@
+load("@rules_cc//cc:defs.bzl", "cc_toolchain")
+load(":empty_cc.bzl", "empty_cc_info")
+load("@rules_cc//cc/private/toolchain:unix_cc_toolchain_config.bzl", "cc_toolchain_config")
+load(
+    "@rules_rust//rust:toolchain.bzl",
+    "rust_analyzer_toolchain",
+    "rust_stdlib_filegroup",
+    "rust_toolchain",
+    "rustfmt_toolchain",
+)
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files([
+    "paths.bzl", "closure.json", "bin/rustc",
+    "developer/bin/rust-analyzer", "developer/bin/proc-macro-srv",
+])
+
+filegroup(name = "python", srcs = ["bin/python3"])
+filegroup(name = "bash", srcs = ["bin/bash"])
+
+# The manifest fingerprints the realized Nix reference closure, including
+# support libraries reached through absolute immutable store references.
+filegroup(
+    name = "cc_inputs",
+    srcs = ["closure.json"] + glob([
+        "bin/*",
+        "gcc/bin/*",
+        "gcc/include/**",
+        "gcc/lib/gcc/**",
+        "gcc/libexec/gcc/**",
+        "binutils/bin/*",
+        "sysroot/lib/**",
+        "sysroot-dev/include/**",
+        "sysroot-dev/lib/**",
+        "gcc-runtime/lib/**",
+    ], allow_empty = True),
+)
+filegroup(name = "rustc", srcs = ["bin/rustc"])
+filegroup(name = "rustdoc", srcs = ["bin/rustdoc"])
+filegroup(name = "cargo", srcs = ["bin/cargo"])
+filegroup(name = "clippy", srcs = ["developer/bin/clippy-driver"])
+filegroup(name = "rustfmt", srcs = ["developer/bin/rustfmt"])
+filegroup(name = "rust_sources", srcs = glob(["developer/rust-src/**"]))
+filegroup(
+    name = "rustc_lib",
+    srcs = ["closure.json"] + glob([
+        "lib/*.so*",
+        "lib/rustlib/@TRIPLE@/codegen-backends/*.so",
+    ], allow_empty = True),
+)
+
+rust_stdlib_filegroup(
+    name = "rust_std",
+    srcs = glob([
+        "lib/rustlib/@TRIPLE@/lib/*.rlib",
+        "lib/rustlib/@TRIPLE@/lib/*.rmeta",
+        "lib/rustlib/@TRIPLE@/lib/*.so*",
+        "lib/rustlib/@TRIPLE@/lib/*.a",
+        "lib/rustlib/@TRIPLE@/lib/self-contained/**",
+    ], allow_empty = True),
+)
+
+# The compiler and linker execute on Linux; only these standard libraries and
+# the final artifact target WebAssembly. No native C/C++ toolchain matches it.
+rust_stdlib_filegroup(
+    name = "wasm_std",
+    srcs = glob([
+        "lib/rustlib/wasm32-unknown-unknown/lib/*.rlib",
+        "lib/rustlib/wasm32-unknown-unknown/lib/*.rmeta",
+    ]),
+)
+
+filegroup(
+    name = "rust_lld",
+    srcs = ["lib/rustlib/@TRIPLE@/bin/rust-lld"],
+)
+
+empty_cc_info(name = "wasm_allocator")
+
+rust_toolchain(
+    name = "rust_wasm",
+    rustc = ":rustc",
+    rust_doc = ":rustdoc",
+    cargo = ":cargo",
+    clippy_driver = ":clippy",
+    rustc_lib = ":rustc_lib",
+    rust_std = ":wasm_std",
+    linker = ":rust_lld",
+    linker_preference = "rust",
+    linker_type = "direct",
+    allocator_library = ":wasm_allocator",
+    global_allocator_library = ":wasm_allocator",
+    binary_ext = ".wasm",
+    staticlib_ext = ".a",
+    dylib_ext = ".wasm",
+    stdlib_linkflags = [],
+    default_edition = "2024",
+    exec_triple = "@TRIPLE@",
+    target_triple = "wasm32-unknown-unknown",
+    version = "@RUST_VERSION@",
+    channel = "stable",
+)
+
+toolchain(
+    name = "rust_wasm_registered",
+    toolchain = ":rust_wasm",
+    toolchain_type = "@rules_rust//rust:toolchain_type",
+    exec_compatible_with = ["@platforms//cpu:@CPU@", "@platforms//os:linux"],
+    target_compatible_with = ["@platforms//cpu:wasm32", "@platforms//os:none"],
+)
+
+rust_toolchain(
+    name = "rust",
+    rustc = ":rustc",
+    rust_doc = ":rustdoc",
+    cargo = ":cargo",
+    clippy_driver = ":clippy",
+    rustc_lib = ":rustc_lib",
+    rust_std = ":rust_std",
+    allocator_library = "@rules_rust//ffi/rs:empty",
+    binary_ext = "",
+    staticlib_ext = ".a",
+    dylib_ext = ".so",
+    stdlib_linkflags = ["-ldl", "-lpthread"],
+    default_edition = "2024",
+    exec_triple = "@TRIPLE@",
+    target_triple = "@TRIPLE@",
+    version = "@RUST_VERSION@",
+    channel = "stable",
+)
+
+toolchain(
+    name = "rust_registered",
+    toolchain = ":rust",
+    toolchain_type = "@rules_rust//rust:toolchain_type",
+    exec_compatible_with = ["@platforms//cpu:@CPU@", "@platforms//os:linux"],
+    target_compatible_with = ["@platforms//cpu:@CPU@", "@platforms//os:linux"],
+)
+
+cc_toolchain(
+    name = "cc",
+    toolchain_identifier = "aos-@TRIPLE@",
+    toolchain_config = ":cc_config",
+    all_files = ":cc_inputs",
+    ar_files = ":cc_inputs",
+    as_files = ":cc_inputs",
+    compiler_files = ":cc_inputs",
+    dwp_files = ":cc_inputs",
+    linker_files = ":cc_inputs",
+    objcopy_files = ":cc_inputs",
+    strip_files = ":cc_inputs",
+    supports_param_files = 1,
+)
+
+cc_toolchain_config(
+    name = "cc_config",
+    cpu = "@CPU@",
+    compiler = "gcc",
+    toolchain_identifier = "aos-@TRIPLE@",
+    host_system_name = "@TRIPLE@",
+    target_system_name = "@TRIPLE@",
+    target_libc = "glibc",
+    abi_version = "gnu",
+    abi_libc_version = "glibc",
+    cxx_builtin_include_directories = @INCLUDE_DIRECTORIES@,
+    tool_paths = @TOOL_PATHS@,
+    link_libs = ["-lstdc++", "-lm"],
+    link_flags = ["-L@GCC_RUNTIME@/lib", "-Wl,-rpath,@GCC_RUNTIME@/lib"],
+    opt_compile_flags = ["-O2", "-DNDEBUG"],
+    dbg_compile_flags = ["-g"],
+    supports_start_end_lib = False,
+)
+
+toolchain(
+    name = "cc_registered",
+    toolchain = ":cc",
+    toolchain_type = "@bazel_tools//tools/cpp:toolchain_type",
+    exec_compatible_with = ["@platforms//cpu:@CPU@", "@platforms//os:linux"],
+    target_compatible_with = ["@platforms//cpu:@CPU@", "@platforms//os:linux"],
+)
+
+rustfmt_toolchain(
+    name = "rustfmt_tools",
+    rustfmt = ":rustfmt",
+    rustc = ":rustc",
+    rustc_lib = ":rustc_lib",
+)
+
+toolchain(
+    name = "rustfmt_registered",
+    toolchain = ":rustfmt_tools",
+    toolchain_type = "@rules_rust//rust/rustfmt:toolchain_type",
+    exec_compatible_with = ["@platforms//cpu:@CPU@", "@platforms//os:linux"],
+    target_compatible_with = ["@platforms//cpu:@CPU@", "@platforms//os:linux"],
+)
+
+rust_analyzer_toolchain(
+    name = "analyzer_tools",
+    rust_analyzer = "developer/bin/rust-analyzer",
+    proc_macro_srv = "developer/bin/proc-macro-srv",
+    rustc = "bin/rustc",
+    rustc_srcs = ":rust_sources",
+    rustc_srcs_path = "developer/rust-src/library",
+    version = "@RUST_VERSION@",
+)
+
+toolchain(
+    name = "analyzer_registered",
+    toolchain = ":analyzer_tools",
+    toolchain_type = "@rules_rust//rust/rust_analyzer:toolchain_type",
+    exec_compatible_with = ["@platforms//cpu:@CPU@", "@platforms//os:linux"],
+    target_compatible_with = ["@platforms//cpu:@CPU@", "@platforms//os:linux"],
+)

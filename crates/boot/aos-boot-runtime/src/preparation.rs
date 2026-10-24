@@ -247,6 +247,10 @@ fn outputs(invocation: &Invocation) -> Value {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::expect_used,
+    reason = "Test fixtures and assertions fail immediately on unexpected errors"
+)]
 mod tests {
     use std::sync::{
         Arc,

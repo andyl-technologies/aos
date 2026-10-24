@@ -1,0 +1,39 @@
+load("//tools/bazel/rules:compile.bzl", "cc_binary", "rust_binary", "rust_proc_macro")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:package.bzl", "aos_package")
+
+rust_proc_macro(
+    name = "execution_macro",
+    srcs = ["macro.rs"],
+    edition = "2024",
+)
+
+rust_binary(
+    name = "rust_app",
+    srcs = ["main.rs"],
+    edition = "2024",
+    proc_macro_deps = [":execution_macro"],
+    link_deps = ["//tools/bazel/tests/native-libraries:probe", "@aos_native//:static_runtime"],
+)
+
+cc_binary(
+    name = "c_app",
+    srcs = ["//tools/bazel/tests/native-libraries:main.c"],
+    deps = ["//tools/bazel/tests/native-libraries:probe", "@aos_native//:static_runtime"],
+)
+
+aos_package(
+    name = "package",
+    package_name = "aos-static-runtime-fixture",
+    version = "1",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+    artifacts = {":rust_app": "bin/static-rust", ":c_app": "bin/static-c"},
+    executables = ["bin/static-rust", "bin/static-c"],
+)
+
+aos_license_check(
+    name = "license_closure",
+    roots = [":rust_app", ":c_app"],
+    license_domain = "apache-host",
+)

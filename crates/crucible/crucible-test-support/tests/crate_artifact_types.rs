@@ -5,12 +5,19 @@
 //! builds the public `crucible-engine` binary, `crucible-qemu-debug-gateway` builds the
 //! GPL-side gateway process, `crucible-guest` builds its optional in-guest
 //! emitter binary, `crucible-store` builds the fleet-store binary, and every
-//! other Crucible package remains a library crate.
+//! other Crucible package remains a library crate. The control server also
+//! declares one explicitly gated test-oracle executable, excluded from default
+//! builds and ordinary binary discovery.
 
 #![forbid(unsafe_code)]
 
 #[path = "support/workspace.rs"]
 mod workspace;
+
+#[path = "support/artifact_type_binaries.rs"]
+mod binary_artifacts;
+
+use binary_artifacts::{forbid_binary_targets, gateway_test_oracle_failures};
 
 use std::error::Error;
 use std::fs;
@@ -590,7 +597,11 @@ fn artifact_type_failures(
                     ));
                 }
             }
-            forbid_binary_targets(spec.package, manifest, layout, &mut failures);
+            if spec.package == "crucible-control-server" {
+                failures.extend(gateway_test_oracle_failures(manifest, layout));
+            } else {
+                forbid_binary_targets(spec.package, manifest, layout, &mut failures);
+            }
         }
     }
 
@@ -645,33 +656,6 @@ fn bin_targets(manifest: &Value) -> Vec<BinTarget> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-fn forbid_binary_targets(
-    package: &str,
-    manifest: &Value,
-    layout: &PackageLayout,
-    failures: &mut Vec<String>,
-) {
-    let bins = bin_targets(manifest);
-    if !bins.is_empty() {
-        failures.push(format!(
-            "{}: library/plugin package must not declare [[bin]] targets",
-            package
-        ));
-    }
-    if layout.has_main_rs {
-        failures.push(format!(
-            "{}: library/plugin package must not have an implicit binary target at src/main.rs",
-            package
-        ));
-    }
-    if layout.has_src_bin_dir {
-        failures.push(format!(
-            "{}: library/plugin package must not have implicit binary targets under src/bin",
-            package
-        ));
-    }
 }
 
 fn contains_finding(findings: &[String], needle: &str) -> bool {

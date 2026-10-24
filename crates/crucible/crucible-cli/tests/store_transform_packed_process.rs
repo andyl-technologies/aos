@@ -182,7 +182,9 @@ target_pack_bytes = {TARGET_PACK_BYTES}
     }
 
     fn transform_command(&self, operation: &str, journal: &Path) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_crucible"));
+        let mut command = Command::new(crucible_test_support::runfiles::binary_path(env!(
+            "CARGO_BIN_EXE_crucible"
+        )));
         command
             .args([
                 "--format",

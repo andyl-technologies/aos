@@ -787,7 +787,7 @@ fn independent_review_follows_the_destination_review_threshold() -> anyhow::Resu
     let keys = [fixture.key];
     let reviewed = STABLE;
 
-    assert!(verify_reviews(&plan, reviewed, report, &[bytes.clone()], &keys).is_ok());
+    assert!(verify_reviews(&plan, reviewed, report, std::slice::from_ref(&bytes), &keys).is_ok());
     let alias = crate::signing::TrustedEd25519Key {
         key_id: "review-key-alias".into(),
         public_key: keys[0].public_key,
@@ -796,7 +796,7 @@ fn independent_review_follows_the_destination_review_threshold() -> anyhow::Resu
         &plan,
         reviewed,
         report,
-        &[bytes.clone()],
+        std::slice::from_ref(&bytes),
         &[keys[0].clone(), alias],
     )
     .unwrap_err();
@@ -816,7 +816,16 @@ fn independent_review_follows_the_destination_review_threshold() -> anyhow::Resu
         )
         .is_err()
     );
-    assert!(verify_reviews(&plan, reviewed, b"changed report", &[bytes.clone()], &keys).is_err());
+    assert!(
+        verify_reviews(
+            &plan,
+            reviewed,
+            b"changed report",
+            std::slice::from_ref(&bytes),
+            &keys
+        )
+        .is_err()
+    );
     // The build profile demands no review, but a supplied review must verify.
     assert!(verify_reviews(&plan, "staging/stable", report, &[], &keys).is_ok());
     assert!(verify_reviews(&plan, "staging/stable", b"other", &[bytes], &keys).is_err());

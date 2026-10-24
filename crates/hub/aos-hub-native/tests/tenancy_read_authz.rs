@@ -236,7 +236,7 @@ async fn seed_placement(
         .create_surface_placement(&NewSurfacePlacementSpec {
             surface,
             name: name.to_string(),
-            binding_id: binding_id,
+            binding_id,
             prefix: prefix.to_string(),
             kind: "complete".to_string(),
             desired_state: "active".to_string(),
@@ -261,7 +261,7 @@ async fn private_registry_inventory_is_denied_to_anonymous() {
     db.create_project(org, "internal", "Internal")
         .await
         .unwrap();
-    let binding = common::create_local_binding(&db, org, "b", "/var/lib/aos/storage/victim").await;
+    let _binding = common::create_local_binding(&db, org, "b", "/var/lib/aos/storage/victim").await;
     let id = db
         .create_managed_registry(org, "internal", "secret", "private", &[], false)
         .await
@@ -428,12 +428,9 @@ async fn topology_placements_use_typed_camel_case_refs_and_surface_read_auth() {
     assert_eq!(placement["observation"]["completeness"], "complete");
     assert_eq!(placement["status"]["derivedRole"], "replica");
     assert_eq!(placement["status"]["effectiveReadEnabled"], true);
-    assert_eq!(
-        placement["status"]["effectiveWriteEnabled"]
-            .as_bool()
-            .unwrap_or(false),
-        false
-    );
+    assert!(!placement["status"]["effectiveWriteEnabled"]
+        .as_bool()
+        .unwrap_or(false));
     assert!(placement["resourceVersion"].is_string());
     assert!(placement.get("id").is_none());
     assert!(placement.get("bindingId").is_none());
@@ -1497,7 +1494,7 @@ async fn topology_placement_mutations_enforce_tenancy_cas_and_plan_apply() {
 async fn topology_cache_placements_enforce_visibility_and_org_tenancy() {
     let db = Arc::new(Database::open_in_memory().await.unwrap());
     let org = db.create_org("cache-owner", "Cache Owner").await.unwrap();
-    let other_org = db.create_org("other-org", "Other Org").await.unwrap();
+    let _other_org = db.create_org("other-org", "Other Org").await.unwrap();
     let binding =
         common::create_local_binding(&db, org, "cache-origin", "/var/lib/aos/caches").await;
     let public_cache = db

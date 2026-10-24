@@ -163,13 +163,13 @@ pub(crate) fn validate_registry(command: &RegistryCommand, system: bool) -> Resu
 /// Ordinary package and configuration commands are admitted here. Their
 /// ability graphs validate the handlers required by the selected environment.
 fn requires_host_runtime(command: &PackageCommand) -> bool {
-    match command {
-        PackageCommand::Image { .. } => true,
-        PackageCommand::Attest {
-            command: AttestCommand::Quote { .. },
-        } => true,
-        _ => false,
-    }
+    matches!(
+        command,
+        PackageCommand::Image { .. }
+            | PackageCommand::Attest {
+                command: AttestCommand::Quote { .. },
+            }
+    )
 }
 
 /// Returns whether a command is observational with respect to user state.

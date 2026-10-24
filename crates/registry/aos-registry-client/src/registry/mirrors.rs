@@ -30,7 +30,7 @@ pub fn resolve_mirrors(dir: &Path) -> Vec<CacheEntry> {
     match read_registry_toml(dir) {
         Ok(Some(config)) => {
             let mut caches = config.cache_entries();
-            caches.sort_by(|a, b| b.priority.cmp(&a.priority));
+            caches.sort_by_key(|cache| std::cmp::Reverse(cache.priority));
             caches
         }
         _ => Vec::new(),
@@ -46,6 +46,6 @@ pub fn resolve_mirrors(dir: &Path) -> Vec<CacheEntry> {
 pub fn resolve_mirrors_for_registry(dir: &Path, registry: &RegistryConfig) -> Vec<CacheEntry> {
     let mut caches = registry.caches.clone();
     caches.extend(resolve_mirrors(dir));
-    caches.sort_by(|a, b| b.priority.cmp(&a.priority));
+    caches.sort_by_key(|cache| std::cmp::Reverse(cache.priority));
     caches
 }

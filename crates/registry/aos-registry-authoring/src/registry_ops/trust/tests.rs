@@ -359,8 +359,11 @@ fn consumed_release_aliases_block_retirement_using_their_actual_refs() {
         .map(|name| git(&fixture.repo, &["rev-parse", &format!("refs/tags/{name}")]).unwrap())
         .collect();
 
-    let plan =
-        plan_retirement_resign(&fixture.repo, &[fixture.survivor.trusted_key.clone()]).unwrap();
+    let plan = plan_retirement_resign(
+        &fixture.repo,
+        std::slice::from_ref(&fixture.survivor.trusted_key),
+    )
+    .unwrap();
     assert_eq!(
         plan.affected_releases,
         vec!["2026.02", "v01.02.03", "v1.2.3"]

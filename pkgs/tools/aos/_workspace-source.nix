@@ -47,8 +47,13 @@ in
           == ".git"
           || base == ".direnv"
           || base == ".worktrees"
-          || base == "result"
-          || lib.hasPrefix "result-" base
+          # Nested modules may legitimately be named result. Only checkout
+          # root result directories are generated Nix build outputs.
+          || (
+            dirOf pathString
+            == repoRootString
+            && (base == "result" || lib.hasPrefix "result-" base)
+          )
           || base == "target"
           || lib.hasPrefix "target-" base
         );
@@ -95,6 +100,7 @@ in
         || lib.hasPrefix "${repoRootString}/tests/vm" pathString
         || pathString == "${repoRootString}/tests/native"
         || pathString == "${repoRootString}/tests/native/hub-settings.py"
+        || pathString == "${repoRootString}/MODULE.bazel"
         || pathString == "${repoRootString}/default.nix"
         || pathString == "${repoRootString}/flake.nix"
         || pathString == "${repoRootString}/justfile";

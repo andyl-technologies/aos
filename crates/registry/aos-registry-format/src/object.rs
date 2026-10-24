@@ -414,6 +414,7 @@ fn parse_ident_when(ident: &str) -> Option<i64> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

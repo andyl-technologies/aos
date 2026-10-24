@@ -166,7 +166,7 @@ pub async fn provision_binding(db: &Database, req: NewBinding<'_>) -> Result<i64
                     return Err(ProvisionError::Invalid("endpoint host is required".into()));
                 }
             };
-            let (bucket, prefix) = root.split_once('/').map_or((root, ""), |parts| parts);
+            let (bucket, prefix) = root.split_once('/').unwrap_or((root, ""));
             let region = if origin.region.trim().is_empty() {
                 "auto"
             } else {

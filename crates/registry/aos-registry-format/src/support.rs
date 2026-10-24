@@ -365,6 +365,7 @@ fn days_in_month(year: i64, month: u8) -> u8 {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

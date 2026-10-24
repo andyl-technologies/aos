@@ -33,6 +33,8 @@ const DEFAULT_GC_RETENTION: &str = "7d";
 /// without `--view`, remote mode without a token), if the local store
 /// database is absent in view mode, or if the underlying GC operation
 /// (local `nix-store`, view eviction, or remote RPC) fails.
+// This command boundary receives the independent local and remote CLI selectors.
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     nix: &NixRunner,
     printer: &Printer,

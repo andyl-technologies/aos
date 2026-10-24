@@ -12,7 +12,6 @@
 //! representation.
 
 use sha2::{Digest, Sha256};
-use std::collections::HashSet;
 use thiserror::Error;
 use unicode_normalization::UnicodeNormalization as _;
 
@@ -254,7 +253,11 @@ pub fn longest_prefix_match<'a, T>(
     request_path: &'a RouteAdvertisementPath,
     candidates: &'a [RouteCandidate<T>],
 ) -> Result<Option<RouteMatch<'a, T>>, RouteMatchError> {
-    let mut seen_bases = HashSet::with_capacity(candidates.len());
+    #[allow(
+        clippy::disallowed_types,
+        reason = "Membership-only set; candidate order controls route selection"
+    )]
+    let mut seen_bases = std::collections::HashSet::with_capacity(candidates.len());
     for candidate in candidates {
         if !seen_bases.insert(candidate.base_path.as_str()) {
             return Err(RouteMatchError::DuplicateBasePath {

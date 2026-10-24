@@ -288,6 +288,7 @@ fn project_snapshot(snapshot: JournalSnapshot<Event>) -> Result<ActivationInspec
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use std::collections::BTreeSet;
     use std::fs::{self, OpenOptions};

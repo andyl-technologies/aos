@@ -1,0 +1,41 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "3ac2690f06",
+  "compiled_changed_rust_inputs_sha256": {
+    "crates/aos/modules/aos-module-format/src/graph/mod.rs": "b2b11a93cbaed57681fbf9de632f0a1169a3d47aeb1d3cb1492b48a33b6f4468",
+    "crates/aos/modules/aos-module-format/src/graph/resolution.rs": "cc30d49ae23e651a8070fd79fae6ff9bbdb9826e7622897fba10b8269ef92d91",
+    "crates/aos/modules/aos-module-format/src/graph/tests.rs": "74b68a9bf925cf38a24ed4220804171651a28791e4ec22b0420ba3e02801a36f",
+    "crates/aos/modules/aos-module-format/src/graph/validation.rs": "fdcb8d545b0af2f001e9d19727798f2d2c531f8ccf63da161e432256b81761e4",
+    "crates/aos/modules/aos-module-format/src/schema.rs": "da5a2a78219883f2444de109e425d096253b2e7e4db6603c650fb22a5eacd60b",
+    "crates/aos/registry/aos-registry-format/src/channel.rs": "cc5910fdc165492db13c7b5fd4347fa2231a48b769fb5a654c001363b7ca5daa",
+    "crates/aos/registry/aos-registry-format/src/consumer.rs": "789f23b567554c3037d64f695f8c6dd3401944378407d236b6aabe15da285bba",
+    "crates/aos/registry/aos-registry-format/src/keymap.rs": "507fd2217c879727aa91b822db1f227c0f1fe613308dc64a669457564dcfb949",
+    "crates/aos/registry/aos-registry-format/src/manifest.rs": "0037996fb54b66ccb3a17c38f712d347c4ccfe94a385ead9e653820b9be2bb59",
+    "crates/aos/registry/aos-registry-format/src/native_dependencies.rs": "7e78f3838beb5e55104f6636938239bda3f121280cfd5f507ea80e07a8db8461",
+    "crates/aos/registry/aos-registry-format/src/object.rs": "05fc9bbca2b089acb3a59a94cdc6a53d6ff5f0fb22684465e2a36eef340f5f27",
+    "crates/aos/registry/aos-registry-format/src/object_bundle.rs": "cc5ab3da23c0736be233b04c840b622272e247aa72da93cf621fc3076dc643be",
+    "crates/aos/registry/aos-registry-format/src/pack_index.rs": "571720741f9deb65868b1454fd20de63a59a17249cba64bfc6db349d92e7c18c",
+    "crates/aos/registry/aos-registry-format/src/package_version.rs": "64560588275250b186ba8ba1279afe575d9df8323d6ac2dcd52bfe2bc455d569",
+    "crates/aos/registry/aos-registry-format/src/platform.rs": "ea44e82d4cb59f33691a65be7da49b6c5862ad4e986a448b5a00ac000f4aae6a",
+    "crates/aos/registry/aos-registry-format/src/refs.rs": "d4479a411ffe3aa329dbbbf96c9e569c2e287ed691ea7ac623b95d42967a26dc",
+    "crates/aos/registry/aos-registry-format/src/sshsig.rs": "1f8ee1e609e6538fa9d880d1d0f9a0513380cc8e013587042d2cb938c6f69900",
+    "crates/aos/registry/aos-registry-format/src/stack.rs": "eead1178dc05cc4f51d9e890c3c5f15c9ef61a907764c2f8a6cd6403b852e8b4",
+    "crates/aos/registry/aos-registry-format/src/staging/wire.rs": "7e97f397bca4c4ec3dde6e3a73f9b6e9404679d52fae0d4a6df67edaf6c278ca",
+    "crates/aos/registry/aos-registry-format/src/store.rs": "31373730fee65bfdc12142b551980c6f03dd75bf57a1576b6ddfe7f9e636c1fa",
+    "crates/aos/registry/aos-registry-format/src/support.rs": "53d5cfecc6b6e6027f073f36147f23d307de33407baf753ee25bf0aab28ba2a6",
+    "crates/aos/registry/aos-registry-format/src/tag.rs": "6b709336e37425456e8b50b4de5f7aebc5982530e0e32320e2ca8fcef8a7aedb",
+    "crates/aos/registry/aos-registry-format/src/tagobject.rs": "907de7750b0d313a291029182e4d86527b2930b2145b72a05543a64678f60fdf"
+  },
+  "derivation": "/nix/store/lcgz097x469ljac2vw341wyggi43im4y-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "7056ea2cc9958fddcbe6a0f713e98321f2bcd9caf205a94cb8cfa81ffb132934",
+  "implementation_commit": "61e5a7615b",
+  "limits": [
+    "This gate compiles application unit and integration targets without executing them. Native Bazel/Cargo execution is retained separately.",
+    "This frozen format checkpoint includes the release-format canonical-encoding assertion correction, but predates the later contracts lint and OCI fixture-count changes."
+  ],
+  "log_sha256": "7c3a66039821684408c24d3fb756756e9b6322115ab92d946cc6d518a0a22998",
+  "output": "/nix/store/da5s3cpaypcsr3khm3b662lfjiil0w63-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/lbh6dwzblm8y8jbyzsd1j2i6sf8bmnzm-aos-workspace-src",
+  "status": "Required workspace Rust application unit and integration targets compiled successfully"
+}

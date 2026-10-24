@@ -221,6 +221,7 @@ pub fn registry_policy(identity: &str) -> Result<RegistryPolicy> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

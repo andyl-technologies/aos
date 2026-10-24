@@ -329,12 +329,10 @@ pub fn resolve_bucket(persisted: Option<u8>, registry: &str, salt: &str) -> u8 {
 /// Returns an error when `candidate` is strictly older than `floor`,
 /// indicating an attempted channel rollback.
 pub fn check_floor(floor: Option<&semver::Version>, candidate: &semver::Version) -> Result<()> {
-    if let Some(floor) = floor {
-        if candidate < floor {
-            bail!(
-                "registry rollback refused: target release {candidate} is older than floor {floor}",
-            );
-        }
+    if let Some(floor) = floor
+        && candidate < floor
+    {
+        bail!("registry rollback refused: target release {candidate} is older than floor {floor}",);
     }
     Ok(())
 }
@@ -487,9 +485,10 @@ fn parse_partition(raw: &str) -> Result<u8> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
+    use std::collections::BTreeSet;
 
     fn v(s: &str) -> semver::Version {
         semver::Version::parse(s).unwrap()
@@ -606,7 +605,7 @@ mod tests {
         assert_eq!(order[1], 255);
         assert_eq!(order[2], 0);
         assert_eq!(order.len(), 256);
-        let unique: HashSet<u8> = order.into_iter().collect();
+        let unique: BTreeSet<u8> = order.into_iter().collect();
         assert_eq!(unique.len(), 256);
     }
 

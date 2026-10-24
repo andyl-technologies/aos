@@ -197,6 +197,10 @@ pub(crate) async fn fetch_metadata_with(
 /// Uses the system clock; the value is recorded, never used in a security
 /// decision, so a coarse seconds-resolution stamp is sufficient. Falls back to
 /// the Unix epoch when the clock is before it.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Platform metadata records host wall-clock observations outside Crucible replayable state"
+)]
 pub fn now_rfc3339() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()

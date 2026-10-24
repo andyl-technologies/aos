@@ -59,14 +59,15 @@ pub fn handle(action: &str, bytes: &[u8]) -> Result<Vec<u8>> {
     }
     let output = match action {
         "apply" => {
-            if let Some(old) = &claim {
-                if old.input.pool != input.pool && is_imported(&old.input.zpool, &old.input.pool)? {
-                    run_success(
-                        &old.input.zpool,
-                        &["export", "--", &old.input.pool],
-                        invocation.effect.timeout_ms,
-                    )?;
-                }
+            if let Some(old) = &claim
+                && old.input.pool != input.pool
+                && is_imported(&old.input.zpool, &old.input.pool)?
+            {
+                run_success(
+                    &old.input.zpool,
+                    &["export", "--", &old.input.pool],
+                    invocation.effect.timeout_ms,
+                )?;
             }
             // A named pre-existing pool is deliberately configurable: import
             // is a lease on existing data, never permission to recreate it.
@@ -100,14 +101,14 @@ pub fn handle(action: &str, bytes: &[u8]) -> Result<Vec<u8>> {
             json!({"pool":input.pool,"resource":invocation.id})
         }
         "remove" => {
-            if let Some(claim) = &claim {
-                if is_imported(&claim.input.zpool, &claim.input.pool)? {
-                    run_success(
-                        &claim.input.zpool,
-                        &["export", "--", &claim.input.pool],
-                        invocation.effect.timeout_ms,
-                    )?;
-                }
+            if let Some(claim) = &claim
+                && is_imported(&claim.input.zpool, &claim.input.pool)?
+            {
+                run_success(
+                    &claim.input.zpool,
+                    &["export", "--", &claim.input.pool],
+                    invocation.effect.timeout_ms,
+                )?;
             }
             state::remove(root, &invocation.id)?;
             json!({})

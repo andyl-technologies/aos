@@ -15,7 +15,7 @@
 //! in core (so the renderer stays task-local-free and wasm-clean); the thin
 //! wrappers below preserve the hub's historical signatures by supplying the
 //! current request's indicator from the native session middleware's task-local
-//! ([`current_session_indicator`](crate::ui::render::current_session_indicator)),
+//! ([`current_session_indicator`]),
 //! so every `crate::ui::pages::…` call site in the hub compiles unchanged.
 
 use aos_hub_service::web::release_browse::ReleaseContext;
@@ -115,6 +115,10 @@ pub fn package_index(
 /// Native-hub shim over
 /// [`aos_hub_service::web::browse_pages::package_page`].
 #[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserves the shared browse-page adapter interface."
+)]
 pub fn package_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,
@@ -190,6 +194,10 @@ pub fn channels_index(
 
 /// The signed system-image catalog with direct disk-download actions.
 #[must_use]
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Preserves the shared browse-page adapter interface."
+)]
 pub fn images_page(
     registry: &RegistryRecord,
     status: Option<&IndexStatus>,

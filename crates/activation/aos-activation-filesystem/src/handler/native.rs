@@ -155,7 +155,7 @@ impl NativeFilesystem {
                     && privileged.name != "..",
                 "invalid privileged executable name"
             );
-            let input = Input {
+            Input {
                 path: Path::new("/run/wrappers/bin").join(privileged.name),
                 mode: privileged.mode,
                 owner: Some(privileged.owner),
@@ -164,8 +164,7 @@ impl NativeFilesystem {
                 source_path: Some(privileged.source),
                 max_bytes: default_max_bytes(),
                 parent_resource: None,
-            };
-            input
+            }
         } else {
             serde_json::from_value(invocation.input.clone())?
         };
@@ -211,16 +210,16 @@ impl NativeFilesystem {
                         true,
                     )?;
                 }
-                if let Some(claim) = &claim {
-                    if claim.path != input.path {
-                        ensure!(
-                            matches!(fs::symlink_metadata(&input.path), Err(error) if error.kind() == io::ErrorKind::NotFound),
-                            "replacement filesystem path has no ownership claim"
-                        );
-                        self.validate_path(&claim.path, claim.kind == "symlink-tree")?;
-                        self.remove(&claim.path, Some(claim))?;
-                        fs::remove_file(&claim_path)?;
-                    }
+                if let Some(claim) = &claim
+                    && claim.path != input.path
+                {
+                    ensure!(
+                        matches!(fs::symlink_metadata(&input.path), Err(error) if error.kind() == io::ErrorKind::NotFound),
+                        "replacement filesystem path has no ownership claim"
+                    );
+                    self.validate_path(&claim.path, claim.kind == "symlink-tree")?;
+                    self.remove(&claim.path, Some(claim))?;
+                    fs::remove_file(&claim_path)?;
                 }
                 let current = claim.as_ref().filter(|claim| claim.path == input.path);
                 let installed = self.apply(&invocation, &input, current)?;

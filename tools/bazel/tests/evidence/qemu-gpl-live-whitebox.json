@@ -1,0 +1,252 @@
+{
+  "cases": {
+    "app-random-branch-result": {
+      "observations": {
+        "app_random_decision_count": "1",
+        "app_random_values": "213645",
+        "execution_fingerprint": "f5409035bdd696edb5aa57bf9ed1954a413032a3603f00f2deb2c9d1176821d8",
+        "handshake_abi_version": "30",
+        "handshake_proto_version": "3",
+        "orderly_child_exit": "true",
+        "plugin_loaded": "rust-control-cdylib",
+        "setup_ack_ready": "true",
+        "whitebox": "on",
+        "whitebox_last_marker_icount": "4000",
+        "whitebox_marker_count": "1",
+        "whitebox_marker_icount": "4000"
+      },
+      "sha256": "03b48350c0912641ea0698cc4f2ee3ed39700c9370de5d4b2084f50069704e56"
+    },
+    "app-random-result": {
+      "observations": {
+        "app_random_decision_count": "1",
+        "app_random_values": "213645",
+        "execution_fingerprint": "f5409035bdd696edb5aa57bf9ed1954a413032a3603f00f2deb2c9d1176821d8",
+        "handshake_abi_version": "30",
+        "handshake_proto_version": "3",
+        "orderly_child_exit": "true",
+        "plugin_loaded": "rust-control-cdylib",
+        "setup_ack_ready": "true",
+        "whitebox": "on",
+        "whitebox_last_marker_icount": "4000",
+        "whitebox_marker_count": "1",
+        "whitebox_marker_icount": "4000"
+      },
+      "sha256": "03b48350c0912641ea0698cc4f2ee3ed39700c9370de5d4b2084f50069704e56"
+    },
+    "install-aarch64-off-result": {
+      "observations": {
+        "app_random_decision_count": "0",
+        "app_random_values": "",
+        "execution_fingerprint": "not-observed",
+        "handshake_abi_version": "30",
+        "handshake_proto_version": "3",
+        "orderly_child_exit": "true",
+        "plugin_loaded": "rust-control-cdylib",
+        "setup_ack_ready": "true",
+        "whitebox": "off",
+        "whitebox_last_marker_icount": "not-observed",
+        "whitebox_marker_count": "0",
+        "whitebox_marker_icount": "not-observed"
+      },
+      "sha256": "1c2dce7452812eaaad06e2bd92eb7c6370b02c04546e23185608e776ca6120e2"
+    },
+    "install-aarch64-repeat-result": {
+      "observations": {
+        "app_random_decision_count": "0",
+        "app_random_values": "",
+        "execution_fingerprint": "not-observed",
+        "handshake_abi_version": "30",
+        "handshake_proto_version": "3",
+        "orderly_child_exit": "true",
+        "plugin_loaded": "rust-control-cdylib",
+        "setup_ack_ready": "true",
+        "whitebox": "on",
+        "whitebox_last_marker_icount": "450",
+        "whitebox_marker_count": "2",
+        "whitebox_marker_icount": "400"
+      },
+      "sha256": "074147db9af509224db3259e0956582796f02a851d84f0102c7312d8dddbfbd3"
+    },
+    "install-aarch64-result": {
+      "observations": {
+        "app_random_decision_count": "0",
+        "app_random_values": "",
+        "execution_fingerprint": "not-observed",
+        "handshake_abi_version": "30",
+        "handshake_proto_version": "3",
+        "orderly_child_exit": "true",
+        "plugin_loaded": "rust-control-cdylib",
+        "setup_ack_ready": "true",
+        "whitebox": "on",
+        "whitebox_last_marker_icount": "450",
+        "whitebox_marker_count": "2",
+        "whitebox_marker_icount": "400"
+      },
+      "sha256": "074147db9af509224db3259e0956582796f02a851d84f0102c7312d8dddbfbd3"
+    },
+    "install-off-repeat-result": {
+      "observations": {
+        "app_random_decision_count": "0",
+        "app_random_values": "",
+        "execution_fingerprint": "1e657019420802efdb056cfa3ce847ca73e3188ab458a285fb2388e3f42b4bf8",
+        "handshake_abi_version": "30",
+        "handshake_proto_version": "3",
+        "orderly_child_exit": "true",
+        "plugin_loaded": "rust-control-cdylib",
+        "setup_ack_ready": "true",
+        "whitebox": "off",
+        "whitebox_last_marker_icount": "not-observed",
+        "whitebox_marker_count": "0",
+        "whitebox_marker_icount": "not-observed"
+      },
+      "sha256": "7c036183ba4fd336260c40f4f36dd3556df38d1533e9bcfcb25ea57b55823555"
+    },
+    "install-off-result": {
+      "observations": {
+        "app_random_decision_count": "0",
+        "app_random_values": "",
+        "execution_fingerprint": "1e657019420802efdb056cfa3ce847ca73e3188ab458a285fb2388e3f42b4bf8",
+        "handshake_abi_version": "30",
+        "handshake_proto_version": "3",
+        "orderly_child_exit": "true",
+        "plugin_loaded": "rust-control-cdylib",
+        "setup_ack_ready": "true",
+        "whitebox": "off",
+        "whitebox_last_marker_icount": "not-observed",
+        "whitebox_marker_count": "0",
+        "whitebox_marker_icount": "not-observed"
+      },
+      "sha256": "7c036183ba4fd336260c40f4f36dd3556df38d1533e9bcfcb25ea57b55823555"
+    },
+    "install-on-repeat-result": {
+      "observations": {
+        "app_random_decision_count": "0",
+        "app_random_values": "",
+        "execution_fingerprint": "1e657019420802efdb056cfa3ce847ca73e3188ab458a285fb2388e3f42b4bf8",
+        "handshake_abi_version": "30",
+        "handshake_proto_version": "3",
+        "orderly_child_exit": "true",
+        "plugin_loaded": "rust-control-cdylib",
+        "setup_ack_ready": "true",
+        "whitebox": "on",
+        "whitebox_last_marker_icount": "200",
+        "whitebox_marker_count": "1",
+        "whitebox_marker_icount": "200"
+      },
+      "sha256": "46d6d6d2b7d7a4309062d1f13f27d7e3dab28a48314f158df330b37d55271956"
+    },
+    "install-on-result": {
+      "observations": {
+        "app_random_decision_count": "0",
+        "app_random_values": "",
+        "execution_fingerprint": "1e657019420802efdb056cfa3ce847ca73e3188ab458a285fb2388e3f42b4bf8",
+        "handshake_abi_version": "30",
+        "handshake_proto_version": "3",
+        "orderly_child_exit": "true",
+        "plugin_loaded": "rust-control-cdylib",
+        "setup_ack_ready": "true",
+        "whitebox": "on",
+        "whitebox_last_marker_icount": "200",
+        "whitebox_marker_count": "1",
+        "whitebox_marker_icount": "200"
+      },
+      "sha256": "46d6d6d2b7d7a4309062d1f13f27d7e3dab28a48314f158df330b37d55271956"
+    }
+  },
+  "collision_rejection": "FAIL: reserved white-box port 0x00e7 collides with QEMU region `isa-debugcon`",
+  "guest_architectures": [
+    "x86_64",
+    "aarch64"
+  ],
+  "host": "x86_64-linux",
+  "limits": [
+    "The host test drivers retain their existing Cargo build; the plugin loaded by QEMU is the installed Bazel artifact.",
+    "AArch64 guests run under native x86_64 QEMU; an AArch64 host/plugin build is not qualified here.",
+    "Other live QEMU scenarios, GPL test process oracles, full closure equivalence, and suite release retention remain separate gates."
+  ],
+  "plugin": "/nix/store/p72knlyg89a3r7x4qjnyd4wqy0052nnc-crucible-qemu-plugin-0.1.0",
+  "plugin_derivation": "/nix/store/kcp1lrckkqqznlkfhx318n151bqj52bx-crucible-qemu-plugin-0.1.0.drv",
+  "plugin_derivation_in_vm_inputs": true,
+  "plugin_sha256": "72515bec7a3405ed600bd443f3d126cbcae6f7723d724c0e28f6cc822669b18f",
+  "retained_evidence_sha256": {
+    "app-random-branch-result": "03b48350c0912641ea0698cc4f2ee3ed39700c9370de5d4b2084f50069704e56",
+    "app-random-result": "03b48350c0912641ea0698cc4f2ee3ed39700c9370de5d4b2084f50069704e56",
+    "collision.error": "905ab60cc0db3e3a58728990e6f7a8a217e7a95abddebb240e18c9f62992a986",
+    "collision.mtree": "6246f4e9553805da9eeb60bc726bc1def12f7e4e4e072d79e08af6b1a53878cc",
+    "install-aarch64-off-result": "1c2dce7452812eaaad06e2bd92eb7c6370b02c04546e23185608e776ca6120e2",
+    "install-aarch64-repeat-result": "074147db9af509224db3259e0956582796f02a851d84f0102c7312d8dddbfbd3",
+    "install-aarch64-result": "074147db9af509224db3259e0956582796f02a851d84f0102c7312d8dddbfbd3",
+    "install-off-repeat-result": "7c036183ba4fd336260c40f4f36dd3556df38d1533e9bcfcb25ea57b55823555",
+    "install-off-result": "7c036183ba4fd336260c40f4f36dd3556df38d1533e9bcfcb25ea57b55823555",
+    "install-on-repeat-result": "46d6d6d2b7d7a4309062d1f13f27d7e3dab28a48314f158df330b37d55271956",
+    "install-on-result": "46d6d6d2b7d7a4309062d1f13f27d7e3dab28a48314f158df330b37d55271956",
+    "qemu-aarch64-off.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "qemu-aarch64-repeat.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "qemu-aarch64.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "qemu-app-random-branch.log": "5fdfeda90b0f9905648e0f1725395af075cc1ee11d6506d14c81097302fd09a0",
+    "qemu-app-random.log": "5fdfeda90b0f9905648e0f1725395af075cc1ee11d6506d14c81097302fd09a0",
+    "qemu-collision.log": "5fdfeda90b0f9905648e0f1725395af075cc1ee11d6506d14c81097302fd09a0",
+    "qemu-off-repeat.log": "5fdfeda90b0f9905648e0f1725395af075cc1ee11d6506d14c81097302fd09a0",
+    "qemu-off.log": "5fdfeda90b0f9905648e0f1725395af075cc1ee11d6506d14c81097302fd09a0",
+    "qemu-on-repeat.log": "5fdfeda90b0f9905648e0f1725395af075cc1ee11d6506d14c81097302fd09a0",
+    "qemu-on.log": "5fdfeda90b0f9905648e0f1725395af075cc1ee11d6506d14c81097302fd09a0",
+    "result": "351f630b79252c22c7a3901de04c4b44471007e78e94a3d7abc422bb4c327744",
+    "vm-monitor.log": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "vm-serial.log": "6685fa3a3d1d721d008ab6b6858cdd10992bb7951217e07e5bab8c1bf2e39609"
+  },
+  "schema_version": 1,
+  "source_sha256": {
+    "tests/build/_bazel-qemu-gpl.nix": "ca4bee7f8a7522bf7f9c7a71f1763484c8473f3711c88b2c37322f1f4ec9fcdb",
+    "tests/crucible/phase2-qemu-live-whitebox-doorbell.nix": "586ea5967de6ec1398fb89103eddc1be967d4265c0c85b13b04b2e827bec780f"
+  },
+  "summary": {
+    "aarch64_adjacent_marker_ticks": "true",
+    "aarch64_boot_barrier_ceiling_enforced": "true",
+    "aarch64_doorbell_instruction": "hint-0x4c",
+    "aarch64_live_marker_observed": "true",
+    "aarch64_marker_ticks_reproducible": "true",
+    "aarch64_payload_registers": "x0,x1",
+    "aarch64_repeated_doorbells": "2",
+    "aarch64_setup_attestation": "aarch64-hint-4c-inert-v1",
+    "aarch64_whitebox_off_inert": "true",
+    "app_random_branch_sequence_live_qemu": "true",
+    "app_random_branch_sequence_values": "213645",
+    "app_random_guest_reply_observed": "true",
+    "app_random_host_seed_reconstruction": "true",
+    "app_random_live_decisions": "1",
+    "app_random_reply_api": "qemu_plugin_crucible_write_memory_vaddr",
+    "attr_path": "checks.build.bazel.qemu-gpl.live-whitebox",
+    "collision_negative_device": "isa-debugcon",
+    "collision_negative_rejected_before_plugin_launch": "true",
+    "doorbell_architecture": "x86_64",
+    "doorbell_instruction": "out-imm8-al",
+    "doorbell_port": "0x00e7",
+    "exact_icount_callback": "true",
+    "fingerprint_sampling": "production-plugin",
+    "guest_memory_api": "qemu_plugin_read_memory_vaddr",
+    "installer_launches": "9",
+    "marker_event_log_admission": "true",
+    "marker_host_consumer": "quantum-boundary",
+    "marker_icount": "200",
+    "marker_kind": "coverage",
+    "marker_payload_len": "10",
+    "marker_transport": "plugin-to-host-shmem-spsc",
+    "off_fingerprint": "1e657019420802efdb056cfa3ce847ca73e3188ab458a285fb2388e3f42b4bf8",
+    "off_mode_callback_records": "0",
+    "off_on_fingerprint_equal": "true",
+    "on_fingerprint": "1e657019420802efdb056cfa3ce847ca73e3188ab458a285fb2388e3f42b4bf8",
+    "open_task_ids": "",
+    "payload_registers": "rax,rcx",
+    "plugin_loaded": "rust-control-cdylib",
+    "production_whitebox_channel_implemented": "x86_64,aarch64",
+    "setup_attestation": "x86-port-00e7-unclaimed-v1",
+    "setup_port_map_probe": "stopped-plugin-free-exact-machine",
+    "setup_reserved_port_region": "io",
+    "status": "complete",
+    "task_ids": "T-DET-31,T-PLUG-14,T-PLUG-27,T-GHC-4,T-GHC-6,T-GHC-9,T-GHC-12,T-GHC-16",
+    "whitebox_modes": "off,on"
+  },
+  "vm": "/nix/store/npfw1p77nyhcjq0nk3rysk12vhn6776z-crucible-phase2-qemu-live-whitebox-doorbell-0",
+  "vm_derivation": "/nix/store/svrqpbcfis8snmwp53r0ajdvrvg74zwz-crucible-phase2-qemu-live-whitebox-doorbell-0.drv"
+}

@@ -316,6 +316,10 @@ async fn stock_git_current_version_syncs_sha256_dumb_http_registry() -> Result<(
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires AOS_PACKAGE_TEST_GIT_MATRIX and pinned git binaries; run with --test-threads=1"]
+#[allow(
+    clippy::await_holding_lock,
+    reason = "The single-threaded opt-in matrix keeps its process PATH override scoped across each async sync"
+)]
 async fn stock_git_configured_version_matrix_syncs_sha256_dumb_http_registry() -> Result<()> {
     let Some(matrix) = env::var_os(GIT_MATRIX_ENV) else {
         eprintln!(

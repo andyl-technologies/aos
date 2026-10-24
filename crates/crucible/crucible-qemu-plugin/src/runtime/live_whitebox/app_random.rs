@@ -453,20 +453,23 @@ mod tests {
     use crate::PluginArgs;
 
     #[test]
-    fn plugin_stream_matches_the_authoritative_engine_stream() {
-        let scenario_seed = crucible_engine::Seed::from_u64(1_048_598);
-        let root_seed = scenario_seed.decision_rng_root_seed();
+    fn plugin_stream_matches_the_authoritative_engine_stream() -> std::io::Result<()> {
         let stream_name = app_random_stream_name("node-a", "live-rng");
+        let mut engine = crate::engine_oracle::EngineOracle::launch()?;
+        let initialized = engine.request(serde_json::json!({
+            "operation": "rng-init", "seed": 1_048_598_u64, "stream": stream_name,
+        }))?;
+        let root_seed = initialized["root_seed"]
+            .as_u64()
+            .ok_or_else(|| crate::engine_oracle::invalid("engine root seed is not a u64"))?;
         let mut plugin = PluginDecisionStream::new(root_seed, &stream_name);
-        let stream = crucible_engine::RngStreamId::from_name(stream_name);
-        let mut engine = scenario_seed
-            .decision_rng()
-            .fork_in_domain(&stream.domain, &stream.name);
+        let first = engine.request(serde_json::json!({"operation": "rng-next", "advance": 0}))?;
+        assert_eq!(Some(plugin.next_u64()), first["draw"].as_u64());
 
-        assert_eq!(plugin.next_u64(), engine.next_u64());
         plugin.advance_by(17);
-        engine.advance_by(17);
-        assert_eq!(plugin.next_u64(), engine.next_u64());
+        let second = engine.request(serde_json::json!({"operation": "rng-next", "advance": 17}))?;
+        assert_eq!(Some(plugin.next_u64()), second["draw"].as_u64());
+        Ok(())
     }
 
     #[test]

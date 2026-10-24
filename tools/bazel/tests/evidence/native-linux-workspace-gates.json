@@ -1,0 +1,26 @@
+{
+  "checks": {
+    "abi_conformance": "/nix/store/fzps7isypqz0nkihflrdczly7pfbb5j6-crucible-green-before-advance-checks-crucible-phase2-gates-abiConformance-0",
+    "license_boundary": "/nix/store/ipfgqxf5vhwpb5makli56afmp4i629rz-crucible-green-before-advance-checks-crucible-phase1-gates-licenseBoundary-0",
+    "rust_test_targets": "/nix/store/agzj1gwf81mch6f1jny04pizxvli1fvr-aos-test-targets-0.1.0"
+  },
+  "observations": {
+    "campaign_unit_passed": 426,
+    "license_nextest_passed": 5566,
+    "license_nextest_skipped": 75
+  },
+  "qualification_source_commit": "b4de58cc4f",
+  "repaired_source_sha256": {
+    "crates/crucible/engine/crucible-campaign/src/tests/schema_registry.rs": "33d338b5904875275b8069462008588ae0ab61d983801e5c114bf39373749430",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp.rs": "ee73a51bd51ffb04b9988718bfede61944b5b263288591efb3fd10357458f631",
+    "crates/crucible/qemu/crucible-qemu-host/tests/qmp/schema_registry.rs": "c66a49f5843651e570e0fe0df7d40aa00c6a44015a35ffaf04cc6acde4c0a8ab",
+    "crates/shared/aos-artifact-evidence/src/consumption.rs": "7e38f9f101fde359ad056e70f8ecba06c77137d561c29b609575eb5f8988862c",
+    "crates/shared/aos-artifact-evidence/src/identity.rs": "a960256438697c76067c85c13c364da507ff8bdcad4fa098bea776a016915f5d",
+    "crates/shared/aos-core/src/digest.rs": "f2c3c762eaa35314f95fe60cc1a109083ceb2b4d1149d193243dc370a9f00403",
+    "crates/shared/aos-core/src/limits.rs": "d1071f9bbfe39c8cfde4b5bffb4e39e1e3ed935285d9eb7da3261151c9334c1b",
+    "crates/shared/aos-oci-types/src/lib.rs": "756519530da64d7d0b12fa4017c1cafd52e6a18ad2cfadbdf8141d61a1745275",
+    "crates/shared/aos-oci-types/src/model/config.rs": "e1b656c6035aa48528ff22eb91e7acc679d44fdc39572b5eca14d28e38ba25f0"
+  },
+  "schema_version": 1,
+  "scope": "repository Rust source qualification after ownership-schema assertion repairs; Bazel conversion coexists with production builders"
+}

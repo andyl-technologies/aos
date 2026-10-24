@@ -91,10 +91,10 @@ pub async fn run(command: &AbilityCommand, printer: &Printer) -> Result<()> {
                     .collect::<Vec<_>>();
                 let mut changed = Vec::new();
                 for (id, effect) in later {
-                    if let Some(previous) = earlier.get(id) {
-                        if previous.revision != effect.revision {
-                            changed.push(id);
-                        }
+                    if let Some(previous) = earlier.get(id)
+                        && previous.revision != effect.revision
+                    {
+                        changed.push(id);
                     }
                 }
                 printer.json(&serde_json::json!({

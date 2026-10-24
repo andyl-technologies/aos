@@ -14,8 +14,8 @@
 
 // Adapted from sccache 8396f0209d74d496b7cb27cdf323cd3ff8d4a291.
 
+use super::{ColorMode, Language};
 use std::{collections::HashMap, ffi::OsString, path::PathBuf};
-use super::{ColorMode,Language};
 
 /// Artifact produced by a C/C++ compiler.
 #[derive(Clone, Debug, PartialEq, Eq)]

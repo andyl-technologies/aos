@@ -8,6 +8,10 @@ use crate::backend::{Backend as _, Statement};
 
 #[tokio::test]
 async fn cancelled_acquisitions_preserve_the_in_memory_database() {
+    #[allow(
+        clippy::infallible_destructuring_match,
+        reason = "The same constructor check also covers optional SQL driver variants."
+    )]
     let pool = match SqlxBackend::connect_sqlite(":memory:").await.unwrap() {
         SqlxBackend::Sqlite(pool) => pool,
         #[cfg(any(feature = "postgres", feature = "mysql"))]

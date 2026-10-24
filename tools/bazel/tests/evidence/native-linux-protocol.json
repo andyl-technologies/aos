@@ -1,0 +1,606 @@
+{
+  "bazel_checks": "/nix/store/rrhirlsqqp4zxyyyidcn71da6bwqmqc7-aos-bazel-checks",
+  "conservative": "/nix/store/9l91d4vrlgz400y5ynhmpsc9ija0vmdw-aos-bazel-protocol-checks",
+  "doctest_cases": {
+    "crucible-qemu-protocol": 0,
+    "crucible-qemu-shmem": 0
+  },
+  "features": {
+    "arrayref@0.3.9": [
+      []
+    ],
+    "arrayvec@0.7.7": [
+      []
+    ],
+    "blake3@1.8.5": [
+      [
+        "pure",
+        "std"
+      ]
+    ],
+    "block-buffer@0.10.4": [
+      []
+    ],
+    "cc@1.2.65": [
+      []
+    ],
+    "cfg-if@1.0.4": [
+      []
+    ],
+    "constant_time_eq@0.4.2": [
+      [
+        "std"
+      ]
+    ],
+    "cpufeatures@0.2.17": [
+      []
+    ],
+    "cpufeatures@0.3.0": [
+      []
+    ],
+    "crypto-common@0.1.7": [
+      [
+        "std"
+      ]
+    ],
+    "digest@0.10.7": [
+      [
+        "alloc",
+        "block-buffer",
+        "core-api",
+        "default",
+        "std"
+      ]
+    ],
+    "find-msvc-tools@0.1.9": [
+      []
+    ],
+    "generic-array@0.14.7": [
+      [
+        "more_lengths"
+      ]
+    ],
+    "itoa@1.0.18": [
+      []
+    ],
+    "libc@0.2.186": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "memchr@2.8.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "proc-macro2@1.0.106": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "quote@1.0.46": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "serde@1.0.228": [
+      [
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std"
+      ]
+    ],
+    "serde_core@1.0.228": [
+      [
+        "rc",
+        "result",
+        "std"
+      ]
+    ],
+    "serde_derive@1.0.228": [
+      [
+        "default"
+      ]
+    ],
+    "serde_json@1.0.150": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "sha2@0.10.9": [
+      [
+        "compress",
+        "default",
+        "std"
+      ]
+    ],
+    "shlex@2.0.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "syn@2.0.118": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "parsing",
+        "printing",
+        "proc-macro"
+      ]
+    ],
+    "thiserror-impl@2.0.18": [
+      []
+    ],
+    "thiserror@2.0.18": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "tinyvec@1.11.0": [
+      [
+        "alloc",
+        "default",
+        "tinyvec_macros"
+      ]
+    ],
+    "tinyvec_macros@0.1.1": [
+      []
+    ],
+    "typenum@1.20.1": [
+      []
+    ],
+    "unicode-ident@1.0.24": [
+      []
+    ],
+    "unicode-normalization@0.1.25": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "version_check@0.9.5": [
+      []
+    ],
+    "zmij@1.0.21": [
+      []
+    ]
+  },
+  "platform": "x86_64-unknown-linux-gnu",
+  "precise": "/nix/store/ivj4827xcpm6yx2gqzxkjzy6kgiz5kqr-aos-bazel-protocol-tests-1",
+  "schema_version": 1,
+  "targets": {
+    "//crates/crucible/protocol/crucible-qemu-protocol:codec": {
+      "executed": [
+        "decoder_reports_direction_and_payload_shape_errors",
+        "decoder_reports_typed_frame_shape_errors",
+        "doorbell_frame_decoder_reports_typed_shape_errors",
+        "frame_read_helper_preserves_prefix_and_length_contract",
+        "frame_stream_helpers_read_and_write_complete_frames",
+        "frame_stream_helpers_reject_truncated_reads_as_io_errors",
+        "frame_stream_helpers_report_write_errors",
+        "host_messages_round_trip_through_big_endian_frames",
+        "marker_payload_decoder_reports_typed_shape_errors",
+        "plugin_messages_round_trip_through_big_endian_frames"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-protocol:codec_fuzz": {
+      "executed": [
+        "fuzz_target_never_panics_on_regression_corpus",
+        "fuzz_target_reports_directional_success_only_for_registered_direction",
+        "generated_truncations_and_trailing_bytes_stay_typed",
+        "seeded_regression_corpus_exercises_malformed_and_adversarial_frames",
+        "structure_aware_directional_adversarial_frames_remain_typed_errors",
+        "structure_aware_malformed_frames_never_panic",
+        "tag_constants_are_covered_by_structure_aware_fuzz_generation",
+        "well_formed_generated_messages_round_trip"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-protocol:descriptor_handover": {
+      "executed": [
+        "setup_handover_accepts_split_descriptor_control_messages",
+        "setup_handover_rejects_wrong_descriptor_count",
+        "setup_handover_reports_closed_peer_on_send",
+        "setup_handover_transfers_three_descriptors_in_fixed_order"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-protocol:frame_format": {
+      "executed": [
+        "closed_tag_registry_matches_rfc_14_table",
+        "closed_tag_registry_rejects_unregistered_wire_values",
+        "frame_format_uses_big_endian_length_tag_and_payload",
+        "tag_directions_and_payload_lengths_match_control_lifecycle"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-protocol:gate_abi_conformance": {
+      "executed": [
+        "guest_selectable_catalog_plan_v4_golden_vector_matches_live_codec",
+        "guest_selectable_current_schemas_are_registered_exactly",
+        "guest_selectable_pending_transport_v2_golden_vector_matches_live_codec",
+        "guest_selectable_v1_golden_vectors_match_live_codec_bytes",
+        "measurement_marker_codec_rejects_noncanonical_and_oversized_values",
+        "plugin_setup_plan_v2_golden_vector_matches_live_codec",
+        "protocol_abi_conformance_runs_named_checks",
+        "protocol_codec_fuzz_regression_corpus_is_clean_and_deterministic",
+        "protocol_doorbell_decoder_fuzz_corpus_is_clean_and_bounded",
+        "protocol_doorbell_frame_golden_vectors_match_live_codec_bytes",
+        "protocol_doorbell_marker_kind_vocabulary_is_closed_and_versioned",
+        "protocol_doorbell_marker_payload_golden_vectors_match_live_codec_bytes",
+        "protocol_doorbell_marker_subvocabularies_are_closed_and_versioned",
+        "protocol_golden_vector_versions_are_explicit",
+        "protocol_golden_vectors_cover_required_control_frames",
+        "protocol_golden_vectors_freeze_literal_frame_bytes",
+        "protocol_golden_vectors_match_live_codec_bytes",
+        "protocol_rejects_an_unsupported_doorbell_version"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-protocol:gate_layer1_injection": {
+      "executed": [
+        "gate_layer1_injection_control_protocol_carries_no_runtime_injection_data",
+        "gate_layer1_injection_control_protocol_is_silent_on_hot_path"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-protocol:golden_vectors": {
+      "executed": [
+        "doorbell_frame_golden_vectors_match_canonical_codec_bytes",
+        "golden_vector_protocol_version_matches_current_protocol_version",
+        "golden_vectors_cover_required_protocol_messages_in_stable_order",
+        "golden_vectors_freeze_literal_wire_bytes",
+        "golden_vectors_match_canonical_codec_bytes",
+        "marker_payload_golden_vectors_match_canonical_codec_bytes",
+        "setup_vector_freezes_payload_without_descriptor_sidecar"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-protocol:handshake": {
+      "executed": [
+        "host_accepts_exact_hello_and_writes_hello_ack",
+        "host_rejects_handshake_failures_without_hello_ack",
+        "plugin_rejects_invalid_hello_ack",
+        "plugin_sends_hello_and_validates_hello_ack_before_setup"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-protocol:lifecycle": {
+      "executed": [
+        "lifecycle_control_tags_preserve_registered_direction",
+        "lifecycle_events_are_derived_from_decoded_control_messages",
+        "lifecycle_rejects_non_ready_setup_ack_before_run",
+        "lifecycle_rejects_out_of_order_and_incomplete_traces",
+        "lifecycle_stream_does_not_advance_after_invalid_hello_ack",
+        "lifecycle_stream_splits_host_faults_from_plugin_quit_acceptance",
+        "lifecycle_stream_wires_real_frames_setup_descriptors_and_run_silence",
+        "normal_lifecycle_connects_handshakes_runs_via_shmem_and_quits",
+        "plugin_failure_ack_writes_nonready_bytes_without_entering_run",
+        "plugin_ready_commit_records_exact_setup_transition",
+        "plugin_setup_io_is_bounded_to_setup_and_rejected_during_run",
+        "restored_child_run_stream_accepts_only_the_terminal_run_frame",
+        "run_phase_accepts_only_shmem_until_quit"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-protocol:setup_completion": {
+      "executed": [
+        "host_accepts_zero_setup_ack_as_schedulable",
+        "host_refuses_nonzero_setup_ack_before_scheduling",
+        "host_rejects_unexpected_or_malformed_setup_ack",
+        "plugin_sends_setup_ack_status_and_flushes"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-protocol:unit": {
+      "executed": [
+        "app_random_branch_plan::tests::branch_plan_rejects_duplicate_positions_and_trailing_bytes",
+        "app_random_branch_plan::tests::branch_plan_round_trips_and_freezes_big_endian_layout",
+        "app_random_transport::tests::completed_decision_rejects_out_of_range_value",
+        "app_random_transport::tests::completed_decision_round_trips",
+        "app_random_transport::tests::stream_name_membership_uses_the_complete_length_framed_node",
+        "choice::tests::scalar_domain_uses_v2_and_rejects_v1_and_group_tags",
+        "debug_gateway::tests::backend_status_round_trips_for_reconnect_reconciliation",
+        "debug_gateway::tests::stream_and_size_invariants_fail_closed",
+        "debug_gateway::tests::typed_error_payload_round_trips_with_stable_code",
+        "debug_gateway::tests::version_one_golden_rsp_frame_is_stable",
+        "device_group_opportunity::tests::bounded_public_roundtrip_preserves_exact_original_bytes",
+        "device_group_opportunity::tests::copied_count_digest_padding_and_unpaired_grid_refuse",
+        "doorbell_abi::tests::doorbell_abi_aarch64_vector_freezes_inert_hint",
+        "doorbell_abi::tests::doorbell_abi_vectors_cover_x86_64_and_aarch64",
+        "doorbell_abi::tests::doorbell_abi_x86_64_vector_freezes_out_imm8_al",
+        "guest_introspection::tests::every_record_kind_round_trips",
+        "guest_introspection::tests::malformed_and_unbounded_records_fail_closed",
+        "guest_introspection::tests::request_and_response_directions_are_closed",
+        "guest_introspection_doorbell::tests::all_exchange_kinds_round_trip",
+        "guest_introspection_doorbell::tests::malformed_envelopes_fail_closed",
+        "plugin_setup_plan::tests::composite_plan_rejects_nested_substitution_and_length_drift",
+        "plugin_setup_plan::tests::composite_plan_round_trips_and_freezes_big_endian_layout",
+        "preemption::tests::ipi_delivery_adds_fixed_latency_and_rounds_to_rr_boundary",
+        "preemption::tests::ipi_delivery_rejects_zero_quantum_and_overflow",
+        "selectable::tests::selectable_bounds_reject_before_large_decode_allocations",
+        "selectable::tests::selectable_decoders_reject_every_truncation_without_panicking",
+        "selectable::tests::selectable_decoders_reject_noncanonical_headers_ranges_and_reserved_bits",
+        "selectable::tests::selectable_identifier_tag_and_value_shapes_fail_closed",
+        "selectable::tests::selectable_registration_v1_has_frozen_canonical_bytes",
+        "selectable::tests::selection_reply_v1_binds_sequence_ids_status_and_value",
+        "selectable::tests::selection_request_optional_domain_flag_and_capacity_are_exact",
+        "selectable::tests::selection_request_v1_reserves_one_exact_zeroed_reply_buffer",
+        "selectable_catalog_plan::tests::cold_and_restored_plans_round_trip_with_frozen_header",
+        "selectable_catalog_plan::tests::continuation_rejects_runtime_state_before_freeze_and_stale_pending_sequence",
+        "selectable_catalog_plan::tests::decode_rejects_flags_order_reserved_total_and_trailing_mutations",
+        "selectable_catalog_plan::tests::host_mirror_transitions_round_trip_one_completed_request",
+        "selectable_catalog_plan::tests::pending_trap_must_represent_the_following_native_stop_boundary",
+        "selectable_catalog_plan::tests::plan_rejects_unknown_registered_missing_required_and_limit_overflow",
+        "selectable_transport::tests::decoder_rejects_reserved_and_nested_length_mutations",
+        "selectable_transport::tests::pending_request_round_trips_with_exact_reply_target",
+        "selectable_transport::tests::transport_bound_is_stricter_than_standalone_guest_message"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-shmem:advance_ceiling_handoff": {
+      "executed": [
+        "control_boundary_request_release_acknowledges_publication",
+        "external_restore_ceiling_does_not_wake_or_rewind_the_slot",
+        "frame_delivery_wake_always_bumps_the_futex_word",
+        "idle_publish_uses_race_free_futex_wait_and_wake_counter",
+        "linux_frame_delivery_trigger_wakes_parked_waiter",
+        "linux_non_private_futex_syscalls_are_available",
+        "linux_scheduler_trigger_wakes_parked_waiter",
+        "mark_running_participates_in_publish_generation",
+        "next_idle_safety_ceiling_does_not_synthesize_an_idle_boundary",
+        "node_cannot_self_extend_past_published_ceiling",
+        "node_reports_invalid_idle_and_time_conversion_loudly",
+        "node_slot_layout_matches_wire_contract",
+        "scheduler_publishes_ceiling_and_node_publishes_reached_icount",
+        "scheduler_raise_during_idle_publish_race_bumps_wake_counter",
+        "scheduler_wake_batches_pending_inputs_before_single_wake",
+        "scheduler_wake_enqueues_pending_inputs_before_ceiling_and_futex_wake",
+        "scheduler_wake_node_slot_borrowed_inbox_handoff_orders_input_ceiling_and_wake",
+        "scheduler_wake_publication_source_orders_inbox_before_ceiling_before_wake",
+        "scheduler_wake_rejects_full_inbox_before_ceiling_or_wake",
+        "scheduler_wake_rejects_source_mismatch_before_inbox_write_or_wake",
+        "scheduler_wake_rejects_stale_ceiling_before_inbox_write_or_wake"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-shmem:control_flags": {
+      "executed": [
+        "linux_shutdown_request_wakes_all_parked_waiters",
+        "logical_time_restore_is_one_generation_exact_transaction",
+        "logical_time_restore_rejects_raw_time_ahead_of_logical_time",
+        "node_can_publish_pause_quiescence_at_quantum_boundary",
+        "pause_request_sets_flag_and_wakes_every_slot",
+        "shutdown_request_takes_priority_and_nodes_mark_done"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-shmem:gate_abi_conformance": {
+      "executed": [
+        "gate_cases::gate_abi_conformance_checks_generated_header_and_golden_vectors",
+        "gate_cases::generated_header_carries_static_asserts_for_every_shared_struct",
+        "gate_cases::generated_header_matches_committed_copy",
+        "gate_cases::golden_vector_negative_control_detects_layout_drift",
+        "gate_cases::rust_golden_vector_round_trip_matches_fixture"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-shmem:gate_layer1_injection": {
+      "executed": [
+        "coverage_ring::paused_restore_discards_only_the_queued_coverage_generation",
+        "gate_layer1_injection_checks_spsc_ring_concurrency_properties"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-shmem:generated_abi_header": {
+      "executed": [
+        "committed_header_matches_generated_rust_layout",
+        "generated_header_asserts_every_shared_struct_layout",
+        "generated_header_preserves_public_abi_license_notice"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-shmem:icount_stamped_injection": {
+      "executed": [
+        "deliverability_depends_on_consumer_icount_not_arrival_order",
+        "frame_entry_carries_delivery_icount_in_band",
+        "frame_entry_rejects_malformed_payload_length",
+        "frame_entry_rejects_oversized_payload",
+        "same_icount_frames_resolve_by_source_node_then_sequence"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-shmem:lookahead_gate": {
+      "executed": [
+        "lookahead_gate_allows_exact_current_delivery_icount",
+        "lookahead_gate_allows_future_frame_to_deliver_at_exact_icount",
+        "lookahead_gate_authorizes_ceiling_before_possible_delivery",
+        "lookahead_gate_rejects_already_passed_delivery_icount",
+        "lookahead_gate_rejects_ceiling_at_possible_delivery",
+        "lookahead_gate_rejects_ceiling_before_current_icount",
+        "lookahead_gate_rejects_ceiling_past_possible_delivery"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-shmem:multi_vcpu_node_slot": {
+      "executed": [
+        "generated_c_header_keeps_node_slot_node_scoped",
+        "multi_vcpu_count_does_not_change_region_shape_or_abi_version",
+        "node_slot_publishes_device_io_active_flag",
+        "one_node_slot_carries_aggregate_multi_vcpu_clock_and_idle_deadline",
+        "shmem_abi_has_no_per_vcpu_fields_or_slots"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-shmem:preemption_mailbox": {
+      "executed": [
+        "preemption_mailbox_rejects_overwrite_wrong_ack_and_invalid_window",
+        "preemption_mailbox_round_trips_switch_interrupt_and_acknowledgement"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-shmem:region_layout": {
+      "executed": [
+        "guest_introspection_rings_are_directional_bounded_and_vm_isolated",
+        "region_allocation_initializes_slots_rings_and_storage",
+        "region_header_layout_matches_wire_contract",
+        "region_header_records_computed_geometry",
+        "region_header_round_trips_explicit_fault_payload_geometry",
+        "region_layout_computes_offsets_and_directed_rings",
+        "region_layout_rejects_invalid_shapes",
+        "reserved_executor_slot_constants_are_stable"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-shmem:setup_validation": {
+      "executed": [
+        "hot_fork_ring_image_round_trips_queued_bytes_into_a_held_private_mapping",
+        "mapped_hot_fork_barrier_holds_and_releases_every_ring_endpoint",
+        "mmap_setup_region_exposes_node_slot_and_distinct_directed_rings",
+        "mmap_setup_region_keeps_guest_introspection_directions_distinct",
+        "mmap_setup_region_maps_exact_region_len_before_header_validation",
+        "mmap_setup_region_rejects_duplicate_mutable_directed_ring_view",
+        "mmap_setup_region_rejects_lengths_smaller_than_header",
+        "mmap_setup_region_rejects_short_backing_before_mapping",
+        "mmap_setup_region_round_trips_fault_command_transport",
+        "mmap_setup_region_round_trips_one_bounded_selectable_reply",
+        "mmap_setup_region_round_trips_whitebox_marker_ring_entries",
+        "setup_region_bytes_include_ring_indices_and_frame_entries",
+        "setup_region_bytes_materialize_a_valid_initial_memfd_image",
+        "setup_region_header_validation_accepts_magic_abi_and_region_len",
+        "setup_region_header_validation_rejects_invalid_abi_marker",
+        "setup_region_header_validation_rejects_invalid_geometry",
+        "setup_region_header_validation_rejects_wrong_clock_scale",
+        "setup_region_header_validation_rejects_wrong_region_len"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-shmem:snapshot_restore": {
+      "executed": [
+        "canonical_bytes_decoder_rejects_malformed_corpus_without_panicking",
+        "canonical_bytes_decoder_round_trips_and_normalizes_padding",
+        "canonical_bytes_rejects_impossible_attempt_state_combinations",
+        "canonical_bytes_round_trip_retained_delivery_state",
+        "canonical_decoder_keeps_minimal_frames_compact",
+        "canonical_decoder_rejects_amplified_truncated_ring_before_reservation",
+        "canonical_decoder_rejects_corrupt_snapshot_frame_length",
+        "canonical_decoder_rejects_frame_count_before_allocation",
+        "canonical_decoder_rejects_retained_attempt_before_delivery",
+        "restore_normalizes_indices_and_replays_snapshot_frames",
+        "restore_rejects_snapshot_larger_than_target_capacity",
+        "snapshot_captures_fifo_after_wraparound_and_canonicalizes_entries",
+        "snapshot_rejects_corrupt_frame_length_before_serializing"
+      ],
+      "ignored": []
+    },
+    "//crates/crucible/protocol/crucible-qemu-shmem:unit": {
+      "executed": [
+        "fault_clock_evidence::tests::clock_evidence_rejects_noncanonical_and_unbound_records",
+        "fault_clock_evidence::tests::every_clock_evidence_kind_round_trips_canonically",
+        "fault_command::tests::capability_manifest_is_sorted_bounded_and_content_addressed",
+        "fault_command::tests::command_round_trip_authenticates_payload_and_reserved_bytes",
+        "fault_command::tests::command_transport_wraps_without_splitting_payloads",
+        "fault_command::tests::full_command_ring_fails_before_reserving_payload_bytes",
+        "fault_command::tests::malformed_command_is_consumed_without_losing_raw_correlation",
+        "fault_command::tests::result_preflight_reports_backpressure_without_mutating_transport",
+        "fault_command::tests::result_status_controls_mutation_evidence_invariants",
+        "fault_command::tests::result_transport_accepts_unknown_kind_only_for_rejection",
+        "fault_command::tests::result_transport_reuses_preallocated_payload_storage_without_consuming_on_short_buffer",
+        "fault_event::tests::drained_event_checkpoint_round_trips_and_rejects_trailing_bytes",
+        "fault_event::tests::event_snapshot_authenticates_without_consuming_transport_ownership",
+        "fault_event::tests::event_snapshot_rejects_inline_payload_before_copying_or_consuming",
+        "fault_event::tests::event_snapshot_rejects_payload_bytes_without_consuming_transport_ownership",
+        "fault_event::tests::event_transport_round_trips_authenticated_payload",
+        "fault_event::tests::passed_event_cannot_change_state_digest",
+        "fault_instruction_evidence::tests::delivered_exception_round_trip_rejects_delivery_disagreement",
+        "fault_instruction_evidence::tests::device_replay_requires_an_authenticated_completed_port_io_transcript",
+        "fault_instruction_evidence::tests::instruction_round_trip_rejects_reserved_bytes",
+        "fault_instruction_evidence::tests::suppressed_instruction_binds_mismatched_input_digest",
+        "fault_memory::tests::gva_preparation_may_resolve_translation_before_commit",
+        "fault_memory::tests::memory_mutation_payload_bounds_match_the_transport_envelope",
+        "fault_memory::tests::memory_mutation_payload_rejects_partial_or_ambiguous_context",
+        "fault_memory::tests::memory_mutation_payload_round_trips_both_transforms",
+        "fault_memory_batch::tests::batch_rejects_duplicate_identity_and_cumulative_overflow",
+        "fault_memory_batch::tests::preparation_and_commit_batches_are_canonical_and_ordered",
+        "fault_memory_batch::tests::transport_envelopes_include_worst_case_batch_overhead",
+        "fault_memory_evidence::tests::prepared_precondition_binds_every_boundary_digest",
+        "fault_memory_evidence::tests::translation_digest_and_evidence_round_trip",
+        "fault_node::tests::every_typed_node_command_has_an_exact_closed_schema",
+        "fault_node::tests::typed_node_evidence_round_trips_every_identity",
+        "fault_node::tests::typed_node_payload_rejects_command_target_mismatch",
+        "fault_node::tests::typed_node_payload_rejects_invalid_memory_cross_fields",
+        "fault_node::tests::typed_node_payload_rejects_noncanonical_fields",
+        "fault_node::tests::typed_node_payload_rejects_noncanonical_policy_json",
+        "fault_node::tests::typed_node_payload_rejects_unknown_discriminant",
+        "fault_node::tests::typed_node_payload_round_trips",
+        "fault_node::tests::typed_node_remove_is_parameter_free",
+        "fault_register_evidence::tests::only_after_instruction_evidence_accepts_the_terminal_rr_position",
+        "fault_register_evidence::tests::register_evidence_round_trips_and_authenticates_values",
+        "fault_target_manifest::tests::accelerator_manifest_round_trips_and_rejects_incomplete_devices",
+        "fault_target_manifest::tests::clock_manifest_round_trips_and_rejects_noncanonical_sources",
+        "fault_target_manifest::tests::fault_system_manifest_is_fixed_authenticated_and_fail_closed",
+        "fault_target_manifest::tests::hardware_error_manifest_rejects_partial_or_mismatched_rows",
+        "fault_target_manifest::tests::hardware_error_manifest_round_trips_real_mca_rows",
+        "fault_target_manifest::tests::interrupt_manifest_round_trips_and_rejects_incomplete_controller_semantics",
+        "fault_target_manifest::tests::query_codec_rejects_unknown_kinds_and_reserved_bytes",
+        "fault_target_manifest::tests::register_manifest_carries_non_writable_rows_without_mutation_hooks",
+        "fault_target_manifest::tests::register_manifest_golden_vector_is_frozen",
+        "fault_target_manifest::tests::register_manifest_rejects_overlap_gaps_order_and_digest_drift",
+        "fault_target_manifest::tests::register_manifest_round_trips_canonical_rows_and_masks",
+        "fault_terminal_evidence::tests::decodes_queue_and_resource_terminal_records",
+        "fault_terminal_evidence::tests::rejects_mismatched_magic_and_resource_kind",
+        "fingerprint_sample::tests::capture_request_is_odd_until_acknowledged",
+        "fingerprint_sample::tests::capture_request_wraps_without_acknowledging_a_different_token",
+        "fingerprint_sample::tests::over_capacity_vcpu_count_is_rejected",
+        "fingerprint_sample::tests::publish_then_snapshot_round_trips_every_field",
+        "fingerprint_sample::tests::republish_advances_generation_and_replaces_sample",
+        "fingerprint_sample::tests::unpublished_slot_snapshots_to_none",
+        "frame_node::advance_publication_tests::clone_captures_one_even_coherent_scheduler_tuple",
+        "frame_node::advance_publication_tests::concurrent_publication_never_exposes_a_mixed_scheduler_tuple",
+        "frame_node::advance_publication_tests::full_mode_aba_changes_the_publication_sequence",
+        "frame_node::advance_publication_tests::unknown_stop_condition_fails_closed",
+        "frame_node::control_boundary_tests::outstanding_control_request_rejects_a_changed_frontier_or_capture",
+        "frame_node::control_boundary_tests::repeated_request_and_acknowledgement_are_idempotent",
+        "frame_node::control_boundary_tests::request_and_acknowledgement_wrap_through_zero",
+        "frame_node::preemption_mailbox::tests::pending_hint_does_not_decode_or_validate_command_fields",
+        "frame_node::preemption_mailbox::tests::pending_hint_handles_publication_sequence_wrap",
+        "frame_node::virtual_timer_witness_tests::completed_virtual_timer_witness_round_trips_in_one_slot_snapshot",
+        "mapped_setup_region::tests::hot_fork_child_installs_private_mapping_at_exact_source_address",
+        "mapped_setup_region::tests::hot_fork_mapping_disposition_is_reversible",
+        "mapped_setup_region::tests::owned_mapping_can_move_to_a_session_thread",
+        "mapped_setup_region::tests::seal_capable_memfd_must_prevent_shrink_before_mapping",
+        "ring_accelerator::tests::accelerator_entry_round_trips_and_rejects_tail_bytes",
+        "ring_accelerator::tests::cancellation_repeats_a_canonical_job_envelope_without_payload",
+        "ring_accelerator::tests::immutable_job_material_excludes_transport_identity",
+        "ring_coverage::admission_barrier_tests::hold_between_load_and_admission_cas_rejects_racing_consumer",
+        "ring_coverage::admission_barrier_tests::hold_between_load_and_admission_cas_rejects_racing_producer",
+        "ring_coverage::admission_barrier_tests::hold_rejects_late_consumers_without_advancing_the_ring",
+        "ring_coverage::admission_barrier_tests::hold_rejects_late_producers_and_waits_for_admitted_publication",
+        "ring_coverage::whitebox_availability_tests::whitebox_availability_does_not_validate_payloads",
+        "ring_coverage::whitebox_availability_tests::whitebox_availability_is_advisory_across_publication_and_consumption",
+        "ring_coverage::whitebox_availability_tests::whitebox_availability_matches_peek_without_consuming",
+        "ring_coverage::whitebox_availability_tests::whitebox_availability_preserves_peek_without_consumer_admission",
+        "ring_guest_introspection::tests::consumer_rejects_malformed_entry_without_releasing_its_slot",
+        "ring_guest_introspection::tests::directional_ring_applies_backpressure_and_wraps_without_overwrite",
+        "ring_guest_introspection::tests::entry_rejects_every_untrusted_envelope_and_protocol_shape",
+        "ring_guest_introspection::tests::entry_round_trips_owned_record_bytes",
+        "ring_guest_introspection::tests::peek_requires_matching_commit_before_releasing_request",
+        "ring_whitebox_marker::tests::marker_entry_rejects_oversized_payload",
+        "ring_whitebox_marker::tests::marker_entry_round_trips_exact_observational_fields"
+      ],
+      "ignored": []
+    }
+  },
+  "unit_and_integration_cases": 302
+}

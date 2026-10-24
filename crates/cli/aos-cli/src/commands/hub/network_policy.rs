@@ -239,7 +239,6 @@ pub(super) async fn network_policy(printer: &Printer, command: &HubNetworkPolicy
                     )),
                     idempotency_key: new_idempotency_key(),
                     expected_resource_version: mutation.if_version.clone().unwrap_or_default(),
-                    ..Default::default()
                 },
                 mutation,
                 |plan_id, idempotency_key, confirmation_hash| {

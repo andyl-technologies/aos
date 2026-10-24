@@ -3,7 +3,7 @@
 #![forbid(unsafe_code)]
 
 use std::fmt::Display;
-use std::path::Path;
+use std::path::PathBuf;
 
 use crucible_guest::{
     CRUCIBLE_GUEST_DEFAULT_RANDOM_REQUEST_ID, CRUCIBLE_GUEST_DEFAULT_RANDOM_STREAM_TAG,
@@ -251,23 +251,20 @@ fn guest_static_build_contract_is_declared_for_aos_package() {
         CRUCIBLE_GUEST_STATIC_RUSTFLAGS,
         &["-C", "target-feature=+crt-static"]
     );
-    let cargo_toml = manifest_file("Cargo.toml");
-    assert!(cargo_toml.contains("name = \"crucible-guest\""));
-    assert!(cargo_toml.contains("path = \"src/main.rs\""));
-    assert!(
-        cargo_toml.contains("crucible-qemu-protocol = { path = \"../crucible-qemu-protocol\" }")
-    );
-    assert!(!cargo_toml.contains("clap"));
+    let declaration = repo_file("crates/crucible/crucible-guest/BUILD.bazel");
+    assert!(declaration.contains("name = \"crucible-guest\""));
+    assert!(declaration.contains("crate_root = \"src/main.rs\""));
+    assert!(declaration.contains("//crates/crucible/crucible-qemu-protocol:lib"));
+    assert!(declaration.contains("@aos_native//:static_runtime"));
+    assert!(declaration.contains("license_expression = \"Apache-2.0\""));
+    assert!(declaration.contains("\"bin/crucible-guest\""));
+    assert!(!declaration.contains("clap"));
 
-    let package = repo_file("pkgs/tools/crucible-guest.nix");
-    assert!(package.contains("CARGO_TARGET_"));
-    assert!(package.contains("target-feature=+crt-static"));
-    assert!(package.contains("-p crucible-guest --bin crucible-guest"));
-    assert!(package.contains("patchelf --print-interpreter"));
-    assert!(package.contains("packaged_guest_system=${stdenv.hostPlatform.system}"));
-    assert!(package.contains("instruction_abi_architectures=x86_64,aarch64"));
-    assert!(package.contains("licenseScope = \"Apache-2.0\""));
-    assert!(package.contains("license = \"Apache-2.0\""));
+    let qualification = repo_file("tests/build/_bazel-guest.nix");
+    assert!(qualification.contains("-Ctarget-feature=+crt-static"));
+    assert!(qualification.contains("-Crelocation-model=static"));
+    assert!(qualification.contains("aosBazelGuestLibraries"));
+    assert!(qualification.contains("mkAosBazelPackage"));
 }
 
 fn payload_from_args(args: &[&str]) -> WhiteboxMarkerPayload {
@@ -291,23 +288,23 @@ fn assert_usage_error(result: Result<GuestCommand, GuestEmitterError>) {
     }
 }
 
-fn manifest_file(path: &str) -> String {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    match std::fs::read_to_string(manifest_dir.join(path)) {
-        Ok(content) => content,
-        Err(error) => panic!("failed to read manifest file {path}: {error}"),
-    }
+fn repo_file(path: &str) -> String {
+    std::fs::read_to_string(repository_root().join(path))
+        .unwrap_or_else(|error| panic!("failed to read repository file {path}: {error}"))
 }
 
-fn repo_file(path: &str) -> String {
-    let Some(root) = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .ancestors()
-        .find(|candidate| candidate.join("crates/Cargo.toml").is_file())
-    else {
-        panic!("guest test must be inside the repository Cargo workspace");
-    };
-    std::fs::read_to_string(root.join(path))
-        .unwrap_or_else(|error| panic!("failed to read repository file {path}: {error}"))
+fn repository_root() -> PathBuf {
+    let mut directory = std::env::current_dir()
+        .unwrap_or_else(|error| panic!("failed to locate the guest test directory: {error}"));
+    loop {
+        if directory.join("MODULE.bazel").is_file() {
+            return directory;
+        }
+        assert!(
+            directory.pop(),
+            "guest test must have declared repository inputs"
+        );
+    }
 }
 
 fn must<T, E>(result: Result<T, E>) -> T

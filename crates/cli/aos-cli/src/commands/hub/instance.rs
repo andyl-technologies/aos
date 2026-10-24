@@ -417,6 +417,8 @@ fn set_generation_ref(
     Ok(())
 }
 
+// Set and clear selectors share one validation and reviewed-plan submission path.
+#[allow(clippy::too_many_arguments)]
 async fn apply_topology_defaults(
     printer: &Printer,
     client: &HubClient,
@@ -513,26 +515,25 @@ pub(super) async fn organization_topology_defaults(
     let client = hub_client(&access.hub, access.token.as_deref()).await?;
     if let HubOrgTopologyDefaultsCmd::Set { mutation, .. }
     | HubOrgTopologyDefaultsCmd::Clear { mutation, .. } = command
+        && mutation.plan_id.is_some()
     {
-        if mutation.plan_id.is_some() {
-            return apply_topology_defaults(
-                printer,
-                &client,
-                hub_types::TopologyDefaults::default(),
-                None,
-                None,
-                None,
-                None,
-                false,
-                false,
-                false,
-                false,
-                mutation,
-                HubTopologyMethod::PlanSetOrganizationTopologyDefaults,
-                HubTopologyMethod::SetOrganizationTopologyDefaults,
-            )
-            .await;
-        }
+        return apply_topology_defaults(
+            printer,
+            &client,
+            hub_types::TopologyDefaults::default(),
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            false,
+            false,
+            mutation,
+            HubTopologyMethod::PlanSetOrganizationTopologyDefaults,
+            HubTopologyMethod::SetOrganizationTopologyDefaults,
+        )
+        .await;
     }
     let current: hub_types::TopologyDefaultsResponse = client
         .call_topology(
@@ -617,26 +618,25 @@ async fn instance_topology_defaults(
     let client = hub_client(&access.hub, access.token.as_deref()).await?;
     if let HubInstanceTopologyDefaultsCmd::Set { mutation, .. }
     | HubInstanceTopologyDefaultsCmd::Clear { mutation, .. } = command
+        && mutation.plan_id.is_some()
     {
-        if mutation.plan_id.is_some() {
-            return apply_topology_defaults(
-                printer,
-                &client,
-                hub_types::TopologyDefaults::default(),
-                None,
-                None,
-                None,
-                None,
-                false,
-                false,
-                false,
-                false,
-                mutation,
-                HubTopologyMethod::PlanSetInstanceTopologyDefaults,
-                HubTopologyMethod::SetInstanceTopologyDefaults,
-            )
-            .await;
-        }
+        return apply_topology_defaults(
+            printer,
+            &client,
+            hub_types::TopologyDefaults::default(),
+            None,
+            None,
+            None,
+            None,
+            false,
+            false,
+            false,
+            false,
+            mutation,
+            HubTopologyMethod::PlanSetInstanceTopologyDefaults,
+            HubTopologyMethod::SetInstanceTopologyDefaults,
+        )
+        .await;
     }
     let current: hub_types::TopologyDefaultsResponse = client
         .call_topology(

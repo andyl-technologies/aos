@@ -1,0 +1,685 @@
+{
+  "baseline": "qemu-host-cargo-baseline.json",
+  "cli_checks": "/nix/store/hblgr12xzyrl36p7wm0r5p3bp1wzw009-aos-dev-cli-check-0",
+  "configured_targets": 249,
+  "dependency_specification_outputs": [
+    "/nix/store/wdpks4rjkjfzj0i0124ijsqv8zcq1hkk-aos-rust-core-specifications-1",
+    "/nix/store/pvqwgwiw38w4xidi2wiph9slk3ydidmn-aos-rust-device-specifications-1",
+    "/nix/store/iajls99hdsndgrzgimpsrnpxfplaml1c-aos-rust-store-specifications-1",
+    "/nix/store/man48crndb2izmg1zvb04ycslna6wla7-aos-rust-guest-specifications-1",
+    "/nix/store/y2lib3w4524yhy1agynnp7k10by6izk6-aos-rust-engine-specifications-1",
+    "/nix/store/lczycvj3gcca9d9md05vimcdrsrii7lh-aos-rust-quota-specifications-1",
+    "/nix/store/3f6lslzka3cl7r8hbn9kfx7m07m502yc-aos-rust-session-specifications-1",
+    "/nix/store/i5xpha97i0xcngiqz3p7304wqm73qgn6-aos-rust-control-specifications-1",
+    "/nix/store/6cfa6b8dpdhb74aqahh4smkrnil5zvv4-aos-rust-qemu-host-specifications-1"
+  ],
+  "existing_eight_dependency_locks": "unchanged after explicit dependency update",
+  "external_crate_identities": 107,
+  "external_features": {
+    "aead@0.5.2": [
+      [
+        "alloc",
+        "getrandom",
+        "rand_core"
+      ]
+    ],
+    "aes-gcm@0.10.3": [
+      [
+        "aes",
+        "alloc",
+        "default",
+        "getrandom",
+        "rand_core",
+        "zeroize"
+      ]
+    ],
+    "aes@0.8.4": [
+      []
+    ],
+    "ahash@0.8.12": [
+      []
+    ],
+    "aho-corasick@1.1.4": [
+      [
+        "perf-literal",
+        "std"
+      ]
+    ],
+    "arrayref@0.3.9": [
+      []
+    ],
+    "arrayvec@0.7.7": [
+      []
+    ],
+    "autocfg@1.5.1": [
+      []
+    ],
+    "bitflags@2.13.0": [
+      [
+        "std"
+      ]
+    ],
+    "blake3@1.8.5": [
+      [
+        "pure",
+        "std"
+      ]
+    ],
+    "block-buffer@0.10.4": [
+      []
+    ],
+    "cc@1.2.65": [
+      [
+        "parallel"
+      ]
+    ],
+    "cfg-if@1.0.4": [
+      []
+    ],
+    "ciborium-io@0.2.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "ciborium-ll@0.2.2": [
+      []
+    ],
+    "ciborium@0.2.2": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "cipher@0.4.4": [
+      []
+    ],
+    "const-oid@0.9.6": [
+      []
+    ],
+    "constant_time_eq@0.4.2": [
+      [
+        "std"
+      ]
+    ],
+    "cpufeatures@0.2.17": [
+      []
+    ],
+    "cpufeatures@0.3.0": [
+      []
+    ],
+    "crypto-common@0.1.7": [
+      [
+        "getrandom",
+        "rand_core",
+        "std"
+      ]
+    ],
+    "ctr@0.9.2": [
+      []
+    ],
+    "curve25519-dalek-derive@0.1.1": [
+      []
+    ],
+    "curve25519-dalek@4.1.3": [
+      [
+        "alloc",
+        "digest",
+        "precomputed-tables",
+        "zeroize"
+      ]
+    ],
+    "der@0.7.10": [
+      [
+        "alloc",
+        "oid",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "digest@0.10.7": [
+      [
+        "alloc",
+        "block-buffer",
+        "core-api",
+        "default",
+        "std"
+      ]
+    ],
+    "ed25519-dalek@2.2.0": [
+      [
+        "alloc",
+        "default",
+        "fast",
+        "pkcs8",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "ed25519@2.2.3": [
+      [
+        "alloc",
+        "pkcs8",
+        "std"
+      ]
+    ],
+    "equivalent@1.0.2": [
+      []
+    ],
+    "fallible-iterator@0.3.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "fallible-streaming-iterator@0.1.9": [
+      []
+    ],
+    "fastrand@2.4.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "find-msvc-tools@0.1.9": [
+      []
+    ],
+    "generic-array@0.14.7": [
+      [
+        "more_lengths"
+      ]
+    ],
+    "getrandom@0.2.17": [
+      []
+    ],
+    "getrandom@0.4.2": [
+      []
+    ],
+    "ghash@0.5.1": [
+      []
+    ],
+    "half@2.7.1": [
+      []
+    ],
+    "hashbrown@0.14.5": [
+      [
+        "ahash",
+        "inline-more"
+      ]
+    ],
+    "hashbrown@0.17.1": [
+      []
+    ],
+    "hashlink@0.9.1": [
+      []
+    ],
+    "indexmap@2.14.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "inout@0.1.4": [
+      []
+    ],
+    "itoa@1.0.18": [
+      []
+    ],
+    "jobserver@0.1.34": [
+      []
+    ],
+    "libc@0.2.186": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "libsqlite3-sys@0.30.1": [
+      [
+        "default",
+        "min_sqlite_version_3_14_0",
+        "pkg-config",
+        "vcpkg"
+      ]
+    ],
+    "linux-raw-sys@0.12.1": [
+      [
+        "auxvec",
+        "elf",
+        "errno",
+        "general",
+        "if_ether",
+        "ioctl",
+        "net",
+        "netlink",
+        "no_std",
+        "prctl",
+        "xdp"
+      ]
+    ],
+    "memchr@2.8.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "num-bigint@0.4.6": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "num-integer@0.1.46": [
+      [
+        "default",
+        "i128",
+        "std"
+      ]
+    ],
+    "num-traits@0.2.19": [
+      [
+        "default",
+        "i128",
+        "std"
+      ]
+    ],
+    "once_cell@1.21.4": [
+      [
+        "alloc",
+        "default",
+        "race",
+        "std"
+      ]
+    ],
+    "opaque-debug@0.3.1": [
+      []
+    ],
+    "pin-project-lite@0.2.17": [
+      []
+    ],
+    "pkcs8@0.10.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "pkg-config@0.3.33": [
+      []
+    ],
+    "polyval@0.6.2": [
+      []
+    ],
+    "proc-macro2@1.0.106": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "quote@1.0.46": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "rand_core@0.6.4": [
+      [
+        "getrandom"
+      ]
+    ],
+    "regex-automata@0.4.14": [
+      [
+        "alloc",
+        "dfa-onepass",
+        "hybrid",
+        "meta",
+        "nfa-backtrack",
+        "nfa-pikevm",
+        "nfa-thompson",
+        "perf-inline",
+        "perf-literal",
+        "perf-literal-multisubstring",
+        "perf-literal-substring",
+        "std",
+        "syntax",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment",
+        "unicode-word-boundary"
+      ]
+    ],
+    "regex-syntax@0.8.11": [
+      [
+        "default",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "regex@1.12.4": [
+      [
+        "default",
+        "perf",
+        "perf-backtrack",
+        "perf-cache",
+        "perf-dfa",
+        "perf-inline",
+        "perf-literal",
+        "perf-onepass",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "rusqlite@0.32.1": [
+      [
+        "blob"
+      ]
+    ],
+    "rustc_version@0.4.1": [
+      []
+    ],
+    "rustix@1.1.4": [
+      [
+        "alloc",
+        "default",
+        "event",
+        "fs",
+        "net",
+        "param",
+        "process",
+        "std",
+        "time"
+      ]
+    ],
+    "semver@1.0.28": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "serde@1.0.228": [
+      [
+        "alloc",
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std"
+      ]
+    ],
+    "serde_core@1.0.228": [
+      [
+        "alloc",
+        "rc",
+        "result",
+        "std"
+      ]
+    ],
+    "serde_derive@1.0.228": [
+      [
+        "default"
+      ]
+    ],
+    "serde_json@1.0.150": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "serde_spanned@0.6.9": [
+      [
+        "serde"
+      ]
+    ],
+    "sha2@0.10.9": [
+      [
+        "compress",
+        "default",
+        "std"
+      ]
+    ],
+    "shlex@2.0.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "signature@2.2.0": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "smallvec@1.15.2": [
+      []
+    ],
+    "spki@0.7.3": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "subtle@2.6.1": [
+      []
+    ],
+    "syn@2.0.118": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit-mut"
+      ]
+    ],
+    "tempfile@3.27.0": [
+      [
+        "default",
+        "getrandom"
+      ]
+    ],
+    "thiserror-impl@2.0.18": [
+      []
+    ],
+    "thiserror@2.0.18": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "tinyvec@1.11.0": [
+      [
+        "alloc",
+        "default",
+        "tinyvec_macros"
+      ]
+    ],
+    "tinyvec_macros@0.1.1": [
+      []
+    ],
+    "toml@0.8.23": [
+      [
+        "default",
+        "display",
+        "parse"
+      ]
+    ],
+    "toml_datetime@0.6.11": [
+      [
+        "serde"
+      ]
+    ],
+    "toml_edit@0.22.27": [
+      [
+        "display",
+        "parse",
+        "serde"
+      ]
+    ],
+    "toml_write@0.1.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "tracing-attributes@0.1.31": [
+      []
+    ],
+    "tracing-core@0.1.36": [
+      [
+        "once_cell",
+        "std"
+      ]
+    ],
+    "tracing@0.1.44": [
+      [
+        "attributes",
+        "default",
+        "std",
+        "tracing-attributes"
+      ]
+    ],
+    "typenum@1.20.1": [
+      []
+    ],
+    "unicode-ident@1.0.24": [
+      []
+    ],
+    "unicode-normalization@0.1.25": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "universal-hash@0.5.1": [
+      []
+    ],
+    "vcpkg@0.2.15": [
+      []
+    ],
+    "version_check@0.9.5": [
+      []
+    ],
+    "winnow@0.7.15": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "zerocopy-derive@0.8.49": [
+      []
+    ],
+    "zerocopy@0.8.49": [
+      [
+        "derive",
+        "simd",
+        "zerocopy-derive"
+      ]
+    ],
+    "zeroize@1.9.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "zmij@1.0.21": [
+      []
+    ],
+    "zstd-safe@7.2.4": [
+      [
+        "arrays",
+        "legacy",
+        "std",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ],
+    "zstd-sys@2.0.16+zstd.1.5.7": [
+      [
+        "legacy",
+        "std",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ],
+    "zstd@0.13.3": [
+      [
+        "arrays",
+        "default",
+        "legacy",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ]
+  },
+  "external_features_match_cargo_baseline": true,
+  "file_sha256": {
+    "BUILD.bazel": "2386616ecf40730bd57645e9237932e5bebe0435d85d71ee21d2e6a9efda7715",
+    "MODULE.bazel": "61e1471bff69b85ece857083316ca99653300163514717c6fbc855a3753bcbe8",
+    "crates/crucible/qemu/crucible-qemu-host/BUILD.bazel": "80d62e5bd32605bec33a0fcec3860467049c6e72c39368735ab904e97dbdfd36",
+    "crates/crucible/qemu/crucible-qemu-host/tests/gate_qemu_inert.rs": "16097401d949cdc2ce086002c8776522cfe2133dc5fbe356dc0d69b82fec2ce0",
+    "docs/rfcs/0020-crucible-campaigns/BUILD.bazel": "6800165a11bec94b8e57b25353fd23112b3c6d38f34e58c19a042718b7f0d41f",
+    "tests/build/_bazel-qemu-host.nix": "21aad8fcf53adeb766522bdd41c438390c0703e484ab3d883523e84c351e26cc",
+    "tests/crucible/BUILD.bazel": "b9c58a3f795e99902fb004b9745e19c843dbbdfd097c768a4b11d32317d46c40",
+    "third_party/bazel/modules.json": "7f2b24f737ec76feed2049cd3ac7cad5ac30818aa730817a3f525a0d4b7217ec",
+    "third_party/rust/BUILD.bazel": "d8dfe68f5790b9d799f91dee7c58c55a0b19484a5252111454db196d2124ad29",
+    "third_party/rust/qemu-host/sources.json": "4353a0deef5fdbb45810e9ba5a279dfd50cae7d08d2b793b2328c5ddc9c00eb3",
+    "tools/bazel/metadata/qemu-host-inventory.json": "861a85a697dc8331e0af39f863619aaac08642e8dc8823e03dabd091817e49f8",
+    "tools/bazel/tests/qemu-host.nix": "feb0cb086a41e5a5997408a071819b3fd3dc3860ceb07a58afe86f98bd6c6071",
+    "tools/bazel/tests/verify_protocol.py": "9c5c7b334c3b3816b766de0b56418f09864de6f773f43b64d2986e1a92283183",
+    "tools/dev/lib/bazel.bash": "e1939059115c59206e70dfa583d297f5a6bcecac711f24b73a65a96c6745db3f",
+    "tools/dev/lib/common.bash": "018a48ac29d3b8308707c0a4e50b7e376e6d33293c3018cb9e9ad83f4eb50bcd",
+    "tools/dev/tests/cli.bash": "21db0e16684a442ae3ee2c991c4ced4d2467b7507c3140b7dd664437fbe13328"
+  },
+  "inventory_refresh_outputs": [
+    "/nix/store/qj5a4ziq1zxinb6a62nhf40dlkc38v21-aos-bazel-boot-pilot-inventory-1",
+    "/nix/store/cbfdwl2ijrbbq9cdaya26sc0ri4mpv01-aos-bazel-control-inventory-1",
+    "/nix/store/3h48xcl7jl1crq5ps6qx43rszs9ixf2l-aos-bazel-device-inventory-1",
+    "/nix/store/4bm0g7a4nsv6i255hr3cxgrcmdf2q1h9-aos-bazel-engine-inventory-1",
+    "/nix/store/y6n3cxic1qjjb9hiia1jkqxa924qiy5q-aos-bazel-fixture-inventory-1",
+    "/nix/store/zz82mfj45asxab3clksbn5v3lr81l150-aos-bazel-guest-inventory-1",
+    "/nix/store/b9kcd2la9h7n7lpbyas89gwa1iaxlxfz-aos-bazel-protocol-inventory-1",
+    "/nix/store/xcyiyrd8lbncf8a7lsp8sfv093vwji7p-aos-bazel-qemu-host-inventory-1",
+    "/nix/store/2w4ba8d0pcr2lzi2yhny0gihy518vbzb-aos-bazel-quota-inventory-1",
+    "/nix/store/2m0rx4p79j8qbf7a6xw4zhqg5jf45y1s-aos-bazel-session-inventory-1",
+    "/nix/store/hfwcg55cnffcjqywij9z6xc4612410pd-aos-bazel-shared-inventory-1",
+    "/nix/store/52sndi5gdg2n9z7msmx1g2p49kb98ylz-aos-bazel-source-catalog-checks",
+    "/nix/store/l5hym70rc207knblyyd4ab836h80qf9g-aos-bazel-store-inventory-1"
+  ],
+  "limits": [
+    "Configured graph and Cargo baseline evidence only; native Bazel execution, editor parity, foreign execution, performance and production cutover remain separate gates.",
+    "The Rust target compilation covers the build-system-independent audit locator change; it is compilation evidence rather than execution of every workspace test.",
+    "QEMU patch text and Nix files are declared audit inputs. No QEMU implementation is linked into the Apache host crate."
+  ],
+  "policy_checks": "/nix/store/z42fz43ahp9s2zhf8mvmhn10ljgk3iqv-aos-bazel-policy-checks",
+  "policy_tests": 142,
+  "rust_target_compilation": "/nix/store/zdxmbwvimhc678s48bhjbpl0mlbgf6rr-aos-test-targets-0.1.0",
+  "rust_target_compilation_derivation": "/nix/store/mvg8z6c6vfrq72vkkgd5m8f301kb09fr-aos-test-targets-0.1.0.drv",
+  "schema_version": 1,
+  "source_files": 1126,
+  "status": "offline configured graph, source inventories, policy, CLI and Rust target compilation passed; native execution pending",
+  "tested_tree_parent_commit": "0fabb26270312182fdc0a24f194a08ad405dbb63"
+}

@@ -104,6 +104,10 @@ impl TokenStore {
     /// Returns an error if the system clock is before the Unix epoch, the
     /// views/permissions cannot be serialized, the connection lock is
     /// poisoned, or the insert fails.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Host credentials require unpredictable secrets and wall-clock creation timestamps."
+    )]
     pub fn create_token(
         &self,
         views: &[String],
@@ -185,6 +189,10 @@ impl TokenStore {
     /// Returns an error if the system clock is before the Unix epoch, the
     /// connection lock is poisoned, the query fails, or a stored row is
     /// malformed.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Host token validation must reject credentials past their real-time expiry."
+    )]
     pub fn validate_token(&self, plaintext: &str) -> Result<Option<TokenRecord>> {
         let hash = sha256_hex(plaintext);
         let now = SystemTime::now()
@@ -231,11 +239,11 @@ impl TokenStore {
         }
 
         // Expired tokens are invalid.
-        if let Some(exp) = raw.expires_at {
-            if now >= exp {
-                tracing::warn!(token_id = %raw.id, "token validation failed: expired");
-                return Ok(None);
-            }
+        if let Some(exp) = raw.expires_at
+            && now >= exp
+        {
+            tracing::warn!(token_id = %raw.id, "token validation failed: expired");
+            return Ok(None);
         }
 
         Ok(Some(raw.into_record()?))
@@ -295,6 +303,10 @@ impl TokenStore {
     ///
     /// Returns an error if the system clock is before the Unix epoch, the
     /// connection lock is poisoned, or the update fails.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "The host credential audit record stores the actual revocation time."
+    )]
     pub fn revoke_token(&self, id: &str) -> Result<bool> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -337,6 +349,10 @@ impl TokenStore {
     /// Returns an error if the system clock is before the Unix epoch, the
     /// connection lock is poisoned, or any of the lookup/update/insert
     /// statements fail.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Host credential rotation requires a fresh unpredictable secret and actual revocation time."
+    )]
     pub fn rotate_token(&self, id: &str) -> Result<Option<(String, TokenRecord)>> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -561,6 +577,10 @@ mod tests {
     }
 
     #[test]
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "The expiry fixture must be in the past relative to the host token validator's clock."
+    )]
     fn expired_token_is_invalid() {
         let (_dir, db) = tmp_db();
         let store = TokenStore::open(&db).unwrap();

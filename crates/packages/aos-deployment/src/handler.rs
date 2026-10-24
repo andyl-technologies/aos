@@ -150,7 +150,7 @@ impl<A: HandlerArtifacts> ProcessAdapter<A> {
             &budget,
             &mut OperatorDiagnostics::stderr(),
         )
-        .with_context(&handler_context)?;
+        .with_context(handler_context)?;
         check_handler_status(&output).with_context(handler_context)?;
         Ok(output.stdout)
     }
@@ -208,9 +208,7 @@ impl<A: HandlerArtifacts> ActivationAdapter for ProcessAdapter<A> {
             Action::Remove => "remove",
         };
         let bytes = self.exchange(invocation, operation, cancellation)?;
-        MESSAGE_LIMITS
-            .decode(&bytes, "handler results")
-            .map_err(Into::into)
+        MESSAGE_LIMITS.decode(&bytes, "handler results")
     }
 
     fn release(&mut self, effect: &Effect) -> Result<()> {

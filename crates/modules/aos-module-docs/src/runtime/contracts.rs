@@ -136,6 +136,7 @@ fn validate_range(range: &str) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use crate::runtime::RuntimeDocument;
     use serde_json::json;

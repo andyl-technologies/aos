@@ -19,7 +19,7 @@
 //! All writes are atomic (temp file + rename); unparseable entries are
 //! skipped with a warning rather than failing whole-profile listings.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
@@ -108,7 +108,7 @@ pub fn snapshot_profile_meta_to_generation(
     profile: &Profile,
     generation: &Generation,
 ) -> Result<()> {
-    let roots: HashSet<String> = generation
+    let roots: BTreeSet<String> = generation
         .roots()?
         .into_iter()
         .map(|(hash, _)| hash)
@@ -219,10 +219,10 @@ pub fn list_meta(profile: &Profile) -> Result<Vec<InstalledPackageRecord>> {
 
 /// Reads immutable native snapshots through the same atomic pointer as payloads.
 fn metadata_directory(profile: &Profile) -> Result<std::path::PathBuf> {
-    if let Some(generation) = profile.current_generation()? {
-        if generation.path.join("native-deployment.json").is_file() {
-            return Ok(generation.path.join("meta"));
-        }
+    if let Some(generation) = profile.current_generation()?
+        && generation.path.join("native-deployment.json").is_file()
+    {
+        return Ok(generation.path.join("meta"));
     }
     Ok(profile.path.join("meta"))
 }
@@ -244,11 +244,11 @@ fn apply_current_flags(profile: &Profile, meta: &mut InstalledPackageRecord) -> 
         return Ok(());
     }
     let current = read_and_parse(&path)?;
-    if current.store_path == meta.store_path {
-        if let (Some(current), Some(snapshot)) = (current.apm, &mut meta.apm) {
-            snapshot.held = current.held;
-            snapshot.explicit = current.explicit;
-        }
+    if current.store_path == meta.store_path
+        && let (Some(current), Some(snapshot)) = (current.apm, &mut meta.apm)
+    {
+        snapshot.held = current.held;
+        snapshot.explicit = current.explicit;
     }
     Ok(())
 }
@@ -294,7 +294,7 @@ pub fn meta_by_registry(
 /// read. A missing profile yields an empty list rather than an error.
 pub fn orphaned_by_registry(
     profile: &Profile,
-    configured_registries: &HashSet<&str>,
+    configured_registries: &BTreeSet<&str>,
 ) -> Result<Vec<InstalledPackageRecord>> {
     let all = list_meta(profile)?;
     Ok(all
@@ -360,13 +360,12 @@ pub fn set_held(profile: &Profile, hash: &str, held: bool) -> Result<()> {
 
     write_meta(profile, hash, &meta)?;
 
-    if let Some(generation) = profile.current_generation()? {
-        if let Some(mut generation_meta) = read_generation_meta(&generation, hash)? {
-            if let Some(ref mut apm) = generation_meta.apm {
-                apm.held = held;
-                write_generation_meta(&generation, hash, &generation_meta)?;
-            }
-        }
+    if let Some(generation) = profile.current_generation()?
+        && let Some(mut generation_meta) = read_generation_meta(&generation, hash)?
+        && let Some(ref mut apm) = generation_meta.apm
+    {
+        apm.held = held;
+        write_generation_meta(&generation, hash, &generation_meta)?;
     }
 
     Ok(())
@@ -391,6 +390,10 @@ pub fn set_held(profile: &Profile, hash: &str, held: bool) -> Result<()> {
 ///
 /// Returns an error if the existing metadata or generation roots cannot be
 /// read, or a rebuilt entry cannot be written.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native profile metadata records its host creation time."
+)]
 pub fn rebuild_meta(
     profile: &Profile,
     generation: &Generation,
@@ -691,14 +694,14 @@ mod tests {
         write_meta(&profile, "ccc333", &sample_meta("jq", "extra", true, true)).unwrap();
 
         // Only "core" is still configured; "extra" was removed.
-        let configured: HashSet<&str> = ["core"].into_iter().collect();
+        let configured: BTreeSet<&str> = ["core"].into_iter().collect();
         let orphans = orphaned_by_registry(&profile, &configured).unwrap();
         assert_eq!(orphans.len(), 1);
         assert_eq!(orphans[0].apm.as_ref().unwrap().name, "jq");
         assert_eq!(orphans[0].apm.as_ref().unwrap().registry, "extra");
 
         // With every registry configured, nothing is orphaned.
-        let all_configured: HashSet<&str> = ["core", "extra"].into_iter().collect();
+        let all_configured: BTreeSet<&str> = ["core", "extra"].into_iter().collect();
         assert!(
             orphaned_by_registry(&profile, &all_configured)
                 .unwrap()
@@ -706,7 +709,7 @@ mod tests {
         );
 
         // With no registries configured, every apm package is orphaned.
-        let none: HashSet<&str> = HashSet::new();
+        let none: BTreeSet<&str> = BTreeSet::new();
         assert_eq!(orphaned_by_registry(&profile, &none).unwrap().len(), 3);
     }
 
@@ -720,7 +723,7 @@ mod tests {
             scope: ProfileScope::User,
         };
 
-        let configured: HashSet<&str> = ["core"].into_iter().collect();
+        let configured: BTreeSet<&str> = ["core"].into_iter().collect();
         assert!(
             orphaned_by_registry(&profile, &configured)
                 .unwrap()

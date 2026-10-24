@@ -99,10 +99,10 @@ impl BuildService for BuildServiceImpl {
         let live_stream = tokio_stream::wrappers::BroadcastStream::new(rx).filter_map(
             move |result| match result {
                 Ok(event) => {
-                    if let Some(max_id) = highest_replayed {
-                        if event.id <= max_id {
-                            return None;
-                        }
+                    if let Some(max_id) = highest_replayed
+                        && event.id <= max_id
+                    {
+                        return None;
                     }
                     Some(Ok(internal_to_proto(&event, "")))
                 }
@@ -227,6 +227,10 @@ impl BuildService for BuildServiceImpl {
 ///
 /// A non-empty `drv_override` (used by closure streams) replaces the
 /// event's own derivation so clients can attribute multiplexed events.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Build-service progress events report the host observation timestamp."
+)]
 fn internal_to_proto(event: &InternalBuildEvent, drv_override: &str) -> BuildEvent {
     let timestamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

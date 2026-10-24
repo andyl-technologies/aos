@@ -1,0 +1,43 @@
+{
+  "bazel_version": "9.2.0",
+  "checks": {
+    "all": "/nix/store/lw50k9js99jsim3gb5y764zjjavb4lpn-aos-bazel-checks",
+    "boot": "/nix/store/rsgvdz4dvgsly991bjdg5wmgsiq5ydqm-aos-bazel-boot-pilot-checks",
+    "bootDeveloper": "/nix/store/1zv25nr1rnr7j4zxz4n36333pr905vvj-aos-bazel-boot-developer-tools-1",
+    "bootFormat": "/nix/store/4vhm0ij26fsp7imcga6j5bhs89x182kc-aos-bazel-boot-format-1",
+    "determinism": "/nix/store/b4076hsgkk5g2japhz3lap7lv4wx6lv7-aos-bazel-external-rust-pilot-1",
+    "developerEvidence": "/nix/store/x6p28kg1lwi6y63jfc9x6sh5mi3bfc9j-aos-bazel-developer-evidence",
+    "developerPolicy": "/nix/store/wyhyjsjijgmsgp5d1ax7xkjls1bq1a2l-aos-bazel-developer-policy",
+    "editor": "/nix/store/6pzgb9cmivrcij4h239762fmkwymvvx9-aos-bazel-editor-check",
+    "protocol": "/nix/store/axswapq26a4hy1n4nwbimz793yar0c27-aos-bazel-protocol-checks",
+    "protocolDeveloper": "/nix/store/pip9p7c7bjwypaplr9ldwn49smi97zyp-aos-bazel-protocol-developer-tools-1",
+    "protocolFormat": "/nix/store/nhny2vc4s7c36a8vrllkhfgqxdv0j73l-aos-bazel-protocol-format-1",
+    "recovery": "/nix/store/am60icmcz2imsl5qi7m30n0wa7fzagka-aos-bazel-cache-recovery",
+    "toolchains": "/nix/store/dfvcm7f22wcm2204hpfdpsrjk1clr2ar-aos-bazel-toolchains-1"
+  },
+  "configuration_sha256": {
+    "MODULE.bazel": "5cd049baeba287f632f5f91a415223489cbbbb3b960f236f540fd065e1d6f265",
+    "tools/bazel/metadata/export_rust_project.py": "8802ad04a7665fcaf571965d9a9d68e6f2df3f1b72495c3bac900f808ded3c57",
+    "tools/bazel/rules/BUILD.bazel": "6e909fc14afef949132077bf450ce64645f80a0dd58c2d415ea23c31fae5f805",
+    "tools/bazel/rules/clippy.toml": "a268b742ccb51a92a0f4f92b0cd28561d21ec59638d47b5292ea3871e8fade0f",
+    "tools/bazel/rules/rustfmt.toml": "a2efcdd8d36fc4614041b7b02bb744c5143caeb5f3b5e286c2b6064c1483e140",
+    "tools/bazel/toolchains/BUILD.toolchains.bazel": "bac3cce83e252e76b4469b843bab156335ab9fcc8039bba656f2b91fed6e3780"
+  },
+  "fixture": {
+    "analyzer_panics": 0,
+    "editor_crates": 5,
+    "editor_proc_macros": 1,
+    "passing_doctests": 1,
+    "python_regressions": 39,
+    "unknown_expression_types": 0,
+    "unknown_pattern_types": 0
+  },
+  "negative_lints": [
+    "disallowed_methods:std::time::Instant::now",
+    "unwrap_used"
+  ],
+  "platform": "x86_64-linux",
+  "rust_version": "1.98.1",
+  "schema_version": 1,
+  "scope": "native Linux developer tooling before production cutover"
+}

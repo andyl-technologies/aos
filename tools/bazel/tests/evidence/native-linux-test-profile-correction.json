@@ -1,0 +1,278 @@
+{
+  "compiler_command_checks": {
+    "path": "/nix/store/l7924pcg6v74hgibkpyyfynxjgzxz0h4-aos-bazel-measurement-checks",
+    "status": "passed",
+    "tests": 24
+  },
+  "aborted_measurement": {
+    "derivation": "/nix/store/jypqs2s7h0pxw0md6lj3bx6s6j1ljbz0-aos-bazel-store-performance.drv",
+    "reason": "Mismatched assertion settings discovered before accepting the measurement.",
+    "status": "interrupted with status 130; no timing result accepted",
+    "trial": "store-native-20261023-v1"
+  },
+  "cargo_artifact_profiles": [
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_campaign_store_composition"
+    },
+    {
+      "kind": [
+        "bin"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "crucible-fleet-store"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "crucible_store"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_campaign_continuity"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_lazy_frontier"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_campaign_cold_continuity"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_campaign_model"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_campaign_statistics"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_attempt_idempotence"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_typed_choice"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_campaign_replay"
+    },
+    {
+      "kind": [
+        "test"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "gate_branch_point_model"
+    },
+    {
+      "kind": [
+        "lib"
+      ],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      },
+      "target": "crucible_campaign"
+    }
+  ],
+  "cargo_messages": "/nix/store/7h7cl7w1g6r0z57b9s5w3fhrhzpr5i6x-aos-bazel-store-cargo-oracle-1/cargo-messages.jsonl",
+  "cargo_messages_sha256": "f2534771f92f03b7418f7501ad8a38ada2310bc3985675d5fcd4724111214478",
+  "configuration_sha256": {
+    "tests/build/_bazel-store.nix": "5f4cee6d33d6afc4e4338c10bb4eb3836e4baf1cfb20a31d5883892eb1658b4d",
+    "tools/bazel/bench/measure_family.py": "4a670085fcf9df168c72dc1fc0e6522b983275efbd45113fd43407c659741f84",
+    "tools/bazel/bench/store.nix": "43696c006a133248e1a0e1bbfae447c5a1daab94d51a72d8543128766efd314e",
+    "tools/bazel/bench/test_measure_family.py": "9d727e8a6be918955429c90d85e8a4e7de6950e0355e26963a05e8f57afb3e97"
+  },
+  "corrected_rustc_flags": [
+    "-Copt-level=s",
+    "-Cdebuginfo=0",
+    "-Cdebug-assertions=yes",
+    "-Coverflow-checks=yes"
+  ],
+  "corrected_storage_qualification": {
+    "additional_checks": [
+      "Clippy",
+      "formatting",
+      "documentation",
+      "whole-model editor parity",
+      "native build-script metadata",
+      "native linkage and runtime closure",
+      "installed runtime probe parity"
+    ],
+    "configuration": "/nix/store/c1qmhhs5zbnbldwr0l23xpp9pqqdnjcn-aos-bazel-configuration.json",
+    "configuration_sha256": "fc7eaca163b825ba32a3eeccf5307c4feb20866dc338aa4745f8d951e6e653b1",
+    "path": "/nix/store/j52b24sfqls8bsw5gg8ib283hk9b62pp-aos-bazel-store-qualified-checks",
+    "reports_sha256": {
+      "editor-parity.json": "a953f9a1f9ce3a6002b26b7f4fbbc9198259ae977e07251ba1fbf2daa88935e2",
+      "inventory.json": "b03f56e330f0b4703730c5929b72fc793eecf332b985009ed4c83563c13cccdc",
+      "native-linkage.json": "1cb2d652d5c7585a5cc8a2dcfd8522646c0298dae1d79060d23ce71b92b53387",
+      "native-metadata.json": "24074289bdc7a597a3a4de0531dec84468edad6c8d91443185a054b36255ecb6",
+      "parity.json": "6e707051ac8f92ccbbc9512a5294fe87c7148b9d8de3cfab739b42b98967dad8",
+      "runtime/package.json": "19b1eea8305e613d8bdca4982bc03ca1b1dc87c6c4b7cdf176a04388e9a19234",
+      "runtime/parity.json": "a2751348ae20413bbdc24b382e2ce48fca0c13e449939ada4872805709c5c4f4",
+      "variants/all-features.json": "04b16e04a873207deb68f1915e42c33d8aa64eb9f6b983ae10370491379717c0",
+      "variants/recovery-faults.json": "c3debc701fe6b6ca4b63012d252b855171d360ba59029116f6bdded1ca7b7b84",
+      "variants/test-support.json": "a37cdc585b24d34829392e2229b6aa56a01463a944680f5779e32b8254e1834d"
+    },
+    "rustc_flags": [
+      "-Copt-level=s",
+      "-Cdebuginfo=0",
+      "-Cdebug-assertions=yes",
+      "-Coverflow-checks=yes"
+    ],
+    "status": "passed",
+    "variants": {
+      "all-features": {
+        "executed_cases": 608,
+        "external_crate_identities": 85,
+        "ignored_cases": 1,
+        "report_sha256": "04b16e04a873207deb68f1915e42c33d8aa64eb9f6b983ae10370491379717c0",
+        "targets": 15
+      },
+      "default": {
+        "executed_cases": 599,
+        "external_crate_identities": 85,
+        "ignored_cases": 1,
+        "report_sha256": "6e707051ac8f92ccbbc9512a5294fe87c7148b9d8de3cfab739b42b98967dad8",
+        "targets": 13
+      },
+      "recovery-faults": {
+        "executed_cases": 605,
+        "external_crate_identities": 85,
+        "ignored_cases": 1,
+        "report_sha256": "c3debc701fe6b6ca4b63012d252b855171d360ba59029116f6bdded1ca7b7b84",
+        "targets": 13
+      },
+      "test-support": {
+        "executed_cases": 602,
+        "external_crate_identities": 85,
+        "ignored_cases": 1,
+        "report_sha256": "a37cdc585b24d34829392e2229b6aa56a01463a944680f5779e32b8254e1834d",
+        "targets": 15
+      }
+    }
+  },
+  "limits": [
+    "Prior storage case/feature and runtime checks retain their recorded scope; the corrected qualification matches optimization, debug information, assertions, and overflow checks for selected test artifacts. Other code-generation and execution-tool settings are not equated.",
+    "Engine qualification and performance acceptance remain separate requirements before production cutover.",
+    "This storage checkpoint preceded the later engine empty-artifact declaration changes; its compiled storage/campaign sources and compiler flags retain the scope recorded here."
+  ],
+  "measurement_checks": {
+    "path": "/nix/store/zcrkr6n18308z1g2z2injrijxjhfrgdw-aos-bazel-measurement-checks",
+    "status": "passed",
+    "tests": 22
+  },
+  "measurement_guard": "Cargo artifact profiles now record assertion/overflow settings; matched workloads reject profile drift.",
+  "observed_engine_compile_failure": {
+    "builder": "/nix/store/5z3h758h8n1j800gqk1kvgxxcmpi04gh-aos-bazel-engine-initial-tests-1.drv",
+    "message": "cannot find test_support in crate; the module was configured out by cfg(any(debug_assertions, feature = \"test-support\"))"
+  },
+  "problem": "The optimized storage and initial engine Bazel test configurations omitted debug assertions and overflow checks retained by Cargo test.",
+  "schema_version": 1
+}

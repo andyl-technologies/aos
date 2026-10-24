@@ -1,0 +1,31 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "4bdd687b13",
+  "compiled_changed_rust_inputs_sha256": {
+    "crates/hub/aos-hub-model/src/auth/device.rs": "fda958cf6ca4200f6a8ff4031442b0fb9baf45e3bb3481b9ec1a0d93b428f7bf",
+    "crates/hub/aos-hub-model/src/auth/jwt.rs": "a05650f535cf5a8a6c4c8727962e5c4b269abf5a07af6ba7fffd93f5e16790e5",
+    "crates/hub/aos-hub-model/src/auth/magic.rs": "cad416189d4424eb847887cccb6c9a1206bf308a6f7ee7fc80c5137f9b5c34ca",
+    "crates/hub/aos-hub-model/src/auth/seal.rs": "f15c97072d36f7b1e10e559996d8f4ec58523f00abf957c7801ceb7fd7674edb",
+    "crates/hub/aos-hub-model/src/auth/session.rs": "d2355fa8f51bfd6dcf054b9e02c010fcd77490c6e31a0fd956567bd314889159",
+    "crates/hub/aos-hub-model/src/auth/token.rs": "c624da10a5d8946ecd4128651f0f2ceabadd5e2b2ff0721ed2a1fb61abe0916a",
+    "crates/hub/aos-hub-model/src/binding.rs": "9ae5e37b951713b6c131c95014dd3624ea31447cc10a3fe481f7175a65a222e1",
+    "crates/hub/aos-hub-model/src/clock.rs": "dcb65f87af7181ebd8eb8274d2a1a102d210e36f3a25185dbd05920b9001b2ee",
+    "crates/hub/aos-hub-model/src/delivery.rs": "b5497ab8db9004608d107cabec70b4c3423812d4fc904f1288c912d315f5d58d",
+    "crates/hub/aos-hub-model/src/delivery_http.rs": "89e5faf215d70126ef5632a4b0754e5ddb0295e2288b6f4feeac6f74b0eebf73",
+    "crates/hub/aos-hub-model/src/retained_control/classifier.rs": "d4aaf03e7c0589c45e80b6a5039960fb6c5f3397e1e9ed7ce55e209f8bfa937e",
+    "crates/hub/aos-hub-model/src/retention.rs": "b6925d19256e35ecc41086df09aa8dd030370100345b9dc2e059b6d9a74dcca8",
+    "crates/hub/aos-hub-model/tests/retained_control_foundation.rs": "c34a7bcbb35b46fb78160f44ed3d2b94510b48aa72cb24a8e50e9da211e396aa"
+  },
+  "derivation": "/nix/store/bchma4zs08zc1zzda9w0yqfvkpillk84-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "0bfb069987a643903a667746d2d0b7b9b86f925df957b07e74a1dae360a515e9",
+  "implementation_commit": "7476907045",
+  "limits": [
+    "This gate compiles application unit and integration targets without executing them. Native Bazel/Cargo execution is retained separately.",
+    "This frozen source contains all thirteen Hub model Rust inputs changed by the conversion, including the separate ETag helper move. Later Hub client changes are not qualified by this checkpoint."
+  ],
+  "log_sha256": "507d3467fbc67993f2f7e33836f4089097322a737820b375df0008a06b9e59df",
+  "output": "/nix/store/1fn982hmrl27il0gdxvzyf2z9q27f35s-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/zkdqlyl3xmnpvk6rrczsv2njvdhaibwh-aos-workspace-src",
+  "status": "Required workspace Rust application unit and integration targets compiled successfully"
+}

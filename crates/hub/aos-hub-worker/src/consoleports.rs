@@ -799,6 +799,10 @@ impl WorkerEgressClient {
         let body = body.unwrap_or_default();
         let body_digest = aos_hub_service::egress_protocol::body_sha256(&body);
         let mut nonce_bytes = [0_u8; 32];
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "Authentication nonces require fresh runtime entropy"
+        )]
         rand::rng().fill(&mut nonce_bytes);
         let nonce = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(nonce_bytes);
         let timestamp = aos_hub_model::clock::now_unix_secs();
@@ -1292,6 +1296,6 @@ impl Reindexer for WorkerReindexer {
         let outcome = self.index(registry).await?;
         // Return the indexed commit (when the run wasn't an empty/pending no-op)
         // so the caller can cross-reference the indexed revision in audit state.
-        Ok((!outcome.commit.is_empty()).then(|| outcome.commit))
+        Ok((!outcome.commit.is_empty()).then_some(outcome.commit))
     }
 }

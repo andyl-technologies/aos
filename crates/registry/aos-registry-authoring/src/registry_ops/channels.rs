@@ -157,6 +157,10 @@ async fn channel_init(
 
 /// `apr channel advance`: re-sign the selected partitions of an existing
 /// channel against a newer release and recompute the frontier.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep existing publication transaction inputs explicit without changing their API"
+)]
 async fn channel_advance(
     config: &ApmConfig,
     channel_name: &str,

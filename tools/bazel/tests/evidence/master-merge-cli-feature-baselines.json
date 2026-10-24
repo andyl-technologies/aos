@@ -1,0 +1,1049 @@
+{
+  "configurations": {
+    "aos-cli-fleet-tests": {
+      "cargo_messages_sha256": "21b074e643fb0b462681170a757d08af118e73ab07ee5e01c46ee3f8010f30f4",
+      "cargo_output": "/nix/store/ar098jcj23g1qkl9alxx1mkjkxslcy1g-aos-master-aos-cli-fleet-tests-cargo-feature-baseline-1",
+      "compiler_trace_sha256": "f24b1d199bcfc876e3e7581796ddc7ac55fc51a540124d5463d24a82b0723d4c",
+      "feature_roles": {
+        "base64": {
+          "exec_features": [
+            [
+              "alloc"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "version": "0.22.1"
+        },
+        "bytes": {
+          "exec_features": [
+            [
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "default",
+              "serde",
+              "std"
+            ]
+          ],
+          "version": "1.11.1"
+        },
+        "either": {
+          "exec_features": [
+            [
+              "std",
+              "use_std"
+            ]
+          ],
+          "features": [
+            [
+              "default",
+              "serde",
+              "std",
+              "use_std"
+            ]
+          ],
+          "version": "1.16.0"
+        },
+        "hashbrown": {
+          "exec_features": [
+            [
+              "default-hasher",
+              "serde"
+            ]
+          ],
+          "features": [
+            [
+              "allocator-api2",
+              "default",
+              "default-hasher",
+              "equivalent",
+              "inline-more",
+              "raw-entry",
+              "serde"
+            ]
+          ],
+          "version": "0.15.5"
+        },
+        "indexmap": {
+          "features": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "version": "2.14.0"
+        },
+        "libssh2-sys": {
+          "compiled_target_features": {
+            "0.3.1": [
+              []
+            ]
+          }
+        },
+        "libz-sys": {
+          "compiled_target_features": {
+            "1.1.28": [
+              [
+                "libc"
+              ]
+            ]
+          }
+        },
+        "linux-raw-sys": {
+          "exec_features": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "ioctl",
+              "no_std"
+            ]
+          ],
+          "features": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "if_ether",
+              "ioctl",
+              "net",
+              "netlink",
+              "no_std",
+              "prctl",
+              "xdp"
+            ]
+          ],
+          "version": "0.12.1"
+        },
+        "memchr": {
+          "exec_features": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "version": "2.8.2"
+        },
+        "openssl-sys": {
+          "compiled_target_features": {
+            "0.9.116": [
+              []
+            ]
+          }
+        },
+        "regex": {
+          "exec_features": [
+            [
+              "std",
+              "unicode-bool"
+            ]
+          ],
+          "features": [
+            [
+              "default",
+              "perf",
+              "perf-backtrack",
+              "perf-cache",
+              "perf-dfa",
+              "perf-inline",
+              "perf-literal",
+              "perf-onepass",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "version": "1.12.4"
+        },
+        "regex-automata": {
+          "exec_features": [
+            [
+              "alloc",
+              "meta",
+              "nfa-pikevm",
+              "nfa-thompson",
+              "std",
+              "syntax",
+              "unicode-bool"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "dfa-onepass",
+              "hybrid",
+              "meta",
+              "nfa",
+              "nfa-backtrack",
+              "nfa-pikevm",
+              "nfa-thompson",
+              "perf",
+              "perf-inline",
+              "perf-literal",
+              "perf-literal-multisubstring",
+              "perf-literal-substring",
+              "std",
+              "syntax",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment",
+              "unicode-word-boundary"
+            ]
+          ],
+          "version": "0.4.14"
+        },
+        "regex-syntax": {
+          "exec_features": [
+            [
+              "std",
+              "unicode-bool"
+            ]
+          ],
+          "features": [
+            [
+              "default",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "version": "0.8.11"
+        },
+        "rustix": {
+          "exec_features": [
+            [
+              "alloc",
+              "default",
+              "fs",
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "event",
+              "fs",
+              "net",
+              "process",
+              "std",
+              "stdio",
+              "termios"
+            ]
+          ],
+          "version": "1.1.4"
+        },
+        "serde": {
+          "exec_features": [
+            [
+              "alloc",
+              "derive",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "derive",
+              "rc",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "version": "1.0.228"
+        },
+        "serde_core": {
+          "exec_features": [
+            [
+              "alloc",
+              "result",
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "rc",
+              "result",
+              "std"
+            ]
+          ],
+          "version": "1.0.228"
+        },
+        "serde_json": {
+          "exec_features": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "raw_value",
+              "std"
+            ]
+          ],
+          "version": "1.0.150"
+        },
+        "sqlx-core": {
+          "features": [
+            [
+              "_rt-tokio",
+              "crc",
+              "default",
+              "migrate",
+              "offline",
+              "serde",
+              "sha2",
+              "tokio",
+              "tokio-stream"
+            ]
+          ],
+          "version": "0.8.6"
+        },
+        "thiserror": {
+          "exec_features": [
+            [
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "version": "2.0.18"
+        }
+      }
+    },
+    "aos-cli-production": {
+      "cargo_messages_sha256": "bb263d7ae068370e9d9bff5e102494ebbc1a53c045de6bd5405f023e4cb6935c",
+      "cargo_output": "/nix/store/pbbf1s4n3w25569mxqrhjdiayf2ijjgc-aos-master-aos-cli-production-cargo-feature-baseline-1",
+      "compiler_trace_sha256": "b315ab3a380cb341dfb573029eef8c011c6202b5efd6cddd846ad172cc43e042",
+      "feature_roles": {
+        "base64": {
+          "exec_features": [
+            [
+              "alloc"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "version": "0.22.1"
+        },
+        "bytes": {
+          "exec_features": [
+            [
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "default",
+              "serde",
+              "std"
+            ]
+          ],
+          "version": "1.11.1"
+        },
+        "hashbrown": {
+          "exec_features": [
+            [
+              "default-hasher",
+              "serde"
+            ]
+          ],
+          "features": [
+            [
+              "default-hasher",
+              "serde"
+            ]
+          ],
+          "version": "0.15.5"
+        },
+        "indexmap": {
+          "features": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "version": "2.14.0"
+        },
+        "libssh2-sys": {
+          "compiled_target_features": {
+            "0.3.1": [
+              []
+            ]
+          }
+        },
+        "libz-sys": {
+          "compiled_target_features": {
+            "1.1.28": [
+              [
+                "libc"
+              ]
+            ]
+          }
+        },
+        "linux-raw-sys": {
+          "exec_features": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "ioctl",
+              "no_std"
+            ]
+          ],
+          "features": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "if_ether",
+              "ioctl",
+              "net",
+              "netlink",
+              "no_std",
+              "prctl",
+              "xdp"
+            ]
+          ],
+          "version": "0.12.1"
+        },
+        "memchr": {
+          "exec_features": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "version": "2.8.2"
+        },
+        "openssl-sys": {
+          "compiled_target_features": {
+            "0.9.116": [
+              []
+            ]
+          }
+        },
+        "regex": {
+          "exec_features": [
+            [
+              "std",
+              "unicode-bool"
+            ]
+          ],
+          "features": [
+            [
+              "default",
+              "perf",
+              "perf-backtrack",
+              "perf-cache",
+              "perf-dfa",
+              "perf-inline",
+              "perf-literal",
+              "perf-onepass",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "version": "1.12.4"
+        },
+        "regex-automata": {
+          "exec_features": [
+            [
+              "alloc",
+              "meta",
+              "nfa-pikevm",
+              "nfa-thompson",
+              "std",
+              "syntax",
+              "unicode-bool"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "dfa-onepass",
+              "hybrid",
+              "meta",
+              "nfa",
+              "nfa-backtrack",
+              "nfa-pikevm",
+              "nfa-thompson",
+              "perf",
+              "perf-inline",
+              "perf-literal",
+              "perf-literal-multisubstring",
+              "perf-literal-substring",
+              "std",
+              "syntax",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment",
+              "unicode-word-boundary"
+            ]
+          ],
+          "version": "0.4.14"
+        },
+        "regex-syntax": {
+          "exec_features": [
+            [
+              "std",
+              "unicode-bool"
+            ]
+          ],
+          "features": [
+            [
+              "default",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "version": "0.8.11"
+        },
+        "rustix": {
+          "exec_features": [
+            [
+              "alloc",
+              "default",
+              "fs",
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "event",
+              "fs",
+              "net",
+              "process",
+              "std",
+              "stdio",
+              "termios"
+            ]
+          ],
+          "version": "1.1.4"
+        },
+        "serde": {
+          "exec_features": [
+            [
+              "alloc",
+              "derive",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "derive",
+              "rc",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "version": "1.0.228"
+        },
+        "serde_core": {
+          "exec_features": [
+            [
+              "alloc",
+              "result",
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "rc",
+              "result",
+              "std"
+            ]
+          ],
+          "version": "1.0.228"
+        },
+        "serde_json": {
+          "exec_features": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "raw_value",
+              "std"
+            ]
+          ],
+          "version": "1.0.150"
+        },
+        "thiserror": {
+          "exec_features": [
+            [
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "version": "2.0.18"
+        }
+      }
+    },
+    "aos-cli-tests": {
+      "cargo_messages_sha256": "eaa69cf900b574d3e96dcbc132a2f474bf5e389738cf71b181e8f3a841c1b897",
+      "cargo_output": "/nix/store/0yp9a0i9kx91w44gd85marcz5q0q2igl-aos-master-aos-cli-tests-cargo-feature-baseline-1",
+      "compiler_trace_sha256": "288bbb48438cbd49925f0a117a0443a40e4db8aadb3329990ddc7b6ea9f37068",
+      "feature_roles": {
+        "base64": {
+          "exec_features": [
+            [
+              "alloc"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "version": "0.22.1"
+        },
+        "bytes": {
+          "exec_features": [
+            [
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "default",
+              "serde",
+              "std"
+            ]
+          ],
+          "version": "1.11.1"
+        },
+        "either": {
+          "exec_features": [
+            [
+              "std",
+              "use_std"
+            ]
+          ],
+          "features": [
+            [
+              "default",
+              "serde",
+              "std",
+              "use_std"
+            ]
+          ],
+          "version": "1.16.0"
+        },
+        "hashbrown": {
+          "exec_features": [
+            [
+              "default-hasher",
+              "serde"
+            ]
+          ],
+          "features": [
+            [
+              "allocator-api2",
+              "default",
+              "default-hasher",
+              "equivalent",
+              "inline-more",
+              "raw-entry",
+              "serde"
+            ]
+          ],
+          "version": "0.15.5"
+        },
+        "indexmap": {
+          "features": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "version": "2.14.0"
+        },
+        "libssh2-sys": {
+          "compiled_target_features": {
+            "0.3.1": [
+              []
+            ]
+          }
+        },
+        "libz-sys": {
+          "compiled_target_features": {
+            "1.1.28": [
+              [
+                "libc"
+              ]
+            ]
+          }
+        },
+        "linux-raw-sys": {
+          "exec_features": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "ioctl",
+              "no_std"
+            ]
+          ],
+          "features": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "if_ether",
+              "ioctl",
+              "net",
+              "netlink",
+              "no_std",
+              "prctl",
+              "xdp"
+            ]
+          ],
+          "version": "0.12.1"
+        },
+        "memchr": {
+          "exec_features": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "version": "2.8.2"
+        },
+        "openssl-sys": {
+          "compiled_target_features": {
+            "0.9.116": [
+              []
+            ]
+          }
+        },
+        "regex": {
+          "exec_features": [
+            [
+              "std",
+              "unicode-bool"
+            ]
+          ],
+          "features": [
+            [
+              "default",
+              "perf",
+              "perf-backtrack",
+              "perf-cache",
+              "perf-dfa",
+              "perf-inline",
+              "perf-literal",
+              "perf-onepass",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "version": "1.12.4"
+        },
+        "regex-automata": {
+          "exec_features": [
+            [
+              "alloc",
+              "meta",
+              "nfa-pikevm",
+              "nfa-thompson",
+              "std",
+              "syntax",
+              "unicode-bool"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "dfa-onepass",
+              "hybrid",
+              "meta",
+              "nfa",
+              "nfa-backtrack",
+              "nfa-pikevm",
+              "nfa-thompson",
+              "perf",
+              "perf-inline",
+              "perf-literal",
+              "perf-literal-multisubstring",
+              "perf-literal-substring",
+              "std",
+              "syntax",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment",
+              "unicode-word-boundary"
+            ]
+          ],
+          "version": "0.4.14"
+        },
+        "regex-syntax": {
+          "exec_features": [
+            [
+              "std",
+              "unicode-bool"
+            ]
+          ],
+          "features": [
+            [
+              "default",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ]
+          ],
+          "version": "0.8.11"
+        },
+        "rustix": {
+          "exec_features": [
+            [
+              "alloc",
+              "default",
+              "fs",
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "event",
+              "fs",
+              "net",
+              "process",
+              "std",
+              "stdio",
+              "termios"
+            ]
+          ],
+          "version": "1.1.4"
+        },
+        "serde": {
+          "exec_features": [
+            [
+              "alloc",
+              "derive",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "derive",
+              "rc",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "version": "1.0.228"
+        },
+        "serde_core": {
+          "exec_features": [
+            [
+              "alloc",
+              "result",
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "rc",
+              "result",
+              "std"
+            ]
+          ],
+          "version": "1.0.228"
+        },
+        "serde_json": {
+          "exec_features": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "alloc",
+              "default",
+              "raw_value",
+              "std"
+            ]
+          ],
+          "version": "1.0.150"
+        },
+        "sqlx-core": {
+          "features": [
+            [
+              "_rt-tokio",
+              "crc",
+              "default",
+              "migrate",
+              "offline",
+              "serde",
+              "sha2",
+              "tokio",
+              "tokio-stream"
+            ]
+          ],
+          "version": "0.8.6"
+        },
+        "thiserror": {
+          "exec_features": [
+            [
+              "std"
+            ]
+          ],
+          "features": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "version": "2.0.18"
+        }
+      }
+    }
+  },
+  "limits": [
+    "Cargo check captures features and compiler units; this is not runtime, native-linkage, full Bazel parity, current Console-asset, or production qualification.",
+    "The source-built AOS tooling and offline vendor tree execute inside the Nix sandbox. No shared action-cache mount is requested."
+  ],
+  "schema_version": 1,
+  "source_sha256": {
+    "crates/Cargo.lock": "b18fd38ac5bba2e0de53f2e79096739f664289b80861a470f72ea7faeb1ead58",
+    "crates/Cargo.toml": "f2d3e5f496217ab00020726b43c55acc30fb9c6a38196825ccd2a694bf1ee18e",
+    "crates/bindings/libssh2-sys/Cargo.toml": "01ab35767b179c4bc6ff58938937126a12abd2544ac472b3612328fc36d585cd",
+    "crates/bindings/libssh2-sys/build.rs": "ef8fe6615bb9e0350a34b09372e1d4e3229d2e589eb3444748aa40eea915c565",
+    "crates/bindings/libssh2-sys/lib.rs": "0d4cae2e162e5fe47b26148012c0ac07f8f728f592b4d2bb4f39d17adf714021",
+    "crates/packages/aos-package-manager/src/download.rs": "49cbebd37ecaf8cc8d141ca260e0dec2dba08940d440b24d578671e831d981cc",
+    "third_party/rust/aos-cli.bzl": "03b7b845f29187fc2be454be85f08ac650856e8e6daad723551188de11c305aa"
+  },
+  "status": "PASS: retained Cargo check compiler units match declared SDK feature roles"
+}

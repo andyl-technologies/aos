@@ -1,0 +1,26 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "d079988cce",
+  "compiled_changed_rust_inputs_sha256": {
+    "crates/shared/aos-nix/src/runner.rs": "73e2b2c2d51bb8a961879ecd0e3e51ac6d672c307e799f98cdc75083569d5517",
+    "crates/shared/aos-oci/src/external_signing.rs": "cddaf73759f1df0fb2a797161adb0ab27280889eb3c9c7f05013e2f37daed7f2",
+    "crates/shared/aos-oci/tests/external_signing.rs": "260e4577252929d8dc134e2cb42417be0b14e368ecd655e5872bec32dbd622e5",
+    "crates/shared/aos-oci/tests/registry.rs": "2ba01e6e5380a86a31b902c668a7e985d88f38b713cc0793c9a781ce344dd0f6",
+    "crates/shared/aos-systemd-client/src/client.rs": "8faf0050ea57da993471f46cafdbde048b7b11972fccb94b7e19107cfbde384e",
+    "crates/shared/aos-systemd-client/src/manager_proxy.rs": "4da78e28aae955336fe3ce1bec2c128fae5ff0362e7469f69d2c631d3857588c",
+    "crates/shared/aos-systemd-client/tests/pinned_bus.rs": "f5e7fa11dccc823a64525aaadbcdcb1e74a06d737fba1e93faf953fa17c6e161",
+    "crates/shared/aos-transfer/src/protocol/s3.rs": "22981e3115fe7ecaca006278eaacdb1ce3699a1c04d8e870c9a138dd28613ccc"
+  },
+  "derivation": "/nix/store/jzwdf3anibp8ly03qy7yiyvmf5avzi4g-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "959ee175b68e7a9513753de7f906afd9d50765e6b73b1b917ac1a8ac7e6224e9",
+  "implementation_commit": "76f870048a",
+  "limits": [
+    "This gate compiles application unit and integration targets without executing them. Native Bazel/Cargo execution is retained separately.",
+    "This frozen native integration checkpoint includes the final OCI, D-Bus test, SSH type layout and iterator lint corrections. It predates activation lint and compilation declarations."
+  ],
+  "log_sha256": "d24c43dda2dea4bac8cfe99a3fb3844ca9d8bc5af25740f821d79dcc2cd11c1f",
+  "output": "/nix/store/yswvjkvhczgfp1s6lc1mki7abaq8698k-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/8w8wi5f2qlqj8c9v5sx2xv5z149jacwx-aos-workspace-src",
+  "status": "Required workspace Rust application unit and integration targets compiled successfully"
+}

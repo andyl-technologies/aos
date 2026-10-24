@@ -12,6 +12,10 @@ impl Database {
     ///
     /// Returns an error for mismatched evidence, a placement outside the
     /// publication, a terminal publication, or database failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn record_registry_publication_object_presence(
         &self,
         publication_id: &str,
@@ -125,6 +129,10 @@ impl Database {
     ///
     /// Returns an error for mismatched evidence, a stale publication or placement,
     /// malformed input, or a database failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn refresh_ready_registry_publication_object_presence(
         &self,
         publication_id: &str,
@@ -1005,7 +1013,7 @@ impl Database {
                 && self
                     .changeset(change_id)
                     .await?
-                    .map_or(false, |changeset| changeset.status == "applied")
+                    .is_some_and(|changeset| changeset.status == "applied")
                 && self
                     .list_revisions(change_id)
                     .await?
@@ -1130,7 +1138,7 @@ impl Database {
             if self
                 .registry_by_id(registry_id)
                 .await?
-                .map_or(true, |record| record.resource_version != expected_version)
+                .is_none_or(|record| record.resource_version != expected_version)
             {
                 return Ok(false);
             }

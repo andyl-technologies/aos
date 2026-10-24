@@ -8,6 +8,7 @@
 }: let
   crucibleSrc = import ../../pkgs/tools/crucible/_source.nix {inherit lib;};
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
+  engineOracle = builtins.readFile ../../crates/crucible/crucible-control-server/src/bin/qemu_test_oracle/engine.rs;
 
   scheduler = import ./_crucible-scheduler-source.nix {inherit lib;};
   trigger = import ./_crucible-trigger-source.nix {inherit lib;};
@@ -129,16 +130,26 @@
         needle = "struct EngineEventLogMarkerSink";
       }
       {
-        label = "plugin sink maps decoded marker payload";
-        needle = "crucible_engine::observable_event_from_whitebox_marker_payload";
-      }
-      {
-        label = "plugin sink appends to event log";
-        needle = "append_entries(vec![entry])";
+        label = "plugin sink sends decoded marker payload";
+        needle = "\"operation\": \"marker\"";
       }
       {
         label = "plugin sink causal projection empty";
-        needle = "event_log_causal_projection(&sink.entries).is_empty()";
+        needle = "assert!(sink.causal_projection_empty)";
+      }
+    ]
+    ++ failuresFor "crates/crucible/crucible-control-server/src/bin/qemu_test_oracle/engine.rs" engineOracle [
+      {
+        label = "Apache helper maps decoded marker payload";
+        needle = "observable_event_from_whitebox_marker_payload(icount, node, &marker)";
+      }
+      {
+        label = "Apache helper appends to event log";
+        needle = "append_entries(vec![entry])";
+      }
+      {
+        label = "Apache helper projects causal log";
+        needle = "event_log_causal_projection(&self.entries).is_empty()";
       }
     ]
     ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/runtime.rs" pluginRuntime [
@@ -297,6 +308,8 @@ in
       pname = "crucible-phase4-guest-host-marker-observability";
       version = "0";
       src = crucibleSrc;
+      # Engine cross-checks execute the independently linked Apache helper.
+      CRUCIBLE_QEMU_TEST_ORACLE = "${pkgs.callPackage ../../pkgs/tools/crucible/_qemu-test-oracle.nix {}}/bin/crucible-qemu-test-oracle";
       runtimeDeps = [pkgs.sqlite];
       buildDeps = [pkgs.coreutils pkgs.grep pkgs.rust pkgs.sqlite pkgs.sed liveWhitebox];
       phases = [

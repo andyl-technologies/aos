@@ -221,12 +221,14 @@ mod tests {
     }
 
     #[test]
-    fn bounded_writer_counts_only_accepted_bytes() {
+    fn bounded_writer_counts_only_accepted_bytes() -> std::io::Result<()> {
         let mut writer = BoundedWriter::new(4, "test byte limit exceeded");
 
-        assert_eq!(writer.write(b"test").unwrap(), 4);
+        assert_eq!(writer.write(b"test")?, 4);
         assert!(writer.write(b"!").is_err());
         assert!(writer.exceeded());
         assert_eq!(writer.written(), 4);
+
+        Ok(())
     }
 }

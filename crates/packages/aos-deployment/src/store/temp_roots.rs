@@ -166,10 +166,10 @@ impl TemporaryRoots {
 
     fn close(&mut self) {
         self.requests.take();
-        if let Ok(identifier) = i32::try_from(self.child.id()) {
-            if let Some(group) = rustix::process::Pid::from_raw(identifier) {
-                let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
-            }
+        if let Ok(identifier) = i32::try_from(self.child.id())
+            && let Some(group) = rustix::process::Pid::from_raw(identifier)
+        {
+            let _ = rustix::process::kill_process_group(group, rustix::process::Signal::KILL);
         }
         let _ = self.child.kill();
         let _ = self.child.wait();
@@ -331,7 +331,7 @@ mod tests {
         let mut response = Cursor::new(0_u64.to_le_bytes().to_vec());
         let mut request = Vec::new();
 
-        register(&mut request, &mut response, &[root.clone()]).unwrap();
+        register(&mut request, &mut response, std::slice::from_ref(&root)).unwrap();
 
         let mut request = Cursor::new(request);
         assert_eq!(read_word(&mut request).unwrap(), 1);

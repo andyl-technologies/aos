@@ -88,6 +88,10 @@ fn check_configuration(receipt: Option<&Receipt>, configuration: Option<&[u8]>) 
     Ok(())
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Bounds host systemd manager reconnection; this deadline does not enter simulated state"
+)]
 async fn reexecute() -> Result<()> {
     let manager = PinnedSystemdManager::connect().await?;
     let bus = manager.incarnation().bus_id().to_owned();
@@ -97,10 +101,10 @@ async fn reexecute() -> Result<()> {
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if let Ok(current) = PinnedSystemdManager::connect().await {
-            if current.incarnation().bus_id() != bus || current.incarnation().owner() != owner {
-                return Ok(());
-            }
+        if let Ok(current) = PinnedSystemdManager::connect().await
+            && (current.incarnation().bus_id() != bus || current.incarnation().owner() != owner)
+        {
+            return Ok(());
         }
         ensure!(
             Instant::now() < deadline,
@@ -260,6 +264,7 @@ pub(super) async fn execute(invocation: &Invocation, action: &str) -> Result<Val
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

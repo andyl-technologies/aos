@@ -204,6 +204,10 @@ fn validate_github_url(value: &str, allow_pull: bool) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Fixture decoding and construction failures must fail these tests"
+)]
 mod tests {
     use super::*;
     use crate::envelope::GitObjectFormat;

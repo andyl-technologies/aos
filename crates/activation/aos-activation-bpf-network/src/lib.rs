@@ -251,6 +251,10 @@ impl EbpfNetPolicyProvider {
         })
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "The host loader deadline is shared across sequential policy operations."
+    )]
     fn apply(
         &self,
         context: &ProviderContext,

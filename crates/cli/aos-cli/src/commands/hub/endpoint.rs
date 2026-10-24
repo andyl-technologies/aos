@@ -358,7 +358,7 @@ pub(super) async fn endpoint(printer: &Printer, command: &HubEndpointCmd) -> Res
                     endpoint_id: endpoint.clone(),
                     revision: Some(hub_types::EndpointRevisionSpec {
                         boundary_revision: boundary_revision
-                            .map(|value| i64::try_from(value))
+                            .map(i64::try_from)
                             .transpose()?
                             .unwrap_or_default(),
                         ingress_kind: ingress

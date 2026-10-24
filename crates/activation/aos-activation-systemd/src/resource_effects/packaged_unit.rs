@@ -260,6 +260,7 @@ pub(super) async fn execute(invocation: &Invocation, action: &str) -> Result<Val
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 

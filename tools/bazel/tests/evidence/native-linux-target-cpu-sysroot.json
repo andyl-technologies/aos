@@ -1,0 +1,594 @@
+{
+  "checks": {
+    "combined_all": "/nix/store/s1bfj8vkfil2zs7qyhbasyxcb7zsq2rg-aos-bazel-checks",
+    "invalidation_matrix": "/nix/store/kd1sbfz4c18vyvnqbzfn87kc3hvnk7x7-aos-bazel-cache-invalidation-matrix",
+    "policy": "/nix/store/0xqwfmjrf2k7j2994xak024h5qg9r4sk-aos-bazel-policy-checks",
+    "target_invalidation": "/nix/store/bxb412zydj5y6az9v8b0lz43xn87xrpc-aos-bazel-target-invalidation-proof"
+  },
+  "configuration_sha256": {
+    "pkgs/build-support/_bazel/toolchains.nix": "637c2f632f38bd8edf028f5ed4d8940841f509a37a654ad61379aa2cc1724858",
+    "tests/build/_bazel-cache.nix": "aef9fe4e50a84a7354063e0faeece4af6ae464b38650f9a447734c42c0d62a4b",
+    "tests/build/_bazel-invalidation.nix": "2e39d1dd3fd3ccdb616af5f009999b5d16e5363bd96374b94805d48aeaecb519",
+    "tests/build/_bazel-target-invalidation.nix": "497a632f063dc37fc2808d1b16a0b32fd568dd16f5e7977b52a0e0b3e6855192",
+    "tools/bazel/tests/mutate_fixture.py": "b390a00c78d328dc1b3a568fce05eaca1858e5104d71b4ade1cafc74857b91e6",
+    "tools/bazel/tests/verify_invalidation.py": "e3996f6577d03337b32bad4c7cd90132e11835a77688ff71f84a0f4fc63b01db",
+    "tools/bazel/tests/verify_target_invalidation.py": "5a0248d21cec0fecce1ee80facceef04098dfab3845c7f62b80f20f9cf41321b"
+  },
+  "cpu": {
+    "baseline": "/nix/store/cd3l4fm1aal6is959g64kw54ps6ffmhd-aos-bazel-rust-cpu-baseline-1",
+    "schema_version": 1,
+    "variants": {
+      "rust-cpu": {
+        "actions": {
+          "cpp_app": {
+            "action_digest": {
+              "hash": "3c9b5585654825d843ff52a6bda38062e10f8199160a5b25bd9078c9bca8a9c8",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": true,
+            "fingerprint": "4ed6d64cad074abb411266cf6b4c7e451f27d4274cc6bf15aca276c0beec6d17",
+            "runner": "disk cache hit"
+          },
+          "cpp_library": {
+            "action_digest": {
+              "hash": "5f796d367dfab7c58df59af765c860368bc31587c7508df66c45939e00c49a2c",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": true,
+            "fingerprint": "166a83675e3f09c0a9be40f0594d8923a65f78d10426a75b17c0a4dcb38599a1",
+            "runner": "disk cache hit"
+          },
+          "cpp_link": {
+            "action_digest": {
+              "hash": "900dc3a55fbc05cb99e47b4b762656e7277be4f64d13b63c66601aa0e83bfca3",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": true,
+            "fingerprint": "0531546622ac063cd63423c42679025ce587fa6d7c235dd8383a07dba8aced5b",
+            "runner": "disk cache hit"
+          },
+          "fixture_macro": {
+            "action_digest": {
+              "hash": "a0b8043c54433de434af676ad933ab9e0941c404c1cd84b9a8e3ea899c3663f0",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": true,
+            "fingerprint": "5c9771460c9183b046c6cf5b5ad8aa7afea2ded63c111097972c7981fef4f37c",
+            "runner": "disk cache hit"
+          },
+          "generated": {
+            "action_digest": {
+              "hash": "79ef8f5cf924f4a606f70ed8a4c54e130ddebf28f3f193b054e0ef2dac3a18ab",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": true,
+            "fingerprint": "31bbf8de86a1689ea8b175e2ffec8d96f80e933a0ea6095095961b6ba6dd707d",
+            "runner": "disk cache hit"
+          },
+          "generated_library": {
+            "action_digest": {
+              "hash": "176418b5b1d386846fb2028d05af88ab75844127a8fe17a65a4c8eb7197e3f56",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": true,
+            "fingerprint": "27e0bd15bd21a6be7e34a2eeb7be5e869db741809c58dbfd6b06d682b9d6bc5c",
+            "runner": "disk cache hit"
+          },
+          "native_app": {
+            "action_digest": {
+              "hash": "25487c157e3cb317f96ea6698281363ce133551df87dce25ab673f2995348d30",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "328f37b99332abb68c5af2784a529242b71f01356ec361faa59be8c4dea2ab72",
+            "runner": "linux-sandbox"
+          },
+          "rust_app": {
+            "action_digest": {
+              "hash": "7da6c010842adbb0f9024736b6e353ef11173ef0fcc274a906a1f276a88ffe90",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "55fdcfda4064d979d9b09677cd98ebadc16cd8a7ad8aa04d4b2924c10e764263",
+            "runner": "linux-sandbox"
+          },
+          "rust_library": {
+            "action_digest": {
+              "hash": "e9c8f019678ed8b37b544f9373c1ab2443024830ce3a0ec989b5b11ff4faec01",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "41c8a72aa5f0bafb3f5d7c6f76c1332fbdcebabefaa5f7429bc8a7e10bdfab5f",
+            "runner": "linux-sandbox"
+          }
+        },
+        "artifacts": {
+          "bin/cpp-fixture": "b67642d386b2d0401c5930bc0f0f417463569a887d80c15a8bc8313b19d9e516",
+          "bin/native-fixture": "404e6c290a618edda6d58d76cb2de51069515f1784b1c210c50c7f678dbba0b9",
+          "bin/rust-fixture": "12fb32ebb701dc4ee43643207ea0704b2810b3734b008f25be275a6fd57d87ec"
+        },
+        "build": "/nix/store/kvj0nxar2yhdbcfqfsiw0sjjadabcklg-aos-bazel-invalidation-rust-cpu-1"
+      }
+    }
+  },
+  "limitations": [
+    "Only native x86_64 Linux execution and the AArch64 Linux foreign target are qualified here.",
+    "PGO and a separately replaced linker executable remain unqualified.",
+    "The sysroot overlay retains original AOS headers through declared symlinks and selects the added probe header through an explicit compiler wrapper.",
+    "Correctness checks do not establish performance budgets or authorize a production cutover."
+  ],
+  "matrix_cases": [
+    "cpp-source",
+    "feature",
+    "generated-input",
+    "generator-environment",
+    "header",
+    "link-flags",
+    "rust-cpu",
+    "rust-flags",
+    "rust-source",
+    "sysroot",
+    "tool-closure"
+  ],
+  "schema_version": 1,
+  "scope": "Native Linux action-cache separation for a named Rust CPU, changed sysroot headers, and native/AArch64 target configurations",
+  "source_parent_commit": "cf948ce0c4",
+  "sysroot": {
+    "baseline": "/nix/store/x0mzwf6fsl1y9wzvpdf69vn61bcq07nq-aos-bazel-sysroot-baseline-1",
+    "schema_version": 1,
+    "variants": {
+      "sysroot": {
+        "actions": {
+          "cpp_app": {
+            "action_digest": {
+              "hash": "0deb0ae350e7b0b1c551144051b2198c5fdf93b720420c228f34bb1c5815e657",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "5c29be02eb23541037c6eedbc8b998e12ba8e873686000abf18c145b62117fde",
+            "runner": "linux-sandbox"
+          },
+          "cpp_library": {
+            "action_digest": {
+              "hash": "791e02527b80d85aea0729766163d31c4646399c4620533ccce4cfa5a0a6e865",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "ba5f0d1bcf9b8bb496cd47596d4f264b0cb73dc27867eccbed835f7c14bc0556",
+            "runner": "linux-sandbox"
+          },
+          "cpp_link": {
+            "action_digest": {
+              "hash": "60941d74a81bfbd6ad59713d08961bbad8d1b2a4484edb1ad1d989be28d3b417",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "c1661984894804c1ce7b7c7f26f7259bd601af84eee6c310b534b05f80839294",
+            "runner": "linux-sandbox"
+          },
+          "fixture_macro": {
+            "action_digest": {
+              "hash": "9cf38793214bb08c4c3585728d715bebbd868fca82e1c9f1f82f5ff1506d9868",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "4a3a4a989fcbe5b4662ffeff4a0be6b405dbef4d92a350aeb4fb079fbf52b742",
+            "runner": "linux-sandbox"
+          },
+          "generated": {
+            "action_digest": {
+              "hash": "1660e24bda5b8798f65ba7612a416fb0f80621a9aeb73f5f935acf097b4bd311",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "28356e65bc66a69656be4fae0b39c45e7e086be86e329a14683095aadf3e031b",
+            "runner": "linux-sandbox"
+          },
+          "generated_library": {
+            "action_digest": {
+              "hash": "9a5f62fed4cff4da077e8283c10ffea4dceefa8604ac8596e024243965b70b53",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "deee309f5c4c3e301482bb05be735b36a699a43dd343f52b614b089089d492be",
+            "runner": "linux-sandbox"
+          },
+          "native_app": {
+            "action_digest": {
+              "hash": "7d2a6577294bae93925893c819f5c159964ae4a89ff6e3cb719e098e25464b5f",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "edd91ad9905e8444f1fdc8f7aef9e02c1a123889187e7d0d57d6ea1ce9a6f35b",
+            "runner": "linux-sandbox"
+          },
+          "rust_app": {
+            "action_digest": {
+              "hash": "0391d39d35a251e2165df8dc0157c95787994f5bb505be240d17050ebd0b8184",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "d0807cc98dc737bf932369fc1c6043af42d16c90d01f1037916d58cef7d2dbbf",
+            "runner": "linux-sandbox"
+          },
+          "rust_library": {
+            "action_digest": {
+              "hash": "b130477d4a9a3f7a2d1978aa1cdeab545670e0e714d9c02844b9bff65f76a8f8",
+              "hashFunctionName": "SHA256",
+              "sizeBytes": "146"
+            },
+            "cache_hit": false,
+            "fingerprint": "45f85455b0f6d4ce954c6f43c2e534d51699017c259bf53f7c63fcf0fa739fa6",
+            "runner": "linux-sandbox"
+          }
+        },
+        "artifacts": {
+          "bin/cpp-fixture": "b603f25e6a5212f7b5915a54bfa99a120827cfdb5e0fb5e8dce9e393d55b83b7",
+          "bin/native-fixture": "0282f9c0d14dcfb769baf30640c8b9aeb319eb4f4ee74e4627665a57c09702e6",
+          "bin/rust-fixture": "f3e87f8679c4b325d1e4585dd9c34336d0bdcdfb1ba475a2bdcb911b42988893"
+        },
+        "build": "/nix/store/ggwjvp93q89h0pzplc5bph7hvgli1d1r-aos-bazel-invalidation-sysroot-1"
+      }
+    }
+  },
+  "target": {
+    "actions": {
+      "cpp_app:CppCompile": {
+        "foreign": {
+          "action_digest": {
+            "hash": "6df16ac979e3e31b811e09670e1d0cc8288f143c71328fd8dd6a15bf320059ab",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": false,
+          "fingerprint": "d036c5d944a31146001246b39f198df8cf9eaf9eb7f674d7318d64bb6990acdc",
+          "runner": "linux-sandbox"
+        },
+        "native": {
+          "action_digest": {
+            "hash": "5d09d5ccbc474bd0e8715a1954f6c8a426892d8fdf011448b17a50f19c6daf4f",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": false,
+          "fingerprint": "c34e2102a9b29fc9f8893cdae610828f4dae15b4f10c92254cd7cf43a9aa99bd",
+          "runner": "linux-sandbox"
+        },
+        "restored": {
+          "action_digest": {
+            "hash": "6df16ac979e3e31b811e09670e1d0cc8288f143c71328fd8dd6a15bf320059ab",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": true,
+          "fingerprint": "d036c5d944a31146001246b39f198df8cf9eaf9eb7f674d7318d64bb6990acdc",
+          "runner": "disk cache hit"
+        }
+      },
+      "cpp_app:CppLink": {
+        "foreign": {
+          "action_digest": {
+            "hash": "4d64f83e0176fb05ad86fd0e1ff6bd95605efba9e540429f87746683ae86407f",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": false,
+          "fingerprint": "c60d160651c95f54d4235cce2eeba61f6750e7b2909480438ac8ffc67556efb2",
+          "runner": "linux-sandbox"
+        },
+        "native": {
+          "action_digest": {
+            "hash": "4de1c6e2114ff6ce4ac1dcb0f187730c008acf342884b42f74ac1df778ebdb8e",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": false,
+          "fingerprint": "63a8d95a71427c082799095592c899ff41b27e7567a43e1d55c81276db197cd6",
+          "runner": "linux-sandbox"
+        },
+        "restored": {
+          "action_digest": {
+            "hash": "4d64f83e0176fb05ad86fd0e1ff6bd95605efba9e540429f87746683ae86407f",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": true,
+          "fingerprint": "c60d160651c95f54d4235cce2eeba61f6750e7b2909480438ac8ffc67556efb2",
+          "runner": "disk cache hit"
+        }
+      },
+      "cpp_library:CppCompile": {
+        "foreign": {
+          "action_digest": {
+            "hash": "047109d194c9dbc3891e5afa55aeea8d05968d7d5b8f8c0d692b65aa1e38772c",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": false,
+          "fingerprint": "8017e758894a6211088b3009f6e08ccb4397a3b393fc6ac1e0ca359192ed4362",
+          "runner": "linux-sandbox"
+        },
+        "native": {
+          "action_digest": {
+            "hash": "dd0a759fba22aa5d0b626d1ec789b2c9d10f8af2a5f4eda872012b3f321db4b5",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": false,
+          "fingerprint": "b30bea340a953254fc8244e05b217f33df8d74bf9ad8355336bb569a13bdbf32",
+          "runner": "linux-sandbox"
+        },
+        "restored": {
+          "action_digest": {
+            "hash": "047109d194c9dbc3891e5afa55aeea8d05968d7d5b8f8c0d692b65aa1e38772c",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": true,
+          "fingerprint": "8017e758894a6211088b3009f6e08ccb4397a3b393fc6ac1e0ca359192ed4362",
+          "runner": "disk cache hit"
+        }
+      },
+      "fixture_macro:Rustc": {
+        "foreign": {
+          "action_digest": {
+            "hash": "3a11b11d14b48615f072f472eb01dd052092eac0d51d966ab39690c78236a3d4",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": true,
+          "fingerprint": "970bdf245e604ff37f7fa31b6616f0c158cbc612721d5cd5e0bfac16734ce4cc",
+          "runner": "disk cache hit"
+        },
+        "native": {
+          "action_digest": {
+            "hash": "3a11b11d14b48615f072f472eb01dd052092eac0d51d966ab39690c78236a3d4",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": false,
+          "fingerprint": "970bdf245e604ff37f7fa31b6616f0c158cbc612721d5cd5e0bfac16734ce4cc",
+          "runner": "linux-sandbox"
+        },
+        "restored": {
+          "action_digest": {
+            "hash": "3a11b11d14b48615f072f472eb01dd052092eac0d51d966ab39690c78236a3d4",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": true,
+          "fingerprint": "970bdf245e604ff37f7fa31b6616f0c158cbc612721d5cd5e0bfac16734ce4cc",
+          "runner": "disk cache hit"
+        }
+      },
+      "generated:AosPythonGenerate": {
+        "foreign": {
+          "action_digest": {
+            "hash": "27ff53f7b3d1086927433d04686396c86fe646b573ad182aba30ffc48ffead26",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": true,
+          "fingerprint": "36b230932d4a19950aa5e9dbcb23d71a6097bc4ead36f2574a5cc581fe1be358",
+          "runner": "disk cache hit"
+        },
+        "native": {
+          "action_digest": {
+            "hash": "27ff53f7b3d1086927433d04686396c86fe646b573ad182aba30ffc48ffead26",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": false,
+          "fingerprint": "36b230932d4a19950aa5e9dbcb23d71a6097bc4ead36f2574a5cc581fe1be358",
+          "runner": "linux-sandbox"
+        },
+        "restored": {
+          "action_digest": {
+            "hash": "27ff53f7b3d1086927433d04686396c86fe646b573ad182aba30ffc48ffead26",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": true,
+          "fingerprint": "36b230932d4a19950aa5e9dbcb23d71a6097bc4ead36f2574a5cc581fe1be358",
+          "runner": "disk cache hit"
+        }
+      },
+      "generated_library:Rustc": {
+        "foreign": {
+          "action_digest": {
+            "hash": "23756cdf30a8c5ee027a8a53d2c9c9928719752f4d08393b3aa325e82a21df99",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": false,
+          "fingerprint": "cd6bee0437c22f4e7a101e11a349c053db04917d3ab1bd2affb2877f29eac78d",
+          "runner": "linux-sandbox"
+        },
+        "native": {
+          "action_digest": {
+            "hash": "a980afba71462717585cfc1dc9a0ec09791bbde24721b41583e57a0f9297f7f3",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": false,
+          "fingerprint": "39338a915c6013f2838e18e810095fde3312ef83596bce9ed2402045e7da96db",
+          "runner": "linux-sandbox"
+        },
+        "restored": {
+          "action_digest": {
+            "hash": "23756cdf30a8c5ee027a8a53d2c9c9928719752f4d08393b3aa325e82a21df99",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": true,
+          "fingerprint": "cd6bee0437c22f4e7a101e11a349c053db04917d3ab1bd2affb2877f29eac78d",
+          "runner": "disk cache hit"
+        }
+      },
+      "native_app:Rustc": {
+        "foreign": {
+          "action_digest": {
+            "hash": "58c1240fc8c4e8e745f851066f5e0ed3e7b82dcfa1036dad8c45f0492b8d452b",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": false,
+          "fingerprint": "97aae66027f8591684d67f4fe9f7f0182949cf928368286a89f9ea4017608821",
+          "runner": "linux-sandbox"
+        },
+        "native": {
+          "action_digest": {
+            "hash": "591d7268e695c0eabc8a885c3a8e3162b34984a0b63f28562a4221790da0135a",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": false,
+          "fingerprint": "43f25acb0e58548976a204b3d0a0a3c666017e3c2a687a812450709f03bbaf68",
+          "runner": "linux-sandbox"
+        },
+        "restored": {
+          "action_digest": {
+            "hash": "58c1240fc8c4e8e745f851066f5e0ed3e7b82dcfa1036dad8c45f0492b8d452b",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": true,
+          "fingerprint": "97aae66027f8591684d67f4fe9f7f0182949cf928368286a89f9ea4017608821",
+          "runner": "disk cache hit"
+        }
+      },
+      "rust_app:Rustc": {
+        "foreign": {
+          "action_digest": {
+            "hash": "511d6815d3a991201b44329486dfbf53f70b098fa32c922063af528dfcd9a0d3",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": false,
+          "fingerprint": "7330d28ab548fac9383b8dc1e1a76bf692a6cc66b78ba3567063bdc2083e0c89",
+          "runner": "linux-sandbox"
+        },
+        "native": {
+          "action_digest": {
+            "hash": "3aac0ed05c7192901405b96fe61e99eda25f9ead040cf8898e63d8056b0b493f",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": false,
+          "fingerprint": "0bfc62405c4bace22787bc9ba17fa48cda524f286b66058a8d7c22e9be3d6196",
+          "runner": "linux-sandbox"
+        },
+        "restored": {
+          "action_digest": {
+            "hash": "511d6815d3a991201b44329486dfbf53f70b098fa32c922063af528dfcd9a0d3",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": true,
+          "fingerprint": "7330d28ab548fac9383b8dc1e1a76bf692a6cc66b78ba3567063bdc2083e0c89",
+          "runner": "disk cache hit"
+        }
+      },
+      "rust_library:Rustc": {
+        "foreign": {
+          "action_digest": {
+            "hash": "b776ee8bcb9559b3e560a6a7990b61cf594126238686abc83f6808a82d2e819a",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": false,
+          "fingerprint": "3a79b5c49d433cf8fe33394abd293b132673e08d4641e46a3c284011a9a1647c",
+          "runner": "linux-sandbox"
+        },
+        "native": {
+          "action_digest": {
+            "hash": "f920f4a144ce69ff8e59b8e25d3b23faaab991067bd1e246ff1b503a5407726a",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": false,
+          "fingerprint": "e7d6681cbe06cf8d7d186fb30602fee04a66b8e50523b7b29f72ddf48a8d2045",
+          "runner": "linux-sandbox"
+        },
+        "restored": {
+          "action_digest": {
+            "hash": "b776ee8bcb9559b3e560a6a7990b61cf594126238686abc83f6808a82d2e819a",
+            "hashFunctionName": "SHA256",
+            "sizeBytes": "146"
+          },
+          "cache_hit": true,
+          "fingerprint": "3a79b5c49d433cf8fe33394abd293b132673e08d4641e46a3c284011a9a1647c",
+          "runner": "disk cache hit"
+        }
+      }
+    },
+    "artifacts": {
+      "foreign": {
+        "bin/cpp-fixture": {
+          "sha256": "75a94d366dd6378a1b04eb7ef63235e4b6bdf5111e01d580da934322cc2824ca",
+          "stdout": "answer=42\n"
+        },
+        "bin/native-fixture": {
+          "sha256": "d1c6b653faf0acf318ccc946acdb4b28c897ae8fa96d1ba9aa293d5cc1240aec",
+          "stdout": "answer=84\n"
+        },
+        "bin/rust-fixture": {
+          "sha256": "e9aad1defe57c5c6c36327565111b39551d43b2fa6b467a02614184c020b74a6",
+          "stdout": "answer=42\n"
+        }
+      },
+      "native": {
+        "bin/cpp-fixture": {
+          "sha256": "b67642d386b2d0401c5930bc0f0f417463569a887d80c15a8bc8313b19d9e516",
+          "stdout": "answer=42\n"
+        },
+        "bin/native-fixture": {
+          "sha256": "7612673c8bda9fcf6ee781fc742604e20ad8879bf425de048233f18f0417156e",
+          "stdout": "answer=84\n"
+        },
+        "bin/rust-fixture": {
+          "sha256": "f3e87f8679c4b325d1e4585dd9c34336d0bdcdfb1ba475a2bdcb911b42988893",
+          "stdout": "answer=42\n"
+        }
+      },
+      "restored": {
+        "bin/cpp-fixture": {
+          "sha256": "75a94d366dd6378a1b04eb7ef63235e4b6bdf5111e01d580da934322cc2824ca",
+          "stdout": "answer=42\n"
+        },
+        "bin/native-fixture": {
+          "sha256": "d1c6b653faf0acf318ccc946acdb4b28c897ae8fa96d1ba9aa293d5cc1240aec",
+          "stdout": "answer=84\n"
+        },
+        "bin/rust-fixture": {
+          "sha256": "e9aad1defe57c5c6c36327565111b39551d43b2fa6b467a02614184c020b74a6",
+          "stdout": "answer=42\n"
+        }
+      }
+    },
+    "builds": {
+      "foreign": "/nix/store/35m29nnvkg4pi2wl000pp0vs50qdx6vi-aos-bazel-target-invalidation-foreign-1",
+      "native": "/nix/store/hawllsbl905aysiqfdjg14yl34sksgbs-aos-bazel-target-invalidation-native-1",
+      "restored": "/nix/store/gvk84wja47v0ihqm9q6m86f58l9mjgq1-aos-bazel-target-invalidation-restored-1"
+    },
+    "foreign_runtime": "AOS source-built QEMU linux-user",
+    "schema_version": 1
+  }
+}

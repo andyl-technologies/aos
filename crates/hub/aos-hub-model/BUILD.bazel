@@ -1,0 +1,140 @@
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
+load("//tools/bazel/rules:compile.bzl", "rust_library")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+load("//tools/bazel/rules:test_sources.bzl", "aos_repository_test_sources")
+
+package(default_visibility = ["//crates:__subpackages__"])
+
+RUST_PACKAGE = aos_rust_package(
+    name = "aos-hub-model",
+    version = "0.1.0",
+    edition = "2021",
+    description = "Portable Hub domain values, credential primitives, and delivery policies",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+)
+
+config_setting(
+    name = "wasm32",
+    constraint_values = ["@platforms//cpu:wasm32", "@platforms//os:none"],
+)
+
+DEPENDENCIES = [
+    "//crates/registry/aos-registry-format:lib",
+    "//third_party/rust:core_aes_gcm",
+    "//third_party/rust:core_zeroize",
+    "//third_party/rust:core_anyhow",
+    "//third_party/rust:core_argon2",
+    "//third_party/rust:core_base64",
+    "//third_party/rust:core_hex",
+    "//third_party/rust:core_hmac",
+    "//third_party/rust:core_rand",
+    "//third_party/rust:core_serde",
+    "//third_party/rust:core_serde_json",
+    "//third_party/rust:core_sha2",
+    "//third_party/rust:core_thiserror",
+    "//third_party/rust:core_url",
+    "//third_party/rust:core_unicode_normalization",
+    "//crates/artifacts/aos-oci-types:lib",
+    "//third_party/rust:core_password_hash",
+] + select({
+    ":wasm32": [
+        "//third_party/rust:core_getrandom",
+        "//third_party/rust:core_getrandom_03",
+        "//third_party/rust:core_wasm_bindgen",
+        "//third_party/rust:core_wasm_bindgen_futures",
+        "//third_party/rust:core_js_sys",
+    ],
+    "//conditions:default": ["//third_party/rust:core_tokio"],
+})
+
+DEVELOPMENT_DEPENDENCIES = ["//crates/hub/aos-hub-api:lib"]
+
+# Recursive scanners ignore runfile symlinks. Copy the full pinned source
+# inventory into regular files before the contract case traverses it.
+aos_repository_test_sources(
+    name = "production_source_audit",
+    manifest = "@aos_hub_model_test_sources//:manifest.json",
+    sources = "@aos_hub_model_test_sources//:production_sources",
+)
+
+# The service's selected dev dependencies expose direct identity fixtures.
+# Production service selections retain the ordinary model API.
+LIBRARY_FEATURES = select({
+    "//tools/bazel/rules:hub_service_tests_dependencies": ["default", "test-fixtures"],
+    "//tools/bazel/rules:hub_service_all_features_tests_dependencies": ["default", "test-fixtures"],
+    "//conditions:default": ["default"],
+})
+
+rust_library(
+    name = "lib",
+    package = RUST_PACKAGE,
+    crate_name = "aos_hub_model",
+    crate_features = LIBRARY_FEATURES,
+    crate_root = "src/lib.rs",
+    srcs = glob(["src/**/*.rs"]),
+    deps = DEPENDENCIES,
+    aliases = select({
+        ":wasm32": {"//third_party/rust:core_getrandom_03": "getrandom_03"},
+        "//conditions:default": {},
+    }),
+    proc_macro_deps = ["//third_party/rust:core_async_trait"],
+)
+
+aos_rust_test(
+    name = "unit",
+    package = RUST_PACKAGE,
+    crate = ":lib",
+    crate_features = ["default"],
+    deps = DEVELOPMENT_DEPENDENCIES,
+    proc_macro_deps = ["//third_party/rust:core_async_trait"],
+)
+
+aos_rust_test(
+    name = "retained_control_foundation",
+    package = RUST_PACKAGE,
+    crate_name = "retained_control_foundation",
+    crate_root = "tests/retained_control_foundation.rs",
+    crate_features = ["default"],
+    srcs = [
+        "tests/retained_control_foundation.rs",
+        "src/retained_control/classifier.rs",
+        "src/retained_control/primitives.rs",
+    ],
+    compile_data = glob(["tests/fixtures/*.json"]) + [
+        "//docs/rfcs/0012-hub-surface-topology:hub_contract_manifests",
+    ],
+    runfile_env = {"AOS_TEST_PRODUCTION_SOURCE_ROOT": ":production_source_audit"},
+    deps = [":lib"] + DEPENDENCIES + DEVELOPMENT_DEPENDENCIES,
+    proc_macro_deps = ["//third_party/rust:core_async_trait"],
+)
+
+DEVELOPER_ARTIFACTS = [":lib", ":unit_binary", ":retained_control_foundation_binary"]
+
+rust_doc_test(name = "doc", crate = ":lib")
+rust_clippy(name = "clippy", testonly = True, deps = DEVELOPER_ARTIFACTS)
+rustfmt_test(name = "format", targets = DEVELOPER_ARTIFACTS)
+rust_doc(name = "documentation", crate = ":lib")
+
+aos_license_check(
+    name = "license_closure",
+    testonly = True,
+    roots = DEVELOPER_ARTIFACTS,
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_license_check(
+    name = "production_license_closure",
+    roots = [":lib"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_source_package(
+    name = "source_package",
+    package = RUST_PACKAGE,
+    srcs = glob(["**/*.rs"]),
+    visibility = ["//visibility:public"],
+)

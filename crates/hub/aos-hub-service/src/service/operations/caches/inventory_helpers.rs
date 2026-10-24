@@ -18,7 +18,7 @@ impl RpcService {
         body: &[u8],
         admission: Option<aos_hub_db::db::CacheWriteTicketRecord>,
     ) -> SurfaceWriteOutcome {
-        if let Err(deny) = self.require_cache_admin(auth, &cache).await {
+        if let Err(deny) = self.require_cache_admin(auth, cache).await {
             return auth_denial_to_write_outcome(deny);
         }
         self.write_cache_object_authorized(cache, path, body, admission)

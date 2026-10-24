@@ -195,6 +195,10 @@ pub(crate) fn progress_percent(stage: &StagedRelease) -> u64 {
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Invalid test fixtures must fail immediately rather than produce a different case."
+)]
 mod tests {
     use super::*;
     use aos_registry_format::staging::{inventory_digest, StageObject, STAGE_SCHEMA};

@@ -217,7 +217,7 @@ fn push_if_published(
     published: &[semver::Version],
     candidate: semver::Version,
 ) {
-    if published.iter().any(|v| *v == candidate) && !bases.contains(&candidate) {
+    if published.contains(&candidate) && !bases.contains(&candidate) {
         bases.push(candidate);
     }
 }

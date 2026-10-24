@@ -65,6 +65,10 @@ pub(crate) struct RequestStart(pub Instant);
 impl<S: Send + Sync> axum::extract::FromRequestParts<S> for RequestStart {
     type Rejection = std::convert::Infallible;
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Uses the portable Hub clock for request timing and runtime budgets."
+    )]
     async fn from_request_parts(
         _parts: &mut axum::http::request::Parts,
         _state: &S,
@@ -807,6 +811,10 @@ fn check_csrf(session: &Session, csrf: &str) -> Result<(), Box<Response>> {
 /// Returns the boxed re-authentication page — HTTP `403` (the action is
 /// forbidden until the caller re-authenticates) carrying the "confirm your
 /// identity" form as its body — when the session is not within the sudo window.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Uses the portable Hub clock for request timing and runtime budgets."
+)]
 fn require_sudo(session: &Session, headers: &HeaderMap) -> Result<(), Box<Response>> {
     if session.auth.is_sudo(aos_hub_model::clock::now_unix_secs()) {
         return Ok(());
@@ -1666,7 +1674,7 @@ pub(crate) async fn magic_consume(
                 safe_return_path(query.next.as_deref()),
                 started,
             ))
-            .into_response()
+            .into_response();
         }
         Err(err) => return internal(err),
     };

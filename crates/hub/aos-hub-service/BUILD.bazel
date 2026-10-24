@@ -1,0 +1,221 @@
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
+load("//tools/bazel/rules:build_script.bzl", "aos_rust_build_script")
+load("//tools/bazel/rules:compile.bzl", "rust_library")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+load("//tools/bazel/rules:package.bzl", "aos_package")
+load(":assets.bzl", "console_assets_snapshot")
+
+package(default_visibility = ["//crates:__subpackages__"])
+
+RUST_PACKAGE = aos_rust_package(
+    name = "aos-hub-service",
+    version = "0.1.0",
+    edition = "2021",
+    description = "Runtime-neutral Hub application services, authorization, and transport adapters",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+)
+
+LIBRARY_FEATURES = select({
+    "//tools/bazel/rules:aos_cli_tests_dependencies": ["default", "test-fixtures"],
+    "//tools/bazel/rules:aos_cli_fleet_tests_dependencies": ["default", "test-fixtures"],
+    "//tools/bazel/rules:hub_worker_all_features_tests_dependencies": ["default", "do-e2e-test-support", "query-timing"],
+    "//tools/bazel/rules:hub_worker_wasm_do_e2e_dependencies": ["default", "do-e2e-test-support"],
+    "//tools/bazel/rules:hub_worker_wasm_all_features_dependencies": ["default", "do-e2e-test-support", "query-timing"],
+    "//tools/bazel/rules:hub_native_tests_dependencies": ["default", "test-fixtures"],
+    "//tools/bazel/rules:hub_service_all_features_dependencies": ["default", "postgres", "mysql", "query-timing", "do-e2e-test-support", "test-fixtures"],
+    "//tools/bazel/rules:hub_service_all_features_tests_dependencies": ["default", "postgres", "mysql", "query-timing", "do-e2e-test-support", "test-fixtures"],
+    "//conditions:default": ["default"],
+})
+
+config_setting(
+    name = "wasm32",
+    constraint_values = ["@platforms//cpu:wasm32", "@platforms//os:none"],
+)
+
+DEPENDENCIES = [
+    "//crates/modules/aos-module-docs:lib",
+    "//crates/modules/aos-module-format:lib",
+    "//crates/registry/aos-registry-format:lib",
+    "//crates/release/aos-release-format:lib",
+    "//crates/hub/aos-hub-api:lib",
+    "//crates/hub/aos-hub-db:lib",
+    "//crates/hub/aos-hub-model:lib",
+    "//crates/hub/aos-hub-ui:lib",
+    "//crates/core/aos-core:lib",
+    "//crates/artifacts/aos-oci-types:lib",
+    "//third_party/rust:core_anyhow",
+    "//third_party/rust:core_axum",
+    "//third_party/rust:core_base64",
+    "//third_party/rust:core_ciborium",
+    "//third_party/rust:core_ed25519_dalek",
+    "//third_party/rust:core_futures_util",
+    "//third_party/rust:core_hex",
+    "//third_party/rust:core_hmac",
+    "//third_party/rust:core_humantime",
+    "//third_party/rust:core_jwt_rustcrypto",
+    "//third_party/rust:core_md_5",
+    "//third_party/rust:core_p256",
+    "//third_party/rust:core_rand",
+    "//third_party/rust:core_rsa",
+    "//third_party/rust:core_semver",
+    "//third_party/rust:core_serde",
+    "//third_party/rust:core_serde_json",
+    "//third_party/rust:core_sha2",
+    "//third_party/rust:core_thiserror",
+    "//third_party/rust:core_toml",
+    "//third_party/rust:core_toml_edit",
+    "//third_party/rust:core_tracing",
+    "//third_party/rust:core_unicode_normalization",
+    "//third_party/rust:core_url",
+    "//third_party/rust:core_uuid",
+    "//third_party/rust:core_zeroize"
+] + select({
+    ":wasm32": ["//third_party/rust:core_getrandom", "//third_party/rust:core_getrandom_03", "//third_party/rust:core_wasm_bindgen", "//third_party/rust:core_wasm_bindgen_futures", "//third_party/rust:core_js_sys", "//third_party/rust:core_send_wrapper"],
+    "//conditions:default": ["//third_party/rust:core_tokio"],
+})
+
+# Every artifact is declared. Missing assets fail instead of using build.rs's
+# development fallback, and no browser tool executes inside the native graph.
+aos_rust_build_script(
+    name = "build_script",
+    package = RUST_PACKAGE,
+    src = "build.rs",
+    crate_features = LIBRARY_FEATURES,
+    data = [
+        "@aos_console_assets//:javascript",
+        "@aos_console_assets//:wasm",
+        "@aos_console_assets//:stylesheet",
+    ],
+    env = {
+        "AOS_HUB_CONSOLE_JS": "$(execpath @aos_console_assets//:javascript)",
+        "AOS_HUB_CONSOLE_WASM": "$(execpath @aos_console_assets//:wasm)",
+        "AOS_HUB_CONSOLE_CSS": "$(execpath @aos_console_assets//:stylesheet)",
+    },
+)
+
+console_assets_snapshot(
+    name = "generated_assets",
+    generator = ":build_script",
+    tags = ["aos-license:apache-host"],
+)
+
+aos_package(
+    name = "generated_assets_evidence",
+    package = RUST_PACKAGE,
+    artifacts = {":generated_assets": "console-assets.json"},
+)
+
+rust_library(
+    name = "lib",
+    package = RUST_PACKAGE,
+    crate_name = "aos_hub_service",
+    crate_root = "src/lib.rs",
+    crate_features = LIBRARY_FEATURES,
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = glob(["src/web/static_assets/*"]) + ["//api/proto:hub_api_definitions"],
+    deps = [":build_script"] + DEPENDENCIES,
+    # Cargo names getrandom 0.3 separately from the 0.2 dependency on Wasm.
+    aliases = select({
+        ":wasm32": {"//third_party/rust:core_getrandom_03": "getrandom_03"},
+        "//conditions:default": {},
+    }),
+    proc_macro_deps = ["//third_party/rust:core_async_trait"],
+)
+
+TEST_DEPENDENCIES = [
+    "//crates/registry/aos-registry-authoring:lib",
+    "//third_party/rust:core_tempfile",
+]
+
+aos_rust_test(
+    name = "unit",
+    package = RUST_PACKAGE,
+    crate = ":lib",
+    crate_features = LIBRARY_FEATURES,
+    deps = [":build_script"] + TEST_DEPENDENCIES,
+    proc_macro_deps = ["//third_party/rust:core_async_trait"],
+)
+
+aos_rust_test(
+    name = "signing_key_lifecycle",
+    package = RUST_PACKAGE,
+    crate_name = "signing_key_lifecycle",
+    crate_root = "tests/signing_key_lifecycle.rs",
+    crate_features = LIBRARY_FEATURES,
+    srcs = ["tests/signing_key_lifecycle.rs"],
+    deps = [":lib"] + DEPENDENCIES + TEST_DEPENDENCIES,
+)
+
+aos_rust_test(
+    name = "wasm_clock_guard",
+    package = RUST_PACKAGE,
+    crate_name = "wasm_clock_guard",
+    crate_root = "tests/wasm_clock_guard.rs",
+    crate_features = LIBRARY_FEATURES,
+    srcs = ["tests/wasm_clock_guard.rs"],
+    # Runtime source traversal uses paths relative to the test workspace.
+    rustc_env = {"CARGO_MANIFEST_DIR": "crates/hub/aos-hub-service"},
+    data = [
+        ":source_package",
+        "//crates/hub/aos-hub-model:source_package",
+        "//crates/hub/aos-hub-db:source_package",
+    ],
+    deps = [":lib"] + DEPENDENCIES + TEST_DEPENDENCIES,
+)
+
+DEVELOPER_ARTIFACTS = [
+    ":lib",
+    ":unit_binary",
+    ":signing_key_lifecycle_binary",
+    ":wasm_clock_guard_binary",
+    ":build_script_program",
+]
+
+rust_doc_test(name = "doc", crate = ":lib")
+rust_clippy(name = "clippy", testonly = True, deps = DEVELOPER_ARTIFACTS)
+rustfmt_test(name = "format", targets = DEVELOPER_ARTIFACTS)
+rust_doc(name = "documentation", crate = ":lib")
+
+aos_license_check(
+    name = "license_closure",
+    testonly = True,
+    roots = DEVELOPER_ARTIFACTS,
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_license_check(
+    name = "production_license_closure",
+    roots = [":lib", ":build_script_program"],
+    license_domain = RUST_PACKAGE.license_domain,
+)
+
+aos_source_package(
+    name = "source_package",
+    package = RUST_PACKAGE,
+    srcs = glob(["**/*.rs"]),
+    data = glob(["src/web/static_assets/*"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "presentation_stylesheet",
+    srcs = ["src/web/static_assets/style.css"],
+    visibility = ["//crates/hub/aos-hub-ui:__pkg__"],
+)
+
+filegroup(
+    name = "static_assets",
+    srcs = [
+        "src/web/static_assets/style.css",
+        "src/web/static_assets/app.js",
+        "src/web/static_assets/theme.js",
+        "src/web/static_assets/Geist-Variable.woff2",
+        "src/web/static_assets/GeistMono-Variable.woff2",
+        "src/web/static_assets/OFL.txt",
+    ],
+    tags = ["aos-license:apache-host"],
+)

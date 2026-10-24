@@ -1,0 +1,1385 @@
+{
+  "changed_rust_inputs_sha256": {
+    "crates/hub/aos-hub-console/src/mutation.rs": "edcdc42edbabc94b267706dc02ef28a4c2ee6a55bf8207ab8396bd2fbac2079d",
+    "crates/hub/aos-hub-console/src/staging.rs": "86734b731175a99fd9fb53b8d51504f363e6b4d9054b1bc077fefe1de9c8835e"
+  },
+  "checks": {
+    "cargo-parity": {
+      "derivation": "/nix/store/ji5w24qxd0nxa03zylgg31i0c7spjzqr-aos-bazel-hub-console-cargo-parity.drv",
+      "output": "/nix/store/87fqmbggilmdlrbdm3didygn1j0n7d7l-aos-bazel-hub-console-cargo-parity",
+      "report": {
+        "doctests": {
+          "//crates/hub/aos-hub-console:doc": {}
+        },
+        "examples": [],
+        "features": {
+          "adler2@2.0.1": [
+            []
+          ],
+          "aho-corasick@1.1.4": [
+            [
+              "perf-literal",
+              "std"
+            ]
+          ],
+          "anyhow@1.0.102": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "base64@0.21.7": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "base64@0.22.1": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "bitflags@2.13.0": [
+            [
+              "std"
+            ]
+          ],
+          "block-buffer@0.10.4": [
+            []
+          ],
+          "bytes@1.11.1": [
+            []
+          ],
+          "cfg-if@1.0.4": [
+            []
+          ],
+          "const-oid@0.9.6": [
+            []
+          ],
+          "cpufeatures@0.2.17": [
+            []
+          ],
+          "crc32fast@1.5.0": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "crypto-common@0.1.7": [
+            [
+              "std"
+            ]
+          ],
+          "curve25519-dalek-derive@0.1.1": [
+            []
+          ],
+          "curve25519-dalek@4.1.3": [
+            [
+              "alloc",
+              "digest",
+              "precomputed-tables",
+              "zeroize"
+            ]
+          ],
+          "der@0.7.10": [
+            [
+              "alloc",
+              "oid",
+              "std",
+              "zeroize"
+            ]
+          ],
+          "digest@0.10.7": [
+            [
+              "alloc",
+              "block-buffer",
+              "core-api",
+              "default",
+              "std"
+            ]
+          ],
+          "dyn-clone@1.0.20": [
+            []
+          ],
+          "ed25519-dalek@2.2.0": [
+            [
+              "alloc",
+              "default",
+              "fast",
+              "pkcs8",
+              "std",
+              "zeroize"
+            ]
+          ],
+          "ed25519@2.2.3": [
+            [
+              "alloc",
+              "pkcs8",
+              "std"
+            ]
+          ],
+          "either@1.16.0": [
+            [
+              "std",
+              "use_std"
+            ]
+          ],
+          "equivalent@1.0.2": [
+            []
+          ],
+          "fastrand@2.4.1": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "fixedbitset@0.5.7": [
+            []
+          ],
+          "flate2@1.1.9": [
+            [
+              "any_impl",
+              "miniz_oxide",
+              "rust_backend"
+            ]
+          ],
+          "generic-array@0.14.7": [
+            [
+              "more_lengths"
+            ]
+          ],
+          "getrandom@0.4.2": [
+            []
+          ],
+          "hashbrown@0.17.1": [
+            []
+          ],
+          "heck@0.5.0": [
+            []
+          ],
+          "hex@0.4.3": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "indexmap@2.14.0": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "itertools@0.13.0": [
+            [
+              "default",
+              "use_alloc",
+              "use_std"
+            ]
+          ],
+          "itertools@0.14.0": [
+            [
+              "default",
+              "use_alloc",
+              "use_std"
+            ]
+          ],
+          "itoa@1.0.18": [
+            []
+          ],
+          "libc@0.2.186": [
+            []
+          ],
+          "linux-raw-sys@0.12.1": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "ioctl",
+              "no_std"
+            ]
+          ],
+          "log@0.4.30": [
+            []
+          ],
+          "memchr@2.8.2": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "miniz_oxide@0.8.9": [
+            [
+              "simd",
+              "simd-adler32",
+              "with-alloc"
+            ]
+          ],
+          "multimap@0.10.1": [
+            []
+          ],
+          "once_cell@1.21.4": [
+            [
+              "alloc",
+              "default",
+              "race",
+              "std"
+            ]
+          ],
+          "pbjson-build@0.7.0": [
+            []
+          ],
+          "pbjson@0.7.0": [
+            []
+          ],
+          "petgraph@0.7.1": [
+            []
+          ],
+          "pkcs8@0.10.2": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "prettyplease@0.2.37": [
+            []
+          ],
+          "proc-macro2@1.0.106": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "prost-build@0.13.5": [
+            [
+              "default",
+              "format"
+            ]
+          ],
+          "prost-derive@0.13.5": [
+            []
+          ],
+          "prost-types@0.13.5": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "prost@0.13.5": [
+            [
+              "default",
+              "derive",
+              "prost-derive",
+              "std"
+            ],
+            [
+              "default",
+              "derive",
+              "std"
+            ]
+          ],
+          "quote@1.0.46": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "ref-cast-impl@1.0.27": [
+            []
+          ],
+          "ref-cast@1.0.27": [
+            []
+          ],
+          "regex-automata@0.4.14": [
+            [
+              "alloc",
+              "dfa-onepass",
+              "hybrid",
+              "meta",
+              "nfa-backtrack",
+              "nfa-pikevm",
+              "nfa-thompson",
+              "perf-inline",
+              "perf-literal",
+              "perf-literal-multisubstring",
+              "perf-literal-substring",
+              "std",
+              "syntax",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment",
+              "unicode-word-boundary"
+            ],
+            [
+              "alloc",
+              "meta",
+              "nfa-pikevm",
+              "nfa-thompson",
+              "std",
+              "syntax",
+              "unicode-bool"
+            ]
+          ],
+          "regex-syntax@0.8.11": [
+            [
+              "default",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ],
+            [
+              "std",
+              "unicode-bool"
+            ]
+          ],
+          "regex@1.12.4": [
+            [
+              "default",
+              "perf",
+              "perf-backtrack",
+              "perf-cache",
+              "perf-dfa",
+              "perf-inline",
+              "perf-literal",
+              "perf-onepass",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ],
+            [
+              "std",
+              "unicode-bool"
+            ]
+          ],
+          "rustc_version@0.4.1": [
+            []
+          ],
+          "rustix@1.1.4": [
+            [
+              "alloc",
+              "default",
+              "fs",
+              "std"
+            ]
+          ],
+          "schemars@1.2.2": [
+            [
+              "default",
+              "derive",
+              "schemars_derive",
+              "std"
+            ]
+          ],
+          "schemars_derive@1.2.2": [
+            []
+          ],
+          "semver@1.0.28": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "serde@1.0.228": [
+            [
+              "alloc",
+              "default",
+              "derive",
+              "rc",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "serde_core@1.0.228": [
+            [
+              "alloc",
+              "rc",
+              "result",
+              "std"
+            ]
+          ],
+          "serde_derive@1.0.228": [
+            [
+              "default"
+            ]
+          ],
+          "serde_derive_internals@0.30.0": [
+            []
+          ],
+          "serde_json@1.0.150": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "serde_spanned@0.6.9": [
+            [
+              "serde"
+            ]
+          ],
+          "sha2@0.10.9": [
+            [
+              "compress",
+              "default",
+              "std"
+            ]
+          ],
+          "signature@2.2.0": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "simd-adler32@0.3.9": [
+            []
+          ],
+          "spki@0.7.3": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "subtle@2.6.1": [
+            []
+          ],
+          "syn@2.0.118": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "extra-traits",
+              "full",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "syn@3.0.5": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "tempfile@3.27.0": [
+            [
+              "default",
+              "getrandom"
+            ]
+          ],
+          "thiserror-impl@2.0.18": [
+            []
+          ],
+          "thiserror@2.0.18": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "toml@0.8.23": [
+            [
+              "default",
+              "display",
+              "parse"
+            ]
+          ],
+          "toml_datetime@0.6.11": [
+            [
+              "serde"
+            ]
+          ],
+          "toml_edit@0.22.27": [
+            [
+              "display",
+              "parse",
+              "serde"
+            ]
+          ],
+          "toml_write@0.1.2": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "typenum@1.20.1": [
+            []
+          ],
+          "unicode-ident@1.0.24": [
+            []
+          ],
+          "version_check@0.9.5": [
+            []
+          ],
+          "winnow@0.7.15": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "zeroize@1.9.0": [
+            [
+              "alloc"
+            ]
+          ],
+          "zmij@1.0.21": [
+            []
+          ]
+        },
+        "first_party_features": {
+          "aos-artifact-evidence": [
+            []
+          ],
+          "aos-core": [
+            []
+          ],
+          "aos-hub-api": [
+            []
+          ],
+          "aos-hub-console": [
+            []
+          ],
+          "aos-hub-ui": [
+            []
+          ],
+          "aos-module-docs": [
+            []
+          ],
+          "aos-module-format": [
+            []
+          ],
+          "aos-oci-types": [
+            []
+          ],
+          "aos-registry-format": [
+            []
+          ]
+        },
+        "schema_version": 1,
+        "targets": {
+          "//crates/hub/aos-hub-console:bin_aos-hub-console": {
+            "executed": [],
+            "ignored": []
+          },
+          "//crates/hub/aos-hub-console:unit": {
+            "executed": [
+              "mutation::tests::admin_configure_only_does_not_expose_tag_mutation_controls",
+              "mutation::tests::blockers_and_non_planned_states_hide_apply_controls",
+              "mutation::tests::container_apply_preserves_the_reviewed_plan_and_idempotency_key",
+              "mutation::tests::default_retention_policy_binds_gc_to_version_zero",
+              "mutation::tests::maintainer_publish_exposes_tag_mutation_controls",
+              "mutation::tests::pending_plan_rejects_missing_confirmation_material",
+              "mutation::tests::signed_container_tags_never_enable_manual_controls",
+              "mutation::tests::untracked_repair_apply_requires_the_exact_positive_plan_version",
+              "registry_deletion::tests::blocker_rows_list_only_present_conditions_with_their_resolver",
+              "registry_deletion::tests::operation_detail_parses_protojson_readiness",
+              "registry_deletion::tests::provider_objects_block_only_when_a_current_inventory_lists_them",
+              "staging::tests::large_inventory_reviews_render_a_bounded_filtered_window",
+              "staging::tests::progress_avoids_rounding_overflow_and_bounds_stale_counters",
+              "staging::tests::publication_actions_fail_closed_for_incomplete_or_terminal_stages",
+              "staging::tests::resume_commands_require_a_local_selector_and_quote_shell_syntax",
+              "staging::tests::review_rejects_wrong_identity_stale_revision_and_changed_inventory",
+              "staging::tests::stage_review_binds_actions_to_the_exact_response_identity"
+            ],
+            "ignored": []
+          }
+        }
+      },
+      "report_sha256": "8ad6ce4bf56ef9bdc5797f54e612e4861897df1ebe908af1a71ba6e846856007"
+    },
+    "developer-tools-1": {
+      "action_counts": {
+        "CargoBuildScriptRun": 19,
+        "Clippy": 4,
+        "ExtractCargoTomlEnvVars": 110,
+        "Rustc": 132,
+        "Rustdoc": 1
+      },
+      "actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:lib"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:bin_aos-hub-console_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Rustdoc",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:documentation"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:shared"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:unit_binary"
+        }
+      ],
+      "derivation": "/nix/store/vdqg09pmygjz9m0w0cri8nv7fzvkkwzx-aos-bazel-hub-console-developer-tools-1.drv",
+      "execution_sha256": "622244a7aa541be3dd6b274f71f96cb9131cfe7eecc7924a62b401eecba9b8d1",
+      "output": "/nix/store/q0id9b6zm6ad29v8gwz1bq25nbawz3sp-aos-bazel-hub-console-developer-tools-1",
+      "source": "/nix/store/xy05k6k033w1phnfkbvbavd0h4j0rviq-aos-bazel-workspace"
+    },
+    "format-1": {
+      "action_counts": {
+        "Rustc": 5,
+        "TestRunner": 2
+      },
+      "actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:format"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:format"
+        }
+      ],
+      "derivation": "/nix/store/8idjwsw40z14hiapbx8iq6qazb3m31i2-aos-bazel-hub-console-format-1.drv",
+      "execution_sha256": "6d27ea27f0c3ca16a02587c3c1fe350cdfa561d04852871c3be6f00318059091",
+      "output": "/nix/store/r06bsx474x7j1qk8mx3p3vqiyis064wq-aos-bazel-hub-console-format-1",
+      "source": "/nix/store/xy05k6k033w1phnfkbvbavd0h4j0rviq-aos-bazel-workspace"
+    },
+    "generated-source-parity": {
+      "derivation": "/nix/store/hwcpx9zwav4b5bv07ymxc8hqav9qpj5m-aos-bazel-hub-console-generated-source-parity.drv",
+      "output": "/nix/store/ia5bf9kmjzg64xbysawfvngdr8wd7c05-aos-bazel-hub-console-generated-source-parity",
+      "report": {
+        "count": 4,
+        "files": {
+          "aos.hub.v1.descriptor.bin": {
+            "sha256": "40e193e5a1e999dcb2f4fe0b1daad9bc9d11f54890f35c530ff3a2b7deb6e881",
+            "size": 455195
+          },
+          "aos.hub.v1.rs": {
+            "sha256": "127c514e16d9b94b6608456676d167a2d8390fb8ba0b65c24dc74bdca21f28de",
+            "size": 353859
+          },
+          "aos.hub.v1.serde.rs": {
+            "sha256": "4e2a1dd5c1fbca087eb224de84f9ef248e2a467d89e77205a22debda8bc3dba8",
+            "size": 4387910
+          },
+          "connect_paths.rs": {
+            "sha256": "144464fc6e2748bb6802fdb1f7b99ed7ddcbcc2a08d641e149797d6b24863f2c",
+            "size": 259532
+          }
+        },
+        "status": "PASS"
+      },
+      "report_sha256": "7d156d8bd56d4f9bd5290375ba052924ee8fe5f3492a02d973d4e6b43d1bd582"
+    },
+    "production-features": {
+      "derivation": "/nix/store/155ypizfzxzcl6qfdh5z21n2i40yb253-aos-bazel-hub-console-production-features.drv",
+      "output": "/nix/store/avf14xl34d9bx64s8wr4ivahzi7m8h3j-aos-bazel-hub-console-production-features",
+      "report": {
+        "features": {
+          "adler2@2.0.1": [
+            []
+          ],
+          "aho-corasick@1.1.4": [
+            [
+              "perf-literal",
+              "std"
+            ]
+          ],
+          "anyhow@1.0.102": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "base64@0.21.7": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "base64@0.22.1": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "bitflags@2.13.0": [
+            [
+              "std"
+            ]
+          ],
+          "block-buffer@0.10.4": [
+            []
+          ],
+          "bytes@1.11.1": [
+            []
+          ],
+          "cfg-if@1.0.4": [
+            []
+          ],
+          "const-oid@0.9.6": [
+            []
+          ],
+          "cpufeatures@0.2.17": [
+            []
+          ],
+          "crc32fast@1.5.0": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "crypto-common@0.1.7": [
+            [
+              "std"
+            ]
+          ],
+          "curve25519-dalek-derive@0.1.1": [
+            []
+          ],
+          "curve25519-dalek@4.1.3": [
+            [
+              "alloc",
+              "digest",
+              "precomputed-tables",
+              "zeroize"
+            ]
+          ],
+          "der@0.7.10": [
+            [
+              "alloc",
+              "oid",
+              "std",
+              "zeroize"
+            ]
+          ],
+          "digest@0.10.7": [
+            [
+              "alloc",
+              "block-buffer",
+              "core-api",
+              "default",
+              "std"
+            ]
+          ],
+          "dyn-clone@1.0.20": [
+            []
+          ],
+          "ed25519-dalek@2.2.0": [
+            [
+              "alloc",
+              "default",
+              "fast",
+              "pkcs8",
+              "std",
+              "zeroize"
+            ]
+          ],
+          "ed25519@2.2.3": [
+            [
+              "alloc",
+              "pkcs8",
+              "std"
+            ]
+          ],
+          "either@1.16.0": [
+            [
+              "std",
+              "use_std"
+            ]
+          ],
+          "equivalent@1.0.2": [
+            []
+          ],
+          "fastrand@2.4.1": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "fixedbitset@0.5.7": [
+            []
+          ],
+          "flate2@1.1.9": [
+            [
+              "any_impl",
+              "miniz_oxide",
+              "rust_backend"
+            ]
+          ],
+          "generic-array@0.14.7": [
+            [
+              "more_lengths"
+            ]
+          ],
+          "getrandom@0.4.2": [
+            []
+          ],
+          "hashbrown@0.17.1": [
+            []
+          ],
+          "heck@0.5.0": [
+            []
+          ],
+          "hex@0.4.3": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "indexmap@2.14.0": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "itertools@0.13.0": [
+            [
+              "default",
+              "use_alloc",
+              "use_std"
+            ]
+          ],
+          "itertools@0.14.0": [
+            [
+              "default",
+              "use_alloc",
+              "use_std"
+            ]
+          ],
+          "itoa@1.0.18": [
+            []
+          ],
+          "libc@0.2.186": [
+            []
+          ],
+          "linux-raw-sys@0.12.1": [
+            [
+              "auxvec",
+              "elf",
+              "errno",
+              "general",
+              "ioctl",
+              "no_std"
+            ]
+          ],
+          "log@0.4.30": [
+            []
+          ],
+          "memchr@2.8.2": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "miniz_oxide@0.8.9": [
+            [
+              "simd",
+              "simd-adler32",
+              "with-alloc"
+            ]
+          ],
+          "multimap@0.10.1": [
+            []
+          ],
+          "once_cell@1.21.4": [
+            [
+              "alloc",
+              "default",
+              "race",
+              "std"
+            ]
+          ],
+          "pbjson-build@0.7.0": [
+            []
+          ],
+          "pbjson@0.7.0": [
+            []
+          ],
+          "petgraph@0.7.1": [
+            []
+          ],
+          "pkcs8@0.10.2": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "prettyplease@0.2.37": [
+            []
+          ],
+          "proc-macro2@1.0.106": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "prost-build@0.13.5": [
+            [
+              "default",
+              "format"
+            ]
+          ],
+          "prost-derive@0.13.5": [
+            []
+          ],
+          "prost-types@0.13.5": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "prost@0.13.5": [
+            [
+              "default",
+              "derive",
+              "prost-derive",
+              "std"
+            ],
+            [
+              "default",
+              "derive",
+              "std"
+            ]
+          ],
+          "quote@1.0.46": [
+            [
+              "default",
+              "proc-macro"
+            ]
+          ],
+          "ref-cast-impl@1.0.27": [
+            []
+          ],
+          "ref-cast@1.0.27": [
+            []
+          ],
+          "regex-automata@0.4.14": [
+            [
+              "alloc",
+              "dfa-onepass",
+              "hybrid",
+              "meta",
+              "nfa-backtrack",
+              "nfa-pikevm",
+              "nfa-thompson",
+              "perf-inline",
+              "perf-literal",
+              "perf-literal-multisubstring",
+              "perf-literal-substring",
+              "std",
+              "syntax",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment",
+              "unicode-word-boundary"
+            ],
+            [
+              "alloc",
+              "meta",
+              "nfa-pikevm",
+              "nfa-thompson",
+              "std",
+              "syntax",
+              "unicode-bool"
+            ]
+          ],
+          "regex-syntax@0.8.11": [
+            [
+              "default",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ],
+            [
+              "std",
+              "unicode-bool"
+            ]
+          ],
+          "regex@1.12.4": [
+            [
+              "default",
+              "perf",
+              "perf-backtrack",
+              "perf-cache",
+              "perf-dfa",
+              "perf-inline",
+              "perf-literal",
+              "perf-onepass",
+              "std",
+              "unicode",
+              "unicode-age",
+              "unicode-bool",
+              "unicode-case",
+              "unicode-gencat",
+              "unicode-perl",
+              "unicode-script",
+              "unicode-segment"
+            ],
+            [
+              "std",
+              "unicode-bool"
+            ]
+          ],
+          "rustc_version@0.4.1": [
+            []
+          ],
+          "rustix@1.1.4": [
+            [
+              "alloc",
+              "default",
+              "fs",
+              "std"
+            ]
+          ],
+          "schemars@1.2.2": [
+            [
+              "default",
+              "derive",
+              "schemars_derive",
+              "std"
+            ]
+          ],
+          "schemars_derive@1.2.2": [
+            []
+          ],
+          "semver@1.0.28": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "serde@1.0.228": [
+            [
+              "alloc",
+              "default",
+              "derive",
+              "rc",
+              "serde_derive",
+              "std"
+            ]
+          ],
+          "serde_core@1.0.228": [
+            [
+              "alloc",
+              "rc",
+              "result",
+              "std"
+            ]
+          ],
+          "serde_derive@1.0.228": [
+            [
+              "default"
+            ]
+          ],
+          "serde_derive_internals@0.30.0": [
+            []
+          ],
+          "serde_json@1.0.150": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "serde_spanned@0.6.9": [
+            [
+              "serde"
+            ]
+          ],
+          "sha2@0.10.9": [
+            [
+              "compress",
+              "default",
+              "std"
+            ]
+          ],
+          "signature@2.2.0": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "simd-adler32@0.3.9": [
+            []
+          ],
+          "spki@0.7.3": [
+            [
+              "alloc",
+              "std"
+            ]
+          ],
+          "subtle@2.6.1": [
+            []
+          ],
+          "syn@2.0.118": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "extra-traits",
+              "full",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "syn@3.0.5": [
+            [
+              "clone-impls",
+              "default",
+              "derive",
+              "parsing",
+              "printing",
+              "proc-macro"
+            ]
+          ],
+          "tempfile@3.27.0": [
+            [
+              "default",
+              "getrandom"
+            ]
+          ],
+          "thiserror-impl@2.0.18": [
+            []
+          ],
+          "thiserror@2.0.18": [
+            [
+              "default",
+              "std"
+            ]
+          ],
+          "toml@0.8.23": [
+            [
+              "default",
+              "display",
+              "parse"
+            ]
+          ],
+          "toml_datetime@0.6.11": [
+            [
+              "serde"
+            ]
+          ],
+          "toml_edit@0.22.27": [
+            [
+              "display",
+              "parse",
+              "serde"
+            ]
+          ],
+          "toml_write@0.1.2": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "typenum@1.20.1": [
+            []
+          ],
+          "unicode-ident@1.0.24": [
+            []
+          ],
+          "version_check@0.9.5": [
+            []
+          ],
+          "winnow@0.7.15": [
+            [
+              "alloc",
+              "default",
+              "std"
+            ]
+          ],
+          "zeroize@1.9.0": [
+            [
+              "alloc"
+            ]
+          ],
+          "zmij@1.0.21": [
+            []
+          ]
+        },
+        "first_party_features": {
+          "aos-artifact-evidence": [
+            []
+          ],
+          "aos-core": [
+            []
+          ],
+          "aos-hub-api": [
+            []
+          ],
+          "aos-hub-console": [
+            []
+          ],
+          "aos-hub-ui": [
+            []
+          ],
+          "aos-module-docs": [
+            []
+          ],
+          "aos-module-format": [
+            []
+          ],
+          "aos-oci-types": [
+            []
+          ],
+          "aos-registry-format": [
+            []
+          ]
+        }
+      },
+      "report_sha256": "8f817a1eed2f67eeb6f96bfe3e44923217f79a399050f40f9e813a32e06f75c5"
+    },
+    "tests-1": {
+      "action_counts": {
+        "CargoBuildScriptRun": 19,
+        "ExtractCargoTomlEnvVars": 110,
+        "Rustc": 137,
+        "RustdocTestWriter": 1,
+        "TestRunner": 4
+      },
+      "actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:bin_aos-hub-console"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:doc"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:doc"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:unit"
+        }
+      ],
+      "derivation": "/nix/store/cjk29g2l6rgya3m8iwhv094wad9qblhq-aos-bazel-hub-console-tests-1.drv",
+      "doctests": {},
+      "execution_sha256": "768690924ddaf7cd263b19450ce4cd07ff308bf1218265cd772dfe195b3e67ac",
+      "output": "/nix/store/32q5gk664y476dlqq4apjwv1m4llj42m-aos-bazel-hub-console-tests-1",
+      "source": "/nix/store/xy05k6k033w1phnfkbvbavd0h4j0rviq-aos-bazel-workspace",
+      "targets": {
+        "bin_aos-hub-console": [],
+        "unit": [
+          "mutation::tests::admin_configure_only_does_not_expose_tag_mutation_controls",
+          "mutation::tests::blockers_and_non_planned_states_hide_apply_controls",
+          "mutation::tests::container_apply_preserves_the_reviewed_plan_and_idempotency_key",
+          "mutation::tests::default_retention_policy_binds_gc_to_version_zero",
+          "mutation::tests::maintainer_publish_exposes_tag_mutation_controls",
+          "mutation::tests::pending_plan_rejects_missing_confirmation_material",
+          "mutation::tests::signed_container_tags_never_enable_manual_controls",
+          "mutation::tests::untracked_repair_apply_requires_the_exact_positive_plan_version",
+          "registry_deletion::tests::blocker_rows_list_only_present_conditions_with_their_resolver",
+          "registry_deletion::tests::operation_detail_parses_protojson_readiness",
+          "registry_deletion::tests::provider_objects_block_only_when_a_current_inventory_lists_them",
+          "staging::tests::large_inventory_reviews_render_a_bounded_filtered_window",
+          "staging::tests::progress_avoids_rounding_overflow_and_bounds_stale_counters",
+          "staging::tests::publication_actions_fail_closed_for_incomplete_or_terminal_stages",
+          "staging::tests::resume_commands_require_a_local_selector_and_quote_shell_syntax",
+          "staging::tests::review_rejects_wrong_identity_stale_revision_and_changed_inventory",
+          "staging::tests::stage_review_binds_actions_to_the_exact_response_identity"
+        ]
+      }
+    }
+  },
+  "command": "nix-build /tmp/aos-bazel-722/hub-console-iterative.nix -A builds --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "648cd0ad63",
+  "limits": [
+    "Seventeen native cases, the inert binary test artifact and empty doctests match the original Cargo baseline. The twenty-two browser-only test declarations are not executed here.",
+    "Two test-module lint exceptions retain intentional fixture/assertion panics. Production lints are unchanged. All thirty-nine test declarations and assertion counts stay unchanged across fifty-five Rust files.",
+    "Conservative workspaces include Cargo manifests. Strict configured staging, editor parity, browser/Wasm checks, required Rust compilation, compiler invocation equivalence and performance acceptance are separate gates.",
+    "Later browser lint repairs are outside this frozen native checkpoint. No production cutover or Cargo removal is claimed."
+  ],
+  "schema_version": 1,
+  "source_test_audit": {
+    "comparison_base_commit": "648cd0ad63",
+    "only_changes": "Two test-module lint exceptions retain intentional fixture/assertion panics.",
+    "rust_files": 55,
+    "unchanged_counts": {
+      "#\\[ignore(?:\\([^\\n]*\\))?\\]": 0,
+      "#\\[test\\]": 39,
+      "\\bassert!\\s*\\(": 63,
+      "\\bassert_eq!\\s*\\(": 60,
+      "\\bassert_ne!\\s*\\(": 0,
+      "\\bpanic!\\s*\\(": 1
+    }
+  },
+  "status": "Conservative native console tests, developer checks and fresh Cargo runtime/feature/generator comparisons passed"
+}

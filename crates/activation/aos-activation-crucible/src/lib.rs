@@ -382,12 +382,12 @@ impl EventDetails for BoundaryEvent {
 }
 
 trait BoundaryDetails {
-    fn as_str(self) -> &'static str;
+    fn as_str(&self) -> &'static str;
     fn transition(self) -> MonitorTransition;
 }
 
 impl BoundaryDetails for BoundaryName {
-    fn as_str(self) -> &'static str {
+    fn as_str(&self) -> &'static str {
         match self {
             Self::IntentDurable => "intent-durable",
             Self::DispatchStarted => "dispatch-started",
@@ -495,6 +495,7 @@ fn write_frame(stream: &mut UnixStream, bytes: &[u8]) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use std::os::unix::net::UnixStream;
 

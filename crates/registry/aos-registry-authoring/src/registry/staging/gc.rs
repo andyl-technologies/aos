@@ -13,7 +13,7 @@ use std::time::{Duration, SystemTime};
 use anyhow::{Context as _, Result};
 
 use super::retention::RETIRED_ROOT_GRACE_SECONDS as OBJECT_GRACE_SECONDS;
-use super::{LocalStageStore, StageRevision, validate_stage_id};
+use super::{LocalStageStore, StageLock, StageRevision, validate_stage_id};
 use crate::registry::nixcache::{self, StaticCacheGcReport};
 
 /// Reports the cache and private candidate object portions of one cleanup.
@@ -75,6 +75,20 @@ impl LocalStageStore {
         self.gc_cache_at(cache_dir, max_age_days, dry_run, SystemTime::now())
     }
 
+    // Preview locks need the same explicit unlock as writers: another thread
+    // can fork while this descriptor is open and retain it until exec.
+    fn preview_lock(&self) -> Result<Option<StageLock>> {
+        match File::open(self.root.join("lock")) {
+            Ok(file) => {
+                rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
+                    .context("another local stage operation is running")?;
+                Ok(Some(StageLock { file }))
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     fn gc_cache_at(
         &self,
         cache_dir: &Path,
@@ -87,15 +101,7 @@ impl LocalStageStore {
         let _preview_lock;
         if dry_run {
             _write_lock = None;
-            _preview_lock = match File::open(self.root.join("lock")) {
-                Ok(file) => {
-                    rustix::fs::flock(&file, rustix::fs::FlockOperation::NonBlockingLockExclusive)
-                        .context("another local stage operation is running")?;
-                    Some(file)
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-                Err(error) => return Err(error.into()),
-            };
+            _preview_lock = self.preview_lock()?;
         } else {
             _write_lock = Some(self.lock()?);
             _preview_lock = None;
@@ -350,6 +356,26 @@ mod tests {
         git2::Repository::init_bare(temporary.path()).unwrap();
         let store = LocalStageStore::open(temporary.path()).unwrap();
         (temporary, store)
+    }
+
+    #[test]
+    fn preview_releases_its_lock_while_an_inherited_description_remains_open() {
+        let (_temporary, store) = store();
+        drop(store.lock().unwrap());
+        let lock_path = store.root.join("lock");
+        let original = fs::read(&lock_path).unwrap();
+
+        let preview = store.preview_lock().unwrap().unwrap();
+        // A duplicate shares the open-file description just as a forked child
+        // does before exec. Keeping it alive makes close-only release fail.
+        let inherited = preview.file.try_clone().unwrap();
+        assert!(store.preview_lock().is_err());
+        drop(preview);
+
+        let next_preview = store.preview_lock().unwrap().unwrap();
+        assert_eq!(fs::read(&lock_path).unwrap(), original);
+        drop(next_preview);
+        drop(inherited);
     }
 
     fn install(store: &LocalStageStore, id: &str, bytes: &[u8], state: StageState) -> StageObject {

@@ -90,7 +90,7 @@ impl ImageRuntimeConfig {
     /// # Errors
     ///
     /// Returns an error for embedded NUL bytes, malformed environment or port
-    /// entries, empty executable argv[0], a relative non-empty working directory
+    /// entries, empty executable `argv[0]`, a relative non-empty working directory
     /// or volume path, or invalid labels.
     pub fn validate(&self) -> Result<()> {
         if let Some(user) = &self.user {
@@ -344,7 +344,7 @@ fn validate_no_nul(value: &str, field: &'static str) -> Result<()> {
 }
 
 fn validate_port(value: &str) -> Result<()> {
-    let (port, protocol) = value.split_once('/').map_or((value, "tcp"), |parts| parts);
+    let (port, protocol) = value.split_once('/').unwrap_or((value, "tcp"));
     let port = port
         .parse::<u16>()
         .map_err(|error| Error::invalid("image config ExposedPorts", error.to_string()))?;

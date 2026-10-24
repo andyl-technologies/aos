@@ -23,6 +23,9 @@
 //! - no subcommand: a native qualification executor reading one request on
 //!   stdin.
 
+// Native fleet evidence timestamps describe real host execution, outside replay state.
+#![allow(clippy::disallowed_methods)]
+
 mod artifact_consumption_fixture;
 mod initrd_contract_fixture;
 mod native_deployment_fixture;
@@ -807,6 +810,8 @@ fn record(
     })
 }
 
+// Keep each authenticated signing-request field explicit in the fixture constructor.
+#[allow(clippy::too_many_arguments)]
 fn signing_request(
     role: SignerRole,
     key_id: &str,
@@ -928,6 +933,8 @@ fn signer_exchange() -> Result<()> {
     Ok(())
 }
 
+// The fleet fixture uses a subset of the shared qualification constructors.
+#[allow(dead_code)]
 #[path = "../../../../release/aos-release-format/src/test_support/qualification/mod.rs"]
 mod qualification_fixture;
 

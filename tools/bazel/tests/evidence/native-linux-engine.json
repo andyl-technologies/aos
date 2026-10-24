@@ -1,0 +1,323 @@
+{
+  "aggregate_regression_checks": {
+    "checkpoint_commit": "ae2ef5ae9e985944038e5756d4d96aa334d0fd6a",
+    "command": "nix-build -A checks.build.bazel.all -A checks.eval -A checks.build.aos-dev-cli --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+    "outputs": [
+      "/nix/store/8cqlvi48nz56wjcgpy3r90b0s732pwy9-aos-bazel-checks",
+      "/nix/store/aah8g2szam8h4ccl8dlj6fz67g2y2i8q-aos-native-evaluation-checks-0",
+      "/nix/store/v6c5hd3j30axmcl0v3iff8gnr77wgck9-aos-dev-cli-check-0"
+    ],
+    "scope": "All configured Bazel qualification families, infrastructure and cross checks, core evaluation checks, and the development CLI regression checks. Performance budgets and production cutovers remain open.",
+    "status": "passed"
+  },
+  "checkpoint_commit": "3b1ced10b97c44eed73bc7307afdb71658a901b3",
+  "command": "nix-build tools/bazel/tests/engine.nix -A all --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "configuration_sha256": {
+    "crates/crucible/engine/crucible-engine/BUILD.bazel": "5973f280bd12afd72694df8ae90f9ea442efd1819e372eac938f4e88e77b690d",
+    "crates/crucible/engine/crucible-engine/tests/formal_trace_export.rs": "0ec962b0883de554b1fba58a1f10cac2b2676f641dd599442d65767e5f4d57c0",
+    "crates/crucible/engine/crucible-engine/tests/workload_model.rs": "0cfc47edb71afdc0cc677c131157fa651dd9583a95c0b56ccadd3dbaa8ca3d2e",
+    "crates/crucible/testing/crucible-test-support/BUILD.bazel": "1f246444fc216bb465ae55d81c85025dd60b8ad260563e37e470e191b42d942e",
+    "crates/crucible/testing/crucible-test-support/tests/support/workspace.rs": "4ac243344ecac20454ef41a0bbfb1b0f9497daf376d7283390490f8d5cdc9f4b",
+    "tests/build/_bazel-engine.nix": "0fe914d493e73c57ca0e7bf212673275a7ca233b3ee4defdf2afe8c19e1640fa",
+    "tests/build/_bazel-rust-family.nix": "431c54bac9c9eb729d812fd3b1a7fe5f2b8b37c1b9395f6c2b93ebedd5ce3d4f",
+    "third_party/rust/BUILD.bazel": "241c8d96a3380f29db0b9e2c3b18e090a647f62dacc43e458240bdb8d7f30bea",
+    "third_party/rust/engine/sources.json": "a2236740aa98b4572935eed0f4835acdaca60c6a34640a1611519e7bff8dd767",
+    "tools/bazel/metadata/engine-inventory.json": "9c5412585d6772482cb680a6a4ed05102715a2e8ebaae7c880200f1f821e5d08",
+    "tools/bazel/tests/normalize_editor_diagnostics.py": "168e4608b4d4026fd72787285190bd156d05a8f9b8f004a593b4207f3d575bbf",
+    "tools/bazel/tests/test_editor_diagnostic_context.py": "16c4f5a6fbb90e7d1e345ab9957108a0b828d81a4f8c30e8fb4e829516fd5c0c",
+    "tools/bazel/tests/verify_family_editor.py": "6c7022c9dd4ce424c3f1168948772d05e4d935fbb6e1b2d48b36470a724182d5",
+    "tools/bazel/tests/verify_pilot.py": "c9ef31330770bd6ad65bb33a48949c029623d731b8fdf232009f3bd5ccd78952",
+    "tools/bazel/tests/verify_protocol.py": "2723ece343f59c3a9ee2a4b0a1c36ddadb74a51527d370b78c3709a7190aec8a",
+    "tools/dev/lib/bazel.bash": "53957b81bfaeede1a91b3e8f2c5633acf2d626a4f20149ff016b014fa1d3cebf"
+  },
+  "editor_comparison": {
+    "aggregate_statistics_comparable": false,
+    "analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 11,
+        "total": 584539,
+        "unknown": 27
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 6,
+        "total": 104731,
+        "unknown": 6
+      }
+    },
+    "cargo_analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 395,
+        "total": 1266749,
+        "unknown": 934
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 79,
+        "total": 236584,
+        "unknown": 139
+      }
+    },
+    "comparison_scope": [
+      "crates/crucible/engine/crucible-engine"
+    ],
+    "diagnostics_count": 50,
+    "roots_count": 126,
+    "unattributed_cargo_diagnostics_count": 0,
+    "unselected_cargo_diagnostics_count": 1498
+  },
+  "editor_source_attribution": {
+    "owned_diagnostics": 50,
+    "synthetic_body_diagnostics": 9,
+    "unattributed_cargo_diagnostics": 0,
+    "unselected_cargo_diagnostics": 1498
+  },
+  "limits": [
+    "Native x86_64 Linux qualification; other platforms and production consumers remain separate gates.",
+    "Editor diagnostics are compared within the selected engine package. Whole-workspace inference totals are not equivalent; out-of-scope and unattributed Cargo diagnostics remain in the immutable report.",
+    "The Cargo oracle is retained for comparison. Cargo-free Bazel source selection does not establish repository-wide Cargo removal.",
+    "No build-performance budget or production cutover is accepted by this checkpoint."
+  ],
+  "policy_checks": {
+    "path": "/nix/store/27g0frnnsx8xynkn1d6yx9sl5dj0gcc5-aos-bazel-policy-checks",
+    "status": "passed",
+    "tests": 133
+  },
+  "qualified_checks": "/nix/store/cy02sbgqii47zpzsjg25qgs1dqnddpik-aos-bazel-engine-qualified-checks",
+  "report_sha256": {
+    "default.json": "317c59e76226dce44f81fbdf68206e16258f42f6c940420c01ce14c1b3d10cb1",
+    "editor-parity.json": "99161b403415037283ccc6e2bdeadd55473436548bf26b08358cde821e55a680",
+    "editor/bazel/analysis.log": "8e0558685a4f42853b4a775f78c923162b43fc22786f250cb340cd9300dc3a9a",
+    "editor/bazel/analyzer-output.txt": "1e438f6f5e1a487c7eccd42a004b66f8f32ffafbf8cfd40b2b074fc92d1dc436",
+    "editor/bazel/diagnostics.csv": "4791511127c18acb9467afd5bdd0adb0d564344e201cb51ca3422dd8d596a788",
+    "editor/cargo/analysis.log": "4a868cce2890f351dff98d6a2c2265ffdf5b67d5030c6953f88ec7b5282a9c70",
+    "editor/cargo/analyzer-output.txt": "73339d30e1d86f03961c842653722b08d1f3939fb80175ca88f1f327882014c2",
+    "editor/cargo/diagnostics.csv": "66438a09010bb3742dc77894a856e6db45f3532606cb8da703276f91b61e0fec",
+    "inventory.json": "ed4a34ccbe4d679e1feb127ecb05fe5307edbbe397a48a3d36c17ed7ea88a1c5",
+    "source-catalog.json": "31d8b4486374cd03b130f1aa56f571ef037d272c9476228ff06f19c95ab6a5ac"
+  },
+  "rust_test_targets": {
+    "evidence": "native-linux-engine-rust-targets.json",
+    "path": "/nix/store/bji546wakx1wqhvsqqgw1m7fcfsns8f3-aos-test-targets-0.1.0",
+    "status": "passed"
+  },
+  "schema_version": 1,
+  "status": "passed",
+  "variants": {
+    "all-features": {
+      "doctests": {
+        "//crates/crucible/engine/crucible-engine:doc_all_features": {
+          "src/model/temporal_graph/core.rs - model::temporal_graph::core::TemporalGraph::select_strategy_frontier (line 364) - compile": "ok"
+        }
+      },
+      "empty_test_artifacts": [],
+      "examples": [
+        "//crates/crucible/engine/crucible-engine:crucible-debugger-live-fixture_all_features",
+        "//crates/crucible/engine/crucible-engine:phase5_live_asset_fixture_all_features"
+      ],
+      "executed_cases": 1298,
+      "external_crate_identities": 104,
+      "first_party_features": {
+        "crucible-campaign": [
+          []
+        ],
+        "crucible-determinism": [
+          []
+        ],
+        "crucible-device": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-engine": [
+          [
+            "default",
+            "test-double",
+            "test-support"
+          ]
+        ],
+        "crucible-qemu-protocol": [
+          []
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ],
+        "crucible-store": [
+          []
+        ],
+        "crucible-test-support": [
+          []
+        ]
+      },
+      "ignored_cases": 1,
+      "report_sha256": "a22ef96b7952ee74fd4049aff8839b344df4c98a7ccccf62ef739b47ac54535c",
+      "test_artifacts": 128
+    },
+    "default": {
+      "doctests": {
+        "//crates/crucible/engine/crucible-engine:doc": {
+          "src/model/temporal_graph/core.rs - model::temporal_graph::core::TemporalGraph::select_strategy_frontier (line 364) - compile": "ok"
+        }
+      },
+      "empty_test_artifacts": [
+        "//crates/crucible/engine/crucible-engine:guest_host_channel_determinism",
+        "//crates/crucible/engine/crucible-engine:guest_host_marker_observability",
+        "//crates/crucible/engine/crucible-engine:property_fingerprint_neutrality"
+      ],
+      "examples": [
+        "//crates/crucible/engine/crucible-engine:crucible-debugger-live-fixture",
+        "//crates/crucible/engine/crucible-engine:phase5_live_asset_fixture"
+      ],
+      "executed_cases": 1235,
+      "external_crate_identities": 104,
+      "first_party_features": {
+        "crucible-campaign": [
+          []
+        ],
+        "crucible-determinism": [
+          []
+        ],
+        "crucible-device": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-engine": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-qemu-protocol": [
+          []
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ],
+        "crucible-store": [
+          []
+        ],
+        "crucible-test-support": [
+          []
+        ]
+      },
+      "ignored_cases": 1,
+      "report_sha256": "317c59e76226dce44f81fbdf68206e16258f42f6c940420c01ce14c1b3d10cb1",
+      "test_artifacts": 124
+    },
+    "test-double": {
+      "doctests": {
+        "//crates/crucible/engine/crucible-engine:doc_test_double": {
+          "src/model/temporal_graph/core.rs - model::temporal_graph::core::TemporalGraph::select_strategy_frontier (line 364) - compile": "ok"
+        }
+      },
+      "empty_test_artifacts": [],
+      "examples": [
+        "//crates/crucible/engine/crucible-engine:crucible-debugger-live-fixture_test_double",
+        "//crates/crucible/engine/crucible-engine:phase5_live_asset_fixture_test_double"
+      ],
+      "executed_cases": 1298,
+      "external_crate_identities": 104,
+      "first_party_features": {
+        "crucible-campaign": [
+          []
+        ],
+        "crucible-determinism": [
+          []
+        ],
+        "crucible-device": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-engine": [
+          [
+            "default",
+            "test-double"
+          ]
+        ],
+        "crucible-qemu-protocol": [
+          []
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ],
+        "crucible-store": [
+          []
+        ],
+        "crucible-test-support": [
+          []
+        ]
+      },
+      "ignored_cases": 1,
+      "report_sha256": "68a900e2727f9d45f8087246e3f13d0495d36cad8f71330d961b94040bd294e7",
+      "test_artifacts": 128
+    },
+    "test-support": {
+      "doctests": {
+        "//crates/crucible/engine/crucible-engine:doc_test_support": {
+          "src/model/temporal_graph/core.rs - model::temporal_graph::core::TemporalGraph::select_strategy_frontier (line 364) - compile": "ok"
+        }
+      },
+      "empty_test_artifacts": [
+        "//crates/crucible/engine/crucible-engine:guest_host_channel_determinism_test_support",
+        "//crates/crucible/engine/crucible-engine:guest_host_marker_observability_test_support",
+        "//crates/crucible/engine/crucible-engine:property_fingerprint_neutrality_test_support"
+      ],
+      "examples": [
+        "//crates/crucible/engine/crucible-engine:crucible-debugger-live-fixture_test_support",
+        "//crates/crucible/engine/crucible-engine:phase5_live_asset_fixture_test_support"
+      ],
+      "executed_cases": 1235,
+      "external_crate_identities": 104,
+      "first_party_features": {
+        "crucible-campaign": [
+          []
+        ],
+        "crucible-determinism": [
+          []
+        ],
+        "crucible-device": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-engine": [
+          [
+            "default",
+            "test-support"
+          ]
+        ],
+        "crucible-qemu-protocol": [
+          []
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ],
+        "crucible-store": [
+          []
+        ],
+        "crucible-test-support": [
+          []
+        ]
+      },
+      "ignored_cases": 1,
+      "report_sha256": "909a2602a1ce4b47e5ecc221fa4bb34d484b4030027aea88d9c7b3cfdd557c72",
+      "test_artifacts": 124
+    }
+  },
+  "workspace": {
+    "configuration": "/nix/store/ccjjffyf1s9ah7cszkax7pprgy6j672m-aos-bazel-configuration.json",
+    "configuration_sha256": "9504318c1f96ed2b25100dd90ad61609312fe4c4e3edd981ce98d7643786cfaa",
+    "first_party_cargo_metadata": [],
+    "rustc_flags": [
+      "-Copt-level=s",
+      "-Cdebuginfo=0",
+      "-Cdebug-assertions=yes",
+      "-Coverflow-checks=yes"
+    ],
+    "source": "/nix/store/5n7pprbcx524fkq9d665mx1wy6d6rs8i-aos-bazel-workspace",
+    "source_file_count": 3891
+  }
+}

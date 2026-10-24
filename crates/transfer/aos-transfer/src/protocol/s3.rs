@@ -428,6 +428,9 @@ struct S3ClientConfig {
     endpoint: Option<String>,
 }
 
+/// Cached client, native AWS endpoint status, and optional configured endpoint.
+type CachedS3Client = (aws_sdk_s3::Client, bool, Option<String>);
+
 /// S3 protocol handler.
 ///
 /// URLs use the `s3://bucket/key` form. SigV4 signing is delegated to
@@ -443,7 +446,7 @@ pub struct S3Protocol {
     /// Part size for multi-part uploads, in bytes.
     part_size: u64,
     /// Clients cached by their resolved configuration.
-    clients: Mutex<BTreeMap<Option<S3ClientConfig>, (aws_sdk_s3::Client, bool, Option<String>)>>,
+    clients: Mutex<BTreeMap<Option<S3ClientConfig>, CachedS3Client>>,
 }
 
 impl S3Protocol {
@@ -474,10 +477,7 @@ impl S3Protocol {
     /// Subsequent calls with the same `(region, profile, endpoint)`
     /// reuse the cached client (a cheap `Arc` clone) instead of
     /// re-running the credential chain.
-    async fn build_client(
-        &self,
-        auth: Option<&Credential>,
-    ) -> Result<(aws_sdk_s3::Client, bool, Option<String>)> {
+    async fn build_client(&self, auth: Option<&Credential>) -> Result<CachedS3Client> {
         let key = match auth {
             Some(Credential::AwsSigV4 {
                 region,
@@ -516,10 +516,7 @@ impl S3Protocol {
 
     /// Builds a fresh S3 client, resolving the credential chain. Callers
     /// should prefer [`build_client`](Self::build_client), which caches.
-    async fn build_client_uncached(
-        &self,
-        auth: Option<&Credential>,
-    ) -> Result<(aws_sdk_s3::Client, bool, Option<String>)> {
+    async fn build_client_uncached(&self, auth: Option<&Credential>) -> Result<CachedS3Client> {
         let mut config_loader = aws_config::defaults(aws_config::BehaviorVersion::latest());
 
         if let Some(Credential::AwsSigV4 {

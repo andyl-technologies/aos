@@ -741,5 +741,7 @@ fn main() {
 }
 
 #[cfg(test)]
+// crucible-lint: allow panic-shortcut -- Executable unit-test assertions panic on fixture failures.
+#[allow(clippy::expect_used)]
 #[path = "main/tests.rs"]
 mod tests;

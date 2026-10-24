@@ -1,0 +1,144 @@
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
+load("//tools/bazel/rules:compile.bzl", "cc_binary", "cc_library", "rust_binary", "rust_library", "rust_proc_macro")
+load("//tools/bazel/rules:generated.bzl", "aos_python_generator")
+load("//tools/bazel/rules:package.bzl", "aos_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+
+RUST_PACKAGE = aos_rust_package(
+    name = "aos-bazel-fixture",
+    version = "1.2.3-rc.4+local.5",
+    license_expression = "Apache-2.0",
+    description = "Hermetic Bazel qualification fixture",
+    authors = ["Fixture One", "Fixture Two"],
+    homepage = "https://example.invalid/fixture",
+    repository = "https://example.invalid/fixture/source",
+)
+
+aos_python_generator(
+    name = "generated",
+    script = "generate.py",
+    srcs = ["value.txt"],
+    outs = ["generated.h", "generated.rs"],
+    env = {"AOS_FIXTURE_OFFSET": "0"},
+)
+
+rust_library(
+    name = "generated_library",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "fixture_generated",
+    crate_root = "generated.rs",
+    srcs = ["generated.rs"],
+    edition = "2024",
+)
+
+rust_proc_macro(
+    name = "fixture_macro",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    srcs = ["macro.rs"],
+    edition = "2024",
+)
+
+rust_library(
+    name = "rust_library",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate_name = "fixture_library",
+    srcs = ["lib.rs"],
+    deps = [":generated_library"],
+    edition = "2024",
+)
+
+rust_binary(
+    name = "rust_app",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    srcs = ["main.rs"],
+    edition = "2024",
+    deps = [":rust_library"],
+    proc_macro_deps = [":fixture_macro"],
+)
+
+rust_binary(
+    name = "native_app",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    srcs = ["native.rs"],
+    edition = "2024",
+    deps = [":rust_library"],
+    link_deps = [":cpp_library"],
+)
+
+rust_binary(
+    name = "wasm_app",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    srcs = ["wasm.rs"],
+    deps = [":rust_library"],
+    proc_macro_deps = [":fixture_macro"],
+    target_compatible_with = ["@platforms//cpu:wasm32", "@platforms//os:none"],
+    tags = ["manual"],
+)
+
+aos_package(
+    name = "wasm_package",
+    package = RUST_PACKAGE,
+    artifacts = {":wasm_app": "share/fixture.wasm"},
+    target_compatible_with = ["@platforms//cpu:wasm32", "@platforms//os:none"],
+    tags = ["manual"],
+)
+
+aos_rust_test(
+    name = "rust_test",
+    package = RUST_PACKAGE,
+    lint_config = "//tools/bazel/rules:workspace_lints",
+    crate = ":rust_library",
+)
+
+cc_library(
+    name = "cpp_library",
+    srcs = ["library.cc"],
+    hdrs = ["library.h", "generated.h"],
+)
+
+cc_binary(
+    name = "cpp_app",
+    srcs = ["main.cc"],
+    deps = [":cpp_library"],
+)
+
+aos_package(
+    name = "package",
+    package = RUST_PACKAGE,
+    artifacts = {":rust_app": "bin/rust-fixture", ":cpp_app": "bin/cpp-fixture", ":native_app": "bin/native-fixture"},
+    executables = ["bin/rust-fixture", "bin/cpp-fixture", "bin/native-fixture"],
+)
+
+rust_clippy(
+    name = "clippy",
+    deps = [":rust_library", ":rust_app", ":fixture_macro", ":native_app"],
+)
+
+rustfmt_test(
+    name = "format",
+    targets = [":rust_library", ":rust_app", ":fixture_macro", ":native_app"],
+)
+
+rust_doc(
+    name = "documentation",
+    crate = ":rust_library",
+)
+
+rust_doc_test(
+    name = "doctest",
+    crate = ":rust_library",
+)
+
+# Keep the configured inventory rooted in this workspace while qualifying the
+# pinned rule's source-built rust-analyzer toolchain adapter.
+filegroup(
+    name = "analyzer_toolchain",
+    srcs = ["@rules_rust//rust/private:rust_analyzer_detect_sysroot"],
+)

@@ -25,7 +25,7 @@ impl Database {
     ///
     /// Returns an error on database failure, or when an existing sealed value
     /// cannot be unsealed or decoded into a 32-byte seed (tampering or a key
-    /// mismatch).
+    /// mismatch), or platform entropy is unavailable.
     pub async fn get_or_create_draft_signing_key(
         &self,
         sealer: &dyn aos_hub_model::auth::seal::SecretSealer,
@@ -41,8 +41,9 @@ impl Database {
                     .map_err(|_| anyhow::anyhow!("draft-signing key seed is not 32 bytes"))?
             }
             None => {
-                use rand::Rng as _;
-                let seed: [u8; 32] = rand::rng().random();
+                let mut seed = [0u8; 32];
+                rand::TryRngCore::try_fill_bytes(&mut rand::rngs::OsRng, &mut seed)
+                    .context("obtaining draft-signing key entropy")?;
                 let sealed = sealer.seal(&hex::encode(seed))?;
                 self.instance_config_set(Self::DRAFT_SIGNING_KEY, &sealed)
                     .await?;

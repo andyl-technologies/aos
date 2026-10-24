@@ -1,0 +1,2376 @@
+{
+  "changed_rust_inputs_sha256": {
+    "crates/hub/aos-hub-db/src/backend/sqlx/sqlite_tests.rs": "a8b7729a550820ea7e877860525d7d837c4a291d6b497f0ea326fb1a6487dc19",
+    "crates/hub/aos-hub-db/src/backend/timing.rs": "7df82560fec186a808e5b07ed2b1bd4ee5d22ab5f4255c09e9d89c0dfb426021",
+    "crates/hub/aos-hub-db/src/db/ability_deployment_overlays.rs": "3e7f2f980ae3b92a01ba1d9932a51e7709771264fad3a98aa0359a269af55734",
+    "crates/hub/aos-hub-db/src/db/delivery_identity.rs": "07ce24dd20ee3318072029fb51a46953acd4598345d55bfbf7f2ac692f9f9c8b",
+    "crates/hub/aos-hub-db/src/db/delivery_workflow.rs": "475c002ceef471df677f7c78989801afc419e82b23e3da87e17e35706d891f68",
+    "crates/hub/aos-hub-db/src/db/fixtures.rs": "6e8fea184958844b49fbb7c6dfee484913b569f1e43ba025a188f07e204ef82b",
+    "crates/hub/aos-hub-db/src/db/gc_topology.rs": "7b6644eb82e243b55eaf6f93e1d0a5d558d44ee14afa022d210e840ab5f2838b",
+    "crates/hub/aos-hub-db/src/db/mod.rs": "9ee1c83823436e22977d4119a916352bfb6d55582304f11e525c6c1932579048",
+    "crates/hub/aos-hub-db/src/db/oci.rs": "6c218cca0084c0e25fb5878ab6144e2df6e0fa7e37ac528c152d79df260d901f",
+    "crates/hub/aos-hub-db/src/db/oci_gc/plan.rs": "687855cff2acc9ab740aafc9f911f27230dd5eb8a435acfb452beff34cc65b5e",
+    "crates/hub/aos-hub-db/src/db/oci_namespaces.rs": "99a677eb4d1a030a06dd90d2146a758dcb7192d739f5e0d1c12910230a31b53c",
+    "crates/hub/aos-hub-db/src/db/oci_publication.rs": "0dd87e1ee65d2cb1d62720d55391c7d6847eea0f224a13ec04ba2c3b037b7d58",
+    "crates/hub/aos-hub-db/src/db/oci_upload.rs": "0be07f81e15dbd7accdf375f3a27ec6943fa6bc182f8ebc70110c7e5fa110398",
+    "crates/hub/aos-hub-db/src/db/oci_upload/sha256.rs": "e11e19142d53a1d7dce3670bcca96745c16290301d0c4aad76efd9e581294c8b",
+    "crates/hub/aos-hub-db/src/db/placement_policy.rs": "ab1aad42e468bdf1058a0d87d73cc142752bd1ffc5cea0a6058e467135aabbdd",
+    "crates/hub/aos-hub-db/src/db/queries/administration/configuration_mutations.rs": "33d6e83df22be1791272a806dc3d1566575dad1e9b1a6eba53656bfe83932c82",
+    "crates/hub/aos-hub-db/src/db/queries/caches/uploads_mutations.rs": "1141bce345b88015a0bd4740fc261b45220886b49010c2c84d0ded54540377de",
+    "crates/hub/aos-hub-db/src/db/queries/registries/configuration_mutations_record_registry_publication_object_presence.rs": "3531cbb37ae7f2002087e21d2c4bd1f1853b5d7a34e5d5847aa474461e26eba8",
+    "crates/hub/aos-hub-db/src/db/queries/registries/configuration_mutations_registry_publication_class_is_complete.rs": "56ac932d32a803fb48ea05469e265dcfe9868a8f5ade9ef0f0c31edac436875a",
+    "crates/hub/aos-hub-db/src/db/queries/registries/index_helpers.rs": "4ff3bb83486196470a6ea4c8981523f681fe8af727c4c5df448c513e54966d80",
+    "crates/hub/aos-hub-db/src/db/queries/registries/index_mutations.rs": "f9eef9a031dcf9c591a8d91ac16ff23ef1ed634100cbbf7f6bb5312c2f5ed148",
+    "crates/hub/aos-hub-db/src/db/queries/releases/signing_reads.rs": "fc4a611c97ceae6f7c62f7395cd7ce5a3b3d02556abb80c9d4acc7a8749c3f06",
+    "crates/hub/aos-hub-db/src/db/queries/runtime/coordination_mutations.rs": "323eacde0caf397b33e4c6ea3baba0af3a9a0044804bfe077f761c3a2a05ae39",
+    "crates/hub/aos-hub-db/src/db/queries/tenancy/projects_helpers.rs": "e234fb556f1306824a8a7384389966b18dea5ae526b80f99a922d2dd1571d065",
+    "crates/hub/aos-hub-db/src/db/queries/tenancy/projects_mutations.rs": "bd60a933e54c17d92dba1b0dd200bd83722402048ae1bf11a174004d7c3d8d24",
+    "crates/hub/aos-hub-db/src/db/queries/topology/bindings_mutations.rs": "05bdf6e8f185035bd7b3974e46e0d8fbad0a3b6c0d534425feb18c53e7625ba2",
+    "crates/hub/aos-hub-db/src/db/queries/topology/placements_mutations_apply_snapshot_from_placement.rs": "50b654ee693934ea87d595b5a8a4bc8015840c874e3354cc2a05c38e0624d4a8",
+    "crates/hub/aos-hub-db/src/db/registry_delete_operation.rs": "5f990455bf2b1da274ba8249b50135c479dcc01d0ed692adecff553500b292f2",
+    "crates/hub/aos-hub-db/src/db/registry_index_build.rs": "685e73c887d7c3220c8a3aecbcb0da3fe40d4be21fcf00af89ed5f5b157b3776",
+    "crates/hub/aos-hub-db/src/db/tests/mod.rs": "52d176427641581c2ce3c0d11030c92a4edccd3970d61bc985804582115ea7b9",
+    "crates/hub/aos-hub-db/src/db/tests/webhooks.rs": "d2d84473179f1cb29f9a6647c57fe29478e43b05f56f789e43c38e1cda079c79",
+    "crates/hub/aos-hub-db/src/db/topology.rs": "47fe9f0ad34c810f1c0dec79b492d3cceb57ad4b77f400f1d5b1bcf8ed77a552"
+  },
+  "changes": [
+    "The SQL binding macro still returns owned vectors; statement batches retain and extend their values.",
+    "String-keyed lookup and membership collections use ordered maps and sets.",
+    "Probe challenges and draft-signing seeds obtain fallible platform entropy and retain documented failure contexts.",
+    "Existing persistence argument lists and optional service-latency clock calls have method-scoped exceptions. The public inline OCI projection has an enum-scoped layout exception, and a SQLite constructor test retains its feature-dependent match arms.",
+    "Equivalent borrowed slices, fixed-size chunks, option predicates, statement initialization and conversions satisfy the remaining strict lints."
+  ],
+  "checks": {
+    "all-features-developer-tools-1": {
+      "action_counts": {
+        "CargoBuildScriptRun": 26,
+        "Clippy": 2,
+        "ExtractCargoTomlEnvVars": 236,
+        "Rustc": 251,
+        "Rustdoc": 1
+      },
+      "actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-db:lib"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Rustdoc",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-db:documentation"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-db:unit_binary"
+        }
+      ],
+      "derivation": "/nix/store/dganjs731qi31rf6zkzrvmzarmn0x4kf-aos-bazel-hub-db-all-features-developer-tools-1.drv",
+      "evidence_sha256": {
+        "execution.json": "6a3740cfbc110f270b1463679abba05e84f2df77b321809d074b6ed3d6cf139f",
+        "tests/index.json": "e8f8b76a046d3e6c876363165db3c4f02d96d28365a142c1dd059eea4bd3269d"
+      },
+      "output": "/nix/store/kkvk7jdr152pxljsxm8nxpb8gqb7p8zy-aos-bazel-hub-db-all-features-developer-tools-1",
+      "source": "/nix/store/gd6wnyml5wrp038mrvbi6ivi3yc3kc29-aos-bazel-workspace"
+    },
+    "all-features-format-1": {
+      "action_counts": {
+        "Rustc": 5,
+        "TestRunner": 2
+      },
+      "actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-db:format"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-db:format"
+        }
+      ],
+      "derivation": "/nix/store/16vys2yjv5z10j0cwbn05hqxlacdba82-aos-bazel-hub-db-all-features-format-1.drv",
+      "evidence_sha256": {
+        "execution.json": "0751b23ef109a29f6dd167136ea89889974793c28e8685c14d5b02026fa1eae4",
+        "tests/index.json": "269c16b509242dbb18c39263a8116443db6cb44c94f2331943338c668d5291ac"
+      },
+      "output": "/nix/store/229x3l2kw0fh67c8ziwb64y39s14f8nl-aos-bazel-hub-db-all-features-format-1",
+      "source": "/nix/store/gd6wnyml5wrp038mrvbi6ivi3yc3kc29-aos-bazel-workspace"
+    },
+    "all-features-tests-1": {
+      "action_counts": {
+        "CargoBuildScriptRun": 26,
+        "ExtractCargoTomlEnvVars": 236,
+        "Rustc": 254,
+        "RustdocTestWriter": 1,
+        "TestRunner": 3
+      },
+      "actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-db:doc"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-db:doc"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-db:unit"
+        }
+      ],
+      "derivation": "/nix/store/32r5k9ma3iya9zr12jlh9j00fqqklqa2-aos-bazel-hub-db-all-features-tests-1.drv",
+      "doctests": {
+        "src/backend/mod.rs - backend::Statement::new (line 70)": "ignored",
+        "src/db/release_publication.rs - db::release_publication::is_release_channel_name (line 293)": "ok",
+        "src/value.rs - value (line 30)": "ok"
+      },
+      "evidence_sha256": {
+        "execution.json": "b13e27ed00eb807361bdbb4bd4caf4b0e2a35a95d4f24fdb03b0b018ea494233",
+        "tests/index.json": "504b47ba070b17eb2735ef5632eadbd73f1ede7104c01ec688d0c835c9bc7eaa"
+      },
+      "output": "/nix/store/aq6g0iir29bh3ij1l050qn1j4kdrv2pf-aos-bazel-hub-db-all-features-tests-1",
+      "source": "/nix/store/gd6wnyml5wrp038mrvbi6ivi3yc3kc29-aos-bazel-workspace",
+      "targets": {
+        "//crates/hub/aos-hub-db:unit": {
+          "executed": [
+            "backend::sqlx::mysql::tests::decodes_integral_mysql_decimal_values",
+            "backend::sqlx::mysql::tests::rejects_fractional_or_overflowing_mysql_decimal_values",
+            "backend::sqlx::postgres::tests::decodes_integral_postgres_numeric_binary_values",
+            "backend::sqlx::postgres::tests::rejects_fractional_or_malformed_postgres_numeric_values",
+            "backend::sqlx::sqlite_tests::cancelled_acquisitions_preserve_the_in_memory_database",
+            "backend::sqlx::sqlite_tests::migrations_wait_for_a_writer_beyond_the_statement_busy_timeout",
+            "backend::tests::batch_commits_all_statements_atomically",
+            "backend::tests::batch_rolls_back_on_a_failing_statement",
+            "backend::tests::checked_batch_rolls_back_on_an_affected_row_mismatch",
+            "backend::tests::checked_cas_statements_prepare_portably_for_every_dialect",
+            "backend::tests::redact_db_url_passes_through_without_password",
+            "backend::tests::redact_db_url_preserves_non_secret_parts",
+            "backend::tests::redact_db_url_strips_password",
+            "backend::tests::split_statements_drops_trailing_inline_comment",
+            "backend::tests::split_statements_keeps_statements_with_embedded_comments",
+            "backend::timing::tests::records_a_span_per_statement_in_order",
+            "backend::timing::tests::server_timing_header_is_none_when_empty_and_well_formed_when_not",
+            "backend::timing::tests::snippet_collapses_whitespace_and_caps_length",
+            "db::ability_deployment_overlays::tests::enrollment_sequence_replay_expiry_and_revocation_fail_closed",
+            "db::ability_deployment_overlays::tests::native_report_migration_preserves_enrollment_and_replay_fence",
+            "db::cache_write_admission::tests::bulk_proxy_admission_uses_one_query_and_one_checked_batch",
+            "db::delivery_identity::tests::boundary_fingerprints_match_normative_vectors",
+            "db::delivery_identity::tests::boundary_lifecycle_requires_verified_observation_and_cas",
+            "db::delivery_identity::tests::cidrs_are_masked_sorted_and_deduplicated",
+            "db::delivery_identity::tests::domain_mutations_are_version_checked_and_paged",
+            "db::delivery_identity::tests::public_boundary_seed_matches_the_normative_posture",
+            "db::delivery_identity::tests::security_configurations_are_closed_and_require_exact_fields",
+            "db::delivery_workflow::tests::activation_rechecks_network_policy_posture_inside_the_transaction",
+            "db::delivery_workflow::tests::activation_rechecks_route_evidence_inside_the_transaction",
+            "db::delivery_workflow::tests::activation_rolls_back_every_audience_when_a_later_baseline_is_stale",
+            "db::delivery_workflow::tests::endpoint_selector_does_not_expose_an_ungranted_successor_generation",
+            "db::delivery_workflow::tests::public_object_delivery_requires_current_route_and_exact_publication_evidence",
+            "db::delivery_workflow::tests::resume_replays_after_progress_changes_and_rejects_different_input",
+            "db::egress_nonce::tests::admission_is_single_effect_across_instances_and_restart",
+            "db::egress_nonce::tests::admission_rejects_non_future_expiry_on_every_instance",
+            "db::gc_topology::tests::cache_creation_initializes_fail_closed_gc_topology",
+            "db::gc_topology::tests::cache_write_recovery_cursor_is_durable_and_cas_guarded",
+            "db::gc_topology::tests::completing_ambiguity_becomes_conservative_after_bounded_retries",
+            "db::gc_topology::tests::completing_retention_refresh_uses_captured_subscription_and_index",
+            "db::gc_topology::tests::deletion_receipt_recovers_response_before_job_finalization",
+            "db::gc_topology::tests::disabling_a_subscription_preserves_its_removal_grace",
+            "db::gc_topology::tests::do_e2e_fixture_has_distinct_flat_and_nested_surface_identities",
+            "db::gc_topology::tests::expired_write_ticket_scans_require_bounded_pages",
+            "db::gc_topology::tests::gc_plan_reports_a_retained_root_missing_from_inventory",
+            "db::gc_topology::tests::incomplete_closure_cannot_publish_or_change_the_mark_head",
+            "db::gc_topology::tests::inventory_lease_fences_live_owner_and_recovers_abandoned_generation",
+            "db::gc_topology::tests::inventory_publication_failure_leaks_no_objects_and_corrected_retry_succeeds",
+            "db::gc_topology::tests::inventory_publication_rejects_cross_placement_identity_drift",
+            "db::gc_topology::tests::inventory_stages_explicit_missing_for_new_cross_placement_objects",
+            "db::gc_topology::tests::multipart_parts_admit_and_confirm_independently_under_concurrency",
+            "db::gc_topology::tests::multipart_retry_rejects_same_size_with_different_body_digest",
+            "db::gc_topology::tests::placement_change_cannot_cross_a_mark_generation",
+            "db::gc_topology::tests::quota_reservation_rolls_back_with_failed_ticket_batch",
+            "db::gc_topology::tests::renewal_and_revocation_preserve_history_but_remove_active_reason",
+            "db::gc_topology::tests::reusable_cache_write_ticket_requires_exact_live_request_and_writer",
+            "db::gc_topology::tests::simultaneous_same_part_admission_is_idempotent_or_conflicts_by_body",
+            "db::gc_topology::tests::staged_cache_root_admission_invalidates_an_older_gc_plan",
+            "db::gc_topology::tests::staged_cache_roots_retain_dependency_and_shared_nar_until_discard_grace",
+            "db::gc_topology::tests::staged_nar_inventory_without_store_roots_invalidates_an_older_gc_plan",
+            "db::gc_topology::tests::staged_nar_inventory_without_store_roots_retains_shared_objects",
+            "db::gc_topology::tests::stale_root_epoch_rolls_back_the_entire_batch",
+            "db::gc_topology::tests::tombstone_reap_preserves_unresolved_edges_for_possible_reactivation",
+            "db::gc_topology::tests::uncertain_cache_writes_commit_quota_and_retain_inventory_fences",
+            "db::native_documentation::tests::native_search_requires_complete_release_and_exact_projection_identity",
+            "db::oci::tests::authorized_first_push_bootstraps_one_empty_repository",
+            "db::oci::tests::blob_keys_are_canonical_and_algorithm_free",
+            "db::oci::tests::catalog_admission_is_atomic_repository_scoped_and_queryable",
+            "db::oci::tests::catalog_quota_identity_fits_widened_contract_at_max_registry_and_digest",
+            "db::oci::tests::catalog_rejects_orphans_but_accepts_exact_noncanonical_manifest_bytes",
+            "db::oci::tests::catalog_sql_translates_reserved_aliases_and_nullable_projection_identity",
+            "db::oci::tests::concurrent_uploads_charge_one_shared_digest_once",
+            "db::oci::tests::first_uploaded_object_evidence_seeds_registry_state_once",
+            "db::oci::tests::index_platform_must_match_persisted_config_projection",
+            "db::oci::tests::manifest_reference_predicate_types_nullable_parameters_before_null_checks",
+            "db::oci::tests::portable_sha256_resumes_across_block_and_tail_boundaries",
+            "db::oci::tests::publication_freezes_exact_graph_and_commits_atomically",
+            "db::oci::tests::upload_retries_quota_and_expiry_are_transactional",
+            "db::oci_admin::tests::instance_registry_plan_lookup_apply_and_expiry_are_actor_bound",
+            "db::oci_admin::tests::repository_cursor_binds_filters_and_mutation_epoch",
+            "db::oci_gc::plan::tests::repository_root_sources_do_not_collide_across_repositories",
+            "db::oci_gc::plan::tests::staged_oci_inventory_remains_a_hard_root_until_discard_grace",
+            "db::oci_gc::tests::applying_registry_lock_blocks_first_push_repository_admission",
+            "db::oci_gc::tests::applying_run_reports_planned_partial_and_atomic_final_counters",
+            "db::oci_gc::tests::baseline_and_expired_plan_recovery_execute_on_sqlite",
+            "db::oci_gc::tests::baseline_contains_review_remediation_authorities",
+            "db::oci_gc::tests::baseline_contains_transactional_gc_evidence_and_fences",
+            "db::oci_gc::tests::bounded_candidate_frontier_and_expired_history_compaction_make_progress",
+            "db::oci_gc::tests::cancellation_fails_closed_for_applying_stale_and_unknown_runs",
+            "db::oci_gc::tests::cancelled_diagnostic_plan_stops_blocking_registry_deletion",
+            "db::oci_gc::tests::cancelling_a_terminal_run_returns_it_unchanged",
+            "db::oci_gc::tests::clean_registry_lists_empty_untracked_inventory_at_epoch_zero",
+            "db::oci_gc::tests::deletion_evidence_digest_binds_every_response_field",
+            "db::oci_gc::tests::expired_plans_stop_blocking_while_applying_work_still_blocks",
+            "db::oci_gc::tests::finalization_sweep_skips_a_drifted_earlier_run_and_completes_later_work",
+            "db::oci_gc::tests::fresh_untag_and_retained_unlinked_history_protect_manifest_closure",
+            "db::oci_gc::tests::gc_lock_fences_every_upload_phase_and_publication_add_commit",
+            "db::oci_gc::tests::grace_root_protects_forward_closure_and_apply_rejects_new_survivor_edge",
+            "db::oci_gc::tests::live_graph_identity_query_translates_for_postgres_and_mysql",
+            "db::oci_gc::tests::maintenance_requeue_is_actor_request_and_response_loss_idempotent",
+            "db::oci_gc::tests::operations_metrics_query_translates_for_postgres_and_mysql",
+            "db::oci_gc::tests::provider_inventory_checkpoints_survive_takeover_and_seal_tracked_and_untracked",
+            "db::oci_gc::tests::purge_requires_post_fence_empty_head_and_rejects_failed_newer_scan",
+            "db::oci_gc::tests::registry_deletion_abandons_plans_and_ignores_their_frozen_actions",
+            "db::oci_gc::tests::registry_deletion_is_blocked_by_applying_runs_and_their_actions",
+            "db::oci_gc::tests::registry_deletion_retires_delivery_setup_workflows",
+            "db::oci_gc::tests::retirement_plan_blocks_on_serving_routes_then_collects_catalog_roots",
+            "db::oci_gc::tests::reviewed_plan_apply_claim_evidence_and_atomic_accounting_complete",
+            "db::oci_gc::tests::snapshot_lease_acquisition_cannot_race_an_applying_candidate",
+            "db::oci_namespaces::tests::conversion_keeps_the_reservation_and_enables_the_namespace",
+            "db::oci_namespaces::tests::conversion_refuses_routes_that_serve_other_audiences",
+            "db::oci_namespaces::tests::fresh_instance_route_reserves_its_url_once",
+            "db::oci_namespaces::tests::instance_route_refuses_then_binds_an_existing_reservation",
+            "db::oci_namespaces::tests::namespace_state_is_versioned_and_listed_longest_slug_first",
+            "db::oci_release_projection::tests::registry_without_oci_state_has_no_unchanged_epoch",
+            "db::oci_release_projection::tests::unchanged_projection_keeps_only_the_observed_epoch",
+            "db::placement_policy::tests::rejects_open_or_cross_kind_revision_shapes",
+            "db::publication_admission::tests::manifest_page_crosses_the_backend_in_one_atomic_batch",
+            "db::publication_admission::tests::manifest_pages_are_atomic_and_idempotent",
+            "db::publication_admission::tests::manifest_session_resumes_exact_chunks_and_fences_ownership",
+            "db::registry_delete::tests::changed_registry_version_is_stale_rather_than_blocked",
+            "db::registry_delete::tests::precondition_changed_inside_the_transaction_is_reported_as_blocked",
+            "db::registry_delete_readiness::tests::post_fence_empty_inventory_is_ready_and_pre_fence_inventory_is_recollected",
+            "db::registry_delete_readiness::tests::unobserved_offline_and_object_holding_placements_are_classified_exactly",
+            "db::registry_delete_readiness::tests::verdict_separates_operator_blockers_from_automatic_steps",
+            "db::registry_index_build::tests::failed_stable_build_identity_can_be_retried",
+            "db::registry_index_build::tests::registry_builds_exclude_competitors_and_record_noops",
+            "db::release_browse::tests::publication_selects_its_own_branch_catalog_and_tag_notes",
+            "db::release_publication::tests::exact_release_chain_is_idempotent_and_channel_is_cas",
+            "db::release_publication::tests::isolated_production_imports_evidence_without_a_staging_row",
+            "db::release_publication::tests::per_train_channels_advance_and_malformed_names_are_rejected",
+            "db::release_publication::tests::per_train_ledger_migration_replays_after_any_interruption",
+            "db::release_publication::tests::per_train_ledger_migration_retains_baseline_operations",
+            "db::release_publication::tests::production_deployment_still_requires_a_promotion",
+            "db::release_publication::tests::release_chain_rejects_wrong_deployment_and_discontinuous_promotion",
+            "db::release_publication::tests::release_channel_names_follow_kind_and_train_syntax",
+            "db::release_publication::tests::shared_deployment_keeps_the_promotion_requirement",
+            "db::release_publication::tests::staging_deployment_advances_after_its_staging_commit",
+            "db::release_publication::tests::timestamp_versions_advance_exactly_once",
+            "db::settings_reads::tests::active_surface_operations_match_scoped_primary_and_secondary_targets",
+            "db::settings_reads::tests::route_pages_are_bounded_and_resume_in_stable_identity_order",
+            "db::signing_keys::tests::concurrent_rotations_leave_exactly_one_active_generation",
+            "db::signing_keys::tests::consumer_resolution_rejects_orphans_and_wrong_kinds",
+            "db::snapshot_insert_tests::multirow_inserts_respect_durable_object_parameter_limit",
+            "db::snapshot_insert_tests::release_artifact_inserts_include_shared_snapshot_parameter_in_limit",
+            "db::staged_releases::tests::discarded_stage_relinquishes_only_its_current_roots_after_grace",
+            "db::staged_releases::tests::publication_associations_are_unique_and_survive_supersession",
+            "db::staged_releases::tests::release_requires_exact_indexed_commit_and_ready_publication",
+            "db::staged_releases::tests::revision_cas_preserves_superseded_roots_through_grace",
+            "db::staged_releases::tests::staged_releases_admits_full_fifty_thousand_object_inventory",
+            "db::staged_releases::tests::staged_releases_migrates_existing_version_two_database",
+            "db::staged_releases::tests::staged_releases_pointer_phase_serializes_with_draft_admission",
+            "db::staged_releases::tests::staged_releases_require_complete_chunked_documents",
+            "db::staged_releases::tests::summary_pagination_never_loads_private_inventory_documents",
+            "db::staged_retention_tests::expired_stage_publication_relinquishes_objects_after_multipart_settlement",
+            "db::staged_retention_tests::staged_git_and_image_objects_survive_shared_stages_and_discard_grace",
+            "db::staged_retention_tests::superseded_inventory_releases_only_its_unshared_objects_after_grace",
+            "db::surface_topology::tests::endpoint_grant_pin_batch_preserves_consumer_and_generation_boundaries",
+            "db::surface_topology::tests::topology_batches_preserve_records_order_and_tenant_scope",
+            "db::tests::administration::audit_and_changeset_scope_containment",
+            "db::tests::administration::audit_exists_for_commit_is_specific_to_action_and_commit",
+            "db::tests::administration::deployment_default_records_one_valid_write_revision",
+            "db::tests::administration::list_audit_is_bounded_and_newest_first",
+            "db::tests::administration::mark_changeset_applied_commit_links_promoting_commit",
+            "db::tests::administration::record_audit_sanitizes_crlf_in_detail_and_label",
+            "db::tests::caches::caches_crud_and_servable_filter",
+            "db::tests::caches::list_caches_excludes_soft_deleted_org",
+            "db::tests::caches::native_reference_schema_upgrades_from_released_production_versions",
+            "db::tests::caches::registry_publication_inventory_is_stable_and_filter_bound",
+            "db::tests::caches::scope_operation_inventory_includes_only_descendant_scopes",
+            "db::tests::caches::standalone_cache_slugs_cannot_collide_with_stable_ids",
+            "db::tests::documentation::legacy_registry_object_conversion_follows_shared_mutability_policy",
+            "db::tests::identity::approve_device_is_idempotent_one_token_per_approval",
+            "db::tests::identity::delete_user_re_checks_sole_ownership_in_tx",
+            "db::tests::identity::deleted_principal_deadens_unrevoked_credentials_and_grants",
+            "db::tests::identity::grant_membership_backstop_rejects_non_canonical_scopes",
+            "db::tests::identity::invitations_create_accept_and_expire",
+            "db::tests::identity::magic_links_single_use_and_expiry",
+            "db::tests::identity::memberships_grant_revoke_and_list",
+            "db::tests::identity::orgs_projects_and_principals_roundtrip",
+            "db::tests::identity::registry_identity_creation_does_not_invent_storage",
+            "db::tests::identity::registry_publication_multipart_state_retains_expired_backend_identity",
+            "db::tests::identity::repeated_session_validation_preserves_liveness_without_identical_writes",
+            "db::tests::identity::revoke_membership_owner_safe_keeps_one_owner",
+            "db::tests::identity::revoked_token_is_denied_immediately_without_grace",
+            "db::tests::identity::session_idle_and_absolute_timeouts_enforced",
+            "db::tests::identity::session_is_sudo_window",
+            "db::tests::identity::sessions_create_validate_expire_and_revoke",
+            "db::tests::identity::set_membership_role_owner_safe_blocks_last_owner_demotion",
+            "db::tests::identity::sibling_surface_scopes_are_isolated_and_slug_reuse_gets_new_identity",
+            "db::tests::identity::signup_policy_defaults_invite_only_and_round_trips",
+            "db::tests::identity::take_webauthn_challenge_is_scoped_by_kind",
+            "db::tests::identity::tokens_create_validate_revoke_and_list",
+            "db::tests::identity::tokens_expired_is_rejected",
+            "db::tests::identity::tokens_rotation_honors_grace_window",
+            "db::tests::registries::git_changeset_records_ref_and_commit",
+            "db::tests::registries::instance_registry_slugs_cannot_collide_with_stable_ids",
+            "db::tests::registries::managed_registry_canonical_slug_and_scope_lookup",
+            "db::tests::registries::registry_crawl_policy_and_llms_defaults_and_round_trip",
+            "db::tests::registries::snapshot_materializes_only_the_exact_signed_container_root",
+            "db::tests::registries::snapshot_replace_is_idempotent",
+            "db::tests::registries::snapshot_rows_are_bounded_into_multirow_statements",
+            "db::tests::registries::stale_index_failure_cannot_replace_a_newer_success",
+            "db::tests::releases::channel_floors_persist_and_overwrite",
+            "db::tests::releases::empty_registry_publication_object_class_is_complete",
+            "db::tests::releases::pointer_advance_accepts_a_raced_retry_for_the_same_publication",
+            "db::tests::releases::registry_delete_rejects_active_publication_without_partial_history",
+            "db::tests::releases::registry_index_mutation_waits_for_an_active_publication",
+            "db::tests::releases::registry_publication_inherits_exact_reusable_evidence",
+            "db::tests::releases::registry_publication_manifest_is_invisible_and_exact",
+            "db::tests::releases::update_channels_replaces_only_channels",
+            "db::tests::runtime::approve_device_after_deny_mints_nothing",
+            "db::tests::runtime::authorization_context_rejects_extraneous_closure_rows",
+            "db::tests::runtime::change_comments_and_reviews_record_and_list_in_order",
+            "db::tests::runtime::close_reopen_preserves_draft_auto_merge",
+            "db::tests::runtime::closure_resolution_resolves_refs_and_reverse_deps",
+            "db::tests::runtime::device_flow_deny_and_unknown",
+            "db::tests::runtime::device_flow_expiry_blocks_approval",
+            "db::tests::runtime::device_flow_full_path_with_scope_clamping",
+            "db::tests::runtime::draft_signing_key_is_generated_once_and_persists",
+            "db::tests::runtime::failed_forward_migration_rolls_back_schema_and_marker",
+            "db::tests::runtime::failure_marks_state_without_dropping_index",
+            "db::tests::runtime::fresh_schema_is_final_and_foreign_key_clean",
+            "db::tests::runtime::generated_relational_ids_are_positive_and_worker_exact",
+            "db::tests::runtime::migrate_refuses_pre_cutover_version_collision",
+            "db::tests::runtime::migrate_register_and_reopen",
+            "db::tests::runtime::migration_statements_translate_for_postgres_and_mysql",
+            "db::tests::runtime::mirror_creation_rejects_unsafe_targets",
+            "db::tests::runtime::mysql_migration_replay_helpers_cover_every_ddl_shape",
+            "db::tests::runtime::production_baseline_concurrent_installation_converges",
+            "db::tests::runtime::production_baseline_keeps_portable_recovery_columns",
+            "db::tests::runtime::production_baseline_rejects_incompatible_ledgers_without_changing_data",
+            "db::tests::runtime::purge_only_after_grace_window",
+            "db::tests::runtime::quota_defaults_to_unlimited_and_round_trips",
+            "db::tests::runtime::root_crawl_policy_and_overrides_round_trip",
+            "db::tests::runtime::sanitize_log_text_strips_c0_controls_but_keeps_tab",
+            "db::tests::runtime::soft_delete_excludes_from_serving_then_restore",
+            "db::tests::runtime::store_backed_images_remain_discoverable_without_legacy_object_roots",
+            "db::tests::runtime::usage_accumulates_and_drives_would_exceed_quota",
+            "db::tests::runtime::whole_surface_reads_prefer_the_reconciled_writer",
+            "db::tests::tenancy::concurrent_owner_revokes_preserve_one_owner",
+            "db::tests::tenancy::create_org_backstop_rejects_non_segment_slugs",
+            "db::tests::tenancy::create_org_initializes_quota_usage",
+            "db::tests::tenancy::deleted_co_owner_cannot_mask_the_last_live_human_owner",
+            "db::tests::tenancy::planned_project_create_and_delete_emit_one_atomic_history_chain",
+            "db::tests::tenancy::purge_is_no_op_for_org_restored_in_window",
+            "db::tests::tenancy::reserve_org_usage_is_atomic_and_charges_deltas",
+            "db::tests::tenancy::sole_owner_delete_blocked_then_transfer_succeeds",
+            "db::tests::topology_1::binding_read_sql_projects_only_non_sensitive_columns",
+            "db::tests::topology_1::bindings_use_only_the_typed_topology_shape",
+            "db::tests::topology_1::degraded_registry_placement_remains_eligible_for_publication_repair",
+            "db::tests::topology_1::instance_resources_require_explicit_organization_grants",
+            "db::tests::topology_1::registry_placement_delete_detaches_only_terminal_placement_history",
+            "db::tests::topology_1::signed_images_require_complete_exact_placement_presence_and_remain_gc_roots",
+            "db::tests::topology_1::topology_operation_retry_is_persistently_idempotent",
+            "db::tests::topology_1::topology_regrant_cannot_race_a_soft_deleted_scope",
+            "db::tests::topology_1::unused_topology_binding_can_be_checked_and_deleted",
+            "db::tests::topology_2::topology_orders_named_placements_and_rejects_stale_versions",
+            "db::tests::topology_2::topology_v34_opens_and_rejects_xor_and_location_collisions",
+            "db::tests::webhooks::registry_configuration_cas_commits_head_history_audit_and_outbox_once",
+            "db::tests::webhooks::registry_delete_cas_commits_history_audit_and_outbox_once",
+            "db::tests::webhooks::webhook_limit_is_serialized_inside_the_create_transaction",
+            "db::topology::tests::domain_probe_completion_promotes_endpoint_and_requeues_routes_atomically",
+            "db::topology::tests::endpoint_host_exists_with_several_endpoints_on_one_host",
+            "db::topology::tests::gateway_creation_rejects_ineligible_endpoint_atomically",
+            "db::topology::tests::gateway_inventory_preserves_owner_and_requires_current_active_grant",
+            "db::topology::tests::gateway_revision_reuses_an_unchanged_path_reservation",
+            "db::topology::tests::normalizes_route_paths",
+            "db::topology::tests::oci_route_side_table_masks_web_and_serializes_enabled_registry_route",
+            "db::topology::tests::oci_routes_require_root_hub_proxy_delivery",
+            "db::topology::tests::rejects_open_route_variants_and_forged_access_digests",
+            "db::topology::tests::reservation_digest_commits_to_path_and_url",
+            "db::topology::tests::retained_key_digest_blocks_cross_version_url_reuse",
+            "db::topology::tests::route_mutation_and_probe_outbox_commit_atomically_and_deduplicate",
+            "db::topology::tests::route_probe_outbox_failure_rolls_back_the_route_mutation",
+            "db::topology::tests::route_update_cancels_stale_probe_and_stale_evidence_is_rejected",
+            "db::worker_jobs::tests::completed_jobs_deduplicate_and_expired_claims_resume",
+            "db::worker_jobs::tests::operation_identity_cannot_alias_another_payload",
+            "value::tests::out_of_range_and_null_errors",
+            "value::tests::reads_typed_columns",
+            "value::tests::round_trips_scalars",
+            "value::tests::rows_round_trip_across_the_worker_database_protocol"
+          ],
+          "ignored_in_unchanged_cargo_baseline": [],
+          "test_artifacts_sha256": {
+            "test.log": "14c5a45497253b7279b37dc9eaa95ac4746cd11272789ed0b2539d8592ce9cee",
+            "test.xml": "e8eb20059076bca95bb9d4c2dc00571717c4fb2da18fd50b9a347cfc4412fa08"
+          }
+        }
+      }
+    },
+    "developer-tools-1": {
+      "action_counts": {
+        "CargoBuildScriptRun": 24,
+        "Clippy": 2,
+        "ExtractCargoTomlEnvVars": 212,
+        "Rustc": 227,
+        "Rustdoc": 1
+      },
+      "actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-db:lib"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Rustdoc",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-db:documentation"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-db:unit_binary"
+        }
+      ],
+      "derivation": "/nix/store/7in28khb4mm5shhlqw02y7j0qqkrgd90-aos-bazel-hub-db-developer-tools-1.drv",
+      "evidence_sha256": {
+        "execution.json": "59e461bfb0b416fcd42439e67e7e1356349482d6b853bb549a2713726e370e35",
+        "tests/index.json": "e8f8b76a046d3e6c876363165db3c4f02d96d28365a142c1dd059eea4bd3269d"
+      },
+      "output": "/nix/store/p38yyxm7qc32bnpv6rp9rd7hqqyvdmxx-aos-bazel-hub-db-developer-tools-1",
+      "source": "/nix/store/gd6wnyml5wrp038mrvbi6ivi3yc3kc29-aos-bazel-workspace"
+    },
+    "format-1": {
+      "action_counts": {
+        "Rustc": 5,
+        "TestRunner": 2
+      },
+      "actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-db:format"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-db:format"
+        }
+      ],
+      "derivation": "/nix/store/f5ph7affgas93wfjyxibvjr9yz2i30sv-aos-bazel-hub-db-format-1.drv",
+      "evidence_sha256": {
+        "execution.json": "8f10c24586fa69a8ec9cdbb687937e4efa7e8834b18a71d5a3089c3cc4910c91",
+        "tests/index.json": "d58fa1e3371a64e08eef4c12b4e303be34f26f8afb8bf38bfcb69d980d46a3d8"
+      },
+      "output": "/nix/store/9f66g5lnq19s38cr6ky4r90bsir2097a-aos-bazel-hub-db-format-1",
+      "source": "/nix/store/gd6wnyml5wrp038mrvbi6ivi3yc3kc29-aos-bazel-workspace"
+    },
+    "tests-1": {
+      "action_counts": {
+        "CargoBuildScriptRun": 24,
+        "ExtractCargoTomlEnvVars": 212,
+        "Rustc": 230,
+        "RustdocTestWriter": 1,
+        "TestRunner": 3
+      },
+      "actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-db:doc"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-db:doc"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-db:unit"
+        }
+      ],
+      "derivation": "/nix/store/ikfv5b101zlami5xin20qlv7c6wxngbc-aos-bazel-hub-db-tests-1.drv",
+      "doctests": {
+        "src/backend/mod.rs - backend::Statement::new (line 70)": "ignored",
+        "src/db/release_publication.rs - db::release_publication::is_release_channel_name (line 293)": "ok",
+        "src/value.rs - value (line 30)": "ok"
+      },
+      "evidence_sha256": {
+        "execution.json": "ddeba98429b6e35bb6d4586807ca9da9623be2ea0fa820b815488602f16896f7",
+        "tests/index.json": "33e0d77f2c45ea7b6b92d7014caab25f3f1a72f6429a052d61b69768a21d5345"
+      },
+      "output": "/nix/store/im5yipy4fr2zchmvpcmdxhyzlp24cj9i-aos-bazel-hub-db-tests-1",
+      "source": "/nix/store/gd6wnyml5wrp038mrvbi6ivi3yc3kc29-aos-bazel-workspace",
+      "targets": {
+        "//crates/hub/aos-hub-db:unit": {
+          "executed": [
+            "backend::sqlx::sqlite_tests::cancelled_acquisitions_preserve_the_in_memory_database",
+            "backend::sqlx::sqlite_tests::migrations_wait_for_a_writer_beyond_the_statement_busy_timeout",
+            "backend::tests::batch_commits_all_statements_atomically",
+            "backend::tests::batch_rolls_back_on_a_failing_statement",
+            "backend::tests::checked_batch_rolls_back_on_an_affected_row_mismatch",
+            "backend::tests::checked_cas_statements_prepare_portably_for_every_dialect",
+            "backend::tests::redact_db_url_passes_through_without_password",
+            "backend::tests::redact_db_url_preserves_non_secret_parts",
+            "backend::tests::redact_db_url_strips_password",
+            "backend::tests::split_statements_drops_trailing_inline_comment",
+            "backend::tests::split_statements_keeps_statements_with_embedded_comments",
+            "db::ability_deployment_overlays::tests::enrollment_sequence_replay_expiry_and_revocation_fail_closed",
+            "db::ability_deployment_overlays::tests::native_report_migration_preserves_enrollment_and_replay_fence",
+            "db::delivery_identity::tests::boundary_fingerprints_match_normative_vectors",
+            "db::delivery_identity::tests::boundary_lifecycle_requires_verified_observation_and_cas",
+            "db::delivery_identity::tests::cidrs_are_masked_sorted_and_deduplicated",
+            "db::delivery_identity::tests::domain_mutations_are_version_checked_and_paged",
+            "db::delivery_identity::tests::public_boundary_seed_matches_the_normative_posture",
+            "db::delivery_identity::tests::security_configurations_are_closed_and_require_exact_fields",
+            "db::delivery_workflow::tests::activation_rechecks_network_policy_posture_inside_the_transaction",
+            "db::delivery_workflow::tests::activation_rechecks_route_evidence_inside_the_transaction",
+            "db::delivery_workflow::tests::activation_rolls_back_every_audience_when_a_later_baseline_is_stale",
+            "db::delivery_workflow::tests::endpoint_selector_does_not_expose_an_ungranted_successor_generation",
+            "db::delivery_workflow::tests::public_object_delivery_requires_current_route_and_exact_publication_evidence",
+            "db::delivery_workflow::tests::resume_replays_after_progress_changes_and_rejects_different_input",
+            "db::egress_nonce::tests::admission_is_single_effect_across_instances_and_restart",
+            "db::egress_nonce::tests::admission_rejects_non_future_expiry_on_every_instance",
+            "db::gc_topology::tests::cache_creation_initializes_fail_closed_gc_topology",
+            "db::gc_topology::tests::cache_write_recovery_cursor_is_durable_and_cas_guarded",
+            "db::gc_topology::tests::completing_ambiguity_becomes_conservative_after_bounded_retries",
+            "db::gc_topology::tests::completing_retention_refresh_uses_captured_subscription_and_index",
+            "db::gc_topology::tests::deletion_receipt_recovers_response_before_job_finalization",
+            "db::gc_topology::tests::disabling_a_subscription_preserves_its_removal_grace",
+            "db::gc_topology::tests::do_e2e_fixture_has_distinct_flat_and_nested_surface_identities",
+            "db::gc_topology::tests::expired_write_ticket_scans_require_bounded_pages",
+            "db::gc_topology::tests::gc_plan_reports_a_retained_root_missing_from_inventory",
+            "db::gc_topology::tests::incomplete_closure_cannot_publish_or_change_the_mark_head",
+            "db::gc_topology::tests::inventory_lease_fences_live_owner_and_recovers_abandoned_generation",
+            "db::gc_topology::tests::inventory_publication_failure_leaks_no_objects_and_corrected_retry_succeeds",
+            "db::gc_topology::tests::inventory_publication_rejects_cross_placement_identity_drift",
+            "db::gc_topology::tests::inventory_stages_explicit_missing_for_new_cross_placement_objects",
+            "db::gc_topology::tests::multipart_parts_admit_and_confirm_independently_under_concurrency",
+            "db::gc_topology::tests::multipart_retry_rejects_same_size_with_different_body_digest",
+            "db::gc_topology::tests::placement_change_cannot_cross_a_mark_generation",
+            "db::gc_topology::tests::quota_reservation_rolls_back_with_failed_ticket_batch",
+            "db::gc_topology::tests::renewal_and_revocation_preserve_history_but_remove_active_reason",
+            "db::gc_topology::tests::reusable_cache_write_ticket_requires_exact_live_request_and_writer",
+            "db::gc_topology::tests::simultaneous_same_part_admission_is_idempotent_or_conflicts_by_body",
+            "db::gc_topology::tests::staged_cache_root_admission_invalidates_an_older_gc_plan",
+            "db::gc_topology::tests::staged_cache_roots_retain_dependency_and_shared_nar_until_discard_grace",
+            "db::gc_topology::tests::staged_nar_inventory_without_store_roots_invalidates_an_older_gc_plan",
+            "db::gc_topology::tests::staged_nar_inventory_without_store_roots_retains_shared_objects",
+            "db::gc_topology::tests::stale_root_epoch_rolls_back_the_entire_batch",
+            "db::gc_topology::tests::tombstone_reap_preserves_unresolved_edges_for_possible_reactivation",
+            "db::gc_topology::tests::uncertain_cache_writes_commit_quota_and_retain_inventory_fences",
+            "db::native_documentation::tests::native_search_requires_complete_release_and_exact_projection_identity",
+            "db::oci::tests::authorized_first_push_bootstraps_one_empty_repository",
+            "db::oci::tests::blob_keys_are_canonical_and_algorithm_free",
+            "db::oci::tests::catalog_admission_is_atomic_repository_scoped_and_queryable",
+            "db::oci::tests::catalog_quota_identity_fits_widened_contract_at_max_registry_and_digest",
+            "db::oci::tests::catalog_rejects_orphans_but_accepts_exact_noncanonical_manifest_bytes",
+            "db::oci::tests::catalog_sql_translates_reserved_aliases_and_nullable_projection_identity",
+            "db::oci::tests::concurrent_uploads_charge_one_shared_digest_once",
+            "db::oci::tests::first_uploaded_object_evidence_seeds_registry_state_once",
+            "db::oci::tests::index_platform_must_match_persisted_config_projection",
+            "db::oci::tests::manifest_reference_predicate_types_nullable_parameters_before_null_checks",
+            "db::oci::tests::portable_sha256_resumes_across_block_and_tail_boundaries",
+            "db::oci::tests::publication_freezes_exact_graph_and_commits_atomically",
+            "db::oci::tests::upload_retries_quota_and_expiry_are_transactional",
+            "db::oci_admin::tests::instance_registry_plan_lookup_apply_and_expiry_are_actor_bound",
+            "db::oci_admin::tests::repository_cursor_binds_filters_and_mutation_epoch",
+            "db::oci_gc::plan::tests::repository_root_sources_do_not_collide_across_repositories",
+            "db::oci_gc::plan::tests::staged_oci_inventory_remains_a_hard_root_until_discard_grace",
+            "db::oci_gc::tests::applying_registry_lock_blocks_first_push_repository_admission",
+            "db::oci_gc::tests::applying_run_reports_planned_partial_and_atomic_final_counters",
+            "db::oci_gc::tests::baseline_and_expired_plan_recovery_execute_on_sqlite",
+            "db::oci_gc::tests::baseline_contains_review_remediation_authorities",
+            "db::oci_gc::tests::baseline_contains_transactional_gc_evidence_and_fences",
+            "db::oci_gc::tests::bounded_candidate_frontier_and_expired_history_compaction_make_progress",
+            "db::oci_gc::tests::cancellation_fails_closed_for_applying_stale_and_unknown_runs",
+            "db::oci_gc::tests::cancelled_diagnostic_plan_stops_blocking_registry_deletion",
+            "db::oci_gc::tests::cancelling_a_terminal_run_returns_it_unchanged",
+            "db::oci_gc::tests::clean_registry_lists_empty_untracked_inventory_at_epoch_zero",
+            "db::oci_gc::tests::deletion_evidence_digest_binds_every_response_field",
+            "db::oci_gc::tests::expired_plans_stop_blocking_while_applying_work_still_blocks",
+            "db::oci_gc::tests::finalization_sweep_skips_a_drifted_earlier_run_and_completes_later_work",
+            "db::oci_gc::tests::fresh_untag_and_retained_unlinked_history_protect_manifest_closure",
+            "db::oci_gc::tests::gc_lock_fences_every_upload_phase_and_publication_add_commit",
+            "db::oci_gc::tests::grace_root_protects_forward_closure_and_apply_rejects_new_survivor_edge",
+            "db::oci_gc::tests::live_graph_identity_query_translates_for_postgres_and_mysql",
+            "db::oci_gc::tests::maintenance_requeue_is_actor_request_and_response_loss_idempotent",
+            "db::oci_gc::tests::operations_metrics_query_translates_for_postgres_and_mysql",
+            "db::oci_gc::tests::provider_inventory_checkpoints_survive_takeover_and_seal_tracked_and_untracked",
+            "db::oci_gc::tests::purge_requires_post_fence_empty_head_and_rejects_failed_newer_scan",
+            "db::oci_gc::tests::registry_deletion_abandons_plans_and_ignores_their_frozen_actions",
+            "db::oci_gc::tests::registry_deletion_is_blocked_by_applying_runs_and_their_actions",
+            "db::oci_gc::tests::registry_deletion_retires_delivery_setup_workflows",
+            "db::oci_gc::tests::retirement_plan_blocks_on_serving_routes_then_collects_catalog_roots",
+            "db::oci_gc::tests::reviewed_plan_apply_claim_evidence_and_atomic_accounting_complete",
+            "db::oci_gc::tests::snapshot_lease_acquisition_cannot_race_an_applying_candidate",
+            "db::oci_namespaces::tests::conversion_keeps_the_reservation_and_enables_the_namespace",
+            "db::oci_namespaces::tests::conversion_refuses_routes_that_serve_other_audiences",
+            "db::oci_namespaces::tests::fresh_instance_route_reserves_its_url_once",
+            "db::oci_namespaces::tests::instance_route_refuses_then_binds_an_existing_reservation",
+            "db::oci_namespaces::tests::namespace_state_is_versioned_and_listed_longest_slug_first",
+            "db::oci_release_projection::tests::registry_without_oci_state_has_no_unchanged_epoch",
+            "db::oci_release_projection::tests::unchanged_projection_keeps_only_the_observed_epoch",
+            "db::placement_policy::tests::rejects_open_or_cross_kind_revision_shapes",
+            "db::publication_admission::tests::manifest_pages_are_atomic_and_idempotent",
+            "db::publication_admission::tests::manifest_session_resumes_exact_chunks_and_fences_ownership",
+            "db::registry_delete::tests::changed_registry_version_is_stale_rather_than_blocked",
+            "db::registry_delete::tests::precondition_changed_inside_the_transaction_is_reported_as_blocked",
+            "db::registry_delete_readiness::tests::post_fence_empty_inventory_is_ready_and_pre_fence_inventory_is_recollected",
+            "db::registry_delete_readiness::tests::unobserved_offline_and_object_holding_placements_are_classified_exactly",
+            "db::registry_delete_readiness::tests::verdict_separates_operator_blockers_from_automatic_steps",
+            "db::registry_index_build::tests::failed_stable_build_identity_can_be_retried",
+            "db::registry_index_build::tests::registry_builds_exclude_competitors_and_record_noops",
+            "db::release_browse::tests::publication_selects_its_own_branch_catalog_and_tag_notes",
+            "db::release_publication::tests::exact_release_chain_is_idempotent_and_channel_is_cas",
+            "db::release_publication::tests::isolated_production_imports_evidence_without_a_staging_row",
+            "db::release_publication::tests::per_train_channels_advance_and_malformed_names_are_rejected",
+            "db::release_publication::tests::per_train_ledger_migration_replays_after_any_interruption",
+            "db::release_publication::tests::per_train_ledger_migration_retains_baseline_operations",
+            "db::release_publication::tests::production_deployment_still_requires_a_promotion",
+            "db::release_publication::tests::release_chain_rejects_wrong_deployment_and_discontinuous_promotion",
+            "db::release_publication::tests::release_channel_names_follow_kind_and_train_syntax",
+            "db::release_publication::tests::shared_deployment_keeps_the_promotion_requirement",
+            "db::release_publication::tests::staging_deployment_advances_after_its_staging_commit",
+            "db::release_publication::tests::timestamp_versions_advance_exactly_once",
+            "db::settings_reads::tests::active_surface_operations_match_scoped_primary_and_secondary_targets",
+            "db::settings_reads::tests::route_pages_are_bounded_and_resume_in_stable_identity_order",
+            "db::signing_keys::tests::concurrent_rotations_leave_exactly_one_active_generation",
+            "db::signing_keys::tests::consumer_resolution_rejects_orphans_and_wrong_kinds",
+            "db::snapshot_insert_tests::multirow_inserts_respect_durable_object_parameter_limit",
+            "db::snapshot_insert_tests::release_artifact_inserts_include_shared_snapshot_parameter_in_limit",
+            "db::staged_releases::tests::discarded_stage_relinquishes_only_its_current_roots_after_grace",
+            "db::staged_releases::tests::publication_associations_are_unique_and_survive_supersession",
+            "db::staged_releases::tests::release_requires_exact_indexed_commit_and_ready_publication",
+            "db::staged_releases::tests::revision_cas_preserves_superseded_roots_through_grace",
+            "db::staged_releases::tests::staged_releases_admits_full_fifty_thousand_object_inventory",
+            "db::staged_releases::tests::staged_releases_migrates_existing_version_two_database",
+            "db::staged_releases::tests::staged_releases_pointer_phase_serializes_with_draft_admission",
+            "db::staged_releases::tests::staged_releases_require_complete_chunked_documents",
+            "db::staged_releases::tests::summary_pagination_never_loads_private_inventory_documents",
+            "db::staged_retention_tests::expired_stage_publication_relinquishes_objects_after_multipart_settlement",
+            "db::staged_retention_tests::staged_git_and_image_objects_survive_shared_stages_and_discard_grace",
+            "db::staged_retention_tests::superseded_inventory_releases_only_its_unshared_objects_after_grace",
+            "db::surface_topology::tests::endpoint_grant_pin_batch_preserves_consumer_and_generation_boundaries",
+            "db::surface_topology::tests::topology_batches_preserve_records_order_and_tenant_scope",
+            "db::tests::administration::audit_and_changeset_scope_containment",
+            "db::tests::administration::audit_exists_for_commit_is_specific_to_action_and_commit",
+            "db::tests::administration::deployment_default_records_one_valid_write_revision",
+            "db::tests::administration::list_audit_is_bounded_and_newest_first",
+            "db::tests::administration::mark_changeset_applied_commit_links_promoting_commit",
+            "db::tests::administration::record_audit_sanitizes_crlf_in_detail_and_label",
+            "db::tests::caches::caches_crud_and_servable_filter",
+            "db::tests::caches::list_caches_excludes_soft_deleted_org",
+            "db::tests::caches::native_reference_schema_upgrades_from_released_production_versions",
+            "db::tests::caches::registry_publication_inventory_is_stable_and_filter_bound",
+            "db::tests::caches::scope_operation_inventory_includes_only_descendant_scopes",
+            "db::tests::caches::standalone_cache_slugs_cannot_collide_with_stable_ids",
+            "db::tests::documentation::legacy_registry_object_conversion_follows_shared_mutability_policy",
+            "db::tests::identity::approve_device_is_idempotent_one_token_per_approval",
+            "db::tests::identity::delete_user_re_checks_sole_ownership_in_tx",
+            "db::tests::identity::deleted_principal_deadens_unrevoked_credentials_and_grants",
+            "db::tests::identity::grant_membership_backstop_rejects_non_canonical_scopes",
+            "db::tests::identity::invitations_create_accept_and_expire",
+            "db::tests::identity::magic_links_single_use_and_expiry",
+            "db::tests::identity::memberships_grant_revoke_and_list",
+            "db::tests::identity::orgs_projects_and_principals_roundtrip",
+            "db::tests::identity::registry_identity_creation_does_not_invent_storage",
+            "db::tests::identity::registry_publication_multipart_state_retains_expired_backend_identity",
+            "db::tests::identity::repeated_session_validation_preserves_liveness_without_identical_writes",
+            "db::tests::identity::revoke_membership_owner_safe_keeps_one_owner",
+            "db::tests::identity::revoked_token_is_denied_immediately_without_grace",
+            "db::tests::identity::session_idle_and_absolute_timeouts_enforced",
+            "db::tests::identity::session_is_sudo_window",
+            "db::tests::identity::sessions_create_validate_expire_and_revoke",
+            "db::tests::identity::set_membership_role_owner_safe_blocks_last_owner_demotion",
+            "db::tests::identity::sibling_surface_scopes_are_isolated_and_slug_reuse_gets_new_identity",
+            "db::tests::identity::signup_policy_defaults_invite_only_and_round_trips",
+            "db::tests::identity::take_webauthn_challenge_is_scoped_by_kind",
+            "db::tests::identity::tokens_create_validate_revoke_and_list",
+            "db::tests::identity::tokens_expired_is_rejected",
+            "db::tests::identity::tokens_rotation_honors_grace_window",
+            "db::tests::registries::git_changeset_records_ref_and_commit",
+            "db::tests::registries::instance_registry_slugs_cannot_collide_with_stable_ids",
+            "db::tests::registries::managed_registry_canonical_slug_and_scope_lookup",
+            "db::tests::registries::registry_crawl_policy_and_llms_defaults_and_round_trip",
+            "db::tests::registries::snapshot_materializes_only_the_exact_signed_container_root",
+            "db::tests::registries::snapshot_replace_is_idempotent",
+            "db::tests::registries::snapshot_rows_are_bounded_into_multirow_statements",
+            "db::tests::registries::stale_index_failure_cannot_replace_a_newer_success",
+            "db::tests::releases::channel_floors_persist_and_overwrite",
+            "db::tests::releases::empty_registry_publication_object_class_is_complete",
+            "db::tests::releases::pointer_advance_accepts_a_raced_retry_for_the_same_publication",
+            "db::tests::releases::registry_delete_rejects_active_publication_without_partial_history",
+            "db::tests::releases::registry_index_mutation_waits_for_an_active_publication",
+            "db::tests::releases::registry_publication_inherits_exact_reusable_evidence",
+            "db::tests::releases::registry_publication_manifest_is_invisible_and_exact",
+            "db::tests::releases::update_channels_replaces_only_channels",
+            "db::tests::runtime::approve_device_after_deny_mints_nothing",
+            "db::tests::runtime::authorization_context_rejects_extraneous_closure_rows",
+            "db::tests::runtime::change_comments_and_reviews_record_and_list_in_order",
+            "db::tests::runtime::close_reopen_preserves_draft_auto_merge",
+            "db::tests::runtime::closure_resolution_resolves_refs_and_reverse_deps",
+            "db::tests::runtime::device_flow_deny_and_unknown",
+            "db::tests::runtime::device_flow_expiry_blocks_approval",
+            "db::tests::runtime::device_flow_full_path_with_scope_clamping",
+            "db::tests::runtime::draft_signing_key_is_generated_once_and_persists",
+            "db::tests::runtime::failed_forward_migration_rolls_back_schema_and_marker",
+            "db::tests::runtime::failure_marks_state_without_dropping_index",
+            "db::tests::runtime::fresh_schema_is_final_and_foreign_key_clean",
+            "db::tests::runtime::generated_relational_ids_are_positive_and_worker_exact",
+            "db::tests::runtime::migrate_refuses_pre_cutover_version_collision",
+            "db::tests::runtime::migrate_register_and_reopen",
+            "db::tests::runtime::migration_statements_translate_for_postgres_and_mysql",
+            "db::tests::runtime::mirror_creation_rejects_unsafe_targets",
+            "db::tests::runtime::mysql_migration_replay_helpers_cover_every_ddl_shape",
+            "db::tests::runtime::production_baseline_concurrent_installation_converges",
+            "db::tests::runtime::production_baseline_keeps_portable_recovery_columns",
+            "db::tests::runtime::production_baseline_rejects_incompatible_ledgers_without_changing_data",
+            "db::tests::runtime::purge_only_after_grace_window",
+            "db::tests::runtime::quota_defaults_to_unlimited_and_round_trips",
+            "db::tests::runtime::root_crawl_policy_and_overrides_round_trip",
+            "db::tests::runtime::sanitize_log_text_strips_c0_controls_but_keeps_tab",
+            "db::tests::runtime::soft_delete_excludes_from_serving_then_restore",
+            "db::tests::runtime::store_backed_images_remain_discoverable_without_legacy_object_roots",
+            "db::tests::runtime::usage_accumulates_and_drives_would_exceed_quota",
+            "db::tests::runtime::whole_surface_reads_prefer_the_reconciled_writer",
+            "db::tests::tenancy::concurrent_owner_revokes_preserve_one_owner",
+            "db::tests::tenancy::create_org_backstop_rejects_non_segment_slugs",
+            "db::tests::tenancy::create_org_initializes_quota_usage",
+            "db::tests::tenancy::deleted_co_owner_cannot_mask_the_last_live_human_owner",
+            "db::tests::tenancy::planned_project_create_and_delete_emit_one_atomic_history_chain",
+            "db::tests::tenancy::purge_is_no_op_for_org_restored_in_window",
+            "db::tests::tenancy::reserve_org_usage_is_atomic_and_charges_deltas",
+            "db::tests::tenancy::sole_owner_delete_blocked_then_transfer_succeeds",
+            "db::tests::topology_1::binding_read_sql_projects_only_non_sensitive_columns",
+            "db::tests::topology_1::bindings_use_only_the_typed_topology_shape",
+            "db::tests::topology_1::degraded_registry_placement_remains_eligible_for_publication_repair",
+            "db::tests::topology_1::instance_resources_require_explicit_organization_grants",
+            "db::tests::topology_1::registry_placement_delete_detaches_only_terminal_placement_history",
+            "db::tests::topology_1::signed_images_require_complete_exact_placement_presence_and_remain_gc_roots",
+            "db::tests::topology_1::topology_operation_retry_is_persistently_idempotent",
+            "db::tests::topology_1::topology_regrant_cannot_race_a_soft_deleted_scope",
+            "db::tests::topology_1::unused_topology_binding_can_be_checked_and_deleted",
+            "db::tests::topology_2::topology_orders_named_placements_and_rejects_stale_versions",
+            "db::tests::topology_2::topology_v34_opens_and_rejects_xor_and_location_collisions",
+            "db::tests::webhooks::registry_configuration_cas_commits_head_history_audit_and_outbox_once",
+            "db::tests::webhooks::registry_delete_cas_commits_history_audit_and_outbox_once",
+            "db::tests::webhooks::webhook_limit_is_serialized_inside_the_create_transaction",
+            "db::topology::tests::domain_probe_completion_promotes_endpoint_and_requeues_routes_atomically",
+            "db::topology::tests::endpoint_host_exists_with_several_endpoints_on_one_host",
+            "db::topology::tests::gateway_creation_rejects_ineligible_endpoint_atomically",
+            "db::topology::tests::gateway_inventory_preserves_owner_and_requires_current_active_grant",
+            "db::topology::tests::gateway_revision_reuses_an_unchanged_path_reservation",
+            "db::topology::tests::normalizes_route_paths",
+            "db::topology::tests::oci_route_side_table_masks_web_and_serializes_enabled_registry_route",
+            "db::topology::tests::oci_routes_require_root_hub_proxy_delivery",
+            "db::topology::tests::rejects_open_route_variants_and_forged_access_digests",
+            "db::topology::tests::reservation_digest_commits_to_path_and_url",
+            "db::topology::tests::retained_key_digest_blocks_cross_version_url_reuse",
+            "db::topology::tests::route_mutation_and_probe_outbox_commit_atomically_and_deduplicate",
+            "db::topology::tests::route_probe_outbox_failure_rolls_back_the_route_mutation",
+            "db::topology::tests::route_update_cancels_stale_probe_and_stale_evidence_is_rejected",
+            "db::worker_jobs::tests::completed_jobs_deduplicate_and_expired_claims_resume",
+            "db::worker_jobs::tests::operation_identity_cannot_alias_another_payload",
+            "value::tests::out_of_range_and_null_errors",
+            "value::tests::reads_typed_columns",
+            "value::tests::round_trips_scalars",
+            "value::tests::rows_round_trip_across_the_worker_database_protocol"
+          ],
+          "ignored_in_unchanged_cargo_baseline": [],
+          "test_artifacts_sha256": {
+            "test.log": "a0945f14bca1a1ead98113c8288ae8d72981547c98e9c3f8ed9bc15fdf6530e1",
+            "test.xml": "1a6656a8ae9b5adbcd133864312f7d15a5913f15eb3d517545e54f2d0291568b"
+          }
+        }
+      }
+    }
+  },
+  "command": "nix-build /tmp/aos-bazel-722/hub-db-iterative.nix -A builds --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "2fb1ab37ae",
+  "limits": [
+    "Conservative sources retain Cargo manifests. Strict workspace staging, independent fresh Cargo runtime/feature comparison and editor parity qualify separate checkpoints.",
+    "Both configurations retain all existing unit cases and two passing/one ignored doctests. Four outer workers preserve existing internal concurrency, migration retry logic and timeouts.",
+    "No live PostgreSQL/MySQL services, foreign/Wasm execution, full compiler invocation equivalence, numeric performance acceptance, production migration or Cargo removal is claimed.",
+    "Whole-workspace Rust target compilation is retained separately."
+  ],
+  "preserved_tests": {
+    "assertion_macros": {
+      "assert": 755,
+      "assert_eq": 904,
+      "assert_ne": 17,
+      "bail": 826,
+      "ensure": 89,
+      "panic": 20
+    },
+    "changed_files": [
+      "crates/hub/aos-hub-db/src/backend/sqlx/sqlite_tests.rs",
+      "crates/hub/aos-hub-db/src/backend/timing.rs",
+      "crates/hub/aos-hub-db/src/db/ability_deployment_overlays.rs",
+      "crates/hub/aos-hub-db/src/db/delivery_identity.rs",
+      "crates/hub/aos-hub-db/src/db/delivery_workflow.rs",
+      "crates/hub/aos-hub-db/src/db/fixtures.rs",
+      "crates/hub/aos-hub-db/src/db/gc_topology.rs",
+      "crates/hub/aos-hub-db/src/db/mod.rs",
+      "crates/hub/aos-hub-db/src/db/oci.rs",
+      "crates/hub/aos-hub-db/src/db/oci_gc/plan.rs",
+      "crates/hub/aos-hub-db/src/db/oci_namespaces.rs",
+      "crates/hub/aos-hub-db/src/db/oci_publication.rs",
+      "crates/hub/aos-hub-db/src/db/oci_upload/sha256.rs",
+      "crates/hub/aos-hub-db/src/db/oci_upload.rs",
+      "crates/hub/aos-hub-db/src/db/placement_policy.rs",
+      "crates/hub/aos-hub-db/src/db/queries/administration/configuration_mutations.rs",
+      "crates/hub/aos-hub-db/src/db/queries/caches/uploads_mutations.rs",
+      "crates/hub/aos-hub-db/src/db/queries/registries/configuration_mutations_record_registry_publication_object_presence.rs",
+      "crates/hub/aos-hub-db/src/db/queries/registries/configuration_mutations_registry_publication_class_is_complete.rs",
+      "crates/hub/aos-hub-db/src/db/queries/registries/index_helpers.rs",
+      "crates/hub/aos-hub-db/src/db/queries/registries/index_mutations.rs",
+      "crates/hub/aos-hub-db/src/db/queries/releases/signing_reads.rs",
+      "crates/hub/aos-hub-db/src/db/queries/runtime/coordination_mutations.rs",
+      "crates/hub/aos-hub-db/src/db/queries/tenancy/projects_helpers.rs",
+      "crates/hub/aos-hub-db/src/db/queries/tenancy/projects_mutations.rs",
+      "crates/hub/aos-hub-db/src/db/queries/topology/bindings_mutations.rs",
+      "crates/hub/aos-hub-db/src/db/queries/topology/placements_mutations_apply_snapshot_from_placement.rs",
+      "crates/hub/aos-hub-db/src/db/registry_delete_operation.rs",
+      "crates/hub/aos-hub-db/src/db/registry_index_build.rs",
+      "crates/hub/aos-hub-db/src/db/tests/mod.rs",
+      "crates/hub/aos-hub-db/src/db/tests/webhooks.rs",
+      "crates/hub/aos-hub-db/src/db/topology.rs"
+    ],
+    "comparison_base_commit": "df2acf6f28",
+    "files": 166,
+    "ignored_attributes": 0,
+    "limits": [
+      "This textual audit checks test names, ignore reasons and assertion macro counts; runtime case equivalence is checked separately against unchanged Cargo baselines."
+    ],
+    "per_file": {
+      "crates/hub/aos-hub-db/src/backend/mod.rs": {
+        "assertion_macros": {
+          "assert": 16,
+          "assert_eq": 8,
+          "bail": 1
+        },
+        "ignores": [],
+        "tests": [
+          "batch_commits_all_statements_atomically",
+          "batch_rolls_back_on_a_failing_statement",
+          "checked_batch_rolls_back_on_an_affected_row_mismatch",
+          "checked_cas_statements_prepare_portably_for_every_dialect",
+          "redact_db_url_passes_through_without_password",
+          "redact_db_url_preserves_non_secret_parts",
+          "redact_db_url_strips_password",
+          "split_statements_drops_trailing_inline_comment",
+          "split_statements_keeps_statements_with_embedded_comments"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/backend/sqlx.rs": {
+        "assertion_macros": {
+          "assert": 5,
+          "assert_eq": 5,
+          "bail": 8,
+          "ensure": 5
+        },
+        "ignores": [],
+        "tests": [
+          "decodes_integral_mysql_decimal_values",
+          "decodes_integral_postgres_numeric_binary_values",
+          "rejects_fractional_or_malformed_postgres_numeric_values",
+          "rejects_fractional_or_overflowing_mysql_decimal_values"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/backend/sqlx/sqlite_tests.rs": {
+        "assertion_macros": {
+          "assert_eq": 2,
+          "panic": 1
+        },
+        "ignores": [],
+        "tests": [
+          "cancelled_acquisitions_preserve_the_in_memory_database",
+          "migrations_wait_for_a_writer_beyond_the_statement_busy_timeout"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/backend/timing.rs": {
+        "assertion_macros": {
+          "assert": 8,
+          "assert_eq": 4
+        },
+        "ignores": [],
+        "tests": [
+          "records_a_span_per_statement_in_order",
+          "server_timing_header_is_none_when_empty_and_well_formed_when_not",
+          "snippet_collapses_whitespace_and_caps_length"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/ability_deployment_overlays.rs": {
+        "assertion_macros": {
+          "assert": 9,
+          "assert_eq": 7,
+          "ensure": 3
+        },
+        "ignores": [],
+        "tests": [
+          "enrollment_sequence_replay_expiry_and_revocation_fail_closed",
+          "native_report_migration_preserves_enrollment_and_replay_fence"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/cache_write_admission.rs": {
+        "assertion_macros": {
+          "assert": 1,
+          "assert_eq": 1,
+          "bail": 4
+        },
+        "ignores": [],
+        "tests": [
+          "bulk_proxy_admission_uses_one_query_and_one_checked_batch"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/delivery_identity.rs": {
+        "assertion_macros": {
+          "assert": 23,
+          "assert_eq": 47,
+          "assert_ne": 1,
+          "bail": 99
+        },
+        "ignores": [],
+        "tests": [
+          "boundary_fingerprints_match_normative_vectors",
+          "boundary_lifecycle_requires_verified_observation_and_cas",
+          "cidrs_are_masked_sorted_and_deduplicated",
+          "domain_mutations_are_version_checked_and_paged",
+          "public_boundary_seed_matches_the_normative_posture",
+          "security_configurations_are_closed_and_require_exact_fields"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/delivery_workflow.rs": {
+        "assertion_macros": {
+          "bail": 2,
+          "ensure": 3
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/delivery_workflow_tests.rs": {
+        "assertion_macros": {
+          "assert": 16,
+          "assert_eq": 12,
+          "panic": 1
+        },
+        "ignores": [],
+        "tests": [
+          "activation_rechecks_network_policy_posture_inside_the_transaction",
+          "activation_rechecks_route_evidence_inside_the_transaction",
+          "activation_rolls_back_every_audience_when_a_later_baseline_is_stale",
+          "endpoint_selector_does_not_expose_an_ungranted_successor_generation",
+          "public_object_delivery_requires_current_route_and_exact_publication_evidence",
+          "resume_replays_after_progress_changes_and_rejects_different_input"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/direct_delivery.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/egress_nonce.rs": {
+        "assertion_macros": {
+          "assert": 2,
+          "assert_eq": 2,
+          "bail": 3
+        },
+        "ignores": [],
+        "tests": [
+          "admission_is_single_effect_across_instances_and_restart",
+          "admission_rejects_non_future_expiry_on_every_instance"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/fixtures.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/gc_topology.rs": {
+        "assertion_macros": {
+          "assert": 45,
+          "assert_eq": 70,
+          "bail": 95
+        },
+        "ignores": [],
+        "tests": [
+          "cache_creation_initializes_fail_closed_gc_topology",
+          "cache_write_recovery_cursor_is_durable_and_cas_guarded",
+          "completing_ambiguity_becomes_conservative_after_bounded_retries",
+          "completing_retention_refresh_uses_captured_subscription_and_index",
+          "deletion_receipt_recovers_response_before_job_finalization",
+          "disabling_a_subscription_preserves_its_removal_grace",
+          "do_e2e_fixture_has_distinct_flat_and_nested_surface_identities",
+          "expired_write_ticket_scans_require_bounded_pages",
+          "gc_plan_reports_a_retained_root_missing_from_inventory",
+          "incomplete_closure_cannot_publish_or_change_the_mark_head",
+          "inventory_lease_fences_live_owner_and_recovers_abandoned_generation",
+          "inventory_publication_failure_leaks_no_objects_and_corrected_retry_succeeds",
+          "inventory_publication_rejects_cross_placement_identity_drift",
+          "inventory_stages_explicit_missing_for_new_cross_placement_objects",
+          "multipart_parts_admit_and_confirm_independently_under_concurrency",
+          "multipart_retry_rejects_same_size_with_different_body_digest",
+          "placement_change_cannot_cross_a_mark_generation",
+          "quota_reservation_rolls_back_with_failed_ticket_batch",
+          "renewal_and_revocation_preserve_history_but_remove_active_reason",
+          "reusable_cache_write_ticket_requires_exact_live_request_and_writer",
+          "simultaneous_same_part_admission_is_idempotent_or_conflicts_by_body",
+          "staged_cache_root_admission_invalidates_an_older_gc_plan",
+          "staged_cache_roots_retain_dependency_and_shared_nar_until_discard_grace",
+          "staged_nar_inventory_without_store_roots_invalidates_an_older_gc_plan",
+          "staged_nar_inventory_without_store_roots_retains_shared_objects",
+          "stale_root_epoch_rolls_back_the_entire_batch",
+          "tombstone_reap_preserves_unresolved_edges_for_possible_reactivation",
+          "uncertain_cache_writes_commit_quota_and_retain_inventory_fences"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/mod.rs": {
+        "assertion_macros": {
+          "assert": 2,
+          "assert_eq": 2,
+          "bail": 12,
+          "ensure": 20
+        },
+        "ignores": [],
+        "tests": [
+          "multirow_inserts_respect_durable_object_parameter_limit",
+          "release_artifact_inserts_include_shared_snapshot_parameter_in_limit"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/native_documentation.rs": {
+        "assertion_macros": {
+          "assert": 2,
+          "assert_eq": 2,
+          "ensure": 3
+        },
+        "ignores": [],
+        "tests": [
+          "native_search_requires_complete_release_and_exact_projection_identity"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/oci.rs": {
+        "assertion_macros": {
+          "assert": 57,
+          "assert_eq": 87,
+          "assert_ne": 1,
+          "bail": 37,
+          "panic": 2
+        },
+        "ignores": [],
+        "tests": [
+          "authorized_first_push_bootstraps_one_empty_repository",
+          "blob_keys_are_canonical_and_algorithm_free",
+          "catalog_admission_is_atomic_repository_scoped_and_queryable",
+          "catalog_quota_identity_fits_widened_contract_at_max_registry_and_digest",
+          "catalog_rejects_orphans_but_accepts_exact_noncanonical_manifest_bytes",
+          "catalog_sql_translates_reserved_aliases_and_nullable_projection_identity",
+          "concurrent_uploads_charge_one_shared_digest_once",
+          "first_uploaded_object_evidence_seeds_registry_state_once",
+          "index_platform_must_match_persisted_config_projection",
+          "manifest_reference_predicate_types_nullable_parameters_before_null_checks",
+          "portable_sha256_resumes_across_block_and_tail_boundaries",
+          "publication_freezes_exact_graph_and_commits_atomically",
+          "upload_retries_quota_and_expiry_are_transactional"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/oci_admin/cursor.rs": {
+        "assertion_macros": {
+          "bail": 4
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_admin/mod.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_admin/mutation.rs": {
+        "assertion_macros": {
+          "bail": 24
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_admin/read.rs": {
+        "assertion_macros": {
+          "bail": 3
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_admin/tests.rs": {
+        "assertion_macros": {
+          "assert": 7,
+          "assert_eq": 8
+        },
+        "ignores": [],
+        "tests": [
+          "instance_registry_plan_lookup_apply_and_expiry_are_actor_bound",
+          "repository_cursor_binds_filters_and_mutation_epoch"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/oci_gc/cancel.rs": {
+        "assertion_macros": {
+          "bail": 4
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_gc/inventory.rs": {
+        "assertion_macros": {
+          "bail": 19
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_gc/inventory_model.rs": {
+        "assertion_macros": {
+          "bail": 7
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_gc/mod.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_gc/plan.rs": {
+        "assertion_macros": {
+          "assert": 3,
+          "assert_eq": 1,
+          "assert_ne": 1,
+          "bail": 16
+        },
+        "ignores": [],
+        "tests": [
+          "repository_root_sources_do_not_collide_across_repositories",
+          "staged_oci_inventory_remains_a_hard_root_until_discard_grace"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/oci_gc/plan_frontier.rs": {
+        "assertion_macros": {
+          "bail": 2
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_gc/plan_model.rs": {
+        "assertion_macros": {
+          "bail": 2
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_gc/purge_plan.rs": {
+        "assertion_macros": {
+          "bail": 7
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_gc/read.rs": {
+        "assertion_macros": {
+          "bail": 11
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_gc/remediation.rs": {
+        "assertion_macros": {
+          "bail": 13
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_gc/repair_worker.rs": {
+        "assertion_macros": {
+          "bail": 6
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_gc/retirement.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_gc/tests.rs": {
+        "assertion_macros": {
+          "assert": 75,
+          "assert_eq": 110,
+          "assert_ne": 2,
+          "panic": 2
+        },
+        "ignores": [],
+        "tests": [
+          "applying_registry_lock_blocks_first_push_repository_admission",
+          "applying_run_reports_planned_partial_and_atomic_final_counters",
+          "baseline_and_expired_plan_recovery_execute_on_sqlite",
+          "baseline_contains_review_remediation_authorities",
+          "baseline_contains_transactional_gc_evidence_and_fences",
+          "bounded_candidate_frontier_and_expired_history_compaction_make_progress",
+          "cancellation_fails_closed_for_applying_stale_and_unknown_runs",
+          "cancelled_diagnostic_plan_stops_blocking_registry_deletion",
+          "cancelling_a_terminal_run_returns_it_unchanged",
+          "clean_registry_lists_empty_untracked_inventory_at_epoch_zero",
+          "deletion_evidence_digest_binds_every_response_field",
+          "expired_plans_stop_blocking_while_applying_work_still_blocks",
+          "finalization_sweep_skips_a_drifted_earlier_run_and_completes_later_work",
+          "fresh_untag_and_retained_unlinked_history_protect_manifest_closure",
+          "gc_lock_fences_every_upload_phase_and_publication_add_commit",
+          "grace_root_protects_forward_closure_and_apply_rejects_new_survivor_edge",
+          "live_graph_identity_query_translates_for_postgres_and_mysql",
+          "maintenance_requeue_is_actor_request_and_response_loss_idempotent",
+          "operations_metrics_query_translates_for_postgres_and_mysql",
+          "provider_inventory_checkpoints_survive_takeover_and_seal_tracked_and_untracked",
+          "purge_requires_post_fence_empty_head_and_rejects_failed_newer_scan",
+          "registry_deletion_abandons_plans_and_ignores_their_frozen_actions",
+          "registry_deletion_is_blocked_by_applying_runs_and_their_actions",
+          "registry_deletion_retires_delivery_setup_workflows",
+          "retirement_plan_blocks_on_serving_routes_then_collects_catalog_roots",
+          "reviewed_plan_apply_claim_evidence_and_atomic_accounting_complete",
+          "snapshot_lease_acquisition_cannot_race_an_applying_candidate"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/oci_gc/worker.rs": {
+        "assertion_macros": {
+          "bail": 13
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_namespaces.rs": {
+        "assertion_macros": {
+          "assert": 29,
+          "assert_eq": 11,
+          "bail": 20
+        },
+        "ignores": [],
+        "tests": [
+          "conversion_keeps_the_reservation_and_enables_the_namespace",
+          "conversion_refuses_routes_that_serve_other_audiences",
+          "fresh_instance_route_reserves_its_url_once",
+          "instance_route_refuses_then_binds_an_existing_reservation",
+          "namespace_state_is_versioned_and_listed_longest_slug_first"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/oci_publication.rs": {
+        "assertion_macros": {
+          "bail": 29
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_release_projection.rs": {
+        "assertion_macros": {
+          "assert_eq": 5
+        },
+        "ignores": [],
+        "tests": [
+          "registry_without_oci_state_has_no_unchanged_epoch",
+          "unchanged_projection_keeps_only_the_observed_epoch"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/oci_upload.rs": {
+        "assertion_macros": {
+          "bail": 9
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_upload/claim.rs": {
+        "assertion_macros": {
+          "bail": 1
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_upload/model.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_upload/recovery.rs": {
+        "assertion_macros": {
+          "bail": 5
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/oci_upload/sha256.rs": {
+        "assertion_macros": {
+          "bail": 5
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/placement_policy.rs": {
+        "assertion_macros": {
+          "assert": 3,
+          "bail": 23
+        },
+        "ignores": [],
+        "tests": [
+          "rejects_open_or_cross_kind_revision_shapes"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/publication_admission.rs": {
+        "assertion_macros": {
+          "assert": 4,
+          "assert_eq": 13,
+          "bail": 14
+        },
+        "ignores": [],
+        "tests": [
+          "manifest_page_crosses_the_backend_in_one_atomic_batch",
+          "manifest_pages_are_atomic_and_idempotent",
+          "manifest_session_resumes_exact_chunks_and_fences_ownership"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/publication_delivery.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/administration/audit_mutations.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/administration/audit_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/administration/configuration_mutations.rs": {
+        "assertion_macros": {
+          "bail": 6,
+          "ensure": 1
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/administration/configuration_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/administration/jobs_helpers.rs": {
+        "assertion_macros": {
+          "bail": 12
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/administration/mod.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/caches/configuration_mutations.rs": {
+        "assertion_macros": {
+          "bail": 2
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/caches/configuration_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/caches/integration_mutations.rs": {
+        "assertion_macros": {
+          "bail": 3
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/caches/integration_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/caches/inventory_mutations.rs": {
+        "assertion_macros": {
+          "bail": 1
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/caches/mod.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/caches/retention_mutations.rs": {
+        "assertion_macros": {
+          "bail": 2
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/caches/retention_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/caches/uploads_mutations.rs": {
+        "assertion_macros": {
+          "bail": 7,
+          "ensure": 2
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/identity/credentials_mutations.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/identity/membership_helpers.rs": {
+        "assertion_macros": {
+          "bail": 1
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/identity/membership_mutations.rs": {
+        "assertion_macros": {
+          "bail": 6
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/identity/membership_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/identity/mod.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/identity/principals_helpers.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/identity/principals_mutations.rs": {
+        "assertion_macros": {
+          "bail": 3
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/identity/principals_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/identity/sessions_helpers.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/identity/sessions_mutations.rs": {
+        "assertion_macros": {
+          "bail": 1
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/identity/tokens_helpers.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/identity/tokens_mutations.rs": {
+        "assertion_macros": {
+          "bail": 6
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/identity/tokens_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/mod.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/registries/configuration_helpers.rs": {
+        "assertion_macros": {
+          "bail": 4
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/registries/configuration_mutations_record_registry_publication_object_presence.rs": {
+        "assertion_macros": {
+          "bail": 15
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/registries/configuration_mutations_registry_publication_class_is_complete.rs": {
+        "assertion_macros": {
+          "bail": 6
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/registries/configuration_reads.rs": {
+        "assertion_macros": {
+          "bail": 2
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/registries/git_mutations.rs": {
+        "assertion_macros": {
+          "bail": 2
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/registries/index_helpers.rs": {
+        "assertion_macros": {
+          "bail": 15
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/registries/index_mutations.rs": {
+        "assertion_macros": {
+          "bail": 2,
+          "ensure": 5
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/registries/mod.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/registries/packages_helpers.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/registries/packages_mutations.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/registries/packages_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/releases/channels_helpers.rs": {
+        "assertion_macros": {
+          "ensure": 2
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/releases/channels_mutations.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/releases/channels_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/releases/mod.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/releases/publications_mutations.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/releases/publications_reads.rs": {
+        "assertion_macros": {
+          "bail": 2
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/releases/signing_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/runtime/coordination_helpers.rs": {
+        "assertion_macros": {
+          "ensure": 1
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/runtime/coordination_mutations.rs": {
+        "assertion_macros": {
+          "bail": 14,
+          "ensure": 5
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/runtime/coordination_reads.rs": {
+        "assertion_macros": {
+          "bail": 3,
+          "ensure": 4
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/runtime/lifecycle_helpers.rs": {
+        "assertion_macros": {
+          "bail": 1,
+          "ensure": 8
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/runtime/lifecycle_mutations.rs": {
+        "assertion_macros": {
+          "bail": 2
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/runtime/mod.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/tenancy/mod.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/tenancy/organizations_mutations.rs": {
+        "assertion_macros": {
+          "bail": 2
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/tenancy/organizations_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/tenancy/projects_helpers.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/tenancy/projects_mutations.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/tenancy/projects_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/bindings_helpers.rs": {
+        "assertion_macros": {
+          "bail": 1
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/bindings_mutations.rs": {
+        "assertion_macros": {
+          "bail": 16
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/bindings_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/credentials_mutations.rs": {
+        "assertion_macros": {
+          "bail": 7,
+          "ensure": 1
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/credentials_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/domains_helpers.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/domains_mutations.rs": {
+        "assertion_macros": {
+          "bail": 9
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/domains_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/grants_mutations.rs": {
+        "assertion_macros": {
+          "bail": 5
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/mod.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/networks_mutations.rs": {
+        "assertion_macros": {
+          "bail": 1
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/networks_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/operations_helpers.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/operations_mutations.rs": {
+        "assertion_macros": {
+          "bail": 28,
+          "ensure": 2
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/operations_reads.rs": {
+        "assertion_macros": {
+          "bail": 2
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/placements_helpers.rs": {
+        "assertion_macros": {
+          "bail": 1
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/placements_mutations_apply_snapshot_from_placement.rs": {
+        "assertion_macros": {
+          "bail": 19
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/placements_mutations_create_placement_equivalence.rs": {
+        "assertion_macros": {
+          "bail": 6
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/placements_reads.rs": {
+        "assertion_macros": {
+          "bail": 1
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/topology/routes_mutations.rs": {
+        "assertion_macros": {
+          "bail": 1
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/webhooks/delivery_helpers.rs": {
+        "assertion_macros": {
+          "ensure": 3
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/webhooks/delivery_mutations.rs": {
+        "assertion_macros": {
+          "ensure": 7
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/webhooks/delivery_reads.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/queries/webhooks/mod.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/records/administration.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/records/caches.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/records/identity.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/records/mod.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/records/registries.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/records/releases.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/records/tenancy.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/records/topology.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/records/webhooks.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/registry_delete.rs": {
+        "assertion_macros": {
+          "assert": 4,
+          "assert_eq": 2,
+          "bail": 1,
+          "panic": 1
+        },
+        "ignores": [],
+        "tests": [
+          "changed_registry_version_is_stale_rather_than_blocked",
+          "precondition_changed_inside_the_transaction_is_reported_as_blocked"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/registry_delete_operation.rs": {
+        "assertion_macros": {
+          "bail": 2
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/registry_delete_readiness.rs": {
+        "assertion_macros": {
+          "assert": 3,
+          "assert_eq": 11,
+          "ensure": 1
+        },
+        "ignores": [],
+        "tests": [
+          "post_fence_empty_inventory_is_ready_and_pre_fence_inventory_is_recollected",
+          "unobserved_offline_and_object_holding_placements_are_classified_exactly",
+          "verdict_separates_operator_blockers_from_automatic_steps"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/registry_index_build.rs": {
+        "assertion_macros": {
+          "assert": 1,
+          "assert_eq": 2,
+          "bail": 7,
+          "panic": 2
+        },
+        "ignores": [],
+        "tests": [
+          "failed_stable_build_identity_can_be_retried",
+          "registry_builds_exclude_competitors_and_record_noops"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/release_browse.rs": {
+        "assertion_macros": {
+          "assert": 8,
+          "assert_eq": 6,
+          "ensure": 1
+        },
+        "ignores": [],
+        "tests": [
+          "publication_selects_its_own_branch_catalog_and_tag_notes"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/release_publication.rs": {
+        "assertion_macros": {
+          "assert": 25,
+          "assert_eq": 11,
+          "bail": 12,
+          "panic": 1
+        },
+        "ignores": [],
+        "tests": [
+          "exact_release_chain_is_idempotent_and_channel_is_cas",
+          "isolated_production_imports_evidence_without_a_staging_row",
+          "per_train_channels_advance_and_malformed_names_are_rejected",
+          "per_train_ledger_migration_replays_after_any_interruption",
+          "per_train_ledger_migration_retains_baseline_operations",
+          "production_deployment_still_requires_a_promotion",
+          "release_chain_rejects_wrong_deployment_and_discontinuous_promotion",
+          "release_channel_names_follow_kind_and_train_syntax",
+          "shared_deployment_keeps_the_promotion_requirement",
+          "staging_deployment_advances_after_its_staging_commit",
+          "timestamp_versions_advance_exactly_once"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/settings_reads.rs": {
+        "assertion_macros": {
+          "assert": 4,
+          "assert_eq": 4,
+          "bail": 1
+        },
+        "ignores": [],
+        "tests": [
+          "active_surface_operations_match_scoped_primary_and_secondary_targets",
+          "route_pages_are_bounded_and_resume_in_stable_identity_order"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/signing_keys.rs": {
+        "assertion_macros": {
+          "assert": 2,
+          "assert_eq": 4,
+          "assert_ne": 1,
+          "bail": 4
+        },
+        "ignores": [],
+        "tests": [
+          "concurrent_rotations_leave_exactly_one_active_generation",
+          "consumer_resolution_rejects_orphans_and_wrong_kinds"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/staged_releases.rs": {
+        "assertion_macros": {
+          "assert": 22,
+          "assert_eq": 21,
+          "bail": 3,
+          "ensure": 11
+        },
+        "ignores": [],
+        "tests": [
+          "discarded_stage_relinquishes_only_its_current_roots_after_grace",
+          "publication_associations_are_unique_and_survive_supersession",
+          "release_requires_exact_indexed_commit_and_ready_publication",
+          "revision_cas_preserves_superseded_roots_through_grace",
+          "staged_releases_admits_full_fifty_thousand_object_inventory",
+          "staged_releases_migrates_existing_version_two_database",
+          "staged_releases_pointer_phase_serializes_with_draft_admission",
+          "staged_releases_require_complete_chunked_documents",
+          "summary_pagination_never_loads_private_inventory_documents"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/staged_retention_tests.rs": {
+        "assertion_macros": {
+          "assert": 15,
+          "assert_eq": 1
+        },
+        "ignores": [],
+        "tests": [
+          "expired_stage_publication_relinquishes_objects_after_multipart_settlement",
+          "staged_git_and_image_objects_survive_shared_stages_and_discard_grace",
+          "superseded_inventory_releases_only_its_unshared_objects_after_grace"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/surface_topology.rs": {
+        "assertion_macros": {
+          "assert": 8,
+          "assert_eq": 15,
+          "ensure": 1
+        },
+        "ignores": [],
+        "tests": [
+          "endpoint_grant_pin_batch_preserves_consumer_and_generation_boundaries",
+          "topology_batches_preserve_records_order_and_tenant_scope"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/tests/administration.rs": {
+        "assertion_macros": {
+          "assert": 14,
+          "assert_eq": 16
+        },
+        "ignores": [],
+        "tests": [
+          "audit_and_changeset_scope_containment",
+          "audit_exists_for_commit_is_specific_to_action_and_commit",
+          "deployment_default_records_one_valid_write_revision",
+          "list_audit_is_bounded_and_newest_first",
+          "mark_changeset_applied_commit_links_promoting_commit",
+          "record_audit_sanitizes_crlf_in_detail_and_label"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/tests/caches.rs": {
+        "assertion_macros": {
+          "assert": 12,
+          "assert_eq": 24
+        },
+        "ignores": [],
+        "tests": [
+          "caches_crud_and_servable_filter",
+          "list_caches_excludes_soft_deleted_org",
+          "native_reference_schema_upgrades_from_released_production_versions",
+          "registry_publication_inventory_is_stable_and_filter_bound",
+          "scope_operation_inventory_includes_only_descendant_scopes",
+          "standalone_cache_slugs_cannot_collide_with_stable_ids"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/tests/documentation.rs": {
+        "assertion_macros": {
+          "assert": 1,
+          "assert_eq": 12
+        },
+        "ignores": [],
+        "tests": [
+          "legacy_registry_object_conversion_follows_shared_mutability_policy"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/tests/identity.rs": {
+        "assertion_macros": {
+          "assert": 74,
+          "assert_eq": 51,
+          "assert_ne": 4,
+          "panic": 2
+        },
+        "ignores": [],
+        "tests": [
+          "approve_device_is_idempotent_one_token_per_approval",
+          "delete_user_re_checks_sole_ownership_in_tx",
+          "deleted_principal_deadens_unrevoked_credentials_and_grants",
+          "grant_membership_backstop_rejects_non_canonical_scopes",
+          "invitations_create_accept_and_expire",
+          "magic_links_single_use_and_expiry",
+          "memberships_grant_revoke_and_list",
+          "orgs_projects_and_principals_roundtrip",
+          "registry_identity_creation_does_not_invent_storage",
+          "registry_publication_multipart_state_retains_expired_backend_identity",
+          "repeated_session_validation_preserves_liveness_without_identical_writes",
+          "revoke_membership_owner_safe_keeps_one_owner",
+          "revoked_token_is_denied_immediately_without_grace",
+          "session_idle_and_absolute_timeouts_enforced",
+          "session_is_sudo_window",
+          "sessions_create_validate_expire_and_revoke",
+          "set_membership_role_owner_safe_blocks_last_owner_demotion",
+          "sibling_surface_scopes_are_isolated_and_slug_reuse_gets_new_identity",
+          "signup_policy_defaults_invite_only_and_round_trips",
+          "take_webauthn_challenge_is_scoped_by_kind",
+          "tokens_create_validate_revoke_and_list",
+          "tokens_expired_is_rejected",
+          "tokens_rotation_honors_grace_window"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/tests/mod.rs": {
+        "assertion_macros": {
+          "panic": 2
+        },
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/db/tests/registries.rs": {
+        "assertion_macros": {
+          "assert": 24,
+          "assert_eq": 59,
+          "assert_ne": 1
+        },
+        "ignores": [],
+        "tests": [
+          "git_changeset_records_ref_and_commit",
+          "instance_registry_slugs_cannot_collide_with_stable_ids",
+          "managed_registry_canonical_slug_and_scope_lookup",
+          "registry_crawl_policy_and_llms_defaults_and_round_trip",
+          "snapshot_materializes_only_the_exact_signed_container_root",
+          "snapshot_replace_is_idempotent",
+          "snapshot_rows_are_bounded_into_multirow_statements",
+          "stale_index_failure_cannot_replace_a_newer_success"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/tests/releases.rs": {
+        "assertion_macros": {
+          "assert": 16,
+          "assert_eq": 24
+        },
+        "ignores": [],
+        "tests": [
+          "channel_floors_persist_and_overwrite",
+          "empty_registry_publication_object_class_is_complete",
+          "pointer_advance_accepts_a_raced_retry_for_the_same_publication",
+          "registry_delete_rejects_active_publication_without_partial_history",
+          "registry_index_mutation_waits_for_an_active_publication",
+          "registry_publication_inherits_exact_reusable_evidence",
+          "registry_publication_manifest_is_invisible_and_exact",
+          "update_channels_replaces_only_channels"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/tests/runtime.rs": {
+        "assertion_macros": {
+          "assert": 65,
+          "assert_eq": 82,
+          "assert_ne": 3,
+          "panic": 4
+        },
+        "ignores": [],
+        "tests": [
+          "approve_device_after_deny_mints_nothing",
+          "authorization_context_rejects_extraneous_closure_rows",
+          "change_comments_and_reviews_record_and_list_in_order",
+          "close_reopen_preserves_draft_auto_merge",
+          "closure_resolution_resolves_refs_and_reverse_deps",
+          "device_flow_deny_and_unknown",
+          "device_flow_expiry_blocks_approval",
+          "device_flow_full_path_with_scope_clamping",
+          "draft_signing_key_is_generated_once_and_persists",
+          "failed_forward_migration_rolls_back_schema_and_marker",
+          "failure_marks_state_without_dropping_index",
+          "fresh_schema_is_final_and_foreign_key_clean",
+          "generated_relational_ids_are_positive_and_worker_exact",
+          "migrate_refuses_pre_cutover_version_collision",
+          "migrate_register_and_reopen",
+          "migration_statements_translate_for_postgres_and_mysql",
+          "mirror_creation_rejects_unsafe_targets",
+          "mysql_migration_replay_helpers_cover_every_ddl_shape",
+          "production_baseline_concurrent_installation_converges",
+          "production_baseline_keeps_portable_recovery_columns",
+          "production_baseline_rejects_incompatible_ledgers_without_changing_data",
+          "purge_only_after_grace_window",
+          "quota_defaults_to_unlimited_and_round_trips",
+          "root_crawl_policy_and_overrides_round_trip",
+          "sanitize_log_text_strips_c0_controls_but_keeps_tab",
+          "soft_delete_excludes_from_serving_then_restore",
+          "store_backed_images_remain_discoverable_without_legacy_object_roots",
+          "usage_accumulates_and_drives_would_exceed_quota",
+          "whole_surface_reads_prefer_the_reconciled_writer"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/tests/tenancy.rs": {
+        "assertion_macros": {
+          "assert": 32,
+          "assert_eq": 26,
+          "assert_ne": 1
+        },
+        "ignores": [],
+        "tests": [
+          "concurrent_owner_revokes_preserve_one_owner",
+          "create_org_backstop_rejects_non_segment_slugs",
+          "create_org_initializes_quota_usage",
+          "deleted_co_owner_cannot_mask_the_last_live_human_owner",
+          "planned_project_create_and_delete_emit_one_atomic_history_chain",
+          "purge_is_no_op_for_org_restored_in_window",
+          "reserve_org_usage_is_atomic_and_charges_deltas",
+          "sole_owner_delete_blocked_then_transfer_succeeds"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/tests/topology_1.rs": {
+        "assertion_macros": {
+          "assert": 49,
+          "assert_eq": 39
+        },
+        "ignores": [],
+        "tests": [
+          "binding_read_sql_projects_only_non_sensitive_columns",
+          "bindings_use_only_the_typed_topology_shape",
+          "degraded_registry_placement_remains_eligible_for_publication_repair",
+          "instance_resources_require_explicit_organization_grants",
+          "registry_placement_delete_detaches_only_terminal_placement_history",
+          "signed_images_require_complete_exact_placement_presence_and_remain_gc_roots",
+          "topology_operation_retry_is_persistently_idempotent",
+          "topology_regrant_cannot_race_a_soft_deleted_scope",
+          "unused_topology_binding_can_be_checked_and_deleted"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/tests/topology_2.rs": {
+        "assertion_macros": {
+          "assert": 18,
+          "assert_eq": 20
+        },
+        "ignores": [],
+        "tests": [
+          "topology_orders_named_placements_and_rejects_stale_versions",
+          "topology_v34_opens_and_rejects_xor_and_location_collisions"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/tests/webhooks.rs": {
+        "assertion_macros": {
+          "assert": 8,
+          "assert_eq": 23,
+          "assert_ne": 1
+        },
+        "ignores": [],
+        "tests": [
+          "registry_configuration_cas_commits_head_history_audit_and_outbox_once",
+          "registry_delete_cas_commits_history_audit_and_outbox_once",
+          "webhook_limit_is_serialized_inside_the_create_transaction"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/topology.rs": {
+        "assertion_macros": {
+          "assert": 38,
+          "assert_eq": 35,
+          "assert_ne": 1,
+          "bail": 69
+        },
+        "ignores": [],
+        "tests": [
+          "domain_probe_completion_promotes_endpoint_and_requeues_routes_atomically",
+          "endpoint_host_exists_with_several_endpoints_on_one_host",
+          "gateway_creation_rejects_ineligible_endpoint_atomically",
+          "gateway_inventory_preserves_owner_and_requires_current_active_grant",
+          "gateway_revision_reuses_an_unchanged_path_reservation",
+          "normalizes_route_paths",
+          "oci_route_side_table_masks_web_and_serializes_enabled_registry_route",
+          "oci_routes_require_root_hub_proxy_delivery",
+          "rejects_open_route_variants_and_forged_access_digests",
+          "reservation_digest_commits_to_path_and_url",
+          "retained_key_digest_blocks_cross_version_url_reuse",
+          "route_mutation_and_probe_outbox_commit_atomically_and_deduplicate",
+          "route_probe_outbox_failure_rolls_back_the_route_mutation",
+          "route_update_cancels_stale_probe_and_stale_evidence_is_rejected"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/db/worker_jobs.rs": {
+        "assertion_macros": {
+          "assert": 2,
+          "assert_eq": 4,
+          "bail": 8,
+          "panic": 2
+        },
+        "ignores": [],
+        "tests": [
+          "completed_jobs_deduplicate_and_expired_claims_resume",
+          "operation_identity_cannot_alias_another_payload"
+        ]
+      },
+      "crates/hub/aos-hub-db/src/dialect.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/lib.rs": {
+        "assertion_macros": {},
+        "ignores": [],
+        "tests": []
+      },
+      "crates/hub/aos-hub-db/src/value.rs": {
+        "assertion_macros": {
+          "assert": 3,
+          "assert_eq": 15,
+          "bail": 4
+        },
+        "ignores": [],
+        "tests": [
+          "out_of_range_and_null_errors",
+          "reads_typed_columns",
+          "round_trips_scalars",
+          "rows_round_trip_across_the_worker_database_protocol"
+        ]
+      }
+    },
+    "test_attributes": 281
+  },
+  "schema_version": 1,
+  "status": "Conservative default and all-feature native database tests, strict Clippy, Rustdoc and formatting passed"
+}

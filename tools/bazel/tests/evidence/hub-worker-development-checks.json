@@ -1,0 +1,39 @@
+{
+  "limits": [
+    "Metadata compares package identity with a temporary Cargo manifest oracle; configured inventories execute no external compilation actions.",
+    "The developer CLI check routes all 40 families, including the five Worker families and their explicit SDK update profiles, through mocked packaged launchers. Runtime compilation and editor checks are separate.",
+    "The two bindgen regression cases exclude only numeric function-index trampolines and their numeric collision suffixes. Other public exports remain part of the comparison.",
+    "Runtime, uncached compiler execution, full compiler argument equivalence, performance acceptance, production migration and Cargo removal require separate evidence."
+  ],
+  "metadata": {
+    "configured_selections": 50,
+    "distinct_rust_target_labels": 529,
+    "report_sha256": "b62a930ece81dabe2f6f4dad94457e799d03a271dbcca6778260d2f50aa4ba65"
+  },
+  "metadata_and_cli_log_sha256": "98a8ede831693b821e9a9775371cb729e86f2f3f5d3bcd553d2495c23b026819",
+  "policy": {
+    "command": "PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools/bazel/tests -p test_*.py",
+    "executed": 209,
+    "failed": 0,
+    "log_sha256": "e2db9418d0967bc3ebdc453e97cbd4ad97568caeb5ed90edac8c695b21e3235a"
+  },
+  "reports": {
+    "aos-dev-cli": {
+      "derivation": "/nix/store/bkidcs5k5danwc9157g429zbslnyhwjk-aos-dev-cli-check-0.drv",
+      "derivation_sha256": "6141f669f6b19bf69fe5f0ec40f417cfed189dd0af668526ebc299acb1ec06c8",
+      "output": "/nix/store/3xz5inxqdy1c9n3y6d71whkb4qdwvdsi-aos-dev-cli-check-0"
+    },
+    "core-evaluation": {
+      "derivation": "/nix/store/2fd72wbqn7gs55dc38j2j5hf5yc3jgkc-aos-native-evaluation-checks-0.drv",
+      "derivation_sha256": "d83cde141abc7981f15d17400bc2283f48d79d077b54e8f24f6192c6d05d864a",
+      "output": "/nix/store/iibqjj9fi7s68zbhh7psvrp3dbimlvlv-aos-native-evaluation-checks-0"
+    },
+    "package-metadata-parity": {
+      "derivation": "/nix/store/w2kp4g8kndxycna28qq2axq379n77wgb-aos-bazel-package-metadata-parity.drv",
+      "derivation_sha256": "7b1b04fdc1810ee41b3c9643b71324906504ca31384d138f84de7d315cf248d2",
+      "output": "/nix/store/67x34jwcrzaijv3fsx4nfrrz3bxkvrcq-aos-bazel-package-metadata-parity"
+    }
+  },
+  "schema_version": 1,
+  "status": "Worker package metadata, core evaluation, developer command routing and build-policy checks passed"
+}

@@ -95,6 +95,10 @@ impl Database {
     ///
     /// Returns an error when the expected version is stale or a database write
     /// fails.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn configure_ability_deployment_reporter(
         &self,
         registry_id: i64,

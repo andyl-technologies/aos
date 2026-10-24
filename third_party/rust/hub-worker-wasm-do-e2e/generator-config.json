@@ -1,0 +1,18 @@
+{
+  "annotations": {},
+  "generate_binaries": false,
+  "generate_build_scripts": true,
+  "rendering": {
+    "generate_cargo_toml_env_vars": true,
+    "generate_rules_license_metadata": false,
+    "generate_target_compatible_with": true,
+    "incompatible_no_root_alias_targets": false,
+    "regen_command": "aos-dev bazel update-deps hub-worker-wasm-do-e2e",
+    "repository_name": "aos_hub_worker_wasm_do_e2e_crates"
+  },
+  "supported_platform_triples": [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "wasm32-unknown-unknown"
+  ]
+}

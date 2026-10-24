@@ -336,6 +336,8 @@ pub(super) fn confirm_destructive(yes: bool, action: &str) -> Result<bool> {
 /// # Errors
 ///
 /// Returns an error if request validation, credential resolution, or a hub API call fails.
+// Resource identity and typed plan/apply methods must stay explicit at this shared boundary.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn consumer_scope_mutation(
     printer: &Printer,
     access: &crate::cli::HubAccessArgs,
@@ -439,6 +441,8 @@ pub(super) async fn delete_topology_resource(
 /// # Errors
 ///
 /// Returns an error if request validation, credential resolution, or a hub API call fails.
+// One lifecycle path binds the CLI selectors to their typed plan/apply methods.
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn boundary_lifecycle_mutation(
     printer: &Printer,
     access: &crate::cli::HubAccessArgs,

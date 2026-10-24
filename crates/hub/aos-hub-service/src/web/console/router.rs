@@ -123,7 +123,6 @@ fn management_get() -> MethodRouter<SharedState> {
 }
 
 /// Builds the shared authentication and browser-console router.
-#[must_use]
 pub fn console_router(deps: ConsoleDeps) -> Router {
     DeclaredRouter::new()
         .route(

@@ -5,6 +5,10 @@
 //! Command workflows use terminal presentation; signing adapters and local stage
 //! operations expose domain inputs independently of that presentation.
 
+// Native publication uses host time, signing entropy, and process-local lookup
+// tables. These operations are outside Crucible's replayable state paths.
+#![allow(clippy::disallowed_methods, clippy::disallowed_types)]
+
 mod commands;
 mod error;
 mod initial_sync;
@@ -1622,7 +1626,7 @@ mod tests {
             parsed.registry.branch.as_deref(),
             Some("feature/quoted-url")
         );
-        assert_eq!(parsed.registry.signing.unwrap().required, false);
+        assert!(!parsed.registry.signing.unwrap().required);
     }
 
     #[tokio::test]

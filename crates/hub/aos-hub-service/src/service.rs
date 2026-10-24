@@ -60,7 +60,7 @@ mod staged_releases;
 mod staged_releases_tests;
 mod surface_topology;
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use anyhow::Context as _;
@@ -514,6 +514,10 @@ fn add_release_retention_reasons(
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 fn insert_retention_reason(
     reasons: &mut BTreeMap<String, aos_hub_db::db::RetentionRefreshReason>,
     source_kind: &str,
@@ -1086,6 +1090,10 @@ fn normalize_service_account_name(value: &str) -> Result<String, RpcError> {
 }
 
 /// Build the wire [`pb::Webhook`] for a webhook subscription under `org_slug`.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 fn webhook_message(
     id: i64,
     org_slug: String,
@@ -1266,12 +1274,12 @@ fn advance_multipart_sha256(
         "multipart SHA-256 state is invalid"
     );
     let mut state = [0_u32; 8];
-    for (word, bytes) in state.iter_mut().zip(state_bytes.chunks_exact(4)) {
-        *word = u32::from_be_bytes(bytes.try_into()?);
+    for (word, bytes) in state.iter_mut().zip(state_bytes.as_chunks::<4>().0.iter()) {
+        *word = u32::from_be_bytes(*bytes);
     }
 
     let complete = body.len() / 64 * 64;
-    for chunk in body[..complete].chunks_exact(64) {
+    for chunk in body[..complete].as_chunks::<64>().0 {
         let block = sha2::digest::generic_array::GenericArray::clone_from_slice(chunk);
         sha2::compress256(&mut state, std::slice::from_ref(&block));
     }
@@ -1287,7 +1295,7 @@ fn advance_multipart_sha256(
                 .context("multipart SHA-256 bit length overflowed")?
                 .to_be_bytes(),
         );
-        for chunk in tail.chunks_exact(64) {
+        for chunk in tail.as_chunks::<64>().0 {
             let block = sha2::digest::generic_array::GenericArray::clone_from_slice(chunk);
             sha2::compress256(&mut state, std::slice::from_ref(&block));
         }

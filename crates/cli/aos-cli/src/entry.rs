@@ -334,16 +334,15 @@ async fn run(cli: &Cli, printer: &Printer) -> Result<()> {
         output,
         ..
     } = &cli.command
+        && source.as_deref() == Some("runtime")
     {
-        if source.as_deref() == Some("runtime") {
-            return commands::runtime_docs::run(
-                path.as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("runtime document path is absent"))?,
-                format.as_deref(),
-                output.as_deref(),
-                printer,
-            );
-        }
+        return commands::runtime_docs::run(
+            path.as_deref()
+                .ok_or_else(|| anyhow::anyhow!("runtime document path is absent"))?,
+            format.as_deref(),
+            output.as_deref(),
+            printer,
+        );
     }
 
     // Cache commands use NixCli (classic nix commands), not NixRunner.

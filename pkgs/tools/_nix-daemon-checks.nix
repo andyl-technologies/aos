@@ -161,8 +161,8 @@ in {
       mkdir -p /dev/pts
       mount -t devpts devpts /dev/pts -o newinstance,ptmxmode=0666,mode=0620
       ln -sf pts/ptmx /dev/ptmx
-      mkdir -p /etc/aos/packages/nix-daemon /var/cache/nix-build /nix/var/nix/daemon-socket
-      cp ${nativeFile}/nix.conf /etc/aos/packages/nix-daemon/nix.conf
+      mkdir -p /etc/packages/nix-daemon /var/cache/nix-build /nix/var/nix/daemon-socket
+      cp ${nativeFile}/nix.conf /etc/packages/nix-daemon/nix.conf
       cat > /etc/passwd <<'PASSWD'
       root:x:0:0:root:/root:${pkgs.bash}/bin/bash
       client:x:1000:100:client:/tmp:${pkgs.bash}/bin/bash
@@ -178,7 +178,7 @@ in {
       nixbld:x:30000:nixbld1,nixbld2,nixbld3,nixbld4
       GROUP
       printf 'nixbld1:!*:::::::\nnixbld2:!*:::::::\nnixbld3:!*:::::::\nnixbld4:!*:::::::\n' > /etc/shadow
-      export NIX_CONF_DIR=/etc/aos/packages/nix-daemon
+      export NIX_CONF_DIR=/etc/packages/nix-daemon
       export NIX_REMOTE=local
       ${pkgs.nix}/bin/nix-store --init --option build-users-group ""
       ${pkgs.nix}/bin/nix-store --load-db < /usr/lib/aos/nix-registration
@@ -208,7 +208,7 @@ in {
         builder = "''${bash}/bin/bash";
         args = [ "-c" '''
           set -euo pipefail
-          test ! -e /etc/aos/packages/nix-daemon/nix.conf
+          test ! -e /etc/packages/nix-daemon/nix.conf
           test ! -e /tmp/host-only-sentinel
           ''${coreutils}/bin/sleep 15
           ''${coreutils}/bin/mkdir "$out"

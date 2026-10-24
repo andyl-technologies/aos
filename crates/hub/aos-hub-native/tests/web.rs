@@ -98,7 +98,10 @@ async fn unavailable_browser_data_is_a_page_and_not_an_empty_catalog() {
     use aos_hub_db::backend::{Backend as _, SqlxBackend};
 
     let backend = SqlxBackend::connect_sqlite(":memory:").await.unwrap();
-    let SqlxBackend::Sqlite(pool) = &backend else {
+    // Other variants exist when the PostgreSQL or MySQL features are enabled.
+    #[allow(irrefutable_let_patterns)]
+    let SqlxBackend::Sqlite(pool) = &backend
+    else {
         panic!("expected SQLite test backend");
     };
     let writer = SqlxBackend::Sqlite(pool.clone());

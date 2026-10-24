@@ -1522,7 +1522,7 @@ mod tests {
         ];
 
         for (name, version) in schemas {
-            let row = format!("{name}\t{version}\tcrucible-qemu::qmp::");
+            let row = format!("{name}\t{version}\tcrucible-qemu-host::qmp::");
             assert!(
                 registry.lines().any(|line| line.starts_with(&row)),
                 "missing current QMP schema {name}"

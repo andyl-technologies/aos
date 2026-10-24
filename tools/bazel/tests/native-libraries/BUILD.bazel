@@ -1,0 +1,47 @@
+load("@rules_rust//rust:defs.bzl", "rust_doc_test")
+load("//tools/bazel/rules:compile.bzl", "cc_binary", "cc_library", "rust_binary", "rust_library")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+
+exports_files(["main.c"])
+
+cc_library(
+    name = "probe",
+    srcs = ["probe.c"],
+    hdrs = ["probe.h"],
+    deps = ["@aos_native//:sqlite", "@aos_native//:zstd"],
+    visibility = ["//tools/bazel/tests/static-runtime:__pkg__"],
+)
+
+cc_binary(
+    name = "c_app",
+    srcs = ["main.c"],
+    deps = [":probe"],
+)
+
+rust_binary(
+    name = "rust_app",
+    srcs = ["main.rs"],
+    edition = "2024",
+    link_deps = [":probe"],
+)
+
+# A native provider's source-file closure inputs must survive the conversion
+# from compile action paths to the doctest runfiles tree.
+rust_library(
+    name = "rust_library",
+    crate_name = "native_library_fixture",
+    srcs = ["lib.rs"],
+    edition = "2024",
+    link_deps = [":probe"],
+)
+
+rust_doc_test(
+    name = "doc",
+    crate = ":rust_library",
+)
+
+aos_license_check(
+    name = "license_closure",
+    roots = [":c_app", ":rust_app", ":rust_library"],
+    license_domain = "apache-host",
+)

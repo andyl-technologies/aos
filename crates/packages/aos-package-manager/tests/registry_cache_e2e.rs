@@ -395,6 +395,10 @@ fn assert_stock_nix_can_query_signed_cache(
     Ok(())
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "This native test bounds real subprocess or solver execution with the host clock."
+)]
 fn command_output_with_timeout(
     mut command: Command,
     timeout: Duration,

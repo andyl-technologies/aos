@@ -1,0 +1,126 @@
+"""Runs ordinary rules_rust libtest artifacts with isolated case scheduling."""
+
+load("@aos_tools//:paths.bzl", "AOS_TOOLS")
+load("@rules_rust//rust:defs.bzl", "rust_test")
+load(":license.bzl", "license_tags")
+load(":rust_package.bzl", "rust_package_attributes")
+
+def _runfile(ctx, file):
+    path = file.short_path
+    if path.startswith("../"):
+        path = path[3:]
+    else:
+        path = ctx.workspace_name + "/" + path
+    return '"${TEST_SRCDIR:?}/"' + _quote(path)
+
+def _quote(value):
+    return "'" + value.replace("'", "'\\''") + "'"
+
+def _libtest_impl(ctx):
+    binary = ctx.executable.binary
+    if ctx.attr.jobs < 1:
+        fail("test concurrency must be positive")
+    script = ctx.actions.declare_file(ctx.label.name)
+    command = [
+        _quote(AOS_TOOLS.python), _runfile(ctx, ctx.file._runner),
+        "--binary", _runfile(ctx, binary),
+        "--policy", _runfile(ctx, ctx.file._policy),
+        "--package", _quote(ctx.attr.package_name),
+        "--jobs", str(ctx.attr.jobs),
+    ]
+    if ctx.file.setup:
+        command = [_runfile(ctx, ctx.file.setup)] + command
+    if ctx.attr.allow_empty:
+        command.append("--allow-empty")
+    if ctx.attr.allow_ignored_only:
+        command.append("--allow-ignored-only")
+    runtime_files = [ctx.file.setup] if ctx.file.setup else []
+    exports = []
+    if len(ctx.attr.runfile_env_names) != len(ctx.attr.runfile_env_files):
+        fail("runfile environment names and inputs differ")
+    for name, target in zip(ctx.attr.runfile_env_names, ctx.attr.runfile_env_files):
+        files = target[DefaultInfo].files.to_list()
+        if len(files) != 1:
+            fail("runfile environment input must name exactly one file: " + name)
+        runtime_files.extend(files)
+        exports.append("export " + name + "=" + _runfile(ctx, files[0]) + "\n")
+    ctx.actions.write(script,
+        "#!" + AOS_TOOLS.bash + "\nset -euo pipefail\n" + "".join(exports) + "exec " + " ".join(command) + ' "$@"\n',
+        is_executable = True)
+    runfiles = ctx.runfiles(files = [
+        binary, ctx.file._runner, ctx.file._policy,
+        ctx.file._python, ctx.file._bash, ctx.file._tool_identity,
+    ] + runtime_files)
+    runfiles = runfiles.merge(ctx.attr.binary[DefaultInfo].default_runfiles)
+    environment = ctx.attr.binary[RunEnvironmentInfo].environment if RunEnvironmentInfo in ctx.attr.binary else {}
+    return [
+        DefaultInfo(executable = script, runfiles = runfiles),
+        RunEnvironmentInfo(environment = environment),
+    ]
+
+_libtest_test = rule(
+    implementation = _libtest_impl,
+    test = True,
+    attrs = {
+        "binary": attr.label(mandatory = True, executable = True, cfg = "target"),
+        "setup": attr.label(allow_single_file = True, executable = True, cfg = "exec"),
+        "package_name": attr.string(mandatory = True),
+        "jobs": attr.int(default = 4),
+        "allow_empty": attr.bool(default = False),
+        "allow_ignored_only": attr.bool(default = False),
+        "runfile_env_names": attr.string_list(),
+        "runfile_env_files": attr.label_list(allow_files = True),
+        "_runner": attr.label(default = "//tools/bazel/testing:runner.py", allow_single_file = True),
+        "_policy": attr.label(default = "//tools/bazel/testing:policy.json", allow_single_file = True),
+        "_python": attr.label(default = "@aos_tools//:python", allow_single_file = True),
+        "_bash": attr.label(default = "@aos_tools//:bash", allow_single_file = True),
+        "_tool_identity": attr.label(default = "@aos_tools//:closure.json", allow_single_file = True),
+    },
+)
+
+def aos_rust_test(name, package_name = None, package = None, jobs = 4, allow_empty = False, allow_ignored_only = False, runfile_env = {}, setup = None, license_domain = None, tags = [], timeout = "long", size = "medium", args = [], **kwargs):
+    """Preserves Rust compilation/runfiles while replacing only test scheduling."""
+    if kwargs.get("env_inherit", []):
+        fail("declare test environment through env; ambient inheritance is not supported")
+    runfile_env_names = sorted(runfile_env)
+    for variable in runfile_env_names:
+        allowed = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_0123456789"
+        if not variable or variable[0] in "0123456789" or any([character not in allowed for character in variable.elems()]):
+            fail("invalid runfile environment variable: " + variable)
+        if variable in kwargs.get("env", {}):
+            fail("test environment variable has multiple declarations: " + variable)
+    if package != None:
+        if package_name != None and package_name != package.name:
+            fail("Rust test conflicts with package name: " + package.name)
+        if license_domain != None and license_domain != package.license_domain:
+            fail("Rust test conflicts with package license domain: " + package.name)
+        package_name = package.name
+        license_domain = package.license_domain
+        kwargs = rust_package_attributes(package, kwargs)
+    if not package_name:
+        fail("Rust test requires a package identity")
+    rust_test(
+        name = name + "_binary",
+        tags = license_tags(tags, license_domain or "apache-host") + ["manual", "aos-libtest-artifact"],
+        **kwargs
+    )
+    test_attributes = {}
+    for key in ["visibility", "target_compatible_with", "exec_compatible_with"]:
+        if key in kwargs:
+            test_attributes[key] = kwargs[key]
+    _libtest_test(
+        name = name,
+        binary = ":" + name + "_binary",
+        package_name = package_name,
+        setup = setup,
+        jobs = jobs,
+        allow_empty = allow_empty,
+        allow_ignored_only = allow_ignored_only,
+        tags = tags,
+        timeout = timeout,
+        size = size,
+        args = args,
+        runfile_env_names = runfile_env_names,
+        runfile_env_files = [runfile_env[variable] for variable in runfile_env_names],
+        **test_attributes
+    )

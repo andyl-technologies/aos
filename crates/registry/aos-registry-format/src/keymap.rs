@@ -252,6 +252,7 @@ pub fn is_producer_document(path: &str) -> bool {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

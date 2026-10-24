@@ -1,0 +1,2380 @@
+{
+  "baseline": "qemu-host-cargo-baseline.json",
+  "command": "nix-build tools/bazel/tests/qemu-host.nix -A all --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "configuration": "/nix/store/wlrk7a2afn4z6g3p5y32zxs47nfv57dn-aos-bazel-configuration.json",
+  "configuration_sha256": "c9b9ac0bc4556b320dbe8189b4abe8ccac6152a5195dbf7003d2654f345e1a27",
+  "derivation": "/nix/store/az0yig1qrqnzd1m21lf0d75p7xc5ys64-aos-bazel-qemu-host-qualified-checks.drv",
+  "editor_crate_graph_acyclic": true,
+  "editor_parity": {
+    "aggregate_statistics_comparable": false,
+    "analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 0,
+        "total": 384680,
+        "unknown": 27
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 74325,
+        "unknown": 0
+      }
+    },
+    "cargo_analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 384,
+        "total": 1452138,
+        "unknown": 946
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 73,
+        "total": 281535,
+        "unknown": 133
+      }
+    },
+    "comparison_scope": [
+      "crates/crucible/qemu/crucible-qemu-host"
+    ],
+    "diagnostics": [
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/bounded_cbor/tests.rs",
+        "109:39",
+        "109:40",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/bounded_cbor/tests.rs",
+        "126:55",
+        "126:56",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/bounded_cbor/tests.rs",
+        "12:65",
+        "12:66",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/bounded_cbor/tests.rs",
+        "132:39",
+        "132:40",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/bounded_cbor/tests.rs",
+        "146:35",
+        "146:36",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/bounded_cbor/tests.rs",
+        "30:35",
+        "30:36",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/bounded_cbor/tests.rs",
+        "35:61",
+        "35:62",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/bounded_cbor/tests.rs",
+        "45:69",
+        "45:70",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/bounded_cbor/tests.rs",
+        "64:47",
+        "64:48",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/bounded_cbor/tests.rs",
+        "79:43",
+        "79:44",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/bounded_cbor/tests.rs",
+        "96:47",
+        "96:48",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/fault_action_sink/evidence.rs",
+        "206:23",
+        "206:25",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/fault_action_sink/result_validation.rs",
+        "164:29",
+        "164:31",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/fault_action_sink/transaction.rs",
+        "477:25",
+        "477:27",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/evidence.rs",
+        "290:30",
+        "290:32",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/evidence.rs",
+        "378:34",
+        "378:36",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/evidence.rs",
+        "58:41",
+        "58:65",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/evidence/event_evidence.rs",
+        "215:21",
+        "215:23",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/evidence/event_evidence.rs",
+        "216:20",
+        "216:22",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/evidence/event_evidence.rs",
+        "241:10",
+        "241:12",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/evidence/event_evidence.rs",
+        "242:17",
+        "242:19",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/evidence/event_evidence.rs",
+        "353:18",
+        "353:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/evidence/event_evidence.rs",
+        "354:25",
+        "354:27",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/lifecycle_tests.rs",
+        "324:41",
+        "324:65",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/lifecycle_tests.rs",
+        "332:14",
+        "332:16",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/lifecycle_tests.rs",
+        "367:25",
+        "367:27",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/test_support.rs",
+        "191:34",
+        "191:36",
+        "type",
+        "{unknown}"
+      ]
+    ],
+    "raw_report": "/nix/store/pjl644jp83sdz7s8v5ki1gdvb9apgkka-aos-bazel-qemu-host-qualified-checks/editor-parity.json",
+    "roots": {
+      "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-host-owner-flight.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-live-block-realization.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-live-hot-fork-child-stress.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-live-hot-fork-child.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-live-plugin-install.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-rr-control-boundary-device-flight.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-whitebox-map-validate.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/src/lib.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/tests/crash_detection.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/tests/debug_gdbstub.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/tests/gate_basic_block_coverage.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/tests/gate_qemu_inert.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/tests/mapped_quantum.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/tests/plugin_control_channel.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/tests/production_fault_checkpoint.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/tests/protocol_inertness.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/tests/qmp.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/tests/qmp_launch_channel.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/tests/qmp_unix_socket.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/tests/qmp_vmstate_control.rs": [
+        "default"
+      ],
+      "crates/crucible/qemu/crucible-qemu-host/tests/shutdown.rs": [
+        "default"
+      ]
+    },
+    "unattributed_cargo_diagnostics": [],
+    "unselected_cargo_diagnostics_count": 1510
+  },
+  "file_sha256": {
+    "MODULE.bazel": "61e1471bff69b85ece857083316ca99653300163514717c6fbc855a3753bcbe8",
+    "crates/crucible/qemu/crucible-qemu-debug-gateway/BUILD.bazel": "a31eefa538a3f73dd62fa1f80164544aa0d75d8cef7858839ab2ded5e948deb6",
+    "crates/crucible/qemu/crucible-qemu-host/BUILD.bazel": "80d62e5bd32605bec33a0fcec3860467049c6e72c39368735ab904e97dbdfd36",
+    "crates/crucible/qemu/crucible-qemu-plugin/BUILD.bazel": "aa6721f78279e3a35d26a8e74a2b8dfa530db3ebfc059a356854aa19ceb00453",
+    "tests/build/_bazel-qemu-host.nix": "fc7cda0c1603edee676c1102150bb87e90eab52fee793a53e53c222f139c2621",
+    "tests/build/_bazel-rust-family.nix": "236efe00c06859df1c463303952c26bd16c4a4d74260fc222abdb5fab53d6f35",
+    "third_party/bazel/modules.json": "7f2b24f737ec76feed2049cd3ac7cad5ac30818aa730817a3f525a0d4b7217ec",
+    "third_party/rust/BUILD.bazel": "d8dfe68f5790b9d799f91dee7c58c55a0b19484a5252111454db196d2124ad29",
+    "third_party/rust/qemu-host/sources.json": "4353a0deef5fdbb45810e9ba5a279dfd50cae7d08d2b793b2328c5ddc9c00eb3",
+    "tools/bazel/metadata/export_rust_project.py": "d2d5010dbd2ff92fcc1929a1bc654f1b7bcf404f34a3361f33b278578c73a06d",
+    "tools/bazel/metadata/qemu-host-inventory.json": "861a85a697dc8331e0af39f863619aaac08642e8dc8823e03dabd091817e49f8",
+    "tools/bazel/tests/test_family_editor.py": "f2ae35c47baf0af41f66515dcf785caf0d801e150c0ed25fb117a241a998bdf7",
+    "tools/bazel/tests/test_rust_project.py": "2edd2544e186bfc4a71589c07e6c56563d981df8b9b22e2bfcb547808399bca2",
+    "tools/bazel/tests/verify_family_editor.py": "5dffbb725cbb2928126c2eabfcd14837ee50b6b82d7c38af67e3ae2c503f1433",
+    "tools/bazel/tests/verify_protocol.py": "9c5c7b334c3b3816b766de0b56418f09864de6f773f43b64d2986e1a92283183"
+  },
+  "first_party_cargo_manifests_in_bazel_workspace": false,
+  "first_party_rust_sha256": {
+    "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-host-owner-flight.rs": "d7a9b0ed789c6dc47865cfa9cd888b8a5f226bb12a7d9168ffc345adfa1ae4da",
+    "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-live-block-realization.rs": "8bc6f1c116f84b528dfa3176e119fad03fb08768a0e8518cea530871e3822cce",
+    "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-live-hot-fork-child-stress.rs": "efd37083f997f75388575bba4df1b7531586207c853529048defa1114a3cb66e",
+    "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-live-hot-fork-child.rs": "adb1722d622ffd85a7e91b336faa015acd7822457fe958cc6a5521c0b948c9f7",
+    "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-live-plugin-install.rs": "2d68fd93342bc0f1d686e3f8c59304e5b33d40e3346cfc3cae1fffe062cf4bae",
+    "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight.rs": "f53158456954707fc0d5398e6307e814f9294662df241d23327086060af7e882",
+    "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight/block_recovery_hot_fork.rs": "cd231b44e9acc672e23f2ff559ee7342017de951e61201cb50fd9b40d4d434c6",
+    "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight/partition_probe.rs": "5133ae9752a3b3c3db329c021339918fa6f44caabdd8bde565ed83aa8912eb31",
+    "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight/runtime_trace.rs": "7b1914f6929ba5f7cddfdff056aba98427c29f18394f48212ce925690f53cd50",
+    "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-production-plugin-flight/tests.rs": "de3ede6e9d9119a78e2e312cc9e5821605dc4b09e79ca26cbdbf54c1e969b93a",
+    "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-rr-control-boundary-device-flight.rs": "9f882966c3a36ca45c25e5a2e488435f657e17941b0078d049230de049ba02ff",
+    "crates/crucible/qemu/crucible-qemu-host/examples/crucible-qemu-whitebox-map-validate.rs": "8c1a787cdb8a8f4e028aa169b5da64984a1d23e815dbb6b9da31fcaa065d880c",
+    "crates/crucible/qemu/crucible-qemu-host/src/artifact_identity.rs": "26166847ab66314c67f56979c8623694368decd0df0269cdfcf4af18a4307eaf",
+    "crates/crucible/qemu/crucible-qemu-host/src/async_driver.rs": "c155eaa66f9f0a58741c2567b87a9abc1dfd38b94488d9ff12aa11301ced3a6f",
+    "crates/crucible/qemu/crucible-qemu-host/src/async_driver/driver.rs": "c904b6e6882e368822d9c90b6ee568de5f1e8f58d444019c71dcee6d9860fa8a",
+    "crates/crucible/qemu/crucible-qemu-host/src/async_driver/error.rs": "91756b7dcfd68b8b7c546a2c54f5de469f2495a1d934e732d09ef8fcdfb0226e",
+    "crates/crucible/qemu/crucible-qemu-host/src/async_driver/host_io_runtime.rs": "ebae32b3ad27957c0c676187feea0ab1d4f2e89ff50f016af6c7d41ab10c6c3f",
+    "crates/crucible/qemu/crucible-qemu-host/src/async_driver/hot_path.rs": "0b6cfa8b49ae186f823c248ed7d0a1d517cad2b839fcd4bd9848e2743dbc28d1",
+    "crates/crucible/qemu/crucible-qemu-host/src/async_driver/policy.rs": "e892a44f6dc8e0069e8d81866435c9b58dd535d207b9ad068e8dc692768b0ed4",
+    "crates/crucible/qemu/crucible-qemu-host/src/async_driver_test.rs": "e72c394f341b5f8581b3bcafa2726ad8037acbc63648f86ad645309c59197000",
+    "crates/crucible/qemu/crucible-qemu-host/src/block_realization_gate.rs": "38797406e79ff4a7df36ad5a70cdf68c1a2f2cbdcad1a8e2ca85b9978526ee33",
+    "crates/crucible/qemu/crucible-qemu-host/src/checkpoint.rs": "f45d878d0ee2a546a4a00c1a603c87df939865eb26832b5125a694fce9f802f3",
+    "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/bounded_cbor.rs": "d113b0692aa42cc4c6bc7db064074dfaf575788e0c10f88c1e02a614469ccf87",
+    "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/bounded_cbor/map.rs": "ba795f25b7311914683e9ca7fa52ea761dbcb6ea1474dffae07a5d415229fa8b",
+    "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/bounded_cbor/set.rs": "b149b472f18e582ecccb9a749afc87458ad8e9ed89d84aa6b0dad8907f634b92",
+    "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/bounded_cbor/tests.rs": "3cd0ffd0a43245c2b7799304f31344db53b747719a6e1533a8bf44fa0ff26264",
+    "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/host_io_accessors.rs": "a56ff1225cb54311031430552e769dc2fada537d24f95c16f916cf06b4f5625a",
+    "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/host_io_codec.rs": "6ff77bbd5de619d312bac16b5d06526825feafc8adee76a0c0eb3de82e7770b5",
+    "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/host_io_codec/resource.rs": "238f6fed45461dd4e534f5974c7adfa73b50671ec0ff9e6782dff7731b12fc62",
+    "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/node_codec.rs": "3a6620c91b7e5eaf01d7147c13b42e861cb1dcae21e134bb54f9607c6ca28af0",
+    "crates/crucible/qemu/crucible-qemu-host/src/checkpoint/tests.rs": "fb74f8a7413e17a63ebe6b5b7cb222586f770a64ac636c39bdeb26018a2b7a26",
+    "crates/crucible/qemu/crucible-qemu-host/src/console_observation.rs": "15d6a119d878710040ea3eac2e93eb98bb2ed1b732f38347b72b2b584bf01e86",
+    "crates/crucible/qemu/crucible-qemu-host/src/coverage.rs": "847abf3b04bb3dcac102f24b75f5cd4dda430164d9fb382cd1668c5058434ded",
+    "crates/crucible/qemu/crucible-qemu-host/src/crash_detection.rs": "2461c5033a9eb5efb7e3a742e32c26f5da1ab181a59612d547e8816169b8dae9",
+    "crates/crucible/qemu/crucible-qemu-host/src/exact_checkpoint_input.rs": "09c1bcc0b20f31805c310b3e65b3a26aca72031f3e06200ac47a7606226ff975",
+    "crates/crucible/qemu/crucible-qemu-host/src/fault_action_sink.rs": "4a10ee1cff1db68388f924852571af79654ca164a026299971b0262c26195330",
+    "crates/crucible/qemu/crucible-qemu-host/src/fault_action_sink/event_staging.rs": "2f36497c1ef5158ca575b9dce87d2b48b78208bc46a96fff8043591d0c93cc72",
+    "crates/crucible/qemu/crucible-qemu-host/src/fault_action_sink/evidence.rs": "64d70636c6fc835a602a96d64c60a8896e7338976fbd879309e933cfe454e7cb",
+    "crates/crucible/qemu/crucible-qemu-host/src/fault_action_sink/memory_payload.rs": "a6ad8e382a0f83df031201137bede3c30177fc72cbc238bd318b9f41dce8c90f",
+    "crates/crucible/qemu/crucible-qemu-host/src/fault_action_sink/node_payload.rs": "f7ea5460c029a7bf7c47dfc73e114477c47d76812e8f50727d6f73452f47c9e8",
+    "crates/crucible/qemu/crucible-qemu-host/src/fault_action_sink/node_payload/effect_fields.rs": "477991f18e8a290de0c25ce24680a272c60dda44ddda77137702563596ded317",
+    "crates/crucible/qemu/crucible-qemu-host/src/fault_action_sink/node_payload/encoding.rs": "6041b3b0280c095d3fb8fbc06468c3dfaa5791f2f8296c4af92fd78b54ba462f",
+    "crates/crucible/qemu/crucible-qemu-host/src/fault_action_sink/node_payload/payload.rs": "0a5c364633f2c4edd7a9d224dd38b37b047e0f9370ec9060e26681509dd4a009",
+    "crates/crucible/qemu/crucible-qemu-host/src/fault_action_sink/node_payload_test.rs": "c9311e27e5a01575f03403369184fa9ee0020af4c7c9ea0fb7447ac958e705ec",
+    "crates/crucible/qemu/crucible-qemu-host/src/fault_action_sink/result_validation.rs": "b7f59e96259345da292572394fecba05a467b467fcd151eb3df8bc2035cc1e91",
+    "crates/crucible/qemu/crucible-qemu-host/src/fault_action_sink/transaction.rs": "dca163451d52313a714b20a11b7fbb69ff2bad23915e4d449f78ed25597ebc2d",
+    "crates/crucible/qemu/crucible-qemu-host/src/fault_action_sink_tests.rs": "305c76519add36323688172d794e66746bcd36adbc49c90aa89aebb5b6fcc86c",
+    "crates/crucible/qemu/crucible-qemu-host/src/fault_capability.rs": "f501f32f39bc235a89e64e4a58a282723fb7adb7e47f5ed31e57e758785cd371",
+    "crates/crucible/qemu/crucible-qemu-host/src/fault_capability/world_node.rs": "6251c2afa0461dc78c3304899765c0ec103acc6c914b0a403936aee01fe2c56f",
+    "crates/crucible/qemu/crucible-qemu-host/src/fault_implementation.rs": "1b338e6cc81ab6150636ed80964ec26b84358bb5c122117a35f410eee4fe652b",
+    "crates/crucible/qemu/crucible-qemu-host/src/host_setup.rs": "d8305fd2831c4290246fe3eb13bb56b4d526eeff4f54c676492d80967cf266a3",
+    "crates/crucible/qemu/crucible-qemu-host/src/host_setup/admission.rs": "557dc11ae5b773611d344a9379fdf977f64d6ffe63872912e40ada149b4c5b19",
+    "crates/crucible/qemu/crucible-qemu-host/src/inertness.rs": "2be093ef99aa6e96cedd40979bd9e8e76d59e1c8aee509fb145ea75d2e4bbb0f",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch.rs": "3e86ca22e969bdb0392ed3ac4232f78ae71e2c92279cfa35bdb9240e8ea34f0c",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/canonical.rs": "e2fba63d8a787839d74e194b52da524c9dd14922bbbc4c5ffc1be989b9729516",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/control_channels.rs": "77a26bd92ddfc5a3cd5b39fc4bb6cf7d893eda700ff99602de38f5e5d4687853",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/crucible_accelerator.rs": "854b59f4912452d4aa772b3c966cd65eeda64dc40bff1e5f72b0366f87d06c96",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/crucible_shmem_9p.rs": "7d39edbb1bc13eb5c7dcde1127e06301be3652af4a624da76b7988b438f05159",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/crucible_shmem_block.rs": "dc1cd858426c0bde42a5d9a5af63f4a77a82ac818baeb6bacd9908b15af48082",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/crucible_shmem_network.rs": "f8672fbf1d34469639f37301eee1c6d62c4e796244af83556b0194267ca9f6fd",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/device_topology.rs": "f69f3a19ec145f7b24cf2b2c081844b249161a784b91dea11e098d55f826f22c",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/entropy.rs": "12c9aad8e1b8030058db34e99deb58a983a48b914763bfb2987558873087de09",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/error.rs": "7c252edbd6a1cc805aa6c3a12e634066fcea6d1ea403cb1a1b728829055d0865",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/fingerprint_projection.rs": "915c7cae7b64eb76b32908b71f845db302c6efaff71fd5123fdaa446b9e1daba",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/helpers.rs": "7407e61e92a947f52fcf269219765c295b8632b102eb008fe6a5492c10f9a8ff",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/modes.rs": "c0cb290624cd16cbc0d178a1ec41071a9a4f23a9cb8e3aed3f750f054079dd25",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/plugin_config.rs": "6bded01311675f330275a04fb18c49dd32bee95b9c8bccf02d2803088580ec5e",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/plugin_config/tests.rs": "9141c8cd2d30f03dd6d5708b0948d6f87b21ceae92c999a7940579ece6e38558",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/profile_tests.rs": "36f3c8ca2f6f1e4d84742f68a81256f8cb5a4ebbd268dce4252041834b9f288a",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/validation.rs": "1cd38e50b698ebb082edd4b558005d49f435cb1bdb342a4aad0c97348c53e3df",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/validation/values.rs": "cfcd9c2e1bd50570fb529ac58e53e5628807f77cc9c04e33fa77632b2aa90097",
+    "crates/crucible/qemu/crucible-qemu-host/src/launch/whitebox_setup.rs": "b9e7b4d93ef24b3ef0a9f13a0740a8d11c134781381dd985f7caa89e69d9a2b3",
+    "crates/crucible/qemu/crucible-qemu-host/src/lib.rs": "b43d2bcc2e80d163656e9a909fa6f9e1cc370b85347dc1541c54efda6fd03187",
+    "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_host.rs": "05b40acf686157373bc72539b391b36b0448813210a4b41907abb5feee1bb22b",
+    "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_process.rs": "b0303f859c2965a9d189b3c9dc8b0bbc078b9cf9a777e959ec1496c73c93bbb0",
+    "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_storage.rs": "29765ae75e3009c544da808e9ebaf296a4b4c734f1cadcba04d27c1277190389",
+    "crates/crucible/qemu/crucible-qemu-host/src/linux_attempt_storage/filesystem.rs": "b3e6673f525e5004cc9e0be6c451f0f616b2816d60f16c5baf87b7944e9a9dcb",
+    "crates/crucible/qemu/crucible-qemu-host/src/linux_cgroup.rs": "96dc5a5b85a338ee9babef73360e357be081cd3b17b1075ff8310e6e5cddf07e",
+    "crates/crucible/qemu/crucible-qemu-host/src/linux_cgroup/attempt_owner.rs": "737c16fd7961d60eb36d218060c1f73673dbd9d5d867e4dd7752921d70a1aa8d",
+    "crates/crucible/qemu/crucible-qemu-host/src/linux_cgroup/quarantine.rs": "1825980ab4d6c9084911f375aad1bdd5a7e090951f75c6f39bfe3bf5806ea63c",
+    "crates/crucible/qemu/crucible-qemu-host/src/live_plugin_gate.rs": "2bf3202349aabcd3068e83f2571dccac9cc558300752e3bd5f0059eeb9ba082c",
+    "crates/crucible/qemu/crucible-qemu-host/src/live_plugin_gate/error.rs": "5fff4d3467cfb18ea817feff766551ac8828c50c98178b894931030ddaeb1476",
+    "crates/crucible/qemu/crucible-qemu-host/src/live_plugin_gate/support.rs": "d285eb4f1f8559716927e6499fcc6317c3d2fc1d00c3623d5033d5216a146e32",
+    "crates/crucible/qemu/crucible-qemu-host/src/live_plugin_gate/unsupported.rs": "f1cdccc395927c22f314caf840e9864b9cf17fee03d1df3889932793bcac4863",
+    "crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum.rs": "81485b9e0c744c47e09e326df55e1c3642c2d9750f16803c8a1dce8e9f95c308",
+    "crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum/coverage_tests.rs": "c67209565480b73a37b233d0bd7289ae202df3fd28b0597493676ca53f4cc336",
+    "crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum/error.rs": "95ee6b423873c70897432e7b9c95c24fd046cd8107a94ae23c94fabe62fa43d7",
+    "crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum/fault_commands.rs": "e6d80211ab3bc8ebd0b0de4b4ea8862c4f2089f217ce0d8f2e4486cb26650ab7",
+    "crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum/fault_event_tests.rs": "f587079cf377aa9ce701c44bd08212239fb7c7ef6a3e4bd906e9c761c5d7a8f0",
+    "crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum/fingerprint.rs": "81cafdf5535acf406cdbbc6f02438d87fecbb16caa180a2e095d4d61183103d4",
+    "crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum/fingerprint_tests.rs": "4fb9133330ac620a0e1235b2e7d0a3238c7183893c00684d9c6ef3c3a04dc957",
+    "crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum/hot_fork_continuation_tests.rs": "99cae9c2e7b473caed9efd79d8609e680399f3d6105624b7f5a5d4f923264000",
+    "crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum/marker_drain.rs": "dc7f16fdc1e6d935b005150e439e1a39b2962713269a83ce74f49e7c217f5bf7",
+    "crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum/preemption.rs": "9b5e08ec54c1fb0a225b92bcb80e21b4cf5cd983a6a99b05afcf0fa7c893d409",
+    "crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum/restore.rs": "36b1fdfa86144dab38a908e54d310858ad097f73714be03b99f28b50f67c6601",
+    "crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum/restore_tests.rs": "12cdf5ae44278c8d17b69423fbaaba5f6c9a426819452102eaed3366bf5b765f",
+    "crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum/selectable_tests.rs": "fce2d1eec82599d5ffae90d05fe3386c33360de966d2fb4a9f17290026d302f4",
+    "crates/crucible/qemu/crucible-qemu-host/src/mapped_quantum/support.rs": "0c18ce1d61147bf0270b460e691699a28d03a8a924c8b6a0b696fc7665f56efb",
+    "crates/crucible/qemu/crucible-qemu-host/src/node.rs": "2f2ba38d0da05676e48e3f992b8dae0a9f20c3e43d83c597dbbb9fcde73f471f",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/async_step.rs": "e069fed4277130d5eeca3616f59192e268e1bff402b26169aa252deee6431014",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/channels.rs": "c1962fc12b5eeabfc7d7a69e2e48e6d1ea2e1997386c29ce138e69f4a563c0c9",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/error.rs": "f97b581458ba62d7a2937abc4b3037ddfb10cb674a2d44ed58142ef504156695",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/error/tests.rs": "1374ebd80a1201f80303dce7289bdb66b5b6606b9e6741d1f03456b23bfd854f",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/exact_snapshot.rs": "bd65f18e5f49b19889d61517d785e99fdb582082cd03995464bc0282832199dc",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/exact_snapshot/capture.rs": "525cdd343c93657366eb2742893ce89bba3bf6de4db1d86c9ba4f041582be272",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/fault_events.rs": "34f2aab541da11efb4c5f02105cc601a55b38dd3aef1c87f22cee6620f5323f7",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_child_console.rs": "06cd94b47f75c0880ed3695d56f56d628e26fa3c859cbe36a7581489eb9aeebc",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_child_files.rs": "07b2fdcd1bf83f32d43bf2f1cccae8137eacb072478715c7fa4880ded46e7985",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_child_qmp.rs": "52ba6f615a09fe45a08fcda931b7f353835bf7ab1c50220df616343274fad851",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_diagnostics.rs": "ee09eadcf17816181c6728465d3ab15db87f373cc8c68039a4afb460b1357527",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_diagnostics/checkpoint_stop.rs": "3c58c4e507df2c0af87a0c95d9916d1795fda7ae21ca9e11518f168a24fb83a9",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_diagnostics/control_stage.rs": "0a9b2de59f89cba1838d6e0a4b3f9852c3c3f8b8da40a4c6fe199481808896aa",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_diagnostics/live_drain.rs": "808c26604a8a13ffd4f6ee6c9e8ca95b13409036a6166c04b574a2f2df8d55b8",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_diagnostics/live_drain/tests.rs": "3b6e182c67e7b888b7c60bd4fff2a7fe1f60710fcece56016e7d78d001bf9492",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_diagnostics/native_stop_context.rs": "3618cfc28d52d40c063f49b53742f3d6f2e920cecea54642b4e7f9507922eaf5",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_diagnostics/network_output_context.rs": "baa1deb4c13afeed2d558f0bb4e0daaf5f65fcd1d14f13c71ae3ce7188eeaf75",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_diagnostics/staging.rs": "2f77f3dc57504cd53f4bcab8936704fb806147225d56b8e1a65fa19aa903cbd1",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_diagnostics/stop_notice_tests.rs": "07bf5418c724eded1707ff028ce45129b14dc0e20551a7da300285622898c966",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_diagnostics/summary.rs": "e37646e4ea9db31b0057976d07c021a70e601e38106312b3f1f38963f58531cf",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_disk.rs": "c40cf9d7e2270d2cb0981cd642b1c3967ed644b0182d37c717e660b2cc996a58",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_operation.rs": "0abd1f57e78a289c4bf7ca7e3365fac9c78e41fd675da319ade218d3b6b1780a",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_operation/node.rs": "b3569ab431c3a77250af5ad045b88e60d517d505af191b85ccf6e171448b2d0d",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_plugin_endpoints.rs": "7bf2d3382e5766dbf5754bb75e32360ed153911e05dfb09b1dce2484e7f4d053",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_preparation.rs": "ae6b8c6dbd62da2bfa6630083b56b86b206e81e3b349a79d27cd35d42b6405cd",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_process_contract.rs": "32e685daa88305e5d95766d9913b9877adaa8f491bd0d8a623ce9c3b09980f30",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_rearm.rs": "604c926c6d1a793f203e2bbfaba836cf4219ad643d076ef02ccd93f23ceb10b6",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_ring_image.rs": "b55cb2e5ef2bfa77ae8e75a0feac3cf449929aa7dd9f0a55fc807626fba74e10",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/hot_fork_scheduler_continuation.rs": "181e2c4ec553b67b2e88ca7eab55c492d835032c8babbf260409b008e3ba7c84",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/network_output.rs": "38793a20f96f2ab25565f224b9c01a9c8c1056950e25548e929e981ffec0a937",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/process_control.rs": "24dd94fcda86dd5e42bd76803b6e4afb8503a42e25b63e162dca9ed23e9e6df5",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/process_identity.rs": "b539069069bca98cac40c1609ced722c50505e2794c2b19d7eef56d37af8725f",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/test_support.rs": "3b452405275943302e665be299c22db468d5d67005ec00f10acdf60cd88ed5f8",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/test_support/hot_fork.rs": "1086a1aa83248a835f7bf21bb6b62bc10baabd9b233c2b5d7c5680888d693a08",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/test_support/hot_fork/io_inventory_tests.rs": "57662e47b4552f36beba8a7c0a7860f5c4a4096703058db59141118576c05c75",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/test_support/hot_fork/scripted_child.rs": "793e96f23fffdc59ce689f99c229ddf0ce025142f83eb6d4662cb5dc2b4d3170",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/tests/child_exit.rs": "3fede2a3aaa7b680cb1bc4897661666636548f4d1e67610b11658518a40cea07",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/tests/fault_command.rs": "9ceb72ddf1da82625ecfc350a37925ed237bbcbaaaf0a27f809b955e29fd89bf",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/tests/host_io_runtime.rs": "c9a835e9f1cd24e54d119d13274851b0720a63cf4ef4de139dfc2fb7d26b7ac2",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/tests/hot_fork.rs": "ab59f591c4f45df2f6233719a5d13559cb319e9d47665db970c364ea6966b063",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/tests/hot_fork/isolation.rs": "9468c47602845cc742d2b46db54440c40a97c9181e2fc2574b0db33a4f2a66a5",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/tests/network_output.rs": "eb679778c29bf72cff3481e6916b6fbd3b2714946a2b2e4bffd9966a35314529",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/tests/scripted_qmp.rs": "1f1f38e3a3bc56df6b1ea36a90b6ca2703f0d8f0be36e0b2016677221cd47a2a",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/tests/selectable_node_set.rs": "2b69b3626809d1e1cef706d39ca3190c96ec115b374486abb48fad185ee4d733",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/tests/sequence_restore.rs": "fc0c4455d76f1ebd1639d1fec26d58028f4c8f45ee0481272c8f4d79ee676c6c",
+    "crates/crucible/qemu/crucible-qemu-host/src/node/tests/shutdown_and_preemption.rs": "9a57044352d36a9d106f39116d88c8445f40c902c4093224367cfb141a1f6d46",
+    "crates/crucible/qemu/crucible-qemu-host/src/node_factory.rs": "8bd92f77d271865ae1e5b3715757596caaf4e680cb9616eeba9fdb8e5c461c97",
+    "crates/crucible/qemu/crucible-qemu-host/src/node_factory/restore_cleanup.rs": "ea92723ac7cce5960c6b85b12af46995ffc86f51f57c8088f91e021706c4c972",
+    "crates/crucible/qemu/crucible-qemu-host/src/node_factory/restore_plan.rs": "10519330a7db6367bd4a8b67681dec5bfbff246b17d6fe056d505633ef36b29a",
+    "crates/crucible/qemu/crucible-qemu-host/src/node_factory/tests.rs": "20c579dbad5068d0138cd690497799c4dd1c3a25655da6703600702138d0c547",
+    "crates/crucible/qemu/crucible-qemu-host/src/node_factory/validation.rs": "d0f84372c6fc3c7622e43b0070fb5236d86fc2cc6d433eb8de6afe62361a9028",
+    "crates/crucible/qemu/crucible-qemu-host/src/node_set.rs": "0fe664f72d9522619d5060013751b47338ad65aff0a1c05f650b80c7fe4b7b96",
+    "crates/crucible/qemu/crucible-qemu-host/src/node_set/block_boundary.rs": "4dfc5b87f25619ce22ff93ef9d8879a4a806b105452c680d28b2b3caee5b6a0a",
+    "crates/crucible/qemu/crucible-qemu-host/src/node_set/campaign_marker_boundary.rs": "096410a962ceb2bc25a36dbf80e098866352dfd78c1f618cbea01e3fc85b93b2",
+    "crates/crucible/qemu/crucible-qemu-host/src/node_set/collection.rs": "8dbf115d762c116f8bdb8f67298b2fcfff0634cd6af69d088aca0bc03a75afc7",
+    "crates/crucible/qemu/crucible-qemu-host/src/node_set/concurrent.rs": "4a7e6dc60f7adbae8fc4bc595cf4eca687fdb5e7bef4bb864dd7415e6c319ba4",
+    "crates/crucible/qemu/crucible-qemu-host/src/node_set/disk_seal.rs": "734653e8348fbbfaeeaf12a8d2eb035cb0286328c7abbfe08ca996ef0d81dc88",
+    "crates/crucible/qemu/crucible-qemu-host/src/node_set/fault_events.rs": "f6047c44cc75eac13701415f2fc80273fa256db8fd008e853c247c58c4b0e0dd",
+    "crates/crucible/qemu/crucible-qemu-host/src/node_set/lifecycle.rs": "a7a0708fc88d9dd0715e9154ae133dc260698dedef08f57c26fbab02342e365c",
+    "crates/crucible/qemu/crucible-qemu-host/src/node_tests.rs": "ce27876c66e5985dbfdb0d6b66f89f7e554f9aba13085f4165d1e5bca5e43555",
+    "crates/crucible/qemu/crucible-qemu-host/src/node_tests/exact_lifecycle_tests.rs": "1f43cac75cbcea6971315145bfc2ffb3198712de69214bfb3c36ea49cc7d0c0b",
+    "crates/crucible/qemu/crucible-qemu-host/src/node_tests/fault_event_budget.rs": "f3d12d8507355c951da9afc95178ebac59249fa1f835da4c5a73a1ca4600eba9",
+    "crates/crucible/qemu/crucible-qemu-host/src/node_tests/fingerprint.rs": "91d73d88aaca78435990c77f33e5c06c0b69107ed26dc0c13f2d2461b0f7854d",
+    "crates/crucible/qemu/crucible-qemu-host/src/plugin_control.rs": "0b8a70e1c4c576fb6131f821f28cd9ea32a882732cc6cd1d343158897b6083ed",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime.rs": "de57a990720aa65723e79fd6e03031f27146723e17255d2c3830d1bb598cc41c",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/checkpoint.rs": "c937fc5deb6fff57b5e0484cf3e2d26af9a463fb9c70e773d286bd319fb1e6a0",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/checkpoint_codec.rs": "dc30ca813e2d2a27cbd476e083ffc75520dee4d0ae4962747ca115c086a3028e",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/checkpoint_codec/preflight.rs": "a5af139d783152966ed26d68aa87797369aa07b156517b62c6fd27b1ae6902e5",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/checkpoint_codec/resource.rs": "5348de2ec5d55b86d225414939e8f4678802b77fe5451809863179f75ccea177",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/checkpoint_codec/tests.rs": "9eac9e9068f7f5f9a7ae2e139c8ef9ce647bb23c2a8fe61f08e4bac0682f1f5a",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/checkpoint_identity.rs": "37dcbe03df9f11f55f43b1511a3a8cd834a3c7fbadf31e150238c8aa09f6a06a",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/checkpoint_identity/record_state.rs": "1c5ffc66462e6a0dfda978f8718e250b15335c9349cf6d2cbad8fa743e83d26c",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/checkpoint_identity_material.rs": "642a650208937e3a4ce2f2fee13901d5437394cbdffa593266000b4147ad7a7f",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/construction.rs": "4eda3ebe89e01026c4cbf6e0fc9e186557b4af3a3d9d9ea7c9d0aaebe384bff1",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/evaluation.rs": "a88ba246421bfa56a40beca602008c1b434ecd8c9b879691e17dacfa0383bd07",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/evaluation/ledger.rs": "e76490f6617cd0387b51d36a725a60731006075e95e33332885e46f28fa63f5e",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/evaluation/lifecycle.rs": "52d440629f50a984956a2ddfbc690789d230d60405f499ddaf35f791b12e1571",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/evaluation/opportunities.rs": "4d54530c4bcde59297ba385f831095f21862948631efafed4e42a56a0326f9a9",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/evaluation/publication.rs": "e5046714bc0d9754159eb7e376fd924ac728f60664b11addc95159c67960db27",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/evaluation/reservation.rs": "6196c4fb1dc7c419752d85fe40bd38b2c8f2503149dba722a39599ad9ff06481",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/evidence.rs": "8e1cca50682b113d98c232fb4808fbb091bf841315e2c8cae3f2b5397dd9e878",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/evidence/event_evidence.rs": "2f54c74fffb4879611c871f82e1991c681d99e2d188e9e448dabfd171484e262",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/fallible_clone.rs": "10f800b7ce584a4fcc1157df4973e636135bdef6726a8f4d3769d392332b0389",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/lifecycle_tests.rs": "16d8ccd6c839e1cd8b04e342f1f91451c2f63d2741156ceca95ba39f90735894",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/lifecycle_tests/ownership.rs": "a4c9f883100ae035dccd9a969fa14e4796ea4da2c27ff30670300607d88f9056",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/runtime_tests.rs": "4a5e2618324083a3af07daa2e9daa250c05449042f82e1f2ae10f8271a533dac",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/runtime_tests/recovery_tests.rs": "d11a862bb32236de0922bdb0913377b1ad3172301e5b9c8e688f79fdc49737e2",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_runtime/test_support.rs": "c53a1ca2194b7499728aabaf1e0d28d00a6d756854ae208ceb4c8384983f1de3",
+    "crates/crucible/qemu/crucible-qemu-host/src/production_fault_sink.rs": "4afb1488c3f36ce2b019bd2337a95b4208b85245b408de2ee743fe6af0a69ec1",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp.rs": "ee73a51bd51ffb04b9988718bfede61944b5b263288591efb3fd10357458f631",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/checkpoint_delta_flight_support.rs": "c4e5fb09b3d0f3bb8552cd31d8b31f2316c5da520dbc08748b5c8ea12523b3be",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/checkpoint_delta_flight_tests.rs": "3173249aa768011b8824f7f151b6cea160481eda312b3df78ea2cc6e85a7b8ac",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/command.rs": "ccbb5d0375be3245c0b9b4a52c5407c383ab6c8fd332ea10ad2c03420d5575aa",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/error.rs": "010d33e0cd40788b5124826307be857b869e818ee08b74418e188251ec61beac",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/fingerprint_projection.rs": "ddc1c33a540959b195857f8b47b6842b7f5869f019cc557f0c1599cc43ba59bc",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork.rs": "3cd6490ffe923e22b26752e6cd9c797835aaeafdc762cc5747b3334667e6a077",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/async_worker_barrier.rs": "4d2fdc9d79e956f9f9ca6f924884675b26bfb7c1f9ef7c3afe8d4fdcf34b7913",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/block_barrier.rs": "bbfcd05f314d22bc63efc9958fd475773518c490bef96b6a529d2f231fc83172",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/block_barrier/source_proof.rs": "474a08e09ecb79551125d655589de4a93143869198f3b1b67cc6273f35cd88cb",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/block_seal.rs": "1d69b09668bea57461f255e3010b26ce25d5ed22684539fceadad9cf47bceeab",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/child_console.rs": "59189702a39af15c4a9a146518960bc00296d463e703951bf524ba2759c8fbb9",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/child_files.rs": "b9c390056b9464ee05b6ace922bbaf69f1d56afea7296b2fe6719cac02e010be",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/child_process.rs": "49e86a892ae4892d9bdcba8719a6120521627582b611e2f5a1c6f6e997b5a64b",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/child_process_contract.rs": "e595f4081cf28131df0e4e3d9dfd969f27fa797bd4f6185ce900f98291743ae5",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/child_qmp.rs": "7bd6ecff27148a64e12658bd402126d9ecdea432b473a9922fd209e48e3e2c3c",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/child_runtime.rs": "89028a107ca513846ed0c2a68e3fda13e7726fb37301ff23d0d4a4c4a6b53bf9",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/diagnostics.rs": "a16cf66b716437346d72fd7aee55d359b09a078416b9f3724c36cde340ad4af0",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/fork.rs": "2000a319a65f0349115a65385ca36ae7a34965133a57585c4900fe3ed56c4348",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/plugin.rs": "71953e7d7ae301bbf63af645b3499f7d7a53f88a8eadc196dcc769fdf61a8c94",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/plugin_endpoints.rs": "53555994ffa664ee6440461fae3d2b6cd77d30432274563fa550ce6e1abb88a7",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/private_rings.rs": "0bd28fdedbd670499a2fcc077638d3eb6bf5b945aacaa0d9e1c0dc210394cb9b",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/rcu_barrier.rs": "9bf51e9528105304b27ffa0efacbaf0871aa43ad6745412c7ef3996531834ce7",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/source_graph.rs": "f9910b44b1910057c909cba3b4babeeb8fbbca734220c61c0dae1c5cb8bcba99",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/template.rs": "a8e4b18fbafb1cb18d66f97281988935bfc079ad5380327be877cd700001310e",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/template/native_worker_tests.rs": "4ed6a86ac76f2d1f90bf6e0242c3dc74f6a76781bff528993333b0c632ad1f67",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/template/parse.rs": "56ef242a2ff3011597e0bcc20be0896e8c314ecb2282414ecfd593dc0858169c",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/template/parse/tests.rs": "f7380b19881ae342d9bf2fc8c918a0212ea5fe7e27edd6922c99c26d67b32977",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/template/preparation.rs": "3adc9f0d30558add42d2212c7d9d65cca990a20fd884d5d20d545efe8a950f82",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/template/preparation_tests.rs": "c0197ddbd6a9d57a96ec206324fe378dacfa101c1c47bca01473f85745df12aa",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork/template/source_proof_tests.rs": "7a8c2698e0c32434162a59792289ee596affc80bcc51884b0b9de05db6118808",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork_coordinator.rs": "6d176403149581c96dcb4d56c0641c750f4922760144cbea5dd979d8e43b1352",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/hot_fork_stages.rs": "da1bad44757dbfaee5f7e9b2e7b564c9f76e39c1bf8eed06571faeeb0609e123",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/ram_delta.rs": "35cec3842f13d2a39a22b9fdfc2089cc7f5bd24a162fed10535accfbdedaa6a5",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/snapshot_tag.rs": "4c9b2f4edd5aa914619e8c4e2e866c28cbb04b1f447100df823c27be167d410e",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/unix_socket.rs": "9c8b1efc2531a588648c10ad13a46429d83db3f6d8f73a22d649b34f6bc644b3",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/vmstate_control.rs": "cc9d600268f6285c40bfb774d1f66c52f9391c2edfbcd41a3727cfcbafc505af",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/vmstate_control/hot_fork_barriers.rs": "74cab7e56ca39f723c6e17030041afe961f7cea48c2c120df31f09e56b8e828d",
+    "crates/crucible/qemu/crucible-qemu-host/src/qmp/vmstate_control/launch_fdsets_tests.rs": "3d01a81d5b1041e31069f4e3b6a49b35f5e5cc38c5067233c79e5ff9f624f3b9",
+    "crates/crucible/qemu/crucible-qemu-host/src/quantum.rs": "6abb9d77105c9c7e6e1d2003c596793e8d69730bfc30201cd7a16e89099a5d97",
+    "crates/crucible/qemu/crucible-qemu-host/src/quantum/channel.rs": "3b538309fd446f3752afc04068dea85ec2db7b873c16604139fa8f156fef2238",
+    "crates/crucible/qemu/crucible-qemu-host/src/quantum/inbound_delivery.rs": "9e4a6abcda8b413dc52e18f2c11935d1c759421dcd8a1c6e73c05fd6d5b7573a",
+    "crates/crucible/qemu/crucible-qemu-host/src/quantum/support.rs": "258bba5ceb17a3ac7e2edc1e4e467659e524ea8a33920a8cec19195bb0272c68",
+    "crates/crucible/qemu/crucible-qemu-host/src/quantum/tests.rs": "09c37e309fdc2c891b67fec506e1d4f37fa17b4c2757d38eb51c8dba9cd1b420",
+    "crates/crucible/qemu/crucible-qemu-host/src/quantum/tests/channel_behavior.rs": "4c2a44159fb61fe97089e33998979d7d7bbde41e2a1d701fa7e53acd9b93186a",
+    "crates/crucible/qemu/crucible-qemu-host/src/quantum/tests/completion.rs": "3dda19ab2fd221dccf6b8c41089ee48a9387dc751ba05f14cf9f2e795ae753d7",
+    "crates/crucible/qemu/crucible-qemu-host/src/quantum/tests/network_delivery.rs": "4008bee9e6772937ea08da7502a8de7039d4298c9531b18d9f1d618d1fd43729",
+    "crates/crucible/qemu/crucible-qemu-host/src/quantum/tests/network_output.rs": "3f15a566110685ce257f63dc8af4031640c52e2c2009e2145ef805375f52c740",
+    "crates/crucible/qemu/crucible-qemu-host/src/quantum/tests/retained_inbound.rs": "8f7e94fef3278f64f2d2034ea567d4ede5705b3ecc46da1016cd8298745406bf",
+    "crates/crucible/qemu/crucible-qemu-host/src/quantum/tests/source_assertions.rs": "fd471d9ef576eaf52d476ad93df3cf22b9eebd944ba9a9d787d369f06cf0bd35",
+    "crates/crucible/qemu/crucible-qemu-host/src/quantum_boundary.rs": "a3892257ebd81950612d4637f0133b1f867fbfae9ac32af9136b0db8d85c70bf",
+    "crates/crucible/qemu/crucible-qemu-host/src/realization.rs": "cb0b89f9f5f5db291b8757e3eabcd9b692442ee88bbc1b26b2352542ace1db02",
+    "crates/crucible/qemu/crucible-qemu-host/src/realization/node_executor.rs": "398754bf0e6a8a95d31a929d99c4f993c7ce7b246a9717bf6030d222af480417",
+    "crates/crucible/qemu/crucible-qemu-host/src/realization/node_executor/admission.rs": "6e9f48e739a58771afc7922e853f5041950f7d2d67866416ec40fb9cf3a764ae",
+    "crates/crucible/qemu/crucible-qemu-host/src/realization/node_executor/replay_physical.rs": "5e2aa00910d306e3f4415e6d0a2333774660b9ed2f9db900b0313cff5926c01e",
+    "crates/crucible/qemu/crucible-qemu-host/src/realization/snapshot_codec.rs": "4f24e2c58e1ebdd931a674cd4e5c0e841e04d3b935c918fa25e3509a3f5ba251",
+    "crates/crucible/qemu/crucible-qemu-host/src/realization/snapshot_codec/tests.rs": "ab2d84ae98e371bc5c406afe79bd9dec2c23c3979d48f72a45acc98f111e32e1",
+    "crates/crucible/qemu/crucible-qemu-host/src/realization/tests.rs": "b861c39a0ed153a420e11cc23df1b6e7493e8102d4e64ca8fd7065dc34a3349c",
+    "crates/crucible/qemu/crucible-qemu-host/src/shutdown.rs": "3914841c0b0e243a5d2393e83d5a5cbbe729cc9c0103e9d2e63c62cbb5e9c3a1",
+    "crates/crucible/qemu/crucible-qemu-host/src/spawn.rs": "63532a92673557982662057ae24449bb49b22c5ebe0c24d80f29e8bb20efd6b5",
+    "crates/crucible/qemu/crucible-qemu-host/src/spawn/control_delivery_trace.rs": "b0c09c0e906f8f0d51669d34fd6e4942de731d3ce3849ee9cf962a968a0ff3eb",
+    "crates/crucible/qemu/crucible-qemu-host/src/spawn/image_launch.rs": "3d0477a4eec175ce58ed7a6c800d3538ba6e29ffd3a08c30ab37c4e96b78c782",
+    "crates/crucible/qemu/crucible-qemu-host/src/spawn/image_launch_test.rs": "f7a65190fe1aa9143f6ef257f81cc261462b23950844527d62a3756bf10a695c",
+    "crates/crucible/qemu/crucible-qemu-host/src/spawn/materialization.rs": "1fbdf437a5ec6ce0948c75da7969300618a01bc84a306c5d3fd4b98605da208d",
+    "crates/crucible/qemu/crucible-qemu-host/src/spawn/materialization/exact_restore.rs": "6ea1b9c24118ebae7b318aedbce6e13bb0d1b58d38b693b394ae5c116e4ba219",
+    "crates/crucible/qemu/crucible-qemu-host/src/spawn/materialization/exact_writers.rs": "7d491cff9d48745db0dc65a18073237ccea5f5b0a5f90d7bac13b62b51be7269",
+    "crates/crucible/qemu/crucible-qemu-host/src/spawn/materialization/hot_fork_overlay.rs": "4688cac0797055cc414a81db3192bf3fabb09a46ba5b7b8d79538d0b47558430",
+    "crates/crucible/qemu/crucible-qemu-host/src/spawn/run_directory.rs": "6ba2be6a2e1ea2b1d037fae12916078cd02064b95af5e0f42997e198d5188002",
+    "crates/crucible/qemu/crucible-qemu-host/src/spawn_test.rs": "498f32e478e306a5750a43771274d3179644b21c96c68d0f83850b9588c3d0c3",
+    "crates/crucible/qemu/crucible-qemu-host/src/storage_array.rs": "1fa2b8a1b2675f21612646c6cd73cf8ddc2ada82a2b7a6923d5701254a9eda31",
+    "crates/crucible/qemu/crucible-qemu-host/src/storage_fault_resolver.rs": "d7791158696594ab594af6ca995b4dbee50123fb98b1a8a5cef0734b67294e64",
+    "crates/crucible/qemu/crucible-qemu-host/src/storage_fault_resolver/error.rs": "c8239a407917e5dab533b29c2d6eb6c1143d74f780939e75090627b8aa4dc7af",
+    "crates/crucible/qemu/crucible-qemu-host/src/storage_fault_resolver_tests.rs": "770096c68f751b7f18b6027848fc10fa8aec724fe631d170cbdc83a6e8e942de",
+    "crates/crucible/qemu/crucible-qemu-host/src/storage_fault_resolver_tests/opportunity_semantics.rs": "3923ce78c3ee777d5d02715e305529194abfc5298271b53702d2fea696d62b83",
+    "crates/crucible/qemu/crucible-qemu-host/src/storage_fault_resolver_tests/production_conformance.rs": "853006129b11f44029e4853441246745760a4c84c57344e8ffebbb703544a46a",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision.rs": "67c9399f9f88118d36c9ac7d2778f7aa114788d4345c854f28f590f6dbc6f177",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/accelerator_io_servicer.rs": "f5959648a30aec89c91c2c094786db1b0791f93144641ef60d9908c0fc747103",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/accelerator_io_servicer_test.rs": "c9a72fbf67ab903a366f80e36b06bb84f360f722e32360ba8267ff13049f932c",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/block_io_servicer.rs": "c1fec8711d0373ceaede41ebad2085759cbe27691f0be81e7191f802ff3add4c",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/block_io_servicer_tests.rs": "586b6c4ea29b99ab7440721832b0c35d829f9627d67eb0a2afec45406b87a5f0",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/bounded_scheduler_preemption.rs": "0603a09ccb511d0c7fb26e2d684b03c1fceca5ee62c1dec271a0dad1afd04dbb",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/bounded_scheduler_preemption/tests.rs": "4cdfe5bbf83a83e8c42c3033914b00b9683f8f851ac5568e65022ea8d8225cf4",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/deadline.rs": "e8b7242213e4a092ceca2e4d7d734c4e91ba78cfdbf8086a40085f6c3126fff7",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/device_host_work.rs": "d0cdf6bc26c85d5ff06097e38e354af88ea95055bdacaf3958b56251891eff03",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/device_host_work/worker.rs": "b2361f04f953a4671586184c33f6d596129092411079cfc3bafdfa124cfdaeec",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/exact_restore.rs": "9b42826fa73d331275ae1c6c2a2f81cf2ea6564c601f7c0a8acc6017ee9bbee8",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/host_io_runtime.rs": "8eb219b85900af33f2b09f9a3151b3ca05f58a1f6164ab0c22ea7b43e730e5f1",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/host_io_runtime/boundary.rs": "5343f50476249faadf8830575c28b48b457fb08a831d5c9cd19c677fc45729a5",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/host_io_runtime/control.rs": "1c2185f0280fbb7f8a2b24e48462374174f50b6c415853ad3ad3eaec066b3ee3",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/host_io_runtime/deadline.rs": "a57c41c5bda1e3c6546be40fb6a0b9b4fd06a8618d404298dc6cca705dcd071a",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/host_io_runtime/device_service.rs": "e7d1afe636a5e89ffbba4a22a32d816f4d380d255355d58802015fe72f4f4bd0",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/host_io_runtime/error.rs": "f2b8232b594a4c219f7d8b454fbe297d120ac0c62eb9175fb6a2b1e810179c7f",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/host_io_runtime/fault_result.rs": "046a1a29c4421ba209ba5397ba0d42e2df68da623e01a62b0b5e17a59101e362",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/host_io_runtime/performance.rs": "5f4822841d304b79141737a944a65b8c5b5c3397d3e9f092e47ebd24cf73cdc3",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/host_io_runtime/servicing.rs": "481c3a542865118d400dbf5fd0afe4deefc15cdf593a3415271da2e776982c64",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/host_io_runtime/wait_observation.rs": "411c7025614f20a4062e604c04555d9051b91544b151b1ec3672cdaac56c12f1",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/host_io_runtime/wait_observation_tests.rs": "6e8e788fac37ebb51a08774a87c742e0590c98c61b4858d1e8d264bf2031138e",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/host_io_runtime_tests.rs": "822b11cab8243a32378fe8a53eff563125c10ca867cb05f14aee0ed660af3cdf",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/host_io_runtime_tests/block_coordinator_tests.rs": "d05dc6ca4e888e419f70c3448f862e4780054a3646a647de99463b11594d30da",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/host_io_runtime_tests/network_output.rs": "fc04fceb588435a3f2bc371b302999ca740f31b4c71171cbefad856d5fc4622e",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/ninep_io_servicer.rs": "d33d3dfd05b78122a5ec9d8aa72d5ee3cf3b55f122398ed43a59a6c409f09952",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/ninep_io_servicer_tests.rs": "fb7e98a9ed4584e599e26c62868e6bfee8e4da2564a48d28afd5d4d55fca5d10",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/node_step_gate.rs": "bd29e5613297f536b097481dde6637f2f39fc2e06be3de537c4be0156a8c1497",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/node_step_gate/error.rs": "6a7f58c6a090f14ba9b5211b946b6b807430a1518131ba3c8f54cec37edeee17",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/node_step_gate/exact_snapshot.rs": "ad15cc7ebbca5e1e20bdd16aecad256220b023b627b6733bfebc132f213fa66c",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/node_step_gate/exact_snapshot/child_files.rs": "4e74a688e3997a45ad9ad76cfc87c0d10137017c1ba52857661f9e2109f87e60",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/node_step_gate/exact_snapshot/child_measure.rs": "844b3d5dad7e6634d71d49b0988ecfc3bfcb21daec30e484737d94c519f581ec",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/node_step_gate/exact_snapshot/child_stress.rs": "f0820a330f87c64ae5ee692f1f6239716065a684afd3546eda2ae43558038acb",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/node_step_gate/exact_snapshot/child_support.rs": "8e3c22f5ca7a50de97c45b81dee7942670ec3ccace88b1216123482f3d1b0414",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/node_step_gate/exact_snapshot/source_set.rs": "9fff99ddff6577eb54236ef42ab46fd4036cb9263d5004a71deafe2143ec44d9",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/node_step_gate/plugin_resources.rs": "ae26d1c0e534e3c96f6f65f26daeb454029e1ea931bcc4eb25c30d0c6a240970",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/node_step_gate/setup_failure_tests.rs": "03edca50bfd938b4f3335c658ba7b576ca3a46b272b7146584e3833d3a7ab0c4",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/node_step_gate/support.rs": "ea328b07ccba84abe7f5d3e0d35fdf78e7d27d7fec33a1307ae767df5134d7ee",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/node_step_gate/support/priming.rs": "72be5ba3271de3a83dc3b938f486a5f55f2c672f1d6d291a6e9aa87e27a1aca4",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/node_step_gate/support/tail.rs": "925e038b386f478f704f91b025bb76c400f6a5f053000bd6c01225f177943e42",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/node_step_gate/support/tests.rs": "a151df69875def712176651872b3612cd25223d44421748c03e928ad95f40b0f",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/rr_control_boundary_trace.rs": "7568e6d8b049911f61730fb454719ab25dfa53fb9da12b877a434e507c665137",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/runtime_determinism_trace.rs": "d2387b98751b74f72d740ce14e82a2aae329b52584fa7567d4bfd296e274c349",
+    "crates/crucible/qemu/crucible-qemu-host/src/supervision/world_io_binding.rs": "94cb945e9071369fb93bfed00503a43936117405dea5994a001b4adc53f0d26f",
+    "crates/crucible/qemu/crucible-qemu-host/src/unix_socket_path.rs": "a986d0029fc67ed698872617ccea09197117a25a01457c25a21ea59807c420b1",
+    "crates/crucible/qemu/crucible-qemu-host/tests/crash_detection.rs": "cfe7df7ffc3539c88ef072a9bb4fa64b7ad51e16361689d5bd1a097bdfa1eb94",
+    "crates/crucible/qemu/crucible-qemu-host/tests/debug_gdbstub.rs": "6388863aa7e7f5a9f432c8c2937152b8e832643d74c3f737ee2131d4e8367f4b",
+    "crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch.rs": "444327660690a6169064bcf7dcb53ecdac4f22a3f71950089e30cb4dbd6971e1",
+    "crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch/fingerprint_options.rs": "4adbe0d7e5e8eff463b26ecbc5a4da306393f95a5194fa79647d3f58e9281984",
+    "crates/crucible/qemu/crucible-qemu-host/tests/deterministic_launch/launch_artifacts.rs": "b617898147898177b4972379b924c8e2441a750778287dd41e797739c7b8a097",
+    "crates/crucible/qemu/crucible-qemu-host/tests/gate_basic_block_coverage.rs": "c4f36e5fd8856d2541cbc3e4b35a4565d4faa04862fb75cad5714bd85ae42322",
+    "crates/crucible/qemu/crucible-qemu-host/tests/gate_qemu_inert.rs": "16097401d949cdc2ce086002c8776522cfe2133dc5fbe356dc0d69b82fec2ce0",
+    "crates/crucible/qemu/crucible-qemu-host/tests/mapped_quantum.rs": "b82a5f5481a4a2e5d696c492b06be6d11a1a08ff4b2b21b85bff1a706187c710",
+    "crates/crucible/qemu/crucible-qemu-host/tests/plugin_control_channel.rs": "370d0a4cff129cef0c498843300537f91720fbcce38a74c429833b2b1bc8f7cd",
+    "crates/crucible/qemu/crucible-qemu-host/tests/production_fault_checkpoint.rs": "a2c36999ec051aca778104da4142f0ae689e1be5c958c6496c961ca7f16a2da5",
+    "crates/crucible/qemu/crucible-qemu-host/tests/protocol_inertness.rs": "ef809261a803349262d3c72d6fd84c9b5df4ef9e41d6e938f7934d6d6fbe10d6",
+    "crates/crucible/qemu/crucible-qemu-host/tests/qmp.rs": "816dcbf258abe995d9b0dc4e58a30357dcd9f7ec4affbf498f3c2ceba0092886",
+    "crates/crucible/qemu/crucible-qemu-host/tests/qmp/schema_registry.rs": "c66a49f5843651e570e0fe0df7d40aa00c6a44015a35ffaf04cc6acde4c0a8ab",
+    "crates/crucible/qemu/crucible-qemu-host/tests/qmp/support.rs": "9e6bcf6410340ac37f0b2e5a939ca19486547b51ccf944aeff2590977523ed2e",
+    "crates/crucible/qemu/crucible-qemu-host/tests/qmp_launch_channel.rs": "e8dfd7b8ac3915398125f0bb07a46b4d32f1a0e387de5d71ab26c5fee5c14692",
+    "crates/crucible/qemu/crucible-qemu-host/tests/qmp_unix_socket.rs": "78b2329cf0ef6d6824b9b7826fb95425e9fdbbf6fa9c28bd3989f94960eaa72c",
+    "crates/crucible/qemu/crucible-qemu-host/tests/qmp_vmstate_control.rs": "4bdb9fc4253b69177d43b623a4fac5ca16e078fba81a90b32e6a470fc58ec4c6",
+    "crates/crucible/qemu/crucible-qemu-host/tests/shutdown.rs": "312c16c6e9c3a49ce1774986e9c265fe43d34a1f5735dfa99c4ca46c25b6228c",
+    "crates/crucible/qemu/crucible-qemu-host/tests/support/mod.rs": "8a26a2f719fbd8da83284cae91bd232ab54bf04689709b1ed1f2703b1b209189"
+  },
+  "limits": [
+    "Editor parity compares diagnostics in the selected QEMU host package. Both inference summaries and wider Cargo diagnostics are retained without claiming whole-model equality.",
+    "Four existing ignored cases remain ignored. This does not execute the environment-gated real-QEMU shutdown case or replace separate QEMU runtime, ABI, license-boundary and VM gates.",
+    "Exact Nix derivation, configuration and source pin this snapshot before the later S3 profile and ignored-suite runner changes.",
+    "This is semantic qualification, not a performance result or production consumer cutover."
+  ],
+  "output": "/nix/store/pjl644jp83sdz7s8v5ki1gdvb9apgkka-aos-bazel-qemu-host-qualified-checks",
+  "parity": {
+    "doctests": {
+      "//crates/crucible/qemu/crucible-qemu-host:doc": {}
+    },
+    "examples": [
+      "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-host-owner-flight",
+      "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-live-block-realization",
+      "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-live-hot-fork-child",
+      "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-live-hot-fork-child-stress",
+      "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-live-plugin-install",
+      "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-production-plugin-flight",
+      "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-rr-control-boundary-device-flight",
+      "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-whitebox-map-validate"
+    ],
+    "features": {
+      "aead@0.5.2": [
+        [
+          "alloc",
+          "getrandom",
+          "rand_core"
+        ]
+      ],
+      "aes-gcm@0.10.3": [
+        [
+          "aes",
+          "alloc",
+          "default",
+          "getrandom",
+          "rand_core",
+          "zeroize"
+        ]
+      ],
+      "aes@0.8.4": [
+        []
+      ],
+      "ahash@0.8.12": [
+        []
+      ],
+      "aho-corasick@1.1.4": [
+        [
+          "perf-literal",
+          "std"
+        ]
+      ],
+      "arrayref@0.3.9": [
+        []
+      ],
+      "arrayvec@0.7.7": [
+        []
+      ],
+      "autocfg@1.5.1": [
+        []
+      ],
+      "bitflags@2.13.0": [
+        [
+          "std"
+        ]
+      ],
+      "blake3@1.8.5": [
+        [
+          "pure",
+          "std"
+        ]
+      ],
+      "block-buffer@0.10.4": [
+        []
+      ],
+      "cc@1.2.65": [
+        [
+          "parallel"
+        ]
+      ],
+      "cfg-if@1.0.4": [
+        []
+      ],
+      "ciborium-io@0.2.2": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "ciborium-ll@0.2.2": [
+        []
+      ],
+      "ciborium@0.2.2": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "cipher@0.4.4": [
+        []
+      ],
+      "const-oid@0.9.6": [
+        []
+      ],
+      "constant_time_eq@0.4.2": [
+        [
+          "std"
+        ]
+      ],
+      "cpufeatures@0.2.17": [
+        []
+      ],
+      "cpufeatures@0.3.0": [
+        []
+      ],
+      "crypto-common@0.1.7": [
+        [
+          "getrandom",
+          "rand_core",
+          "std"
+        ]
+      ],
+      "ctr@0.9.2": [
+        []
+      ],
+      "curve25519-dalek-derive@0.1.1": [
+        []
+      ],
+      "curve25519-dalek@4.1.3": [
+        [
+          "alloc",
+          "digest",
+          "precomputed-tables",
+          "zeroize"
+        ]
+      ],
+      "der@0.7.10": [
+        [
+          "alloc",
+          "oid",
+          "std",
+          "zeroize"
+        ]
+      ],
+      "digest@0.10.7": [
+        [
+          "alloc",
+          "block-buffer",
+          "core-api",
+          "default",
+          "std"
+        ]
+      ],
+      "ed25519-dalek@2.2.0": [
+        [
+          "alloc",
+          "default",
+          "fast",
+          "pkcs8",
+          "std",
+          "zeroize"
+        ]
+      ],
+      "ed25519@2.2.3": [
+        [
+          "alloc",
+          "pkcs8",
+          "std"
+        ]
+      ],
+      "equivalent@1.0.2": [
+        []
+      ],
+      "fallible-iterator@0.3.0": [
+        [
+          "alloc",
+          "default"
+        ]
+      ],
+      "fallible-streaming-iterator@0.1.9": [
+        []
+      ],
+      "fastrand@2.4.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "find-msvc-tools@0.1.9": [
+        []
+      ],
+      "generic-array@0.14.7": [
+        [
+          "more_lengths"
+        ]
+      ],
+      "getrandom@0.2.17": [
+        []
+      ],
+      "getrandom@0.4.2": [
+        []
+      ],
+      "ghash@0.5.1": [
+        []
+      ],
+      "half@2.7.1": [
+        []
+      ],
+      "hashbrown@0.14.5": [
+        [
+          "ahash",
+          "inline-more"
+        ]
+      ],
+      "hashbrown@0.17.1": [
+        []
+      ],
+      "hashlink@0.9.1": [
+        []
+      ],
+      "indexmap@2.14.0": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "inout@0.1.4": [
+        []
+      ],
+      "itoa@1.0.18": [
+        []
+      ],
+      "jobserver@0.1.34": [
+        []
+      ],
+      "libc@0.2.186": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "libsqlite3-sys@0.30.1": [
+        [
+          "default",
+          "min_sqlite_version_3_14_0",
+          "pkg-config",
+          "vcpkg"
+        ]
+      ],
+      "linux-raw-sys@0.12.1": [
+        [
+          "auxvec",
+          "elf",
+          "errno",
+          "general",
+          "if_ether",
+          "ioctl",
+          "net",
+          "netlink",
+          "no_std",
+          "prctl",
+          "xdp"
+        ]
+      ],
+      "memchr@2.8.2": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "num-bigint@0.4.6": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "num-integer@0.1.46": [
+        [
+          "default",
+          "i128",
+          "std"
+        ]
+      ],
+      "num-traits@0.2.19": [
+        [
+          "default",
+          "i128",
+          "std"
+        ]
+      ],
+      "once_cell@1.21.4": [
+        [
+          "alloc",
+          "default",
+          "race",
+          "std"
+        ]
+      ],
+      "opaque-debug@0.3.1": [
+        []
+      ],
+      "pin-project-lite@0.2.17": [
+        []
+      ],
+      "pkcs8@0.10.2": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "pkg-config@0.3.33": [
+        []
+      ],
+      "polyval@0.6.2": [
+        []
+      ],
+      "proc-macro2@1.0.106": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "quote@1.0.46": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "rand_core@0.6.4": [
+        [
+          "getrandom"
+        ]
+      ],
+      "regex-automata@0.4.14": [
+        [
+          "alloc",
+          "dfa-onepass",
+          "hybrid",
+          "meta",
+          "nfa-backtrack",
+          "nfa-pikevm",
+          "nfa-thompson",
+          "perf-inline",
+          "perf-literal",
+          "perf-literal-multisubstring",
+          "perf-literal-substring",
+          "std",
+          "syntax",
+          "unicode",
+          "unicode-age",
+          "unicode-bool",
+          "unicode-case",
+          "unicode-gencat",
+          "unicode-perl",
+          "unicode-script",
+          "unicode-segment",
+          "unicode-word-boundary"
+        ]
+      ],
+      "regex-syntax@0.8.11": [
+        [
+          "default",
+          "std",
+          "unicode",
+          "unicode-age",
+          "unicode-bool",
+          "unicode-case",
+          "unicode-gencat",
+          "unicode-perl",
+          "unicode-script",
+          "unicode-segment"
+        ]
+      ],
+      "regex@1.12.4": [
+        [
+          "default",
+          "perf",
+          "perf-backtrack",
+          "perf-cache",
+          "perf-dfa",
+          "perf-inline",
+          "perf-literal",
+          "perf-onepass",
+          "std",
+          "unicode",
+          "unicode-age",
+          "unicode-bool",
+          "unicode-case",
+          "unicode-gencat",
+          "unicode-perl",
+          "unicode-script",
+          "unicode-segment"
+        ]
+      ],
+      "rusqlite@0.32.1": [
+        [
+          "blob"
+        ]
+      ],
+      "rustc_version@0.4.1": [
+        []
+      ],
+      "rustix@1.1.4": [
+        [
+          "alloc",
+          "default",
+          "event",
+          "fs",
+          "net",
+          "param",
+          "process",
+          "std",
+          "time"
+        ]
+      ],
+      "semver@1.0.28": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "serde@1.0.228": [
+        [
+          "alloc",
+          "default",
+          "derive",
+          "rc",
+          "serde_derive",
+          "std"
+        ]
+      ],
+      "serde_core@1.0.228": [
+        [
+          "alloc",
+          "rc",
+          "result",
+          "std"
+        ]
+      ],
+      "serde_derive@1.0.228": [
+        [
+          "default"
+        ]
+      ],
+      "serde_json@1.0.150": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "serde_spanned@0.6.9": [
+        [
+          "serde"
+        ]
+      ],
+      "sha2@0.10.9": [
+        [
+          "compress",
+          "default",
+          "std"
+        ]
+      ],
+      "shlex@2.0.1": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "signature@2.2.0": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "smallvec@1.15.2": [
+        []
+      ],
+      "spki@0.7.3": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "subtle@2.6.1": [
+        []
+      ],
+      "syn@2.0.118": [
+        [
+          "clone-impls",
+          "default",
+          "derive",
+          "extra-traits",
+          "full",
+          "parsing",
+          "printing",
+          "proc-macro",
+          "visit-mut"
+        ]
+      ],
+      "tempfile@3.27.0": [
+        [
+          "default",
+          "getrandom"
+        ]
+      ],
+      "thiserror-impl@2.0.18": [
+        []
+      ],
+      "thiserror@2.0.18": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "tinyvec@1.11.0": [
+        [
+          "alloc",
+          "default",
+          "tinyvec_macros"
+        ]
+      ],
+      "tinyvec_macros@0.1.1": [
+        []
+      ],
+      "toml@0.8.23": [
+        [
+          "default",
+          "display",
+          "parse"
+        ]
+      ],
+      "toml_datetime@0.6.11": [
+        [
+          "serde"
+        ]
+      ],
+      "toml_edit@0.22.27": [
+        [
+          "display",
+          "parse",
+          "serde"
+        ]
+      ],
+      "toml_write@0.1.2": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "tracing-attributes@0.1.31": [
+        []
+      ],
+      "tracing-core@0.1.36": [
+        [
+          "once_cell",
+          "std"
+        ]
+      ],
+      "tracing@0.1.44": [
+        [
+          "attributes",
+          "default",
+          "std",
+          "tracing-attributes"
+        ]
+      ],
+      "typenum@1.20.1": [
+        []
+      ],
+      "unicode-ident@1.0.24": [
+        []
+      ],
+      "unicode-normalization@0.1.25": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "universal-hash@0.5.1": [
+        []
+      ],
+      "vcpkg@0.2.15": [
+        []
+      ],
+      "version_check@0.9.5": [
+        []
+      ],
+      "winnow@0.7.15": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "zerocopy-derive@0.8.49": [
+        []
+      ],
+      "zerocopy@0.8.49": [
+        [
+          "derive",
+          "simd",
+          "zerocopy-derive"
+        ]
+      ],
+      "zeroize@1.9.0": [
+        [
+          "alloc",
+          "default"
+        ]
+      ],
+      "zmij@1.0.21": [
+        []
+      ],
+      "zstd-safe@7.2.4": [
+        [
+          "arrays",
+          "legacy",
+          "std",
+          "zdict_builder",
+          "zstdmt"
+        ]
+      ],
+      "zstd-sys@2.0.16+zstd.1.5.7": [
+        [
+          "legacy",
+          "std",
+          "zdict_builder",
+          "zstdmt"
+        ]
+      ],
+      "zstd@0.13.3": [
+        [
+          "arrays",
+          "default",
+          "legacy",
+          "zdict_builder",
+          "zstdmt"
+        ]
+      ]
+    },
+    "first_party_features": {
+      "aos-linux-project-quota": [
+        []
+      ],
+      "crucible-campaign": [
+        []
+      ],
+      "crucible-determinism": [
+        []
+      ],
+      "crucible-device": [
+        [
+          "default"
+        ]
+      ],
+      "crucible-engine": [
+        [
+          "default",
+          "test-double"
+        ]
+      ],
+      "crucible-qemu-host": [
+        [
+          "default"
+        ]
+      ],
+      "crucible-qemu-protocol": [
+        []
+      ],
+      "crucible-qemu-shmem": [
+        []
+      ],
+      "crucible-store": [
+        []
+      ]
+    },
+    "schema_version": 1,
+    "targets": {
+      "//crates/crucible/qemu/crucible-qemu-host:crash_detection": {
+        "executed": [
+          "child_exit_probe_errors_remain_probe_errors",
+          "child_exit_probe_reports_running_child_without_crash",
+          "child_exit_probe_surfaces_real_exit_through_detector",
+          "intended_crash_fault_is_distinct_from_infrastructure_crash",
+          "plugin_ipc_close_is_crash_not_intended_fault",
+          "plugin_ipc_frame_failure_is_detected_as_crashed_node",
+          "plugin_ipc_success_passes_through_without_crash",
+          "qmp_disconnect_is_crash_not_retried_on_gated_path",
+          "qmp_io_failure_is_detected_as_crashed_node",
+          "qmp_success_passes_through_without_crash",
+          "std_process_child_is_the_production_exit_probe",
+          "unexpected_child_exit_surfaces_typed_crashed_node_status"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/qemu/crucible-qemu-host:debug_gdbstub": {
+        "executed": [
+          "debug_gdbstub_launch_does_not_expose_guest_activation_device",
+          "debug_gdbstub_rejects_unstable_endpoint_text",
+          "debug_guest_activation_endpoint_is_fixed_and_inert"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/qemu/crucible-qemu-host:deterministic_launch": {
+        "executed": [
+          "aarch64_sim_launch_requires_pmu_disabled_before_spawn",
+          "default_launch_profile_pins_contract_a_arguments",
+          "fingerprint_options::fingerprint_plugin_switch_is_emitted_only_when_enabled",
+          "firmware_boot_omits_direct_kernel_and_has_explicit_identity",
+          "firmware_boot_rejects_initrd_without_direct_kernel",
+          "guest_entropy_seed_is_scenario_seed_derived",
+          "launch_artifacts::launch_material_feeds_scenario_identity",
+          "launch_artifacts::launch_profile_binds_fw_cfg_file_to_guest_entropy_seed",
+          "launch_artifacts::raw_root_image_format_is_pinned_in_identity_and_backing_driver",
+          "launch_command_builder_adds_plugin_and_hashes_full_argv",
+          "launch_command_builder_rejects_invalid_tool_or_plugin_paths",
+          "launch_command_exposes_and_validates_its_static_resource_baseline",
+          "launch_command_hash_material_feeds_scenario_identity",
+          "launch_hash_material_records_every_determinism_field",
+          "launch_profile_accepts_any_guest_kernel_cmdline",
+          "launch_profile_admits_only_consistent_diskless_storage",
+          "launch_profile_enforces_guest_non_modification",
+          "launch_profile_pins_fixed_tick_scale_for_each_node",
+          "launch_profile_rejects_host_entropy_and_host_timing",
+          "launch_profile_rejects_mutating_or_interactive_state",
+          "launch_rejects_world_node_cpu_and_architecture_identity_mismatches",
+          "multi_vcpu_round_robin_launch_is_pinned_validated_and_hashed",
+          "plugin_setup_plan_enters_the_v3_launch_identity_for_every_catalog",
+          "pre_spawn_launch_validation_accepts_canonical_arguments",
+          "pre_spawn_launch_validation_accepts_only_an_unbridged_hubport",
+          "pre_spawn_launch_validation_accepts_only_the_fixed_trace_pair",
+          "pre_spawn_launch_validation_preserves_disabled_and_internal_channels",
+          "pre_spawn_launch_validation_rejects_bad_icount_and_mttcg",
+          "pre_spawn_launch_validation_rejects_host_cpu_timing_and_entropy",
+          "pre_spawn_launch_validation_rejects_host_input_bypass_forms",
+          "pre_spawn_launch_validation_rejects_kvm_and_non_sim_accelerators",
+          "virtual_time_floors_only_at_the_guest_nanosecond_boundary"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/qemu/crucible-qemu-host:gate_basic_block_coverage": {
+        "executed": [
+          "gate_basic_block_coverage_consumes_plugin_protocol_observation"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/qemu/crucible-qemu-host:gate_qemu_inert": {
+        "executed": [
+          "gate_qemu_inert_runs_reference_vs_patched_corpus"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/qemu/crucible-qemu-host:mapped_quantum": {
+        "executed": [
+          "mapped_quantum_decodes_typed_guest_measurement_samples",
+          "mapped_quantum_drains_coverage_into_the_unified_event_log",
+          "mapped_quantum_emit_frame_reads_owned_outbound_ring",
+          "mapped_quantum_merges_whitebox_markers_into_the_unified_event_log",
+          "mapped_quantum_publishes_one_exact_selectable_reply",
+          "mapped_quantum_publishes_one_outstanding_preemption",
+          "mapped_quantum_rejects_duplicate_novelty_and_future_icount_loudly",
+          "mapped_quantum_rejects_invalid_marker_timing_and_non_observational_kinds",
+          "mapped_quantum_split_completion_keeps_full_operation_log"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/qemu/crucible-qemu-host:plugin_control_channel": {
+        "executed": [
+          "lifecycle_stream_plugin_control_rejects_quit_before_run",
+          "lifecycle_stream_plugin_control_sends_quit_and_advances_state"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/qemu/crucible-qemu-host:production_fault_checkpoint": {
+        "executed": [
+          "empty_production_continuation_round_trips_with_the_same_identity"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/qemu/crucible-qemu-host:protocol_inertness": {
+        "executed": [
+          "sim_mode_off_creates_no_control_socket_and_sends_no_frames",
+          "sim_mode_off_rejects_control_plane_activation",
+          "sim_mode_on_control_channel_is_timing_neutral_and_silent_during_run",
+          "sim_mode_on_rejects_timing_significant_or_run_phase_control_traffic"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/qemu/crucible-qemu-host:qmp": {
+        "executed": [
+          "ambiguous_template_response_poisoned_the_qmp_client",
+          "child_diagnostics_stage_authenticates_exact_stderr_basis_and_releases_qemu_copy",
+          "child_qmp_stage_authenticates_exact_stream_basis_and_releases_qemu_copy",
+          "contradictory_plugin_endpoint_stage_poisons_the_qmp_client",
+          "contradictory_private_ring_stage_poisoned_the_qmp_client",
+          "hot_fork_async_worker_barrier_parks_sources_and_releases_oob",
+          "hot_fork_async_worker_barrier_rejects_malformed_states",
+          "hot_fork_block_barrier_holds_drains_and_releases_on_main_qmp",
+          "hot_fork_block_barrier_rejects_malformed_or_wrong_action_state",
+          "hot_fork_block_snapshot_binding_rejects_noncanonical_identity",
+          "hot_fork_child_console_stage_authenticates_exact_stream_basis_and_releases_qemu_copy",
+          "hot_fork_child_runtime_is_exact_and_oob",
+          "hot_fork_plugin_barrier_holds_queries_and_releases_oob",
+          "hot_fork_plugin_barrier_rejects_malformed_or_wrong_action_state",
+          "hot_fork_plugin_resource_inventory_is_exact_and_oob",
+          "hot_fork_plugin_resource_inventory_rejects_malformed_contracts",
+          "hot_fork_rcu_barrier_holds_drains_and_releases_oob",
+          "hot_fork_rcu_barrier_rejects_malformed_or_wrong_action_state",
+          "hot_fork_template_abort_is_exact_and_malformed_states_fail_closed",
+          "hot_fork_template_coordinator_retains_draining_until_explicit_abort",
+          "plugin_endpoint_stage_authenticates_exact_basis_and_releases_qemu_copies",
+          "plugin_endpoint_worker_disposition_is_exact_and_empty",
+          "predeclared_debug_guest_activation_emits_no_qmp_mutation",
+          "private_ring_stage_authenticates_exact_basis_and_releases_qemu_copy",
+          "qmp_client_installs_explicit_stream_timeouts",
+          "qmp_client_rejects_unbounded_stream_timeouts",
+          "qmp_connect_reads_greeting_and_negotiates_capabilities",
+          "qmp_timeout_errors_classify_node_channel_timeouts",
+          "query_status_is_typed_and_bounded",
+          "schema_registry::cold_stop_qapi_contract_matches_its_patch_owned_schema",
+          "schema_registry::hot_fork_qmp_schemas_have_current_registry_owners",
+          "schema_registry::patched_qapi_commands_have_schema_owners_or_qapi_only_contracts",
+          "typed_status_queries_reject_missing_and_contradictory_fields"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/qemu/crucible-qemu-host:qmp_launch_channel": {
+        "executed": [
+          "console_capture_uses_only_the_run_directory_output_socket",
+          "pre_spawn_validator_rejects_duplicate_qmp_channels",
+          "pre_spawn_validator_rejects_duplicate_qmp_suboptions",
+          "pre_spawn_validator_rejects_unsafe_qmp_endpoints",
+          "qmp_and_gdbstub_remain_distinct_out_of_band_launch_channels",
+          "qmp_channel_adds_stable_unix_socket_to_launch_command",
+          "qmp_channel_rejects_unstable_socket_file_names"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/qemu/crucible-qemu-host:qmp_unix_socket": {
+        "executed": [
+          "qmp_client_connects_and_negotiates_over_unix_socket",
+          "qmp_descriptor_names_use_the_closed_bounded_grammar",
+          "qmp_getfd_rejection_poisons_connection_and_preserves_caller_descriptor",
+          "qmp_getfd_transfers_one_exact_descriptor_and_closefd_releases_name",
+          "vmstate_control_connects_over_unix_socket",
+          "vmstate_control_orders_both_plugin_endpoint_ownership_layers",
+          "vmstate_control_stages_and_releases_both_descriptor_ownership_layers"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/qemu/crucible-qemu-host:qmp_vmstate_control": {
+        "executed": [
+          "exact_restore_resume_does_not_probe_status_before_the_next_ceiling",
+          "vmstate_control_forwards_async_worker_barrier_operations",
+          "vmstate_control_forwards_block_barrier_operations",
+          "vmstate_control_forwards_hot_fork_template_coordination",
+          "vmstate_control_forwards_plugin_barrier_operations",
+          "vmstate_control_forwards_rcu_barrier_operations"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/qemu/crucible-qemu-host:shutdown": {
+        "executed": [
+          "control_quit_and_qmp_helpers_write_canonical_shutdown_bytes",
+          "shutdown_escalates_to_sigkill_and_reaps_unresponsive_child",
+          "shutdown_order_matches_protocol_spec",
+          "shutdown_records_polite_failures_and_continues_to_reap",
+          "shutdown_reports_leak_when_reap_cannot_collect_child",
+          "shutdown_stops_escalating_after_qmp_exit",
+          "unix_adapter_continues_after_broken_polite_channels_and_reaps_child",
+          "unix_adapter_reaps_real_qemu_child_when_polite_channels_fail"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/qemu/crucible-qemu-host:unit": {
+        "executed": [
+          "artifact_identity::tests::identity_authenticates_and_binds_exact_paths",
+          "artifact_identity::tests::identity_rejects_matched_but_unsupported_abi_versions",
+          "artifact_identity::tests::identity_rejects_missing_selected_artifacts",
+          "artifact_identity::tests::identity_rejects_plugin_relabeling",
+          "async_driver::tests::async_driver_arms_the_pending_scheduler_input_fence_before_waiting",
+          "async_driver::tests::async_driver_completes_one_quantum_with_bounded_wait_and_yields",
+          "async_driver::tests::async_driver_lifecycle_awaits_use_policy_timeouts",
+          "async_driver::tests::async_driver_lifecycle_timeouts_crash_and_shutdown_for_each_wait_class",
+          "async_driver::tests::async_driver_preserves_consumed_inbound_boundary_progress",
+          "async_driver::tests::async_driver_rejects_qmp_or_plugin_ipc_in_quantum_hot_path",
+          "async_driver::tests::async_driver_rejects_zero_timeout_policy",
+          "async_driver::tests::async_driver_repolls_a_transient_shared_memory_report",
+          "async_driver::tests::async_driver_timeout_surfaces_crash_and_escalates_shutdown",
+          "async_driver::tests::campaign_advance_can_outlive_multiple_host_poll_slices",
+          "async_driver::tests::campaign_advance_detects_child_exit_within_one_host_poll_slice",
+          "checkpoint::bounded_cbor::tests::bounded_map_and_set_delegate_nested_duplication_fallibly",
+          "checkpoint::bounded_cbor::tests::bounded_map_and_set_preserve_tree_cbor_shape",
+          "checkpoint::bounded_cbor::tests::bounded_map_and_set_reject_programmatic_growth_past_the_ceiling",
+          "checkpoint::bounded_cbor::tests::bounded_map_rejects_hostile_declared_length_before_allocation",
+          "checkpoint::bounded_cbor::tests::bounded_map_rejects_noncanonical_key_order",
+          "checkpoint::bounded_cbor::tests::bounded_sequence_rejects_hostile_declared_length_before_allocation",
+          "checkpoint::bounded_cbor::tests::bounded_sequence_round_trips_without_changing_cbor_shape",
+          "checkpoint::tests::device_continuation_comparison_allows_only_coherent_owner_rebinding",
+          "checkpoint::tests::host_io_checkpoint_codec_round_trips_block_state",
+          "checkpoint::tests::host_io_checkpoint_codec_round_trips_device_free_state",
+          "checkpoint::tests::network_transport_authenticates_inbound_producer_provenance",
+          "checkpoint::tests::network_transport_binds_host_and_plugin_cursors_around_live_frames",
+          "checkpoint::tests::network_transport_rejects_a_gap_or_inconsistent_plugin_cursor",
+          "checkpoint::tests::network_transport_rejects_impossible_retained_attempt_state",
+          "checkpoint::tests::network_transport_rejects_noncanonical_retained_state",
+          "checkpoint::tests::node_continuation_codec_rejects_wrong_binding_and_trailing_bytes",
+          "checkpoint::tests::node_continuation_codec_round_trips_complete_state",
+          "checkpoint::tests::node_continuation_decode_reports_typed_collection_resource_limit",
+          "checkpoint::tests::node_continuation_round_trips_large_and_full_capacity_compact_rings",
+          "console_observation::tests::reader_releases_backpressure_and_preserves_bytes",
+          "console_observation::tests::spool_fails_before_discarding_retained_evidence",
+          "console_observation::tests::spool_preserves_order_and_clears_at_boundary",
+          "exact_checkpoint_input::tests::finished_input_has_complete_immutable_seals",
+          "exact_checkpoint_input::tests::input_rejects_a_short_finished_stream",
+          "exact_checkpoint_input::tests::input_rejects_bytes_beyond_authenticated_length",
+          "fault_action_sink::node_payload::tests::atomic_selectors_export_actual_typed_payloads",
+          "fault_action_sink::node_payload::tests::clock_phase_tags_match_the_closed_model_phase_registry",
+          "fault_action_sink::node_payload::tests::dma_device_identity_matches_the_qemu_wire_contract",
+          "fault_action_sink::node_payload::tests::effect_target_pairing_rejects_conflicting_memory_range",
+          "fault_action_sink::node_payload::tests::effect_target_pairing_rejects_wrong_category",
+          "fault_action_sink::node_payload::tests::every_typed_node_effect_translates_to_its_closed_wire_schema",
+          "fault_action_sink::node_payload::tests::memory_bit_flip_rejects_authored_length_before_expanding_mask",
+          "fault_action_sink::node_payload::tests::memory_service_rejects_latency_beyond_the_sim_tick_limit",
+          "fault_action_sink::node_payload::tests::memory_service_rejects_the_nanosecond_field",
+          "fault_action_sink::node_payload::tests::page_table_walk_rejects_a_virtual_memory_target",
+          "fault_action_sink::node_payload::tests::remove_payload_discards_all_target_fields",
+          "fault_action_sink::node_payload::tests::shared_object_id_hash_matches_the_model_contract",
+          "fault_action_sink::tests::authenticated_typed_prepare_rejection_is_not_a_fatal_commit_error",
+          "fault_action_sink::tests::dynamic_prepare_limit_preserves_authored_coordinates",
+          "fault_action_sink::tests::memory_application_evidence_excludes_replay_authorization",
+          "fault_action_sink::tests::node_action_requires_the_exact_logical_tick",
+          "fault_action_sink::tests::staged_qemu_results_and_evidence_use_reserved_storage",
+          "fault_action_sink::tests::streaming_result_evidence_hash_preserves_the_canonical_identity",
+          "fault_action_sink::tests::typed_node_application_evidence_excludes_replay_authorization",
+          "fault_action_sink::tests::typed_prepare_reserves_only_the_exact_evidence_capacity",
+          "fault_capability::tests::architecture_changes_the_required_manifest",
+          "fault_capability::tests::current_manifest_is_exact_for_each_architecture",
+          "fault_capability::tests::exact_gate_manifest_resolution_is_idempotent_and_checks_every_manifest",
+          "fault_capability::tests::live_gate_accelerator_attachment_is_manifest_bound",
+          "fault_capability::tests::live_gate_without_accelerator_forbids_accelerator_capabilities",
+          "fault_capability::tests::world_node_binds_the_exact_register_manifest_into_launch_identity",
+          "fault_capability::tests::world_node_rejects_a_register_schema_digest_mismatch",
+          "fault_implementation::tests::command_mapping_and_registry_cover_every_node_effect_exactly",
+          "host_setup::tests::qemu_host_plugin_setup_rejects_a_valid_but_inexact_capability_manifest",
+          "host_setup::tests::qemu_host_plugin_setup_rejects_nonready_ack_after_descriptor_handoff",
+          "host_setup::tests::qemu_host_plugin_setup_rejects_peer_close_during_descriptor_handoff",
+          "host_setup::tests::qemu_host_plugin_setup_rejects_plugin_detected_real_region_corruption",
+          "host_setup::tests::qemu_host_plugin_setup_rejects_spawn_node_identity_mismatch_before_protocol",
+          "host_setup::tests::qemu_host_plugin_setup_rejects_spawn_region_length_mismatch_before_protocol",
+          "host_setup::tests::qemu_host_plugin_setup_wires_real_socket_descriptors_and_memfd",
+          "host_setup::tests::qemu_host_rejects_an_unsupported_plugin_abi",
+          "launch::crucible_accelerator::tests::launch_arguments_require_the_modern_only_transport",
+          "launch::crucible_accelerator::tests::launch_identity_attests_the_transport_mode",
+          "launch::crucible_shmem_9p::tests::args_use_synth_fsdev_and_virtio_9p_pci",
+          "launch::crucible_shmem_9p::tests::default_ids_and_synth_backend_apply",
+          "launch::crucible_shmem_9p::tests::hash_material_is_present_marker_plus_fields",
+          "launch::crucible_shmem_9p::tests::validate_accepts_defaults",
+          "launch::crucible_shmem_9p::tests::validate_rejects_comma_in_mount_tag",
+          "launch::crucible_shmem_9p::tests::validate_rejects_empty_fsdev_id",
+          "launch::crucible_shmem_9p::tests::validate_rejects_equals_in_device_id",
+          "launch::crucible_shmem_block::tests::args_use_typed_blockdev_path",
+          "launch::crucible_shmem_block::tests::default_ids_apply",
+          "launch::crucible_shmem_block::tests::hash_material_is_present_marker_plus_fields",
+          "launch::crucible_shmem_block::tests::validate_accepts_sector_multiple",
+          "launch::crucible_shmem_block::tests::validate_rejects_comma_in_id",
+          "launch::crucible_shmem_block::tests::validate_rejects_empty_id",
+          "launch::crucible_shmem_block::tests::validate_rejects_equals_in_device_id",
+          "launch::crucible_shmem_block::tests::validate_rejects_non_sector_multiple",
+          "launch::crucible_shmem_block::tests::validate_rejects_oversize_length",
+          "launch::crucible_shmem_block::tests::validate_rejects_zero_length",
+          "launch::crucible_shmem_network::tests::attachment_identity_covers_every_field",
+          "launch::crucible_shmem_network::tests::default_attachment_uses_only_a_hostless_hubport",
+          "launch::crucible_shmem_network::tests::validation_rejects_option_injection_and_noncanonical_mac",
+          "launch::fingerprint_projection::tests::base_manifests_match_real_qemu_registry",
+          "launch::fingerprint_projection::tests::combined_aarch64_manifest_matches_fixed_slot_registry",
+          "launch::fingerprint_projection::tests::combined_q35_manifest_matches_fixed_slot_registry",
+          "launch::fingerprint_projection::tests::envoy_manifest_matches_realized_registry",
+          "launch::fingerprint_projection::tests::every_composed_manifest_has_unique_section_identity",
+          "launch::fingerprint_projection::tests::four_vcpu_manifests_match_real_qemu_registry",
+          "launch::fingerprint_projection::tests::isa_serial_uses_current_projection_schema",
+          "launch::fingerprint_projection::tests::optional_pci_slots_are_distinct",
+          "launch::fingerprint_projection::tests::production_q35_manifest_matches_fixed_slot_registry",
+          "launch::fingerprint_projection::tests::realized_profiles_pin_every_changed_projection_row",
+          "launch::fingerprint_projection::tests::stale_realized_projection_versions_are_detected",
+          "launch::fingerprint_projection::tests::timer_uses_current_projection_schema",
+          "launch::fingerprint_projection::tests::virtio_devices_use_current_projection_schema",
+          "launch::plugin_config::tests::app_random_branch_and_continuation_arguments_are_canonical",
+          "launch::plugin_config::tests::app_random_branch_plan_must_name_the_launched_node",
+          "launch::plugin_config::tests::app_random_branch_sequence_arguments_preserve_order",
+          "launch::plugin_config::tests::authored_storage_history_limits_are_explicit_and_fail_closed",
+          "launch::plugin_config::tests::campaign_marker_parking_requires_explicit_whitebox_launch",
+          "launch::plugin_config::tests::complete_scenario_seed_controls_the_plugin_decision_root",
+          "launch::plugin_config::tests::process_generation_is_canonical_and_nonzero",
+          "launch::plugin_config::tests::selectable_catalog_requires_whitebox_mode",
+          "launch::profile_tests::host_provided_machine_reset_is_rejected",
+          "launch::validation::tests::delivery_witness_admits_only_two_exact_adjacent_selections",
+          "launch::validation::tests::idle_prefix_trace_is_one_fixed_whitelisted_pair",
+          "launch::validation::tests::qmp_monitor_trace_is_one_fixed_whitelisted_pair",
+          "launch::whitebox_setup::tests::aarch64_setup_rejects_a_mismatched_guest_instruction_abi",
+          "launch::whitebox_setup::tests::hmp_mtree_accepts_only_the_unassigned_io_fallback",
+          "launch::whitebox_setup::tests::hmp_mtree_rejects_a_real_device_at_the_reserved_port",
+          "launch::whitebox_setup::tests::setup_probe_preserves_the_builders_absolute_generation_overlay_read_only",
+          "launch::whitebox_setup::tests::setup_probe_rejects_noncanonical_control_boundary_trace_pair",
+          "launch::whitebox_setup::tests::setup_probe_rejects_noncanonical_root_overlay_paths",
+          "launch::whitebox_setup::tests::setup_probe_rejects_storage_forms_the_builder_does_not_emit",
+          "launch::whitebox_setup::tests::setup_probe_removes_both_exact_control_witness_selections",
+          "launch::whitebox_setup::tests::setup_probe_removes_fixed_control_boundary_trace_pair",
+          "launch::whitebox_setup::tests::setup_probe_removes_fixed_runtime_determinism_trace_pair",
+          "launch::whitebox_setup::tests::setup_probe_requires_the_exact_root_node_and_closed_drive_fields",
+          "launch::whitebox_setup::tests::setup_probe_uses_inert_vmstate_and_read_only_storage",
+          "linux_attempt_host::tests::configuration_is_exact_and_rejects_before_path_access",
+          "linux_attempt_host::tests::invariant_panic_parks_without_dropping_combined_authority",
+          "linux_attempt_host::tests::retry_delay_is_bounded_and_dropped_observation_cannot_stop_work",
+          "linux_attempt_host::tests::storage_cleanup_waits_for_reap_and_each_failure_retains_exact_retry",
+          "linux_attempt_process::tests::child_names_are_bounded_unique_and_namespace_scoped",
+          "linux_attempt_process::tests::configuration_rejects_invalid_values_before_cgroup_access",
+          "linux_attempt_process::tests::non_cgroup_root_fails_closed_without_creating_children",
+          "linux_attempt_process::tests::pidfd_identity_rejects_a_reaped_process_generation",
+          "linux_attempt_storage::tests::cleanup_depth_is_bounded_by_inodes_instead_of_open_descriptors",
+          "linux_attempt_storage::tests::cleanup_entry_bound_fails_closed_and_allows_exact_retry",
+          "linux_attempt_storage::tests::cleanup_is_descriptor_relative_and_does_not_follow_symlinks",
+          "linux_attempt_storage::tests::configuration_and_names_preserve_exact_bounds",
+          "linux_attempt_storage::tests::configuration_rejects_invalid_values_before_storage_access",
+          "linux_attempt_storage::tests::generation_directories_are_monotone_distinct_and_descriptor_pinned",
+          "linux_attempt_storage::tests::ordinary_filesystem_fails_closed_before_child_creation",
+          "linux_attempt_storage::tests::project_ids_recycle_only_before_commit_or_after_explicit_release",
+          "linux_attempt_storage::tests::public_root_mode_is_rejected_before_quota_access",
+          "linux_attempt_storage::tests::vmstate_provisioning_uses_the_pinned_directory_and_is_retryable",
+          "linux_cgroup::attempt_owner::tests::dropping_unfinished_owner_transfers_child_and_cgroup_to_quarantine",
+          "linux_cgroup::attempt_owner::tests::narrow_signal_closes_minting_and_drives_normal_cleanup",
+          "linux_cgroup::attempt_owner::tests::normal_finish_joins_watcher_and_removes_the_exact_group",
+          "linux_cgroup::attempt_owner::tests::start_failure_returns_group_and_started_watcher",
+          "linux_cgroup::attempt_owner::tests::unverified_failed_child_is_reaped_under_the_exact_owner_lifecycle",
+          "linux_cgroup::quarantine::tests::dropped_handle_cannot_drop_detached_cleanup_work",
+          "linux_cgroup::quarantine::tests::invariant_panic_parks_without_dropping_authority",
+          "linux_cgroup::tests::cancellation_is_sticky_across_control_clones",
+          "linux_cgroup::tests::cancellation_watcher_kills_until_the_cgroup_is_empty",
+          "linux_cgroup::tests::cgroup_limits_render_exact_cpu_quota",
+          "linux_cgroup::tests::cgroup_names_are_single_stable_components",
+          "linux_cgroup::tests::control_writes_are_read_back_exactly",
+          "linux_cgroup::tests::failed_cancellation_signal_still_latches_terminal_state",
+          "linux_cgroup::tests::failed_setup_retains_child_and_namespace_authority",
+          "linux_cgroup::tests::membership_scan_is_chunk_independent_and_task_bounded",
+          "linux_cgroup::tests::namespace_lock_is_exclusive_across_open_descriptions",
+          "linux_cgroup::tests::non_cgroup_delegation_fails_before_child_creation",
+          "linux_cgroup::tests::ordinary_finish_closes_child_minting_and_drop_cancels_fail_closed",
+          "linux_cgroup::tests::populated_parser_is_strict_and_complete",
+          "linux_cgroup::tests::release_retains_authority_and_rejects_path_replacement",
+          "linux_cgroup::tests::terminal_closure_rejects_new_child_contracts",
+          "linux_cgroup::tests::terminal_signal_orders_sticky_wake_before_successful_publication",
+          "linux_cgroup::tests::watcher_panic_is_classified_once_for_terminal_quarantine",
+          "linux_cgroup::tests::watcher_signal_failure_still_latches_terminal_state",
+          "linux_cgroup::tests::watcher_start_is_one_shot_and_required_for_child_minting",
+          "linux_cgroup::tests::watcher_timeout_retains_the_live_owner_for_retry",
+          "mapped_quantum::coverage_tests::acknowledged_restore_resets_host_novelty_and_coordinate_state",
+          "mapped_quantum::coverage_tests::host_rejects_acknowledgement_before_the_plugin_empties_coverage",
+          "mapped_quantum::fault_event_tests::mapped_inline_preview_preserves_exact_production_resource_coordinates",
+          "mapped_quantum::fault_event_tests::mapped_preview_preserves_exact_production_resource_coordinates",
+          "mapped_quantum::fingerprint::diagnostic_tests::component_diagnostic_bounds_and_escapes_node_names",
+          "mapped_quantum::fingerprint_tests::black_box_fingerprint_covers_live_register_ram_and_device_state",
+          "mapped_quantum::fingerprint_tests::black_box_fingerprint_excludes_unused_vcpu_slots",
+          "mapped_quantum::fingerprint_tests::black_box_fingerprint_rejects_incomplete_samples",
+          "mapped_quantum::hot_fork_continuation_tests::hot_fork_clone_copies_host_state_onto_an_independent_private_mapping",
+          "mapped_quantum::restore_tests::stopped_restore_requires_a_paired_control_boundary_ack",
+          "mapped_quantum::selectable_tests::mapped_catalog_retains_pending_until_exact_reply_completion",
+          "mapped_quantum::selectable_tests::mapped_marker_yields_one_exact_pending_request",
+          "mapped_quantum::selectable_tests::mapped_pending_rejects_a_nonquiesced_boundary",
+          "mapped_quantum::selectable_tests::mapped_pending_rejects_a_quiesced_boundary_beyond_the_native_handoff",
+          "node::error::tests::resource_limit_coordinates_survive_node_and_scheduler_conversion",
+          "node::exact_snapshot::capture_admission_tests::capture_admission_rejects_another_modeled_node",
+          "node::exact_snapshot::capture_admission_tests::capture_outputs_reject_non_regular_descriptors",
+          "node::exact_snapshot::capture_admission_tests::capture_outputs_reject_nonempty_files",
+          "node::exact_snapshot::capture_admission_tests::capture_outputs_reject_nonzero_offsets",
+          "node::exact_snapshot::capture_admission_tests::capture_outputs_reject_read_only_files",
+          "node::exact_snapshot::capture_admission_tests::capture_outputs_reject_the_same_file_for_ram_and_device_state",
+          "node::hot_fork_child_qmp::tests::child_qmp_host_endpoint_authenticates_complete_generation_basis",
+          "node::hot_fork_child_qmp::tests::child_qmp_host_endpoint_rejects_a_foreign_generation",
+          "node::hot_fork_child_qmp::tests::child_qmp_host_endpoint_rejects_a_foreign_monitor_generation",
+          "node::hot_fork_child_qmp::tests::child_qmp_host_endpoint_rejects_an_incomplete_disposition",
+          "node::hot_fork_diagnostics::live_drain::tests::interleaved_live_drains_retain_late_rows_after_actual_socket_saturation",
+          "node::hot_fork_diagnostics::live_drain::tests::live_capacity_failure_stays_sticky_and_refuses_truncated_eof_capture",
+          "node::hot_fork_diagnostics::live_drain::tests::one_live_turn_leaves_available_bytes_beyond_its_64_kib_budget",
+          "node::hot_fork_diagnostics::summary::native_stop_context::tests::admitted_and_unavailable_native_rows_keep_original_scope_and_pid",
+          "node::hot_fork_diagnostics::summary::native_stop_context::tests::malformed_context_is_rejected_before_retention",
+          "node::hot_fork_diagnostics::summary::network_output_context::tests::exact_owned_failure_context_is_advisory_and_strict",
+          "node::hot_fork_diagnostics::summary::network_output_context::tests::mixed_capture_retains_failure_under_original_row_and_line_caps",
+          "node::hot_fork_diagnostics::summary::stop_notice_tests::admitted_control_stages_preserve_exact_results_and_optional_identity",
+          "node::hot_fork_diagnostics::summary::stop_notice_tests::late_stop_notices_survive_the_original_owned_socket_capture",
+          "node::hot_fork_diagnostics::summary::stop_notice_tests::mixed_late_notices_share_existing_32_row_child_tail",
+          "node::hot_fork_diagnostics::summary::stop_notice_tests::stop_callers_accept_only_matching_identity_phase_and_status_grammar",
+          "node::hot_fork_diagnostics::summary::tests::final_callback_public_vector_is_retained_only_for_owned_pid_and_exact_schema",
+          "node::hot_fork_diagnostics::summary::tests::final_rejection_and_unavailable_rows_preserve_existing_tail_limits",
+          "node::hot_fork_diagnostics::summary::tests::late_native_stop_context_uses_existing_child_tail_bound",
+          "node::hot_fork_diagnostics::summary::tests::latest_rows_survive_unrelated_and_malformed_stderr",
+          "node::hot_fork_diagnostics::summary::tests::shares_native_advisory_schemas_and_accepts_actual_defer_reasons",
+          "node::hot_fork_diagnostics::tests::consumer_drains_in_order_and_finishes_only_at_eof",
+          "node::hot_fork_diagnostics::tests::consumer_fails_closed_before_growing_past_its_cumulative_limit",
+          "node::hot_fork_diagnostics::tests::retained_child_control_tail_survives_detached_finalization",
+          "node::hot_fork_diagnostics::tests::transferred_consumer_is_linear_and_bound_to_its_exact_stage",
+          "node::hot_fork_plugin_endpoints::eventfd_identity_tests::accepts_kernel_id_zero_as_one_based_token",
+          "node::hot_fork_plugin_endpoints::eventfd_identity_tests::rejects_ambiguous_or_unrepresentable_kernel_identity",
+          "node::test_support::hot_fork::io_inventory_tests::cloned_scripted_continuation_retains_the_exact_fixture_binding",
+          "node::test_support::hot_fork::io_inventory_tests::configured_physical_queue_is_never_manufactured_absent",
+          "node::test_support::hot_fork::io_inventory_tests::node_set_observation_requires_explicit_scripted_runtime_binding",
+          "node::test_support::hot_fork::io_inventory_tests::scripted_admission_authenticates_the_exact_actor_world_node_and_cap",
+          "node::test_support::hot_fork::io_inventory_tests::scripted_admission_refuses_before_effects_and_steps_to_the_actor_cap",
+          "node::test_support::hot_fork::io_inventory_tests::unbound_and_foreign_scripted_inventory_refuses",
+          "node::tests::child_exit::child_poll_preserves_clean_exit_status_and_disarms_drop_cleanup",
+          "node::tests::child_exit::child_poll_preserves_signal_termination_as_unclean",
+          "node::tests::child_exit::failed_helper_cleanup_reaps_original_child_and_is_idempotent",
+          "node::tests::exact_lifecycle::exact_checkpoint_pause_aborts_plugin_pause_when_qmp_stop_fails",
+          "node::tests::exact_lifecycle::exact_checkpoint_pause_orders_quiesce_stop_and_release",
+          "node::tests::exact_lifecycle::permanent_failure_retires_and_removes_the_authoritative_generation",
+          "node::tests::exact_lifecycle::qemu_node_appends_quantum_coverage_to_the_unified_event_log",
+          "node::tests::exact_lifecycle::qemu_node_discards_pre_authoritative_observations_after_coverage_generation_reset",
+          "node::tests::exact_lifecycle::qemu_node_drains_final_coverage_before_teardown",
+          "node::tests::exact_lifecycle::qemu_node_generic_backend_drains_coverage_without_a_local_side_record",
+          "node::tests::exact_lifecycle::qemu_node_preserves_priming_coverage_for_the_authoritative_drain",
+          "node::tests::exact_lifecycle::qemu_node_rejects_a_coverage_quantum_without_an_event_log",
+          "node::tests::exact_lifecycle::qemu_node_satisfies_simulation_backend_trait",
+          "node::tests::exact_lifecycle::qemu_node_stamps_polled_console_at_the_scheduler_boundary",
+          "node::tests::exact_lifecycle::restored_replacement_requires_explicit_release_after_install",
+          "node::tests::exact_lifecycle::terminal_lifecycle_capture_uses_the_existing_qemu_stop_fence",
+          "node::tests::failed_node_surrenders_its_direct_child_wait_authority",
+          "node::tests::failed_template_preparation_keeps_the_exactly_stopped_source_owned",
+          "node::tests::fault_command::fault_command_applies_at_exact_current_boundary_without_guest_progress",
+          "node::tests::fault_command::invalid_fault_event_sequence_is_terminal_across_retries",
+          "node::tests::fault_event_budget::fault_event_inline_payload_limit_rejects_before_copying_or_consuming_ownership",
+          "node::tests::fault_event_budget::fault_event_limit_rejects_before_consuming_staged_ownership",
+          "node::tests::fault_event_budget::fault_event_payload_limit_rejects_before_copying_or_consuming_ownership",
+          "node::tests::fault_event_budget::fingerprint_nodes_spend_one_sequential_fault_event_budget",
+          "node::tests::fault_event_budget::node_set_arms_one_node_from_one_aggregate_fault_event_budget",
+          "node::tests::fault_event_budget::production_restore_rejects_fault_event_published_by_fingerprint",
+          "node::tests::fault_event_budget::production_restore_requires_clean_fault_event_ownership",
+          "node::tests::fault_event_budget::selected_node_step_rearms_the_retained_aggregate_fault_event_budget",
+          "node::tests::fingerprint::stale_execution_fingerprint_requests_production_control_boundary",
+          "node::tests::hot_fork::hot_fork_child_files_stage_requires_empty_regular_destinations",
+          "node::tests::hot_fork::hot_fork_child_resources_are_prepared_in_one_authenticated_order",
+          "node::tests::hot_fork::hot_fork_consumes_the_staged_child_file_plan",
+          "node::tests::hot_fork::hot_fork_derived_request_rejects_a_foreign_qmp_basis_before_fork",
+          "node::tests::hot_fork::hot_fork_explicit_rejection_retains_a_reusable_source_owner",
+          "node::tests::hot_fork::hot_fork_explicit_rejection_rolls_back_the_target_process_contract",
+          "node::tests::hot_fork::hot_fork_first_advance_retains_activation_after_resume_rejection",
+          "node::tests::hot_fork::hot_fork_indeterminate_exchange_quarantines_the_complete_source_owner",
+          "node::tests::hot_fork::hot_fork_parent_disposition_failure_preserves_child_identity_and_quarantines",
+          "node::tests::hot_fork::hot_fork_plugin_endpoint_transfer_failure_retains_and_quarantines_owner",
+          "node::tests::hot_fork::hot_fork_plugin_endpoint_worker_disposition_mismatch_quarantines_owner",
+          "node::tests::hot_fork::hot_fork_private_ring_stage_returns_mapping_before_transfer_on_source_drift",
+          "node::tests::hot_fork::hot_fork_process_retention_failure_quarantines_before_endpoint_admission",
+          "node::tests::hot_fork::hot_fork_rejects_a_foreign_private_ring_before_consuming_host_continuation",
+          "node::tests::hot_fork::hot_fork_rejects_host_io_clone_failure_before_qmp_or_process_retention",
+          "node::tests::hot_fork::hot_fork_rejects_uncommitted_node_state_before_process_creation",
+          "node::tests::hot_fork::hot_fork_scheduler_continuation_owns_exact_private_planes",
+          "node::tests::hot_fork::hot_fork_success_transfers_child_qmp_and_private_host_continuation",
+          "node::tests::hot_fork::hot_fork_success_without_a_transferable_endpoint_quarantines_the_source",
+          "node::tests::hot_fork::hot_fork_target_process_contract_is_staged_before_child_creation",
+          "node::tests::hot_fork::hot_fork_with_files_explicit_rejection_releases_the_plan",
+          "node::tests::hot_fork::hot_fork_with_files_stages_the_plan_before_the_contract_and_fork",
+          "node::tests::hot_fork::isolation::gate_hot_fork_isolation_keeps_two_resource_generations_physically_private",
+          "node::tests::hot_fork::successful_child_file_proof_seals_only_its_exact_destination_pair",
+          "node::tests::hot_fork_plugin_endpoints_bind_the_installed_private_ring_generation",
+          "node::tests::hot_fork_private_ring_stage_retains_ambiguous_transfer_and_close_failures",
+          "node::tests::hot_fork_ring_capture_binds_one_unchanged_plugin_barrier",
+          "node::tests::live_fault_sequences_continue_after_capability_admission",
+          "node::tests::logical_time_calibration_checks_scaled_raw_retirement",
+          "node::tests::network_output::network_output_source_checkpoint_resume_releases_the_retained_native_stop",
+          "node::tests::network_output::network_output_stops_at_its_frame_coordinate_before_idle_frontier_promotion",
+          "node::tests::network_output::retained_http_frame_and_later_physical_pause_remain_a_boundary_refusal",
+          "node::tests::next_idle_advance_pauses_below_an_unrelated_large_ceiling",
+          "node::tests::qemu_node_owns_one_child_and_exactly_three_channel_roles",
+          "node::tests::qemu_node_routes_scheduler_operations_over_strict_channels",
+          "node::tests::selectable_node_set::one_nodes_choice_does_not_project_a_peer_step",
+          "node::tests::selectable_node_set::ordinary_idle_pause_still_reissues_to_the_requested_ceiling",
+          "node::tests::selectable_node_set::selectable_at_the_exact_ceiling_is_retained_before_the_fast_path_returns",
+          "node::tests::selectable_node_set::selectable_pause_returns_before_reissue_and_reply_reaches_the_next_choice",
+          "node::tests::selectable_node_set::selectable_projection_requires_the_exact_physical_pause_boundary",
+          "node::tests::selectable_reply_and_ceiling_are_published_before_qemu_resumes",
+          "node::tests::selectable_reply_is_not_published_before_qemu_confirms_pause",
+          "node::tests::sequence_restore::node_set_sequence_restore_rejects_late_invalid_node_without_partial_mutation",
+          "node::tests::shutdown_and_preemption::bounded_scheduler_preemption_rejects_externally_owned_process",
+          "node::tests::shutdown_and_preemption::bounded_scheduler_preemption_rejects_reaped_direct_child",
+          "node::tests::shutdown_and_preemption::orphan_quarantine_ignores_a_reused_process_identity",
+          "node::tests::shutdown_and_preemption::process_identity_components_reuse_preowned_executable_storage",
+          "node::tests::shutdown_and_preemption::qemu_node_keeps_exact_preemption_after_an_idle_time_jump",
+          "node::tests::shutdown_and_preemption::qemu_node_publishes_scheduler_preemption_before_owned_run",
+          "node::tests::shutdown_and_preemption::qemu_node_qmp_timeout_terminates_indeterminate_save_job",
+          "node::tests::shutdown_and_preemption::qemu_node_repeated_shutdown_is_idempotent_after_reap",
+          "node::tests::shutdown_and_preemption::qemu_node_reports_shmem_failures_as_backend_rejections",
+          "node::tests::shutdown_and_preemption::qemu_node_retains_process_endpoints_when_reap_fails",
+          "node::tests::shutdown_and_preemption::qemu_node_retires_process_endpoints_after_crash_reap",
+          "node::tests::shutdown_and_preemption::qemu_node_retires_process_endpoints_after_normal_reap",
+          "node::tests::shutdown_and_preemption::qemu_node_retires_process_endpoints_when_already_reaped",
+          "node::tests::shutdown_and_preemption::qemu_node_shutdown_continues_to_reap_when_plugin_quit_fails",
+          "node::tests::shutdown_and_preemption::qemu_node_terminates_after_indeterminate_qmp_save_failure",
+          "node::tests::shutdown_and_preemption::qemu_node_timeout_reports_crash_and_runs_shutdown",
+          "node_factory::restore_plan::tests::descriptor_validation_rejects_unsealed_device_state",
+          "node_factory::tests::exact_ram_restore_rejects_a_foreign_host_checkpoint_before_qmp_stop",
+          "node_factory::tests::factory_assembles_node_with_exact_snapshot_qmp_control",
+          "node_factory::tests::factory_rejects_setup_slot_mismatch_before_binding_hot_path",
+          "node_factory::tests::qmp_node_control_saves_deletes_and_quits",
+          "node_set::campaign_marker_parking_tests::only_exact_campaign_marker_stop_is_retained",
+          "node_set::concurrent::tests::failed_fingerprint_capture_restores_nodes_for_next_sample",
+          "node_set::concurrent::tests::fingerprint_collection_rejects_mismatched_identity_or_missing_result",
+          "node_set::concurrent::tests::invalid_fingerprint_selection_fails_before_sampling",
+          "node_set::concurrent::tests::panicking_fingerprint_worker_keeps_backend_owned",
+          "node_set::concurrent::tests::parallel_fingerprint_errors_are_sorted_and_keep_every_backend_owned",
+          "node_set::concurrent::tests::parallel_fingerprints_equal_every_sequential_boundary_sample",
+          "node_set::tests::authoritative_node_set_prepares_and_rolls_back_two_real_source_owners",
+          "node_set::tests::current_coordinate_input_consumption_is_reissuable_boundary_progress",
+          "node_set::tests::drained_selectable_request_remains_owned_after_delivery_failure",
+          "node_set::tests::fresh_stagnant_pause_is_progress_but_an_identical_repeat_is_not",
+          "node_set::tests::partial_source_preparation_failure_releases_transferred_host_resources",
+          "node_set::tests::preparation_token_cannot_move_to_a_reused_process_id",
+          "node_set::tests::prepared_source_loan_rejects_a_changed_process_incarnation",
+          "node_set::tests::prepared_source_loan_rejects_a_stale_transaction_generation",
+          "node_set::tests::qmp_abort_cannot_hide_retained_host_side_template_resources",
+          "node_set::tests::reconciliation_token_accepts_only_the_same_active_transaction",
+          "node_set::tests::recovered_source_reprepares_without_waiting_for_a_stopped_plugin",
+          "node_set::tests::retained_selectable_preserves_physical_pause_before_later_scheduler_ceiling",
+          "node_set::tests::second_source_failure_preserves_both_owners_through_rollback",
+          "node_set::tests::shutdown_closes_node_owned_unlinked_file_before_quota_release",
+          "node_set::tests::stale_preparation_token_cannot_authorize_a_new_qmp_transaction",
+          "production_fault_runtime::checkpoint_codec::preflight::tests::preflight_applies_event_records_as_one_aggregate_ceiling",
+          "production_fault_runtime::checkpoint_codec::preflight::tests::preflight_rejects_authored_node_count_before_owned_decode",
+          "production_fault_runtime::checkpoint_codec::preflight::tests::preflight_rejects_total_nested_event_count_at_exact_node",
+          "production_fault_runtime::checkpoint_codec::tests::aggregate_codec_rejects_the_prior_nanosecond_version",
+          "production_fault_runtime::checkpoint_codec::tests::aggregate_codec_rejects_trailing_bytes",
+          "production_fault_runtime::checkpoint_codec::tests::aggregate_identity_binds_network_adapter_bytes",
+          "production_fault_runtime::checkpoint_codec::tests::aggregate_identity_enforces_authored_limit_before_growth",
+          "production_fault_runtime::checkpoint_codec::tests::aggregate_identity_preserves_canonical_v10_hex_material_hash",
+          "production_fault_runtime::checkpoint_codec::tests::complete_production_checkpoint_round_trips_canonically",
+          "production_fault_runtime::checkpoint_codec::tests::fault_checkpoint_clone_cost_keeps_mutable_ledgers_private",
+          "production_fault_runtime::checkpoint_codec::tests::pending_network_output_resource_coordinates_cross_production_envelope",
+          "production_fault_runtime::checkpoint_codec::tests::production_decode_rejects_actions_above_authored_event_limit_before_wire_decode",
+          "production_fault_runtime::checkpoint_codec::tests::production_decode_rejects_nodes_above_authored_limit_before_wire_decode",
+          "production_fault_runtime::checkpoint_codec::tests::production_network_children_share_one_construction_budget",
+          "production_fault_runtime::checkpoint_codec::tests::production_network_codec_propagates_authored_limit_into_scheduler",
+          "production_fault_runtime::checkpoint_codec::tests::qemu_event_record_is_admitted_before_output_allocation",
+          "production_fault_runtime::checkpoint_codec::tests::scheduler_network_resource_coordinates_cross_production_envelope",
+          "production_fault_runtime::checkpoint_codec::tests::sibling_fault_checkpoints_share_immutable_qemu_fingerprints_and_sequences",
+          "production_fault_runtime::evaluation::coordinate_tests::qemu_event_boundary_uses_logical_ticks_after_idle_bias",
+          "production_fault_runtime::evaluation::publication::tests::production_evaluation_publication_is_owned_before_commit",
+          "production_fault_runtime::evidence::event_evidence::tests::cpu_service_requires_exact_tick_version_and_original_logical_clock",
+          "production_fault_runtime::evidence::event_evidence::tests::interrupted_cpu_service_retains_debt_without_advancing_time",
+          "production_fault_runtime::evidence::event_evidence::tests::memory_access_requires_exact_tick_evidence_version",
+          "production_fault_runtime::evidence::event_evidence::tests::memory_service_requires_tick_ledger_arithmetic",
+          "production_fault_runtime::evidence::event_evidence::tests::vcpu_state_preserves_raw_receipt_with_logical_tick_header",
+          "production_fault_runtime::lifecycle_tests::armed_accelerator_event_matches_the_installing_apply_result",
+          "production_fault_runtime::lifecycle_tests::boot_ready_exhaustion_preserves_requested_intent_and_effective_terminal_decision",
+          "production_fault_runtime::lifecycle_tests::fail_closed_lifecycle_accepts_an_explicit_missing_pre_exit_measurement",
+          "production_fault_runtime::lifecycle_tests::hang_evidence_keeps_raw_retirements_distinct_from_logical_ticks",
+          "production_fault_runtime::lifecycle_tests::immediate_qemu_event_must_match_the_exact_apply_result",
+          "production_fault_runtime::lifecycle_tests::lifecycle_evidence_preserves_exact_tick_phase_and_rejects_old_units",
+          "production_fault_runtime::lifecycle_tests::lifecycle_intent_preview_enforces_the_authored_pending_mutation_limit",
+          "production_fault_runtime::lifecycle_tests::lifecycle_intent_preview_is_action_exact_and_ignores_active_hang_rules",
+          "production_fault_runtime::lifecycle_tests::outer_poison_latch_rejects_an_inert_plan_after_ambiguous_visibility",
+          "production_fault_runtime::lifecycle_tests::ownership::lifecycle_owners_are_bound_to_the_creating_runtime_instance",
+          "production_fault_runtime::lifecycle_tests::ownership::lifecycle_work_transfer_preserves_buffers_and_holds_barrier_until_release_completion",
+          "production_fault_runtime::lifecycle_tests::qemu_action_ledger_retains_impulses_and_removed_rules_for_events",
+          "production_fault_runtime::lifecycle_tests::terminal_lifecycle_evidence_reconstructs_the_pre_exit_digest",
+          "production_fault_runtime::lifecycle_tests::typed_lifecycle_evidence_rejects_policy_and_marker_mismatch",
+          "production_fault_runtime::runtime_tests::empty_plan_checkpoint_preserves_custom_resource_identity",
+          "production_fault_runtime::runtime_tests::external_event_reservation_is_charged_before_boundary_apply",
+          "production_fault_runtime::runtime_tests::production_admits_every_availability_target_phase_state_and_policy",
+          "production_fault_runtime::runtime_tests::production_availability_survives_checkpoint_restore",
+          "production_fault_runtime::runtime_tests::production_checkpoint_preserves_runtime_resource_limit_coordinates",
+          "production_fault_runtime::runtime_tests::production_search_choices_must_cross_scheduler_boundary_before_checkpoint",
+          "production_fault_runtime::runtime_tests::recovery_tests::live_host_fault_event_drain_reaches_production_authentication",
+          "production_fault_runtime::runtime_tests::recovery_tests::pending_observation_reports_the_exhausted_checkpoint_resource",
+          "production_fault_runtime::runtime_tests::recovery_tests::pending_qemu_observation_identity_covers_kind_binding_and_target",
+          "production_fault_runtime::runtime_tests::recovery_tests::pending_qemu_observation_identity_reserves_before_growth",
+          "production_fault_runtime::runtime_tests::recovery_tests::production_checkpoints_referenced_storage_recovery_events",
+          "production_fault_runtime::runtime_tests::recovery_tests::production_event_limits_cover_all_retained_event_classes_in_aggregate",
+          "production_fault_runtime::runtime_tests::recovery_tests::qemu_event_staging_uses_remaining_aggregate_ledger_capacity",
+          "production_fault_runtime::runtime_tests::recovery_tests::rejected_qemu_event_validation_retains_the_raw_event",
+          "qmp::checkpoint_delta_flight_tests::support::prior_nanosecond_ram_sidecar_is_rejected",
+          "qmp::fingerprint_projection::tests::first_difference_identifies_the_changed_row",
+          "qmp::fingerprint_projection::tests::parser_recomputes_the_ordered_manifest_digest",
+          "qmp::fingerprint_projection::tests::parser_rejects_digest_and_row_drift",
+          "qmp::hot_fork::block_seal::tests::exact_current_root_is_required_for_a_seal",
+          "qmp::hot_fork::block_seal::tests::malformed_and_unsealed_reports_do_not_authorize_prepare",
+          "qmp::hot_fork::child_console::tests::console_requires_one_exact_nonblocking_retained_stream",
+          "qmp::hot_fork::child_files::tests::child_files_require_exact_staged_or_absent_shape",
+          "qmp::hot_fork::child_files::tests::root_selectors_are_bounded_block_names",
+          "qmp::hot_fork::child_process::tests::child_process_state_binds_generation_phase_and_retention",
+          "qmp::hot_fork::child_process_contract::tests::process_contract_requires_exact_staged_or_absent_shape",
+          "qmp::hot_fork::child_qmp::tests::child_qmp_requires_one_unattached_nonblocking_retained_stream",
+          "qmp::hot_fork::child_runtime::tests::child_runtime_parser_binds_registration_and_process_generation",
+          "qmp::hot_fork::diagnostics::tests::child_diagnostics_require_exact_nonblocking_stderr_replacement",
+          "qmp::hot_fork::fork::tests::response_requires_exact_echo_and_outcome_status",
+          "qmp::hot_fork::private_rings::tests::source_mapping_extent_rounds_exact_lengths_to_whole_pages",
+          "qmp::hot_fork::private_rings::tests::template_stage_requires_exact_source_mapping_basis",
+          "qmp::hot_fork::source_graph::tests::closed_graph_requires_original_process_template_and_full_roster",
+          "qmp::hot_fork::source_graph::tests::graph_rejects_invalid_edges_identity_digest_and_byte_budget",
+          "qmp::hot_fork::template::native_worker_tests::aio_proof_still_requires_closed_quiescent_admission",
+          "qmp::hot_fork::template::native_worker_tests::missing_native_worker_proof_cannot_claim_prepared",
+          "qmp::hot_fork::template::native_worker_tests::quiescent_aio_without_retired_native_workers_remains_draining",
+          "qmp::hot_fork::template::parse::tests::failure_diagnostic_rejects_unknown_or_unbounded_values",
+          "qmp::hot_fork::template::parse::tests::resource_stage_requires_exact_template_and_private_ring_generations",
+          "qmp::hot_fork::template::preparation_tests::abort_draining_response_must_release_ordinary_barriers",
+          "qmp::hot_fork::template::preparation_tests::abort_rejects_a_prepared_response",
+          "qmp::hot_fork::template::preparation_tests::abort_retains_pending_block_release_and_source_restoration",
+          "qmp::hot_fork::template::preparation_tests::acquisition_advances_prepare_until_non_plugin_proofs_are_complete",
+          "qmp::hot_fork::template::preparation_tests::acquisition_rejects_generation_replacement_before_accepting_completion",
+          "qmp::hot_fork::template::preparation_tests::blocked_acquisition_retains_the_validated_barrier_report",
+          "qmp::hot_fork::template::preparation_tests::missing_native_workers_exhausts_the_bound_without_replacing_or_aborting",
+          "qmp::hot_fork::template::preparation_tests::pending_completion_is_delivered_before_the_next_template_action",
+          "qmp::hot_fork::template::source_proof_tests::empty_frozen_source_set_is_distinct_from_absent_provenance",
+          "qmp::hot_fork::template::source_proof_tests::frozen_snapshot_proof_requires_no_current_writable_backend",
+          "qmp::hot_fork::template::source_proof_tests::frozen_source_proof_cannot_survive_snapshot_release_or_missing_wire_field",
+          "qmp::hot_fork::template::source_proof_tests::frozen_sources_preserve_original_permissions_and_parentless_roots",
+          "qmp::hot_fork::template::source_proof_tests::malformed_source_provenance_fails_closed",
+          "qmp::hot_fork::template::source_proof_tests::ordinary_snapshot_binding_does_not_acknowledge_frozen_source_proof",
+          "qmp::ram_delta::tests::capture_rejects_aliased_descriptor_names",
+          "qmp::ram_delta::tests::delta_wire_request_binds_complete_parent_triple",
+          "qmp::ram_delta::tests::epoch_parser_preserves_parent_when_candidate_is_absent",
+          "qmp::ram_delta::tests::epoch_parser_rejects_inactive_candidate_identity",
+          "qmp::ram_delta::tests::epoch_parser_rejects_inactive_committed_identity",
+          "qmp::ram_delta::tests::epoch_parser_rejects_inactive_malformed_candidate_identity",
+          "qmp::ram_delta::tests::epoch_parser_rejects_inactive_malformed_committed_identity",
+          "qmp::ram_delta::tests::epoch_parser_rejects_partial_parent_identity",
+          "qmp::ram_delta::tests::epoch_parser_rejects_prior_nanosecond_schema",
+          "qmp::ram_delta::tests::epoch_parser_retains_generation_after_fail_closed_invalidation",
+          "qmp::ram_delta::tests::restore_parser_binds_identity_layer_count_and_ceilings",
+          "qmp::ram_delta::tests::restore_rejects_aliased_descriptor_names",
+          "qmp::ram_delta::tests::restore_wire_request_preserves_order_and_final_identity",
+          "qmp::tests::checkpoint_and_projection_versions_match_registry",
+          "qmp::tests::command_response_rejects_excess_async_events",
+          "qmp::tests::greeting_rejects_an_oversized_partial_line",
+          "qmp::tests::hot_fork_accepts_exact_result_and_poisons_ambiguous_mismatch",
+          "qmp::tests::hot_fork_child_status_is_exact_releasable_and_poisoned_on_mismatch",
+          "qmp::tests::hot_fork_command_carries_every_exact_generation",
+          "qmp::tests::hot_fork_pre_fork_rejection_keeps_the_connection_usable",
+          "qmp::tests::launch_fdset_adoption_uses_the_typed_private_qmp_command",
+          "qmp::tests::source_graph_query_bypasses_retained_template_admission",
+          "qmp::vmstate_control::launch_fdsets_tests::adopted_child_channel_has_no_launch_fdsets_to_retire",
+          "qmp::vmstate_control::launch_fdsets_tests::adoption_failure_cannot_publish_seal_custody",
+          "qmp::vmstate_control::launch_fdsets_tests::launch_fdsets_retire_after_sealing_and_only_once",
+          "qmp::vmstate_control::launch_fdsets_tests::seal_refusal_retains_launch_custody_without_adoption",
+          "quantum::inbound_delivery::tests::inbound_snapshot_retries_if_plugin_consumes_during_capture",
+          "quantum::tests::channel_behavior::qemu_network_checkpoint_restores_backpressured_inbound_for_retry",
+          "quantum::tests::channel_behavior::qemu_quantum_hot_path_rejects_qmp_or_plugin_ipc_operations",
+          "quantum::tests::channel_behavior::qemu_quantum_implements_existing_shmem_hot_path_trait",
+          "quantum::tests::channel_behavior::qemu_quantum_outbound_dequeue_uses_scheduler_send_authorizer",
+          "quantum::tests::channel_behavior::qemu_quantum_outbound_enqueue_uses_scheduler_send_authorizer",
+          "quantum::tests::channel_behavior::qemu_quantum_repoll_retains_and_drains_one_outbound_frame_once",
+          "quantum::tests::channel_behavior::qemu_quantum_reports_device_io_freeze_across_burst_release",
+          "quantum::tests::completion::next_idle_quantum_requires_a_fresh_idle_publication",
+          "quantum::tests::completion::next_idle_quantum_requires_freshness_before_ceiling_precedence",
+          "quantum::tests::completion::qemu_quantum_accepts_a_release_acknowledged_runtime_clamp",
+          "quantum::tests::completion::qemu_quantum_accepts_a_running_resume_at_the_exact_clamp",
+          "quantum::tests::completion::qemu_quantum_accepts_an_existing_idle_report_beyond_the_new_ceiling",
+          "quantum::tests::completion::qemu_quantum_rejects_an_unacknowledged_or_device_active_clamp",
+          "quantum::tests::completion::qemu_quantum_retries_a_later_report_that_is_not_at_a_boundary",
+          "quantum::tests::network_delivery::qemu_quantum_accepts_exact_delivery_horizon_in_total_order",
+          "quantum::tests::network_delivery::qemu_quantum_accepts_frame_published_at_current_boundary",
+          "quantum::tests::network_delivery::qemu_quantum_deliver_frame_assigns_router_sequences",
+          "quantum::tests::network_delivery::qemu_quantum_deliver_frame_fails_loud_on_sequence_overflow",
+          "quantum::tests::network_delivery::qemu_quantum_preserves_scheduler_resolved_delivery_icount",
+          "quantum::tests::network_output::network_output_batch_finishes_at_the_fresh_physical_pause",
+          "quantum::tests::network_output::running_output_publication_cannot_consume_the_original_frame",
+          "quantum::tests::qemu_quantum_accepts_a_fresh_explicit_quiesced_boundary",
+          "quantum::tests::qemu_quantum_accepts_ledgered_mid_quantum_publication",
+          "quantum::tests::qemu_quantum_binds_external_shmem_and_finishes_after_plugin_report",
+          "quantum::tests::qemu_quantum_caps_horizon_at_next_possible_frame_delivery",
+          "quantum::tests::qemu_quantum_inbound_uses_ordered_scheduler_wake_handoff",
+          "quantum::tests::qemu_quantum_rejects_finish_before_reaching_a_boundary",
+          "quantum::tests::qemu_quantum_rejects_unconsumed_mid_quantum_publication",
+          "quantum::tests::qemu_quantum_rejects_unproven_frame_behind_current_icount",
+          "quantum::tests::qemu_quantum_reports_idle_before_horizon",
+          "quantum::tests::qemu_quantum_start_uses_ordered_scheduler_wake_handoff",
+          "quantum::tests::retained_inbound::qemu_quantum_accepts_canonical_retained_frame_behind_current_icount",
+          "quantum::tests::retained_inbound::qemu_quantum_caps_horizon_at_retained_fifo_head_retry",
+          "quantum::tests::retained_inbound::qemu_quantum_preserves_backpressured_due_frame_for_retry",
+          "quantum_boundary::tests::a_deadline_at_the_ceiling_is_not_paused",
+          "quantum_boundary::tests::a_deadline_before_the_ceiling_is_pending",
+          "quantum_boundary::tests::a_deadline_beyond_the_ceiling_is_paused",
+          "quantum_boundary::tests::an_explicit_quiesced_boundary_is_paused",
+          "quantum_boundary::tests::next_idle_pauses_below_an_unrelated_large_ceiling",
+          "quantum_boundary::tests::no_deadline_below_the_ceiling_is_pending",
+          "quantum_boundary::tests::reaching_the_ceiling_is_reached",
+          "quantum_boundary::tests::reaching_the_ceiling_wins_over_a_deadline",
+          "realization::node_executor::replay_physical::tests::physical_replay_reads_only_the_owned_node_clock",
+          "realization::node_executor::tests::admissions_reject_different_immutable_launch_profiles",
+          "realization::node_executor::tests::admissions_reject_node_and_full_snapshot_transplants",
+          "realization::node_executor::tests::baked_checkpoint_rejects_unrelated_configuration",
+          "realization::node_executor::tests::observations_reject_cross_executor_and_stale_generations",
+          "realization::node_executor::tests::replay_transition_rejects_forged_target",
+          "realization::node_executor::tests::replay_transition_rejects_mismatched_source_and_stale_runtime",
+          "realization::snapshot_codec::tests::production_envelope_rejects_an_unsupported_version",
+          "realization::snapshot_codec::tests::production_envelope_reports_typed_aggregate_limit",
+          "realization::snapshot_codec::tests::production_envelope_round_trips_full_network_frame_capacity",
+          "realization::tests::native_baked_genesis_uses_exact_vm_clock_set_without_modeled_blob_refs",
+          "spawn::control_delivery_trace::tests::admits_all_declared_phases_and_native_integer_limits",
+          "spawn::control_delivery_trace::tests::rejects_unknown_reordered_extra_and_malformed_fields",
+          "spawn::tests::canceled_pre_exec_contract_stays_canceled_across_spawns",
+          "spawn::tests::cancellation_contract_rejects_blocking_and_non_event_descriptors",
+          "spawn::tests::direct_launch_pin_rejects_overlay_replacement_after_revalidation",
+          "spawn::tests::exact_checkpoint_root_is_immutable_across_contract_generations",
+          "spawn::tests::guarded_credentials_reject_root_and_supervisor_identity",
+          "spawn::tests::guarded_image_helper_observes_sticky_cancellation_before_exec",
+          "spawn::tests::guarded_image_helper_uses_the_attempt_contract_and_pinned_directory",
+          "spawn::tests::guarded_launch_rewrites_only_authenticated_block_roots",
+          "spawn::tests::guarded_pre_exec_places_child_before_exec",
+          "spawn::tests::guarded_preparation_rejects_underprovisioned_launch_before_run_directory_access",
+          "spawn::tests::guarded_probe_bounds_a_flooding_output_stream",
+          "spawn::tests::guarded_probe_deadline_survives_descendant_held_output_pipes",
+          "spawn::tests::guarded_probe_descendant_launcher_child",
+          "spawn::tests::guarded_probe_descendant_pipe_holder_child",
+          "spawn::tests::guarded_probe_flood_child",
+          "spawn::tests::guarded_probe_timeout_child",
+          "spawn::tests::guarded_probe_times_out_and_reaps_a_live_child",
+          "spawn::tests::guarded_spawn_rejects_another_attempt_with_identical_limits",
+          "spawn::tests::guarded_spawn_rejects_changed_admission_before_revalidation",
+          "spawn::tests::image_launch_tests::guarded_absolute_overlay_is_bound_to_its_exact_generation",
+          "spawn::tests::image_launch_tests::guarded_probe_exec_inherits_only_read_only_overlay_authority",
+          "spawn::tests::image_launch_tests::guarded_probe_read_only_overlay_child",
+          "spawn::tests::image_launch_tests::hot_fork_child_provisioning_never_adopts_a_substituted_destination",
+          "spawn::tests::image_launch_tests::hot_fork_child_provisioning_retains_original_empty_pair_authority",
+          "spawn::tests::image_launch_tests::overlay_relative_name_original_cwd_child",
+          "spawn::tests::image_launch_tests::overlay_relative_name_requires_actual_original_cwd_and_admitted_inode",
+          "spawn::tests::image_launch_tests::retained_source_helper_preserves_original_attempt_and_ready_file_authority",
+          "spawn::tests::independent_launch_pin_rejects_vmstate_replacement",
+          "spawn::tests::inherited_block_roots_survive_names_replaced_after_exec",
+          "spawn::tests::materialization_preparation_rejects_before_run_directory_access",
+          "spawn::tests::pinned_pre_exec_rejects_vmstate_replacement",
+          "spawn::tests::pinned_run_directory_survives_diagnostic_path_replacement",
+          "spawn::tests::pre_exec_vmstate_name_matches_the_launch_contract",
+          "spawn::tests::prepared_run_directory_rejects_a_final_symlink",
+          "spawn::tests::prepared_run_directory_rejects_root_overlay_replacement",
+          "spawn::tests::prepared_run_directory_rejects_vmstate_replacement",
+          "spawn::tests::prepared_trace_admission_rejects_an_unreserved_command",
+          "spawn::tests::prepared_vmstate_container_rejects_symlinks",
+          "spawn::tests::process_contract_rejects_forged_regular_descriptors",
+          "spawn::tests::qemu_node_child_drop_kills_and_reaps_unreaped_child",
+          "spawn::tests::qemu_spawn_clears_inherited_environment_and_preserves_explicit_values",
+          "spawn::tests::qemu_spawn_kills_child_when_parent_exits",
+          "spawn::tests::qemu_spawn_maps_fixed_child_fds_after_pre_exec",
+          "spawn::tests::qemu_spawn_rejects_empty_region",
+          "spawn::tests::qemu_spawn_resources_create_socket_memfd_eventfd_and_host_copies",
+          "spawn::tests::retained_control_boundary_trace_accepts_only_the_prepared_inode",
+          "spawn::tests::retained_control_boundary_trace_enforces_content_and_aggregate_bounds",
+          "spawn::tests::retained_control_boundary_trace_rejects_unprepared_and_invalid_filesystem_state",
+          "spawn::tests::retained_runtime_liveness_tail_bounds_an_oversized_authenticated_trace",
+          "spawn::tests::retained_runtime_trace_accepts_only_its_prepared_inode",
+          "spawn::tests::streamed_control_boundary_trace_hashes_all_rows_and_retains_only_the_tail",
+          "spawn::tests::streamed_control_boundary_trace_rejects_replacement_malformed_and_oversize",
+          "spawn::tests::streamed_control_trace_retains_delivery_only_and_mixed_late_rows",
+          "spawn::tests::streamed_runtime_trace_rejects_replacement_oversize_and_partial_reads",
+          "spawn::tests::vmstate_launch_pin_has_independent_ofd_locks",
+          "storage_array::tests::dual_parity_recovers_two_missing_data_chunks",
+          "storage_array::tests::rotating_parity_never_overlaps_data",
+          "storage_fault_resolver::tests::composition_is_canonical_and_uses_most_severe_availability",
+          "storage_fault_resolver::tests::flush_stall_without_recovery_still_retains_until_exact_timeout",
+          "storage_fault_resolver::tests::latency_uses_typed_dynamic_value_and_checked_sum",
+          "storage_fault_resolver::tests::opportunity_semantics::delivery_completion_payload_authenticates_the_original_request",
+          "storage_fault_resolver::tests::opportunity_semantics::delivery_opportunity_binds_the_computed_response",
+          "storage_fault_resolver::tests::opportunity_semantics::hazard_probability_uses_the_request_keyed_draw",
+          "storage_fault_resolver::tests::opportunity_semantics::independently_sampled_storage_phases_merge_without_erasing_prior_fields",
+          "storage_fault_resolver::tests::opportunity_semantics::keyed_choices_are_reproducible_and_scenario_owned",
+          "storage_fault_resolver::tests::opportunity_semantics::opportunity_action_requires_exact_opportunity_identity",
+          "storage_fault_resolver::tests::opportunity_semantics::opportunity_binds_wire_digest_range_phase_and_monotone_sequence",
+          "storage_fault_resolver::tests::opportunity_semantics::opportunity_payload_cannot_alias_another_same_operation_request",
+          "storage_fault_resolver::tests::opportunity_semantics::volatile_cache_loss_requires_a_boundary_event_payload",
+          "storage_fault_resolver::tests::opportunity_semantics::volatile_cache_loss_selection_is_exact_and_reproducible",
+          "storage_fault_resolver::tests::opportunity_semantics::write_fragments_follow_physical_atomic_boundaries",
+          "storage_fault_resolver::tests::persistence_resolver_accepts_discard_and_rejects_operation_aliasing",
+          "storage_fault_resolver::tests::production_conformance::every_non_success_block_policy_result_maps_exactly",
+          "storage_fault_resolver::tests::production_conformance::production_resolver_mutates_controller_lifecycle_directive",
+          "storage_fault_resolver::tests::production_conformance::production_resolver_mutates_failure_and_volatile_cache_directives",
+          "storage_fault_resolver::tests::production_conformance::production_resolver_mutates_flash_state_directive",
+          "storage_fault_resolver::tests::production_conformance::production_resolver_mutates_storage_array_state_directive",
+          "storage_fault_resolver::tests::production_conformance::service_classes_are_canonical_after_identity_and_operation_conversion",
+          "storage_fault_resolver::tests::production_resolver_mutates_capacity_service_and_delivery_directives",
+          "storage_fault_resolver::tests::production_resolver_mutates_read_and_media_directives",
+          "storage_fault_resolver::tests::production_resolver_mutates_write_and_persistence_directives",
+          "storage_fault_resolver::tests::stall_timeout_resolves_exact_timeout_and_optional_recovery_subscription",
+          "storage_fault_resolver::tests::wrong_dynamic_parameter_fails_closed",
+          "supervision::accelerator_io_servicer::tests::accelerator_checkpoint_codec_round_trips_pending_completion",
+          "supervision::accelerator_io_servicer::tests::closed_job_schemas_are_integer_only_and_strict",
+          "supervision::block_io_servicer::tests::deterministic_base_image_is_reproducible_and_sized",
+          "supervision::block_io_servicer::tests::explicit_latency_is_retained_in_exact_checkpoint_state",
+          "supervision::block_io_servicer::tests::in_place_checkpoint_restore_reinstates_exact_device_and_ring_state",
+          "supervision::block_io_servicer::tests::latency_replacement_is_retained_in_exact_checkpoint_state",
+          "supervision::block_io_servicer::tests::multi_device_write_commits_every_member_and_orders_dependencies",
+          "supervision::block_io_servicer::tests::rejected_in_place_restore_preserves_exact_live_continuation",
+          "supervision::block_io_servicer::tests::remote_write_publishes_destination_deadline_and_wake",
+          "supervision::block_io_servicer::tests::terminal_slot_observation_replaces_pre_consumption_device_state",
+          "supervision::block_io_servicer::tests::world_bound_queue_retains_original_key_through_codec_restore_and_private_clone",
+          "supervision::bounded_scheduler_preemption::tests::abandoned_evidence_claim_cannot_be_reused",
+          "supervision::bounded_scheduler_preemption::tests::asynchronous_preemption_completes_while_target_runs",
+          "supervision::bounded_scheduler_preemption::tests::completed_controller_disarms_watchdog_before_expiry",
+          "supervision::bounded_scheduler_preemption::tests::completed_evidence_handle_rejects_a_second_flight",
+          "supervision::bounded_scheduler_preemption::tests::completed_quantum_error_preserves_the_effective_boundary",
+          "supervision::bounded_scheduler_preemption::tests::controller_waits_for_pending_work_release",
+          "supervision::bounded_scheduler_preemption::tests::disabled_adversary_spawns_no_controller",
+          "supervision::bounded_scheduler_preemption::tests::dropping_controller_resumes_and_joins_stopped_target",
+          "supervision::bounded_scheduler_preemption::tests::dropping_prepared_controller_joins_without_stopping_target",
+          "supervision::bounded_scheduler_preemption::tests::exited_target_fails_after_pending_work_release",
+          "supervision::bounded_scheduler_preemption::tests::first_stop_rejects_an_already_completed_quantum",
+          "supervision::bounded_scheduler_preemption::tests::prepared_watchdog_does_not_expire_during_guest_priming",
+          "supervision::bounded_scheduler_preemption::tests::signal_failure_is_reported_and_joined",
+          "supervision::bounded_scheduler_preemption::tests::stop_observation_honors_timeout_without_a_state_change",
+          "supervision::bounded_scheduler_preemption::tests::watchdog_expiry_directly_resumes_stopped_target",
+          "supervision::device_host_work::tests::exact_directive_matches_pinned_request",
+          "supervision::device_host_work::tests::mismatched_directive_is_rejected_before_dispatch",
+          "supervision::device_host_work::tests::synchronous_host_wins_and_guest_wins_preserve_completion_and_canonical_log",
+          "supervision::exact_restore::tests::exact_restore_matches_repository_snapshot_object_identity",
+          "supervision::host_io_runtime::performance::tests::disabled_and_exhausted_samples_never_read_the_clock",
+          "supervision::host_io_runtime::performance::tests::sampling_cadence_and_total_budget_are_bounded",
+          "supervision::host_io_runtime::tests::advance_accepts_future_idle_without_a_generation_fence",
+          "supervision::host_io_runtime::tests::advance_accepts_its_control_acknowledgement_and_later_serials",
+          "supervision::host_io_runtime::tests::advance_completion_poll_respects_elapsed_host_deadline",
+          "supervision::host_io_runtime::tests::advance_rejects_checkpoint_idle_until_qemu_releases_it",
+          "supervision::host_io_runtime::tests::advance_requires_a_plugin_publication_after_a_device_wake",
+          "supervision::host_io_runtime::tests::block_coordinator::empty_block_poll_does_not_block_late_fault_coordinator_installation",
+          "supervision::host_io_runtime::tests::block_coordinator::hot_fork_clone_requires_fresh_branch_local_fault_coordinator",
+          "supervision::host_io_runtime::tests::bounded_poll_attempts_divides_the_budget",
+          "supervision::host_io_runtime::tests::bounded_poll_attempts_is_at_least_one",
+          "supervision::host_io_runtime::tests::bounded_poll_attempts_tolerates_a_zero_interval",
+          "supervision::host_io_runtime::tests::checkpoint_pause_wakes_reached_boundary_but_not_device_idle_waiter",
+          "supervision::host_io_runtime::tests::completed_clamp_accepts_preserved_future_idle_deadline",
+          "supervision::host_io_runtime::tests::completed_clamp_rejects_unacknowledged_or_active_boundary",
+          "supervision::host_io_runtime::tests::completed_clamp_uses_current_coordinate_after_device_progress",
+          "supervision::host_io_runtime::tests::control_acknowledgement_order_wraps_without_accepting_stale_serials",
+          "supervision::host_io_runtime::tests::expired_fault_event_deadline_distinguishes_empty_and_pending_rings",
+          "supervision::host_io_runtime::tests::fault_result_publication_waits_for_the_full_control_pump",
+          "supervision::host_io_runtime::tests::hot_fork_clone_does_not_fall_back_to_uncoordinated_ninep_service",
+          "supervision::host_io_runtime::tests::hot_fork_clone_reconstructs_private_host_devices_without_aliasing_source",
+          "supervision::host_io_runtime::tests::hot_fork_clone_requires_and_accepts_fresh_child_console",
+          "supervision::host_io_runtime::tests::hot_fork_rejects_pending_on_demand_fingerprint_request",
+          "supervision::host_io_runtime::tests::network_output::network_output_at_unchanged_tick_requires_a_fresh_ring_frontier_and_control_ack",
+          "supervision::host_io_runtime::tests::network_output::network_output_witness_waits_for_the_matching_producer_publication",
+          "supervision::host_io_runtime::tests::on_demand_fingerprint_host_waits_for_exact_capture_request_ack",
+          "supervision::host_io_runtime::tests::preparation_result_is_admitted_before_exact_storage_allocation",
+          "supervision::host_io_runtime::tests::priming_handoff_waits_for_an_acknowledged_post_device_boundary",
+          "supervision::host_io_runtime::tests::stale_scheduler_publication_cannot_complete_next_idle_advance",
+          "supervision::host_io_runtime::tests::unacknowledged_device_wake_invalidates_an_idle_snapshot",
+          "supervision::host_io_runtime::tests::unacknowledged_device_wake_preserves_a_reached_boundary",
+          "supervision::host_io_runtime::wait_observation::tests::admitted_observation_keeps_original_snapshot_and_all_transport_cursors",
+          "supervision::host_io_runtime::wait_observation::tests::disabled_and_unadmitted_budgets_never_reserve_a_capture",
+          "supervision::host_io_runtime::wait_observation::tests::early_renewal_counts_only_original_observed_consumption",
+          "supervision::host_io_runtime::wait_observation::tests::largest_scalar_record_stays_within_fixture_line_bound_and_missing_views_are_nonfatal",
+          "supervision::host_io_runtime::wait_observation::tests::one_second_clamp_reports_once_after_half_budget_and_short_success_preserves_budget",
+          "supervision::host_io_runtime::wait_observation::tests::phase_reset_requires_another_five_seconds_and_small_deadlines_do_not_sample",
+          "supervision::host_io_runtime::wait_observation::tests::real_advance_wait_keeps_timeout_and_owned_state_with_diagnostics_enabled_or_disabled",
+          "supervision::host_io_runtime::wait_observation::tests::real_one_second_renewals_sample_pending_advance_without_resetting_cadence",
+          "supervision::host_io_runtime::wait_observation::tests::real_short_successes_preserve_the_lifetime_record_budget",
+          "supervision::host_io_runtime::wait_observation::tests::short_waits_preserve_budget_for_late_pending_phase_and_rate_limit_it",
+          "supervision::ninep_io_servicer::tests::authorized_due_reply_remains_retryable_after_backpressure",
+          "supervision::ninep_io_servicer::tests::deterministic_fs_tree_is_reproducible",
+          "supervision::ninep_io_servicer::tests::diagnostics_accumulate_as_a_pure_function_of_observations",
+          "supervision::ninep_io_servicer::tests::empty_poll_cannot_advance_past_later_request_completion",
+          "supervision::ninep_io_servicer::tests::host_private_transaction_rollback_restores_exact_state",
+          "supervision::node_step_gate::exact_snapshot::source_set::tests::vmstate_graph_authenticates_pinned_bytes_without_changing_shared_offset",
+          "supervision::node_step_gate::exact_snapshot::source_set::tests::vmstate_graph_query_preserves_native_refusal_and_original_identity_checks",
+          "supervision::node_step_gate::exact_snapshot::source_set::tests::vmstate_graph_refuses_foreign_files_changed_bytes_and_unexpected_roots",
+          "supervision::node_step_gate::setup_failure_tests::invalid_region_setup_reaps_real_child_before_scheduler_admission",
+          "supervision::node_step_gate::setup_failure_tests::nonready_ack_after_descriptor_handoff_reaps_real_child_before_scheduler_admission",
+          "supervision::node_step_gate::support::tests::aarch64_launch_profile_pins_virt_cortex_a57_and_ttyama0",
+          "supervision::node_step_gate::support::tests::authored_storage_history_limits_reach_the_plugin_launch_boundary",
+          "supervision::node_step_gate::support::tests::callback_witness_constructs_only_exact_admitted_child_environment_and_trace",
+          "supervision::node_step_gate::support::tests::campaign_marker_parking_survives_child_launch_profile_clone",
+          "supervision::node_step_gate::support::tests::coverage_switch_reaches_plugin_and_host_drain_configuration",
+          "supervision::node_step_gate::support::tests::diskless_launch_material_retains_firmware",
+          "supervision::node_step_gate::support::tests::guarded_checkpoint_capture_preserves_contract_eventfd_identity",
+          "supervision::node_step_gate::support::tests::guarded_exact_restore_rejects_an_unrelated_cancellation_eventfd",
+          "supervision::node_step_gate::support::tests::pre_directory_resource_admission_matches_the_concrete_launch_command",
+          "supervision::node_step_gate::support::tests::root_image_launch_material_does_not_fall_back_to_firmware",
+          "supervision::node_step_gate::support::tests::runtime_trace_budget_rejects_unbounded_or_empty_admission",
+          "supervision::node_step_gate::support::tests::runtime_trace_capacity_is_present_in_pre_directory_admission",
+          "supervision::node_step_gate::support::tests::selectable_catalog_plan_reaches_the_launch_bound_plugin_setup_plan",
+          "supervision::node_step_gate::support::tests::x86_64_launch_profile_pins_q35_qemu64_and_ttys0",
+          "supervision::rr_control_boundary_trace::tests::parser_accepts_bounded_control_path_diagnostics",
+          "supervision::rr_control_boundary_trace::tests::parser_accepts_exact_native_schema",
+          "supervision::rr_control_boundary_trace::tests::parser_accepts_lifecycle_cancellation",
+          "supervision::rr_control_boundary_trace::tests::parser_rejects_reordered_unknown_and_malformed_fields",
+          "supervision::runtime_determinism_trace::tests::exact_trace_accepts_the_genesis_rr_cursor",
+          "supervision::runtime_determinism_trace::tests::exact_trace_decodes_all_fixed_rows",
+          "supervision::runtime_determinism_trace::tests::exact_trace_preserves_subnanosecond_timer_time",
+          "supervision::runtime_determinism_trace::tests::trace_rejects_torn_noncanonical_and_nonmonotonic_rows",
+          "supervision::world_io_binding::tests::binding_uses_actual_world_layout_and_rejects_missing_device",
+          "supervision::world_io_binding::tests::serialized_binding_requires_every_original_identity_field",
+          "unix_socket_path::tests::child_owned_bind_installs_exact_private_policy",
+          "unix_socket_path::tests::child_owned_bind_preserves_occupied_destination",
+          "unix_socket_path::tests::child_owned_bind_reaches_directory_beyond_sun_path_limit",
+          "unix_socket_path::tests::child_owned_socket_accepts_the_distinct_admitted_identity",
+          "unix_socket_path::tests::connect_as_admitted_identity_child",
+          "unix_socket_path::tests::descriptor_relative_path_reaches_socket_beyond_sun_path_limit",
+          "unix_socket_path::tests::expected_peer_listener_rejects_absence_and_wrong_process"
+        ],
+        "ignored": [
+          "qmp::checkpoint_delta_flight_tests::live_direct_delta_restore_preserves_exact_bytes_and_dirty_epochs",
+          "qmp::checkpoint_delta_flight_tests::ordinary_mode_checkpoint_rejection_is_inert",
+          "supervision::bounded_scheduler_preemption::tests::preemption_target_process",
+          "supervision::node_step_gate::support::tests::callback_witness_cleared_child_probe"
+        ]
+      }
+    }
+  },
+  "report_sha256": {
+    "default.json": "3fb8a06465863ed5f9d6961867997cac6de796c8329c915ed76b0ca24f68e3c8",
+    "editor-parity.json": "1312051118ad3c34dc3fb320fe86066dbc2364225169b437ef6d4be88b207879",
+    "evidence/execution.json": "4e034c867229a062bdf19b95cbb94bbcac86837c9a3c3781651eb7431a218e1f",
+    "evidence/metrics.json": "1325ea03c123bc7045abde84f160ecdf4ba4afc320d60c9b9aaf9bcf11801c7a",
+    "inventory.json": "7f36b517bec1f1f05ec4cbfbb3ecb9b3b04cc6330a2508f5b0baa9c585379da1",
+    "production-license/evidence/execution.json": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "production-license/inventory.json": "64443b0f7e3ba5d66a4cdd689b41ed6b10f7772fa86f936e3a5a5d988f9e49e0",
+    "variants/test-support/parity.json": "524959c89a9b15647dda71d0ff0e168db50d163f3a8e81a4bbd4b5542009a0d5"
+  },
+  "schema_version": 1,
+  "source": "/nix/store/01wkvxhmrrf3k6km8y86384qn2525d54-aos-bazel-workspace",
+  "status": "native QEMU host test, feature, developer, editor and production license qualification passed",
+  "test_graph_commit": "f667534fade94743f72eeeac9be8a3d32f7900fd",
+  "tested_tree_parent_commit": "f667534fade94743f72eeeac9be8a3d32f7900fd",
+  "variants": {
+    "default": {
+      "doctest_cases": 0,
+      "examples": [
+        "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-host-owner-flight",
+        "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-live-block-realization",
+        "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-live-hot-fork-child",
+        "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-live-hot-fork-child-stress",
+        "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-live-plugin-install",
+        "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-production-plugin-flight",
+        "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-rr-control-boundary-device-flight",
+        "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-whitebox-map-validate"
+      ],
+      "executed_cases": 841,
+      "external_crate_identities": 107,
+      "first_party_features": {
+        "aos-linux-project-quota": [
+          []
+        ],
+        "crucible-campaign": [
+          []
+        ],
+        "crucible-determinism": [
+          []
+        ],
+        "crucible-device": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-engine": [
+          [
+            "default",
+            "test-double"
+          ]
+        ],
+        "crucible-qemu-host": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-qemu-protocol": [
+          []
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ],
+        "crucible-store": [
+          []
+        ]
+      },
+      "ignored_cases": 4,
+      "libtest_targets": 15
+    },
+    "test-support": {
+      "doctest_cases": 0,
+      "examples": [
+        "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-host-owner-flight_test_support",
+        "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-live-block-realization_test_support",
+        "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-live-hot-fork-child-stress_test_support",
+        "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-live-hot-fork-child_test_support",
+        "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-live-plugin-install_test_support",
+        "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-production-plugin-flight_test_support",
+        "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-rr-control-boundary-device-flight_test_support",
+        "//crates/crucible/qemu/crucible-qemu-host:crucible-qemu-whitebox-map-validate_test_support"
+      ],
+      "executed_cases": 841,
+      "external_crate_identities": 107,
+      "first_party_features": {
+        "aos-linux-project-quota": [
+          []
+        ],
+        "crucible-campaign": [
+          []
+        ],
+        "crucible-determinism": [
+          []
+        ],
+        "crucible-device": [
+          [
+            "default"
+          ]
+        ],
+        "crucible-engine": [
+          [
+            "default",
+            "test-double"
+          ]
+        ],
+        "crucible-qemu-host": [
+          [
+            "default",
+            "test-support"
+          ]
+        ],
+        "crucible-qemu-protocol": [
+          []
+        ],
+        "crucible-qemu-shmem": [
+          []
+        ],
+        "crucible-store": [
+          []
+        ]
+      },
+      "ignored_cases": 4,
+      "libtest_targets": 15
+    }
+  }
+}

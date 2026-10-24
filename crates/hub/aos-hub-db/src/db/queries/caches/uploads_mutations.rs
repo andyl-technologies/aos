@@ -364,6 +364,10 @@ impl Database {
     ///
     /// Returns an error for malformed identities, an invalid part number or
     /// entity tag, an inactive upload, or database failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn record_registry_publication_multipart_part(
         &self,
         upload_id: &str,

@@ -1,0 +1,87 @@
+{
+  "builds": {
+    "cached": {
+      "compiler_actions": 523,
+      "configuration": "/nix/store/glmkd55svgb3kblsdswvm3sks3wl0q1i-aos-bazel-configuration.json",
+      "derivation": "/nix/store/77c3sbs4njaqbys3mr724biglr7sij2m-aos-bazel-cli-compiler-input-proof-1.drv",
+      "evidence_sha256": {
+        "actions.json": "bab9c68c5692e0295ca244ea7c06841a8c80c69953fe948bcaf66e0f4a12cf99",
+        "compiler-inputs.json": "b8719e5e0e0d77cacd42c3b62b14a7aba9eaf38cc1cf6ca94dc30828d77f1971",
+        "execution.json": "1216acd2b5ff01008267536ca4b2576a3c1eaf5e463d6a9ee48e2d15cb63e7dd"
+      },
+      "file_references": 2003,
+      "first_party_actions": 35,
+      "output": "/nix/store/a5v248dx6nch21krr3x0q16d3p25qjry-aos-bazel-cli-compiler-input-proof-1",
+      "prepared_lock": "/nix/store/12c1bvc984n1zfq6w0rdsrmh98iqrars-aos-bazel-prepared-lock-1",
+      "retained_bytes": 237749,
+      "retained_files": 696,
+      "runners": {
+        "disk cache hit": 523
+      },
+      "source": "/nix/store/mffby9yps9va8rsj10jzbvlqq6rgygq1-aos-bazel-workspace",
+      "wrapper_flags": {
+        "--arg-file": 1461,
+        "--env-file": 542
+      }
+    },
+    "uncached": {
+      "compiler_actions": 523,
+      "configuration": "/nix/store/glmkd55svgb3kblsdswvm3sks3wl0q1i-aos-bazel-configuration.json",
+      "derivation": "/nix/store/8rs8gm74rfbq5l3m2ijm10w7ppzjy95m-aos-bazel-cli-compiler-input-uncached-proof-1.drv",
+      "evidence_sha256": {
+        "actions.json": "855cc4a4163447bc4e184a76032c93301e8fad268587699a0ae492d51bc4eb8f",
+        "compiler-inputs.json": "b8719e5e0e0d77cacd42c3b62b14a7aba9eaf38cc1cf6ca94dc30828d77f1971",
+        "execution.json": "1226599c46a3d9a79811cac16fd1a63f74fcad0c93e7f261388887c598fe5f5f"
+      },
+      "file_references": 2003,
+      "first_party_actions": 35,
+      "output": "/nix/store/kfvg97jj5ma9zhvwavvb0yz8mwqkvbad-aos-bazel-cli-compiler-input-uncached-proof-1",
+      "prepared_lock": "/nix/store/12c1bvc984n1zfq6w0rdsrmh98iqrars-aos-bazel-prepared-lock-1",
+      "retained_bytes": 237749,
+      "retained_files": 696,
+      "runners": {
+        "linux-sandbox": 523
+      },
+      "source": "/nix/store/mffby9yps9va8rsj10jzbvlqq6rgygq1-aos-bazel-workspace",
+      "wrapper_flags": {
+        "--arg-file": 1461,
+        "--env-file": 542
+      }
+    }
+  },
+  "cached_mount": "/aos-build-cache/bazel=/var/tmp/aos-dev-cache-1000/bazel/rfc-722-hub-service-iteration",
+  "cached_recipe": "let\n  pkgs = (import ./. {sharedBazelCacheDir = \"/aos-build-cache/bazel\";}).pkgs;\n  workspace = {\n    source = builtins.storePath \"/nix/store/mffby9yps9va8rsj10jzbvlqq6rgygq1-aos-bazel-workspace\";\n    configuration = builtins.storePath \"/nix/store/glmkd55svgb3kblsdswvm3sks3wl0q1i-aos-bazel-configuration.json\";\n    preparedLock = builtins.storePath \"/nix/store/12c1bvc984n1zfq6w0rdsrmh98iqrars-aos-bazel-prepared-lock-1\";\n    batch = false;\n  };\nin pkgs.mkAosBazelBuild {\n  pname = \"aos-bazel-cli-compiler-input-proof\";\n  inherit workspace;\n  targets = [\"//crates/aos/cli/aos-cli:lib\"];\n  retainActionGraph = true;\n}\n",
+  "checks": {
+    "core_evaluation": "/nix/store/1rhi589amw8vjz46zd34mvrgslpkgacn-aos-native-evaluation-checks-0",
+    "python_cases": 267,
+    "python_policy": "/nix/store/s61lml46qy2ax62ahi1fmr4qbra2l23l-aos-bazel-policy-checks"
+  },
+  "equal_command_and_file_inventories": true,
+  "implementation_sha256": {
+    "pkgs/build-support/_bazel/build.nix": "57203b0def8644ab35821e3bf783d366862e3e2d9053e960c78a4f84765f416c",
+    "tools/bazel/launcher.py": "3b71ce8e176492a665cb4873a8792ad0ce71db5ea1d8cf598cbd20b5d7c098a5",
+    "tools/bazel/tests/retain_compiler_inputs.py": "26812fd89a6eab6f045eb77f39db4c408b24955046ee6b91cb9cfc90ac94b9b7",
+    "tools/bazel/tests/test_compiler_input_retention.py": "c61367845107cd42991f7790f142f731970457260bebffdd791c878404a0e0e6",
+    "tools/bazel/tests/test_launcher.py": "86779e45979944aebcb098a96335434a1e019c780dad8a311976125aa9ef2ccb"
+  },
+  "limits": [
+    "This is the frozen lint-qualified CLI library workspace, preceding the architecture-consumer change. The source and configuration paths identify its exact inputs.",
+    "All 523 cached Rust actions restored from the explicitly mounted local disk cache. All 523 uncached Rust actions executed inside linux-sandbox with no requested shared cache mount.",
+    "Retention covers exact indirect wrapper input bytes, not interpretation of their syntax, substitution behavior, compiler defaults, semantic option equivalence, native ABI, or runtime closure.",
+    "Status-file handling and virtual FileWrite inputs have policy-test coverage; this CLI build used argument and environment files only."
+  ],
+  "nix_arguments": [
+    "--no-out-link",
+    "--max-jobs",
+    "4",
+    "--cores",
+    "4",
+    "--option",
+    "substitute",
+    "false"
+  ],
+  "schema_version": 1,
+  "status": "PASS: cached and uncached CLI compiler inputs retain identical digest-checked bytes",
+  "target": "//crates/aos/cli/aos-cli:lib",
+  "uncached_recipe": "let\n  pkgs = (import ./. {sharedBazelCacheDir = \"/aos-build-cache/bazel\";}).pkgs;\n  workspace = {\n    source = builtins.storePath \"/nix/store/mffby9yps9va8rsj10jzbvlqq6rgygq1-aos-bazel-workspace\";\n    configuration = builtins.storePath \"/nix/store/glmkd55svgb3kblsdswvm3sks3wl0q1i-aos-bazel-configuration.json\";\n    preparedLock = builtins.storePath \"/nix/store/12c1bvc984n1zfq6w0rdsrmh98iqrars-aos-bazel-prepared-lock-1\";\n    batch = false;\n  };\nin pkgs.mkAosBazelBuild {\n  pname = \"aos-bazel-cli-compiler-input-uncached-proof\";\n  inherit workspace;\n  targets = [\"//crates/aos/cli/aos-cli:lib\"];\n  retainActionGraph = true;\n  sharedBuildCache = false;\n}\n"
+}

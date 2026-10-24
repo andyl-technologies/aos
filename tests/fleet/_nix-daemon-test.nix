@@ -80,7 +80,7 @@ in {
             "systemctl status nix-daemon.service nix-daemon.socket nix-daemon-policy.service --no-pager || true",
             "journalctl -u nix-daemon.service -u nix-daemon-policy.service -n 80 --no-pager || true",
             f"systemctl show {SLICE} --property=LoadState,ActiveState,FragmentPath,DropInPaths,MemoryMax,MemoryHigh,MemoryCurrent,ControlGroup",
-            "cat /etc/aos/packages/nix-daemon/runtime.env "
+            "cat /etc/packages/nix-daemon/runtime.env "
             "/etc/systemd/system/aos-pkg-nix-daemon-builds.slice "
             "/etc/systemd/system/aos-pkg-nix-daemon-builds.slice.d/30-aos-resources.conf",
             "cat /run/systemd/system.control/aos-pkg-nix-daemon-builds.slice.d/* 2>/dev/null || true",
@@ -170,7 +170,7 @@ in {
         # The control plane must work from a daemon-selected login environment,
         # including when socket admission is closed.
         command = (
-            "NIX_REMOTE=daemon NIX_CONF_DIR=/etc/aos/packages/nix-daemon "
+            "NIX_REMOTE=daemon NIX_CONF_DIR=/etc/packages/nix-daemon "
             f"{APM} config apply --eval-root /run/daemon-eval-{sequence}"
         )
         if capture_result:

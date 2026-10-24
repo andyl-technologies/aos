@@ -1,0 +1,17 @@
+load("//tools/bazel/rules:package.bzl", "aos_package")
+load(":tree.bzl", "fixture_tree")
+
+fixture_tree(
+    name = "generated",
+    tags = ["aos-license:apache-host"],
+)
+
+aos_package(
+    name = "package",
+    package_name = "directory-fixture",
+    version = "1",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+    artifacts = {},
+    directories = {":generated": "assets"},
+)

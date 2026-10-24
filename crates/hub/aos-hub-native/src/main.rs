@@ -1588,6 +1588,10 @@ async fn deploy_worker(
 }
 
 /// Current Unix time in seconds.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native operator actions use host timestamps outside Crucible state."
+)]
 fn now_secs() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1941,8 +1945,12 @@ mod production_vm_coverage {
 
         let repository = Path::new(env!("CARGO_MANIFEST_DIR"))
             .ancestors()
-            .find(|candidate| candidate.join("crates/Cargo.toml").is_file())
-            .expect("native operation coverage requires the AOS source workspace");
+            .find(|candidate| {
+                candidate
+                    .join("tests/vm/hub-native-operations.nix")
+                    .is_file()
+            })
+            .expect("native operation coverage requires its declared VM test source");
         let source = fs::read_to_string(repository.join("tests/vm/hub-native-operations.nix"))
             .expect("native Hub operation test must be readable")
             .lines()

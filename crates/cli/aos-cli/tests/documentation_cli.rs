@@ -1,10 +1,17 @@
 //! Process checks for explicit documentation sources without Nix or a checkout.
 
+// These process tests bound real HTTP waits with the host monotonic clock.
+#![allow(clippy::disallowed_methods)]
+
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 use std::process::{Command, Output};
 
 fn run(arguments: &[&str], hub_environment: bool) -> Output {
     let directory = tempfile::tempdir().expect("temporary home");
-    let mut command = Command::new(env!("CARGO_BIN_EXE_aos"));
+    let mut command = Command::new(cli_binary!("CARGO_BIN_EXE_aos"));
     command
         .args(arguments)
         .env_clear()

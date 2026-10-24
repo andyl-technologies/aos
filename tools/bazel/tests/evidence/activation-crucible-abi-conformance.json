@@ -1,0 +1,25 @@
+{
+  "command": "nix-build -A checks.crucible.phase2.abiConformance --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "derivation": "/nix/store/v6s7rpgd5hrqhlig22vdnr6p62mafy6k-crucible-phase2-abi-conformance-0.drv",
+  "derivation_sha256": "2d0ba5a3f65886983e087bbcf50c223d2700d77da9860026cd21fcee33d523b0",
+  "frozen_contract_inputs_sha256": {
+    "MODULE.bazel": "be6425564ca12f91e01833ede88e280961682514a5cc6fe815c78bb02cf7d1c8",
+    "crates/crucible/guest/crucible-guest/BUILD.bazel": "9dd5dbdc33d5982d5a503fc819b1898abbea7e0a82bb271c1b634603a3d3e626",
+    "crates/crucible/guest/crucible-guest/tests/gate_abi_conformance.rs": "1dc2c6f76cf149145c028ab73812b47799f58440be62e58478596c1a9386ff31",
+    "pkgs/tools/crucible/_source.nix": "58bfa4c0284075e2ee1cc3e73acb937225c65bd8c7bef26e75a7f70a1f2a6e1a",
+    "tests/build/_bazel-guest.nix": "4947d00f264931a13dc52e6b5de0d2af7241a0a16148428156d6cc05446b8433",
+    "tests/crucible/phase2-abi-conformance.nix": "76b0c5ff608840aee544a5ab8b1ce2a9c0650e69c0b68d770c19a28185131429"
+  },
+  "limits": [
+    "The first run failed because the guest assertion could not find its repository marker. The source filter now declares MODULE.bazel and the Nix qualification contract; assertions and ABI versions remain unchanged.",
+    "This original ABI gate retains generated headers, golden corpora, exact-version rejection, guest doorbell and engine aggregate checks. It does not establish foreign runtime, license-boundary qualification, performance acceptance, or production migration."
+  ],
+  "log_sha256": "66bc15c29fa299fd8f536795142f7acd0267d47f5fcffc56fcfe4e968351176c",
+  "output": "/nix/store/w3q8wswc5cvffjmi868nnd29v09gflff-crucible-phase2-abi-conformance-0",
+  "result": "PASS\ncheck=checks.crucible.phase2.abiConformance\ntasks=T-HARN-17,T-API-11,T-API-12,T-PAT-8\ngate=gate:abi-conformance\nshmem_vectors=generated-header,layout-fixture,spsc-structure-aware,spsc-snapshot-byte-codec\nprotocol_vectors=hello,hello-ack,setup-payload,setup-ack,quit\nrpc_vectors=hello-request,hello-response,attached,send-request,send-response,event-effect-applied\nplugin_io_wire_fuzz=phase2-protocol-codec-fuzz-run-qemu-plugin-io-wire-fuzz\nplugin_io_wire_fuzz_executed=true\ndoorbell_abi_unit_targets_executed=true\nguest_abi_target_executed=true\nengine_abi_aggregate=true\nzero_test_guards=exact-count-and-canonical-owner\nversion_bump_rule=shmem+protocol+rpc-golden-corpora\nrpc_exact_version_rejection=true\nreference_client_scope=implemented-T-API-13\n",
+  "result_sha256": "0e02578c5510d1a7e0290a9297893fc58d0ed1aff0430c46ae1bd3a5449f88a5",
+  "schema_version": 1,
+  "source": "/nix/store/x414mwb28d15lvzpabh1rxglyw0l6jza-crucible-workspace-src",
+  "source_input_fix_commit": "642e7af244",
+  "status": "Dedicated native Crucible ABI conformance gate passed with unchanged assertions"
+}

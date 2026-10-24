@@ -1,0 +1,381 @@
+{
+  "changed_rust_inputs_sha256": {
+    "crates/aos/boot/aos-boot-runtime/src/boot_platform.rs": "58bad69fee973557998eed3c68c08a723339e3f4926083cea4129eb1b2418de8",
+    "crates/aos/boot/aos-boot-runtime/src/boot_platform/success.rs": "7385662af9fccf1aac46e2a0f526fc41b547fa772f1b59187024d58f16802f7c",
+    "crates/aos/boot/aos-boot-runtime/src/boot_storage.rs": "847b3a0d561a43d3f3e396909be204dc0c4ce48c73c92090c9d43825b3d8cf6e",
+    "crates/aos/boot/aos-boot-runtime/src/image_profile.rs": "63039f7e00953cb9afb25c208ca65f24d63d1b36b5b15d8f5eceda10551e6294",
+    "crates/aos/boot/aos-boot-runtime/src/image_stage.rs": "d19a15c5a7df0ba3cbd4c7df18c74e3b51afed6ebebb7bdb7122166f20bc5f0e",
+    "crates/aos/boot/aos-boot-runtime/src/image_stage/copy_up.rs": "0e251dab1964a4b1155c75fc0a080e1fe705500bde91a76efe0cf475113f3620",
+    "crates/aos/boot/aos-boot-runtime/src/initrd_archive.rs": "86e4149ac6100d4e4b74d891905d7382c6fc1fbfb18a8224ba0c8ec078bc355d",
+    "crates/aos/boot/aos-boot-runtime/src/initrd_store.rs": "5215ed6c945871c669b3c1bb49d9335d580c3daf7d907260445d99b2b0cfa1d3",
+    "crates/aos/boot/aos-boot-runtime/src/measurement_index.rs": "90080d72dfa3fa55036ae2befd14fa969a4870de53108f30241af011488f458b",
+    "crates/aos/boot/aos-boot-runtime/src/preparation.rs": "b8a2c8ea53ebfbaafdee1e2f2789f1fa94d81b18252af7b35298adb3bf051599",
+    "crates/aos/boot/aos-boot-runtime/src/process.rs": "70d539ff0fbe96a17354a9656738dd82c6e2b7c91892b5022a6e079a4b17d2f1",
+    "crates/aos/boot/aos-boot-runtime/src/recovery.rs": "677f16edb2201b045aced86eb9a97b3fe426d20d25815ecd64e531697b6b9f6f",
+    "crates/aos/boot/aos-configuration-image/src/lib.rs": "e70da4d6a57e0b42db8f4da31fb81939527886cf39d49a7e0f251bbef4879424",
+    "crates/aos/boot/aos-configuration-image/src/model.rs": "5d742a622c8c3c6e2df5a93ee5f58f9974d2caa1864c3c8e30b2f056fd7aba58",
+    "crates/aos/boot/aos-platform-metadata/src/http.rs": "c25a3b97ca6cbb7c3259f05bc0391813ec72e81275b935115f258206e05099a3",
+    "crates/aos/boot/aos-platform-metadata/src/lib.rs": "ed48b0cc43f856b73b8eb1d9233e3476c245b9315f78084078717480c0ef4215",
+    "crates/aos/boot/aos-platform-metadata/src/mount.rs": "16346519ea73f68f757eb29824268d240cda42a210301a638aed133ba30d45de",
+    "crates/aos/boot/aos-platform-metadata/src/tests.rs": "0c58c083a7a08ba09595e52bc6a317d668c79c65c6386fe594dfe8c25a5bbd22",
+    "crates/aos/boot/aos-platform-metadata/src/trust.rs": "b4f108199000e047a573879ece7028547a1fbafa4cec3ab7a51c423b6057e8d8"
+  },
+  "command": "nix-build /tmp/aos-bazel-722/boot-preparation-iterative-clippy.nix -A builds --no-out-link --keep-going --max-jobs 4 --cores 4 --option substitute false",
+  "limits": [
+    "This iteration intentionally reuses a previously built, real AOS command-tool closure to avoid rebuilding legacy Cargo applications for each lint edit. Final strict qualification rebuilds the current ordinary command closure independently.",
+    "No runtime execution, complete compiler invocation equivalence, performance acceptance, foreign/Wasm qualification, production cutover or Cargo removal is claimed by this developer checkpoint."
+  ],
+  "preserved_tests": {
+    "metadata_test_inputs_sha256": {
+      "crates/aos/boot/aos-platform-metadata/src/tests.rs": "0c58c083a7a08ba09595e52bc6a317d668c79c65c6386fe594dfe8c25a5bbd22",
+      "crates/aos/boot/aos-platform-metadata/src/trust.rs": "b4f108199000e047a573879ece7028547a1fbafa4cec3ab7a51c423b6057e8d8"
+    },
+    "normalizations": [
+      "The unchanged store-executable helper moves before the boot-platform test module.",
+      "Two CPIO fixture padding predicates use is_multiple_of with identical modulo semantics.",
+      "Four metadata trust-test path clones become borrowed one-element slices with unchanged assertion conditions.",
+      "The existing real HTTP timeout test gains a function-scoped clock lint exception."
+    ],
+    "test_module_sha256": {
+      "crates/aos/boot/aos-boot-runtime/src/boot_platform.rs": "2cb4e4254aebfcccf6fa596ede4fea9055df08c691d40c64e4a0e5ea5be1becd",
+      "crates/aos/boot/aos-boot-runtime/src/boot_platform/success.rs": "32f8fec5583eca770e540081c592f93001cdbfc8b0a0599f6895ef7ad15bf659",
+      "crates/aos/boot/aos-boot-runtime/src/boot_storage.rs": "96d35d1ff3eb0ba9386056305865c48583f06cb559e488d22d15136cb12adc37",
+      "crates/aos/boot/aos-boot-runtime/src/image_profile.rs": "6297a02653b0a5f0e67e46a446120f5dc1503959fda2fe62e8fbef3c5d41c291",
+      "crates/aos/boot/aos-boot-runtime/src/image_stage.rs": "eb58f49011e6fc4829bdb7c3e3d1d0141641b9e0d887c2409bf8ec176aefa01f",
+      "crates/aos/boot/aos-boot-runtime/src/image_stage/copy_up.rs": "517dbbf41b46f84460ad05a09c86dd74cf5478752c99f2c458ee0c87e5c94174",
+      "crates/aos/boot/aos-boot-runtime/src/initrd_archive.rs": "e5bba1632de85e20408d5f1ead0d579c4b6faa1c2d90c579c7d61d03250f061e",
+      "crates/aos/boot/aos-boot-runtime/src/initrd_store.rs": "d8a957038679125d4840554fc43375697e662283121561afdefc2c3fbecaf729",
+      "crates/aos/boot/aos-boot-runtime/src/measurement_index.rs": "b99d9a60cac90ae778a48295e8125a12c99b9fcc08984c40258ec5ccd92789fa",
+      "crates/aos/boot/aos-boot-runtime/src/preparation.rs": "93d4b09becc5e018564b56446a434dbe5f981a4162a99f3ecaa8dc093ebe2efa",
+      "crates/aos/boot/aos-boot-runtime/src/recovery.rs": "943f253e03f323ceaadb185a8a2fbb6d6980e43cdbf5586cd5904bfcb63e19d6",
+      "crates/aos/boot/aos-configuration-image/src/model.rs": "30d225c76c0d4e73a07f6e88fcc04e55e6a630277fab261804861dfa71641818"
+    }
+  },
+  "profiles": {
+    "default": {
+      "action_counts": {
+        "CargoBuildScriptRun": 34,
+        "Clippy": 28,
+        "ExtractCargoTomlEnvVars": 294,
+        "Rustc": 317,
+        "Rustdoc": 3
+      },
+      "clippy_actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:lib"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:aos-certificate-bundle"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:aos-configuration-boot"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:aos-configuration-lower"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:aos-configuration-mount"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:bin_aos-certificate-bundle_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:bin_aos-configuration-boot_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:bin_aos-configuration-lower_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:bin_aos-configuration-mount_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:unit_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-platform-metadata:lib"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-platform-metadata:aos-metadata-acquisition-provider"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-platform-metadata:aos-metadata-policy-provider"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-platform-metadata:bin_aos-metadata-acquisition-provider_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-platform-metadata:bin_aos-metadata-policy-provider_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-platform-metadata:unit_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-boot-runtime:lib"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-boot-runtime:aos-boot-preparation-provider"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-boot-runtime:aos-systemd-boot-platform"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-boot-runtime:aos-systemd-image-evidence"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-boot-runtime:aos-systemd-image-stage"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-boot-runtime:aos-systemd-initrd-store"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-boot-runtime:bin_aos-boot-preparation-provider_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-boot-runtime:bin_aos-systemd-boot-platform_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-boot-runtime:bin_aos-systemd-image-evidence_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-boot-runtime:bin_aos-systemd-image-stage_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-boot-runtime:bin_aos-systemd-initrd-store_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-boot-runtime:unit_binary"
+        }
+      ],
+      "derivation": "/nix/store/fl6qwvplpp8f8y5pg317m9bybfkv988n-aos-bazel-boot-preparation-developer-tools-1.drv",
+      "derivation_sha256": "53a1fc8f3fbd8dbb43705304f87506e7563d6abc7a14fe8e2e354a92da39a890",
+      "execution_sha256": "9e00c327db9293bb152fcd950e3f0b42e392cef29fb6a3f6cba17a71bf953404",
+      "inventory_sha256": "9f1c9f80f5d3449808e554cbfe92f25f942a263e378f847f0c016d6b47e35857",
+      "output": "/nix/store/vfjj2amg0gwq774hk91h73xa26ld06vv-aos-bazel-boot-preparation-developer-tools-1",
+      "source": "/nix/store/0a0nsn6ssk1d11ni9b68cmcl966x4z0i-aos-bazel-workspace"
+    },
+    "without-boot-tools": {
+      "action_counts": {
+        "CargoBuildScriptRun": 32,
+        "Clippy": 20,
+        "ExtractCargoTomlEnvVars": 277,
+        "Rustc": 296,
+        "Rustdoc": 3
+      },
+      "clippy_actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-boot-runtime:lib"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-boot-runtime:aos-boot-preparation-provider"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-boot-runtime:bin_aos-boot-preparation-provider_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-boot-runtime:unit_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:lib"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:aos-certificate-bundle"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:aos-configuration-boot"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:aos-configuration-lower"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:aos-configuration-mount"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:bin_aos-certificate-bundle_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:bin_aos-configuration-boot_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:bin_aos-configuration-lower_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:bin_aos-configuration-mount_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-configuration-image:unit_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-platform-metadata:lib"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-platform-metadata:aos-metadata-acquisition-provider"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-platform-metadata:aos-metadata-policy-provider"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-platform-metadata:bin_aos-metadata-acquisition-provider_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-platform-metadata:bin_aos-metadata-policy-provider_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/aos/boot/aos-platform-metadata:unit_binary"
+        }
+      ],
+      "derivation": "/nix/store/p9zc2448q8czcdiv45j61wwgvxw1k3l3-aos-bazel-boot-preparation-minimal-developer-tools-1.drv",
+      "derivation_sha256": "056752ae0e974b13ec6f1786485e3152f6c618c66f4ef72a6c536ee0e831d8e2",
+      "execution_sha256": "545cb191e23989d6e0712e456bc7d26a1d5d51a28cc7349dd39025dc0be74683",
+      "inventory_sha256": "cd10ba123001002840710ca863624dabd0eb6ceecda0f20ae74d3a597fb467eb",
+      "output": "/nix/store/7i4rahnw5l1ixaihxca06c1jkgjmmm8v-aos-bazel-boot-preparation-minimal-developer-tools-1",
+      "source": "/nix/store/nbjj4dawmcikfgmifvdx6a7amrrrg64w-aos-bazel-workspace"
+    }
+  },
+  "recipe": "let\n  root = /home/dylan/src/aos/.worktrees/codex/bazel-integration-722;\n  original = (import root {}).pkgs;\n  pkgs = original // {aosBazelBootTools = builtins.storePath /nix/store/lvyv6bc2giws3hhpxz69kq5vj8689fwf-aos-bazel-boot-tools-1;};\n  family = import (root + \"/tests/build/_bazel-boot-preparation.nix\") {inherit pkgs; sourceInventory = null;};\nin { builds = [family.default.developer-build family.without-boot-tools.developer-build]; }\n",
+  "schema_version": 1,
+  "status": "Both boot profiles pass Clippy, documentation and developer license closure for the final nineteen Rust edits"
+}

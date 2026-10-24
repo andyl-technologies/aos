@@ -1,0 +1,127 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "derivation": "/nix/store/0bppzgijq8lifry8687vy8mfjhmyshif-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "d9160e7f442f3309a51a519c001a7f4f8c8329ad09fb9707584ae5f4cba14fbf",
+  "limits": [
+    "The mandatory workspace gate compiles application unit and integration targets without executing them. Bazel runtime, developer, editor and Wasm qualification are separate.",
+    "All 24 Worker Rust source files match the compiled source, including nine equivalent lint and target-selection repairs. All 50 original test declarations remain without new ignored tests.",
+    "Production migration and Cargo removal remain separate gates."
+  ],
+  "log_sha256": "47062ba1ffa9aabac4bb56ec64aa1a396ecba641eb7de017d44d389ccb5f1bb8",
+  "output": "/nix/store/x03vdv5s8cwm0xdnlshrfv4wcys69n9q-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/b1w9k70x9711zvs4znlprrdkj1lqimfv-aos-workspace-src",
+  "source_test_audit": {
+    "changed_rust_files": [
+      "crates/hub/aos-hub-worker/src/bridge_dispatch.rs",
+      "crates/hub/aos-hub-worker/src/consoleports.rs",
+      "crates/hub/aos-hub-worker/src/e2e_surface.rs",
+      "crates/hub/aos-hub-worker/src/indexer.rs",
+      "crates/hub/aos-hub-worker/src/lib.rs",
+      "crates/hub/aos-hub-worker/src/pitr.rs",
+      "crates/hub/aos-hub-worker/src/r2_adapter.rs",
+      "crates/hub/aos-hub-worker/src/remoteprotocol.rs",
+      "crates/hub/aos-hub-worker/src/surface.rs"
+    ],
+    "comparison_base_commit": "ef801cc67cc6af449b33af3502c6ce3837812057",
+    "ignored_declarations": 0,
+    "source_sha256": {
+      "crates/hub/aos-hub-worker/src/bridge.rs": "72594035fb37c03440cd5d0b1cfbcbf84be451d5b9f0f647e770266d01dac610",
+      "crates/hub/aos-hub-worker/src/bridge_dispatch.rs": "42f56d77814ec3767904febd611e831521c5d742504fce6fedf719527551e908",
+      "crates/hub/aos-hub-worker/src/consoleports.rs": "4409e10ba8025e27bc33817656fa59cfebecebf0600c142fbba022a80bf432ae",
+      "crates/hub/aos-hub-worker/src/coordinatorobj.rs": "8fc32533b1de1824345150cce95661a55b8bcf1694ac5e5fcd1377acac09093d",
+      "crates/hub/aos-hub-worker/src/delivery_ingress.rs": "eb7860952acdcb4836edce9c502ac4b8a08bfb8517762f22c558a1ceb655ac75",
+      "crates/hub/aos-hub-worker/src/e2e_surface.rs": "dff0f8a6bba7d985c5b08ac99056e91aadf40be13d9ebdb6988b186b20c8b515",
+      "crates/hub/aos-hub-worker/src/edgeratelimit.rs": "5db432844ce80a0aa7de5b3f408beb72647b9c8bd8079f72000776363b1d47e1",
+      "crates/hub/aos-hub-worker/src/frozen_surface_access.rs": "7d17c5134bd8a33d080e7f555d4ccfcb2a1d9140f256f5af249a2192ce4b4177",
+      "crates/hub/aos-hub-worker/src/handlers.rs": "31e96c0ce4621e092c750d842bbef99976c0417df679f8ad75fb7aa92e3b3150",
+      "crates/hub/aos-hub-worker/src/indexer.rs": "23d7a194c67d281360dcf519b47cc0473cc391ca0bd9abd8f12faf224d753a6e",
+      "crates/hub/aos-hub-worker/src/keymap.rs": "a3553219e0cdb7a3f159c35a718e4adb9e46411f25974dbed94441f72693d7b9",
+      "crates/hub/aos-hub-worker/src/lib.rs": "8176e3464947437821ca57dc80c3cf754f57453cbb8b690b80437287d28b6dfc",
+      "crates/hub/aos-hub-worker/src/pitr.rs": "3bc91fa9bb784def01df7794b622781b1d3f6eacab3406a93110f16febe334b9",
+      "crates/hub/aos-hub-worker/src/placeholder.rs": "03d6df6fe7c1d6d19c67d7546ee6c634d0fd56a5b01a4deb8d671754cc40dc5f",
+      "crates/hub/aos-hub-worker/src/r2_adapter.rs": "280691d79e123b17d992b704f15d87d9b972f0edab0e6e9986d4aff11d8cc2a6",
+      "crates/hub/aos-hub-worker/src/remotebackend.rs": "c3b67bf3d731dd3a0ec7724f3abd5d03a8777132ea93f7d7f7ffd835be4d6d8b",
+      "crates/hub/aos-hub-worker/src/remoteprotocol.rs": "b8aab278dcddb92ffec908b0f746b0f783c5c1398077771db0b7eff0ef0ecfda",
+      "crates/hub/aos-hub-worker/src/requestshard.rs": "2587e8eecee105e7dce205f6593fd7c924d5e13d5a510d0f9d6af3de6ea94446",
+      "crates/hub/aos-hub-worker/src/secretversions.rs": "69f4edff503dd41ba2d6666efc0a0ddf14d70719373e776d05c3a34355a5d2a3",
+      "crates/hub/aos-hub-worker/src/sqldobackend.rs": "2c38cc12eca9aba1e366679f59a4ac3958af572f826f2709404e8adf9506c396",
+      "crates/hub/aos-hub-worker/src/surface.rs": "3b6a92d1e01b23fb1c636e62e89add8d1ab52eb6a04a744a164190df92dc7160",
+      "crates/hub/aos-hub-worker/src/tracinglog.rs": "0ac2d0d308bb9645b049302c87340f63036a7b532f2d72addaa9ee553277b5f7",
+      "crates/hub/aos-hub-worker/src/workerkv.rs": "5e841c561cdbc3a901d6e16b1d2f4786a0eb098da9538b3987ad607f728700f2",
+      "crates/hub/aos-hub-worker/src/workerqueue.rs": "b91bda020df1acba5f2033a7fd70ba651a7cbd46a95c692b185d991ca8b2714a"
+    },
+    "test_declaration_count": 50,
+    "test_declarations": {
+      "crates/hub/aos-hub-worker/src/bridge_dispatch.rs": [
+        "worker_bridge_service_enforces_every_disabled_container_capability",
+        "unreadable_settings_render_browser_pages_without_masking_api_failures",
+        "branding_apply_and_warm_worker_reads_use_current_settings",
+        "worker_bridge_reaches_every_declared_console_route",
+        "worker_control_authority_explains_registries_its_host_does_not_deliver",
+        "worker_control_authority_explains_a_disabled_route",
+        "worker_delivery_authority_still_requires_an_explicit_route",
+        "rejects_a_body_before_nested_dispatch_can_buffer_past_its_limit",
+        "machine_put_is_classified_without_body_inspection",
+        "typed_raw_uploads_keep_their_request_streams"
+      ],
+      "crates/hub/aos-hub-worker/src/consoleports.rs": [
+        "rejects_lying_declared_length_before_reading",
+        "rejects_chunked_body_when_running_total_crosses_cap",
+        "rejects_future_gateway_evidence"
+      ],
+      "crates/hub/aos-hub-worker/src/delivery_ingress.rs": [
+        "configured_delivery_hosts_use_layer7_ingress",
+        "other_authorities_and_non_tls_requests_keep_hub_ingress",
+        "malformed_deployment_hostnames_fail_closed"
+      ],
+      "crates/hub/aos-hub-worker/src/frozen_surface_access.rs": [
+        "frozen_gen_one_resolves_after_current_capability_moves_to_gen_two"
+      ],
+      "crates/hub/aos-hub-worker/src/lib.rs": [
+        "pending_index_runs_are_retryable_but_empty_indexes_can_finish",
+        "deferred_index_upgrade_does_not_reuse_finished_v3_builds",
+        "identity_coalesces_duplicates_and_tracks_every_input_version",
+        "release_browser_upgrade_does_not_reuse_finished_v2_builds",
+        "sharding_modes_preserve_the_read_only_cutover_for_oci_methods",
+        "worker_oci_defaults_enable_capabilities_but_reject_invalid_values",
+        "worker_maintenance_never_schedules_provider_gc_while_rollout_is_disabled",
+        "registry_deletion_follow_ups_rerun_topology_passes_within_a_bound",
+        "inventory_continuations_are_deterministic_bounded_queue_children"
+      ],
+      "crates/hub/aos-hub-worker/src/placeholder.rs": [
+        "worker_sql_accepts_every_production_migration",
+        "expands_numbered_to_positional_in_order",
+        "duplicates_a_reused_numbered_placeholder",
+        "leaves_numbered_tokens_inside_string_literals_alone",
+        "inlines_a_bound_null_as_a_literal_and_omits_it_from_bindings",
+        "inlines_multiple_nulls_keeping_remaining_bindings_aligned"
+      ],
+      "crates/hub/aos-hub-worker/src/r2_adapter.rs": [
+        "contract_covers_listing_size_before_body_and_multipart_lifecycle",
+        "contract_rejects_caps_and_preserves_abort_ambiguity",
+        "contract_fences_deletion_on_observed_identity"
+      ],
+      "crates/hub/aos-hub-worker/src/remoteprotocol.rs": [
+        "wire_decoder_preserves_query_parameters_and_sql_null",
+        "wire_decoder_preserves_large_checked_batches_with_reordered_fields",
+        "wire_decoder_rejects_incomplete_batch_envelopes"
+      ],
+      "crates/hub/aos-hub-worker/src/requestshard.rs": [
+        "delivery_workflow_affinity_uses_stable_request_identity",
+        "malformed_delivery_workflow_affinity_uses_shared_fallback",
+        "routes_resource_families_and_stable_affinity",
+        "routes_upload_paths_without_reading_the_payload",
+        "oci_affinity_is_registry_and_repository_specific",
+        "oci_authorities_and_registry_incarnations_are_canonical",
+        "registry_home_and_browse_pages_share_affinity",
+        "only_anonymous_html_uses_the_colocated_browse_fast_path",
+        "browse_invalidation_excludes_reads_plans_and_object_chunks",
+        "unknown_shapes_use_a_stable_partition_fallback",
+        "every_hub_service_has_an_explicit_partition",
+        "phase_seven_container_service_remains_on_the_control_shard"
+      ]
+    }
+  },
+  "status": "Required application unit and integration targets compiled successfully with the final Worker Rust changes"
+}

@@ -194,13 +194,13 @@ pub(crate) fn retained_declarations(
             version: envelope.package.version.clone(),
             version_requirement: envelope.version_requirement.clone(),
         });
-        if envelope.module.is_none() {
-            if let Some(os_version) = envelope.os_version {
-                requirements.push(aos_module_docs::runtime::OsRequirement {
-                    owner: envelope.package.name,
-                    os_version,
-                });
-            }
+        if envelope.module.is_none()
+            && let Some(os_version) = envelope.os_version
+        {
+            requirements.push(aos_module_docs::runtime::OsRequirement {
+                owner: envelope.package.name,
+                os_version,
+            });
         }
     }
     Ok(RetainedDeclarations {

@@ -23,7 +23,7 @@
 //! | `cidata`       | `nocloud`      |
 //! | `config-2`     | `config-drive` |
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -140,7 +140,7 @@ impl ConfigDriveProbe for BlkidProbe {
 /// drive. Never shells out, never requires root.
 #[derive(Default)]
 pub struct FakeProbe {
-    drives: HashMap<String, PathBuf>,
+    drives: BTreeMap<String, PathBuf>,
 }
 
 impl FakeProbe {

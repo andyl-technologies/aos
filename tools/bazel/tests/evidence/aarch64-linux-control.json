@@ -1,0 +1,86 @@
+{
+  "command": "nix-build tools/bazel/tests/control.nix -A cross-linux --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "compilation": "/nix/store/xyvaj1p1nxc35x71jx1p9p1kahvwmv4l-aos-bazel-control-aarch64-compilation",
+  "compilation_report_sha256": "74fa00d2a1e230d3bc6c6c40b62495908725b61fd6b8f10a9133a007ff48a78a",
+  "compiler_arguments_sha256": "3dd2f93cfa11b7858ada20ea784577484725e7ea63c290d084026871c8df89ed",
+  "configuration": "/nix/store/55p8ya4paji9z64n583g2j7p4wk8llhz-aos-bazel-configuration.json",
+  "configuration_sha256": "0091b35c0b7f12cf720048fd9caa118af987c10da4c3d06a69491d2ff3cf1d80",
+  "derivation": "/nix/store/pknhfrg31hjz0rx0rk2yrnsqmjd9rzjk-aos-bazel-control-aarch64-parity.drv",
+  "evidence": "/nix/store/d2qp3lq3p3s9nrqgqsngnyc08f9sxj2d-aos-bazel-control-aarch64-compilation-evidence",
+  "execution_sha256": "de30f940f02754203186f471e57011439aded175303c0b1c12022df5ce4b63b4",
+  "file_sha256": {
+    "tests/build/_bazel-control-cross.nix": "90ab878470795917dfd4700f5b09954d056d5434bb8d8384bcda471c60ecaf76",
+    "tests/build/_bazel-family-vm.nix": "4a0f7da4c2244c8ead39222b9bd74c0cdeba2caed12ac513ae89f37f1586d0c6",
+    "tools/bazel/metadata/control-inventory.json": "9440a19e06319669bcc62d074cf4c3d080a60c83bebac3c700d048bacfe67d2a",
+    "tools/bazel/tests/control.nix": "4b388e0b3d068471fa7db283f8596eca78ec7d3411ef495cc14739f50f8b684e",
+    "tools/bazel/tests/family_libtest.py": "2a86b91bc4d8ad2aa7cd14550f45afa6e0828bc92a41cd67baef979417cc112c",
+    "tools/bazel/tests/run_family_vm.py": "0842da3c35b1541f06603e904c6cce3b17adcb144733474f3c7c8ccaec0f9040",
+    "tools/bazel/tests/verify_family_cross.py": "f05cec4dc26cf7d84e548c2c594432f0350163db145b57ccad13c3e319a4d05a"
+  },
+  "first_party_cargo_manifests_in_bazel_workspace": false,
+  "guest_network": "Loopback enabled with AOS target iproute2; QEMU uses -nic none.",
+  "libraries": "/nix/store/82b8kn3mhmcp5aa9b0d216v4f13jp1h8-aos-bazel-native-libraries-1",
+  "limits": [
+    "Covers the default control transport test family; the additional server test-support configuration is qualified natively only.",
+    "Production consumers remain on Cargo and no performance budget is accepted."
+  ],
+  "native_library_metadata_sha256": {
+    "sqlite/closure.json": "b320fc872d2afd2655423046248ed9d337034703886e1c293b2d898d44677024",
+    "sqlite/pkg-config-tools.json": "5b0fcda1caad0d2f99a4a4fdbc332042dfa2dc138f6d4b40b21d4547e3726e38",
+    "zstd/closure.json": "9d31f17eadf9d0d723b708b9a1de36bf17a20eb8c0cd3b3b0cab67d2850a1706",
+    "zstd/pkg-config-tools.json": "5b0fcda1caad0d2f99a4a4fdbc332042dfa2dc138f6d4b40b21d4547e3726e38"
+  },
+  "native_procedural_macros": [
+    "@@+aos_tools_repository+aos_control_crates__axum-macros-0.5.1//:axum_macros",
+    "@@+aos_tools_repository+aos_control_crates__displaydoc-0.2.6//:displaydoc",
+    "@@+aos_tools_repository+aos_control_crates__futures-macro-0.3.32//:futures_macro",
+    "@@+aos_tools_repository+aos_control_crates__serde_derive-1.0.228//:serde_derive",
+    "@@+aos_tools_repository+aos_control_crates__thiserror-impl-2.0.18//:thiserror_impl",
+    "@@+aos_tools_repository+aos_control_crates__tokio-macros-2.7.0//:tokio_macros",
+    "@@+aos_tools_repository+aos_control_crates__tracing-attributes-0.1.31//:tracing_attributes",
+    "@@+aos_tools_repository+aos_control_crates__yoke-derive-0.8.2//:yoke_derive",
+    "@@+aos_tools_repository+aos_control_crates__zerocopy-derive-0.8.49//:zerocopy_derive",
+    "@@+aos_tools_repository+aos_control_crates__zerofrom-derive-0.1.7//:zerofrom_derive",
+    "@@+aos_tools_repository+aos_control_crates__zerovec-derive-0.11.3//:zerovec_derive"
+  ],
+  "native_qualification": "native-linux-control.json",
+  "output": "/nix/store/lnd6vlha4jmb0idsiigqg34jxdbvazsg-aos-bazel-control-aarch64-parity",
+  "platform_differences": {},
+  "runtime": {
+    "compilation_sha256": "74fa00d2a1e230d3bc6c6c40b62495908725b61fd6b8f10a9133a007ff48a78a",
+    "executed_cases": 107,
+    "executed_targets": 9,
+    "ignored_cases": 0,
+    "runtime": "AOS AArch64 Linux kernel under source-built QEMU system emulation",
+    "schema_version": 1,
+    "target": "aarch64-unknown-linux-gnu"
+  },
+  "runtime_report_sha256": "1331868db528e085c4ed5279e26a8a09489d1f177e452713a090577eeca39ff2",
+  "schema_version": 1,
+  "serial_sha256": "33f7d1f6fafb3cdf9fbf6efcb49c0f8a5798aa474e85b27bcd83ff3445fd3db6",
+  "source": "/nix/store/935nvif6d2dq8qv398fbb8fa51msmzc6-aos-bazel-workspace",
+  "status": "AArch64 Linux default-feature control transport execution passed",
+  "tested_tree_parent_commit": "ca45ab02445dd4dfeccba13d907f27fca3a032fb",
+  "toolchains": "/nix/store/as939vk2k6j0gv1msqwd2jb586587mhi-aos-bazel-cross-toolchains-aarch64-linux-1",
+  "verified_first_party_compile_labels": [
+    "//crates/crucible/control/crucible-session:lib_for_tests_test_support",
+    "//crates/crucible/control/crucible-control-api:lib_for_tests_test_support",
+    "//crates/crucible/control/crucible-control-client:lib_for_tests",
+    "//crates/crucible/control/crucible-control-server:lib_for_tests",
+    "//crates/crucible/control/crucible-control-client:gate_control_client_binary",
+    "//crates/crucible/control/crucible-control-client:unit_binary",
+    "//crates/crucible/control/crucible-control-server:gate_control_responsive_binary",
+    "//crates/crucible/control/crucible-control-server:gate_epoch_guards_binary",
+    "//crates/crucible/control/crucible-control-server:gate_lifecycle_unary_binary",
+    "//crates/crucible/control/crucible-control-server:gate_reproduction_context_binary",
+    "//crates/crucible/control/crucible-control-server:gate_streaming_cursor_binary",
+    "//crates/crucible/control/crucible-control-server:gate_streaming_equivalence_binary",
+    "//crates/crucible/control/crucible-control-server:unit_binary"
+  ],
+  "verified_first_party_compiler_flags": [
+    "-Copt-level=s",
+    "-Cdebuginfo=0",
+    "-Cdebug-assertions=yes",
+    "-Coverflow-checks=yes"
+  ]
+}

@@ -1,0 +1,8 @@
+filegroup(
+    name = "engine_contracts",
+    srcs = [
+        "04-fault-taxonomy.md",
+        "08-executable-effect-contracts.md",
+    ],
+    visibility = ["//crates/crucible/crucible-engine:__pkg__"],
+)

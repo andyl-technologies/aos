@@ -1,0 +1,9 @@
+# Checked manifests are test inputs; API generation consumes only protobuf.
+filegroup(
+    name = "hub_contract_manifests",
+    srcs = [
+        "hub-api-manifest-v1.json",
+        "hub-control-plane-capabilities-v1.json",
+    ],
+    visibility = ["//crates/hub:__subpackages__"],
+)

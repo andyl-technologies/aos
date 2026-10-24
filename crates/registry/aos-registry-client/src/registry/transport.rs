@@ -154,10 +154,10 @@ impl RegistryTransport {
 
     fn object_url(&self, relative: &str) -> Result<String> {
         validate_relative_path(relative)?;
-        if relative == "HEAD" {
-            if let Some(head_url) = &self.head_url {
-                return Ok(head_url.to_string());
-            }
+        if relative == "HEAD"
+            && let Some(head_url) = &self.head_url
+        {
+            return Ok(head_url.to_string());
         }
         // Append individual segments so '?' and '#' remain literal filename
         // bytes rather than changing the origin's query or fragment.
@@ -272,6 +272,15 @@ pub fn validate_relative_path(relative: &str) -> Result<()> {
     Ok(())
 }
 
+/// Joins an origin URL and one relative transport path.
+pub fn join_cache_url(base: &str, path: &str) -> String {
+    format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        path.trim_start_matches('/')
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -338,7 +347,7 @@ mod tests {
             let server = tokio::spawn(async move {
                 let (mut stream, _) = listener.accept().await.unwrap();
                 let mut request = [0_u8; 1024];
-                stream.read(&mut request).await.unwrap();
+                let _ = stream.read(&mut request).await.unwrap();
                 let body = vec![b'x'; 64 * 1024];
                 let headers = format!(
                     "HTTP/1.1 403 Forbidden\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
@@ -431,13 +440,4 @@ mod tests {
             b"shared partition bytes"
         );
     }
-}
-
-/// Joins an origin URL and one relative transport path.
-pub fn join_cache_url(base: &str, path: &str) -> String {
-    format!(
-        "{}/{}",
-        base.trim_end_matches('/'),
-        path.trim_start_matches('/')
-    )
 }

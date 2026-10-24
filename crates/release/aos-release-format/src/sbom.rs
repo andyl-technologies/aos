@@ -246,6 +246,7 @@ fn spdx_id(id: &str) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use crate::build::{
         BUILD_REPORT_V1, BuildOutputEvidence, BuildSourceEvidence, ReproducibilityResult,

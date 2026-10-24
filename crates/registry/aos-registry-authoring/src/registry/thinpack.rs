@@ -589,7 +589,7 @@ fn build_suffix_array(base: &[u8]) -> Vec<u32> {
     let mut k = 1usize;
     loop {
         let key = |i: usize| -> (i32, i32) { (rank[i], if i + k < n { rank[i + k] } else { -1 }) };
-        sa.sort_unstable_by(|&a, &b| key(a as usize).cmp(&key(b as usize)));
+        sa.sort_unstable_by_key(|&offset| key(offset as usize));
         next[sa[0] as usize] = 0;
         for w in 1..n {
             let prev = sa[w - 1] as usize;

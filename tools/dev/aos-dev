@@ -17,5 +17,7 @@ source "$aos_dev_dir/lib/maintenance.bash"
 source "$aos_dev_dir/lib/cache-report.bash"
 # shellcheck source=tools/dev/lib/commands.bash
 source "$aos_dev_dir/lib/commands.bash"
+# shellcheck source=tools/dev/lib/bazel.bash
+source "$aos_dev_dir/lib/bazel.bash"
 
 aos_dev_main "$@"

@@ -483,6 +483,10 @@ fn success_observation(
     })
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Installed image health checks enforce host process deadlines outside Crucible replayable state"
+)]
 fn health_observation(
     observation_schema: &str,
     rollout: &RolloutRequest,
@@ -1554,6 +1558,10 @@ fn remove_regular_payload(path: &Path) -> Result<()> {
     }
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Installed boot rollout records use host wall-clock timestamps outside Crucible replayable state"
+)]
 fn now_millis() -> Result<u64> {
     let elapsed = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1598,12 +1606,15 @@ fn firmware_entry(name: &str) -> Result<Option<String>> {
 
 fn parse_efi_entry(bytes: &[u8]) -> Result<String> {
     ensure!(
-        bytes.len() >= 6 && bytes.len() <= 4096 && bytes.len() % 2 == 0,
+        bytes.len() >= 6 && bytes.len() <= 4096 && bytes.len().is_multiple_of(2),
         "boot entry EFI variable has an invalid length"
     );
     let words = bytes[4..]
-        .chunks_exact(2)
-        .map(|part| u16::from_le_bytes([part[0], part[1]]))
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .copied()
+        .map(u16::from_le_bytes)
         .collect::<Vec<_>>();
     ensure!(
         words.last() == Some(&0) && !words[..words.len() - 1].contains(&0),
@@ -1642,7 +1653,53 @@ fn run(executable: &Path, arguments: &[&str], action: &str) -> Result<()> {
     Ok(())
 }
 
+fn validate_store_executable(path: &Path, label: &str) -> Result<PathBuf> {
+    ensure!(path.is_absolute(), "{label} path is not absolute");
+    ensure!(
+        path.components()
+            .all(|component| matches!(component, Component::RootDir | Component::Normal(_))),
+        "{label} path is not normalized"
+    );
+
+    let store = Path::new("/nix/store");
+    let relative = path
+        .strip_prefix(store)
+        .with_context(|| format!("{label} is outside the immutable store"))?;
+    let package = relative
+        .components()
+        .next()
+        .and_then(|component| match component {
+            Component::Normal(package) => Some(package),
+            _ => None,
+        })
+        .with_context(|| format!("{label} store path has no package identity"))?;
+    ensure!(
+        relative.components().count() > 1,
+        "{label} does not name a file inside its package"
+    );
+
+    let package_root = fs::canonicalize(store.join(package))
+        .with_context(|| format!("resolving {label} package root"))?;
+    let executable = fs::canonicalize(path).with_context(|| format!("resolving {label}"))?;
+    ensure!(
+        executable.starts_with(package_root),
+        "{label} escapes its selected package"
+    );
+    let metadata = fs::metadata(&executable).with_context(|| format!("inspecting {label}"))?;
+    ensure!(metadata.is_file(), "{label} is not a regular file");
+    ensure!(
+        metadata.permissions().mode() & 0o111 != 0,
+        "{label} is not executable"
+    );
+
+    Ok(executable)
+}
+
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Test fixtures and assertions fail immediately on unexpected errors"
+)]
 mod tests {
     use super::*;
 
@@ -2100,46 +2157,4 @@ mod tests {
             b"foreign payload"
         );
     }
-}
-
-fn validate_store_executable(path: &Path, label: &str) -> Result<PathBuf> {
-    ensure!(path.is_absolute(), "{label} path is not absolute");
-    ensure!(
-        path.components()
-            .all(|component| matches!(component, Component::RootDir | Component::Normal(_))),
-        "{label} path is not normalized"
-    );
-
-    let store = Path::new("/nix/store");
-    let relative = path
-        .strip_prefix(store)
-        .with_context(|| format!("{label} is outside the immutable store"))?;
-    let package = relative
-        .components()
-        .next()
-        .and_then(|component| match component {
-            Component::Normal(package) => Some(package),
-            _ => None,
-        })
-        .with_context(|| format!("{label} store path has no package identity"))?;
-    ensure!(
-        relative.components().count() > 1,
-        "{label} does not name a file inside its package"
-    );
-
-    let package_root = fs::canonicalize(store.join(package))
-        .with_context(|| format!("resolving {label} package root"))?;
-    let executable = fs::canonicalize(path).with_context(|| format!("resolving {label}"))?;
-    ensure!(
-        executable.starts_with(package_root),
-        "{label} escapes its selected package"
-    );
-    let metadata = fs::metadata(&executable).with_context(|| format!("inspecting {label}"))?;
-    ensure!(metadata.is_file(), "{label} is not a regular file");
-    ensure!(
-        metadata.permissions().mode() & 0o111 != 0,
-        "{label} is not executable"
-    );
-
-    Ok(executable)
 }

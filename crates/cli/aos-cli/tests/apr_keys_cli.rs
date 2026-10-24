@@ -1,3 +1,7 @@
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -69,12 +73,12 @@ fn apr_keys_cli_manages_committed_roster() -> Result<()> {
     assert!(git_ssh::verify_commit_signature(
         &registry_dir,
         "HEAD",
-        &[initial.trust_key.clone()],
+        std::slice::from_ref(&initial.trust_key),
     )?);
     assert!(!git_ssh::verify_commit_signature(
         &registry_dir,
         "HEAD",
-        &[next.trust_key.clone()],
+        std::slice::from_ref(&next.trust_key),
     )?);
 
     let duplicate = run_apr_err(
@@ -126,7 +130,7 @@ fn apr_keys_cli_manages_committed_roster() -> Result<()> {
     assert!(git_ssh::verify_commit_signature(
         &registry_dir,
         "HEAD",
-        &[next.trust_key.clone()],
+        std::slice::from_ref(&next.trust_key),
     )?);
 
     let last_key = run_apr_err(
@@ -301,7 +305,7 @@ fn apr_create_with_trust_key_requires_and_signs_initial_commit() -> Result<()> {
     assert!(git_ssh::verify_commit_signature(
         &registry_dir,
         "HEAD",
-        &[key.trust_key.clone()],
+        std::slice::from_ref(&key.trust_key),
     )?);
 
     Ok(())
@@ -372,7 +376,7 @@ fn apr_create_commits_roster_keys_in_the_root_commit() -> Result<()> {
     assert!(git_ssh::verify_commit_signature(
         &registry_dir,
         "HEAD",
-        &[signer.trust_key.clone()],
+        std::slice::from_ref(&signer.trust_key),
     )?);
 
     let roster = keys::load_keys_toml_at_commit(&registry_dir, "HEAD")?
@@ -595,7 +599,7 @@ fn run_apr_err(home: &Path, args: &[&str]) -> Result<Output> {
 /// Spawn `apr` against an isolated `HOME`, with a committer identity in the
 /// environment: registry commits refuse to run without one.
 fn apr_command(home: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_apr"));
+    let mut cmd = Command::new(cli_binary!("CARGO_BIN_EXE_apr"));
     cmd.env("HOME", home)
         .env("USER", "registry-test")
         .env("LOGNAME", "registry-test")

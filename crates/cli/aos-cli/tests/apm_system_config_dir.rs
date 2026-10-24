@@ -5,6 +5,10 @@
 //! non-AOS hosts. Both derived paths must follow it: `trusted-keys.d`
 //! (trusted key lookups) and `registries.d` (registry configuration).
 
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -50,7 +54,7 @@ fn system_config_dir_override_redirects_trusted_keys_and_registries() -> Result<
 
     // Without the override the same fixtures must be invisible (the default
     // /etc/apm does not contain them).
-    let unredirected = Command::new(env!("CARGO_BIN_EXE_apr"))
+    let unredirected = Command::new(cli_binary!("CARGO_BIN_EXE_apr"))
         .env("HOME", &home)
         .env_remove("APM_SYSTEM_CONFIG_DIR")
         .args(["list"])
@@ -980,7 +984,7 @@ fn relative_system_config_dir_override_is_ignored() -> Result<()> {
 
     // A relative override must be ignored in favour of the default; the
     // command still works and simply sees no fixture registries.
-    let output = Command::new(env!("CARGO_BIN_EXE_apr"))
+    let output = Command::new(cli_binary!("CARGO_BIN_EXE_apr"))
         .env("HOME", &home)
         .env("APM_SYSTEM_CONFIG_DIR", "relative/apm")
         .args(["list"])
@@ -1050,7 +1054,7 @@ fn run_aos_package_output(
         "NAME=AOS test root\nID=aos\nAOS_PACKAGE_MODULE_LIBRARY=/nix/store/00000000000000000000000000000000-aos-module-library\n",
     )?;
 
-    let mut command = Command::new(env!("CARGO_BIN_EXE_apm"));
+    let mut command = Command::new(cli_binary!("CARGO_BIN_EXE_apm"));
     command
         .env("HOME", home)
         .env("APM_SYSTEM_CONFIG_DIR", system_dir)
@@ -1103,7 +1107,7 @@ fn run_apr(home: &Path, system_dir: &Path, args: &[&str]) -> Result<String> {
 }
 
 fn run_apr_output(home: &Path, system_dir: &Path, args: &[&str]) -> Result<std::process::Output> {
-    Command::new(env!("CARGO_BIN_EXE_apr"))
+    Command::new(cli_binary!("CARGO_BIN_EXE_apr"))
         .env("HOME", home)
         .env("APM_SYSTEM_CONFIG_DIR", system_dir)
         .env("AOS_ROOT", aos_root(system_dir))

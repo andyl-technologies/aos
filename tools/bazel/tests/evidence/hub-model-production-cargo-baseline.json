@@ -1,0 +1,649 @@
+{
+  "command": "nix-build /tmp/aos-bazel-722/hub-model-baselines.nix -A tests -A production --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "derivation": "/nix/store/b2dd4zdi32lgi89lf1jwbna7qnlk9xb9-aos-bazel-hub-model-production-cargo-baseline-1.drv",
+  "derivation_sha256": "662a18b29cef5a224a43e860ebdc30c6c49651a4ab66d949a85970e4ab9da7c4",
+  "external_features": {
+    "adler2@2.0.1": [
+      []
+    ],
+    "aead@0.5.2": [
+      [
+        "alloc",
+        "getrandom",
+        "rand_core"
+      ]
+    ],
+    "aes-gcm@0.10.3": [
+      [
+        "aes",
+        "alloc",
+        "default",
+        "getrandom",
+        "rand_core"
+      ]
+    ],
+    "aes@0.8.4": [
+      []
+    ],
+    "anyhow@1.0.102": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "argon2@0.5.3": [
+      [
+        "alloc",
+        "default",
+        "password-hash",
+        "rand"
+      ]
+    ],
+    "async-trait@0.1.89": [
+      []
+    ],
+    "base64@0.22.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "base64ct@1.8.3": [
+      [
+        "alloc"
+      ]
+    ],
+    "blake2@0.10.6": [
+      []
+    ],
+    "block-buffer@0.10.4": [
+      []
+    ],
+    "bytes@1.11.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "cfg-if@1.0.4": [
+      []
+    ],
+    "cipher@0.4.4": [
+      []
+    ],
+    "const-oid@0.9.6": [
+      []
+    ],
+    "cpufeatures@0.2.17": [
+      []
+    ],
+    "crc32fast@1.5.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "crypto-common@0.1.7": [
+      [
+        "getrandom",
+        "rand_core",
+        "std"
+      ]
+    ],
+    "ctr@0.9.2": [
+      []
+    ],
+    "curve25519-dalek-derive@0.1.1": [
+      []
+    ],
+    "curve25519-dalek@4.1.3": [
+      [
+        "alloc",
+        "digest",
+        "precomputed-tables",
+        "zeroize"
+      ]
+    ],
+    "der@0.7.10": [
+      [
+        "alloc",
+        "oid",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "digest@0.10.7": [
+      [
+        "alloc",
+        "block-buffer",
+        "core-api",
+        "default",
+        "mac",
+        "std",
+        "subtle"
+      ]
+    ],
+    "displaydoc@0.2.6": [
+      []
+    ],
+    "ed25519-dalek@2.2.0": [
+      [
+        "alloc",
+        "default",
+        "fast",
+        "pkcs8",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "ed25519@2.2.3": [
+      [
+        "alloc",
+        "pkcs8",
+        "std"
+      ]
+    ],
+    "equivalent@1.0.2": [
+      []
+    ],
+    "errno@0.3.14": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "flate2@1.1.9": [
+      [
+        "any_impl",
+        "miniz_oxide",
+        "rust_backend"
+      ]
+    ],
+    "form_urlencoded@1.2.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "generic-array@0.14.7": [
+      [
+        "more_lengths"
+      ]
+    ],
+    "getrandom@0.2.17": [
+      []
+    ],
+    "getrandom@0.3.4": [
+      [
+        "std"
+      ]
+    ],
+    "ghash@0.5.1": [
+      []
+    ],
+    "hashbrown@0.17.1": [
+      []
+    ],
+    "hex@0.4.3": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "hmac@0.12.1": [
+      []
+    ],
+    "icu_collections@2.2.0": [
+      []
+    ],
+    "icu_locale_core@2.2.0": [
+      [
+        "zerovec"
+      ]
+    ],
+    "icu_normalizer@2.2.0": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "icu_normalizer_data@2.2.0": [
+      []
+    ],
+    "icu_properties@2.2.0": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "icu_properties_data@2.2.0": [
+      []
+    ],
+    "icu_provider@2.2.0": [
+      [
+        "baked"
+      ]
+    ],
+    "idna@1.1.0": [
+      [
+        "alloc",
+        "compiled_data",
+        "std"
+      ]
+    ],
+    "idna_adapter@1.2.2": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "indexmap@2.14.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "inout@0.1.4": [
+      []
+    ],
+    "itoa@1.0.18": [
+      []
+    ],
+    "libc@0.2.186": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "litemap@0.8.2": [
+      []
+    ],
+    "memchr@2.8.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "miniz_oxide@0.8.9": [
+      [
+        "simd",
+        "simd-adler32",
+        "with-alloc"
+      ]
+    ],
+    "mio@1.2.1": [
+      [
+        "net",
+        "os-ext",
+        "os-poll"
+      ]
+    ],
+    "opaque-debug@0.3.1": [
+      []
+    ],
+    "password-hash@0.5.0": [
+      [
+        "alloc",
+        "default",
+        "getrandom",
+        "rand_core"
+      ]
+    ],
+    "percent-encoding@2.3.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "pin-project-lite@0.2.17": [
+      []
+    ],
+    "pkcs8@0.10.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "polyval@0.6.2": [
+      []
+    ],
+    "potential_utf@0.1.5": [
+      [
+        "zerovec"
+      ]
+    ],
+    "ppv-lite86@0.2.21": [
+      [
+        "simd",
+        "std"
+      ]
+    ],
+    "proc-macro2@1.0.106": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "quote@1.0.46": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "rand@0.9.4": [
+      [
+        "alloc",
+        "default",
+        "os_rng",
+        "small_rng",
+        "std",
+        "std_rng",
+        "thread_rng"
+      ]
+    ],
+    "rand_chacha@0.9.0": [
+      [
+        "std"
+      ]
+    ],
+    "rand_core@0.6.4": [
+      [
+        "getrandom"
+      ]
+    ],
+    "rand_core@0.9.5": [
+      [
+        "os_rng",
+        "std"
+      ]
+    ],
+    "rustc_version@0.4.1": [
+      []
+    ],
+    "semver@1.0.28": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "serde@1.0.228": [
+      [
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std"
+      ]
+    ],
+    "serde_core@1.0.228": [
+      [
+        "rc",
+        "result",
+        "std"
+      ]
+    ],
+    "serde_derive@1.0.228": [
+      [
+        "default"
+      ]
+    ],
+    "serde_json@1.0.150": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "serde_spanned@0.6.9": [
+      [
+        "serde"
+      ]
+    ],
+    "sha2@0.10.9": [
+      [
+        "compress",
+        "default",
+        "std"
+      ]
+    ],
+    "signal-hook-registry@1.4.8": [
+      []
+    ],
+    "signature@2.2.0": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "simd-adler32@0.3.9": [
+      []
+    ],
+    "smallvec@1.15.2": [
+      [
+        "const_generics"
+      ]
+    ],
+    "socket2@0.6.4": [
+      [
+        "all"
+      ]
+    ],
+    "spki@0.7.3": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "stable_deref_trait@1.2.1": [
+      []
+    ],
+    "subtle@2.6.1": [
+      []
+    ],
+    "syn@2.0.118": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "fold",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit",
+        "visit-mut"
+      ]
+    ],
+    "synstructure@0.13.2": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "thiserror-impl@2.0.18": [
+      []
+    ],
+    "thiserror@2.0.18": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "tinystr@0.8.3": [
+      [
+        "zerovec"
+      ]
+    ],
+    "tinyvec@1.11.0": [
+      [
+        "alloc",
+        "default",
+        "tinyvec_macros"
+      ]
+    ],
+    "tinyvec_macros@0.1.1": [
+      []
+    ],
+    "tokio-macros@2.7.0": [
+      []
+    ],
+    "tokio@1.52.3": [
+      [
+        "bytes",
+        "default",
+        "fs",
+        "io-std",
+        "io-util",
+        "libc",
+        "macros",
+        "mio",
+        "net",
+        "process",
+        "rt",
+        "rt-multi-thread",
+        "signal",
+        "signal-hook-registry",
+        "socket2",
+        "sync",
+        "time",
+        "tokio-macros"
+      ]
+    ],
+    "toml@0.8.23": [
+      [
+        "default",
+        "display",
+        "parse"
+      ]
+    ],
+    "toml_datetime@0.6.11": [
+      [
+        "serde"
+      ]
+    ],
+    "toml_edit@0.22.27": [
+      [
+        "display",
+        "parse",
+        "serde"
+      ]
+    ],
+    "toml_write@0.1.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "typenum@1.20.1": [
+      []
+    ],
+    "unicode-ident@1.0.24": [
+      []
+    ],
+    "unicode-normalization@0.1.25": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "universal-hash@0.5.1": [
+      []
+    ],
+    "url@2.5.8": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "utf8_iter@1.0.4": [
+      []
+    ],
+    "version_check@0.9.5": [
+      []
+    ],
+    "winnow@0.7.15": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "writeable@0.6.3": [
+      []
+    ],
+    "yoke-derive@0.8.2": [
+      []
+    ],
+    "yoke@0.8.3": [
+      [
+        "derive",
+        "zerofrom"
+      ]
+    ],
+    "zerocopy@0.8.49": [
+      [
+        "simd"
+      ]
+    ],
+    "zerofrom-derive@0.1.7": [
+      []
+    ],
+    "zerofrom@0.1.8": [
+      [
+        "derive"
+      ]
+    ],
+    "zeroize@1.9.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "zerotrie@0.2.4": [
+      [
+        "yoke",
+        "zerofrom"
+      ]
+    ],
+    "zerovec-derive@0.11.3": [
+      []
+    ],
+    "zerovec@0.11.6": [
+      [
+        "derive",
+        "yoke"
+      ]
+    ],
+    "zmij@1.0.21": [
+      []
+    ]
+  },
+  "first_party_features": {
+    "aos-core": [
+      []
+    ],
+    "aos-hub-model": [
+      [
+        "default"
+      ]
+    ],
+    "aos-oci-types": [
+      []
+    ],
+    "aos-registry-format": [
+      []
+    ]
+  },
+  "limits": [
+    "Native Linux Cargo baseline only; Bazel, foreign/Wasm execution, installed services, performance acceptance and production cutover remain separate qualification.",
+    "Production and development dependency feature graphs are retained independently; this baseline does not claim that their feature units are identical."
+  ],
+  "output": "/nix/store/g80hq9j60lahmbkp7l4ym5wviiwiy7cp-aos-bazel-hub-model-production-cargo-baseline-1",
+  "recipe": "let\n  root = /home/dylan/src/aos/.worktrees/codex/bazel-integration-722;\n  pkgs = (import root {}).pkgs;\nin pkgs.mkDerivation {\n  pname = \"aos-bazel-hub-model-production-cargo-baseline\";\n  version = \"1\";\n  src = import (root + \"/pkgs/tools/crucible/_cargo-source.nix\") {\n    inherit (pkgs) lib;\n    extraPaths = [\n      \"api/proto/aos/auth/v1/auth.proto\"\n      \"api/proto/aos/build/v1/build.proto\"\n      \"api/proto/aos/cache/v1/cache.proto\"\n      \"api/proto/aos/gc/v1/gc.proto\"\n      \"api/proto/aos/hub/v1/hub.proto\"\n      \"default.nix\"\n      \"docs/rfcs/0012-hub-surface-topology/00-goals-and-invariants.md\"\n      \"docs/rfcs/0012-hub-surface-topology/01-domain-model.md\"\n      \"docs/rfcs/0012-hub-surface-topology/02-delivery-and-auth.md\"\n      \"docs/rfcs/0012-hub-surface-topology/03-registry-cache-relations.md\"\n      \"docs/rfcs/0012-hub-surface-topology/04-retention-and-gc.md\"\n      \"docs/rfcs/0012-hub-surface-topology/05-data-model-and-api.md\"\n      \"docs/rfcs/0012-hub-surface-topology/06-console-and-operations.md\"\n      \"docs/rfcs/0012-hub-surface-topology/07-implementation-plan.md\"\n      \"docs/rfcs/0012-hub-surface-topology/08-decisions-and-open-questions.md\"\n      \"docs/rfcs/0012-hub-surface-topology/09-interface-contracts.md\"\n      \"docs/rfcs/0012-hub-surface-topology/10-settings-information-architecture.md\"\n      \"docs/rfcs/0012-hub-surface-topology/11-web-route-cutover-ledger.md\"\n      \"docs/rfcs/0012-hub-surface-topology/12-topology-cutover-operator-runbook.md\"\n      \"docs/rfcs/0012-hub-surface-topology/13-control-plane-parity.md\"\n      \"docs/rfcs/0012-hub-surface-topology/14-settings-workflows.md\"\n      \"docs/rfcs/0012-hub-surface-topology/BUILD.bazel\"\n      \"docs/rfcs/0012-hub-surface-topology/README.md\"\n      \"docs/rfcs/0012-hub-surface-topology/aos-cutover-schema-v1.metaschema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-api-manifest-v1.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-cli-json-schema-v1.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-control-plane-capabilities-v1.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-backup-d1-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-backup-do-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-bundle-generation-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-bundle-generation-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-bundle-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-database-restore-rules-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-digest-verification-v1.fixture-source.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-digest-verification-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-evidence-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-fixtures-v1.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-fixtures-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-plan-v1.fixture-source.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-plan-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-report-v1.fixture-source.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-report-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-signature-envelope-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-signer-key-map-v1.fixture-source.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-signer-key-map-v1.schema.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-source-deployment-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/hub-topology-cutover-source-export-v1.fixture.json\"\n      \"docs/rfcs/0012-hub-surface-topology/run-topology-cutover-fixtures.jq\"\n      \"docs/rfcs/0012-hub-surface-topology/run-topology-cutover-validation.jq\"\n      \"docs/rfcs/0012-hub-surface-topology/validate-topology-cutover.jq\"\n      \"flake.nix\"\n      \"justfile\"\n      \"lib/attrsets.nix\"\n      \"lib/build-support/nuke-references/default.nix\"\n      \"lib/build/artifact-consumption-audit.nix\"\n      \"lib/build/artifact-consumption-elf-check.sh\"\n      \"lib/build/artifact-consumption-path-check.sh\"\n      \"lib/build/artifact-text.nix\"\n      \"lib/build/closure-info.nix\"\n      \"lib/build/evaluate-stages.nix\"\n      \"lib/build/evaluation-input.nix\"\n      \"lib/build/freeze-pkgs.nix\"\n      \"lib/build/merge-image-manifest.nix\"\n      \"lib/build/package-modules.nix\"\n      \"lib/build/reference-graph.nix\"\n      \"lib/build/run-artifact.nix\"\n      \"lib/build/runtime-closure-audit.nix\"\n      \"lib/cargo-vendor/fetch-cargo-vendor-util.py\"\n      \"lib/cargo-vendor/replace-workspace-values.py\"\n      \"lib/default.nix\"\n      \"lib/derivations.nix\"\n      \"lib/effects/documentation.nix\"\n      \"lib/effects/execution.nix\"\n      \"lib/effects/module.nix\"\n      \"lib/effects/plan.nix\"\n      \"lib/formats/default.nix\"\n      \"lib/formats/json.nix\"\n      \"lib/formats/toml.nix\"\n      \"lib/formats/yaml.nix\"\n      \"lib/hardening.nix\"\n      \"lib/lists.nix\"\n      \"lib/modules.nix\"\n      \"lib/modules/checks.nix\"\n      \"lib/namespacing.nix\"\n      \"lib/package-platform.nix\"\n      \"lib/packages/artifacts.nix\"\n      \"lib/packages/discover-output-packages.nix\"\n      \"lib/packages/evaluate.nix\"\n      \"lib/packages/module-dependencies.nix\"\n      \"lib/packages/module-source.nix\"\n      \"lib/packages/output-packages.nix\"\n      \"lib/packages/release-compatibility.nix\"\n      \"lib/packages/resolution-lock.nix\"\n      \"lib/packages/runtime-dependencies.nix\"\n      \"lib/packages/semver.nix\"\n      \"lib/packages/version.nix\"\n      \"lib/platform.nix\"\n      \"lib/qualification.nix\"\n      \"lib/strings.nix\"\n      \"lib/testing/apm-install-at-boot.nix\"\n      \"lib/testing/boot-configuration.nix\"\n      \"lib/testing/checks.nix\"\n      \"lib/testing/config-eval.nix\"\n      \"lib/testing/config-manifest.nix\"\n      \"lib/testing/config-materialize.nix\"\n      \"lib/testing/config-provenance.nix\"\n      \"lib/testing/config-source-gc.nix\"\n      \"lib/testing/darling-check.nix\"\n      \"lib/testing/darling.nix\"\n      \"lib/testing/default.nix\"\n      \"lib/testing/eval.nix\"\n      \"lib/testing/firecracker.nix\"\n      \"lib/testing/fixtures/module-abi-v2.nix\"\n      \"lib/testing/fixtures/package-import-confined/inside.nix\"\n      \"lib/testing/fixtures/package-import-confined/module.nix\"\n      \"lib/testing/fixtures/package-import-evaluated/inside.nix\"\n      \"lib/testing/fixtures/package-import-evaluated/module.nix\"\n      \"lib/testing/fixtures/package-import-foreign.nix\"\n      \"lib/testing/fixtures/package-import-string-escape/module.nix\"\n      \"lib/testing/fixtures/package-output-unlisted/module.nix\"\n      \"lib/testing/fleet-spec-check.nix\"\n      \"lib/testing/fleet-spec.nix\"\n      \"lib/testing/fleet.nix\"\n      \"lib/testing/frozen-pkgs.nix\"\n      \"lib/testing/homes.nix\"\n      \"lib/testing/image-assertions.nix\"\n      \"lib/testing/image-matrix.nix\"\n      \"lib/testing/image-platform.nix\"\n      \"lib/testing/image_matrix.py\"\n      \"lib/testing/image_matrix_boot.py\"\n      \"lib/testing/integration.nix\"\n      \"lib/testing/module-args.nix\"\n      \"lib/testing/module-enforcement.nix\"\n      \"lib/testing/qualification-ability.nix\"\n      \"lib/testing/qualification-ability.py\"\n      \"lib/testing/qualification-container.nix\"\n      \"lib/testing/qualification-fixture-commitments-self-test.py\"\n      \"lib/testing/qualification-fixture-commitments.py\"\n      \"lib/testing/qualification-fixture-export.py\"\n      \"lib/testing/qualification-image.nix\"\n      \"lib/testing/qualification-image.py\"\n      \"lib/testing/qualification-nar-self-test.py\"\n      \"lib/testing/qualification-nar.py\"\n      \"lib/testing/qualification-native-adapter-cohort-self-test.py\"\n      \"lib/testing/qualification-native-adapter-cohort.py\"\n      \"lib/testing/qualification-native-adapter-matrix-self-test.py\"\n      \"lib/testing/qualification-native-adapter-matrix.nix\"\n      \"lib/testing/qualification-native-adapter-matrix.py\"\n      \"lib/testing/qualification-native-custody-self-test.py\"\n      \"lib/testing/qualification-native-custody.py\"\n      \"lib/testing/qualification-native-image-self-test.py\"\n      \"lib/testing/qualification-native-image.py\"\n      \"lib/testing/qualification-package-probe.nix\"\n      \"lib/testing/qualification-package-probe.py\"\n      \"lib/testing/qualification-package-spec.nix\"\n      \"lib/testing/qualification-package.nix\"\n      \"lib/testing/qualification-package.py\"\n      \"lib/testing/qualification-report.nix\"\n      \"lib/testing/qualification.nix\"\n      \"lib/testing/selinux-base.nix\"\n      \"lib/testing/system-structure.nix\"\n      \"lib/testing/test_image_matrix.py\"\n      \"lib/testing/test_qualification_image.py\"\n      \"lib/testing/tla.nix\"\n      \"lib/testing/trivial-builders.nix\"\n      \"lib/testing/type-addcheck.nix\"\n      \"lib/testing/vm.nix\"\n      \"lib/trivial.nix\"\n      \"lib/type-schema.nix\"\n      \"lib/types.nix\"\n      \"lib/types/constraints.nix\"\n      \"lib/types/portable-pattern.nix\"\n      \"modules/_package-domain-options.nix\"\n      \"modules/abilities/_service.nix\"\n      \"modules/abilities/default.nix\"\n      \"modules/abilities/domain-support.nix\"\n      \"modules/abilities/storage.nix\"\n      \"modules/base/_apm-registry-renderer.nix\"\n      \"modules/base/_evaluation-mode.nix\"\n      \"modules/base/_filesystem-tree-options.nix\"\n      \"modules/base/_initrd-runtime-options.nix\"\n      \"modules/base/_kernel-abilities.nix\"\n      \"modules/base/_kernel-command-line-options.nix\"\n      \"modules/base/_kernel-package-options.nix\"\n      \"modules/base/_kernel-selection.nix\"\n      \"modules/base/_manager-selection.nix\"\n      \"modules/base/_networking-abilities.nix\"\n      \"modules/base/ability-activation.nix\"\n      \"modules/base/activation-stages.nix\"\n      \"modules/base/apm-registries.nix\"\n      \"modules/base/apm.nix\"\n      \"modules/base/boot-storage.nix\"\n      \"modules/base/boot.nix\"\n      \"modules/base/build.nix\"\n      \"modules/base/checks.nix\"\n      \"modules/base/config-artifacts.nix\"\n      \"modules/base/config-eval.nix\"\n      \"modules/base/filesystems.nix\"\n      \"modules/base/homes.nix\"\n      \"modules/base/host-facts.nix\"\n      \"modules/base/host-selection.nix\"\n      \"modules/base/journald.nix\"\n      \"modules/base/kernel-platform.nix\"\n      \"modules/base/kernel.nix\"\n      \"modules/base/manager.nix\"\n      \"modules/base/networking.nix\"\n      \"modules/base/nsswitch.nix\"\n      \"modules/base/package-environment.nix\"\n      \"modules/base/pam.nix\"\n      \"modules/base/provisioning-metadata.nix\"\n      \"modules/base/provisioning.nix\"\n      \"modules/base/recovery.nix\"\n      \"modules/base/secure-boot.nix\"\n      \"modules/base/system.nix\"\n      \"modules/base/users.nix\"\n      \"modules/default.nix\"\n      \"modules/hardware/nvidia-open.nix\"\n      \"modules/hardware/server-management.nix\"\n      \"modules/image/_platform.nix\"\n      \"modules/image/container.nix\"\n      \"modules/image/default.nix\"\n      \"modules/packages.nix\"\n      \"modules/profiles/_ability-crucible-enable.nix\"\n      \"modules/profiles/_debug-autologin-enable.nix\"\n      \"modules/profiles/_debug-enable.nix\"\n      \"modules/profiles/_development-enable.nix\"\n      \"modules/profiles/ability-crucible.nix\"\n      \"modules/profiles/bare-metal-zfs.nix\"\n      \"modules/profiles/canonical-release.nix\"\n      \"modules/profiles/debug.nix\"\n      \"modules/profiles/development.nix\"\n      \"modules/profiles/edge.nix\"\n      \"modules/profiles/experimental-release.nix\"\n      \"modules/profiles/release-artifacts.nix\"\n      \"modules/profiles/server.nix\"\n      \"modules/security/_hardening-abilities.nix\"\n      \"modules/security/hardening.nix\"\n      \"modules/security/level.nix\"\n      \"modules/security/pki.nix\"\n      \"modules/security/verity.nix\"\n      \"modules/services/boot-substrate.nix\"\n      \"modules/services/crucible-campaign.nix\"\n      \"modules/services/repart.nix\"\n      \"modules/services/storage-topology.nix\"\n      \"modules/systemd/graph.nix\"\n      \"pkgs/_target-policy.nix\"\n      \"pkgs/base/bash.nix\"\n      \"pkgs/base/coreutils.nix\"\n      \"pkgs/base/diffutils.nix\"\n      \"pkgs/base/findutils.nix\"\n      \"pkgs/base/gawk.nix\"\n      \"pkgs/base/glibc-tools.nix\"\n      \"pkgs/base/gnumake.nix\"\n      \"pkgs/base/grep.nix\"\n      \"pkgs/base/gzip.nix\"\n      \"pkgs/base/patch.nix\"\n      \"pkgs/base/sed.nix\"\n      \"pkgs/base/tar.nix\"\n      \"pkgs/base/uutils-coreutils.nix\"\n      \"pkgs/base/uutils-diffutils.nix\"\n      \"pkgs/base/uutils-findutils.nix\"\n      \"pkgs/base/uutils-grep.nix\"\n      \"pkgs/base/uutils-sed.nix\"\n      \"pkgs/boot/_aos-boot-preparation-provider/module.nix\"\n      \"pkgs/boot/_aos-boot-preparations/aos-host-store-seed.sh\"\n      \"pkgs/boot/_aos-boot-preparations/aos-machine-id.sh\"\n      \"pkgs/boot/_aos-boot-preparations/aos-seed-profiles.sh\"\n      \"pkgs/boot/_aos-boot-preparations/etc-overlay-setup.sh\"\n      \"pkgs/boot/_aos-boot-preparations/module.nix\"\n      \"pkgs/boot/_aos-boot-preparations/mount-var.sh\"\n      \"pkgs/boot/_aos-boot-preparations/nix-overlay-setup.sh\"\n      \"pkgs/boot/_aos-boot-preparations/policy.nix\"\n      \"pkgs/boot/_aos-boot-preparations/run-etc-setup.sh\"\n      \"pkgs/boot/_aos-boot-preparations/source-authorization/module.nix\"\n      \"pkgs/boot/_aos-boot-storage/measurement-options.nix\"\n      \"pkgs/boot/_aos-boot-storage/module.nix\"\n      \"pkgs/boot/_aos-boot-storage/options.nix\"\n      \"pkgs/boot/_aos-boot-storage/pcr-policy-key/module.nix\"\n      \"pkgs/boot/_aos-boot-storage/policy-options.nix\"\n      \"pkgs/boot/_aos-boot-transaction-storage-provider/module.nix\"\n      \"pkgs/boot/_aos-configuration-lower/cargo-env.nix\"\n      \"pkgs/boot/_aos-configuration-lower/module.nix\"\n      \"pkgs/boot/_aos-configuration-lower/trees.nix\"\n      \"pkgs/boot/_aos-host-evaluation-input/build.nix\"\n      \"pkgs/boot/_aos-host-evaluation-input/module.nix\"\n      \"pkgs/boot/aos-boot-preparation-provider.nix\"\n      \"pkgs/boot/aos-boot-preparations.nix\"\n      \"pkgs/boot/aos-boot-storage.nix\"\n      \"pkgs/boot/aos-boot-transaction-storage-provider.nix\"\n      \"pkgs/boot/aos-configuration-lower.nix\"\n      \"pkgs/boot/edk2.nix\"\n      \"pkgs/boot/efitools.nix\"\n      \"pkgs/boot/gnu-efi.nix\"\n      \"pkgs/boot/pe-tools.nix\"\n      \"pkgs/boot/sbsigntools.nix\"\n      \"pkgs/boot/secure-boot-test-keys.nix\"\n      \"pkgs/boot/systemd-measure.nix\"\n      \"pkgs/build-support/_accache.nix\"\n      \"pkgs/build-support/_bazel/build.nix\"\n      \"pkgs/build-support/_bazel/codegen-tools.nix\"\n      \"pkgs/build-support/_bazel/cross-toolchains.nix\"\n      \"pkgs/build-support/_bazel/default.nix\"\n      \"pkgs/build-support/_bazel/development.nix\"\n      \"pkgs/build-support/_bazel/modules.nix\"\n      \"pkgs/build-support/_bazel/native-libraries.nix\"\n      \"pkgs/build-support/_bazel/nix-test-tools.nix\"\n      \"pkgs/build-support/_bazel/package.nix\"\n      \"pkgs/build-support/_bazel/repositories.nix\"\n      \"pkgs/build-support/_bazel/rust-helper.nix\"\n      \"pkgs/build-support/_bazel/rust-sources.nix\"\n      \"pkgs/build-support/_bazel/static-libraries.nix\"\n      \"pkgs/build-support/_bazel/toolchains.nix\"\n      \"pkgs/build-support/_bazel/updater.nix\"\n      \"pkgs/build-support/_bazel/workspace.nix\"\n      \"pkgs/build-support/_cargo-artifacts.nix\"\n      \"pkgs/build-support/_cargo-source-vendor.nix\"\n      \"pkgs/build-support/_github-upstream.nix\"\n      \"pkgs/build-support/_manual-upstream.nix\"\n      \"pkgs/build-support/_perl-module.nix\"\n      \"pkgs/build-support/_perl-xs-cross-config.nix\"\n      \"pkgs/build-support/_trivial-builders.nix\"\n      \"pkgs/build-support/_upstream.nix\"\n      \"pkgs/build-support/remove-references-to.nix\"\n      \"pkgs/compression/brotli.nix\"\n      \"pkgs/compression/bzip2.nix\"\n      \"pkgs/compression/lz4.nix\"\n      \"pkgs/compression/lzip.nix\"\n      \"pkgs/compression/lzo.nix\"\n      \"pkgs/compression/pigz.nix\"\n      \"pkgs/compression/snappy.nix\"\n      \"pkgs/compression/unzip.nix\"\n      \"pkgs/compression/xz.nix\"\n      \"pkgs/compression/zip.nix\"\n      \"pkgs/compression/zlib.nix\"\n      \"pkgs/compression/zstd.nix\"\n      \"pkgs/containers/_aos-oci-backend/aos-definition.nix\"\n      \"pkgs/containers/_aos-oci-backend/backend-option.nix\"\n      \"pkgs/containers/_aos-oci-backend/container/build.nix\"\n      \"pkgs/containers/_aos-oci-backend/container/facade-layer.nix\"\n      \"pkgs/containers/_aos-oci-backend/container/init-script.nix\"\n      \"pkgs/containers/_aos-oci-backend/container/multi-platform.nix\"\n      \"pkgs/containers/_aos-oci-backend/container/package-evidence.nix\"\n      \"pkgs/containers/_aos-oci-backend/container/publication-inputs.nix\"\n      \"pkgs/containers/_aos-oci-backend/container/schema.nix\"\n      \"pkgs/containers/_aos-oci-backend/deployment-bundle.nix\"\n      \"pkgs/containers/_aos-oci-backend/module.nix\"\n      \"pkgs/containers/_aos-oci-backend/oci/closure-layer.nix\"\n      \"pkgs/containers/_aos-oci-backend/oci/common.nix\"\n      \"pkgs/containers/_aos-oci-backend/oci/default.nix\"\n      \"pkgs/containers/_aos-oci-backend/oci/deployment-artifact.nix\"\n      \"pkgs/containers/_aos-oci-backend/oci/deployment-evidence.nix\"\n      \"pkgs/containers/_aos-oci-backend/oci/deployment-validation.sh\"\n      \"pkgs/containers/_aos-oci-backend/oci/docker-archive.nix\"\n      \"pkgs/containers/_aos-oci-backend/oci/evidence-assemble.sh\"\n      \"pkgs/containers/_aos-oci-backend/oci/evidence-layout.nix\"\n      \"pkgs/containers/_aos-oci-backend/oci/evidence-platforms.sh\"\n      \"pkgs/containers/_aos-oci-backend/oci/evidence-source-graph.nix\"\n      \"pkgs/containers/_aos-oci-backend/oci/image-layout.nix\"\n      \"pkgs/containers/_aos-oci-backend/oci/metadata-layer.nix\"\n      \"pkgs/containers/_aos-oci-backend/oci/multi-platform-index.nix\"\n      \"pkgs/containers/_containerd-config/module.nix\"\n      \"pkgs/containers/_containerd-tests/contract.nix\"\n      \"pkgs/containers/_containerd-tests/lifecycle.nix\"\n      \"pkgs/containers/_docker-engine/module.nix\"\n      \"pkgs/containers/_docker-engine/runtime-tests.nix\"\n      \"pkgs/containers/aos-oci-backend.nix\"\n      \"pkgs/containers/cni-plugins.nix\"\n      \"pkgs/containers/containerd.nix\"\n      \"pkgs/containers/crictl.nix\"\n      \"pkgs/containers/docker-buildx.nix\"\n      \"pkgs/containers/docker-compose.nix\"\n      \"pkgs/containers/docker-engine.nix\"\n      \"pkgs/containers/docker.nix\"\n      \"pkgs/containers/nerdctl.nix\"\n      \"pkgs/containers/rootlesskit.nix\"\n      \"pkgs/containers/runc.nix\"\n      \"pkgs/containers/tini.nix\"\n      \"pkgs/crypto/boringssl.nix\"\n      \"pkgs/darwin/_apple-libtapi.nix\"\n      \"pkgs/darwin/_darwin-binutils.nix\"\n      \"pkgs/darwin/_darwin-cc.nix\"\n      \"pkgs/darwin/_darwin-cctools-linker.nix\"\n      \"pkgs/darwin/_darwin-dtrace-compiler.nix\"\n      \"pkgs/darwin/_darwin-gcc.nix\"\n      \"pkgs/darwin/_darwin-mig.nix\"\n      \"pkgs/darwin/darling-dtrace-nodev-stubs.c\"\n      \"pkgs/darwin/darwin-runtimes.nix\"\n      \"pkgs/darwin/darwin-sdk-accelerate-jdk.h\"\n      \"pkgs/darwin/darwin-sdk-appkit-jdk.h\"\n      \"pkgs/darwin/darwin-sdk-appkit-jdk25.h\"\n      \"pkgs/darwin/darwin-sdk-appkit-nsaccessibility.h\"\n      \"pkgs/darwin/darwin-sdk-appkit-nsfont.h\"\n      \"pkgs/darwin/darwin-sdk-appkit-nsopengl.h\"\n      \"pkgs/darwin/darwin-sdk-appkit-nsrunningapplication.h\"\n      \"pkgs/darwin/darwin-sdk-appkit-wrapper.h\"\n      \"pkgs/darwin/darwin-sdk-application-services.h\"\n      \"pkgs/darwin/darwin-sdk-audio-midi.h\"\n      \"pkgs/darwin/darwin-sdk-audiotoolbox.h\"\n      \"pkgs/darwin/darwin-sdk-audiounit.h\"\n      \"pkgs/darwin/darwin-sdk-auth-session.h\"\n      \"pkgs/darwin/darwin-sdk-carbon-ae.h\"\n      \"pkgs/darwin/darwin-sdk-carbon-jdk.h\"\n      \"pkgs/darwin/darwin-sdk-carbon.h\"\n      \"pkgs/darwin/darwin-sdk-cf-proxy-support.h\"\n      \"pkgs/darwin/darwin-sdk-cfnetwork.h\"\n      \"pkgs/darwin/darwin-sdk-core-services-jdk.h\"\n      \"pkgs/darwin/darwin-sdk-core-services.h\"\n      \"pkgs/darwin/darwin-sdk-coreaudio.h\"\n      \"pkgs/darwin/darwin-sdk-coregraphics-jdk.h\"\n      \"pkgs/darwin/darwin-sdk-coremidi.h\"\n      \"pkgs/darwin/darwin-sdk-coretext-jdk.h\"\n      \"pkgs/darwin/darwin-sdk-corevideo-fragment.sh\"\n      \"pkgs/darwin/darwin-sdk-cssmapple.h\"\n      \"pkgs/darwin/darwin-sdk-cssmtype.h\"\n      \"pkgs/darwin/darwin-sdk-foundation-jdk.h\"\n      \"pkgs/darwin/darwin-sdk-foundation-jdk25.h\"\n      \"pkgs/darwin/darwin-sdk-foundation-nsdate.h\"\n      \"pkgs/darwin/darwin-sdk-foundation-nspathutilities.h\"\n      \"pkgs/darwin/darwin-sdk-foundation-nsstring.h\"\n      \"pkgs/darwin/darwin-sdk-foundation-nsvalue.h\"\n      \"pkgs/darwin/darwin-sdk-ioaudio-types.h\"\n      \"pkgs/darwin/darwin-sdk-iographics-types.h\"\n      \"pkgs/darwin/darwin-sdk-java-runtime-support.h\"\n      \"pkgs/darwin/darwin-sdk-oidsalg.h\"\n      \"pkgs/darwin/darwin-sdk-opengl.h\"\n      \"pkgs/darwin/darwin-sdk-quartzcore-caopengl.h\"\n      \"pkgs/darwin/darwin-sdk-quartzcore-catransaction.h\"\n      \"pkgs/darwin/darwin-sdk-sec-access.h\"\n      \"pkgs/darwin/darwin-sdk-sec-identity-search.h\"\n      \"pkgs/darwin/darwin-sdk-sec-identity.h\"\n      \"pkgs/darwin/darwin-sdk-sec-import-export.h\"\n      \"pkgs/darwin/darwin-sdk-sec-key.h\"\n      \"pkgs/darwin/darwin-sdk-sec-keychain.h\"\n      \"pkgs/darwin/darwin-sdk-sec-policy-search.h\"\n      \"pkgs/darwin/darwin-sdk-secure-transport.h\"\n      \"pkgs/darwin/darwin-sdk.nix\"\n      \"pkgs/data/_glibc-locales/module.nix\"\n      \"pkgs/data/glibc-locales.nix\"\n      \"pkgs/data/gsettings-desktop-schemas.nix\"\n      \"pkgs/data/hwdata.nix\"\n      \"pkgs/data/publicsuffix-list.nix\"\n      \"pkgs/db/_etcd-config/module.nix\"\n      \"pkgs/db/_etcd-config/native-tests.nix\"\n      \"pkgs/db/etcd.nix\"\n      \"pkgs/db/sqlite.nix\"\n      \"pkgs/default.nix\"\n      \"pkgs/doc/docbook-xml-4_2.nix\"\n      \"pkgs/editors/_vim-darwin/api.h\"\n      \"pkgs/editors/_vim-darwin/text.h\"\n      \"pkgs/editors/vim.nix\"\n      \"pkgs/emulation/_darling-sources.nix\"\n      \"pkgs/emulation/_darwin-signer.nix\"\n      \"pkgs/emulation/_qemu-function-map.py\"\n      \"pkgs/emulation/crucible-qemu-plugin.nix\"\n      \"pkgs/emulation/crucible-qemu-trace-plugin.c\"\n      \"pkgs/emulation/crucible-qemu-trace-plugin.nix\"\n      \"pkgs/emulation/darling.nix\"\n      \"pkgs/emulation/firecracker.nix\"\n      \"pkgs/emulation/qemu-crucible-source.nix\"\n      \"pkgs/emulation/qemu-img.nix\"\n      \"pkgs/emulation/qemu-patches/_atomic-patch.nix\"\n      \"pkgs/emulation/qemu-patches/_native-costs-baseline.nix\"\n      \"pkgs/emulation/qemu.nix\"\n      \"pkgs/filesystem/_aos-filesystem-provider/module.nix\"\n      \"pkgs/filesystem/_aos-zfs-provider/maintenance.nix\"\n      \"pkgs/filesystem/_aos-zfs-provider/module.nix\"\n      \"pkgs/filesystem/_aos-zfs-provider/policy.nix\"\n      \"pkgs/filesystem/aos-filesystem-provider.nix\"\n      \"pkgs/filesystem/aos-zfs-provider.nix\"\n      \"pkgs/filesystem/btrfs-progs.nix\"\n      \"pkgs/filesystem/device-mapper.nix\"\n      \"pkgs/filesystem/dosfstools.nix\"\n      \"pkgs/filesystem/e2fsprogs.nix\"\n      \"pkgs/filesystem/fuse-overlayfs.nix\"\n      \"pkgs/filesystem/gptfdisk.nix\"\n      \"pkgs/filesystem/lvm2.nix\"\n      \"pkgs/filesystem/mdadm.nix\"\n      \"pkgs/filesystem/xfsprogs.nix\"\n      \"pkgs/filesystem/zfs.nix\"\n      \"pkgs/hardware/dmidecode.nix\"\n      \"pkgs/hardware/efibootmgr.nix\"\n      \"pkgs/hardware/lm-sensors.nix\"\n      \"pkgs/hardware/pciutils.nix\"\n      \"pkgs/kernel/_kernel-interface/module.nix\"\n      \"pkgs/kernel/_linux-abilities/module.nix\"\n      \"pkgs/kernel/_source.nix\"\n      \"pkgs/kernel/firmware.nix\"\n      \"pkgs/kernel/kernel-interface.nix\"\n      \"pkgs/kernel/linux-crucible.nix\"\n      \"pkgs/kernel/linux-headers.nix\"\n      \"pkgs/kernel/linux.nix\"\n      \"pkgs/kernel/nvidia-gsp-firmware.nix\"\n      \"pkgs/kernel/nvidia-open.nix\"\n      \"pkgs/kernel/server-initrd-firmware.nix\"\n      \"pkgs/kubernetes/_cilium-abilities/module.nix\"\n      \"pkgs/kubernetes/_cloudcore-config/module.nix\"\n      \"pkgs/kubernetes/_edgecore-config/module.nix\"\n      \"pkgs/kubernetes/_k3s-addon-entrypoints.nix\"\n      \"pkgs/kubernetes/_k3s-addon-images.nix\"\n      \"pkgs/kubernetes/_k3s-addon-programs.nix\"\n      \"pkgs/kubernetes/_k3s-bundle.py\"\n      \"pkgs/kubernetes/_k3s-common.nix\"\n      \"pkgs/kubernetes/_k3s-config/module.nix\"\n      \"pkgs/kubernetes/_k3s-config/roles.nix\"\n      \"pkgs/kubernetes/_k3s-dashboard-tools.nix\"\n      \"pkgs/kubernetes/_k3s-dashboard.nix\"\n      \"pkgs/kubernetes/_k3s-dashboard/pnpm-lock.yaml\"\n      \"pkgs/kubernetes/_k3s-dashboard/remove-precompiled.py\"\n      \"pkgs/kubernetes/_k3s-helm-programs.nix\"\n      \"pkgs/kubernetes/_k3s-helm-sources.nix\"\n      \"pkgs/kubernetes/_k3s-role-package.nix\"\n      \"pkgs/kubernetes/_k3s-traefik.nix\"\n      \"pkgs/kubernetes/_k3s-workload-image.nix\"\n      \"pkgs/kubernetes/_kubeedge-source.nix\"\n      \"pkgs/kubernetes/_kubelet-config/module.nix\"\n      \"pkgs/kubernetes/_kubernetes-interface/configuration.nix\"\n      \"pkgs/kubernetes/_kubernetes-interface/module.nix\"\n      \"pkgs/kubernetes/_kubernetes-interface/object.nix\"\n      \"pkgs/kubernetes/_source.nix\"\n      \"pkgs/kubernetes/aos-kubernetes-provider.nix\"\n      \"pkgs/kubernetes/cilium.nix\"\n      \"pkgs/kubernetes/cloudcore.nix\"\n      \"pkgs/kubernetes/edgecore.nix\"\n      \"pkgs/kubernetes/hubble.nix\"\n      \"pkgs/kubernetes/k3s-combined.nix\"\n      \"pkgs/kubernetes/k3s-control-plane.nix\"\n      \"pkgs/kubernetes/k3s-worker.nix\"\n      \"pkgs/kubernetes/k3s.nix\"\n      \"pkgs/kubernetes/kubectl.nix\"\n      \"pkgs/kubernetes/kubelet.nix\"\n      \"pkgs/kubernetes/kubernetes-interface.nix\"\n      \"pkgs/lang/duktape.nix\"\n      \"pkgs/lang/guile-tests/high-wakeup-fd.c\"\n      \"pkgs/lang/guile.nix\"\n      \"pkgs/lang/ruby.nix\"\n      \"pkgs/libraries/fmt.nix\"\n      \"pkgs/libs/_cgif-probe.c\"\n      \"pkgs/libs/_docbook-xml-probe.nix\"\n      \"pkgs/libs/_giflib-source.nix\"\n      \"pkgs/libs/_glycin-loader.nix\"\n      \"pkgs/libs/_glycin-sources.nix\"\n      \"pkgs/libs/_highway-assembler.nix\"\n      \"pkgs/libs/_highway-probe.cpp\"\n      \"pkgs/libs/_image-glib.nix\"\n      \"pkgs/libs/_libevdev-probe.c\"\n      \"pkgs/libs/_libfontenc.nix\"\n      \"pkgs/libs/_libjxl-sources.nix\"\n      \"pkgs/libs/_librsvg-sources.nix\"\n      \"pkgs/libs/_libutempter/module.nix\"\n      \"pkgs/libs/_libxcb.nix\"\n      \"pkgs/libs/_mesa-rust-sources.nix\"\n      \"pkgs/libs/_sharp-libheif.nix\"\n      \"pkgs/libs/_sharp-ultrahdr.nix\"\n      \"pkgs/libs/_sharp-vips.nix\"\n      \"pkgs/libs/abseil-cpp.nix\"\n      \"pkgs/libs/acl.nix\"\n      \"pkgs/libs/alsa-lib.nix\"\n      \"pkgs/libs/apache-portable-runtime.nix\"\n      \"pkgs/libs/attr.nix\"\n      \"pkgs/libs/boost.nix\"\n      \"pkgs/libs/c-ares.nix\"\n      \"pkgs/libs/cairo.nix\"\n      \"pkgs/libs/cgif.nix\"\n      \"pkgs/libs/check.nix\"\n      \"pkgs/libs/cmocka.nix\"\n      \"pkgs/libs/cups-full.nix\"\n      \"pkgs/libs/cups.nix\"\n      \"pkgs/libs/dav1d.nix\"\n      \"pkgs/libs/docbook-xml-4-2.nix\"\n      \"pkgs/libs/docbook-xml-4-3.nix\"\n      \"pkgs/libs/docbook-xml.nix\"\n      \"pkgs/libs/docbook-xsl.nix\"\n      \"pkgs/libs/editline.nix\"\n      \"pkgs/libs/efivar.nix\"\n      \"pkgs/libs/elfutils.nix\"\n      \"pkgs/libs/encodings.nix\"\n      \"pkgs/libs/expat.nix\"\n      \"pkgs/libs/fmt.nix\"\n      \"pkgs/libs/fontconfig.nix\"\n      \"pkgs/libs/freetype.nix\"\n      \"pkgs/libs/fribidi.nix\"\n      \"pkgs/libs/fstrm.nix\"\n      \"pkgs/libs/fuse3.nix\"\n      \"pkgs/libs/gc.nix\"\n      \"pkgs/libs/gcc-libs.nix\"\n      \"pkgs/libs/gdbm.nix\"\n      \"pkgs/libs/gdk-pixbuf.nix\"\n      \"pkgs/libs/giflib.nix\"\n      \"pkgs/libs/glib.nix\"\n      \"pkgs/libs/glusterfs-client.nix\"\n      \"pkgs/libs/glycin-image-rs.nix\"\n      \"pkgs/libs/gmp.nix\"\n      \"pkgs/libs/gobject-introspection.nix\"\n      \"pkgs/libs/gperftools.nix\"\n      \"pkgs/libs/harfbuzz.nix\"\n      \"pkgs/libs/highway.nix\"\n      \"pkgs/libs/icu.nix\"\n      \"pkgs/libs/icu4j.nix\"\n      \"pkgs/libs/imath.nix\"\n      \"pkgs/libs/inih.nix\"\n      \"pkgs/libs/jansson.nix\"\n      \"pkgs/libs/jbigkit.nix\"\n      \"pkgs/libs/jemalloc.nix\"\n      \"pkgs/libs/json-c.nix\"\n      \"pkgs/libs/json-glib.nix\"\n      \"pkgs/libs/lcms2.nix\"\n      \"pkgs/libs/lerc.nix\"\n      \"pkgs/libs/libaio.nix\"\n      \"pkgs/libs/libaom.nix\"\n      \"pkgs/libs/libapparmor.nix\"\n      \"pkgs/libs/libarchive.nix\"\n      \"pkgs/libs/libassuan.nix\"\n      \"pkgs/libs/libatomic_ops.nix\"\n      \"pkgs/libs/libbpf.nix\"\n      \"pkgs/libs/libbsd.nix\"\n      \"pkgs/libs/libcap-ng.nix\"\n      \"pkgs/libs/libcap.nix\"\n      \"pkgs/libs/libclc.nix\"\n      \"pkgs/libs/libdaemon.nix\"\n      \"pkgs/libs/libdeflate.nix\"\n      \"pkgs/libs/libdrm.nix\"\n      \"pkgs/libs/libedit.nix\"\n      \"pkgs/libs/libepoxy-headers.nix\"\n      \"pkgs/libs/libepoxy.nix\"\n      \"pkgs/libs/libevdev.nix\"\n      \"pkgs/libs/libevent.nix\"\n      \"pkgs/libs/libexif.nix\"\n      \"pkgs/libs/libffi.nix\"\n      \"pkgs/libs/libfontenc.nix\"\n      \"pkgs/libs/libgcrypt.nix\"\n      \"pkgs/libs/libgit2.nix\"\n      \"pkgs/libs/libglvnd-headers.nix\"\n      \"pkgs/libs/libglvnd.nix\"\n      \"pkgs/libs/libglycin.nix\"\n      \"pkgs/libs/libgpg-error.nix\"\n      \"pkgs/libs/libidn2.nix\"\n      \"pkgs/libs/libimagequant.nix\"\n      \"pkgs/libs/libjxl.nix\"\n      \"pkgs/libs/libksba.nix\"\n      \"pkgs/libs/liblinear.nix\"\n      \"pkgs/libs/libmaxminddb.nix\"\n      \"pkgs/libs/libmd.nix\"\n      \"pkgs/libs/libmetalink.nix\"\n      \"pkgs/libs/libmnl.nix\"\n      \"pkgs/libs/libmpc.nix\"\n      \"pkgs/libs/libnetfilter_conntrack.nix\"\n      \"pkgs/libs/libnetfilter_cthelper.nix\"\n      \"pkgs/libs/libnetfilter_cttimeout.nix\"\n      \"pkgs/libs/libnetfilter_queue.nix\"\n      \"pkgs/libs/libnfnetlink.nix\"\n      \"pkgs/libs/libnftnl.nix\"\n      \"pkgs/libs/libnl.nix\"\n      \"pkgs/libs/libpcap.nix\"\n      \"pkgs/libs/libpciaccess.nix\"\n      \"pkgs/libs/libpng.nix\"\n      \"pkgs/libs/libproxy.nix\"\n      \"pkgs/libs/libpsl.nix\"\n      \"pkgs/libs/libqcow.nix\"\n      \"pkgs/libs/librsvg.nix\"\n      \"pkgs/libs/libseccomp.nix\"\n      \"pkgs/libs/libselinux.nix\"\n      \"pkgs/libs/libsemanage.nix\"\n      \"pkgs/libs/libsepol.nix\"\n      \"pkgs/libs/libsharpyuv.nix\"\n      \"pkgs/libs/libslirp.nix\"\n      \"pkgs/libs/libsodium.nix\"\n      \"pkgs/libs/libtasn1.nix\"\n      \"pkgs/libs/libtiff.nix\"\n      \"pkgs/libs/libtirpc.nix\"\n      \"pkgs/libs/libunistring.nix\"\n      \"pkgs/libs/libunwind.nix\"\n      \"pkgs/libs/liburcu.nix\"\n      \"pkgs/libs/liburing.nix\"\n      \"pkgs/libs/libusb1.nix\"\n      \"pkgs/libs/libutempter.nix\"\n      \"pkgs/libs/libuv.nix\"\n      \"pkgs/libs/libva.nix\"\n      \"pkgs/libs/libwebp.nix\"\n      \"pkgs/libs/libx11.nix\"\n      \"pkgs/libs/libxau.nix\"\n      \"pkgs/libs/libxcb.nix\"\n      \"pkgs/libs/libxcrypt.nix\"\n      \"pkgs/libs/libxdmcp.nix\"\n      \"pkgs/libs/libxext.nix\"\n      \"pkgs/libs/libxfixes.nix\"\n      \"pkgs/libs/libxml2.nix\"\n      \"pkgs/libs/libxrandr.nix\"\n      \"pkgs/libs/libxrender.nix\"\n      \"pkgs/libs/libxshmfence.nix\"\n      \"pkgs/libs/libxslt.nix\"\n      \"pkgs/libs/libxxf86vm.nix\"\n      \"pkgs/libs/libyaml.nix\"\n      \"pkgs/libs/lksctp-tools.nix\"\n      \"pkgs/libs/lmdb.nix\"\n      \"pkgs/libs/lowdown.nix\"\n      \"pkgs/libs/mathjax.nix\"\n      \"pkgs/libs/mesa.nix\"\n      \"pkgs/libs/mozjpeg.nix\"\n      \"pkgs/libs/mpfr.nix\"\n      \"pkgs/libs/ncurses.nix\"\n      \"pkgs/libs/nettle.nix\"\n      \"pkgs/libs/nlohmann-json.nix\"\n      \"pkgs/libs/npth.nix\"\n      \"pkgs/libs/numactl.nix\"\n      \"pkgs/libs/oniguruma.nix\"\n      \"pkgs/libs/openexr.nix\"\n      \"pkgs/libs/openjph.nix\"\n      \"pkgs/libs/opus.nix\"\n      \"pkgs/libs/pango.nix\"\n      \"pkgs/libs/pcre2.nix\"\n      \"pkgs/libs/pixman.nix\"\n      \"pkgs/libs/popt.nix\"\n      \"pkgs/libs/protobuf-c.nix\"\n      \"pkgs/libs/protobuf.nix\"\n      \"pkgs/libs/python3-pefile.nix\"\n      \"pkgs/libs/python3-pyelftools.nix\"\n      \"pkgs/libs/readline.nix\"\n      \"pkgs/libs/rpcsvc-proto.nix\"\n      \"pkgs/libs/shared-mime-info.nix\"\n      \"pkgs/libs/spice-protocol.nix\"\n      \"pkgs/libs/spirv-headers.nix\"\n      \"pkgs/libs/spirv-llvm-translator-graphics.nix\"\n      \"pkgs/libs/spirv-llvm-translator.nix\"\n      \"pkgs/libs/spirv-tools.nix\"\n      \"pkgs/libs/tcl.nix\"\n      \"pkgs/libs/toml11.nix\"\n      \"pkgs/libs/usbredir.nix\"\n      \"pkgs/libs/utf8proc.nix\"\n      \"pkgs/libs/virglrenderer-headers.nix\"\n      \"pkgs/libs/virglrenderer.nix\"\n      \"pkgs/libs/vulkan-headers.nix\"\n      \"pkgs/libs/vulkan-loader.nix\"\n      \"pkgs/libs/wayland-protocols.nix\"\n      \"pkgs/libs/wayland.nix\"\n      \"pkgs/libs/xcb-proto.nix\"\n      \"pkgs/libs/xorg-stubs.nix\"\n      \"pkgs/libs/xorg-util-macros.nix\"\n      \"pkgs/libs/xorgproto.nix\"\n      \"pkgs/libs/xtrans.nix\"\n      \"pkgs/libs/xxhash.nix\"\n      \"pkgs/networking/_aos-network-ruleset-provider/module.nix\"\n      \"pkgs/networking/_aos-network-ruleset-provider/native-tests.nix\"\n      \"pkgs/networking/_bind/module.nix\"\n      \"pkgs/networking/_bind/native-tests.nix\"\n      \"pkgs/networking/_bind/runtime-tests.nix\"\n      \"pkgs/networking/_chrony-abilities/module.nix\"\n      \"pkgs/networking/_chrony-abilities/runtime-tests.nix\"\n      \"pkgs/networking/_dnsmasq/module.nix\"\n      \"pkgs/networking/_dnsmasq/native-tests.nix\"\n      \"pkgs/networking/_dnsmasq/runtime-tests.nix\"\n      \"pkgs/networking/_envoy/module.nix\"\n      \"pkgs/networking/_envoy/native-tests.nix\"\n      \"pkgs/networking/_envoy/render.nix\"\n      \"pkgs/networking/_envoy/types.nix\"\n      \"pkgs/networking/_inetutils/module.nix\"\n      \"pkgs/networking/_nftables/module.nix\"\n      \"pkgs/networking/_nftables/runtime-tests.nix\"\n      \"pkgs/networking/_nginx/module.nix\"\n      \"pkgs/networking/_nginx/native-tests.nix\"\n      \"pkgs/networking/_openldap/module.nix\"\n      \"pkgs/networking/_openldap/native-tests.nix\"\n      \"pkgs/networking/_openssh/host-key-helper.c\"\n      \"pkgs/networking/_openssh/host-policy-wait.c\"\n      \"pkgs/networking/_openssh/module.nix\"\n      \"pkgs/networking/_openssh/runtime-tests.nix\"\n      \"pkgs/networking/_samba-cross/heimdal-build-tools.nix\"\n      \"pkgs/networking/_tailscale/module.nix\"\n      \"pkgs/networking/_tailscale/runtime-tests.nix\"\n      \"pkgs/networking/aos-network-ruleset-provider.nix\"\n      \"pkgs/networking/avahi-core.nix\"\n      \"pkgs/networking/bind.nix\"\n      \"pkgs/networking/bridge-utils.nix\"\n      \"pkgs/networking/ca-certificates.nix\"\n      \"pkgs/networking/chrony.nix\"\n      \"pkgs/networking/dnsmasq.nix\"\n      \"pkgs/networking/dnsutils.nix\"\n      \"pkgs/networking/envoy-patches/_antlr4-tool.nix\"\n      \"pkgs/networking/envoy-patches/_build-antlr4-tool.py\"\n      \"pkgs/networking/envoy-patches/cel-cc-embed.py\"\n      \"pkgs/networking/envoy-patches/go-link-memfd.py\"\n      \"pkgs/networking/envoy-patches/linker-mmap-sync.c\"\n      \"pkgs/networking/envoy-patches/source-only-bazel-deps.py\"\n      \"pkgs/networking/envoy.nix\"\n      \"pkgs/networking/inetutils-ip6.h\"\n      \"pkgs/networking/inetutils.nix\"\n      \"pkgs/networking/iperf3.nix\"\n      \"pkgs/networking/iproute2.nix\"\n      \"pkgs/networking/ipset.nix\"\n      \"pkgs/networking/iptables.nix\"\n      \"pkgs/networking/libssh2.nix\"\n      \"pkgs/networking/nftables.nix\"\n      \"pkgs/networking/nghttp2.nix\"\n      \"pkgs/networking/nghttp3.nix\"\n      \"pkgs/networking/nginx.nix\"\n      \"pkgs/networking/ngtcp2.nix\"\n      \"pkgs/networking/nmap.nix\"\n      \"pkgs/networking/openldap.nix\"\n      \"pkgs/networking/openssh.nix\"\n      \"pkgs/networking/passt.nix\"\n      \"pkgs/networking/samba-smbd.nix\"\n      \"pkgs/networking/samba.nix\"\n      \"pkgs/networking/slirp4netns.nix\"\n      \"pkgs/networking/tailscale.nix\"\n      \"pkgs/networking/wget.nix\"\n      \"pkgs/perl/perl-algorithm-diff.nix\"\n      \"pkgs/perl/perl-b-cow.nix\"\n      \"pkgs/perl/perl-class-method-modifiers.nix\"\n      \"pkgs/perl/perl-clone.nix\"\n      \"pkgs/perl/perl-encode-locale.nix\"\n      \"pkgs/perl/perl-http-daemon.nix\"\n      \"pkgs/perl/perl-http-date.nix\"\n      \"pkgs/perl/perl-http-message.nix\"\n      \"pkgs/perl/perl-io-html.nix\"\n      \"pkgs/perl/perl-io-socket-ssl.nix\"\n      \"pkgs/perl/perl-io-tty.nix\"\n      \"pkgs/perl/perl-ipc-run.nix\"\n      \"pkgs/perl/perl-locale-gettext.nix\"\n      \"pkgs/perl/perl-lwp-mediatypes.nix\"\n      \"pkgs/perl/perl-module-runtime.nix\"\n      \"pkgs/perl/perl-moo.nix\"\n      \"pkgs/perl/perl-mozilla-ca.nix\"\n      \"pkgs/perl/perl-net-ssleay.nix\"\n      \"pkgs/perl/perl-parallel-forkmanager.nix\"\n      \"pkgs/perl/perl-parse-yapp.nix\"\n      \"pkgs/perl/perl-readonly.nix\"\n      \"pkgs/perl/perl-regexp-common.nix\"\n      \"pkgs/perl/perl-role-tiny.nix\"\n      \"pkgs/perl/perl-sub-quote.nix\"\n      \"pkgs/perl/perl-time-duration.nix\"\n      \"pkgs/perl/perl-timedate.nix\"\n      \"pkgs/perl/perl-uri.nix\"\n      \"pkgs/python/python3-cffi.nix\"\n      \"pkgs/python/python3-cryptography.nix\"\n      \"pkgs/python/python3-dbus.nix\"\n      \"pkgs/python/python3-dbusmock.nix\"\n      \"pkgs/python/python3-dnspython.nix\"\n      \"pkgs/python/python3-jinja2.nix\"\n      \"pkgs/python/python3-libevdev.nix\"\n      \"pkgs/python/python3-lxml.nix\"\n      \"pkgs/python/python3-mako.nix\"\n      \"pkgs/python/python3-markdown.nix\"\n      \"pkgs/python/python3-markupsafe.nix\"\n      \"pkgs/python/python3-pycparser.nix\"\n      \"pkgs/python/python3-pygdbmi.nix\"\n      \"pkgs/python/python3-pygments.nix\"\n      \"pkgs/python/python3-pyparsing.nix\"\n      \"pkgs/python/python3-pyyaml.nix\"\n      \"pkgs/python/python3-railroad-diagrams.nix\"\n      \"pkgs/python/python3-smartypants.nix\"\n      \"pkgs/python/python3-typogrify.nix\"\n      \"pkgs/security/_aos-boot-identity/aos-boot-identity-failure-report.sh\"\n      \"pkgs/security/_aos-boot-identity/aos-boot-identity-guard.sh\"\n      \"pkgs/security/_aos-boot-identity/aos-boot-identity-success.sh\"\n      \"pkgs/security/_aos-boot-identity/module.nix\"\n      \"pkgs/security/_aos-cryptsetup-provider/module.nix\"\n      \"pkgs/security/_aos-ebpf-lsm-policy/module.nix\"\n      \"pkgs/security/_aos-ebpf-net-policy/module.nix\"\n      \"pkgs/security/_aos-verity-root-guard/aos-verity-root-verify.sh\"\n      \"pkgs/security/_aos-verity-root-guard/module.nix\"\n      \"pkgs/security/_audit/helper-check.nix\"\n      \"pkgs/security/_audit/module.nix\"\n      \"pkgs/security/_audit/runtime-tests.nix\"\n      \"pkgs/security/_cryptsetup/module.nix\"\n      \"pkgs/security/_krb5-kdc/module.nix\"\n      \"pkgs/security/_krb5-kdc/native-tests.nix\"\n      \"pkgs/security/_linux-pam/module.nix\"\n      \"pkgs/security/_opkssh/module.nix\"\n      \"pkgs/security/_polkit/module.nix\"\n      \"pkgs/security/_refpolicy/module.nix\"\n      \"pkgs/security/_sudo/module.nix\"\n      \"pkgs/security/aos-boot-identity.nix\"\n      \"pkgs/security/aos-cryptsetup-provider.nix\"\n      \"pkgs/security/aos-ebpf-lsm-policy.bpf.c\"\n      \"pkgs/security/aos-ebpf-lsm-policy.c\"\n      \"pkgs/security/aos-ebpf-lsm-policy.nix\"\n      \"pkgs/security/aos-ebpf-net-policy.bpf.c\"\n      \"pkgs/security/aos-ebpf-net-policy.c\"\n      \"pkgs/security/aos-ebpf-net-policy.nix\"\n      \"pkgs/security/aos-landlock.c\"\n      \"pkgs/security/aos-landlock.nix\"\n      \"pkgs/security/aos-recovery.nix\"\n      \"pkgs/security/aos-selinux-run.c\"\n      \"pkgs/security/aos-selinux-run.nix\"\n      \"pkgs/security/aos-service-root.c\"\n      \"pkgs/security/aos-service-root.nix\"\n      \"pkgs/security/aos-verity-root-guard.nix\"\n      \"pkgs/security/audit.nix\"\n      \"pkgs/security/checkpolicy.nix\"\n      \"pkgs/security/cryptsetup.nix\"\n      \"pkgs/security/cyrus-sasl.nix\"\n      \"pkgs/security/gnupg.nix\"\n      \"pkgs/security/gnutls.nix\"\n      \"pkgs/security/gpgme.nix\"\n      \"pkgs/security/krb5.nix\"\n      \"pkgs/security/libtpms.nix\"\n      \"pkgs/security/linux-pam.nix\"\n      \"pkgs/security/minisign.nix\"\n      \"pkgs/security/openpam.nix\"\n      \"pkgs/security/openssl.nix\"\n      \"pkgs/security/opkssh.nix\"\n      \"pkgs/security/policycoreutils.nix\"\n      \"pkgs/security/polkit.nix\"\n      \"pkgs/security/refpolicy-load-policy.sh\"\n      \"pkgs/security/refpolicy.nix\"\n      \"pkgs/security/semodule-utils.nix\"\n      \"pkgs/security/setools.nix\"\n      \"pkgs/security/sudo.nix\"\n      \"pkgs/security/swtpm.nix\"\n      \"pkgs/security/tpm2-tools.nix\"\n      \"pkgs/security/tpm2-tss.nix\"\n      \"pkgs/shells/bash-completion.nix\"\n      \"pkgs/shells/fish.nix\"\n      \"pkgs/shells/zsh.nix\"\n      \"pkgs/storage/_garage-config/module.nix\"\n      \"pkgs/storage/_garage-config/native-tests.nix\"\n      \"pkgs/storage/_garage-tests/lifecycle.nix\"\n      \"pkgs/storage/_longhorn-config/module.nix\"\n      \"pkgs/storage/_mariadb-tests/lifecycle.nix\"\n      \"pkgs/storage/_mariadb/module.nix\"\n      \"pkgs/storage/_mariadb/native-tests.nix\"\n      \"pkgs/storage/_postgresql-tests/lifecycle.nix\"\n      \"pkgs/storage/_postgresql/module.nix\"\n      \"pkgs/storage/_postgresql/native-tests.nix\"\n      \"pkgs/storage/_zfstools/module.nix\"\n      \"pkgs/storage/garage.nix\"\n      \"pkgs/storage/longhorn-engine.nix\"\n      \"pkgs/storage/longhorn-instance-manager.nix\"\n      \"pkgs/storage/longhorn-manager.nix\"\n      \"pkgs/storage/mariadb.nix\"\n      \"pkgs/storage/parted.nix\"\n      \"pkgs/storage/postgresql.nix\"\n      \"pkgs/storage/zfstools.nix\"\n      \"pkgs/system/_aos-configuration-provider/account-lookup.c\"\n      \"pkgs/system/_aos-configuration-provider/module.nix\"\n      \"pkgs/system/_aos-host-policy/baseline/boot-policy.nix\"\n      \"pkgs/system/_aos-host-policy/baseline/common.nix\"\n      \"pkgs/system/_aos-host-policy/baseline/edge.nix\"\n      \"pkgs/system/_aos-host-policy/baseline/initrd.nix\"\n      \"pkgs/system/_aos-host-policy/baseline/server.nix\"\n      \"pkgs/system/_aos-host-policy/bashrc-text.nix\"\n      \"pkgs/system/_aos-host-policy/build-baseline.nix\"\n      \"pkgs/system/_aos-host-policy/configuration-lower.nix\"\n      \"pkgs/system/_aos-host-policy/hardening.nix\"\n      \"pkgs/system/_aos-host-policy/homes.nix\"\n      \"pkgs/system/_aos-host-policy/image-inventory/module.nix\"\n      \"pkgs/system/_aos-host-policy/inputrc-text.nix\"\n      \"pkgs/system/_aos-host-policy/journald.nix\"\n      \"pkgs/system/_aos-host-policy/kernel-effects.nix\"\n      \"pkgs/system/_aos-host-policy/kernel-packages.nix\"\n      \"pkgs/system/_aos-host-policy/kernel.nix\"\n      \"pkgs/system/_aos-host-policy/literal-text.nix\"\n      \"pkgs/system/_aos-host-policy/locale.nix\"\n      \"pkgs/system/_aos-host-policy/managed-paths.py\"\n      \"pkgs/system/_aos-host-policy/module.nix\"\n      \"pkgs/system/_aos-host-policy/network-effects.nix\"\n      \"pkgs/system/_aos-host-policy/networking.nix\"\n      \"pkgs/system/_aos-host-policy/observer-bootstrap.nix\"\n      \"pkgs/system/_aos-host-policy/package-environment.nix\"\n      \"pkgs/system/_aos-host-policy/package-selection.nix\"\n      \"pkgs/system/_aos-host-policy/pki.nix\"\n      \"pkgs/system/_aos-host-policy/profile-text.nix\"\n      \"pkgs/system/_aos-host-policy/role-edge.nix\"\n      \"pkgs/system/_aos-host-policy/role-server.nix\"\n      \"pkgs/system/_aos-host-policy/security-baseline.nix\"\n      \"pkgs/system/_aos-host-policy/security-level.nix\"\n      \"pkgs/system/_aos-host-policy/session-environment.nix\"\n      \"pkgs/system/_aos-host-policy/users.nix\"\n      \"pkgs/system/_aos-init-provider/module.nix\"\n      \"pkgs/system/_aos-runtime-checks/module.nix\"\n      \"pkgs/system/_aos-storage-provisioning-provider/aos-storage-topology.sh\"\n      \"pkgs/system/_aos-storage-provisioning-provider/check-repart-helpers.sh\"\n      \"pkgs/system/_aos-storage-provisioning-provider/configuration.nix\"\n      \"pkgs/system/_aos-storage-provisioning-provider/module.nix\"\n      \"pkgs/system/_aos-storage-provisioning-provider/prepare.nix\"\n      \"pkgs/system/_aos-storage-provisioning-provider/topology.nix\"\n      \"pkgs/system/_aos-storage-provisioning-provider/types.nix\"\n      \"pkgs/system/_aos-systemd-var-policy/aos-var-crypt.sh\"\n      \"pkgs/system/_aos-systemd-var-policy/module.nix\"\n      \"pkgs/system/_dbus/module.nix\"\n      \"pkgs/system/_init-system/module.nix\"\n      \"pkgs/system/_kmod-abilities/module.nix\"\n      \"pkgs/system/_kmod-handler.c\"\n      \"pkgs/system/_service-management/configuration.nix\"\n      \"pkgs/system/_service-management/credential.nix\"\n      \"pkgs/system/_service-management/device.nix\"\n      \"pkgs/system/_service-management/execution.nix\"\n      \"pkgs/system/_service-management/identity.nix\"\n      \"pkgs/system/_service-management/input.nix\"\n      \"pkgs/system/_service-management/listener.nix\"\n      \"pkgs/system/_service-management/module.nix\"\n      \"pkgs/system/_service-management/mount.nix\"\n      \"pkgs/system/_service-management/network-configuration.nix\"\n      \"pkgs/system/_service-management/network.nix\"\n      \"pkgs/system/_service-management/policy.nix\"\n      \"pkgs/system/_service-management/types.nix\"\n      \"pkgs/system/_service-management/watchdog.nix\"\n      \"pkgs/system/_storage-interface/module.nix\"\n      \"pkgs/system/_systemd-abilities/aos_service_resources.py\"\n      \"pkgs/system/_systemd-abilities/aos_service_storage.py\"\n      \"pkgs/system/_systemd-abilities/bootstrap-config.nix\"\n      \"pkgs/system/_systemd-abilities/bootstrap-provider-tests.py\"\n      \"pkgs/system/_systemd-abilities/bootstrap-provider.py\"\n      \"pkgs/system/_systemd-abilities/bootstrap-resource-groups.nix\"\n      \"pkgs/system/_systemd-abilities/bootstrap-services.nix\"\n      \"pkgs/system/_systemd-abilities/container-bootstrap.nix\"\n      \"pkgs/system/_systemd-abilities/container-startup.nix\"\n      \"pkgs/system/_systemd-abilities/core.nix\"\n      \"pkgs/system/_systemd-abilities/crash-dump-policy.nix\"\n      \"pkgs/system/_systemd-abilities/dbus-registrations.nix\"\n      \"pkgs/system/_systemd-abilities/identity-shells.nix\"\n      \"pkgs/system/_systemd-abilities/initrd-handoff-plan.nix\"\n      \"pkgs/system/_systemd-abilities/journald-policy.nix\"\n      \"pkgs/system/_systemd-abilities/manager.nix\"\n      \"pkgs/system/_systemd-abilities/module.nix\"\n      \"pkgs/system/_systemd-abilities/network-account-policy.nix\"\n      \"pkgs/system/_systemd-abilities/network-handler.py\"\n      \"pkgs/system/_systemd-abilities/network-handlers.nix\"\n      \"pkgs/system/_systemd-abilities/packaged-unit.nix\"\n      \"pkgs/system/_systemd-abilities/pam-policy.nix\"\n      \"pkgs/system/_systemd-abilities/platform/_boot-artifacts.nix\"\n      \"pkgs/system/_systemd-abilities/platform/_converted-image.nix\"\n      \"pkgs/system/_systemd-abilities/platform/_crash-dump-configuration.nix\"\n      \"pkgs/system/_systemd-abilities/platform/_event-log-configuration.nix\"\n      \"pkgs/system/_systemd-abilities/platform/_identity-bootstrap.nix\"\n      \"pkgs/system/_systemd-abilities/platform/_image-budget-check.nix\"\n      \"pkgs/system/_systemd-abilities/platform/_image-builder.nix\"\n      \"pkgs/system/_systemd-abilities/platform/_initrd-builder.nix\"\n      \"pkgs/system/_systemd-abilities/platform/_populate-esp.sh\"\n      \"pkgs/system/_systemd-abilities/platform/_recovery-initrd-builder.nix\"\n      \"pkgs/system/_systemd-abilities/platform/_rootfs-builder.nix\"\n      \"pkgs/system/_systemd-abilities/platform/_rootfs.nix\"\n      \"pkgs/system/_systemd-abilities/platform/_uki-builder.nix\"\n      \"pkgs/system/_systemd-abilities/platform/account-seed.nix\"\n      \"pkgs/system/_systemd-abilities/platform/build-initrd.nix\"\n      \"pkgs/system/_systemd-abilities/platform/crash-dump.nix\"\n      \"pkgs/system/_systemd-abilities/platform/event-log.nix\"\n      \"pkgs/system/_systemd-abilities/platform/image.nix\"\n      \"pkgs/system/_systemd-abilities/platform/initrd-store.nix\"\n      \"pkgs/system/_systemd-abilities/platform/initrd.nix\"\n      \"pkgs/system/_systemd-abilities/platform/install-bundle.nix\"\n      \"pkgs/system/_systemd-abilities/platform/nsswitch.nix\"\n      \"pkgs/system/_systemd-abilities/platform/presets.nix\"\n      \"pkgs/system/_systemd-abilities/platform/render.nix\"\n      \"pkgs/system/_systemd-abilities/platform/share-kernel-modules.sh\"\n      \"pkgs/system/_systemd-abilities/platform/system.nix\"\n      \"pkgs/system/_systemd-abilities/platform/tmpfiles.nix\"\n      \"pkgs/system/_systemd-abilities/platform/types.nix\"\n      \"pkgs/system/_systemd-abilities/platform/unit-options.nix\"\n      \"pkgs/system/_systemd-abilities/platform/users.nix\"\n      \"pkgs/system/_systemd-abilities/resource-handlers.nix\"\n      \"pkgs/system/_systemd-abilities/service-handler.py\"\n      \"pkgs/system/_systemd-abilities/testing/disk.nix\"\n      \"pkgs/system/_systemd-abilities/testing/fleet-initrd-policy.nix\"\n      \"pkgs/system/_systemd-abilities/testing/fleet-kernel-policy.nix\"\n      \"pkgs/system/_systemd-abilities/testing/fleet-module.nix\"\n      \"pkgs/system/_systemd-abilities/testing/storage-layout.nix\"\n      \"pkgs/system/_systemd-abilities/verity-root.nix\"\n      \"pkgs/system/_zram-generator/module.nix\"\n      \"pkgs/system/aos-configuration-provider.nix\"\n      \"pkgs/system/aos-host-policy.nix\"\n      \"pkgs/system/aos-init-provider.nix\"\n      \"pkgs/system/aos-runtime-checks.nix\"\n      \"pkgs/system/aos-storage-provisioning-provider.nix\"\n      \"pkgs/system/aos-systemd-provider.nix\"\n      \"pkgs/system/aos-systemd-var-policy.nix\"\n      \"pkgs/system/build-composefs-dump.py\"\n      \"pkgs/system/composefs.nix\"\n      \"pkgs/system/dbus.nix\"\n      \"pkgs/system/erofs-utils.nix\"\n      \"pkgs/system/init-system.nix\"\n      \"pkgs/system/kmod.nix\"\n      \"pkgs/system/numad.nix\"\n      \"pkgs/system/pm-utils.nix\"\n      \"pkgs/system/service-management.nix\"\n      \"pkgs/system/storage-interface.nix\"\n      \"pkgs/system/systemd.nix\"\n      \"pkgs/system/tzdata.nix\"\n      \"pkgs/system/zram-generator.nix\"\n      \"pkgs/toolchain/_bazel-asm.nix\"\n      \"pkgs/toolchain/_bazel-async-profiler-api.nix\"\n      \"pkgs/toolchain/_bazel-async-profiler-jar.nix\"\n      \"pkgs/toolchain/_bazel-async-profiler-native.nix\"\n      \"pkgs/toolchain/_bazel-async-profiler-repositories.nix\"\n      \"pkgs/toolchain/_bazel-avalon-framework-api.nix\"\n      \"pkgs/toolchain/_bazel-blockhound.nix\"\n      \"pkgs/toolchain/_bazel-bnd-annotation.nix\"\n      \"pkgs/toolchain/_bazel-bouncycastle.nix\"\n      \"pkgs/toolchain/_bazel-byte-buddy-1_14.nix\"\n      \"pkgs/toolchain/_bazel-byte-buddy-bootstrap.nix\"\n      \"pkgs/toolchain/_bazel-caffeine.nix\"\n      \"pkgs/toolchain/_bazel-chicory-maven.nix\"\n      \"pkgs/toolchain/_bazel-chicory.nix\"\n      \"pkgs/toolchain/_bazel-common-protos-241.nix\"\n      \"pkgs/toolchain/_bazel-commons-csv.nix\"\n      \"pkgs/toolchain/_bazel-conscrypt-java.nix\"\n      \"pkgs/toolchain/_bazel-error-prone-check-api.nix\"\n      \"pkgs/toolchain/_bazel-error-prone-core.nix\"\n      \"pkgs/toolchain/_bazel-error-prone-dataflow.nix\"\n      \"pkgs/toolchain/_bazel-fastutil-source-tools.nix\"\n      \"pkgs/toolchain/_bazel-google-auth-123.nix\"\n      \"pkgs/toolchain/_bazel-google-http-1433.nix\"\n      \"pkgs/toolchain/_bazel-google-http.nix\"\n      \"pkgs/toolchain/_bazel-google-java-format.nix\"\n      \"pkgs/toolchain/_bazel-grpc-java-plugin.nix\"\n      \"pkgs/toolchain/_bazel-grpc-netty.nix\"\n      \"pkgs/toolchain/_bazel-grpc-xds-source.nix\"\n      \"pkgs/toolchain/_bazel-guava-3345.nix\"\n      \"pkgs/toolchain/_bazel-jackson-base.nix\"\n      \"pkgs/toolchain/_bazel-jackson-xml.nix\"\n      \"pkgs/toolchain/_bazel-jackson-yaml.nix\"\n      \"pkgs/toolchain/_bazel-jacoco-source.nix\"\n      \"pkgs/toolchain/_bazel-jacoco.nix\"\n      \"pkgs/toolchain/_bazel-jansi.nix\"\n      \"pkgs/toolchain/_bazel-jboss-modules.nix\"\n      \"pkgs/toolchain/_bazel-jeromq.nix\"\n      \"pkgs/toolchain/_bazel-jimfs.nix\"\n      \"pkgs/toolchain/_bazel-jna.nix\"\n      \"pkgs/toolchain/_bazel-kafka-clients.nix\"\n      \"pkgs/toolchain/_bazel-legacy-java-http.nix\"\n      \"pkgs/toolchain/_bazel-listenablefuture-empty.nix\"\n      \"pkgs/toolchain/_bazel-log4j-core.nix\"\n      \"pkgs/toolchain/_bazel-log4j.nix\"\n      \"pkgs/toolchain/_bazel-logkit.nix\"\n      \"pkgs/toolchain/_bazel-lz4-java.nix\"\n      \"pkgs/toolchain/_bazel-mail-api.nix\"\n      \"pkgs/toolchain/_bazel-maven-bootstrap.nix\"\n      \"pkgs/toolchain/_bazel-maven-modern-annotations.nix\"\n      \"pkgs/toolchain/_bazel-maven-source-repositories.nix\"\n      \"pkgs/toolchain/_bazel-mockito.nix\"\n      \"pkgs/toolchain/_bazel-module-prepared.nix\"\n      \"pkgs/toolchain/_bazel-module-source.nix\"\n      \"pkgs/toolchain/_bazel-msv-chain.nix\"\n      \"pkgs/toolchain/_bazel-netty-119-native-repositories.nix\"\n      \"pkgs/toolchain/_bazel-netty-119.nix\"\n      \"pkgs/toolchain/_bazel-netty-93-native-repositories.nix\"\n      \"pkgs/toolchain/_bazel-netty-93-repositories.nix\"\n      \"pkgs/toolchain/_bazel-netty-base.nix\"\n      \"pkgs/toolchain/_bazel-netty-boringssl-2061.nix\"\n      \"pkgs/toolchain/_bazel-netty-boringssl.nix\"\n      \"pkgs/toolchain/_bazel-netty-codec-http.nix\"\n      \"pkgs/toolchain/_bazel-netty-codec-java-deps.nix\"\n      \"pkgs/toolchain/_bazel-netty-codec.nix\"\n      \"pkgs/toolchain/_bazel-netty-common.nix\"\n      \"pkgs/toolchain/_bazel-netty-dns-proxy-119.nix\"\n      \"pkgs/toolchain/_bazel-netty-dns.nix\"\n      \"pkgs/toolchain/_bazel-netty-handler-apis.nix\"\n      \"pkgs/toolchain/_bazel-netty-handler.nix\"\n      \"pkgs/toolchain/_bazel-netty-http2-119.nix\"\n      \"pkgs/toolchain/_bazel-netty-http2-proxy.nix\"\n      \"pkgs/toolchain/_bazel-netty-native-epoll.nix\"\n      \"pkgs/toolchain/_bazel-netty-native-kqueue.nix\"\n      \"pkgs/toolchain/_bazel-netty-native-unix.nix\"\n      \"pkgs/toolchain/_bazel-netty-tcnative-2061-repositories.nix\"\n      \"pkgs/toolchain/_bazel-netty-tcnative-classes-2061.nix\"\n      \"pkgs/toolchain/_bazel-netty-tcnative-classes.nix\"\n      \"pkgs/toolchain/_bazel-netty-tcnative-native-2061.nix\"\n      \"pkgs/toolchain/_bazel-netty-tcnative-native.nix\"\n      \"pkgs/toolchain/_bazel-netty-transport-extras.nix\"\n      \"pkgs/toolchain/_bazel-offline-modules-7.nix\"\n      \"pkgs/toolchain/_bazel-offline-modules-9.nix\"\n      \"pkgs/toolchain/_bazel-offline-modules.nix\"\n      \"pkgs/toolchain/_bazel-pcollections-sources.nix\"\n      \"pkgs/toolchain/_bazel-pcollections.nix\"\n      \"pkgs/toolchain/_bazel-platforms-source.nix\"\n      \"pkgs/toolchain/_bazel-proguard.nix\"\n      \"pkgs/toolchain/_bazel-protobuf-java-util.nix\"\n      \"pkgs/toolchain/_bazel-protobuf-java.nix\"\n      \"pkgs/toolchain/_bazel-protoc-gen-validate-source.nix\"\n      \"pkgs/toolchain/_bazel-python-runtime.nix\"\n      \"pkgs/toolchain/_bazel-registry-lock.py\"\n      \"pkgs/toolchain/_bazel-remote-java-tools.nix\"\n      \"pkgs/toolchain/_bazel-rules-java-tools.nix\"\n      \"pkgs/toolchain/_bazel-rules-python-tools.nix\"\n      \"pkgs/toolchain/_bazel-snappy-java.nix\"\n      \"pkgs/toolchain/_bazel-source-8-prepared.nix\"\n      \"pkgs/toolchain/_bazel-source-8.nix\"\n      \"pkgs/toolchain/_bazel-source-9-prepared.nix\"\n      \"pkgs/toolchain/_bazel-source-9.nix\"\n      \"pkgs/toolchain/_bazel-source-checkout.nix\"\n      \"pkgs/toolchain/_bazel-source.nix\"\n      \"pkgs/toolchain/_bazel-stax2-api.nix\"\n      \"pkgs/toolchain/_bazel-tomcat-annotations-6053.nix\"\n      \"pkgs/toolchain/_bazel-unix-jni.nix\"\n      \"pkgs/toolchain/_bazel-velocity.nix\"\n      \"pkgs/toolchain/_bazel-woodstox-core.nix\"\n      \"pkgs/toolchain/_bazel-xml-resolver.nix\"\n      \"pkgs/toolchain/_bazel-xom-sources.nix\"\n      \"pkgs/toolchain/_bazel-zstd-jni.nix\"\n      \"pkgs/toolchain/_bazel.nix\"\n      \"pkgs/toolchain/_kotlin-bootstrap-2011.nix\"\n      \"pkgs/toolchain/_kotlin-bootstrap-2012.nix\"\n      \"pkgs/toolchain/_kotlin-bootstrap-april-2013.nix\"\n      \"pkgs/toolchain/_kotlin-bootstrap-august-2013.nix\"\n      \"pkgs/toolchain/_kotlin-bootstrap-december-2013.nix\"\n      \"pkgs/toolchain/_kotlin-bootstrap-february-2014.nix\"\n      \"pkgs/toolchain/_kotlin-bootstrap-january-2013.nix\"\n      \"pkgs/toolchain/_kotlin-bootstrap-june-2012.nix\"\n      \"pkgs/toolchain/_kotlin-bootstrap-november-2013.nix\"\n      \"pkgs/toolchain/_kotlin-bootstrap-october-2012.nix\"\n      \"pkgs/toolchain/_kotlin-bootstrap-serialized-2013.nix\"\n      \"pkgs/toolchain/_kotlin-bootstrap-serialized-patch.py\"\n      \"pkgs/toolchain/_kotlin-builtins-generator-2013.nix\"\n      \"pkgs/toolchain/_kotlin-builtins-generator-patch.py\"\n      \"pkgs/toolchain/_kotlin-dart-ast-2012.nix\"\n      \"pkgs/toolchain/_kotlin-idea-api-2012.nix\"\n      \"pkgs/toolchain/_kotlin-idea-core-2012.nix\"\n      \"pkgs/toolchain/_kotlin-stdlib-2013.nix\"\n      \"pkgs/toolchain/_kotlin-stdlib-december-2013.nix\"\n      \"pkgs/toolchain/_kotlin-stdlib-february-2014.nix\"\n      \"pkgs/toolchain/_kotlin-stdlib-january-2014.nix\"\n      \"pkgs/toolchain/_kotlin-stdlib-november-2013.nix\"\n      \"pkgs/toolchain/_linux-hosted-binutils.nix\"\n      \"pkgs/toolchain/_linux-hosted-cc.nix\"\n      \"pkgs/toolchain/_linux-hosted-gcc.nix\"\n      \"pkgs/toolchain/_linux-hosted-glibc.nix\"\n      \"pkgs/toolchain/_protobuf-java-lite-2_5.nix\"\n      \"pkgs/toolchain/acpica.nix\"\n      \"pkgs/toolchain/ant.nix\"\n      \"pkgs/toolchain/autoconf-archive.nix\"\n      \"pkgs/toolchain/autoconf.nix\"\n      \"pkgs/toolchain/automake.nix\"\n      \"pkgs/toolchain/bazel-7.nix\"\n      \"pkgs/toolchain/bazel-8.nix\"\n      \"pkgs/toolchain/bazel-9.nix\"\n      \"pkgs/toolchain/bazel-bootstrap.nix\"\n      \"pkgs/toolchain/bazel.nix\"\n      \"pkgs/toolchain/bison.nix\"\n      \"pkgs/toolchain/cmake.nix\"\n      \"pkgs/toolchain/cpio.nix\"\n      \"pkgs/toolchain/flex.nix\"\n      \"pkgs/toolchain/generate-bazel-bootstrap-resources.py\"\n      \"pkgs/toolchain/generate-bazel-vendor.py\"\n      \"pkgs/toolchain/go/_go-darwin.nix\"\n      \"pkgs/toolchain/go/_go-linux-cross.nix\"\n      \"pkgs/toolchain/go/go-1_17.nix\"\n      \"pkgs/toolchain/go/go-1_20.nix\"\n      \"pkgs/toolchain/go/go-1_22.nix\"\n      \"pkgs/toolchain/go/go-1_24.nix\"\n      \"pkgs/toolchain/go/go-1_4.nix\"\n      \"pkgs/toolchain/go/go.nix\"\n      \"pkgs/toolchain/gperf.nix\"\n      \"pkgs/toolchain/java/_openjdk-bootstrap.nix\"\n      \"pkgs/toolchain/java/ant-bootstrap.nix\"\n      \"pkgs/toolchain/java/classpath-0_93.nix\"\n      \"pkgs/toolchain/java/classpath-0_99.nix\"\n      \"pkgs/toolchain/java/ecj-bootstrap.nix\"\n      \"pkgs/toolchain/java/fastjar.nix\"\n      \"pkgs/toolchain/java/gjavah.nix\"\n      \"pkgs/toolchain/java/jamvm-1_5.nix\"\n      \"pkgs/toolchain/java/jamvm-2_0.nix\"\n      \"pkgs/toolchain/java/java-native-foundation.nix\"\n      \"pkgs/toolchain/java/jikes.nix\"\n      \"pkgs/toolchain/java/openjdk-10.nix\"\n      \"pkgs/toolchain/java/openjdk-11.nix\"\n      \"pkgs/toolchain/java/openjdk-12.nix\"\n      \"pkgs/toolchain/java/openjdk-13.nix\"\n      \"pkgs/toolchain/java/openjdk-14.nix\"\n      \"pkgs/toolchain/java/openjdk-15.nix\"\n      \"pkgs/toolchain/java/openjdk-16.nix\"\n      \"pkgs/toolchain/java/openjdk-17.nix\"\n      \"pkgs/toolchain/java/openjdk-18.nix\"\n      \"pkgs/toolchain/java/openjdk-19.nix\"\n      \"pkgs/toolchain/java/openjdk-20.nix\"\n      \"pkgs/toolchain/java/openjdk-21.nix\"\n      \"pkgs/toolchain/java/openjdk-22.nix\"\n      \"pkgs/toolchain/java/openjdk-23.nix\"\n      \"pkgs/toolchain/java/openjdk-24.nix\"\n      \"pkgs/toolchain/java/openjdk-7.nix\"\n      \"pkgs/toolchain/java/openjdk-8.nix\"\n      \"pkgs/toolchain/java/openjdk-9.nix\"\n      \"pkgs/toolchain/java/openjdk.nix\"\n      \"pkgs/toolchain/libtool.nix\"\n      \"pkgs/toolchain/llvm/_llvm.nix\"\n      \"pkgs/toolchain/llvm/llvm-17.nix\"\n      \"pkgs/toolchain/llvm/llvm-18.nix\"\n      \"pkgs/toolchain/llvm/llvm-19.nix\"\n      \"pkgs/toolchain/llvm/llvm-20.nix\"\n      \"pkgs/toolchain/llvm/llvm-21.nix\"\n      \"pkgs/toolchain/llvm/llvm-22.nix\"\n      \"pkgs/toolchain/llvm/llvm-graphics.nix\"\n      \"pkgs/toolchain/llvm/llvm.nix\"\n      \"pkgs/toolchain/lua.nix\"\n      \"pkgs/toolchain/m4.nix\"\n      \"pkgs/toolchain/meson.nix\"\n      \"pkgs/toolchain/nasm.nix\"\n      \"pkgs/toolchain/ninja.nix\"\n      \"pkgs/toolchain/node/nodejs.nix\"\n      \"pkgs/toolchain/python/cython.nix\"\n      \"pkgs/toolchain/python/distlib.nix\"\n      \"pkgs/toolchain/python/packaging.nix\"\n      \"pkgs/toolchain/python/pip.nix\"\n      \"pkgs/toolchain/python/python-seccomp.nix\"\n      \"pkgs/toolchain/python/python3-3_12.nix\"\n      \"pkgs/toolchain/python/python3.nix\"\n      \"pkgs/toolchain/python/setuptools.nix\"\n      \"pkgs/toolchain/python/wheel.nix\"\n      \"pkgs/toolchain/rust/_current.nix\"\n      \"pkgs/toolchain/rust/_rust-bootstrap.nix\"\n      \"pkgs/toolchain/rust/_rust-darwin-build-tool.nix\"\n      \"pkgs/toolchain/rust/_rust-darwin.nix\"\n      \"pkgs/toolchain/rust/_rust-linux-hosted.nix\"\n      \"pkgs/toolchain/rust/rust-1_74.nix\"\n      \"pkgs/toolchain/rust/rust-1_75.nix\"\n      \"pkgs/toolchain/rust/rust-1_76.nix\"\n      \"pkgs/toolchain/rust/rust-1_77.nix\"\n      \"pkgs/toolchain/rust/rust-1_78.nix\"\n      \"pkgs/toolchain/rust/rust-1_79.nix\"\n      \"pkgs/toolchain/rust/rust-1_80.nix\"\n      \"pkgs/toolchain/rust/rust-1_81.nix\"\n      \"pkgs/toolchain/rust/rust-1_82.nix\"\n      \"pkgs/toolchain/rust/rust-1_83.nix\"\n      \"pkgs/toolchain/rust/rust-1_84.nix\"\n      \"pkgs/toolchain/rust/rust-1_85.nix\"\n      \"pkgs/toolchain/rust/rust-1_86.nix\"\n      \"pkgs/toolchain/rust/rust-1_87.nix\"\n      \"pkgs/toolchain/rust/rust-1_88.nix\"\n      \"pkgs/toolchain/rust/rust-1_89.nix\"\n      \"pkgs/toolchain/rust/rust-1_90.nix\"\n      \"pkgs/toolchain/rust/rust-1_91.nix\"\n      \"pkgs/toolchain/rust/rust-1_92.nix\"\n      \"pkgs/toolchain/rust/rust-1_93.nix\"\n      \"pkgs/toolchain/rust/rust-1_94.nix\"\n      \"pkgs/toolchain/rust/rust-1_95.nix\"\n      \"pkgs/toolchain/rust/rust-1_96.nix\"\n      \"pkgs/toolchain/rust/rust-1_97.nix\"\n      \"pkgs/toolchain/rust/rust.nix\"\n      \"pkgs/toolchain/swig.nix\"\n      \"pkgs/toolchain/texinfo.nix\"\n      \"pkgs/toolchain/tla-plus.nix\"\n      \"pkgs/toolchain/treecc.nix\"\n      \"pkgs/toolchain/vala.nix\"\n      \"pkgs/tools/_aos-ability-crucible/module.nix\"\n      \"pkgs/tools/_aos-ability-crucible/settings.nix\"\n      \"pkgs/tools/_aos-kernel-tunable-provider/module.nix\"\n      \"pkgs/tools/_aos-metadata-provider/facts/module.nix\"\n      \"pkgs/tools/_aos-metadata-provider/module.nix\"\n      \"pkgs/tools/_aos-metadata-provider/policy.nix\"\n      \"pkgs/tools/_aos-metadata-provider/types.nix\"\n      \"pkgs/tools/_aos-nix-store-provider/module.nix\"\n      \"pkgs/tools/_aos-storage-format-provider/module.nix\"\n      \"pkgs/tools/_cargo-c-sources.nix\"\n      \"pkgs/tools/_conntrackd/module.nix\"\n      \"pkgs/tools/_conntrackd/native-tests.nix\"\n      \"pkgs/tools/_device-test-coreutils.nix\"\n      \"pkgs/tools/_image-hardlink-tree.sh\"\n      \"pkgs/tools/_nix-daemon-checks.nix\"\n      \"pkgs/tools/_nix-daemon-config/module.nix\"\n      \"pkgs/tools/_rsyncd/module.nix\"\n      \"pkgs/tools/_rsyncd/native-tests.nix\"\n      \"pkgs/tools/_smartmontools/module.nix\"\n      \"pkgs/tools/_util-linux-getty/module.nix\"\n      \"pkgs/tools/accache.nix\"\n      \"pkgs/tools/alejandra.nix\"\n      \"pkgs/tools/aos-ability-crucible.nix\"\n      \"pkgs/tools/aos-boot-configuration-test-driver.nix\"\n      \"pkgs/tools/aos-deployment-check.nix\"\n      \"pkgs/tools/aos-hub-cloudflare.nix\"\n      \"pkgs/tools/aos-hub-console-dist.nix\"\n      \"pkgs/tools/aos-hub-dialect-tests.nix\"\n      \"pkgs/tools/aos-hub-e2e.nix\"\n      \"pkgs/tools/aos-hub-worker-dist.nix\"\n      \"pkgs/tools/aos-hub-worker-do-e2e.nix\"\n      \"pkgs/tools/aos-hub/_aos-hub/module.nix\"\n      \"pkgs/tools/aos-hub/aos-hub.nix\"\n      \"pkgs/tools/aos-kernel-tunable-provider.nix\"\n      \"pkgs/tools/aos-metadata-provider.nix\"\n      \"pkgs/tools/aos-nix-store-provider.nix\"\n      \"pkgs/tools/aos-package-evaluation-driver.nix\"\n      \"pkgs/tools/aos-release-signer.nix\"\n      \"pkgs/tools/aos-storage-format-provider.nix\"\n      \"pkgs/tools/aos-system-image-e2e-fixture.nix\"\n      \"pkgs/tools/aos-vm.nix\"\n      \"pkgs/tools/aos/_abilities/attestation-verifier.nix\"\n      \"pkgs/tools/aos/_abilities/configuration-evaluation.nix\"\n      \"pkgs/tools/aos/_abilities/configuration-provider/module.nix\"\n      \"pkgs/tools/aos/_abilities/control-plane/module.nix\"\n      \"pkgs/tools/aos/_abilities/module.nix\"\n      \"pkgs/tools/aos/_abilities/nix-store-database.nix\"\n      \"pkgs/tools/aos/_abilities/package-attestation-quote.nix\"\n      \"pkgs/tools/aos/_abilities/package-profile-convergence.nix\"\n      \"pkgs/tools/aos/_abilities/release-coordinator/module.nix\"\n      \"pkgs/tools/aos/_abilities/runtime-layout.nix\"\n      \"pkgs/tools/aos/_outputs.nix\"\n      \"pkgs/tools/aos/_release-tooling.nix\"\n      \"pkgs/tools/aos/_runtime-library-check.nix\"\n      \"pkgs/tools/aos/_tests.nix\"\n      \"pkgs/tools/aos/_workspace-slice.nix\"\n      \"pkgs/tools/aos/_workspace-source.nix\"\n      \"pkgs/tools/aos/aos-agent-rpc.c\"\n      \"pkgs/tools/aos/aos-agent-rpc.nix\"\n      \"pkgs/tools/aos/aos-test-driver.nix\"\n      \"pkgs/tools/aos/aos-test-driver/aos_test_driver/__init__.py\"\n      \"pkgs/tools/aos/aos-test-driver/aos_test_driver/__main__.py\"\n      \"pkgs/tools/aos/aos-test-driver/aos_test_driver/agent.py\"\n      \"pkgs/tools/aos/aos-test-driver/aos_test_driver/errors.py\"\n      \"pkgs/tools/aos/aos-test-driver/aos_test_driver/firecracker.py\"\n      \"pkgs/tools/aos/aos-test-driver/aos_test_driver/fs.py\"\n      \"pkgs/tools/aos/aos-test-driver/aos_test_driver/logger.py\"\n      \"pkgs/tools/aos/aos-test-driver/aos_test_driver/machine.py\"\n      \"pkgs/tools/aos/aos-test-driver/aos_test_driver/qemu.py\"\n      \"pkgs/tools/aos/aos-test-driver/pyrefly.toml\"\n      \"pkgs/tools/aos/aos.nix\"\n      \"pkgs/tools/asciidoc.nix\"\n      \"pkgs/tools/autogen.nix\"\n      \"pkgs/tools/bat.nix\"\n      \"pkgs/tools/bc.nix\"\n      \"pkgs/tools/bibtex.nix\"\n      \"pkgs/tools/bindgen.nix\"\n      \"pkgs/tools/bottom.nix\"\n      \"pkgs/tools/bubblewrap.nix\"\n      \"pkgs/tools/cargo-c.nix\"\n      \"pkgs/tools/cargo-deny.nix\"\n      \"pkgs/tools/cargo-fuzz.nix\"\n      \"pkgs/tools/cargo-hakari.nix\"\n      \"pkgs/tools/cargo-llvm-cov.nix\"\n      \"pkgs/tools/cargo-nextest.nix\"\n      \"pkgs/tools/cbindgen.nix\"\n      \"pkgs/tools/cloc.nix\"\n      \"pkgs/tools/conntrack-tools.nix\"\n      \"pkgs/tools/crucible-fixtures.nix\"\n      \"pkgs/tools/crucible-fleet-store.nix\"\n      \"pkgs/tools/crucible-guest.nix\"\n      \"pkgs/tools/crucible/_cargo-deps-hash.nix\"\n      \"pkgs/tools/crucible/_cargo-source.nix\"\n      \"pkgs/tools/crucible/_control-protocol-version.nix\"\n      \"pkgs/tools/crucible/_packages.nix\"\n      \"pkgs/tools/crucible/_release-manifest.nix\"\n      \"pkgs/tools/crucible/_source.nix\"\n      \"pkgs/tools/crucible/_workspace.nix\"\n      \"pkgs/tools/crucible/crucible.nix\"\n      \"pkgs/tools/crucible/live-debugger-matrix.sh\"\n      \"pkgs/tools/curl.nix\"\n      \"pkgs/tools/delve.nix\"\n      \"pkgs/tools/direnv.nix\"\n      \"pkgs/tools/docutils.nix\"\n      \"pkgs/tools/doxygen.nix\"\n      \"pkgs/tools/dtc.nix\"\n      \"pkgs/tools/dwarves.nix\"\n      \"pkgs/tools/esbuild.nix\"\n      \"pkgs/tools/ethtool.nix\"\n      \"pkgs/tools/fakeroot.nix\"\n      \"pkgs/tools/file.nix\"\n      \"pkgs/tools/fzf.nix\"\n      \"pkgs/tools/gdb.nix\"\n      \"pkgs/tools/gettext.nix\"\n      \"pkgs/tools/gi-docgen.nix\"\n      \"pkgs/tools/git-2_42.nix\"\n      \"pkgs/tools/git-lfs.nix\"\n      \"pkgs/tools/git.nix\"\n      \"pkgs/tools/glslang.nix\"\n      \"pkgs/tools/gopls.nix\"\n      \"pkgs/tools/graphviz.nix\"\n      \"pkgs/tools/gtk-doc.nix\"\n      \"pkgs/tools/hdparm.nix\"\n      \"pkgs/tools/help2man.nix\"\n      \"pkgs/tools/htop.nix\"\n      \"pkgs/tools/image-hardlink-tree.nix\"\n      \"pkgs/tools/ipmitool.nix\"\n      \"pkgs/tools/jq.nix\"\n      \"pkgs/tools/just.nix\"\n      \"pkgs/tools/kbd.nix\"\n      \"pkgs/tools/latex2man.nix\"\n      \"pkgs/tools/less.nix\"\n      \"pkgs/tools/libburn.nix\"\n      \"pkgs/tools/libisoburn.nix\"\n      \"pkgs/tools/libisofs.nix\"\n      \"pkgs/tools/lsof.nix\"\n      \"pkgs/tools/mandoc.nix\"\n      \"pkgs/tools/mdbook.nix\"\n      \"pkgs/tools/miniflare/_blake3-wasm.nix\"\n      \"pkgs/tools/miniflare/_sharp-addon.nix\"\n      \"pkgs/tools/miniflare/miniflare.nix\"\n      \"pkgs/tools/miniflare/package-lock.json\"\n      \"pkgs/tools/miniflare/package.json\"\n      \"pkgs/tools/mkfontscale.nix\"\n      \"pkgs/tools/moreutils.nix\"\n      \"pkgs/tools/mtools.nix\"\n      \"pkgs/tools/nix-daemon.nix\"\n      \"pkgs/tools/nix.nix\"\n      \"pkgs/tools/parallel.nix\"\n      \"pkgs/tools/patchelf.nix\"\n      \"pkgs/tools/perl.nix\"\n      \"pkgs/tools/pkg-config.nix\"\n      \"pkgs/tools/pnpm.nix\"\n      \"pkgs/tools/procps-ng.nix\"\n      \"pkgs/tools/pv.nix\"\n      \"pkgs/tools/pyrefly.nix\"\n      \"pkgs/tools/ripgrep.nix\"\n      \"pkgs/tools/rsync.nix\"\n      \"pkgs/tools/smartmontools.nix\"\n      \"pkgs/tools/socat.nix\"\n      \"pkgs/tools/soelim.nix\"\n      \"pkgs/tools/strace.nix\"\n      \"pkgs/tools/tcpdump.nix\"\n      \"pkgs/tools/tmux.nix\"\n      \"pkgs/tools/util-linux.nix\"\n      \"pkgs/tools/uutils-acl.nix\"\n      \"pkgs/tools/uutils-awk.nix\"\n      \"pkgs/tools/uutils-bsdutils.nix\"\n      \"pkgs/tools/uutils-hostname.nix\"\n      \"pkgs/tools/uutils-procps.nix\"\n      \"pkgs/tools/uutils-red.nix\"\n      \"pkgs/tools/uutils-shadow.nix\"\n      \"pkgs/tools/uutils-tar.nix\"\n      \"pkgs/tools/uutils-util-linux.nix\"\n      \"pkgs/tools/uv.nix\"\n      \"pkgs/tools/valgrind.nix\"\n      \"pkgs/tools/wac-cli.nix\"\n      \"pkgs/tools/wasm-bindgen-cli.nix\"\n      \"pkgs/tools/wasm-tools.nix\"\n      \"pkgs/tools/wasmtime.nix\"\n      \"pkgs/tools/which.nix\"\n      \"pkgs/tools/worker-build.nix\"\n      \"pkgs/tools/workerd/_bazel-copy-directory.nix\"\n      \"pkgs/tools/workerd/_binaryen.nix\"\n      \"pkgs/tools/workerd/_cargo-bazel.nix\"\n      \"pkgs/tools/workerd/_cross-clang.nix\"\n      \"pkgs/tools/workerd/_cross-toolchain.nix\"\n      \"pkgs/tools/workerd/_darwin-toolchain.nix\"\n      \"pkgs/tools/workerd/_emscripten-acorn.nix\"\n      \"pkgs/tools/workerd/_emscripten-llvm.nix\"\n      \"pkgs/tools/workerd/_emscripten.nix\"\n      \"pkgs/tools/workerd/_esbuild-repository.nix\"\n      \"pkgs/tools/workerd/_esbuild.nix\"\n      \"pkgs/tools/workerd/_modern.nix\"\n      \"pkgs/tools/workerd/_native-clang.nix\"\n      \"pkgs/tools/workerd/_node-repository.nix\"\n      \"pkgs/tools/workerd/_pyodide-esbuild.nix\"\n      \"pkgs/tools/workerd/_pyodide-sources.nix\"\n      \"pkgs/tools/workerd/_pyodide.nix\"\n      \"pkgs/tools/workerd/_python-repositories.nix\"\n      \"pkgs/tools/workerd/_runtime-check.nix\"\n      \"pkgs/tools/workerd/_rust-repository.nix\"\n      \"pkgs/tools/workerd/_utility-repositories.nix\"\n      \"pkgs/tools/workerd/_yq.nix\"\n      \"pkgs/tools/workerd/clean-bazel-tool-downloads.py\"\n      \"pkgs/tools/workerd/fixtures/cargo-bazel/config.json\"\n      \"pkgs/tools/workerd/fixtures/cargo-bazel/splicing_manifest.json\"\n      \"pkgs/tools/workerd/install-modern-notices.py\"\n      \"pkgs/tools/workerd/install-pyodide-notices.py\"\n      \"pkgs/tools/workerd/prepare-modern-cross.py\"\n      \"pkgs/tools/workerd/prepare-modern-toolchains.py\"\n      \"pkgs/tools/workerd/prepare-pyodide.py\"\n      \"pkgs/tools/workerd/runtime-check.js\"\n      \"pkgs/tools/workerd/strip-opaque-deps.py\"\n      \"pkgs/tools/workerd/workerd-source.nix\"\n      \"pkgs/tools/workerd/workerd.nix\"\n      \"pkgs/tools/xmlto.nix\"\n      \"pkgs/tools/xorg-sgml-doctools.nix\"\n      \"pkgs/virtualization/_libvirt/module.nix\"\n      \"pkgs/virtualization/_libvirt/native-tests.nix\"\n      \"pkgs/virtualization/_libvirt/runtime-tests.nix\"\n      \"pkgs/virtualization/libvirt.nix\"\n      \"stdenv/bootstrap/compiler.nix\"\n      \"stdenv/bootstrap/default.nix\"\n      \"stdenv/bootstrap/exports.nix\"\n      \"stdenv/bootstrap/lib.nix\"\n      \"stdenv/bootstrap/set-mtime.c\"\n      \"stdenv/bootstrap/sources.nix\"\n      \"stdenv/bootstrap/stage0-seeds.nix\"\n      \"stdenv/bootstrap/stage1-posix-tools.nix\"\n      \"stdenv/bootstrap/stage2-mes.nix\"\n      \"stdenv/bootstrap/stage3-tinycc.nix\"\n      \"stdenv/bootstrap/stage4-bash-tcc.nix\"\n      \"stdenv/bootstrap/stage4-binutils-tcc.nix\"\n      \"stdenv/bootstrap/stage4-coreutils-tcc.nix\"\n      \"stdenv/bootstrap/stage4-diffutils-tcc.nix\"\n      \"stdenv/bootstrap/stage4-findutils-tcc.nix\"\n      \"stdenv/bootstrap/stage4-gawk-tcc.nix\"\n      \"stdenv/bootstrap/stage4-gcc-tcc.nix\"\n      \"stdenv/bootstrap/stage4-gnumake-tcc.nix\"\n      \"stdenv/bootstrap/stage4-grep-tcc.nix\"\n      \"stdenv/bootstrap/stage4-gzip-tcc.nix\"\n      \"stdenv/bootstrap/stage4-patch-tcc.nix\"\n      \"stdenv/bootstrap/stage4-sed-tcc.nix\"\n      \"stdenv/bootstrap/stage4-tar-tcc.nix\"\n      \"stdenv/bootstrap/stage5-bash.nix\"\n      \"stdenv/bootstrap/stage5-binutils.nix\"\n      \"stdenv/bootstrap/stage5-coreutils.nix\"\n      \"stdenv/bootstrap/stage5-diffutils.nix\"\n      \"stdenv/bootstrap/stage5-findutils.nix\"\n      \"stdenv/bootstrap/stage5-gawk.nix\"\n      \"stdenv/bootstrap/stage5-gcc.nix\"\n      \"stdenv/bootstrap/stage5-glibc.nix\"\n      \"stdenv/bootstrap/stage5-gnumake.nix\"\n      \"stdenv/bootstrap/stage5-grep.nix\"\n      \"stdenv/bootstrap/stage5-gzip.nix\"\n      \"stdenv/bootstrap/stage5-linux-headers.nix\"\n      \"stdenv/bootstrap/stage5-patch.nix\"\n      \"stdenv/bootstrap/stage5-sed.nix\"\n      \"stdenv/bootstrap/stage5-tar.nix\"\n      \"stdenv/cargo-workspace.nix\"\n      \"stdenv/cc-wrapper.nix\"\n      \"stdenv/darwin-cc-wrapper.nix\"\n      \"stdenv/darwin-cross.nix\"\n      \"stdenv/default.nix\"\n      \"stdenv/linux-cross/binutils.nix\"\n      \"stdenv/linux-cross/default.nix\"\n      \"stdenv/linux-cross/gcc-runtime.nix\"\n      \"stdenv/linux-cross/gcc.nix\"\n      \"stdenv/linux-cross/glibc.nix\"\n      \"stdenv/linux-cross/linux-headers.nix\"\n      \"stdenv/linux-cross/sources.nix\"\n      \"stdenv/linux-cross/toolchain.nix\"\n      \"stdenv/phases.nix\"\n      \"stdenv/pin-make-shell.sh\"\n      \"stdenv/runtime-scripts.sh\"\n      \"stdenv/runtime_python_scripts.py\"\n      \"stdenv/setup.sh\"\n      \"stdenv/tier-stdenv.nix\"\n      \"stdenv/toolchains/default.nix\"\n      \"stdenv/toolchains/gcc11/binutils.nix\"\n      \"stdenv/toolchains/gcc11/bootstrap-bash.nix\"\n      \"stdenv/toolchains/gcc11/default.nix\"\n      \"stdenv/toolchains/gcc11/gcc-export.nix\"\n      \"stdenv/toolchains/gcc11/gcc.nix\"\n      \"stdenv/toolchains/gcc11/glibc.nix\"\n      \"stdenv/toolchains/gcc11/linux-headers.nix\"\n      \"stdenv/toolchains/gcc11/manifest.nix\"\n      \"stdenv/toolchains/gcc14/binutils.nix\"\n      \"stdenv/toolchains/gcc14/bzip2.nix\"\n      \"stdenv/toolchains/gcc14/default.nix\"\n      \"stdenv/toolchains/gcc14/gcc-stage2.nix\"\n      \"stdenv/toolchains/gcc14/gcc.nix\"\n      \"stdenv/toolchains/gcc14/glibc.nix\"\n      \"stdenv/toolchains/gcc14/linux-headers.nix\"\n      \"stdenv/toolchains/gcc14/manifest.nix\"\n      \"stdenv/toolchains/gcc14/patchelf.nix\"\n      \"stdenv/toolchains/gcc14/xz.nix\"\n      \"stdenv/toolchains/gcc16/binutils.nix\"\n      \"stdenv/toolchains/gcc16/bzip2.nix\"\n      \"stdenv/toolchains/gcc16/default.nix\"\n      \"stdenv/toolchains/gcc16/gcc-stage2.nix\"\n      \"stdenv/toolchains/gcc16/gcc.nix\"\n      \"stdenv/toolchains/gcc16/glibc.nix\"\n      \"stdenv/toolchains/gcc16/linux-headers.nix\"\n      \"stdenv/toolchains/gcc16/manifest.nix\"\n      \"stdenv/toolchains/gcc16/patchelf.nix\"\n      \"stdenv/toolchains/gcc16/xz.nix\"\n      \"stdenv/toolchains/gcc3_4/binutils.nix\"\n      \"stdenv/toolchains/gcc3_4/default.nix\"\n      \"stdenv/toolchains/gcc3_4/gcc.nix\"\n      \"stdenv/toolchains/gcc3_4/glibc.nix\"\n      \"stdenv/toolchains/gcc3_4/linux-headers.nix\"\n      \"stdenv/toolchains/gcc3_4/manifest.nix\"\n      \"stdenv/toolchains/gcc3_4_cross/binutils.nix\"\n      \"stdenv/toolchains/gcc3_4_cross/cross-binutils.nix\"\n      \"stdenv/toolchains/gcc3_4_cross/cross-gcc-stage1.nix\"\n      \"stdenv/toolchains/gcc3_4_cross/cross-gcc-stage2.nix\"\n      \"stdenv/toolchains/gcc3_4_cross/cross-glibc.nix\"\n      \"stdenv/toolchains/gcc3_4_cross/default.nix\"\n      \"stdenv/toolchains/gcc3_4_cross/gcc.nix\"\n      \"stdenv/toolchains/gcc3_4_cross/linux-headers.nix\"\n      \"stdenv/toolchains/gcc3_4_cross/manifest.nix\"\n      \"stdenv/toolchains/gcc4_1/binutils.nix\"\n      \"stdenv/toolchains/gcc4_1/bzip2.nix\"\n      \"stdenv/toolchains/gcc4_1/default.nix\"\n      \"stdenv/toolchains/gcc4_1/gcc.nix\"\n      \"stdenv/toolchains/gcc4_1/glibc.nix\"\n      \"stdenv/toolchains/gcc4_1/linux-headers.nix\"\n      \"stdenv/toolchains/gcc4_1/manifest.nix\"\n      \"stdenv/toolchains/gcc4_4/binutils.nix\"\n      \"stdenv/toolchains/gcc4_4/bzip2.nix\"\n      \"stdenv/toolchains/gcc4_4/default.nix\"\n      \"stdenv/toolchains/gcc4_4/gcc.nix\"\n      \"stdenv/toolchains/gcc4_4/glibc.nix\"\n      \"stdenv/toolchains/gcc4_4/linux-headers.nix\"\n      \"stdenv/toolchains/gcc4_4/manifest.nix\"\n      \"stdenv/toolchains/gcc4_8/binutils.nix\"\n      \"stdenv/toolchains/gcc4_8/bzip2.nix\"\n      \"stdenv/toolchains/gcc4_8/default.nix\"\n      \"stdenv/toolchains/gcc4_8/gcc.nix\"\n      \"stdenv/toolchains/gcc4_8/glibc.nix\"\n      \"stdenv/toolchains/gcc4_8/linux-headers.nix\"\n      \"stdenv/toolchains/gcc4_8/manifest.nix\"\n      \"stdenv/toolchains/gcc4_8/xz.nix\"\n      \"stdenv/toolchains/gcc4_8_cross/binutils.nix\"\n      \"stdenv/toolchains/gcc4_8_cross/cross-binutils.nix\"\n      \"stdenv/toolchains/gcc4_8_cross/cross-gcc-stage1.nix\"\n      \"stdenv/toolchains/gcc4_8_cross/cross-gcc-stage2.nix\"\n      \"stdenv/toolchains/gcc4_8_cross/cross-glibc.nix\"\n      \"stdenv/toolchains/gcc4_8_cross/default.nix\"\n      \"stdenv/toolchains/gcc4_8_cross/gcc.nix\"\n      \"stdenv/toolchains/gcc4_8_cross/linux-headers.nix\"\n      \"stdenv/toolchains/gcc4_8_cross/manifest.nix\"\n      \"stdenv/toolchains/gcc8/binutils.nix\"\n      \"stdenv/toolchains/gcc8/default.nix\"\n      \"stdenv/toolchains/gcc8/gcc.nix\"\n      \"stdenv/toolchains/gcc8/glibc.nix\"\n      \"stdenv/toolchains/gcc8/linux-headers.nix\"\n      \"stdenv/toolchains/gcc8/manifest.nix\"\n      \"stdenv/toolchains/gcc8_cross/binutils-export.nix\"\n      \"stdenv/toolchains/gcc8_cross/binutils.nix\"\n      \"stdenv/toolchains/gcc8_cross/cross-binutils.nix\"\n      \"stdenv/toolchains/gcc8_cross/cross-gcc-stage1.nix\"\n      \"stdenv/toolchains/gcc8_cross/cross-gcc-stage2.nix\"\n      \"stdenv/toolchains/gcc8_cross/cross-glibc.nix\"\n      \"stdenv/toolchains/gcc8_cross/default.nix\"\n      \"stdenv/toolchains/gcc8_cross/gcc.nix\"\n      \"stdenv/toolchains/gcc8_cross/linux-headers.nix\"\n      \"stdenv/toolchains/gcc8_cross/manifest.nix\"\n      \"stdenv/toolchains/lib/bootstrap-perl.nix\"\n      \"stdenv/toolchains/lib/finalize-cross.nix\"\n      \"stdenv/toolchains/lib/finalize-libc.nix\"\n      \"stdenv/toolchains/lib/finalize-native.nix\"\n      \"stdenv/toolchains/lib/mk-autotools-tool.nix\"\n      \"stdenv/toolchains/lib/mk-gcc.nix\"\n      \"stdenv/toolchains/lib/mk-glibc.nix\"\n      \"stdenv/toolchains/lib/mk-manifest-tools.nix\"\n      \"stdenv/toolchains/lib/perl-static.nix\"\n      \"stdenv/toolchains/lib/retarget-compiler.nix\"\n      \"stdenv/toolchains/lib/source-script-filter.nix\"\n      \"stdenv/toolchains/lib/static-build-compiler.nix\"\n      \"stdenv/toolchains/lib/with-runtime-shell.nix\"\n      \"systems/_ability-providers.nix\"\n      \"systems/_artifact-backend.nix\"\n      \"systems/_base-packages.nix\"\n      \"systems/_fleet-transition-test.nix\"\n      \"systems/_full-host-budgets.nix\"\n      \"systems/_image-builder.nix\"\n      \"systems/_kernel.nix\"\n      \"systems/_native-policy/measured-boot.nix\"\n      \"systems/_native-policy/secure-boot.nix\"\n      \"systems/_server-test-packages.nix\"\n      \"systems/_server-test-policy.nix\"\n      \"systems/_server-vm-policy.nix\"\n      \"systems/_server-vm.nix\"\n      \"systems/_server-zfs-test-policy.nix\"\n      \"systems/_system-manager.nix\"\n      \"systems/_upgrade-http-fixture.nix\"\n      \"systems/aos-experimental-staging.nix\"\n      \"systems/aos-experimental.nix\"\n      \"systems/edge.nix\"\n      \"systems/server-2.nix\"\n      \"systems/server-measured-boot.nix\"\n      \"systems/server-secureboot-lockdown.nix\"\n      \"systems/server-secureboot.nix\"\n      \"systems/server-test.nix\"\n      \"systems/server-verity.nix\"\n      \"systems/server-zfs-test.nix\"\n      \"systems/server.nix\"\n    ];\n  };\n  buildDeps = [pkgs.rust pkgs.sed pkgs.python3 pkgs.protobuf];\n  sharedBuildCache = false;\n  dontStrip = true;\n  dontPatchELF = true;\n  dontNukeRefs = true;\n  phases = [{\n    name = \"compile\";\n    script = ''\n      cp -R \"$src\" source\n      chmod -R u+w source\n      cd source\n      export CARGO_HOME=\"$TMPDIR/cargo\" CARGO_TARGET_DIR=\"$TMPDIR/target\"\n      mkdir -p \"$CARGO_HOME\" .cargo \"$out\"\n      sed 's|@vendor@|${pkgs.aos.passthru.cargoDeps}|g' \\\n        ${pkgs.aos.passthru.cargoDeps}/.cargo/config.toml > .cargo/config.toml\n      export PROTOC=\"${pkgs.protobuf}/bin/protoc\"\n      export PROTOC_INCLUDE=\"${pkgs.protobuf}/include\"\n      cargo build --frozen --offline --manifest-path crates/Cargo.toml --lib \\\n        -p aos-hub-model --jobs \"$NIX_BUILD_CORES\" \\\n        --message-format=json > \"$out/cargo-messages.jsonl\"\n    '';\n  }];\n}\n",
+  "report_sha256": {
+    "cargo-messages.jsonl": "5cbac9fa5d3c2eef63e017765b337314de54ceb3b442fb26b7d02b21acd837d1"
+  },
+  "schema_version": 1,
+  "source": "/nix/store/80a2577lf7i1azzc02khv1r50y6wz457-crucible-cargo-src",
+  "status": "Unchanged Hub domain production compilation passed before Bazel conversion"
+}

@@ -1,0 +1,181 @@
+{
+  "behavior": "The pinned rules_rust analyzer crate identity includes the compiler output path for external crates. Dependency and alias edges use the same identity function; first-party library/libtest merging is retained.",
+  "derivation": "/nix/store/hly9qlfjmxxqlll5j3s1jf8prnd5w9xw-aos-bazel-native-foundation-tests-editor-parity.drv",
+  "derivation_sha256": "174f35c0c42d7ca5428ed99bc2bb8dc46ab352ac8c39804687d4c0c7483a5d9d",
+  "implementation_sha256": {
+    "pkgs/build-support/_bazel/modules.nix": "33cae07fea320ef263d2991b0fd54a2fd31a5e12b772c8f85fc4540d243a3bf5",
+    "tools/bazel/metadata/patch_analyzer_identity.py": "f438da7231df5bc5f07c68686e4bdcdcdd6a41b86236f346e147070bf39a9c36",
+    "tools/bazel/tests/test_analyzer_identity.py": "c0f7086c53cb2b98c71ee0880ce85e9625ac9de173dbe6d224ee8616281f7aad"
+  },
+  "initial_ambiguous_unit_failure_log_sha256": "43fd0a9040170c9229776fd3c060b513c42ea6da8ae102b4303ec5369f0fb436",
+  "limits": [
+    "This frozen native editor checkpoint predates the final OCI test lint and transfer cache type changes and the zlib linker response flag.",
+    "The comparison retains two selected unknown-type diagnostics. Complete inference is not claimed.",
+    "The broader thirteen-family editor regression was running at this checkpoint and is recorded separately after completion."
+  ],
+  "output": "/nix/store/n436d92ghxn240jwwgakmfdx9ad2lhi4-aos-bazel-native-foundation-tests-editor-parity",
+  "policy_output": "/nix/store/jh7cmcjk426dlk3hywqnlzqf05riscph-aos-bazel-policy-checks",
+  "policy_tests": 164,
+  "report": {
+    "aggregate_statistics_comparable": false,
+    "analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 1,
+        "total": 90137,
+        "unknown": 1
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 17049,
+        "unknown": 0
+      }
+    },
+    "bazel_diagnostics": [
+      [
+        "crates/shared/aos-nix/src/runner.rs",
+        "1555:24",
+        "1555:25",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/shared/aos-oci/tests/registry.rs",
+        "1802:18",
+        "1802:21",
+        "type",
+        "fn any<fn handle(State<Arc<RegistryState, Global>>, Request<Body>) -> impl Future<Output = Response<Body>>, {unknown}, Arc<RegistryState, Global>>(fn handle(State<Arc<RegistryState, Global>>, Request<Body>) -> impl Future<Output = Response<Body>>) -> MethodRouter<Arc<RegistryState, Global>, Infallible>"
+      ]
+    ],
+    "cargo_analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 1,
+        "total": 134922,
+        "unknown": 9
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 24373,
+        "unknown": 0
+      }
+    },
+    "cargo_selected_diagnostics": [
+      [
+        "crates/shared/aos-nix/src/runner.rs",
+        "1555:24",
+        "1555:25",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/shared/aos-oci/tests/registry.rs",
+        "1802:18",
+        "1802:21",
+        "type",
+        "fn any<fn handle(State<Arc<RegistryState, Global>>, Request<Body>) -> impl Future<Output = Response<Body>>, {unknown}, Arc<RegistryState, Global>>(fn handle(State<Arc<RegistryState, Global>>, Request<Body>) -> impl Future<Output = Response<Body>>) -> MethodRouter<Arc<RegistryState, Global>, Infallible>"
+      ]
+    ],
+    "comparison_scope": [
+      "crates/shared/aos-nix",
+      "crates/shared/aos-oci",
+      "crates/shared/aos-systemd-client",
+      "crates/shared/aos-transfer"
+    ],
+    "diagnostic_multiplicity_comparable": false,
+    "diagnostics": [
+      [
+        "crates/shared/aos-nix/src/runner.rs",
+        "1555:24",
+        "1555:25",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/shared/aos-oci/tests/registry.rs",
+        "1802:18",
+        "1802:21",
+        "type",
+        "fn any<fn handle(State<Arc<RegistryState, Global>>, Request<Body>) -> impl Future<Output = Response<Body>>, {unknown}, Arc<RegistryState, Global>>(fn handle(State<Arc<RegistryState, Global>>, Request<Body>) -> impl Future<Output = Response<Body>>) -> MethodRouter<Arc<RegistryState, Global>, Infallible>"
+      ]
+    ],
+    "roots": {
+      "crates/shared/aos-nix/src/lib.rs": [],
+      "crates/shared/aos-oci/src/lib.rs": [],
+      "crates/shared/aos-oci/tests/external_signing.rs": [],
+      "crates/shared/aos-oci/tests/layout.rs": [],
+      "crates/shared/aos-oci/tests/registry.rs": [],
+      "crates/shared/aos-systemd-client/src/lib.rs": [],
+      "crates/shared/aos-systemd-client/tests/client.rs": [],
+      "crates/shared/aos-systemd-client/tests/pinned_bus.rs": [],
+      "crates/shared/aos-transfer/src/lib.rs": [
+        "default",
+        "transfer"
+      ]
+    },
+    "unattributed_cargo_diagnostics": [],
+    "unselected_cargo_diagnostics": [
+      [
+        "crates/aos/registry/aos-registry-format/src/object.rs",
+        "45:22",
+        "45:24",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "188:22",
+        "188:37",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "656:22",
+        "656:24",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "669:32",
+        "669:34",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "722:27",
+        "722:29",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "746:32",
+        "746:34",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "806:30",
+        "806:31",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/shared/aos-nar/src/cache.rs",
+        "145:28",
+        "145:30",
+        "type",
+        "{unknown}"
+      ]
+    ]
+  },
+  "report_sha256": "017ef294fdf76308d01bd351796e3c5847eed46b9949cbf88db718d2b746568a",
+  "schema_version": 1,
+  "status": "Configured external Rust target and execution units export distinctly and match the selected Cargo editor diagnostics"
+}

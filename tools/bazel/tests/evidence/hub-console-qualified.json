@@ -1,0 +1,2006 @@
+{
+  "changed_rust_inputs_sha256": {
+    "crates/hub/aos-hub-console/src/components.rs": "83da53e7e3ff1e026dc4584a62d985ecfc319554795cd2a6aa2ad2799d07e766",
+    "crates/hub/aos-hub-console/src/mutation.rs": "bc5cc614518a0c241e0368019953e0eb920e944e9d0e4a43075450743ce0a163",
+    "crates/hub/aos-hub-console/src/staging.rs": "86734b731175a99fd9fb53b8d51504f363e6b4d9054b1bc077fefe1de9c8835e",
+    "crates/hub/aos-hub-console/src/transport.rs": "ce2542fb79e15935a8d2154beb2db14ba7b726cbc0f1e21898afb80aea6a33a1",
+    "crates/hub/aos-hub-console/src/workflows/access_policy.rs": "48b63de59da9852fd88c1043a19a665b3e92003cf61708d35b4a6a9359cede8c",
+    "crates/hub/aos-hub-console/src/workflows/cache_retention.rs": "1c612bf3fd9803064142ffe6369c41005f3d80e527983e30d0a478ea4c83ab80",
+    "crates/hub/aos-hub-console/src/workflows/cache_stack.rs": "66b4f8b3e6846036631efd2d76fe1e9d8630f11a43d80f79cfa1edfcc80c8c4b",
+    "crates/hub/aos-hub-console/src/workflows/delivery_workflow.rs": "8dee8ddac78b5021edabbb3bd58bcd7fdcbb7ea78e2877525d062c726d7d260d",
+    "crates/hub/aos-hub-console/src/workflows/endpoints.rs": "83bab6e0f678a97423639f4bdf80912caeba253915f6a494598b2945dd2618c7",
+    "crates/hub/aos-hub-console/src/workflows/infrastructure.rs": "5f7a43a9a2b9ffc06e0d8f9f158ebbbbf8661d67201b988365d1de279ddc8bc0",
+    "crates/hub/aos-hub-console/src/workflows/instance_settings.rs": "788722319fcba529dc1495c8a1428a28fa33bd435ae376ee73fed423602dadaf",
+    "crates/hub/aos-hub-console/src/workflows/placements.rs": "8680eaf54e232601dc599313ea517d92501b560724a1d57b8934cadb2cac21e7",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/mod.rs": "87a8832056620c4f569f065cff8caae488a6caf3b35d9b7f762643e3ae68f0bc",
+    "crates/hub/aos-hub-console/src/workflows/resources.rs": "190165589110a77393898962103df2d86a2a7c2e568d874550c971cfc4f07132",
+    "crates/hub/aos-hub-console/src/workflows/routes.rs": "a51f4ec9de62cc91f8df9be1045ca4f6cfde3f407bda147d95d3ad9cf69c4f7a"
+  },
+  "command": "nix-build tools/bazel/tests/hub-console.nix -A all --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "648cd0ad63",
+  "editor_parity": {
+    "aggregate_statistics_comparable": false,
+    "analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 0,
+        "total": 2689,
+        "unknown": 1
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 0,
+        "total": 312,
+        "unknown": 0
+      }
+    },
+    "bazel_diagnostics": [
+      [
+        "crates/hub/aos-hub-console/src/main.rs",
+        "body-byte:191",
+        "body-byte:269",
+        "synthetic-type",
+        "{unknown}"
+      ]
+    ],
+    "cargo_analysis": {
+      "complete_inference": false,
+      "exprs": {
+        "partial": 15,
+        "total": 389502,
+        "unknown": 43
+      },
+      "panics": 0,
+      "pats": {
+        "partial": 2,
+        "total": 54945,
+        "unknown": 7
+      }
+    },
+    "cargo_selected_diagnostics": [
+      [
+        "crates/hub/aos-hub-console/src/main.rs",
+        "body-byte:191",
+        "body-byte:269",
+        "synthetic-type",
+        "{unknown}"
+      ]
+    ],
+    "comparison_scope": [
+      "crates/hub/aos-hub-console"
+    ],
+    "diagnostic_multiplicity_comparable": false,
+    "diagnostics": [
+      [
+        "crates/hub/aos-hub-console/src/main.rs",
+        "body-byte:191",
+        "body-byte:269",
+        "synthetic-type",
+        "{unknown}"
+      ]
+    ],
+    "roots": {
+      "crates/hub/aos-hub-console/src/lib.rs": [],
+      "crates/hub/aos-hub-console/src/main.rs": []
+    },
+    "unattributed_cargo_diagnostics": [],
+    "unselected_cargo_diagnostics": [
+      [
+        "crates/aos/registry/aos-registry-format/src/object.rs",
+        "45:22",
+        "45:24",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "188:22",
+        "188:37",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "656:22",
+        "656:24",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "669:32",
+        "669:34",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "722:27",
+        "722:29",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "746:32",
+        "746:34",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/aos/registry/aos-registry-format/src/pack_index.rs",
+        "806:30",
+        "806:31",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1692:12",
+        "1692:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1692:42",
+        "1692:62",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1692:42",
+        "1694:10",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1692:42",
+        "1695:57",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1696:12",
+        "1696:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1696:23",
+        "1696:31",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1696:23",
+        "1696:43",
+        "type",
+        "<{unknown} as Index<&str>>::Output"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1696:23",
+        "1697:23",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1696:23",
+        "1698:48",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1699:12",
+        "1699:25",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1699:28",
+        "1699:36",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1699:28",
+        "1700:19",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1699:28",
+        "1707:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1699:28",
+        "1708:55",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1701:22",
+        "1707:13",
+        "type",
+        "impl Fn({unknown}) -> {unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1701:23",
+        "1701:30",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1701:32",
+        "1707:13",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1702:16",
+        "1702:23",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1702:16",
+        "1702:40",
+        "type",
+        "<{unknown} as Index<&str>>::Output"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1702:16",
+        "1703:31",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1702:16",
+        "1704:32",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1702:16",
+        "1705:30",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1702:16",
+        "1706:58",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1706:32",
+        "1706:57",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1709:12",
+        "1709:20",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1709:24",
+        "1709:32",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1709:24",
+        "1709:53",
+        "type",
+        "<{unknown} as Index<&str>>::Output"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1709:24",
+        "1710:23",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1709:24",
+        "1711:57",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1709:24",
+        "1712:19",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1709:24",
+        "1719:14",
+        "type",
+        "<{unknown} as IntoIterator>::IntoIter"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1709:24",
+        "1719:14",
+        "type",
+        "fn into_iter<{unknown}>({unknown}) -> <{unknown} as IntoIterator>::IntoIter"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1709:24",
+        "1719:14",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1709:8",
+        "1722:9",
+        "type",
+        "&mut {unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1709:8",
+        "1722:9",
+        "type",
+        "Option<<{unknown} as Iterator>::Item>"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1709:8",
+        "1722:9",
+        "type",
+        "fn next<{unknown}>(&mut {unknown}) -> Option<<{unknown} as Iterator>::Item>"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1709:8",
+        "1722:9",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1713:22",
+        "1719:13",
+        "type",
+        "impl Fn({unknown}) -> {unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1713:23",
+        "1713:33",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1713:35",
+        "1719:13",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1714:16",
+        "1714:26",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1714:16",
+        "1714:43",
+        "type",
+        "<{unknown} as Index<&str>>::Output"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1714:16",
+        "1715:31",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1714:16",
+        "1716:32",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1714:16",
+        "1717:30",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1714:16",
+        "1718:58",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1718:32",
+        "1718:57",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1721:12",
+        "1721:21",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1721:12",
+        "1721:38",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1721:29",
+        "1721:37",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1723:22",
+        "1730:62",
+        "type",
+        "Filter<Chain<Chain<Chain<Chain<Chain<Iter<'_, PageSpec>, Iter<'_, PageSpec>>, Iter<'_, PageSpec>>, Iter<'_, PageSpec>>, Iter<'_, PageSpec>>, Iter<'_, PageSpec>>, impl FnMut(&&PageSpec) -> bool>"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1723:22",
+        "1731:66",
+        "type",
+        "Map<Filter<Chain<Chain<Chain<Chain<Chain<Iter<'_, PageSpec>, Iter<'_, PageSpec>>, Iter<'_, PageSpec>>, Iter<'_, PageSpec>>, Iter<'_, PageSpec>>, Iter<'_, PageSpec>>, impl FnMut(&&PageSpec) -> bool>, impl FnMut(&PageSpec) -> String>"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1730:20",
+        "1730:61",
+        "type",
+        "impl FnMut(&&PageSpec) -> bool"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1730:27",
+        "1730:61",
+        "type",
+        "<{unknown} as Not>::Output"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1730:28",
+        "1730:37",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "1730:28",
+        "1730:61",
+        "type",
+        "{unknown}"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "body-byte:54368",
+        "body-byte:56129",
+        "synthetic-type",
+        "Option<{unknown}>"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "body-byte:54368",
+        "body-byte:56129",
+        "synthetic-type",
+        "Option<{unknown}>"
+      ],
+      [
+        "crates/hub/aos-hub-ui/src/lib.rs",
+        "body-byte:54368",
+        "body-byte:56129",
+        "synthetic-type",
+        "{unknown}"
+      ]
+    ]
+  },
+  "execution": {
+    "developer": {
+      "action_counts": {
+        "CargoBuildScriptRun": 19,
+        "Clippy": 4,
+        "ExtractCargoTomlEnvVars": 110,
+        "Rustc": 132,
+        "Rustdoc": 1
+      },
+      "execution_sha256": "ed133d44bfd9a45780003abf2e607a4641a3e6c0962c5cb42a5261452116bf49",
+      "output": "/nix/store/nnnqhmqlcic5pmxnd16kl06gi2vqaxcs-aos-bazel-hub-console-developer-tools-1",
+      "selected_actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:lib"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:bin_aos-hub-console_binary"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Rustdoc",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:documentation"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:shared"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "Clippy",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:unit_binary"
+        }
+      ]
+    },
+    "runtime": {
+      "action_counts": {
+        "CargoBuildScriptRun": 19,
+        "ExtractCargoTomlEnvVars": 110,
+        "Rustc": 137,
+        "RustdocTestWriter": 1,
+        "TestRunner": 4
+      },
+      "execution_sha256": "a995248838c91ffb590c8f5d18c19de07144d072cfe2808aa11bef4e4b428bd5",
+      "output": "/nix/store/ji2dh6f8wbx4z4wnaylrb9ia5viaalg8-aos-bazel-hub-console-qualified-checks",
+      "selected_actions": [
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:bin_aos-hub-console"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:doc"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:doc"
+        },
+        {
+          "cacheHit": false,
+          "exitCode": 0,
+          "mnemonic": "TestRunner",
+          "runner": "linux-sandbox",
+          "targetLabel": "//crates/hub/aos-hub-console:unit"
+        }
+      ]
+    }
+  },
+  "generated_api_parity": {
+    "count": 4,
+    "files": {
+      "aos.hub.v1.descriptor.bin": {
+        "sha256": "40e193e5a1e999dcb2f4fe0b1daad9bc9d11f54890f35c530ff3a2b7deb6e881",
+        "size": 455195
+      },
+      "aos.hub.v1.rs": {
+        "sha256": "127c514e16d9b94b6608456676d167a2d8390fb8ba0b65c24dc74bdca21f28de",
+        "size": 353859
+      },
+      "aos.hub.v1.serde.rs": {
+        "sha256": "4e2a1dd5c1fbca087eb224de84f9ef248e2a467d89e77205a22debda8bc3dba8",
+        "size": 4387910
+      },
+      "connect_paths.rs": {
+        "sha256": "144464fc6e2748bb6802fdb1f7b99ed7ddcbcc2a08d641e149797d6b24863f2c",
+        "size": 259532
+      }
+    },
+    "status": "PASS"
+  },
+  "limits": [
+    "Seventeen native unit cases pass; the inert command and doctest selections are empty. Browser-only cases have separate compile-only evidence and have not executed in a browser.",
+    "One selected editor diagnostic matches Cargo, with no unattributed rows. Both analyses retain incomplete inference; aggregate statistics and diagnostic multiplicities are not claimed equivalent.",
+    "All fifteen current Rust edits and 132 unchanged baseline inputs are checked. Strict source trees omit Cargo manifests/lockfiles and retain declared CSS/protobuf loading inputs.",
+    "Full compiler argument equivalence, browser runtime, performance acceptance, production cutover and Cargo removal remain separate gates."
+  ],
+  "production_features": {
+    "features": {
+      "adler2@2.0.1": [
+        []
+      ],
+      "aho-corasick@1.1.4": [
+        [
+          "perf-literal",
+          "std"
+        ]
+      ],
+      "anyhow@1.0.102": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "base64@0.21.7": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "base64@0.22.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "bitflags@2.13.0": [
+        [
+          "std"
+        ]
+      ],
+      "block-buffer@0.10.4": [
+        []
+      ],
+      "bytes@1.11.1": [
+        []
+      ],
+      "cfg-if@1.0.4": [
+        []
+      ],
+      "const-oid@0.9.6": [
+        []
+      ],
+      "cpufeatures@0.2.17": [
+        []
+      ],
+      "crc32fast@1.5.0": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "crypto-common@0.1.7": [
+        [
+          "std"
+        ]
+      ],
+      "curve25519-dalek-derive@0.1.1": [
+        []
+      ],
+      "curve25519-dalek@4.1.3": [
+        [
+          "alloc",
+          "digest",
+          "precomputed-tables",
+          "zeroize"
+        ]
+      ],
+      "der@0.7.10": [
+        [
+          "alloc",
+          "oid",
+          "std",
+          "zeroize"
+        ]
+      ],
+      "digest@0.10.7": [
+        [
+          "alloc",
+          "block-buffer",
+          "core-api",
+          "default",
+          "std"
+        ]
+      ],
+      "dyn-clone@1.0.20": [
+        []
+      ],
+      "ed25519-dalek@2.2.0": [
+        [
+          "alloc",
+          "default",
+          "fast",
+          "pkcs8",
+          "std",
+          "zeroize"
+        ]
+      ],
+      "ed25519@2.2.3": [
+        [
+          "alloc",
+          "pkcs8",
+          "std"
+        ]
+      ],
+      "either@1.16.0": [
+        [
+          "std",
+          "use_std"
+        ]
+      ],
+      "equivalent@1.0.2": [
+        []
+      ],
+      "fastrand@2.4.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "fixedbitset@0.5.7": [
+        []
+      ],
+      "flate2@1.1.9": [
+        [
+          "any_impl",
+          "miniz_oxide",
+          "rust_backend"
+        ]
+      ],
+      "generic-array@0.14.7": [
+        [
+          "more_lengths"
+        ]
+      ],
+      "getrandom@0.4.2": [
+        []
+      ],
+      "hashbrown@0.17.1": [
+        []
+      ],
+      "heck@0.5.0": [
+        []
+      ],
+      "hex@0.4.3": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "indexmap@2.14.0": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "itertools@0.13.0": [
+        [
+          "default",
+          "use_alloc",
+          "use_std"
+        ]
+      ],
+      "itertools@0.14.0": [
+        [
+          "default",
+          "use_alloc",
+          "use_std"
+        ]
+      ],
+      "itoa@1.0.18": [
+        []
+      ],
+      "libc@0.2.186": [
+        []
+      ],
+      "linux-raw-sys@0.12.1": [
+        [
+          "auxvec",
+          "elf",
+          "errno",
+          "general",
+          "ioctl",
+          "no_std"
+        ]
+      ],
+      "log@0.4.30": [
+        []
+      ],
+      "memchr@2.8.2": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "miniz_oxide@0.8.9": [
+        [
+          "simd",
+          "simd-adler32",
+          "with-alloc"
+        ]
+      ],
+      "multimap@0.10.1": [
+        []
+      ],
+      "once_cell@1.21.4": [
+        [
+          "alloc",
+          "default",
+          "race",
+          "std"
+        ]
+      ],
+      "pbjson-build@0.7.0": [
+        []
+      ],
+      "pbjson@0.7.0": [
+        []
+      ],
+      "petgraph@0.7.1": [
+        []
+      ],
+      "pkcs8@0.10.2": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "prettyplease@0.2.37": [
+        []
+      ],
+      "proc-macro2@1.0.106": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "prost-build@0.13.5": [
+        [
+          "default",
+          "format"
+        ]
+      ],
+      "prost-derive@0.13.5": [
+        []
+      ],
+      "prost-types@0.13.5": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "prost@0.13.5": [
+        [
+          "default",
+          "derive",
+          "prost-derive",
+          "std"
+        ],
+        [
+          "default",
+          "derive",
+          "std"
+        ]
+      ],
+      "quote@1.0.46": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "ref-cast-impl@1.0.27": [
+        []
+      ],
+      "ref-cast@1.0.27": [
+        []
+      ],
+      "regex-automata@0.4.14": [
+        [
+          "alloc",
+          "dfa-onepass",
+          "hybrid",
+          "meta",
+          "nfa-backtrack",
+          "nfa-pikevm",
+          "nfa-thompson",
+          "perf-inline",
+          "perf-literal",
+          "perf-literal-multisubstring",
+          "perf-literal-substring",
+          "std",
+          "syntax",
+          "unicode",
+          "unicode-age",
+          "unicode-bool",
+          "unicode-case",
+          "unicode-gencat",
+          "unicode-perl",
+          "unicode-script",
+          "unicode-segment",
+          "unicode-word-boundary"
+        ],
+        [
+          "alloc",
+          "meta",
+          "nfa-pikevm",
+          "nfa-thompson",
+          "std",
+          "syntax",
+          "unicode-bool"
+        ]
+      ],
+      "regex-syntax@0.8.11": [
+        [
+          "default",
+          "std",
+          "unicode",
+          "unicode-age",
+          "unicode-bool",
+          "unicode-case",
+          "unicode-gencat",
+          "unicode-perl",
+          "unicode-script",
+          "unicode-segment"
+        ],
+        [
+          "std",
+          "unicode-bool"
+        ]
+      ],
+      "regex@1.12.4": [
+        [
+          "default",
+          "perf",
+          "perf-backtrack",
+          "perf-cache",
+          "perf-dfa",
+          "perf-inline",
+          "perf-literal",
+          "perf-onepass",
+          "std",
+          "unicode",
+          "unicode-age",
+          "unicode-bool",
+          "unicode-case",
+          "unicode-gencat",
+          "unicode-perl",
+          "unicode-script",
+          "unicode-segment"
+        ],
+        [
+          "std",
+          "unicode-bool"
+        ]
+      ],
+      "rustc_version@0.4.1": [
+        []
+      ],
+      "rustix@1.1.4": [
+        [
+          "alloc",
+          "default",
+          "fs",
+          "std"
+        ]
+      ],
+      "schemars@1.2.2": [
+        [
+          "default",
+          "derive",
+          "schemars_derive",
+          "std"
+        ]
+      ],
+      "schemars_derive@1.2.2": [
+        []
+      ],
+      "semver@1.0.28": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "serde@1.0.228": [
+        [
+          "alloc",
+          "default",
+          "derive",
+          "rc",
+          "serde_derive",
+          "std"
+        ]
+      ],
+      "serde_core@1.0.228": [
+        [
+          "alloc",
+          "rc",
+          "result",
+          "std"
+        ]
+      ],
+      "serde_derive@1.0.228": [
+        [
+          "default"
+        ]
+      ],
+      "serde_derive_internals@0.30.0": [
+        []
+      ],
+      "serde_json@1.0.150": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "serde_spanned@0.6.9": [
+        [
+          "serde"
+        ]
+      ],
+      "sha2@0.10.9": [
+        [
+          "compress",
+          "default",
+          "std"
+        ]
+      ],
+      "signature@2.2.0": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "simd-adler32@0.3.9": [
+        []
+      ],
+      "spki@0.7.3": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "subtle@2.6.1": [
+        []
+      ],
+      "syn@2.0.118": [
+        [
+          "clone-impls",
+          "default",
+          "derive",
+          "extra-traits",
+          "full",
+          "parsing",
+          "printing",
+          "proc-macro"
+        ]
+      ],
+      "syn@3.0.5": [
+        [
+          "clone-impls",
+          "default",
+          "derive",
+          "parsing",
+          "printing",
+          "proc-macro"
+        ]
+      ],
+      "tempfile@3.27.0": [
+        [
+          "default",
+          "getrandom"
+        ]
+      ],
+      "thiserror-impl@2.0.18": [
+        []
+      ],
+      "thiserror@2.0.18": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "toml@0.8.23": [
+        [
+          "default",
+          "display",
+          "parse"
+        ]
+      ],
+      "toml_datetime@0.6.11": [
+        [
+          "serde"
+        ]
+      ],
+      "toml_edit@0.22.27": [
+        [
+          "display",
+          "parse",
+          "serde"
+        ]
+      ],
+      "toml_write@0.1.2": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "typenum@1.20.1": [
+        []
+      ],
+      "unicode-ident@1.0.24": [
+        []
+      ],
+      "version_check@0.9.5": [
+        []
+      ],
+      "winnow@0.7.15": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "zeroize@1.9.0": [
+        [
+          "alloc"
+        ]
+      ],
+      "zmij@1.0.21": [
+        []
+      ]
+    },
+    "first_party_features": {
+      "aos-artifact-evidence": [
+        []
+      ],
+      "aos-core": [
+        []
+      ],
+      "aos-hub-api": [
+        []
+      ],
+      "aos-hub-console": [
+        []
+      ],
+      "aos-hub-ui": [
+        []
+      ],
+      "aos-module-docs": [
+        []
+      ],
+      "aos-module-format": [
+        []
+      ],
+      "aos-oci-types": [
+        []
+      ],
+      "aos-registry-format": [
+        []
+      ]
+    }
+  },
+  "report_sha256": {
+    "editor-parity.json": "836eba6ebd6b3a633f46dba0e27bb2f3018bb731304c2c69db32efbfd018ae82",
+    "evidence/tests/index.json": "b5fca398d142abbd5ea9406636a265c15a9ad55ff77db28c364f34670730d1a5",
+    "generated-source-parity.json": "7d156d8bd56d4f9bd5290375ba052924ee8fe5f3492a02d973d4e6b43d1bd582",
+    "parity.json": "8ad6ce4bf56ef9bdc5797f54e612e4861897df1ebe908af1a71ba6e846856007",
+    "production-parity.json": "8f817a1eed2f67eeb6f96bfe3e44923217f79a399050f40f9e813a32e06f75c5"
+  },
+  "schema_version": 1,
+  "scope": {
+    "all": "/nix/store/ji2dh6f8wbx4z4wnaylrb9ia5viaalg8-aos-bazel-hub-console-qualified-checks",
+    "cargo": "/nix/store/clj63awjsh5f4s3mbd76bm1ypmn659i5-aos-bazel-hub-console-cargo-oracle-1",
+    "configuration": "/nix/store/zcyy5pgz48ibkdsglmix5zj92b38p63v-aos-bazel-configuration.json",
+    "derivation": "/nix/store/3p6dnhkb891nlnjnzs1xhym4pgjp4k6n-aos-bazel-hub-console-qualified-checks.drv",
+    "developer": "/nix/store/nnnqhmqlcic5pmxnd16kl06gi2vqaxcs-aos-bazel-hub-console-developer-tools-1",
+    "editor": "/nix/store/1nbplk2lmdwwdm3ppdjgn3zikqxlwb7z-aos-bazel-hub-console-editor",
+    "editorCargo": "/nix/store/rdyfi5lqvrlk901vz1y3xmlyllg8w2z9-aos-bazel-hub-console-editor-cargo-oracle",
+    "editorParity": "/nix/store/zsbbhmyrf5wb6aabm501wl6ahg378sw5-aos-bazel-hub-console-editor-parity",
+    "oracle": "/nix/store/9zd9ng848sj4m9b2bihglaigihgsj38i-aos-bazel-hub-console-cargo-parity",
+    "production": "/nix/store/z57aj0va25j2ln78sxd60ix1acwiqirr-aos-bazel-hub-console-production-1",
+    "productionCargo": "/nix/store/wr37w3rzvd65hyv8x6lbsagjzjks1irn-aos-bazel-hub-console-production-cargo-1",
+    "productionParity": "/nix/store/wswghnyq7v9jacaw2f1818g3q8rbl8w6-aos-bazel-hub-console-production-features",
+    "productionSource": "/nix/store/wr2jq4i00ma3s8zkcknq8lrbfj060nzb-aos-bazel-workspace",
+    "source": "/nix/store/wr2jq4i00ma3s8zkcknq8lrbfj060nzb-aos-bazel-workspace",
+    "tests": "/nix/store/b4m4x8gk3lh913hy2p1c5j3wg7d0w3v8-aos-bazel-hub-console-tests-1"
+  },
+  "status": "Strict native console runtime, production features, developer and selected editor qualification passed",
+  "tests": {
+    "doctests": {
+      "//crates/hub/aos-hub-console:doc": {}
+    },
+    "examples": [],
+    "features": {
+      "adler2@2.0.1": [
+        []
+      ],
+      "aho-corasick@1.1.4": [
+        [
+          "perf-literal",
+          "std"
+        ]
+      ],
+      "anyhow@1.0.102": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "base64@0.21.7": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "base64@0.22.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "bitflags@2.13.0": [
+        [
+          "std"
+        ]
+      ],
+      "block-buffer@0.10.4": [
+        []
+      ],
+      "bytes@1.11.1": [
+        []
+      ],
+      "cfg-if@1.0.4": [
+        []
+      ],
+      "const-oid@0.9.6": [
+        []
+      ],
+      "cpufeatures@0.2.17": [
+        []
+      ],
+      "crc32fast@1.5.0": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "crypto-common@0.1.7": [
+        [
+          "std"
+        ]
+      ],
+      "curve25519-dalek-derive@0.1.1": [
+        []
+      ],
+      "curve25519-dalek@4.1.3": [
+        [
+          "alloc",
+          "digest",
+          "precomputed-tables",
+          "zeroize"
+        ]
+      ],
+      "der@0.7.10": [
+        [
+          "alloc",
+          "oid",
+          "std",
+          "zeroize"
+        ]
+      ],
+      "digest@0.10.7": [
+        [
+          "alloc",
+          "block-buffer",
+          "core-api",
+          "default",
+          "std"
+        ]
+      ],
+      "dyn-clone@1.0.20": [
+        []
+      ],
+      "ed25519-dalek@2.2.0": [
+        [
+          "alloc",
+          "default",
+          "fast",
+          "pkcs8",
+          "std",
+          "zeroize"
+        ]
+      ],
+      "ed25519@2.2.3": [
+        [
+          "alloc",
+          "pkcs8",
+          "std"
+        ]
+      ],
+      "either@1.16.0": [
+        [
+          "std",
+          "use_std"
+        ]
+      ],
+      "equivalent@1.0.2": [
+        []
+      ],
+      "fastrand@2.4.1": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "fixedbitset@0.5.7": [
+        []
+      ],
+      "flate2@1.1.9": [
+        [
+          "any_impl",
+          "miniz_oxide",
+          "rust_backend"
+        ]
+      ],
+      "generic-array@0.14.7": [
+        [
+          "more_lengths"
+        ]
+      ],
+      "getrandom@0.4.2": [
+        []
+      ],
+      "hashbrown@0.17.1": [
+        []
+      ],
+      "heck@0.5.0": [
+        []
+      ],
+      "hex@0.4.3": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "indexmap@2.14.0": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "itertools@0.13.0": [
+        [
+          "default",
+          "use_alloc",
+          "use_std"
+        ]
+      ],
+      "itertools@0.14.0": [
+        [
+          "default",
+          "use_alloc",
+          "use_std"
+        ]
+      ],
+      "itoa@1.0.18": [
+        []
+      ],
+      "libc@0.2.186": [
+        []
+      ],
+      "linux-raw-sys@0.12.1": [
+        [
+          "auxvec",
+          "elf",
+          "errno",
+          "general",
+          "ioctl",
+          "no_std"
+        ]
+      ],
+      "log@0.4.30": [
+        []
+      ],
+      "memchr@2.8.2": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "miniz_oxide@0.8.9": [
+        [
+          "simd",
+          "simd-adler32",
+          "with-alloc"
+        ]
+      ],
+      "multimap@0.10.1": [
+        []
+      ],
+      "once_cell@1.21.4": [
+        [
+          "alloc",
+          "default",
+          "race",
+          "std"
+        ]
+      ],
+      "pbjson-build@0.7.0": [
+        []
+      ],
+      "pbjson@0.7.0": [
+        []
+      ],
+      "petgraph@0.7.1": [
+        []
+      ],
+      "pkcs8@0.10.2": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "prettyplease@0.2.37": [
+        []
+      ],
+      "proc-macro2@1.0.106": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "prost-build@0.13.5": [
+        [
+          "default",
+          "format"
+        ]
+      ],
+      "prost-derive@0.13.5": [
+        []
+      ],
+      "prost-types@0.13.5": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "prost@0.13.5": [
+        [
+          "default",
+          "derive",
+          "prost-derive",
+          "std"
+        ],
+        [
+          "default",
+          "derive",
+          "std"
+        ]
+      ],
+      "quote@1.0.46": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "ref-cast-impl@1.0.27": [
+        []
+      ],
+      "ref-cast@1.0.27": [
+        []
+      ],
+      "regex-automata@0.4.14": [
+        [
+          "alloc",
+          "dfa-onepass",
+          "hybrid",
+          "meta",
+          "nfa-backtrack",
+          "nfa-pikevm",
+          "nfa-thompson",
+          "perf-inline",
+          "perf-literal",
+          "perf-literal-multisubstring",
+          "perf-literal-substring",
+          "std",
+          "syntax",
+          "unicode",
+          "unicode-age",
+          "unicode-bool",
+          "unicode-case",
+          "unicode-gencat",
+          "unicode-perl",
+          "unicode-script",
+          "unicode-segment",
+          "unicode-word-boundary"
+        ],
+        [
+          "alloc",
+          "meta",
+          "nfa-pikevm",
+          "nfa-thompson",
+          "std",
+          "syntax",
+          "unicode-bool"
+        ]
+      ],
+      "regex-syntax@0.8.11": [
+        [
+          "default",
+          "std",
+          "unicode",
+          "unicode-age",
+          "unicode-bool",
+          "unicode-case",
+          "unicode-gencat",
+          "unicode-perl",
+          "unicode-script",
+          "unicode-segment"
+        ],
+        [
+          "std",
+          "unicode-bool"
+        ]
+      ],
+      "regex@1.12.4": [
+        [
+          "default",
+          "perf",
+          "perf-backtrack",
+          "perf-cache",
+          "perf-dfa",
+          "perf-inline",
+          "perf-literal",
+          "perf-onepass",
+          "std",
+          "unicode",
+          "unicode-age",
+          "unicode-bool",
+          "unicode-case",
+          "unicode-gencat",
+          "unicode-perl",
+          "unicode-script",
+          "unicode-segment"
+        ],
+        [
+          "std",
+          "unicode-bool"
+        ]
+      ],
+      "rustc_version@0.4.1": [
+        []
+      ],
+      "rustix@1.1.4": [
+        [
+          "alloc",
+          "default",
+          "fs",
+          "std"
+        ]
+      ],
+      "schemars@1.2.2": [
+        [
+          "default",
+          "derive",
+          "schemars_derive",
+          "std"
+        ]
+      ],
+      "schemars_derive@1.2.2": [
+        []
+      ],
+      "semver@1.0.28": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "serde@1.0.228": [
+        [
+          "alloc",
+          "default",
+          "derive",
+          "rc",
+          "serde_derive",
+          "std"
+        ]
+      ],
+      "serde_core@1.0.228": [
+        [
+          "alloc",
+          "rc",
+          "result",
+          "std"
+        ]
+      ],
+      "serde_derive@1.0.228": [
+        [
+          "default"
+        ]
+      ],
+      "serde_derive_internals@0.30.0": [
+        []
+      ],
+      "serde_json@1.0.150": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "serde_spanned@0.6.9": [
+        [
+          "serde"
+        ]
+      ],
+      "sha2@0.10.9": [
+        [
+          "compress",
+          "default",
+          "std"
+        ]
+      ],
+      "signature@2.2.0": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "simd-adler32@0.3.9": [
+        []
+      ],
+      "spki@0.7.3": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "subtle@2.6.1": [
+        []
+      ],
+      "syn@2.0.118": [
+        [
+          "clone-impls",
+          "default",
+          "derive",
+          "extra-traits",
+          "full",
+          "parsing",
+          "printing",
+          "proc-macro"
+        ]
+      ],
+      "syn@3.0.5": [
+        [
+          "clone-impls",
+          "default",
+          "derive",
+          "parsing",
+          "printing",
+          "proc-macro"
+        ]
+      ],
+      "tempfile@3.27.0": [
+        [
+          "default",
+          "getrandom"
+        ]
+      ],
+      "thiserror-impl@2.0.18": [
+        []
+      ],
+      "thiserror@2.0.18": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "toml@0.8.23": [
+        [
+          "default",
+          "display",
+          "parse"
+        ]
+      ],
+      "toml_datetime@0.6.11": [
+        [
+          "serde"
+        ]
+      ],
+      "toml_edit@0.22.27": [
+        [
+          "display",
+          "parse",
+          "serde"
+        ]
+      ],
+      "toml_write@0.1.2": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "typenum@1.20.1": [
+        []
+      ],
+      "unicode-ident@1.0.24": [
+        []
+      ],
+      "version_check@0.9.5": [
+        []
+      ],
+      "winnow@0.7.15": [
+        [
+          "alloc",
+          "default",
+          "std"
+        ]
+      ],
+      "zeroize@1.9.0": [
+        [
+          "alloc"
+        ]
+      ],
+      "zmij@1.0.21": [
+        []
+      ]
+    },
+    "first_party_features": {
+      "aos-artifact-evidence": [
+        []
+      ],
+      "aos-core": [
+        []
+      ],
+      "aos-hub-api": [
+        []
+      ],
+      "aos-hub-console": [
+        []
+      ],
+      "aos-hub-ui": [
+        []
+      ],
+      "aos-module-docs": [
+        []
+      ],
+      "aos-module-format": [
+        []
+      ],
+      "aos-oci-types": [
+        []
+      ],
+      "aos-registry-format": [
+        []
+      ]
+    },
+    "schema_version": 1,
+    "targets": {
+      "//crates/hub/aos-hub-console:bin_aos-hub-console": {
+        "executed": [],
+        "ignored": []
+      },
+      "//crates/hub/aos-hub-console:unit": {
+        "executed": [
+          "mutation::tests::admin_configure_only_does_not_expose_tag_mutation_controls",
+          "mutation::tests::blockers_and_non_planned_states_hide_apply_controls",
+          "mutation::tests::container_apply_preserves_the_reviewed_plan_and_idempotency_key",
+          "mutation::tests::default_retention_policy_binds_gc_to_version_zero",
+          "mutation::tests::maintainer_publish_exposes_tag_mutation_controls",
+          "mutation::tests::pending_plan_rejects_missing_confirmation_material",
+          "mutation::tests::signed_container_tags_never_enable_manual_controls",
+          "mutation::tests::untracked_repair_apply_requires_the_exact_positive_plan_version",
+          "registry_deletion::tests::blocker_rows_list_only_present_conditions_with_their_resolver",
+          "registry_deletion::tests::operation_detail_parses_protojson_readiness",
+          "registry_deletion::tests::provider_objects_block_only_when_a_current_inventory_lists_them",
+          "staging::tests::large_inventory_reviews_render_a_bounded_filtered_window",
+          "staging::tests::progress_avoids_rounding_overflow_and_bounds_stale_counters",
+          "staging::tests::publication_actions_fail_closed_for_incomplete_or_terminal_stages",
+          "staging::tests::resume_commands_require_a_local_selector_and_quote_shell_syntax",
+          "staging::tests::review_rejects_wrong_identity_stale_revision_and_changed_inventory",
+          "staging::tests::stage_review_binds_actions_to_the_exact_response_identity"
+        ],
+        "ignored": []
+      }
+    }
+  },
+  "untouched_baseline_inputs_sha256": {
+    "api/proto/aos/hub/v1/hub.proto": "77005b93fb1df0a6830325e9b30a1b8bd83db2d1008a6bcee88a0a36f51adec5",
+    "crates/Cargo.lock": "033bfad7de38812960028c5c2f69c2737eaa5a73dba2a810dfcf2f992268e6fd",
+    "crates/Cargo.toml": "8761ede65c4d2a37b93a130f16436aba18112776494133f86e026d2a9acb6aee",
+    "crates/aos/modules/aos-module-docs/Cargo.toml": "392f7ebb83b8d86c1cdff5fc868536e4dc20046c8ccb20dd923321736bf4c823",
+    "crates/aos/modules/aos-module-docs/src/lib.rs": "15c9f7fbc575affe9db3e52036c2f4e2e5503800499403c757d0e8716f43b5d6",
+    "crates/aos/modules/aos-module-docs/src/nar.rs": "7632b43b558348813bef44f8b47e97bbd6cd18091416b44354e0b3250c77ef83",
+    "crates/aos/modules/aos-module-docs/src/runtime/comparison.rs": "0618a30afd1052ddc5bec547beab718b42a9b86715dfcd1cf943c0df7e93a3bf",
+    "crates/aos/modules/aos-module-docs/src/runtime/compatibility.rs": "2bd6a0c55a15f4d67a7405133b5a4ae9b3f0d0905a2eb99c17f0b0cd2d896e5b",
+    "crates/aos/modules/aos-module-docs/src/runtime/compatibility/tests.rs": "d81539a818d489556b8833fbba5705e57df9819bec00bb3f68f9545d0db3efa0",
+    "crates/aos/modules/aos-module-docs/src/runtime/contracts.rs": "3510891a1cc5e14cf36ec603f68618ee2c4b548a239ab8cfce6afd264d3f9b24",
+    "crates/aos/modules/aos-module-docs/src/runtime/deployment.rs": "51890e82adab16112b8a16148af8e2c21411fcb5f99c77ec9a4701ef41c6bc0f",
+    "crates/aos/modules/aos-module-docs/src/runtime/mod.rs": "62e3eff21673e6061bb621117cfc28b52677402aba53f2cc081d196ec05993b2",
+    "crates/aos/modules/aos-module-docs/src/runtime/render.rs": "7eb764275fdff717f773ae89838c7fcf4521ed930d11f2994d02ee13b92ae127",
+    "crates/aos/modules/aos-module-format/Cargo.toml": "865d3d1c001bd2e9316817361235bdb5bdf992514eec0e707fbcbfa093a59fda",
+    "crates/aos/modules/aos-module-format/src/diagnostic.rs": "16ce106d58218b8ba8431f8aa1baa693edf4a62500fc6309a969fdd56496069c",
+    "crates/aos/modules/aos-module-format/src/graph/mod.rs": "b2b11a93cbaed57681fbf9de632f0a1169a3d47aeb1d3cb1492b48a33b6f4468",
+    "crates/aos/modules/aos-module-format/src/graph/resolution.rs": "cc30d49ae23e651a8070fd79fae6ff9bbdb9826e7622897fba10b8269ef92d91",
+    "crates/aos/modules/aos-module-format/src/graph/tests.rs": "74b68a9bf925cf38a24ed4220804171651a28791e4ec22b0420ba3e02801a36f",
+    "crates/aos/modules/aos-module-format/src/graph/validation.rs": "fdcb8d545b0af2f001e9d19727798f2d2c531f8ccf63da161e432256b81761e4",
+    "crates/aos/modules/aos-module-format/src/graph/validation/tests.rs": "f5f1ad44802802fe675d7c278b677edb52e7d5bbc38240d2dc97a3a181a16543",
+    "crates/aos/modules/aos-module-format/src/identity.rs": "87a4198a21260e2de56626cc8300d52910470795a124dd5a62eab1f5f29da5cd",
+    "crates/aos/modules/aos-module-format/src/lib.rs": "8cd0b38729c0ea2a35cbbc283480932f7d294512d2608dd620d9b759943f4520",
+    "crates/aos/modules/aos-module-format/src/limits.rs": "6a5110b4981e4d0115910d826fe4b46f6c491e0fa8ef2babdab8032dfdbc2419",
+    "crates/aos/modules/aos-module-format/src/option.rs": "ae9b246770b273b25646c41efe661412622cbafdb6875405bf6f747b8dbe2cc4",
+    "crates/aos/modules/aos-module-format/src/schema.rs": "da5a2a78219883f2444de109e425d096253b2e7e4db6603c650fb22a5eacd60b",
+    "crates/aos/modules/aos-module-format/src/transaction_blob.rs": "c677b49f46370a4b1986d1232f939784b352e37382bbde507832fd2bb267a069",
+    "crates/aos/modules/aos-module-format/src/value.rs": "7fe4d3c24684ef8b95009b3e6cfa0efbb13da1cf9f7ae3aadae7fd7648382259",
+    "crates/aos/registry/aos-registry-format/Cargo.toml": "8a1ef97fc3554e204e0761f353cfd9e426cbd6bb8a77ffca902274c5b58e1c5d",
+    "crates/aos/registry/aos-registry-format/src/channel.rs": "cc5910fdc165492db13c7b5fd4347fa2231a48b769fb5a654c001363b7ca5daa",
+    "crates/aos/registry/aos-registry-format/src/consumer.rs": "789f23b567554c3037d64f695f8c6dd3401944378407d236b6aabe15da285bba",
+    "crates/aos/registry/aos-registry-format/src/keymap.rs": "507fd2217c879727aa91b822db1f227c0f1fe613308dc64a669457564dcfb949",
+    "crates/aos/registry/aos-registry-format/src/lib.rs": "047c5a1a40b30c0c42ce6258ef09de2eb6e7b8b5caa07cb85ee48d6632550121",
+    "crates/aos/registry/aos-registry-format/src/manifest.rs": "0037996fb54b66ccb3a17c38f712d347c4ccfe94a385ead9e653820b9be2bb59",
+    "crates/aos/registry/aos-registry-format/src/measurement.rs": "d338bb3cfe832c571ed7ecebfa3607036f91f38ef775549b02e499a750700988",
+    "crates/aos/registry/aos-registry-format/src/native_dependencies.rs": "7e78f3838beb5e55104f6636938239bda3f121280cfd5f507ea80e07a8db8461",
+    "crates/aos/registry/aos-registry-format/src/object.rs": "05fc9bbca2b089acb3a59a94cdc6a53d6ff5f0fb22684465e2a36eef340f5f27",
+    "crates/aos/registry/aos-registry-format/src/object_bundle.rs": "cc5ab3da23c0736be233b04c840b622272e247aa72da93cf621fc3076dc643be",
+    "crates/aos/registry/aos-registry-format/src/pack_index.rs": "571720741f9deb65868b1454fd20de63a59a17249cba64bfc6db349d92e7c18c",
+    "crates/aos/registry/aos-registry-format/src/package_version.rs": "64560588275250b186ba8ba1279afe575d9df8323d6ac2dcd52bfe2bc455d569",
+    "crates/aos/registry/aos-registry-format/src/platform.rs": "ea44e82d4cb59f33691a65be7da49b6c5862ad4e986a448b5a00ac000f4aae6a",
+    "crates/aos/registry/aos-registry-format/src/provenance.rs": "2a303aff22a0e8b0826014a79b1d4d989369aee08fdc6c518120828edef1c314",
+    "crates/aos/registry/aos-registry-format/src/publication.rs": "1b16a11079487c2e44813c29824cb417c7e8b67dc8df28d1892d522963b1ad8b",
+    "crates/aos/registry/aos-registry-format/src/refs.rs": "d4479a411ffe3aa329dbbbf96c9e569c2e287ed691ea7ac623b95d42967a26dc",
+    "crates/aos/registry/aos-registry-format/src/release.rs": "66e65b115bedb728dc39e86b6960924e49e48f2a6796590a236c402cfa5a0ccf",
+    "crates/aos/registry/aos-registry-format/src/sshsig.rs": "1f8ee1e609e6538fa9d880d1d0f9a0513380cc8e013587042d2cb938c6f69900",
+    "crates/aos/registry/aos-registry-format/src/stack.rs": "eead1178dc05cc4f51d9e890c3c5f15c9ef61a907764c2f8a6cd6403b852e8b4",
+    "crates/aos/registry/aos-registry-format/src/staging.rs": "29fc653f84e972c00688b2967c9bc99bd558f42310553ea59e785c6bad1fdc71",
+    "crates/aos/registry/aos-registry-format/src/staging/wire.rs": "7e97f397bca4c4ec3dde6e3a73f9b6e9404679d52fae0d4a6df67edaf6c278ca",
+    "crates/aos/registry/aos-registry-format/src/store.rs": "31373730fee65bfdc12142b551980c6f03dd75bf57a1576b6ddfe7f9e636c1fa",
+    "crates/aos/registry/aos-registry-format/src/support.rs": "53d5cfecc6b6e6027f073f36147f23d307de33407baf753ee25bf0aab28ba2a6",
+    "crates/aos/registry/aos-registry-format/src/tag.rs": "6b709336e37425456e8b50b4de5f7aebc5982530e0e32320e2ca8fcef8a7aedb",
+    "crates/aos/registry/aos-registry-format/src/tagobject.rs": "907de7750b0d313a291029182e4d86527b2930b2145b72a05543a64678f60fdf",
+    "crates/aos/registry/aos-registry-format/src/tuf.rs": "75af0d5b193d7ded61c0c17646a2a0086676c1f9eebe5db9c9be27fe64f4140d",
+    "crates/hub/aos-hub-api/Cargo.toml": "569398cdddd5b291c68460b9fceb4fc0132c01868d0200d433c7a4cc472df6c5",
+    "crates/hub/aos-hub-api/build.rs": "f33e462a0e1a690a7fbecf612cc310543a932c81837f6074ac8e13f57ee2e9ca",
+    "crates/hub/aos-hub-api/src/lib.rs": "cf03f7a9fa1c04210498a0a69c05c89ccb5e3db6d48aae74380d85982a5333ea",
+    "crates/hub/aos-hub-api/tests/contract_inventory.rs": "4771db975f7e5ead657e6edc51c3605fb4f21424e2832cfe219cb45af27ad32b",
+    "crates/hub/aos-hub-console/Cargo.toml": "3e8d7af2c9a5150add9071a6c1c9b562f7fd4818d625e776bd4fe2ad95ffe019",
+    "crates/hub/aos-hub-console/assets/app.css": "2fd692263cf951ec2c279aa1fb98b02adc2cb108e19cb20f6d9cd4703a4c8164",
+    "crates/hub/aos-hub-console/src/app.rs": "4ae01cf28974e2592f574c081bf55b10b3444a2f1837691b64f31c38c0d45491",
+    "crates/hub/aos-hub-console/src/lib.rs": "5aa6893e320b7c986985a007633e60ae5ab7ac23602a8705a742318a05c0e599",
+    "crates/hub/aos-hub-console/src/main.rs": "c47fff2db598117b336114361e7f0f5f67125173caf492b65ec70f9517353d37",
+    "crates/hub/aos-hub-console/src/registry_deletion.rs": "405fd7464a2252a40773fb75ccaf053ea4a63401d7a10b5d2c98256bb7f6ba0d",
+    "crates/hub/aos-hub-console/src/route.rs": "5fd9762568c9b1022ac0f2e72a54c8cdecf3e5520f662a89f08faa7659da472d",
+    "crates/hub/aos-hub-console/src/workflows/access_tokens.rs": "8e4106cbda98b47ad3d912c73e9b572896c95bcbe74a186b755f91d63490c70b",
+    "crates/hub/aos-hub-console/src/workflows/cache_gc.rs": "891b4f022e5d6d52d54711655d06a88740ecbf642adf1e44043fe3c16e142d75",
+    "crates/hub/aos-hub-console/src/workflows/cache_gc_jobs.rs": "4aad94614e48ea0cf8ed29584a5160b2dac5db8039d3d8705c3f4a1ecd367a1f",
+    "crates/hub/aos-hub-console/src/workflows/cache_gc_safety.rs": "ee587eec2ef30f96adcef12d2c6fade052cb3ea60526c9b5cd504d1f78ba2e03",
+    "crates/hub/aos-hub-console/src/workflows/cache_integration_preview.rs": "e5ef74e9cb4384544b8d78cb3c05e97157e3afefc7324a07fdee2354d93cc165",
+    "crates/hub/aos-hub-console/src/workflows/cache_integrations.rs": "f62830303f45fbf2d1f84adc559db68c844a0bc90b82b4d6d15e2e1c2000703d",
+    "crates/hub/aos-hub-console/src/workflows/cache_manual_roots.rs": "5cc56f3e1bd83339bc298a7bbc4e1104cfd03f190d0f1ff12f098cecddf996e6",
+    "crates/hub/aos-hub-console/src/workflows/cache_objects.rs": "c2927c80ecbf54172a27385df95c6bafb941ef03afee7b98dd69e542ce108407",
+    "crates/hub/aos-hub-console/src/workflows/cache_population.rs": "acc22f84d600cd74d417b91d220f8d9373882b28c494ec6e856cbeb4a4bfa17e",
+    "crates/hub/aos-hub-console/src/workflows/cache_retention_refresh.rs": "75112b203b7f77e9375664114e2f311ae97eb6d65e523dd5dccd83e45d552c98",
+    "crates/hub/aos-hub-console/src/workflows/cache_root_reasons.rs": "d9f8bc839a6692e4e7ab926f56d798ff6473064b4c33c267feb139557bdf6b75",
+    "crates/hub/aos-hub-console/src/workflows/gateways.rs": "ed93d6056f11b72712033172b991cd68e89568629a16f4b33e3c44c8a686a9e4",
+    "crates/hub/aos-hub-console/src/workflows/mod.rs": "3bc1213a1cfa7aa1fbd9fab416a0e694e9ca740cc6f46c930fced07f527c5378",
+    "crates/hub/aos-hub-console/src/workflows/network_policies.rs": "45ae496e7335badb2a21fdd16fb155286a1bb4a0926ac69d02c480b4e8ac79b9",
+    "crates/hub/aos-hub-console/src/workflows/networking.rs": "4fe4249fa10152725bbbdaf3145119b0221d58132d3abd6141699f2fcbcfe3a4",
+    "crates/hub/aos-hub-console/src/workflows/operations.rs": "265a93d90140aa531bb9752095cdc0ac641a80eb713bd16d75bab448b4896457",
+    "crates/hub/aos-hub-console/src/workflows/organization_activity.rs": "36706ee3c524289c330a73eb7b0c2e73b1f7739e6236e71fc1174b49e0302e9a",
+    "crates/hub/aos-hub-console/src/workflows/organization_identity.rs": "340c4cf126571c4a82fe606b17c32e7552399d751ac7859d830d57ed37a38b84",
+    "crates/hub/aos-hub-console/src/workflows/organization_scope.rs": "0a7a1d07c3cb827ba4b2372da29621ed7df1f9d719530a67b259038a69f94a7a",
+    "crates/hub/aos-hub-console/src/workflows/organization_sso.rs": "ae654e3e1e54285fe0e3e0355fe4dcbbf5589bebd351e0dc5e89452ec922e741",
+    "crates/hub/aos-hub-console/src/workflows/placement_policies.rs": "8f8f95006011bd6fec2b568a3e69fc4854e456f7a98c1f501642394d1fc1bc2b",
+    "crates/hub/aos-hub-console/src/workflows/registry_configuration.rs": "c745f8a29fdc18c8f895b02445b5baa38743f989dff3248495b07f9214731c25",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/gc.rs": "a12770aedf5af2effaa65a91cd9076d267fc4d06163ac83b0bd486bf89c5b4a7",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/inspection.rs": "650ff65dc621fb4dee4f13f23318072d61a5ae4b2f95ebeac5cc99da546ed80f",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/publications.rs": "f1305e4dd73e209dd1d2b4397a5b184c0e1c2f1ebe179671f5e0dd7ae52bff9e",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/retention.rs": "af46d32c18604a0be8dffb7c2a74036bbfc239e59bcc0377022c7deace651af6",
+    "crates/hub/aos-hub-console/src/workflows/registry_containers/tags.rs": "9329954406d3cf2a55105f2920ceeefc06ebc7a9cbb8a7518e1a0f4e86969f3a",
+    "crates/hub/aos-hub-console/src/workflows/registry_delete.rs": "f8908e374f2cc6d6fbd3a8a187bd0c189c094811bafe07dffab35c1cd07a4f4b",
+    "crates/hub/aos-hub-console/src/workflows/registry_metadata.rs": "db8000041cf6e983a649b257f414eadea2255b9466a4e1e95b0f5bbc8eae01f1",
+    "crates/hub/aos-hub-console/src/workflows/registry_mirror.rs": "d0061b3efeff5ee5eb270d73fc2aff527831471019af7c27db4a0c3b7b115473",
+    "crates/hub/aos-hub-console/src/workflows/registry_publication.rs": "bc7c4a8b91787af1fd9e9b859cfcc8fce00b7b7ae25e9c4506e697c85a4e3f58",
+    "crates/hub/aos-hub-console/src/workflows/registry_stage_inventory.rs": "6967a14f969fb93f51f5e99f25a1fb5aaf2b0fdd791e48b0638afeae4c251276",
+    "crates/hub/aos-hub-console/src/workflows/registry_staging.rs": "eb977f0437e71ef5ae70629fe72e06a13721887325d83ecdedad421fb4b82b4e",
+    "crates/hub/aos-hub-console/src/workflows/resource_access.rs": "964025e9502d7a40881b504b3c5dbac33ffd8ee43637471a478b824ac0981e37",
+    "crates/hub/aos-hub-console/src/workflows/signing_keys.rs": "08002f3cac4e5f1e30669b28ac85f9e8eadc1f62284c6b107ed6dab9de1964d9",
+    "crates/hub/aos-hub-ui/Cargo.toml": "8a8b0dbbde252274e8c71e2a31aa1aefe97ae78f60a815ebf4f1507a10200484",
+    "crates/hub/aos-hub-ui/src/lib.rs": "35f551e68f7cd823106225bda602843f6e87ac4d243f732b7c8acdf0c047f186",
+    "crates/shared/aos-artifact-evidence/Cargo.toml": "249f331d2c67207dc3d74d581105284273382b6278fb8186476f1ea353c9c329",
+    "crates/shared/aos-artifact-evidence/src/consumption.rs": "7e38f9f101fde359ad056e70f8ecba06c77137d561c29b609575eb5f8988862c",
+    "crates/shared/aos-artifact-evidence/src/diagnostic.rs": "1ad0a4401d80d32b31afdf0b16bf98e822449ff445a80191e1f827c512dfbf68",
+    "crates/shared/aos-artifact-evidence/src/document.rs": "b3223bef9a7dd87bb72f4afde800217a24317f64a45b2fb3413046c39af76078",
+    "crates/shared/aos-artifact-evidence/src/identity.rs": "a960256438697c76067c85c13c364da507ff8bdcad4fa098bea776a016915f5d",
+    "crates/shared/aos-artifact-evidence/src/lib.rs": "b96037a5a80f0563c3646bfb208cc7f5d44f979fff4cb166ae2dd0f466e15104",
+    "crates/shared/aos-artifact-evidence/src/limits.rs": "07d81f5fd738e4e3fe14613a1947f32beeeb9989b935f74b4242f56fc900950f",
+    "crates/shared/aos-artifact-evidence/src/model.rs": "6536a0109591d899397b86800199b262b8e427c460d3c5b301253850740f084d",
+    "crates/shared/aos-core/Cargo.toml": "a83ae101ada1471e2cf6e3592eff604b932b32bb6b9c08ca78e7f28a84386f0c",
+    "crates/shared/aos-core/src/digest.rs": "f2c3c762eaa35314f95fe60cc1a109083ceb2b4d1149d193243dc370a9f00403",
+    "crates/shared/aos-core/src/identity.rs": "d5b29def050947cd57a09ed3fec6c2e6af4ea3e13a1751fec2e7a4fe351f1686",
+    "crates/shared/aos-core/src/json.rs": "e4c9f02df4321930960b4c6586b8e93f0439c8f1eabe0b1e929ceb277c95fa45",
+    "crates/shared/aos-core/src/lib.rs": "14fadc5d679efeb8f0b7ea696886bbd44d5148f972fd0fedd8c030bae66c1198",
+    "crates/shared/aos-core/src/limits.rs": "d1071f9bbfe39c8cfde4b5bffb4e39e1e3ed935285d9eb7da3261151c9334c1b",
+    "crates/shared/aos-oci-types/Cargo.toml": "bea5fc3bc178b33900c9cee33e898b94a6dfca56c862ea77743b909b865dcc95",
+    "crates/shared/aos-oci-types/src/annotations.rs": "b826cf1eb7722467c279979fe3b3928ada6f6679347c0b55069c5be40eae73b7",
+    "crates/shared/aos-oci-types/src/canonical.rs": "2bf4df9e9605c1bd15795fbb5bf4698a725356c7c92a404c38c7ca7891705bd0",
+    "crates/shared/aos-oci-types/src/digest.rs": "11fd262899ea2e3452432139c51369e548155268e73f3fa85cc68f5fb4975591",
+    "crates/shared/aos-oci-types/src/distribution.rs": "57873d289089296efa2840ff9c3821dec0e641db94a137f957b0aabb95a3d2f4",
+    "crates/shared/aos-oci-types/src/error.rs": "1d4695ae84e0ae9e63f45606b11e24553e481fd75d0dd69e9d3e7f9b42f1d953",
+    "crates/shared/aos-oci-types/src/lib.rs": "756519530da64d7d0b12fa4017c1cafd52e6a18ad2cfadbdf8141d61a1745275",
+    "crates/shared/aos-oci-types/src/limits.rs": "077245bc92f8b997a67a77d271d7d3bfb7796211c0275d954343a03b21105758",
+    "crates/shared/aos-oci-types/src/media_type.rs": "5c0669b979b553907edd2c87b68b235e7b8bd6251f76b2582afab2ef8cd7320c",
+    "crates/shared/aos-oci-types/src/model/config.rs": "e1b656c6035aa48528ff22eb91e7acc679d44fdc39572b5eca14d28e38ba25f0",
+    "crates/shared/aos-oci-types/src/model/descriptor.rs": "eac6b0860dd0853058830bd4bf07dbfdb8fb2f8beb9ba2bca9221cbb7d0e61c1",
+    "crates/shared/aos-oci-types/src/model/manifest.rs": "a1793dc0fd47a58b3e1e4da4d977b64d25a9268de781cc2e381277d24a0de740",
+    "crates/shared/aos-oci-types/src/model/mod.rs": "b96b5f7bdd18ffc98976c75b2378b337529681873b57e071e0b2c4226e7c7444",
+    "crates/shared/aos-oci-types/src/reference.rs": "247a68b43b9ab7e6d4559aae409fd161f42cd11f48d9527ca6a4a5938abc5b54",
+    "crates/shared/aos-oci-types/src/release.rs": "d1292dd31430961a79cbd4617f0b8dff0594f893fa15fa7a66bb0b47a870efc6",
+    "crates/shared/aos-oci-types/tests/golden.rs": "c8ce5eed8bdcddda1e928987d7b6e006081ece4d652e072e1e2e252b7e3795a3",
+    "crates/shared/aos-oci-types/tests/reference_vectors.rs": "9804b99ba92e2fd66b0e8ef82a5ca296c4f41cd88f37981858d3c89f1a8ca8e8"
+  }
+}

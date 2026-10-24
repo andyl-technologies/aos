@@ -1,6 +1,9 @@
 //! SPDX-License-Identifier: GPL-2.0-only
 //! Process-boundary lifecycle tests for the standalone debugger gateway.
 
+// crucible-lint: allow panic-shortcut -- Lifecycle assertions panic on fixture failures.
+#![allow(clippy::expect_used)]
+
 use std::io::{Read, Write};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -8,7 +11,10 @@ use std::path::{Path, PathBuf};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
-use crucible_control_server::DebugGatewayProcess;
+#[path = "support/process_oracle.rs"]
+mod process_oracle;
+
+use process_oracle::DebugGatewayProcess;
 
 #[test]
 fn apache_client_launches_negotiates_queries_and_reaps_gateway() {

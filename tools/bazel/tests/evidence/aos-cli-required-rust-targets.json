@@ -1,0 +1,38 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "compiled_changed_rust_inputs_sha256": {
+    "crates/aos/cli/aos-cli/tests/ability_check_compat_cli.rs": "23d4e707eb2bbe383e5a5d63b3b0a755c3564562424cc1f37b8560d467d90726",
+    "crates/aos/cli/aos-cli/tests/ability_inspect_cli.rs": "674970579bbd20da318d4b2f14827d0eba57fd727f361569a10dc6065ec038be",
+    "crates/aos/cli/aos-cli/tests/apm_profile_lifecycle_cli.rs": "a33a6738db24987205587c6a741f790e2a4e8fd9a1fed520ede1bf877d148e73",
+    "crates/aos/cli/aos-cli/tests/apm_system_config_dir.rs": "1fa1f17bb812abe4a96996967983e356acca4310890e891d5b48371ceff61f2d",
+    "crates/aos/cli/aos-cli/tests/apr_cache_cli.rs": "75fe97073baf16d5e149bece4d74c62829a3284110b66124338cb4a9a3d5d753",
+    "crates/aos/cli/aos-cli/tests/apr_create_host_identity_cli.rs": "d8a83e259993d60bae178c5c12496e1e943bf7995896b743623c6576c46e7129",
+    "crates/aos/cli/aos-cli/tests/apr_dry_run_cli.rs": "ae804ee79a65ef790068b25268ec8cd92a774679acf16582ef517c1a552e6eef",
+    "crates/aos/cli/aos-cli/tests/apr_keys_cli.rs": "8b3e89c59c8ce209907ed7e1d89d12279c5cfa0375f66bdaa49a1cf812b27f98",
+    "crates/aos/cli/aos-cli/tests/apr_keys_generate_cli.rs": "eb0ef69bf874c854f84bfafc21268d01dc7b322d3893cfba8c48ba668e75e118",
+    "crates/aos/cli/aos-cli/tests/apr_keys_register_cli.rs": "104c7c2ea67f085f50f905b3f94ea5151103b39a12ad89669ef04778be5bf3b7",
+    "crates/aos/cli/aos-cli/tests/apr_origin_config_cli.rs": "8a25bcd2987af7ac806c017477ef7e350cb97ad99916636b873b9c38a4512451",
+    "crates/aos/cli/aos-cli/tests/apr_trust_cli.rs": "b338acd18774942ab5489f9d30bb8efc37e7f9f0d727ecb04a649aa80bd37fd0",
+    "crates/aos/cli/aos-cli/tests/cli_separation.rs": "26562ac8ee70063a84100889d6f6652f0604a9c6f3b17ae1300315f27c04d07d",
+    "crates/aos/cli/aos-cli/tests/container_cli.rs": "79566e6a6932eb8d1ca1add8f585193283f99f449ba4a833ad1586b3b04ff399",
+    "crates/aos/cli/aos-cli/tests/container_cli_transfer.rs": "6ff6684d75fdb3ceadc29eaedab66f4be550eeb077b5d6d440c59820303fee59",
+    "crates/aos/cli/aos-cli/tests/container_native_publication.rs": "4399926d9db79302176a679d0c8774a790243d96b2e43e88357f4481d08a5ca1",
+    "crates/aos/cli/aos-cli/tests/documentation_cli.rs": "65f4540258447287570f86918df919199dba83ab3cdd51ffed390f7caca6eafd",
+    "crates/aos/cli/aos-cli/tests/hub_topology_cutover.rs": "e465537e6a4f24e2560020aaa66d077d5ddb71aae4d69a0f2dd64642c082650b",
+    "crates/aos/cli/aos-cli/tests/image_registry_cli.rs": "294b72047f1ba644fbc783a274dcbf02d160acd8dc7f6f3863bb391ddfbc45aa",
+    "crates/aos/cli/aos-cli/tests/registry_staging_cli.rs": "faf6f99f20a620da687e92858e413606ba0d8a4984f2fe05d4afae4d9660a429",
+    "crates/aos/cli/aos-cli/tests/support/binaries.rs": "0070a130771a357185c8de61afc93b16d1e701535a7a9770145116bddd0519ed"
+  },
+  "derivation": "/nix/store/r35as7jd6ixm0b837yyk2g0kfihhxwdk-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "2f123a6688a3372c03c18ebad6714a76deb14c132b7ea97617ce77158f3e5475",
+  "limits": [
+    "This gate compiles unit and integration targets without executing them.",
+    "It uses the final changed Rust inputs and ordinary CLI recipe with native lifecycle and cache fixture inputs.",
+    "Bazel executions, installed loader checks, and the offline Cargo comparison are recorded separately."
+  ],
+  "log_sha256": "e486c1460568a8150c54bf631921f614aba9eb89c74d0f1d6b17a3f02c9943a9",
+  "output": "/nix/store/xcx4r7n3ds7141xjkcj64pqf599ir6f5-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/gb8jhgyyzpf9dvznlzlm970sxw52iihv-aos-workspace-src",
+  "status": "PASS: all required application Rust unit and integration targets compiled"
+}

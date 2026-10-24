@@ -1,0 +1,1 @@
+filegroup(name = "sources", srcs = glob(["src/**/*.rs"]))

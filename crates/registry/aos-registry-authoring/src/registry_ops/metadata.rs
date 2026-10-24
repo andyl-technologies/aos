@@ -277,6 +277,10 @@ pub(crate) fn record_named_output(
 /// # Errors
 /// Returns an error when the exact package coordinate is missing or malformed,
 /// an artifact locator is invalid, or feature gates cannot be merged.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep existing publication transaction inputs explicit without changing their API"
+)]
 pub(crate) fn record_native_artifacts(
     existing: &str,
     name: &str,
@@ -501,12 +505,14 @@ fn package_platform_table(
                     image.format
                 );
             }
+            // Each encoding retains its own authenticated payload and provider
+            // artifact set. Their common identity is the logical disk and the
+            // provider schema, not the store path of the encoded output.
             if image.delivery.logical_image_id != first.logical_image_id
                 || image.delivery.artifact_contract.schema != first.artifact_contract.schema
-                || image.delivery.artifact_contract.artifacts != first.artifact_contract.artifacts
             {
                 bail!(
-                    "all image encodings in one platform publication must share one logical disk and artifact contract"
+                    "all image encodings in one platform publication must share one logical disk and artifact contract schema"
                 );
             }
         }

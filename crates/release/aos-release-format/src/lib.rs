@@ -51,12 +51,15 @@
 extern crate self as aos_release_format;
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod test_support;
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod assurance_tests;
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod native_adapter_matrix_tests;
 
 pub mod artifact;

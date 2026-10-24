@@ -1,0 +1,115 @@
+{
+  "limits": [
+    "This checkpoint records 697 native registry cases and 109 shared format cases, plus formatting. It does not qualify the live VM.",
+    "Existing ignored cases follow the unchanged test policy; no new ignores, filters or disabled cases were introduced.",
+    "These Bazel executions used the explicitly mounted local disk action cache.",
+    "The application Rust compile gate and fresh CLI/Worker live VM qualification continue separately."
+  ],
+  "log_sha256": "83cfab979288a9f84a1f2661a229a69cb59ea3f722d39cf754f2179a3ddab14a",
+  "new_regressions": [
+    "manifest::image_delivery_tests::shared_parser_preserves_each_encoding_artifact_set_and_rejects_schema_drift",
+    "registry_ops::metadata::tests::image_encodings_recheck_each_payload_before_commit",
+    "registry_ops::metadata::tests::image_encodings_reject_different_logical_disks",
+    "registry_ops::metadata::tests::image_encodings_reject_different_provider_schemas",
+    "registry_ops::metadata::tests::image_encodings_reject_duplicate_formats",
+    "registry_ops::metadata::tests::image_encodings_retain_their_distinct_authenticated_artifact_sets"
+  ],
+  "results": [
+    {
+      "output": "/nix/store/jl0sbnlyklrsvh9rb3bgs891wyhpj3zf-aos-bazel-registry-native-tests-1",
+      "targets": {
+        "//crates/aos/packages/aos-nix-cache:backend_matrix": {
+          "executed_cases": 3,
+          "xml_sha256": "9ddedb765a4ea2492631acd656188cdd6d2ab1b264be473153f94bd6db9d3a18"
+        },
+        "//crates/aos/packages/aos-nix-cache:conditional_writes": {
+          "executed_cases": 4,
+          "xml_sha256": "9161e3174d8d225106f941b1cea730c5fea0fb4dbd1bce4aecb1c1376ba2d2d3"
+        },
+        "//crates/aos/packages/aos-nix-cache:doc": {
+          "executed_cases": 0,
+          "xml_sha256": "d2afe6ef08390d9e4444f41f15eb63a95b20961e1c6ac00cfedbe57c33ccf675"
+        },
+        "//crates/aos/packages/aos-nix-cache:unit": {
+          "executed_cases": 31,
+          "xml_sha256": "4c5d77b06accb1cab67a4694ed8dfc79f821c1bbfee6e7b9991a720682be970d"
+        },
+        "//crates/aos/registry/aos-registry-authoring:change_requests": {
+          "executed_cases": 1,
+          "xml_sha256": "fd1e1ef59bc54b7144079f5f658959283235b7c2bcf1f201b71418511abc10a0"
+        },
+        "//crates/aos/registry/aos-registry-authoring:doc": {
+          "executed_cases": 0,
+          "xml_sha256": "5a26047b9d6aafb64be9a8ed4942b9741c4e65bfecaf54a4183d3f617e64edb6"
+        },
+        "//crates/aos/registry/aos-registry-authoring:registry_default_channel": {
+          "executed_cases": 7,
+          "xml_sha256": "cc40d094ba4f72e39b21e7733e21c1f1498b12a2e0f975ea217b8325bc0ed191"
+        },
+        "//crates/aos/registry/aos-registry-authoring:registry_e2e": {
+          "executed_cases": 15,
+          "xml_sha256": "cd1aa48aa84cbaefa6131f9857c3722d1bba16062e72d8ece61e4a0e889d331f"
+        },
+        "//crates/aos/registry/aos-registry-authoring:registry_perf": {
+          "executed_cases": 0,
+          "xml_sha256": "d4d321271a6a89f0e5968b7a3d06ebb28a3ee6a5da24cdf51deefa22f6ccc3d7"
+        },
+        "//crates/aos/registry/aos-registry-authoring:registry_pki_e2e": {
+          "executed_cases": 7,
+          "xml_sha256": "18088566aa8668cc703e3c4eb67d46bf72f4de1ad1e0d8475c0d9ccff4f25d53"
+        },
+        "//crates/aos/registry/aos-registry-authoring:unit": {
+          "executed_cases": 316,
+          "xml_sha256": "47db95e7e4165f951e2b774a918dbee320b4aaca6ea85e26a43dad09a63a1b22"
+        },
+        "//crates/aos/registry/aos-registry-client:doc": {
+          "executed_cases": 0,
+          "xml_sha256": "a1e95907a463cb93dbcdb29eaa7b371644f52df751477bda0cdef5455fcaea78"
+        },
+        "//crates/aos/registry/aos-registry-client:unit": {
+          "executed_cases": 313,
+          "xml_sha256": "6285650b53976f626950642038e6b871702060ad77879d877d6e35a1b4b8c345"
+        }
+      }
+    },
+    {
+      "output": "/nix/store/5ycgqmgdrwqazrw5a5x03ynr4bx3hj32-aos-bazel-registry-native-format-1",
+      "targets": {
+        "//crates/aos/packages/aos-nix-cache:format": {
+          "executed_cases": 0,
+          "xml_sha256": "0f9e8324e14c6b3c03a46bbd47291f67b3bfde069cf3184ec7c0ea251c345c7b"
+        },
+        "//crates/aos/registry/aos-registry-authoring:format": {
+          "executed_cases": 0,
+          "xml_sha256": "c4196970193ee86940ddcd451240f75642655566d153497dcc097389463349d3"
+        },
+        "//crates/aos/registry/aos-registry-client:format": {
+          "executed_cases": 0,
+          "xml_sha256": "917cf13d3bc055309e69d205eb44df2f0832d3d5a2cf73ec6747939018651c9c"
+        }
+      }
+    },
+    {
+      "output": "/nix/store/v8ybkdsnnv6pyi3aq1sd6xl7bxx2ya94-aos-bazel-image-delivery-format-tests-1",
+      "targets": {
+        "//crates/aos/registry/aos-registry-format:format": {
+          "executed_cases": 0,
+          "xml_sha256": "1e5bef899adde96873156a545ecbb191a1c7929e4957b923c6b7742aff023801"
+        },
+        "//crates/aos/registry/aos-registry-format:unit": {
+          "executed_cases": 109,
+          "xml_sha256": "eb485b5bc782ea89254ec2ec68226232c9ee92299398e67acf63a1ef3cc89dce"
+        }
+      }
+    }
+  ],
+  "schema_version": 1,
+  "source_sha256": {
+    "crates/aos/registry/aos-registry-authoring/src/registry_ops/metadata.rs": "dd857f0d19c745ee2fef23c3c410b35f946c1a8c3d2d54b9b38c9f5a4827f9ba",
+    "crates/aos/registry/aos-registry-authoring/src/registry_ops/metadata/tests.rs": "3b064fb8e89593cc21f095e51f15aa986cf61534767a3cfa77ff905faf3e9e9c",
+    "crates/aos/registry/aos-registry-format/src/manifest.rs": "5678a834c517106b8c30f44a9129d791dc47013571efc7fdb875cc6f24c2f0ab",
+    "pkgs/tools/aos-system-image-e2e-fixture.nix": "f9c3fdb0dc3df7b78853ff3c7eb80ca4f15e4f42b6f95c849b6ba8a5c39a2d5a",
+    "pkgs/tools/aos/_tests.nix": "844acaf43837b40e2f60fd2fc1741fd4f2c76e054b65967b1caa2c553b0c2848"
+  },
+  "status": "PASS: native registry and shared image-delivery validation regressions"
+}

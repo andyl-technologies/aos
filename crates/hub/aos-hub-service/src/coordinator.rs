@@ -31,7 +31,7 @@
 //! ports ([`BackendBounds`]): `Send + Sync` natively, unbounded on the
 //! single-threaded wasm32 Worker.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use anyhow::Result;
@@ -121,11 +121,11 @@ struct Lease {
 #[derive(Debug, Default)]
 pub struct InMemoryCoordinator {
     /// Fixed-window counters keyed by `(class, key, window)`.
-    counts: Mutex<HashMap<(String, String, i64), i64>>,
+    counts: Mutex<BTreeMap<(String, String, i64), i64>>,
     /// Leases keyed by an opaque lease key.
-    leases: Mutex<HashMap<String, Lease>>,
+    leases: Mutex<BTreeMap<String, Lease>>,
     /// Monotonic floors keyed by an opaque floor key.
-    floors: Mutex<HashMap<String, i64>>,
+    floors: Mutex<BTreeMap<String, i64>>,
 }
 
 impl InMemoryCoordinator {

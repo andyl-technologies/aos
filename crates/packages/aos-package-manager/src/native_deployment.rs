@@ -200,6 +200,10 @@ impl EvaluationInputs {
     }
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The profile transaction keeps validated deployment evidence explicit."
+)]
 fn apply_profile(
     command: &NativeDeploymentCommand,
     path: &Path,

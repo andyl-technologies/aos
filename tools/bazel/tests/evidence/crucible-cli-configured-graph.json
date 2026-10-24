@@ -1,0 +1,2261 @@
+{
+  "baseline": "crucible-cli-cargo-baseline.json",
+  "configured_targets": 578,
+  "default_unit_first_party_features": {
+    "aos-linux-project-quota": [
+      []
+    ],
+    "crucible-campaign": [
+      []
+    ],
+    "crucible-cli": [
+      [
+        "default"
+      ]
+    ],
+    "crucible-control-api": [
+      []
+    ],
+    "crucible-control-client": [
+      []
+    ],
+    "crucible-control-server": [
+      [
+        "default",
+        "test-support"
+      ]
+    ],
+    "crucible-daemon": [
+      [
+        "default",
+        "test-support"
+      ]
+    ],
+    "crucible-determinism": [
+      []
+    ],
+    "crucible-device": [
+      [
+        "default"
+      ]
+    ],
+    "crucible-engine": [
+      [
+        "default",
+        "test-double",
+        "test-support"
+      ]
+    ],
+    "crucible-guest": [
+      []
+    ],
+    "crucible-qemu-host": [
+      [
+        "default",
+        "test-support"
+      ]
+    ],
+    "crucible-qemu-protocol": [
+      []
+    ],
+    "crucible-qemu-shmem": [
+      []
+    ],
+    "crucible-session": [
+      [
+        "default"
+      ]
+    ],
+    "crucible-store": [
+      []
+    ],
+    "crucible-store-s3": [
+      []
+    ],
+    "crucible-test-support": [
+      []
+    ]
+  },
+  "default_unit_first_party_features_match_cargo_baseline": true,
+  "dependency_specification_outputs": [
+    "/nix/store/3jry84vah9airlzqp2pvni8mgbgc2i0g-aos-rust-control-specifications-1",
+    "/nix/store/mnnilj4hbm7kvnb1cclyq3r4ka81d2bl-aos-rust-core-specifications-1",
+    "/nix/store/5fwi01dwyrd5z5m0cbd8wscz1mhdcwfr-aos-rust-crucible-cli-specifications-1",
+    "/nix/store/c8f1k2jgwri2f75h92izcal9b31lv7j1-aos-rust-daemon-specifications-1",
+    "/nix/store/yrnin0j0rsfk8r17ji3mjdd1j3brdvli-aos-rust-device-specifications-1",
+    "/nix/store/lxl7msx5vl4fjqbgbwd4gvbbz1mc8w6l-aos-rust-engine-specifications-1",
+    "/nix/store/rll31lpb9flg4fvdh3szdbimdca8lrql-aos-rust-guest-specifications-1",
+    "/nix/store/lp2c6kxqbdl0y2s2w6907pbbs51sm90s-aos-rust-qemu-host-specifications-1",
+    "/nix/store/kfvjirfs6zpqdgrhdvfbfvv1nfvdb0s4-aos-rust-quota-specifications-1",
+    "/nix/store/3sbmqgn3df43kscfdzzc1mn8qdmyym90-aos-rust-session-specifications-1",
+    "/nix/store/ba2671acsd18s8ad9i37pr75dcl87hq9-aos-rust-store-specifications-1",
+    "/nix/store/3fki9dm6wvsh3473qf53hckk7xhgccvd-aos-rust-store-s3-specifications-1"
+  ],
+  "existing_dependency_generated_files_and_resolved_features_unchanged": true,
+  "existing_eleven_dependency_locks_sha256": {
+    "third_party/rust/control/Cargo.lock": "3f3857940345cf61716d0ea38fcb63f504a41d52ba477f5372f4e5de8fc04d0d",
+    "third_party/rust/core/Cargo.lock": "0b168b602b191e454c706aef89dd82a597842773965ee254f1236851428bd615",
+    "third_party/rust/daemon/Cargo.lock": "33e42d277aaf52eeada4522da629e077fc7781487969615e604c4be967a3a394",
+    "third_party/rust/device/Cargo.lock": "74fd85578ed6a2d23b373d12641b34bf5d9ca49de30004ea47dee4b4861885b6",
+    "third_party/rust/engine/Cargo.lock": "0d2a40fb1f2213cb0d753d2764eacea427b4ca02239ff70aafbdce7d272a9fb3",
+    "third_party/rust/guest/Cargo.lock": "fa9f752ab8c424b1614e06824569f71243b6da005efdb3e0ec286e1df19992ce",
+    "third_party/rust/qemu-host/Cargo.lock": "0d2a40fb1f2213cb0d753d2764eacea427b4ca02239ff70aafbdce7d272a9fb3",
+    "third_party/rust/quota/Cargo.lock": "1fc90f99bcf9493f278b05f0b9a713f295ccabd7263a5adc6be2434c60a0daf2",
+    "third_party/rust/session/Cargo.lock": "f6123dd7b3a731831eb6d147fe1764980a2335bfe6c58b28a733feaa0ccf5f21",
+    "third_party/rust/store-s3/Cargo.lock": "e153e130a7c55ca6f4013455777ad12b1342640549b4000f02cfb5e1f71ef14d",
+    "third_party/rust/store/Cargo.lock": "933e9281b714ad7bee40fb4c1f3dfc0a89858d2e4ec16ab7067ab3a5b1992d8a"
+  },
+  "external_bzlmod_module_and_source_inventory_unchanged": true,
+  "external_crate_identities": 281,
+  "external_features": {
+    "aead@0.5.2": [
+      [
+        "alloc",
+        "getrandom",
+        "rand_core"
+      ]
+    ],
+    "aes-gcm@0.10.3": [
+      [
+        "aes",
+        "alloc",
+        "default",
+        "getrandom",
+        "rand_core",
+        "zeroize"
+      ]
+    ],
+    "aes@0.8.4": [
+      []
+    ],
+    "ahash@0.8.12": [
+      []
+    ],
+    "aho-corasick@1.1.4": [
+      [
+        "perf-literal",
+        "std"
+      ]
+    ],
+    "allocator-api2@0.2.21": [
+      [
+        "alloc"
+      ]
+    ],
+    "anstream@1.0.0": [
+      [
+        "auto",
+        "default",
+        "wincon"
+      ]
+    ],
+    "anstyle-parse@1.0.0": [
+      [
+        "default",
+        "utf8"
+      ]
+    ],
+    "anstyle-query@1.1.5": [
+      []
+    ],
+    "anstyle@1.0.14": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "arrayref@0.3.9": [
+      []
+    ],
+    "arrayvec@0.7.7": [
+      []
+    ],
+    "atomic-waker@1.1.2": [
+      []
+    ],
+    "autocfg@1.5.1": [
+      []
+    ],
+    "aws-credential-types@1.2.14": [
+      []
+    ],
+    "aws-lc-rs@1.17.0": [
+      [
+        "aws-lc-sys",
+        "prebuilt-nasm"
+      ]
+    ],
+    "aws-lc-sys@0.41.0": [
+      [
+        "prebuilt-nasm"
+      ]
+    ],
+    "aws-runtime@1.7.4": [
+      [
+        "event-stream",
+        "http-02x",
+        "http-1x",
+        "sigv4a"
+      ]
+    ],
+    "aws-sdk-s3@1.134.0": [
+      [
+        "default-https-client",
+        "http-1x",
+        "rt-tokio",
+        "sigv4a"
+      ]
+    ],
+    "aws-sigv4@1.4.4": [
+      [
+        "default",
+        "http0-compat",
+        "http1",
+        "sign-eventstream",
+        "sign-http",
+        "sigv4a"
+      ]
+    ],
+    "aws-smithy-async@1.2.14": [
+      [
+        "rt-tokio"
+      ]
+    ],
+    "aws-smithy-checksums@0.64.8": [
+      []
+    ],
+    "aws-smithy-eventstream@0.60.20": [
+      []
+    ],
+    "aws-smithy-http-client@1.1.12": [
+      [
+        "default-client",
+        "rustls-aws-lc"
+      ]
+    ],
+    "aws-smithy-http@0.63.6": [
+      [
+        "aws-smithy-eventstream",
+        "event-stream"
+      ]
+    ],
+    "aws-smithy-json@0.62.6": [
+      []
+    ],
+    "aws-smithy-observability@0.2.6": [
+      []
+    ],
+    "aws-smithy-runtime-api-macros@1.0.0": [
+      []
+    ],
+    "aws-smithy-runtime-api@1.12.1": [
+      [
+        "client",
+        "default",
+        "http-02x",
+        "http-1x",
+        "http-auth"
+      ]
+    ],
+    "aws-smithy-runtime@1.11.3": [
+      [
+        "client",
+        "default-https-client"
+      ]
+    ],
+    "aws-smithy-schema@0.1.0": [
+      []
+    ],
+    "aws-smithy-types@1.4.8": [
+      [
+        "byte-stream-poll-next",
+        "http-body-0-4-x",
+        "http-body-1-x",
+        "rt-tokio"
+      ]
+    ],
+    "aws-smithy-xml@0.60.15": [
+      []
+    ],
+    "aws-types@1.3.16": [
+      []
+    ],
+    "axum-core@0.5.6": [
+      [
+        "tracing"
+      ]
+    ],
+    "axum-macros@0.5.1": [
+      [
+        "default"
+      ]
+    ],
+    "axum@0.8.9": [
+      [
+        "default",
+        "form",
+        "http1",
+        "json",
+        "macros",
+        "matched-path",
+        "original-uri",
+        "query",
+        "tokio",
+        "tower-log",
+        "tracing"
+      ]
+    ],
+    "base16ct@0.2.0": [
+      [
+        "alloc"
+      ]
+    ],
+    "base64-simd@0.8.0": [
+      [
+        "alloc",
+        "default",
+        "detect",
+        "std"
+      ]
+    ],
+    "base64@0.22.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "base64ct@1.8.3": [
+      [
+        "alloc"
+      ]
+    ],
+    "bitflags@2.13.0": [
+      [
+        "std"
+      ]
+    ],
+    "blake3@1.8.5": [
+      [
+        "pure",
+        "std"
+      ]
+    ],
+    "block-buffer@0.10.4": [
+      []
+    ],
+    "block-buffer@0.12.0": [
+      []
+    ],
+    "bytes-utils@0.1.4": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "bytes@1.11.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "cc@1.2.65": [
+      [
+        "parallel"
+      ]
+    ],
+    "cfg-if@1.0.4": [
+      []
+    ],
+    "ciborium-io@0.2.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "ciborium-ll@0.2.2": [
+      []
+    ],
+    "ciborium@0.2.2": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "cipher@0.4.4": [
+      []
+    ],
+    "clap@4.6.1": [
+      [
+        "color",
+        "default",
+        "derive",
+        "env",
+        "error-context",
+        "help",
+        "std",
+        "suggestions",
+        "usage"
+      ]
+    ],
+    "clap_builder@4.6.0": [
+      [
+        "color",
+        "env",
+        "error-context",
+        "help",
+        "std",
+        "suggestions",
+        "usage"
+      ]
+    ],
+    "clap_complete@4.6.5": [
+      [
+        "default"
+      ]
+    ],
+    "clap_derive@4.6.1": [
+      [
+        "default"
+      ]
+    ],
+    "clap_lex@1.1.0": [
+      []
+    ],
+    "cmake@0.1.58": [
+      []
+    ],
+    "cmov@0.5.4": [
+      []
+    ],
+    "colorchoice@1.0.5": [
+      []
+    ],
+    "const-oid@0.10.2": [
+      []
+    ],
+    "const-oid@0.9.6": [
+      []
+    ],
+    "constant_time_eq@0.4.2": [
+      [
+        "std"
+      ]
+    ],
+    "cpufeatures@0.2.17": [
+      []
+    ],
+    "cpufeatures@0.3.0": [
+      []
+    ],
+    "crc-fast@1.10.0": [
+      [
+        "alloc",
+        "default",
+        "digest",
+        "ffi",
+        "panic-handler",
+        "std"
+      ]
+    ],
+    "crc32fast@1.5.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "crypto-bigint@0.5.5": [
+      [
+        "default",
+        "generic-array",
+        "rand",
+        "rand_core",
+        "zeroize"
+      ]
+    ],
+    "crypto-common@0.1.7": [
+      [
+        "getrandom",
+        "rand_core",
+        "std"
+      ]
+    ],
+    "crypto-common@0.2.2": [
+      []
+    ],
+    "ctr@0.9.2": [
+      []
+    ],
+    "ctutils@0.4.2": [
+      []
+    ],
+    "curve25519-dalek-derive@0.1.1": [
+      []
+    ],
+    "curve25519-dalek@4.1.3": [
+      [
+        "alloc",
+        "digest",
+        "precomputed-tables",
+        "zeroize"
+      ]
+    ],
+    "der@0.7.10": [
+      [
+        "alloc",
+        "oid",
+        "pem",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "deranged@0.5.8": [
+      [
+        "default",
+        "powerfmt"
+      ]
+    ],
+    "digest@0.10.7": [
+      [
+        "alloc",
+        "block-buffer",
+        "const-oid",
+        "core-api",
+        "default",
+        "mac",
+        "oid",
+        "std",
+        "subtle"
+      ]
+    ],
+    "digest@0.11.3": [
+      [
+        "alloc",
+        "block-api",
+        "default",
+        "mac",
+        "oid"
+      ]
+    ],
+    "displaydoc@0.2.6": [
+      []
+    ],
+    "dunce@1.0.5": [
+      []
+    ],
+    "ecdsa@0.16.9": [
+      [
+        "alloc",
+        "arithmetic",
+        "der",
+        "digest",
+        "hazmat",
+        "pem",
+        "pkcs8",
+        "rfc6979",
+        "signing",
+        "spki",
+        "std",
+        "verifying"
+      ]
+    ],
+    "ed25519-dalek@2.2.0": [
+      [
+        "alloc",
+        "default",
+        "fast",
+        "pkcs8",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "ed25519@2.2.3": [
+      [
+        "alloc",
+        "pkcs8",
+        "std"
+      ]
+    ],
+    "either@1.16.0": [
+      []
+    ],
+    "elliptic-curve@0.13.8": [
+      [
+        "alloc",
+        "arithmetic",
+        "digest",
+        "ff",
+        "group",
+        "hazmat",
+        "pem",
+        "pkcs8",
+        "sec1",
+        "std"
+      ]
+    ],
+    "equivalent@1.0.2": [
+      []
+    ],
+    "errno@0.3.14": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "fallible-iterator@0.3.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "fallible-streaming-iterator@0.1.9": [
+      []
+    ],
+    "fastrand@2.4.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "ff@0.13.1": [
+      [
+        "alloc"
+      ]
+    ],
+    "find-msvc-tools@0.1.9": [
+      []
+    ],
+    "fnv@1.0.7": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "foldhash@0.2.0": [
+      []
+    ],
+    "form_urlencoded@1.2.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "fs_extra@1.3.0": [
+      []
+    ],
+    "futures-channel@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-core@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-macro@0.3.32": [
+      []
+    ],
+    "futures-sink@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-task@0.3.32": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "futures-util@0.3.32": [
+      [
+        "alloc",
+        "async-await",
+        "async-await-macro",
+        "default",
+        "futures-macro",
+        "slab",
+        "std"
+      ]
+    ],
+    "generic-array@0.14.7": [
+      [
+        "more_lengths",
+        "zeroize"
+      ]
+    ],
+    "getrandom@0.2.17": [
+      [
+        "std"
+      ]
+    ],
+    "getrandom@0.3.4": [
+      [
+        "std"
+      ]
+    ],
+    "getrandom@0.4.2": [
+      []
+    ],
+    "ghash@0.5.1": [
+      []
+    ],
+    "group@0.13.0": [
+      [
+        "alloc"
+      ]
+    ],
+    "h2@0.4.14": [
+      []
+    ],
+    "half@2.7.1": [
+      []
+    ],
+    "hashbrown@0.14.5": [
+      [
+        "ahash",
+        "inline-more"
+      ]
+    ],
+    "hashbrown@0.16.1": [
+      [
+        "allocator-api2",
+        "default",
+        "default-hasher",
+        "equivalent",
+        "inline-more",
+        "raw-entry"
+      ]
+    ],
+    "hashbrown@0.17.1": [
+      []
+    ],
+    "hashlink@0.9.1": [
+      []
+    ],
+    "heck@0.5.0": [
+      []
+    ],
+    "hex@0.4.3": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "hmac@0.12.1": [
+      [
+        "reset"
+      ]
+    ],
+    "hmac@0.13.0": [
+      []
+    ],
+    "http-body-util@0.1.3": [
+      [
+        "default"
+      ]
+    ],
+    "http-body@0.4.6": [
+      []
+    ],
+    "http-body@1.0.1": [
+      []
+    ],
+    "http@0.2.12": [
+      []
+    ],
+    "http@1.4.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "httparse@1.10.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "httpdate@1.0.3": [
+      []
+    ],
+    "hybrid-array@0.4.12": [
+      []
+    ],
+    "hyper-rustls@0.27.9": [
+      [
+        "http1",
+        "http2",
+        "native-tokio",
+        "ring",
+        "rustls-native-certs",
+        "tls12"
+      ]
+    ],
+    "hyper-util@0.1.20": [
+      [
+        "client",
+        "client-legacy",
+        "client-proxy",
+        "default",
+        "http1",
+        "http2",
+        "server",
+        "server-auto",
+        "service",
+        "tokio"
+      ]
+    ],
+    "hyper@1.10.0": [
+      [
+        "client",
+        "default",
+        "http1",
+        "http2",
+        "server"
+      ]
+    ],
+    "icu_collections@2.2.0": [
+      []
+    ],
+    "icu_locale_core@2.2.0": [
+      [
+        "zerovec"
+      ]
+    ],
+    "icu_normalizer@2.2.0": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "icu_normalizer_data@2.2.0": [
+      []
+    ],
+    "icu_properties@2.2.0": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "icu_properties_data@2.2.0": [
+      []
+    ],
+    "icu_provider@2.2.0": [
+      [
+        "baked"
+      ]
+    ],
+    "idna@1.1.0": [
+      [
+        "alloc",
+        "compiled_data",
+        "std"
+      ]
+    ],
+    "idna_adapter@1.2.2": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "indexmap@2.14.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "inout@0.1.4": [
+      []
+    ],
+    "ipnet@2.12.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "is_terminal_polyfill@1.70.2": [
+      [
+        "default"
+      ]
+    ],
+    "itoa@1.0.18": [
+      []
+    ],
+    "jobserver@0.1.34": [
+      []
+    ],
+    "libc@0.2.186": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "libsqlite3-sys@0.30.1": [
+      [
+        "default",
+        "min_sqlite_version_3_14_0",
+        "pkg-config",
+        "vcpkg"
+      ]
+    ],
+    "linux-raw-sys@0.12.1": [
+      [
+        "auxvec",
+        "elf",
+        "errno",
+        "general",
+        "if_ether",
+        "ioctl",
+        "net",
+        "netlink",
+        "no_std",
+        "prctl",
+        "xdp"
+      ]
+    ],
+    "litemap@0.8.2": [
+      []
+    ],
+    "log@0.4.30": [
+      []
+    ],
+    "lru@0.16.4": [
+      [
+        "default",
+        "hashbrown"
+      ]
+    ],
+    "matchit@0.8.4": [
+      [
+        "default"
+      ]
+    ],
+    "md-5@0.11.0": [
+      [
+        "alloc",
+        "default",
+        "oid"
+      ]
+    ],
+    "memchr@2.8.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "mime@0.3.17": [
+      []
+    ],
+    "mio@1.2.1": [
+      [
+        "net",
+        "os-ext",
+        "os-poll"
+      ]
+    ],
+    "num-bigint@0.4.6": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "num-conv@0.2.2": [
+      []
+    ],
+    "num-integer@0.1.46": [
+      [
+        "default",
+        "i128",
+        "std"
+      ]
+    ],
+    "num-traits@0.2.19": [
+      [
+        "default",
+        "i128",
+        "std"
+      ]
+    ],
+    "once_cell@1.21.4": [
+      [
+        "alloc",
+        "default",
+        "race",
+        "std"
+      ]
+    ],
+    "opaque-debug@0.3.1": [
+      []
+    ],
+    "openssl-probe@0.2.1": [
+      []
+    ],
+    "outref@0.5.2": [
+      []
+    ],
+    "p256@0.13.2": [
+      [
+        "alloc",
+        "arithmetic",
+        "default",
+        "digest",
+        "ecdsa",
+        "ecdsa-core",
+        "pem",
+        "pkcs8",
+        "sha2",
+        "sha256",
+        "std"
+      ]
+    ],
+    "pem-rfc7468@0.7.0": [
+      [
+        "alloc"
+      ]
+    ],
+    "pem@3.0.6": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "percent-encoding@2.3.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "pin-project-lite@0.2.17": [
+      []
+    ],
+    "pin-utils@0.1.0": [
+      []
+    ],
+    "pkcs8@0.10.2": [
+      [
+        "alloc",
+        "pem",
+        "std"
+      ]
+    ],
+    "pkg-config@0.3.33": [
+      []
+    ],
+    "polyval@0.6.2": [
+      []
+    ],
+    "potential_utf@0.1.5": [
+      [
+        "zerovec"
+      ]
+    ],
+    "powerfmt@0.2.0": [
+      []
+    ],
+    "ppv-lite86@0.2.21": [
+      [
+        "simd",
+        "std"
+      ]
+    ],
+    "primeorder@0.13.6": [
+      []
+    ],
+    "proc-macro2@1.0.106": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "quote@1.0.46": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "rand@0.9.4": [
+      [
+        "alloc",
+        "default",
+        "os_rng",
+        "small_rng",
+        "std",
+        "std_rng",
+        "thread_rng"
+      ]
+    ],
+    "rand_chacha@0.9.0": [
+      [
+        "std"
+      ]
+    ],
+    "rand_core@0.6.4": [
+      [
+        "alloc",
+        "getrandom",
+        "std"
+      ]
+    ],
+    "rand_core@0.9.5": [
+      [
+        "os_rng",
+        "std"
+      ]
+    ],
+    "rcgen@0.14.8": [
+      [
+        "crypto",
+        "default",
+        "pem",
+        "ring"
+      ]
+    ],
+    "regex-automata@0.4.14": [
+      [
+        "alloc",
+        "dfa-onepass",
+        "hybrid",
+        "meta",
+        "nfa-backtrack",
+        "nfa-pikevm",
+        "nfa-thompson",
+        "perf-inline",
+        "perf-literal",
+        "perf-literal-multisubstring",
+        "perf-literal-substring",
+        "std",
+        "syntax",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment",
+        "unicode-word-boundary"
+      ]
+    ],
+    "regex-lite@0.1.9": [
+      [
+        "default",
+        "std",
+        "string"
+      ]
+    ],
+    "regex-syntax@0.8.11": [
+      [
+        "default",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "regex@1.12.4": [
+      [
+        "default",
+        "perf",
+        "perf-backtrack",
+        "perf-cache",
+        "perf-dfa",
+        "perf-inline",
+        "perf-literal",
+        "perf-onepass",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "reqwest@0.12.28": [
+      [
+        "__rustls",
+        "__rustls-ring",
+        "__tls",
+        "h2",
+        "http2",
+        "json",
+        "rustls-tls-native-roots",
+        "rustls-tls-native-roots-no-provider",
+        "stream"
+      ]
+    ],
+    "rfc6979@0.4.0": [
+      []
+    ],
+    "ring@0.17.14": [
+      [
+        "alloc",
+        "default",
+        "dev_urandom_fallback"
+      ]
+    ],
+    "rusqlite@0.32.1": [
+      [
+        "blob"
+      ]
+    ],
+    "rustc_version@0.4.1": [
+      []
+    ],
+    "rustix@1.1.4": [
+      [
+        "alloc",
+        "default",
+        "event",
+        "fs",
+        "net",
+        "param",
+        "process",
+        "std",
+        "termios",
+        "time"
+      ]
+    ],
+    "rustls-native-certs@0.8.3": [
+      []
+    ],
+    "rustls-pemfile@2.2.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "rustls-pki-types@1.14.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "rustls-webpki@0.103.13": [
+      [
+        "alloc",
+        "aws-lc-rs",
+        "ring",
+        "std"
+      ]
+    ],
+    "rustls@0.23.40": [
+      [
+        "aws-lc-rs",
+        "aws_lc_rs",
+        "default",
+        "log",
+        "logging",
+        "prefer-post-quantum",
+        "ring",
+        "std",
+        "tls12"
+      ]
+    ],
+    "ryu@1.0.23": [
+      []
+    ],
+    "sec1@0.7.3": [
+      [
+        "alloc",
+        "default",
+        "der",
+        "pem",
+        "pkcs8",
+        "point",
+        "std",
+        "subtle",
+        "zeroize"
+      ]
+    ],
+    "semver@1.0.28": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "serde@1.0.228": [
+      [
+        "alloc",
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std"
+      ]
+    ],
+    "serde_core@1.0.228": [
+      [
+        "alloc",
+        "default",
+        "rc",
+        "result",
+        "std"
+      ]
+    ],
+    "serde_derive@1.0.228": [
+      [
+        "default"
+      ]
+    ],
+    "serde_json@1.0.150": [
+      [
+        "default",
+        "raw_value",
+        "std"
+      ]
+    ],
+    "serde_path_to_error@0.1.20": [
+      []
+    ],
+    "serde_spanned@0.6.9": [
+      [
+        "serde"
+      ]
+    ],
+    "serde_urlencoded@0.7.1": [
+      []
+    ],
+    "sha1@0.11.0": [
+      [
+        "alloc",
+        "default",
+        "oid"
+      ]
+    ],
+    "sha2@0.10.9": [
+      [
+        "compress",
+        "default",
+        "std"
+      ]
+    ],
+    "sha2@0.11.0": [
+      [
+        "alloc",
+        "default",
+        "oid"
+      ]
+    ],
+    "shlex@2.0.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "signal-hook-registry@1.4.8": [
+      []
+    ],
+    "signature@2.2.0": [
+      [
+        "alloc",
+        "digest",
+        "rand_core",
+        "std"
+      ]
+    ],
+    "slab@0.4.12": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "smallvec@1.15.2": [
+      [
+        "const_generics",
+        "const_new"
+      ]
+    ],
+    "socket2@0.6.4": [
+      [
+        "all"
+      ]
+    ],
+    "spin@0.10.0": [
+      [
+        "mutex",
+        "once",
+        "rwlock",
+        "spin_mutex"
+      ]
+    ],
+    "spki@0.7.3": [
+      [
+        "alloc",
+        "pem",
+        "std"
+      ]
+    ],
+    "stable_deref_trait@1.2.1": [
+      []
+    ],
+    "strsim@0.11.1": [
+      []
+    ],
+    "subtle@2.6.1": [
+      [
+        "default",
+        "i128",
+        "std"
+      ]
+    ],
+    "syn@2.0.118": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "fold",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit",
+        "visit-mut"
+      ]
+    ],
+    "sync_wrapper@1.0.2": [
+      [
+        "futures",
+        "futures-core"
+      ]
+    ],
+    "synstructure@0.13.2": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "tempfile@3.27.0": [
+      [
+        "default",
+        "getrandom"
+      ]
+    ],
+    "thiserror-impl@2.0.18": [
+      []
+    ],
+    "thiserror@2.0.18": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "time-core@0.1.8": [
+      []
+    ],
+    "time@0.3.47": [
+      [
+        "alloc",
+        "default",
+        "parsing",
+        "std"
+      ]
+    ],
+    "tinystr@0.8.3": [
+      [
+        "zerovec"
+      ]
+    ],
+    "tinyvec@1.11.0": [
+      [
+        "alloc",
+        "default",
+        "tinyvec_macros"
+      ]
+    ],
+    "tinyvec_macros@0.1.1": [
+      []
+    ],
+    "tokio-macros@2.7.0": [
+      []
+    ],
+    "tokio-rustls@0.26.4": [
+      [
+        "aws_lc_rs",
+        "default",
+        "logging",
+        "ring",
+        "tls12"
+      ]
+    ],
+    "tokio-util@0.7.18": [
+      [
+        "codec",
+        "default",
+        "io"
+      ]
+    ],
+    "tokio@1.52.3": [
+      [
+        "bytes",
+        "default",
+        "fs",
+        "io-std",
+        "io-util",
+        "libc",
+        "macros",
+        "mio",
+        "net",
+        "process",
+        "rt",
+        "rt-multi-thread",
+        "signal",
+        "signal-hook-registry",
+        "socket2",
+        "sync",
+        "time",
+        "tokio-macros"
+      ]
+    ],
+    "toml@0.8.23": [
+      [
+        "default",
+        "display",
+        "parse"
+      ]
+    ],
+    "toml_datetime@0.6.11": [
+      [
+        "serde"
+      ]
+    ],
+    "toml_edit@0.22.27": [
+      [
+        "display",
+        "parse",
+        "serde"
+      ]
+    ],
+    "toml_write@0.1.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "tower-http@0.6.11": [
+      [
+        "follow-redirect",
+        "futures-util",
+        "tower"
+      ]
+    ],
+    "tower-layer@0.3.3": [
+      []
+    ],
+    "tower-service@0.3.3": [
+      []
+    ],
+    "tower@0.5.3": [
+      [
+        "futures-core",
+        "futures-util",
+        "log",
+        "make",
+        "pin-project-lite",
+        "retry",
+        "sync_wrapper",
+        "timeout",
+        "tokio",
+        "tracing",
+        "util"
+      ]
+    ],
+    "tracing-attributes@0.1.31": [
+      []
+    ],
+    "tracing-core@0.1.36": [
+      [
+        "once_cell",
+        "std"
+      ]
+    ],
+    "tracing@0.1.44": [
+      [
+        "attributes",
+        "default",
+        "log",
+        "std",
+        "tracing-attributes"
+      ]
+    ],
+    "try-lock@0.2.5": [
+      []
+    ],
+    "typenum@1.20.1": [
+      [
+        "const-generics"
+      ]
+    ],
+    "unicode-ident@1.0.24": [
+      []
+    ],
+    "unicode-normalization@0.1.25": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "universal-hash@0.5.1": [
+      []
+    ],
+    "untrusted@0.9.0": [
+      []
+    ],
+    "url@2.5.8": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "utf8_iter@1.0.4": [
+      []
+    ],
+    "utf8parse@0.2.2": [
+      [
+        "default"
+      ]
+    ],
+    "uuid@1.23.1": [
+      [
+        "default",
+        "rng",
+        "serde",
+        "std",
+        "v4"
+      ]
+    ],
+    "vcpkg@0.2.15": [
+      []
+    ],
+    "version_check@0.9.5": [
+      []
+    ],
+    "vsimd@0.8.0": [
+      [
+        "alloc",
+        "detect",
+        "std"
+      ]
+    ],
+    "want@0.3.1": [
+      []
+    ],
+    "winnow@0.7.15": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "writeable@0.6.3": [
+      []
+    ],
+    "xmlparser@0.13.6": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "yasna@0.6.0": [
+      [
+        "default",
+        "std",
+        "time"
+      ]
+    ],
+    "yoke-derive@0.8.2": [
+      []
+    ],
+    "yoke@0.8.3": [
+      [
+        "derive",
+        "zerofrom"
+      ]
+    ],
+    "zerocopy-derive@0.8.49": [
+      []
+    ],
+    "zerocopy@0.8.49": [
+      [
+        "derive",
+        "simd",
+        "zerocopy-derive"
+      ]
+    ],
+    "zerofrom-derive@0.1.7": [
+      []
+    ],
+    "zerofrom@0.1.8": [
+      [
+        "derive"
+      ]
+    ],
+    "zeroize@1.9.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "zerotrie@0.2.4": [
+      [
+        "yoke",
+        "zerofrom"
+      ]
+    ],
+    "zerovec-derive@0.11.3": [
+      []
+    ],
+    "zerovec@0.11.6": [
+      [
+        "derive",
+        "yoke"
+      ]
+    ],
+    "zmij@1.0.21": [
+      []
+    ],
+    "zstd-safe@7.2.4": [
+      [
+        "arrays",
+        "legacy",
+        "std",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ],
+    "zstd-sys@2.0.16+zstd.1.5.7": [
+      [
+        "legacy",
+        "std",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ],
+    "zstd@0.13.3": [
+      [
+        "arrays",
+        "default",
+        "legacy",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ]
+  },
+  "external_features_match_cargo_baseline": true,
+  "file_sha256": {
+    "MODULE.bazel": "24655ddb5ff40f2433d1b1c61e7c140ea26ad06db226e0e2b1e3eb835353c839",
+    "crates/crucible/control/crucible-cli/BUILD.bazel": "48c83e3df3a5213582c8f94714f8f93f60f0d8e142a1882bc89a1d5b0d3a72b1",
+    "crates/crucible/control/crucible-cli/src/tests/surface.rs": "2c480d52056b8ef3377bd5fccca70c75f96b8a1783cb09f3b419c51515a449a8",
+    "crates/crucible/control/crucible-cli/tests/campaign_process.rs": "414d66696254ee5ca4cadf70b45333df5145e1abc54d3c6e1296a9a4bd68b5ae",
+    "crates/crucible/control/crucible-cli/tests/campaign_store_process.rs": "2629c43b5589ac120f156f33991c8d8510593505207990a81e781303d644a0e3",
+    "crates/crucible/control/crucible-cli/tests/help_surface.rs": "7bc758d0c0e505512a5dadf7e68f5d5104b8496a75a8c58205759ce7aff80721",
+    "crates/crucible/control/crucible-cli/tests/machine_readable.rs": "cbbf2a5d05ee0d3d8fdbb72973f3956affe1da3158100b305ff04d4048e9458c",
+    "crates/crucible/control/crucible-cli/tests/planner_process.rs": "e5b984b009299be15d86ee71cc8e9b30aae02a86d258f15d5177cfe20cafc130",
+    "crates/crucible/control/crucible-cli/tests/serve_process.rs": "8fb02fb6f8366cd9383c62516c8896d56b33bfdf183e3b77c00dbdaeee8a6c56",
+    "crates/crucible/control/crucible-cli/tests/store_transform_packed_process.rs": "24aaceb6ecdb7b47357e1e5de545e7c220aa9437086869594e4b6ad8833a0c13",
+    "crates/crucible/control/crucible-daemon/BUILD.bazel": "59fd39c669d3ec1637a81493b306678e8c48a8216b837c1fd5c69ef50fca88ec",
+    "crates/crucible/control/crucible-session/BUILD.bazel": "c782d43697123b41aeab22f9e7007133e9de8a3697501d594eb0f5c45029211e",
+    "crates/crucible/engine/crucible-engine/BUILD.bazel": "606d9ea93358ebac9cc8f9a8c626a3196f090fea9950dc35d3638ea8adeff583",
+    "crates/crucible/testing/crucible-test-support/src/lib.rs": "14b9e33f2f4de53dbbb5180b47aec7d7924b4dce030b8cfbde39b5a03ea6285d",
+    "crates/crucible/testing/crucible-test-support/src/runfiles.rs": "53b4f5fb28e0e98b70628e109430d213cd01305cbbdaf4ee59373effc5172c3b",
+    "pkgs/build-support/_bazel/default.nix": "02fbcd7e991b416aebe29d2bea961525df4973e831502a1bfe6a4c3eebef987d",
+    "pkgs/default.nix": "3df26082cfcb19893068b633c0667b2d686c675fd92bc00d1f8557a1d67eca67",
+    "tests/build/_bazel-crucible-cli.nix": "81e663c34d9bbda69b35aa38dd21d910cf70a7a13177bf03cf65d5f2b26e14c3",
+    "tests/build/_bazel-dependencies.nix": "e145d2ac80aec96b2f6d49596e8d4b7de7fc98f533f81ab06eebff23906442c0",
+    "tests/build/_bazel-rust-family.nix": "7add4f2e98a8641df37c34470d3a43ba4b51c1fd877b594229b3c79851be2bef",
+    "tests/build/aos-dev-cli.nix": "cd6de4fbefe58c45c73fe6269799cb08a766a584e16b4fbcbd1bb96aa8d9b709",
+    "tests/build/bazel.nix": "f61a65dee3db5388cf5b9e913503b4cf759575a8b48cf6664939ed5f9769bd33",
+    "tests/crucible/BUILD.bazel": "c5d20b291e8f14046e48f864148f5614c914b5a729f96d9175f5fb636f44399a",
+    "third_party/bazel/modules.json": "1285d023610fd9259c1974002ecb370d07a3611ea8090196ff8f8947d214b2d8",
+    "third_party/rust/BUILD.bazel": "7dad676846f6203f968f04f4cf83f5337fd1a00caf18058c00c33385a232a3ca",
+    "third_party/rust/control/sources.json": "032e8c5c1a9b331df33c299c3cf5b1264b47d0ff93e7266ce1de7a1a48b4e1a2",
+    "third_party/rust/core/sources.json": "1f75b27091341b1e9b4016bc4a7a42d225a0a92a3842a8ba6e8679603befe54d",
+    "third_party/rust/crucible-cli/BUILD.aead-0.5.2.bazel": "9778c410029fab557a73e4110c62afa4a201472d7efe589e155ee3555ba5b461",
+    "third_party/rust/crucible-cli/BUILD.aes-0.8.4.bazel": "e20ace37d525eacf2ae5734eafd35a1f2405339f0643e8462461ee1c56deb468",
+    "third_party/rust/crucible-cli/BUILD.aes-gcm-0.10.3.bazel": "315a739ea6b7ab2c671306f3db5091703e28351b3ac29f6abf0bbe2a7446a76e",
+    "third_party/rust/crucible-cli/BUILD.ahash-0.8.12.bazel": "473f5e11b2571c4d0c0b5c40f3b6ad8c0728157b7f2e7082560b1a08de6057ee",
+    "third_party/rust/crucible-cli/BUILD.aho-corasick-1.1.4.bazel": "fab53e9544065f863136a99c844b17c669e715920b27416675a3d71fcbe20305",
+    "third_party/rust/crucible-cli/BUILD.allocator-api2-0.2.21.bazel": "cd9c2d17b7791031f990826da5f16edd835978128be19b4d4be69d5a10a96c1d",
+    "third_party/rust/crucible-cli/BUILD.anstream-1.0.0.bazel": "57af3c68c2f6935b2899ab68f89483a29dc6f6e7e3a3f024bd56952a59c9d5b6",
+    "third_party/rust/crucible-cli/BUILD.anstyle-1.0.14.bazel": "1c05f92f569ea5b7d4cf41e5cbdacae72fa2420a86ddf4f8dd034adb803402d3",
+    "third_party/rust/crucible-cli/BUILD.anstyle-parse-1.0.0.bazel": "63a146190b6cfd295aae9a4a3336310be31ce66f8bccb3a26b2ec98bc104dc7a",
+    "third_party/rust/crucible-cli/BUILD.anstyle-query-1.1.5.bazel": "8ad8d23c01af347ccdb30d1314bbf1a78a8e3a12f76d2e0003a36a0f016efe26",
+    "third_party/rust/crucible-cli/BUILD.anstyle-wincon-3.0.11.bazel": "03d1aa5dc6767d396c3050bf174a234268c39361cff6957cffd2fbcfe483577e",
+    "third_party/rust/crucible-cli/BUILD.anyhow-1.0.102.bazel": "0d0b53c238dbb41925211f78c1b2185b29cefaab3a3f86e98df71e240938af34",
+    "third_party/rust/crucible-cli/BUILD.arrayref-0.3.9.bazel": "4aefc0f005b6169cc6044a66a7682bed843949ead4f1964e2c865b09af371bb2",
+    "third_party/rust/crucible-cli/BUILD.arrayvec-0.7.7.bazel": "45080c2da69c8ba564edef877afa3e5f13f6a2afb0236e8da6dd4e296d69f12d",
+    "third_party/rust/crucible-cli/BUILD.asn1-rs-0.7.2.bazel": "a8ed1a7ee392b3ea9e7b415b162e74def3e942f1683b4a46e030dde4ce41e896",
+    "third_party/rust/crucible-cli/BUILD.asn1-rs-derive-0.6.0.bazel": "dc9f7344ceb233f9a7df00dc7d83784d6bc96900b23cf158aa23968fd352df40",
+    "third_party/rust/crucible-cli/BUILD.asn1-rs-impl-0.2.0.bazel": "d4624a0d3d8185f82bc4c5590f1cb0b80795eebb5801f2f0da9dfafe04e184f7",
+    "third_party/rust/crucible-cli/BUILD.atomic-waker-1.1.2.bazel": "7cd1cb8b1764cb0ea4307d9c90edf29e5cde1c3a7adde0959aac991e93e96d1b",
+    "third_party/rust/crucible-cli/BUILD.autocfg-1.5.1.bazel": "a15dae41e5a4a38a19dc0374925c9c1c788bc0216da051bba363774e59107410",
+    "third_party/rust/crucible-cli/BUILD.aws-credential-types-1.2.14.bazel": "0efef00f95b4083a28fb71959827935ec94b33e58ff83fe4aab72f5715d7dc0c",
+    "third_party/rust/crucible-cli/BUILD.aws-lc-rs-1.17.0.bazel": "1846d1be9e39c5f62bd2a6ebada06d5a8c11f0f2f9c85cc877042f051247cf18",
+    "third_party/rust/crucible-cli/BUILD.aws-lc-sys-0.41.0.bazel": "776d160194606bd65c9fd3ca861803565ebde5a126b2f67b5e4010ae67101eac",
+    "third_party/rust/crucible-cli/BUILD.aws-runtime-1.7.4.bazel": "03557806ee8e6c0bc95e496136c30b5ff13fa75830a24228920597ec500ef01b",
+    "third_party/rust/crucible-cli/BUILD.aws-sdk-s3-1.134.0.bazel": "eb173ef61ab2dfbf1f77745f33de1e9b6ce7ce969e91957d46a6835583c29f47",
+    "third_party/rust/crucible-cli/BUILD.aws-sigv4-1.4.4.bazel": "c3a8fae711d9e3e4c34b339fd0559e388df10850e7d3673ca752e21e69c5b05e",
+    "third_party/rust/crucible-cli/BUILD.aws-smithy-async-1.2.14.bazel": "fea7f9cb39ff18c2f57a2e3a53c77b03af0ca24aa614b741ff40f65b4aceda02",
+    "third_party/rust/crucible-cli/BUILD.aws-smithy-checksums-0.64.8.bazel": "be8e7d6b2775363a99a2b73deeb0dd765a224a953cdc91cd4055313115f74719",
+    "third_party/rust/crucible-cli/BUILD.aws-smithy-eventstream-0.60.20.bazel": "e3074cc064318928edd1885d641d93a963d207edf1cbaf696f617c033f0115b7",
+    "third_party/rust/crucible-cli/BUILD.aws-smithy-http-0.63.6.bazel": "bc3fb368b581abecb66ab1c5f68600d187296ba99cf480966baa1f418fc09a9f",
+    "third_party/rust/crucible-cli/BUILD.aws-smithy-http-client-1.1.12.bazel": "8e098c4b70b7c670e5b0dc741350004646e00b6228e5e8087008a907111e18fb",
+    "third_party/rust/crucible-cli/BUILD.aws-smithy-json-0.62.6.bazel": "a47cfe10a39f867023679759251a8330fd582a7c683283c45b64dddf064fb4d7",
+    "third_party/rust/crucible-cli/BUILD.aws-smithy-observability-0.2.6.bazel": "f718863c73ee20c86e238bc810a9f5d1bc6722913912454d74fd172ae2faa519",
+    "third_party/rust/crucible-cli/BUILD.aws-smithy-runtime-1.11.3.bazel": "f77e66aebc78d5159a453cbe16df45cd54581bb2c1ba301cf45fc69be9a888a3",
+    "third_party/rust/crucible-cli/BUILD.aws-smithy-runtime-api-1.12.1.bazel": "289c23227630305b60d2d23acc001c75bf60d9d3698b5d0968d58a14b3a7d5ec",
+    "third_party/rust/crucible-cli/BUILD.aws-smithy-runtime-api-macros-1.0.0.bazel": "35b2dd3dfbcbca0d15f3bd49520c98b36a1a308eec93134311d5783b9504dba7",
+    "third_party/rust/crucible-cli/BUILD.aws-smithy-schema-0.1.0.bazel": "5f0453ab4a559a77ab365704e914f40ad53bdddef54a66983411d0b706b21f82",
+    "third_party/rust/crucible-cli/BUILD.aws-smithy-types-1.4.8.bazel": "4bb350269cb021714e0e984251446302d17353f6837d5def3a868d15123bb5c4",
+    "third_party/rust/crucible-cli/BUILD.aws-smithy-xml-0.60.15.bazel": "3be84c19480d262589f2b0c41074ac33da4f79186ab9632af13e56818b6f8a03",
+    "third_party/rust/crucible-cli/BUILD.aws-types-1.3.16.bazel": "161dc2e51d55495e99cc0879e21fbe03f133e4ecb0d8d435e326904c7af8091d",
+    "third_party/rust/crucible-cli/BUILD.axum-0.8.9.bazel": "8389cc4da4a000af89f82d2af1036b6d0e07753edacf60baee40f88c983b45c6",
+    "third_party/rust/crucible-cli/BUILD.axum-core-0.5.6.bazel": "1a687ff00210a0fe597bff20144222bb1aecad3f2a50039f034eaf8ccbb872b2",
+    "third_party/rust/crucible-cli/BUILD.axum-macros-0.5.1.bazel": "d229f1d4fff243a9727baa9274e839a5dc44c9a6e327f8518612b67edf8852d1",
+    "third_party/rust/crucible-cli/BUILD.base16ct-0.2.0.bazel": "921acba1bc54650851ddb3ce7febbc5ab4131858b35b96c4f0d66760da418d89",
+    "third_party/rust/crucible-cli/BUILD.base64-0.22.1.bazel": "091b9255feb5f2431b3d94dfc19eec1a6b47b9cbbe5451e478f1eb96cb450577",
+    "third_party/rust/crucible-cli/BUILD.base64-simd-0.8.0.bazel": "e5ebd28765ea8b0232c4f3bea87f7a972e048c667aac1149c5b690d3a55c08bf",
+    "third_party/rust/crucible-cli/BUILD.base64ct-1.8.3.bazel": "f5a83c5538ee20a62e629c22d42aacce9b262c27977d3387bcf68b9e0fbd61c4",
+    "third_party/rust/crucible-cli/BUILD.bit-vec-0.9.1.bazel": "3f85d94cadd2a6c895ae28c6c4bb421385a7d7a4bda738eb3d8de315774decb5",
+    "third_party/rust/crucible-cli/BUILD.bitflags-2.13.0.bazel": "e83b25a9c2bff8bae7aa2b9f7a03dcec4b9bb58eb53134757d24ea1afb29779e",
+    "third_party/rust/crucible-cli/BUILD.blake3-1.8.5.bazel": "dba8bffe4ab5fe812aa6acf0ddc52ddc89be20ea66556511c8d54bd695e9546b",
+    "third_party/rust/crucible-cli/BUILD.block-buffer-0.10.4.bazel": "61b5b313a705e43a4e86c9df63f3de57d55e48833877feaf23d5f24ea60525f5",
+    "third_party/rust/crucible-cli/BUILD.block-buffer-0.12.0.bazel": "9ac1bae19163ed36fc86753b25bd1eeee1bb6235aa5dfd0f3a74eafb8da2d78d",
+    "third_party/rust/crucible-cli/BUILD.bumpalo-3.20.3.bazel": "eab6dcf6bd3cb82ff1c3099a15a9e3ab9770fb72f4d45597d5f4b4a1073a8b18",
+    "third_party/rust/crucible-cli/BUILD.bytes-1.11.1.bazel": "b8a407a52ce648f8f9551c054b0a67ba6691c90e9274cafa419f32ce64e6d2e5",
+    "third_party/rust/crucible-cli/BUILD.bytes-utils-0.1.4.bazel": "5aa55aa4f183a9da9cba06d929ee51481289733bbcbef44ff2046195245024aa",
+    "third_party/rust/crucible-cli/BUILD.cc-1.2.65.bazel": "b7d6d35ed5e00eb965f1880a9eb99fc0d64a4f19d04806238187c947875a72fe",
+    "third_party/rust/crucible-cli/BUILD.cfg-if-1.0.4.bazel": "929d2bcd48a19cb0e702cd2722d88f29b9f6d0765ab106fa3347251a635e2c44",
+    "third_party/rust/crucible-cli/BUILD.cfg_aliases-0.2.1.bazel": "8f087dab220cd4ed153aba4c67208e139470b3036f9d4998e56e6c770f218918",
+    "third_party/rust/crucible-cli/BUILD.ciborium-0.2.2.bazel": "cd22df29736ce3fa44423c21a95c0bdc4a6a25e0f527d8ec813966ae01064509",
+    "third_party/rust/crucible-cli/BUILD.ciborium-io-0.2.2.bazel": "d70d38fc48501620d6e6d313497e9fad62ed166f8c9755483d7321f7a67dc48f",
+    "third_party/rust/crucible-cli/BUILD.ciborium-ll-0.2.2.bazel": "42b7de4e2cf69d05f81da22e076640dc7b6dfdfb5fcf5fdf10cc1cebc28f806e",
+    "third_party/rust/crucible-cli/BUILD.cipher-0.4.4.bazel": "16c0128e3d5b46d4b4022c915f76ec827f6dfc84636cfcd8930cd5784657a2d5",
+    "third_party/rust/crucible-cli/BUILD.clap-4.6.1.bazel": "a90ceaa97ccf3d12f49642dc7c55d64e0aa963c5e2e8893048f5be8612177c19",
+    "third_party/rust/crucible-cli/BUILD.clap_builder-4.6.0.bazel": "b5a49cd4d2e9677377ca6fd60b7153a7b00f3728ab9f37fdee8c11fb51fa3256",
+    "third_party/rust/crucible-cli/BUILD.clap_complete-4.6.5.bazel": "12558e9472429aa80d12659e33dadcc24bcbf4b9794b25f166402e00cf9cebc3",
+    "third_party/rust/crucible-cli/BUILD.clap_derive-4.6.1.bazel": "6ac11d246ac8c3ad1cd6555ce2639f4aa88ffd55bd3d0762e32382fad54891df",
+    "third_party/rust/crucible-cli/BUILD.clap_lex-1.1.0.bazel": "eeab2bcf9a347bb2e0636555cf871899e042a8a16cbd53b2369d4a748afd3b9d",
+    "third_party/rust/crucible-cli/BUILD.cmake-0.1.58.bazel": "9148c2b4f2abd57319975a8707054f31d71b7b3986b2569994f616231a7342d1",
+    "third_party/rust/crucible-cli/BUILD.cmov-0.5.4.bazel": "079e8683236885d13744bf379c56b2711bb217e7ec9c6399933d6b383d68c9c5",
+    "third_party/rust/crucible-cli/BUILD.colorchoice-1.0.5.bazel": "571ba83fc83b54be58a045b526e2c7bec0728dd24e2a8126464e5130415e492f",
+    "third_party/rust/crucible-cli/BUILD.const-oid-0.10.2.bazel": "8237d1b32491a132db0db8efd81502f7f91dd99b386d76d92d5eaff4d7d34439",
+    "third_party/rust/crucible-cli/BUILD.const-oid-0.9.6.bazel": "961a0dfd371324c7d86ebac009299d5f293f350f3257b9175b0185e097142c76",
+    "third_party/rust/crucible-cli/BUILD.constant_time_eq-0.4.2.bazel": "f851d2f7d8ba0fc877e64cac0e4635629b7d2b209bfb3ced9d3f9136f546e87e",
+    "third_party/rust/crucible-cli/BUILD.core-foundation-0.10.1.bazel": "459fa44b82b4e37f4091b80a5d94311c78f50a9ad710e320cfe991380faedad3",
+    "third_party/rust/crucible-cli/BUILD.core-foundation-sys-0.8.7.bazel": "cccf7e9a4ed65abe8073fe54dea86337626a8c644755ebd1d9983227c21eb433",
+    "third_party/rust/crucible-cli/BUILD.cpufeatures-0.2.17.bazel": "6111f90db0b28d4f333e3d17f1fa7f7365a07995578e0d1414f17335329ec7d8",
+    "third_party/rust/crucible-cli/BUILD.cpufeatures-0.3.0.bazel": "a0bcda80aa403d2fc9b8968c2969fb9f2092e77bab2f2a27456219162dbc3ae4",
+    "third_party/rust/crucible-cli/BUILD.crc-fast-1.10.0.bazel": "9871b7969f94a33aadd937fc473899162ec2483312431281c95f1fe97d17d23a",
+    "third_party/rust/crucible-cli/BUILD.crc32fast-1.5.0.bazel": "3f9f831c9a35cf760500da58032b5a23e3d587b541c4114052daa81019c60955",
+    "third_party/rust/crucible-cli/BUILD.crunchy-0.2.4.bazel": "493818de0c4ad65a82079b6d87a0fe5b3efd95b0e516f13d3886278bfccaad46",
+    "third_party/rust/crucible-cli/BUILD.crypto-bigint-0.5.5.bazel": "e5f8ecbc81298c9b23f58bb912cd88a041759906e49ce3efdba0d0c2182f55f3",
+    "third_party/rust/crucible-cli/BUILD.crypto-common-0.1.7.bazel": "97c2f7164fceac12ed48e176bec866e183ed66f9b36931437f31e25cb6f3027f",
+    "third_party/rust/crucible-cli/BUILD.crypto-common-0.2.2.bazel": "574ac17bc27f0940cb45045fdc475722179ee9f73adb4691ce5dda9afea6989a",
+    "third_party/rust/crucible-cli/BUILD.ctr-0.9.2.bazel": "a334ab0ea497e676b59c947b485ed3e5aaa0d4aa52cb43b998a53d3f490c34e1",
+    "third_party/rust/crucible-cli/BUILD.ctutils-0.4.2.bazel": "0c1dda6f1a03702a1b01b91e8d7961bda38437f472e33abb72343e0f52f5a59f",
+    "third_party/rust/crucible-cli/BUILD.curve25519-dalek-4.1.3.bazel": "17f8c08e8f1973b3fe3551c2452e39bde906e8170cd2ebbf07d4ee1d89b0c7d0",
+    "third_party/rust/crucible-cli/BUILD.curve25519-dalek-derive-0.1.1.bazel": "9ea227dbfe2ce026ed4f296b9c2da7c333e1cc7b68846f772c446bbb9cf9ddbf",
+    "third_party/rust/crucible-cli/BUILD.data-encoding-2.11.0.bazel": "d4b9f79bcc10e352daa91c1220ae35045e537ca0f2b8024f6f86397bdc487802",
+    "third_party/rust/crucible-cli/BUILD.der-0.7.10.bazel": "b4e4747a997dbb9d1058d40ead2fd68777e3570a1803a6d7188ac35bee818a5f",
+    "third_party/rust/crucible-cli/BUILD.der-parser-10.0.0.bazel": "89d11013fd5eb6d00259aa2675f59c7f30567d3a128e41f8d437a8df26fd099a",
+    "third_party/rust/crucible-cli/BUILD.deranged-0.5.8.bazel": "70b3bcdb4e44aba44cd81c9da2029562be9c2fdc1e1eada5c17bdb6cbcb37298",
+    "third_party/rust/crucible-cli/BUILD.digest-0.10.7.bazel": "b6467279ec579e0aab6e0a16fc88eaed089cc839aa93afc5412eff40a59de85e",
+    "third_party/rust/crucible-cli/BUILD.digest-0.11.3.bazel": "68bb91a77e4289825028562e9bae64a54a67578ebdfbcca63b1ec8226d517d8e",
+    "third_party/rust/crucible-cli/BUILD.displaydoc-0.2.6.bazel": "52e95933689f64bed5313d8008effd1b72045d32f5bae699ec46dc125790cb37",
+    "third_party/rust/crucible-cli/BUILD.dunce-1.0.5.bazel": "d9c2a9631a545b45b025b27873e1e53a641073ee22ccf0dff4d2fdb88a0fd385",
+    "third_party/rust/crucible-cli/BUILD.ecdsa-0.16.9.bazel": "d4bde16abe75765b821bd049129a6edd86af2c6bbc0616dc8e2c1b2a2ffdc3ac",
+    "third_party/rust/crucible-cli/BUILD.ed25519-2.2.3.bazel": "92b61b7f1201d44c08ad6c279c64b3e19d813029026b51322e1e19dd84b1d15c",
+    "third_party/rust/crucible-cli/BUILD.ed25519-dalek-2.2.0.bazel": "2fd9d9c5d3644591deea5325c72e7c6d77d7b8d2b26ea463cf5a1bdc4cd2c51d",
+    "third_party/rust/crucible-cli/BUILD.either-1.16.0.bazel": "8020a7baac248458e3b9b2ea300816a5293bd70c012120665767a72410bfd8ec",
+    "third_party/rust/crucible-cli/BUILD.elliptic-curve-0.13.8.bazel": "22d8554916419cb18850ec75b9e3a40e976f3baab17a6c6087b11938bb198e22",
+    "third_party/rust/crucible-cli/BUILD.equivalent-1.0.2.bazel": "e937bad37c426be3e68b1318ed16961b71559f675cb5e318c020bb5b1454f4ed",
+    "third_party/rust/crucible-cli/BUILD.errno-0.3.14.bazel": "3de88ce4887423a9a1ce6d9f220d77c376edec90ee2127734769e6793cc3a83d",
+    "third_party/rust/crucible-cli/BUILD.fallible-iterator-0.3.0.bazel": "a509ac2452e3bc7582ae3f49cdf969500913a84fb19b4142274cb1c70fb63b5b",
+    "third_party/rust/crucible-cli/BUILD.fallible-streaming-iterator-0.1.9.bazel": "b7316ac1eec4d04bb9713b78d4e079f0a616d0a16515f78c3a87f5dd551516b1",
+    "third_party/rust/crucible-cli/BUILD.fastrand-2.4.1.bazel": "cc3dd249ad1e61b0b55d63c42ca318d8ab607e2df8fc19ca2d56d07ff70cdd39",
+    "third_party/rust/crucible-cli/BUILD.ff-0.13.1.bazel": "a9e77fa6921e16725437a594d694e0c00bd9a41c7f4ef81e5b447909f7b36cc8",
+    "third_party/rust/crucible-cli/BUILD.fiat-crypto-0.2.9.bazel": "528db9d69fcabd1e01c3ad3925d2d815857dec6cf84fbab4839b7dafc4d1d570",
+    "third_party/rust/crucible-cli/BUILD.find-msvc-tools-0.1.9.bazel": "f50a7569fd832a16b51991be95e691c2db6f57d4b27cf69f0e72a2917d1a2086",
+    "third_party/rust/crucible-cli/BUILD.fnv-1.0.7.bazel": "54074724abac342c51bfca8ed81855e74f9428262bd858fe91c5cc4c5110506c",
+    "third_party/rust/crucible-cli/BUILD.foldhash-0.1.5.bazel": "ad50f5874f9ed3faf5708e8d04991aaca342999269a96386d8cfed8ad75123e8",
+    "third_party/rust/crucible-cli/BUILD.foldhash-0.2.0.bazel": "17b8815be3bce6387f512b81b3839d5e07516d1dc40fd1d8fa8a0262dc857f16",
+    "third_party/rust/crucible-cli/BUILD.form_urlencoded-1.2.2.bazel": "11a0aa0b4a076e5b95b6ae6af25994adba08d7b0184f03bbdd54a9bbc15b99d3",
+    "third_party/rust/crucible-cli/BUILD.fs_extra-1.3.0.bazel": "3ab36f1e4dbf141a8d4b890a72120b3ca5c70ea2527be89d785cacc72dd6a5d7",
+    "third_party/rust/crucible-cli/BUILD.futures-channel-0.3.32.bazel": "71dfd78c9cc7353ea4af9db05321426a48dd7093de69c7fb74eea9f4411dc762",
+    "third_party/rust/crucible-cli/BUILD.futures-core-0.3.32.bazel": "a4e149b2fe3261863975f8c8067bfc67b22ab21450f20f4d8db2d1881da0dd31",
+    "third_party/rust/crucible-cli/BUILD.futures-io-0.3.32.bazel": "7158d78f9252e84f612390391137bee461fa331c81b324bdb094d95d521d95ab",
+    "third_party/rust/crucible-cli/BUILD.futures-macro-0.3.32.bazel": "b46b2273bdf6f272954fe5dd9dcb32130c569784436cf978da0f2e09927aee14",
+    "third_party/rust/crucible-cli/BUILD.futures-sink-0.3.32.bazel": "f9fabaf9464075a07e15c1f8480d2a42bf5c09008bcef35ed7806da4d018fa6a",
+    "third_party/rust/crucible-cli/BUILD.futures-task-0.3.32.bazel": "cc24aaa6a7e1a0942996d8610a39e944b59a3575be12e2d946d4bfc6dc7ad379",
+    "third_party/rust/crucible-cli/BUILD.futures-util-0.3.32.bazel": "d2456c301a500b969225095698375cadc600116339f71cf5394aa88e98758632",
+    "third_party/rust/crucible-cli/BUILD.generic-array-0.14.7.bazel": "87d66a5f1c4b63b5a5a80fa58dced99d8186b09584ee6da0932aa31dfddb8bf5",
+    "third_party/rust/crucible-cli/BUILD.getrandom-0.2.17.bazel": "59d7b27300d93ec8843f7fe963547cfe0091c6aa9720ccf09025415cd99ac524",
+    "third_party/rust/crucible-cli/BUILD.getrandom-0.3.4.bazel": "7946020aa93cc1c11c64c1d0270b9f9f07f41259d5dd3d740bde63203829218c",
+    "third_party/rust/crucible-cli/BUILD.getrandom-0.4.2.bazel": "afdd90d25cde86d1243528680791180e8bf84b71a7f1946bc2f178a30714164e",
+    "third_party/rust/crucible-cli/BUILD.ghash-0.5.1.bazel": "742a09c6dd2f71694280777a405ca8b40f8aaba5f64b1877e8044304ceb2e997",
+    "third_party/rust/crucible-cli/BUILD.group-0.13.0.bazel": "b5494dc7c2f4368c6bd8613e529d77d996bb79b93644d80398ef706cba7d67a3",
+    "third_party/rust/crucible-cli/BUILD.h2-0.4.14.bazel": "fe95d52f127d3c753d7cd19cbad29b216d7baa11e15e8f6daa43f004ec11117b",
+    "third_party/rust/crucible-cli/BUILD.half-2.7.1.bazel": "f943b73ec730fa9aac4dd53fdf34f54eef64bed51214b45d1c68bd802f0926f8",
+    "third_party/rust/crucible-cli/BUILD.hashbrown-0.14.5.bazel": "c68a9afd2c7a8ed6404cbbc7cb620283321fbfd884282ff4ac9f7a09044caa33",
+    "third_party/rust/crucible-cli/BUILD.hashbrown-0.15.5.bazel": "568c5d230b2ba572521217a12b2461abb55b4ff9f3fab32a8c9144b0f2c50e31",
+    "third_party/rust/crucible-cli/BUILD.hashbrown-0.16.1.bazel": "95bcb015459c481b1f661d5fe92eded818705742d983b45062955b11fea3fd96",
+    "third_party/rust/crucible-cli/BUILD.hashbrown-0.17.1.bazel": "286e05133fead67d4cdde10a04531c335499aea8b7e977879036ee7e226547c6",
+    "third_party/rust/crucible-cli/BUILD.hashlink-0.9.1.bazel": "fc00cc18c89044197f85078c1da75994836fc63fddfd3e318fe4ad554a741868",
+    "third_party/rust/crucible-cli/BUILD.heck-0.5.0.bazel": "f102b0d9459bbcdca25ea4650ebc8e977454df5bb026338af34ebe907a1c3cce",
+    "third_party/rust/crucible-cli/BUILD.hex-0.4.3.bazel": "19297bcc0cad290d19a0a880dd6bfc0b675955bb2d780af2db9e57c69ee74d35",
+    "third_party/rust/crucible-cli/BUILD.hmac-0.12.1.bazel": "d27ad7eace1397c09b16d65a4f0d7f4ea1265b4ccc69c3501e34e6b1d3c82f61",
+    "third_party/rust/crucible-cli/BUILD.hmac-0.13.0.bazel": "1e0423af7809f46625d2824bdbeee1e7af70f1918f69a3fca4eeb6c27fddf6ac",
+    "third_party/rust/crucible-cli/BUILD.http-0.2.12.bazel": "127a12fb0b1797659b6d2fa0bfcd15843f56043e81e28412a66f10525ca72541",
+    "third_party/rust/crucible-cli/BUILD.http-1.4.1.bazel": "2e1214de7f76afc84f9022194c4090cf23ee4e1f7410a4c3c3814ee68a04bcec",
+    "third_party/rust/crucible-cli/BUILD.http-body-0.4.6.bazel": "a890d0ff9d97af27a958af65456c6abc21582da0678c3e51a762065401e4fd80",
+    "third_party/rust/crucible-cli/BUILD.http-body-1.0.1.bazel": "66ea09bc3039b973b42519b674a82c2f20f6cb5083a3f7098cc38093f2d5dc12",
+    "third_party/rust/crucible-cli/BUILD.http-body-util-0.1.3.bazel": "ef09f4d91d391c5f0c27b16d60b447f13edf838b8a0e07ae7ef42cf08363c7f8",
+    "third_party/rust/crucible-cli/BUILD.httparse-1.10.1.bazel": "88e3aaea89094f3c6fa2e0605e2455754e0de4d7e83f9f80cd81db7578c29a03",
+    "third_party/rust/crucible-cli/BUILD.httpdate-1.0.3.bazel": "6dc296cf2955896dbc8568334125d1d982f9997084964f0acb94ef3e7fce073a",
+    "third_party/rust/crucible-cli/BUILD.hybrid-array-0.4.12.bazel": "5fd218feab5e5ddfb2e3216fb1fcfc1b355db3f401a6103ee577a5c0042e73a7",
+    "third_party/rust/crucible-cli/BUILD.hyper-1.10.0.bazel": "cb38331c2a9700a3b416b15789419daf942b8cc6dfe8890f18eeb9f24b250588",
+    "third_party/rust/crucible-cli/BUILD.hyper-rustls-0.27.9.bazel": "e2d251e9ec4f5bd56cecb56f23286fa68afa186e187e20b27273f3686ca253b5",
+    "third_party/rust/crucible-cli/BUILD.hyper-util-0.1.20.bazel": "8b9788283853d60c7aff3fbf995267863680b0b09f52a93b60d39d139a630f1c",
+    "third_party/rust/crucible-cli/BUILD.icu_collections-2.2.0.bazel": "846e8bd752a26e53d5858a6b1c9561688cbfa17ac74f529ee7f1116ae14e30cf",
+    "third_party/rust/crucible-cli/BUILD.icu_locale_core-2.2.0.bazel": "ae221ce724797907e8f6f2114c876c77292de5dd08148dffedd98139abcde0d9",
+    "third_party/rust/crucible-cli/BUILD.icu_normalizer-2.2.0.bazel": "6f0938aba5de7d7f64c8257970420b9b41b1d651aea50ae61713daf1658e4d2a",
+    "third_party/rust/crucible-cli/BUILD.icu_normalizer_data-2.2.0.bazel": "07e86dc1b2b40ac41d113b38b4f9189c4d58de07012df41c8b3c59c37bdb7673",
+    "third_party/rust/crucible-cli/BUILD.icu_properties-2.2.0.bazel": "3f5a65ce48f8a6632ade7bfd9d193e32d03a03974daec0de8504a81508f78e21",
+    "third_party/rust/crucible-cli/BUILD.icu_properties_data-2.2.0.bazel": "c93e25ec3b133b7855dfc55525eb9852ceeec9e230e30aeab4256a2185a29ba5",
+    "third_party/rust/crucible-cli/BUILD.icu_provider-2.2.0.bazel": "56ab607d74429c77a821c1e8fb6a6b46332f5d036b02f066bf0c8831139fb4c5",
+    "third_party/rust/crucible-cli/BUILD.id-arena-2.3.0.bazel": "a39cca452d941d313149d92ceb893a89be5f5009ec6857d08ff46a703013b93b",
+    "third_party/rust/crucible-cli/BUILD.idna-1.1.0.bazel": "380790eb564916ad37d3f001cda27bc573e4b3d66427f3a8cb276e2d9befdb7b",
+    "third_party/rust/crucible-cli/BUILD.idna_adapter-1.2.2.bazel": "c972ac64347fee663bd7d63c48c17fc7dcf45c9ca43df481da42f32c350a58f5",
+    "third_party/rust/crucible-cli/BUILD.indexmap-2.14.0.bazel": "eb0cbbc1c46d1d5ea5a6e4e234869f25477c963a8765d47f15b4c15d0f5978da",
+    "third_party/rust/crucible-cli/BUILD.inout-0.1.4.bazel": "c0aaa2f1780a523f28f59c14218a400b9e2913a944152a65ecf93b8a28eb485c",
+    "third_party/rust/crucible-cli/BUILD.ipnet-2.12.0.bazel": "64c0c19e580cbc796c3a3f4210495ae7bc98c58755c874d05b1c8ea03d43125c",
+    "third_party/rust/crucible-cli/BUILD.is_terminal_polyfill-1.70.2.bazel": "d273ffd2fd5b57267e37d79ecf292fd1ea5f15c589a6114a4fba507f6b9b65ee",
+    "third_party/rust/crucible-cli/BUILD.itoa-1.0.18.bazel": "c04da406c2b29d5864944fa01ec0f40baeb067e2926a22dc3875d89353bf1207",
+    "third_party/rust/crucible-cli/BUILD.jobserver-0.1.34.bazel": "dd4772f4fb777a9c5edc778c86a60aa9d8be899980519dd96eb0e3aa3f4aeccb",
+    "third_party/rust/crucible-cli/BUILD.js-sys-0.3.103.bazel": "baa63179ed3f72d48715368f53a179cadc6829c92cae6d16f74241083ddbceff",
+    "third_party/rust/crucible-cli/BUILD.lazy_static-1.5.0.bazel": "3c60e7f1a7cdec8c1641c2f20e23cb0c5231cfd514e4fd70db58612482f08fff",
+    "third_party/rust/crucible-cli/BUILD.leb128fmt-0.1.0.bazel": "b8ce217b1ec667f953c3387cb654f782dbf8e8fa9d372484c0d70c9a11a64419",
+    "third_party/rust/crucible-cli/BUILD.libc-0.2.186.bazel": "17a74e566c1e4a9031680d0d27d7cc3be7edc8dda17149e3408c04dbd151c285",
+    "third_party/rust/crucible-cli/BUILD.libsqlite3-sys-0.30.1.bazel": "278063cca3147056e4f52db48ce435722a7c295ae9f3be96db44ad8045b6e464",
+    "third_party/rust/crucible-cli/BUILD.linux-raw-sys-0.12.1.bazel": "47937a971249c60862b12818365cc4b1a81efd87d7a9b8a25cafa80a030d8385",
+    "third_party/rust/crucible-cli/BUILD.litemap-0.8.2.bazel": "5fb15385bc7bb3d1f966928c6367310f0175a3656e05c7ecc5acd7e809f0d9cd",
+    "third_party/rust/crucible-cli/BUILD.log-0.4.30.bazel": "9715653bd0ad01a276ef9ff1d7be61a15eeb3d65868f8f4c00cd6cfffa8bb9b8",
+    "third_party/rust/crucible-cli/BUILD.lru-0.16.4.bazel": "17cd9b1313171147c268286be3caa688666012c516f0155adc645b93eabe1ea4",
+    "third_party/rust/crucible-cli/BUILD.lru-slab-0.1.2.bazel": "e919c3e9e5e1bd52c24f437f8cb9d76a33bfd85c7dff826002a743dba662ea20",
+    "third_party/rust/crucible-cli/BUILD.matchit-0.8.4.bazel": "a7a287fca9853012621d61714a055b7a1a9fc9c796967ecd5d86bbdb6155e943",
+    "third_party/rust/crucible-cli/BUILD.md-5-0.11.0.bazel": "fe5daf1af2e5e03083f6a8f8f6136f6fe371bf844c2c33f7da3740e8a2921605",
+    "third_party/rust/crucible-cli/BUILD.memchr-2.8.2.bazel": "54a3f8b21fb7214532c00b92bcdbcb6ea58aafd0b2d0c5f6391e886cd63c930b",
+    "third_party/rust/crucible-cli/BUILD.mime-0.3.17.bazel": "087375c1d6798b6616cb53c802c1035ef72ce358c30b210d27bdb51ca0e6335c",
+    "third_party/rust/crucible-cli/BUILD.minimal-lexical-0.2.1.bazel": "222fac96eebd2c8c692b14b17c3b2c14855eae6d77cc6326365015436d7900a5",
+    "third_party/rust/crucible-cli/BUILD.mio-1.2.1.bazel": "0211cc70c99a30bd4f9b10177db249b8d4263a1479a7c9863fe72fcba925fa13",
+    "third_party/rust/crucible-cli/BUILD.nom-7.1.3.bazel": "e6bdf6d048e0874fb938b56a573f04076a8a41716b69ad7be5cfcff868b7d56e",
+    "third_party/rust/crucible-cli/BUILD.num-bigint-0.4.6.bazel": "b4d213f4228ead5888f4697431e40b389415180c1ecdf49f459bcd95b849dcb4",
+    "third_party/rust/crucible-cli/BUILD.num-conv-0.2.2.bazel": "67d7c9fa445e26c6cb8bc3761fe3c716ffc67f5359c3b2bb97204389a5b273dc",
+    "third_party/rust/crucible-cli/BUILD.num-integer-0.1.46.bazel": "5f6c4cf89ad989d38e28e28a8c62603ea314047f00fa7f6b5fb8a2adb4bb81f6",
+    "third_party/rust/crucible-cli/BUILD.num-traits-0.2.19.bazel": "af7dbd59ec6070445b5409e494b4154feb295d9b661fc4b3a8dff30cff621f76",
+    "third_party/rust/crucible-cli/BUILD.oid-registry-0.8.1.bazel": "fc5e89319a654f3e3a5d1ee2c74235b17e8511654ca6077ddc80eb9594882df5",
+    "third_party/rust/crucible-cli/BUILD.once_cell-1.21.4.bazel": "47d17f16f6089b0bd655a1613fc864ec5be205cde0266b8f5ef8be2e27872490",
+    "third_party/rust/crucible-cli/BUILD.once_cell_polyfill-1.70.2.bazel": "cb4de85b1e42c8a7c75e6e86ae9f08ee3e01722b6b19f2d73ca3edc36b2bde85",
+    "third_party/rust/crucible-cli/BUILD.opaque-debug-0.3.1.bazel": "0d4f67957a46eb600d35361c7a80047721afaa73763121f2b17cf1f57da8e510",
+    "third_party/rust/crucible-cli/BUILD.openssl-probe-0.2.1.bazel": "439e86757455db3c0e3e73935daf4e16e9675e4725c76cbaec7b47394a32b3a3",
+    "third_party/rust/crucible-cli/BUILD.outref-0.5.2.bazel": "1657329ab2b9d2032b382186eaa5b47782fb24f4c7102c49110d60e597283686",
+    "third_party/rust/crucible-cli/BUILD.p256-0.13.2.bazel": "b122186d32bf1280ee54e0deae497b0e2f1edf06362aa277382b3a819feadce8",
+    "third_party/rust/crucible-cli/BUILD.pem-3.0.6.bazel": "410b3a3cd594d6c72340eb6b0a591bc1f8697d433d72da0a973ce889e3252658",
+    "third_party/rust/crucible-cli/BUILD.pem-rfc7468-0.7.0.bazel": "4b6349b569d4426c334c5302aea9114baff1d684ad33da7586ba32f744bf4031",
+    "third_party/rust/crucible-cli/BUILD.percent-encoding-2.3.2.bazel": "2c133445cff15966827cd8b8023691c11ca8350126edd7ec080e98d4e4d8a4cc",
+    "third_party/rust/crucible-cli/BUILD.pin-project-lite-0.2.17.bazel": "7af5852633177a8bcb42aae09dd141fc64ce1c3d95a48622a069abca29c4250b",
+    "third_party/rust/crucible-cli/BUILD.pin-utils-0.1.0.bazel": "29e764a051e65f4389b03348e8bca2f16d0b475634948aa2476c016e64308306",
+    "third_party/rust/crucible-cli/BUILD.pkcs8-0.10.2.bazel": "ad7cd039f199555c5791912ec0500d0344bfe5adcb5350ae87960883a2a090bc",
+    "third_party/rust/crucible-cli/BUILD.pkg-config-0.3.33.bazel": "1652d398bd1af8a09663ef43d1b629ff512922c3eb2cbf3cdea42c68d80c58e8",
+    "third_party/rust/crucible-cli/BUILD.polyval-0.6.2.bazel": "c6648ddc95ab763d7c0606cf0764820b1625f536e0432a2dca9fdb40bd8ed922",
+    "third_party/rust/crucible-cli/BUILD.potential_utf-0.1.5.bazel": "4a2e321f61296995fa8b148c00b67e298ae250dde445a4c5172dfe943204d267",
+    "third_party/rust/crucible-cli/BUILD.powerfmt-0.2.0.bazel": "b51d69adb8e5e8c1aa108c663d74b6f9bfc7e6156e9e5045c6cc990b3a7faa81",
+    "third_party/rust/crucible-cli/BUILD.ppv-lite86-0.2.21.bazel": "73e34b358fa47e259d3c734301e4547a6c50398dfe73abed1587730bf807a0a7",
+    "third_party/rust/crucible-cli/BUILD.prettyplease-0.2.37.bazel": "c4c7cfb9ebbd6a8a074849f275189279444d70508bc94c1e7976a289dd17cb5f",
+    "third_party/rust/crucible-cli/BUILD.primeorder-0.13.6.bazel": "b54ae9f5a53017ae70c34ac08ec638f1eb26730d7a4e9fb7cc85c6b9e40502bf",
+    "third_party/rust/crucible-cli/BUILD.proc-macro2-1.0.106.bazel": "421fd449e89b048c6b7fe1a65a142de9e3f36d2a2031502150aa35c5ca11d1c5",
+    "third_party/rust/crucible-cli/BUILD.quinn-0.11.9.bazel": "1cb357af0cfab6601d22d023c9779d2e1bddf80102b657b1c018019e4efe7c60",
+    "third_party/rust/crucible-cli/BUILD.quinn-proto-0.11.15.bazel": "197e4e0acf4cc762a504e3ede2fc8663b3cd8b919b596054a81465cc64b90f48",
+    "third_party/rust/crucible-cli/BUILD.quinn-udp-0.5.14.bazel": "e852810105d8251eef1d444550ac700e798f42d2c2569830eb285b892ce203a3",
+    "third_party/rust/crucible-cli/BUILD.quote-1.0.46.bazel": "83dbc1d99a620ef09c63322b45be1c91efddf7a1b845cb4d7ccaf9bb158d63f6",
+    "third_party/rust/crucible-cli/BUILD.r-efi-5.3.0.bazel": "410a84e06651872ab3e3b3e6bffab61b52ff8e86603e54537a22f14ba1116968",
+    "third_party/rust/crucible-cli/BUILD.r-efi-6.0.0.bazel": "21afb66e621bc0ce152cec6e4dc015bb67156f2dfe0a7d50dbd38c4d8a9da4aa",
+    "third_party/rust/crucible-cli/BUILD.rand-0.9.4.bazel": "996754a7c1f0ab3aae7aa51116e79247e7ea749ac273435e0d0b4c87defb2e7a",
+    "third_party/rust/crucible-cli/BUILD.rand_chacha-0.9.0.bazel": "f9ee62f9088b49e0be2c338316a486fc6fe575a015a7652001e72127bcf2abd7",
+    "third_party/rust/crucible-cli/BUILD.rand_core-0.6.4.bazel": "3d09fb9d1ddb9b1423477909d585b921ee57a2aa2ba750cbf39cd9ca5051dbf2",
+    "third_party/rust/crucible-cli/BUILD.rand_core-0.9.5.bazel": "e3c4f3cfbc4765b3e118c865267071ccf58e81e9dc62fa9343d31ad50ee7357f",
+    "third_party/rust/crucible-cli/BUILD.rcgen-0.14.8.bazel": "74051848fb369e5859ec240357acb440a7d42b499e8e5bba8790ef67f5de6c6c",
+    "third_party/rust/crucible-cli/BUILD.regex-1.12.4.bazel": "981d520cdc375634c59b2ceb722c40a3e560e7b44b796aef6f39b56c2bab5e23",
+    "third_party/rust/crucible-cli/BUILD.regex-automata-0.4.14.bazel": "4889e7bc946a875b4b45babcfd613a9d9535a4414d06b207cbcffb9e7f0cfe68",
+    "third_party/rust/crucible-cli/BUILD.regex-lite-0.1.9.bazel": "cc23040cb69f859b0400c0e85fbbcd4c35faeeb4bca4937be15b0bfbafd9d7aa",
+    "third_party/rust/crucible-cli/BUILD.regex-syntax-0.8.11.bazel": "2b932533330e2929e4cec6027fd4dd2e9aea5e28cd81fbfc04e155beaa43990e",
+    "third_party/rust/crucible-cli/BUILD.reqwest-0.12.28.bazel": "f6d25adeb82d34e38b1b6714185a5e20e817226e43b1d234f0be8a2326b3870b",
+    "third_party/rust/crucible-cli/BUILD.rfc6979-0.4.0.bazel": "afdc7555c85e94cd4d9862221ede535bc97b6fc2b88665724f780420774d59c8",
+    "third_party/rust/crucible-cli/BUILD.ring-0.17.14.bazel": "a30807a3871293b52bbbaa905f1207ed62f7e0be2900d14faccb40ef8f1db6d0",
+    "third_party/rust/crucible-cli/BUILD.rusqlite-0.32.1.bazel": "5866646c136693076fd99fcd595a1de42fe0867dcb0cd464d5182dd7594a91d8",
+    "third_party/rust/crucible-cli/BUILD.rustc-hash-2.1.2.bazel": "6aa9658e76919129f36c39a1abb1406cc6f49942575bc1290904b04e2c75a509",
+    "third_party/rust/crucible-cli/BUILD.rustc_version-0.4.1.bazel": "4326c26523e8edaabde47021694f05fdbf2e407690574a5cb19ed3c7aa5527cf",
+    "third_party/rust/crucible-cli/BUILD.rusticata-macros-4.1.0.bazel": "f1a8aabf56a0269cb70e3cfeeb4c1e6fce7cec509bbf2350a2f914581e4caef9",
+    "third_party/rust/crucible-cli/BUILD.rustix-1.1.4.bazel": "2d4e360856e76572d50f82b827e72cdd3395db3908ffaaf8d9df9cca9ddbf559",
+    "third_party/rust/crucible-cli/BUILD.rustls-0.23.40.bazel": "702a8ae05306a989139f86155d0911d70ca442be39e1edc0eb27b6cde9a33766",
+    "third_party/rust/crucible-cli/BUILD.rustls-native-certs-0.8.3.bazel": "2849bfe4a0423814bd274b85609d87d9269e171b08ab908300f05e323c44d1cb",
+    "third_party/rust/crucible-cli/BUILD.rustls-pemfile-2.2.0.bazel": "91d88f24121ff8badc3c74c29bf72566ecc8dc5ecad15c20ae209580776b6d4d",
+    "third_party/rust/crucible-cli/BUILD.rustls-pki-types-1.14.1.bazel": "467e5c6625728ae87e8eb460862bafa8ab2bc6637c853a4119906d35cdd381c4",
+    "third_party/rust/crucible-cli/BUILD.rustls-webpki-0.103.13.bazel": "81d65a48d745ae5da44f0c3f094641bedba180b8b01f8945a164fc75e28762bd",
+    "third_party/rust/crucible-cli/BUILD.rustversion-1.0.22.bazel": "e3740c496d90bcaef3de8ecc6b6804a3f4b5a1d752f6c5600cd121302a0961a0",
+    "third_party/rust/crucible-cli/BUILD.ryu-1.0.23.bazel": "effa44893d39ed8f17c33df0d8b345eb85c3a337a0514b7b296e53861a5755f1",
+    "third_party/rust/crucible-cli/BUILD.schannel-0.1.29.bazel": "719c2f171ef9d8bb7dc8ce4fd84636e77baae222e25d09de65e847ae137167aa",
+    "third_party/rust/crucible-cli/BUILD.sec1-0.7.3.bazel": "4df18624afe3100ed423b50486c04dfd93452e7935bb14889739a1f4f773e3d6",
+    "third_party/rust/crucible-cli/BUILD.security-framework-3.7.0.bazel": "39242e13c0142ae3e11b7687b978099c5779bf5e82982fe0d526045d4c1c69dd",
+    "third_party/rust/crucible-cli/BUILD.security-framework-sys-2.17.0.bazel": "744813cc284e61751bf0a802ec1e340ba11adb055fd46d0cc06d7eddb71e86bf",
+    "third_party/rust/crucible-cli/BUILD.semver-1.0.28.bazel": "34026b0c0cdd3f2705cb7b16596a7eb47823b76fe091f0ef9fca1f4cb08d5b03",
+    "third_party/rust/crucible-cli/BUILD.serde-1.0.228.bazel": "5d09991d174dca25d86041c19541769d6d426a771be0874327aa24f3467f9afe",
+    "third_party/rust/crucible-cli/BUILD.serde_core-1.0.228.bazel": "ff6788fdd50aea1739789bd8b04650180070915c28de9dca494d75b91c081f82",
+    "third_party/rust/crucible-cli/BUILD.serde_derive-1.0.228.bazel": "341aee7456a21bb6441a1143b15a610df5b25a4993cade13096f841ee55a7dc8",
+    "third_party/rust/crucible-cli/BUILD.serde_json-1.0.150.bazel": "3c810c03a154fff1f66b01891ea60d4d0ad6074ca1ecf7e1603624b5ab10de8d",
+    "third_party/rust/crucible-cli/BUILD.serde_path_to_error-0.1.20.bazel": "7bb38d56f5baf1e1d67eb5ef226df6fdafb67b060add0407fbf5065fa62f2f3b",
+    "third_party/rust/crucible-cli/BUILD.serde_spanned-0.6.9.bazel": "3d41793de28f20b477234e8aab6969ccc31d61e753947b0ad459465c3cecb61b",
+    "third_party/rust/crucible-cli/BUILD.serde_urlencoded-0.7.1.bazel": "76961c14f7532b58adb8de24a5492d2911810dd9c04725414ce64e8e64031324",
+    "third_party/rust/crucible-cli/BUILD.sha1-0.11.0.bazel": "28ee6a2d90f4ff6be87f9944809e10121a3e16c39736aadb574273973234e0c1",
+    "third_party/rust/crucible-cli/BUILD.sha2-0.10.9.bazel": "654947f2cc602e63fcad4c87510aaddcb65e763b2703759a576fc01108494e40",
+    "third_party/rust/crucible-cli/BUILD.sha2-0.11.0.bazel": "4d69c9dd52464cfc16bfa204edd8392d0b1517da8cda90eeb46143c7e7c97b79",
+    "third_party/rust/crucible-cli/BUILD.shlex-2.0.1.bazel": "505f9fcc29a2f7468e151759073d9d60f7225ab39e0931edf9c2e15e704b4cf7",
+    "third_party/rust/crucible-cli/BUILD.signal-hook-registry-1.4.8.bazel": "26d9ae09259c239e3eec6ad94a86fec3b3cf5f65e962dfd73f85cb9a2c7152d3",
+    "third_party/rust/crucible-cli/BUILD.signature-2.2.0.bazel": "f35e8acffecb431893b03a38b04a69826774e48d7f0b588f22e2ff1ac6db30a5",
+    "third_party/rust/crucible-cli/BUILD.slab-0.4.12.bazel": "d42ece9495976fbbfb5ab3d0ec9761dfc5bdd442ffc6acf65f94a4d4997df579",
+    "third_party/rust/crucible-cli/BUILD.smallvec-1.15.2.bazel": "8f1f80abec1fd39afbfa11e70d483386c7af607c07585e37503c2af71f91d212",
+    "third_party/rust/crucible-cli/BUILD.socket2-0.6.4.bazel": "8bc20a4a3d27b354c3103c5d848844441a14122543d14481349a9b1004f9391a",
+    "third_party/rust/crucible-cli/BUILD.spin-0.10.0.bazel": "ea9e2988e60caef97e1da63cb815eb63e6b78996b580d24a63d716cd2601c34e",
+    "third_party/rust/crucible-cli/BUILD.spki-0.7.3.bazel": "f5819002f5a94a74e1456dccf1bbad8db725564fcd34b193db0b7ca8f20f385f",
+    "third_party/rust/crucible-cli/BUILD.stable_deref_trait-1.2.1.bazel": "504ae0069fe8ce212aaac6f4baf21208c2c045f24781c7c95a3033e923ff6eef",
+    "third_party/rust/crucible-cli/BUILD.strsim-0.11.1.bazel": "92955f3b25f2b620b0ed7056dbfde8ef406b6eb866d67161ddb360e7f578acb5",
+    "third_party/rust/crucible-cli/BUILD.subtle-2.6.1.bazel": "458c1def82084b1c48f0396d7f6d261c429dae3f1dbce231902cc7ad976e0fce",
+    "third_party/rust/crucible-cli/BUILD.syn-2.0.118.bazel": "72bcaddf37ff6fc5403df0a918b4bc4eb4e15a580681c0e2e51e2d714257e219",
+    "third_party/rust/crucible-cli/BUILD.sync_wrapper-1.0.2.bazel": "af0a02c100b12cdb38e9f5aa447fb7e967b660d0f92457656d62decc35512b1c",
+    "third_party/rust/crucible-cli/BUILD.synstructure-0.13.2.bazel": "aaba53c02505b5a6e1a069d278fc504245c06cf83f3d0632c9fde20a66db5152",
+    "third_party/rust/crucible-cli/BUILD.tempfile-3.27.0.bazel": "abedabd504a9654212ac59c229f73a97ea40d0545d19bf5692eeb67dad9a6b30",
+    "third_party/rust/crucible-cli/BUILD.thiserror-2.0.18.bazel": "025d16f3115e56e34370ea7a7941bbc3bf55634ddb61f783f58102e893bee436",
+    "third_party/rust/crucible-cli/BUILD.thiserror-impl-2.0.18.bazel": "79f1dc3f780a06c22254a5066c981fe6ba015f8624ffef6fcce3a3fa176b7f7d",
+    "third_party/rust/crucible-cli/BUILD.time-0.3.47.bazel": "534ae348023ee89b3adefacda6e7b38e2077836c47a743a73f48e14e04ce11a2",
+    "third_party/rust/crucible-cli/BUILD.time-core-0.1.8.bazel": "2a62bdee8eb51834c33134386f0c893dfa3cc9574fc93a2b5f6513f39f7ef32a",
+    "third_party/rust/crucible-cli/BUILD.time-macros-0.2.27.bazel": "80e2236e31c47207c500f398083a45ad3057559ce4633521eefdc0cd4e3343a9",
+    "third_party/rust/crucible-cli/BUILD.tinystr-0.8.3.bazel": "2a9dad65e8944509dc8e4dd7d10ef38eef8f1c7dda1ef3c788e168fd622e3767",
+    "third_party/rust/crucible-cli/BUILD.tinyvec-1.11.0.bazel": "dd935fce1a787557e02b82c74fc93c2becf6a9a6603da16d1fc79a135ac56564",
+    "third_party/rust/crucible-cli/BUILD.tinyvec_macros-0.1.1.bazel": "2df4aeaf1a73ff888557071afcc993dc5462a40dc96f1e33db0977682f3c9681",
+    "third_party/rust/crucible-cli/BUILD.tokio-1.52.3.bazel": "aa388e4de7504d534b5bf4e32360b294493798f0bca0ec8357cad542b761f594",
+    "third_party/rust/crucible-cli/BUILD.tokio-macros-2.7.0.bazel": "dd9305a662106fcdf782d349953fecb34e62368f4bfaa1dfc958396e5031d3f6",
+    "third_party/rust/crucible-cli/BUILD.tokio-rustls-0.26.4.bazel": "15d9cadcf2668bf2881623c24981c169890b7d4aad0b66e266451b32d3034c99",
+    "third_party/rust/crucible-cli/BUILD.tokio-util-0.7.18.bazel": "45d57bc9538100ce37c377963af86682ee4f9fecc3888dcda00b466ca6ebf675",
+    "third_party/rust/crucible-cli/BUILD.toml-0.8.23.bazel": "3615721038054dd3fd75909020b3c4f260e553c70f502562bb4a126b2c41e10a",
+    "third_party/rust/crucible-cli/BUILD.toml_datetime-0.6.11.bazel": "a89cc0402bf959fe7ab22e18809789a05f4dbe955fdaba0c6786d1571dc0b1d3",
+    "third_party/rust/crucible-cli/BUILD.toml_edit-0.22.27.bazel": "de8fd3278a2f983cf36e6be03ee83393c0e99682b9ff0780cde64d95dac38a59",
+    "third_party/rust/crucible-cli/BUILD.toml_write-0.1.2.bazel": "f804fe7b064dac5d7a7abcdeb881608ddb178ed95a8f87cf22a8aaded85d2cfb",
+    "third_party/rust/crucible-cli/BUILD.tower-0.5.3.bazel": "f0193bbfd8e42b4cd62e8b380ea1e1f11f6c91215388074b6087d15dbff00587",
+    "third_party/rust/crucible-cli/BUILD.tower-http-0.6.11.bazel": "7c5f1c41b1c480ad1790746eeff63a857d1fcf916a33c8bd43b107941a9a9218",
+    "third_party/rust/crucible-cli/BUILD.tower-layer-0.3.3.bazel": "c17857975a8af09d775b8bd5b5f020f02d0ab01c97bbaeebbf813a36cdaa1866",
+    "third_party/rust/crucible-cli/BUILD.tower-service-0.3.3.bazel": "9f974ccc4b45ad60485c27ba90de9b810993fa546d165947dab0b6b2a9de5edc",
+    "third_party/rust/crucible-cli/BUILD.tracing-0.1.44.bazel": "b5f12807484cd20294fc8e673f7f620431516ef36b1c5324358f382e59c47b77",
+    "third_party/rust/crucible-cli/BUILD.tracing-attributes-0.1.31.bazel": "d93f6a2c8e7cebbd22c9081aa530b93f504e7c27a16e51661db8c375748dbff7",
+    "third_party/rust/crucible-cli/BUILD.tracing-core-0.1.36.bazel": "44fe3d308553b40bd2c7f3556cde71608268d61cb6611e86bec58390b2aafd2d",
+    "third_party/rust/crucible-cli/BUILD.try-lock-0.2.5.bazel": "763890d9df15922274e91498ecc81b659dfca9d78a59eaf1749af286d7c85efc",
+    "third_party/rust/crucible-cli/BUILD.typenum-1.20.1.bazel": "dba8776a2c9d96395cc534823e5404f1442523ddf610716a2c4172c663e54144",
+    "third_party/rust/crucible-cli/BUILD.unicode-ident-1.0.24.bazel": "f8e66592b3f08123cfacfd02225c31323da5b12efd0d1220ba41721b4ea4b654",
+    "third_party/rust/crucible-cli/BUILD.unicode-normalization-0.1.25.bazel": "f83a78073dbde643e01b6d3cf01b093c027fdd818f78947c31a3ea61899aacfc",
+    "third_party/rust/crucible-cli/BUILD.unicode-xid-0.2.6.bazel": "5fcd48b1f0ce4542d168f29f352d1e3e5c0bc353137fc1d4d18c957c8b2fb9e7",
+    "third_party/rust/crucible-cli/BUILD.universal-hash-0.5.1.bazel": "93db8f1b6ff73bec2f93c372519832b2ebb369fae2a6b4326dbd23290866c4cb",
+    "third_party/rust/crucible-cli/BUILD.untrusted-0.9.0.bazel": "7f587ec39c67ecd0587ec7a9ebfdb29d5a9b1637ea9eb057348065e77d33b01d",
+    "third_party/rust/crucible-cli/BUILD.url-2.5.8.bazel": "89ff9332eb85c01476799f4e36a8c9bb77579a7e787e47e2c34dfc9216e2e4d5",
+    "third_party/rust/crucible-cli/BUILD.utf8_iter-1.0.4.bazel": "26d4d41f26d7966a97d6774a30f5691e886669b16159dc5ebd5d0bb8838f286a",
+    "third_party/rust/crucible-cli/BUILD.utf8parse-0.2.2.bazel": "6bf7010ab9fcdd58f0c9621a233bcf97097795998ce8575c446e34f12f126462",
+    "third_party/rust/crucible-cli/BUILD.uuid-1.23.1.bazel": "56c6ec5b34d23b0374226883e82acdb918bad11ec8b101dffcf9ff7313b83781",
+    "third_party/rust/crucible-cli/BUILD.vcpkg-0.2.15.bazel": "39ae8cf4b85d7627e24efcbdec6d97bcd61acc7f17f19a799d9fc4be478f966c",
+    "third_party/rust/crucible-cli/BUILD.version_check-0.9.5.bazel": "0a94ee18e89e28d5a0192234b39ea2cbcec5ef8eb13a76da50b46c5e975148e9",
+    "third_party/rust/crucible-cli/BUILD.vsimd-0.8.0.bazel": "e48500965a871b74722df3500dac73a36177204b500fa1aac4ac9ec4100038b3",
+    "third_party/rust/crucible-cli/BUILD.want-0.3.1.bazel": "e92531a3878ecc07a98fec6cfa9bf82aebfd2e38ba1a84d501de61654315ad64",
+    "third_party/rust/crucible-cli/BUILD.wasi-0.11.1+wasi-snapshot-preview1.bazel": "3fa52b8d4e4c5df4dfa52bebe3e235f531dc15b485003d9d717159167f8d9d0a",
+    "third_party/rust/crucible-cli/BUILD.wasip2-1.0.4+wasi-0.2.12.bazel": "299e3d076770f97743771e42b1aabb12bb1a6206c450bd54b9cd9d2a398139fb",
+    "third_party/rust/crucible-cli/BUILD.wasip3-0.4.0+wasi-0.3.0-rc-2026-01-06.bazel": "cc460a2be7f048a4626ab98c62068862d4d74ed6a5cae605736269f0e293314d",
+    "third_party/rust/crucible-cli/BUILD.wasm-bindgen-0.2.126.bazel": "d95518c8225a5ebe2a62ea61edfd9288989b5e39480ea19f1f5b6ed3c38ee059",
+    "third_party/rust/crucible-cli/BUILD.wasm-bindgen-futures-0.4.76.bazel": "933a4deb12fc361c456bdf9b53ec444f418518e1d13daf10d08651154ea1fe9a",
+    "third_party/rust/crucible-cli/BUILD.wasm-bindgen-macro-0.2.126.bazel": "d81424f1ea205b2182d9f609a4540f1224b7fbd722f2df2a0750887ba89c4b36",
+    "third_party/rust/crucible-cli/BUILD.wasm-bindgen-macro-support-0.2.126.bazel": "749257c8a1ad26861993f6869afafc591328f1e38d6db858a80a772daa235e3b",
+    "third_party/rust/crucible-cli/BUILD.wasm-bindgen-shared-0.2.126.bazel": "52d926d05b31d3b8ceb5d577d2c393ddb30d4f4f69a157e6b5e83e1c6e56ad13",
+    "third_party/rust/crucible-cli/BUILD.wasm-encoder-0.244.0.bazel": "eb76a7ed066f738eb095806fc859bea0460b4f2c26b51e724ee9307a15ffeec4",
+    "third_party/rust/crucible-cli/BUILD.wasm-metadata-0.244.0.bazel": "411b411fddbf2767565c3075502f5cee2158a813aebd279fe53c4e9b7c26d9d5",
+    "third_party/rust/crucible-cli/BUILD.wasm-streams-0.4.2.bazel": "687850c192ba3934a8165b89fa2e7ee0994c691da3f9eab31e363fa62e22e800",
+    "third_party/rust/crucible-cli/BUILD.wasmparser-0.244.0.bazel": "460314418aed9e4c4b3890677a4050a798eb20c4bb8eac76558cd77bff080b4c",
+    "third_party/rust/crucible-cli/BUILD.web-sys-0.3.103.bazel": "88e068399e49978be773a4b32e954f2cb558fc95f89c78191ff16c59da69ef74",
+    "third_party/rust/crucible-cli/BUILD.web-time-1.1.0.bazel": "7a7b0f1bbd3d4c04d8b389667df4d1bfa8fe9813b55d8f8d3e8b576ba922abc4",
+    "third_party/rust/crucible-cli/BUILD.windows-link-0.2.1.bazel": "3811b633a7c445a4ab066777e3d570eb500de2eb249aef5d0ec103dcdf30e34b",
+    "third_party/rust/crucible-cli/BUILD.windows-sys-0.52.0.bazel": "e426102a269857014e4354f266deb062d33fc3275ee3c5e48da9e6d01d1884ce",
+    "third_party/rust/crucible-cli/BUILD.windows-sys-0.59.0.bazel": "8a4f0a196f875eef7a2c4cd66e278f1d474e2a4a20b99c1131906d6a143c625d",
+    "third_party/rust/crucible-cli/BUILD.windows-sys-0.61.2.bazel": "6225150ca43b2042eba98fcde87df90bd03248cbb79d0c04c9da0f2fb81b4e12",
+    "third_party/rust/crucible-cli/BUILD.windows-targets-0.52.6.bazel": "4546bd23c11d6885e2a8bcbe33c6be4023bab850c39e8b397a2e27ce5095c37e",
+    "third_party/rust/crucible-cli/BUILD.windows_aarch64_gnullvm-0.52.6.bazel": "7a9405a0c64d1223d106b865c3562a08c85718ebe2c7ea2540b17dee036a3593",
+    "third_party/rust/crucible-cli/BUILD.windows_aarch64_msvc-0.52.6.bazel": "89d93fbd5b3a58f45072e16fec5d8aa9da782cc30b14d519778e37f2baefce4f",
+    "third_party/rust/crucible-cli/BUILD.windows_i686_gnu-0.52.6.bazel": "9cea30e555642d9651ef9b3890fa191bd9d921cdfb4fd1277d9c3a3af755ddbd",
+    "third_party/rust/crucible-cli/BUILD.windows_i686_gnullvm-0.52.6.bazel": "7a3d64bfe0359a68836669ba71750db0bff67fb5313abc5724c2b0607eedeebc",
+    "third_party/rust/crucible-cli/BUILD.windows_i686_msvc-0.52.6.bazel": "62083103d7ccb73e1d15ab01a63149d91b34c93819d899b929c0f39fe9d5c30c",
+    "third_party/rust/crucible-cli/BUILD.windows_x86_64_gnu-0.52.6.bazel": "3e764ce4e78803031d502a1beca77d9048e233a9f1b417eebc961d3310b6940a",
+    "third_party/rust/crucible-cli/BUILD.windows_x86_64_gnullvm-0.52.6.bazel": "1d995d1f961241179bca3506660ec27e1542b80ad2319a5d67ba2d650f803f3b",
+    "third_party/rust/crucible-cli/BUILD.windows_x86_64_msvc-0.52.6.bazel": "9c3330aead28d9ce70ce202a769bb058ccd62a76cc79c06bc0353601efef7d68",
+    "third_party/rust/crucible-cli/BUILD.winnow-0.7.15.bazel": "bbf12fa750021cb16c060171e25ce9796f914d1bfa3d8ef651909c7870f3deb8",
+    "third_party/rust/crucible-cli/BUILD.wit-bindgen-0.51.0.bazel": "61049e1fe3673d095070eec384bae2794fdcd517fc3aea3a89650bdbcca30c29",
+    "third_party/rust/crucible-cli/BUILD.wit-bindgen-0.57.1.bazel": "7117989af2d160a082bf670cee31d642cd0b3c53eca8b9950070cebf6764c625",
+    "third_party/rust/crucible-cli/BUILD.wit-bindgen-core-0.51.0.bazel": "021cc5347482fece2749a5aa19ad9a28ca5167d651b5a94daf51df8670567141",
+    "third_party/rust/crucible-cli/BUILD.wit-bindgen-rust-0.51.0.bazel": "4d21ec9eb2d24cf3d3235fadd6a3aed42806b8f7fff5885e98cc41ffd052c105",
+    "third_party/rust/crucible-cli/BUILD.wit-bindgen-rust-macro-0.51.0.bazel": "92790fa901c9c82bed0421a1b8a5d2bb6474b192bc90d5268cfb49f634191a28",
+    "third_party/rust/crucible-cli/BUILD.wit-component-0.244.0.bazel": "1076c3ce031e90358b14607a853732880c1925d7ab27f7735448ac60cee024ed",
+    "third_party/rust/crucible-cli/BUILD.wit-parser-0.244.0.bazel": "6ef8ed1d55009a252f5710fdaf7d2a67f0f3d6fa530d0b313f12503dd62fbba0",
+    "third_party/rust/crucible-cli/BUILD.writeable-0.6.3.bazel": "9fea6a90869be042f2b611cfd1460b1b8922c9720aa44aef940a3faf9f96d636",
+    "third_party/rust/crucible-cli/BUILD.x509-parser-0.18.1.bazel": "7ad66fb5fa3dd96e9088ac27e305236832c367e93b01618568252cc6d10fb62c",
+    "third_party/rust/crucible-cli/BUILD.xmlparser-0.13.6.bazel": "d40cbc8d15a8bbdede3ce39c98482955bf0d4b5db08ce076d8b606e75d3009d6",
+    "third_party/rust/crucible-cli/BUILD.yasna-0.6.0.bazel": "39cd14de3472237888370cf54201b9422e411d1320572fa435dffe0e8175c015",
+    "third_party/rust/crucible-cli/BUILD.yoke-0.8.3.bazel": "0e2e953f6df47b237365be4c3551fb6dc53ccf6d393c4b789f5fde64c37e3402",
+    "third_party/rust/crucible-cli/BUILD.yoke-derive-0.8.2.bazel": "bbc1055b5cdb171f12251b98632285112599935789d5cc3c07c09ff19762fd03",
+    "third_party/rust/crucible-cli/BUILD.zerocopy-0.8.49.bazel": "bf9f5530e5154060b31704da57553362ab4e11157213c5a6e825427629211241",
+    "third_party/rust/crucible-cli/BUILD.zerocopy-derive-0.8.49.bazel": "c86ea5acaa1085b02a853990b590e8985267b344b8ee480dabfce361731c2969",
+    "third_party/rust/crucible-cli/BUILD.zerofrom-0.1.8.bazel": "2a67c52afef3144ed021188acceeb65dca7ed4a7634a3b9c2bb44f85f30e5a52",
+    "third_party/rust/crucible-cli/BUILD.zerofrom-derive-0.1.7.bazel": "2c20095a6c8812c95410fe32a347093f449a4eac900e2094b348da062a7cae32",
+    "third_party/rust/crucible-cli/BUILD.zeroize-1.9.0.bazel": "fda13da8cd091b66d92e2ae99162c6c0d77f0b9319303a504457aaafa036ccef",
+    "third_party/rust/crucible-cli/BUILD.zerotrie-0.2.4.bazel": "5478a6cbd69c4828890f0280cdb055703e580741261fae9f8e01c278cd530100",
+    "third_party/rust/crucible-cli/BUILD.zerovec-0.11.6.bazel": "3f8f49c5ac64ba17cf9ff3ed6f47edfa87fe6843a91e9bbaf19b0f27dcdbda42",
+    "third_party/rust/crucible-cli/BUILD.zerovec-derive-0.11.3.bazel": "2b78c382bc9543ac29831f2f8b7fa788bae9f6934ceff9854e0b9ed003aa3fb4",
+    "third_party/rust/crucible-cli/BUILD.zmij-1.0.21.bazel": "349683318141ec21b51a100dc76721d11acfb043a6d030d9e7a8320809863c24",
+    "third_party/rust/crucible-cli/BUILD.zstd-0.13.3.bazel": "09d06ceda51ae9670c745b608d0cbc321d11a4c3cb9257860669f88911f8033e",
+    "third_party/rust/crucible-cli/BUILD.zstd-safe-7.2.4.bazel": "29d83f66983f985725a0d557976db3750e49da66f035f41fa8369e228acd94e6",
+    "third_party/rust/crucible-cli/BUILD.zstd-sys-2.0.16+zstd.1.5.7.bazel": "59a2cb270817fadf5ab2f6fb2bf81fd99b1f2180b29412022d5f4b883c8f436e",
+    "third_party/rust/crucible-cli/Cargo.lock": "ca58d01c86eca1b93451263779117fe55d0a6c475fa24b96c9b50c560684e6c7",
+    "third_party/rust/crucible-cli/aliases.bzl": "fd79d59b440eb3ce4c02785460c7ddaf2229ac8c4cbf730b534abb6142a1f36d",
+    "third_party/rust/crucible-cli/cargo-bazel.json": "b5640b8e59c2468619ce04c672825b1a7d5778b75b8de29ff01ee3fb6aa043d0",
+    "third_party/rust/crucible-cli/generator-config.json": "66dc34cae10c10da7bdc1c313e0277ddd36280f525ef58274807da1a58ffa54f",
+    "third_party/rust/crucible-cli/repositories.MODULE.bazel": "355cb3f4b3a3abc96b8c073aa5e1f3dd919287d6e0855a509786030db089a4f0",
+    "third_party/rust/crucible-cli/sources.json": "5b5c843c3b794b34a0600f8f9415fc95c4f82f61cc3d595a8c69fdb720adaf06",
+    "third_party/rust/daemon/sources.json": "8dbf5c1c344322490d8e7e2d8414f51a6d2708b33416b90b33ba3638a05d7ea3",
+    "third_party/rust/device/sources.json": "70018c577e8eb41697364c4b26d6088f8572968d6c4032a47ffbf0398b286184",
+    "third_party/rust/engine/sources.json": "37646ba47fd346837f599977fb2d44c5675f799c59cfad34cd497b177dc150f1",
+    "third_party/rust/guest/sources.json": "71b71136238877969cff594e1fdc7bd50a4a7877c4909b8c4f6aa3e79be9ce9c",
+    "third_party/rust/qemu-host/sources.json": "5240faed73efe144f203213b226a51fc29fa3cbb25a6ef99f150556c616ada69",
+    "third_party/rust/quota/sources.json": "c21d92c63474908a43808298d25f064de06c5f4d0ed7f9d0d4143e9b89fca179",
+    "third_party/rust/session/sources.json": "d85a9e02b3828091c9a7c32b9c51b9a842a3bf703e002b0df4e79bdd7ae5b0bb",
+    "third_party/rust/store-s3/sources.json": "3d6d026f06c20295f391e4ffe35c616d13e5066c298b5b17e23036c280fcba43",
+    "third_party/rust/store/sources.json": "df79a68a375537e9c7ea22c014dda7d8a9b669df369576d4765ee06f09cedff5",
+    "tools/bazel/README.md": "2803b04b3b5b61ce641a325c0cc9f20a260b9b1eafaa4044613870e84883c146",
+    "tools/bazel/metadata/boot-pilot-inventory.json": "a708899aa7079c7d6cb84eea793c353ee77f06a95806213f4c99a4284629e4c2",
+    "tools/bazel/metadata/control-inventory.json": "99a86d7251ecc2c2886fd094df3ac4d6a53699b38ff53761af6f21a55e87a22e",
+    "tools/bazel/metadata/crucible-cli-inventory.json": "f376d42a2137004ebdf4f32b6c3dff2d025f00e56a170ed9b689102835306617",
+    "tools/bazel/metadata/daemon-inventory.json": "7ee9563d28b0dbf3f7091a2fad741466923677da838b2a2c12f1b2cb34672d14",
+    "tools/bazel/metadata/device-inventory.json": "6bff689d8cc14840ebb11c820982d2994f0e36ce01b30e748283ff69eceb8b87",
+    "tools/bazel/metadata/engine-inventory.json": "5450741550f389a13c748d6d6f77921097208eac28644be880bcb0032e571e73",
+    "tools/bazel/metadata/fixture-inventory.json": "f20cc5cf78b89a692bee38ab64b0a8289dd3785d71e073a70c3b10071edd393e",
+    "tools/bazel/metadata/guest-inventory.json": "9ca83649fa937d7e304d713a4bf3e9deda8a0c346eeb2a9ab30eb3ed0fe0bfa0",
+    "tools/bazel/metadata/protocol-inventory.json": "b81ab3e76f221450fc693ef20dcf1ae99e829d91f10dc7d1837ace72cf07e79e",
+    "tools/bazel/metadata/qemu-host-inventory.json": "1075540db27ff0e2abd9463cd6b4ccbee55a5fb023a4ca5bb3e50d09705e4635",
+    "tools/bazel/metadata/quota-inventory.json": "2a56f10175206fcb65fc751278d84145763933e995499f4da1634b5aefa1a833",
+    "tools/bazel/metadata/session-inventory.json": "566030de9016bac45e1bdd2129c80c33c79fbc9276c0203ae6c98c8cbd02e2ec",
+    "tools/bazel/metadata/shared-inventory.json": "3b500e7519e7011829ecc9804b2aea1d9ca65b56d11717e0f726241e4ab99638",
+    "tools/bazel/metadata/store-inventory.json": "5d43c2e8af2070df0a2d7b69fcd3d3abb28ed3fb6045c7d088d0029cc0f3ea0a",
+    "tools/bazel/metadata/store-s3-inventory.json": "1c0e3fb58bf3d9cc563db64d13b6b9df7cc3bf2ca9c89f9987edebfd43ce9669",
+    "tools/bazel/rules/BUILD.bazel": "235c433e261f879d5817b24098991d8544477c1928ca892b1108783be9fb93d9",
+    "tools/bazel/rules/crucible_cli_graph.bzl": "47e4498caf20989e7460e5a16ab65c817a0c838089785fe654aeded967edfe24",
+    "tools/bazel/rules/daemon_graph.bzl": "0b1ce662deddd36905fe75837c33537754a6e09d3a0ad30a9f24b1a2af6d0e67",
+    "tools/bazel/rules/profiles.bzl": "aedea4321bb68a472fda1cbbf8a25483b8c7ad24158711223c67edd51cf41259",
+    "tools/bazel/rules/test.bzl": "8bf245e0509f54e6d4848c12ef94be32f13b7ce5a750a75870510727f73506a9",
+    "tools/bazel/tests/crucible-cli.nix": "62d8aa5bb75d69c0222aaaadc32d4eb9d9d3ed4f9d526d7cab3b17b9a198576d",
+    "tools/bazel/tests/evidence/native-linux-crucible-cli-default.json": "beda7e2b357162ba03f5110b885c7f179e2c1e443f201155051099e141932dac",
+    "tools/bazel/tests/test_protocol_parity.py": "316e13e1161ea938f13d9f2504eba3b86b2c38c77322961240841c80c1be8335",
+    "tools/bazel/tests/verify_protocol.py": "4a54f5c3eaaa531b65ee6bc71a3f9ee7ccacb37b39dee7526423a6cd7bc7734e",
+    "tools/dev/lib/bazel.bash": "bec058d9f024c3b8fee22c20908d380c4456818c2f4634f7a17ca63208143395",
+    "tools/dev/lib/common.bash": "8851e95dcf9db76c9cdcf36f4d5db4e4045eaf4bcfe7395d65e13918c9ff30d9",
+    "tools/dev/tests/cli.bash": "7fc7d874b3c8724c011ab9b899760644d996179de944f669bc5b0c29c38f32b2"
+  },
+  "implementation_commit": "26f1980a40",
+  "inventory_refresh_outputs": [
+    "/nix/store/3s5ijc8hq082swlg6hw52b1gvh6i5ms7-aos-bazel-boot-pilot-inventory-1",
+    "/nix/store/5wjr2g0glf537m4y2ml4mh4bahcii2fh-aos-bazel-control-inventory-1",
+    "/nix/store/krppavgadj3pryb6jh9fdz6jiv23bhip-aos-bazel-crucible-cli-inventory-1",
+    "/nix/store/3yqsmvv5ydvllsj2vywhx13mr2k2fn50-aos-bazel-daemon-inventory-1",
+    "/nix/store/gfk4rc33vsp4jgak4532ad00w31ir8q1-aos-bazel-device-inventory-1",
+    "/nix/store/smd41rmfiqj5fh2kfwgg19nmbcls7qjs-aos-bazel-engine-inventory-1",
+    "/nix/store/sfm6vwdr2dqhh44fn5gbms2xnws1n3jc-aos-bazel-fixture-inventory-1",
+    "/nix/store/sr1f5jp132dvgd3fas1gwxhc86xk6z2b-aos-bazel-guest-inventory-1",
+    "/nix/store/mzkznrhzl1ram5vwq42j9y8rqy8x6hh5-aos-bazel-protocol-inventory-1",
+    "/nix/store/cpb1i7saaf77bnysbd0b593zrfwqbkhi-aos-bazel-qemu-host-inventory-1",
+    "/nix/store/qv0a40r678ccf8m0nd022dljz330pf8q-aos-bazel-quota-inventory-1",
+    "/nix/store/zwbvccxagvn57dl1nrm4ryky00n98s46-aos-bazel-session-inventory-1",
+    "/nix/store/ik3cjlrg3nv2q0j6jbcqxbp744grj1w4-aos-bazel-shared-inventory-1",
+    "/nix/store/4j22gwgid1zydm8piyj9savgz7vx7y8w-aos-bazel-source-catalog-checks",
+    "/nix/store/ihmsfymqxxlycsd3n917gyln5ffcvs0p-aos-bazel-store-inventory-1",
+    "/nix/store/y750fql6vqw1ajjcyibh09zh96b4fy9d-aos-bazel-store-s3-inventory-1"
+  ],
+  "launcher_derivation_evaluation": {
+    "aosBazelControlLauncher": "/nix/store/swf4k8mb1997717yavjpy3sjcsl6cryl-aos-bazel.drv",
+    "aosBazelCrucibleCliLauncher": "/nix/store/1cq6dhgqqc4sgvy1aifc2hzvbdfnhim9-aos-bazel.drv",
+    "aosBazelDaemonLauncher": "/nix/store/1ahgryyyydpc0dh5ng0fsj87x68nfjqp-aos-bazel.drv",
+    "aosBazelQemuHostLauncher": "/nix/store/vgk7k3543g9hnn96z2c0d77h1205rjd1-aos-bazel.drv",
+    "aosBazelQuotaLauncher": "/nix/store/wynz5ckivhmygiyy2m2kfpc6ad8j7y9a-aos-bazel.drv",
+    "aosBazelSessionLauncher": "/nix/store/7iq2wbazihfy738gcigvmxz6hdmvzx0l-aos-bazel.drv",
+    "aosBazelStoreS3Launcher": "/nix/store/048dp58kdfw7qdplwwj3na5spaac2x32-aos-bazel.drv"
+  },
+  "limits": [
+    "All eight feature graphs are analyzed. Native runtime and editor parity remain separate checks.",
+    "Four packaged-flight combinations compile in their qualification target; their runtime cases still require the existing dedicated VM gates.",
+    "The new runfiles helper changes only test executable lookup. Original assertions, required-feature target selection and ignored inventories remain in place.",
+    "The required aos-test-targets check compiles AOS application targets; the CLI has separate Bazel and Cargo compilation and runtime qualification.",
+    "No performance acceptance, foreign CLI execution, license-boundary migration or production cutover is claimed."
+  ],
+  "policy_and_cli_checks": [
+    "/nix/store/z32jifrc7w75aik3jxxixxr4m8cj1m8i-aos-bazel-policy-checks",
+    "/nix/store/4xsf44jyrnafz0mw35dlvsdlb6cy3w24-aos-dev-cli-check-0"
+  ],
+  "policy_tests": 148,
+  "private_fixture_correction": "The impersonation test makes only its copied executable owner-writable before replacing its bytes. Bazel artifacts remain read-only, and all validation assertions are unchanged.",
+  "required_rust_target_compilation": {
+    "changed_rust_inputs_sha256": {
+      "crates/crucible/control/crucible-cli/src/tests/surface.rs": "2c480d52056b8ef3377bd5fccca70c75f96b8a1783cb09f3b419c51515a449a8",
+      "crates/crucible/control/crucible-cli/tests/campaign_process.rs": "414d66696254ee5ca4cadf70b45333df5145e1abc54d3c6e1296a9a4bd68b5ae",
+      "crates/crucible/control/crucible-cli/tests/campaign_store_process.rs": "2629c43b5589ac120f156f33991c8d8510593505207990a81e781303d644a0e3",
+      "crates/crucible/control/crucible-cli/tests/help_surface.rs": "7bc758d0c0e505512a5dadf7e68f5d5104b8496a75a8c58205759ce7aff80721",
+      "crates/crucible/control/crucible-cli/tests/machine_readable.rs": "cbbf2a5d05ee0d3d8fdbb72973f3956affe1da3158100b305ff04d4048e9458c",
+      "crates/crucible/control/crucible-cli/tests/planner_process.rs": "e5b984b009299be15d86ee71cc8e9b30aae02a86d258f15d5177cfe20cafc130",
+      "crates/crucible/control/crucible-cli/tests/serve_process.rs": "8fb02fb6f8366cd9383c62516c8896d56b33bfdf183e3b77c00dbdaeee8a6c56",
+      "crates/crucible/control/crucible-cli/tests/store_transform_packed_process.rs": "24aaceb6ecdb7b47357e1e5de545e7c220aa9437086869594e4b6ad8833a0c13",
+      "crates/crucible/testing/crucible-test-support/src/lib.rs": "14b9e33f2f4de53dbbb5180b47aec7d7924b4dce030b8cfbde39b5a03ea6285d",
+      "crates/crucible/testing/crucible-test-support/src/runfiles.rs": "53b4f5fb28e0e98b70628e109430d213cd01305cbbdaf4ee59373effc5172c3b"
+    },
+    "derivation": "/nix/store/86k52kf2rmfr4gl8rh992z133wms1l3h-aos-test-targets-0.1.0.drv",
+    "output": "/nix/store/lxxjy4y25gbq6sp1h6i87wws0vb2qrdx-aos-test-targets-0.1.0",
+    "source": "/nix/store/xx32q1xamqmmxa3s76jqf9x9c73zj6q7-aos-workspace-src"
+  },
+  "schema_version": 1,
+  "scope": "Frozen CLI implementation before the AOS format graph conversion",
+  "source_files": 1737,
+  "status": "Offline configured graph, source inventories, dependency specifications, policy, CLI exports and required Rust target compilation passed; default native parity recorded separately; full feature qualification pending",
+  "strict_inventory": {
+    "normalized_configured_reports": 578,
+    "normalized_strict_inventory_matches_checked_in_inventory": true,
+    "raw_configured_reports": 588,
+    "source_files": 1737,
+    "strict_output": "/nix/store/0hklj6l3w6h6bk5123qyy8cdavz63z6x-aos-bazel-crucible-cli-inventory-1"
+  }
+}

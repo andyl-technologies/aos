@@ -1,0 +1,29 @@
+{
+  "comparison_base_commit": "158a5f5b05",
+  "console_assets": {
+    "artifact_sha256": {
+      "hub-console.css": "2fd692263cf951ec2c279aa1fb98b02adc2cb108e19cb20f6d9cd4703a4c8164",
+      "hub-console.js": "aa3472c7de9edc92a5085db6faac4c523f1d21f8b0abe5c878f616b04e7fe1d6",
+      "hub-console_bg.wasm": "c56aca1f46ab460febe13968a9b539a3e7ebb42d575d5c6ad1170b28b115028f"
+    },
+    "browser_build": "/nix/store/bp63xwrmki9mm9r8dnjbjfn7i29qx7np-aos-bazel-hub-console-browser-1",
+    "derivation": "/nix/store/3rra0cd4p4dn7qip90vdl1kdiwbqnyk2-aos-bazel-console-assets-1.drv",
+    "manifest_sha256": "34e01edc77dcae56fb9460cc5e3ab847825768af2ee8cc16389af5e6555fd4cc",
+    "output": "/nix/store/20zd0rfiqxvy8w7fsnjiavg3xgahjmxs-aos-bazel-console-assets-1"
+  },
+  "limits": [
+    "This probe imports the frozen, qualified Bazel console distribution and checks its identity and exact artifact hashes. It does not qualify browser execution or service generator staging.",
+    "The existing native foundation derivation retains its identity. Service tests add the AOS SQLite library to its TLS, SSH and compression declarations. Native service compilation and runtime qualification remain separate gates.",
+    "No production cutover or Cargo removal is claimed."
+  ],
+  "native_library_outputs": {
+    "/nix/store/abv9682dl9a0qflapwp50yghzv8rd7mh-aos-bazel-native-libraries-1": "/nix/store/9akgwa4xasnfpzj932qpn5nvmxkw6way-aos-bazel-native-libraries-1.drv",
+    "/nix/store/grvw9q1iav66a8q8sf6kj3dj3yalnx7q-aos-bazel-native-libraries-1": "/nix/store/jd94wh5ci287ch0mhbrfbjvs0ybr7km1-aos-bazel-native-libraries-1.drv"
+  },
+  "previous_native_foundation_derivation_unchanged": {
+    "drvPath": "/nix/store/jd94wh5ci287ch0mhbrfbjvs0ybr7km1-aos-bazel-native-libraries-1.drv",
+    "unchanged": true
+  },
+  "schema_version": 1,
+  "status": "Verified browser package imports and combined source-built native library repository passed"
+}

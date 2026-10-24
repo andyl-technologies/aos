@@ -189,6 +189,10 @@ async fn jwks() -> Response {
     .into_response()
 }
 
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native protocol tests compare against real service timestamps."
+)]
 fn jsonwebtoken_now() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -691,7 +695,7 @@ async fn begin_login_sets_pkce_s256_and_records_flow() {
         .await
         .unwrap();
     let parsed = url::Url::parse(&redirect.url).unwrap();
-    let q: std::collections::HashMap<_, _> = parsed.query_pairs().into_owned().collect();
+    let q: std::collections::BTreeMap<_, _> = parsed.query_pairs().into_owned().collect();
     assert_eq!(q.get("response_type").map(String::as_str), Some("code"));
     assert_eq!(
         q.get("code_challenge_method").map(String::as_str),

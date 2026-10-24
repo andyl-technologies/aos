@@ -7,6 +7,9 @@
 //! directories are valid input for `apm` (they are exactly what
 //! `apr origin upload` would have written).
 
+// Each integration target uses a different subset of these shared fixtures.
+#![allow(dead_code)]
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -91,6 +94,10 @@ pub async fn create_local_binding(
 }
 
 /// Creates and reconciles one native Hub endpoint and route.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps topology fixtures explicit at each integration call site."
+)]
 pub async fn configure_hub_route(
     db: &aos_hub_native::db::Database,
     surface: aos_hub_native::db::SurfaceTarget,
@@ -341,7 +348,7 @@ pub async fn create_ready_placement(
         .create_surface_placement(&aos_hub_native::db::NewSurfacePlacementSpec {
             surface,
             name: name.to_string(),
-            binding_id: binding_id,
+            binding_id,
             prefix: prefix.to_string(),
             kind: "complete".to_string(),
             desired_state: "active".to_string(),
@@ -369,7 +376,7 @@ pub async fn configure_write_authority(
         create_valid_write_credential(db, binding_id, "secret://test/write/v1").await;
     let revision = db
         .create_binding_write_revision(&aos_hub_native::db::NewBindingWriteRevision {
-            binding_id: binding_id,
+            binding_id,
             write_credential_generation: credential_generation,
             writes_supported: true,
             conditional_writes_supported: true,

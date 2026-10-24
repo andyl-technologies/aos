@@ -1,0 +1,1134 @@
+{
+  "benchmark_tests": 10,
+  "cache_summary": {
+    "consumer": {
+      "AosPythonGenerate:disk cache hit": 1,
+      "CppArchive:disk cache hit": 1,
+      "CppCompile:disk cache hit": 1,
+      "CppCompile:linux-sandbox": 1,
+      "CppLink:linux-sandbox": 1,
+      "Rustc:disk cache hit": 6,
+      "Rustc:linux-sandbox": 1
+    },
+    "producer": {
+      "AosPythonGenerate:linux-sandbox": 1,
+      "CppArchive:linux-sandbox": 1,
+      "CppCompile:linux-sandbox": 2,
+      "CppLink:linux-sandbox": 1,
+      "Rustc:linux-sandbox": 7
+    },
+    "uncached": {
+      "AosPythonGenerate:linux-sandbox": 1,
+      "CppArchive:linux-sandbox": 1,
+      "CppCompile:linux-sandbox": 2,
+      "CppLink:linux-sandbox": 1,
+      "Rustc:linux-sandbox": 7
+    }
+  },
+  "checks": {
+    "all": "/nix/store/md0wz3sbgc5x3wpirl4nyb09g1bzn8mg-aos-bazel-checks",
+    "ciborium-license-policy": "/nix/store/m8hxckfsjyxi8708fzy3aspwflph5j48-aos-bazel-ciborium-license-policy",
+    "cli": "/nix/store/3x6fqcziv450b42nfxqskxx7j95v3rx7-aos-dev-cli-check-0",
+    "concurrent": "/nix/store/zz27ysp0bjinhk5gfmvz4liai8xal0ii-aos-bazel-concurrent-cache-proof",
+    "cross_derivation": "/nix/store/2r92k4lzc31zpd8z0d1d15qwvgwyvv7q-aos-bazel-cross-derivation-cache-proof",
+    "device-cargo-oracle-1": "/nix/store/llkxrz2qc3y97ki6fgjlgkpgi13cb8jm-aos-bazel-device-cargo-oracle-1",
+    "device-cargo-parity": "/nix/store/khs81ldrz6sgx5l0zrlml4n76m9l9z8j-aos-bazel-device-cargo-parity",
+    "device-checks": "/nix/store/xj3qgygjkywa59lmpdqzrddmfl51r2rn-aos-bazel-device-checks",
+    "device-developer-tools-1": "/nix/store/62wj5fyn5x46p9ryqcmck239xykswksw-aos-bazel-device-developer-tools-1",
+    "device-format-1": "/nix/store/p3fb918i274ckh1r9038clxfvmj81ag6-aos-bazel-device-format-1",
+    "device-qualified-checks": "/nix/store/ykdplpk2acrcgnqky9vi949m4pg6dgm2-aos-bazel-device-qualified-checks",
+    "device-tests-1": "/nix/store/pl2ffcx8chd2m87r9r6rk6v7mnjj8i8k-aos-bazel-device-tests-1",
+    "invalidation": "/nix/store/zkqkl1x1xpvldjk5db5l28nygl125nbs-aos-bazel-cache-invalidation-matrix",
+    "package-metadata-parity": "/nix/store/yqgilhygq7xbzzh2lxwcflm8s42cpka9-aos-bazel-package-metadata-parity",
+    "policy-checks": "/nix/store/785754xwh9yrv8gh741isry7ws344wpk-aos-bazel-policy-checks"
+  },
+  "compiled_first_party_actions": 38,
+  "concurrent_overlap_seconds": 10.993265327,
+  "configuration_sha256": {
+    "MODULE.bazel": "f90d983c71f65a938e3b643786a1fb115e23afd776370e0d2c47b977367d1a69",
+    "crates/crucible/engine/crucible-determinism/BUILD.bazel": "9845a084a42e37feccf294e01682e58bb377f485c002a893027001efe7f69c6e",
+    "crates/crucible/engine/crucible-device/BUILD.bazel": "ed4fd8ea940ae47cf6ae1990a32901aa38683423d29ada6dd1819d73280bf767",
+    "tests/build/_bazel-device.nix": "4628a1ef96548c2ba4f0df48582274f3da6df4039e0b83b7310949db497755a0",
+    "tests/build/_bazel-rust-family.nix": "9a7342df227b6500eed75dde446682f17c196e619b7aae26d10df42a52b91249",
+    "third_party/rust/BUILD.bazel": "3733ff7d79c62281bd2541afe86d4cf614fd26b13b9b5e56e74cdec100dd4abf",
+    "third_party/rust/core/sources.json": "69907199bec5670d3202a1163041f35d6eec26557c7fe1851ecc2b497ed1eaa0",
+    "third_party/rust/device/sources.json": "dbced1db38ddc99d9de13f75ffbb59bf8f513ff46ef0772968b0b52b3bb6448b",
+    "tools/bazel/launcher.py": "b1f56c9aa91b7d03fde2b570d8ec23bc43f7793e5b63b31b4b074f8ddd2eef1b",
+    "tools/bazel/metadata/device-inventory.json": "8797c7a47aa2055265b94da76b18dd56123ce73a66abbee5fc4078c234d632e1",
+    "tools/bazel/metadata/update_rust.py": "6b2f070d02acb982959337472c86771ebda63112cf17c7bbb4ae776b72ab1409",
+    "tools/bazel/rules/BUILD.bazel": "7dfdbf07c3b3c5333e0c91e00bb74fece95ca74b2f5ed6c91b9132527ad8d2c4",
+    "tools/bazel/rules/crates.bzl": "56a4723a1a2d92208089075f9afee94f0563d1a5cecfde125a1bf08fabfba6ef",
+    "tools/bazel/rules/profiles.bzl": "d29fd8b5430de6a94f9cb35fc3fd2f5a1e77d44201a578a8450dd5976c7c93f8",
+    "tools/bazel/tests/verify_protocol.py": "584f330cd71a0a26f211b7a0d130b3d9be53fa15a7f6ddeeaa374200a368b258"
+  },
+  "core_rendered_rules_unchanged_from": "4af6860e7d",
+  "dependency_profiles": {
+    "core": {
+      "host_only_sources": [],
+      "source_archives": 36
+    },
+    "device": {
+      "host_only_sources": [
+        "ciborium",
+        "ciborium-io",
+        "ciborium-ll"
+      ],
+      "source_archives": 43
+    }
+  },
+  "limitations": [
+    "No production family cutover; the leaf end-to-end baseline remains a regression.",
+    "Full-family editor, foreign-target runtime and larger-family performance qualification remain required.",
+    "Whole-workspace ABI and license gates are tracked separately from these Bazel checks."
+  ],
+  "parity": {
+    "doctests": {
+      "//crates/crucible/engine/crucible-determinism:doc": {},
+      "//crates/crucible/engine/crucible-device:doc": {
+        "src/ninep/tree.rs - ninep::tree::qid_path (line 398) - compile": "ok"
+      },
+      "//crates/crucible/protocol/crucible-qemu-protocol:doc": {},
+      "//crates/crucible/protocol/crucible-qemu-shmem:doc": {}
+    },
+    "examples": [
+      "//crates/crucible/protocol/crucible-qemu-shmem:crucible-shmem-abi-header"
+    ],
+    "features": {
+      "arrayref@0.3.9": [
+        []
+      ],
+      "arrayvec@0.7.7": [
+        []
+      ],
+      "blake3@1.8.5": [
+        [
+          "pure",
+          "std"
+        ]
+      ],
+      "block-buffer@0.10.4": [
+        []
+      ],
+      "cc@1.2.65": [
+        []
+      ],
+      "cfg-if@1.0.4": [
+        []
+      ],
+      "ciborium-io@0.2.2": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "ciborium-ll@0.2.2": [
+        []
+      ],
+      "ciborium@0.2.2": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "constant_time_eq@0.4.2": [
+        [
+          "std"
+        ]
+      ],
+      "cpufeatures@0.2.17": [
+        []
+      ],
+      "cpufeatures@0.3.0": [
+        []
+      ],
+      "crypto-common@0.1.7": [
+        [
+          "std"
+        ]
+      ],
+      "digest@0.10.7": [
+        [
+          "alloc",
+          "block-buffer",
+          "core-api",
+          "default",
+          "std"
+        ]
+      ],
+      "find-msvc-tools@0.1.9": [
+        []
+      ],
+      "generic-array@0.14.7": [
+        [
+          "more_lengths"
+        ]
+      ],
+      "half@2.7.1": [
+        []
+      ],
+      "itoa@1.0.18": [
+        []
+      ],
+      "libc@0.2.186": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "memchr@2.8.2": [
+        [
+          "alloc",
+          "std"
+        ]
+      ],
+      "proc-macro2@1.0.106": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "quote@1.0.46": [
+        [
+          "default",
+          "proc-macro"
+        ]
+      ],
+      "serde@1.0.228": [
+        [
+          "alloc",
+          "default",
+          "derive",
+          "rc",
+          "serde_derive",
+          "std"
+        ]
+      ],
+      "serde_core@1.0.228": [
+        [
+          "alloc",
+          "rc",
+          "result",
+          "std"
+        ]
+      ],
+      "serde_derive@1.0.228": [
+        [
+          "default"
+        ]
+      ],
+      "serde_json@1.0.150": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "sha2@0.10.9": [
+        [
+          "compress",
+          "default",
+          "std"
+        ]
+      ],
+      "shlex@2.0.1": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "syn@2.0.118": [
+        [
+          "clone-impls",
+          "default",
+          "derive",
+          "full",
+          "parsing",
+          "printing",
+          "proc-macro"
+        ]
+      ],
+      "thiserror-impl@2.0.18": [
+        []
+      ],
+      "thiserror@2.0.18": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "tinyvec@1.11.0": [
+        [
+          "alloc",
+          "default",
+          "tinyvec_macros"
+        ]
+      ],
+      "tinyvec_macros@0.1.1": [
+        []
+      ],
+      "typenum@1.20.1": [
+        []
+      ],
+      "unicode-ident@1.0.24": [
+        []
+      ],
+      "unicode-normalization@0.1.25": [
+        [
+          "default",
+          "std"
+        ]
+      ],
+      "version_check@0.9.5": [
+        []
+      ],
+      "zerocopy-derive@0.8.49": [
+        []
+      ],
+      "zerocopy@0.8.49": [
+        [
+          "derive",
+          "simd",
+          "zerocopy-derive"
+        ]
+      ],
+      "zmij@1.0.21": [
+        []
+      ]
+    },
+    "first_party_features": {
+      "crucible-determinism": [
+        []
+      ],
+      "crucible-device": [
+        [
+          "default"
+        ]
+      ],
+      "crucible-qemu-protocol": [
+        []
+      ],
+      "crucible-qemu-shmem": [
+        []
+      ]
+    },
+    "schema_version": 1,
+    "targets": {
+      "//crates/crucible/engine/crucible-determinism:contract_a": {
+        "executed": [
+          "contract_a_config_and_driver_reject_zero_or_unbounded_parameters",
+          "contract_a_driver_feeds_recorded_inputs_into_vm_boundary",
+          "contract_a_driver_is_sensitive_to_seed_cmdline_and_input_payload",
+          "contract_a_driver_models_fixed_rr_vcpu_cursor_without_live_peers",
+          "contract_a_driver_preserves_prefix_before_future_inputs",
+          "contract_a_driver_preserves_prefix_when_run_horizon_extends",
+          "contract_a_driver_rejects_non_monotonic_recorded_inputs",
+          "contract_a_driver_rejects_out_of_interval_recorded_inputs",
+          "contract_a_driver_replays_recorded_inputs_identically",
+          "contract_a_multi_vcpu_fingerprint_changes_when_register_file_changes",
+          "contract_a_multi_vcpu_fingerprint_includes_every_vcpu_and_rr_cursor",
+          "contract_a_multi_vcpu_fingerprint_trajectory_is_bit_identical_across_runs",
+          "contract_a_multi_vcpu_uses_single_aggregate_time_axis",
+          "contract_a_rr_switch_quantum_is_content_addressed_retired_instructions",
+          "contract_a_time_fingerprint_ignores_payload_when_icount_horizon_is_fixed",
+          "contract_a_time_fingerprint_matches_across_adversarial_host_conditions",
+          "contract_a_time_trajectory_preserves_exact_ticks_and_guest_nanoseconds"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/engine/crucible-determinism:decision_rng": {
+        "executed": [
+          "decision_rng_domain_separates_node_and_link_streams",
+          "decision_rng_forks_by_seed_xor_stable_name_hash",
+          "decision_rng_streams_are_independent_of_construction_order",
+          "decision_rng_streams_change_with_name_and_seed",
+          "decision_rng_uses_fixed_cross_platform_algorithm"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/engine/crucible-determinism:gate_content_address": {
+        "executed": [
+          "gate_content_address_changes_on_single_byte_mutations",
+          "gate_content_address_collision_corpus_has_unique_ids",
+          "gate_content_address_hashes_equal_content_to_equal_ids",
+          "gate_content_address_keeps_fixed_vectors_stable",
+          "gate_content_address_separates_domains_and_ordering"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/engine/crucible-determinism:gate_layer0_determinism": {
+        "executed": [
+          "gate_layer0_determinism_is_sensitive_to_each_fixed_input",
+          "gate_layer0_determinism_keeps_named_streams_stable_under_entity_addition",
+          "gate_layer0_determinism_reduces_fixed_contract_a_twice",
+          "gate_layer0_determinism_rejects_unordered_recorded_inputs"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/engine/crucible-determinism:unit": {
+        "executed": [
+          "tests::decision_rng_forks_stream_seed_by_name_hash",
+          "tests::decision_stream_constant_time_advance_matches_materialized_draws",
+          "tests::decision_stream_is_repeatable_and_counts_draws",
+          "tests::stable_hasher_covers_chunk_remainder_and_bool_inputs",
+          "tests::stable_hasher_is_order_sensitive",
+          "tests::stable_hasher_is_repeatable"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/engine/crucible-device:device_harness": {
+        "executed": [
+          "block_divergence_localizes_first_differing_payload_byte",
+          "block_harness_exposes_device_visible_state",
+          "block_idle_equals_busy_poll",
+          "block_idle_equals_busy_poll_with_bounded_outbox_under_coincident_deliveries",
+          "block_run_twice_is_byte_identical",
+          "busy_poll_spike_conclusion_is_recorded",
+          "compare_logs_identical_when_equal_and_localizes_length_mismatch",
+          "link_divergence_localizes_first_differing_payload",
+          "link_idle_equals_busy_poll",
+          "link_run_twice_is_byte_identical",
+          "ninep_divergence_localizes_first_differing_record",
+          "ninep_harness_exposes_fid_table_state",
+          "ninep_idle_equals_busy_poll",
+          "ninep_run_twice_is_byte_identical"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/engine/crucible-device:gate_layer1_injection": {
+        "executed": [
+          "gate_layer1_injection_rejects_host_timing_negative_control",
+          "gate_layer1_injection_run_twice_observed_vectors_match"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/engine/crucible-device:io_subnode_lifecycle": {
+        "executed": [
+          "additional_completion_without_primary_fails_closed",
+          "advance_to_drains_only_due_responses",
+          "block_shmem_full_response_ring_preserves_inflight_order",
+          "block_shmem_lifecycle_uses_real_rings_and_wakes",
+          "block_shmem_single_request_compute_preserves_next_head_for_dispatch",
+          "compute_then_deliver_pins_delivery_to_virtual_time",
+          "computed_dynamic_delay_and_duplicates_enter_exact_delivery_order",
+          "dynamic_tick_delay_preserves_subnanosecond_phase",
+          "full_inbox_blocks_producer_without_drop",
+          "full_outbox_backpressures_delivery_without_reorder",
+          "host_compute_timing_does_not_change_outputs",
+          "late_duplicate_overflow_rolls_back_device_and_inflight_state",
+          "next_exact_local_event_is_inflight_head",
+          "ninep_shmem_lifecycle_uses_real_rings_and_wakes",
+          "responses_emerge_in_delivery_icount_order",
+          "run_twice_is_byte_identical",
+          "snapshot_restore_round_trips_mid_flight",
+          "tail_cases::clock_never_moves_backward",
+          "tail_cases::stale_request_delivering_in_the_past_fails_loudly"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/engine/crucible-device:unit": {
+        "executed": [
+          "backpressure::tests::full_ring_blocks_then_wakes_without_drop_or_reorder",
+          "backpressure::tests::live_depth_tracks_push_and_pop",
+          "backpressure::tests::rejects_non_power_of_two_capacity",
+          "block::fault::codec_tests::block_fault_checkpoint_codec_is_bounded_versioned_and_canonical",
+          "block::fault::observation_revision::tests::absent_graph_commit_refuses_before_any_durable_payload_write",
+          "block::fault::observation_revision::tests::actual_payload_effect_followed_by_refusal_retains_reserved_revision",
+          "block::fault::observation_revision::tests::clean_refusal_does_not_create_a_poll_dependent_revision",
+          "block::fault::observation_revision::tests::dependency_blocked_graph_commit_refuses_before_any_durable_payload_write",
+          "block::fault::observation_revision::tests::exhaustion_refuses_before_phase_and_external_payload_effects",
+          "block::fault::observation_revision::tests::immutable_queries_and_exact_no_op_polling_preserve_revision",
+          "block::fault::observation_revision::tests::layer_accounting_refuses_before_any_durable_payload_write",
+          "block::fault::observation_revision::tests::mandatory_revision_cannot_be_omitted_or_zero_in_a_current_snapshot",
+          "block::fault::observation_revision::tests::nested_entry_reserves_once_and_partial_error_retains_revision",
+          "block::fault::observation_revision::tests::physical_destination_refuses_before_any_durable_payload_write",
+          "block::fault::observation_revision::tests::pipeline_deadline_changes_before_any_response_exists",
+          "block::fault::observation_revision::tests::rebuild_poll_changes_only_when_the_actual_deadline_changes",
+          "block::fault::observation_revision::tests::repeated_cold_restore_preserves_revision_and_rejects_old_envelope",
+          "block::fault::observation_revision::tests::trusted_compute_rollback_retains_observed_phase_revision",
+          "block::fault::observation_revision::tests::trusted_replacement_advances_from_live_owner_not_saved_counter",
+          "block::fault::observation_revision::tests::zero_length_flash_read_at_nonzero_page_boundary_preserves_revision",
+          "block::fault::observation_revision::tests::zero_length_selected_flash_read_tracks_actual_page_counter_changes",
+          "block::fault::state_admission::execution_services::tests::actual_rebuild_registration_binds_payload_generation_and_due_coordinate",
+          "block::fault::state_admission::execution_services::tests::missing_request_job_cannot_borrow_a_contributors_unrelated_future_deadline",
+          "block::fault::state_admission::execution_services::tests::unknown_and_due_items_cannot_hide_behind_another_future_event",
+          "block::fault::tests::cache::cache_admission_failure_is_transactional",
+          "block::fault::tests::cache::cache_dirty_eviction_preserves_the_authored_typed_failure",
+          "block::fault::tests::cache::cache_loss_candidates_distinguish_power_loss_from_protection_failure",
+          "block::fault::tests::cache::cache_lru_tracks_visible_bytes_and_preserves_overlap_dependencies",
+          "block::fault::tests::cache::cache_policy_lru_reads_change_the_exact_victim",
+          "block::fault::tests::cache::cache_policy_persists_fifo_victims_before_admission",
+          "block::fault::tests::cache::cache_rejection_rolls_back_partially_schedulable_evictions",
+          "block::fault::tests::cache::controller_accepted_writes_remain_a_distinct_durability_layer",
+          "block::fault::tests::cache::pending_durability_continuation_tracks_acknowledged_cache_write",
+          "block::fault::tests::cache::volatile_cache_flush_lie_loss_and_honest_flush_track_both_frontiers",
+          "block::fault::tests::external_write_dependency_uses_the_destination_completion_policy",
+          "block::fault::tests::media::flash_discard_applies_one_request_wide_partial_erase",
+          "block::fault::tests::media::flash_retention_changes_survive_effect_deactivation_and_restore",
+          "block::fault::tests::media::persistence_delay_defers_durable_bytes_and_flush_truth_until_due",
+          "block::fault::tests::media::persistence_opportunity_applies_checkpointed_partial_flash_program",
+          "block::fault::tests::payload::acknowledged_lost_and_torn_fragments_permanently_bound_durability",
+          "block::fault::tests::payload::discard_readback_contracts_mutate_real_future_reads",
+          "block::fault::tests::payload::discard_rejects_unsupported_or_misaligned_ranges_without_mutation",
+          "block::fault::tests::payload::latent_media_failure_changes_future_real_request_results",
+          "block::fault::tests::payload::lost_torn_and_misdirected_writes_mutate_exact_bytes",
+          "block::fault::tests::pipeline::durable_delivery_waits_for_the_exact_physical_media_decision",
+          "block::fault::tests::pipeline::queue_service_release_creates_the_execution_opportunity",
+          "block::fault::tests::pipeline::service_evidence_precedes_same_nanos_persistence_it_triggers",
+          "block::fault::tests::pipeline::staged_execution_does_not_mutate_before_the_exact_decision",
+          "block::fault::tests::resource_usage::media_rule_usage_tracks_existing_and_prospective_intervals",
+          "block::fault::tests::resource_usage::pending_operation_usage_tracks_count_and_largest_request_extent",
+          "block::fault::tests::retained::read_transforms_and_stalled_completion_are_checkpointable",
+          "block::fault::tests::retained::stalled_flush_recovery_waits_for_delayed_persistence",
+          "block::fault::tests::retained::stalled_flush_timeout_does_not_persist_or_report_cached_writes",
+          "block::fault::tests::transport::duplicate_directive_rejection_preserves_the_original",
+          "block::fault::tests::transport::duplicate_ignore_and_protocol_error_produce_exact_additional_completions",
+          "block::fault::tests::transport::duplicate_reset_encodes_the_exact_live_transport_transition",
+          "block::fault::tests::transport::duplicate_resolution_uses_checked_primary_relative_delays",
+          "block::fault::tests::transport::timeout_and_duplicate_responses_must_fit_one_transport_frame",
+          "block::flash::tests::erase_rejects_unaligned_complete_requests_without_mutation",
+          "block::flash::tests::erase_uses_worn_probability_at_the_endurance_boundary",
+          "block::flash::tests::failed_program_applies_only_the_keyed_prefix",
+          "block::flash::tests::partial_erase_is_request_wide_checkpointed_and_counts_wear_once",
+          "block::flash::tests::retention_and_disturb_are_sparse_persistent_and_restorable",
+          "block::lifecycle_tests::asynchronous_controller_transition_advances_pristine_epoch_and_recovers",
+          "block::lifecycle_tests::delivered_transport_reset_rewrites_later_completion_without_aliasing_identity",
+          "block::lifecycle_tests::device_get_length_returns_base_size",
+          "block::lifecycle_tests::device_out_of_range_read_returns_error_status",
+          "block::lifecycle_tests::device_read_then_write_then_read_through_lifecycle",
+          "block::lifecycle_tests::latency_depends_only_on_op_and_count",
+          "block::lifecycle_tests::one_nanosecond_latency_preserves_request_tick_phase",
+          "block::lifecycle_tests::queued_old_epoch_frames_receive_every_reset_disposition_after_backpressure",
+          "block::lifecycle_tests::reset_queue_rewrite_exhaustion_refuses_before_shared_publication",
+          "block::lifecycle_tests::reset_without_remaining_rewrite_uses_only_actual_publication_revision",
+          "block::lifecycle_tests::selected_reset_queue_rewrite_budget_is_reserved_before_publication",
+          "block::lifecycle_tests::selected_transport_reset_waits_for_its_exact_publication",
+          "block::lifecycle_tests::transport_reset_commits_only_after_bounded_shmem_delivery",
+          "block::media::tests::contributor_redefinition_is_atomic",
+          "block::media::tests::latent_rule_counts_only_intersecting_media_opportunities",
+          "block::media::tests::overlapping_rules_advance_independently_and_compose_by_severity",
+          "block::overlay_codec_tests::base_bytes_never_change_under_writes",
+          "block::overlay_codec_tests::decode_never_panics_on_arbitrary_bytes",
+          "block::overlay_codec_tests::decode_rejects_bad_version_and_unknown_op",
+          "block::overlay_codec_tests::decode_rejects_malformed_typed_error_payloads",
+          "block::overlay_codec_tests::decode_rejects_nonzero_reserved_request_and_response_headers",
+          "block::overlay_codec_tests::decode_rejects_write_count_exceeding_payload",
+          "block::overlay_codec_tests::dirty_set_tracks_written_pages_and_clears_at_boundary",
+          "block::overlay_codec_tests::every_typed_error_round_trips",
+          "block::overlay_codec_tests::materialize_applies_overlay_over_base_without_mutating_base",
+          "block::overlay_codec_tests::out_of_range_read_and_write_error_not_truncate",
+          "block::overlay_codec_tests::read_falls_through_to_base_when_overlay_empty",
+          "block::overlay_codec_tests::request_round_trips_for_every_op",
+          "block::overlay_codec_tests::response_round_trips",
+          "block::overlay_codec_tests::write_copies_up_and_read_sees_overlay_over_base",
+          "block::persistence::tests::configured_edge_bound_and_barrier_policy_fail_closed",
+          "block::persistence::tests::explicit_edges_reject_forward_or_absent_nodes_without_mutation",
+          "block::persistence::tests::flush_frontier_excludes_later_writes_and_delay_is_exact",
+          "block::persistence::tests::loss_unblocks_dependents_without_claiming_durability",
+          "block::persistence::tests::ordering_group_does_not_reorder_an_out_of_group_fragment",
+          "block::persistence::tests::request_and_overlap_dependencies_are_finite_and_release_exactly",
+          "block::persistence::tests::reverse_ready_changes_only_mutually_ready_selection",
+          "block::persistence::tests::transformation_evidence_retains_every_contributor_until_drained",
+          "block::service::tests::admission_is_atomic_across_contributors",
+          "block::service::tests::cumulative_busy_epoch_has_no_per_request_rounding_drift",
+          "block::service::tests::service_duration_preserves_admission_tick_phase",
+          "block::service::tests::strict_priority_reorders_only_requests_waiting_behind_active_work",
+          "block::service::tests::weighted_round_robin_uses_canonical_class_weights",
+          "block::service_tests::admission_failure_bypasses_integrated_service",
+          "block::service_tests::block_snapshot_codec_round_trips_complete_device_state",
+          "block::service_tests::cross_device_misdirection_commits_both_devices_or_neither",
+          "block::service_tests::full_service_queue_returns_stable_busy_response",
+          "block::service_tests::integrated_service_defers_real_mutation_and_survives_restore",
+          "block::service_tests::later_high_priority_admission_cannot_precede_queued_work",
+          "block::service_tests::retained_completion_batch_release_is_atomic",
+          "block::service_tests::retained_completion_release_rejects_an_early_timeout",
+          "block::service_tests::retained_flush_release_rolls_back_when_completion_order_is_exhausted",
+          "block::service_tests::unresolved_storage_execution_is_a_hard_advance_horizon",
+          "block::snapshot_array_tests::array_dirty_ranges_coalesce_and_survive_checkpoint_restore",
+          "block::snapshot_array_tests::array_rebuild_is_rate_scheduled_authenticated_and_retryable",
+          "block::snapshot_array_tests::coincident_completions_deliver_in_total_order",
+          "block::snapshot_array_tests::completion_is_host_timing_independent",
+          "block::snapshot_array_tests::delta_pages_are_blake3_keyed",
+          "block::snapshot_array_tests::external_array_discard_and_flush_mutate_real_member_state",
+          "block::snapshot_array_tests::regression_read_over_frame_cap_returns_error_status",
+          "block::snapshot_array_tests::regression_restore_preserves_latency_so_delivery_icount_matches",
+          "block::snapshot_array_tests::regression_restore_preserves_mid_epoch_dirty_set",
+          "block::snapshot_array_tests::restore_rejects_mismatched_base",
+          "block::snapshot_array_tests::run_twice_is_byte_identical",
+          "block::snapshot_array_tests::snapshot_excludes_base_and_restore_round_trips",
+          "block::snapshot_array_tests::snapshot_mutate_restore_yields_identical_behavior",
+          "block::snapshot_array_tests::snapshot_restore_preserves_inflight_responses",
+          "clock::tests::clock_advances_forward_only",
+          "clock::tests::nanosecond_projection_preserves_fractional_phase",
+          "clock::tests::tick_arithmetic_rejects_overflow",
+          "fault::tests::device_rng_is_deterministic_and_tracks_position",
+          "fault::tests::device_rng_name_hash_fork_is_topology_stable",
+          "fault::tests::device_rng_restore_resumes_identical_stream",
+          "fault::tests::probability_fires_on_exact_fraction_without_float",
+          "inflight::tests::coincident_deliveries_break_ties_by_src_then_seq",
+          "inflight::tests::drain_due_below_head_emits_nothing",
+          "inflight::tests::drain_due_emits_only_due_in_order_and_retains_future",
+          "inflight::tests::insert_keeps_delivery_order_regardless_of_compute_order",
+          "netlink::delivery_tests::added_latency_shifts_delivery_later",
+          "netlink::delivery_tests::bandwidth_adds_size_proportional_delay",
+          "netlink::delivery_tests::duplicate_emits_exactly_two_deliveries_at_distinct_icounts",
+          "netlink::delivery_tests::fault_free_delivers_at_base_latency",
+          "netlink::delivery_tests::fractional_latency_and_jitter_preserve_three_tick_shift",
+          "netlink::delivery_tests::jitter_shifts_later_and_is_deterministic",
+          "netlink::delivery_tests::link_latency_preserves_emission_tick_phase",
+          "netlink::delivery_tests::link_snapshot_codec_enforces_authored_aggregate_limit",
+          "netlink::delivery_tests::link_snapshot_codec_round_trips_complete_state",
+          "netlink::delivery_tests::link_snapshot_rejects_wrong_clock_scale",
+          "netlink::delivery_tests::loss_drops_the_frame",
+          "netlink::delivery_tests::partition_drops_the_frame",
+          "netlink::delivery_tests::reorder_moves_a_frame_past_its_sibling",
+          "netlink::delivery_tests::resolved_duplicate_failure_enqueues_nothing",
+          "netlink::delivery_tests::resolved_signal_drop_and_latency_floor_are_exact",
+          "netlink::delivery_tests::resolved_signal_outcomes_apply_without_link_rng_interpretation",
+          "netlink::delivery_tests::resolved_tick_delay_preserves_emission_phase",
+          "netlink::delivery_tests::subfloor_latency_is_clamped_to_floor",
+          "netlink::delivery_tests::zero_floor_or_subfloor_base_is_rejected",
+          "netlink::fault::tests::affects_latency_reports_only_minimum_bound_changes",
+          "netlink::fault::tests::bandwidth_delays_sum_across_exact_bit_caps",
+          "netlink::fault::tests::corrupt_flips_exactly_the_seeded_bits",
+          "netlink::fault::tests::corrupt_is_a_noop_on_empty_or_zero_flips",
+          "netlink::fault::tests::jitter_and_reorder_shifts_stay_within_window",
+          "netlink::fault::tests::probability_fires_on_exact_fraction_without_float",
+          "netlink::fault::tests::probability_zero_denominator_never_fires",
+          "netlink::fault_replay_tests::clamp_preserves_duplicate_gap_when_both_land_in_past",
+          "netlink::fault_replay_tests::corrupt_flips_exactly_the_seeded_bits",
+          "netlink::fault_replay_tests::corruption_strategies_use_seeded_selectors",
+          "netlink::fault_replay_tests::drop_inflight_returns_complete_delivery_evidence",
+          "netlink::fault_replay_tests::effective_latency_change_raises_recompute_signal",
+          "netlink::fault_replay_tests::emit_from_rng_is_reproducible_and_advances_the_cursor",
+          "netlink::fault_replay_tests::link_slot_references_router_constant",
+          "netlink::fault_replay_tests::next_delivery_yields_one_coincident_frame_per_call",
+          "netlink::fault_replay_tests::regression_recompute_tracks_minimum_latency_not_delivery_profile",
+          "netlink::fault_replay_tests::reorder_into_consumer_past_clamps_to_future",
+          "netlink::fault_replay_tests::reorder_into_consumer_past_fails_loud",
+          "netlink::fault_replay_tests::restore_rejects_corrupt_subfloor_snapshot",
+          "netlink::fault_replay_tests::run_twice_with_same_draws_is_byte_identical",
+          "netlink::fault_replay_tests::snapshot_restore_round_trips",
+          "netlink::ipv4::tests::fragmentation_preserves_data_offsets_and_checksums",
+          "netlink::ipv4::tests::later_hop_can_refragment_an_existing_fragment",
+          "netlink::ipv4::tests::malformed_and_too_small_inputs_fail_loudly",
+          "netlink::response::tests::family_mismatch_is_distinct_from_malformed_matching_packet",
+          "netlink::response::tests::icmpv4_packet_too_big_has_exact_headers_quote_and_checksums",
+          "netlink::response::tests::icmpv4_suppresses_noninitial_fragments_and_icmp_errors",
+          "netlink::response::tests::icmpv6_multicast_suppression_keeps_packet_too_big_exception",
+          "netlink::response::tests::icmpv6_packet_too_big_has_exact_headers_quote_and_checksum",
+          "netlink::response::tests::opaque_response_is_exact_and_parameter_errors_are_closed",
+          "netlink::response::tests::tcp_reset_ipv4_obeys_acknowledgement_rules",
+          "netlink::response::tests::tcp_reset_ipv6_walks_extension_headers_and_suppresses_resets",
+          "ninep::fault::tests::absolute_nanosecond_release_starts_at_its_tick_boundary",
+          "ninep::fault::tests::data_deadline_overflow_fails_closed",
+          "ninep::fault::tests::delayed_and_event_releases_advance_only_a_contiguous_prefix",
+          "ninep::fault::tests::delayed_tick_release_preserves_fractional_action_phase",
+          "ninep::fault::tests::event_data_lag_preserves_fractional_tick_phase",
+          "ninep::fault::tests::non_atomic_policy_exposes_metadata_before_new_data",
+          "ninep::fault::tests::transport_sequence_distinguishes_identical_requests_at_one_coordinate",
+          "ninep::fault::tests::writer_immediate_and_delete_retention_are_explicit",
+          "ninep::fault_policy_tests::errno_directive_returns_rlerror_without_attach_side_effects",
+          "ninep::fault_policy_tests::fault_resource_usage_tracks_sessions_fids_and_object_versions",
+          "ninep::fault_policy_tests::required_directive_is_fail_closed_and_preserves_server_state",
+          "ninep::fault_policy_tests::stale_read_uses_exact_object_bytes_and_survives_restore_before_consumption",
+          "ninep::fault_policy_tests::unsupported_object_result_shapes_are_rejected_before_installation",
+          "ninep::fault_policy_tests::visible_creation_is_discoverable_by_normal_walk_and_tracks_updates",
+          "ninep::fault_policy_tests::visible_deletion_hides_base_tree_and_already_walked_fids",
+          "ninep::fault_policy_tests::visible_walk_never_traverses_through_a_regular_object",
+          "ninep::golden::tests::all_request_vectors_are_size_consistent",
+          "ninep::golden::tests::getattr_reply_encodes_with_fixed_epoch_timestamps",
+          "ninep::golden::tests::qid_round_trips_through_wire_bytes",
+          "ninep::golden::tests::rclunk_golden_vector_encodes_exactly",
+          "ninep::golden::tests::request_golden_vectors_decode_exactly",
+          "ninep::golden::tests::rlerror_golden_vector_encodes_exactly",
+          "ninep::golden::tests::rversion_golden_vector_matches_handwritten_bytes",
+          "ninep::golden::tests::statfs_reply_encodes_synthetic_fixed_values",
+          "ninep::lifecycle_tests::completion_is_host_timing_independent",
+          "ninep::lifecycle_tests::decode_never_panics_on_arbitrary_bytes",
+          "ninep::lifecycle_tests::latency_depends_only_on_message_kind_and_size",
+          "ninep::lifecycle_tests::run_twice_is_byte_identical",
+          "ninep::lifecycle_tests::snapshot_preserves_inflight_responses",
+          "ninep::lifecycle_tests::snapshot_restore_round_trips_fid_table_and_msize",
+          "ninep::lifecycle_tests::structured_fuzz_reaches_deep_decode_paths_without_panic",
+          "ninep::protocol_limits_tests::every_mutating_message_returns_erofs",
+          "ninep::protocol_limits_tests::malformed_body_returns_einval",
+          "ninep::protocol_limits_tests::over_msize_request_is_rejected",
+          "ninep::protocol_limits_tests::readdir_respects_msize_budget_across_chunks",
+          "ninep::protocol_limits_tests::regression_no_reply_exceeds_negotiated_msize",
+          "ninep::protocol_limits_tests::regression_oversized_single_dirent_returns_emsgsize_not_empty",
+          "ninep::protocol_limits_tests::regression_qid_path_distinguishes_adversarial_structured_samples",
+          "ninep::protocol_limits_tests::regression_walk_rejects_illegal_component_from_wire",
+          "ninep::protocol_limits_tests::unknown_message_type_returns_enosys",
+          "ninep::protocol_tests::attach_returns_root_qid_path_hashed",
+          "ninep::protocol_tests::clunk_releases_fid",
+          "ninep::protocol_tests::getattr_returns_fixed_and_content_derived_attrs",
+          "ninep::protocol_tests::qid_is_path_hashed_and_stable_across_trees",
+          "ninep::protocol_tests::read_of_directory_is_eisdir",
+          "ninep::protocol_tests::read_returns_content_derived_bytes",
+          "ninep::protocol_tests::readdir_is_byte_identical_on_repeat",
+          "ninep::protocol_tests::readdir_returns_sorted_entries_with_dot_first",
+          "ninep::protocol_tests::readlink_returns_symlink_target",
+          "ninep::protocol_tests::statfs_is_synthetic_and_host_independent",
+          "ninep::protocol_tests::version_clamps_msize_to_client_when_smaller",
+          "ninep::protocol_tests::version_pins_protocol_and_clamps_msize_down",
+          "ninep::protocol_tests::version_rejects_unknown_protocol_string",
+          "ninep::protocol_tests::walk_missing_component_returns_enoent",
+          "ninep::protocol_tests::walk_resolves_into_subdirectory",
+          "ninep::test_support::ninep_snapshot_codec_round_trips_complete_device_state",
+          "ninep::tree::tests::canonical_decoder_rejects_illegal_and_unsorted_directory_names",
+          "ninep::tree::tests::canonical_decoder_rejects_truncation_invalid_utf8_unknown_tags_and_excessive_depth",
+          "ninep::tree::tests::canonical_tree_decoder_round_trips_and_rejects_noncanonical_artifacts",
+          "ninep::tree::tests::canonical_tree_encoding_length_prefixes_adversarial_shapes",
+          "ninep::tree::tests::canonical_tree_identity_is_order_independent_and_field_sensitive",
+          "ninep::tree::tests::tree_construction_rejects_reserved_and_ambiguous_components",
+          "snapshot_codec::tests::hostile_sequence_hint_is_typed_before_large_allocation",
+          "subnode::queue_revision::tests::actual_queue_changes_advance_revision_without_changing_original_delivery_key",
+          "subnode::queue_revision::tests::exhausted_revision_refuses_enqueue_compute_discard_and_publication_before_effects",
+          "subnode::queue_revision::tests::repeated_canonical_restore_retains_pending_keys_and_exact_queue_revision",
+          "subnode::queue_revision::tests::version_five_requires_nonzero_revision_and_rejects_previous_queue_format",
+          "subnode::selected_delivery::tests::equal_payload_does_not_authorize_reordered_wrong_or_future_selection",
+          "subnode::selected_delivery::tests::exhausted_revision_refuses_selected_publication_before_queue_or_ring_effects",
+          "subnode::selected_delivery::tests::only_the_exact_computed_key_is_published_without_bulk_drain",
+          "subnode::selected_delivery::tests::repeated_actual_queue_restore_preserves_source_keys_and_selection",
+          "subnode::selected_delivery::tests::ring_full_retains_exact_key_and_success_cannot_be_republished",
+          "subnode::snapshot::tests::io_core_snapshot_enforces_authored_aggregate_limit",
+          "subnode::snapshot::tests::io_core_snapshot_rejects_unsupported_version",
+          "subnode::snapshot::tests::io_core_snapshot_rejects_wrong_clock_scale",
+          "subnode::snapshot::tests::io_core_snapshot_reports_offending_capacity"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-protocol:codec": {
+        "executed": [
+          "decoder_reports_direction_and_payload_shape_errors",
+          "decoder_reports_typed_frame_shape_errors",
+          "doorbell_frame_decoder_reports_typed_shape_errors",
+          "frame_read_helper_preserves_prefix_and_length_contract",
+          "frame_stream_helpers_read_and_write_complete_frames",
+          "frame_stream_helpers_reject_truncated_reads_as_io_errors",
+          "frame_stream_helpers_report_write_errors",
+          "host_messages_round_trip_through_big_endian_frames",
+          "marker_payload_decoder_reports_typed_shape_errors",
+          "plugin_messages_round_trip_through_big_endian_frames"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-protocol:codec_fuzz": {
+        "executed": [
+          "fuzz_target_never_panics_on_regression_corpus",
+          "fuzz_target_reports_directional_success_only_for_registered_direction",
+          "generated_truncations_and_trailing_bytes_stay_typed",
+          "seeded_regression_corpus_exercises_malformed_and_adversarial_frames",
+          "structure_aware_directional_adversarial_frames_remain_typed_errors",
+          "structure_aware_malformed_frames_never_panic",
+          "tag_constants_are_covered_by_structure_aware_fuzz_generation",
+          "well_formed_generated_messages_round_trip"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-protocol:descriptor_handover": {
+        "executed": [
+          "setup_handover_accepts_split_descriptor_control_messages",
+          "setup_handover_rejects_wrong_descriptor_count",
+          "setup_handover_reports_closed_peer_on_send",
+          "setup_handover_transfers_three_descriptors_in_fixed_order"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-protocol:frame_format": {
+        "executed": [
+          "closed_tag_registry_matches_rfc_14_table",
+          "closed_tag_registry_rejects_unregistered_wire_values",
+          "frame_format_uses_big_endian_length_tag_and_payload",
+          "tag_directions_and_payload_lengths_match_control_lifecycle"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-protocol:gate_abi_conformance": {
+        "executed": [
+          "guest_selectable_catalog_plan_v4_golden_vector_matches_live_codec",
+          "guest_selectable_current_schemas_are_registered_exactly",
+          "guest_selectable_pending_transport_v2_golden_vector_matches_live_codec",
+          "guest_selectable_v1_golden_vectors_match_live_codec_bytes",
+          "measurement_marker_codec_rejects_noncanonical_and_oversized_values",
+          "plugin_setup_plan_v2_golden_vector_matches_live_codec",
+          "protocol_abi_conformance_runs_named_checks",
+          "protocol_codec_fuzz_regression_corpus_is_clean_and_deterministic",
+          "protocol_doorbell_decoder_fuzz_corpus_is_clean_and_bounded",
+          "protocol_doorbell_frame_golden_vectors_match_live_codec_bytes",
+          "protocol_doorbell_marker_kind_vocabulary_is_closed_and_versioned",
+          "protocol_doorbell_marker_payload_golden_vectors_match_live_codec_bytes",
+          "protocol_doorbell_marker_subvocabularies_are_closed_and_versioned",
+          "protocol_golden_vector_versions_are_explicit",
+          "protocol_golden_vectors_cover_required_control_frames",
+          "protocol_golden_vectors_freeze_literal_frame_bytes",
+          "protocol_golden_vectors_match_live_codec_bytes",
+          "protocol_rejects_an_unsupported_doorbell_version"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-protocol:gate_layer1_injection": {
+        "executed": [
+          "gate_layer1_injection_control_protocol_carries_no_runtime_injection_data",
+          "gate_layer1_injection_control_protocol_is_silent_on_hot_path"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-protocol:golden_vectors": {
+        "executed": [
+          "doorbell_frame_golden_vectors_match_canonical_codec_bytes",
+          "golden_vector_protocol_version_matches_current_protocol_version",
+          "golden_vectors_cover_required_protocol_messages_in_stable_order",
+          "golden_vectors_freeze_literal_wire_bytes",
+          "golden_vectors_match_canonical_codec_bytes",
+          "marker_payload_golden_vectors_match_canonical_codec_bytes",
+          "setup_vector_freezes_payload_without_descriptor_sidecar"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-protocol:handshake": {
+        "executed": [
+          "host_accepts_exact_hello_and_writes_hello_ack",
+          "host_rejects_handshake_failures_without_hello_ack",
+          "plugin_rejects_invalid_hello_ack",
+          "plugin_sends_hello_and_validates_hello_ack_before_setup"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-protocol:lifecycle": {
+        "executed": [
+          "lifecycle_control_tags_preserve_registered_direction",
+          "lifecycle_events_are_derived_from_decoded_control_messages",
+          "lifecycle_rejects_non_ready_setup_ack_before_run",
+          "lifecycle_rejects_out_of_order_and_incomplete_traces",
+          "lifecycle_stream_does_not_advance_after_invalid_hello_ack",
+          "lifecycle_stream_splits_host_faults_from_plugin_quit_acceptance",
+          "lifecycle_stream_wires_real_frames_setup_descriptors_and_run_silence",
+          "normal_lifecycle_connects_handshakes_runs_via_shmem_and_quits",
+          "plugin_failure_ack_writes_nonready_bytes_without_entering_run",
+          "plugin_ready_commit_records_exact_setup_transition",
+          "plugin_setup_io_is_bounded_to_setup_and_rejected_during_run",
+          "restored_child_run_stream_accepts_only_the_terminal_run_frame",
+          "run_phase_accepts_only_shmem_until_quit"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-protocol:setup_completion": {
+        "executed": [
+          "host_accepts_zero_setup_ack_as_schedulable",
+          "host_refuses_nonzero_setup_ack_before_scheduling",
+          "host_rejects_unexpected_or_malformed_setup_ack",
+          "plugin_sends_setup_ack_status_and_flushes"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-protocol:unit": {
+        "executed": [
+          "app_random_branch_plan::tests::branch_plan_rejects_duplicate_positions_and_trailing_bytes",
+          "app_random_branch_plan::tests::branch_plan_round_trips_and_freezes_big_endian_layout",
+          "app_random_transport::tests::completed_decision_rejects_out_of_range_value",
+          "app_random_transport::tests::completed_decision_round_trips",
+          "app_random_transport::tests::stream_name_membership_uses_the_complete_length_framed_node",
+          "choice::tests::scalar_domain_uses_v2_and_rejects_v1_and_group_tags",
+          "debug_gateway::tests::backend_status_round_trips_for_reconnect_reconciliation",
+          "debug_gateway::tests::stream_and_size_invariants_fail_closed",
+          "debug_gateway::tests::typed_error_payload_round_trips_with_stable_code",
+          "debug_gateway::tests::version_one_golden_rsp_frame_is_stable",
+          "device_group_opportunity::tests::bounded_public_roundtrip_preserves_exact_original_bytes",
+          "device_group_opportunity::tests::copied_count_digest_padding_and_unpaired_grid_refuse",
+          "doorbell_abi::tests::doorbell_abi_aarch64_vector_freezes_inert_hint",
+          "doorbell_abi::tests::doorbell_abi_vectors_cover_x86_64_and_aarch64",
+          "doorbell_abi::tests::doorbell_abi_x86_64_vector_freezes_out_imm8_al",
+          "guest_introspection::tests::every_record_kind_round_trips",
+          "guest_introspection::tests::malformed_and_unbounded_records_fail_closed",
+          "guest_introspection::tests::request_and_response_directions_are_closed",
+          "guest_introspection_doorbell::tests::all_exchange_kinds_round_trip",
+          "guest_introspection_doorbell::tests::malformed_envelopes_fail_closed",
+          "plugin_setup_plan::tests::composite_plan_rejects_nested_substitution_and_length_drift",
+          "plugin_setup_plan::tests::composite_plan_round_trips_and_freezes_big_endian_layout",
+          "preemption::tests::ipi_delivery_adds_fixed_latency_and_rounds_to_rr_boundary",
+          "preemption::tests::ipi_delivery_rejects_zero_quantum_and_overflow",
+          "selectable::tests::selectable_bounds_reject_before_large_decode_allocations",
+          "selectable::tests::selectable_decoders_reject_every_truncation_without_panicking",
+          "selectable::tests::selectable_decoders_reject_noncanonical_headers_ranges_and_reserved_bits",
+          "selectable::tests::selectable_identifier_tag_and_value_shapes_fail_closed",
+          "selectable::tests::selectable_registration_v1_has_frozen_canonical_bytes",
+          "selectable::tests::selection_reply_v1_binds_sequence_ids_status_and_value",
+          "selectable::tests::selection_request_optional_domain_flag_and_capacity_are_exact",
+          "selectable::tests::selection_request_v1_reserves_one_exact_zeroed_reply_buffer",
+          "selectable_catalog_plan::tests::cold_and_restored_plans_round_trip_with_frozen_header",
+          "selectable_catalog_plan::tests::continuation_rejects_runtime_state_before_freeze_and_stale_pending_sequence",
+          "selectable_catalog_plan::tests::decode_rejects_flags_order_reserved_total_and_trailing_mutations",
+          "selectable_catalog_plan::tests::host_mirror_transitions_round_trip_one_completed_request",
+          "selectable_catalog_plan::tests::pending_trap_must_represent_the_following_native_stop_boundary",
+          "selectable_catalog_plan::tests::plan_rejects_unknown_registered_missing_required_and_limit_overflow",
+          "selectable_transport::tests::decoder_rejects_reserved_and_nested_length_mutations",
+          "selectable_transport::tests::pending_request_round_trips_with_exact_reply_target",
+          "selectable_transport::tests::transport_bound_is_stricter_than_standalone_guest_message"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-shmem:advance_ceiling_handoff": {
+        "executed": [
+          "control_boundary_request_release_acknowledges_publication",
+          "external_restore_ceiling_does_not_wake_or_rewind_the_slot",
+          "frame_delivery_wake_always_bumps_the_futex_word",
+          "idle_publish_uses_race_free_futex_wait_and_wake_counter",
+          "linux_frame_delivery_trigger_wakes_parked_waiter",
+          "linux_non_private_futex_syscalls_are_available",
+          "linux_scheduler_trigger_wakes_parked_waiter",
+          "mark_running_participates_in_publish_generation",
+          "next_idle_safety_ceiling_does_not_synthesize_an_idle_boundary",
+          "node_cannot_self_extend_past_published_ceiling",
+          "node_reports_invalid_idle_and_time_conversion_loudly",
+          "node_slot_layout_matches_wire_contract",
+          "scheduler_publishes_ceiling_and_node_publishes_reached_icount",
+          "scheduler_raise_during_idle_publish_race_bumps_wake_counter",
+          "scheduler_wake_batches_pending_inputs_before_single_wake",
+          "scheduler_wake_enqueues_pending_inputs_before_ceiling_and_futex_wake",
+          "scheduler_wake_node_slot_borrowed_inbox_handoff_orders_input_ceiling_and_wake",
+          "scheduler_wake_publication_source_orders_inbox_before_ceiling_before_wake",
+          "scheduler_wake_rejects_full_inbox_before_ceiling_or_wake",
+          "scheduler_wake_rejects_source_mismatch_before_inbox_write_or_wake",
+          "scheduler_wake_rejects_stale_ceiling_before_inbox_write_or_wake"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-shmem:control_flags": {
+        "executed": [
+          "linux_shutdown_request_wakes_all_parked_waiters",
+          "logical_time_restore_is_one_generation_exact_transaction",
+          "logical_time_restore_rejects_raw_time_ahead_of_logical_time",
+          "node_can_publish_pause_quiescence_at_quantum_boundary",
+          "pause_request_sets_flag_and_wakes_every_slot",
+          "shutdown_request_takes_priority_and_nodes_mark_done"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-shmem:gate_abi_conformance": {
+        "executed": [
+          "gate_cases::gate_abi_conformance_checks_generated_header_and_golden_vectors",
+          "gate_cases::generated_header_carries_static_asserts_for_every_shared_struct",
+          "gate_cases::generated_header_matches_committed_copy",
+          "gate_cases::golden_vector_negative_control_detects_layout_drift",
+          "gate_cases::rust_golden_vector_round_trip_matches_fixture"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-shmem:gate_layer1_injection": {
+        "executed": [
+          "coverage_ring::paused_restore_discards_only_the_queued_coverage_generation",
+          "gate_layer1_injection_checks_spsc_ring_concurrency_properties"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-shmem:generated_abi_header": {
+        "executed": [
+          "committed_header_matches_generated_rust_layout",
+          "generated_header_asserts_every_shared_struct_layout",
+          "generated_header_preserves_public_abi_license_notice"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-shmem:icount_stamped_injection": {
+        "executed": [
+          "deliverability_depends_on_consumer_icount_not_arrival_order",
+          "frame_entry_carries_delivery_icount_in_band",
+          "frame_entry_rejects_malformed_payload_length",
+          "frame_entry_rejects_oversized_payload",
+          "same_icount_frames_resolve_by_source_node_then_sequence"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-shmem:lookahead_gate": {
+        "executed": [
+          "lookahead_gate_allows_exact_current_delivery_icount",
+          "lookahead_gate_allows_future_frame_to_deliver_at_exact_icount",
+          "lookahead_gate_authorizes_ceiling_before_possible_delivery",
+          "lookahead_gate_rejects_already_passed_delivery_icount",
+          "lookahead_gate_rejects_ceiling_at_possible_delivery",
+          "lookahead_gate_rejects_ceiling_before_current_icount",
+          "lookahead_gate_rejects_ceiling_past_possible_delivery"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-shmem:multi_vcpu_node_slot": {
+        "executed": [
+          "generated_c_header_keeps_node_slot_node_scoped",
+          "multi_vcpu_count_does_not_change_region_shape_or_abi_version",
+          "node_slot_publishes_device_io_active_flag",
+          "one_node_slot_carries_aggregate_multi_vcpu_clock_and_idle_deadline",
+          "shmem_abi_has_no_per_vcpu_fields_or_slots"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-shmem:preemption_mailbox": {
+        "executed": [
+          "preemption_mailbox_rejects_overwrite_wrong_ack_and_invalid_window",
+          "preemption_mailbox_round_trips_switch_interrupt_and_acknowledgement"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-shmem:region_layout": {
+        "executed": [
+          "guest_introspection_rings_are_directional_bounded_and_vm_isolated",
+          "region_allocation_initializes_slots_rings_and_storage",
+          "region_header_layout_matches_wire_contract",
+          "region_header_records_computed_geometry",
+          "region_header_round_trips_explicit_fault_payload_geometry",
+          "region_layout_computes_offsets_and_directed_rings",
+          "region_layout_rejects_invalid_shapes",
+          "reserved_executor_slot_constants_are_stable"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-shmem:setup_validation": {
+        "executed": [
+          "hot_fork_ring_image_round_trips_queued_bytes_into_a_held_private_mapping",
+          "mapped_hot_fork_barrier_holds_and_releases_every_ring_endpoint",
+          "mmap_setup_region_exposes_node_slot_and_distinct_directed_rings",
+          "mmap_setup_region_keeps_guest_introspection_directions_distinct",
+          "mmap_setup_region_maps_exact_region_len_before_header_validation",
+          "mmap_setup_region_rejects_duplicate_mutable_directed_ring_view",
+          "mmap_setup_region_rejects_lengths_smaller_than_header",
+          "mmap_setup_region_rejects_short_backing_before_mapping",
+          "mmap_setup_region_round_trips_fault_command_transport",
+          "mmap_setup_region_round_trips_one_bounded_selectable_reply",
+          "mmap_setup_region_round_trips_whitebox_marker_ring_entries",
+          "setup_region_bytes_include_ring_indices_and_frame_entries",
+          "setup_region_bytes_materialize_a_valid_initial_memfd_image",
+          "setup_region_header_validation_accepts_magic_abi_and_region_len",
+          "setup_region_header_validation_rejects_invalid_abi_marker",
+          "setup_region_header_validation_rejects_invalid_geometry",
+          "setup_region_header_validation_rejects_wrong_clock_scale",
+          "setup_region_header_validation_rejects_wrong_region_len"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-shmem:snapshot_restore": {
+        "executed": [
+          "canonical_bytes_decoder_rejects_malformed_corpus_without_panicking",
+          "canonical_bytes_decoder_round_trips_and_normalizes_padding",
+          "canonical_bytes_rejects_impossible_attempt_state_combinations",
+          "canonical_bytes_round_trip_retained_delivery_state",
+          "canonical_decoder_keeps_minimal_frames_compact",
+          "canonical_decoder_rejects_amplified_truncated_ring_before_reservation",
+          "canonical_decoder_rejects_corrupt_snapshot_frame_length",
+          "canonical_decoder_rejects_frame_count_before_allocation",
+          "canonical_decoder_rejects_retained_attempt_before_delivery",
+          "restore_normalizes_indices_and_replays_snapshot_frames",
+          "restore_rejects_snapshot_larger_than_target_capacity",
+          "snapshot_captures_fifo_after_wraparound_and_canonicalizes_entries",
+          "snapshot_rejects_corrupt_frame_length_before_serializing"
+        ],
+        "ignored": []
+      },
+      "//crates/crucible/protocol/crucible-qemu-shmem:unit": {
+        "executed": [
+          "fault_clock_evidence::tests::clock_evidence_rejects_noncanonical_and_unbound_records",
+          "fault_clock_evidence::tests::every_clock_evidence_kind_round_trips_canonically",
+          "fault_command::tests::capability_manifest_is_sorted_bounded_and_content_addressed",
+          "fault_command::tests::command_round_trip_authenticates_payload_and_reserved_bytes",
+          "fault_command::tests::command_transport_wraps_without_splitting_payloads",
+          "fault_command::tests::full_command_ring_fails_before_reserving_payload_bytes",
+          "fault_command::tests::malformed_command_is_consumed_without_losing_raw_correlation",
+          "fault_command::tests::result_preflight_reports_backpressure_without_mutating_transport",
+          "fault_command::tests::result_status_controls_mutation_evidence_invariants",
+          "fault_command::tests::result_transport_accepts_unknown_kind_only_for_rejection",
+          "fault_command::tests::result_transport_reuses_preallocated_payload_storage_without_consuming_on_short_buffer",
+          "fault_event::tests::drained_event_checkpoint_round_trips_and_rejects_trailing_bytes",
+          "fault_event::tests::event_snapshot_authenticates_without_consuming_transport_ownership",
+          "fault_event::tests::event_snapshot_rejects_inline_payload_before_copying_or_consuming",
+          "fault_event::tests::event_snapshot_rejects_payload_bytes_without_consuming_transport_ownership",
+          "fault_event::tests::event_transport_round_trips_authenticated_payload",
+          "fault_event::tests::passed_event_cannot_change_state_digest",
+          "fault_instruction_evidence::tests::delivered_exception_round_trip_rejects_delivery_disagreement",
+          "fault_instruction_evidence::tests::device_replay_requires_an_authenticated_completed_port_io_transcript",
+          "fault_instruction_evidence::tests::instruction_round_trip_rejects_reserved_bytes",
+          "fault_instruction_evidence::tests::suppressed_instruction_binds_mismatched_input_digest",
+          "fault_memory::tests::gva_preparation_may_resolve_translation_before_commit",
+          "fault_memory::tests::memory_mutation_payload_bounds_match_the_transport_envelope",
+          "fault_memory::tests::memory_mutation_payload_rejects_partial_or_ambiguous_context",
+          "fault_memory::tests::memory_mutation_payload_round_trips_both_transforms",
+          "fault_memory_batch::tests::batch_rejects_duplicate_identity_and_cumulative_overflow",
+          "fault_memory_batch::tests::preparation_and_commit_batches_are_canonical_and_ordered",
+          "fault_memory_batch::tests::transport_envelopes_include_worst_case_batch_overhead",
+          "fault_memory_evidence::tests::prepared_precondition_binds_every_boundary_digest",
+          "fault_memory_evidence::tests::translation_digest_and_evidence_round_trip",
+          "fault_node::tests::every_typed_node_command_has_an_exact_closed_schema",
+          "fault_node::tests::typed_node_evidence_round_trips_every_identity",
+          "fault_node::tests::typed_node_payload_rejects_command_target_mismatch",
+          "fault_node::tests::typed_node_payload_rejects_invalid_memory_cross_fields",
+          "fault_node::tests::typed_node_payload_rejects_noncanonical_fields",
+          "fault_node::tests::typed_node_payload_rejects_noncanonical_policy_json",
+          "fault_node::tests::typed_node_payload_rejects_unknown_discriminant",
+          "fault_node::tests::typed_node_payload_round_trips",
+          "fault_node::tests::typed_node_remove_is_parameter_free",
+          "fault_register_evidence::tests::only_after_instruction_evidence_accepts_the_terminal_rr_position",
+          "fault_register_evidence::tests::register_evidence_round_trips_and_authenticates_values",
+          "fault_target_manifest::tests::accelerator_manifest_round_trips_and_rejects_incomplete_devices",
+          "fault_target_manifest::tests::clock_manifest_round_trips_and_rejects_noncanonical_sources",
+          "fault_target_manifest::tests::fault_system_manifest_is_fixed_authenticated_and_fail_closed",
+          "fault_target_manifest::tests::hardware_error_manifest_rejects_partial_or_mismatched_rows",
+          "fault_target_manifest::tests::hardware_error_manifest_round_trips_real_mca_rows",
+          "fault_target_manifest::tests::interrupt_manifest_round_trips_and_rejects_incomplete_controller_semantics",
+          "fault_target_manifest::tests::query_codec_rejects_unknown_kinds_and_reserved_bytes",
+          "fault_target_manifest::tests::register_manifest_carries_non_writable_rows_without_mutation_hooks",
+          "fault_target_manifest::tests::register_manifest_golden_vector_is_frozen",
+          "fault_target_manifest::tests::register_manifest_rejects_overlap_gaps_order_and_digest_drift",
+          "fault_target_manifest::tests::register_manifest_round_trips_canonical_rows_and_masks",
+          "fault_terminal_evidence::tests::decodes_queue_and_resource_terminal_records",
+          "fault_terminal_evidence::tests::rejects_mismatched_magic_and_resource_kind",
+          "fingerprint_sample::tests::capture_request_is_odd_until_acknowledged",
+          "fingerprint_sample::tests::capture_request_wraps_without_acknowledging_a_different_token",
+          "fingerprint_sample::tests::over_capacity_vcpu_count_is_rejected",
+          "fingerprint_sample::tests::publish_then_snapshot_round_trips_every_field",
+          "fingerprint_sample::tests::republish_advances_generation_and_replaces_sample",
+          "fingerprint_sample::tests::unpublished_slot_snapshots_to_none",
+          "frame_node::advance_publication_tests::clone_captures_one_even_coherent_scheduler_tuple",
+          "frame_node::advance_publication_tests::concurrent_publication_never_exposes_a_mixed_scheduler_tuple",
+          "frame_node::advance_publication_tests::full_mode_aba_changes_the_publication_sequence",
+          "frame_node::advance_publication_tests::unknown_stop_condition_fails_closed",
+          "frame_node::control_boundary_tests::outstanding_control_request_rejects_a_changed_frontier_or_capture",
+          "frame_node::control_boundary_tests::repeated_request_and_acknowledgement_are_idempotent",
+          "frame_node::control_boundary_tests::request_and_acknowledgement_wrap_through_zero",
+          "frame_node::preemption_mailbox::tests::pending_hint_does_not_decode_or_validate_command_fields",
+          "frame_node::preemption_mailbox::tests::pending_hint_handles_publication_sequence_wrap",
+          "frame_node::virtual_timer_witness_tests::completed_virtual_timer_witness_round_trips_in_one_slot_snapshot",
+          "mapped_setup_region::tests::hot_fork_child_installs_private_mapping_at_exact_source_address",
+          "mapped_setup_region::tests::hot_fork_mapping_disposition_is_reversible",
+          "mapped_setup_region::tests::owned_mapping_can_move_to_a_session_thread",
+          "mapped_setup_region::tests::seal_capable_memfd_must_prevent_shrink_before_mapping",
+          "ring_accelerator::tests::accelerator_entry_round_trips_and_rejects_tail_bytes",
+          "ring_accelerator::tests::cancellation_repeats_a_canonical_job_envelope_without_payload",
+          "ring_accelerator::tests::immutable_job_material_excludes_transport_identity",
+          "ring_coverage::admission_barrier_tests::hold_between_load_and_admission_cas_rejects_racing_consumer",
+          "ring_coverage::admission_barrier_tests::hold_between_load_and_admission_cas_rejects_racing_producer",
+          "ring_coverage::admission_barrier_tests::hold_rejects_late_consumers_without_advancing_the_ring",
+          "ring_coverage::admission_barrier_tests::hold_rejects_late_producers_and_waits_for_admitted_publication",
+          "ring_coverage::whitebox_availability_tests::whitebox_availability_does_not_validate_payloads",
+          "ring_coverage::whitebox_availability_tests::whitebox_availability_is_advisory_across_publication_and_consumption",
+          "ring_coverage::whitebox_availability_tests::whitebox_availability_matches_peek_without_consuming",
+          "ring_coverage::whitebox_availability_tests::whitebox_availability_preserves_peek_without_consumer_admission",
+          "ring_guest_introspection::tests::consumer_rejects_malformed_entry_without_releasing_its_slot",
+          "ring_guest_introspection::tests::directional_ring_applies_backpressure_and_wraps_without_overwrite",
+          "ring_guest_introspection::tests::entry_rejects_every_untrusted_envelope_and_protocol_shape",
+          "ring_guest_introspection::tests::entry_round_trips_owned_record_bytes",
+          "ring_guest_introspection::tests::peek_requires_matching_commit_before_releasing_request",
+          "ring_whitebox_marker::tests::marker_entry_rejects_oversized_payload",
+          "ring_whitebox_marker::tests::marker_entry_round_trips_exact_observational_fields"
+        ],
+        "ignored": []
+      }
+    }
+  },
+  "platform": "x86_64-linux",
+  "policy_tests": 58,
+  "schema_version": 1,
+  "scope": "native Linux deterministic device family with configured third-party dependency profiles; production builders retained",
+  "test_cases_by_package": {
+    "crucible-determinism": 37,
+    "crucible-device": 303,
+    "crucible-qemu-protocol": 115,
+    "crucible-qemu-shmem": 187
+  }
+}

@@ -18,6 +18,11 @@
 //!   `anonymous_read = true`. A *present but invalid* token is still
 //!   rejected with `401`.
 
+#![allow(
+    clippy::disallowed_types,
+    reason = "The public JWT claims retain their permission-set API; these host credentials are outside Crucible replay state."
+)]
+
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -111,6 +116,10 @@ pub(crate) fn require_view_permission(
 ///
 /// Returns an error if the system clock is before the Unix epoch or JWT
 /// encoding fails.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Host JWT expiry must use current Unix time."
+)]
 pub fn create_access_token(
     secret: &[u8],
     token_record: &TokenRecord,

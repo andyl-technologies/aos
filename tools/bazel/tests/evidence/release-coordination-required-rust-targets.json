@@ -1,0 +1,19 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "9f51efede4",
+  "compiled_changed_rust_inputs_sha256": {
+    "crates/aos/release/aos-release-coordinator/src/capture.rs": "ffdbab43e2279703f0a6f2b262d2e2ea26459e6dc4e2d0141ff8e84032af731a",
+    "crates/aos/release/aos-release-coordinator/src/journal.rs": "3260f9734c543a32d2966f96ac0b356753c7d6d348113ff5ed19529d7e201b8b"
+  },
+  "derivation": "/nix/store/ds8jssbnapjw47g5dhybgnlqvyk78648-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "90bd0409f18a3454036c3a29cac45b005c4cd093ca3752a7c9c68f2ec1ba0af4",
+  "limits": [
+    "This gate compiles application unit and integration targets without executing them. Native Bazel/Cargo execution is retained separately.",
+    "The frozen source contains both release-coordination Rust inputs: the compile-time C string and the function-scoped journal clock exception. Later conversion work is not qualified by this checkpoint."
+  ],
+  "log_sha256": "3036bc63a172d7208001b9744cc5e7f5b0f5cb051d3961daeaafa16b96300653",
+  "output": "/nix/store/firgwx2z8fnqhxq9qf131wdwnq5l4n0y-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/raljxz30sry3bg8f2mc4shhwbnnlvb5r-aos-workspace-src",
+  "status": "Required workspace Rust application unit and integration targets compiled successfully"
+}

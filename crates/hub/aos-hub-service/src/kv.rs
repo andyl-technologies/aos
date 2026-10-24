@@ -31,7 +31,7 @@
 //! ports ([`BackendBounds`]): `Send + Sync` natively, unbounded on the
 //! single-threaded wasm32 Worker.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Mutex;
 
 use anyhow::Result;
@@ -113,7 +113,7 @@ impl Entry {
     }
 }
 
-/// The native, in-process [`KvStore`]: a `Mutex<HashMap>` with lazy TTL eviction.
+/// The native, in-process [`KvStore`]: a `Mutex<BTreeMap>` with lazy TTL eviction.
 ///
 /// Correct and microsecond-fast for the common single-node native hub (the
 /// process is one address space, so a map is the in-process analog of the
@@ -124,7 +124,7 @@ impl Entry {
 /// swaps [`InMemoryLease`](crate::lease::InMemoryLease) for a shared store.
 #[derive(Debug, Default)]
 pub struct InMemoryKv {
-    entries: Mutex<HashMap<String, Entry>>,
+    entries: Mutex<BTreeMap<String, Entry>>,
 }
 
 impl InMemoryKv {

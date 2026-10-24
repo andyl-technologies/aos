@@ -83,6 +83,10 @@ impl QueryTimings {
     /// Records one span. Never panics: a poisoned native mutex is recovered, and
     /// a re-entrant `RefCell` borrow (impossible on the single-threaded Worker)
     /// is silently dropped rather than aborting the request.
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Measures Hub SQL request latency through its platform clock outside deterministic guest execution."
+    )]
     fn record(&self, op: &'static str, sql: &str, started: Instant) {
         let span = QuerySpan {
             op,
@@ -172,6 +176,10 @@ impl<B: Backend> Backend for TimingBackend<B> {
         self.inner.dialect()
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Measures Hub SQL request latency through its platform clock outside deterministic guest execution."
+    )]
     async fn execute(&self, sql: &str, params: &[Value]) -> Result<u64> {
         let started = Instant::now();
         let r = self.inner.execute(sql, params).await;
@@ -179,6 +187,10 @@ impl<B: Backend> Backend for TimingBackend<B> {
         r
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Measures Hub SQL request latency through its platform clock outside deterministic guest execution."
+    )]
     async fn execute_insert(&self, sql: &str, params: &[Value]) -> Result<i64> {
         let started = Instant::now();
         let r = self.inner.execute_insert(sql, params).await;
@@ -186,6 +198,10 @@ impl<B: Backend> Backend for TimingBackend<B> {
         r
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Measures Hub SQL request latency through its platform clock outside deterministic guest execution."
+    )]
     async fn query(&self, sql: &str, params: &[Value]) -> Result<Vec<Row>> {
         let started = Instant::now();
         let r = self.inner.query(sql, params).await;
@@ -193,6 +209,10 @@ impl<B: Backend> Backend for TimingBackend<B> {
         r
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Measures Hub SQL request latency through its platform clock outside deterministic guest execution."
+    )]
     async fn execute_batch(&self, sql: &str) -> Result<()> {
         let started = Instant::now();
         let r = self.inner.execute_batch(sql).await;
@@ -200,6 +220,10 @@ impl<B: Backend> Backend for TimingBackend<B> {
         r
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Measures Hub SQL request latency through its platform clock outside deterministic guest execution."
+    )]
     async fn batch(&self, stmts: &[Statement]) -> Result<()> {
         let started = Instant::now();
         let r = self.inner.batch(stmts).await;
@@ -207,6 +231,10 @@ impl<B: Backend> Backend for TimingBackend<B> {
         r
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Measures Hub SQL request latency through its platform clock outside deterministic guest execution."
+    )]
     async fn migration_batch(
         &self,
         expected_current: i64,
@@ -222,6 +250,10 @@ impl<B: Backend> Backend for TimingBackend<B> {
         r
     }
 
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "Measures Hub SQL request latency through its platform clock outside deterministic guest execution."
+    )]
     async fn checked_batch(&self, stmts: &[CheckedStatement]) -> Result<()> {
         let started = Instant::now();
         let r = self.inner.checked_batch(stmts).await;

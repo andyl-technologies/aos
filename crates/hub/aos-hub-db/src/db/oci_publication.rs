@@ -1718,6 +1718,10 @@ impl Database {
     /// Returns an error for ownership/version drift, expiry, tag CAS failure,
     /// a publication/catalog identity mismatch, an incomplete or changed graph,
     /// absent placement evidence, or database failure.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "Keep persisted identities and transaction inputs explicit in this existing API."
+    )]
     pub async fn commit_oci_publication(
         &self,
         publication_id: &str,

@@ -183,7 +183,7 @@ impl RuntimeKind {
     /// external `s3`/`r2` are creatable on both runtimes. The Worker also lets
     /// an operator explicitly select its canonical R2 runtime attachment.
     pub fn creatable_binding_kinds(&self) -> Vec<BindingKind> {
-        self.supported_binding_kinds().iter().copied().collect()
+        self.supported_binding_kinds().to_vec()
     }
 }
 

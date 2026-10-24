@@ -191,7 +191,11 @@ pub fn artifact_content_identity(nar_hash: &Sha256Digest) -> Sha256Digest {
 }
 
 #[cfg(test)]
-#[allow(clippy::expect_used)]
+#[allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "invalid fixtures and unexpected validation failures must fail the test immediately"
+)]
 mod tests {
     use super::*;
 

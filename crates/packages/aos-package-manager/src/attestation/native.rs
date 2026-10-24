@@ -230,7 +230,7 @@ pub fn persist(
 ///
 /// # Errors
 /// Returns an error for inconsistent committed state or descriptors, missing
-/// admission, changed NARs, or failed source identity checks.
+/// admission, changed NARs, failed source identity checks, or unavailable OS entropy.
 pub fn collect(
     profile: &Path,
     generation: u32,
@@ -285,9 +285,13 @@ pub fn collect(
             .is_some_and(|evidence| evidence.nar_hash == evaluation.library_nar_hash),
         "library identity differs from its original admission"
     );
+    let mut activation_nonce = [0u8; 32];
+    rand::TryRngCore::try_fill_bytes(&mut rand::rngs::OsRng, &mut activation_nonce)
+        .context("obtaining native activation entropy")?;
+
     Ok(GenerationEvidence {
         schema: GENERATION_SCHEMA.into(),
-        activation_id: Sha256Digest::of_bytes(rand::random::<[u8; 32]>()),
+        activation_id: Sha256Digest::of_bytes(activation_nonce),
         profile_generation: generation,
         sequence: committed.sequence,
         content: committed.content,

@@ -1,0 +1,24 @@
+{
+  "derivation": "/nix/store/9a9vhzqic2g058h3s3981wpgpl1mxzvk-aos-bazel-build-script-metadata-check-1.drv",
+  "derivation_sha256": "ecd9d260e128ea93edcdcb044b3c9404215ba72dff6b5fbc2cf5c6aae935b20d",
+  "input_sha256": {
+    "pkgs/build-support/_bazel/modules.nix": "a7bbca622bd99c922f108db8fd80dbdd0860e8dd7aaa5d6f700741dcb8b14c61",
+    "tests/build/_bazel-build-script-metadata.nix": "a272df3f9e152518998d8f83cf5435e45ba88fbadc6420137c3870c39c8c076b",
+    "third_party/bazel/patches/rules-rust-build-script-metadata.patch": "8bf875f3842f05dd95315fd189a1c9e43fcf56735c4027471798cc9a8d5f9d2a"
+  },
+  "limits": [
+    "This focused check verifies dependency metadata serialization. Full native registry compilation and execution are qualified separately."
+  ],
+  "output": "/nix/store/6gig8l78g6r70dh8hmiadcqh90xfgx6p-aos-bazel-build-script-metadata-check-1",
+  "prepared_rules_rust_source": "/nix/store/yjmfqfq850dn6f45prdz8a3r2q5n447a-aos-bazel-module-rules_rust-0.71.2",
+  "prepared_runner_source_sha256": "41688970943ae2e2ddb3478c8257f57c15e1cab183af66fa56e7c408626f1cf5",
+  "schema_version": 1,
+  "status": "Pinned rules_rust producer build-script metadata retains generated include paths in dependent actions",
+  "tests": {
+    "failing_log_sha256": "9798605465161dd1d9c3ebe1767a2f4fd64fc10a4b31ee9fc80a4aa61f11ba6f",
+    "ignored": 0,
+    "passing_log_sha256": "fb7a454552c3edb67fa358e3081a0a6d20f879f96ec1aa43fe12ad9123f08c97",
+    "passing_patched_upstream_cases": 10,
+    "restored_original_serialization_fails_the_new_regression": true
+  }
+}

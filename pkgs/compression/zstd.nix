@@ -8,6 +8,9 @@
   xz,
   lz4,
   stdenv,
+  # Upstream enables threads only in its shared library by default. Static
+  # consumers requesting zstdmt must select the matching archive explicitly.
+  enableStaticMultithread ? false,
 }: let
   upstream = mkGithubUpstream {
     unitId = "zstd-1";
@@ -63,7 +66,10 @@ in
       target = [];
       role = "public-package";
     };
-    pname = "zstd";
+    pname =
+      if enableStaticMultithread
+      then "zstd-static-mt"
+      else "zstd";
     qualification.packageProbe = lib.qualification.commandProbe {
       "primary" = {
         "artifacts" = [];
@@ -153,7 +159,7 @@ in
       {
         name = "build";
         script = ''
-          make PREFIX=$out -j$NIX_BUILD_CORES ${
+          make${lib.optionalString enableStaticMultithread " CPPFLAGS_STATICLIB=-DZSTD_MULTITHREAD"} PREFIX=$out -j$NIX_BUILD_CORES ${
             if stdenv.hostPlatform.isDarwin
             then "TARGET_SYSTEM=Darwin UNAME_TARGET_SYSTEM=Darwin"
             else ""
@@ -163,7 +169,7 @@ in
       {
         name = "install";
         script = ''
-          make install PREFIX=$out ${
+          make${lib.optionalString enableStaticMultithread " CPPFLAGS_STATICLIB=-DZSTD_MULTITHREAD"} install PREFIX=$out ${
             if stdenv.hostPlatform.isDarwin
             then "TARGET_SYSTEM=Darwin UNAME_TARGET_SYSTEM=Darwin"
             else ""

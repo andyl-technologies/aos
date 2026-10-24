@@ -327,7 +327,7 @@ fn CacheStackEntry(
         );
     });
     let apply = apply_callback(client, pending, error, busy, completed);
-    let move_action = on_action.clone();
+    let move_action = on_action;
 
     view! {
         <article class="revision-card">

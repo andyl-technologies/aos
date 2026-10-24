@@ -16,14 +16,16 @@ use crucible_control_client::{ControlClient, RpcControlClient, RpcEndpoint};
 
 #[test]
 fn cleartext_client_requires_explicit_trust_before_connecting() -> Result<(), Box<dyn Error>> {
-    let output = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args([
-            "--daemon",
-            "http://127.0.0.1:1",
-            "run",
-            "builtin:happy-path.scn",
-        ])
-        .output()?;
+    let output = Command::new(crucible_test_support::runfiles::binary_path(env!(
+        "CARGO_BIN_EXE_crucible"
+    )))
+    .args([
+        "--daemon",
+        "http://127.0.0.1:1",
+        "run",
+        "builtin:happy-path.scn",
+    ])
+    .output()?;
 
     assert_eq!(output.status.code(), Some(64));
     assert!(output.stdout.is_empty());
@@ -36,16 +38,18 @@ fn cleartext_client_requires_explicit_trust_before_connecting() -> Result<(), Bo
 
 #[tokio::test(flavor = "current_thread")]
 async fn serve_process_exits_zero_on_sigterm() -> Result<(), Box<dyn Error>> {
-    let child = Command::new(env!("CARGO_BIN_EXE_crucible"))
-        .args([
-            "serve",
-            "--listen",
-            "127.0.0.1:0",
-            "--trusted-unauthenticated-bind",
-        ])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
+    let child = Command::new(crucible_test_support::runfiles::binary_path(env!(
+        "CARGO_BIN_EXE_crucible"
+    )))
+    .args([
+        "serve",
+        "--listen",
+        "127.0.0.1:0",
+        "--trusted-unauthenticated-bind",
+    ])
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()?;
     let mut child = ChildGuard::new(child);
 
     let stdout = child

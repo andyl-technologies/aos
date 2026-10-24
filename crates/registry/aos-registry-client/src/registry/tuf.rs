@@ -36,6 +36,8 @@ pub struct CommitMetadataFiles {
 /// threshold, metadata is expired, versions go backwards, snapshot or
 /// timestamp hashes do not match, or the targets catalog does not match
 /// the selected commit's non-`tuf/` files.
+// Keep the existing trust transaction inputs explicit at this public boundary.
+#[allow(clippy::too_many_arguments)]
 pub fn verify_commit_metadata(
     repo_dir: &Path,
     registry: &str,
@@ -963,7 +965,7 @@ fn days_in_month(year: u64, month: u64) -> u64 {
 }
 
 fn is_leap_year(year: u64) -> bool {
-    year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
+    year.is_multiple_of(4) && (!year.is_multiple_of(100) || year.is_multiple_of(400))
 }
 
 /// Lists parseable semver tags in ascending version order.

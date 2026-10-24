@@ -1,0 +1,30 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "d02026572d",
+  "compiled_changed_rust_inputs_sha256": {
+    "crates/aos/packages/aos-build-server/src/access.rs": "99c7f99f490a9d7d79a92a17db3db4a92c24e4264a4e6ed1c9a9e917e71eed69",
+    "crates/aos/packages/aos-build-server/src/auth.rs": "b5fc7417ac9829d84800c0e7fb84cacfa2f8fe3b0c6a43efd067d7126f425934",
+    "crates/aos/packages/aos-build-server/src/bootstrap.rs": "9fada3ef87c7671cf39b56ec8c205da203eb19866fd97f85481be6daff4b3de1",
+    "crates/aos/packages/aos-build-server/src/build.rs": "ad3b233f45f6bc27c01dffd3dc475d9ce5610be1ef0ea2d4eac5189389cb7540",
+    "crates/aos/packages/aos-build-server/src/config.rs": "b091482457866d4befbc37193712b87311cefd2093e08452c4b8a4f10c55510f",
+    "crates/aos/packages/aos-build-server/src/drain.rs": "fb774a6abb22f9d74b2a1474d58af92e9abe8dccdcc310425a5ae3174320e7af",
+    "crates/aos/packages/aos-build-server/src/evict.rs": "26906efd606133ee04da96b2170bfc6a7e0c42a2068a3953b9ceac617e8eaf6a",
+    "crates/aos/packages/aos-build-server/src/routes.rs": "2290c3ea35c1191d69e94eb0eb0614943dd6bc41adad13d2fc1a3f0bf633e686",
+    "crates/aos/packages/aos-build-server/src/services/build.rs": "831dbaed9a7c9383acc3df7b6747db1650469d1ce3ce77a47351e5ddf4f028d2",
+    "crates/aos/packages/aos-build-server/src/services/cache.rs": "80a40428268262024cfae5477ec96b53a02641fba25c994aa5b4277965391c75",
+    "crates/aos/packages/aos-build-server/src/tokens.rs": "5cf4c6838f78b691741f854dc7c164a16cac3abe0607f0d55b10300126da0428",
+    "crates/aos/packages/aos-build-server/src/views.rs": "ea8ca0e74fbc2999ae2eb9b30ecc87ae25822dfce40910ce26b8208b955677e8"
+  },
+  "derivation": "/nix/store/gnjmd7cac1gaz342y7fk885xykg1yj0p-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "89b6888e4304d1f5e6fb807031dcc346959f82d24c33362e9dcf219bcbdad98e",
+  "implementation_commit": "ff532648aa",
+  "limits": [
+    "This gate compiles application unit and integration targets without executing them. Native Bazel/Cargo execution is retained separately.",
+    "This frozen source contains the twelve build-server lint corrections. Later deployment declarations and evaluator fixture changes are not qualified by this checkpoint."
+  ],
+  "log_sha256": "81637abf9fa1ffaccae823a773b7b97b615646c8565edd508589fe6491d16b8f",
+  "output": "/nix/store/9w038p1zfqdhi0pagc7nb361cp6msf8v-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/y7liwbfg18bnjfg3ikhsvjg679xckq9x-aos-workspace-src",
+  "status": "Required workspace Rust application unit and integration targets compiled successfully"
+}

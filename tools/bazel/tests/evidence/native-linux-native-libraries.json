@@ -1,0 +1,359 @@
+{
+  "checks": {
+    "combined_all": "/nix/store/na9fa07hzqdf1rmsbka66x1d12gya2lh-aos-bazel-checks",
+    "evaluation": "/nix/store/qlb2k5h34yfck0kghyqrvfa7mx15sk2i-aos-native-evaluation-checks-0",
+    "native_libraries": "/nix/store/jzsm7ndxc6i4fmccxfgidgy9b0y70jbj-aos-bazel-native-library-checks",
+    "shared": "/nix/store/csf34w20q1vlra64plym3d96i0rhzhnn-aos-bazel-shared-native-library-check",
+    "static": "/nix/store/ckd33gzby6lwqj5nqbj2piny06843jfa-aos-bazel-static-native-library-check"
+  },
+  "configuration_sha256": {
+    "pkgs/build-support/_bazel/default.nix": "a6ca8023b12fc5ca7754087e57a843baad9add7f9c701c04da22fb5fc119f942",
+    "pkgs/build-support/_bazel/native-libraries.nix": "75db70478989b2f416674e5c1b8bd49417bf8d650de4e9d5b78ba3d4f3dcd97e",
+    "pkgs/compression/zstd.nix": "0f5b5665d8dc3ddc36bc519abd0564c11c8770cdb5958cc6b73995b23945f05a",
+    "pkgs/default.nix": "1b4397bbec4e755bc0efe9942f77fde05825f62ae0ebd04c8a22445074a49f7b",
+    "tests/build/_bazel-native-libraries.nix": "069552ce40c3794cf054288958944e516c15da968da2c5a5dcaa74853c6b4f74",
+    "tests/build/bazel.nix": "968f7ecfd3ccded150dc1ca738c527864117dbdfe0c2e58d6c636f3deccb4983",
+    "tools/bazel/tests/native-libraries/BUILD.bazel": "4a869f78832a173f2168f070e3e2e0d601a3ceff6d7e4f4cca959d6d41dad99f",
+    "tools/bazel/tests/native-libraries/main.c": "00d57ffa4c67bac4af5c3687cee087378da87933e2cb20843495599c3d24d907",
+    "tools/bazel/tests/native-libraries/main.rs": "4f3bc623e9f80608c9759b4dadd751745c5a76aa1ccf5506f7021b7f6b8101ea",
+    "tools/bazel/tests/native-libraries/probe.c": "d49bac75b2785439d4c2fb5d3977ea71c2165322d3ef466b3e5fd8bcc7dd041f",
+    "tools/bazel/tests/native-libraries/probe.h": "4c41325b6fcb1542820191d3ebe35503d58acc431b781d573cfab0bd9becd52c",
+    "tools/bazel/tests/verify_native_libraries.py": "ee27073b4fce998f8258a543d4332844b3a44980560e61f5c025faaf6f1f7d6d"
+  },
+  "default_zstd_identity": {
+    "after": "/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7",
+    "before": "/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7"
+  },
+  "limitations": [
+    "Runtime qualification covers native x86_64 Linux. A foreign platform is a negative analysis check, not a foreign native-library execution test.",
+    "Static linkage applies to SQLite and zstd; these executables still use the ordinary dynamically linked AOS libc and Rust runtime configuration.",
+    "This does not qualify the store/campaign family build scripts or perform a production package cutover.",
+    "The default zstd recipe retains its upstream single-threaded static archive; consumers requiring zstdmt explicitly select the added multithreaded static variant."
+  ],
+  "qualification": {
+    "shared": {
+      "actions": {
+        "//tools/bazel/tests/native-libraries:c_app": {
+          "input_count": 2772,
+          "mnemonic": "CppLink",
+          "selected_libraries": {
+            "sqlite": [
+              {
+                "digest": {
+                  "hash": "355f069f759621753606d4704c2ff5d71d21f8eccb5586480556fbf8d7d53ab0",
+                  "hashFunctionName": "SHA-256",
+                  "sizeBytes": "1591216"
+                },
+                "isTool": false,
+                "path": "bazel-out/k8-fastbuild/bin/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Unative_S_S_Csqlite_Uimport___Usqlite_Slib/libsqlite3.so",
+                "symlinkTargetPath": ""
+              }
+            ],
+            "zstd": [
+              {
+                "digest": {
+                  "hash": "e9dc051050eb81711d1dbf18ed1fd5044a97038a332143e670fa4ffec39b8b3c",
+                  "hashFunctionName": "SHA-256",
+                  "sizeBytes": "1042368"
+                },
+                "isTool": false,
+                "path": "bazel-out/k8-fastbuild/bin/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Unative_S_S_Czstd_Uimport___Uzstd_Slib/libzstd.so",
+                "symlinkTargetPath": ""
+              }
+            ]
+          }
+        },
+        "//tools/bazel/tests/native-libraries:probe": {
+          "input_count": 2770,
+          "mnemonic": "CppCompile",
+          "selected_libraries": {}
+        },
+        "//tools/bazel/tests/native-libraries:rust_app": {
+          "input_count": 2892,
+          "mnemonic": "Rustc",
+          "selected_libraries": {
+            "sqlite": [
+              {
+                "digest": {
+                  "hash": "355f069f759621753606d4704c2ff5d71d21f8eccb5586480556fbf8d7d53ab0",
+                  "hashFunctionName": "SHA-256",
+                  "sizeBytes": "1591216"
+                },
+                "isTool": false,
+                "path": "bazel-out/k8-fastbuild/bin/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Unative_S_S_Csqlite_Uimport___Usqlite_Slib/libsqlite3.so",
+                "symlinkTargetPath": ""
+              }
+            ],
+            "zstd": [
+              {
+                "digest": {
+                  "hash": "e9dc051050eb81711d1dbf18ed1fd5044a97038a332143e670fa4ffec39b8b3c",
+                  "hashFunctionName": "SHA-256",
+                  "sizeBytes": "1042368"
+                },
+                "isTool": false,
+                "path": "bazel-out/k8-fastbuild/bin/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Unative_S_S_Czstd_Uimport___Uzstd_Slib/libzstd.so",
+                "symlinkTargetPath": ""
+              }
+            ]
+          }
+        }
+      },
+      "artifacts": {
+        "//tools/bazel/tests/native-libraries:c_app": {
+          "dynamic": "\nDynamic section at offset 0x2cc8 contains 33 entries:\n  Tag        Type                         Name/Value\n 0x0000000000000001 (NEEDED)             Shared library: [libsqlite3.so]\n 0x0000000000000001 (NEEDED)             Shared library: [libzstd.so.1]\n 0x0000000000000001 (NEEDED)             Shared library: [libstdc++.so.6]\n 0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]\n 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]\n 0x000000000000000f (RPATH)              Library rpath: [/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib:$ORIGIN/../../../../_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Unative_S_S_Csqlite_Uimport___Usqlite_Slib:$ORIGIN/c_app.runfiles/_main/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Unative_S_S_Csqlite_Uimport___Usqlite_Slib:$ORIGIN/../../../../_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Unative_S_S_Czstd_Uimport___Uzstd_Slib:$ORIGIN/c_app.runfiles/_main/_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Unative_S_S_Czstd_Uimport___Uzstd_Slib:/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib:/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib:/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7/lib]\n 0x000000000000000c (INIT)               0x1000\n 0x000000000000000d (FINI)               0x165c\n 0x0000000000000019 (INIT_ARRAY)         0x3cb8\n 0x000000000000001b (INIT_ARRAYSZ)       8 (bytes)\n 0x000000000000001a (FINI_ARRAY)         0x3cc0\n 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)\n 0x0000000000000004 (HASH)               0x3d8\n 0x000000006ffffef5 (GNU_HASH)           0x490\n 0x0000000000000005 (STRTAB)             0x740\n 0x0000000000000006 (SYMTAB)             0x4b8\n 0x000000000000000a (STRSZ)              1260 (bytes)\n 0x000000000000000b (SYMENT)             24 (bytes)\n 0x0000000000000015 (DEBUG)              0x0\n 0x0000000000000003 (PLTGOT)             0x3f18\n 0x0000000000000002 (PLTRELSZ)           480 (bytes)\n 0x0000000000000014 (PLTREL)             RELA\n 0x0000000000000017 (JMPREL)             0xd90\n 0x0000000000000007 (RELA)               0xcb8\n 0x0000000000000008 (RELASZ)             216 (bytes)\n 0x0000000000000009 (RELAENT)            24 (bytes)\n 0x0000000000000018 (BIND_NOW)           \n 0x000000006ffffffb (FLAGS_1)            Flags: NOW PIE\n 0x000000006ffffffe (VERNEED)            0xc68\n 0x000000006fffffff (VERNEEDNUM)         1\n 0x000000006ffffff0 (VERSYM)             0xc2c\n 0x000000006ffffff9 (RELACOUNT)          3\n 0x0000000000000000 (NULL)               0x0\n",
+          "sha256": "83c9f497af9ed45c8e6fb34c9ba5a914dc3fc5eeb16120c00619db937b22b7e2",
+          "stdout": "native-libraries=42\n"
+        },
+        "//tools/bazel/tests/native-libraries:rust_app": {
+          "dynamic": "\nDynamic section at offset 0x5d478 contains 33 entries:\n  Tag        Type                         Name/Value\n 0x0000000000000001 (NEEDED)             Shared library: [libsqlite3.so]\n 0x0000000000000001 (NEEDED)             Shared library: [libzstd.so.1]\n 0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]\n 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]\n 0x0000000000000001 (NEEDED)             Shared library: [ld-linux-x86-64.so.2]\n 0x000000000000000f (RPATH)              Library rpath: [/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib:$ORIGIN/../../../../_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Unative_S_S_Csqlite_Uimport___Usqlite_Slib:$ORIGIN/../../../../_solib_x86_64/_U_A_A+aos_Utools_Urepository+aos_Unative_S_S_Czstd_Uimport___Uzstd_Slib:/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib:/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib:/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7/lib]\n 0x000000000000000c (INIT)               0x7000\n 0x000000000000000d (FINI)               0x49760\n 0x0000000000000019 (INIT_ARRAY)         0x5b3d0\n 0x000000000000001b (INIT_ARRAYSZ)       16 (bytes)\n 0x000000000000001a (FINI_ARRAY)         0x5b3e0\n 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)\n 0x0000000000000004 (HASH)               0x3e0\n 0x000000006ffffef5 (GNU_HASH)           0x660\n 0x0000000000000005 (STRTAB)             0xf10\n 0x0000000000000006 (SYMTAB)             0x688\n 0x000000000000000a (STRSZ)              1921 (bytes)\n 0x000000000000000b (SYMENT)             24 (bytes)\n 0x0000000000000015 (DEBUG)              0x0\n 0x0000000000000003 (PLTGOT)             0x5d6c8\n 0x0000000000000002 (PLTRELSZ)           504 (bytes)\n 0x0000000000000014 (PLTREL)             RELA\n 0x0000000000000017 (JMPREL)             0x5ea8\n 0x0000000000000007 (RELA)               0x1888\n 0x0000000000000008 (RELASZ)             17952 (bytes)\n 0x0000000000000009 (RELAENT)            24 (bytes)\n 0x0000000000000018 (BIND_NOW)           \n 0x000000006ffffffb (FLAGS_1)            Flags: NOW PIE\n 0x000000006ffffffe (VERNEED)            0x1748\n 0x000000006fffffff (VERNEEDNUM)         3\n 0x000000006ffffff0 (VERSYM)             0x1692\n 0x000000006ffffff9 (RELACOUNT)          679\n 0x0000000000000000 (NULL)               0x0\n",
+          "sha256": "276816dc1283a91929950d20df497ee7bf7d87bae268c54bc740ac44bdc8eccf",
+          "stdout": "native-libraries=42\n"
+        }
+      },
+      "libraries": {
+        "sqlite": {
+          "closure": [
+            {
+              "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+              "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+            },
+            {
+              "narHash": "sha256:1zqysm2wkn0arj41ang2f73p56lyq02mla4w1ycng91cy1cg724y",
+              "path": "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4"
+            }
+          ],
+          "headerDirectory": "include",
+          "headerPackage": "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4",
+          "libraryFile": "lib/libsqlite3.so",
+          "licenseDomain": "apache-host",
+          "linkage": "shared",
+          "linkopts": [],
+          "package": "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4",
+          "schema_version": 1,
+          "selected_library_sha256": "355f069f759621753606d4704c2ff5d71d21f8eccb5586480556fbf8d7d53ab0",
+          "target": "x86_64-unknown-linux-gnu"
+        },
+        "zstd": {
+          "closure": [
+            {
+              "narHash": "sha256:0y5gycdr52a2xc8gzxf37bika6m7kyzw3az0lqdbmz4mma49drj5",
+              "path": "/nix/store/56khy442n6yd810v2pqnjipqljlkyk0m-lz4-1.10.0"
+            },
+            {
+              "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+              "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+            },
+            {
+              "narHash": "sha256:1d6ljajp4ih85ra4xahg006r5gs0hi2z3wj8ix8dcjll7z2wpm87",
+              "path": "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2"
+            },
+            {
+              "narHash": "sha256:0dq59r0f8vdhmqzy2zars0xq12y1sa179xfbfvl9crk1px6a94f6",
+              "path": "/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7"
+            }
+          ],
+          "headerDirectory": "include",
+          "headerPackage": "/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7",
+          "libraryFile": "lib/libzstd.so",
+          "licenseDomain": "apache-host",
+          "linkage": "shared",
+          "linkopts": [],
+          "package": "/nix/store/h0xfjzpmdfapqb2vydl5dnbrglvpa8ga-zstd-1.5.7",
+          "schema_version": 1,
+          "selected_library_sha256": "e9dc051050eb81711d1dbf18ed1fd5044a97038a332143e670fa4ffec39b8b3c",
+          "target": "x86_64-unknown-linux-gnu"
+        }
+      },
+      "raw_evidence_sha256": {
+        "events.json": "84b44afa2a53bf5c53cd942133700e75d0b98506a046fbe346d6455b02aba71e",
+        "execution.json": "0894fdf6d47a043a2f3e60c1d66f65ebd978e5e9eddead6e7055dcf337f2840d"
+      },
+      "rejections": {
+        "foreign": {
+          "required_diagnostic": "incompatible",
+          "sha256": "f1bb0e1ff4a8dd6ed79a1d43427fb620718c8747ac4fa0507c04bc94b1ee133b"
+        },
+        "missing": {
+          "required_diagnostic": "must be supplied by Nix",
+          "sha256": "55c285b34650e324a1367951b64f2c1afdd954f80e4f14e89ad564fa95e167d8"
+        }
+      },
+      "schema_version": 1
+    },
+    "static": {
+      "actions": {
+        "//tools/bazel/tests/native-libraries:c_app": {
+          "input_count": 2772,
+          "mnemonic": "CppLink",
+          "selected_libraries": {
+            "sqlite": [
+              {
+                "digest": {
+                  "hash": "62cefe13391e8034027478e2df23fc2678abc5be956c0a7c34d09ab61e1711d7",
+                  "hashFunctionName": "SHA-256",
+                  "sizeBytes": "2058062"
+                },
+                "isTool": false,
+                "path": "external/+aos_tools_repository+aos_native/sqlite/lib/libsqlite3.a",
+                "symlinkTargetPath": ""
+              }
+            ],
+            "zstd": [
+              {
+                "digest": {
+                  "hash": "cd67bba08db44bf4e2955db31daf9cc442552e86f84e6932b261c86342eeb9b6",
+                  "hashFunctionName": "SHA-256",
+                  "sizeBytes": "1283582"
+                },
+                "isTool": false,
+                "path": "external/+aos_tools_repository+aos_native/zstd/lib/libzstd.a",
+                "symlinkTargetPath": ""
+              }
+            ]
+          }
+        },
+        "//tools/bazel/tests/native-libraries:probe": {
+          "input_count": 2770,
+          "mnemonic": "CppCompile",
+          "selected_libraries": {}
+        },
+        "//tools/bazel/tests/native-libraries:rust_app": {
+          "input_count": 2892,
+          "mnemonic": "Rustc",
+          "selected_libraries": {
+            "sqlite": [
+              {
+                "digest": {
+                  "hash": "62cefe13391e8034027478e2df23fc2678abc5be956c0a7c34d09ab61e1711d7",
+                  "hashFunctionName": "SHA-256",
+                  "sizeBytes": "2058062"
+                },
+                "isTool": false,
+                "path": "external/+aos_tools_repository+aos_native/sqlite/lib/libsqlite3.a",
+                "symlinkTargetPath": ""
+              }
+            ],
+            "zstd": [
+              {
+                "digest": {
+                  "hash": "cd67bba08db44bf4e2955db31daf9cc442552e86f84e6932b261c86342eeb9b6",
+                  "hashFunctionName": "SHA-256",
+                  "sizeBytes": "1283582"
+                },
+                "isTool": false,
+                "path": "external/+aos_tools_repository+aos_native/zstd/lib/libzstd.a",
+                "symlinkTargetPath": ""
+              }
+            ]
+          }
+        }
+      },
+      "artifacts": {
+        "//tools/bazel/tests/native-libraries:c_app": {
+          "dynamic": "\nDynamic section at offset 0x264b80 contains 31 entries:\n  Tag        Type                         Name/Value\n 0x0000000000000001 (NEEDED)             Shared library: [libstdc++.so.6]\n 0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]\n 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]\n 0x000000000000000f (RPATH)              Library rpath: [/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib:/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib]\n 0x000000000000000c (INIT)               0xe000\n 0x000000000000000d (FINI)               0x217334\n 0x0000000000000019 (INIT_ARRAY)         0x262a90\n 0x000000000000001b (INIT_ARRAYSZ)       8 (bytes)\n 0x000000000000001a (FINI_ARRAY)         0x262a98\n 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)\n 0x0000000000000004 (HASH)               0x3d8\n 0x000000006ffffef5 (GNU_HASH)           0x718\n 0x0000000000000005 (STRTAB)             0x1178\n 0x0000000000000006 (SYMTAB)             0x740\n 0x000000000000000a (STRSZ)              1354 (bytes)\n 0x000000000000000b (SYMENT)             24 (bytes)\n 0x0000000000000015 (DEBUG)              0x0\n 0x0000000000000003 (PLTGOT)             0x265db0\n 0x0000000000000002 (PLTRELSZ)           1392 (bytes)\n 0x0000000000000014 (PLTREL)             RELA\n 0x0000000000000017 (JMPREL)             0xcac0\n 0x0000000000000007 (RELA)               0x1870\n 0x0000000000000008 (RELASZ)             45648 (bytes)\n 0x0000000000000009 (RELAENT)            24 (bytes)\n 0x0000000000000018 (BIND_NOW)           \n 0x000000006ffffffb (FLAGS_1)            Flags: NOW PIE\n 0x000000006ffffffe (VERNEED)            0x17a0\n 0x000000006fffffff (VERNEEDNUM)         2\n 0x000000006ffffff0 (VERSYM)             0x16c2\n 0x000000006ffffff9 (RELACOUNT)          1851\n 0x0000000000000000 (NULL)               0x0\n",
+          "sha256": "60122b14d5566e88f25732e3bc59d78fc485286209b39c3bc2e43d41b84e542c",
+          "stdout": "native-libraries=42\n"
+        },
+        "//tools/bazel/tests/native-libraries:rust_app": {
+          "dynamic": "\nDynamic section at offset 0x2bd380 contains 32 entries:\n  Tag        Type                         Name/Value\n 0x0000000000000001 (NEEDED)             Shared library: [libgcc_s.so.1]\n 0x0000000000000001 (NEEDED)             Shared library: [libm.so.6]\n 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]\n 0x0000000000000001 (NEEDED)             Shared library: [ld-linux-x86-64.so.2]\n 0x000000000000000f (RPATH)              Library rpath: [/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib:/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib]\n 0x000000000000000c (INIT)               0x12000\n 0x000000000000000d (FINI)               0x25da94\n 0x0000000000000019 (INIT_ARRAY)         0x2b81e8\n 0x000000000000001b (INIT_ARRAYSZ)       16 (bytes)\n 0x000000000000001a (FINI_ARRAY)         0x2b81f8\n 0x000000000000001c (FINI_ARRAYSZ)       8 (bytes)\n 0x0000000000000004 (HASH)               0x3e0\n 0x000000006ffffef5 (GNU_HASH)           0x840\n 0x0000000000000005 (STRTAB)             0x1668\n 0x0000000000000006 (SYMTAB)             0x8a0\n 0x000000000000000a (STRSZ)              2039 (bytes)\n 0x000000000000000b (SYMENT)             24 (bytes)\n 0x0000000000000015 (DEBUG)              0x0\n 0x0000000000000003 (PLTGOT)             0x2bd5c0\n 0x0000000000000002 (PLTRELSZ)           1080 (bytes)\n 0x0000000000000014 (PLTREL)             RELA\n 0x0000000000000017 (JMPREL)             0x118d0\n 0x0000000000000007 (RELA)               0x2108\n 0x0000000000000008 (RELASZ)             63432 (bytes)\n 0x0000000000000009 (RELAENT)            24 (bytes)\n 0x0000000000000018 (BIND_NOW)           \n 0x000000006ffffffb (FLAGS_1)            Flags: NOW PIE\n 0x000000006ffffffe (VERNEED)            0x1f88\n 0x000000006fffffff (VERNEEDNUM)         4\n 0x000000006ffffff0 (VERSYM)             0x1e60\n 0x000000006ffffff9 (RELACOUNT)          2532\n 0x0000000000000000 (NULL)               0x0\n",
+          "sha256": "67d76d53ff63d76a1586be0ee99c5f60a6d2c7c00d30136d849c9384fd842304",
+          "stdout": "native-libraries=42\n"
+        }
+      },
+      "libraries": {
+        "sqlite": {
+          "closure": [
+            {
+              "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+              "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+            },
+            {
+              "narHash": "sha256:1j1rg409yyfnirgg08a7wzn2rii1lxfmjk9samqri2yi1qvcz69h",
+              "path": "/nix/store/8zr71nfka9m368nj4x0b4n2sabmm5bdn-sqlite-static-3.53.4"
+            }
+          ],
+          "headerDirectory": "include",
+          "headerPackage": "/nix/store/8zr71nfka9m368nj4x0b4n2sabmm5bdn-sqlite-static-3.53.4",
+          "libraryFile": "lib/libsqlite3.a",
+          "licenseDomain": "apache-host",
+          "linkage": "static",
+          "linkopts": [],
+          "package": "/nix/store/8zr71nfka9m368nj4x0b4n2sabmm5bdn-sqlite-static-3.53.4",
+          "schema_version": 1,
+          "selected_library_sha256": "62cefe13391e8034027478e2df23fc2678abc5be956c0a7c34d09ab61e1711d7",
+          "target": "x86_64-unknown-linux-gnu"
+        },
+        "zstd": {
+          "closure": [
+            {
+              "narHash": "sha256:109h987ir323zjn5jma151xnb227rax88yq3n600qymbnfw6nspd",
+              "path": "/nix/store/0ns3aw53zif9vsyx4rwjsklbq14gznqp-zstd-static-mt-1.5.7"
+            },
+            {
+              "narHash": "sha256:0y5gycdr52a2xc8gzxf37bika6m7kyzw3az0lqdbmz4mma49drj5",
+              "path": "/nix/store/56khy442n6yd810v2pqnjipqljlkyk0m-lz4-1.10.0"
+            },
+            {
+              "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+              "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+            },
+            {
+              "narHash": "sha256:1d6ljajp4ih85ra4xahg006r5gs0hi2z3wj8ix8dcjll7z2wpm87",
+              "path": "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2"
+            }
+          ],
+          "headerDirectory": "include",
+          "headerPackage": "/nix/store/0ns3aw53zif9vsyx4rwjsklbq14gznqp-zstd-static-mt-1.5.7",
+          "libraryFile": "lib/libzstd.a",
+          "licenseDomain": "apache-host",
+          "linkage": "static",
+          "linkopts": [],
+          "package": "/nix/store/0ns3aw53zif9vsyx4rwjsklbq14gznqp-zstd-static-mt-1.5.7",
+          "schema_version": 1,
+          "selected_library_sha256": "cd67bba08db44bf4e2955db31daf9cc442552e86f84e6932b261c86342eeb9b6",
+          "target": "x86_64-unknown-linux-gnu"
+        }
+      },
+      "raw_evidence_sha256": {
+        "events.json": "c6929cd023d72310b9b0111b1586483def7193ecb681d3ba883e25c6a39548c2",
+        "execution.json": "b78a20820ef92ad398b9a29b5ea25e3584ed833c13cd59fede357e34691cc4c7"
+      },
+      "rejections": {
+        "foreign": {
+          "required_diagnostic": "incompatible",
+          "sha256": "44749c7db2061174354511151b0036ab6e599ee5f79bcbfc158fdb0dd7618555"
+        },
+        "missing": {
+          "required_diagnostic": "must be supplied by Nix",
+          "sha256": "4947cf3ff2302b76da35b7b71db7b50b45796d9e647cc2540db387f6dd306468"
+        }
+      },
+      "schema_version": 1
+    }
+  },
+  "qualification_command": [
+    "nix-build",
+    "-A",
+    "checks.build.bazel.all",
+    "--no-out-link",
+    "--max-jobs",
+    "4",
+    "--cores",
+    "4",
+    "--option",
+    "substitute",
+    "false"
+  ],
+  "rejected_api_configurations": [
+    "parent-directory library path",
+    "absolute header path",
+    "shell syntax in library path",
+    "automatic linkage",
+    "unknown license domain",
+    "mismatched package target system"
+  ],
+  "schema_version": 1,
+  "source_parent_commit": "252334ad10bf15ce913c739d7e6492b891e1e4f9",
+  "static_multithread_zstd": "/nix/store/0ns3aw53zif9vsyx4rwjsklbq14gznqp-zstd-static-mt-1.5.7"
+}

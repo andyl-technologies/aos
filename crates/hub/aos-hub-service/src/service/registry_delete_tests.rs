@@ -23,7 +23,7 @@ use aos_hub_db::db::{
 /// Binds SQL parameters like the database module's private `vals!`.
 macro_rules! values {
     ($($value:expr),* $(,)?) => {
-        vec![$(aos_hub_db::value::ToValue::to_value(&$value)),*]
+        Vec::from([$(aos_hub_db::value::ToValue::to_value(&$value)),*])
     };
 }
 

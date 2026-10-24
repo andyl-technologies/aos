@@ -331,15 +331,14 @@ impl RuntimeDocument {
                 }
             }
         }
-        if let Source::Transaction { graph, .. } = &source {
-            if graph
+        if let Source::Transaction { graph, .. } = &source
+            && graph
                 .graph()
                 .nodes
                 .values()
                 .any(|effect| !effect.identity.starts_with(scope))
-            {
-                return Err(invalid("effect identity differs from the document scope"));
-            }
+        {
+            return Err(invalid("effect identity differs from the document scope"));
         }
         Ok(Self { original, source })
     }
@@ -468,6 +467,7 @@ fn invalid(error: impl std::fmt::Display) -> DocumentationError {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

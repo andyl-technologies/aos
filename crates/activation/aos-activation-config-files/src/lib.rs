@@ -359,16 +359,16 @@ fn apply(
         fchown(&file, uid.map(Uid::from_raw), gid.map(Gid::from_raw))?;
         file.sync_all()?;
     }
-    if let Some(old_path) = &pending.previous_path {
-        if old_path != &invocation.input.path {
-            let old_path = io::owned_path(old_path)?;
-            let observed = io::read_digest(old_path)?;
-            ensure!(
-                observed.is_none() || observed == pending.previous_path_digest,
-                "previous configuration path changed outside its effect"
-            );
-            io::unlink(old_path)?;
-        }
+    if let Some(old_path) = &pending.previous_path
+        && old_path != &invocation.input.path
+    {
+        let old_path = io::owned_path(old_path)?;
+        let observed = io::read_digest(old_path)?;
+        ensure!(
+            observed.is_none() || observed == pending.previous_path_digest,
+            "previous configuration path changed outside its effect"
+        );
+        io::unlink(old_path)?;
     }
     pending.pending = false;
     pending.owned_paths = BTreeSet::from([pending.path.clone()]);

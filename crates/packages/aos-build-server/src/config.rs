@@ -303,7 +303,7 @@ impl Default for BootstrapConfig {
 }
 
 /// TLS / HTTPS configuration.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Default)]
 pub struct TlsConfig {
     /// Enable HTTPS. When `true`, the server listens with TLS.
     #[serde(default)]
@@ -320,17 +320,6 @@ pub struct TlsConfig {
     /// Defaults to `["localhost", "127.0.0.1", "::1"]`.
     #[serde(default)]
     pub san: Vec<String>,
-}
-
-impl Default for TlsConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            cert_file: None,
-            key_file: None,
-            san: Vec::new(),
-        }
-    }
 }
 
 impl Default for ServerConfig {

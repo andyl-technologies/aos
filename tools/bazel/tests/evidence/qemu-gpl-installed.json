@@ -1,0 +1,150 @@
+{
+  "inspection": {
+    "artifacts": {
+      "gateway": {
+        "exports": [],
+        "identity": {
+          "Class": "ELF64",
+          "Data": "2's complement, little endian",
+          "Machine": "Advanced Micro Devices X86-64",
+          "OS/ABI": "UNIX - System V",
+          "Type": "DYN (Position-Independent Executable file)"
+        },
+        "interpreter": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/ld-linux-x86-64.so.2"
+        ],
+        "needed": [
+          "ld-linux-x86-64.so.2",
+          "libc.so.6"
+        ],
+        "resolved_libraries": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+        ],
+        "runtime_search_paths": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+        ],
+        "sha256": "28caadaa93fd132074434fd8d8d73443b438414017c641837036e0688543fda1"
+      },
+      "plugin": {
+        "exports": [
+          {
+            "kind": "FUNC",
+            "name": "qemu_plugin_install",
+            "size": 6829
+          },
+          {
+            "kind": "OBJECT",
+            "name": "qemu_plugin_version",
+            "size": 4
+          }
+        ],
+        "identity": {
+          "Class": "ELF64",
+          "Data": "2's complement, little endian",
+          "Machine": "Advanced Micro Devices X86-64",
+          "OS/ABI": "UNIX - System V",
+          "Type": "DYN (Shared object file)"
+        },
+        "interpreter": [],
+        "needed": [
+          "ld-linux-x86-64.so.2",
+          "libc.so.6"
+        ],
+        "resolved_libraries": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+        ],
+        "runtime_search_paths": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib"
+        ],
+        "sha256": "72515bec7a3405ed600bd443f3d126cbcae6f7723d724c0e28f6cc822669b18f"
+      }
+    },
+    "cargo": "/nix/store/v9pbq0m4yadjrdyqgm46j6z0gmqvih4k-aos-bazel-qemu-gpl-production-cargo-1",
+    "gateway": "/nix/store/zsnynvxs285qjj3awpp8m4h09m19qrsy-crucible-debug-gateway-0.1.0",
+    "gateway_cases": [
+      {
+        "arguments": [],
+        "exit_code": 1,
+        "stderr": "crucible-debug-gateway: missing control socket\n",
+        "stdout": ""
+      },
+      {
+        "arguments": [
+          "--help"
+        ],
+        "exit_code": 1,
+        "stderr": "crucible-debug-gateway: usage: crucible-debug-gateway --control-socket <absolute-path> [--owner-gdb-socket <absolute-path>]\n",
+        "stdout": ""
+      },
+      {
+        "arguments": [
+          "--control-socket",
+          "relative"
+        ],
+        "exit_code": 1,
+        "stderr": "crucible-debug-gateway: control socket path must be absolute\n",
+        "stdout": ""
+      },
+      {
+        "arguments": [
+          "--control-socket",
+          "/unused-control",
+          "--owner-gdb-socket",
+          "relative"
+        ],
+        "exit_code": 1,
+        "stderr": "crucible-debug-gateway: owner GDB socket path must be absolute\n",
+        "stdout": ""
+      }
+    ],
+    "limits": [
+      "This checks installed layout and native resolution; live QEMU loading, complete Cargo closure equivalence, and suite release/source retention remain separate gates."
+    ],
+    "plugin": "/nix/store/p72knlyg89a3r7x4qjnyd4wqy0052nnc-crucible-qemu-plugin-0.1.0",
+    "plugin_build_info": {
+      "build_system": "mkAosBazelBuild",
+      "component": "qemu-in-process-adapter",
+      "component_license": "GPL-2.0-only",
+      "package": "crucible-qemu-plugin",
+      "plugin_abi": "crucible-shmem-abi-v30",
+      "qemu_build_id": "9e47e62d424d444db836abca6dd3fac0c893113a43fb6341a41b18e66788c377",
+      "qemu_package": "qemu-crucible",
+      "qemu_plugin_abi": "qemu-plugin-api-v7",
+      "qemu_plugin_api_version": "7",
+      "qemu_plugin_header": "/nix/store/zdsnl7ib0j7am6f3mg2a7jk4fwsda4wr-qemu-crucible-11.1.1/include/qemu/qemu-plugin.h",
+      "qemu_shmem_abi": "crucible-shmem-abi-v30",
+      "qemu_sim_capability_marker": "/nix/store/zdsnl7ib0j7am6f3mg2a7jk4fwsda4wr-qemu-crucible-11.1.1/share/aos/crucible/qemu-build-identity.env",
+      "rust_dependencies": "locked-bazel-source-repositories",
+      "shmem_abi": "crucible-shmem-abi-v30",
+      "shmem_abi_version": "30",
+      "shmem_generated_header": "/nix/store/zdsnl7ib0j7am6f3mg2a7jk4fwsda4wr-qemu-crucible-11.1.1/include/aos/crucible/crucible_shmem_abi.h",
+      "shmem_generated_header_hash": "1dc465a755a9d9e8195a7e3cd22ecadcc1496fff89a2e19bcf7ffb7b9c9b8dcd"
+    },
+    "rejected_drift": [
+      "qemu-package",
+      "shmem-version",
+      "embedded-identity"
+    ],
+    "schema_version": 1,
+    "status": "PASS"
+  },
+  "mandatory_boundary_evidence": "tools/bazel/tests/evidence/qemu-plugin-abi.json",
+  "outputs": {
+    "all": "/nix/store/94shfb7p3n0g8k139kwdv88r6qlxwh8c-aos-bazel-qemu-gpl-production-checks",
+    "gateway": "/nix/store/zsnynvxs285qjj3awpp8m4h09m19qrsy-crucible-debug-gateway-0.1.0",
+    "installed-inspection": "/nix/store/x3yc0nxizzx13p2q0cr5fsd7zndk01vp-aos-bazel-qemu-gpl-installed-inspection",
+    "parity": "/nix/store/hzpfznzcn9slkrmm62zch0bla6k4fwsi-aos-bazel-qemu-gpl-production-parity",
+    "plugin": "/nix/store/p72knlyg89a3r7x4qjnyd4wqy0052nnc-crucible-qemu-plugin-0.1.0"
+  },
+  "production_consumers_changed": false,
+  "python_policy": "/nix/store/ipbsdc4vfqprlccq3r6h65nllvkjkzhb-aos-bazel-policy-checks",
+  "report_sha256": "be401cdd04131af6c39aa1e14ec651464b28ddd9077e2679701dbdc3874431a3",
+  "requested_shared_cache_mounts": [],
+  "schema_version": 1,
+  "source_sha256": {
+    "tests/build/_bazel-qemu-gpl-installed.nix": "01bbac6297e00b38bce54ba9204c8bc2d354bcb21251e27fe2f1c6b70865687e",
+    "tests/build/_bazel-qemu-gpl.nix": "25ac096adf045c4019d83116bc1c209c75a54f3391f8667002b3ee40ef57d36e",
+    "tools/bazel/metadata/install_qemu_plugin_metadata.py": "2ac65de5ee5aae9d3bc08090cc6bdfb7dbae5e088615f82030234d27f4748213",
+    "tools/bazel/tests/verify_qemu_installed.py": "d5e2abf15c67a9958262501d0c703da37a940772a77d6f3a79ce331c381e7be1"
+  }
+}

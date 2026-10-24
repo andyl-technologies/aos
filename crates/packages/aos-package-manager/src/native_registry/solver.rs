@@ -37,6 +37,10 @@ pub(crate) struct Solution {
 /// # Errors
 /// Returns an error for conflicting roots, unsatisfiable requirements, ambiguous
 /// sources, inconsistent retained choices, cancellation, or exhausted search limits.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "The native package solver enforces a host monotonic deadline."
+)]
 pub(crate) fn solve(
     roots: &[Envelope],
     candidates: &[Envelope],
@@ -243,6 +247,10 @@ struct SearchBudget<'a> {
 }
 
 impl SearchBudget<'_> {
+    #[allow(
+        clippy::disallowed_methods,
+        reason = "The native package solver enforces a host monotonic deadline."
+    )]
     fn check(&self) -> Result<()> {
         if self.cancellation.is_cancelled() {
             return Err(SearchStopped("module solver cancelled").into());

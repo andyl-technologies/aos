@@ -707,6 +707,8 @@ fn bounded_timeout(seconds: u64, label: &str) -> Result<Duration> {
     Ok(Duration::from_secs(seconds))
 }
 
+// Persist the complete qualification evidence set under one existing-directory guard.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn persist(
     output: &Path,
     staging: &[u8],

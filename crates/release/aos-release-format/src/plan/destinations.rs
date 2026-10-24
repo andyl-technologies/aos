@@ -460,5 +460,6 @@ fn validate_effective_values(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 #[path = "destinations_tests.rs"]
 mod tests;

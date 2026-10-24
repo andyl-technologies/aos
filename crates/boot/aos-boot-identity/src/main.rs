@@ -25,7 +25,7 @@ fn main() -> ExitCode {
         _ => return usage(),
     };
 
-    let cmdline = match fs::read_to_string(&path) {
+    let cmdline = match fs::read_to_string(path) {
         Ok(cmdline) => cmdline,
         Err(error) => {
             eprintln!("aos-boot-identity: cannot read {}: {error}", path.display());

@@ -113,13 +113,9 @@ fn validate_image_attribute(attribute: &str, images: &[ImagePlan]) -> Result<()>
 }
 
 #[cfg(test)]
-#[path = "../../../../../release/aos-release-format/src/test_support/qualification/mod.rs"]
-#[allow(dead_code)]
-mod qualification_fixture;
-
-#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::release::qualification_fixture;
 
     fn images(variants: &[&str]) -> Vec<ImagePlan> {
         variants

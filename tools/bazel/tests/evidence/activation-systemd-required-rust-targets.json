@@ -1,0 +1,28 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "a079c7d59c",
+  "compiled_changed_rust_inputs_sha256": {
+    "crates/aos/activation/aos-activation-systemd/src/credential_encryption.rs": "07130a38faa19d1f6ec382bf7c2089206e98fc6bbc52868e22015135d39a7dc7",
+    "crates/aos/activation/aos-activation-systemd/src/resource_effects/credential.rs": "db8d8399a939bfb72c388ddf2be82f1ed8535dd894bb83b14d0c2c4b5b9749e6",
+    "crates/aos/activation/aos-activation-systemd/src/resource_effects/identity.rs": "95a462cc6bba3b96fed56d8f67697bc64f4aebe5720071a1c0d0c6aeb55900c9",
+    "crates/aos/activation/aos-activation-systemd/src/resource_effects/identity/restore.rs": "58db5a5f017ad04df2441997902159b4bde622e2323afe4663651c2d7e2a6829",
+    "crates/aos/activation/aos-activation-systemd/src/resource_effects/listener.rs": "fed4c3b2aa8730a0303a3a1b30a84e6fec56d0c0dfe895d406e35841c50b4ca7",
+    "crates/aos/activation/aos-activation-systemd/src/resource_effects/mod.rs": "e223c788985143784e1123952cf543fba13ea489ea4e182ed6911dff348abbd9",
+    "crates/aos/activation/aos-activation-systemd/src/resource_effects/packaged_unit.rs": "f8cdf9c13debab14e27988ae54904bdca369d25c01826d21639158ca14a64c8e",
+    "crates/aos/activation/aos-activation-systemd/src/resource_effects/unit.rs": "0f8059864361cd0f15b1c03a72c79946f2c078ef0e878ee83687128ef30c79cd",
+    "crates/aos/activation/aos-activation-systemd/src/resource_effects/unit/resource_group.rs": "3c9ad2219cfbe254f0698c9a9f4fe20c46966e020ff219e78fb9ad3ef717147e",
+    "crates/aos/activation/aos-activation-systemd/src/resource_effects/watchdog.rs": "808d2c1c72f2937c38eb4d73d34d7e8e5910198ddd76f4be5726dcc7986c2af8"
+  },
+  "derivation": "/nix/store/zms3qsldqyn2dxapxfyzy6vhhysff2sn-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "12154149ab55e6ab920f1e4b3497ab7d66336acaf8a3d8479275ca15c58114a9",
+  "implementation_commit": "5332035a3f",
+  "limits": [
+    "This gate compiles application unit and integration targets without executing them. Native Bazel/Cargo execution is retained separately.",
+    "This frozen source includes the ten Systemd activation Rust lint corrections and the earlier activation corrections. Later Bazel declaration changes and the Crucible activation Rust correction are not qualified by this checkpoint."
+  ],
+  "log_sha256": "d911df5809803ec03809c07c482dcb59f2b99fffc459bfa3d206afb720c6b78b",
+  "output": "/nix/store/5kqdhfmcyaz6a0sqplr3saqrr2i293n8-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/ql02kfgcaghhqnrk9xnpckp7hm1vli9l-aos-workspace-src",
+  "status": "Required workspace Rust application unit and integration targets compiled successfully"
+}

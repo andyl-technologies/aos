@@ -17,6 +17,11 @@
 //! Access recency comes from the metadata maintained by
 //! [`crate::access::update_access`].
 
+#![allow(
+    clippy::disallowed_types,
+    reason = "Public Nix closure APIs retain their existing set types and eviction behavior outside Crucible replay state."
+)]
+
 use std::collections::HashSet;
 use std::fs;
 
@@ -69,6 +74,10 @@ pub struct EvictionCandidate {
 ///
 /// Returns an error if the system clock is before the Unix epoch, or if a
 /// root directory or metadata file cannot be read or parsed.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Host cache expiry compares retained roots with current Unix time."
+)]
 pub fn expire_ttl_roots(views: &ViewManager, view: &str) -> Result<Vec<String>> {
     let mut expired = Vec::new();
     let now = std::time::SystemTime::now()
@@ -106,14 +115,15 @@ pub fn expire_ttl_roots(views: &ViewManager, view: &str) -> Result<Vec<String>> 
             let meta: serde_json::Value = serde_json::from_str(&meta_str)
                 .with_context(|| format!("parsing {}", meta_path.display()))?;
 
-            if let Some(expires_at) = meta.get("expires_at").and_then(|v| v.as_i64()) {
-                if expires_at > 0 && expires_at < now {
-                    // Expired — remove symlink and metadata
-                    let _ = fs::remove_file(entry.path());
-                    let _ = fs::remove_file(&meta_path);
-                    tracing::info!(view = %view, ns = %ns, hash = %hash, "path expired by TTL");
-                    expired.push(hash);
-                }
+            if let Some(expires_at) = meta.get("expires_at").and_then(|v| v.as_i64())
+                && expires_at > 0
+                && expires_at < now
+            {
+                // Expired — remove symlink and metadata
+                let _ = fs::remove_file(entry.path());
+                let _ = fs::remove_file(&meta_path);
+                tracing::info!(view = %view, ns = %ns, hash = %hash, "path expired by TTL");
+                expired.push(hash);
             }
         }
     }
@@ -244,6 +254,10 @@ pub fn compute_unique(
 ///
 /// Returns an error if the system clock is before the Unix epoch or a
 /// closure computation fails.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Host eviction scores depend on wall-clock cache age."
+)]
 pub fn score_candidates(store: &NixStore, roots: &[RootInfo]) -> Result<Vec<EvictionCandidate>> {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

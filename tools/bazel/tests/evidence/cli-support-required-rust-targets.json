@@ -1,0 +1,27 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "c7b459924b",
+  "compiled_changed_rust_inputs_sha256": {
+    "crates/aos/cli/aos-cli-ui/src/output.rs": "9e29d8451ff52bdce9447a3cad95670facd570eac6dae00ef5b08fd0dd644f52",
+    "crates/aos/cli/aos-closure-analysis/src/closure.rs": "ae9b3742614469c955de96fb26e26842637590ad51cbb978455bde5828e38200",
+    "crates/aos/cli/aos-closure-analysis/src/report.rs": "08c77a5c3de939c848bbf6c94da26abec37a30f2ecb898670340c3670112698d",
+    "crates/aos/cli/aos-closure-analysis/src/scan/mod.rs": "02fb86ae8e17bb67c422538991382f3cc575d9f440ff39826c54b6ad87dbdbe6",
+    "crates/aos/cli/aos-nix-docs/src/cache.rs": "084ec56974626a92071025e2316328f7be6e5611634a244c2304754dbfbd430c",
+    "crates/aos/cli/aos-nix-docs/src/extract.rs": "dd1793d250020a03c9cd789d96a421043cddcba60ee8f284f5579fc429650406",
+    "crates/aos/cli/aos-nix-docs/src/nix_parser.rs": "1bc42d5d867a53ee9ad5b433c9125ec4b8fba5cc0976ad1e76ea36f6cd3fdea6",
+    "crates/aos/cli/aos-nix-docs/src/search.rs": "f29f3f611e23646adbab667dd9599cc10ca2d66ee8388b00529666b1dfe1216c",
+    "crates/aos/cli/aos-nix-docs/src/tui.rs": "af5c2386db120d0247feac8055b32306c1d5a090ba2aa71a9a403d9fa3e8f12d"
+  },
+  "derivation": "/nix/store/mw9z8gzar8r58cfr71cd42wcyym79m8r-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "30879e77d749a80b8fdb0b9298bd4c886910655f3d57c70097c02725587d3896",
+  "implementation_commit": "950eab2ee4",
+  "limits": [
+    "This gate compiles application unit and integration targets without executing them. Native Bazel/Cargo execution is retained separately.",
+    "This frozen source contains the nine CLI support lint corrections. Later build-service declarations and Rust changes are not qualified by this checkpoint."
+  ],
+  "log_sha256": "d1057d930c8781acf9fff515d979d4bc0316e5bc713df70273bdbb04cd837275",
+  "output": "/nix/store/n69mr7p2l5kxh20jhvlvz5pz0iyhc0m2-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/az99cicpv6clrjv0hsq9l12d2fv6bxy8-aos-workspace-src",
+  "status": "Required workspace Rust application unit and integration targets compiled successfully"
+}

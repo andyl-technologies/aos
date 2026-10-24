@@ -58,6 +58,10 @@ fn with_writable_boot_using<T>(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    reason = "Test fixtures and assertions fail immediately on unexpected errors"
+)]
 mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};

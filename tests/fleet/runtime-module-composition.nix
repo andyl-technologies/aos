@@ -311,7 +311,7 @@ in {
           assert held["event"]["effect"] == selected_effect, held
           assert held["event"]["boundary"] == "dispatch-returned", held
           assert current_generation() == prior_generation
-          assert response in runtime.succeed(f"{COREUTILS}/cat /etc/aos/packages/nginx/nginx.conf")
+          assert response in runtime.succeed(f"{COREUTILS}/cat /etc/packages/nginx/nginx.conf")
           assert route() == previous_response
 
           if power_loss:
@@ -489,7 +489,7 @@ in {
       runtime.fail(f"{APM} switch --worktree {WORKTREE} --eval-root /var/lib/aos/runtime-evaluations/failed-reload", timeout=1200)
       assert current_generation() == prior_generation
       assert route() == "nginx-runtime-power-loss"
-      assert "nginx-runtime-failed-reload" in runtime.succeed(f"{COREUTILS}/cat /etc/aos/packages/nginx/nginx.conf")
+      assert "nginx-runtime-failed-reload" in runtime.succeed(f"{COREUTILS}/cat /etc/packages/nginx/nginx.conf")
       failed = inspection()
       assert failed["pending"] is not None, failed
       runtime.succeed(f"{COREUTILS}/rm /run/systemd/system/nginx.service.d/99-fail-reload.conf")

@@ -1,0 +1,62 @@
+# Compiler invocation evidence
+
+Builds selecting `retainActionGraph` preserve the executed action log and
+expanded aquery commands. The response-file expansion must match the executed
+command and its declared response-file digest, including when one target has
+separate execution and target configurations.
+
+These builds also retain `evidence/compiler-inputs.json`. For every successful
+`Rustc` action, it records the exact wrapper argument vector's digest and each
+indirect argument, environment, or workspace-status input. Shared file records
+preserve UTF-8 contents, byte lengths, and SHA-256 digests. Every file must appear
+in that action's executed input inventory with the same digest. Missing files,
+changed contents, ambiguous commands, failed compiler actions, and conflicting
+contents for a shared path fail the build.
+
+Local disk-cache hits normally leave intermediate outputs unmaterialized. The
+evidence launcher option materializes all action outputs so these inputs can be
+read before the private build tree is removed. It preserves disabled remote
+cache/executor endpoints, offline repository setup, and sandbox policy. Ordinary
+builds retain their default materialization behavior. Virtual `FileWrite` inputs
+come from aquery's declared contents and undergo the same execution-digest check.
+
+The CLI library proof in `../tests/evidence/cli-compiler-input-retention.json`
+uses the frozen lint-qualified CLI workspace. That checkpoint qualifies byte
+retention for its source snapshot.
+
+Evidence builds also export `evidence/compiler-invocations.json`. Reconstruction
+rechecks the complete executed action inventory and every input digest before
+interpreting the pinned wrapper's file syntax, environment precedence, workspace
+status values, substitutions, and explicit unstable-feature policy. Repeated
+file flags retain every value in each group. Missing inputs, unknown wrapper
+flags, duplicate scalar flags, and unretained nested response files fail closed.
+
+Sandbox working-directory, output-base, and execution-root identities remain
+explicit symbolic roots. Compiler defaults, semantic equivalence between build
+profiles, native ABI, linker closure, and runtime comparisons remain independent
+gates. `../tests/evidence/cli-compiler-input-reconstruction.json` binds the
+reconstruction checkpoint to its exact source and execution inputs.
+
+The conformance check builds the pinned process wrapper from source with AOS
+Rust, then compares its actual child arguments and selected environment values
+with the reconstruction model. Run it with:
+
+```text
+nix-build -A checks.build.bazel.compiler-wrapper --no-out-link
+```
+
+The retained helper can also check an existing build while its execution root
+is still available:
+
+```text
+python3 tools/bazel/tests/retain_compiler_inputs.py \
+  --build BUILD_OUTPUT --execution-root PRIVATE_BASE/execroot/_main \
+  --output compiler-inputs.json
+```
+
+Reconstruct an already retained build without its removed private execution tree:
+
+```text
+python3 tools/bazel/tests/reconstruct_compiler_inputs.py \
+  --build BUILD_OUTPUT --output compiler-invocations.json
+```

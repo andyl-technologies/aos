@@ -1,0 +1,36 @@
+{
+  "command": "nix-build -A checks.crucible.phase1.gates.licenseBoundary.rawGate --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "derivation": "/nix/store/fi6jfkavckh798k5zrxpbmg9pwll8n40-crucible-phase1-license-boundary-0.drv",
+  "derivation_sha256": "30062514054aebd9b4aa74fffbd64848c5b2d1bb44f8cfe4b3467880276fa8ad",
+  "frozen_contract_inputs_sha256": {
+    "MODULE.bazel": "be6425564ca12f91e01833ede88e280961682514a5cc6fe815c78bb02cf7d1c8",
+    "crates/crucible/control/crucible-cli/src/tests/surface.rs": "2c480d52056b8ef3377bd5fccca70c75f96b8a1783cb09f3b419c51515a449a8",
+    "crates/crucible/control/crucible-cli/tests/campaign_store_process.rs": "2629c43b5589ac120f156f33991c8d8510593505207990a81e781303d644a0e3",
+    "pkgs/tools/crucible/_source.nix": "58bfa4c0284075e2ee1cc3e73acb937225c65bd8c7bef26e75a7f70a1f2a6e1a",
+    "tests/build/_bazel-guest.nix": "4947d00f264931a13dc52e6b5de0d2af7241a0a16148428156d6cc05446b8433",
+    "tests/crucible/engineering-hygiene-baseline.txt": "4aee8a06cfd8f54ce3d6a4107c95b1045e569e4b144ecddf13ccfa127e9a3caf",
+    "tests/crucible/phase1-license-boundary.nix": "8d5664032300203a4c019b836abc15926636e20026d7b6a8569da9b22c9fd58c"
+  },
+  "frozen_source_comparison_commit": "540bcbaf25",
+  "hygiene_fixture_review_commit": "540bcbaf25",
+  "limits": [
+    "The initial run exposed missing guest repository inputs and stale content-bound reviews for two earlier CLI fixture changes. The source declarations and reviewed hygiene hashes were corrected without weakening test assertions or debt caps.",
+    "This original gate retains corresponding-source reconstruction, offline archived-plugin checks, dependency and feature checks and the full workspace test suite. The existing seventy-five skips remain explicit.",
+    "The source is frozen before the build-service conversion. It qualifies the earlier Crucible and CLI changes rather than later application changes.",
+    "The separate native ABI gate is retained in activation-crucible-abi-conformance.json. Foreign runtime, numeric performance acceptance and production migration remain pending."
+  ],
+  "log_sha256": "ea7872a3f5b21f803ee3d8cf9016d70a934ff5da711f9871b5e1347a42ea8816",
+  "output": "/nix/store/2aifrkkmcdngfydwgsqnbpg22a7d1fql-crucible-phase1-license-boundary-0",
+  "result": "PASS\ncheck=checks.crucible.phase1.gates.licenseBoundary\ngate=gate:license-boundary\ntasks=BOUND-1,BOUND-2,BOUND-3,BOUND-4,BOUND-5,BOUND-6,BOUND-7,BOUND-8,BOUND-9,BOUND-10,BOUND-11,BOUND-12\nrust_test=crucible_test_support::gate_license_boundary\ncontroller_package=crucible-controller\ncontroller_license=Apache-2.0\nqemu_corresponding_source_package=qemu-crucible-source\nqemu_corresponding_source_build_id=9e47e62d424d444db836abca6dd3fac0c893113a43fb6341a41b18e66788c377\ncorresponding_source_reconstruction=atomic-patch-applied,archived-plugin-offline-checked\n",
+  "result_sha256": "1bf0c51f9c330c3d2f8706db905e01ebd7fe35db8589b5a218322ba8e253fd6a",
+  "schema_version": 1,
+  "source": "/nix/store/1hpys9na5z6gda0a5kbhrpkpis8nr1qr-crucible-workspace-src",
+  "source_input_fix_commit": "642e7af244",
+  "status": "Dedicated native Crucible license-boundary gate passed with unchanged assertions",
+  "workspace_nextest": {
+    "binaries": 267,
+    "executed": 5566,
+    "passed": 5566,
+    "skipped": 75
+  }
+}

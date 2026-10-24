@@ -1,0 +1,54 @@
+exports_files([
+    "phase1-production-fingerprint-sample.nix",
+    "phase7-production-rust-plugin-flight.nix",
+])
+
+exports_files(["engineering-hygiene-baseline.txt"])
+
+filegroup(
+    name = "qemu_host_gate_audit",
+    testonly = True,
+    srcs = ["default.nix", "phase2-qemu-inert.nix", "phase2-patch-microtests.nix"],
+    visibility = ["//crates/crucible/crucible-qemu-host:__pkg__"],
+)
+
+filegroup(
+    name = "engine_fixture_inputs",
+    srcs = [
+        "fixtures/debugger-live-x86_64.scenario.toml",
+        "fixtures/debugger-live-aarch64.scenario.toml",
+        "fixtures/live-qemu-search.scenario.toml",
+        "fixtures/live-qemu-fuzz.family.toml",
+        "fixtures/nginx-curl-http-200.scenario.toml",
+        "fixtures/happy-path.scenario.toml",
+    ],
+    visibility = ["//crates/crucible/crucible-engine:__pkg__"],
+)
+
+filegroup(
+    name = "daemon_fixture_inputs",
+    srcs = ["fixtures/e2e-determinism.scenario.toml"],
+    visibility = ["//crates/crucible/crucible-daemon:__pkg__"],
+)
+
+filegroup(
+    name = "cli_fixture_inputs",
+    srcs = ["fixtures/live-qemu-fuzz.family.toml"],
+    visibility = ["//crates/crucible/crucible-cli:__pkg__"],
+)
+
+# Source-only gate inputs are inspected as data, never linked into the plugin.
+filegroup(
+    name = "qemu_plugin_gate_audit",
+    testonly = True,
+    srcs = [
+        "default.nix",
+        "_qemu-atomic-patch-repository.nix",
+        "phase2-patch-microtests.nix",
+        "phase2-plugin-qemu-inert.nix",
+        "phase2-protocol-codec-fuzz.nix",
+        "phase2-abi-conformance.nix",
+        "phase4-guest-host-doorbell-abi.nix",
+    ],
+    visibility = ["//crates/crucible/crucible-qemu-plugin:__pkg__"],
+)

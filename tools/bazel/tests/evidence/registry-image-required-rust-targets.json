@@ -1,0 +1,20 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "compiled_image_validation_sources_sha256": {
+    "crates/aos/registry/aos-registry-authoring/src/registry_ops/metadata.rs": "dd857f0d19c745ee2fef23c3c410b35f946c1a8c3d2d54b9b38c9f5a4827f9ba",
+    "crates/aos/registry/aos-registry-authoring/src/registry_ops/metadata/tests.rs": "3b064fb8e89593cc21f095e51f15aa986cf61534767a3cfa77ff905faf3e9e9c",
+    "crates/aos/registry/aos-registry-format/src/manifest.rs": "5678a834c517106b8c30f44a9129d791dc47013571efc7fdb875cc6f24c2f0ab"
+  },
+  "derivation": "/nix/store/13b0b21rdb95z726pn7myvf6h1faz6rc-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "b3757cb94675edb022a7675019a4b3e688b14d870bb61f4503e9174cff569205",
+  "limits": [
+    "This required gate compiles application unit and integration targets without executing them.",
+    "Native regression execution and the live Worker VM are recorded separately.",
+    "The source snapshot includes the image-validation fix; subsequent build and editor fixture changes do not alter these Rust inputs."
+  ],
+  "log_sha256": "cfae0f449deda5721b3b56d098216daa5c573a0b65527350b9a17acfa40052bb",
+  "output": "/nix/store/5f04icv6xvr20937grk3sn8plc3pwaw4-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/f521i64nb2pbggr2wncg18g20l9wg6wq-aos-workspace-src",
+  "status": "PASS: all required application Rust unit and integration targets compiled"
+}

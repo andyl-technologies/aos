@@ -1,0 +1,182 @@
+load("@rules_rust//rust:defs.bzl", "rust_clippy", "rust_doc", "rust_doc_test", "rustfmt_test")
+load("//tools/bazel/rules:compile.bzl", "rust_binary", "rust_library")
+load("//tools/bazel/rules:daemon_graph.bzl", "DAEMON_VARIANTS", "daemon_dependencies", "daemon_session_test_double_libraries")
+load("//tools/bazel/rules:license.bzl", "aos_license_check")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+
+package(default_visibility = ["//crates/crucible:__subpackages__"])
+
+RUST_PACKAGE = aos_rust_package(
+    name = "crucible-daemon",
+    version = "0.1.0",
+    edition = "2024",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+)
+
+LIBRARIES = ["engine", "session", "api", "client", "server", "qemu", "s3", "campaign", "store"]
+COMMON_DEPENDENCIES = [
+    "//crates/crucible/crucible-device:lib",
+    "//crates/linux/aos-linux-project-quota:lib",
+    "//crates/crucible/crucible-qemu-protocol:lib",
+    "//crates/crucible/crucible-qemu-shmem:lib",
+] + [
+    "//third_party/rust:core_" + name
+    for name in ["sha2", "blake3", "ciborium", "ed25519_dalek", "rand", "rustix", "serde", "serde_json", "tempfile", "thiserror", "tokio", "toml"]
+]
+DEVELOPMENT_DEPENDENCIES = ["//crates/crucible/crucible-guest:lib_host"]
+COMPILE_INPUTS = [
+    "//docs/rfcs/0020-crucible-campaigns:schema-registry.tsv",
+    "//tests/crucible:daemon_fixture_inputs",
+]
+SOURCES = glob(["src/**/*.rs"])
+INTEGRATIONS = glob(["tests/*.rs"], allow_empty = True)
+EXAMPLES = glob(["examples/*.rs"], allow_empty = True)
+SUPPORT_TESTS = ["gate_campaign_component_contract", "gate_exact_closure_streaming"]
+
+[
+    rust_library(
+        name = "lib" + suffix,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_name = "crucible_daemon",
+        crate_root = "src/lib.rs",
+        srcs = SOURCES,
+        crate_features = ["default"] + features,
+        deps = COMMON_DEPENDENCIES + daemon_dependencies(LIBRARIES, suffix),
+    )
+    for suffix, features in DAEMON_VARIANTS.items()
+]
+
+[
+    rust_library(
+        name = "lib_for_tests" + suffix,
+        testonly = True,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_name = "crucible_daemon",
+        crate_root = "src/lib.rs",
+        srcs = SOURCES,
+        crate_features = ["default"] + features,
+        deps = COMMON_DEPENDENCIES + daemon_dependencies(LIBRARIES, suffix, development = True),
+    )
+    for suffix, features in DAEMON_VARIANTS.items()
+]
+
+[
+    aos_rust_test(
+        name = "unit" + suffix,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate = ":lib_for_tests" + suffix,
+        compile_data = COMPILE_INPUTS,
+        data = ["//tests/crucible:daemon_fixture_inputs"],
+        crate_features = ["default"] + features,
+        deps = DEVELOPMENT_DEPENDENCIES,
+    )
+    for suffix, features in DAEMON_VARIANTS.items()
+]
+
+[
+    aos_rust_test(
+        name = source.removeprefix("tests/").removesuffix(".rs") + suffix,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_root = source,
+        srcs = [source] + glob([source.removesuffix(".rs") + "/**/*.rs"], allow_empty = True),
+        crate_features = ["default"] + features,
+        deps = [":lib_for_tests" + suffix] + COMMON_DEPENDENCIES + DEVELOPMENT_DEPENDENCIES + daemon_dependencies(LIBRARIES, suffix, development = True),
+    )
+    for suffix, features in DAEMON_VARIANTS.items()
+    for source in INTEGRATIONS
+    if "test-support" in features or source.removeprefix("tests/").removesuffix(".rs") not in SUPPORT_TESTS
+]
+
+[
+    rust_binary(
+        name = source.removeprefix("examples/").removesuffix(".rs") + suffix,
+        testonly = True,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_name = source.removeprefix("examples/").removesuffix(".rs").replace("-", "_"),
+        crate_root = source,
+        srcs = [source],
+        crate_features = ["default"] + features,
+        deps = [":lib_for_tests" + suffix] + COMMON_DEPENDENCIES + DEVELOPMENT_DEPENDENCIES + daemon_dependencies(LIBRARIES, suffix, development = True),
+    )
+    for suffix, features in DAEMON_VARIANTS.items()
+    for source in EXAMPLES
+]
+
+[
+    rust_doc_test(name = "doc" + suffix, crate = ":lib_for_tests" + suffix)
+    for suffix in DAEMON_VARIANTS
+]
+
+TEST_ARTIFACTS = [":unit" + suffix + "_binary" for suffix in DAEMON_VARIANTS] + [
+    ":" + source.removeprefix("tests/").removesuffix(".rs") + suffix + "_binary"
+    for suffix, features in DAEMON_VARIANTS.items()
+    for source in INTEGRATIONS
+    if "test-support" in features or source.removeprefix("tests/").removesuffix(".rs") not in SUPPORT_TESTS
+]
+
+EXAMPLE_ARTIFACTS = [
+    ":" + source.removeprefix("examples/").removesuffix(".rs") + suffix
+    for suffix in DAEMON_VARIANTS
+    for source in EXAMPLES
+]
+
+rust_clippy(
+    name = "clippy",
+    testonly = True,
+    deps = [":lib" + suffix for suffix in DAEMON_VARIANTS] + [":lib_for_tests" + suffix for suffix in DAEMON_VARIANTS] + TEST_ARTIFACTS + EXAMPLE_ARTIFACTS,
+)
+
+rustfmt_test(
+    name = "format",
+    targets = [":lib" + suffix for suffix in DAEMON_VARIANTS] + [":lib_for_tests" + suffix for suffix in DAEMON_VARIANTS] + TEST_ARTIFACTS + EXAMPLE_ARTIFACTS,
+)
+
+rust_doc(name = "documentation", crate = ":lib")
+
+[
+    aos_license_check(
+        name = "license_closure" + suffix,
+        testonly = True,
+        roots = [":lib_for_tests" + suffix, ":unit" + suffix + "_binary"] + [
+            ":" + source.removeprefix("tests/").removesuffix(".rs") + suffix + "_binary"
+            for source in INTEGRATIONS
+            if "test-support" in features or source.removeprefix("tests/").removesuffix(".rs") not in SUPPORT_TESTS
+        ] + [
+            ":" + source.removeprefix("examples/").removesuffix(".rs") + suffix
+            for source in EXAMPLES
+        ],
+        license_domain = RUST_PACKAGE.license_domain,
+    )
+    for suffix, features in DAEMON_VARIANTS.items()
+]
+
+[
+    aos_license_check(
+        name = "production_license_closure" + suffix,
+        roots = [":lib" + suffix],
+        license_domain = RUST_PACKAGE.license_domain,
+    )
+    for suffix in DAEMON_VARIANTS
+]
+
+daemon_session_test_double_libraries(
+    package = RUST_PACKAGE,
+    sources = SOURCES,
+    common_deps = COMMON_DEPENDENCIES,
+    library_names = LIBRARIES,
+)
+
+aos_source_package(
+    name = "source_package",
+    package = RUST_PACKAGE,
+    srcs = glob(["**/*.rs"]),
+    visibility = ["//visibility:public"],
+)

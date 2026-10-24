@@ -1,0 +1,56 @@
+{
+  "build_log_sha256": "5af9ad0322cb1c0df6dfe55ce49b88dcbaf9415a99b37d6844dd985d6c84e53d",
+  "checks": [
+    "Signed release publication with distinct raw and qcow2 authenticated artifact sets",
+    "Real SQLite Durable Object, checked-batch rollback and provider dispatch",
+    "OCI protocol transcript: 29 cases",
+    "Public and private image API, current provider contracts, browser session and management writes",
+    "Content-addressed Console assets and image download commands",
+    "Concurrent multipart writes, exact retries and conflicting-part rejection",
+    "Default and configured request body limits",
+    "Shipped CLI image list and raw image download byte comparison"
+  ],
+  "cli": {
+    "derivation": "/nix/store/z3yza6030l39b4b2drxrgz50vs5i3q63-aos-0.1.0.drv",
+    "image_validation_sources_sha256": {
+      "crates/aos/registry/aos-registry-authoring/src/registry_ops/metadata.rs": "dd857f0d19c745ee2fef23c3c410b35f946c1a8c3d2d54b9b38c9f5a4827f9ba",
+      "crates/aos/registry/aos-registry-format/src/manifest.rs": "5678a834c517106b8c30f44a9129d791dc47013571efc7fdb875cc6f24c2f0ab"
+    },
+    "output": "/nix/store/w8dcz3jarklpg3pry2zaazpycv6rbbn0-aos-0.1.0",
+    "source": "/nix/store/3whjjvsf65v3mmywdj30k571nl2h5s3x-aos-workspace-src"
+  },
+  "derivation": "/nix/store/v0wjfg1hr906vdmpqy147qnhzrvaij5a-aos-vm-test-aos-bazel-hub-worker-do-e2e-live-0.drv",
+  "fixture_sources_sha256": {
+    "pkgs/tools/aos-hub-worker-do-e2e.nix": "c7d7e5440c9355e5fe91d137db4aefb13d01826fa5bf3d61befd8c4b8c164bb7",
+    "pkgs/tools/aos-system-image-e2e-fixture.nix": "2e07b7c5aad7dd304d2b7aad3bb60b8001e035f3ae27e95dea561ab53764f7f6",
+    "tests/build/_bazel-hub-worker-wasm.nix": "a191e4a3c99e66455b1c4fbad3466a77a226242da9617766d0d427af1313b68b"
+  },
+  "limits": [
+    "The live fixture intentionally uses the SQLite-backed object-store adapter; Cloudflare R2 physical garbage collection remains a separate check.",
+    "This runtime rerun pins the ordinary CLI and Bazel Worker outputs compiled immediately before the fixture corrections; it does not replace production Cargo builders.",
+    "The Worker build has no action-cache hits; the KVM runtime check requests no shared compiler cache mount.",
+    "Earlier Wasm artifact parity and all-feature qualifications apply to their separately recorded source snapshots."
+  ],
+  "output": "/nix/store/nqzxqvkr1ybvrshwr3r6pdba9bg7gsgp-aos-vm-test-aos-bazel-hub-worker-do-e2e-live-0",
+  "recipe_sha256": "c3d269d22128d407651e980095c4bc425769f5c556b18842d13eb7ececb404bc",
+  "schema_version": 1,
+  "serial_sha256": "5d979cb71d4a3c932dc5d17968adf3d2f6ac816f742ae59097f14b43c7df0f65",
+  "source_built_workerd": "/nix/store/ap4gbzr5kxnbi8ns286cg0y8bxwq6xxd-workerd-modern-source-1.20260801.1",
+  "status": "PASS: live Bazel Worker under source-built workerd in a KVM guest",
+  "worker": {
+    "action_cache_hits": 0,
+    "action_counts": {
+      "AosConsoleAssetsSnapshot": 1,
+      "AosGeneratedSourcesSnapshot": 1,
+      "AosWorkerBundle": 1,
+      "CargoBuildScriptRun": 33,
+      "CopyFile": 3,
+      "ExtractCargoTomlEnvVars": 288,
+      "Rustc": 320
+    },
+    "build": "/nix/store/ixdf0g7n29wbx00gjmd5d2rsaa74p93k-aos-bazel-hub-worker-wasm-do-e2e-1",
+    "execution_sha256": "aa49a7d08a61d830b04410ec768b017ca9a805754cc7bb38d2c98c8cb271512a",
+    "installed": "/nix/store/njjcfzvwn9ar0i2hdjjsiy4wqq475cad-aos-hub-worker-0.1.0",
+    "source": "/nix/store/nfbmlcmn63l7hsh6d75bdpn1l19rmcxz-aos-bazel-workspace"
+  }
+}

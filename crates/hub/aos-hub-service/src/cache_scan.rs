@@ -7,7 +7,7 @@
 //! advances the cache-wide inventory only after the complete selected set
 //! succeeds. Mirrors may have equal manifests; shards are expected to differ.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{bail, Context, Result};
 use base64::Engine as _;
@@ -467,7 +467,7 @@ async fn build_inventory(
         let mut pages = 0_usize;
         let mut object_count = 0_i64;
         let mut content_hasher = Sha256::new();
-        let mut staged_surface_ids = HashSet::new();
+        let mut staged_surface_ids = BTreeSet::new();
         loop {
             let heartbeat_at = clock::now_unix_secs();
             db.heartbeat_cache_inventory_topology(
@@ -594,7 +594,7 @@ async fn build_inventory(
                             generation,
                             placement.id,
                             owner_token,
-                            &surface_object,
+                            surface_object,
                         )
                         .await?,
                     )
@@ -624,7 +624,7 @@ async fn build_inventory(
                             placement.id,
                             owner_token,
                             &staged,
-                            &observed,
+                            observed,
                         )
                         .await?;
                     }
@@ -685,7 +685,7 @@ async fn build_inventory(
                             placement.id,
                             owner_token,
                             &narinfo,
-                            &observed,
+                            observed,
                         )
                         .await?;
                     }
@@ -856,6 +856,10 @@ async fn build_inventory(
     })
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 async fn stage_observed_surface_object(
     db: &Database,
     cache_id: i64,
@@ -1029,6 +1033,10 @@ async fn stage_existing_cache_surface_object(
     .await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keeps the existing transport and storage context explicit."
+)]
 async fn stage_cache_surface_object(
     db: &Database,
     cache_id: i64,
@@ -1315,7 +1323,7 @@ mod tests {
         db.install_write_failure_test_tickets().await.unwrap();
         db.prepare_ambiguous_recovery_test_tickets().await.unwrap();
         let surfaces = RecoverySurfaces {
-            evidence: Mutex::new(std::iter::repeat(None).take(16).collect()),
+            evidence: Mutex::new(std::iter::repeat_n(None, 16).collect()),
         };
 
         for attempt in 0..8 {

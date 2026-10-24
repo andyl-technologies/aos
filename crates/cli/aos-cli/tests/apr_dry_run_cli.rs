@@ -12,6 +12,10 @@
 //! the fix: `create` honors the flag, and any subcommand that does not
 //! implement it refuses rather than mutating behind a preview.
 
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -26,7 +30,7 @@ fn registry_path(home: &Path, name: &str) -> std::path::PathBuf {
 /// Spawn `apr` against an isolated `HOME` with a committer identity present,
 /// so nothing fails for the unrelated reason of a missing maintainer identity.
 fn apr(home: &Path, args: &[&str]) -> Result<Output> {
-    Command::new(env!("CARGO_BIN_EXE_apr"))
+    Command::new(cli_binary!("CARGO_BIN_EXE_apr"))
         .env("HOME", home)
         .env("USER", "dry-run-test")
         .env("LOGNAME", "dry-run-test")

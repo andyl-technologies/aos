@@ -1,0 +1,59 @@
+{
+  "actions": {
+    "fixture_macro": {
+      "action_digest": null,
+      "cache_hit": false,
+      "fingerprint": "dc1ce993bf3eb16aba5fcbd3dd362f1141cab0eb3e834a8223237fd690841225",
+      "runner": "linux-sandbox"
+    },
+    "generated": {
+      "action_digest": null,
+      "cache_hit": false,
+      "fingerprint": "85f0784705152423ba4421308f2130aa687602cf36c444560b66c61c98a90f72",
+      "runner": "linux-sandbox"
+    },
+    "generated_library": {
+      "action_digest": null,
+      "cache_hit": false,
+      "fingerprint": "e382ac871c7d682777c1fe611b540461332a3577a8b4ef4bb11a622e3121d223",
+      "runner": "linux-sandbox"
+    },
+    "rust_library": {
+      "action_digest": null,
+      "cache_hit": false,
+      "fingerprint": "82d389db88e5369b7277de311c1ba6dfe31bda8b9439464f67264039c3e69c9e",
+      "runner": "linux-sandbox"
+    },
+    "wasm_app": {
+      "action_digest": null,
+      "cache_hit": false,
+      "fingerprint": "ed1a16cf14c2f9acc522a324de8f5c27e7ff280935489d57155c9d1064d778ad",
+      "runner": "linux-sandbox"
+    }
+  },
+  "all_checks": "/nix/store/pcpnvqvp506lkzirgj88hin3vis0alxq-aos-bazel-checks",
+  "artifact_bytes": 28258,
+  "artifact_sha256": "b2714df8c572e903dea76d4c72606d38bd03075d2c3d5e9f8dcbfa673388e9d2",
+  "bazel_version": "9.2.0",
+  "build": "/nix/store/bjsbbki7vgdrfnf0ycr5bxlh6jsx8gz0-aos-bazel-wasm-fixture-1",
+  "check": "/nix/store/b73cbjpnba62ai0wwhs504a12kmjbq7w-aos-bazel-wasm-toolchain-check",
+  "configuration_sha256": {
+    "MODULE.bazel": "d5d9f5af11f827fb0987711aa993d860fc311cbd663e9c09924ed9f759e5e2fb",
+    "pkgs/build-support/_bazel/toolchains.nix": "3adb1e1a27c97ae392cacab6efe881c744575165a201ba66045c8f139c2ebdb8",
+    "pkgs/build-support/_bazel/workspace.nix": "5491dff8ebd7b6ecb424401d3da201813a118ada1f5e3c6380ddbc4cbf81fdc8",
+    "tests/build/_bazel-wasm.nix": "95b53d00eb9fc90aa5e5e85b355aa15ccd5d40549a2b9f3aa6fecf64130e5c86",
+    "third_party/bazel/modules.json": "00886aa6d25a782fdf32bad4a0bc871673d0223059a761ce9aee4f9eda274054",
+    "tools/bazel/launcher.py": "2ecfefb44fe69d2064242227c886e0018237320292975ca86f0529a93237b5b4",
+    "tools/bazel/tests/verify_wasm.py": "8836009a0fafb76a459dca10948461a30093110beb2f9a78e68e948af58f8f59",
+    "tools/bazel/toolchains/BUILD.bazel": "938bc6f138b93acafddd2346324677c05fcbac61a7c5b4883c9bf7bfa3ccc04a",
+    "tools/bazel/toolchains/BUILD.toolchains.bazel": "26b39f8ea8da0fd774baa862caa1937c13c6af0e7bd6f94fb0f0a15e65a60128",
+    "tools/bazel/toolchains/empty_cc.bzl": "fc2e979400ecbbc42540859c1a1eb4a9e67e50a79adef5299bda8b0594125404"
+  },
+  "native_cpp_fallback_rejected": true,
+  "platform": "x86_64-linux",
+  "python_regressions": 49,
+  "runtime_execution": "not qualified by this toolchain check",
+  "rust_version": "1.98.1",
+  "schema_version": 1,
+  "target": "wasm32-unknown-unknown"
+}

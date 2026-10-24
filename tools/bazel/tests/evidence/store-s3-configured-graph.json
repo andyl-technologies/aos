@@ -1,0 +1,1258 @@
+{
+  "baseline": "store-s3-cargo-baseline.json",
+  "cli_checks": "/nix/store/75g915pmwzsbszwm3ysp2ixc37wr7cyp-aos-dev-cli-check-0",
+  "configured_targets": 282,
+  "dependency_specification_outputs": [
+    "/nix/store/r3ffyvpcsar8xw4g92bs973yb0g8j14x-aos-rust-control-specifications-1",
+    "/nix/store/k10vyg4iw85f5pi5bxalpp9hx2h7rn0r-aos-rust-core-specifications-1",
+    "/nix/store/k3w21s9z4j1ny647f0rcc7q4rn099fby-aos-rust-device-specifications-1",
+    "/nix/store/bv383dlb6ln9y1wz0nbp0lnb5n1hrkrk-aos-rust-engine-specifications-1",
+    "/nix/store/3iyg1nkpcln8fm3pammfv1dmy8rs9n4z-aos-rust-guest-specifications-1",
+    "/nix/store/5y079nvz46k8id5zxdwl66npnxp2l1i7-aos-rust-qemu-host-specifications-1",
+    "/nix/store/rldfdayb4gpii9jdd00ncwlwd3aj29hc-aos-rust-quota-specifications-1",
+    "/nix/store/mka4whx308hi96dmf3imzrnki5kbqr98-aos-rust-session-specifications-1",
+    "/nix/store/knb3g25hppz42yvd2y3srcdf72sz3ay8-aos-rust-store-specifications-1",
+    "/nix/store/pi6894x1zxd5f4dxnviwwggyr2sn9b2r-aos-rust-store-s3-specifications-1"
+  ],
+  "existing_nine_dependency_locks": "unchanged after explicit dependency update",
+  "external_crate_identities": 222,
+  "external_features": {
+    "aead@0.5.2": [
+      [
+        "alloc",
+        "getrandom",
+        "rand_core"
+      ]
+    ],
+    "aes-gcm@0.10.3": [
+      [
+        "aes",
+        "alloc",
+        "default",
+        "getrandom",
+        "rand_core",
+        "zeroize"
+      ]
+    ],
+    "aes@0.8.4": [
+      []
+    ],
+    "ahash@0.8.12": [
+      []
+    ],
+    "allocator-api2@0.2.21": [
+      [
+        "alloc"
+      ]
+    ],
+    "arc-swap@1.9.1": [
+      []
+    ],
+    "arrayref@0.3.9": [
+      []
+    ],
+    "arrayvec@0.7.7": [
+      []
+    ],
+    "atomic-waker@1.1.2": [
+      []
+    ],
+    "autocfg@1.5.1": [
+      []
+    ],
+    "aws-config@1.8.17": [
+      [
+        "credentials-process",
+        "default",
+        "default-https-client",
+        "rt-tokio",
+        "sso"
+      ]
+    ],
+    "aws-credential-types@1.2.14": [
+      [
+        "test-util"
+      ]
+    ],
+    "aws-lc-rs@1.17.0": [
+      [
+        "aws-lc-sys",
+        "prebuilt-nasm"
+      ]
+    ],
+    "aws-lc-sys@0.41.0": [
+      [
+        "prebuilt-nasm"
+      ]
+    ],
+    "aws-runtime@1.7.4": [
+      [
+        "event-stream",
+        "http-02x",
+        "http-1x",
+        "sigv4a"
+      ]
+    ],
+    "aws-sdk-s3@1.134.0": [
+      [
+        "default-https-client",
+        "http-1x",
+        "rt-tokio",
+        "sigv4a"
+      ]
+    ],
+    "aws-sdk-sso@1.100.0": [
+      []
+    ],
+    "aws-sdk-ssooidc@1.102.0": [
+      []
+    ],
+    "aws-sdk-sts@1.105.0": [
+      []
+    ],
+    "aws-sigv4@1.4.4": [
+      [
+        "default",
+        "http0-compat",
+        "http1",
+        "sign-eventstream",
+        "sign-http",
+        "sigv4a"
+      ]
+    ],
+    "aws-smithy-async@1.2.14": [
+      [
+        "rt-tokio"
+      ]
+    ],
+    "aws-smithy-checksums@0.64.8": [
+      []
+    ],
+    "aws-smithy-eventstream@0.60.20": [
+      []
+    ],
+    "aws-smithy-http-client@1.1.12": [
+      [
+        "default-client",
+        "rustls-aws-lc"
+      ]
+    ],
+    "aws-smithy-http@0.63.6": [
+      [
+        "aws-smithy-eventstream",
+        "event-stream"
+      ]
+    ],
+    "aws-smithy-json@0.62.6": [
+      []
+    ],
+    "aws-smithy-observability@0.2.6": [
+      []
+    ],
+    "aws-smithy-query@0.60.15": [
+      []
+    ],
+    "aws-smithy-runtime-api-macros@1.0.0": [
+      []
+    ],
+    "aws-smithy-runtime-api@1.12.1": [
+      [
+        "client",
+        "default",
+        "http-02x",
+        "http-1x",
+        "http-auth",
+        "test-util"
+      ]
+    ],
+    "aws-smithy-runtime@1.11.3": [
+      [
+        "client",
+        "default-https-client",
+        "rt-tokio"
+      ]
+    ],
+    "aws-smithy-schema@0.1.0": [
+      []
+    ],
+    "aws-smithy-types@1.4.8": [
+      [
+        "byte-stream-poll-next",
+        "http-body-0-4-x",
+        "http-body-1-x",
+        "rt-tokio",
+        "test-util"
+      ]
+    ],
+    "aws-smithy-xml@0.60.15": [
+      []
+    ],
+    "aws-types@1.3.16": [
+      []
+    ],
+    "base16ct@0.2.0": [
+      [
+        "alloc"
+      ]
+    ],
+    "base64-simd@0.8.0": [
+      [
+        "alloc",
+        "default",
+        "detect",
+        "std"
+      ]
+    ],
+    "base64@0.22.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "base64ct@1.8.3": [
+      [
+        "alloc"
+      ]
+    ],
+    "bitflags@2.13.0": [
+      [
+        "std"
+      ]
+    ],
+    "blake3@1.8.5": [
+      [
+        "pure",
+        "std"
+      ]
+    ],
+    "block-buffer@0.10.4": [
+      []
+    ],
+    "block-buffer@0.12.0": [
+      []
+    ],
+    "bytes-utils@0.1.4": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "bytes@1.11.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "cc@1.2.65": [
+      [
+        "parallel"
+      ]
+    ],
+    "cfg-if@1.0.4": [
+      []
+    ],
+    "cipher@0.4.4": [
+      []
+    ],
+    "cmake@0.1.58": [
+      []
+    ],
+    "cmov@0.5.4": [
+      []
+    ],
+    "const-oid@0.10.2": [
+      []
+    ],
+    "const-oid@0.9.6": [
+      []
+    ],
+    "constant_time_eq@0.4.2": [
+      [
+        "std"
+      ]
+    ],
+    "cpufeatures@0.2.17": [
+      []
+    ],
+    "cpufeatures@0.3.0": [
+      []
+    ],
+    "crc-fast@1.10.0": [
+      [
+        "alloc",
+        "default",
+        "digest",
+        "ffi",
+        "panic-handler",
+        "std"
+      ]
+    ],
+    "crc32fast@1.5.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "crypto-bigint@0.5.5": [
+      [
+        "default",
+        "generic-array",
+        "rand",
+        "rand_core",
+        "zeroize"
+      ]
+    ],
+    "crypto-common@0.1.7": [
+      [
+        "getrandom",
+        "rand_core",
+        "std"
+      ]
+    ],
+    "crypto-common@0.2.2": [
+      []
+    ],
+    "ctr@0.9.2": [
+      []
+    ],
+    "ctutils@0.4.2": [
+      []
+    ],
+    "der@0.7.10": [
+      [
+        "alloc",
+        "oid",
+        "pem",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "deranged@0.5.8": [
+      [
+        "default",
+        "powerfmt"
+      ]
+    ],
+    "digest@0.10.7": [
+      [
+        "alloc",
+        "block-buffer",
+        "const-oid",
+        "core-api",
+        "default",
+        "mac",
+        "oid",
+        "std",
+        "subtle"
+      ]
+    ],
+    "digest@0.11.3": [
+      [
+        "alloc",
+        "block-api",
+        "default",
+        "mac",
+        "oid"
+      ]
+    ],
+    "displaydoc@0.2.6": [
+      []
+    ],
+    "dunce@1.0.5": [
+      []
+    ],
+    "ecdsa@0.16.9": [
+      [
+        "alloc",
+        "arithmetic",
+        "der",
+        "digest",
+        "hazmat",
+        "pem",
+        "pkcs8",
+        "rfc6979",
+        "signing",
+        "spki",
+        "std",
+        "verifying"
+      ]
+    ],
+    "either@1.16.0": [
+      []
+    ],
+    "elliptic-curve@0.13.8": [
+      [
+        "alloc",
+        "arithmetic",
+        "digest",
+        "ff",
+        "group",
+        "hazmat",
+        "pem",
+        "pkcs8",
+        "sec1",
+        "std"
+      ]
+    ],
+    "equivalent@1.0.2": [
+      []
+    ],
+    "errno@0.3.14": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "fallible-iterator@0.3.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "fallible-streaming-iterator@0.1.9": [
+      []
+    ],
+    "fastrand@2.4.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "ff@0.13.1": [
+      [
+        "alloc"
+      ]
+    ],
+    "find-msvc-tools@0.1.9": [
+      []
+    ],
+    "fnv@1.0.7": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "foldhash@0.2.0": [
+      []
+    ],
+    "form_urlencoded@1.2.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "fs_extra@1.3.0": [
+      []
+    ],
+    "futures-channel@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-core@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-sink@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-task@0.3.32": [
+      []
+    ],
+    "futures-util@0.3.32": [
+      []
+    ],
+    "generic-array@0.14.7": [
+      [
+        "more_lengths",
+        "zeroize"
+      ]
+    ],
+    "getrandom@0.2.17": [
+      [
+        "std"
+      ]
+    ],
+    "ghash@0.5.1": [
+      []
+    ],
+    "group@0.13.0": [
+      [
+        "alloc"
+      ]
+    ],
+    "h2@0.4.14": [
+      []
+    ],
+    "hashbrown@0.14.5": [
+      [
+        "ahash",
+        "inline-more"
+      ]
+    ],
+    "hashbrown@0.16.1": [
+      [
+        "allocator-api2",
+        "default",
+        "default-hasher",
+        "equivalent",
+        "inline-more",
+        "raw-entry"
+      ]
+    ],
+    "hashbrown@0.17.1": [
+      []
+    ],
+    "hashlink@0.9.1": [
+      []
+    ],
+    "hex@0.4.3": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "hmac@0.12.1": [
+      [
+        "reset"
+      ]
+    ],
+    "hmac@0.13.0": [
+      []
+    ],
+    "http-body-util@0.1.3": [
+      [
+        "default"
+      ]
+    ],
+    "http-body@0.4.6": [
+      []
+    ],
+    "http-body@1.0.1": [
+      []
+    ],
+    "http@0.2.12": [
+      []
+    ],
+    "http@1.4.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "httparse@1.10.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "hybrid-array@0.4.12": [
+      []
+    ],
+    "hyper-rustls@0.27.9": [
+      [
+        "http1",
+        "http2",
+        "native-tokio",
+        "rustls-native-certs",
+        "tls12"
+      ]
+    ],
+    "hyper-util@0.1.20": [
+      [
+        "client",
+        "client-legacy",
+        "client-proxy",
+        "default",
+        "http1",
+        "http2",
+        "tokio"
+      ]
+    ],
+    "hyper@1.10.0": [
+      [
+        "client",
+        "default",
+        "http1",
+        "http2"
+      ]
+    ],
+    "icu_collections@2.2.0": [
+      []
+    ],
+    "icu_locale_core@2.2.0": [
+      [
+        "zerovec"
+      ]
+    ],
+    "icu_normalizer@2.2.0": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "icu_normalizer_data@2.2.0": [
+      []
+    ],
+    "icu_properties@2.2.0": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "icu_properties_data@2.2.0": [
+      []
+    ],
+    "icu_provider@2.2.0": [
+      [
+        "baked"
+      ]
+    ],
+    "idna@1.1.0": [
+      [
+        "alloc",
+        "compiled_data",
+        "std"
+      ]
+    ],
+    "idna_adapter@1.2.2": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "indexmap@2.14.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "inout@0.1.4": [
+      []
+    ],
+    "ipnet@2.12.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "itoa@1.0.18": [
+      []
+    ],
+    "jobserver@0.1.34": [
+      []
+    ],
+    "libc@0.2.186": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "libsqlite3-sys@0.30.1": [
+      [
+        "default",
+        "min_sqlite_version_3_14_0",
+        "pkg-config",
+        "vcpkg"
+      ]
+    ],
+    "linux-raw-sys@0.12.1": [
+      [
+        "auxvec",
+        "elf",
+        "errno",
+        "general",
+        "ioctl",
+        "no_std"
+      ]
+    ],
+    "litemap@0.8.2": [
+      []
+    ],
+    "lru@0.16.4": [
+      [
+        "default",
+        "hashbrown"
+      ]
+    ],
+    "md-5@0.11.0": [
+      [
+        "alloc",
+        "default",
+        "oid"
+      ]
+    ],
+    "mio@1.2.1": [
+      [
+        "net",
+        "os-ext",
+        "os-poll"
+      ]
+    ],
+    "num-conv@0.2.2": [
+      []
+    ],
+    "num-integer@0.1.46": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "num-traits@0.2.19": [
+      [
+        "i128",
+        "std"
+      ]
+    ],
+    "once_cell@1.21.4": [
+      [
+        "alloc",
+        "default",
+        "race",
+        "std"
+      ]
+    ],
+    "opaque-debug@0.3.1": [
+      []
+    ],
+    "openssl-probe@0.2.1": [
+      []
+    ],
+    "outref@0.5.2": [
+      []
+    ],
+    "p256@0.13.2": [
+      [
+        "alloc",
+        "arithmetic",
+        "default",
+        "digest",
+        "ecdsa",
+        "ecdsa-core",
+        "pem",
+        "pkcs8",
+        "sha2",
+        "sha256",
+        "std"
+      ]
+    ],
+    "pem-rfc7468@0.7.0": [
+      [
+        "alloc"
+      ]
+    ],
+    "percent-encoding@2.3.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "pin-project-lite@0.2.17": [
+      []
+    ],
+    "pin-utils@0.1.0": [
+      []
+    ],
+    "pkcs8@0.10.2": [
+      [
+        "alloc",
+        "pem",
+        "std"
+      ]
+    ],
+    "pkg-config@0.3.33": [
+      []
+    ],
+    "polyval@0.6.2": [
+      []
+    ],
+    "potential_utf@0.1.5": [
+      [
+        "zerovec"
+      ]
+    ],
+    "powerfmt@0.2.0": [
+      []
+    ],
+    "primeorder@0.13.6": [
+      []
+    ],
+    "proc-macro2@1.0.106": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "quote@1.0.46": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "rand_core@0.6.4": [
+      [
+        "alloc",
+        "getrandom",
+        "std"
+      ]
+    ],
+    "regex-lite@0.1.9": [
+      [
+        "default",
+        "std",
+        "string"
+      ]
+    ],
+    "rfc6979@0.4.0": [
+      []
+    ],
+    "rusqlite@0.32.1": [
+      [
+        "blob"
+      ]
+    ],
+    "rustc_version@0.4.1": [
+      []
+    ],
+    "rustix@1.1.4": [
+      [
+        "alloc",
+        "default",
+        "event",
+        "fs",
+        "std"
+      ]
+    ],
+    "rustls-native-certs@0.8.3": [
+      []
+    ],
+    "rustls-pki-types@1.14.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "rustls-webpki@0.103.13": [
+      [
+        "alloc",
+        "aws-lc-rs",
+        "std"
+      ]
+    ],
+    "rustls@0.23.40": [
+      [
+        "aws-lc-rs",
+        "aws_lc_rs",
+        "prefer-post-quantum",
+        "std",
+        "tls12"
+      ]
+    ],
+    "rustversion@1.0.22": [
+      []
+    ],
+    "ryu@1.0.23": [
+      []
+    ],
+    "sec1@0.7.3": [
+      [
+        "alloc",
+        "default",
+        "der",
+        "pem",
+        "pkcs8",
+        "point",
+        "std",
+        "subtle",
+        "zeroize"
+      ]
+    ],
+    "semver@1.0.28": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "sha1@0.10.6": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "sha1@0.11.0": [
+      [
+        "alloc",
+        "default",
+        "oid"
+      ]
+    ],
+    "sha2@0.10.9": [
+      []
+    ],
+    "sha2@0.11.0": [
+      [
+        "alloc",
+        "default",
+        "oid"
+      ]
+    ],
+    "shlex@2.0.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "signal-hook-registry@1.4.8": [
+      []
+    ],
+    "signature@2.2.0": [
+      [
+        "alloc",
+        "digest",
+        "rand_core",
+        "std"
+      ]
+    ],
+    "slab@0.4.12": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "smallvec@1.15.2": [
+      [
+        "const_generics",
+        "const_new"
+      ]
+    ],
+    "socket2@0.6.4": [
+      [
+        "all"
+      ]
+    ],
+    "spin@0.10.0": [
+      [
+        "mutex",
+        "once",
+        "rwlock",
+        "spin_mutex"
+      ]
+    ],
+    "spki@0.7.3": [
+      [
+        "alloc",
+        "pem",
+        "std"
+      ]
+    ],
+    "stable_deref_trait@1.2.1": [
+      []
+    ],
+    "subtle@2.6.1": [
+      [
+        "default",
+        "i128",
+        "std"
+      ]
+    ],
+    "syn@2.0.118": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "fold",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit",
+        "visit-mut"
+      ]
+    ],
+    "synstructure@0.13.2": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "thiserror-impl@2.0.18": [
+      []
+    ],
+    "thiserror@2.0.18": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "time-core@0.1.8": [
+      []
+    ],
+    "time@0.3.47": [
+      [
+        "alloc",
+        "default",
+        "parsing",
+        "std"
+      ]
+    ],
+    "tinystr@0.8.3": [
+      [
+        "zerovec"
+      ]
+    ],
+    "tokio-macros@2.7.0": [
+      []
+    ],
+    "tokio-rustls@0.26.4": [
+      [
+        "tls12"
+      ]
+    ],
+    "tokio-util@0.7.18": [
+      [
+        "codec",
+        "default",
+        "io"
+      ]
+    ],
+    "tokio@1.52.3": [
+      [
+        "bytes",
+        "default",
+        "fs",
+        "io-std",
+        "io-util",
+        "libc",
+        "macros",
+        "mio",
+        "net",
+        "process",
+        "rt",
+        "rt-multi-thread",
+        "signal",
+        "signal-hook-registry",
+        "socket2",
+        "sync",
+        "time",
+        "tokio-macros"
+      ]
+    ],
+    "tower-layer@0.3.3": [
+      []
+    ],
+    "tower-service@0.3.3": [
+      []
+    ],
+    "tower@0.5.3": [
+      []
+    ],
+    "tracing-attributes@0.1.31": [
+      []
+    ],
+    "tracing-core@0.1.36": [
+      [
+        "once_cell",
+        "std"
+      ]
+    ],
+    "tracing@0.1.44": [
+      [
+        "attributes",
+        "default",
+        "std",
+        "tracing-attributes"
+      ]
+    ],
+    "try-lock@0.2.5": [
+      []
+    ],
+    "typenum@1.20.1": [
+      [
+        "const-generics"
+      ]
+    ],
+    "unicode-ident@1.0.24": [
+      []
+    ],
+    "universal-hash@0.5.1": [
+      []
+    ],
+    "untrusted@0.9.0": [
+      []
+    ],
+    "url@2.5.8": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "urlencoding@2.1.3": [
+      []
+    ],
+    "utf8_iter@1.0.4": [
+      []
+    ],
+    "uuid@1.23.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "vcpkg@0.2.15": [
+      []
+    ],
+    "version_check@0.9.5": [
+      []
+    ],
+    "vsimd@0.8.0": [
+      [
+        "alloc",
+        "detect",
+        "std"
+      ]
+    ],
+    "want@0.3.1": [
+      []
+    ],
+    "writeable@0.6.3": [
+      []
+    ],
+    "xmlparser@0.13.6": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "yoke-derive@0.8.2": [
+      []
+    ],
+    "yoke@0.8.3": [
+      [
+        "derive",
+        "zerofrom"
+      ]
+    ],
+    "zerocopy@0.8.49": [
+      [
+        "simd"
+      ]
+    ],
+    "zerofrom-derive@0.1.7": [
+      []
+    ],
+    "zerofrom@0.1.8": [
+      [
+        "derive"
+      ]
+    ],
+    "zeroize@1.9.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "zerotrie@0.2.4": [
+      [
+        "yoke",
+        "zerofrom"
+      ]
+    ],
+    "zerovec-derive@0.11.3": [
+      []
+    ],
+    "zerovec@0.11.6": [
+      [
+        "derive",
+        "yoke"
+      ]
+    ],
+    "zstd-safe@7.2.4": [
+      [
+        "arrays",
+        "legacy",
+        "std",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ],
+    "zstd-sys@2.0.16+zstd.1.5.7": [
+      [
+        "legacy",
+        "std",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ],
+    "zstd@0.13.3": [
+      [
+        "arrays",
+        "default",
+        "legacy",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ]
+  },
+  "external_features_match_cargo_baseline": true,
+  "file_sha256": {
+    "MODULE.bazel": "2824fcf5dc08065c71f719ca63eb527aa073e17271d302543a17133aa86b1cfc",
+    "crates/crucible/storage/crucible-store-s3/BUILD.bazel": "cec82ca6887e335ff6bd45b241f034b7ec1d103d657768dfdb13208849a3f069",
+    "tests/build/_bazel-store-s3.nix": "5760977c366c4a69d102897b439538abca54f6bec495147fbdb2ae08772943d8",
+    "third_party/bazel/modules.json": "a88ebd1b8441802247f07436c543ad31d84070bd25f403669a13d3171a1e34a9",
+    "third_party/rust/BUILD.bazel": "dca8bc3bd5c4ee1dcbd3a743cbd117c96c3b8664a69c214543c628855003616e",
+    "third_party/rust/store-s3/sources.json": "611bd0905ac966fbb95e79d145697ce101839eb388f90d215afe2a02cf5755b4",
+    "tools/bazel/metadata/store-s3-inventory.json": "e263b0438365ccdc79dc34dd9d545101f33b34bb3e6db1cdd592d9beba551899",
+    "tools/bazel/rules/test.bzl": "234d72035982e854804fcbc4e42ac8c11a3aa697c8e491ac5ee9db69e76992a5",
+    "tools/bazel/testing/runner.py": "8a18b6fb0dca658cc3f699b1e5cc1ec8b20fbcfa8e2e60fa8fa9e6f099a02adc",
+    "tools/bazel/tests/family_libtest.py": "2aa8ef4a594dd5e22a5b866de743416aeea444fbcdd4c1524bf77a458e7c1944",
+    "tools/bazel/tests/store-s3.nix": "400c7fb622ab4bbd8d37b959f25dcc2b69c7edd6f7441a2501d119434f7f83e1",
+    "tools/bazel/tests/test_protocol_parity.py": "c961bbcc3a549bf2cf204ab1be84c8458ce42711131ba35f7c767bb028f51d60",
+    "tools/bazel/tests/test_runner.py": "148fc3c1ffa233ebfd0138a2f67188409a6ee19c22e9cb20df0691cc20305b23",
+    "tools/bazel/tests/verify_pilot.py": "19d94d835b764d92881c5797d7d8e9251b9b6965a1c7aeb41030db6a7e207e50",
+    "tools/bazel/tests/verify_protocol.py": "fc8bb2dc2f56b7dcd15600782a92db32a15bcbb4db4039ecdc90c2db4ca2cce9",
+    "tools/dev/lib/bazel.bash": "e9ce94ae4b0f646a4711446d044faab15887cdd91783a312bb191e0732c662a9",
+    "tools/dev/lib/common.bash": "b94c9efaf69d21a3380c26bcd9128a1087af4b90a756e18055db469f16569674",
+    "tools/dev/tests/cli.bash": "deecc4d5965baf7c47e2dac8ee93424ea1d07bdeb1eea444dcf5f4ab1a3cac56"
+  },
+  "ignored_suite_policy": "Only the declared live_conformance target may succeed with its entire discovered inventory ignored. Empty or filtered zero-match selections still fail; newly active cases execute normally.",
+  "inventory_refresh_outputs": [
+    "/nix/store/vsqjcg7gmmlz5m14zqcnn98vx4vcf1p7-aos-bazel-boot-pilot-inventory-1",
+    "/nix/store/w88f77qwd8dxmfhidf73xqyfw0ra6frc-aos-bazel-control-inventory-1",
+    "/nix/store/v8l5gzwjsw2bfflkvllrzqbyqbydgaw3-aos-bazel-device-inventory-1",
+    "/nix/store/zvybh6wfhhjw5y3rqkc7m27q8a08p8br-aos-bazel-engine-inventory-1",
+    "/nix/store/ngw0bjr74iphciv2cq13j19mkd2h3ljq-aos-bazel-fixture-inventory-1",
+    "/nix/store/rxpa9c13pf2y0zlqnv1m1jj89in85p6g-aos-bazel-guest-inventory-1",
+    "/nix/store/pgvdr6h38n95ppg5likp6ljggmzc0nlr-aos-bazel-protocol-inventory-1",
+    "/nix/store/fy0aqdh61rgv7hnbxkf5nk3a96dqys02-aos-bazel-qemu-host-inventory-1",
+    "/nix/store/1d76lfzh0fzigkxlbkqy78pqwkcvxm9w-aos-bazel-quota-inventory-1",
+    "/nix/store/ynwvqi1cfzs1glmwsxpj4gkv1x1q88hz-aos-bazel-session-inventory-1",
+    "/nix/store/i840bn5rmwahryfvc3v19svkiy0f9qii-aos-bazel-shared-inventory-1",
+    "/nix/store/a9a97ni0j1xvwpm97dqw6ns0yz0dc1p5-aos-bazel-source-catalog-checks",
+    "/nix/store/p20f2rhxi7qwviwbdgplhd7rbzl0hby3-aos-bazel-store-inventory-1",
+    "/nix/store/xg5nq2i66sr3i0qyv2siyfv9zsav32yw-aos-bazel-store-s3-inventory-1"
+  ],
+  "limits": [
+    "Configured graph evidence only; native Bazel execution, editor parity, foreign execution, performance and production cutover remain separate gates.",
+    "The original live S3 conformance case remains ignored. No external service was started and no live-service qualification is claimed.",
+    "Production library and Cargo-compatible development library retain distinct store features; the development view enables test-support."
+  ],
+  "policy_checks": "/nix/store/ff62zsg2agqlv63bm03k4wdcmiyzyvqm-aos-bazel-policy-checks",
+  "policy_tests": 147,
+  "schema_version": 1,
+  "source_files": 54,
+  "status": "offline configured graph, source inventories, dependency specifications, policy and CLI checks passed; native execution pending",
+  "tested_tree_parent_commit": "e987e0d71ee15e49e246b004247fae543c804023"
+}

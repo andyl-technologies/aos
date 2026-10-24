@@ -1,0 +1,6 @@
+filegroup(
+    name = "hub_native_operations_source",
+    srcs = ["hub-native-operations.nix"],
+    tags = ["aos-license:apache-host"],
+    visibility = ["//crates/hub/aos-hub-native:__pkg__"],
+)

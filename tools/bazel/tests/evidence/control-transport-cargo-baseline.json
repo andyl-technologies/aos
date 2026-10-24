@@ -1,0 +1,1464 @@
+{
+  "derivation": "/nix/store/89bcvnrqs5caj4vdc3sfmyvza79fmv77-aos-bazel-control-transport-cargo-oracle-1.drv",
+  "doctests": {
+    "crucible_control_client": {},
+    "crucible_control_server": {}
+  },
+  "executed_cases": 107,
+  "external_features": {
+    "aead@0.5.2": [
+      [
+        "alloc",
+        "getrandom",
+        "rand_core"
+      ]
+    ],
+    "aes-gcm@0.10.3": [
+      [
+        "aes",
+        "alloc",
+        "default",
+        "getrandom",
+        "rand_core",
+        "zeroize"
+      ]
+    ],
+    "aes@0.8.4": [
+      []
+    ],
+    "ahash@0.8.12": [
+      []
+    ],
+    "aho-corasick@1.1.4": [
+      [
+        "perf-literal",
+        "std"
+      ]
+    ],
+    "arrayref@0.3.9": [
+      []
+    ],
+    "arrayvec@0.7.7": [
+      []
+    ],
+    "atomic-waker@1.1.2": [
+      []
+    ],
+    "autocfg@1.5.1": [
+      []
+    ],
+    "aws-lc-rs@1.17.0": [
+      [
+        "aws-lc-sys",
+        "prebuilt-nasm"
+      ]
+    ],
+    "aws-lc-sys@0.41.0": [
+      [
+        "prebuilt-nasm"
+      ]
+    ],
+    "axum-core@0.5.6": [
+      [
+        "tracing"
+      ]
+    ],
+    "axum-macros@0.5.1": [
+      [
+        "default"
+      ]
+    ],
+    "axum@0.8.9": [
+      [
+        "default",
+        "form",
+        "http1",
+        "json",
+        "macros",
+        "matched-path",
+        "original-uri",
+        "query",
+        "tokio",
+        "tower-log",
+        "tracing"
+      ]
+    ],
+    "base64@0.22.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "bitflags@2.13.0": [
+      [
+        "std"
+      ]
+    ],
+    "blake3@1.8.5": [
+      [
+        "pure",
+        "std"
+      ]
+    ],
+    "block-buffer@0.10.4": [
+      []
+    ],
+    "bytes@1.11.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "cc@1.2.65": [
+      [
+        "parallel"
+      ]
+    ],
+    "cfg-if@1.0.4": [
+      []
+    ],
+    "ciborium-io@0.2.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "ciborium-ll@0.2.2": [
+      []
+    ],
+    "ciborium@0.2.2": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "cipher@0.4.4": [
+      []
+    ],
+    "cmake@0.1.58": [
+      []
+    ],
+    "const-oid@0.9.6": [
+      []
+    ],
+    "constant_time_eq@0.4.2": [
+      [
+        "std"
+      ]
+    ],
+    "cpufeatures@0.2.17": [
+      []
+    ],
+    "cpufeatures@0.3.0": [
+      []
+    ],
+    "crypto-common@0.1.7": [
+      [
+        "getrandom",
+        "rand_core",
+        "std"
+      ]
+    ],
+    "ctr@0.9.2": [
+      []
+    ],
+    "curve25519-dalek-derive@0.1.1": [
+      []
+    ],
+    "curve25519-dalek@4.1.3": [
+      [
+        "alloc",
+        "digest",
+        "precomputed-tables",
+        "zeroize"
+      ]
+    ],
+    "der@0.7.10": [
+      [
+        "alloc",
+        "oid",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "digest@0.10.7": [
+      [
+        "alloc",
+        "block-buffer",
+        "core-api",
+        "default",
+        "std"
+      ]
+    ],
+    "displaydoc@0.2.6": [
+      []
+    ],
+    "dunce@1.0.5": [
+      []
+    ],
+    "ed25519-dalek@2.2.0": [
+      [
+        "alloc",
+        "default",
+        "fast",
+        "pkcs8",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "ed25519@2.2.3": [
+      [
+        "alloc",
+        "pkcs8",
+        "std"
+      ]
+    ],
+    "equivalent@1.0.2": [
+      []
+    ],
+    "errno@0.3.14": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "fallible-iterator@0.3.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "fallible-streaming-iterator@0.1.9": [
+      []
+    ],
+    "fastrand@2.4.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "find-msvc-tools@0.1.9": [
+      []
+    ],
+    "fnv@1.0.7": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "form_urlencoded@1.2.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "fs_extra@1.3.0": [
+      []
+    ],
+    "futures-channel@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-core@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-macro@0.3.32": [
+      []
+    ],
+    "futures-sink@0.3.32": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "futures-task@0.3.32": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "futures-util@0.3.32": [
+      [
+        "alloc",
+        "async-await",
+        "async-await-macro",
+        "default",
+        "futures-macro",
+        "slab",
+        "std"
+      ]
+    ],
+    "generic-array@0.14.7": [
+      [
+        "more_lengths"
+      ]
+    ],
+    "getrandom@0.2.17": [
+      []
+    ],
+    "getrandom@0.4.2": [
+      []
+    ],
+    "ghash@0.5.1": [
+      []
+    ],
+    "h2@0.4.14": [
+      []
+    ],
+    "half@2.7.1": [
+      []
+    ],
+    "hashbrown@0.14.5": [
+      [
+        "ahash",
+        "inline-more"
+      ]
+    ],
+    "hashbrown@0.17.1": [
+      []
+    ],
+    "hashlink@0.9.1": [
+      []
+    ],
+    "http-body-util@0.1.3": [
+      [
+        "default"
+      ]
+    ],
+    "http-body@1.0.1": [
+      []
+    ],
+    "http@1.4.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "httparse@1.10.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "httpdate@1.0.3": [
+      []
+    ],
+    "hyper-rustls@0.27.9": [
+      [
+        "http1",
+        "http2",
+        "native-tokio",
+        "ring",
+        "rustls-native-certs",
+        "tls12"
+      ]
+    ],
+    "hyper-util@0.1.20": [
+      [
+        "client",
+        "client-legacy",
+        "client-proxy",
+        "default",
+        "http1",
+        "http2",
+        "server",
+        "server-auto",
+        "service",
+        "tokio"
+      ]
+    ],
+    "hyper@1.10.0": [
+      [
+        "client",
+        "default",
+        "http1",
+        "http2",
+        "server"
+      ]
+    ],
+    "icu_collections@2.2.0": [
+      []
+    ],
+    "icu_locale_core@2.2.0": [
+      [
+        "zerovec"
+      ]
+    ],
+    "icu_normalizer@2.2.0": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "icu_normalizer_data@2.2.0": [
+      []
+    ],
+    "icu_properties@2.2.0": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "icu_properties_data@2.2.0": [
+      []
+    ],
+    "icu_provider@2.2.0": [
+      [
+        "baked"
+      ]
+    ],
+    "idna@1.1.0": [
+      [
+        "alloc",
+        "compiled_data",
+        "std"
+      ]
+    ],
+    "idna_adapter@1.2.2": [
+      [
+        "compiled_data"
+      ]
+    ],
+    "indexmap@2.14.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "inout@0.1.4": [
+      []
+    ],
+    "ipnet@2.12.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "itoa@1.0.18": [
+      []
+    ],
+    "jobserver@0.1.34": [
+      []
+    ],
+    "libc@0.2.186": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "libsqlite3-sys@0.30.1": [
+      [
+        "default",
+        "min_sqlite_version_3_14_0",
+        "pkg-config",
+        "vcpkg"
+      ]
+    ],
+    "linux-raw-sys@0.12.1": [
+      [
+        "auxvec",
+        "elf",
+        "errno",
+        "general",
+        "ioctl",
+        "no_std"
+      ]
+    ],
+    "litemap@0.8.2": [
+      []
+    ],
+    "log@0.4.30": [
+      []
+    ],
+    "matchit@0.8.4": [
+      [
+        "default"
+      ]
+    ],
+    "memchr@2.8.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "mime@0.3.17": [
+      []
+    ],
+    "mio@1.2.1": [
+      [
+        "net",
+        "os-ext",
+        "os-poll"
+      ]
+    ],
+    "num-bigint@0.4.6": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "num-integer@0.1.46": [
+      [
+        "default",
+        "i128",
+        "std"
+      ]
+    ],
+    "num-traits@0.2.19": [
+      [
+        "default",
+        "i128",
+        "std"
+      ]
+    ],
+    "once_cell@1.21.4": [
+      [
+        "alloc",
+        "default",
+        "race",
+        "std"
+      ]
+    ],
+    "opaque-debug@0.3.1": [
+      []
+    ],
+    "openssl-probe@0.2.1": [
+      []
+    ],
+    "percent-encoding@2.3.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "pin-project-lite@0.2.17": [
+      []
+    ],
+    "pkcs8@0.10.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "pkg-config@0.3.33": [
+      []
+    ],
+    "polyval@0.6.2": [
+      []
+    ],
+    "potential_utf@0.1.5": [
+      [
+        "zerovec"
+      ]
+    ],
+    "proc-macro2@1.0.106": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "quote@1.0.46": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "rand_core@0.6.4": [
+      [
+        "getrandom"
+      ]
+    ],
+    "regex-automata@0.4.14": [
+      [
+        "alloc",
+        "dfa-onepass",
+        "hybrid",
+        "meta",
+        "nfa-backtrack",
+        "nfa-pikevm",
+        "nfa-thompson",
+        "perf-inline",
+        "perf-literal",
+        "perf-literal-multisubstring",
+        "perf-literal-substring",
+        "std",
+        "syntax",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment",
+        "unicode-word-boundary"
+      ]
+    ],
+    "regex-syntax@0.8.11": [
+      [
+        "default",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "regex@1.12.4": [
+      [
+        "default",
+        "perf",
+        "perf-backtrack",
+        "perf-cache",
+        "perf-dfa",
+        "perf-inline",
+        "perf-literal",
+        "perf-onepass",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "reqwest@0.12.28": [
+      [
+        "__rustls",
+        "__rustls-ring",
+        "__tls",
+        "h2",
+        "http2",
+        "json",
+        "rustls-tls-native-roots",
+        "rustls-tls-native-roots-no-provider",
+        "stream"
+      ]
+    ],
+    "ring@0.17.14": [
+      [
+        "alloc",
+        "default",
+        "dev_urandom_fallback"
+      ]
+    ],
+    "rusqlite@0.32.1": [
+      [
+        "blob"
+      ]
+    ],
+    "rustc_version@0.4.1": [
+      []
+    ],
+    "rustix@1.1.4": [
+      [
+        "alloc",
+        "default",
+        "event",
+        "fs",
+        "std"
+      ]
+    ],
+    "rustls-native-certs@0.8.3": [
+      []
+    ],
+    "rustls-pemfile@2.2.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "rustls-pki-types@1.14.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "rustls-webpki@0.103.13": [
+      [
+        "alloc",
+        "aws-lc-rs",
+        "ring",
+        "std"
+      ]
+    ],
+    "rustls@0.23.40": [
+      [
+        "aws-lc-rs",
+        "aws_lc_rs",
+        "default",
+        "log",
+        "logging",
+        "prefer-post-quantum",
+        "ring",
+        "std",
+        "tls12"
+      ]
+    ],
+    "ryu@1.0.23": [
+      []
+    ],
+    "semver@1.0.28": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "serde@1.0.228": [
+      [
+        "alloc",
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std"
+      ]
+    ],
+    "serde_core@1.0.228": [
+      [
+        "alloc",
+        "default",
+        "rc",
+        "result",
+        "std"
+      ]
+    ],
+    "serde_derive@1.0.228": [
+      [
+        "default"
+      ]
+    ],
+    "serde_json@1.0.150": [
+      [
+        "default",
+        "raw_value",
+        "std"
+      ]
+    ],
+    "serde_path_to_error@0.1.20": [
+      []
+    ],
+    "serde_spanned@0.6.9": [
+      [
+        "serde"
+      ]
+    ],
+    "serde_urlencoded@0.7.1": [
+      []
+    ],
+    "sha2@0.10.9": [
+      [
+        "compress",
+        "default",
+        "std"
+      ]
+    ],
+    "shlex@2.0.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "signal-hook-registry@1.4.8": [
+      []
+    ],
+    "signature@2.2.0": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "slab@0.4.12": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "smallvec@1.15.2": [
+      [
+        "const_generics",
+        "const_new"
+      ]
+    ],
+    "socket2@0.6.4": [
+      [
+        "all"
+      ]
+    ],
+    "spki@0.7.3": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "stable_deref_trait@1.2.1": [
+      []
+    ],
+    "subtle@2.6.1": [
+      []
+    ],
+    "syn@2.0.118": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "fold",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit",
+        "visit-mut"
+      ]
+    ],
+    "sync_wrapper@1.0.2": [
+      [
+        "futures",
+        "futures-core"
+      ]
+    ],
+    "synstructure@0.13.2": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "tempfile@3.27.0": [
+      [
+        "default",
+        "getrandom"
+      ]
+    ],
+    "thiserror-impl@2.0.18": [
+      []
+    ],
+    "thiserror@2.0.18": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "tinystr@0.8.3": [
+      [
+        "zerovec"
+      ]
+    ],
+    "tinyvec@1.11.0": [
+      [
+        "alloc",
+        "default",
+        "tinyvec_macros"
+      ]
+    ],
+    "tinyvec_macros@0.1.1": [
+      []
+    ],
+    "tokio-macros@2.7.0": [
+      []
+    ],
+    "tokio-rustls@0.26.4": [
+      [
+        "aws_lc_rs",
+        "default",
+        "logging",
+        "ring",
+        "tls12"
+      ]
+    ],
+    "tokio-util@0.7.18": [
+      [
+        "codec",
+        "default",
+        "io"
+      ]
+    ],
+    "tokio@1.52.3": [
+      [
+        "bytes",
+        "default",
+        "fs",
+        "io-std",
+        "io-util",
+        "libc",
+        "macros",
+        "mio",
+        "net",
+        "process",
+        "rt",
+        "rt-multi-thread",
+        "signal",
+        "signal-hook-registry",
+        "socket2",
+        "sync",
+        "time",
+        "tokio-macros"
+      ]
+    ],
+    "toml@0.8.23": [
+      [
+        "default",
+        "display",
+        "parse"
+      ]
+    ],
+    "toml_datetime@0.6.11": [
+      [
+        "serde"
+      ]
+    ],
+    "toml_edit@0.22.27": [
+      [
+        "display",
+        "parse",
+        "serde"
+      ]
+    ],
+    "toml_write@0.1.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "tower-http@0.6.11": [
+      [
+        "follow-redirect",
+        "futures-util",
+        "tower"
+      ]
+    ],
+    "tower-layer@0.3.3": [
+      []
+    ],
+    "tower-service@0.3.3": [
+      []
+    ],
+    "tower@0.5.3": [
+      [
+        "futures-core",
+        "futures-util",
+        "log",
+        "make",
+        "pin-project-lite",
+        "retry",
+        "sync_wrapper",
+        "timeout",
+        "tokio",
+        "tracing",
+        "util"
+      ]
+    ],
+    "tracing-attributes@0.1.31": [
+      []
+    ],
+    "tracing-core@0.1.36": [
+      [
+        "once_cell",
+        "std"
+      ]
+    ],
+    "tracing@0.1.44": [
+      [
+        "attributes",
+        "default",
+        "log",
+        "std",
+        "tracing-attributes"
+      ]
+    ],
+    "try-lock@0.2.5": [
+      []
+    ],
+    "typenum@1.20.1": [
+      []
+    ],
+    "unicode-ident@1.0.24": [
+      []
+    ],
+    "unicode-normalization@0.1.25": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "universal-hash@0.5.1": [
+      []
+    ],
+    "untrusted@0.9.0": [
+      []
+    ],
+    "url@2.5.8": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "utf8_iter@1.0.4": [
+      []
+    ],
+    "uuid@1.23.1": [
+      [
+        "default",
+        "rng",
+        "serde",
+        "std",
+        "v4"
+      ]
+    ],
+    "vcpkg@0.2.15": [
+      []
+    ],
+    "version_check@0.9.5": [
+      []
+    ],
+    "want@0.3.1": [
+      []
+    ],
+    "winnow@0.7.15": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "writeable@0.6.3": [
+      []
+    ],
+    "yoke-derive@0.8.2": [
+      []
+    ],
+    "yoke@0.8.3": [
+      [
+        "derive",
+        "zerofrom"
+      ]
+    ],
+    "zerocopy-derive@0.8.49": [
+      []
+    ],
+    "zerocopy@0.8.49": [
+      [
+        "derive",
+        "simd",
+        "zerocopy-derive"
+      ]
+    ],
+    "zerofrom-derive@0.1.7": [
+      []
+    ],
+    "zerofrom@0.1.8": [
+      [
+        "derive"
+      ]
+    ],
+    "zeroize@1.9.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "zerotrie@0.2.4": [
+      [
+        "yoke",
+        "zerofrom"
+      ]
+    ],
+    "zerovec-derive@0.11.3": [
+      []
+    ],
+    "zerovec@0.11.6": [
+      [
+        "derive",
+        "yoke"
+      ]
+    ],
+    "zmij@1.0.21": [
+      []
+    ],
+    "zstd-safe@7.2.4": [
+      [
+        "arrays",
+        "legacy",
+        "std",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ],
+    "zstd-sys@2.0.16+zstd.1.5.7": [
+      [
+        "legacy",
+        "std",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ],
+    "zstd@0.13.3": [
+      [
+        "arrays",
+        "default",
+        "legacy",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ]
+  },
+  "first_party_features": {
+    "crucible-campaign": [
+      []
+    ],
+    "crucible-control-api": [
+      []
+    ],
+    "crucible-control-client": [
+      []
+    ],
+    "crucible-control-server": [
+      [
+        "default"
+      ]
+    ],
+    "crucible-determinism": [
+      []
+    ],
+    "crucible-device": [
+      [
+        "default"
+      ]
+    ],
+    "crucible-engine": [
+      [
+        "default",
+        "test-double",
+        "test-support"
+      ]
+    ],
+    "crucible-qemu-protocol": [
+      []
+    ],
+    "crucible-qemu-shmem": [
+      []
+    ],
+    "crucible-session": [
+      [
+        "default",
+        "test-support"
+      ]
+    ],
+    "crucible-store": [
+      []
+    ]
+  },
+  "first_party_rust_sha256": {
+    "crates/crucible/control/crucible-control-client/src/client.rs": "1ebf53e689abf40f6f0a5d28f5f839a520f65720e1c06df255d924cb06fb9375",
+    "crates/crucible/control/crucible-control-client/src/client/debug.rs": "548f8dd6d4222d017e1f70606755d26f3c6375892b5d35e3949e9e8058e25385",
+    "crates/crucible/control/crucible-control-client/src/client/debug/wire.rs": "c884257c99da6e9190faed7fc1ed4c700e065be81c43922c71589dd8dd792b37",
+    "crates/crucible/control/crucible-control-client/src/client/query_result.rs": "56d53ed8d5b7b580826ee06e19e80361c559b6a1fda07e3c66d0c7957f83ad6f",
+    "crates/crucible/control/crucible-control-client/src/client/resource_limit.rs": "cadb2fbe2252a3fb310298f2cbdfa61c71421e6f61666129d908092d99189fd7",
+    "crates/crucible/control/crucible-control-client/src/client/streaming_receiver_tests.rs": "4bcc2db0ba0293138c7dd4a3214bb2457324c78fe58facb41cec5975376c69a6",
+    "crates/crucible/control/crucible-control-client/src/client/streams.rs": "8e93580b573f68d91107dc45981811162d55ec1cdc889e8657908fbd280047d2",
+    "crates/crucible/control/crucible-control-client/src/lib.rs": "ca59073a91d6547af216f6b69a0969337f2b47b6a49dc63a9a0c1c09e8e1ed72",
+    "crates/crucible/control/crucible-control-client/tests/gate_control_client.rs": "286318b11944aa769870fb96ceafe9ad2256f5057a0b0fb592dbfa891049cf57",
+    "crates/crucible/control/crucible-control-client/tests/gate_control_client/conformance.rs": "8d0ff540f507555bacd310bc3e70f9dca9ad112f17d06372ec2f1d11bebd80c3",
+    "crates/crucible/control/crucible-control-client/tests/gate_control_client/contract_tests.rs": "4d269a08a8dcf3a244861c8c9d322adc8aa1e6e986d48dbb7da5981aa00dce5e",
+    "crates/crucible/control/crucible-control-client/tests/gate_control_client/contract_tests/transport.rs": "689c87956047e95d253fd7d7bcf4386949714fd166e8add2540e2078c5ece312",
+    "crates/crucible/control/crucible-control-client/tests/gate_control_client/contract_tests/transport_conformance.rs": "8e7522210af8c3af289b650726ae9b14e649eafda7bd36109fa3f92a898961c1",
+    "crates/crucible/control/crucible-control-client/tests/gate_control_client/http2_fixture.rs": "e93b44cf3f737d3064661ebaeb482f432f63a554bf5fff28d8a0af8ec35e4566",
+    "crates/crucible/control/crucible-control-client/tests/gate_control_client/http2_fixture/response_wire.rs": "8151545e64404896efed6261895407655e52c7698d3a2737753e37d7362b47d2",
+    "crates/crucible/control/crucible-control-client/tests/gate_control_client/http2_fixture/scenario.rs": "ce9fc1dd610784d98327dcf6e165673f55bca1de5fdf49b49117a61475f50778",
+    "crates/crucible/control/crucible-control-server/src/control_responsive.rs": "ea26b87f69aa7fed89568d1d754f71c35bb3fb293cc611f0c135c409ff1998c0",
+    "crates/crucible/control/crucible-control-server/src/debug_access.rs": "6bef981eeff088be70b34d628014caa80eec87019a223c14294babbdfeadfe13",
+    "crates/crucible/control/crucible-control-server/src/debug_gateway.rs": "158ca4af65f03573c000d003dd4e6e525a93c65966c87541a4fe2df7e9829891",
+    "crates/crucible/control/crucible-control-server/src/debug_holders.rs": "4aab62e8b7916f9bac29fbeaa2487b944547c703e6fe115f713dab564d4c15f9",
+    "crates/crucible/control/crucible-control-server/src/debug_relay.rs": "e386951f895c92a17a8b18e3d9fe04c5fdec330ecfc5a06bd6974036ba6aa0f9",
+    "crates/crucible/control/crucible-control-server/src/debug_relay/tests.rs": "775546585462b968c94357499a1a236f5a9251518f0542b983d3330a91e45d7a",
+    "crates/crucible/control/crucible-control-server/src/event_log_stream.rs": "adf59b09b1362142b0a12a2b2e5031b405f77f395ede74a75e971577dccf3532",
+    "crates/crucible/control/crucible-control-server/src/in_process.rs": "8df5cdaaaa4a33b791d726c32be7603b47b2227d81dec7a7a58f0f5c69294892",
+    "crates/crucible/control/crucible-control-server/src/lib.rs": "481e49d1fb1c695aa51d116ae9163435ae952b6854b516c6c94174178287e83d",
+    "crates/crucible/control/crucible-control-server/src/lifecycle.rs": "7a80ff2aece7601b4904547ca7183bc12e30af49a1e1fb5e58c79be636276d2d",
+    "crates/crucible/control/crucible-control-server/src/lifecycle/constructors.rs": "f53caa80dfdcab303516687ac854e03ab5a43afb5d4cff7dec47f5ca8ce191e4",
+    "crates/crucible/control/crucible-control-server/src/lifecycle/debug_dispatch.rs": "302a2ef5ccfc7f26a961a4f3661322e29733345e0fbf52621d6486c515dd4028",
+    "crates/crucible/control/crucible-control-server/src/lifecycle/observation_resume.rs": "54ad04a41be2fa2c01d957d939f127a57b873c02e070a9a987e468bae6c1aca0",
+    "crates/crucible/control/crucible-control-server/src/lifecycle/tests.rs": "98fe44903fdb9a722bec934baf6a96309d033936ced8fa4b64e47228db55bc1f",
+    "crates/crucible/control/crucible-control-server/src/server.rs": "8972c47400306d2080a4b3885e4efe68f27b805939f70b04ba1e40ef4dedc90c",
+    "crates/crucible/control/crucible-control-server/src/server/debug_handlers.rs": "8736d4899b96098c8ec6a30bf4a087aa45e8d6fc741fcfbad88517c206cc7cec",
+    "crates/crucible/control/crucible-control-server/src/server/debug_reposition.rs": "265fa4e700ef491d38a8593de2be3f44a2a14ebf32ee2113a8c47a8347082a84",
+    "crates/crucible/control/crucible-control-server/src/server/debug_wire.rs": "1bc602c69edf6e8aa3ad6c29b18950b3de4e34b386625e328ce42110784a3641",
+    "crates/crucible/control/crucible-control-server/src/server/query_wire.rs": "737b2ba285ec883486050937cbf08e2d7af78bdc499c67739c4100967e436e21",
+    "crates/crucible/control/crucible-control-server/src/server/resource_limit.rs": "fd5e8f74f45b7158d2c9dc7b3fe8fa2b9e7b7d7eece6558ef592eecbf95313da",
+    "crates/crucible/control/crucible-control-server/src/server/response_wire.rs": "28964930f2b5689cc81b2505863f630fb0afb41a6e97acef4535bebd7a34d3ab",
+    "crates/crucible/control/crucible-control-server/src/server/tests.rs": "838cdb26ab4737a28858f22813413742409fed399c8e4c34fd48f28cdfb823f8",
+    "crates/crucible/control/crucible-control-server/src/server/tests/controller_cancellation.rs": "79f091cdffa3479be3ccb67b87f9107c23ffe6e300a157fa409f2a88231fe4f1",
+    "crates/crucible/control/crucible-control-server/src/streaming.rs": "fcf0f55538a3edf72c51002de95a142c6f4e6bb9cf9a47f171d4c28127f90e41",
+    "crates/crucible/control/crucible-control-server/src/transport_security.rs": "cba3fe4145cb2c112d7bffae31faba7c6266d8231b1dee78b99c18a4bb2011ce",
+    "crates/crucible/control/crucible-control-server/tests/gate_control_responsive.rs": "159f617d1f984e05b595db14dce3f132eca457b2f1bc4a78f3c5a84a6ba08923",
+    "crates/crucible/control/crucible-control-server/tests/gate_epoch_guards.rs": "5839c94c0403c906bec83fded5ec6dbde86970c93c97c8a4e7ac02adc85e86ae",
+    "crates/crucible/control/crucible-control-server/tests/gate_lifecycle_unary.rs": "a408d215de6ddc4dad323b9899ee9527500bd49af2d99f46c1c40f6543573c42",
+    "crates/crucible/control/crucible-control-server/tests/gate_lifecycle_unary/debugger_access.rs": "c2f01ed73da09a89e19421edebad40c1336d2789ca58e9f9dec071557399f343",
+    "crates/crucible/control/crucible-control-server/tests/gate_lifecycle_unary/observation_resume.rs": "53116759d9df85bd1bca7d912b30878f4c7052d4b46ba37e29d534176691c235",
+    "crates/crucible/control/crucible-control-server/tests/gate_lifecycle_unary/support.rs": "7308efb8ec2134f2f3b42ba5ee732837402b80152701fd3946632b7533398f7f",
+    "crates/crucible/control/crucible-control-server/tests/gate_reproduction_context.rs": "dbc8eca29c69d87f03292479b6822ca42d9be2069d0bea9e0242dd2274bac852",
+    "crates/crucible/control/crucible-control-server/tests/gate_streaming_cursor.rs": "56b2e0a4ec742a9bcd4ab05adedd59d9014347018145a54008f4cec06cc4b6e7",
+    "crates/crucible/control/crucible-control-server/tests/gate_streaming_equivalence.rs": "443b4488e8537f2340b60a0772119b9a4a013cab82db0894788c2c7f913a3a90"
+  },
+  "ignored_cases": 0,
+  "libtest_artifacts": 9,
+  "limits": [
+    "This is semantic migration evidence, not a performance measurement.",
+    "Artifact profiles retain four settings; full compiler arguments were not retained in this baseline."
+  ],
+  "output": "/nix/store/cqm7c9naz8vsw05sjyw06ybkx1s758k7-aos-bazel-control-transport-cargo-oracle-1",
+  "report_sha256": {
+    "cargo-messages.jsonl": "c3f559e4ed11175d22375b67e7cf3919be86b5ff3f4895b8e47d73fb409ade5b",
+    "cargo-tests.log": "6902a80e08ee3944dfc433f9a3d5beb7d7243a90ae0bcf5e9ad55ab5da173f3e"
+  },
+  "schema_version": 1,
+  "scope": "Default-feature control client and server tests in one Cargo invocation; development dependencies resolve together.",
+  "source": "/nix/store/vgl7pyj0xhxrzn9cbcjbfcfy3h8q0s1z-crucible-cargo-src",
+  "status": "Cargo baseline passed; transport Bazel conversion not yet implemented",
+  "targets": {
+    "crucible-control-client/gate_control_client": {
+      "binary_sha256": "1176f11d8c76a2392f16d020670f1670608ae40afe361b2cc6175018388ff2f0",
+      "executed": [
+        "contract_tests::in_process_lifecycle_control_stream_stop_cleans_registry",
+        "contract_tests::in_process_send_maps_backend_rejections_to_invalid_argument",
+        "contract_tests::in_process_send_maps_internal_command_failures_without_closing_stream",
+        "contract_tests::in_process_send_observes_payload_free_actor_failures",
+        "contract_tests::in_process_send_rejections_use_closed_status_taxonomy_without_closing_stream",
+        "contract_tests::production_http2_lifecycle_server_admits_concurrent_watch_and_query_clients",
+        "contract_tests::production_http2_lifecycle_server_hosts_rpc_control_surface",
+        "contract_tests::production_http2_lifecycle_server_shutdown_completes_with_active_watch_stream",
+        "contract_tests::rejected_lifecycle_stop_has_no_snapshot_and_keeps_registry_entry",
+        "contract_tests::rpc_send_decodes_all_rejection_statuses_and_golden_error_bytes",
+        "contract_tests::rpc_wire_contract_snapshots_cover_lifecycle_and_streaming_message_variants",
+        "contract_tests::transport::control_client_trait_is_transport_agnostic_over_in_process_and_rpc",
+        "contract_tests::transport_conformance::api_nondeterminism_gate_proves_transport_observers_wall_clock_and_read_only_traffic_do_not_perturb_state",
+        "contract_tests::transport_conformance::control_client_rejects_rpc_version_mismatch_on_both_transports",
+        "contract_tests::transport_conformance::reference_client_conformance_drives_full_lifecycle_across_transports_with_simdouble_backend"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "crucible-control-client/unit": {
+      "binary_sha256": "d46c66f89c33cae8e38f826a06ce8070f4671b9b76ea0d8ebb536dc26fed66d0",
+      "executed": [
+        "client::exact_tick_wire_tests::duration_pause_reason_requires_exact_tick_wire_name",
+        "client::resource_limit::tests::rpc_resource_limit_decodes_to_typed_lifecycle_error",
+        "client::streams::streaming_receiver_tests::event_frame_preserves_exact_tick_and_optional_raw_witness",
+        "client::streams::streaming_receiver_tests::pending_event_overflow_remains_fail_closed",
+        "client::streams::streaming_receiver_tests::pending_state_updates_coalesce_to_the_latest_monotone_frame",
+        "client::streams::streaming_receiver_tests::ready_rpc_frames_coalesce_before_state_delivery",
+        "client::streams::streaming_receiver_tests::state_poll_preserves_a_full_scheduler_event_burst"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "crucible-control-server/gate_control_responsive": {
+      "binary_sha256": "80543074d5e3f65bacac1619d783ec1cca6768554e0a262741c10ea66877827a",
+      "executed": [
+        "gate_control_plane_event_log_stream_api_subscribes_without_mutation",
+        "gate_control_responsive_accepts_required_ops_within_quantum_bound",
+        "gate_control_responsive_api_declares_in_process_sim_double_backend",
+        "gate_control_responsive_rejects_wall_clock_shaped_or_unbounded_evidence",
+        "gate_control_responsive_requires_required_operations_to_apply",
+        "gate_control_responsive_requires_running_session_and_all_operation_classes"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "crucible-control-server/gate_epoch_guards": {
+      "binary_sha256": "06fe92abd57f255588993cb6358ce9b1e3e865d7de459b8c95297d06de5de52c",
+      "executed": [
+        "epoch_guards_fast_fail_without_state_or_event_log_mutation",
+        "session_epoch_is_server_monotonic_and_closed_protocol_identity",
+        "stale_session_ref_epoch_detects_recycled_identity_before_dispatch"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "crucible-control-server/gate_lifecycle_unary": {
+      "binary_sha256": "1d106e81158ad9b654d43edeffac9b8e46ede85cf3d5dfc8b038addedd34938b",
+      "executed": [
+        "autonomous_actor_failure_publishes_terminal_crash_without_another_command",
+        "create_list_destroy_session_maps_to_start_stop_and_live_mirror",
+        "create_session_accepts_inline_scenario_without_registry_entry",
+        "create_session_propagates_backend_factory_failure_without_side_effects",
+        "create_session_rejects_inline_seed_mismatch_without_side_effects",
+        "create_session_rejects_unknown_scenario_without_side_effects",
+        "create_session_respects_live_session_limit_without_side_effects",
+        "create_session_start_paused_false_continues_to_running",
+        "debugger_access::debugger_access_is_session_owned_and_generation_guarded",
+        "debugger_access::trusted_http2_debug_controller_uses_server_side_identity_and_lease",
+        "destroy_session_does_not_wedge_when_shutdown_is_rejected",
+        "destroy_session_rejects_epoch_mismatch_without_dropping_actor",
+        "lifecycle_hello_and_list_scenarios_are_side_effect_free",
+        "lifecycle_unary_methods_are_exposed_on_control_client_trait",
+        "observation_resume::failed_observation_preparation_releases_its_in_flight_permit",
+        "observation_resume::http_observation_preparation_releases_registry_lock_and_bounds_in_flight_work",
+        "observation_resume::observation_resume_factory_finishes_before_session_publication",
+        "observation_resume::observation_resume_requires_factory_before_session_allocation",
+        "scenario_ref_create_materializes_the_requested_seed"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "crucible-control-server/gate_reproduction_context": {
+      "binary_sha256": "468ad2f9f237920cd53d7544661af00515e90bccdac3c51e15983b914930ce78",
+      "executed": [
+        "interactive_and_scripted_same_schedule_reproduce_equivalently",
+        "reproduction_context_is_read_only_and_visible_on_attach_snapshot",
+        "reproduction_records_decode_exactly_and_reject_corrupt_material"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "crucible-control-server/gate_streaming_cursor": {
+      "binary_sha256": "6fb15178b828fa276743b2f88ddf1c8a8fb94df3ce71f277df4fd77fb6383808",
+      "executed": [
+        "streaming_cursor_replays_then_live_tails_api_events"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "crucible-control-server/gate_streaming_equivalence": {
+      "binary_sha256": "c830c7d1360737f02619b2633187edb45cd6e3711e47f2ae5dc6008b1e38ac3e",
+      "executed": [
+        "control_and_send_drive_non_basic_command_classes",
+        "control_and_send_reject_invalid_lifecycle_commands_equivalently",
+        "control_and_watch_send_advertise_identical_command_capabilities",
+        "control_stream_and_watch_send_drive_the_same_session_lifecycle",
+        "lagged_state_observer_recovers_to_a_retained_monotone_update",
+        "streaming_equivalence_rejects_missing_capabilities",
+        "watch_only_state_updates_are_monotone_and_not_event_log_entries"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "crucible-control-server/unit": {
+      "binary_sha256": "69eb5515e91a1180686a68fdb34c954c4abdfe3aa627718198439dee33ec6687",
+      "executed": [
+        "debug_access::tests::certificate_and_explicit_trusted_roles_remain_distinct",
+        "debug_access::tests::policy_denies_unknown_and_noncanonical_principals",
+        "debug_access::tests::trusted_unauthenticated_role_admits_debugging_by_itself",
+        "debug_gateway::tests::client_delivers_interrupt_once_for_outstanding_run",
+        "debug_gateway::tests::client_negotiates_and_decodes_backend_status",
+        "debug_gateway::tests::client_preserves_typed_gateway_rejection",
+        "debug_holders::tests::final_release_retains_a_bounded_repeated_release_tombstone",
+        "debug_holders::tests::independent_holders_release_only_the_final_controller_reference",
+        "debug_holders::tests::relay_holder_preserves_exclusivity_against_another_principal",
+        "debug_relay::tests::read_only_relay_allows_queries_breakpoints_and_transport_acknowledgements",
+        "debug_relay::tests::read_only_relay_rejects_every_state_changing_command_family",
+        "debug_relay::tests::relay_connects_only_to_private_unix_gateway_endpoint",
+        "debug_relay::tests::relay_is_private_unix_bounded_and_lease_owned",
+        "debug_relay::tests::relay_rejects_tcp_and_oversized_requests",
+        "lifecycle::tests::durable_owner_cleanup_runs_on_destroy_but_not_control_plane_shutdown",
+        "lifecycle::tests::owner_admitted_debug_session_becomes_writable_only_after_branch_provenance",
+        "lifecycle::tests::owner_admitted_debug_session_rejects_canonical_mutation",
+        "lifecycle::tests::timed_out_observation_preparation_retains_then_releases_its_permit",
+        "server::debug_reposition::tests::goto_parser_accepts_actor_owned_coordinate_intents",
+        "server::debug_reposition::tests::reverse_parsers_preserve_closed_grain_and_condition_sets",
+        "server::resource_limit::tests::rpc_resource_limit_response_preserves_exact_coordinates",
+        "server::tests::controller_cancellation::cancelled_acquire_cannot_leave_an_untracked_controller",
+        "server::tests::controller_cancellation::cancelled_final_release_preserves_holder_and_controller",
+        "server::tests::controller_cancellation::cancelled_request_retains_gate_until_enqueued_operation_finishes",
+        "server::tests::controller_release_cannot_bypass_a_live_relay_holder",
+        "server::tests::debug_guest_wire_parsers_preserve_node_and_bounded_record",
+        "server::tests::debugger_operation_gate_blocks_controller_handoff_until_dispatch_finishes",
+        "server::tests::debugger_reposition_requires_writable_authenticated_service",
+        "server::tests::debugger_session_rejection_is_a_typed_conflict_not_internal_error",
+        "server::tests::duration_step_request_preserves_fractional_ticks_and_rejects_nanoseconds",
+        "server::tests::nonexistent_debug_sessions_do_not_retain_operation_gates",
+        "server::tests::owner_read_only_session_rejection_is_a_typed_forbidden_response",
+        "server::tests::production_resume_parser_authenticates_complete_closure_envelope",
+        "server::tests::rejected_reacquisition_preserves_existing_controller",
+        "server::tests::resume_body_rejects_declared_oversize_before_collection",
+        "server::tests::resume_body_rejects_oversize_chunked_stream_during_collection",
+        "server::tests::server_create_session_limit_maps_to_typed_rpc_error",
+        "server::tests::server_read_only_mode_allows_watch_attach",
+        "server::tests::server_read_only_mode_rejects_control_attach",
+        "server::tests::server_read_only_mode_rejects_debug_controller_before_authorization",
+        "server::tests::server_read_only_mode_rejects_mutating_send_but_allows_query",
+        "server::tests::server_read_only_mode_rejects_session_creation",
+        "server::tests::server_read_only_mode_rejects_session_destruction",
+        "server::tests::server_read_write_mode_keeps_default_mutating_routes",
+        "streaming::tests::continue_acknowledges_an_immediate_breakpoint_pause",
+        "transport_security::tests::certificate_identity_is_stable_and_unambiguous"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    }
+  }
+}

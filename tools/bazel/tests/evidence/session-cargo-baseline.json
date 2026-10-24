@@ -1,0 +1,974 @@
+{
+  "checks": {
+    "cli": "/nix/store/jz4y7lpyxz08dvgs9sn1plsh90n20hsj-aos-dev-cli-check-0",
+    "evaluation": "/nix/store/aah8g2szam8h4ccl8dlj6fz67g2y2i8q-aos-native-evaluation-checks-0",
+    "policy": "/nix/store/brij2jkh4xwym7cnnzxakdxw162qk211-aos-bazel-policy-checks",
+    "policy_tests": 136
+  },
+  "configured_graph": {
+    "external_crate_identities": 111,
+    "external_features_match_cargo_baseline": true,
+    "outputs": [
+      "/nix/store/85nckf8dsg5gp8kp3vsgp62rqpz2201g-aos-bazel-boot-pilot-inventory-1",
+      "/nix/store/vkfga79xsmsw34cnphxmqrqmqh7ggi9h-aos-bazel-device-inventory-1",
+      "/nix/store/iv0dxw9cxkqap4razxf0i13wnv9fc3dj-aos-bazel-engine-inventory-1",
+      "/nix/store/03r5hqc4mjpp94vn4c7hi8ydhsagdlp9-aos-bazel-fixture-inventory-1",
+      "/nix/store/cfrpvjbwynvdcsxd4qhhkpwr27a2hb5b-aos-bazel-guest-inventory-1",
+      "/nix/store/15qmj78v6a5hcr355ngkxb5dr6wdb4zp-aos-bazel-protocol-inventory-1",
+      "/nix/store/viphi25ynvidxm01sap28497amy5wbi0-aos-bazel-quota-inventory-1",
+      "/nix/store/3nnyyvm9dv8955vkn4kbv48dr0df9rw0-aos-bazel-session-inventory-1",
+      "/nix/store/vln0lkv40fn529akjasfp7n8a5gfn4l5-aos-bazel-shared-inventory-1",
+      "/nix/store/i00vq88lsz60d775qv9zdvhw9bz6bc4c-aos-bazel-source-catalog-checks",
+      "/nix/store/5pwcnhflhch0jzp01b9hwgjbvpd1xr6b-aos-bazel-store-inventory-1"
+    ],
+    "scope": "Configured graph evidence only; no Bazel compilation or test execution claim.",
+    "status": "offline configured analysis and source inventory refresh passed"
+  },
+  "derivation": "/nix/store/dixd686q5gfhxzlxlisjpqpn0x12bh6g-aos-bazel-session-cargo-oracle-1.drv",
+  "doctests": {
+    "crucible_control_api": {},
+    "crucible_session": {}
+  },
+  "executed_cases": 132,
+  "external_features": {
+    "aead@0.5.2": [
+      [
+        "alloc",
+        "getrandom",
+        "rand_core"
+      ]
+    ],
+    "aes-gcm@0.10.3": [
+      [
+        "aes",
+        "alloc",
+        "default",
+        "getrandom",
+        "rand_core",
+        "zeroize"
+      ]
+    ],
+    "aes@0.8.4": [
+      []
+    ],
+    "ahash@0.8.12": [
+      []
+    ],
+    "aho-corasick@1.1.4": [
+      [
+        "perf-literal",
+        "std"
+      ]
+    ],
+    "arrayref@0.3.9": [
+      []
+    ],
+    "arrayvec@0.7.7": [
+      []
+    ],
+    "autocfg@1.5.1": [
+      []
+    ],
+    "bitflags@2.13.0": [
+      [
+        "std"
+      ]
+    ],
+    "blake3@1.8.5": [
+      [
+        "pure",
+        "std"
+      ]
+    ],
+    "block-buffer@0.10.4": [
+      []
+    ],
+    "bytes@1.11.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "cc@1.2.65": [
+      [
+        "parallel"
+      ]
+    ],
+    "cfg-if@1.0.4": [
+      []
+    ],
+    "ciborium-io@0.2.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "ciborium-ll@0.2.2": [
+      []
+    ],
+    "ciborium@0.2.2": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "cipher@0.4.4": [
+      []
+    ],
+    "const-oid@0.9.6": [
+      []
+    ],
+    "constant_time_eq@0.4.2": [
+      [
+        "std"
+      ]
+    ],
+    "cpufeatures@0.2.17": [
+      []
+    ],
+    "cpufeatures@0.3.0": [
+      []
+    ],
+    "crypto-common@0.1.7": [
+      [
+        "getrandom",
+        "rand_core",
+        "std"
+      ]
+    ],
+    "ctr@0.9.2": [
+      []
+    ],
+    "curve25519-dalek-derive@0.1.1": [
+      []
+    ],
+    "curve25519-dalek@4.1.3": [
+      [
+        "alloc",
+        "digest",
+        "precomputed-tables",
+        "zeroize"
+      ]
+    ],
+    "der@0.7.10": [
+      [
+        "alloc",
+        "oid",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "digest@0.10.7": [
+      [
+        "alloc",
+        "block-buffer",
+        "core-api",
+        "default",
+        "std"
+      ]
+    ],
+    "ed25519-dalek@2.2.0": [
+      [
+        "alloc",
+        "default",
+        "fast",
+        "pkcs8",
+        "std",
+        "zeroize"
+      ]
+    ],
+    "ed25519@2.2.3": [
+      [
+        "alloc",
+        "pkcs8",
+        "std"
+      ]
+    ],
+    "equivalent@1.0.2": [
+      []
+    ],
+    "errno@0.3.14": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "fallible-iterator@0.3.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "fallible-streaming-iterator@0.1.9": [
+      []
+    ],
+    "find-msvc-tools@0.1.9": [
+      []
+    ],
+    "generic-array@0.14.7": [
+      [
+        "more_lengths"
+      ]
+    ],
+    "getrandom@0.2.17": [
+      []
+    ],
+    "ghash@0.5.1": [
+      []
+    ],
+    "half@2.7.1": [
+      []
+    ],
+    "hashbrown@0.14.5": [
+      [
+        "ahash",
+        "inline-more"
+      ]
+    ],
+    "hashbrown@0.17.1": [
+      []
+    ],
+    "hashlink@0.9.1": [
+      []
+    ],
+    "indexmap@2.14.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "inout@0.1.4": [
+      []
+    ],
+    "itoa@1.0.18": [
+      []
+    ],
+    "jobserver@0.1.34": [
+      []
+    ],
+    "libc@0.2.186": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "libsqlite3-sys@0.30.1": [
+      [
+        "default",
+        "min_sqlite_version_3_14_0",
+        "pkg-config",
+        "vcpkg"
+      ]
+    ],
+    "linux-raw-sys@0.12.1": [
+      [
+        "auxvec",
+        "elf",
+        "errno",
+        "general",
+        "ioctl",
+        "no_std"
+      ]
+    ],
+    "memchr@2.8.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "mio@1.2.1": [
+      [
+        "net",
+        "os-ext",
+        "os-poll"
+      ]
+    ],
+    "num-bigint@0.4.6": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "num-integer@0.1.46": [
+      [
+        "default",
+        "i128",
+        "std"
+      ]
+    ],
+    "num-traits@0.2.19": [
+      [
+        "default",
+        "i128",
+        "std"
+      ]
+    ],
+    "once_cell@1.21.4": [
+      [
+        "alloc",
+        "default",
+        "race",
+        "std"
+      ]
+    ],
+    "opaque-debug@0.3.1": [
+      []
+    ],
+    "pin-project-lite@0.2.17": [
+      []
+    ],
+    "pkcs8@0.10.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "pkg-config@0.3.33": [
+      []
+    ],
+    "polyval@0.6.2": [
+      []
+    ],
+    "proc-macro2@1.0.106": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "quote@1.0.46": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "rand_core@0.6.4": [
+      [
+        "getrandom"
+      ]
+    ],
+    "regex-automata@0.4.14": [
+      [
+        "alloc",
+        "dfa-onepass",
+        "hybrid",
+        "meta",
+        "nfa-backtrack",
+        "nfa-pikevm",
+        "nfa-thompson",
+        "perf-inline",
+        "perf-literal",
+        "perf-literal-multisubstring",
+        "perf-literal-substring",
+        "std",
+        "syntax",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment",
+        "unicode-word-boundary"
+      ]
+    ],
+    "regex-syntax@0.8.11": [
+      [
+        "default",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "regex@1.12.4": [
+      [
+        "default",
+        "perf",
+        "perf-backtrack",
+        "perf-cache",
+        "perf-dfa",
+        "perf-inline",
+        "perf-literal",
+        "perf-onepass",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "rusqlite@0.32.1": [
+      [
+        "blob"
+      ]
+    ],
+    "rustc_version@0.4.1": [
+      []
+    ],
+    "rustix@1.1.4": [
+      [
+        "alloc",
+        "default",
+        "event",
+        "fs",
+        "std"
+      ]
+    ],
+    "semver@1.0.28": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "serde@1.0.228": [
+      [
+        "alloc",
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std"
+      ]
+    ],
+    "serde_core@1.0.228": [
+      [
+        "alloc",
+        "rc",
+        "result",
+        "std"
+      ]
+    ],
+    "serde_derive@1.0.228": [
+      [
+        "default"
+      ]
+    ],
+    "serde_json@1.0.150": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "serde_spanned@0.6.9": [
+      [
+        "serde"
+      ]
+    ],
+    "sha2@0.10.9": [
+      [
+        "compress",
+        "default",
+        "std"
+      ]
+    ],
+    "shlex@2.0.1": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "signal-hook-registry@1.4.8": [
+      []
+    ],
+    "signature@2.2.0": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "smallvec@1.15.2": [
+      []
+    ],
+    "socket2@0.6.4": [
+      [
+        "all"
+      ]
+    ],
+    "spki@0.7.3": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "subtle@2.6.1": [
+      []
+    ],
+    "syn@2.0.118": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "extra-traits",
+        "full",
+        "parsing",
+        "printing",
+        "proc-macro",
+        "visit-mut"
+      ]
+    ],
+    "thiserror-impl@2.0.18": [
+      []
+    ],
+    "thiserror@2.0.18": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "tinyvec@1.11.0": [
+      [
+        "alloc",
+        "default",
+        "tinyvec_macros"
+      ]
+    ],
+    "tinyvec_macros@0.1.1": [
+      []
+    ],
+    "tokio-macros@2.7.0": [
+      []
+    ],
+    "tokio@1.52.3": [
+      [
+        "bytes",
+        "default",
+        "fs",
+        "io-std",
+        "io-util",
+        "libc",
+        "macros",
+        "mio",
+        "net",
+        "process",
+        "rt",
+        "rt-multi-thread",
+        "signal",
+        "signal-hook-registry",
+        "socket2",
+        "sync",
+        "time",
+        "tokio-macros"
+      ]
+    ],
+    "toml@0.8.23": [
+      [
+        "default",
+        "display",
+        "parse"
+      ]
+    ],
+    "toml_datetime@0.6.11": [
+      [
+        "serde"
+      ]
+    ],
+    "toml_edit@0.22.27": [
+      [
+        "display",
+        "parse",
+        "serde"
+      ]
+    ],
+    "toml_write@0.1.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "tracing-attributes@0.1.31": [
+      []
+    ],
+    "tracing-core@0.1.36": [
+      [
+        "once_cell",
+        "std"
+      ]
+    ],
+    "tracing@0.1.44": [
+      [
+        "attributes",
+        "default",
+        "std",
+        "tracing-attributes"
+      ]
+    ],
+    "typenum@1.20.1": [
+      []
+    ],
+    "unicode-ident@1.0.24": [
+      []
+    ],
+    "unicode-normalization@0.1.25": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "universal-hash@0.5.1": [
+      []
+    ],
+    "vcpkg@0.2.15": [
+      []
+    ],
+    "version_check@0.9.5": [
+      []
+    ],
+    "winnow@0.7.15": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "zerocopy-derive@0.8.49": [
+      []
+    ],
+    "zerocopy@0.8.49": [
+      [
+        "derive",
+        "simd",
+        "zerocopy-derive"
+      ]
+    ],
+    "zeroize@1.9.0": [
+      [
+        "alloc",
+        "default"
+      ]
+    ],
+    "zmij@1.0.21": [
+      []
+    ],
+    "zstd-safe@7.2.4": [
+      [
+        "arrays",
+        "legacy",
+        "std",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ],
+    "zstd-sys@2.0.16+zstd.1.5.7": [
+      [
+        "legacy",
+        "std",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ],
+    "zstd@0.13.3": [
+      [
+        "arrays",
+        "default",
+        "legacy",
+        "zdict_builder",
+        "zstdmt"
+      ]
+    ]
+  },
+  "first_party_features": {
+    "crucible-campaign": [
+      []
+    ],
+    "crucible-control-api": [
+      []
+    ],
+    "crucible-determinism": [
+      []
+    ],
+    "crucible-device": [
+      [
+        "default"
+      ]
+    ],
+    "crucible-engine": [
+      [
+        "default",
+        "test-double",
+        "test-support"
+      ]
+    ],
+    "crucible-qemu-protocol": [
+      []
+    ],
+    "crucible-qemu-shmem": [
+      []
+    ],
+    "crucible-session": [
+      [
+        "default"
+      ]
+    ],
+    "crucible-store": [
+      []
+    ]
+  },
+  "first_party_rust_sha256": {
+    "crates/crucible/control/crucible-control-api/src/control_responsive.rs": "d435bedd7e1cb0c7259ec26845dff25db4764b5eb852273f0ad414b8865b0c1a",
+    "crates/crucible/control/crucible-control-api/src/debug_relay.rs": "c113b6b5a60154460acaa9d566aea57a63279b3ec71f0e6d45d14f89e763ff77",
+    "crates/crucible/control/crucible-control-api/src/event_log_stream.rs": "e8153b7c0a19a2fe0d610d6235081be477d386539822e92710e7604fa447b39d",
+    "crates/crucible/control/crucible-control-api/src/lib.rs": "2f625d885484adb19b71dc8e39cb33aeb4bc7a5eaa1e2fc3ad03039809e60d7f",
+    "crates/crucible/control/crucible-control-api/src/lifecycle.rs": "80c7d044acd559fd8927a64109b48e229657262acb229a0d91e34b98bfbc125d",
+    "crates/crucible/control/crucible-control-api/src/lifecycle/hex.rs": "1fc1f68528c8991ef98039ee56b21b50c3ad0ccd1e38f9cd52abab78216e6ae6",
+    "crates/crucible/control/crucible-control-api/src/lifecycle/resource_limit.rs": "6b8afb2bcb516fd62c65c8bc60771900ee8cb6140ce13a94fab0cfe498bfc96f",
+    "crates/crucible/control/crucible-control-api/src/lifecycle/session_contract.rs": "ea4042646c5bda1b15c778910fd2dc24cc8a0db0343161d9be724a6b31e2b4d4",
+    "crates/crucible/control/crucible-control-api/src/open_set.rs": "320a3b6acd40b6b6b1e7a4ac62c5bd29fcfa4c731090ed2c20680ffe543b6ab3",
+    "crates/crucible/control/crucible-control-api/src/rpc_abi.rs": "1632368cb1250ad852344473ea62a1bf7fbf987542f5b3a0fada4b481764f3ef",
+    "crates/crucible/control/crucible-control-api/src/rpc_abi/golden.rs": "a545caca5c824d049e1ebb121e072a03055037fa37bed9efa22fb5301466caff",
+    "crates/crucible/control/crucible-control-api/src/session_mapping.rs": "a0b141834ddb55292a22d7e9fa307b6deaa4291ec1087a9e2b069235c7f11cf4",
+    "crates/crucible/control/crucible-control-api/src/streaming.rs": "7cef4b8c1c09d43f2129e324657cc86ddb03e380fe28d571a69494f15cffa801",
+    "crates/crucible/control/crucible-control-api/src/streaming/equivalence.rs": "84fdb363461ce96875aab157155ead81f1b74598fd9dfb13692ddde4777d31dd",
+    "crates/crucible/control/crucible-control-api/src/wire_model.rs": "28a6cfe40bbcce953d75893b4d382de2a0995f20787acd6533e81727b8b8e673",
+    "crates/crucible/control/crucible-control-api/tests/gate_abi_conformance.rs": "77226074e10721ce52ced56c2a687d4b84a9b72117abd2cf8e4f378916554e0f",
+    "crates/crucible/control/crucible-control-api/tests/gate_open_set_payload.rs": "a40bdf32db335adf106172eecae0debd71f4ed1ebd438ffd8485203132b9530d",
+    "crates/crucible/control/crucible-control-api/tests/gate_session_mapping.rs": "21046c9b2d58f5048b38025e57b58e4f1af54c09749039c92bab1926884b37b0",
+    "crates/crucible/control/crucible-session/src/lib.rs": "11a62a3c9ab848d7439326162fa2b9ff49b3308cb9f282b2ef1ec98769b802ba",
+    "crates/crucible/control/crucible-session/src/session/actor.rs": "96dd35f7d00d03816326f05b1f5bfb4428c9a3a3d2c05c26a6cd378dba53cc52",
+    "crates/crucible/control/crucible-session/src/session/actor/recoverability.rs": "d68638109f267da0a35a76c6c06cf419164ef5185089b14471d190739b9a14a7",
+    "crates/crucible/control/crucible-session/src/session/actor/terminal.rs": "7fedcd8189b722d2817fdfa1709b5b81e001c5519ef86a7aac35a2318a58b009",
+    "crates/crucible/control/crucible-session/src/session/breakpoint_metadata.rs": "472142eb0de0fa8779b383f987f06996e5c244d69db61de048053aeb261d108b",
+    "crates/crucible/control/crucible-session/src/session/commands.rs": "e17fb6ffa4029f8933fcfb196cfdce8c39b0fd69a36ad50eca51ee92bb311050",
+    "crates/crucible/control/crucible-session/src/session/commands/kind_conversion.rs": "5d43fcb7147aed0bc7c349f5f64b2487bd82706ac8ecba60175c4ee7a4c226ae",
+    "crates/crucible/control/crucible-session/src/session/core.rs": "9c1d9a7b38a627c1619e58abdbc98def7bc5b07ceebbf57fd79d08e049546f5e",
+    "crates/crucible/control/crucible-session/src/session/debug_coordinator.rs": "313c3398e1e2891ae4a17f3930aee2b9579acabb1ad77bc4bd299304b7ceb038",
+    "crates/crucible/control/crucible-session/src/session/engine.rs": "54d8fd86bde1b406ea45d0d58b66c739958b2f0a3d8f1bac527ff2c655aa351c",
+    "crates/crucible/control/crucible-session/src/session/engine/guest_introspection.rs": "720de89acdf79c6de6e64868a0c0c98c6474d3ab0ded66ca521764c93261b801",
+    "crates/crucible/control/crucible-session/src/session/engine/terminal.rs": "d1993cd1f61ff37e81311b524e076b2e553161df82ce0f812503503895cd6bab",
+    "crates/crucible/control/crucible-session/src/session/exploration.rs": "00a195c57b82dc0abec1bfbf6c28605d7e6283a511f2a48143a9005923257150",
+    "crates/crucible/control/crucible-session/src/session/exploration/support.rs": "f727617e3778bbacbe179f0d668dc5077ac6af39b4ff57252fd578cd26dfc7d5",
+    "crates/crucible/control/crucible-session/src/session/streams.rs": "20bf4d911f5a2567de1c42020d753350cb8c0b4fc373db2f99a46cdc0697c855",
+    "crates/crucible/control/crucible-session/src/tests.rs": "75fa4524f7ac451d3cace11f9cd2e9ae2226729f14f17031bbce44d0e6f04572",
+    "crates/crucible/control/crucible-session/src/tests/actor_runtime.rs": "0857369d863f2a8292c4691641227e435f4565511b30305b7276bf39d80856c9",
+    "crates/crucible/control/crucible-session/src/tests/actor_runtime/coverage.rs": "012c029f9f68eae2c1103ba07a1f5b8518d9e29644be4d449217cb8a6f8d2120",
+    "crates/crucible/control/crucible-session/src/tests/actor_runtime/debug_loops.rs": "ee4d59d36c3790e9e17663a353a854db705f846e6b8400b88353877690727c47",
+    "crates/crucible/control/crucible-session/src/tests/actor_runtime/runtime_stream.rs": "ef27b457d40db53f566f1dd4d9d6c8d9d07a3e32f93d9301d318a0e91f3b8f73",
+    "crates/crucible/control/crucible-session/src/tests/actor_runtime/support.rs": "bb7c5f7b3af21704a80b515ef0d31d23597d3af81eac5922e6706e27dd2101da",
+    "crates/crucible/control/crucible-session/src/tests/breakpoint_metadata.rs": "9f43a1b0462df0f18282b6d90fafc266b57f7372101fe13d48e22669f19d4551",
+    "crates/crucible/control/crucible-session/src/tests/engine_state.rs": "57dfa882816d8cf6f3d22863bad740400249849b7f5fc21a4f6713a4b3dd0bd9",
+    "crates/crucible/control/crucible-session/src/tests/engine_state/budget_exhaustion.rs": "360fa29574384d7979a4f85cabd14472bd03a7d4424993ae997806a8501e8141",
+    "crates/crucible/control/crucible-session/src/tests/engine_state/guest_introspection.rs": "b42bd683e73054cc9bc23d43510e0e0ff628cdeee4b57fa8c0d3b680203854d8",
+    "crates/crucible/control/crucible-session/src/tests/engine_state/runtime_smoke.rs": "12b2cdfbe199f1510c01653810b9cf1bea0dccc7a2e9cbabab4cbd839b914c86",
+    "crates/crucible/control/crucible-session/src/tests/terminal_verdict.rs": "b9d458d0295599be06e204dbdc9404ec21a2e5b274648b87251cac7790095df8",
+    "crates/crucible/control/crucible-session/src/validation.rs": "f2ffcfc846b178ae7d7dc6af0ef6e90270615f49adb2a8dee63dacf05e5c7be4",
+    "crates/crucible/control/crucible-session/tests/event_log_stream.rs": "9d5077544ea7e599e16d194a3c7c953c2514c79ec4252ee486954830c289d18b",
+    "crates/crucible/control/crucible-session/tests/gate_control_responsive.rs": "36968be125ead039d6b8c588bfbaa717464d4b2ebac285c5d68195b303ae0e53",
+    "crates/crucible/control/crucible-session/tests/gate_control_responsive/support.rs": "634042aceb2ee0eecdb223cec686c762496130eadb6ddc186ca06ef9c71ade7f",
+    "crates/crucible/control/crucible-session/tests/gate_exploration_fork.rs": "dc141f1474869cdc3e8f6dc2f60bffb87a3bb79cfdd1d53895e237082bd37665",
+    "crates/crucible/control/crucible-session/tests/gate_exploration_lifecycle.rs": "2e6b275e3092816542b2b5401e4aaf98e5340d94501da4105a7ee7d93d4b1a3c"
+  },
+  "ignored_cases": 0,
+  "libtest_artifacts": 9,
+  "limits": [
+    "This is semantic migration evidence, not a performance measurement.",
+    "Artifact profiles retain four settings; full compiler arguments were not retained in this baseline.",
+    "Production engine and session libraries must preserve their default dependency features separately from test libraries."
+  ],
+  "output": "/nix/store/s959jgr2jhn26j185sw1s3dnhkbhbypx-aos-bazel-session-cargo-oracle-1",
+  "report_sha256": {
+    "cargo-messages.jsonl": "bb087566144ff48b8a508d10b963792fae10d49a3dad40a9594fa20570da1e60",
+    "cargo-tests.log": "83ed54b296c8b87f1caacd1960ccea8751f1397c315ba88f143d9af8f80d0db1"
+  },
+  "schema_version": 1,
+  "scope": "Default-feature session and control API tests in one Cargo invocation; dev-dependency features are resolved together.",
+  "source": "/nix/store/8yxwwpc3rz6p9mcxhc4iji0pnabqy6n7-crucible-cargo-src",
+  "status": "Cargo baseline passed; Bazel native qualification pending",
+  "targets": {
+    "crucible-control-api/crucible_control_api": {
+      "binary_sha256": "7fbf86ca6a788b38f7defcb3ebe1ba1fef06dc862c29af564202e3794f6d386e",
+      "executed": [
+        "lifecycle::session_contract::exact_tick_wire_tests::arm_timer_reproduction_material_names_exact_ticks"
+      ],
+      "ignored": []
+    },
+    "crucible-control-api/gate_abi_conformance": {
+      "binary_sha256": "b00da90df1e6e32d7d5517237d7e1342bd0c0230316ee06ff66220778dd03f5f",
+      "executed": [
+        "rpc_abi_conformance_runs_named_checks",
+        "rpc_golden_vector_negative_control_detects_wire_drift",
+        "rpc_golden_vectors_cover_requests_responses_events_and_payload_kinds",
+        "rpc_golden_vectors_freeze_literal_wire_bytes",
+        "rpc_golden_vectors_match_live_encoder",
+        "rpc_protocol_version_is_exact_and_rejects_all_drift"
+      ],
+      "ignored": []
+    },
+    "crucible-control-api/gate_open_set_payload": {
+      "binary_sha256": "05a5122fe53d7aa1558366f45d39e251be9c4641ee9b94673f7faca36dcb6d11",
+      "executed": [
+        "capabilities_advertise_dotted_categories_and_kinds",
+        "event_payload_conversion_reuses_event_log_catalog",
+        "existing_command_and_breakpoint_vocabularies_are_adapted",
+        "open_set_payload_model_runs_named_checks",
+        "send_validation_uses_typed_unsupported_and_invalid_argument",
+        "unknown_event_kinds_are_opaque"
+      ],
+      "ignored": []
+    },
+    "crucible-control-api/gate_session_mapping": {
+      "binary_sha256": "20568db6234eecebb172f5933d556ad4cc3e5e1150d6376929c1816051839401",
+      "executed": [
+        "api_mapping_covers_every_session_command_kind_exactly_once",
+        "api_methods_are_thin_programmatic_mappings",
+        "api_session_mapping_validates_thin_wrapper_contract",
+        "control_and_send_dispatch_one_session_command_per_envelope",
+        "representative_session_commands_round_trip_through_existing_session_set"
+      ],
+      "ignored": []
+    },
+    "crucible-session/crucible_session": {
+      "binary_sha256": "49e2673b01cee263d20bbdbd22f2de7135cbce3c60912fb8226a6b1d7bf561ef",
+      "executed": [
+        "session_actor::gdb_run_control_tests::parser_accepts_gdb_all_stop_scheduler_semantics",
+        "session_debug_coordinator::tests::detach_clears_connections_and_invalidates_controller_lease",
+        "session_debug_coordinator::tests::observer_role_cannot_control_or_shell",
+        "session_debug_coordinator::tests::one_controller_is_enforced",
+        "tests::actor_runtime::engine_instantiate_runtime_cannot_bypass_state_transitions",
+        "tests::actor_runtime::engine_rejects_invalid_transition_without_changing_state",
+        "tests::actor_runtime::engine_runtime_cache_refresh_preserves_cache_when_reinstantiate_fails",
+        "tests::actor_runtime::engine_runtime_cache_reinstantiate_rejects_loaded_state_without_mutation",
+        "tests::actor_runtime::engine_runtime_cache_reinstantiate_rejects_never_instantiated_stopped_state",
+        "tests::actor_runtime::engine_runtime_cache_reinstantiates_after_running_quantum_boundary",
+        "tests::actor_runtime::engine_runtime_cache_reinstantiates_without_observable_change_at_pause_boundary",
+        "tests::actor_runtime::rejected_direct_debug_command_does_not_terminate_the_actor",
+        "tests::actor_runtime::runtime_stream::acknowledged_continue_preserves_engine_rejection",
+        "tests::actor_runtime::runtime_stream::engine_captures_terminal_checkpoint_before_shutdown",
+        "tests::actor_runtime::runtime_stream::engine_rejects_event_log_offset_mismatch",
+        "tests::actor_runtime::runtime_stream::engine_rejects_event_log_offset_regression",
+        "tests::actor_runtime::runtime_stream::engine_rejects_non_dense_final_shutdown_entries",
+        "tests::actor_runtime::runtime_stream::event_log_stream_recovers_broadcast_lag_from_the_retained_log",
+        "tests::actor_runtime::runtime_stream::reply_observation_cancellation_releases_actor_before_and_after_publication",
+        "tests::actor_runtime::runtime_stream::reply_observation_preserves_once_only_success_and_publication_error",
+        "tests::actor_runtime::runtime_stream::session_actor_live_query_reads_atomic_mirror_without_mailbox_query",
+        "tests::actor_runtime::runtime_stream::session_actor_live_snapshot_publishes_monotone_progress",
+        "tests::actor_runtime::runtime_stream::session_actor_live_snapshot_starts_as_loaded_without_mailbox",
+        "tests::actor_runtime::runtime_stream::session_actor_state_transition_bus_broadcasts_actor_owned_transitions",
+        "tests::actor_runtime::runtime_stream::session_state_transition_stream_reports_lag_without_backpressure",
+        "tests::actor_runtime::runtime_stream::state_transition_floor_suppresses_pre_snapshot_frames",
+        "tests::actor_runtime::session_actor_command_driven_step_acknowledges_preexisting_running_controls",
+        "tests::actor_runtime::session_actor_paused_step_acknowledges_preexisting_running_controls",
+        "tests::actor_runtime::session_actor_publishes_non_backend_scheduler_failure_as_terminal_crash",
+        "tests::actor_runtime::session_actor_services_pending_command_before_quantum",
+        "tests::actor_runtime::session_actor_source_does_not_lock_engine_across_run",
+        "tests::actor_runtime::session_actor_step_modes_are_interruptible_by_pause_and_stop",
+        "tests::actor_runtime::session_actor_step_modes_stop_on_deterministic_boundaries",
+        "tests::actor_runtime::session_actor_steps_one_quantum_then_yields",
+        "tests::actor_runtime::session_actor_terminalizes_mismatched_debug_runtime_evidence",
+        "tests::actor_runtime::session_actor_yields_after_command_driven_accepted_step",
+        "tests::actor_runtime::support::coverage::actor_publishes_backend_coverage_from_the_canonical_event_log",
+        "tests::actor_runtime::support::coverage::actor_publishes_final_backend_coverage_before_shutdown_completes",
+        "tests::breakpoint_metadata::breakpoint_named_host_predicate_fires_at_no_entry_quantum_boundary",
+        "tests::breakpoint_metadata::breakpoint_symbol_metadata_resolves_coverage_and_memory_leaves",
+        "tests::engine_state::actor_control_replay_publishes_exact_logs_and_stays_terminal_observable",
+        "tests::engine_state::actor_debug_history_indexes_each_emitted_decision_prefix",
+        "tests::engine_state::actor_debug_noncanonical_branch_appends_visible_event_log_marker",
+        "tests::engine_state::actor_non_advancing_command_preserves_future_coordinate_indexes",
+        "tests::engine_state::backend_failure_produces_crashed_terminal_outcome",
+        "tests::engine_state::breakpoint_action_group_is_prevalidated_before_control_application",
+        "tests::engine_state::breakpoint_conditions_cover_after_and_timer_runtime_facts",
+        "tests::engine_state::breakpoint_conditions_cover_guest_marker_white_box_leaves",
+        "tests::engine_state::breakpoint_conditions_cover_node_and_assertion_state_leaves",
+        "tests::engine_state::breakpoint_once_combinator_latches_across_boundaries",
+        "tests::engine_state::breakpoint_suspend_uses_shared_condition_and_preserves_canonical_log",
+        "tests::engine_state::budget_exhaustion::budget_exhaustion_command_produces_timeout_terminal_outcome",
+        "tests::engine_state::budget_exhaustion::control_replay_artifact_reproduces_interactive_scheduler_state",
+        "tests::engine_state::control_replay_artifact_rejects_final_snapshot_mismatch",
+        "tests::engine_state::control_replay_reconstructs_every_step_mode_without_partial_dispatch",
+        "tests::engine_state::debug_time_travel_commands_reposition_without_scheduler_control_log",
+        "tests::engine_state::duration_step_uses_global_frontier_instead_of_event_timestamp",
+        "tests::engine_state::engine_step_modes_complete_from_quantum_outcomes",
+        "tests::engine_state::engine_step_modes_start_bounded_execution_for_forward_vocabulary",
+        "tests::engine_state::engine_transition_table_matches_lifecycle_model_for_current_commands",
+        "tests::engine_state::failed_guest_write_unlock_leaves_a_paused_noncanonical_branch",
+        "tests::engine_state::guest_introspection::continuous_quiescence_terminalizes_active_guest_channels",
+        "tests::engine_state::guest_introspection::guest_channel_owns_scheduler_run_until_terminal_response",
+        "tests::engine_state::guest_introspection::guest_response_broker_does_not_lose_other_channel_records",
+        "tests::engine_state::guest_introspection::operator_stop_resolves_pending_guest_activation",
+        "tests::engine_state::guest_introspection::terminal_guest_response_survives_scheduler_lease_release_failure",
+        "tests::engine_state::lifecycle_state_reason_outcome_and_command_sets_are_closed",
+        "tests::engine_state::lifecycle_transition_model_command_sequences_never_wedge",
+        "tests::engine_state::lifecycle_transition_model_is_total_for_representative_commands",
+        "tests::engine_state::lifecycle_transition_model_matches_rfc_section_table_cells",
+        "tests::engine_state::mismatched_debug_runtime_evidence_fails_closed_without_committing_model_state",
+        "tests::engine_state::no_entry_breakpoint_after_prior_event_uses_current_boundary",
+        "tests::engine_state::pause_and_stop_take_effect_at_boundary_without_extra_quantum",
+        "tests::engine_state::paused_boundary_mutators_apply_and_record_control_log",
+        "tests::engine_state::property_failure_breakpoint_produces_failed_terminal_outcome",
+        "tests::engine_state::quantum_loop_failure_verdict_produces_failed_terminal_outcome",
+        "tests::engine_state::quantum_loop_pass_verdict_produces_passed_terminal_outcome",
+        "tests::engine_state::quiescent_breakpoint_fires_without_emitted_entries",
+        "tests::engine_state::quiescent_breakpoint_uses_scheduler_quiescence_evidence",
+        "tests::engine_state::rejected_debug_runtime_reposition_preserves_session_transaction",
+        "tests::engine_state::repeatable_trace_breakpoint_fires_on_false_to_true_transitions",
+        "tests::engine_state::resumed_actor_rejects_reverse_event_history_before_its_floor",
+        "tests::engine_state::rfc_command_payloads_return_replies_through_engine_boundary",
+        "tests::engine_state::rfc_command_rejections_complete_reply_oneshots_without_side_effects",
+        "tests::engine_state::rfc_command_running_actor_acknowledges_local_boundary_replies_immediately",
+        "tests::engine_state::rfc_command_terminal_drain_completes_queued_replies",
+        "tests::engine_state::running_boundary_commands_record_deterministic_control_log",
+        "tests::engine_state::runtime_smoke::engine_start_instantiates_runtime_and_pauses",
+        "tests::engine_state::runtime_smoke::session_actor_owns_breakpoint_set_with_runtime_state",
+        "tests::engine_state::runtime_smoke::session_driver_delegates_to_quantum_loop",
+        "tests::engine_state::scheduler_liveness_generated_command_streams_exercise_lifecycle_table",
+        "tests::engine_state::step_modes_are_expressible_as_one_shot_breakpoints",
+        "tests::engine_state::step_modes_cover_forward_vocabulary_and_reverse_grains",
+        "tests::engine_state::timer_step_ignores_timer_actions_without_timer_predicate_fire",
+        "tests::engine_state::unsupported_breakpoint_action_fails_loudly",
+        "tests::terminal_verdict::terminal_quantum_verdict_is_not_reapplied_as_a_breakpoint_action"
+      ],
+      "ignored": []
+    },
+    "crucible-session/event_log_stream": {
+      "binary_sha256": "43d9e33a3fee8dcdcde28ae702b6a04d5736cf63389f358791302b5cec28c828",
+      "executed": [
+        "event_log_generation_reset_preserves_retained_prefix_for_lagging_stream",
+        "event_log_stream_does_not_duplicate_replayed_live_frame"
+      ],
+      "ignored": []
+    },
+    "crucible-session/gate_control_responsive": {
+      "binary_sha256": "e6422636d0d9f90426efa460d1ebbb8b4f335c7393d1e8e2a202fd2414b7bf68",
+      "executed": [
+        "gate_control_plane_streams_event_log_entries_from_cursor_without_mutation",
+        "gate_control_plane_streams_state_transitions_without_mailbox_roundtrip",
+        "gate_control_responsive_acknowledges_query_command_within_quantum_bound",
+        "gate_control_responsive_declares_in_process_sim_double_backend",
+        "gate_control_responsive_reads_live_snapshot_without_mailbox_roundtrip"
+      ],
+      "ignored": []
+    },
+    "crucible-session/gate_exploration_fork": {
+      "binary_sha256": "f1286eb69c92f3d411ad84c5d9e59246b8a36e79db2e30e086b25e5ad60c3ed0",
+      "executed": [
+        "actor_fork_command_completes_reply_on_missing_checkpoint",
+        "actor_fork_command_spawns_independent_child_handle",
+        "fork_child_from_checkpoint_instantiates_prefix_child_without_parent_mutation",
+        "fork_child_from_checkpoint_rejects_loaded_and_running_parent_without_pause",
+        "fork_child_rejects_loaded_and_running_parent_without_pause",
+        "fork_child_uses_temporal_graph_fork_and_independent_child_actor",
+        "resume_session_from_cached_snapshot_without_thin_node",
+        "resume_session_from_savepoint_uses_graph_checkpoint_and_independent_actor",
+        "stopped_parent_can_fork_from_final_checkpoint_without_mutation"
+      ],
+      "ignored": []
+    },
+    "crucible-session/gate_exploration_lifecycle": {
+      "binary_sha256": "6212c9e32acfb7c07b5d9ad047e6758128b403a05fe426f86fff752d751ecac3",
+      "executed": [
+        "exploration_lifecycle_driver_routes_pause_resume_stop_as_session_commands",
+        "pause_resume_continue_matches_uninterrupted_canonical_run"
+      ],
+      "ignored": []
+    }
+  }
+}

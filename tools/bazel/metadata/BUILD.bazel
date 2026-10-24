@@ -1,0 +1,8 @@
+exports_files([
+    "inventory.bzl",
+    "export_specs.py",
+    "guest_build_info.py",
+    "snapshot_generated_sources.py",
+    "copy_repository_test_sources.py",
+    "package_browser_assets.py",
+])

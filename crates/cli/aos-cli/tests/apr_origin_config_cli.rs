@@ -1,6 +1,10 @@
 //! End-to-end coverage for `apr origin config` and the persisted
 //! upload-default fallback used by `apr origin upload`.
 
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -995,7 +999,7 @@ fn run_aos_package_json(
     args: &[&str],
     action: &str,
 ) -> Result<Value> {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_apm"));
+    let mut command = Command::new(cli_binary!("CARGO_BIN_EXE_apm"));
     command
         .env("HOME", home)
         .env("APM_SYSTEM_CONFIG_DIR", system_dir)
@@ -1022,7 +1026,7 @@ fn run_aos_package_json(
 /// Spawn `apr` against an isolated `HOME`, with a committer identity in the
 /// environment: registry commits refuse to run without one.
 fn apr_command(home: &Path) -> Command {
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_apr"));
+    let mut cmd = Command::new(cli_binary!("CARGO_BIN_EXE_apr"));
     cmd.env("HOME", home)
         .env("USER", "registry-test")
         .env("LOGNAME", "registry-test")

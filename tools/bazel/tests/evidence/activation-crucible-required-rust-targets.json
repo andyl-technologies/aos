@@ -1,0 +1,19 @@
+{
+  "command": "nix-build -A checks.rust.aos-test-targets --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "comparison_base_commit": "013b1954f7",
+  "compiled_changed_rust_inputs_sha256": {
+    "crates/aos/activation/aos-activation-crucible/src/lib.rs": "c48264e25341b31dce4739af37058736a91e24273868b2d00080dd1826f44da1"
+  },
+  "derivation": "/nix/store/x1ca6v07q101pv68ssfazk54bmi48v6g-aos-test-targets-0.1.0.drv",
+  "derivation_sha256": "de87a6a01fa5e6fb0197d86d57562308990286dd65f1680881a2cf620efbb498",
+  "implementation_commit": "3a560a6f18",
+  "limits": [
+    "This gate compiles application unit and integration targets without executing them. Native Bazel/Cargo execution is retained separately.",
+    "This frozen source includes the single Crucible activation Rust lint correction and the earlier activation corrections. Later CLI support Bazel declarations are not qualified by this checkpoint."
+  ],
+  "log_sha256": "4fccf765740f447f501d7746c13366fe2ecb91e21ef01526d448d29c53b877fc",
+  "output": "/nix/store/5haj1cf4kcvz7zhvnzw0i047d35z9byi-aos-test-targets-0.1.0",
+  "schema_version": 1,
+  "source": "/nix/store/ddayl42h97a6mbbqzz06psn6sk0d6kf6-aos-workspace-src",
+  "status": "Required workspace Rust application unit and integration targets compiled successfully"
+}

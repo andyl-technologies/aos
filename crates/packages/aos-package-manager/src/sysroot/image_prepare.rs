@@ -55,6 +55,10 @@ pub struct ImagePrepareOptions {
 /// Returns an error outside a writable live AOS system context or root scope,
 /// for profile contention, pending image work, failed signed resolution,
 /// rejected operator consent, cancelled work, or failed authenticated staging.
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Native image generations record their host creation time."
+)]
 pub async fn prepare_image(
     config: &ApmConfig,
     options: &ImagePrepareOptions,

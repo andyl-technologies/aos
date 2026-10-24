@@ -1,0 +1,5545 @@
+{
+  "configurations": {
+    "aos-cli-fleet-tests": {
+      "cargo_messages_sha256": "a731f6f65e303f4f9c59f8bb2f5a9193839a8ce3e8bdca72250539579f26c987",
+      "cargo_output": "/nix/store/n7ycsjz6d2qhyw04zkg301k8f5b1l3q4-aos-bazel-aos-cli-fleet-cargo-qualified-capture-1",
+      "configured_inventory_output": "/nix/store/9k9yyw0day8pfwg057xlzxjshm803j38-aos-bazel-aos-cli-fleet-tests-inventory-1",
+      "external_crates": 439,
+      "features": {
+        "adler2@2.0.1": [
+          []
+        ],
+        "aead@0.5.2": [
+          [
+            "alloc",
+            "getrandom",
+            "rand_core"
+          ]
+        ],
+        "aes-gcm@0.10.3": [
+          [
+            "aes",
+            "alloc",
+            "default",
+            "getrandom",
+            "rand_core"
+          ]
+        ],
+        "aes@0.8.4": [
+          []
+        ],
+        "ahash@0.8.12": [
+          []
+        ],
+        "aho-corasick@1.1.4": [
+          [
+            "default",
+            "perf-literal",
+            "std"
+          ]
+        ],
+        "alejandra@3.1.0": [
+          []
+        ],
+        "allocator-api2@0.2.21": [
+          [
+            "alloc"
+          ]
+        ],
+        "anstream@1.0.0": [
+          [
+            "auto",
+            "default",
+            "wincon"
+          ]
+        ],
+        "anstyle-parse@1.0.0": [
+          [
+            "default",
+            "utf8"
+          ]
+        ],
+        "anstyle-query@1.1.5": [
+          []
+        ],
+        "anstyle@1.0.14": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "anyhow@1.0.102": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "arc-swap@1.9.1": [
+          []
+        ],
+        "argon2@0.5.3": [
+          [
+            "alloc",
+            "default",
+            "password-hash",
+            "rand"
+          ]
+        ],
+        "async-trait@0.1.89": [
+          []
+        ],
+        "atoi@2.0.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "atomic-waker@1.1.2": [
+          []
+        ],
+        "autocfg@1.5.1": [
+          []
+        ],
+        "aws-config@1.8.17": [
+          [
+            "credentials-process",
+            "default",
+            "default-https-client",
+            "rt-tokio",
+            "sso"
+          ]
+        ],
+        "aws-credential-types@1.2.14": [
+          [
+            "test-util"
+          ]
+        ],
+        "aws-lc-rs@1.17.0": [
+          [
+            "aws-lc-sys",
+            "prebuilt-nasm"
+          ]
+        ],
+        "aws-lc-sys@0.41.0": [
+          [
+            "prebuilt-nasm"
+          ]
+        ],
+        "aws-runtime@1.7.4": [
+          [
+            "event-stream",
+            "http-02x",
+            "http-1x",
+            "sigv4a"
+          ]
+        ],
+        "aws-sdk-s3@1.134.0": [
+          [
+            "default-https-client",
+            "http-1x",
+            "rt-tokio",
+            "sigv4a"
+          ]
+        ],
+        "aws-sdk-sso@1.100.0": [
+          []
+        ],
+        "aws-sdk-ssooidc@1.102.0": [
+          []
+        ],
+        "aws-sdk-sts@1.105.0": [
+          []
+        ],
+        "aws-sigv4@1.4.4": [
+          [
+            "default",
+            "http0-compat",
+            "http1",
+            "sign-eventstream",
+            "sign-http",
+            "sigv4a"
+          ]
+        ],
+        "aws-smithy-async@1.2.14": [
+          [
+            "rt-tokio"
+          ]
+        ],
+        "aws-smithy-checksums@0.64.8": [
+          []
+        ],
+        "aws-smithy-eventstream@0.60.20": [
+          []
+        ],
+        "aws-smithy-http-client@1.1.12": [
+          [
+            "default-client",
+            "rustls-aws-lc"
+          ]
+        ],
+        "aws-smithy-http@0.63.6": [
+          [
+            "aws-smithy-eventstream",
+            "event-stream"
+          ]
+        ],
+        "aws-smithy-json@0.62.6": [
+          []
+        ],
+        "aws-smithy-observability@0.2.6": [
+          []
+        ],
+        "aws-smithy-query@0.60.15": [
+          []
+        ],
+        "aws-smithy-runtime-api-macros@1.0.0": [
+          []
+        ],
+        "aws-smithy-runtime-api@1.12.1": [
+          [
+            "client",
+            "default",
+            "http-02x",
+            "http-1x",
+            "http-auth",
+            "test-util"
+          ]
+        ],
+        "aws-smithy-runtime@1.11.3": [
+          [
+            "client",
+            "default-https-client",
+            "rt-tokio"
+          ]
+        ],
+        "aws-smithy-schema@0.1.0": [
+          []
+        ],
+        "aws-smithy-types@1.4.8": [
+          [
+            "byte-stream-poll-next",
+            "http-body-0-4-x",
+            "http-body-1-x",
+            "rt-tokio",
+            "test-util"
+          ]
+        ],
+        "aws-smithy-xml@0.60.15": [
+          []
+        ],
+        "aws-types@1.3.16": [
+          []
+        ],
+        "axum-core@0.5.6": [
+          [
+            "tracing"
+          ]
+        ],
+        "axum-macros@0.5.1": [
+          [
+            "default"
+          ]
+        ],
+        "axum@0.8.9": [
+          [
+            "default",
+            "form",
+            "http1",
+            "http2",
+            "json",
+            "macros",
+            "matched-path",
+            "original-uri",
+            "query",
+            "tokio",
+            "tower-log",
+            "tracing"
+          ]
+        ],
+        "base16ct@0.2.0": [
+          [
+            "alloc"
+          ]
+        ],
+        "base64-simd@0.8.0": [
+          [
+            "alloc",
+            "default",
+            "detect",
+            "std"
+          ]
+        ],
+        "base64@0.21.7": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "base64@0.22.1": [
+          [
+            "alloc"
+          ],
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "base64ct@1.8.3": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "bitflags@2.13.0": [
+          [
+            "std"
+          ]
+        ],
+        "blake2@0.10.6": [
+          []
+        ],
+        "block-buffer@0.10.4": [
+          []
+        ],
+        "block-buffer@0.12.0": [
+          []
+        ],
+        "bstr@1.12.1": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "buffa-codegen@0.9.2": [
+          []
+        ],
+        "buffa-descriptor@0.9.2": [
+          [
+            "std"
+          ]
+        ],
+        "buffa@0.9.2": [
+          [
+            "default",
+            "fast-utf8",
+            "json",
+            "std"
+          ]
+        ],
+        "byteorder@1.5.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "bytes-utils@0.1.4": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "bytes@1.11.1": [
+          [
+            "default",
+            "serde",
+            "std"
+          ],
+          [
+            "std"
+          ]
+        ],
+        "bzip2-rs@0.1.2": [
+          [
+            "default"
+          ]
+        ],
+        "cassowary@0.3.0": [
+          []
+        ],
+        "castaway@0.2.4": [
+          [
+            "alloc"
+          ]
+        ],
+        "cbitset@0.2.0": [
+          []
+        ],
+        "cc@1.2.65": [
+          [
+            "parallel"
+          ]
+        ],
+        "cfg-if@1.0.4": [
+          []
+        ],
+        "ciborium-io@0.2.2": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "ciborium-ll@0.2.2": [
+          []
+        ],
+        "ciborium@0.2.2": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "cipher@0.4.4": [
+          []
+        ],
+        "clap@4.6.1": [
+          [
+            "color",
+            "default",
+            "derive",
+            "env",
+            "error-context",
+            "help",
+            "std",
+            "suggestions",
+            "usage"
+          ]
+        ],
+        "clap_builder@4.6.0": [
+          [
+            "color",
+            "env",
+            "error-context",
+            "help",
+            "std",
+            "suggestions",
+            "usage"
+          ]
+        ],
+        "clap_complete@4.6.5": [
+          [
+            "default"
+          ]
+        ],
+        "clap_derive@4.6.1": [
+          [
+            "default"
+          ]
+        ],
+        "clap_lex@1.1.0": [
+          []
+        ],
+        "cmake@0.1.58": [
+          []
+        ],
+        "cmov@0.5.4": [
+          []
+        ],
+        "colorchoice@1.0.5": [
+          []
+        ],
+        "compact_str@0.8.2": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "concurrent-queue@2.5.0": [
+          [
+            "std"
+          ]
+        ],
+        "connectrpc-build@0.9.0": [
+          []
+        ],
+        "connectrpc-codegen@0.9.0": [
+          []
+        ],
+        "connectrpc@0.9.1": [
+          [
+            "axum",
+            "client",
+            "client-tls",
+            "default",
+            "gzip",
+            "json",
+            "server",
+            "zstd"
+          ]
+        ],
+        "console@0.15.11": [
+          [
+            "ansi-parsing",
+            "default",
+            "unicode-width"
+          ]
+        ],
+        "const-oid@0.10.2": [
+          []
+        ],
+        "const-oid@0.9.6": [
+          []
+        ],
+        "countme@2.0.4": [
+          []
+        ],
+        "cpufeatures@0.2.17": [
+          []
+        ],
+        "cpufeatures@0.3.0": [
+          []
+        ],
+        "crc-catalog@2.5.0": [
+          []
+        ],
+        "crc-fast@1.10.0": [
+          [
+            "alloc",
+            "default",
+            "digest",
+            "ffi",
+            "panic-handler",
+            "std"
+          ]
+        ],
+        "crc32fast@1.5.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "crc@3.4.0": [
+          []
+        ],
+        "crossbeam-deque@0.8.6": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "crossbeam-epoch@0.9.18": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "crossbeam-queue@0.3.13": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "crossbeam-utils@0.8.21": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "crossterm@0.28.1": [
+          [
+            "bracketed-paste",
+            "default",
+            "events",
+            "windows"
+          ]
+        ],
+        "crypto-bigint@0.5.5": [
+          [
+            "default",
+            "generic-array",
+            "rand",
+            "rand_core",
+            "zeroize"
+          ]
+        ],
+        "crypto-common@0.1.7": [
+          [
+            "getrandom",
+            "rand_core",
+            "std"
+          ]
+        ],
+        "crypto-common@0.2.2": [
+          []
+        ],
+        "ctr@0.9.2": [
+          []
+        ],
+        "ctutils@0.4.2": [
+          []
+        ],
+        "curve25519-dalek-derive@0.1.1": [
+          []
+        ],
+        "curve25519-dalek@4.1.3": [
+          [
+            "alloc",
+            "digest",
+            "precomputed-tables",
+            "zeroize"
+          ]
+        ],
+        "darling@0.23.0": [
+          [
+            "default",
+            "suggestions"
+          ]
+        ],
+        "darling_core@0.23.0": [
+          [
+            "strsim",
+            "suggestions"
+          ]
+        ],
+        "darling_macro@0.23.0": [
+          []
+        ],
+        "der@0.7.10": [
+          [
+            "alloc",
+            "oid",
+            "pem",
+            "std",
+            "zeroize"
+          ]
+        ],
+        "deranged@0.5.8": [
+          [
+            "default",
+            "powerfmt"
+          ]
+        ],
+        "digest@0.10.7": [
+          [
+            "alloc",
+            "block-buffer",
+            "const-oid",
+            "core-api",
+            "default",
+            "mac",
+            "oid",
+            "std",
+            "subtle"
+          ]
+        ],
+        "digest@0.11.3": [
+          [
+            "alloc",
+            "block-api",
+            "default",
+            "mac",
+            "oid"
+          ]
+        ],
+        "displaydoc@0.2.6": [
+          []
+        ],
+        "dunce@1.0.5": [
+          []
+        ],
+        "dyn-clone@1.0.20": [
+          []
+        ],
+        "ecdsa@0.16.9": [
+          [
+            "alloc",
+            "arithmetic",
+            "default",
+            "der",
+            "digest",
+            "hazmat",
+            "pem",
+            "pkcs8",
+            "rfc6979",
+            "signing",
+            "spki",
+            "std",
+            "verifying"
+          ]
+        ],
+        "ed25519-dalek@2.2.0": [
+          [
+            "alloc",
+            "default",
+            "fast",
+            "pkcs8",
+            "std",
+            "zeroize"
+          ]
+        ],
+        "ed25519@2.2.3": [
+          [
+            "alloc",
+            "pkcs8",
+            "std"
+          ]
+        ],
+        "either@1.16.0": [
+          [
+            "default",
+            "serde",
+            "std",
+            "use_std"
+          ],
+          [
+            "std",
+            "use_std"
+          ]
+        ],
+        "elliptic-curve@0.13.8": [
+          [
+            "alloc",
+            "arithmetic",
+            "digest",
+            "ecdh",
+            "ff",
+            "group",
+            "hazmat",
+            "pem",
+            "pkcs8",
+            "sec1",
+            "std"
+          ]
+        ],
+        "equivalent@1.0.2": [
+          []
+        ],
+        "errno@0.3.14": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "event-listener@5.4.1": [
+          [
+            "default",
+            "parking",
+            "std"
+          ]
+        ],
+        "fallible-iterator@0.3.0": [
+          [
+            "alloc",
+            "default"
+          ]
+        ],
+        "fallible-streaming-iterator@0.1.9": [
+          []
+        ],
+        "fastrand@2.4.1": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "ff@0.13.1": [
+          [
+            "alloc"
+          ]
+        ],
+        "filetime@0.2.29": [
+          []
+        ],
+        "find-msvc-tools@0.1.9": [
+          []
+        ],
+        "fixedbitset@0.5.7": [
+          []
+        ],
+        "flate2@1.1.9": [
+          [
+            "any_impl",
+            "any_zlib",
+            "miniz_oxide",
+            "rust_backend",
+            "zlib-rs"
+          ]
+        ],
+        "flume@0.11.1": [
+          [
+            "async",
+            "futures-core",
+            "futures-sink"
+          ]
+        ],
+        "fnv@1.0.7": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "foldhash@0.1.5": [
+          [
+            "std"
+          ]
+        ],
+        "foldhash@0.2.0": [
+          []
+        ],
+        "form_urlencoded@1.2.2": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "fs_extra@1.3.0": [
+          []
+        ],
+        "futures-channel@0.3.32": [
+          [
+            "alloc",
+            "default",
+            "futures-sink",
+            "sink",
+            "std"
+          ]
+        ],
+        "futures-core@0.3.32": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "futures-executor@0.3.32": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "futures-intrusive@0.5.0": [
+          [
+            "alloc",
+            "default",
+            "parking_lot",
+            "std"
+          ]
+        ],
+        "futures-io@0.3.32": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "futures-macro@0.3.32": [
+          []
+        ],
+        "futures-sink@0.3.32": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "futures-task@0.3.32": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "futures-util@0.3.32": [
+          [
+            "alloc",
+            "async-await",
+            "async-await-macro",
+            "channel",
+            "default",
+            "futures-channel",
+            "futures-io",
+            "futures-macro",
+            "futures-sink",
+            "io",
+            "memchr",
+            "sink",
+            "slab",
+            "std"
+          ]
+        ],
+        "futures@0.3.32": [
+          [
+            "alloc",
+            "async-await",
+            "default",
+            "executor",
+            "futures-executor",
+            "std"
+          ]
+        ],
+        "generic-array@0.14.7": [
+          [
+            "more_lengths",
+            "zeroize"
+          ]
+        ],
+        "getrandom@0.2.17": [
+          [
+            "std"
+          ]
+        ],
+        "getrandom@0.3.4": [
+          [
+            "std"
+          ]
+        ],
+        "getrandom@0.4.2": [
+          []
+        ],
+        "ghash@0.5.1": [
+          []
+        ],
+        "git2@0.21.0": [
+          [
+            "cred",
+            "https",
+            "openssl-probe",
+            "openssl-sys",
+            "ssh",
+            "unstable-sha256",
+            "vendored-libgit2"
+          ]
+        ],
+        "glob@0.3.3": [
+          []
+        ],
+        "globset@0.4.18": [
+          [
+            "default",
+            "log"
+          ]
+        ],
+        "group@0.13.0": [
+          [
+            "alloc"
+          ]
+        ],
+        "h2@0.4.14": [
+          []
+        ],
+        "half@2.7.1": [
+          []
+        ],
+        "hashbrown@0.14.5": [
+          [
+            "ahash",
+            "inline-more"
+          ]
+        ],
+        "hashbrown@0.15.5": [
+          [
+            "allocator-api2",
+            "default",
+            "default-hasher",
+            "equivalent",
+            "inline-more",
+            "raw-entry",
+            "serde"
+          ],
+          [
+            "default-hasher",
+            "serde"
+          ]
+        ],
+        "hashbrown@0.16.1": [
+          [
+            "allocator-api2",
+            "default",
+            "default-hasher",
+            "equivalent",
+            "inline-more",
+            "raw-entry"
+          ]
+        ],
+        "hashbrown@0.17.1": [
+          []
+        ],
+        "hashbrown@0.9.1": [
+          [
+            "inline-more"
+          ]
+        ],
+        "hashlink@0.10.0": [
+          []
+        ],
+        "hashlink@0.9.1": [
+          []
+        ],
+        "heck@0.5.0": [
+          []
+        ],
+        "hex@0.4.3": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "hkdf@0.12.4": [
+          []
+        ],
+        "hmac@0.12.1": [
+          [
+            "reset"
+          ]
+        ],
+        "hmac@0.13.0": [
+          []
+        ],
+        "http-body-util@0.1.3": [
+          [
+            "default"
+          ]
+        ],
+        "http-body@0.4.6": [
+          []
+        ],
+        "http-body@1.0.1": [
+          []
+        ],
+        "http@0.2.12": [
+          []
+        ],
+        "http@1.4.1": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "httparse@1.10.1": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "httpdate@1.0.3": [
+          []
+        ],
+        "humantime-serde@1.1.1": [
+          []
+        ],
+        "humantime@2.3.0": [
+          []
+        ],
+        "hybrid-array@0.4.12": [
+          []
+        ],
+        "hyper-rustls@0.27.9": [
+          [
+            "http1",
+            "http2",
+            "native-tokio",
+            "ring",
+            "rustls-native-certs",
+            "tls12"
+          ]
+        ],
+        "hyper-util@0.1.20": [
+          [
+            "client",
+            "client-legacy",
+            "client-proxy",
+            "default",
+            "http1",
+            "http2",
+            "server",
+            "server-auto",
+            "server-graceful",
+            "service",
+            "tokio"
+          ]
+        ],
+        "hyper@1.10.0": [
+          [
+            "client",
+            "default",
+            "http1",
+            "http2",
+            "server"
+          ]
+        ],
+        "icu_collections@2.2.0": [
+          []
+        ],
+        "icu_locale_core@2.2.0": [
+          [
+            "zerovec"
+          ]
+        ],
+        "icu_normalizer@2.2.0": [
+          [
+            "compiled_data"
+          ]
+        ],
+        "icu_normalizer_data@2.2.0": [
+          []
+        ],
+        "icu_properties@2.2.0": [
+          [
+            "compiled_data"
+          ]
+        ],
+        "icu_properties_data@2.2.0": [
+          []
+        ],
+        "icu_provider@2.2.0": [
+          [
+            "baked"
+          ]
+        ],
+        "ident_case@1.0.1": [
+          []
+        ],
+        "idna@1.1.0": [
+          [
+            "alloc",
+            "compiled_data",
+            "std"
+          ]
+        ],
+        "idna_adapter@1.2.2": [
+          [
+            "compiled_data"
+          ]
+        ],
+        "ignore@0.4.25": [
+          []
+        ],
+        "indexmap@2.14.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "indicatif@0.17.11": [
+          [
+            "default",
+            "unicode-width"
+          ]
+        ],
+        "indoc@2.0.7": [
+          []
+        ],
+        "inout@0.1.4": [
+          []
+        ],
+        "instability@0.3.12": [
+          []
+        ],
+        "ipnet@2.12.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "is_terminal_polyfill@1.70.2": [
+          [
+            "default"
+          ]
+        ],
+        "itertools@0.13.0": [
+          [
+            "default",
+            "use_alloc",
+            "use_std"
+          ]
+        ],
+        "itertools@0.14.0": [
+          [
+            "default",
+            "use_alloc",
+            "use_std"
+          ]
+        ],
+        "itoa@1.0.18": [
+          []
+        ],
+        "jobserver@0.1.34": [
+          []
+        ],
+        "jsonwebtoken@9.3.1": [
+          [
+            "default",
+            "pem",
+            "simple_asn1",
+            "use_pem"
+          ]
+        ],
+        "jwt-rustcrypto@0.2.1": [
+          []
+        ],
+        "k256@0.13.4": [
+          [
+            "alloc",
+            "arithmetic",
+            "default",
+            "digest",
+            "ecdsa",
+            "ecdsa-core",
+            "once_cell",
+            "pkcs8",
+            "precomputed-tables",
+            "schnorr",
+            "sha2",
+            "sha256",
+            "signature",
+            "std"
+          ]
+        ],
+        "lazy_static@1.5.0": [
+          [
+            "spin",
+            "spin_no_std"
+          ]
+        ],
+        "libc@0.2.186": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "libgit2-sys@0.18.5+1.9.4": [
+          [
+            "https",
+            "libssh2-sys",
+            "openssl-sys",
+            "ssh",
+            "unstable-sha256",
+            "vendored"
+          ]
+        ],
+        "libm@0.2.16": [
+          [
+            "arch",
+            "default"
+          ]
+        ],
+        "libmimalloc-sys@0.1.49": [
+          []
+        ],
+        "libsqlite3-sys@0.30.1": [
+          [
+            "bundled",
+            "bundled_bindings",
+            "cc",
+            "default",
+            "min_sqlite_version_3_14_0",
+            "pkg-config",
+            "unlock_notify",
+            "vcpkg"
+          ]
+        ],
+        "libssh2-sys@0.3.1": [
+          [
+            "vendored-openssl"
+          ]
+        ],
+        "libz-sys@1.1.28": [
+          [
+            "libc"
+          ]
+        ],
+        "linux-raw-sys@0.12.1": [
+          [
+            "auxvec",
+            "elf",
+            "errno",
+            "general",
+            "if_ether",
+            "ioctl",
+            "net",
+            "netlink",
+            "no_std",
+            "prctl",
+            "xdp"
+          ],
+          [
+            "auxvec",
+            "elf",
+            "errno",
+            "general",
+            "ioctl",
+            "no_std"
+          ]
+        ],
+        "linux-raw-sys@0.4.15": [
+          [
+            "elf",
+            "errno",
+            "general",
+            "ioctl",
+            "no_std"
+          ]
+        ],
+        "litemap@0.8.2": [
+          []
+        ],
+        "lock_api@0.4.14": [
+          [
+            "atomic_usize",
+            "default"
+          ]
+        ],
+        "log@0.4.30": [
+          []
+        ],
+        "lru@0.12.5": [
+          [
+            "default",
+            "hashbrown"
+          ]
+        ],
+        "lru@0.16.4": [
+          [
+            "default",
+            "hashbrown"
+          ]
+        ],
+        "lzma-rs@0.3.0": [
+          []
+        ],
+        "matchit@0.8.4": [
+          [
+            "default"
+          ]
+        ],
+        "md-5@0.11.0": [
+          [
+            "alloc",
+            "default",
+            "oid"
+          ]
+        ],
+        "memchr@2.8.2": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ],
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "memoffset@0.6.5": [
+          [
+            "default"
+          ]
+        ],
+        "mimalloc@0.1.52": [
+          []
+        ],
+        "mime@0.3.17": [
+          []
+        ],
+        "miniz_oxide@0.8.9": [
+          [
+            "simd",
+            "simd-adler32",
+            "with-alloc"
+          ]
+        ],
+        "mio@1.2.1": [
+          [
+            "default",
+            "log",
+            "net",
+            "os-ext",
+            "os-poll"
+          ]
+        ],
+        "multimap@0.10.1": [
+          []
+        ],
+        "num-bigint-dig@0.8.6": [
+          [
+            "i128",
+            "prime",
+            "rand",
+            "u64_digit",
+            "zeroize"
+          ]
+        ],
+        "num-bigint@0.4.6": [
+          []
+        ],
+        "num-conv@0.2.2": [
+          []
+        ],
+        "num-integer@0.1.46": [
+          [
+            "default",
+            "i128",
+            "std"
+          ]
+        ],
+        "num-iter@0.1.45": [
+          []
+        ],
+        "num-traits@0.2.19": [
+          [
+            "i128",
+            "libm",
+            "std"
+          ]
+        ],
+        "number_prefix@0.4.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "once_cell@1.21.4": [
+          [
+            "alloc",
+            "default",
+            "race",
+            "std"
+          ]
+        ],
+        "opaque-debug@0.3.1": [
+          []
+        ],
+        "openssl-probe@0.1.6": [
+          []
+        ],
+        "openssl-probe@0.2.1": [
+          []
+        ],
+        "openssl-src@300.6.0+3.6.2": [
+          [
+            "default",
+            "legacy"
+          ]
+        ],
+        "openssl-sys@0.9.116": [
+          [
+            "openssl-src",
+            "vendored"
+          ]
+        ],
+        "outref@0.5.2": [
+          []
+        ],
+        "p256@0.13.2": [
+          [
+            "alloc",
+            "arithmetic",
+            "default",
+            "digest",
+            "ecdsa",
+            "ecdsa-core",
+            "pem",
+            "pkcs8",
+            "sha2",
+            "sha256",
+            "std"
+          ]
+        ],
+        "p384@0.13.1": [
+          [
+            "alloc",
+            "arithmetic",
+            "default",
+            "digest",
+            "ecdh",
+            "ecdsa",
+            "ecdsa-core",
+            "pem",
+            "pkcs8",
+            "sha2",
+            "sha384",
+            "std"
+          ]
+        ],
+        "p521@0.13.3": [
+          [
+            "alloc",
+            "arithmetic",
+            "default",
+            "digest",
+            "ecdsa",
+            "ecdsa-core",
+            "getrandom",
+            "pem",
+            "pkcs8",
+            "rand_core",
+            "sha512",
+            "std"
+          ]
+        ],
+        "parking@2.2.1": [
+          []
+        ],
+        "parking_lot@0.12.5": [
+          [
+            "default"
+          ]
+        ],
+        "parking_lot_core@0.9.12": [
+          []
+        ],
+        "password-hash@0.5.0": [
+          [
+            "alloc",
+            "default",
+            "getrandom",
+            "rand_core"
+          ]
+        ],
+        "paste@1.0.15": [
+          []
+        ],
+        "pbjson-build@0.7.0": [
+          []
+        ],
+        "pbjson@0.7.0": [
+          []
+        ],
+        "pem-rfc7468@0.7.0": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "pem@3.0.6": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "percent-encoding@2.3.2": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "petgraph@0.7.1": [
+          []
+        ],
+        "pin-project-internal@1.1.13": [
+          []
+        ],
+        "pin-project-lite@0.2.17": [
+          []
+        ],
+        "pin-project@1.1.13": [
+          []
+        ],
+        "pin-utils@0.1.0": [
+          []
+        ],
+        "pkcs1@0.7.5": [
+          [
+            "alloc",
+            "pem",
+            "pkcs8",
+            "std",
+            "zeroize"
+          ]
+        ],
+        "pkcs8@0.10.2": [
+          [
+            "alloc",
+            "pem",
+            "std"
+          ]
+        ],
+        "pkg-config@0.3.33": [
+          []
+        ],
+        "polyval@0.6.2": [
+          []
+        ],
+        "portable-atomic@1.13.1": [
+          [
+            "default",
+            "fallback"
+          ]
+        ],
+        "potential_utf@0.1.5": [
+          [
+            "zerovec"
+          ]
+        ],
+        "powerfmt@0.2.0": [
+          []
+        ],
+        "ppv-lite86@0.2.21": [
+          [
+            "simd",
+            "std"
+          ]
+        ],
+        "prettyplease@0.2.37": [
+          []
+        ],
+        "primeorder@0.13.6": [
+          []
+        ],
+        "proc-macro2@1.0.106": [
+          [
+            "default",
+            "proc-macro"
+          ]
+        ],
+        "prost-build@0.13.5": [
+          [
+            "default",
+            "format"
+          ]
+        ],
+        "prost-derive@0.13.5": [
+          []
+        ],
+        "prost-types@0.13.5": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "prost@0.13.5": [
+          [
+            "default",
+            "derive",
+            "prost-derive",
+            "std"
+          ]
+        ],
+        "quote@1.0.46": [
+          [
+            "default",
+            "proc-macro"
+          ]
+        ],
+        "rand@0.8.6": [
+          [
+            "alloc",
+            "getrandom",
+            "libc",
+            "rand_chacha",
+            "std",
+            "std_rng"
+          ]
+        ],
+        "rand@0.9.4": [
+          [
+            "alloc",
+            "default",
+            "os_rng",
+            "small_rng",
+            "std",
+            "std_rng",
+            "thread_rng"
+          ]
+        ],
+        "rand_chacha@0.3.1": [
+          [
+            "std"
+          ]
+        ],
+        "rand_chacha@0.9.0": [
+          [
+            "std"
+          ]
+        ],
+        "rand_core@0.6.4": [
+          [
+            "alloc",
+            "getrandom",
+            "std"
+          ]
+        ],
+        "rand_core@0.9.5": [
+          [
+            "os_rng",
+            "std"
+          ]
+        ],
+        "ratatui@0.29.0": [
+          [
+            "crossterm",
+            "default",
+            "underline-color"
+          ]
+        ],
+        "rayon-core@1.13.0": [
+          []
+        ],
+        "rayon@1.12.0": [
+          []
+        ],
+        "rcgen@0.14.8": [
+          [
+            "crypto",
+            "default",
+            "pem",
+            "ring"
+          ]
+        ],
+        "ref-cast-impl@1.0.27": [
+          []
+        ],
+        "ref-cast@1.0.27": [
+          []
+        ],
+        "regex-automata@0.4.14": [
+          [
+            "alloc",
+            "dfa-onepass",
+            "hybrid",
+            "meta",
+            "nfa",
+            "nfa-backtrack",
+            "nfa-pikevm",
+            "nfa-thompson",
+            "perf",
+            "perf-inline",
+            "perf-literal",
+            "perf-literal-multisubstring",
+            "perf-literal-substring",
+            "std",
+            "syntax",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment",
+            "unicode-word-boundary"
+          ],
+          [
+            "alloc",
+            "meta",
+            "nfa-pikevm",
+            "nfa-thompson",
+            "std",
+            "syntax",
+            "unicode-bool"
+          ]
+        ],
+        "regex-lite@0.1.9": [
+          [
+            "default",
+            "std",
+            "string"
+          ]
+        ],
+        "regex-syntax@0.8.11": [
+          [
+            "default",
+            "std",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment"
+          ],
+          [
+            "std",
+            "unicode-bool"
+          ]
+        ],
+        "regex@1.12.4": [
+          [
+            "default",
+            "perf",
+            "perf-backtrack",
+            "perf-cache",
+            "perf-dfa",
+            "perf-inline",
+            "perf-literal",
+            "perf-onepass",
+            "std",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment"
+          ],
+          [
+            "std",
+            "unicode-bool"
+          ]
+        ],
+        "reqwest@0.12.28": [
+          [
+            "__rustls",
+            "__rustls-ring",
+            "__tls",
+            "json",
+            "rustls-tls-native-roots",
+            "rustls-tls-native-roots-no-provider",
+            "stream"
+          ]
+        ],
+        "rfc6979@0.4.0": [
+          []
+        ],
+        "ring@0.17.14": [
+          [
+            "alloc",
+            "default",
+            "dev_urandom_fallback",
+            "std"
+          ]
+        ],
+        "rnix@0.10.2": [
+          []
+        ],
+        "rowan@0.12.6": [
+          []
+        ],
+        "rsa@0.9.10": [
+          [
+            "default",
+            "pem",
+            "sha2",
+            "std",
+            "u64_digit"
+          ]
+        ],
+        "rusqlite@0.32.1": [
+          []
+        ],
+        "rustc-hash@1.1.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "rustc_version@0.4.1": [
+          []
+        ],
+        "rustix@0.38.44": [
+          [
+            "alloc",
+            "libc-extra-traits",
+            "std",
+            "stdio",
+            "termios"
+          ]
+        ],
+        "rustix@1.1.4": [
+          [
+            "alloc",
+            "default",
+            "event",
+            "fs",
+            "net",
+            "process",
+            "std"
+          ],
+          [
+            "alloc",
+            "default",
+            "fs",
+            "std"
+          ]
+        ],
+        "rustls-native-certs@0.8.3": [
+          []
+        ],
+        "rustls-pemfile@2.2.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "rustls-pki-types@1.14.1": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "rustls-webpki@0.103.13": [
+          [
+            "alloc",
+            "aws-lc-rs",
+            "ring",
+            "std"
+          ]
+        ],
+        "rustls@0.23.40": [
+          [
+            "aws-lc-rs",
+            "aws_lc_rs",
+            "default",
+            "log",
+            "logging",
+            "prefer-post-quantum",
+            "ring",
+            "std",
+            "tls12"
+          ]
+        ],
+        "rustversion@1.0.22": [
+          []
+        ],
+        "ryu@1.0.23": [
+          []
+        ],
+        "same-file@1.0.6": [
+          []
+        ],
+        "schemars@1.2.2": [
+          [
+            "default",
+            "derive",
+            "schemars_derive",
+            "std"
+          ]
+        ],
+        "schemars_derive@1.2.2": [
+          []
+        ],
+        "scopeguard@1.2.0": [
+          []
+        ],
+        "sec1@0.7.3": [
+          [
+            "alloc",
+            "default",
+            "der",
+            "pem",
+            "pkcs8",
+            "point",
+            "std",
+            "subtle",
+            "zeroize"
+          ]
+        ],
+        "semver@1.0.28": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "serde@1.0.228": [
+          [
+            "alloc",
+            "default",
+            "derive",
+            "rc",
+            "serde_derive",
+            "std"
+          ],
+          [
+            "alloc",
+            "derive",
+            "serde_derive",
+            "std"
+          ]
+        ],
+        "serde_core@1.0.228": [
+          [
+            "alloc",
+            "default",
+            "rc",
+            "result",
+            "std"
+          ],
+          [
+            "alloc",
+            "result",
+            "std"
+          ]
+        ],
+        "serde_derive@1.0.228": [
+          [
+            "default"
+          ]
+        ],
+        "serde_derive_internals@0.30.0": [
+          []
+        ],
+        "serde_json@1.0.150": [
+          [
+            "alloc",
+            "default",
+            "raw_value",
+            "std"
+          ],
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "serde_path_to_error@0.1.20": [
+          []
+        ],
+        "serde_spanned@0.6.9": [
+          [
+            "serde"
+          ]
+        ],
+        "serde_urlencoded@0.7.1": [
+          []
+        ],
+        "sha1@0.10.6": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "sha1@0.11.0": [
+          [
+            "alloc",
+            "default",
+            "oid"
+          ]
+        ],
+        "sha2@0.10.9": [
+          [
+            "compress",
+            "default",
+            "oid",
+            "std"
+          ]
+        ],
+        "sha2@0.11.0": [
+          [
+            "alloc",
+            "default",
+            "oid"
+          ]
+        ],
+        "shlex@2.0.1": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "signal-hook-mio@0.2.5": [
+          [
+            "mio-1_0",
+            "support-v1_0"
+          ]
+        ],
+        "signal-hook-registry@1.4.8": [
+          []
+        ],
+        "signal-hook@0.3.18": [
+          [
+            "channel",
+            "default",
+            "iterator"
+          ]
+        ],
+        "signature@2.2.0": [
+          [
+            "alloc",
+            "digest",
+            "rand_core",
+            "std"
+          ]
+        ],
+        "simd-adler32@0.3.9": [
+          []
+        ],
+        "simdutf8@0.1.5": [
+          [
+            "std"
+          ]
+        ],
+        "simple_asn1@0.6.4": [
+          []
+        ],
+        "slab@0.4.12": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "smallvec@1.15.2": [
+          [
+            "const_generics",
+            "const_new"
+          ]
+        ],
+        "smol_str@0.1.24": [
+          [
+            "default",
+            "serde",
+            "std"
+          ]
+        ],
+        "smoothutf8@0.2.3": [
+          [
+            "simdutf8"
+          ]
+        ],
+        "socket2@0.6.4": [
+          [
+            "all"
+          ]
+        ],
+        "spin@0.10.0": [
+          [
+            "mutex",
+            "once",
+            "rwlock",
+            "spin_mutex"
+          ]
+        ],
+        "spin@0.9.8": [
+          [
+            "barrier",
+            "default",
+            "lazy",
+            "lock_api",
+            "lock_api_crate",
+            "mutex",
+            "once",
+            "rwlock",
+            "spin_mutex"
+          ]
+        ],
+        "spki@0.7.3": [
+          [
+            "alloc",
+            "pem",
+            "std"
+          ]
+        ],
+        "sqlx-core@0.8.6": [
+          [
+            "_rt-tokio",
+            "crc",
+            "default",
+            "migrate",
+            "offline",
+            "serde",
+            "sha2",
+            "tokio",
+            "tokio-stream"
+          ]
+        ],
+        "sqlx-sqlite@0.8.6": [
+          [
+            "bundled"
+          ]
+        ],
+        "sqlx@0.8.6": [
+          [
+            "_rt-tokio",
+            "_sqlite",
+            "runtime-tokio",
+            "sqlite",
+            "sqlx-sqlite"
+          ]
+        ],
+        "ssh-cipher@0.2.0": [
+          []
+        ],
+        "ssh-encoding@0.2.0": [
+          [
+            "alloc",
+            "base64",
+            "pem",
+            "sha2",
+            "std"
+          ]
+        ],
+        "ssh-key@0.6.7": [
+          [
+            "alloc",
+            "ed25519",
+            "rand_core",
+            "std"
+          ]
+        ],
+        "ssh2@0.9.5": [
+          [
+            "vendored-openssl"
+          ]
+        ],
+        "stable_deref_trait@1.2.1": [
+          []
+        ],
+        "static_assertions@1.1.0": [
+          []
+        ],
+        "strsim@0.11.1": [
+          []
+        ],
+        "strum@0.26.3": [
+          [
+            "default",
+            "derive",
+            "std",
+            "strum_macros"
+          ]
+        ],
+        "strum_macros@0.26.4": [
+          []
+        ],
+        "subtle@2.6.1": [
+          [
+            "default",
+            "i128",
+            "std"
+          ]
+        ],
+        "syn@2.0.118": [
+          [
+            "clone-impls",
+            "default",
+            "derive",
+            "extra-traits",
+            "fold",
+            "full",
+            "parsing",
+            "printing",
+            "proc-macro",
+            "visit",
+            "visit-mut"
+          ]
+        ],
+        "syn@3.0.5": [
+          [
+            "clone-impls",
+            "default",
+            "derive",
+            "parsing",
+            "printing",
+            "proc-macro"
+          ]
+        ],
+        "sync_wrapper@1.0.2": [
+          [
+            "futures",
+            "futures-core"
+          ]
+        ],
+        "synstructure@0.13.2": [
+          [
+            "default",
+            "proc-macro"
+          ]
+        ],
+        "tar@0.4.46": [
+          [
+            "default",
+            "xattr"
+          ]
+        ],
+        "tempfile@3.27.0": [
+          [
+            "default",
+            "getrandom"
+          ]
+        ],
+        "text-size@1.1.1": [
+          []
+        ],
+        "thiserror-impl@1.0.69": [
+          []
+        ],
+        "thiserror-impl@2.0.18": [
+          []
+        ],
+        "thiserror@1.0.69": [
+          []
+        ],
+        "thiserror@2.0.18": [
+          [
+            "default",
+            "std"
+          ],
+          [
+            "std"
+          ]
+        ],
+        "time-core@0.1.8": [
+          []
+        ],
+        "time-macros@0.2.27": [
+          [
+            "formatting",
+            "parsing"
+          ]
+        ],
+        "time@0.3.47": [
+          [
+            "alloc",
+            "default",
+            "formatting",
+            "macros",
+            "parsing",
+            "std"
+          ]
+        ],
+        "tinystr@0.8.3": [
+          [
+            "zerovec"
+          ]
+        ],
+        "tinyvec@1.11.0": [
+          [
+            "alloc",
+            "default",
+            "tinyvec_macros"
+          ]
+        ],
+        "tinyvec_macros@0.1.1": [
+          []
+        ],
+        "tokio-macros@2.7.0": [
+          []
+        ],
+        "tokio-rustls@0.26.4": [
+          [
+            "aws_lc_rs",
+            "default",
+            "logging",
+            "ring",
+            "tls12"
+          ]
+        ],
+        "tokio-stream@0.1.18": [
+          [
+            "default",
+            "fs",
+            "sync",
+            "time",
+            "tokio-util"
+          ]
+        ],
+        "tokio-util@0.7.18": [
+          [
+            "codec",
+            "default",
+            "io"
+          ]
+        ],
+        "tokio@1.52.3": [
+          [
+            "bytes",
+            "default",
+            "fs",
+            "io-std",
+            "io-util",
+            "libc",
+            "macros",
+            "mio",
+            "net",
+            "process",
+            "rt",
+            "rt-multi-thread",
+            "signal",
+            "signal-hook-registry",
+            "socket2",
+            "sync",
+            "time",
+            "tokio-macros"
+          ]
+        ],
+        "toml@0.8.23": [
+          [
+            "default",
+            "display",
+            "parse"
+          ]
+        ],
+        "toml_datetime@0.6.11": [
+          [
+            "serde"
+          ]
+        ],
+        "toml_edit@0.22.27": [
+          [
+            "default",
+            "display",
+            "parse",
+            "serde"
+          ]
+        ],
+        "toml_write@0.1.2": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "tower-http@0.6.11": [
+          [
+            "catch-panic",
+            "cors",
+            "default",
+            "follow-redirect",
+            "futures-util",
+            "limit",
+            "tower",
+            "trace",
+            "tracing"
+          ]
+        ],
+        "tower-layer@0.3.3": [
+          []
+        ],
+        "tower-service@0.3.3": [
+          []
+        ],
+        "tower@0.5.3": [
+          [
+            "buffer",
+            "futures-core",
+            "futures-util",
+            "log",
+            "make",
+            "pin-project-lite",
+            "retry",
+            "sync_wrapper",
+            "timeout",
+            "tokio",
+            "tokio-util",
+            "tracing",
+            "util"
+          ]
+        ],
+        "tracing-attributes@0.1.31": [
+          []
+        ],
+        "tracing-core@0.1.36": [
+          [
+            "once_cell",
+            "std"
+          ]
+        ],
+        "tracing@0.1.44": [
+          [
+            "attributes",
+            "default",
+            "log",
+            "std",
+            "tracing-attributes"
+          ]
+        ],
+        "try-lock@0.2.5": [
+          []
+        ],
+        "typenum@1.20.1": [
+          [
+            "const-generics"
+          ]
+        ],
+        "unicode-ident@1.0.24": [
+          []
+        ],
+        "unicode-normalization@0.1.25": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "unicode-segmentation@1.13.3": [
+          []
+        ],
+        "unicode-truncate@1.1.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "unicode-width@0.1.14": [
+          [
+            "cjk",
+            "default"
+          ]
+        ],
+        "unicode-width@0.2.0": [
+          [
+            "cjk",
+            "default"
+          ]
+        ],
+        "universal-hash@0.5.1": [
+          []
+        ],
+        "untrusted@0.9.0": [
+          []
+        ],
+        "url@2.5.8": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "urlencoding@2.1.3": [
+          []
+        ],
+        "utf8_iter@1.0.4": [
+          []
+        ],
+        "utf8parse@0.2.2": [
+          [
+            "default"
+          ]
+        ],
+        "uuid@1.23.1": [
+          [
+            "default",
+            "rng",
+            "serde",
+            "std",
+            "v4"
+          ]
+        ],
+        "vcpkg@0.2.15": [
+          []
+        ],
+        "version_check@0.9.5": [
+          []
+        ],
+        "vsimd@0.8.0": [
+          [
+            "alloc",
+            "detect",
+            "std"
+          ]
+        ],
+        "walkdir@2.5.0": [
+          []
+        ],
+        "want@0.3.1": [
+          []
+        ],
+        "webpki-roots@1.0.7": [
+          []
+        ],
+        "winnow@0.7.15": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "writeable@0.6.3": [
+          []
+        ],
+        "xattr@1.6.1": [
+          [
+            "default",
+            "unsupported"
+          ]
+        ],
+        "xmlparser@0.13.6": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "yasna@0.6.0": [
+          [
+            "default",
+            "std",
+            "time"
+          ]
+        ],
+        "yoke-derive@0.8.2": [
+          []
+        ],
+        "yoke@0.8.3": [
+          [
+            "derive",
+            "zerofrom"
+          ]
+        ],
+        "zerocopy-derive@0.8.49": [
+          []
+        ],
+        "zerocopy@0.8.49": [
+          [
+            "derive",
+            "simd",
+            "zerocopy-derive"
+          ]
+        ],
+        "zerofrom-derive@0.1.7": [
+          []
+        ],
+        "zerofrom@0.1.8": [
+          [
+            "derive"
+          ]
+        ],
+        "zeroize@1.9.0": [
+          [
+            "alloc",
+            "default"
+          ]
+        ],
+        "zerotrie@0.2.4": [
+          [
+            "yoke",
+            "zerofrom"
+          ]
+        ],
+        "zerovec-derive@0.11.3": [
+          []
+        ],
+        "zerovec@0.11.6": [
+          [
+            "derive",
+            "yoke"
+          ]
+        ],
+        "zlib-rs@0.6.8": [
+          [
+            "rust-allocator",
+            "std"
+          ]
+        ],
+        "zmij@1.0.21": [
+          []
+        ],
+        "zstd-safe@7.2.4": [
+          [
+            "arrays",
+            "legacy",
+            "std",
+            "zdict_builder",
+            "zstdmt"
+          ]
+        ],
+        "zstd-sys@2.0.16+zstd.1.5.7": [
+          [
+            "legacy",
+            "std",
+            "zdict_builder",
+            "zstdmt"
+          ]
+        ],
+        "zstd@0.13.3": [
+          [
+            "arrays",
+            "default",
+            "legacy",
+            "zdict_builder",
+            "zstdmt"
+          ]
+        ]
+      },
+      "first_party_crates": 38,
+      "first_party_features": {
+        "aos-activation": [
+          []
+        ],
+        "aos-artifact-evidence": [
+          []
+        ],
+        "aos-boot-identity": [
+          []
+        ],
+        "aos-build-api": [
+          []
+        ],
+        "aos-build-client": [
+          []
+        ],
+        "aos-build-server": [
+          []
+        ],
+        "aos-cli": [
+          [
+            "release-fleet-fixture"
+          ]
+        ],
+        "aos-cli-ui": [
+          []
+        ],
+        "aos-closure-analysis": [
+          []
+        ],
+        "aos-core": [
+          []
+        ],
+        "aos-deployment": [
+          []
+        ],
+        "aos-deployment-format": [
+          []
+        ],
+        "aos-hub-api": [
+          []
+        ],
+        "aos-hub-client": [
+          []
+        ],
+        "aos-hub-db": [
+          [
+            "default",
+            "test-fixtures"
+          ]
+        ],
+        "aos-hub-model": [
+          [
+            "default"
+          ]
+        ],
+        "aos-hub-native": [
+          [
+            "default"
+          ]
+        ],
+        "aos-hub-service": [
+          [
+            "default",
+            "test-fixtures"
+          ]
+        ],
+        "aos-hub-ui": [
+          []
+        ],
+        "aos-image-finalizer": [
+          []
+        ],
+        "aos-module-docs": [
+          []
+        ],
+        "aos-module-format": [
+          []
+        ],
+        "aos-nar": [
+          [
+            "compression",
+            "default"
+          ]
+        ],
+        "aos-nix": [
+          []
+        ],
+        "aos-nix-cache": [
+          []
+        ],
+        "aos-nix-docs": [
+          []
+        ],
+        "aos-oci": [
+          []
+        ],
+        "aos-oci-types": [
+          []
+        ],
+        "aos-package-maintenance": [
+          []
+        ],
+        "aos-package-manager": [
+          []
+        ],
+        "aos-platform-metadata": [
+          []
+        ],
+        "aos-registry-authoring": [
+          []
+        ],
+        "aos-registry-client": [
+          []
+        ],
+        "aos-registry-format": [
+          []
+        ],
+        "aos-release-coordinator": [
+          []
+        ],
+        "aos-release-format": [
+          []
+        ],
+        "aos-storage-layout": [
+          []
+        ],
+        "aos-transfer": [
+          [
+            "transfer"
+          ]
+        ]
+      },
+      "inventory_sha256": "bd4f18c6669213169fcd32143b084e536b9f668c8aadc0d84914888793c2cc5f"
+    },
+    "aos-cli-tests": {
+      "cargo_messages_sha256": "c4388b1320341e0fadd35e0aee572788c015e01586b92265d45fc2c49108713c",
+      "cargo_output": "/nix/store/zi8mf990ahfk697wcsc3x5kl9rwzqfri-aos-bazel-aos-cli-cargo-qualified-capture-1",
+      "configured_inventory_output": "/nix/store/lix9nf51qr07qy2yv68rm436hzm4cmh2-aos-bazel-aos-cli-tests-inventory-1",
+      "external_crates": 439,
+      "features": {
+        "adler2@2.0.1": [
+          []
+        ],
+        "aead@0.5.2": [
+          [
+            "alloc",
+            "getrandom",
+            "rand_core"
+          ]
+        ],
+        "aes-gcm@0.10.3": [
+          [
+            "aes",
+            "alloc",
+            "default",
+            "getrandom",
+            "rand_core"
+          ]
+        ],
+        "aes@0.8.4": [
+          []
+        ],
+        "ahash@0.8.12": [
+          []
+        ],
+        "aho-corasick@1.1.4": [
+          [
+            "default",
+            "perf-literal",
+            "std"
+          ]
+        ],
+        "alejandra@3.1.0": [
+          []
+        ],
+        "allocator-api2@0.2.21": [
+          [
+            "alloc"
+          ]
+        ],
+        "anstream@1.0.0": [
+          [
+            "auto",
+            "default",
+            "wincon"
+          ]
+        ],
+        "anstyle-parse@1.0.0": [
+          [
+            "default",
+            "utf8"
+          ]
+        ],
+        "anstyle-query@1.1.5": [
+          []
+        ],
+        "anstyle@1.0.14": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "anyhow@1.0.102": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "arc-swap@1.9.1": [
+          []
+        ],
+        "argon2@0.5.3": [
+          [
+            "alloc",
+            "default",
+            "password-hash",
+            "rand"
+          ]
+        ],
+        "async-trait@0.1.89": [
+          []
+        ],
+        "atoi@2.0.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "atomic-waker@1.1.2": [
+          []
+        ],
+        "autocfg@1.5.1": [
+          []
+        ],
+        "aws-config@1.8.17": [
+          [
+            "credentials-process",
+            "default",
+            "default-https-client",
+            "rt-tokio",
+            "sso"
+          ]
+        ],
+        "aws-credential-types@1.2.14": [
+          [
+            "test-util"
+          ]
+        ],
+        "aws-lc-rs@1.17.0": [
+          [
+            "aws-lc-sys",
+            "prebuilt-nasm"
+          ]
+        ],
+        "aws-lc-sys@0.41.0": [
+          [
+            "prebuilt-nasm"
+          ]
+        ],
+        "aws-runtime@1.7.4": [
+          [
+            "event-stream",
+            "http-02x",
+            "http-1x",
+            "sigv4a"
+          ]
+        ],
+        "aws-sdk-s3@1.134.0": [
+          [
+            "default-https-client",
+            "http-1x",
+            "rt-tokio",
+            "sigv4a"
+          ]
+        ],
+        "aws-sdk-sso@1.100.0": [
+          []
+        ],
+        "aws-sdk-ssooidc@1.102.0": [
+          []
+        ],
+        "aws-sdk-sts@1.105.0": [
+          []
+        ],
+        "aws-sigv4@1.4.4": [
+          [
+            "default",
+            "http0-compat",
+            "http1",
+            "sign-eventstream",
+            "sign-http",
+            "sigv4a"
+          ]
+        ],
+        "aws-smithy-async@1.2.14": [
+          [
+            "rt-tokio"
+          ]
+        ],
+        "aws-smithy-checksums@0.64.8": [
+          []
+        ],
+        "aws-smithy-eventstream@0.60.20": [
+          []
+        ],
+        "aws-smithy-http-client@1.1.12": [
+          [
+            "default-client",
+            "rustls-aws-lc"
+          ]
+        ],
+        "aws-smithy-http@0.63.6": [
+          [
+            "aws-smithy-eventstream",
+            "event-stream"
+          ]
+        ],
+        "aws-smithy-json@0.62.6": [
+          []
+        ],
+        "aws-smithy-observability@0.2.6": [
+          []
+        ],
+        "aws-smithy-query@0.60.15": [
+          []
+        ],
+        "aws-smithy-runtime-api-macros@1.0.0": [
+          []
+        ],
+        "aws-smithy-runtime-api@1.12.1": [
+          [
+            "client",
+            "default",
+            "http-02x",
+            "http-1x",
+            "http-auth",
+            "test-util"
+          ]
+        ],
+        "aws-smithy-runtime@1.11.3": [
+          [
+            "client",
+            "default-https-client",
+            "rt-tokio"
+          ]
+        ],
+        "aws-smithy-schema@0.1.0": [
+          []
+        ],
+        "aws-smithy-types@1.4.8": [
+          [
+            "byte-stream-poll-next",
+            "http-body-0-4-x",
+            "http-body-1-x",
+            "rt-tokio",
+            "test-util"
+          ]
+        ],
+        "aws-smithy-xml@0.60.15": [
+          []
+        ],
+        "aws-types@1.3.16": [
+          []
+        ],
+        "axum-core@0.5.6": [
+          [
+            "tracing"
+          ]
+        ],
+        "axum-macros@0.5.1": [
+          [
+            "default"
+          ]
+        ],
+        "axum@0.8.9": [
+          [
+            "default",
+            "form",
+            "http1",
+            "http2",
+            "json",
+            "macros",
+            "matched-path",
+            "original-uri",
+            "query",
+            "tokio",
+            "tower-log",
+            "tracing"
+          ]
+        ],
+        "base16ct@0.2.0": [
+          [
+            "alloc"
+          ]
+        ],
+        "base64-simd@0.8.0": [
+          [
+            "alloc",
+            "default",
+            "detect",
+            "std"
+          ]
+        ],
+        "base64@0.21.7": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "base64@0.22.1": [
+          [
+            "alloc"
+          ],
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "base64ct@1.8.3": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "bitflags@2.13.0": [
+          [
+            "std"
+          ]
+        ],
+        "blake2@0.10.6": [
+          []
+        ],
+        "block-buffer@0.10.4": [
+          []
+        ],
+        "block-buffer@0.12.0": [
+          []
+        ],
+        "bstr@1.12.1": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "buffa-codegen@0.9.2": [
+          []
+        ],
+        "buffa-descriptor@0.9.2": [
+          [
+            "std"
+          ]
+        ],
+        "buffa@0.9.2": [
+          [
+            "default",
+            "fast-utf8",
+            "json",
+            "std"
+          ]
+        ],
+        "byteorder@1.5.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "bytes-utils@0.1.4": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "bytes@1.11.1": [
+          [
+            "default",
+            "serde",
+            "std"
+          ],
+          [
+            "std"
+          ]
+        ],
+        "bzip2-rs@0.1.2": [
+          [
+            "default"
+          ]
+        ],
+        "cassowary@0.3.0": [
+          []
+        ],
+        "castaway@0.2.4": [
+          [
+            "alloc"
+          ]
+        ],
+        "cbitset@0.2.0": [
+          []
+        ],
+        "cc@1.2.65": [
+          [
+            "parallel"
+          ]
+        ],
+        "cfg-if@1.0.4": [
+          []
+        ],
+        "ciborium-io@0.2.2": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "ciborium-ll@0.2.2": [
+          []
+        ],
+        "ciborium@0.2.2": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "cipher@0.4.4": [
+          []
+        ],
+        "clap@4.6.1": [
+          [
+            "color",
+            "default",
+            "derive",
+            "env",
+            "error-context",
+            "help",
+            "std",
+            "suggestions",
+            "usage"
+          ]
+        ],
+        "clap_builder@4.6.0": [
+          [
+            "color",
+            "env",
+            "error-context",
+            "help",
+            "std",
+            "suggestions",
+            "usage"
+          ]
+        ],
+        "clap_complete@4.6.5": [
+          [
+            "default"
+          ]
+        ],
+        "clap_derive@4.6.1": [
+          [
+            "default"
+          ]
+        ],
+        "clap_lex@1.1.0": [
+          []
+        ],
+        "cmake@0.1.58": [
+          []
+        ],
+        "cmov@0.5.4": [
+          []
+        ],
+        "colorchoice@1.0.5": [
+          []
+        ],
+        "compact_str@0.8.2": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "concurrent-queue@2.5.0": [
+          [
+            "std"
+          ]
+        ],
+        "connectrpc-build@0.9.0": [
+          []
+        ],
+        "connectrpc-codegen@0.9.0": [
+          []
+        ],
+        "connectrpc@0.9.1": [
+          [
+            "axum",
+            "client",
+            "client-tls",
+            "default",
+            "gzip",
+            "json",
+            "server",
+            "zstd"
+          ]
+        ],
+        "console@0.15.11": [
+          [
+            "ansi-parsing",
+            "default",
+            "unicode-width"
+          ]
+        ],
+        "const-oid@0.10.2": [
+          []
+        ],
+        "const-oid@0.9.6": [
+          []
+        ],
+        "countme@2.0.4": [
+          []
+        ],
+        "cpufeatures@0.2.17": [
+          []
+        ],
+        "cpufeatures@0.3.0": [
+          []
+        ],
+        "crc-catalog@2.5.0": [
+          []
+        ],
+        "crc-fast@1.10.0": [
+          [
+            "alloc",
+            "default",
+            "digest",
+            "ffi",
+            "panic-handler",
+            "std"
+          ]
+        ],
+        "crc32fast@1.5.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "crc@3.4.0": [
+          []
+        ],
+        "crossbeam-deque@0.8.6": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "crossbeam-epoch@0.9.18": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "crossbeam-queue@0.3.13": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "crossbeam-utils@0.8.21": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "crossterm@0.28.1": [
+          [
+            "bracketed-paste",
+            "default",
+            "events",
+            "windows"
+          ]
+        ],
+        "crypto-bigint@0.5.5": [
+          [
+            "default",
+            "generic-array",
+            "rand",
+            "rand_core",
+            "zeroize"
+          ]
+        ],
+        "crypto-common@0.1.7": [
+          [
+            "getrandom",
+            "rand_core",
+            "std"
+          ]
+        ],
+        "crypto-common@0.2.2": [
+          []
+        ],
+        "ctr@0.9.2": [
+          []
+        ],
+        "ctutils@0.4.2": [
+          []
+        ],
+        "curve25519-dalek-derive@0.1.1": [
+          []
+        ],
+        "curve25519-dalek@4.1.3": [
+          [
+            "alloc",
+            "digest",
+            "precomputed-tables",
+            "zeroize"
+          ]
+        ],
+        "darling@0.23.0": [
+          [
+            "default",
+            "suggestions"
+          ]
+        ],
+        "darling_core@0.23.0": [
+          [
+            "strsim",
+            "suggestions"
+          ]
+        ],
+        "darling_macro@0.23.0": [
+          []
+        ],
+        "der@0.7.10": [
+          [
+            "alloc",
+            "oid",
+            "pem",
+            "std",
+            "zeroize"
+          ]
+        ],
+        "deranged@0.5.8": [
+          [
+            "default",
+            "powerfmt"
+          ]
+        ],
+        "digest@0.10.7": [
+          [
+            "alloc",
+            "block-buffer",
+            "const-oid",
+            "core-api",
+            "default",
+            "mac",
+            "oid",
+            "std",
+            "subtle"
+          ]
+        ],
+        "digest@0.11.3": [
+          [
+            "alloc",
+            "block-api",
+            "default",
+            "mac",
+            "oid"
+          ]
+        ],
+        "displaydoc@0.2.6": [
+          []
+        ],
+        "dunce@1.0.5": [
+          []
+        ],
+        "dyn-clone@1.0.20": [
+          []
+        ],
+        "ecdsa@0.16.9": [
+          [
+            "alloc",
+            "arithmetic",
+            "default",
+            "der",
+            "digest",
+            "hazmat",
+            "pem",
+            "pkcs8",
+            "rfc6979",
+            "signing",
+            "spki",
+            "std",
+            "verifying"
+          ]
+        ],
+        "ed25519-dalek@2.2.0": [
+          [
+            "alloc",
+            "default",
+            "fast",
+            "pkcs8",
+            "std",
+            "zeroize"
+          ]
+        ],
+        "ed25519@2.2.3": [
+          [
+            "alloc",
+            "pkcs8",
+            "std"
+          ]
+        ],
+        "either@1.16.0": [
+          [
+            "default",
+            "serde",
+            "std",
+            "use_std"
+          ],
+          [
+            "std",
+            "use_std"
+          ]
+        ],
+        "elliptic-curve@0.13.8": [
+          [
+            "alloc",
+            "arithmetic",
+            "digest",
+            "ecdh",
+            "ff",
+            "group",
+            "hazmat",
+            "pem",
+            "pkcs8",
+            "sec1",
+            "std"
+          ]
+        ],
+        "equivalent@1.0.2": [
+          []
+        ],
+        "errno@0.3.14": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "event-listener@5.4.1": [
+          [
+            "default",
+            "parking",
+            "std"
+          ]
+        ],
+        "fallible-iterator@0.3.0": [
+          [
+            "alloc",
+            "default"
+          ]
+        ],
+        "fallible-streaming-iterator@0.1.9": [
+          []
+        ],
+        "fastrand@2.4.1": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "ff@0.13.1": [
+          [
+            "alloc"
+          ]
+        ],
+        "filetime@0.2.29": [
+          []
+        ],
+        "find-msvc-tools@0.1.9": [
+          []
+        ],
+        "fixedbitset@0.5.7": [
+          []
+        ],
+        "flate2@1.1.9": [
+          [
+            "any_impl",
+            "any_zlib",
+            "miniz_oxide",
+            "rust_backend",
+            "zlib-rs"
+          ]
+        ],
+        "flume@0.11.1": [
+          [
+            "async",
+            "futures-core",
+            "futures-sink"
+          ]
+        ],
+        "fnv@1.0.7": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "foldhash@0.1.5": [
+          [
+            "std"
+          ]
+        ],
+        "foldhash@0.2.0": [
+          []
+        ],
+        "form_urlencoded@1.2.2": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "fs_extra@1.3.0": [
+          []
+        ],
+        "futures-channel@0.3.32": [
+          [
+            "alloc",
+            "default",
+            "futures-sink",
+            "sink",
+            "std"
+          ]
+        ],
+        "futures-core@0.3.32": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "futures-executor@0.3.32": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "futures-intrusive@0.5.0": [
+          [
+            "alloc",
+            "default",
+            "parking_lot",
+            "std"
+          ]
+        ],
+        "futures-io@0.3.32": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "futures-macro@0.3.32": [
+          []
+        ],
+        "futures-sink@0.3.32": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "futures-task@0.3.32": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "futures-util@0.3.32": [
+          [
+            "alloc",
+            "async-await",
+            "async-await-macro",
+            "channel",
+            "default",
+            "futures-channel",
+            "futures-io",
+            "futures-macro",
+            "futures-sink",
+            "io",
+            "memchr",
+            "sink",
+            "slab",
+            "std"
+          ]
+        ],
+        "futures@0.3.32": [
+          [
+            "alloc",
+            "async-await",
+            "default",
+            "executor",
+            "futures-executor",
+            "std"
+          ]
+        ],
+        "generic-array@0.14.7": [
+          [
+            "more_lengths",
+            "zeroize"
+          ]
+        ],
+        "getrandom@0.2.17": [
+          [
+            "std"
+          ]
+        ],
+        "getrandom@0.3.4": [
+          [
+            "std"
+          ]
+        ],
+        "getrandom@0.4.2": [
+          []
+        ],
+        "ghash@0.5.1": [
+          []
+        ],
+        "git2@0.21.0": [
+          [
+            "cred",
+            "https",
+            "openssl-probe",
+            "openssl-sys",
+            "ssh",
+            "unstable-sha256",
+            "vendored-libgit2"
+          ]
+        ],
+        "glob@0.3.3": [
+          []
+        ],
+        "globset@0.4.18": [
+          [
+            "default",
+            "log"
+          ]
+        ],
+        "group@0.13.0": [
+          [
+            "alloc"
+          ]
+        ],
+        "h2@0.4.14": [
+          []
+        ],
+        "half@2.7.1": [
+          []
+        ],
+        "hashbrown@0.14.5": [
+          [
+            "ahash",
+            "inline-more"
+          ]
+        ],
+        "hashbrown@0.15.5": [
+          [
+            "allocator-api2",
+            "default",
+            "default-hasher",
+            "equivalent",
+            "inline-more",
+            "raw-entry",
+            "serde"
+          ],
+          [
+            "default-hasher",
+            "serde"
+          ]
+        ],
+        "hashbrown@0.16.1": [
+          [
+            "allocator-api2",
+            "default",
+            "default-hasher",
+            "equivalent",
+            "inline-more",
+            "raw-entry"
+          ]
+        ],
+        "hashbrown@0.17.1": [
+          []
+        ],
+        "hashbrown@0.9.1": [
+          [
+            "inline-more"
+          ]
+        ],
+        "hashlink@0.10.0": [
+          []
+        ],
+        "hashlink@0.9.1": [
+          []
+        ],
+        "heck@0.5.0": [
+          []
+        ],
+        "hex@0.4.3": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "hkdf@0.12.4": [
+          []
+        ],
+        "hmac@0.12.1": [
+          [
+            "reset"
+          ]
+        ],
+        "hmac@0.13.0": [
+          []
+        ],
+        "http-body-util@0.1.3": [
+          [
+            "default"
+          ]
+        ],
+        "http-body@0.4.6": [
+          []
+        ],
+        "http-body@1.0.1": [
+          []
+        ],
+        "http@0.2.12": [
+          []
+        ],
+        "http@1.4.1": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "httparse@1.10.1": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "httpdate@1.0.3": [
+          []
+        ],
+        "humantime-serde@1.1.1": [
+          []
+        ],
+        "humantime@2.3.0": [
+          []
+        ],
+        "hybrid-array@0.4.12": [
+          []
+        ],
+        "hyper-rustls@0.27.9": [
+          [
+            "http1",
+            "http2",
+            "native-tokio",
+            "ring",
+            "rustls-native-certs",
+            "tls12"
+          ]
+        ],
+        "hyper-util@0.1.20": [
+          [
+            "client",
+            "client-legacy",
+            "client-proxy",
+            "default",
+            "http1",
+            "http2",
+            "server",
+            "server-auto",
+            "server-graceful",
+            "service",
+            "tokio"
+          ]
+        ],
+        "hyper@1.10.0": [
+          [
+            "client",
+            "default",
+            "http1",
+            "http2",
+            "server"
+          ]
+        ],
+        "icu_collections@2.2.0": [
+          []
+        ],
+        "icu_locale_core@2.2.0": [
+          [
+            "zerovec"
+          ]
+        ],
+        "icu_normalizer@2.2.0": [
+          [
+            "compiled_data"
+          ]
+        ],
+        "icu_normalizer_data@2.2.0": [
+          []
+        ],
+        "icu_properties@2.2.0": [
+          [
+            "compiled_data"
+          ]
+        ],
+        "icu_properties_data@2.2.0": [
+          []
+        ],
+        "icu_provider@2.2.0": [
+          [
+            "baked"
+          ]
+        ],
+        "ident_case@1.0.1": [
+          []
+        ],
+        "idna@1.1.0": [
+          [
+            "alloc",
+            "compiled_data",
+            "std"
+          ]
+        ],
+        "idna_adapter@1.2.2": [
+          [
+            "compiled_data"
+          ]
+        ],
+        "ignore@0.4.25": [
+          []
+        ],
+        "indexmap@2.14.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "indicatif@0.17.11": [
+          [
+            "default",
+            "unicode-width"
+          ]
+        ],
+        "indoc@2.0.7": [
+          []
+        ],
+        "inout@0.1.4": [
+          []
+        ],
+        "instability@0.3.12": [
+          []
+        ],
+        "ipnet@2.12.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "is_terminal_polyfill@1.70.2": [
+          [
+            "default"
+          ]
+        ],
+        "itertools@0.13.0": [
+          [
+            "default",
+            "use_alloc",
+            "use_std"
+          ]
+        ],
+        "itertools@0.14.0": [
+          [
+            "default",
+            "use_alloc",
+            "use_std"
+          ]
+        ],
+        "itoa@1.0.18": [
+          []
+        ],
+        "jobserver@0.1.34": [
+          []
+        ],
+        "jsonwebtoken@9.3.1": [
+          [
+            "default",
+            "pem",
+            "simple_asn1",
+            "use_pem"
+          ]
+        ],
+        "jwt-rustcrypto@0.2.1": [
+          []
+        ],
+        "k256@0.13.4": [
+          [
+            "alloc",
+            "arithmetic",
+            "default",
+            "digest",
+            "ecdsa",
+            "ecdsa-core",
+            "once_cell",
+            "pkcs8",
+            "precomputed-tables",
+            "schnorr",
+            "sha2",
+            "sha256",
+            "signature",
+            "std"
+          ]
+        ],
+        "lazy_static@1.5.0": [
+          [
+            "spin",
+            "spin_no_std"
+          ]
+        ],
+        "libc@0.2.186": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "libgit2-sys@0.18.5+1.9.4": [
+          [
+            "https",
+            "libssh2-sys",
+            "openssl-sys",
+            "ssh",
+            "unstable-sha256",
+            "vendored"
+          ]
+        ],
+        "libm@0.2.16": [
+          [
+            "arch",
+            "default"
+          ]
+        ],
+        "libmimalloc-sys@0.1.49": [
+          []
+        ],
+        "libsqlite3-sys@0.30.1": [
+          [
+            "bundled",
+            "bundled_bindings",
+            "cc",
+            "default",
+            "min_sqlite_version_3_14_0",
+            "pkg-config",
+            "unlock_notify",
+            "vcpkg"
+          ]
+        ],
+        "libssh2-sys@0.3.1": [
+          [
+            "vendored-openssl"
+          ]
+        ],
+        "libz-sys@1.1.28": [
+          [
+            "libc"
+          ]
+        ],
+        "linux-raw-sys@0.12.1": [
+          [
+            "auxvec",
+            "elf",
+            "errno",
+            "general",
+            "if_ether",
+            "ioctl",
+            "net",
+            "netlink",
+            "no_std",
+            "prctl",
+            "xdp"
+          ],
+          [
+            "auxvec",
+            "elf",
+            "errno",
+            "general",
+            "ioctl",
+            "no_std"
+          ]
+        ],
+        "linux-raw-sys@0.4.15": [
+          [
+            "elf",
+            "errno",
+            "general",
+            "ioctl",
+            "no_std"
+          ]
+        ],
+        "litemap@0.8.2": [
+          []
+        ],
+        "lock_api@0.4.14": [
+          [
+            "atomic_usize",
+            "default"
+          ]
+        ],
+        "log@0.4.30": [
+          []
+        ],
+        "lru@0.12.5": [
+          [
+            "default",
+            "hashbrown"
+          ]
+        ],
+        "lru@0.16.4": [
+          [
+            "default",
+            "hashbrown"
+          ]
+        ],
+        "lzma-rs@0.3.0": [
+          []
+        ],
+        "matchit@0.8.4": [
+          [
+            "default"
+          ]
+        ],
+        "md-5@0.11.0": [
+          [
+            "alloc",
+            "default",
+            "oid"
+          ]
+        ],
+        "memchr@2.8.2": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ],
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "memoffset@0.6.5": [
+          [
+            "default"
+          ]
+        ],
+        "mimalloc@0.1.52": [
+          []
+        ],
+        "mime@0.3.17": [
+          []
+        ],
+        "miniz_oxide@0.8.9": [
+          [
+            "simd",
+            "simd-adler32",
+            "with-alloc"
+          ]
+        ],
+        "mio@1.2.1": [
+          [
+            "default",
+            "log",
+            "net",
+            "os-ext",
+            "os-poll"
+          ]
+        ],
+        "multimap@0.10.1": [
+          []
+        ],
+        "num-bigint-dig@0.8.6": [
+          [
+            "i128",
+            "prime",
+            "rand",
+            "u64_digit",
+            "zeroize"
+          ]
+        ],
+        "num-bigint@0.4.6": [
+          []
+        ],
+        "num-conv@0.2.2": [
+          []
+        ],
+        "num-integer@0.1.46": [
+          [
+            "default",
+            "i128",
+            "std"
+          ]
+        ],
+        "num-iter@0.1.45": [
+          []
+        ],
+        "num-traits@0.2.19": [
+          [
+            "i128",
+            "libm",
+            "std"
+          ]
+        ],
+        "number_prefix@0.4.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "once_cell@1.21.4": [
+          [
+            "alloc",
+            "default",
+            "race",
+            "std"
+          ]
+        ],
+        "opaque-debug@0.3.1": [
+          []
+        ],
+        "openssl-probe@0.1.6": [
+          []
+        ],
+        "openssl-probe@0.2.1": [
+          []
+        ],
+        "openssl-src@300.6.0+3.6.2": [
+          [
+            "default",
+            "legacy"
+          ]
+        ],
+        "openssl-sys@0.9.116": [
+          [
+            "openssl-src",
+            "vendored"
+          ]
+        ],
+        "outref@0.5.2": [
+          []
+        ],
+        "p256@0.13.2": [
+          [
+            "alloc",
+            "arithmetic",
+            "default",
+            "digest",
+            "ecdsa",
+            "ecdsa-core",
+            "pem",
+            "pkcs8",
+            "sha2",
+            "sha256",
+            "std"
+          ]
+        ],
+        "p384@0.13.1": [
+          [
+            "alloc",
+            "arithmetic",
+            "default",
+            "digest",
+            "ecdh",
+            "ecdsa",
+            "ecdsa-core",
+            "pem",
+            "pkcs8",
+            "sha2",
+            "sha384",
+            "std"
+          ]
+        ],
+        "p521@0.13.3": [
+          [
+            "alloc",
+            "arithmetic",
+            "default",
+            "digest",
+            "ecdsa",
+            "ecdsa-core",
+            "getrandom",
+            "pem",
+            "pkcs8",
+            "rand_core",
+            "sha512",
+            "std"
+          ]
+        ],
+        "parking@2.2.1": [
+          []
+        ],
+        "parking_lot@0.12.5": [
+          [
+            "default"
+          ]
+        ],
+        "parking_lot_core@0.9.12": [
+          []
+        ],
+        "password-hash@0.5.0": [
+          [
+            "alloc",
+            "default",
+            "getrandom",
+            "rand_core"
+          ]
+        ],
+        "paste@1.0.15": [
+          []
+        ],
+        "pbjson-build@0.7.0": [
+          []
+        ],
+        "pbjson@0.7.0": [
+          []
+        ],
+        "pem-rfc7468@0.7.0": [
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "pem@3.0.6": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "percent-encoding@2.3.2": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "petgraph@0.7.1": [
+          []
+        ],
+        "pin-project-internal@1.1.13": [
+          []
+        ],
+        "pin-project-lite@0.2.17": [
+          []
+        ],
+        "pin-project@1.1.13": [
+          []
+        ],
+        "pin-utils@0.1.0": [
+          []
+        ],
+        "pkcs1@0.7.5": [
+          [
+            "alloc",
+            "pem",
+            "pkcs8",
+            "std",
+            "zeroize"
+          ]
+        ],
+        "pkcs8@0.10.2": [
+          [
+            "alloc",
+            "pem",
+            "std"
+          ]
+        ],
+        "pkg-config@0.3.33": [
+          []
+        ],
+        "polyval@0.6.2": [
+          []
+        ],
+        "portable-atomic@1.13.1": [
+          [
+            "default",
+            "fallback"
+          ]
+        ],
+        "potential_utf@0.1.5": [
+          [
+            "zerovec"
+          ]
+        ],
+        "powerfmt@0.2.0": [
+          []
+        ],
+        "ppv-lite86@0.2.21": [
+          [
+            "simd",
+            "std"
+          ]
+        ],
+        "prettyplease@0.2.37": [
+          []
+        ],
+        "primeorder@0.13.6": [
+          []
+        ],
+        "proc-macro2@1.0.106": [
+          [
+            "default",
+            "proc-macro"
+          ]
+        ],
+        "prost-build@0.13.5": [
+          [
+            "default",
+            "format"
+          ]
+        ],
+        "prost-derive@0.13.5": [
+          []
+        ],
+        "prost-types@0.13.5": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "prost@0.13.5": [
+          [
+            "default",
+            "derive",
+            "prost-derive",
+            "std"
+          ]
+        ],
+        "quote@1.0.46": [
+          [
+            "default",
+            "proc-macro"
+          ]
+        ],
+        "rand@0.8.6": [
+          [
+            "alloc",
+            "getrandom",
+            "libc",
+            "rand_chacha",
+            "std",
+            "std_rng"
+          ]
+        ],
+        "rand@0.9.4": [
+          [
+            "alloc",
+            "default",
+            "os_rng",
+            "small_rng",
+            "std",
+            "std_rng",
+            "thread_rng"
+          ]
+        ],
+        "rand_chacha@0.3.1": [
+          [
+            "std"
+          ]
+        ],
+        "rand_chacha@0.9.0": [
+          [
+            "std"
+          ]
+        ],
+        "rand_core@0.6.4": [
+          [
+            "alloc",
+            "getrandom",
+            "std"
+          ]
+        ],
+        "rand_core@0.9.5": [
+          [
+            "os_rng",
+            "std"
+          ]
+        ],
+        "ratatui@0.29.0": [
+          [
+            "crossterm",
+            "default",
+            "underline-color"
+          ]
+        ],
+        "rayon-core@1.13.0": [
+          []
+        ],
+        "rayon@1.12.0": [
+          []
+        ],
+        "rcgen@0.14.8": [
+          [
+            "crypto",
+            "default",
+            "pem",
+            "ring"
+          ]
+        ],
+        "ref-cast-impl@1.0.27": [
+          []
+        ],
+        "ref-cast@1.0.27": [
+          []
+        ],
+        "regex-automata@0.4.14": [
+          [
+            "alloc",
+            "dfa-onepass",
+            "hybrid",
+            "meta",
+            "nfa",
+            "nfa-backtrack",
+            "nfa-pikevm",
+            "nfa-thompson",
+            "perf",
+            "perf-inline",
+            "perf-literal",
+            "perf-literal-multisubstring",
+            "perf-literal-substring",
+            "std",
+            "syntax",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment",
+            "unicode-word-boundary"
+          ],
+          [
+            "alloc",
+            "meta",
+            "nfa-pikevm",
+            "nfa-thompson",
+            "std",
+            "syntax",
+            "unicode-bool"
+          ]
+        ],
+        "regex-lite@0.1.9": [
+          [
+            "default",
+            "std",
+            "string"
+          ]
+        ],
+        "regex-syntax@0.8.11": [
+          [
+            "default",
+            "std",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment"
+          ],
+          [
+            "std",
+            "unicode-bool"
+          ]
+        ],
+        "regex@1.12.4": [
+          [
+            "default",
+            "perf",
+            "perf-backtrack",
+            "perf-cache",
+            "perf-dfa",
+            "perf-inline",
+            "perf-literal",
+            "perf-onepass",
+            "std",
+            "unicode",
+            "unicode-age",
+            "unicode-bool",
+            "unicode-case",
+            "unicode-gencat",
+            "unicode-perl",
+            "unicode-script",
+            "unicode-segment"
+          ],
+          [
+            "std",
+            "unicode-bool"
+          ]
+        ],
+        "reqwest@0.12.28": [
+          [
+            "__rustls",
+            "__rustls-ring",
+            "__tls",
+            "json",
+            "rustls-tls-native-roots",
+            "rustls-tls-native-roots-no-provider",
+            "stream"
+          ]
+        ],
+        "rfc6979@0.4.0": [
+          []
+        ],
+        "ring@0.17.14": [
+          [
+            "alloc",
+            "default",
+            "dev_urandom_fallback",
+            "std"
+          ]
+        ],
+        "rnix@0.10.2": [
+          []
+        ],
+        "rowan@0.12.6": [
+          []
+        ],
+        "rsa@0.9.10": [
+          [
+            "default",
+            "pem",
+            "sha2",
+            "std",
+            "u64_digit"
+          ]
+        ],
+        "rusqlite@0.32.1": [
+          []
+        ],
+        "rustc-hash@1.1.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "rustc_version@0.4.1": [
+          []
+        ],
+        "rustix@0.38.44": [
+          [
+            "alloc",
+            "libc-extra-traits",
+            "std",
+            "stdio",
+            "termios"
+          ]
+        ],
+        "rustix@1.1.4": [
+          [
+            "alloc",
+            "default",
+            "event",
+            "fs",
+            "net",
+            "process",
+            "std"
+          ],
+          [
+            "alloc",
+            "default",
+            "fs",
+            "std"
+          ]
+        ],
+        "rustls-native-certs@0.8.3": [
+          []
+        ],
+        "rustls-pemfile@2.2.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "rustls-pki-types@1.14.1": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "rustls-webpki@0.103.13": [
+          [
+            "alloc",
+            "aws-lc-rs",
+            "ring",
+            "std"
+          ]
+        ],
+        "rustls@0.23.40": [
+          [
+            "aws-lc-rs",
+            "aws_lc_rs",
+            "default",
+            "log",
+            "logging",
+            "prefer-post-quantum",
+            "ring",
+            "std",
+            "tls12"
+          ]
+        ],
+        "rustversion@1.0.22": [
+          []
+        ],
+        "ryu@1.0.23": [
+          []
+        ],
+        "same-file@1.0.6": [
+          []
+        ],
+        "schemars@1.2.2": [
+          [
+            "default",
+            "derive",
+            "schemars_derive",
+            "std"
+          ]
+        ],
+        "schemars_derive@1.2.2": [
+          []
+        ],
+        "scopeguard@1.2.0": [
+          []
+        ],
+        "sec1@0.7.3": [
+          [
+            "alloc",
+            "default",
+            "der",
+            "pem",
+            "pkcs8",
+            "point",
+            "std",
+            "subtle",
+            "zeroize"
+          ]
+        ],
+        "semver@1.0.28": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "serde@1.0.228": [
+          [
+            "alloc",
+            "default",
+            "derive",
+            "rc",
+            "serde_derive",
+            "std"
+          ],
+          [
+            "alloc",
+            "derive",
+            "serde_derive",
+            "std"
+          ]
+        ],
+        "serde_core@1.0.228": [
+          [
+            "alloc",
+            "default",
+            "rc",
+            "result",
+            "std"
+          ],
+          [
+            "alloc",
+            "result",
+            "std"
+          ]
+        ],
+        "serde_derive@1.0.228": [
+          [
+            "default"
+          ]
+        ],
+        "serde_derive_internals@0.30.0": [
+          []
+        ],
+        "serde_json@1.0.150": [
+          [
+            "alloc",
+            "default",
+            "raw_value",
+            "std"
+          ],
+          [
+            "alloc",
+            "std"
+          ]
+        ],
+        "serde_path_to_error@0.1.20": [
+          []
+        ],
+        "serde_spanned@0.6.9": [
+          [
+            "serde"
+          ]
+        ],
+        "serde_urlencoded@0.7.1": [
+          []
+        ],
+        "sha1@0.10.6": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "sha1@0.11.0": [
+          [
+            "alloc",
+            "default",
+            "oid"
+          ]
+        ],
+        "sha2@0.10.9": [
+          [
+            "compress",
+            "default",
+            "oid",
+            "std"
+          ]
+        ],
+        "sha2@0.11.0": [
+          [
+            "alloc",
+            "default",
+            "oid"
+          ]
+        ],
+        "shlex@2.0.1": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "signal-hook-mio@0.2.5": [
+          [
+            "mio-1_0",
+            "support-v1_0"
+          ]
+        ],
+        "signal-hook-registry@1.4.8": [
+          []
+        ],
+        "signal-hook@0.3.18": [
+          [
+            "channel",
+            "default",
+            "iterator"
+          ]
+        ],
+        "signature@2.2.0": [
+          [
+            "alloc",
+            "digest",
+            "rand_core",
+            "std"
+          ]
+        ],
+        "simd-adler32@0.3.9": [
+          []
+        ],
+        "simdutf8@0.1.5": [
+          [
+            "std"
+          ]
+        ],
+        "simple_asn1@0.6.4": [
+          []
+        ],
+        "slab@0.4.12": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "smallvec@1.15.2": [
+          [
+            "const_generics",
+            "const_new"
+          ]
+        ],
+        "smol_str@0.1.24": [
+          [
+            "default",
+            "serde",
+            "std"
+          ]
+        ],
+        "smoothutf8@0.2.3": [
+          [
+            "simdutf8"
+          ]
+        ],
+        "socket2@0.6.4": [
+          [
+            "all"
+          ]
+        ],
+        "spin@0.10.0": [
+          [
+            "mutex",
+            "once",
+            "rwlock",
+            "spin_mutex"
+          ]
+        ],
+        "spin@0.9.8": [
+          [
+            "barrier",
+            "default",
+            "lazy",
+            "lock_api",
+            "lock_api_crate",
+            "mutex",
+            "once",
+            "rwlock",
+            "spin_mutex"
+          ]
+        ],
+        "spki@0.7.3": [
+          [
+            "alloc",
+            "pem",
+            "std"
+          ]
+        ],
+        "sqlx-core@0.8.6": [
+          [
+            "_rt-tokio",
+            "crc",
+            "default",
+            "migrate",
+            "offline",
+            "serde",
+            "sha2",
+            "tokio",
+            "tokio-stream"
+          ]
+        ],
+        "sqlx-sqlite@0.8.6": [
+          [
+            "bundled"
+          ]
+        ],
+        "sqlx@0.8.6": [
+          [
+            "_rt-tokio",
+            "_sqlite",
+            "runtime-tokio",
+            "sqlite",
+            "sqlx-sqlite"
+          ]
+        ],
+        "ssh-cipher@0.2.0": [
+          []
+        ],
+        "ssh-encoding@0.2.0": [
+          [
+            "alloc",
+            "base64",
+            "pem",
+            "sha2",
+            "std"
+          ]
+        ],
+        "ssh-key@0.6.7": [
+          [
+            "alloc",
+            "ed25519",
+            "rand_core",
+            "std"
+          ]
+        ],
+        "ssh2@0.9.5": [
+          [
+            "vendored-openssl"
+          ]
+        ],
+        "stable_deref_trait@1.2.1": [
+          []
+        ],
+        "static_assertions@1.1.0": [
+          []
+        ],
+        "strsim@0.11.1": [
+          []
+        ],
+        "strum@0.26.3": [
+          [
+            "default",
+            "derive",
+            "std",
+            "strum_macros"
+          ]
+        ],
+        "strum_macros@0.26.4": [
+          []
+        ],
+        "subtle@2.6.1": [
+          [
+            "default",
+            "i128",
+            "std"
+          ]
+        ],
+        "syn@2.0.118": [
+          [
+            "clone-impls",
+            "default",
+            "derive",
+            "extra-traits",
+            "fold",
+            "full",
+            "parsing",
+            "printing",
+            "proc-macro",
+            "visit",
+            "visit-mut"
+          ]
+        ],
+        "syn@3.0.5": [
+          [
+            "clone-impls",
+            "default",
+            "derive",
+            "parsing",
+            "printing",
+            "proc-macro"
+          ]
+        ],
+        "sync_wrapper@1.0.2": [
+          [
+            "futures",
+            "futures-core"
+          ]
+        ],
+        "synstructure@0.13.2": [
+          [
+            "default",
+            "proc-macro"
+          ]
+        ],
+        "tar@0.4.46": [
+          [
+            "default",
+            "xattr"
+          ]
+        ],
+        "tempfile@3.27.0": [
+          [
+            "default",
+            "getrandom"
+          ]
+        ],
+        "text-size@1.1.1": [
+          []
+        ],
+        "thiserror-impl@1.0.69": [
+          []
+        ],
+        "thiserror-impl@2.0.18": [
+          []
+        ],
+        "thiserror@1.0.69": [
+          []
+        ],
+        "thiserror@2.0.18": [
+          [
+            "default",
+            "std"
+          ],
+          [
+            "std"
+          ]
+        ],
+        "time-core@0.1.8": [
+          []
+        ],
+        "time-macros@0.2.27": [
+          [
+            "formatting",
+            "parsing"
+          ]
+        ],
+        "time@0.3.47": [
+          [
+            "alloc",
+            "default",
+            "formatting",
+            "macros",
+            "parsing",
+            "std"
+          ]
+        ],
+        "tinystr@0.8.3": [
+          [
+            "zerovec"
+          ]
+        ],
+        "tinyvec@1.11.0": [
+          [
+            "alloc",
+            "default",
+            "tinyvec_macros"
+          ]
+        ],
+        "tinyvec_macros@0.1.1": [
+          []
+        ],
+        "tokio-macros@2.7.0": [
+          []
+        ],
+        "tokio-rustls@0.26.4": [
+          [
+            "aws_lc_rs",
+            "default",
+            "logging",
+            "ring",
+            "tls12"
+          ]
+        ],
+        "tokio-stream@0.1.18": [
+          [
+            "default",
+            "fs",
+            "sync",
+            "time",
+            "tokio-util"
+          ]
+        ],
+        "tokio-util@0.7.18": [
+          [
+            "codec",
+            "default",
+            "io"
+          ]
+        ],
+        "tokio@1.52.3": [
+          [
+            "bytes",
+            "default",
+            "fs",
+            "io-std",
+            "io-util",
+            "libc",
+            "macros",
+            "mio",
+            "net",
+            "process",
+            "rt",
+            "rt-multi-thread",
+            "signal",
+            "signal-hook-registry",
+            "socket2",
+            "sync",
+            "time",
+            "tokio-macros"
+          ]
+        ],
+        "toml@0.8.23": [
+          [
+            "default",
+            "display",
+            "parse"
+          ]
+        ],
+        "toml_datetime@0.6.11": [
+          [
+            "serde"
+          ]
+        ],
+        "toml_edit@0.22.27": [
+          [
+            "default",
+            "display",
+            "parse",
+            "serde"
+          ]
+        ],
+        "toml_write@0.1.2": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "tower-http@0.6.11": [
+          [
+            "catch-panic",
+            "cors",
+            "default",
+            "follow-redirect",
+            "futures-util",
+            "limit",
+            "tower",
+            "trace",
+            "tracing"
+          ]
+        ],
+        "tower-layer@0.3.3": [
+          []
+        ],
+        "tower-service@0.3.3": [
+          []
+        ],
+        "tower@0.5.3": [
+          [
+            "buffer",
+            "futures-core",
+            "futures-util",
+            "log",
+            "make",
+            "pin-project-lite",
+            "retry",
+            "sync_wrapper",
+            "timeout",
+            "tokio",
+            "tokio-util",
+            "tracing",
+            "util"
+          ]
+        ],
+        "tracing-attributes@0.1.31": [
+          []
+        ],
+        "tracing-core@0.1.36": [
+          [
+            "once_cell",
+            "std"
+          ]
+        ],
+        "tracing@0.1.44": [
+          [
+            "attributes",
+            "default",
+            "log",
+            "std",
+            "tracing-attributes"
+          ]
+        ],
+        "try-lock@0.2.5": [
+          []
+        ],
+        "typenum@1.20.1": [
+          [
+            "const-generics"
+          ]
+        ],
+        "unicode-ident@1.0.24": [
+          []
+        ],
+        "unicode-normalization@0.1.25": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "unicode-segmentation@1.13.3": [
+          []
+        ],
+        "unicode-truncate@1.1.0": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "unicode-width@0.1.14": [
+          [
+            "cjk",
+            "default"
+          ]
+        ],
+        "unicode-width@0.2.0": [
+          [
+            "cjk",
+            "default"
+          ]
+        ],
+        "universal-hash@0.5.1": [
+          []
+        ],
+        "untrusted@0.9.0": [
+          []
+        ],
+        "url@2.5.8": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "urlencoding@2.1.3": [
+          []
+        ],
+        "utf8_iter@1.0.4": [
+          []
+        ],
+        "utf8parse@0.2.2": [
+          [
+            "default"
+          ]
+        ],
+        "uuid@1.23.1": [
+          [
+            "default",
+            "rng",
+            "serde",
+            "std",
+            "v4"
+          ]
+        ],
+        "vcpkg@0.2.15": [
+          []
+        ],
+        "version_check@0.9.5": [
+          []
+        ],
+        "vsimd@0.8.0": [
+          [
+            "alloc",
+            "detect",
+            "std"
+          ]
+        ],
+        "walkdir@2.5.0": [
+          []
+        ],
+        "want@0.3.1": [
+          []
+        ],
+        "webpki-roots@1.0.7": [
+          []
+        ],
+        "winnow@0.7.15": [
+          [
+            "alloc",
+            "default",
+            "std"
+          ]
+        ],
+        "writeable@0.6.3": [
+          []
+        ],
+        "xattr@1.6.1": [
+          [
+            "default",
+            "unsupported"
+          ]
+        ],
+        "xmlparser@0.13.6": [
+          [
+            "default",
+            "std"
+          ]
+        ],
+        "yasna@0.6.0": [
+          [
+            "default",
+            "std",
+            "time"
+          ]
+        ],
+        "yoke-derive@0.8.2": [
+          []
+        ],
+        "yoke@0.8.3": [
+          [
+            "derive",
+            "zerofrom"
+          ]
+        ],
+        "zerocopy-derive@0.8.49": [
+          []
+        ],
+        "zerocopy@0.8.49": [
+          [
+            "derive",
+            "simd",
+            "zerocopy-derive"
+          ]
+        ],
+        "zerofrom-derive@0.1.7": [
+          []
+        ],
+        "zerofrom@0.1.8": [
+          [
+            "derive"
+          ]
+        ],
+        "zeroize@1.9.0": [
+          [
+            "alloc",
+            "default"
+          ]
+        ],
+        "zerotrie@0.2.4": [
+          [
+            "yoke",
+            "zerofrom"
+          ]
+        ],
+        "zerovec-derive@0.11.3": [
+          []
+        ],
+        "zerovec@0.11.6": [
+          [
+            "derive",
+            "yoke"
+          ]
+        ],
+        "zlib-rs@0.6.8": [
+          [
+            "rust-allocator",
+            "std"
+          ]
+        ],
+        "zmij@1.0.21": [
+          []
+        ],
+        "zstd-safe@7.2.4": [
+          [
+            "arrays",
+            "legacy",
+            "std",
+            "zdict_builder",
+            "zstdmt"
+          ]
+        ],
+        "zstd-sys@2.0.16+zstd.1.5.7": [
+          [
+            "legacy",
+            "std",
+            "zdict_builder",
+            "zstdmt"
+          ]
+        ],
+        "zstd@0.13.3": [
+          [
+            "arrays",
+            "default",
+            "legacy",
+            "zdict_builder",
+            "zstdmt"
+          ]
+        ]
+      },
+      "first_party_crates": 38,
+      "first_party_features": {
+        "aos-activation": [
+          []
+        ],
+        "aos-artifact-evidence": [
+          []
+        ],
+        "aos-boot-identity": [
+          []
+        ],
+        "aos-build-api": [
+          []
+        ],
+        "aos-build-client": [
+          []
+        ],
+        "aos-build-server": [
+          []
+        ],
+        "aos-cli": [
+          []
+        ],
+        "aos-cli-ui": [
+          []
+        ],
+        "aos-closure-analysis": [
+          []
+        ],
+        "aos-core": [
+          []
+        ],
+        "aos-deployment": [
+          []
+        ],
+        "aos-deployment-format": [
+          []
+        ],
+        "aos-hub-api": [
+          []
+        ],
+        "aos-hub-client": [
+          []
+        ],
+        "aos-hub-db": [
+          [
+            "default",
+            "test-fixtures"
+          ]
+        ],
+        "aos-hub-model": [
+          [
+            "default"
+          ]
+        ],
+        "aos-hub-native": [
+          [
+            "default"
+          ]
+        ],
+        "aos-hub-service": [
+          [
+            "default",
+            "test-fixtures"
+          ]
+        ],
+        "aos-hub-ui": [
+          []
+        ],
+        "aos-image-finalizer": [
+          []
+        ],
+        "aos-module-docs": [
+          []
+        ],
+        "aos-module-format": [
+          []
+        ],
+        "aos-nar": [
+          [
+            "compression",
+            "default"
+          ]
+        ],
+        "aos-nix": [
+          []
+        ],
+        "aos-nix-cache": [
+          []
+        ],
+        "aos-nix-docs": [
+          []
+        ],
+        "aos-oci": [
+          []
+        ],
+        "aos-oci-types": [
+          []
+        ],
+        "aos-package-maintenance": [
+          []
+        ],
+        "aos-package-manager": [
+          []
+        ],
+        "aos-platform-metadata": [
+          []
+        ],
+        "aos-registry-authoring": [
+          []
+        ],
+        "aos-registry-client": [
+          []
+        ],
+        "aos-registry-format": [
+          []
+        ],
+        "aos-release-coordinator": [
+          []
+        ],
+        "aos-release-format": [
+          []
+        ],
+        "aos-storage-layout": [
+          []
+        ],
+        "aos-transfer": [
+          [
+            "transfer"
+          ]
+        ]
+      },
+      "inventory_sha256": "1ae3efb3768abe5de6faea8c4dee63edbbbd0386436f37420ca9ce57604dfeda"
+    }
+  },
+  "limits": [
+    "This checkpoint compares compiled feature units only.",
+    "Both Cargo captures have three failed cache execution cases from selecting the ordinary single-threaded zstd archive; neither capture qualifies runtime parity.",
+    "The public CLI Cargo checkpoint now selects the AOS multithreaded archive explicitly; fresh executions are qualified separately."
+  ],
+  "schema_version": 1,
+  "status": "PASS: exact compiled feature unit comparison for both CLI test profiles"
+}

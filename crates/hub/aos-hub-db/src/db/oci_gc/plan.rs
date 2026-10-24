@@ -1396,7 +1396,7 @@ impl Database {
         }
         if unreferenced.len() > RECONCILE_BATCH {
             blockers.push(PlanBlocker {
-                kind: "pending_unreferenced_reconciliation".into(),
+                kind: "pending_unreferenced_reconciliation",
                 digest: None,
                 detail: "bounded unreferenced-time reconciliation requires another pass".into(),
             });

@@ -346,6 +346,7 @@ pub fn require_identifier(value: &str, label: &str) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

@@ -304,7 +304,7 @@ in {
           scope = "stack-prepared";
         };
         configuration.operations.file.effects.rsyncd.input = {
-          path = "/etc/aos/packages/rsync/rsyncd.conf";
+          path = "/etc/packages/rsync/rsyncd.conf";
           fragments = configurationFragments;
           mode = "0444";
         };

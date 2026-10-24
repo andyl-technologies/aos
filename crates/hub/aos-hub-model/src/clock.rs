@@ -14,6 +14,10 @@
 /// A clock before the Unix epoch (impossible in practice) yields `0` rather
 /// than panicking, matching the hub's prior `unix_now` behavior.
 #[must_use]
+#[allow(
+    clippy::disallowed_methods,
+    reason = "Hub authentication timestamps use the deployment wall clock"
+)]
 pub fn now_unix_secs() -> i64 {
     #[cfg(not(target_arch = "wasm32"))]
     {

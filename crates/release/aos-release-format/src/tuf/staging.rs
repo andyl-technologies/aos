@@ -162,6 +162,7 @@ fn described_bytes<'a>(
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
     use crate::plan::ReleaseClass;
@@ -170,7 +171,9 @@ mod tests {
         delegated_release_metadata, immutable_snapshot_metadata, timestamp_metadata,
     };
 
-    fn candidate() -> Result<(Vec<u8>, BTreeMap<String, Vec<u8>>)> {
+    type CandidateFixture = (Vec<u8>, BTreeMap<String, Vec<u8>>);
+
+    fn candidate() -> Result<CandidateFixture> {
         // Empty signature sets deliberately demonstrate the admission helper's
         // byte-binding boundary; consumer trust still needs the normal verifier.
         let root = TufEnvelopeV1 {

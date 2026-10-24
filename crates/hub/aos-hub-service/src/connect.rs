@@ -204,6 +204,10 @@ fn decode_request<Req: DeserializeOwned>(body: &Bytes) -> Result<Req, RpcError> 
 }
 
 /// Validates the headers required by a Connect unary JSON request.
+#[allow(
+    clippy::result_large_err,
+    reason = "HTTP handlers return the complete response without changing its public layout."
+)]
 fn validate_connect_headers(headers: &HeaderMap) -> Result<(), Response> {
     let content_type = headers
         .get(header::CONTENT_TYPE)
@@ -722,6 +726,10 @@ pub struct ResolvedRoute {
 ///
 /// Returns `401 Unauthorized` for an absent verifier, duplicate/malformed
 /// header, invalid signature, expired assertion, or request mismatch.
+#[allow(
+    clippy::result_large_err,
+    reason = "HTTP handlers return the complete response without changing its public layout."
+)]
 pub fn apply_delivery_attestation(
     mut request: Request,
     verifier: Option<&crate::delivery_attestation::DeliveryAttestationVerifier>,
@@ -1119,10 +1127,7 @@ fn configured_control_authority(
         return Err(());
     }
     let scheme = url.scheme().to_owned();
-    let port = url
-        .port_or_known_default()
-        .and_then(|port| u16::try_from(port).ok())
-        .ok_or(())?;
+    let port = url.port_or_known_default().ok_or(())?;
     Ok((
         canonical_endpoint_host(url.host_str().ok_or(())?)?,
         port,
@@ -1262,6 +1267,10 @@ fn attested_access_matches_route(
 /// Returns an early 404 for a disallowed route capability, 421 for a direct
 /// route, 503 for an unready Hub route, or 400 for an invalid internal rewrite
 /// URI.
+#[allow(
+    clippy::result_large_err,
+    reason = "HTTP handlers return the complete response without changing its public layout."
+)]
 pub async fn rewrite_for_route(
     svc: &RpcService,
     mut request: Request,
@@ -1880,7 +1889,6 @@ async fn dispatch_route(
 /// Native-only (see `dispatch_route`); the Worker bridges
 /// [`rewrite_for_route`] directly.
 #[cfg(not(target_arch = "wasm32"))]
-#[must_use]
 pub fn with_route_dispatch(
     router: Router,
     service: Arc<RpcService>,
@@ -1904,7 +1912,6 @@ pub fn with_route_dispatch(
 /// handshake and enforcing the configured SNI identity. Plain listeners use
 /// [`with_route_dispatch`].
 #[cfg(not(target_arch = "wasm32"))]
-#[must_use]
 pub fn with_route_dispatch_transport(
     router: Router,
     service: Arc<RpcService>,
@@ -1934,13 +1941,11 @@ pub fn router(service: Arc<RpcService>) -> Router {
 }
 
 /// Builds the Connect-JSON router without browse pages.
-#[must_use]
 pub fn rpc_router(service: Arc<RpcService>) -> Router {
     build(service, false)
 }
 
 /// Builds the Connect-JSON router with the shared session-aware browse surface.
-#[must_use]
 pub fn rpc_browse_router(service: Arc<RpcService>) -> Router {
     build(service, true)
 }

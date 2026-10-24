@@ -1,0 +1,96 @@
+{
+  "cargo_display_normalization": "Remove only libtest's literal expected-panic annotation from displayed case names; no cases are filtered.",
+  "configurations": {
+    "default": {
+      "architecture_cases": [
+        "bazel_metadata_preserves_licenses_and_production_edges",
+        "bazel_metadata_rejects_invalid_or_ambiguous_catalogues",
+        "bazel_metadata_rejects_unmodeled_reachable_packages",
+        "qemu_boundary_remains_permissive_and_independent",
+        "reusable_project_libraries_do_not_depend_on_their_applications",
+        "shared_foundation_remains_portable_and_project_independent"
+      ],
+      "architecture_sha256": "b6e3f18ed952afe20c07abca95ee34482c3f6d40c5fd9a34e3ae1df7f0d0323f",
+      "bazel_derivation": "/nix/store/l2kpi775cb1cd9dxzpaf2zlqib0azkb2-aos-bazel-aos-cli-tests-tests-1.drv",
+      "bazel_source": "/nix/store/9q4ipn34m3654mjksyw2ydjf6ag5018a-aos-bazel-workspace",
+      "bazel_tests": "/nix/store/aypcg5s700aimxaa5fcgwyafjlglqw5n-aos-bazel-aos-cli-tests-tests-1",
+      "cargo": "/nix/store/2wkw6xf66dvnz6s56i0rfxh4pmd521yx-aos-bazel-aos-cli-cargo-1",
+      "cargo_derivation": "/nix/store/3fwam18hc11bd8xz6y37zczqmdaybbra-aos-bazel-aos-cli-cargo-1.drv",
+      "cargo_source": "/nix/store/dx5hnxckf2hgsydhgcphwz06dkxqlpxq-aos-workspace-src",
+      "declared_source_provider": "/nix/store/p49i5j658wsq55zlv1vwq1rjvv5n3zjf-aos-bazel-cli-test-sources",
+      "developer_checks": {
+        "clippy_actions": 37,
+        "execution_sha256": "6d6951e6b5e922c45450263a1b3ebaf375f054a780fed17d025ec310b9a23471",
+        "output": "/nix/store/7505pgr5v9qk8hpbrbdwi28mbbrrky5m-aos-bazel-aos-cli-tests-developer-1",
+        "status": "PASS"
+      },
+      "executed_cases": 543,
+      "execution_sha256": "7f9f866cde7aafda1f46415528f097827eefe8a67cc93b35bd6eea5b9419f8aa",
+      "external_feature_units": 439,
+      "first_party_feature_units": 38,
+      "modeled_packages": 73,
+      "parity_sha256": "a46013b66cfe8aadeca17915de2cfcb6af38dbc1cbe3b9a6444784c83fd0cbbd",
+      "source_manifest_sha256": "f21b84dead5c83257d449a588dc326244a18e613af4b4a6dd88d3a67bba77392",
+      "source_packages": 77,
+      "test_targets": 30
+    },
+    "fleet": {
+      "architecture_cases": [
+        "bazel_metadata_preserves_licenses_and_production_edges",
+        "bazel_metadata_rejects_invalid_or_ambiguous_catalogues",
+        "bazel_metadata_rejects_unmodeled_reachable_packages",
+        "qemu_boundary_remains_permissive_and_independent",
+        "reusable_project_libraries_do_not_depend_on_their_applications",
+        "shared_foundation_remains_portable_and_project_independent"
+      ],
+      "architecture_sha256": "b6e3f18ed952afe20c07abca95ee34482c3f6d40c5fd9a34e3ae1df7f0d0323f",
+      "bazel_derivation": "/nix/store/s5ag7qsk485vz57fapjyhvzmdy9zjv77-aos-bazel-aos-cli-fleet-tests-tests-1.drv",
+      "bazel_source": "/nix/store/9q4ipn34m3654mjksyw2ydjf6ag5018a-aos-bazel-workspace",
+      "bazel_tests": "/nix/store/f11l5z2kgp2pca52mfwnfyhakhs1k6xk-aos-bazel-aos-cli-fleet-tests-tests-1",
+      "cargo": "/nix/store/ffcsw5vjrbk01l5v1dlzshxk9cmgk73q-aos-bazel-aos-cli-fleet-cargo-1",
+      "cargo_derivation": "/nix/store/ibvqza6cgfm67pkyjd8azwmi2saqwmjy-aos-bazel-aos-cli-fleet-cargo-1.drv",
+      "cargo_source": "/nix/store/dx5hnxckf2hgsydhgcphwz06dkxqlpxq-aos-workspace-src",
+      "declared_source_provider": "/nix/store/p49i5j658wsq55zlv1vwq1rjvv5n3zjf-aos-bazel-cli-test-sources",
+      "developer_checks": {
+        "clippy_actions": 43,
+        "execution_sha256": "8b6ca29d1299288f8bf9e4a5d0f88467cfde9e32c959c3be39e086f65a446e66",
+        "output": "/nix/store/6g4m84fch0smfgp7jgfdrl4l7nxybc69-aos-bazel-aos-cli-fleet-tests-developer-1",
+        "status": "PASS"
+      },
+      "executed_cases": 551,
+      "execution_sha256": "a086ab87161b90b7dd4662a0449f619ba4619dee420cab0515bda484ebfa87e7",
+      "external_feature_units": 439,
+      "first_party_feature_units": 38,
+      "modeled_packages": 73,
+      "parity_sha256": "c80a4688c1bbaf09dd4955ca4154c7be4019d7d14fc9186d36e2439775140ea2",
+      "source_manifest_sha256": "f21b84dead5c83257d449a588dc326244a18e613af4b4a6dd88d3a67bba77392",
+      "source_packages": 77,
+      "test_targets": 33
+    }
+  },
+  "consumer_source": "crates/aos/cli/aos-cli/tests/workspace_architecture.rs",
+  "consumer_source_sha256": "0bae053072b091b64073c1f655ca9051ea7ca972c3d327e5dc2763bbe9e7c337",
+  "format": {
+    "output": "/nix/store/b2pkddsaz0qjiwbvvia68irz3bzpwbq3-aos-bazel-aos-cli-tests-format-1",
+    "status": "PASS"
+  },
+  "limits": [
+    "The Bazel execution path requires generated metadata and cannot fall back to Cargo manifests. The independent Cargo execution path temporarily retains its manifest oracle.",
+    "Four source packages remain explicitly unmodeled; guards reject a production dependency walk that reaches any of them.",
+    "Development Bazel validation used the explicitly mounted local disk action cache. Strict uncached production qualification remains separate.",
+    "This change migrates CLI dependency-boundary guards. Other Cargo-dependent root discovery and metadata consumers remain before Cargo removal."
+  ],
+  "parity_verifier_sha256": {
+    "tools/bazel/tests/test_cli_parity.py": "0bec5bb66698b507f7f1024434e6a31b11ab15d8c98e88b6903f5db856ff0fc9",
+    "tools/bazel/tests/verify_cli.py": "e72df34c4dc53d73996d120bf5ae9fc081729787c29c53cc5f08e26d08f3b5ce"
+  },
+  "required_rust_compile": {
+    "derivation": "/nix/store/fxal6w2ccy23bm0nsmj6ds0vi4cv5b7b-aos-test-targets-0.1.0.drv",
+    "log_sha256": "1e19141df5b12305cc2d58f371fedc1df2328bf368e5d0b13b8290ba71a6b35b",
+    "output": "/nix/store/c24rb0d8ra8w87x374lf4ik5xxk237i6-aos-test-targets-0.1.0",
+    "source": "/nix/store/dx5hnxckf2hgsydhgcphwz06dkxqlpxq-aos-workspace-src",
+    "status": "PASS"
+  },
+  "schema_version": 1,
+  "status": "PASS: CLI architecture guards consume the declared Bazel production graph"
+}

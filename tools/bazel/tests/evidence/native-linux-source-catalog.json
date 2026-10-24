@@ -1,0 +1,212 @@
+{
+  "checkpoint_regression_checks": {
+    "aggregate": "/nix/store/2v3k3sv2kmdz6j4953cvbm10ydricymc-aos-bazel-checks",
+    "checkpoint": "312e080a14",
+    "command": [
+      "nix-build",
+      "-A",
+      "checks.build.bazel.all",
+      "--keep-going",
+      "--no-out-link",
+      "--max-jobs",
+      "4",
+      "--cores",
+      "4",
+      "--option",
+      "substitute",
+      "false"
+    ],
+    "scope": "Source-ownership checkpoint regression; later engine and test-profile changes require separate qualification.",
+    "status": "passed"
+  },
+  "configuration_sha256": {
+    "BUILD.bazel": "76b5cb5f45710c031b137fd2d88c1cccc60ea5980bc874f9c01ed38f0494bf64",
+    "crates/BUILD.bazel": "6e310f477d8c1459ddfcef0d4c783e76fa9bb24c585c380b2e810278ee53c417",
+    "crates/aos/activation/aos-activation-bpf-lsm/BUILD.bazel": "f34e567b5c06c9e1f5a572096cdfaa8bdc9157a9721f05995e79faf2d09b2beb",
+    "crates/aos/activation/aos-activation-bpf-network/BUILD.bazel": "d97c34cc288238a4c218c65dcdd2ea47ef8757b3f36dd947ee089a7a8ed8ca7f",
+    "crates/aos/activation/aos-activation-config-files/BUILD.bazel": "b667e42e221c3fdb2c4d513e078b8bfd8ed96d4401eee256c89378a265e603e5",
+    "crates/aos/activation/aos-activation-crucible/BUILD.bazel": "62c6e7c902d91936825e8ed9ea09d5344bd8516fade185326e0a0e108e1ae168",
+    "crates/aos/activation/aos-activation-filesystem/BUILD.bazel": "cd13a2e455b7bf3b0a874adf63535cab8e32f9feca4c828bab8c6e189fb89666",
+    "crates/aos/activation/aos-activation-kubernetes/BUILD.bazel": "46b07fb2c535699e6db357948a67792b98fbc8f300c8e21f549b8f5708f719b7",
+    "crates/aos/activation/aos-activation-nftables/BUILD.bazel": "708eb27b8e113652c713abe09a6c2427843c31f1005275ed1ebb41a8663a749e",
+    "crates/aos/activation/aos-activation-nix-store/BUILD.bazel": "487b2d37eb758a8af32636ecfae231f8040f7ac852db9f51db737cd1fc20cc9f",
+    "crates/aos/activation/aos-activation-storage/BUILD.bazel": "6b252e58242736a7d274d89d249cfd53eab04a91a29c0b68019206a13978038e",
+    "crates/aos/activation/aos-activation-sysctl/BUILD.bazel": "d5d10c8e71cef21d9f02ef78470678fef8b18ee2ad817e7d8a57349afbfa26c4",
+    "crates/aos/activation/aos-activation-systemd/BUILD.bazel": "e25bfdac0243d2f9f3076c6f9fd5a956f15714132d34967856a07d1e11a13fc8",
+    "crates/aos/activation/aos-activation/BUILD.bazel": "87188046098d2e867a4c3885e8f52194d0a9d2176652e797c6f6f7a9bb44c64c",
+    "crates/aos/boot/aos-boot-identity/BUILD.bazel": "caa8b6d9062f705df8980cbf55811af7ebd29e933774e230a255484de2f5e453",
+    "crates/aos/boot/aos-boot-runtime/BUILD.bazel": "20ab97f8e899b6b08492fb5f7f931deaead9775be7790f2d842154b6c2c77a40",
+    "crates/aos/boot/aos-configuration-image/BUILD.bazel": "c718eb29e432ea2ddf88422ff12c15f33daa57e2ec0369ad041f14a76f915212",
+    "crates/aos/boot/aos-platform-metadata/BUILD.bazel": "3d4acf3d773db98c4f1e248849de1b82c63d26d73041a42c03ab1e03d0075639",
+    "crates/aos/boot/aos-recovery/BUILD.bazel": "06d2fe1571bcd37818ddbdc5e645e1eac0aa4f34951a75026a67a04ca9252481",
+    "crates/aos/boot/aos-storage-layout/BUILD.bazel": "a8464592fb6f0844956ec31f4fc3a06cec26d7c39166c7bf9c5d637383b8ea9e",
+    "crates/aos/cli/aos-cli-ui/BUILD.bazel": "c611a3085073be2ebcf89fb1b0a2ef600bfc8be4467665aaf5665dd92e3bfc1c",
+    "crates/aos/cli/aos-cli/BUILD.bazel": "789f15d7ccbc5abbbd66efb36f92b3012bfd6efd3423d9723403d6dc991b3283",
+    "crates/aos/cli/aos-closure-analysis/BUILD.bazel": "fd336b7352cfa3c16575fd6c0d7972cdeb3fc1d1f962b861e78ca713fc9b4965",
+    "crates/aos/cli/aos-nix-docs/BUILD.bazel": "03f4bdb22a8c12fd0ebe9c50d0d95aae29d409c4a2b2cf107775073f59c8351a",
+    "crates/aos/modules/aos-module-docs/BUILD.bazel": "a4caf555147f00606a1cde5ba85d4f3f916fa570ca46d7df5694e57903d30ffa",
+    "crates/aos/modules/aos-module-format/BUILD.bazel": "ac86234cf0cb5c5e480876aac28da0a7a45c561b7272f9065b92f32d88da8c4b",
+    "crates/aos/packages/aos-build-api/BUILD.bazel": "90d48c39b809e31a953b98d2d0a554ff2eda0bf0030ab42bbc5bb64fbe3f614a",
+    "crates/aos/packages/aos-build-client/BUILD.bazel": "107fa9d6b4acb92005be31674c0d35466300e6d15e2c343dfddb8d019ee80342",
+    "crates/aos/packages/aos-build-server/BUILD.bazel": "ec57458a7313d91f5b7741c4466328ce99c71f1f820514882015540cb1781791",
+    "crates/aos/packages/aos-deployment-format/BUILD.bazel": "17edf858e81398534e4ce91f0ae36dea8b8823a07ab2cbc5e3841e8f1a117449",
+    "crates/aos/packages/aos-deployment/BUILD.bazel": "ebe92ea9c13059c40d90efc0eca1dd430875b9ee7fda09738e02e426252e28ce",
+    "crates/aos/packages/aos-nix-cache/BUILD.bazel": "e9f038ba2dd4cfe8b22f04b0bda20cd12f885dfe2d9a1b4b2c15f5bb968c1960",
+    "crates/aos/packages/aos-package-manager/BUILD.bazel": "000afac6202e98f9cc63ec8eb8a734366231a819d06216331d7744818c51f331",
+    "crates/aos/registry/aos-registry-authoring/BUILD.bazel": "3c226f2b2e45d9b62e539cc9d187e733e9d71bdc9bed648093702625b350f9ac",
+    "crates/aos/registry/aos-registry-client/BUILD.bazel": "44fa21038a158a859d780bab0b4a6dfa9400c344b0a9bce1da8bcb83ac76b41d",
+    "crates/aos/registry/aos-registry-format/BUILD.bazel": "a016c23f0f25b3a3f7ee5b2f714ba3a906ff58da6a2636e8b369a11c61b18dbf",
+    "crates/aos/registry/aos-registry-web/BUILD.bazel": "ce5000bb4ee119d23da44ae365e184ce2d8f3b867c7ef61545efe50c2bf40c5f",
+    "crates/aos/release/aos-image-finalizer/BUILD.bazel": "948a9f398f985d55ef16dea72c8a2562f2824951dac0c4466c9f7ea1aa21454a",
+    "crates/aos/release/aos-package-maintenance/BUILD.bazel": "688363537f4c9b40668f68e8cbcaa7a157c7e5a3d2e0631490fc84d3de8a14d5",
+    "crates/aos/release/aos-release-coordinator/BUILD.bazel": "3c6ce0127911cac9e14b91b3f1042fc627ed8a62c714dadcfefc9dfbd9e50252",
+    "crates/aos/release/aos-release-format/BUILD.bazel": "b78ce26ae3050eb6b5c20d2e316a8068b0a8d2da36fb422650b3e08f91155ed0",
+    "crates/aos/release/aos-release-signer/BUILD.bazel": "b222d187bae0b4449d2bfaf02f62253b17c6916bf799ad7e6612da4e2be39da2",
+    "crates/crucible/control/crucible-cli/BUILD.bazel": "55d6c0829f8e7edc74a2af88983003b063fbc0612c889b737066c932d7645cf8",
+    "crates/crucible/control/crucible-control-api/BUILD.bazel": "06c6d50e0dce28955e36c74869768d27d537f4698b337fa602bf898f0ea3174c",
+    "crates/crucible/control/crucible-control-client/BUILD.bazel": "c8c7b0a6ca5df76202a013aada10bc3ecc65931165ed9675df086abade0631a7",
+    "crates/crucible/control/crucible-control-server/BUILD.bazel": "144179948ac11dcd2565cec15fb1ab81d52a30c8e1c66926fca1d63d7662bd33",
+    "crates/crucible/control/crucible-daemon/BUILD.bazel": "4513487402c6d0d243354d679f6597cedc008273e688fe010c70e3cd72e7ba43",
+    "crates/crucible/control/crucible-session/BUILD.bazel": "512fdb0438d90af20799f36e16c07541e41ce580611c5ab507a8976fcd792996",
+    "crates/crucible/engine/crucible-campaign/BUILD.bazel": "444b95e4588c3ff3e700e1d5cf8a5f2841b10e4012da67300e1641b9f553dda9",
+    "crates/crucible/engine/crucible-determinism/BUILD.bazel": "834428488e75501e4930847eb9ffdc23632a2b904b4f8d06d5952b3ef9394e36",
+    "crates/crucible/engine/crucible-device/BUILD.bazel": "70f6c52f90f1b8f1c36a4107c46b3bb42cfccbe5325acf1d94a05f28d3184241",
+    "crates/crucible/engine/crucible-engine/BUILD.bazel": "a14dbb6e00d17658f0b0e20ba127f262196bdba92bf268fc5f969943c72b7233",
+    "crates/crucible/guest/crucible-guest/BUILD.bazel": "8ee53679b200a4ee39334189637e06b77639765360e992f2dd409626f385efab",
+    "crates/crucible/protocol/crucible-qemu-protocol/BUILD.bazel": "bc23273e4359dd68a52f3180fa4eefb7aaf7e65485939483aff4923e9ead61aa",
+    "crates/crucible/protocol/crucible-qemu-shmem/BUILD.bazel": "278e8fb2ebf73d9e2582146422ef436c2d7dc44cd266192a6fad15f21ddcb25e",
+    "crates/crucible/qemu/crucible-qemu-debug-gateway/BUILD.bazel": "a31eefa538a3f73dd62fa1f80164544aa0d75d8cef7858839ab2ded5e948deb6",
+    "crates/crucible/qemu/crucible-qemu-host/BUILD.bazel": "7a1581224fffb4b4b76cc8afc58090cad3b64be22e91e2661dd9be4d7bfe87cc",
+    "crates/crucible/qemu/crucible-qemu-plugin/BUILD.bazel": "aa6721f78279e3a35d26a8e74a2b8dfa530db3ebfc059a356854aa19ceb00453",
+    "crates/crucible/storage/crucible-store-s3/BUILD.bazel": "6f245103b2da5c300032e60173446fbd00f69358da18ebb5a95728a7192d0b0b",
+    "crates/crucible/storage/crucible-store/BUILD.bazel": "3b55a3b50f81447aba444c9cdc298c3f9b309112adfe8f29a273eb5224f1f394",
+    "crates/crucible/testing/crucible-test-support/BUILD.bazel": "0fd6c9b11b24453b2b2cb4f95c64b94c71aba226319b8ef8f4cccb8362cf4e16",
+    "crates/hub/aos-hub-api/BUILD.bazel": "961ee7a75b375b02f231f2deddaeaa1af0ceafa6d08687bd253de5fbcb4fa6b8",
+    "crates/hub/aos-hub-client/BUILD.bazel": "368bf51518aab3eb4585bf2b6e5033d00ec2a9532cd0407f30c0b6ff4d015e19",
+    "crates/hub/aos-hub-console/BUILD.bazel": "0c41d9c48a5825d7454a7a4cf2459fe4bfd434c4b71bb0f931b0ea1bfdd6da23",
+    "crates/hub/aos-hub-db/BUILD.bazel": "912951714e7916d7e4c366998bd297b48ea05a899d2a11d3bc8650231409d3ac",
+    "crates/hub/aos-hub-model/BUILD.bazel": "f3c4d167a3c4cfd561db37ca998ccff06af3f7edcc8a1848fa50a4fbb87b8950",
+    "crates/hub/aos-hub-native/BUILD.bazel": "ab78b5516e6f92825630d5753405751c7fa6366a7d6ed6c110fbf645484076d3",
+    "crates/hub/aos-hub-service/BUILD.bazel": "51f14cb2109fa88ec444c255638f09342889ae81a43f02c777f81cf6f41f2bc8",
+    "crates/hub/aos-hub-ui/BUILD.bazel": "08bcba9793f1408bb1e4e24eca4dcc74145551dda78dab1ac550c81eb1238a25",
+    "crates/hub/aos-hub-worker/BUILD.bazel": "6a301c9205524a5d16a3c1b498c47fd8c9c2a10791951856683c18f45d1932dc",
+    "crates/shared/aos-artifact-evidence/BUILD.bazel": "8f1ca56b86b15b6be53f1fbb328a64c56fce79c6e588cb5f69f338b1e3a4ee4e",
+    "crates/shared/aos-core/BUILD.bazel": "a49b29a61592b961c92007a1fa773a08b486c461b30ffa698d42c79f946d6bd4",
+    "crates/shared/aos-linux-project-quota/BUILD.bazel": "00f60e013217dd02fa11a03bacd29acbf00f809480e3d534ded11e308d6194c9",
+    "crates/shared/aos-nar/BUILD.bazel": "0466f648fe7893f89c8bd2723c5e8668436ef86b835039ad95a3d2ed0a7c6049",
+    "crates/shared/aos-nix/BUILD.bazel": "e794622c6ab3536afa2071fa402f87bae0dd8926557b7a8f6902d68e9314a502",
+    "crates/shared/aos-oci-types/BUILD.bazel": "8d448340c8f3737e8de7f3c4bac008f27658f7dbca589b7dd86a0c84fc3dbd52",
+    "crates/shared/aos-oci/BUILD.bazel": "a99d6143933171445ef38e60e8ac04607da8839343d3a141d543188f90f7d29d",
+    "crates/shared/aos-systemd-client/BUILD.bazel": "822235d35f1d22fad66b87b6faace5f01bf67975912e8e7feb82b359afe29197",
+    "crates/shared/aos-transfer/BUILD.bazel": "17357053fe957d4b2accf7112613e0d4a034ad2bbe13dbfb5978f4d5a6376048",
+    "tests/build/_bazel-source-catalog.nix": "12278b80f3bf5e3de38270d9a8765df6260bba849d0c5c89e7465790575f793a",
+    "tools/accache/BUILD.bazel": "bc9cec5e84f8756036a386d004d0b108f164e647c4ebc85191e1898c97f8f826",
+    "tools/accache/frontend/BUILD.bazel": "33fc6e1571cd6cadc8cc0301bb0dcaff84ce261ab794d5cef425314d2d1d1f82",
+    "tools/bazel/metadata/cargo-inventory.json": "f2bfd3c3c76bfb1fa9466bc3a911021994b2fc3b9256a74331fc437c46d703ff",
+    "tools/bazel/rules/source_package.bzl": "ce4bf20ca33d1db1da524fdbd9010dc3624082da44511811c132bdd3a6f4f3f4",
+    "tools/bazel/tests/source-catalog.nix": "1cabac8cf51b0c68ec6109aecdfcd17532ec3023e612abfb10f7f7dffd93cd3b",
+    "tools/bazel/tests/test_source_catalog.py": "d4155b7fafb63bef2cae27aeca9d7157fc1a5d46e7f812cbb07e186231e19c83",
+    "tools/bazel/tests/verify_source_catalog.py": "b6dfc77802c0d10dfdff65291c2f4370f5d087e24ee706d39a301d69dbd4f5b4"
+  },
+  "configured_inventory_builds": [
+    "/nix/store/mvda8lacwbip38b0jg718xw8j1vmbbsw-aos-bazel-boot-pilot-inventory-1",
+    "/nix/store/3cr7vm0wlk16sr3hlbwm71fnn7136i73-aos-bazel-device-inventory-1",
+    "/nix/store/ybljirxp2pw91vy5hb71vjk9ba9vlsvb-aos-bazel-fixture-inventory-1",
+    "/nix/store/ila9wmgk9c9km2ngdrv9nk0x3r3qljhw-aos-bazel-guest-inventory-1",
+    "/nix/store/cc0cmwqfj3zys1k3aib9c7dhdybnlm7v-aos-bazel-protocol-inventory-1",
+    "/nix/store/ybgkbvpxk3j1yw2p55bk76pafiwv68xc-aos-bazel-shared-inventory-1",
+    "/nix/store/0r6grb33zfr9sn424af7p1kf0gbfl1g0-aos-bazel-source-catalog-checks",
+    "/nix/store/01k59543rlrg9s2r02xlvyficgpgaaci-aos-bazel-store-inventory-1"
+  ],
+  "limits": [
+    "The catalog contains identities and source paths; it does not compile packages or establish runtime/linkage qualification.",
+    "Cargo inventory is retained only as the migration oracle; catalog generation does not read Cargo manifests.",
+    "No production package selection, cache services, or Cargo removal is introduced by source ownership declarations."
+  ],
+  "paths": {
+    "all": "/nix/store/cfpvgq2d8pphb176ajx6xq8rwf571fzs-aos-bazel-source-catalog-checks",
+    "build": "/nix/store/ic9dm0h178fcg08f35w67wlrxr2289za-aos-bazel-source-catalog-1",
+    "configuration": "/nix/store/l72kllm1jqx0gfvkj0c020br3hr44z14-aos-bazel-configuration.json",
+    "crates": "/nix/store/jwqc49l9blfmydyi4j5xk9xqk4167c1n-aos-workspace-source-catalog-1",
+    "repository": "/nix/store/akr2sm4y63zwj28yn8lpjmpjfcihnw1m-aos-source-catalog-1",
+    "source": "/nix/store/nm72151zim7nnhpsr631p8p01rdzksqk-aos-bazel-workspace"
+  },
+  "policy_tests": {
+    "count": 125,
+    "new_source_catalog_tests": 8,
+    "status": "passed"
+  },
+  "prior_checkpoint_regression_checks": {
+    "guest_checkpoint": "dcc77236f9",
+    "guest_checks": [
+      "/nix/store/wbsn7vdv704i4iam3l1kvk3zphhrlb09-aos-bazel-checks",
+      "/nix/store/qlb2k5h34yfck0kghyqrvfa7mx15sk2i-aos-native-evaluation-checks-0",
+      "/nix/store/m4fh41zcrdfzbyxgwmy08rhvf2kn99ss-aos-test-targets-0.1.0",
+      "/nix/store/qpm1k4iiz7z27grzblmpwj6lz48rgr9n-aos-dev-cli-check-0"
+    ],
+    "source_selection_checkpoint": "0fd02d9377",
+    "source_selection_checks": [
+      "/nix/store/n9r1mwafy0hph38y135vp51qxkrlr9wa-aos-bazel-checks",
+      "/nix/store/qlb2k5h34yfck0kghyqrvfa7mx15sk2i-aos-native-evaluation-checks-0",
+      "/nix/store/qpm1k4iiz7z27grzblmpwj6lz48rgr9n-aos-dev-cli-check-0"
+    ]
+  },
+  "report": {
+    "crates": {
+      "packages": 77,
+      "sources": 3730
+    },
+    "external_build_actions": 0,
+    "repository": {
+      "packages": 79,
+      "sources": 3750
+    },
+    "schema_version": 1
+  },
+  "schema_version": 1,
+  "scope": "Bazel-owned Rust package identities and complete source ownership; compilation migration remains independent.",
+  "unchanged_existing_configured_graphs": {
+    "boot-pilot": {
+      "configured_targets": true,
+      "source_directories": true,
+      "source_files": true,
+      "targets": true
+    },
+    "device": {
+      "configured_targets": true,
+      "source_directories": true,
+      "source_files": true,
+      "targets": true
+    },
+    "fixture": {
+      "configured_targets": true,
+      "source_directories": true,
+      "source_files": true,
+      "targets": true
+    },
+    "guest": {
+      "configured_targets": true,
+      "source_directories": true,
+      "source_files": true,
+      "targets": true
+    },
+    "protocol": {
+      "configured_targets": true,
+      "source_directories": true,
+      "source_files": true,
+      "targets": true
+    },
+    "shared": {
+      "configured_targets": true,
+      "source_directories": true,
+      "source_files": true,
+      "targets": true
+    },
+    "store": {
+      "configured_targets": true,
+      "source_directories": true,
+      "source_files": true,
+      "targets": true
+    }
+  }
+}

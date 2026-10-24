@@ -22,6 +22,10 @@ use tower::ServiceExt as _;
 
 const TEST_JWT_SECRET: &[u8] = b"console-test-secret-32-byte-key!!";
 
+// The source-built console Wasm exceeds 1 MiB. This bounds collected test
+// responses independently of the production request-body limits.
+const MAX_TEST_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+
 fn removed_management_paths() -> Vec<String> {
     serde_json::from_str(include_str!("fixtures/removed-management-paths-v1.json"))
         .expect("removed management path fixture")
@@ -115,7 +119,7 @@ async fn send(
     let cache_control = header(header::CACHE_CONTROL);
     let content_type = header(header::CONTENT_TYPE);
     let content_security_policy = header(header::CONTENT_SECURITY_POLICY);
-    let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+    let body = axum::body::to_bytes(response.into_body(), MAX_TEST_RESPONSE_BYTES)
         .await
         .unwrap()
         .to_vec();

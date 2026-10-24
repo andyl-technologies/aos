@@ -29,14 +29,14 @@ impl Database {
             .registry_by_id(registry_id)
             .await?
             .context("indexed registry does not exist")?;
-        let prior_releases: std::collections::HashSet<String> = if registry.org_id.is_some() {
+        let prior_releases: std::collections::BTreeSet<String> = if registry.org_id.is_some() {
             self.list_releases(registry_id)
                 .await?
                 .into_iter()
                 .map(|release| release.semver)
                 .collect()
         } else {
-            std::collections::HashSet::new()
+            std::collections::BTreeSet::new()
         };
         let indexed_at = unix_now();
         let index_digest = index_snapshot_digest(snapshot)?;
@@ -204,10 +204,11 @@ impl Database {
                         &entry.deployment,
                         &entry.module_documentation,
                         &entry.qualification,
-                    ] {
-                        if let Some(artifact) = artifact {
-                            catalog_artifacts.push(("output", artifact.store_path.as_str()));
-                        }
+                    ]
+                    .into_iter()
+                    .flatten()
+                    {
+                        catalog_artifacts.push(("output", artifact.store_path.as_str()));
                     }
                     let mut catalog_artifacts_by_identity =
                         std::collections::BTreeMap::<(String, String), String>::new();
@@ -1037,7 +1038,7 @@ impl Database {
     pub(in crate::db) async fn store_hash_index(
         &self,
         registry_id: i64,
-    ) -> Result<std::collections::HashMap<String, (String, String)>> {
+    ) -> Result<std::collections::BTreeMap<String, (String, String)>> {
         let rows = self
             .backend
             .query(
@@ -1050,7 +1051,7 @@ impl Database {
                 &vals![registry_id],
             )
             .await?;
-        let mut index = std::collections::HashMap::new();
+        let mut index = std::collections::BTreeMap::new();
         for row in &rows {
             let store_path: String = row.get(0)?;
             let name: String = row.get(1)?;

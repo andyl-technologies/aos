@@ -92,10 +92,10 @@ fn apm_state_dir() -> &'static Path {
 /// warning on stderr — better than silently scattering user-scoped state
 /// across process-relative paths. Never panics.
 fn resolve_home() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            return PathBuf::from(home);
-        }
+    if let Ok(home) = std::env::var("HOME")
+        && !home.is_empty()
+    {
+        return PathBuf::from(home);
     }
     // Last-resort fallback: construct from /tmp with a warning.  This is
     // better than silently scattering state into /tmp directly.

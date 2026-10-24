@@ -1,0 +1,18 @@
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:source_package.bzl", "aos_source_package")
+
+# Source ownership is declared before this package's compilation migrates.
+RUST_PACKAGE = aos_rust_package(
+    name = "accache-frontend",
+    version = "0.1.0",
+    edition = "2024",
+    license_expression = "Apache-2.0",
+    license_domain = "apache-host",
+)
+
+aos_source_package(
+    name = "source_package",
+    package = RUST_PACKAGE,
+    srcs = glob(["**/*.rs"]),
+    visibility = ["//visibility:public"],
+)

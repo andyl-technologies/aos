@@ -563,12 +563,16 @@ fn response_inputs(
             // rustc treats tokens from any argfile as literal. Restrict the
             // shell form to the top level so sccache's recursive expansion
             // of ordinary @files cannot change that execution contract.
-            ensure!(depth == 0, "nested Rust shell argfile needs direct compilation");
+            ensure!(
+                depth == 0,
+                "nested Rust shell argfile needs direct compilation"
+            );
             let path = PathBuf::from(path);
             inputs.insert(path.clone());
             let data = fs::read_to_string(&path)?;
-            let arguments = accache_frontend::compiler::rust::split_rust_shell_response_file_args(&data)
-                .ok_or_else(|| anyhow::anyhow!("invalid Rust shell argfile quoting"))?;
+            let arguments =
+                accache_frontend::compiler::rust::split_rust_shell_response_file_args(&data)
+                    .ok_or_else(|| anyhow::anyhow!("invalid Rust shell argfile quoting"))?;
             let arguments = strings(arguments)?;
             ensure!(
                 !arguments.iter().any(|argument| argument.starts_with('@')),
@@ -593,8 +597,14 @@ fn response_inputs(
             } else {
                 accache_frontend::compiler::gcc::split_gnu_response_file_args(&data)
             };
-            let (contents, nested_in_contents) =
-                response_inputs(&strings(nested)?, rust, inputs, active, rust_flags, depth + 1)?;
+            let (contents, nested_in_contents) = response_inputs(
+                &strings(nested)?,
+                rust,
+                inputs,
+                active,
+                rust_flags,
+                depth + 1,
+            )?;
             expanded.extend(contents);
             nested_response |= depth > 0 || nested_in_contents;
             active.remove(&canonical);

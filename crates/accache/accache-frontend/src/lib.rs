@@ -9,7 +9,7 @@ extern crate log;
 #[cfg(test)]
 #[macro_use]
 mod test_macros {
-macro_rules! assert_map_contains {
+    macro_rules! assert_map_contains {
     ( $map:expr , $( ($key:expr, $val:expr) ),* ) => {
         let mut nelems = 0;
         $(
@@ -23,7 +23,6 @@ macro_rules! assert_map_contains {
         assert_eq!(nelems, $map.len(), "{} contains {} elements, expected {}", stringify!($map), $map.len(), nelems);
     }
 }
-
 
     macro_rules! stringvec { ($($value:expr),* $(,)?) => { vec![$($value.to_string()),*] }; }
     macro_rules! ovec { ($($value:expr),* $(,)?) => { vec![$(std::ffi::OsString::from($value)),*] }; }

@@ -98,6 +98,10 @@ pub async fn stage_registry_candidate(
     .await
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Keep existing publication transaction inputs explicit without changing their API"
+)]
 async fn upload_registry_publication_with_commit(
     access: &PublicationAccess,
     registry: &str,
@@ -514,7 +518,7 @@ async fn upload_publication_object_class<'objects>(
                 .iter()
                 .enumerate()
                 .filter(|(index, _)| Some(*index) != leading)
-                .map(|(_, object)| upload_one(*object)),
+                .map(|(_, object)| upload_one(object)),
         )
         .buffer_unordered(request_concurrency)
         .try_collect::<Vec<()>>()

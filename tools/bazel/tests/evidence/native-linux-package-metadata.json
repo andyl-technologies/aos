@@ -1,0 +1,88 @@
+{
+  "bazel_version": "9.2.0",
+  "checks": {
+    "all": "/nix/store/wlkqvqgji3d23839z6lja1bcwx07ivh6-aos-bazel-checks",
+    "boot": "/nix/store/z7ha5x1rs8jmhrn1dvsz1dsabxyvsi7c-aos-bazel-boot-pilot-checks",
+    "developerEvidence": "/nix/store/fc6xjbky1zj9qjxgrv052gmck386yyqa-aos-bazel-developer-evidence",
+    "editor": "/nix/store/xnsyw06jg3wyqh126m6bld2zynn4cwdz-aos-bazel-editor-check",
+    "metadataParity": "/nix/store/9gszgswzcv8yqrv5n9zrgks09d4xbmny-aos-bazel-package-metadata-parity",
+    "metadataPolicy": "/nix/store/6rnwrszyvmf28580gxihhphp56jmssp1-aos-bazel-package-metadata-policy",
+    "policy": "/nix/store/aqx0l36xpzjq0dcl8yq8fy3mx082q2sq-aos-bazel-policy-checks",
+    "protocol": "/nix/store/sp5gil90ydr2x2qcqgaf5h4irnhwpfc3-aos-bazel-protocol-checks",
+    "recovery": "/nix/store/yw8r1rwamdyf8vfh21iw895fn69j1cn4-aos-bazel-cache-recovery"
+  },
+  "configuration_sha256": {
+    "tools/bazel/metadata/inventory.bzl": "f7c915f770175fc96df55110424285698b49cddb8227273634d22f88b48515e0",
+    "tools/bazel/rules/compile.bzl": "6e039728946c19d23b019151a0391a5ca64035796e7d672bfcc3003cb362c300",
+    "tools/bazel/rules/package.bzl": "8570e95108db7958ff8995206ba477dfa32c5860ba3bf0f9fe1eea809e4180e9",
+    "tools/bazel/rules/rust_package.bzl": "359a73e158860b03c0aeabf3aba586206034d2a0c830cfc6709682b18703abe5",
+    "tools/bazel/rules/test.bzl": "96d07d4d0a44690820128d18c49fc5643bd6b47a6b758d3456bfa90c42f677ce",
+    "tools/bazel/tests/verify_metadata_rejections.py": "90b0798a4120c306fc3095836c88e64294df699f166e4b7fe5ad9f313d87239d",
+    "tools/bazel/tests/verify_package_metadata.py": "cf5dcb96565022b81d5f126e840186b2adc28b546f0e9ae86ddaf2ffa5b828b6"
+  },
+  "configured_rust_targets": 36,
+  "fixture_metadata_consumers": [
+    "binary",
+    "unit test",
+    "doctest"
+  ],
+  "fixture_version": "1.2.3-rc.4+local.5",
+  "packages": [
+    "aos-boot-identity",
+    "aos-recovery",
+    "crucible-determinism",
+    "crucible-qemu-protocol",
+    "crucible-qemu-shmem"
+  ],
+  "platform": "x86_64-linux",
+  "python_regressions": 42,
+  "rejections": {
+    "compile-edition": {
+      "diagnostic": "conflicts with package edition",
+      "exit_code": 1
+    },
+    "compile-environment": {
+      "diagnostic": "overrides package metadata CARGO_PKG_NAME",
+      "exit_code": 1
+    },
+    "compile-license": {
+      "diagnostic": "conflicts with package license domain",
+      "exit_code": 1
+    },
+    "compile-version": {
+      "diagnostic": "conflicts with package version",
+      "exit_code": 1
+    },
+    "empty-build": {
+      "diagnostic": "Rust package version must be SemVer",
+      "exit_code": 1
+    },
+    "install-version": {
+      "diagnostic": "installed package conflicts with Rust package version",
+      "exit_code": 1
+    },
+    "invalid-edition": {
+      "diagnostic": "unsupported Rust edition",
+      "exit_code": 1
+    },
+    "invalid-name": {
+      "diagnostic": "invalid Rust package name",
+      "exit_code": 1
+    },
+    "invalid-version": {
+      "diagnostic": "Rust package version must be SemVer",
+      "exit_code": 1
+    },
+    "numeric-prerelease": {
+      "diagnostic": "Rust package version must be SemVer",
+      "exit_code": 1
+    },
+    "test-name": {
+      "diagnostic": "Rust test conflicts with package name",
+      "exit_code": 1
+    }
+  },
+  "rust_version": "1.98.1",
+  "schema_version": 1,
+  "scope": "native Linux package metadata before production cutover"
+}

@@ -1,0 +1,23 @@
+load("@rules_rust//rust:defs.bzl", "rust_clippy")
+load("//tools/bazel/rules:compile.bzl", "rust_library")
+
+# Deliberately invalid code proves both lint levels and configuration reach Clippy.
+[
+    rust_library(
+        name = name,
+        srcs = [name + ".rs"],
+        edition = "2024",
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        tags = ["manual"],
+    )
+    for name in ["host_clock", "unwrap"]
+]
+
+[
+    rust_clippy(
+        name = name + "_check",
+        deps = [":" + name],
+        tags = ["manual"],
+    )
+    for name in ["host_clock", "unwrap"]
+]

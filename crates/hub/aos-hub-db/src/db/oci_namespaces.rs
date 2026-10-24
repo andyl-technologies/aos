@@ -550,7 +550,7 @@ impl Database {
                        AND r.enabled = 1
                      ORDER BY r.id"
                 ),
-                &vec![
+                &[
                     host_value,
                     crate::value::Value::Int(i64::from(effective_port)),
                     crate::value::Value::Text(scheme.to_owned()),

@@ -339,7 +339,7 @@ impl Database {
             let current: Option<String> = row.get(1)?;
             let version: i64 = row.get(3)?;
             if current.as_deref() == Some(publication_id)
-                && expected_version.map_or(true, |expected| expected == version)
+                && expected_version.is_none_or(|expected| expected == version)
             {
                 return Ok(RegistryPublicationStateRecord {
                     registry_id: row.get(0)?,

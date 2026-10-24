@@ -66,8 +66,9 @@ impl Sha256Digest {
             bail!("SHA-256 digest must contain exactly 64 lowercase hexadecimal digits");
         }
 
+        let (pairs, _) = encoded.as_bytes().as_chunks::<2>();
         let mut bytes = [0_u8; 32];
-        for (index, chunk) in encoded.as_bytes().chunks_exact(2).enumerate() {
+        for (index, chunk) in pairs.iter().enumerate() {
             let pair = std::str::from_utf8(chunk).context("decoding SHA-256 text")?;
             bytes[index] = u8::from_str_radix(pair, 16).context("decoding SHA-256 text")?;
         }

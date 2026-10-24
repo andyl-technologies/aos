@@ -18,7 +18,14 @@ use super::args::*;
 use super::c::{ArtifactDescriptor, CCompilerKind, ParsedArguments};
 use super::{ColorMode, CompilerArguments, Language, clang};
 use crate::util::OsStrExt;
-use std::{collections::HashMap, env, ffi::OsString, fs::{self, File}, io::Read, path::{Path,PathBuf}};
+use std::{
+    collections::HashMap,
+    env,
+    ffi::OsString,
+    fs::{self, File},
+    io::Read,
+    path::{Path, PathBuf},
+};
 
 ArgData! { pub
     TooHardFlag,
@@ -843,13 +850,13 @@ pub fn split_gnu_response_file_args(contents: &str) -> Vec<OsString> {
     args
 }
 
-
 #[cfg(test)]
 mod test {
     use super::*;
-use itertools::assert_equal;
-use std::io::Write;
-use temp_env::{with_var,with_var_unset};
+    use itertools::assert_equal;
+    use std::io::Write;
+    use temp_env::{with_var, with_var_unset};
+
     fn parse_arguments_(
         arguments: Vec<String>,
         plusplus: bool,
@@ -906,7 +913,6 @@ use temp_env::{with_var,with_var_unset};
         assert!(!msvc_show_includes);
     }
 
-
     #[test]
     fn test_parse_arguments_external_assembler() {
         // GCC has no integrated assembler, so `as` is always part of what
@@ -917,7 +923,6 @@ use temp_env::{with_var,with_var_unset};
             o => panic!("Got unexpected parse result: {:?}", o),
         }
     }
-
 
     #[test]
     fn test_parse_arguments_default_name() {
@@ -951,7 +956,6 @@ use temp_env::{with_var,with_var_unset};
         assert!(!msvc_show_includes);
     }
 
-
     #[test]
     fn test_parse_arguments_default_outputdir() {
         let args = stringvec!["-c", "/tmp/foo.c"];
@@ -970,7 +974,6 @@ use temp_env::{with_var,with_var_unset};
             )
         );
     }
-
 
     #[test]
     fn test_parse_arguments_objc_header_language() {
@@ -1005,7 +1008,6 @@ use temp_env::{with_var,with_var_unset};
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
     }
-
 
     #[test]
     fn test_parse_arguments_split_dwarf() {
@@ -1052,7 +1054,6 @@ use temp_env::{with_var,with_var_unset};
         assert!(!msvc_show_includes);
     }
 
-
     #[test]
     fn test_parse_arguments_linker_options() {
         let args = stringvec![
@@ -1097,7 +1098,6 @@ use temp_env::{with_var,with_var_unset};
         assert!(!msvc_show_includes);
     }
 
-
     #[test]
     fn test_parse_arguments_coverage_outputs_gcno() {
         let args = stringvec!["--coverage", "-c", "foo.cpp", "-o", "foo.o"];
@@ -1139,7 +1139,6 @@ use temp_env::{with_var,with_var_unset};
         assert!(profile_generate);
     }
 
-
     #[test]
     fn test_parse_arguments_depfile_for_raw_assembly_gcc() {
         let args = stringvec!["-c", "foo.s", "-o", "foo.o", "-MD", "-MF", "foo.d"];
@@ -1168,7 +1167,6 @@ use temp_env::{with_var,with_var_unset};
         assert!(preprocessor_args.is_empty());
     }
 
-
     #[test]
     fn test_parse_arguments_depfile_for_preprocessed_c_clang() {
         let args = stringvec!["-c", "foo.i", "-o", "foo.o", "-MD", "-MF", "foo.d"];
@@ -1196,7 +1194,6 @@ use temp_env::{with_var,with_var_unset};
         );
         assert!(preprocessor_args.is_empty());
     }
-
 
     #[test]
     fn test_parse_arguments_test_coverage_outputs_gcno() {
@@ -1239,7 +1236,6 @@ use temp_env::{with_var,with_var_unset};
         assert!(profile_generate);
     }
 
-
     #[test]
     fn test_parse_arguments_profile_generate() {
         let args = stringvec!["-fprofile-generate", "-c", "foo.cpp", "-o", "foo.o"];
@@ -1274,7 +1270,6 @@ use temp_env::{with_var,with_var_unset};
         assert!(profile_generate);
     }
 
-
     #[test]
     fn test_parse_arguments_extra() {
         let args = stringvec!["-c", "foo.cc", "-fabc", "-o", "foo.o", "-mxyz"];
@@ -1306,7 +1301,6 @@ use temp_env::{with_var,with_var_unset};
         assert_eq!(ovec!["-fabc", "-mxyz"], common_args);
         assert!(!msvc_show_includes);
     }
-
 
     #[test]
     fn test_parse_arguments_values() {
@@ -1341,7 +1335,6 @@ use temp_env::{with_var,with_var_unset};
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
-
 
     #[test]
     fn test_parse_arguments_preprocessor_args() {
@@ -1395,7 +1388,6 @@ use temp_env::{with_var,with_var_unset};
         assert!(!msvc_show_includes);
     }
 
-
     #[test]
     fn test_parse_arguments_unhashed() {
         let unhashed_flags = stringvec!["-pipe"];
@@ -1414,7 +1406,6 @@ use temp_env::{with_var,with_var_unset};
             assert_eq!(ovec![flag], a.unhashed_args,);
         }
     }
-
 
     #[test]
     fn test_parse_arguments_double_dash() {
@@ -1475,7 +1466,6 @@ use temp_env::{with_var,with_var_unset};
         );
     }
 
-
     #[test]
     fn test_parse_arguments_too_hard() {
         let too_hard_flags = stringvec![
@@ -1502,7 +1492,6 @@ use temp_env::{with_var,with_var_unset};
             }
         }
     }
-
 
     #[test]
     fn test_parse_arguments_explicit_dep_target() {
@@ -1544,7 +1533,6 @@ use temp_env::{with_var,with_var_unset};
         assert_eq!(ovec!["-fabc"], common_args);
         assert!(!msvc_show_includes);
     }
-
 
     #[test]
     fn test_parse_arguments_explicit_dep_target_needed() {
@@ -1592,7 +1580,6 @@ use temp_env::{with_var,with_var_unset};
         assert!(!msvc_show_includes);
     }
 
-
     #[test]
     fn test_parse_arguments_explicit_mq_dep_target_needed() {
         let args = stringvec![
@@ -1639,7 +1626,6 @@ use temp_env::{with_var,with_var_unset};
         assert!(!msvc_show_includes);
     }
 
-
     #[test]
     fn test_parse_arguments_diagnostics_color() {
         fn get_color_mode(color_flag: &str) -> ColorMode {
@@ -1656,7 +1642,6 @@ use temp_env::{with_var,with_var_unset};
         assert_eq!(get_color_mode("-fno-diagnostics-color"), ColorMode::Off);
         assert_eq!(get_color_mode("-fdiagnostics-color"), ColorMode::On);
     }
-
 
     #[test]
     fn test_parse_arguments_dep_target_needed() {
@@ -1702,7 +1687,6 @@ use temp_env::{with_var,with_var_unset};
         assert!(!msvc_show_includes);
     }
 
-
     #[test]
     fn test_parse_arguments_dep_target_and_file_needed() {
         let args = stringvec!["-c", "foo/bar.c", "-fabc", "-o", "foo/bar.o", "-MMD"];
@@ -1738,7 +1722,6 @@ use temp_env::{with_var,with_var_unset};
         assert!(!msvc_show_includes);
     }
 
-
     #[test]
     fn test_parse_arguments_empty_args() {
         assert_eq!(
@@ -1746,7 +1729,6 @@ use temp_env::{with_var,with_var_unset};
             parse_arguments_(vec!(), false)
         );
     }
-
 
     #[test]
     fn test_parse_arguments_not_compile() {
@@ -1756,7 +1738,6 @@ use temp_env::{with_var,with_var_unset};
         );
     }
 
-
     #[test]
     fn test_parse_arguments_too_many_inputs_single() {
         assert_eq!(
@@ -1764,7 +1745,6 @@ use temp_env::{with_var,with_var_unset};
             parse_arguments_(stringvec!["-c", "foo.c", "-o", "foo.o", "bar.c"], false)
         );
     }
-
 
     #[test]
     fn test_parse_arguments_too_many_inputs_multiple() {
@@ -1780,7 +1760,6 @@ use temp_env::{with_var,with_var_unset};
         );
     }
 
-
     #[test]
     fn test_parse_arguments_link() {
         assert_eq!(
@@ -1791,7 +1770,6 @@ use temp_env::{with_var,with_var_unset};
             )
         );
     }
-
 
     #[test]
     fn test_parse_arguments_fplugin() {
@@ -1811,7 +1789,6 @@ use temp_env::{with_var,with_var_unset};
         );
     }
 
-
     #[test]
     fn test_parse_arguments_fcallgraph_info_with_markers() {
         assert_eq!(
@@ -1822,7 +1799,6 @@ use temp_env::{with_var,with_var_unset};
             )
         );
     }
-
 
     #[test]
     fn test_parse_arguments_pgo() {
@@ -1841,7 +1817,6 @@ use temp_env::{with_var,with_var_unset};
             )
         );
     }
-
 
     #[test]
     fn test_parse_arguments_cxx20_modules_unsupported() {
@@ -1866,7 +1841,6 @@ use temp_env::{with_var,with_var_unset};
         );
     }
 
-
     #[test]
     fn test_parse_arguments_response_file() {
         assert_eq!(
@@ -1878,7 +1852,6 @@ use temp_env::{with_var,with_var_unset};
             parse_arguments_(stringvec!["-c", "foo.c", "-o", "@foo"], false)
         );
     }
-
 
     #[test]
     fn test_parse_index_store_path() {
@@ -1898,7 +1871,6 @@ use temp_env::{with_var,with_var_unset};
         );
     }
 
-
     #[test]
     fn test_parse_arguments_multiarch_cache_disabled() {
         with_var_unset("SCCACHE_CACHE_MULTIARCH", || {
@@ -1916,7 +1888,6 @@ use temp_env::{with_var,with_var_unset};
             );
         });
     }
-
 
     #[test]
     fn test_parse_arguments_multiple_arch() {
@@ -1976,7 +1947,6 @@ use temp_env::{with_var,with_var_unset};
         });
     }
 
-
     #[test]
     fn at_signs() {
         let td = tempfile::Builder::new()
@@ -2020,7 +1990,6 @@ use temp_env::{with_var,with_var_unset};
         assert!(common_args.is_empty());
         assert!(!msvc_show_includes);
     }
-
 
     #[test]
     fn test_split_gnu_response_file_args() {
@@ -2066,7 +2035,6 @@ use temp_env::{with_var,with_var_unset};
         assert_eq!(ovec!["a b"], split_gnu_response_file_args("'a b"));
     }
 
-
     #[test]
     fn test_parse_arguments_response_file_with_quotes() {
         // A response file containing quoted arguments (common with Clang) must
@@ -2105,7 +2073,6 @@ use temp_env::{with_var,with_var_unset};
         assert_eq!(ovec!["-DGREETING=hello world"], common_args);
     }
 
-
     #[test]
     fn test_parse_arguments_plusplus() {
         let args = stringvec!["-c", "foo.c", "-o", "foo.o"];
@@ -2140,7 +2107,6 @@ use temp_env::{with_var,with_var_unset};
         assert!(!msvc_show_includes);
     }
 
-
     #[test]
     fn test_too_hard_for_preprocessor_cache_mode() {
         let args = stringvec!["-c", "foo.c", "-o", "foo.o"];
@@ -2170,5 +2136,4 @@ use temp_env::{with_var,with_var_unset};
             Some("-Wp".into())
         );
     }
-
 }

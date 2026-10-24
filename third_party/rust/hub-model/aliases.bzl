@@ -1,0 +1,26 @@
+"""Generated direct dependency labels for this resolved family."""
+
+CRATES = {
+    "aes-gcm": "@aos_hub_model_crates__aes-gcm-0.10.3//:aes_gcm",
+    "anyhow": "@aos_hub_model_crates__anyhow-1.0.103//:anyhow",
+    "argon2": "@aos_hub_model_crates__argon2-0.5.3//:argon2",
+    "async-trait": "@aos_hub_model_crates__async-trait-0.1.89//:async_trait",
+    "base64": "@aos_hub_model_crates__base64-0.22.1//:base64",
+    "crc32fast": "@aos_hub_model_crates__crc32fast-1.5.0//:crc32fast",
+    "ed25519-dalek": "@aos_hub_model_crates__ed25519-dalek-2.2.0//:ed25519_dalek",
+    "flate2": "@aos_hub_model_crates__flate2-1.1.9//:flate2",
+    "hex": "@aos_hub_model_crates__hex-0.4.3//:hex",
+    "hmac": "@aos_hub_model_crates__hmac-0.12.1//:hmac",
+    "password-hash": "@aos_hub_model_crates__password-hash-0.5.0//:password_hash",
+    "rand": "@aos_hub_model_crates__rand-0.9.4//:rand",
+    "semver": "@aos_hub_model_crates__semver-1.0.28//:semver",
+    "serde": "@aos_hub_model_crates__serde-1.0.228//:serde",
+    "serde_json": "@aos_hub_model_crates__serde_json-1.0.150//:serde_json",
+    "sha2": "@aos_hub_model_crates__sha2-0.10.9//:sha2",
+    "thiserror": "@aos_hub_model_crates__thiserror-2.0.18//:thiserror",
+    "tokio": "@aos_hub_model_crates__tokio-1.52.3//:tokio",
+    "toml": "@aos_hub_model_crates__toml-0.8.23//:toml",
+    "unicode-normalization": "@aos_hub_model_crates__unicode-normalization-0.1.25//:unicode_normalization",
+    "url": "@aos_hub_model_crates__url-2.5.8//:url",
+    "zeroize": "@aos_hub_model_crates__zeroize-1.9.0//:zeroize"
+}

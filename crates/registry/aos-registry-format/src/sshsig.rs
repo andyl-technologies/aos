@@ -346,6 +346,7 @@ fn write_string(out: &mut Vec<u8>, data: &[u8]) {
 }
 
 #[cfg(test)]
+#[allow(clippy::expect_used, clippy::unwrap_used)]
 mod tests {
     use super::*;
 

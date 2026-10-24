@@ -620,7 +620,7 @@ async fn execute_stream_plan(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
     use super::*;
@@ -694,7 +694,7 @@ mod tests {
     }
 
     struct FakeProvider {
-        behavior: HashMap<String, Behavior>,
+        behavior: BTreeMap<String, Behavior>,
         opened: Arc<Mutex<Vec<String>>>,
     }
 
@@ -773,7 +773,7 @@ mod tests {
         let (db, cache) = cache_with_placements().await;
         let opened = Arc::new(Mutex::new(Vec::new()));
         let provider = FakeProvider {
-            behavior: HashMap::from([
+            behavior: BTreeMap::from([
                 ("first".to_string(), Behavior::Retryable),
                 ("second".to_string(), Behavior::Miss),
                 ("third".to_string(), Behavior::Hit),
@@ -815,7 +815,7 @@ mod tests {
             .unwrap();
         let opened = Arc::new(Mutex::new(Vec::new()));
         let provider = FakeProvider {
-            behavior: HashMap::new(),
+            behavior: BTreeMap::new(),
             opened: Arc::clone(&opened),
         };
         let error = fetch_from_placements(
@@ -838,7 +838,7 @@ mod tests {
         let (db, cache) = cache_with_placements().await;
         let opened = Arc::new(Mutex::new(Vec::new()));
         let provider = FakeProvider {
-            behavior: HashMap::from([
+            behavior: BTreeMap::from([
                 ("first".to_string(), Behavior::Terminal),
                 ("second".to_string(), Behavior::Hit),
                 ("third".to_string(), Behavior::Hit),
@@ -865,7 +865,7 @@ mod tests {
         let (db, cache) = cache_with_placements().await;
         let opened = Arc::new(Mutex::new(Vec::new()));
         let provider = FakeProvider {
-            behavior: HashMap::from([
+            behavior: BTreeMap::from([
                 ("first".to_string(), Behavior::Retryable),
                 ("second".to_string(), Behavior::Hit),
                 ("third".to_string(), Behavior::Hit),
@@ -901,7 +901,7 @@ mod tests {
             .map(|placement| (placement, "fixture-version".to_string()))
             .collect();
         let provider = FakeProvider {
-            behavior: HashMap::from([
+            behavior: BTreeMap::from([
                 ("first".to_string(), Behavior::Retryable),
                 ("second".to_string(), Behavior::Hit),
                 ("third".to_string(), Behavior::Hit),
@@ -926,7 +926,7 @@ mod tests {
             .map(|placement| (placement, "fixture-version".to_string()))
             .collect();
         let provider = FakeProvider {
-            behavior: HashMap::from([
+            behavior: BTreeMap::from([
                 ("first".to_string(), Behavior::Retryable),
                 ("second".to_string(), Behavior::Retryable),
                 ("third".to_string(), Behavior::Retryable),
@@ -1041,7 +1041,7 @@ mod tests {
         .await
         .unwrap();
         let provider = FakeProvider {
-            behavior: HashMap::from([
+            behavior: BTreeMap::from([
                 ("first".to_string(), Behavior::Miss),
                 ("second".to_string(), Behavior::Hit),
                 ("third".to_string(), Behavior::Hit),

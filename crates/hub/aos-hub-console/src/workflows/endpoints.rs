@@ -399,7 +399,7 @@ fn EndpointCreateForm(
                 <label><span>"Scheme"</span><select prop:value=move || scheme.get() on:change=on_scheme_change><option value="https">"HTTPS"</option><option value="http">"HTTP"</option></select></label>
                 <label><span>"Host kind"</span><select prop:value=move || host_kind.get() on:change=on_host_kind_change><option value="domain">"Managed domain"</option><option value="ipv4">"IPv4 address"</option><option value="ipv6">"IPv6 address"</option></select></label>
                 {move || if host_kind.get() == "domain" {
-                    let on_domain_change = on_domain_change.clone();
+
                     view! { <label><span>"Domain"</span><select required prop:value=move || host.get() on:change=move |event| on_domain_change.run(event_target_value(&event))>{domain_choices.iter().map(|domain| view! { <option value=domain.stable_id.clone()>{domain.hostname.clone()}</option> }).collect_view()}</select>{domain_choices.is_empty().then(|| view! { <small>"No domains exist in this scope. Add one from Infrastructure → Domains first."</small> })}</label> }.into_any()
                 } else {
                     view! { <label><span>"IP address"</span><input required prop:value=move || host.get() on:input=move |event| host.set(event_target_value(&event))/></label> }.into_any()
@@ -891,6 +891,10 @@ fn endpoint_host(kind: &str, value: &str) -> Result<aos_hub_api::EndpointHost, S
     };
     Ok(aos_hub_api::EndpointHost { host: Some(host) })
 }
+#[allow(
+    clippy::too_many_arguments,
+    reason = "The existing form builder keeps each independently validated endpoint field explicit."
+)]
 fn endpoint_revision(
     scheme: &str,
     boundary_revision: &str,
@@ -926,12 +930,16 @@ fn endpoint_revision(
         ingress_kind,
         listener_ref: listener_ref.trim().to_string(),
         tls: aos_hub_api::TlsConfiguration {
-            provider: is_https
-                .then(|| tls_provider.trim().to_string())
-                .unwrap_or_default(),
-            certificate_ref: is_https
-                .then(|| certificate_ref.trim().to_string())
-                .unwrap_or_default(),
+            provider: if is_https {
+                tls_provider.trim().to_string()
+            } else {
+                String::new()
+            },
+            certificate_ref: if is_https {
+                certificate_ref.trim().to_string()
+            } else {
+                String::new()
+            },
             require_client_certificate: is_https && require_client_certificate,
         },
         probe_ref: probe_ref.trim().to_string(),

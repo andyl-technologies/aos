@@ -1,0 +1,77 @@
+{
+  "baseline": "tools/bazel/tests/evidence/store-performance-v3-raw.json",
+  "baseline_sha256": "5591a85bee0eef47f386c440fd9fcf86f6593fcb110f84ee78c29593fa709a52",
+  "correction": "A benchmark-only idle option keeps the private JVM for up to one hour. The harness requires the same live PID before and after each warm/edit invocation, requires fresh bases to have no prior JVM, and shuts down all private JVMs in finally.",
+  "interpretation": "Recorded missing pre-command JVMs and distinct post-command PIDs show these samples include server startup. The 60-second idle timeout is consistent with expiration during untimed case validation.",
+  "limits": [
+    "This audit identifies measurement scope. It does not establish improved timings or performance acceptance.",
+    "Original measurements and all Cargo baselines remain retained without rewriting their raw observations."
+  ],
+  "schema_version": 1,
+  "status": "Earlier warm/edit samples did not retain a live Bazel JVM between invocations",
+  "warm_and_edit_samples": [
+    {
+      "repetition": 0,
+      "scenario": "warm",
+      "server_after_pid": 39077,
+      "server_before": null,
+      "wall_seconds": 4.982529455010081
+    },
+    {
+      "repetition": 0,
+      "scenario": "implementation-edit",
+      "server_after_pid": 41159,
+      "server_before": null,
+      "wall_seconds": 37.408778742013965
+    },
+    {
+      "repetition": 0,
+      "scenario": "public-api-edit",
+      "server_after_pid": 43527,
+      "server_before": null,
+      "wall_seconds": 47.59962305100635
+    },
+    {
+      "repetition": 1,
+      "scenario": "warm",
+      "server_after_pid": 71083,
+      "server_before": null,
+      "wall_seconds": 4.951464927988127
+    },
+    {
+      "repetition": 1,
+      "scenario": "implementation-edit",
+      "server_after_pid": 73137,
+      "server_before": null,
+      "wall_seconds": 43.84465208402253
+    },
+    {
+      "repetition": 1,
+      "scenario": "public-api-edit",
+      "server_after_pid": 75598,
+      "server_before": null,
+      "wall_seconds": 47.63781582500087
+    },
+    {
+      "repetition": 2,
+      "scenario": "warm",
+      "server_after_pid": 105988,
+      "server_before": null,
+      "wall_seconds": 4.495198946009623
+    },
+    {
+      "repetition": 2,
+      "scenario": "implementation-edit",
+      "server_after_pid": 108079,
+      "server_before": null,
+      "wall_seconds": 37.714166562014725
+    },
+    {
+      "repetition": 2,
+      "scenario": "public-api-edit",
+      "server_after_pid": 110522,
+      "server_before": null,
+      "wall_seconds": 47.970325727015734
+    }
+  ]
+}

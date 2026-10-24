@@ -88,7 +88,7 @@ pub(crate) fn evaluate(
     temporary_roots.retain(projection_source_roots(&descriptor)?, cancellation)?;
     let (library_root, _) = aos_deployment::nix::store_root_and_suffix(&descriptor.library)?;
     ensure!(
-        library_root == PathBuf::from(&authorized.base_library.store_path),
+        library_root == Path::new(&authorized.base_library.store_path),
         "native evaluator library differs from the admitted authorization library"
     );
     let (library_hash, _) =

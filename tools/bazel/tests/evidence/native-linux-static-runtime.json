@@ -1,0 +1,343 @@
+{
+  "artifacts": {
+    "build": "/nix/store/y84rvn6na928c41p7d38xrj8bjjdijgy-aos-bazel-static-runtime-fixture-1",
+    "libraries": "/nix/store/9nx861hki7m5ip75rbivaqy6dn2g3nzr-aos-bazel-static-libraries-1",
+    "package": "/nix/store/pbfnr7hxcfjg6bjrmacsgjp0mqd9mkhw-aos-static-runtime-fixture-1"
+  },
+  "checks": {
+    "cli": "/nix/store/qz4k0jhs2l5j3pds98d0630ibhn26gxm-aos-dev-cli-check-0",
+    "combined_all": "/nix/store/9r1p43iyw810mxjkyhw150cy5pz4syv9-aos-bazel-checks",
+    "evaluation": "/nix/store/qlb2k5h34yfck0kghyqrvfa7mx15sk2i-aos-native-evaluation-checks-0",
+    "static_runtime": "/nix/store/v1vji0zwhw2mj4995paz3p6fhvha21lk-aos-bazel-static-runtime-checks"
+  },
+  "configuration_sha256": {
+    "pkgs/build-support/_bazel/build.nix": "b604115ca295ed047fe7f0807c8c9b2fd6ab822fa2c5b0c61b106f00bbf363c1",
+    "pkgs/build-support/_bazel/default.nix": "353360ec2c1bccf5fb954a0fb369642aabd82d6ab0a86f98961b5b01ea1e35ad",
+    "pkgs/build-support/_bazel/static-libraries.nix": "4235106c088921c4f6d02df635390e360125080df393a6d9aeb913d3b78e87f7",
+    "pkgs/default.nix": "a4f41a8852c3a0074c10f6d0b9f074f5aef11b6cafc02114313aa464e3ba73e8",
+    "tests/build/_bazel-static-runtime.nix": "ace9ea8e5ce87fc5c5b4853dbca55b1c37ac8322ec2b9690a8d4e461ae74141b",
+    "tests/build/bazel.nix": "c7d0e0b55afb8540a75416df252bfa4b169b39ec9b4bd068c20719ccbb94245a",
+    "tools/bazel/tests/native-libraries/BUILD.bazel": "5bcd5873216e5542ab181f90ff807803861793c6d3a8c781fe4b4ae948dee82a",
+    "tools/bazel/tests/static-runtime.nix": "8bf60362d922cf435ae7ef4ca0362635100c45e9f41faa90ac1f218aa81704dd",
+    "tools/bazel/tests/static-runtime/BUILD.bazel": "0497b14893fedfa3ae6c87ca9bfefae5bff0d2189360cf4910736cad4fb0399b",
+    "tools/bazel/tests/static-runtime/macro.rs": "c327ba5b2f15ca39d7fda9970b07306c843362ad535e2abd9856feab50ea7e84",
+    "tools/bazel/tests/static-runtime/main.rs": "3ef591e10c0ed4a035b4eba552bcb8c7d35b1d0618b6b2ae9884b76e954678e8",
+    "tools/bazel/tests/test_static_runtime.py": "fc7b271a3e1b87735ceffc8b50fcf6d3222ae8f40e0a6a5e1cfa90f7cf686153",
+    "tools/bazel/tests/verify_static_runtime.py": "52ac949b73b4ac915c2aef1e0fbf10ba031584a8ec0aa09e8e8240dc94b75a2b"
+  },
+  "limitations": [
+    "Qualification covers native x86_64 Linux static C/Rust fixtures, not the guest package or a production cutover.",
+    "Foreign static compilation, guest VM execution, and performance acceptance remain unqualified.",
+    "Static ELF linkage removes the interpreter and DT_NEEDED imports; glibc still embeds paths for optional runtime data, so its Nix reference is preserved and reported.",
+    "The fixture invokes a dynamically linked execution-platform procedural macro while its Rust target uses crt-static and a static relocation model.",
+    "Link evidence comes from uncached sandboxed compiler actions. Expanded response arguments are checked against the executed response-file SHA-256 before their flags are inspected."
+  ],
+  "platform": "x86_64-linux",
+  "policy_tests": 99,
+  "qualification": {
+    "actions": {
+      "c_app": {
+        "command": [
+          "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "-o",
+          "bazel-out/k8-fastbuild/bin/tools/bazel/tests/static-runtime/c_app",
+          "-Wl,-S",
+          "-L/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+          "-Wl,-rpath,/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+          "bazel-out/k8-fastbuild/bin/tools/bazel/tests/static-runtime/_objs/c_app/main.pic.o",
+          "bazel-out/k8-fastbuild/bin/tools/bazel/tests/native-libraries/libprobe.a",
+          "external/+aos_tools_repository+aos_native/sqlite/lib/libsqlite3.a",
+          "external/+aos_tools_repository+aos_native/zstd/lib/libzstd.a",
+          "-L/nix/store/9nx861hki7m5ip75rbivaqy6dn2g3nzr-aos-bazel-static-libraries-1/static/lib",
+          "-static",
+          "-no-pie",
+          "-lstdc++",
+          "-lm"
+        ],
+        "input_count": 2787,
+        "mnemonic": "CppLink",
+        "selected_inputs": {
+          "sqlite/lib/libsqlite3.a": "62cefe13391e8034027478e2df23fc2678abc5be956c0a7c34d09ab61e1711d7",
+          "static/lib/libc.a": "883923139dd9d8d3b63db94b3c18e5d8a5df2bd39446a256be68891923eda5c4",
+          "static/lib/libgcc_eh.a": "318c92168f80ad55a49b68b075220a2d31888c6c1795085507884be58222476a",
+          "static/lib/libm.a": "0c2434478139e22d73d542e6d1b59e652e8140409b91e3c28324955a2e1d6324",
+          "zstd/lib/libzstd.a": "cd67bba08db44bf4e2955db31daf9cc442552e86f84e6932b261c86342eeb9b6"
+        }
+      },
+      "rust_app": {
+        "command": [
+          "bazel-out/k8-opt-exec/bin/external/rules_rust+/util/process_wrapper/process_wrapper",
+          "--subst",
+          "pwd=${pwd}",
+          "--subst",
+          "exec_root=${exec_root}",
+          "--subst",
+          "output_base=${output_base}",
+          "--",
+          "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/bin/rustc",
+          "tools/bazel/tests/static-runtime/main.rs",
+          "--crate-name=rust_app",
+          "--crate-type=bin",
+          "--error-format=human",
+          "--out-dir=bazel-out/k8-fastbuild/bin/tools/bazel/tests/static-runtime",
+          "--codegen=opt-level=0",
+          "--codegen=debuginfo=0",
+          "--codegen=strip=none",
+          "--remap-path-prefix=${output_base}=.",
+          "--remap-path-prefix=${pwd}=.",
+          "--remap-path-prefix=${exec_root}=.",
+          "--emit=link=bazel-out/k8-fastbuild/bin/tools/bazel/tests/static-runtime/rust_app",
+          "--emit=dep-info",
+          "--color=always",
+          "--target=x86_64-unknown-linux-gnu",
+          "-L",
+          "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust/lib/rustlib/x86_64-unknown-linux-gnu/lib",
+          "--edition=2024",
+          "-Cembed-bitcode=no",
+          "--codegen=linker=/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "--codegen=link-arg=-L/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+          "--codegen=link-arg=-Wl,-rpath,/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+          "--codegen=link-arg=-lstdc++",
+          "--codegen=link-arg=-lm",
+          "-Lnative=bazel-out/k8-fastbuild/bin/tools/bazel/tests/native-libraries",
+          "-Lnative=external/+aos_tools_repository+aos_native/sqlite/lib",
+          "-Lnative=external/+aos_tools_repository+aos_native/zstd/lib",
+          "-lstatic=probe",
+          "-Clink-arg=-lprobe",
+          "-lstatic=sqlite3",
+          "-Clink-arg=-lsqlite3",
+          "-lstatic=zstd",
+          "-Clink-arg=-lzstd",
+          "--codegen=link-arg=-L/nix/store/9nx861hki7m5ip75rbivaqy6dn2g3nzr-aos-bazel-static-libraries-1/static/lib",
+          "--codegen=link-arg=-static",
+          "--codegen=link-arg=-no-pie",
+          "--extern=execution_macro=bazel-out/k8-opt-exec/bin/tools/bazel/tests/static-runtime/libexecution_macro-828882802.so",
+          "-Ldependency=bazel-out/k8-opt-exec/bin/tools/bazel/tests/static-runtime",
+          "--sysroot=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/rust",
+          "-Ctarget-feature=+crt-static",
+          "-Crelocation-model=static"
+        ],
+        "input_count": 2908,
+        "mnemonic": "Rustc",
+        "selected_inputs": {
+          "sqlite/lib/libsqlite3.a": "62cefe13391e8034027478e2df23fc2678abc5be956c0a7c34d09ab61e1711d7",
+          "static/lib/libc.a": "883923139dd9d8d3b63db94b3c18e5d8a5df2bd39446a256be68891923eda5c4",
+          "static/lib/libgcc_eh.a": "318c92168f80ad55a49b68b075220a2d31888c6c1795085507884be58222476a",
+          "static/lib/libm.a": "0c2434478139e22d73d542e6d1b59e652e8140409b91e3c28324955a2e1d6324",
+          "zstd/lib/libzstd.a": "cd67bba08db44bf4e2955db31daf9cc442552e86f84e6932b261c86342eeb9b6"
+        }
+      }
+    },
+    "artifacts": {
+      "static-c": {
+        "dynamic": "\nThere is no dynamic section in this file.\n",
+        "header": "ELF Header:\n  Magic:   7f 45 4c 46 02 01 01 03 00 00 00 00 00 00 00 00 \n  Class:                             ELF64\n  Data:                              2's complement, little endian\n  Version:                           1 (current)\n  OS/ABI:                            UNIX - GNU\n  ABI Version:                       0\n  Type:                              EXEC (Executable file)\n  Machine:                           Advanced Micro Devices X86-64\n  Version:                           0x1\n  Entry point address:               0x401b30\n  Start of program headers:          64 (bytes into file)\n  Start of section headers:          3652296 (bytes into file)\n  Flags:                             0x0\n  Size of this header:               64 (bytes)\n  Size of program headers:           56 (bytes)\n  Number of program headers:         10\n  Size of section headers:           64 (bytes)\n  Number of section headers:         22\n  Section header string table index: 21\n",
+        "program_headers": "\nElf file type is EXEC (Executable file)\nEntry point 0x401b30\nThere are 10 program headers, starting at offset 64\n\nProgram Headers:\n  Type           Offset             VirtAddr           PhysAddr\n                 FileSiz            MemSiz              Flags  Align\n  LOAD           0x0000000000000000 0x0000000000400000 0x0000000000400000\n                 0x0000000000000700 0x0000000000000700  R      0x1000\n  LOAD           0x0000000000001000 0x0000000000401000 0x0000000000401000\n                 0x00000000002c733d 0x00000000002c733d  R E    0x1000\n  LOAD           0x00000000002c9000 0x00000000006c9000 0x00000000006c9000\n                 0x00000000000a49ee 0x00000000000a49ee  R      0x1000\n  LOAD           0x000000000036e5c8 0x000000000076e5c8 0x000000000076e5c8\n                 0x000000000000d428 0x0000000000013640  RW     0x1000\n  NOTE           0x0000000000000270 0x0000000000400270 0x0000000000400270\n                 0x0000000000000050 0x0000000000000050  R      0x8\n  NOTE           0x00000000000002c0 0x00000000004002c0 0x00000000004002c0\n                 0x0000000000000020 0x0000000000000020  R      0x4\n  TLS            0x000000000036e5c8 0x000000000076e5c8 0x000000000076e5c8\n                 0x0000000000000020 0x0000000000000068  R      0x8\n  GNU_PROPERTY   0x0000000000000270 0x0000000000400270 0x0000000000400270\n                 0x0000000000000050 0x0000000000000050  R      0x8\n  GNU_STACK      0x0000000000000000 0x0000000000000000 0x0000000000000000\n                 0x0000000000000000 0x0000000000000000  RW     0x10\n  GNU_RELRO      0x000000000036e5c8 0x000000000076e5c8 0x000000000076e5c8\n                 0x0000000000007a38 0x0000000000007a38  R      0x1\n\n Section to Segment mapping:\n  Segment Sections...\n   00     .note.gnu.property .note.ABI-tag .rela.plt \n   01     .init .plt .text .fini \n   02     .rodata rodata.cst32 .eh_frame .gcc_except_table \n   03     .tdata .init_array .fini_array .data.rel.ro .got .data .bss \n   04     .note.gnu.property \n   05     .note.ABI-tag \n   06     .tdata .tbss \n   07     .note.gnu.property \n   08     \n   09     .tdata .init_array .fini_array .data.rel.ro .got \n",
+        "sha256": "3f9d928c2ba36716d4c5d9083aa076b6f44ec8da4982ea5fc1b887c2b31ff1dd",
+        "stdout": "native-libraries=42\n"
+      },
+      "static-rust": {
+        "dynamic": "\nThere is no dynamic section in this file.\n",
+        "header": "ELF Header:\n  Magic:   7f 45 4c 46 02 01 01 03 00 00 00 00 00 00 00 00 \n  Class:                             ELF64\n  Data:                              2's complement, little endian\n  Version:                           1 (current)\n  OS/ABI:                            UNIX - GNU\n  ABI Version:                       0\n  Type:                              EXEC (Executable file)\n  Machine:                           Advanced Micro Devices X86-64\n  Version:                           0x1\n  Entry point address:               0x404ca0\n  Start of program headers:          64 (bytes into file)\n  Start of section headers:          4035840 (bytes into file)\n  Flags:                             0x0\n  Size of this header:               64 (bytes)\n  Size of program headers:           56 (bytes)\n  Number of program headers:         11\n  Size of section headers:           64 (bytes)\n  Number of section headers:         23\n  Section header string table index: 22\n",
+        "program_headers": "\nElf file type is EXEC (Executable file)\nEntry point 0x404ca0\nThere are 11 program headers, starting at offset 64\n\nProgram Headers:\n  Type           Offset             VirtAddr           PhysAddr\n                 FileSiz            MemSiz              Flags  Align\n  LOAD           0x0000000000000000 0x0000000000400000 0x0000000000400000\n                 0x0000000000000720 0x0000000000000720  R      0x1000\n  LOAD           0x0000000000001000 0x0000000000401000 0x0000000000401000\n                 0x00000000003098d5 0x00000000003098d5  R E    0x1000\n  LOAD           0x000000000030b000 0x000000000070b000 0x000000000070b000\n                 0x00000000000bdc08 0x00000000000bdc08  R      0x1000\n  LOAD           0x00000000003c8d30 0x00000000007c9d30 0x00000000007c9d30\n                 0x00000000000106a0 0x00000000000169d8  RW     0x1000\n  NOTE           0x00000000000002a8 0x00000000004002a8 0x00000000004002a8\n                 0x0000000000000020 0x0000000000000020  R      0x8\n  NOTE           0x00000000000002c8 0x00000000004002c8 0x00000000004002c8\n                 0x0000000000000020 0x0000000000000020  R      0x4\n  TLS            0x00000000003c8d30 0x00000000007c9d30 0x00000000007c9d30\n                 0x0000000000000050 0x00000000000000b8  R      0x8\n  GNU_PROPERTY   0x00000000000002a8 0x00000000004002a8 0x00000000004002a8\n                 0x0000000000000020 0x0000000000000020  R      0x8\n  GNU_EH_FRAME   0x000000000037e520 0x000000000077e520 0x000000000077e520\n                 0x0000000000009f04 0x0000000000009f04  R      0x4\n  GNU_STACK      0x0000000000000000 0x0000000000000000 0x0000000000000000\n                 0x0000000000000000 0x0000000000000000  RW     0x10\n  GNU_RELRO      0x00000000003c8d30 0x00000000007c9d30 0x00000000007c9d30\n                 0x000000000000a2d0 0x000000000000a2d0  R      0x1\n\n Section to Segment mapping:\n  Segment Sections...\n   00     .note.gnu.property .note.ABI-tag .rela.plt \n   01     .init .plt .text .fini \n   02     .rodata rodata.cst32 .eh_frame_hdr .eh_frame .gcc_except_table \n   03     .tdata .init_array .fini_array .data.rel.ro .got .data .bss \n   04     .note.gnu.property \n   05     .note.ABI-tag \n   06     .tdata .tbss \n   07     .note.gnu.property \n   08     .eh_frame_hdr \n   09     \n   10     .tdata .init_array .fini_array .data.rel.ro .got \n",
+        "sha256": "895fbc26ceedeb6c3bce4d93dc1ad8aea9fc735578cd7d8f5e5495e86d1a1e97",
+        "stdout": "native-libraries=42\n"
+      }
+    },
+    "execution_macro_command": [
+      "bazel-out/k8-opt-exec/bin/external/rules_rust+/util/process_wrapper/process_wrapper",
+      "--subst",
+      "pwd=${pwd}",
+      "--subst",
+      "exec_root=${exec_root}",
+      "--subst",
+      "output_base=${output_base}",
+      "--",
+      "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_tools/rust/bin/rustc",
+      "tools/bazel/tests/static-runtime/macro.rs",
+      "--crate-name=execution_macro",
+      "--crate-type=proc-macro",
+      "--error-format=human",
+      "--codegen=metadata=-828882802",
+      "--codegen=extra-filename=-828882802",
+      "--out-dir=bazel-out/k8-opt-exec/bin/tools/bazel/tests/static-runtime",
+      "--codegen=opt-level=3",
+      "--codegen=debuginfo=0",
+      "--codegen=strip=debuginfo",
+      "--remap-path-prefix=${output_base}=.",
+      "--remap-path-prefix=${pwd}=.",
+      "--remap-path-prefix=${exec_root}=.",
+      "--emit=dep-info,link",
+      "--color=always",
+      "--target=x86_64-unknown-linux-gnu",
+      "-L",
+      "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_tools/rust/lib/rustlib/x86_64-unknown-linux-gnu/lib",
+      "--edition=2024",
+      "-Cembed-bitcode=no",
+      "--codegen=linker=/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+      "--codegen=link-arg=-shared",
+      "--codegen=link-arg=-L/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+      "--codegen=link-arg=-Wl,-rpath,/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+      "--codegen=link-arg=-lstdc++",
+      "--codegen=link-arg=-lm",
+      "--extern",
+      "proc_macro",
+      "--sysroot=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_tools/rust"
+    ],
+    "libraries": {
+      "sqlite": {
+        "closure": [
+          {
+            "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+            "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+          },
+          {
+            "narHash": "sha256:1j1rg409yyfnirgg08a7wzn2rii1lxfmjk9samqri2yi1qvcz69h",
+            "path": "/nix/store/8zr71nfka9m368nj4x0b4n2sabmm5bdn-sqlite-static-3.53.4"
+          }
+        ],
+        "headerDirectory": "include",
+        "headerPackage": "/nix/store/8zr71nfka9m368nj4x0b4n2sabmm5bdn-sqlite-static-3.53.4",
+        "libraryFile": "lib/libsqlite3.a",
+        "licenseDomain": "apache-host",
+        "linkage": "static",
+        "linkopts": [],
+        "package": "/nix/store/8zr71nfka9m368nj4x0b4n2sabmm5bdn-sqlite-static-3.53.4",
+        "pkgConfigFiles": [
+          "lib/pkgconfig/sqlite3.pc"
+        ],
+        "schema_version": 1,
+        "target": "x86_64-unknown-linux-gnu"
+      },
+      "static": {
+        "closure": [
+          {
+            "narHash": "sha256:12j6m23lfw5ci28aglhnc9zq448nampd126x1cy8nbz71jy0vwwx",
+            "path": "/nix/store/0hsvhnbcc7rdm4ysk3wsfz7jlcawgxgz-linux-headers-6.12"
+          },
+          {
+            "narHash": "sha256:109h987ir323zjn5jma151xnb227rax88yq3n600qymbnfw6nspd",
+            "path": "/nix/store/0ns3aw53zif9vsyx4rwjsklbq14gznqp-zstd-static-mt-1.5.7"
+          },
+          {
+            "narHash": "sha256:0y5gycdr52a2xc8gzxf37bika6m7kyzw3az0lqdbmz4mma49drj5",
+            "path": "/nix/store/56khy442n6yd810v2pqnjipqljlkyk0m-lz4-1.10.0"
+          },
+          {
+            "narHash": "sha256:1qxndfaswmmnhz60fk4c9j7qwn6pnl0il66flxlsw4w2i4lz6xxa",
+            "path": "/nix/store/6zgd9kcbnvnvvz1y4jwb46ys7j7i1cwn-binutils-2.41"
+          },
+          {
+            "narHash": "sha256:02280799m4rzqgl7xjlf0jr1d1pn6rfzfmfj1zmilibflkamxls7",
+            "path": "/nix/store/79kkrh8qizk69m98g47h9c7l5dgp0rzi-bash-5.3p15"
+          },
+          {
+            "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+            "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+          },
+          {
+            "narHash": "sha256:1j1rg409yyfnirgg08a7wzn2rii1lxfmjk9samqri2yi1qvcz69h",
+            "path": "/nix/store/8zr71nfka9m368nj4x0b4n2sabmm5bdn-sqlite-static-3.53.4"
+          },
+          {
+            "narHash": "sha256:1d6ljajp4ih85ra4xahg006r5gs0hi2z3wj8ix8dcjll7z2wpm87",
+            "path": "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2"
+          },
+          {
+            "narHash": "sha256:1f3jnfbp5pdyisdskvmzw4p4ad0ysdw6nr2v5sma01pwnf79dzn2",
+            "path": "/nix/store/bqldyfchbhw1aqf9vvsqyps3in2364cr-aos-bazel-native-libraries-1"
+          },
+          {
+            "narHash": "sha256:0cdxvsdc0xmrw5bd28glv64963yz5y99ngzqbk6ihd4dw7nh05c1",
+            "path": "/nix/store/h3y381vk7dz7alj6crzc224pwpm4lvwy-glibc-2.39-dev"
+          },
+          {
+            "narHash": "sha256:1pfsrp74ghfjpwmwqi2b4f61qfdb8zf82kafmfmcw0xg0dfwwjc3",
+            "path": "/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2"
+          },
+          {
+            "narHash": "sha256:1rlk00isrky422xyxjrg2v6jz1m0zmxlxnbclbdpjyivwvxkcc4f",
+            "path": "/nix/store/mrddkm4vqc2s2d7apgpf7fh9r2jwx35l-glibc-2.39-static"
+          },
+          {
+            "narHash": "sha256:03zmqjm0y9l9g4rx5w4161lvx5zfjbdi60liqv0i467grmsbxc0s",
+            "path": "/nix/store/slp1q1sg1nx2nikr551qficdycfbdml3-pkg-config-0.29.2"
+          },
+          {
+            "narHash": "sha256:1vv30xb54bslyj4zrhir583a9m4ysqsmgyx4vfvpibqjaz3cndvi",
+            "path": "/nix/store/zcpcfxmjmzy378s3czw5zkd44bdlmiss-ncurses-6.6"
+          }
+        ],
+        "glibc": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "glibc_static": "/nix/store/mrddkm4vqc2s2d7apgpf7fh9r2jwx35l-glibc-2.39-static",
+        "schema_version": 1,
+        "target": "x86_64-unknown-linux-gnu",
+        "unwinder": "/nix/store/jmr87wqpiymkkmlqfy1hkv83mpfs6nvd-gcc-16.2.0-stage2/lib/gcc/x86_64-unknown-linux-gnu/16.2.0/libgcc_s.a"
+      },
+      "zstd": {
+        "closure": [
+          {
+            "narHash": "sha256:109h987ir323zjn5jma151xnb227rax88yq3n600qymbnfw6nspd",
+            "path": "/nix/store/0ns3aw53zif9vsyx4rwjsklbq14gznqp-zstd-static-mt-1.5.7"
+          },
+          {
+            "narHash": "sha256:0y5gycdr52a2xc8gzxf37bika6m7kyzw3az0lqdbmz4mma49drj5",
+            "path": "/nix/store/56khy442n6yd810v2pqnjipqljlkyk0m-lz4-1.10.0"
+          },
+          {
+            "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+            "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+          },
+          {
+            "narHash": "sha256:1d6ljajp4ih85ra4xahg006r5gs0hi2z3wj8ix8dcjll7z2wpm87",
+            "path": "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2"
+          }
+        ],
+        "headerDirectory": "include",
+        "headerPackage": "/nix/store/0ns3aw53zif9vsyx4rwjsklbq14gznqp-zstd-static-mt-1.5.7",
+        "libraryFile": "lib/libzstd.a",
+        "licenseDomain": "apache-host",
+        "linkage": "static",
+        "linkopts": [],
+        "package": "/nix/store/0ns3aw53zif9vsyx4rwjsklbq14gznqp-zstd-static-mt-1.5.7",
+        "pkgConfigFiles": [
+          "lib/pkgconfig/libzstd.pc"
+        ],
+        "schema_version": 1,
+        "target": "x86_64-unknown-linux-gnu"
+      }
+    },
+    "schema_version": 1
+  },
+  "runtime_closure": {
+    "closure": [
+      {
+        "closureSize": 19921112,
+        "narHash": "sha256:0m2xdk54j7vnd7frv3msrr40qwxwsya552r00snv1byqz37za4fm",
+        "narSize": 19921112,
+        "path": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+        "references": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+        ],
+        "valid": true
+      },
+      {
+        "closureSize": 27613968,
+        "narHash": "sha256:1lbmsqq742wvdql2c71fdxymck9g71jwrflhi65xrmlimbh8gp8f",
+        "narSize": 7692856,
+        "path": "/nix/store/pbfnr7hxcfjg6bjrmacsgjp0mqd9mkhw-aos-static-runtime-fixture-1",
+        "references": [
+          "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+        ],
+        "valid": true
+      }
+    ],
+    "glibc_data_reference": "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+    "references": [
+      "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39"
+    ],
+    "root": "/nix/store/pbfnr7hxcfjg6bjrmacsgjp0mqd9mkhw-aos-static-runtime-fixture-1"
+  },
+  "schema_version": 1,
+  "unchanged_store_build": "/nix/store/xlba73v12l9s4i236g1q03j88pjzi14f-aos-bazel-fleet-store-1.drv"
+}

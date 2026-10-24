@@ -37,14 +37,13 @@ pub async fn run_stage(
     };
     let registry = resolve_registry_name(config, selector)?;
     let mut destinations = resolve_upload_urls(config, &registry, &[]);
-    if destinations.is_empty() {
-        if let Some((configured, _)) = config
+    if destinations.is_empty()
+        && let Some((configured, _)) = config
             .registries
             .iter()
             .find(|(configured, _)| configured.name == registry)
-        {
-            destinations.push(configured.url.clone());
-        }
+    {
+        destinations.push(configured.url.clone());
     }
     let token = std::env::var("AOS_TOKEN").ok().or_else(|| {
         registry_upload_auth_config(config, &registry).and_then(|auth| auth.token.clone())

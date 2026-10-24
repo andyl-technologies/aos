@@ -350,10 +350,11 @@ fn operator_ids(trusted_dirs: &[PathBuf]) -> Vec<String> {
             let Some(name) = name.to_str() else {
                 continue;
             };
-            if let Some(op) = name.strip_suffix(".pub") {
-                if !op.is_empty() && !ids.iter().any(|existing| existing == op) {
-                    ids.push(op.to_string());
-                }
+            if let Some(op) = name.strip_suffix(".pub")
+                && !op.is_empty()
+                && !ids.iter().any(|existing| existing == op)
+            {
+                ids.push(op.to_string());
             }
         }
     }
@@ -406,7 +407,7 @@ mod tests {
         let payload = b"{ aos.host.hostname = \"node\"; }";
         let detached = signature(&bob, CONFIG_SIGNATURE_NAMESPACE, payload);
 
-        let trusted = authenticate_host_nix(payload, Some(&detached), &[keys.clone()])
+        let trusted = authenticate_host_nix(payload, Some(&detached), std::slice::from_ref(&keys))
             .expect("enrolled operator authenticates the exact payload");
         assert_eq!(trusted.operator_id, "bob");
         let trusted = authenticate_config_payload_files(
@@ -419,7 +420,7 @@ mod tests {
         assert_eq!(trusted.operator_id, "bob");
 
         assert_eq!(
-            authenticate_host_nix(b"changed", Some(&detached), &[keys.clone()]),
+            authenticate_host_nix(b"changed", Some(&detached), std::slice::from_ref(&keys)),
             Err(HostNixTrustError::Untrusted)
         );
         let wrong_namespace = signature(&bob, "git", payload);
@@ -470,10 +471,10 @@ mod tests {
         )
         .unwrap();
 
-        assert!(authenticate_host_nix_file(&host, &[keys.clone()]).is_ok());
+        assert!(authenticate_host_nix_file(&host, std::slice::from_ref(&keys)).is_ok());
         std::fs::write(source.join("data/settings.json"), b"changed").unwrap();
         assert_eq!(
-            authenticate_host_nix_file(&host, &[keys.clone()]),
+            authenticate_host_nix_file(&host, std::slice::from_ref(&keys)),
             Err(HostNixTrustError::Untrusted)
         );
         std::fs::write(source.join("data/settings.json"), b"{}\n").unwrap();

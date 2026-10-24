@@ -245,13 +245,13 @@ impl SignerConfigV1 {
                 bail!("signer configuration repeats key id {}", entry.key_id);
             }
             require_private_file(entry.material.private_key(), "private key", true)?;
-            if let Some(public) = entry.material.public_file() {
-                if !public.is_absolute() {
-                    bail!(
-                        "public material path must be absolute: {}",
-                        public.display()
-                    );
-                }
+            if let Some(public) = entry.material.public_file()
+                && !public.is_absolute()
+            {
+                bail!(
+                    "public material path must be absolute: {}",
+                    public.display()
+                );
             }
         }
         Ok(())

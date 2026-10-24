@@ -1,3 +1,7 @@
+#[macro_use]
+#[path = "support/binaries.rs"]
+mod binaries;
+
 use std::ffi::OsString;
 use std::fs;
 use std::io::Write;
@@ -64,7 +68,7 @@ name = "{registry_name}"
     )?;
 
     let nix_tools = nix_tool_path()?;
-    let output = Command::new(env!("CARGO_BIN_EXE_apr"))
+    let output = Command::new(cli_binary!("CARGO_BIN_EXE_apr"))
         .env("HOME", &home)
         .env("PATH", &nix_tools.path)
         .args(["cache", "generate", "--registry", registry_name])
@@ -106,7 +110,13 @@ name = "{registry_name}"
         );
     }
 
-    let cache_info = "StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 37\n";
+    let store_directory = Path::new(&store_path)
+        .parent()
+        .context("fixture store directory")?;
+    let cache_info = format!(
+        "StoreDir: {}\nWantMassQuery: 1\nPriority: 37\n",
+        store_directory.display()
+    );
     assert_eq!(
         fs::read_to_string(output_dir.join("nix-cache-info"))?,
         cache_info,
@@ -161,7 +171,7 @@ url = "file://{}"
         ),
     )?;
 
-    let output = Command::new(env!("CARGO_BIN_EXE_apr"))
+    let output = Command::new(cli_binary!("CARGO_BIN_EXE_apr"))
         .env("HOME", &home)
         .args([
             "--dry-run",
@@ -200,33 +210,43 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
     let tmp = tempfile::TempDir::new()?;
     let producer_aos_root = tmp.path().join("producer-aos-root");
     let consumer_aos_root = tmp.path().join("consumer-aos-root");
-    prepare_aos_root(&producer_aos_root)?;
-    prepare_aos_root(&consumer_aos_root)?;
-    let Some(fixture_v1) = executable_store_path_fixture(tmp.path(), &producer_aos_root, "1.0.0")?
-    else {
-        eprintln!("skipping apm install static-cache e2e: nix-store could not add v1 fixture");
-        return Ok(());
-    };
+    let native = NativeCacheFixture::initialize(tmp.path())?;
 
     let maintainer_home = tmp.path().join("maintainer-home");
     let consumer_home = tmp.path().join("consumer-home");
     let profile_root = tmp.path().join("profiles");
     let registry_name = "cli-install-cache";
+    let key_output = run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &["keys", "generate", "release", "--registry", registry_name],
+    )?;
+    let trust_key = extract_public_key(&key_output)?;
+    let release_key = maintainer_home.join(".config/apm/keys/cli-install-cache-release.key");
     run_apr_with_aos_root(
         &maintainer_home,
         &producer_aos_root,
-        &["create", registry_name],
+        &[
+            "create",
+            registry_name,
+            "--trust-key",
+            &trust_key,
+            "--key",
+            release_key.to_str().context("release key path utf-8")?,
+        ],
     )?;
     let registry_dir = registry_dir(&maintainer_home, registry_name);
     configure_fixture_git_identity(&registry_dir)?;
+    native.publish_store_records(&registry_dir, "v1")?;
+    let cache_key = tmp.path().join("cache-signing-key");
     fs::create_dir_all(registry_dir.join("packages/f"))?;
     fs::write(
         registry_dir.join("packages/f/fixture-tool.toml"),
-        package_toml_with_name("fixture-tool", "1.0.0", &fixture_v1.tool_store_path),
+        fs::read_to_string(tmp.path().join("package-v1.toml"))?,
     )?;
     git_stdout(
         &registry_dir,
-        &["add", "packages/f/fixture-tool.toml"],
+        &["add", "packages", "store"],
         "staging fixture package",
     )?;
     git_stdout(
@@ -251,16 +271,16 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
             &cache_server.base_url(),
             "--priority",
             "37",
+            "--registry-key",
+            release_key.to_str().context("release key path utf-8")?,
+            "--jobs",
+            "1",
+            "--key",
+            cache_key.to_str().context("cache signing key utf-8")?,
         ],
     )?;
-    assert_cache_entry_count(&cache_output, 2)?;
+    assert_cache_entry_count(&cache_output, native.count("cache_entries_v1")?)?;
 
-    let release_key = maintainer_home.join(".config/apm/keys/cli-install-cache-release.key");
-    run_apr_with_aos_root(
-        &maintainer_home,
-        &producer_aos_root,
-        &["keys", "generate", "release", "--registry", registry_name],
-    )?;
     let upload_dir = tmp.path().join("origin-upload");
     run_apr_with_aos_root(
         &maintainer_home,
@@ -276,6 +296,10 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
             &cache_server.base_url(),
             "--upload-url",
             &format!("file://{}", upload_dir.display()),
+            "--cache-key",
+            cache_key.to_str().context("cache signing key utf-8")?,
+            "--jobs",
+            "1",
         ],
     )?;
 
@@ -289,17 +313,18 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
             "registry",
             "add",
             &origin_server.base_url(),
-            "--no-verify",
+            "--trust-key",
+            &trust_key,
             "--name",
             registry_name,
-            "--branch",
-            "stable",
+            "--version",
+            "*",
         ],
         "registry add",
     )?;
     assert_eq!(added["action"], "registry_add");
     assert_eq!(added["synced"], true, "{added}");
-    assert_eq!(added["packages"], 1, "{added}");
+    assert_eq!(added["packages"], 2, "{added}");
 
     let installed = run_aos_package_json_with_env(
         &consumer_home,
@@ -317,8 +342,16 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
     )?;
     assert_eq!(installed["action"], "install");
     assert_eq!(installed["status"], "installed", "{installed}");
-    assert_eq!(installed["downloads"]["downloaded"], 2, "{installed}");
-    assert_eq!(installed["downloads"]["imported"], 2, "{installed}");
+    assert_eq!(
+        installed["downloads"]["downloaded"],
+        native.count("initial_downloads")?,
+        "{installed}"
+    );
+    assert_eq!(
+        installed["downloads"]["imported"],
+        native.count("initial_downloads")?,
+        "{installed}"
+    );
 
     assert_eq!(
         run_profile_tool(&profile_root, "fixture-tool")?,
@@ -335,9 +368,17 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
     let entries = listed
         .as_array()
         .context("installed package list should be an array")?;
-    assert_eq!(entries.len(), 1, "{listed}");
-    assert_eq!(entries[0]["name"], "fixture-tool");
-    assert_eq!(entries[0]["version"], "1.0.0");
+    assert_eq!(entries.len(), 2, "{listed}");
+    assert_eq!(entries[0]["name"], "fixture-helper");
+    assert_eq!(entries[0]["version"], entries[1]["version"]);
+    assert!(
+        entries[0]["status"]
+            .as_str()
+            .is_some_and(|status| status.contains("installed")),
+        "{listed}"
+    );
+    assert_eq!(entries[1]["name"], "fixture-tool");
+    assert_eq!(entries[1]["version"], "1.0.0");
     assert!(
         entries[0]["status"]
             .as_str()
@@ -345,24 +386,14 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
         "{listed}",
     );
 
-    let Some(fixture_v2) = executable_store_path_fixture(tmp.path(), &producer_aos_root, "2.0.0")?
-    else {
-        eprintln!("skipping apm install static-cache e2e: nix-store could not add v2 fixture");
-        return Ok(());
-    };
+    native.publish_store_records(&registry_dir, "v2")?;
     fs::write(
         registry_dir.join("packages/f/fixture-tool.toml"),
-        package_toml_with_versions(
-            "fixture-tool",
-            &[
-                ("1.0.0", fixture_v1.tool_store_path.as_str()),
-                ("2.0.0", fixture_v2.tool_store_path.as_str()),
-            ],
-        ),
+        fs::read_to_string(tmp.path().join("package-v2.toml"))?,
     )?;
     git_stdout(
         &registry_dir,
-        &["add", "packages/f/fixture-tool.toml"],
+        &["add", "packages", "store"],
         "staging upgraded fixture package",
     )?;
     git_stdout(
@@ -384,6 +415,12 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
             &cache_server.base_url(),
             "--priority",
             "37",
+            "--registry-key",
+            release_key.to_str().context("release key path utf-8")?,
+            "--jobs",
+            "1",
+            "--key",
+            cache_key.to_str().context("cache signing key utf-8")?,
         ],
     )?;
     run_apr_with_aos_root(
@@ -400,6 +437,10 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
             &cache_server.base_url(),
             "--upload-url",
             &format!("file://{}", upload_dir.display()),
+            "--cache-key",
+            cache_key.to_str().context("cache signing key utf-8")?,
+            "--jobs",
+            "1",
         ],
     )?;
 
@@ -470,8 +511,16 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
     assert_eq!(upgraded["action"], "upgrade");
     assert_eq!(upgraded["status"], "upgraded", "{upgraded}");
     assert_eq!(upgraded["upgraded"], 1, "{upgraded}");
-    assert_eq!(upgraded["downloads"]["downloaded"], 2, "{upgraded}");
-    assert_eq!(upgraded["downloads"]["imported"], 2, "{upgraded}");
+    assert_eq!(
+        upgraded["downloads"]["downloaded"],
+        native.count("upgrade_downloads")?,
+        "{upgraded}"
+    );
+    assert_eq!(
+        upgraded["downloads"]["imported"],
+        native.count("upgrade_downloads")?,
+        "{upgraded}"
+    );
     assert_eq!(upgraded["upgrades"][0]["name"], "fixture-tool");
     assert_eq!(upgraded["upgrades"][0]["old_version"], "1.0.0");
     assert_eq!(upgraded["upgrades"][0]["new_version"], "2.0.0");
@@ -490,9 +539,17 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
     let entries = listed
         .as_array()
         .context("upgraded package list JSON should be an array")?;
-    assert_eq!(entries.len(), 1, "{listed}");
-    assert_eq!(entries[0]["name"], "fixture-tool");
-    assert_eq!(entries[0]["version"], "2.0.0");
+    assert_eq!(entries.len(), 2, "{listed}");
+    assert_eq!(entries[0]["name"], "fixture-helper");
+    assert_eq!(entries[0]["version"], entries[1]["version"]);
+    assert!(
+        entries[0]["status"]
+            .as_str()
+            .is_some_and(|status| status.contains("installed")),
+        "{listed}"
+    );
+    assert_eq!(entries[1]["name"], "fixture-tool");
+    assert_eq!(entries[1]["version"], "2.0.0");
     assert!(
         entries[0]["status"]
             .as_str()
@@ -541,7 +598,7 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
     )?;
     assert_eq!(rolled_back["action"], "rollback");
     assert_eq!(rolled_back["status"], "rolled_back", "{rolled_back}");
-    assert_eq!(rolled_back["generation"], 1, "{rolled_back}");
+    assert_eq!(rolled_back["generation"], 3, "{rolled_back}");
     assert_eq!(
         run_profile_tool(&profile_root, "fixture-tool")?,
         "fixture-helper 1.0.0\nfixture-tool 1.0.0\n"
@@ -563,22 +620,22 @@ async fn apr_cache_generate_cli_supports_apm_install_upgrade_and_execution() -> 
         "remove should delete fixture-tool from the active profile",
     );
 
-    let restored_upgrade = run_aos_package_json_with_env(
+    let restored_package = run_aos_package_json_with_env(
         &consumer_home,
         &consumer_aos_root,
         &profile_root,
         &["--json", "rollback"],
         "rollback after real cache remove",
     )?;
-    assert_eq!(restored_upgrade["action"], "rollback");
+    assert_eq!(restored_package["action"], "rollback");
     assert_eq!(
-        restored_upgrade["status"], "rolled_back",
-        "{restored_upgrade}"
+        restored_package["status"], "rolled_back",
+        "{restored_package}"
     );
-    assert_eq!(restored_upgrade["generation"], 2, "{restored_upgrade}");
+    assert_eq!(restored_package["generation"], 5, "{restored_package}");
     assert_eq!(
         run_profile_tool(&profile_root, "fixture-tool")?,
-        "fixture-helper 2.0.0\nfixture-tool 2.0.0\n"
+        "fixture-helper 1.0.0\nfixture-tool 1.0.0\n"
     );
 
     Ok(())
@@ -593,18 +650,14 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
     let tmp = tempfile::TempDir::new()?;
     let producer_aos_root = tmp.path().join("producer-aos-root");
     let consumer_aos_root = tmp.path().join("consumer-aos-root");
-    prepare_aos_root(&producer_aos_root)?;
-    prepare_aos_root(&consumer_aos_root)?;
-    let Some(fixture) = executable_store_path_fixture(tmp.path(), &producer_aos_root, "1.0.0")?
-    else {
-        eprintln!("skipping apr release --store-path e2e: nix-store could not add release fixture");
-        return Ok(());
-    };
+    let native = NativeCacheFixture::initialize(tmp.path())?;
+    let fixture = native.package("tool_v1", "helper_v1")?;
 
     let maintainer_home = tmp.path().join("maintainer-home");
     let consumer_home = tmp.path().join("consumer-home");
     let profile_root = tmp.path().join("profiles");
     let registry_name = "release-store-path-cache";
+    let cache_key = tmp.path().join("cache-signing-key");
 
     let key_output = run_apr_with_aos_root(
         &maintainer_home,
@@ -660,6 +713,8 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
             "registry@example.com",
             "--key-id",
             "initial",
+            "--cache-key",
+            cache_key.to_str().context("cache signing key utf-8")?,
             "--cache-url",
             &cache_server.base_url(),
             "--cache-priority",
@@ -672,15 +727,37 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
         ],
     )?;
     assert!(
-        release.contains("Committed: publish fixture-tool 1.0.0"),
-        "{release}",
+        git_stdout(
+            &registry_dir,
+            &["status", "--porcelain"],
+            "checking committed release"
+        )?
+        .trim()
+        .is_empty(),
+        "release must commit its complete authored state",
+    );
+    assert_eq!(
+        git_stdout(
+            &registry_dir,
+            &["rev-parse", "HEAD"],
+            "reading release head"
+        )?,
+        git_stdout(
+            &registry_dir,
+            &["rev-parse", "1.0.0^{commit}"],
+            "reading signed release commit"
+        )?,
+        "the signed release must retain the published commit",
     );
     assert!(
         release.contains("Updated registry.toml [caches]"),
         "{release}",
     );
     assert!(
-        release.contains("Generated static cache: 3 narinfos, 3 NARs"),
+        release.contains(&format!(
+            "Generated static cache: {0} narinfos, {0} NARs",
+            native.count("cache_entries_payload_v1")?
+        )),
         "{release}",
     );
     assert!(
@@ -691,7 +768,7 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
         release.contains("Released release-store-path-cache 1.0.0"),
         "{release}",
     );
-    assert_cache_entry_count(&upload_dir, 3)?;
+    assert_cache_entry_count(&upload_dir, native.count("cache_entries_payload_v1")?)?;
 
     let package_toml = fs::read_to_string(registry_dir.join("packages/f/fixture-tool.toml"))?;
     assert!(
@@ -729,6 +806,54 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
         upload_dir.display(),
     );
 
+    native.publish_store_records(&registry_dir, "v1")?;
+    // A raw store-path publication deliberately carries no evaluator-owned
+    // envelope. Publish the genuine native catalog before testing admission.
+    fs::write(
+        registry_dir.join("packages/f/fixture-tool.toml"),
+        fs::read_to_string(tmp.path().join("package-v1.toml"))?,
+    )?;
+    run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &[
+            "commit",
+            "packages",
+            "store",
+            "--registry",
+            registry_name,
+            "--key",
+            key_path.to_str().context("release key path utf-8")?,
+            "--message",
+            "publish native deployment envelope",
+        ],
+    )?;
+    run_apr_with_aos_root(
+        &maintainer_home,
+        &producer_aos_root,
+        &[
+            "release",
+            "1.0.1",
+            "--registry",
+            registry_name,
+            "--key-id",
+            "initial",
+            "--cache-key",
+            cache_key.to_str().context("cache signing key utf-8")?,
+            "--cache-url",
+            &cache_server.base_url(),
+            "--channel",
+            "stable",
+            "--count",
+            "256",
+            "--upload-url",
+            &upload_url,
+            "--jobs",
+            "1",
+        ],
+    )?;
+    assert_cache_entry_count(&upload_dir, native.count("cache_entries_v1")?)?;
+
     let origin_server = StaticHttpServer::spawn(upload_dir.clone()).await?;
     let added = run_aos_package_json_with_env(
         &consumer_home,
@@ -751,7 +876,7 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
     assert_eq!(added["action"], "registry_add");
     assert_eq!(added["registry"], registry_name);
     assert_eq!(added["synced"], true, "{added}");
-    assert_eq!(added["packages"], 1, "{added}");
+    assert_eq!(added["packages"], 2, "{added}");
     assert_eq!(added["signing_required"], true, "{added}");
     assert_eq!(added["trusted_key_pinned"], true, "{added}");
 
@@ -771,8 +896,16 @@ async fn apr_release_store_path_publishes_signed_cache_channel_and_installs() ->
     )?;
     assert_eq!(installed["action"], "install");
     assert_eq!(installed["status"], "installed", "{installed}");
-    assert_eq!(installed["downloads"]["downloaded"], 3, "{installed}");
-    assert_eq!(installed["downloads"]["imported"], 3, "{installed}");
+    assert_eq!(
+        installed["downloads"]["downloaded"],
+        native.count("initial_downloads")?,
+        "{installed}"
+    );
+    assert_eq!(
+        installed["downloads"]["imported"],
+        native.count("initial_downloads")?,
+        "{installed}"
+    );
     assert_eq!(
         run_profile_tool(&profile_root, "fixture-tool")?,
         "fixture-helper 1.0.0\nfixture-tool 1.0.0\n"
@@ -1239,6 +1372,91 @@ fn registry_dir(home: &Path, name: &str) -> PathBuf {
     home.join(".local/share/apm/registries").join(name)
 }
 
+/// Owns real immutable package coordinates and independently computed closures.
+struct NativeCacheFixture {
+    root: PathBuf,
+    metadata: Value,
+}
+
+impl NativeCacheFixture {
+    fn initialize(root: &Path) -> Result<Self> {
+        let output =
+            Command::new(std::env::var_os("AOS_LIFECYCLE_PYTHON").context("AOS fixture Python")?)
+                .arg(
+                    std::env::var_os("AOS_LIFECYCLE_REGISTRY_SCRIPT")
+                        .context("native fixture script")?,
+                )
+                .args(["initialize-cache", "--root"])
+                .arg(root)
+                .arg("--fixtures")
+                .arg(
+                    std::env::var_os("AOS_NATIVE_CACHE_FIXTURES")
+                        .context("native cache fixtures")?,
+                )
+                .args([
+                    "--apr",
+                    cli_binary!("CARGO_BIN_EXE_apr"),
+                    "--apm",
+                    cli_binary!("CARGO_BIN_EXE_apm"),
+                    "--runtime",
+                    cli_binary!("CARGO_BIN_EXE_aos-package-runtime"),
+                ])
+                .output()
+                .context("initializing native cache fixture")?;
+        if !output.status.success() {
+            bail!(
+                "native cache fixture initialization failed:\n{}",
+                output_text(&output)
+            );
+        }
+        Ok(Self {
+            root: root.to_owned(),
+            metadata: serde_json::from_slice(&fs::read(root.join("native-cache.json"))?)?,
+        })
+    }
+
+    fn publish_store_records(&self, registry: &Path, version: &str) -> Result<()> {
+        let packages = registry.join("packages/f");
+        fs::create_dir_all(&packages)?;
+        fs::copy(
+            self.root.join(format!("helper-{version}.toml")),
+            packages.join("fixture-helper.toml"),
+        )?;
+
+        for bucket in fs::read_dir(self.root.join(format!("store-{version}")))? {
+            let bucket = bucket?;
+            let destination = registry.join("store").join(bucket.file_name());
+            fs::create_dir_all(&destination)?;
+            for entry in fs::read_dir(bucket.path())? {
+                let entry = entry?;
+                fs::copy(entry.path(), destination.join(entry.file_name()))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn count(&self, name: &str) -> Result<usize> {
+        self.metadata[name]
+            .as_u64()
+            .context("native fixture closure count")?
+            .try_into()
+            .context("native fixture closure count overflow")
+    }
+
+    fn package(&self, tool: &str, helper: &str) -> Result<ExecutableFixture> {
+        Ok(ExecutableFixture {
+            tool_store_path: self.metadata["packages"][tool]["store_path"]
+                .as_str()
+                .context("native fixture tool path")?
+                .to_owned(),
+            helper_store_path: self.metadata["packages"][helper]["store_path"]
+                .as_str()
+                .context("native fixture helper path")?
+                .to_owned(),
+        })
+    }
+}
+
 struct ExecutableFixture {
     tool_store_path: String,
     helper_store_path: String,
@@ -1327,7 +1545,7 @@ fn deterministic_payload(len: usize) -> Vec<u8> {
 fn add_path_to_store(aos_root: &Path, source: &Path, label: &str) -> Result<Option<String>> {
     let output = nix_store_command()?
         .env_remove("LD_LIBRARY_PATH")
-        .envs(nix_command_env(aos_root))
+        .envs(nix_command_env(aos_root)?)
         .args(["--add"])
         .arg(source)
         .output()
@@ -1351,7 +1569,7 @@ fn register_store_references(
 ) -> Result<()> {
     let dump = nix_store_command()?
         .env_remove("LD_LIBRARY_PATH")
-        .envs(nix_command_env(aos_root))
+        .envs(nix_command_env(aos_root)?)
         .args(["--dump", store_path])
         .output()
         .with_context(|| format!("running nix-store --dump {store_path}"))?;
@@ -1364,7 +1582,7 @@ fn register_store_references(
 
     let deleted = nix_store_command()?
         .env_remove("LD_LIBRARY_PATH")
-        .envs(nix_command_env(aos_root))
+        .envs(nix_command_env(aos_root)?)
         .args(["--delete", store_path])
         .output()
         .with_context(|| format!("running nix-store --delete {store_path}"))?;
@@ -1378,7 +1596,7 @@ fn register_store_references(
     let trailer = ExportTrailer::new(store_path, references.to_vec(), None);
     let mut child = nix_store_command()?
         .env_remove("LD_LIBRARY_PATH")
-        .envs(nix_command_env(aos_root))
+        .envs(nix_command_env(aos_root)?)
         .arg("--import")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1404,7 +1622,7 @@ fn register_store_references(
 
     let refs = nix_store_command()?
         .env_remove("LD_LIBRARY_PATH")
-        .envs(nix_command_env(aos_root))
+        .envs(nix_command_env(aos_root)?)
         .args(["-q", "--references", store_path])
         .output()
         .with_context(|| format!("running nix-store -q --references {store_path}"))?;
@@ -1431,9 +1649,14 @@ fn prepare_aos_root(aos_root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn nix_command_env(aos_root: &Path) -> Vec<(&'static str, String)> {
+fn nix_command_env(aos_root: &Path) -> Result<std::collections::BTreeMap<String, String>> {
+    let native = aos_root.join("native-environment.json");
+    if native.exists() {
+        return serde_json::from_slice(&fs::read(native)?)
+            .context("reading native fixture Nix environment");
+    }
     let store_dir = nix_store_dir(aos_root);
-    vec![
+    Ok(vec![
         ("AOS_ROOT", aos_root.display().to_string()),
         ("AOS_NIX_STORE_DIR", store_dir.display().to_string()),
         ("NIX_STORE_DIR", store_dir.display().to_string()),
@@ -1446,6 +1669,9 @@ fn nix_command_env(aos_root: &Path) -> Vec<(&'static str, String)> {
             aos_root.join("var/nix/log/nix").display().to_string(),
         ),
     ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value))
+    .collect())
 }
 
 fn nix_store_dir(aos_root: &Path) -> PathBuf {
@@ -1465,7 +1691,7 @@ fn nix_store_dir(aos_root: &Path) -> PathBuf {
 fn initialize_nix_store(aos_root: &Path) -> Result<()> {
     let output = nix_store_command()?
         .env_remove("LD_LIBRARY_PATH")
-        .envs(nix_command_env(aos_root))
+        .envs(nix_command_env(aos_root)?)
         .arg("--init")
         .output()
         .context("running nix-store --init")?;
@@ -1509,10 +1735,10 @@ fn profile_bin_path(profile_root: &Path, command: &str) -> PathBuf {
 
 fn run_apr_with_aos_root(home: &Path, aos_root: &Path, args: &[&str]) -> Result<String> {
     let nix_tools = nix_tool_path()?;
-    let mut command = Command::new(env!("CARGO_BIN_EXE_apr"));
+    let mut command = Command::new(cli_binary!("CARGO_BIN_EXE_apr"));
     command
         .env("HOME", home)
-        .envs(nix_command_env(aos_root))
+        .envs(nix_command_env(aos_root)?)
         .env("USER", "registry-test")
         .env("LOGNAME", "registry-test")
         .env("GIT_AUTHOR_NAME", "Registry Test")
@@ -1543,9 +1769,9 @@ fn run_aos_package_json_with_env(
     action: &str,
 ) -> Result<Value> {
     let nix_tools = nix_tool_path()?;
-    let output = Command::new(env!("CARGO_BIN_EXE_apm"))
+    let output = Command::new(cli_binary!("CARGO_BIN_EXE_apm"))
         .env("HOME", home)
-        .envs(nix_command_env(aos_root))
+        .envs(nix_command_env(aos_root)?)
         .env("AOS_PROFILE_ROOT", profile_root)
         .env("PATH", &nix_tools.path)
         .args(args)

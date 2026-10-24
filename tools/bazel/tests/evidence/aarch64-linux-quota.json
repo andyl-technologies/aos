@@ -1,0 +1,174 @@
+{
+  "command": "nix-build -A checks.build.bazel.cross-quota -A checks.build.bazel.cross-device -A checks.build.bazel.policy --keep-going --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "compilation": {
+    "artifacts": {
+      "//crates/shared/aos-linux-project-quota:unit": {
+        "elf_machine": 183,
+        "file": "binaries/41d6cd567dc8452eb798f3c271ec5ba18ea1a56bff1bcc462a2499c9884fe376",
+        "sha256": "44696acb040c9e98e6173bafeadbbd19d19d7c6544b260bbfb53b15bc7011910"
+      }
+    },
+    "compiled_cases": 8,
+    "execution": "x86_64-unknown-linux-gnu",
+    "first_party_compiles": [
+      "//crates/shared/aos-linux-project-quota:unit_binary"
+    ],
+    "ignored_cases": 0,
+    "native_inventory_sha256": "1672e9b94d8d770966c57471d9173e8c3fe0860390ca07bd52245171c55c4328",
+    "native_procedural_macros": [
+      "@@+aos_tools_repository+aos_quota_crates__thiserror-impl-2.0.18//:thiserror_impl"
+    ],
+    "platform_differences": {},
+    "runtime": "compile-only; guest execution is a separate qualification",
+    "schema_version": 1,
+    "target": "aarch64-unknown-linux-gnu",
+    "targets": {
+      "//crates/shared/aos-linux-project-quota:unit": {
+        "executed": [
+          "linux_project_quota::tests::attribute_readback_ignores_only_kernel_owned_extent_count",
+          "linux_project_quota::tests::byte_limit_rounds_down_to_a_hard_kernel_ceiling",
+          "linux_project_quota::tests::kernel_abi_layout_and_project_commands_are_frozen",
+          "linux_project_quota::tests::project_identifier_fits_the_signed_quotactl_argument",
+          "linux_project_quota::tests::project_identifier_reuse_requires_a_completely_empty_quota_record",
+          "linux_project_quota::tests::quota_limits_reject_unenforceable_or_unbounded_profiles",
+          "linux_project_quota::tests::quota_record_sets_equal_hard_and_soft_bounds",
+          "linux_project_quota::tests::quota_release_clears_limits_and_reuse_blocking_grace_timers"
+        ],
+        "ignored": []
+      }
+    }
+  },
+  "compilation_output": "/nix/store/6jpzxw4jsjf5rdjq6qm092800mkbrrww-aos-bazel-quota-aarch64-compilation",
+  "compiler_evidence": "/nix/store/a6h3ykqra4dyr13sdsr4lx5ichqbsgyl-aos-bazel-quota-aarch64-compilation-evidence",
+  "configuration": "/nix/store/3y3d2wh56fc2lbllkb2q0psilkwf7151-aos-bazel-configuration.json",
+  "configuration_sha256": "a74476544997534817e72b52d3f4a30860d3fb6de6edfdb3a30752869a947fea",
+  "existing_device_regression": {
+    "output": "/nix/store/w5nii2j4ijxz853mpfl61n6fi3h5fi8b-aos-bazel-device-aarch64-parity",
+    "runtime": {
+      "compilation_sha256": "8639e0da4a0b196001262b22c8a905d758f79e82afaa6d76f32bce1fbde57c4d",
+      "executed_cases": 642,
+      "executed_targets": 33,
+      "ignored_cases": 0,
+      "runtime": "AOS AArch64 Linux kernel under source-built QEMU system emulation",
+      "schema_version": 1,
+      "target": "aarch64-unknown-linux-gnu"
+    }
+  },
+  "file_sha256": {
+    "tests/build/_bazel-family-vm.nix": "85df209ea3796f79b7e6f165cdec2a42283db8205c2994b759e5aa681ab7e338",
+    "tests/build/_bazel-quota-cross.nix": "241ad762a750130a2ef4e5da36c2d1b70265babdfedd41c82aaa2d17cd719348",
+    "tests/build/bazel.nix": "ca551396dff44af4012716be54e7067017ce9fe90f5266b5b6db23d2ce717ebc",
+    "tools/bazel/metadata/quota-inventory.json": "38d441b4dec0a495bf2971efec3ee5f41ea544cdf08956facc7eb313a35bfbac",
+    "tools/bazel/tests/family_libtest.py": "2a86b91bc4d8ad2aa7cd14550f45afa6e0828bc92a41cd67baef979417cc112c",
+    "tools/bazel/tests/quota.nix": "e5cd12080a420338907efdebddc7ca8179b4659955c7a601daa59d77d1ce3d4b",
+    "tools/bazel/tests/run_family_vm.py": "0842da3c35b1541f06603e904c6cce3b17adcb144733474f3c7c8ccaec0f9040",
+    "tools/bazel/tests/test_family_cross_cases.py": "6f7317b72c6398287cdd1a4c84faceddc6c0d4041e731dd4ae98481865bff9a3",
+    "tools/bazel/tests/verify_family_cross.py": "f05cec4dc26cf7d84e548c2c594432f0350163db145b57ccad13c3e319a4d05a"
+  },
+  "first_party_cargo_manifests_in_bazel_workspace": false,
+  "first_party_compiler_arguments": [
+    {
+      "arguments": [
+        "bazel-out/k8-opt-exec/bin/external/rules_rust+/util/process_wrapper/process_wrapper",
+        "--arg-file",
+        "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_quota_crates__libc-0.2.186/_bs.linksearchpaths",
+        "--arg-file",
+        "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_quota_crates__rustix-1.1.4/_bs.linksearchpaths",
+        "--arg-file",
+        "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_quota_crates__thiserror-2.0.18/_bs.linksearchpaths",
+        "--subst",
+        "pwd=${pwd}",
+        "--subst",
+        "exec_root=${exec_root}",
+        "--subst",
+        "output_base=${output_base}",
+        "--subst",
+        "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_quota_crates__libc-0.2.186/_bs.out_dir=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_quota_crates__libc-0.2.186/_bs.out_dir",
+        "--subst",
+        "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_quota_crates__rustix-1.1.4/_bs.out_dir=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_quota_crates__rustix-1.1.4/_bs.out_dir",
+        "--subst",
+        "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_quota_crates__proc-macro2-1.0.106/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_quota_crates__proc-macro2-1.0.106/_bs.out_dir",
+        "--subst",
+        "bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_quota_crates__quote-1.0.46/_bs.out_dir=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_quota_crates__quote-1.0.46/_bs.out_dir",
+        "--subst",
+        "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_quota_crates__thiserror-2.0.18/_bs.out_dir=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_quota_crates__thiserror-2.0.18/_bs.out_dir",
+        "--",
+        "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/cross_rust/bin/rustc",
+        "crates/shared/aos-linux-project-quota/src/lib.rs",
+        "--crate-name=aos_linux_project_quota",
+        "--crate-type=bin",
+        "--error-format=human",
+        "--codegen=metadata=-237673537",
+        "--codegen=extra-filename=-237673537",
+        "--out-dir=bazel-out/k8-fastbuild/bin/crates/shared/aos-linux-project-quota",
+        "--codegen=opt-level=0",
+        "--codegen=debuginfo=0",
+        "--codegen=strip=none",
+        "--remap-path-prefix=${output_base}=.",
+        "--remap-path-prefix=${pwd}=.",
+        "--remap-path-prefix=${exec_root}=.",
+        "--emit=link=bazel-out/k8-fastbuild/bin/crates/shared/aos-linux-project-quota/unit_binary",
+        "--emit=dep-info",
+        "--color=always",
+        "--target=aarch64-unknown-linux-gnu",
+        "-L",
+        "bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/cross_rust/cross/lib/rustlib/aarch64-unknown-linux-gnu/lib",
+        "--test",
+        "--edition=2024",
+        "-Cembed-bitcode=no",
+        "--codegen=linker=/nix/store/y7g1xfy5xdmdzhvwkfxzz49rzcj9qfnj-aos-cc-wrapper/bin/cc",
+        "--codegen=link-arg=-L/nix/store/lqyh7bz12qi27ds4n2bw7yshs6523vra-gcc-runtime-16.2.0-aarch64-linux/lib",
+        "--codegen=link-arg=-Wl,-rpath,/nix/store/lqyh7bz12qi27ds4n2bw7yshs6523vra-gcc-runtime-16.2.0-aarch64-linux/lib",
+        "--codegen=link-arg=-lstdc++",
+        "--codegen=link-arg=-lm",
+        "--extern=libc=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_quota_crates__libc-0.2.186/liblibc-141937485.rlib",
+        "--extern=rustix=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_quota_crates__rustix-1.1.4/librustix-1013111828.rlib",
+        "--extern=thiserror=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_quota_crates__thiserror-2.0.18/libthiserror-2015359813.rlib",
+        "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_quota_crates__bitflags-2.13.0",
+        "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_quota_crates__linux-raw-sys-0.12.1",
+        "-Ldependency=bazel-out/k8-opt-exec/bin/external/+aos_tools_repository+aos_quota_crates__thiserror-impl-2.0.18",
+        "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_quota_crates__libc-0.2.186",
+        "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_quota_crates__rustix-1.1.4",
+        "-Ldependency=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_quota_crates__thiserror-2.0.18",
+        "--sysroot=bazel-out/k8-fastbuild/bin/external/+aos_tools_repository+aos_tools/cross_rust",
+        "-Copt-level=s",
+        "-Cdebuginfo=0",
+        "-Cdebug-assertions=yes",
+        "-Coverflow-checks=yes"
+      ],
+      "crate_type": "bin",
+      "label": "//crates/shared/aos-linux-project-quota:unit_binary",
+      "target": "aarch64-unknown-linux-gnu"
+    }
+  ],
+  "limits": [
+    "This executes the eight pure quota unit cases with a real AArch64 Linux kernel. Privileged ext4 quota installation and enforcement are a separate VM flight.",
+    "Production consumers and performance budgets remain unchanged."
+  ],
+  "output": "/nix/store/l99bbm7p471a8qbxr550jf8mgsxngay2-aos-bazel-quota-aarch64-parity",
+  "policy_checks": {
+    "output": "/nix/store/4qsv3wsgx2badc8n78cgcpz8qk0pbh36-aos-bazel-policy-checks",
+    "status": "passed",
+    "tests": 136
+  },
+  "report_sha256": {
+    "/nix/store/6jpzxw4jsjf5rdjq6qm092800mkbrrww-aos-bazel-quota-aarch64-compilation/parity.json": "b9cd9f2f318e6796f68014816aef2bbbee3ef8812f71f71f8d11f3e78b65fb4b",
+    "/nix/store/a6h3ykqra4dyr13sdsr4lx5ichqbsgyl-aos-bazel-quota-aarch64-compilation-evidence/evidence/compiler-arguments.json": "e4c137e6393f366862f11fe64e711f04191b64b5d4739b44c5624d745fcc3891",
+    "/nix/store/a6h3ykqra4dyr13sdsr4lx5ichqbsgyl-aos-bazel-quota-aarch64-compilation-evidence/evidence/execution.json": "606b1cfb053e6692755dff214fffab453837781308346ec600cf080c1ddca19f",
+    "/nix/store/l99bbm7p471a8qbxr550jf8mgsxngay2-aos-bazel-quota-aarch64-parity/runtime.json": "8b02b6065db7a7e92029c3815c3248ff2aa06025994eeabb0cc57b392a5d40a2",
+    "/nix/store/l99bbm7p471a8qbxr550jf8mgsxngay2-aos-bazel-quota-aarch64-parity/serial.log": "287837e3ae7343d71262137c3864e08c41b258e2119928eaa0a7f724ca4255cb"
+  },
+  "runtime": {
+    "compilation_sha256": "b9cd9f2f318e6796f68014816aef2bbbee3ef8812f71f71f8d11f3e78b65fb4b",
+    "executed_cases": 8,
+    "executed_targets": 1,
+    "ignored_cases": 0,
+    "runtime": "AOS AArch64 Linux kernel under source-built QEMU system emulation",
+    "schema_version": 1,
+    "target": "aarch64-unknown-linux-gnu"
+  },
+  "schema_version": 1,
+  "source": "/nix/store/z85y7yw8lmizbd4b95pbd51kp9ci9g6r-aos-bazel-workspace",
+  "status": "passed",
+  "tested_tree_parent_commit": "15e1f429b54bbcd27c3f62ad27f1e866b68201c5"
+}

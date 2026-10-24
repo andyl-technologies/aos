@@ -1,0 +1,740 @@
+{
+  "command": "nix-build /tmp/aos-bazel-722/activation-core-cargo.nix --no-out-link --max-jobs 4 --cores 4 --option substitute false",
+  "derivation": "/nix/store/ash1hsc8wg9frhkjw7r6m0hpy3nqj4in-aos-bazel-activation-core-cargo-baseline-1.drv",
+  "derivation_sha256": "adb916fc8d6f16e7d7d27865c829e3584c06f9e1d0eb6ea86b048ff5ac4ae455",
+  "doctests": {
+    "aos-activation": {},
+    "aos-activation-bpf-lsm": {},
+    "aos-activation-bpf-network": {},
+    "aos-activation-config-files": {},
+    "aos-activation-kubernetes": {},
+    "aos-activation-nftables": {},
+    "aos-activation-sysctl": {}
+  },
+  "executed_cases": 97,
+  "external_features": {
+    "aho-corasick@1.1.4": [
+      [
+        "perf-literal",
+        "std"
+      ]
+    ],
+    "anyhow@1.0.102": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "bitflags@2.13.0": [
+      [
+        "std"
+      ]
+    ],
+    "block-buffer@0.10.4": [
+      []
+    ],
+    "cfg-if@1.0.4": [
+      []
+    ],
+    "cpufeatures@0.2.17": [
+      []
+    ],
+    "crypto-common@0.1.7": [
+      [
+        "std"
+      ]
+    ],
+    "digest@0.10.7": [
+      [
+        "alloc",
+        "block-buffer",
+        "core-api",
+        "default",
+        "std"
+      ]
+    ],
+    "dyn-clone@1.0.20": [
+      []
+    ],
+    "equivalent@1.0.2": [
+      []
+    ],
+    "fastrand@2.4.1": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "generic-array@0.14.7": [
+      [
+        "more_lengths"
+      ]
+    ],
+    "getrandom@0.4.2": [
+      []
+    ],
+    "hashbrown@0.17.1": [
+      []
+    ],
+    "indexmap@2.14.0": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "itoa@1.0.18": [
+      []
+    ],
+    "libc@0.2.186": [
+      []
+    ],
+    "linux-raw-sys@0.12.1": [
+      [
+        "auxvec",
+        "elf",
+        "errno",
+        "general",
+        "if_ether",
+        "ioctl",
+        "net",
+        "netlink",
+        "no_std",
+        "prctl",
+        "xdp"
+      ]
+    ],
+    "memchr@2.8.2": [
+      [
+        "alloc",
+        "std"
+      ]
+    ],
+    "once_cell@1.21.4": [
+      [
+        "alloc",
+        "race",
+        "std"
+      ]
+    ],
+    "proc-macro2@1.0.106": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "quote@1.0.46": [
+      [
+        "default",
+        "proc-macro"
+      ]
+    ],
+    "ref-cast-impl@1.0.27": [
+      []
+    ],
+    "ref-cast@1.0.27": [
+      []
+    ],
+    "regex-automata@0.4.14": [
+      [
+        "alloc",
+        "dfa-onepass",
+        "hybrid",
+        "meta",
+        "nfa-backtrack",
+        "nfa-pikevm",
+        "nfa-thompson",
+        "perf-inline",
+        "perf-literal",
+        "perf-literal-multisubstring",
+        "perf-literal-substring",
+        "std",
+        "syntax",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment",
+        "unicode-word-boundary"
+      ]
+    ],
+    "regex-syntax@0.8.11": [
+      [
+        "default",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "regex@1.12.4": [
+      [
+        "default",
+        "perf",
+        "perf-backtrack",
+        "perf-cache",
+        "perf-dfa",
+        "perf-inline",
+        "perf-literal",
+        "perf-onepass",
+        "std",
+        "unicode",
+        "unicode-age",
+        "unicode-bool",
+        "unicode-case",
+        "unicode-gencat",
+        "unicode-perl",
+        "unicode-script",
+        "unicode-segment"
+      ]
+    ],
+    "rustix@1.1.4": [
+      [
+        "alloc",
+        "default",
+        "event",
+        "fs",
+        "net",
+        "process",
+        "std"
+      ]
+    ],
+    "schemars@1.2.2": [
+      [
+        "default",
+        "derive",
+        "schemars_derive",
+        "std"
+      ]
+    ],
+    "schemars_derive@1.2.2": [
+      []
+    ],
+    "serde@1.0.228": [
+      [
+        "alloc",
+        "default",
+        "derive",
+        "rc",
+        "serde_derive",
+        "std"
+      ]
+    ],
+    "serde_core@1.0.228": [
+      [
+        "alloc",
+        "rc",
+        "result",
+        "std"
+      ]
+    ],
+    "serde_derive@1.0.228": [
+      [
+        "default"
+      ]
+    ],
+    "serde_derive_internals@0.30.0": [
+      []
+    ],
+    "serde_json@1.0.150": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "serde_spanned@0.6.9": [
+      [
+        "serde"
+      ]
+    ],
+    "sha2@0.10.9": [
+      [
+        "compress",
+        "default",
+        "std"
+      ]
+    ],
+    "syn@2.0.118": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "parsing",
+        "printing",
+        "proc-macro"
+      ]
+    ],
+    "syn@3.0.5": [
+      [
+        "clone-impls",
+        "default",
+        "derive",
+        "parsing",
+        "printing",
+        "proc-macro"
+      ]
+    ],
+    "tempfile@3.27.0": [
+      [
+        "default",
+        "getrandom"
+      ]
+    ],
+    "thiserror-impl@2.0.18": [
+      []
+    ],
+    "thiserror@2.0.18": [
+      [
+        "default",
+        "std"
+      ]
+    ],
+    "toml@0.8.23": [
+      [
+        "default",
+        "display",
+        "parse"
+      ]
+    ],
+    "toml_datetime@0.6.11": [
+      [
+        "serde"
+      ]
+    ],
+    "toml_edit@0.22.27": [
+      [
+        "display",
+        "parse",
+        "serde"
+      ]
+    ],
+    "toml_write@0.1.2": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "typenum@1.20.1": [
+      []
+    ],
+    "unicode-ident@1.0.24": [
+      []
+    ],
+    "version_check@0.9.5": [
+      []
+    ],
+    "winnow@0.7.15": [
+      [
+        "alloc",
+        "default",
+        "std"
+      ]
+    ],
+    "zmij@1.0.21": [
+      []
+    ]
+  },
+  "first_party_features": {
+    "aos-activation": [
+      []
+    ],
+    "aos-activation-bpf-lsm": [
+      []
+    ],
+    "aos-activation-bpf-network": [
+      []
+    ],
+    "aos-activation-config-files": [
+      []
+    ],
+    "aos-activation-kubernetes": [
+      []
+    ],
+    "aos-activation-nftables": [
+      []
+    ],
+    "aos-activation-sysctl": [
+      []
+    ],
+    "aos-artifact-evidence": [
+      []
+    ],
+    "aos-core": [
+      []
+    ],
+    "aos-module-format": [
+      []
+    ]
+  },
+  "first_party_source_sha256": {
+    "crates/Cargo.lock": "033bfad7de38812960028c5c2f69c2737eaa5a73dba2a810dfcf2f992268e6fd",
+    "crates/Cargo.toml": "8761ede65c4d2a37b93a130f16436aba18112776494133f86e026d2a9acb6aee",
+    "crates/aos/activation/aos-activation-bpf-lsm/Cargo.toml": "bc1b15ee61ab6640d420334be5a6b97c30af4772ea19c1b0b487cb86ff01e2c3",
+    "crates/aos/activation/aos-activation-bpf-lsm/src/lib.rs": "9ed1f33dfa7e87bd3a065eb440414c28c90092eb3503c6a9b0c82f6bc43f4327",
+    "crates/aos/activation/aos-activation-bpf-lsm/src/main.rs": "8a1e53e260041ded32a09b491ccdea07ba70bc4f999efd06be1e867086da6340",
+    "crates/aos/activation/aos-activation-bpf-lsm/src/native.rs": "442feca8439a3a1a8a1c6880c7f2ce882a5ec3169fbe2a801c2232be97806fbf",
+    "crates/aos/activation/aos-activation-bpf-network/Cargo.toml": "52b7459901ac2b209a4980923e9878c6d79c14582c9e09f47e4100c2c61ced97",
+    "crates/aos/activation/aos-activation-bpf-network/src/lib.rs": "7e50df91fda475211ff236c2c8d29f416ed2feb86b77694a8a4977c33471b82c",
+    "crates/aos/activation/aos-activation-bpf-network/src/main.rs": "6d63b388a592fa19a34a7cd482043e1814bc3c3218304aa31b7ecf5118215ac7",
+    "crates/aos/activation/aos-activation-bpf-network/src/native.rs": "8728dd1d56d219c5903d4a96321a1d1590cc4a6b35e9ab14d0a36f4b07cda802",
+    "crates/aos/activation/aos-activation-config-files/Cargo.toml": "550e692615f54e859a13e9df90bab2503e67fb793b8f71c2243a6481a346d374",
+    "crates/aos/activation/aos-activation-config-files/src/format.rs": "e345826ab0bacc3dd2d7b5f262bb39aebe65971bfd766570a5bafad7dcd7e12e",
+    "crates/aos/activation/aos-activation-config-files/src/io.rs": "435fd718ebb2b2eb5f6815c6ba78b3d346bfab3995e1b7b5c55b6ce288a3a688",
+    "crates/aos/activation/aos-activation-config-files/src/lib.rs": "4eccb90d04174f3ab809b7d36aa0249da539601899bfec7c64cd21028afc3809",
+    "crates/aos/activation/aos-activation-config-files/src/main.rs": "628ef8e41a5317ca28229b6ac25c4a4f04f625fb844608d2b04ac9fba2ef1b4a",
+    "crates/aos/activation/aos-activation-config-files/src/tests.rs": "108887f520ce6188c4696b120852ae7dd2d6bd2d1cc50ec9bc1c136504f0958f",
+    "crates/aos/activation/aos-activation-kubernetes/Cargo.toml": "38b64c6ad29fe6827035e760f3a7d0274535519ff137e1d07f939a4d98b5c704",
+    "crates/aos/activation/aos-activation-kubernetes/src/configuration.rs": "8f2eb07e81707f68072cb67eabfe2a420980957567c3531961472a6e4f24d00f",
+    "crates/aos/activation/aos-activation-kubernetes/src/lib.rs": "7ac0a8ce438440c4aa23f8f5d48c04b7b0435d1e2bd1a8296984d68c54ef0a9d",
+    "crates/aos/activation/aos-activation-kubernetes/src/main.rs": "34d0c67c5a40d8d1cdaf30c04c3ed6251238b875cbce522f34723696419a9517",
+    "crates/aos/activation/aos-activation-nftables/Cargo.toml": "fada50f5889cc18cb50ea615cc5c444bd02c22059191b6eafc0d1bfc58b3138a",
+    "crates/aos/activation/aos-activation-nftables/src/lib.rs": "75eaf365713e0bcf730fc027f72777f5d058fe115494d3a15177709219a2be2d",
+    "crates/aos/activation/aos-activation-nftables/src/main.rs": "158573ecdb6a42be2f1b5505572a3b6d8f5f1ec328c905529afebb2923084f84",
+    "crates/aos/activation/aos-activation-sysctl/Cargo.toml": "be42ebd5b9fcd798cb9819ac967d3d64d31cf23e83d9ab17ecc570ac13da7e6a",
+    "crates/aos/activation/aos-activation-sysctl/src/lib.rs": "b0c0a4ec0024f4d909f86f6aae60326b1be78803a7300fec35aed69b2dc3c49a",
+    "crates/aos/activation/aos-activation-sysctl/src/main.rs": "e8b58f2ac4b3f3fcd0c272fe0000851ab01eb688ba3b64cdf9927ec7b4315790",
+    "crates/aos/activation/aos-activation/Cargo.toml": "a573354dab88f40855642f005d86bab863cb6ebd2bddd68605bedfa9ea7f0410",
+    "crates/aos/activation/aos-activation/examples/module_graph_check.rs": "339b90a088ba42c184b53b5cc9bf306091c3fc093620b4921b719b3b5cd7ac5e",
+    "crates/aos/activation/aos-activation/src/activation/controller.rs": "58c4bc75054aa4740fbac223148e8adfe2f8c007d028b95ce52dc86d79777d82",
+    "crates/aos/activation/aos-activation/src/activation/inspection.rs": "c3f45cc73413cecc53ba3805e7cd53b18ae1f49f91f13fe7057f28fa6a7b4635",
+    "crates/aos/activation/aos-activation/src/activation/journal.rs": "06ab5488fb410f8aef6f9fd8e7c9ce4de23bbca90b094b253659e19ccbb75520",
+    "crates/aos/activation/aos-activation/src/activation/mod.rs": "ec62e4ddd5c51ddca637ca2c499580e6ba1f43d3140196d728cb376abc85ee36",
+    "crates/aos/activation/aos-activation/src/activation/observer.rs": "c3b8be882375d5b6230be548f53e8772e07a7e6aacc729dcb29e3adefd8a4541",
+    "crates/aos/activation/aos-activation/src/activation/restoration.rs": "04d1daa6f24c6144cbb1e96cc45e8269f4438766fe29a70e2f43d25905427233",
+    "crates/aos/activation/aos-activation/src/activation/restoration_tests.rs": "8c4eb96ba83ffd5ff9b4ac424ef6cdb8fea0efad7ff38c6aac224fa03f335077",
+    "crates/aos/activation/aos-activation/src/activation/socket_observer.rs": "10f7f6a7eb7c85f17db20fefe46a62d13b3c7a091536a27fb70983ed97d41297",
+    "crates/aos/activation/aos-activation/src/activation/tests.rs": "cc9a83185e078414f8d06ced96db18d2561f1642c070215bac84587c21e196a0",
+    "crates/aos/activation/aos-activation/src/adapter.rs": "73a529a8347a8cd6ddadee73bb1e370c5412bb68258865f83c98fa29a79079d1",
+    "crates/aos/activation/aos-activation/src/journal/file.rs": "8a26c998ff331227888bb19c2764a61fe6f33d6308ee4c0d5465f179a2195d80",
+    "crates/aos/activation/aos-activation/src/journal/file/observation_tests.rs": "1536660dc936e1827b9817c289d54d74105fc06e3663072aac2dd6e50d79fd93",
+    "crates/aos/activation/aos-activation/src/journal/frame.rs": "f1dbdddeeafad6f90b955ee616e8c6ca19226e579d233b9fda033a854a1ba69b",
+    "crates/aos/activation/aos-activation/src/journal/mod.rs": "b003c030ee4de3d8dee9f9a7319e7dec34851d9f69e0a320f09727560104bd26",
+    "crates/aos/activation/aos-activation/src/lib.rs": "2f6586d523ad4ed2d61092e5967417173890a16dfbf42113a5a645f79b66be62",
+    "crates/aos/modules/aos-module-format/Cargo.toml": "865d3d1c001bd2e9316817361235bdb5bdf992514eec0e707fbcbfa093a59fda",
+    "crates/aos/modules/aos-module-format/src/diagnostic.rs": "16ce106d58218b8ba8431f8aa1baa693edf4a62500fc6309a969fdd56496069c",
+    "crates/aos/modules/aos-module-format/src/graph/mod.rs": "b2b11a93cbaed57681fbf9de632f0a1169a3d47aeb1d3cb1492b48a33b6f4468",
+    "crates/aos/modules/aos-module-format/src/graph/resolution.rs": "cc30d49ae23e651a8070fd79fae6ff9bbdb9826e7622897fba10b8269ef92d91",
+    "crates/aos/modules/aos-module-format/src/graph/tests.rs": "74b68a9bf925cf38a24ed4220804171651a28791e4ec22b0420ba3e02801a36f",
+    "crates/aos/modules/aos-module-format/src/graph/validation.rs": "fdcb8d545b0af2f001e9d19727798f2d2c531f8ccf63da161e432256b81761e4",
+    "crates/aos/modules/aos-module-format/src/graph/validation/tests.rs": "f5f1ad44802802fe675d7c278b677edb52e7d5bbc38240d2dc97a3a181a16543",
+    "crates/aos/modules/aos-module-format/src/identity.rs": "87a4198a21260e2de56626cc8300d52910470795a124dd5a62eab1f5f29da5cd",
+    "crates/aos/modules/aos-module-format/src/lib.rs": "8cd0b38729c0ea2a35cbbc283480932f7d294512d2608dd620d9b759943f4520",
+    "crates/aos/modules/aos-module-format/src/limits.rs": "6a5110b4981e4d0115910d826fe4b46f6c491e0fa8ef2babdab8032dfdbc2419",
+    "crates/aos/modules/aos-module-format/src/option.rs": "ae9b246770b273b25646c41efe661412622cbafdb6875405bf6f747b8dbe2cc4",
+    "crates/aos/modules/aos-module-format/src/schema.rs": "da5a2a78219883f2444de109e425d096253b2e7e4db6603c650fb22a5eacd60b",
+    "crates/aos/modules/aos-module-format/src/transaction_blob.rs": "c677b49f46370a4b1986d1232f939784b352e37382bbde507832fd2bb267a069",
+    "crates/aos/modules/aos-module-format/src/value.rs": "7fe4d3c24684ef8b95009b3e6cfa0efbb13da1cf9f7ae3aadae7fd7648382259",
+    "crates/shared/aos-artifact-evidence/Cargo.toml": "249f331d2c67207dc3d74d581105284273382b6278fb8186476f1ea353c9c329",
+    "crates/shared/aos-artifact-evidence/src/consumption.rs": "7e38f9f101fde359ad056e70f8ecba06c77137d561c29b609575eb5f8988862c",
+    "crates/shared/aos-artifact-evidence/src/diagnostic.rs": "1ad0a4401d80d32b31afdf0b16bf98e822449ff445a80191e1f827c512dfbf68",
+    "crates/shared/aos-artifact-evidence/src/document.rs": "b3223bef9a7dd87bb72f4afde800217a24317f64a45b2fb3413046c39af76078",
+    "crates/shared/aos-artifact-evidence/src/identity.rs": "a960256438697c76067c85c13c364da507ff8bdcad4fa098bea776a016915f5d",
+    "crates/shared/aos-artifact-evidence/src/lib.rs": "b96037a5a80f0563c3646bfb208cc7f5d44f979fff4cb166ae2dd0f466e15104",
+    "crates/shared/aos-artifact-evidence/src/limits.rs": "07d81f5fd738e4e3fe14613a1947f32beeeb9989b935f74b4242f56fc900950f",
+    "crates/shared/aos-artifact-evidence/src/model.rs": "6536a0109591d899397b86800199b262b8e427c460d3c5b301253850740f084d",
+    "crates/shared/aos-core/Cargo.toml": "a83ae101ada1471e2cf6e3592eff604b932b32bb6b9c08ca78e7f28a84386f0c",
+    "crates/shared/aos-core/src/digest.rs": "f2c3c762eaa35314f95fe60cc1a109083ceb2b4d1149d193243dc370a9f00403",
+    "crates/shared/aos-core/src/identity.rs": "d5b29def050947cd57a09ed3fec6c2e6af4ea3e13a1751fec2e7a4fe351f1686",
+    "crates/shared/aos-core/src/json.rs": "e4c9f02df4321930960b4c6586b8e93f0439c8f1eabe0b1e929ceb277c95fa45",
+    "crates/shared/aos-core/src/lib.rs": "14fadc5d679efeb8f0b7ea696886bbd44d5148f972fd0fedd8c030bae66c1198",
+    "crates/shared/aos-core/src/limits.rs": "d1071f9bbfe39c8cfde4b5bffb4e39e1e3ed935285d9eb7da3261151c9334c1b"
+  },
+  "ignored_cases": 0,
+  "libtest_artifacts": 13,
+  "limits": [
+    "Native Linux Cargo semantic baseline only. Bazel, foreign and Wasm execution, performance acceptance and production cutover remain pending.",
+    "Installed command targets retain their existing names independently of their Cargo package names.",
+    "Tests that conditionally require configured native executables retain that existing behavior; dedicated provider integration gates remain required.",
+    "Private offline Cargo build state is used without shared compiler caches or services."
+  ],
+  "output": "/nix/store/kz8cfblcqzz48l9yjpq8jdnql21jgci4-aos-bazel-activation-core-cargo-baseline-1",
+  "packages": {
+    "aos-activation": "crates/aos/activation/aos-activation",
+    "aos-activation-bpf-lsm": "crates/aos/activation/aos-activation-bpf-lsm",
+    "aos-activation-bpf-network": "crates/aos/activation/aos-activation-bpf-network",
+    "aos-activation-config-files": "crates/aos/activation/aos-activation-config-files",
+    "aos-activation-kubernetes": "crates/aos/activation/aos-activation-kubernetes",
+    "aos-activation-nftables": "crates/aos/activation/aos-activation-nftables",
+    "aos-activation-sysctl": "crates/aos/activation/aos-activation-sysctl"
+  },
+  "recipe": "let\n  root = /home/dylan/src/aos/.worktrees/codex/bazel-integration-722;\n  pkgs = (import root {}).pkgs;\nin\n  import (root + \"/tests/build/_bazel-cargo-oracle.nix\") {\n    inherit pkgs;\n    pname = \"aos-bazel-activation-core-cargo-baseline\";\n    packages = [\n      \"aos-activation\"\n      \"aos-activation-config-files\"\n      \"aos-activation-sysctl\"\n      \"aos-activation-bpf-lsm\"\n      \"aos-activation-bpf-network\"\n      \"aos-activation-kubernetes\"\n      \"aos-activation-nftables\"\n    ];\n  }\n",
+  "report_sha256": {
+    "cargo-messages.jsonl": "be1fef43071619331bc28e1b9dd8d77742a462f1881dd730db9770c83036b54d",
+    "cargo-tests.log": "c87ab5f3c27f1ee1d9450181f08e9880d4fd1c126495540d3db5bd43eb218151"
+  },
+  "schema_version": 1,
+  "source": "/nix/store/npnbbvsn3qswcfm0pkagrkywvl82wgh6-crucible-cargo-src",
+  "status": "Activation core Cargo tests and doctests passed before Bazel conversion",
+  "targets": {
+    "aos-activation-bpf-lsm/bin_aos-ebpf-lsm-provider": {
+      "binary_sha256": "c1b6f33003fa6e8374d782a4c9aae344ed8fbd111be160a33b52b2105b2b057f",
+      "executed": [],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-activation-bpf-lsm/unit": {
+      "binary_sha256": "297f487269c85485c0bc85dc06510a25ebe0bc3d7b39bc636174e65c6972c7b2",
+      "executed": [
+        "tests::artifact_paths_cannot_escape_the_selected_package",
+        "tests::duplicate_pin_identity_is_rejected",
+        "tests::selected_artifacts_and_owned_pins_are_exact"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-activation-bpf-network/bin_aos-ebpf-net-policy-provider": {
+      "binary_sha256": "2a41ad1fc421cfd112638b82b6f65ef1bda4fd3bd104da9f3804b631756558c3",
+      "executed": [],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-activation-bpf-network/unit": {
+      "binary_sha256": "554ef4ed11c4f58cbe0258fa5159696f998d40400f27438c9ea3ae41fa0ccc49",
+      "executed": [
+        "tests::artifact_paths_cannot_escape_the_selected_package",
+        "tests::cgroup_must_stay_beneath_the_unified_hierarchy",
+        "tests::selected_artifacts_and_owned_pins_are_exact"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-activation-config-files/bin_aos-configuration-provider": {
+      "binary_sha256": "46ef6abe6baf9753b4e6286638f5e6645bd76068c3f0cc2659fb212dcc71ddb4",
+      "executed": [],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-activation-config-files/unit": {
+      "binary_sha256": "c702b0513a19a1c8b5bb14e85fdec8b0f8e3d703d7cc9c2b0358e3f344fbcf7c",
+      "executed": [
+        "io::tests::stale_temporaries_are_preserved_while_publication_recovers",
+        "tests::foreign_claims_and_symlinks_cannot_be_adopted",
+        "tests::interrupted_moves_retain_both_paths_until_recovery",
+        "tests::invalid_actions_paths_and_inputs_fail_before_mutation",
+        "tests::old_double_slash_receipts_replay_without_retiring_the_same_destination",
+        "tests::pending_same_path_removal_accepts_retained_prior_destination_evidence",
+        "tests::source_built_nss_helper_resolves_exact_names_and_rejects_absence",
+        "tests::structured_formats_and_credential_bounds_are_preserved",
+        "tests::updates_metadata_and_rejects_foreign_edits"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-activation-kubernetes/bin_aos-kubernetes-provider": {
+      "binary_sha256": "c46ede6b49915404681885dc30d2ce8a14c4b7cc789c56dae006f4e1f28fb0b6",
+      "executed": [],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-activation-kubernetes/unit": {
+      "binary_sha256": "12f3eadece2073505f766a202b113376c3ff48fde6188563eef1c6dbcca94aac",
+      "executed": [
+        "configuration::tests::base_configuration_needs_no_empty_integration_map",
+        "configuration::tests::configuration_composes_flags_and_labels_canonically",
+        "configuration::tests::configuration_resource_changes_with_content_without_changing_its_path",
+        "configuration::tests::interrupted_configuration_intent_can_finish_and_rejects_other_revisions",
+        "configuration::tests::release_preserves_foreign_edits_and_removes_owned_configuration_idempotently",
+        "tests::delete_options_bind_uid_and_resource_version",
+        "tests::desired_document_adds_only_provider_annotations",
+        "tests::object_identity_and_canonical_content_are_checked_together",
+        "tests::observation_checks_owned_fields_while_allowing_server_defaults",
+        "tests::retained_identity_distinguishes_removed_objects_from_updated_content"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-activation-nftables/bin_aos-network-ruleset-provider": {
+      "binary_sha256": "e38f69cc8968b255f1261e9b59b72cff7f7b005df609808a45c41873452e234a",
+      "executed": [],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-activation-nftables/unit": {
+      "binary_sha256": "9966061cc5f31cab721b551c71982c1d1ba7eeeec938f09b7a919e3017c1a5db",
+      "executed": [
+        "tests::native_module_fields_round_trip_and_render",
+        "tests::receipts_distinguish_current_drift_and_interrupted_mutations",
+        "tests::rejects_zero_ports_and_configuration_delimiters",
+        "tests::rendering_preserves_allowances_and_atomic_replacement"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-activation-sysctl/bin_aos-kernel-tunable-provider": {
+      "binary_sha256": "d4e5292dcb7f2b5aa9f2d9fb71a9d7b22557c1a381c785a7f447e995e50664a5",
+      "executed": [],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-activation-sysctl/unit": {
+      "binary_sha256": "7a89a006ff91961be9d15fa8fedd47e3d3e77b3f9604a1be920d83b195fa48f7",
+      "executed": [
+        "tests::interrupted_write_is_observed_before_retry_without_losing_baseline",
+        "tests::malformed_keys_fail_before_any_mutation",
+        "tests::reconfiguration_restores_removed_keys_and_teardown_restores_baselines"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    },
+    "aos-activation/unit": {
+      "binary_sha256": "fda964798b6aa1aaf81edeb170359a56d40fbb96c143fa18cfcabf223452bb2b",
+      "executed": [
+        "activation::inspection::tests::checksum_valid_but_out_of_order_records_are_rejected",
+        "activation::inspection::tests::incomplete_tail_is_reported_without_repair",
+        "activation::inspection::tests::inspection_distinguishes_pending_dispatch_from_completed_receipt",
+        "activation::inspection::tests::inspection_preserves_checked_wire_identity_in_stable_and_observed_views",
+        "activation::inspection::tests::observation_reads_exact_pending_dispatch_without_releasing_the_writer",
+        "activation::inspection::tests::pending_update_exports_only_the_previous_finished_invocation_read_only",
+        "activation::inspection::tests::private_retained_authority_survives_persistent_orphaning_without_public_invocations",
+        "activation::journal::tests::application_resolves_retained_and_fresh_dependencies_without_unrelated_outputs",
+        "activation::journal::tests::begin_validation_rejects_invalid_records_before_mutating_state",
+        "activation::journal::tests::replay_compares_full_contracts_and_previous_state",
+        "activation::restoration_tests::a_second_cut_restores_lost_mapper_before_resuming_the_original_format_repair",
+        "activation::restoration_tests::disappeared_persistent_prefix_resources_are_also_restored",
+        "activation::restoration_tests::lost_prerequisites_are_restored_without_repeating_the_primary_or_one_shots",
+        "activation::restoration_tests::replay_rejects_unfinished_unknown_and_out_of_order_restoration_records",
+        "activation::restoration_tests::resumed_restoration_reserves_outcomes_before_any_live_observation_or_dispatch",
+        "activation::restoration_tests::uncertain_or_conflicting_repairs_leave_original_outputs_and_pending_identity_intact",
+        "activation::socket_observer::tests::cancelled_observation_has_no_socket_side_effect",
+        "activation::socket_observer::tests::exact_event_requires_canonical_digest_bound_acknowledgement",
+        "activation::socket_observer::tests::noncanonical_socket_paths_are_rejected",
+        "activation::socket_observer::tests::stalled_acknowledgement_exhausts_transport_budget",
+        "activation::tests::artifact_cleanup_is_retried_after_durable_teardown",
+        "activation::tests::caller_transaction_receipt_survives_generation_commit_interruption",
+        "activation::tests::completed_receipt_revalidates_orphaned_handlers_without_dispatch_or_journal_writes",
+        "activation::tests::converges_observes_and_updates_without_tearing_down_state",
+        "activation::tests::declarative_retirement_is_repeatable_but_unknown_identities_are_rejected",
+        "activation::tests::default_batch_retains_all_inventory_including_compositions",
+        "activation::tests::deferred_completion_replay_rejects_incomplete_and_fabricated_receipts",
+        "activation::tests::dispatch_attempt_boundary_precedes_handler_and_survives_failure",
+        "activation::tests::documentation_changes_preserve_the_effect_revision",
+        "activation::tests::failed_batch_admission_precedes_intent_and_dispatch",
+        "activation::tests::graph_boundary_rejects_inconsistent_content_and_execution_order",
+        "activation::tests::indeterminate_retained_effect_reports_identity_without_repeating_mutation",
+        "activation::tests::installation_one_shot_without_startup_nodes_is_reused_after_reopening",
+        "activation::tests::installation_receipts_defer_dependencies_and_compositions_across_restarts",
+        "activation::tests::installation_recovery_skips_earlier_deferred_nodes_and_preserves_startup_removal",
+        "activation::tests::lifetimes_control_teardown_and_persistent_retirement",
+        "activation::tests::observer_failure_after_durable_outcome_does_not_repeat_dispatch",
+        "activation::tests::observer_interruption_after_dispatch_recovers_the_same_durable_intent",
+        "activation::tests::observes_interrupted_mutation_after_reopening_without_repeating_it",
+        "activation::tests::transaction_recovery_does_not_repeat_completed_work",
+        "activation::tests::uncertain_recovery_and_invalid_results_never_commit",
+        "journal::file::observation_tests::captured_cut_excludes_an_available_complete_suffix_and_reports_partial_frame",
+        "journal::file::observation_tests::observation_preserves_held_writer_and_its_verified_snapshot",
+        "journal::file::observation_tests::observation_rejects_complete_corruption_without_mutating_or_unlocking",
+        "journal::file::observation_tests::observation_rejects_truncation_before_the_captured_endpoint",
+        "journal::file::observation_tests::observation_reports_incomplete_tail_without_repair_under_writer_lock",
+        "journal::file::tests::append_is_recovered_with_sequence_and_digest_chain",
+        "journal::file::tests::body_limits_apply_before_an_append",
+        "journal::file::tests::capacity_check_reserves_future_record_slots_before_dispatch",
+        "journal::file::tests::capacity_check_uses_maximum_frame_bytes",
+        "journal::file::tests::changed_final_length_is_corruption_instead_of_a_torn_tail",
+        "journal::file::tests::changed_previous_digest_is_corruption_even_with_a_valid_header_checksum",
+        "journal::file::tests::changed_sequence_is_corruption_even_with_a_valid_header_checksum",
+        "journal::file::tests::complete_frame_with_invalid_body_invariants_is_preserved",
+        "journal::file::tests::existing_journal_with_broad_permissions_is_rejected",
+        "journal::file::tests::lock_ends_with_owner_even_when_a_descriptor_is_inherited",
+        "journal::file::tests::new_journal_has_private_permissions",
+        "journal::file::tests::read_only_snapshot_never_creates_a_missing_journal",
+        "journal::file::tests::read_only_snapshot_rejects_a_fifo_without_waiting_for_a_writer",
+        "journal::file::tests::read_only_snapshot_reports_a_torn_tail_without_repairing_it",
+        "journal::file::tests::recovery_discards_only_a_torn_final_frame",
+        "journal::file::tests::recovery_preserves_a_complete_corrupt_frame",
+        "journal::file::tests::total_record_limit_bounds_recovery_memory",
+        "journal::file::tests::writer_lock_excludes_a_racing_read_only_snapshot",
+        "journal::file::tests::writer_lock_excludes_recovery_and_another_writer"
+      ],
+      "ignored": [],
+      "profile": {
+        "debug_assertions": true,
+        "debuginfo": 0,
+        "opt_level": "s",
+        "overflow_checks": true,
+        "test": true
+      }
+    }
+  }
+}

@@ -215,13 +215,13 @@ in
           export CARGO_HOME="$TMPDIR/cargo"
           export PROTOC="${buildProtobuf}/bin/protoc"
 
-          # rust-lld may leave a zero-filled output on the build filesystem.
-          # Link on tmpfs, then copy the completed wasm into Cargo's target dir.
+          # Stage a complete linker output before copying into Cargo's target
+          # directory. Shared host RAM must remain available to other builds.
           cat > "$TMPDIR/aos-wasm-linker" <<'LINKER'
           #!${buildBash}/bin/bash
           set -euo pipefail
 
-          stage_dir=$(${buildCoreutils}/bin/mktemp -d /dev/shm/aos-wasm-link.XXXXXXXX)
+          stage_dir=$(${buildCoreutils}/bin/mktemp -d "$TMPDIR/aos-wasm-link.XXXXXXXX")
           trap '${buildCoreutils}/bin/rm -rf "$stage_dir"' EXIT
 
           output=
