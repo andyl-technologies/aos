@@ -771,6 +771,7 @@ impl PreparedSchedulingRestore {
             .ok_or(RuntimeError::ResourceLimit)?;
         let rows = [
             Self::original_retained_installation_duplicate_counter_scratch_data(),
+            super::validation::input_custody::counter_scratch_data(),
             size_of::<Requested>(),
             size_of::<ValidationViews<'_>>(),
             size_of::<Result<usize, RuntimeError>>(),
