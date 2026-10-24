@@ -7,10 +7,12 @@
 use rustix::net::{self, SendAncillaryBuffer, SendAncillaryMessage};
 use std::{
     fs::OpenOptions,
+    future::{Future, pending},
     io::{self, IoSlice},
     mem::MaybeUninit,
     num::NonZeroU64,
     os::{fd::AsFd, unix::fs::OpenOptionsExt},
+    pin::Pin,
     sync::Arc,
     time::Duration,
 };
@@ -25,13 +27,16 @@ use terrane_linux::{
     fuse_connection::Connection,
     fuse_dispatch::{Limits as MetadataLimits, Metadata, Response},
     fuse_metadata::{CachePolicy, Presentation},
+    fuse_open::{self, Enqueued, Outcome, Ticket},
     fuse_protocol::{self, Reply, Request},
     fuse_read::{self, Backing as FallbackBacking},
     fuse_xattr::Policy as XattrPolicy,
     quota_confinement,
     structural_index::{self, Index, Kind},
-    worker_channel::{ExposureContext, RequestedBacking, WorkerClient},
+    worker_channel::{BackingReply, ExposureContext, RequestedBacking, WorkerClient},
 };
+
+type Fetch = Pin<Box<dyn Future<Output = (Ticket, WorkerClient, io::Result<BackingReply>, u64)>>>;
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
 const LIMIT: usize = 262144;
@@ -41,7 +46,7 @@ fn main() -> Result {
     let mode = std::env::args().nth(1).ok_or("missing fixture mode")?;
     if !matches!(
         mode.as_str(),
-        "serve" | "metadata" | "read" | "timeout" | "cancel"
+        "serve" | "metadata" | "read" | "readiness" | "timeout" | "cancel"
     ) {
         return Err("invalid fixture mode".into());
     }
@@ -113,8 +118,14 @@ fn main() -> Result {
             None
         };
         // This fixture retains the original fallback until connection teardown.
-        // It does not qualify production handle accounting or open scheduling.
+        // It does not qualify production handle accounting or exposure authority.
         let mut backing: Option<(u64, FallbackBacking)> = None;
+        let mut fetch: Option<Fetch> = None;
+        let mut opens = fuse_open::Queue::new(fuse_open::Limits {
+            nodes: 1,
+            waiters: 16,
+            bytes: 4096,
+        })?;
 
         // Invalid arguments must fail before accepting or consuming real INIT.
         let error = connection
@@ -147,9 +158,20 @@ fn main() -> Result {
             0,
         )
         .await?;
+        if mode == "readiness" {
+            if connection.try_receive(&mut input)?.is_some() {
+                return Err("idle connection unexpectedly consumed a request".into());
+            }
+            if tokio::time::timeout(Duration::from_millis(100), connection.wait_readable())
+                .await
+                .is_ok()
+            {
+                return Err("idle readiness notification unexpectedly completed".into());
+            }
+        }
         notify(b"READY")?;
 
-        if !matches!(mode.as_str(), "serve" | "metadata" | "read") {
+        if !matches!(mode.as_str(), "serve" | "metadata" | "read" | "readiness") {
             if mode == "timeout" {
                 let error = connection
                     .receive(&mut input, Duration::from_millis(100))
@@ -181,8 +203,40 @@ fn main() -> Result {
         }
 
         loop {
-            let received = tokio::select! {
-                result = connection.receive(&mut input, DEADLINE) => result,
+            while let Some(reply) = opens.next_reply(tokio::time::Instant::now().into_std()) {
+                let mut opened = [0; 16];
+                let body = if reply.outcome == Outcome::Ready {
+                    Some(fuse_read::open(reply.ticket.node(), &mut opened)?)
+                } else {
+                    None
+                };
+                send_unique(&mut connection, &mut output, reply.unique, body, libc::EIO).await?;
+            }
+            let open_deadline = opens.next_deadline();
+            let readable = tokio::select! {
+                result = async {
+                    match fetch.as_mut() {
+                        Some(fetch) => fetch.await,
+                        None => pending().await,
+                    }
+                } => {
+                    let (ticket, client, reply, size) = result;
+                    fetch = None;
+                    backing_client = Some(client);
+                    let file = FallbackBacking::from_reply(reply?, size, 131072)?;
+                    backing = Some((ticket.node().get(), file));
+                    opens.complete(ticket, Outcome::Ready)?;
+                    continue;
+                },
+                () = async {
+                    match open_deadline {
+                        Some(deadline) => tokio::time::sleep_until(deadline.into()).await,
+                        None => pending().await,
+                    }
+                } => continue,
+                result = tokio::time::timeout(DEADLINE, connection.wait_readable()) => {
+                    result.map_err(|_| io::Error::from(io::ErrorKind::TimedOut))?
+                },
                 result = stopped(&control) => {
                     result?;
                     drop(connection);
@@ -190,14 +244,20 @@ fn main() -> Result {
                     return Ok(());
                 }
             };
+            let received = match readable {
+                Ok(()) => connection.try_receive(&mut input),
+                Err(error) => Err(error),
+            };
             let request = match received {
-                Ok(request) => request,
+                Ok(Some(request)) => request,
+                Ok(None) => continue,
                 Err(error) if error.raw_os_error() == Some(libc::ENODEV) => {
                     stopped(&control).await?;
                     break;
                 }
                 Err(error) => return Err(error.into()),
             };
+            let arrived = tokio::time::Instant::now().into_std();
             // FORGET and BATCH_FORGET never receive replies, even for nonzero IDs.
             if matches!(request.opcode(), 2 | 42) {
                 continue;
@@ -224,21 +284,28 @@ fn main() -> Result {
                             (None, libc::EROFS)
                         } else if let Kind::File { content, size } = entry.kind() {
                             if backing.is_none() {
-                                let reply = backing_client
-                                    .as_mut()
-                                    .ok_or("missing backing client")?
-                                    .request_bounded(
-                                        RequestedBacking::File {
+                                let node =
+                                    NonZeroU64::new(request.node()).ok_or("zero open node")?;
+                                let unique = NonZeroU64::new(request.unique())
+                                    .ok_or("zero open response ID")?;
+                                match opens.enqueue(node, unique, arrived, DEADLINE)? {
+                                    Enqueued::Start(ticket) => {
+                                        let mut client = backing_client
+                                            .take()
+                                            .ok_or("missing original backing client")?;
+                                        let selection = RequestedBacking::File {
                                             path: entry.path().to_vec(),
                                             content,
-                                        },
-                                        DEADLINE,
-                                    )
-                                    .await?;
-                                backing = Some((
-                                    request.node(),
-                                    FallbackBacking::from_reply(reply, size, 131072)?,
-                                ));
+                                        };
+                                        fetch = Some(Box::pin(async move {
+                                            let reply =
+                                                client.request_bounded(selection, DEADLINE).await;
+                                            (ticket, client, reply, size)
+                                        }));
+                                    }
+                                    Enqueued::Joined(_) => notify(b"COALESCED")?,
+                                }
+                                continue;
                             }
                             if backing
                                 .as_ref()
@@ -366,6 +433,16 @@ async fn send(
     errno: i32,
 ) -> Result {
     let unique = NonZeroU64::new(request.unique()).ok_or("reply request has zero identifier")?;
+    send_unique(connection, output, unique, body, errno).await
+}
+
+async fn send_unique(
+    connection: &mut Connection,
+    output: &mut [u8],
+    unique: NonZeroU64,
+    body: Option<&[u8]>,
+    errno: i32,
+) -> Result {
     let bytes = match body {
         Some(body) => fuse_protocol::reply(output, unique, body)?,
         None => fuse_protocol::error_reply(output, unique, errno)?,

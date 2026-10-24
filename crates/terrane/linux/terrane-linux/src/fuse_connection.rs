@@ -14,7 +14,7 @@ use rustix::{
     io::{read, write},
 };
 use std::{io, os::fd::OwnedFd, sync::Arc, time::Duration};
-use tokio::io::unix::AsyncFd;
+use tokio::io::{Interest, unix::AsyncFd};
 
 /// Retains one original FUSE descriptor and its originating process confinement.
 ///
@@ -123,6 +123,66 @@ impl Connection {
         self.confinement.check_current()?;
         exchange.complete = true;
         Ok(request)
+    }
+
+    /// Waits for device readiness without accepting or consuming a request.
+    ///
+    /// Cancelling this readiness notification retains the connection. Event
+    /// loops may select it alongside backing completions and open deadlines,
+    /// then call [`Self::try_receive`] to consume one complete ready record.
+    /// The dispatcher supplies its finite idle/deadline policy and closes the
+    /// connection on readiness failure. Accepted [`Self::receive`] exchanges
+    /// retain their existing close-on-cancellation contract.
+    ///
+    /// # Errors
+    /// Refuses changed confinement, a closed device and reactor errors.
+    pub async fn wait_readable(&self) -> io::Result<()> {
+        self.confinement.check_current()?;
+        let device = self.device.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
+        let _readiness = device.readable().await?;
+        self.confinement.check_current()?;
+        Ok(())
+    }
+
+    /// Consumes at most one ready record without waiting or allocating.
+    ///
+    /// `None` indicates stale readiness, WouldBlock or an interrupted read;
+    /// these consume no record and retain the original connection. Every other
+    /// failure after accepting the read closes the transport. A successful
+    /// result borrows only the initialized bytes of the reusable input buffer.
+    /// Use [`Self::wait_readable`] before retrying; do not busy-poll this method.
+    ///
+    /// # Errors
+    /// Refuses insufficient input storage before consuming IO. Reports changed
+    /// confinement, closed transport, native failures, EOF and malformed records.
+    pub fn try_receive<'a>(&mut self, buffer: &'a mut [u8]) -> io::Result<Option<Request<'a>>> {
+        let buffer = buffer
+            .get_mut(..self.maximum_request_bytes)
+            .ok_or_else(|| invalid("FUSE request buffer is smaller than its configured bound"))?;
+        self.confinement.check_current()?;
+        let mut exchange = Exchange::start(&mut self.device)?;
+        let read = exchange.device()?.try_io(Interest::READABLE, |device| {
+            rustix::io::read(device, &mut *buffer).map_err(io::Error::from)
+        });
+        let length = match read {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(length) => length,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) =>
+            {
+                exchange.complete = true;
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        let request = Request::parse(&buffer[..length], self.maximum_request_bytes)
+            .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+        self.confinement.check_current()?;
+        exchange.complete = true;
+        Ok(Some(request))
     }
 
     /// Sends one complete checked ordinary reply in a single device write.

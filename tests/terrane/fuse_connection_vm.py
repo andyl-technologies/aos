@@ -12,6 +12,7 @@ import stat
 import struct
 import subprocess
 import sys
+from threading import Event
 
 
 def require(condition, message):
@@ -38,7 +39,7 @@ def unmount(target):
     subprocess.run(["umount", str(target)], check=True, timeout=5)
 
 
-def grant_backing(channel, descriptor, worker_pid):
+def grant_backing(channel, descriptor, worker_pid, release):
     """Returns one original sealed fixture inode over the actual private channel."""
     packet, ancillary, flags, _ = channel.recvmsg(4172, socket.CMSG_SPACE(12))
     require(not flags and len(ancillary) == 1
@@ -50,10 +51,18 @@ def grant_backing(channel, descriptor, worker_pid):
             and packet[24:40] == struct.pack("<QQ", 1, 1)
             and packet[72:] == struct.pack("<I", 1) + b"a",
             "kernel open requested a foreign fixture selection")
+    require(release.wait(5), "concurrent kernel opens never joined the original handoff")
     require(channel.sendmsg([packet], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
                                         array.array("i", [descriptor]))]) == len(packet),
             "actual sealed backing reply was truncated")
     return os.fstat(descriptor)
+
+
+def read_file(path):
+    """Owns one actual kernel open through checked ranges and closure."""
+    with path.open("rb", buffering=0) as file:
+        return (file.read(1), file.read(), os.pread(file.fileno(), 8, 2),
+                os.pread(file.fileno(), 8, 3))
 
 
 def scenario(executable, directory, mode):
@@ -70,6 +79,7 @@ def scenario(executable, directory, mode):
     descriptors = []
     backing = None
     executor = None
+    release = None
     try:
         child = subprocess.Popen([
             "setpriv", "--reuid=840", "--regid=840", "--clear-groups",
@@ -99,17 +109,17 @@ def scenario(executable, directory, mode):
         require(supervisor.send(b"M") == 1, "mount-ready message was truncated")
         require(supervisor.recv(64) == b"READY", "actual kernel INIT did not complete")
 
-        if mode in {"serve", "metadata", "read"}:
+        if mode in {"serve", "metadata", "read", "readiness"}:
             metadata = target.stat()
             require(stat.S_ISDIR(metadata.st_mode) and metadata.st_mode & 0o7777 == 0o555
                     and metadata.st_ino == 16
-                    and metadata.st_nlink == (2 if mode == "serve" else 3)
+                    and metadata.st_nlink == (2 if mode in {"serve", "readiness"} else 3)
                     and (metadata.st_uid, metadata.st_gid) == (0, 0)
                     and metadata.st_atime_ns == 1_000_000_000
                     and metadata.st_mtime_ns == 1_000_000_000
                     and metadata.st_ctime_ns == 1_000_000_000,
                     "actual GETATTR reply differs from fixture root")
-            if mode == "serve":
+            if mode in {"serve", "readiness"}:
                 require(os.listdir(target) == [], "actual READDIR reply was not empty")
                 try:
                     os.getxattr(target, b"user.note")
@@ -177,16 +187,20 @@ def scenario(executable, directory, mode):
                     argument = struct.pack("=III", 1, 1, 4096) + bytes(116)
                     fcntl.ioctl(backing, 0x40806685, argument)
                     os.lseek(backing, 1, os.SEEK_SET)
-                    executor = ThreadPoolExecutor(max_workers=1)
-                    grant = executor.submit(grant_backing, backing_server, backing, child.pid)
-
-                    with (target / "a").open("rb", buffering=0) as first:
-                        with (target / "b").open("rb", buffering=0) as alias:
-                            require(first.read(1) == b"a" and first.read() == b"bc"
-                                    and alias.read() == b"abc"
-                                    and os.pread(first.fileno(), 8, 2) == b"c"
-                                    and os.pread(first.fileno(), 8, 3) == b"",
-                                    "actual FUSE fallback READ changed sealed bytes or EOF")
+                    executor = ThreadPoolExecutor(max_workers=3)
+                    release = Event()
+                    grant = executor.submit(grant_backing, backing_server, backing, child.pid, release)
+                    first = executor.submit(read_file, target / "a")
+                    alias = executor.submit(read_file, target / "b")
+                    require((target / "directory").stat().st_mode & 0o7777 == 0o750,
+                            "pending backing blocked unrelated kernel metadata")
+                    require(supervisor.recv(64) == b"COALESCED",
+                            "concurrent kernel opens did not share their original handoff")
+                    release.set()
+                    require(first.result(timeout=5) == alias.result(timeout=5)
+                            == (b"a", b"bc", b"c", b""),
+                            "actual FUSE fallback READ changed sealed bytes or EOF")
+                    print("PASS concurrent kernel hard-link opens coalesce while metadata remains responsive", flush=True)
                     with (target / "a").open("rb", buffering=0) as reopened:
                         require(reopened.read() == b"abc",
                                 "repeated original open lost the retained backing")
@@ -232,8 +246,8 @@ def scenario(executable, directory, mode):
         supervisor.close()
         backing_child.close()
         backing_server.close()
-        if executor is not None:
-            executor.shutdown(wait=True)
+        if release is not None:
+            release.set()
         if backing is not None:
             os.close(backing)
         if child is not None:
@@ -245,6 +259,8 @@ def scenario(executable, directory, mode):
                 if diagnostic:
                     print(diagnostic, file=sys.stderr, flush=True)
                 child.stderr.close()
+        if executor is not None:
+            executor.shutdown(wait=True)
         if mounted:
             unmount(target)
         target.rmdir()
@@ -252,5 +268,5 @@ def scenario(executable, directory, mode):
 
 if __name__ == "__main__":
     executable, directory = map(pathlib.Path, sys.argv[1:])
-    for selected in ["serve", "metadata", "read", "timeout", "cancel"]:
+    for selected in ["serve", "metadata", "read", "readiness", "timeout", "cancel"]:
         scenario(executable, directory, selected)

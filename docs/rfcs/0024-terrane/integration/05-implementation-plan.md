@@ -16855,3 +16855,29 @@ This queue does no IO and does not launch the production scheduler, install a
 backing, create a handle, send a reply or acknowledge exposure release. Actual
 concurrent kernel-open composition and mandatory workspace compilation remain
 required. Trunk acceptance remains 27/64.
+
+
+### Readiness-driven FUSE request and backing composition
+
+The transport exposes a readiness notification that accepts no request and can
+be cancelled without disconnecting its original device. A separate bounded
+nonblocking receive consumes at most one complete ready record; WouldBlock and
+interruption retain the connection, while accepted EOF, malformed records and
+other IO failures close it. Existing accepted receive/send cancellation remains
+fail-closed. The caller still owns finite idle, open and drain deadlines.
+
+The disposable kernel fixture now selects readiness, original backing completion,
+individual open deadlines and its supervisor independently. It uses the bounded
+pending-open queue and submits one original channel request for concurrent opens
+of a canonical node, continuing to answer metadata while that request is pending.
+The administrative driver withholds the sealed reply until two actual hard-link
+opens have joined, requires a fresh directory stat during that interval, and
+then checks both reads and original descriptor cursor. It also exercises an idle
+cancelled readiness wait followed by successful metadata on that same connection.
+Original timeout/cancelled accepted-exchange controls remain separate and required.
+
+Strict all-feature/all-target Clippy passes. Python syntax and diff checks pass;
+actual native concurrency/readiness execution, the full 69-case structural gate
+and mandatory workspace target compilation are pending. This remains a synthetic
+namespace fixture with retained test handles, not the production worker launcher,
+handle accounting or repository authorization. Trunk acceptance remains 27/64.

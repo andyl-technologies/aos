@@ -117,7 +117,7 @@ def require(condition, message):
 
 
 def main():
-    """Checks one source-bound Linux artifact and five complete test inventories."""
+    """Checks one source-bound Linux artifact and every closed test inventory."""
     output = Path(os.environ["out"])
     source = Path(os.environ["src"])
     workspace = Path.cwd()
