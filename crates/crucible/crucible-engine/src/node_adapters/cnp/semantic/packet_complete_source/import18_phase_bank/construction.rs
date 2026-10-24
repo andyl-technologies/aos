@@ -243,7 +243,7 @@ impl PacketCompleteSemanticSource {
             + size_of::<&ThreadId>() * 2
             + size_of::<&u32>() * 2
             + size_of::<u32>()
-            + size_of::<usize>() * 8
+            + size_of::<[usize; 8]>()
             + size_of::<bool>() * 4
     }
 }

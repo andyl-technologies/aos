@@ -192,8 +192,8 @@ impl OriginalInitial15ArchivedGroup {
         // before allocating, rather than relying on a later whole-row check.
         let maximum = usize::try_from(limits.state.maximum_native_memory_bytes)
             .map_err(unknown)?
-            .min(usize::try_from(limits.state.maximum_total_content_bytes).map_err(unknown)?)
-            .min(usize::try_from(limits.native.maximum_total_record_bytes).map_err(unknown)?)
+            .min(limits.state.maximum_total_content_bytes)
+            .min(limits.native.maximum_total_record_bytes)
             .min(MAXIMUM_WHOLE_BYTES);
         if output.is_some() {
             return Err(refused("initial15 owning attempt already exists"));

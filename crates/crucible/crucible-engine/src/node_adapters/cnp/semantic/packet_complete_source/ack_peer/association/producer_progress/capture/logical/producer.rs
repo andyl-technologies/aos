@@ -108,10 +108,7 @@ impl Serialize for AttemptData<'_> {
         let mut value = serializer.serialize_struct("SourceRestoredProducerAttempt17", 35)?;
         value.serialize_field("row", &RowData(row))?;
         value.serialize_field("slot", slot)?;
-        value.serialize_field(
-            "admission",
-            &admission.as_ref().map(|admission| AdmissionData(admission)),
-        )?;
+        value.serialize_field("admission", &admission.as_ref().map(AdmissionData))?;
         value.serialize_field("authorization", &CommonOwner(authorization))?;
         value.serialize_field(
             "arguments",

@@ -237,17 +237,15 @@ fn authenticate_inner(
         let coordinator_storage = if current17::selected_record(record) {
             current_coordinator_storage
         } else {
-            let requested =
-                crate::node_contract::NodeRuntime::capture_reference_storage(coordinator_runtime)
-                    .map_err(schema)?
-                    .checked_add(
-                        crate::node_contract::NodeRuntime::capture_reference_storage(
-                            coordinator_scheduler,
-                        )
-                        .map_err(schema)?,
+            crate::node_contract::NodeRuntime::capture_reference_storage(coordinator_runtime)
+                .map_err(schema)?
+                .checked_add(
+                    crate::node_contract::NodeRuntime::capture_reference_storage(
+                        coordinator_scheduler,
                     )
-                    .ok_or_else(|| refused("coordinator metadata overflow"))?;
-            requested
+                    .map_err(schema)?,
+                )
+                .ok_or_else(|| refused("coordinator metadata overflow"))?
         };
         super::storage::admit(
             retained

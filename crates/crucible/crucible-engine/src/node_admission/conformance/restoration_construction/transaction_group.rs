@@ -180,7 +180,7 @@ impl OriginalRestorationTransactionGroup {
             launch: launches
                 .get(selected)
                 .ok_or(RuntimeError::ForeignAuthority)?,
-            encoded_launch: *encoded_launches
+            encoded_launch: encoded_launches
                 .get(selected)
                 .ok_or(RuntimeError::ForeignAuthority)?,
             archive: &self.archive,

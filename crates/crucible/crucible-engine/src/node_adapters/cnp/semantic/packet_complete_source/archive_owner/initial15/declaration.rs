@@ -572,7 +572,7 @@ impl OriginalInitial15ArchivedGroup {
         }
         self.storage[index] = Some(PacketNative5StorageSelection {
             storage: launch.storage.clone(),
-            limits: launch.limits.clone(),
+            limits: launch.limits,
         });
         self.caps[index] = Some(caps);
         drop(program_bytes);

@@ -90,7 +90,7 @@ impl OriginalRestorationConstructionInputs<'_> {
                 .launches
                 .get(selected)
                 .ok_or(RuntimeError::ForeignAuthority)?,
-            encoded_launch: *self
+            encoded_launch: self
                 .encoded_launches
                 .get(selected)
                 .ok_or(RuntimeError::ForeignAuthority)?,

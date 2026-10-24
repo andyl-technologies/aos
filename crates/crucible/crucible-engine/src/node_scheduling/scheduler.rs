@@ -988,7 +988,7 @@ impl CausalScheduler {
         if let Some(update) = update {
             self.apply_observation(update);
         }
-        if let (Some(log), Some(start)) = (coordinator.as_deref_mut(), semantic_start) {
+        if let (Some(log), Some(start)) = (coordinator, semantic_start) {
             log.publish_semantic_range_data(start)
                 .map_err(|_| SchedulingError::CapacityExceeded)?;
         }
