@@ -109,6 +109,11 @@
         };
       }) ["image" "native"]);
 
+  hostCacheAllFeatureProof = import ./host-cache-proof.nix {
+    inherit pkgs lib sourceGateWithInputs;
+    allFeatureUnits = true;
+  };
+
   # Transport components qualify actual peer and native command behavior,
   # independently of complete cache recovery or host-tier readiness.
   publisherLocalProof =
@@ -371,7 +376,7 @@
           // lib.optionalAttrs (builtins.elem file ["host-publish.nix" "surfaces.nix"]) {inherit sourceGateWithInputs;}
           // lib.optionalAttrs (builtins.elem file ["bucket.nix" "ref_advance.nix"]) {inherit bucketSdkGate;}
           // lib.optionalAttrs (file == "shared-dir.nix") {inherit portableSharedModes initialEnrollmentProof;}
-          // lib.optionalAttrs (file == "store.nix") {inherit hostCacheProof wasmHostProof sourceGateWithInputs;}
+          // lib.optionalAttrs (file == "store.nix") {inherit hostCacheProof hostCacheAllFeatureProof wasmHostProof sourceGateWithInputs;}
           // lib.optionalAttrs (file == "auth.nix") {inherit workloadIssuerProof instanceIssuerProof configuredIssuerProof;}
           // lib.optionalAttrs (file == "pack.nix") {inherit defaultSdkGate;}
           // lib.optionalAttrs (file == "host-publish.nix") {inherit publisherLocalProof hostCacheProof initialEnrollmentProof moduleEval;}
@@ -462,6 +467,8 @@ in {
   integration.native-configured-sdk = configuredSdkProof.native;
   integration.host-cache-image = hostCacheProof.image;
   integration.native-host-cache = hostCacheProof.native;
+  integration.native-host-cache-all-features = hostCacheAllFeatureProof.native;
+  integration.host-cache-all-features-image = hostCacheAllFeatureProof.image;
   integration.native-fuse-kernel = import ./fuse-kernel.nix {inherit pkgs lib;};
   integration.publisher-local-image = publisherLocalProof.image;
   integration.publisher-local-multuid = publisherLocalProof.multiUid;

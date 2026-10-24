@@ -6,6 +6,7 @@
   lib,
   sourceGateWithInputs,
   surfaceIndex ? false,
+  allFeatureUnits ? false,
 }: let
   testing = import ../../lib/testing {inherit pkgs lib;};
   image =
@@ -17,6 +18,8 @@
     } (
       if surfaceIndex
       then "surface-index-owner-image"
+      else if allFeatureUnits
+      then "host-cache-all-features-image"
       else "host-cache-image"
     ) (''
         cd crates
@@ -29,7 +32,16 @@
           --message-format=json-render-diagnostics > "$TMPDIR/host-cache-terrane.jsonl"
         cargo build --frozen --offline -p aos-terrane-integration --bin aos-terrane-host \
           --message-format=json-render-diagnostics > "$TMPDIR/host-cache-aos-terrane-host.jsonl"
-        cargo test --frozen --offline -p terrane-linux --features native-test-fixtures \
+        export TERRANE_UNIT_PROFILE=${
+          if allFeatureUnits
+          then "all"
+          else "base"
+        }
+        cargo test --frozen --offline -p terrane-linux --features ${
+          if allFeatureUnits
+          then "native-test-fixtures,surface-fuse"
+          else "native-test-fixtures"
+        } \
           --lib --no-run --message-format=json-render-diagnostics > "$TMPDIR/host-cache-terrane-fs-unit.jsonl"
         cargo metadata --frozen --offline --no-deps --format-version=1 > "$TMPDIR/host-cache-packages.json"
         rustc --print target-libdir > "$TMPDIR/host-cache-target-libdir"
@@ -49,7 +61,10 @@
     then import ./surface-index-owner.nix {inherit pkgs lib image;}
     else
       testing.mkVMTest {
-        name = "terrane-native-host-cache-component-ext4";
+        name =
+          if allFeatureUnits
+          then "terrane-native-host-cache-all-features-component-ext4"
+          else "terrane-native-host-cache-component-ext4";
         memory = 1024;
         # Encoded FIFO adds seven genuine 30-second producer, consumer and native
         # retirement windows; dictionary promotion and automatic admission pressure

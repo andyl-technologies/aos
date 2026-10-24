@@ -16300,3 +16300,42 @@ The seven negotiation regressions pass, as do strict all-feature/all-target
 lint, actual-device fixture compilation, separate no-FUSE compilation and
 formatting. The image's complete source declaration comparison still matches
 all 130 no-FUSE cases. No native fixture executes on the host.
+
+
+#### Complete all-feature native unit inventory
+
+The older immutable `8dc8dd6311` trunk and feature-matrix requests fail in
+18,757.548 and 20,096.228 seconds respectively. The matrix rejects the actual
+all-feature library artifact because its checker still requires only the base
+`native-test-fixtures,tokio` profile. The retained compiler fingerprint contains
+the additionally selected `surface-fuse` feature. The trunk request separately
+retains an initial-enrollment namespace-comparison failure. The older
+`d5b6d36103` aggregate fails in 38,854.048 seconds; its SDK matrix reports
+1,251 passes, one disclosure `Advance(Expired)` failure and one ignored case.
+These receipts are failures and do not qualify later source.
+
+The matrix now distinguishes the exact base and all-feature Cargo profiles
+and requires an explicit compatibility decision for new Linux feature names.
+It also requires a separate real ext4 guest with the complete all-feature
+library inventory: all 130 original cases plus 79 explicitly named FUSE,
+structural-index, inode-policy, maintenance and worker-channel cases. The
+original base guest remains mandatory. Ordinary cases retain UID/GID 842
+and empty capabilities; only the same five initial-enrollment creator cases
+use UID/GID zero with empty capabilities. Every case retains its original
+independent thirty-second bound, exact name, nonignored one-case assertion,
+source/ELF binding and scratch-device check. The guest's whole bound is
+unchanged. This adds execution coverage; compilation is not substituted for it.
+
+Both complete source comparisons pass (130 base and 209 all-feature cases),
+and the actual retained all-feature ELF lists exactly the full 209-case
+contract. The profile checker accepts the actual all-feature compiler record
+and rejects that same artifact as a base profile. Both guest-side source
+contracts validate independently. Python syntax, Nix formatting, derivation
+evaluation and diff checks pass. Fresh VM execution and whole matrix
+qualification remain required; no new task is accepted.
+
+At immutable `44b956e8e4`, actual FUSE INIT negotiation, directory serving,
+receive timeout and cancellation pass in 228.257 seconds. Complete review
+matches all 8,095 immutable source files, 5,366 bound inputs and the actual
+compiler/installed ELF and driver. This qualifies the framing/transport
+component, not production exposure or broker authority.

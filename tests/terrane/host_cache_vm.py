@@ -1330,11 +1330,22 @@ def unit_source_contract():
     for node in tree.body:
         if (isinstance(node, ast.Assign) and len(node.targets) == 1
                 and isinstance(node.targets[0], ast.Name)):
-            if node.targets[0].id in {"UNIT_TESTS", "UNIT_PREFIXES", "UNIT_PROFILE"}:
+            if node.targets[0].id in {"UNIT_TESTS", "UNIT_PREFIXES", "UNIT_PROFILE", "ROOT_UNIT_TESTS",
+                                     "FUSE_UNIT_TESTS", "FUSE_UNIT_PREFIXES"}:
                 values[node.targets[0].id] = ast.literal_eval(node.value)
-    require(set(values) == {"UNIT_TESTS", "UNIT_PREFIXES", "UNIT_PROFILE"}
+    require(set(values) == {"UNIT_TESTS", "UNIT_PREFIXES", "UNIT_PROFILE", "ROOT_UNIT_TESTS",
+                            "FUSE_UNIT_TESTS", "FUSE_UNIT_PREFIXES"}
             and 0 < len(values["UNIT_TESTS"]) == len(set(values["UNIT_TESTS"])) <= 4096,
             "missing immutable FS unit contract")
+    identity = json.loads((IMAGE / "share/identity.json").read_text())
+    features = identity["artifacts"]["terrane-fs-unit"]["cargo_artifact"]["features"]
+    require(features in (["native-test-fixtures", "tokio"],
+                         ["native-test-fixtures", "surface-fuse", "tokio"])
+            and identity["unit_tests"]["features"] == features,
+            "unknown native unit feature profile")
+    if "surface-fuse" in features:
+        values["UNIT_TESTS"] += values["FUSE_UNIT_TESTS"]
+        values["UNIT_PREFIXES"] += values["FUSE_UNIT_PREFIXES"]
     return values
 
 

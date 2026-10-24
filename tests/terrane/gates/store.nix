@@ -2,6 +2,7 @@
   sourceGate,
   sourceGateWithInputs,
   hostCacheProof,
+  hostCacheAllFeatureProof,
   wasmHostProof,
   ...
 }: let
@@ -101,8 +102,10 @@ in {
         # operations. Their complete library inventory executes in the guest;
         # the Nix lane still compiles every requested native feature profile.
         test "$(cat ${hostCacheProof.native}/result)" = PASS
+        test "$(cat ${hostCacheAllFeatureProof.native}/result)" = PASS
         mkdir -p "$out/nix-support"
         printf '%s\n' ${hostCacheProof.native} > "$out/nix-support/native-feature-proof"
+        printf '%s\n' ${hostCacheAllFeatureProof.native} > "$out/nix-support/native-all-feature-proof"
         native_profiles=0
         cd crates
         # This milestone supports native Linux. Extend the target matrix when
@@ -129,6 +132,8 @@ in {
             "update Terrane aggregate profiles for declared features: "
             f"{sorted(declared_features)}"
         )
+    if set(packages["terrane-linux"]["features"]) != {"native-test-fixtures", "surface-fuse", "tokio"}:
+        raise SystemExit("update native aggregate profiles for declared features")
 
     for name in ("terrane-cli", "aos-terrane-integration"):
         dependency = next(dep for dep in packages[name]["dependencies"] if dep["name"] == "terrane-sdk")
@@ -149,10 +154,15 @@ in {
               case "$feature_argument" in
                 --all-features|native-test-fixtures)
                   native_profiles=$((native_profiles + 1))
+                  if [ "$feature_argument" = --all-features ]; then
+                    native_profile=all
+                  else
+                    native_profile=base
+                  fi
                   native_events="$out/native-profile-$native_profiles.jsonl"
                   cargo test --frozen --offline -p "$package_name" --lib "$@" \
                     --no-run --message-format=json > "$native_events"
-                  python3 ../tests/terrane/check_native_feature_build.py "$native_events"
+                  python3 ../tests/terrane/check_native_feature_build.py "$native_events" "$native_profile"
                   return
                   ;;
               esac

@@ -22,10 +22,16 @@ def main():
     if len(artifacts) != 1:
         raise SystemExit("missing or ambiguous native feature libtest artifact")
     artifact = artifacts[0]
+    profiles = {
+        "base": ["native-test-fixtures", "tokio"],
+        "all": ["native-test-fixtures", "surface-fuse", "tokio"],
+    }
+    if len(sys.argv) != 3 or sys.argv[2] not in profiles:
+        raise SystemExit("missing explicit native feature profile")
     package = workspace / "terrane/linux/terrane-linux"
     profile = artifact["profile"]
     executable = Path(artifact["executable"])
-    if (artifact["features"] != ["native-test-fixtures", "tokio"]
+    if (artifact["features"] != profiles[sys.argv[2]]
             or not artifact["package_id"].startswith("path+file://" + str(package))
             or artifact["target"]["kind"] != ["lib"]
             or artifact["target"]["crate_types"] != ["lib"]

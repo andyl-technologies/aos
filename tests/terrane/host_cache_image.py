@@ -175,6 +175,107 @@ PACKAGE_PATHS = {
 }
 
 
+# The all-feature guest adds these cases without replacing the base inventory.
+FUSE_UNIT_PREFIXES = ("fuse_directory::", "fuse_protocol::", "inode_policy::",
+                      "maintenance_channel::", "structural_index::", "worker_channel::")
+FUSE_UNIT_TESTS = (
+    'fuse_directory::tests::encodes_only_direct_children_with_exact_names_types_padding_and_parent',
+    'fuse_directory::tests::hard_link_names_share_one_presented_inode_but_equal_content_keeps_distinct_inodes',
+    'fuse_directory::tests::inode_exhaustion_never_writes_a_partial_record_or_recycles_a_number',
+    'fuse_directory::tests::raw_maximum_component_needs_one_complete_aligned_record_before_inode_assignment',
+    'fuse_directory::tests::rejects_lazy_storage_absent_paths_and_non_directories_without_effects',
+    'fuse_directory::tests::resumes_one_complete_record_at_a_time_and_rewind_preserves_original_numbers',
+    'fuse_protocol::init::tests::caps_device_write_size_and_readahead_without_buffer_growth',
+    'fuse_protocol::init::tests::negotiates_older_supported_read_protocols_without_extensions',
+    'fuse_protocol::init::tests::newer_major_retries_without_interpreting_foreign_body',
+    'fuse_protocol::init::tests::off_never_enables_offered_passthrough_or_writeback',
+    'fuse_protocol::init::tests::refuses_non_init_headers_truncation_reserved_data_and_extra_body',
+    'fuse_protocol::init::tests::requires_both_local_and_kernel_passthrough_support',
+    'fuse_protocol::init::tests::selects_only_implemented_capabilities_with_bounded_native_fields',
+    'fuse_protocol::tests::body_fields_refuse_overflow_and_truncation',
+    'fuse_protocol::tests::checked_reply_preserves_identifier_and_signed_error',
+    'fuse_protocol::tests::checked_reply_refuses_notification_identifiers_and_error_payloads',
+    'fuse_protocol::tests::checked_reply_requires_a_complete_bounded_record',
+    'fuse_protocol::tests::enforces_explicit_record_limits_and_keeps_zero_identifiers',
+    'fuse_protocol::tests::errno_reply_uses_kernel_sign_and_never_contains_payload',
+    'fuse_protocol::tests::filename_validation_preserves_bytes_and_namespace_dot_components',
+    'fuse_protocol::tests::filename_validation_refuses_unterminated_trailing_or_multiple_names',
+    'fuse_protocol::tests::preserves_unknown_operations_and_original_request_bytes',
+    'fuse_protocol::tests::refused_reply_leaves_original_output_unchanged',
+    'fuse_protocol::tests::refuses_unnegotiated_extensions_and_reserved_padding',
+    'fuse_protocol::tests::rejects_every_truncated_header_and_inconsistent_record_length',
+    'fuse_protocol::tests::successful_reply_does_not_expose_unused_output_capacity',
+    'host_cache::owner::recovery_cold::tests::surface_tests::draining_file_pins_retain_policy_without_adoption_or_content_proof',
+    'host_cache::owner::recovery_cold::tests::surface_tests::retired_surface_holds_preserve_all_other_cold_candidates_and_refuse_dependencies',
+    'host_cache::owner::recovery_namespace::surface::tests::cold_surface_classification_is_exact_and_does_not_adopt_content',
+    'host_cache::owner::surface_index::exposure::tests::exposure_read_denial_survives_native_adapter_without_policy_details',
+    'inode_policy::tests::directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch',
+    'inode_policy::tests::full_table_preserves_old_numbers_and_canonical_link_counts',
+    'inode_policy::tests::internal_identity_is_independent_of_first_lookup_order',
+    'inode_policy::tests::invalid_bounds_and_paths_fail_before_table_growth',
+    'inode_policy::tests::metadata_refusal_consumes_no_number_or_existing_identity',
+    'inode_policy::tests::reserved_budget_refuses_before_allocation_and_keeps_number_assignment_lazy',
+    'inode_policy::tests::reserved_first_touch_and_checked_metadata_operations_allocate_nothing',
+    'inode_policy::tests::reserved_probe_chains_keep_collisions_and_full_table_refusals_distinct',
+    'inode_policy::tests::truncated_collision_cannot_alias_or_replace_a_retained_entry',
+    'maintenance_channel::tests::authenticated_remote_refusal_preserves_the_next_exact_sequence',
+    'maintenance_channel::tests::bounded_client_receives_authenticated_counts_and_remote_refusals',
+    'maintenance_channel::tests::bounded_client_refuses_forged_reply_without_returning_counts',
+    'maintenance_channel::tests::bounded_client_refuses_invalid_limits_before_sending',
+    'maintenance_channel::tests::bounded_client_timeout_and_cancellation_close_the_actual_connection',
+    'maintenance_channel::tests::cancelled_client_request_faults_the_original_connection',
+    'maintenance_channel::tests::closed_request_rejects_version_operation_sequence_and_trailing_bytes',
+    'maintenance_channel::tests::endpoint_authenticates_each_kernel_message_and_faults_wrong_uid',
+    'maintenance_channel::tests::endpoint_refuses_received_rights_and_truncated_records',
+    'maintenance_channel::tests::incomplete_exchange_disconnects_and_complete_exchange_preserves_channel',
+    'maintenance_channel::tests::malformed_reply_faults_before_the_pending_request_is_dropped',
+    'maintenance_channel::tests::public_binding_refuses_colliding_and_incorrect_role_identities',
+    'maintenance_channel::tests::reply_checks_exact_sequence_complete_counts_and_registered_errors',
+    'maintenance_channel::tests::reply_rejects_count_overflow_and_unknown_outcomes',
+    'structural_index::tests::arbitrary_short_inputs_and_single_byte_mutations_never_panic',
+    'structural_index::tests::child_resume_skips_direct_indices_and_remains_exhausted_for_oversized_offsets',
+    'structural_index::tests::compiled::canonical_compilation_refuses_a_valid_index_with_an_unchanged_root_tag',
+    'structural_index::tests::compiled::streaming_copy_and_verification_preserve_short_io_failures_and_exact_length',
+    'structural_index::tests::compiler_rejects_missing_nondirectory_duplicate_and_invalid_paths',
+    'structural_index::tests::content_kind_size_symlink_bytes_and_graft_governance_survive_roundtrip',
+    'structural_index::tests::empty_tree_and_exact_compiler_bounds_are_supported',
+    'structural_index::tests::every_truncation_and_hostile_header_offset_is_rejected',
+    'structural_index::tests::forged_parent_child_and_arena_relationships_are_rejected',
+    'structural_index::tests::metadata::canonical_tree_preserves_modes_unknown_fields_and_graft_properties',
+    'structural_index::tests::metadata::forged_link_runs_counts_and_canonical_entries_are_refused',
+    'structural_index::tests::metadata::hardlinks_share_checked_inodes_but_repeated_grafts_and_equal_content_do_not',
+    'structural_index::tests::metadata::malformed_metadata_maps_modes_and_cursors_are_refused',
+    'structural_index::tests::metadata::metadata_key_order_duplicate_names_and_old_format_are_refused',
+    'structural_index::tests::nested_tree_has_sorted_paths_and_contiguous_direct_child_indices',
+    'structural_index::tests::trees::absent_misbound_nonordinary_and_wrong_geometry_grafts_are_refused',
+    'structural_index::tests::trees::canonical_nested_grafts_compile_without_any_file_content_input',
+    'structural_index::tests::trees::expanded_entries_bytes_and_full_paths_obey_compiler_limits',
+    'structural_index::tests::trees::maximum_graft_depth_is_supported_and_the_next_edge_is_refused',
+    'structural_index::tests::trees::raw_node_budget_charges_all_keys_before_decoding_or_expansion',
+    'structural_index::tests::trees::raw_nodes_check_internal_summaries_after_individual_hashes_match',
+    'structural_index::tests::trees::raw_nodes_compile_only_after_actual_identity_and_graft_validation',
+    'structural_index::tests::trees::repeated_grafts_expand_at_distinct_paths_with_one_governing_root',
+    'worker_channel::client::runtime::tests::invalid_limits_and_paths_refuse_before_send_without_faulting_connection',
+    'worker_channel::client::runtime::tests::reply_timeout_and_cancellation_shutdown_retained_descriptor_aliases',
+    'worker_channel::client::runtime::tests::send_backpressure_is_included_in_the_whole_exchange_deadline',
+)
+
+
+def unit_features():
+    """Selects one explicit builder profile, never a caller-supplied feature set."""
+    profile = os.environ.get("TERRANE_UNIT_PROFILE", "base")
+    shared.require(profile in {"base", "all"}, "unknown native unit profile")
+    return (["native-test-fixtures", "surface-fuse", "tokio"] if profile == "all"
+            else ["native-test-fixtures", "tokio"])
+
+
+def unit_selection():
+    """Keeps both the ordinary selectors and feature prefixes closed."""
+    if "surface-fuse" in unit_features():
+        return (*UNIT_TESTS, *FUSE_UNIT_TESTS), (*UNIT_PREFIXES, *FUSE_UNIT_PREFIXES)
+    return UNIT_TESTS, UNIT_PREFIXES
+
+
 def unit_inventory(output):
     """Parses the complete real libtest inventory, rejecting unknown line types."""
     lines = [line for line in output.splitlines() if line]
@@ -184,10 +285,11 @@ def unit_inventory(output):
     shared.require(all(line.endswith(": test") for line in lines[:-1])
                    and len(names) == len(set(names)) and 0 < len(names) <= 4096
                    and int(lines[-1].split()[0]) == len(names), "invalid FS unit inventory")
-    selected = sorted(name for name in names if name.startswith(UNIT_PREFIXES))
-    shared.require(selected == sorted(UNIT_TESTS) and len(selected) == len(UNIT_TESTS),
+    expected, prefixes = unit_selection()
+    selected = sorted(name for name in names if name.startswith(prefixes))
+    shared.require(selected == sorted(expected) and len(selected) == len(expected),
                    "FS unit module-prefix inventory changed")
-    shared.require(sorted(names) == sorted((*UNIT_TESTS, *ROOT_UNIT_TESTS)),
+    shared.require(sorted(names) == sorted((*expected, *ROOT_UNIT_TESTS)),
                    "complete native feature test inventory changed")
     return sorted(names)
 
@@ -237,11 +339,13 @@ def source_unit_inventory(workspace):
     declared = []
     for path in sorted(root.rglob("*.rs")):
         relative = path.relative_to(root).as_posix()
-        if any(relative == prefix + ".rs" or relative.startswith(prefix + "/")
-               for prefix, _, _ in gated):
+        if "surface-fuse" not in unit_features() and any(
+                relative == prefix + ".rs" or relative.startswith(prefix + "/")
+                for prefix, _, _ in gated):
             continue
         declared.extend(re.findall(r"#\[(?:tokio::)?test\]\s*(?:async\s+)?fn\s+(\w+)\s*\(", path.read_text()))
-    expected = (*UNIT_TESTS, *ROOT_UNIT_TESTS)
+    selected, _ = unit_selection()
+    expected = (*selected, *ROOT_UNIT_TESTS)
     shared.require(len(declared) == len(expected)
                    and sorted(declared) == sorted(name.rsplit("::", 1)[1] for name in expected),
                    "source native unit declarations differ from the complete inventory")
@@ -264,7 +368,7 @@ def unit_artifact(workspace, temporary, target, packages):
                    and artifact["target"]["crate_types"] == ["lib"]
                    and pathlib.Path(artifact["target"]["src_path"]) == workspace / "terrane/linux/terrane-linux/src/lib.rs"
                    and artifact["profile"] == UNIT_PROFILE
-                   and sorted(artifact["features"]) == ["native-test-fixtures", "tokio"]
+                   and sorted(artifact["features"]) == unit_features()
                    and str(executable) in artifact["filenames"]
                    and executable.is_file() and os.access(executable, os.X_OK)
                    and executable.resolve().is_relative_to(target.resolve())
@@ -338,7 +442,7 @@ def cargo_directories(name, executable, temporary, target, workspace):
     environment[f"CARGO_TARGET_{triple}_RUNNER"] = str(runner)
     with (temporary / f"host-cache-{name}-discovery.log").open("w") as log:
         command = (["cargo", "test", "--frozen", "--offline", "-p", "terrane-linux",
-                    "--features", "native-test-fixtures", "--lib", "--", "--list"] if is_unit
+                    "--features", ",".join(unit_features()), "--lib", "--", "--list"] if is_unit
                    else ["cargo", "run", *flags(name), "--", "--discover"])
         subprocess.run(command, env=environment,
                        stdout=log, stderr=subprocess.STDOUT, check=True)
@@ -485,9 +589,11 @@ def main():
                                cwd=workspace / "terrane/linux/terrane-linux", check=True, text=True,
                                capture_output=True).stdout)
     shared.require(digest(unit_elf) == unit_hash, "unit discovery changed installed FS ELF")
-    unit_identity = {"full_inventory": full_units, "selected_inventory": sorted(UNIT_TESTS),
+    selected_units, unit_prefixes = unit_selection()
+    unit_identity = {"full_inventory": full_units, "selected_inventory": sorted(selected_units),
+                     "features": unit_features(),
                      "root_inventory": sorted(ROOT_UNIT_TESTS),
-                     "prefixes": list(UNIT_PREFIXES), "working_directory": "crates/terrane/linux/terrane-linux",
+                     "prefixes": list(unit_prefixes), "working_directory": "crates/terrane/linux/terrane-linux",
                      "profile": UNIT_PROFILE, "guest_uid": 842, "guest_gid": 842}
     identity = {"schema_version": 1, "source": str(source), "artifacts": identities,
                 "input_sha256": source_hashes, "selectors": listed, "supervisor": supervisor_identity,

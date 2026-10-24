@@ -1,6 +1,5 @@
 """Executes the native creator cases as the guest administrator on ext4."""
 
-import ast
 import hashlib
 import json
 import os
@@ -14,15 +13,7 @@ def execute(context):
     context.require(os.geteuid() == os.getegid() == 0,
                     "native creator unit supervisor requires guest UID/GID zero")
     identity = json.loads((context.IMAGE / "share/identity.json").read_text())
-    contract = {}
-    tree = ast.parse((context.SOURCE / "tests/terrane/host_cache_image.py").read_text())
-    for node in tree.body:
-        if (isinstance(node, ast.Assign) and len(node.targets) == 1
-                and isinstance(node.targets[0], ast.Name)
-                and node.targets[0].id in {"ROOT_UNIT_TESTS", "UNIT_TESTS"}):
-            contract[node.targets[0].id] = ast.literal_eval(node.value)
-    context.require(set(contract) == {"ROOT_UNIT_TESTS", "UNIT_TESTS"},
-                    "missing complete native feature source inventory")
+    contract = context.unit_source_contract()
     unit = identity["unit_tests"]
     context.require(unit["root_inventory"] == sorted(contract["ROOT_UNIT_TESTS"])
                     and unit["full_inventory"] == sorted((*contract["ROOT_UNIT_TESTS"],
