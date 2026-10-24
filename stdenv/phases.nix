@@ -535,6 +535,7 @@ in rec {
     cargoNextestProfile ? null,
     cargoNextestOpenFilesLimit ? null,
     cargoNextestMaxTestThreads ? null,
+    cargoCheckWrapper ? script: script,
     nextestFlags ? "",
     cargoFlags ? "",
     buildType ? "release",
@@ -791,7 +792,7 @@ in rec {
       then [
         {
           name = "check";
-          script = ''
+          script = cargoCheckWrapper ''
             if [ -n "''${AOS_CROSS_COMPILING:-}" ]; then
               echo "skipping target runtime checks while cross-compiling for $AOS_TARGET_PLATFORM"
             else

@@ -1,0 +1,181 @@
+//! Holds physical exclusion throughout each original cached-body namespace RPC.
+
+use super::NativeOwnerExecutor;
+use crate::{
+    host_cache::owner::publication::eviction::CachePermit,
+    publisher_local::{
+        client::{PeerPublishedObject, PendingCacheBody, PublisherRunningContext},
+        wire::Operation,
+    },
+};
+use std::{io, sync::Arc};
+use terrane_sdk::host::cache::HostDomainLocation;
+
+/// Borrows the actual worker and its original validated cache-transition permit.
+pub(crate) struct PublisherCacheRetirementTurn<'turn> {
+    executor: &'turn mut NativeOwnerExecutor,
+    permit: &'turn CachePermit<'turn>,
+}
+
+impl NativeOwnerExecutor {
+    /// Closes actual recovered manifest registries after final removal acknowledgment.
+    ///
+    /// # Errors
+    /// Refuses another worker, missing original pairs or unrelated removed bodies.
+    pub(in crate::host_cache::owner) fn unregister_retired_manifests(
+        &mut self,
+        manifests: &[Arc<crate::host_cache::recovery_inspection::VerifiedRecoveryManifest>],
+        pending: &Arc<PendingCacheBody>,
+        completion: &Arc<crate::publisher_local::client::CacheBodyCompletion>,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        completion.check_removed(pending)?;
+        // The original retirement turn is still in flight. Its typed removal
+        // reply authorizes cleanup before reconciliation restores healthy state.
+        let session = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("retired manifest custody poisoned"))?
+            .preparation
+            .publisher_session();
+        for manifest in manifests {
+            if !self
+                .verified_manifests
+                .iter()
+                .any(|registered| Arc::ptr_eq(registered, manifest))
+            {
+                return Err(io::Error::other("retired manifest lost original registry"));
+            }
+            pending.check_alias(&session, &manifest.body().retained().body_arc())?;
+        }
+
+        let bodies = manifests
+            .iter()
+            .map(|manifest| manifest.body().retained().body_arc())
+            .collect::<Vec<_>>();
+        let metadata = manifests
+            .iter()
+            .map(|manifest| manifest.body().retained().backing().retirement_metadata())
+            .collect::<Vec<_>>();
+        self.verified_manifests.retain(|registered| {
+            !manifests
+                .iter()
+                .any(|manifest| Arc::ptr_eq(registered, manifest))
+        });
+        self.manifest_bodies
+            .retain(|registered| !bodies.iter().any(|body| Arc::ptr_eq(registered, body)));
+        self.manifest_backings.retain(|registered| {
+            !metadata
+                .iter()
+                .any(|retained| registered.backing().retention_id() == retained.retention_id())
+        });
+        self.manifest_sources.retain(|registered| {
+            !metadata
+                .iter()
+                .any(|retained| Arc::ptr_eq(registered, &retained.source))
+        });
+        Ok(())
+    }
+
+    /// Closes original adopted inline registry entries after acknowledged removal.
+    ///
+    /// # Errors
+    /// Refuses another worker, missing original receipts or an unrelated reply.
+    pub(in crate::host_cache::owner) fn unregister_retired_inline(
+        &mut self,
+        bodies: &[Arc<PeerPublishedObject<HostDomainLocation>>],
+        pending: &Arc<PendingCacheBody>,
+        completion: &Arc<crate::publisher_local::client::CacheBodyCompletion>,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        completion.check_removed(pending)?;
+        // Cleanup precedes reconciliation of this original in-flight turn.
+        let session = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("retired inline custody poisoned"))?
+            .preparation
+            .publisher_session();
+        for body in bodies {
+            if !self
+                .adopted_inline
+                .iter()
+                .any(|registered| Arc::ptr_eq(registered, body))
+            {
+                return Err(io::Error::other("retired inline lost original registry"));
+            }
+            pending.check_alias(&session, body)?;
+        }
+        self.adopted_inline
+            .retain(|registered| !bodies.iter().any(|body| Arc::ptr_eq(registered, body)));
+        Ok(())
+    }
+
+    /// Removes original publication registry slots after final native removal.
+    ///
+    /// # Errors
+    /// Refuses another worker, missing original slots or an unrelated final reply.
+    pub(in crate::host_cache::owner) fn unregister_retired_publications(
+        &mut self,
+        members: &[Arc<std::sync::Mutex<crate::host_cache::owner::publication::PublicationJob>>],
+        pending: &Arc<PendingCacheBody>,
+        completion: &Arc<crate::publisher_local::client::CacheBodyCompletion>,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        completion.check_removed(pending)?;
+        if members.iter().any(|member| {
+            !self
+                .publications
+                .iter()
+                .any(|registered| Arc::ptr_eq(registered, member))
+        }) {
+            return Err(io::Error::other("retired cache lost its original registry"));
+        }
+        self.publications
+            .retain(|job| !members.iter().any(|member| Arc::ptr_eq(member, job)));
+        Ok(())
+    }
+
+    /// Excludes every other physical command for the complete namespace RPC.
+    ///
+    /// # Errors
+    /// Refuses another physical worker.
+    pub(in crate::host_cache::owner) fn cache_retirement_turn<'turn>(
+        &'turn mut self,
+        permit: &'turn CachePermit<'turn>,
+    ) -> io::Result<PublisherCacheRetirementTurn<'turn>> {
+        self.check_physical_worker()?;
+        Ok(PublisherCacheRetirementTurn {
+            executor: self,
+            permit,
+        })
+    }
+}
+
+impl PublisherCacheRetirementTurn<'_> {
+    /// Borrows only the original cache body's native publication for Retire.
+    ///
+    /// # Errors
+    /// Refuses another context, physical phase or permit.
+    pub(crate) fn retiring_body(
+        &self,
+        context: &PublisherRunningContext,
+    ) -> io::Result<Arc<PeerPublishedObject<HostDomainLocation>>> {
+        self.permit
+            .body(self.executor, context, None, Operation::Retire)
+    }
+
+    /// Borrows original pending custody for its exact restoration or final removal.
+    ///
+    /// # Errors
+    /// Refuses another context, receipt, operation or physical phase.
+    pub(crate) fn pending_body(
+        &self,
+        context: &PublisherRunningContext,
+        pending: &Arc<PendingCacheBody>,
+        operation: Operation,
+    ) -> io::Result<Arc<PeerPublishedObject<HostDomainLocation>>> {
+        self.permit
+            .body(self.executor, context, Some(pending), operation)
+    }
+}

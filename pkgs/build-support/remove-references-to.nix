@@ -65,8 +65,24 @@
 '')
 .overrideAttrs (_: {
   platformSupport = {
-    build = [{abi = ["gnu"]; os = ["linux"];}];
-    host = [{abi = ["gnu"]; cpu = ["x86_64" "aarch64"]; os = ["linux"];} {abi = ["darwin"]; cpu = ["x86_64" "aarch64"]; os = ["darwin"];}];
+    build = [
+      {
+        abi = ["gnu"];
+        os = ["linux"];
+      }
+    ];
+    host = [
+      {
+        abi = ["gnu"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["linux"];
+      }
+      {
+        abi = ["darwin"];
+        cpu = ["x86_64" "aarch64"];
+        os = ["darwin"];
+      }
+    ];
     target = [];
     role = "public-package";
   };
@@ -114,7 +130,12 @@
         ];
       };
       badInput = qualification.operation {
-        artifacts = [(qualification.textArtifact {path = "reference.txt"; text = "answer=42\n";})];
+        artifacts = [
+          (qualification.textArtifact {
+            path = "reference.txt";
+            text = "answer=42\n";
+          })
+        ];
         expected = "The tool rejects the target before changing the input file.";
         files."reference.txt" = text "answer=42\n";
         input = "A target argument outside the Nix store path grammar.";

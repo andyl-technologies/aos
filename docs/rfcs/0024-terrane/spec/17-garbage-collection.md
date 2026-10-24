@@ -1,0 +1,532 @@
+# 17 — Garbage collection
+
+This file owns how a Terrane store reclaims space: what counts as a root,
+how reachability is marked across every tier and region, when an unmarked
+object may be swept, how packs are compacted, and why the whole procedure is
+safe against writers that are committing while it runs. Terrane keeps no
+reference counts. Garbage collection is mark-and-sweep from refs with a
+grace window, which is the design every database-free content-addressed
+store converges on, and the only one whose safety argument does not depend
+on a transactional counter.
+
+## Model
+
+Everything in a store except refs is immutable and content-addressed. A
+writer produces packs, then indexes, then a commit object, and finally moves
+a ref to that commit ([`09-refs-and-commits.md`](09-refs-and-commits.md)).
+Reachability therefore flows from refs: a ref names a commit, a commit names
+a tree root and parents, a tree names objects and further roots, an object
+names chunks, and chunks live in packs. Anything not reachable from a ref and
+older than the grace window is garbage.
+
+The collector runs in three phases, each resumable:
+
+1. **Snapshot** the root set: every ref, its retained reflog, every tag, and
+   every job ref, from every region's authority.
+2. **Mark** everything reachable, walking commits, trees, manifests, index
+   trees, and the attribute side table, skipping subtrees already marked.
+3. **Sweep** objects that are unmarked and older than the grace window by
+   tombstoning their packs, and delete tombstoned packs after a second
+   window.
+
+Compaction rewrites packs whose live fraction fell below a threshold and
+merges indexes. It is the fourth phase and the only one that writes new
+data.
+
+## Roots
+
+- **[GC-1]** The root set of a collection MUST include: the current value
+  of every commit-bearing ref; every reflog entry of every ref that is
+  within the ref's retention; every tag; and every job ref under `refs/jobs/`
+  whose lease has not expired ([`32-tree-jobs.md`](32-tree-jobs.md)). *Gate:*
+  `gate:gc-roots-complete`.
+
+  Advisory records under `refs/notes/` are opaque sidecars under REF-3,
+  not commit roots. Their exact names and whole current bytes MUST remain
+  in the complete selected inventory and current publication fences; a
+  collector MUST NOT decode them as `RefRecord` or invent content edges
+  from their bytes. Their presence alone MUST NOT prevent collection.
+  Missing advisory targets are discarded or rebuilt under the sidecar's
+  existing rules. Commit-bearing `refs/derived/` values remain roots even
+  though their names are advisory conveniences. See D-83.
+- **[GC-2]** The root set MUST be read from the authority of every region
+  and every child of every redundant store, and the collection MUST use the
+  union. A ref that is readable in one region and not another is a root.
+  Bucket authorities MUST enumerate the complete key-10 inventory in
+  `CAPABILITIES` and read its exact names. Unknown inventory completeness
+  MUST fail collection as `unsupported`; a partial name list is not proof
+  that other roots are absent.
+- **[GC-3]** Retention of reflog content MUST use the effective `retain`
+  property on the ref's root, including a ref-policy retention override.
+  Under `gc`, `reflog_retain` selects either unsigned seconds from log time
+  or `["count", n]`, the newest `n` candidate-selected committed records by
+  sequence. Count zero selects none; the current ref remains a separate root.
+  Only each selected record's new commit is a full content root; its previous
+  commit is not an extra counted value. Pending proposals never count.
+  `lease`, `ttl` and `forever` override ordinary GC retention with their
+  respective rules. Inheritance follows PROP-2. The default GC duration is
+  the registered 90 days, raised if necessary to at least `G + C`.
+- **[GC-4]** The root set MUST be snapshotted at the start of a collection
+  and recorded in the collection's own object under `gc/` so that a resumed
+  collection marks from the same roots. A ref moved after the snapshot is
+  covered by the grace window (§Safety). Candidate-selected head and
+  retained absent-name predecessor records identify committed reflog roots
+  under [`reference/publication-authority.md`](reference/publication-authority.md).
+  Unknown retained selection MUST refuse exhaustive collection. Never-selected
+  proposals MUST NOT become retained content roots. Candidate metadata needed
+  to traverse a selected chain or an active snapshot MUST remain readable;
+  expired content and never-selected proposals are not made live by that
+  metadata retention. Restarted writers use fresh candidate IDs, so an old
+  abandoned proposal cannot be reused to evade the commit/grace deadline.
+
+## Mark
+
+- **[GC-5]** Marking MUST visit, from each root: the commit, every parent
+  commit reachable within retention, the tree root, every tree node, every
+  `tree` entry's root, every manifest, every chunk each manifest names, every
+  inline chunk an entry names, every index tree of
+  [`10-derived-data.md`](10-derived-data.md) named by the root's properties,
+  every attribute side-table object for every object hash encountered, and
+  every bundle or profile object the commit references, every resolved
+  introducing commit, and every source commit referenced by entry,
+  attribute-origin, or reintroduction receipts. Receipt source edges MUST
+  be retained independently of ordinary parent retention, except exact audit
+  edges behind a checked disclosure boundary under GC-30. Metadata needed
+  to verify introducing commits, inline/side attribute producers and receipt
+  history MUST remain reachable even after ordinary parent retention expires.
+  A witness-only traversal retains commit, node, manifest and attribute
+  metadata and their proof dependencies, but MUST NOT make unrelated old
+  chunks live or read data-pack chunk bodies. Excluded retained-log policy
+  evidence uses `retention-witness` roots so future collections can evaluate
+  its actual timestamp and retention policy without inventing them. *Gate:*
+  `gate:gc-mark-reachability`.
+
+  A count context MUST make ordinary parent edges witness-only. Its selected
+  commit values expand fully through their independent snapshot roots, even
+  when timestamps are out of order. The registered `false` parent cutoff
+  encodes this rule; it never means unbounded ancestry. Metadata needed to
+  verify previous commits remains retained without adding their unrelated
+  content to the count. Duration contexts use timestamp cutoffs and `null`
+  represents unbounded full ancestry.
+- **[GC-30]** A collector MUST prune only exact certified proof edges after
+  verifying the complete destination signature, canonical candidate tree,
+  receipt batch and scoped historical source authority under PROV-26 to
+  PROV-30. Source and original-introducer audit identities behind a checked
+  boundary MUST NOT cause private `get`, `has` or catalog probes. The public
+  introducing commit and certificate remain live. An independently rooted
+  source MUST still traverse normally. Unchecked metadata or global digest
+  suppression MUST NOT authorize pruning. *Gate:*
+  `gate:gc-mark-reachability`.
+
+  Proof-sensitive traversal MUST carry `gc-proof-context` through pending,
+  expanded-object and commit-cutoff checkpoint entries. The context binds
+  destination commit, root and canonical absolute root occurrence path (`/`
+  at the view root). Leaf keys are complete root-relative paths; graft descent
+  replaces the root and appends the exact graft key to the occurrence path.
+  Ordering and deduplication MUST include context; cutoff dominance MUST apply
+  only within identical contexts. Cutoff entries are sorted uniquely by
+  `(commit, optional context)` and expanded objects by
+  `(kind, hash, flags, optional context)`. Absent context sorts before present;
+  present triples compare fieldwise by unsigned destination-commit bytes,
+  root bytes, then absolute-path bytes, not by encoded CBOR length headers.
+  Legacy absent context never authorizes pruning. Each separately
+  reached commit MUST verify its own certificate batch. Attribute catalog
+  lookup MUST remain scoped to the actual disclosure domain and entry proof.
+
+  Resume MUST reverify every persisted proof context before trusting cached
+  expansion or performing destructive effects, including after marking.
+  Historical authority configuration MUST remain consistently pinned or
+  revalidated throughout the cycle; incompatible explicit revocation MUST
+  stop effects rather than reuse stale checked state. Certificate bytes and
+  required scoped verification keys MUST survive private-source deletion.
+- **[GC-6]** Marking MUST skip any tree node, manifest, or root already
+  expanded in this collection under the same traversal context. A prior
+  witness-only expansion does not suppress a later full expansion; a broader
+  ordinary parent cutoff must expand newly eligible edges. A `false` cutoff
+  is narrower than every timestamp cutoff; `null` is the broadest.
+  Because trees are history-independent
+  ([`06-tree-format.md`](06-tree-format.md)), identical subtrees in
+  different commits share nodes, and the cost of marking is proportional to
+  distinct content, not to the number of refs.
+- **[GC-7]** The mark set MUST be recorded as an index-shaped structure
+  (sorted content hashes with a filter) in the collection's `gc/` prefix,
+  written in checkpoints, so that a crashed collector resumes marking from
+  its last checkpoint and never repeats a completed shard. Checkpoint revisions
+  are immutable at `gc/<cycle>/mark/<shard>/<revision>`; the fenced CAS record
+  `gc/<cycle>/state` binds each selected revision's hash and the pending frontier.
+  Each checkpoint pointer is raw BLAKE3-256 over its exact canonical GcMark
+  bytes; it is an integrity pointer to a record, not an immutable Index
+  identity. Final shards may also use `gc/<cycle>/mark/<shard>`. Commit
+  expansion contexts retain the least restrictive parent cutoff already
+  visited; reaching a commit with a broader cutoff must still traverse newly
+  eligible parent edges. Null
+  denotes unbounded retention, and unpruned receipt/source edges bypass the
+  ordinary parent-edge age test. All collector records use the CDDL
+  version-one schemas except the exact D-82 permanent-v2 DeleteOperation,
+  GcReconciliation/GcFence alternatives; existing mark/root/state stay v1;
+  shard and revision key segments are canonical decimal unsigned integers.
+  A mark checkpoint contains exactly 2,048 filter bytes, initially zero. For
+  every hash, interpret byte pairs beginning at offsets 1, 11 and 21 as
+  big-endian unsigned 16-bit integers, reduce each modulo 16,384, and set
+  bit `n % 8` in byte `n / 8`. Readers MUST reconstruct and compare this
+  filter from the sorted hashes; a positive hint still requires exact hash
+  membership. Checkpoint pointers are strictly ordered by distinct shard
+  numbers (0 to 255); commit expansion contexts are strictly ordered by
+  distinct `(commit hash, optional proof context)` pairs under GC-30. A pending
+  item retains its traversal flags, cutoff and optional proof context.
+  Phase progress is a strictly sorted, unique list of pack IDs. State key 9
+  persists distinct `(kind, hash, flags, optional proof context)` metadata
+  expansion contexts in GC-30's unsigned fieldwise order. Its flags contain
+  only root-node, index-tree and witness-only bits; full commit cutoff visits
+  are governed by key 7.
+  Witness-only contexts cannot name a data chunk. The `retention-witness`
+  reason starts witness-only marking; its cutoff is not an unbounded full
+  content-retention request.
+- **[GC-8]** Marking MUST run over the union of all regions before any
+  region sweeps, because a pack may exist only in the region that wrote it
+  while a commit in another region already references it (§Cross-region
+  packs).
+- **[GC-9]** Marking MUST NOT read chunk bodies from data packs. It needs
+  only meta objects and indexes; verified meta objects MAY be obtained from
+  meta packs. A collector that needs a data pack's chunk list reads the
+  per-pack index, never the data pack.
+
+## Grace window
+
+- **[GC-10]** Every store MUST define a grace window `G`. An object whose
+  last-modified time is younger than `G` MUST NOT be swept regardless of
+  reachability. D-82 permits removal of newly observed residue at exact
+  keys ALREADY under selected irreversible permanent ownership without a
+  new grace wait: that residue can never be admitted or served. This is
+  ownership recovery, not a new sweep of a young object; unowned keys
+  retain this rule. Already-burned copied placements use genuine NEW
+  destination retirement barrier G/D under D-82, not missing old artifacts.
+  Their physical residue is inadmissible and cannot acquire serving age.
+  *Gate:* `gate:gc-grace-window`.
+- **[GC-11]** `G` MUST be strictly longer than the maximum commit duration
+  `C` that clients are permitted, and clients MUST enforce `C`: a commit
+  whose first pack was written more than `C` ago MUST be aborted by the
+  client and restarted, never completed. The RECOMMENDED values are
+  `C = 6 h` and `G = 24 h` for bucket-backed stores, shorter for host tiers.
+- **[GC-12]** An implementation MUST obtain last-modified time from the
+  store that holds the object (the bucket's timestamp, the slab header's
+  timestamp for `blockdev`, the filesystem's for `disk`), never from a
+  client-supplied value. Remote first-ownership qualification MAY instead
+  use D-82's stronger FULL same-instance immutable-artifact G/D elapsed
+  method in [`reference/remote-deletion-authority.md`](reference/remote-deletion-authority.md).
+  Backend metadata and exact continuity remain independently checked;
+  client timestamps or persisted ticks MUST NOT establish elapsed age.
+  Already-owned permanent residue recovery is the explicit GC-10 exception;
+  it MUST NOT fabricate old creation or last-modified times for residue.
+  For already-burned copied placement, FULL G/D observe a newly selected,
+  genuinely created destination trash barrier. This explicit retirement
+  delay is not a claim about absent pack/index last-modified time.
+
+## Sweep
+
+- **[GC-13]** Sweep MUST consider as candidates only objects found by
+  listing the store (`LIST` on a bucket, slab-header walk on `blockdev`,
+  directory walk on `disk`). Listing is used to find candidates and for
+  nothing else; correctness comes from the mark set, not from the listing
+  being complete or ordered.
+- **[GC-14]** A candidate MUST be swept only if it is absent from the mark
+  set and older than `G`. A pack MUST be swept only if every chunk and meta
+  object in it is unmarked; a pack with any marked member is a compaction
+  candidate, not a sweep candidate.
+- **[GC-15]** Sweep MUST be two-phase. First the pack is tombstoned: its
+  index entries are removed from the merged index, a tombstone object is
+  written under `trash/<cycle>/<pack-id>` naming the pack, and readers stop
+  resolving to it. Second, after a deletion window `D` has elapsed since the
+  tombstone, the pack bytes are deleted. During `D` a tombstoned pack MUST
+  be restorable by a single operation that re-adds its index entries.
+  Ordinary remote first ownership MUST wait the full D and publish
+  the permanent burn/owner before any DELETE. After ownership, restore
+  MUST use verified fresh secure-ID packs; the old keys never return to
+  service. Every subsequently observed version/marker/residue at those
+  owned keys remains covered by repeatable recovery, with no new D and
+  no terminal phase ending ownership. Genuine copied-burn qualification
+  requires a NEW selected destination exclusion/trash barrier, FULL G/D
+  observation of that barrier and independently checked destination
+  ownership. Neither old pack/index nor source private witness must exist.
+  *Gate:* `gate:gc-two-phase-delete`.
+- **[GC-16]** `D` MUST be at least `G`. The RECOMMENDED value is `D = G`.
+  D-82 preserves this for sweep AND copied-barrier ownership; later
+  residue recovery does not restart D/G.
+- **[GC-17]** A read that resolves through a stale index to a tombstoned
+  pack MUST retry through the current index before reporting an error, and
+  MUST report a tombstone hit through
+  [`34-observability.md`](34-observability.md) because it indicates either a
+  stale reader or a marking defect.
+- **[GC-29]** A physical pack exclusion MUST be bound to its active
+  `[pack-id, cycle, epoch]` incarnation in authoritative manifest key 6.
+  The complete binding and selected exclusion generation MUST be published
+  before the corresponding immutable tombstone. A missing tombstone after a
+  crash MUST leave the pack excluded and undeletable. Restoring a pack MUST
+  clear its active binding in the same generation that restores its index
+  entries, while preserving any fresh live placement and identity quarantine.
+  Only otherwise-unserved eligible members are restored; any leftover old
+  tombstone then becomes stale. An incarnation
+  MUST NOT be reused for that pack. A later exclusion MUST use a fresh cycle
+  and tombstone with a fresh deletion window, even when old trash remains.
+  Recovering an exclusion whose tombstone is missing MUST repeat exact mark
+  and age qualification in a fresh fenced cycle before replacing its binding
+  and creating fresh trash. It MUST NOT backfill the old incarnation or time.
+
+  The deletion window MUST start no earlier than the tombstone's durable
+  creation time obtained from its backend. When stored timestamps use whole
+  seconds, rounding MUST be upward. Deletion MUST verify the exact active
+  binding, tombstone bytes, backend version and creation time under the same
+  backend exclusion that prevents concurrent restore or republication. A stale
+  candidate MUST be skipped without marking that pack's deletion progress
+  complete. Missing or unknown incarnation evidence MUST NOT authorize
+  deletion. All content-facing member, whole-pack and detached-index read,
+  existence, listing and import paths MUST honor the active physical exclusion;
+  a fresh upload MUST NOT resurrect an old placement. Collector-only fenced
+  metadata observation of a retired pack's index remains permitted for
+  qualification and restore, without exposing it through `ContentStore`.
+  Unknown legacy exclusion completeness
+  MUST fail destructive collection as `unsupported` and MUST NOT permit an
+  inventory fallback to bypass a known retired placement. *Gate:*
+  `gate:gc-two-phase-delete`.
+
+  D-82 [`reference/remote-deletion-authority.md`](reference/remote-deletion-authority.md)
+  supplies exact sweep/copied-retirement-v2 alternatives. Selected ownership
+  and manifest-key-7 burn permanently retire every present/future version
+  at pack/index keys and ALL canonical trash/<cycle>/<P> keys. State key 7
+  retains recoverable ownership; separate passes reconcile future residue
+  fairly. Pre-ownership restore may cancel/clear key 6; owned keys MUST
+  NOT be cancelled, recreated or readmitted. Initial nonburned tombstoning
+  retains GC-14. Later ownership requires complete current root/history,
+  serving/catalog/control proof, live lease and actual exclusion. Every
+  marked old member MUST have verified eligible fresh unburned placements;
+  no live dependency may resolve through the excluded keys. New requests
+  and selected pass progress always need the current whole live lease and
+  selected owner/burn/backend; post-ownership retries do not require old
+  hashes globally unmarked or import old root marks. Copied burns preserve
+  visibility only. The separately typed copied-retirement case requires
+  actual fresh destination authority, complete CURRENT root/history and
+  all serving/fallback closure, selected exclusion and NEW trash barrier.
+  FULL G/D observe that barrier even if pack/index/both are absent. No
+  source owner/witness/elapsed claim or absence mints permission. Missing
+  old copied trash does not block creating this NEW destination barrier;
+  it cannot backfill source incarnation/time. Local D-78-v1 is unchanged;
+  the additional copied-burn-v2 case also uses actual held local exclusion.
+
+## Physical incarnation evidence and recoverable deletion
+
+The following ordinary local-filesystem v1 protocol completes GC-15,
+GC-16, GC-24 and GC-29 under D-78. Its cancellation and per-effect exclusion
+rules remain unchanged. The additional D-82 copied/remote-v2 case follows
+its separately registered alternative; old copied pack/index journals are
+not fabricated or required by that already-burned copied-retirement case.
+It MUST NOT synthesize local file identities. This does
+not replace current reachability, retention or lease authorization.
+
+Filesystem backends MUST retain a protected external-control `CreationJournal`
+for each pack, detached index and tombstone they can delete. Its fresh secure
+32-byte nonce identifies the physical incarnation; equal bytes, path, device
+and inode MUST NOT reuse a nonce after recreation. Under stable backend
+exclusion, a writer
+MUST durably install and synchronize Pending before mutation. It MUST then
+install verified final bytes, synchronize the same nofollow regular-file
+descriptor and containing/required ancestor directories, observe that exact
+file identity, and durably install Committed. Pending, Invalidated, missing,
+malformed or mismatched evidence is unknown and MUST NOT authorize deletion.
+Content import and snapshot restoration MUST NOT import journal authority.
+CDDL field combinations and registered artifact associations MUST be checked;
+decoded file identities remain untrusted until compared with the backend.
+
+Committed proves a current version, never an absolute creation time. A local
+backend MAY conservatively qualify `D` by observing the exact Committed trash
+incarnation under exclusion and waiting a FULL `D` afterward using one injected
+monotonic clock instance. Elapsed subtraction and `D` conversion MUST be
+checked. No monotonic tick persists. Reopen, reboot, changed clock instance,
+root, version, binding or exclusion, restore, clock regression, or failed or
+cancelled timing MUST invalidate the witness. Wall time, mtime, inode birth
+time, staging time and the Tombstone timestamp MUST NOT shorten this wait.
+This stronger delay does not replace GC-12's backend last-modified observation
+for ordinary grace qualification. A local implementation MUST support actual
+eventual deletion under stable valid roots and lease; unsupported-only refusal
+tests do not qualify `gate:gc-two-phase-delete`.
+
+Before retiring a journal or unlinking an artifact, the collector MUST durably
+install `DeleteOperation` Authorized. Its immutable authorization binds the
+secure operation nonce, exact active pack/cycle/epoch, original whole lease,
+`D`, ordered pack/index/trash versions, verified detached-index witness and
+completed elapsed lower bound. Its key and all artifact associations MUST
+match. The witness obeys the existing detached-index parser's size/count bounds
+and MUST match the index identity/size. Trash bytes MUST decode to the exact
+active exclusion. Revisions MUST increment without wrap; authorization MUST
+never change. Its digest is raw BLAKE3 of exact canonical authorization bytes.
+This protected intent establishes physical ownership, never reusable marks.
+
+Under the same exclusion the collector MUST conditionally retain DeleteOwned
+journals with their exact operation key and authorization digest, synchronize
+each, then record Invalidated after all three are durable. It MUST compare
+current owned identity/binding before each unlink, synchronize that directory,
+and advance PackAbsent, then IndexAbsent. Crash recovery MAY confirm exact
+owned absence by directory resynchronization; it MUST NOT delete a replacement
+object. ContainersConfirmed requires both container names durably absent and
+an exact authoritative catalog confirmation before trash cleanup and Done.
+The operation and owner evidence MUST remain until recovery needs no further
+evidence; a phase number alone never authorizes absence or replacement.
+
+EVERY effect and restart MUST acquire a CURRENT live whole lease and complete
+current-root/catalog/retention/trust authorization under the same backend
+exclusion as final checked head publication. An original lease, old marks,
+returned receipt or operation digest MUST NOT replace these checks. A changed
+root/admission fence requires fresh complete reconciliation using the retained
+verified index witness, even after physical containers are absent. Missing
+current authorization MUST refuse effects; physical journal implementation
+alone does not establish it. GC-1 to GC-7 and GC-30 still apply. Finite failures
+with stable valid qualification MUST permit recovery to finish exact owned
+artifacts, rather than strand them indefinitely as generic unknown versions.
+
+D-79's [`reference/publication-authority.md`](reference/publication-authority.md)
+defines the exact current fence, selected lease/configuration transitions,
+retained absent-name history and source-preserving collection evidence.
+Protected journals and deletion operations belong outside portable local
+payload; copied physical intent cannot authorize destination deletion.
+
+Restore or recreation MUST durably cancel the exact owning operation and
+invalidate its ownership BEFORE clearing the serving exclusion or mutating
+objects. Failure to persist cancellation forbids those effects. Restore MUST
+remain available with unknown trash age when its actual maintenance index and
+active exclusion qualify. Once a container is absent it MUST NOT advertise
+that old unavailable placement; fresh live placements remain usable. A fresh
+exclusion/incarnation waits its own `D`. Stale replay MUST neither touch a
+replacement nor advance its deletion progress. Explicit layout-version-1
+read-only access MUST refuse every journal and maintenance mutation.
+
+## Compaction
+
+- **[GC-18]** A pack whose live fraction (marked bytes over total bytes) is
+  below the `compaction_threshold` property (default 0.5) MUST be a
+  compaction candidate. Compaction rewrites the live members of one or more
+  candidates into new packs in tree order, writes their per-pack indexes,
+  swaps the merged index entries to the new locations, and tombstones the
+  old packs per [GC-15].
+- **[GC-19]** Compaction MUST write the new pack and index before removing
+  any old index entry, so that every chunk is resolvable at every instant.
+- **[GC-20]** Merged index shards MUST be rebuilt by compaction at least
+  once per index generation, replacing live entries for tombstoned packs
+  with tombstones retained until PACK-18's deletion confirmation, and
+  folding in per-pack indexes written since the previous generation. Readers MAY
+  continue to use the previous generation until the new one is published.
+- **[GC-21]** Compaction MUST honour the same bytes-per-second limit as a
+  scrub ([`15-redundancy.md`](15-redundancy.md)) and MUST be preemptible by
+  foreground writes for space.
+
+## Runner
+
+- **[GC-22]** At most one collector MUST run against a store at a time. The
+  collector MUST hold a lease object at `gc/lease` obtained by conditional
+  create-if-absent, carrying a fencing epoch and an expiry, and MUST renew
+  it by
+  conditional write before expiry. A collector whose renewal fails MUST stop
+  immediately. An already dispatched DELETE under selected irreversible
+  permanent ownership may finish later but cannot touch newly reachable
+  placements. Every new request and selected progress requires the actual
+  current whole live lease; a stale collector MUST NOT issue either.
+  *Gate:* `gate:gc-singleton-lease`.
+- **[GC-23]** A new collector MUST use a fencing epoch greater than the one
+  in the
+  expired lease it replaces, and every checkpoint and tombstone it writes
+  MUST carry its epoch, so that a stalled collector resuming after losing
+  its lease cannot tombstone with a stale mark set.
+- **[GC-24]** A collector MUST be resumable: each phase records progress as
+  checkpoints keyed by cycle, and a fresh collector with a higher epoch MUST
+  discard checkpoints from a cycle it did not start except the root-set
+  snapshot it
+  chooses to reuse, which it MAY do only if that snapshot is younger than
+  `G`. D-82 permanent ownership is distinct recovery evidence, not
+  reusable marks. Current collectors MUST fairly and repeatedly reconcile
+  every selected owner, including new residue after a completed pass and
+  after original roots/cycles expire. They check the actual current backend,
+  burn/owner and whole live lease on each new request/progress. Progress
+  uses the current lease epoch; immutable ownership keeps its original
+  epoch. Completed passes never end or prune that recovery obligation.
+- **[GC-25]** Every host tier MUST run its own collector over its local
+  store with the same rules, using its pins and leases as additional roots
+  ([`14-host-tier.md`](14-host-tier.md)); eviction under pressure is a
+  separate mechanism and MUST NOT be confused with collection.
+
+## Cross-region packs
+
+A commit acknowledged in one region may name packs that so far exist only
+in the region that produced them, while replication catches up
+([`19-tiering-and-topology.md`](19-tiering-and-topology.md)). This is the
+promisor pattern: the commit records where its packs were written.
+
+- **[GC-26]** The collector MUST treat every replica store, in every region,
+  as a sweep target, and MUST mark from the union of roots before sweeping
+  any of them. A pack that is marked in any region MUST NOT be swept in any
+  region. D-82 recovery of already-owned permanently burned keys is not a
+  fresh regional sweep. First ownership MUST prove complete compatible
+  cross-region roots and fresh placements for all marked uses; recovery
+  cannot target fresh placements in any region.
+- **[GC-27]** A commit's recorded pack locations MUST be consulted during
+  mark so that a pack referenced by a commit but not yet present in the
+  local index is neither treated as missing nor swept when it arrives.
+
+## Retention properties
+
+| Property value | Meaning |
+| --- | --- |
+| `retain=gc` | reflog content selected by effective `reflog_retain` duration or committed-record count; unreachable content collected after `G` |
+| `retain=lease` | the root is a root only while a lease is held; on expiry its ref is removed and its content becomes unreachable |
+| `retain=ttl:<duration>` | each commit is a root for `<duration>` from its timestamp regardless of the ref moving on |
+| `retain=forever` | every commit ever pointed at by the ref remains a root |
+
+- **[GC-28]** A root's retention property MUST be evaluated against the
+  commit timestamp for `ttl`, the lease expiry for `lease`, and the reflog
+  entry time for duration-based `gc`, or selected sequence rank for
+  count-based `gc`, and the collector MUST be able to explain, for any swept
+  object, which rule made it unreachable
+  ([`34-observability.md`](34-observability.md)).
+
+## Safety (informative)
+
+The argument that no reachable object is ever deleted rests on four facts.
+
+1. A writer orders its work packs, indexes, commit, ref. Until the ref moves
+   nothing references the new objects, and after it moves everything is
+   reachable. The only window in which reachable-to-be objects are
+   unreferenced is the commit's own duration, bounded by `C`.
+2. Nothing younger than `G > C` is ever swept, so an object written during a
+   commit survives at least until the commit has either completed and made
+   it reachable or been aborted.
+3. The root set is a snapshot, but a ref that moves after the snapshot
+   points at objects that are either older than the snapshot (and were
+   reachable from some root at snapshot time, because the writer's fork or
+   parent commit was a root) or younger than `G`.
+4. Deletion is two-phase, so a defect in any of the above is recoverable
+   for `D` without data loss.
+
+Reference counts would let a store reclaim faster than `G`, at the price of
+a transactional counter store that would become the one stateful dependency
+the design forbids, and of drift that needs repair sweeps of its own. The
+grace window costs storage for one window's worth of dead data and nothing
+else.
+
+## Interactions
+
+- [`09-refs-and-commits.md`](09-refs-and-commits.md) defines the write
+  ordering and the reflog this file depends on.
+- [`12-pack-format.md`](12-pack-format.md) and
+  [`13-bucket-layout.md`](13-bucket-layout.md) define packs, indexes, the
+  `gc/` and `trash/` prefixes, and the conditional writes the lease uses.
+- [`14-host-tier.md`](14-host-tier.md) contributes pins and leases as roots
+  for host-local collection.
+- [`15-redundancy.md`](15-redundancy.md) defines the children a collector
+  sweeps and shares the rate limit and quarantine mechanisms.
+- [`16-blockdev-backend.md`](16-blockdev-backend.md) reclaims slabs through
+  compaction defined here.
+- [`19-tiering-and-topology.md`](19-tiering-and-topology.md) defines
+  cross-region replication that [GC-26] and [GC-27] account for.
+- [`20-consistency.md`](20-consistency.md) requires clients to enforce the
+  maximum commit duration `C`.
+- [`32-tree-jobs.md`](32-tree-jobs.md) provides job refs as roots and the
+  job primitive compaction runs on.
+- [`34-observability.md`](34-observability.md) receives progress,
+  tombstone-hit, and explanation reports.

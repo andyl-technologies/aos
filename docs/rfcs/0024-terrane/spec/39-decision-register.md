@@ -1,0 +1,2921 @@
+# 39 — Decision register
+
+This file records the load-bearing design decisions behind Terrane: the
+choices that shaped the rest of the specification, the reasons they were
+made, the alternatives that were weighed, and the requirements each decision
+affects. A reader who disagrees with the system can find here where the fork
+in the road was taken and why; a future revision can revisit a decision with
+the original reasoning in front of it. This file is informative
+([`00-conventions.md`](00-conventions.md)); the normative force lives in the
+requirement IDs each entry names.
+
+Each entry has a fixed shape:
+
+```text
+- **[D-n] <one-line title>**
+  - **Status:** Decided | Open
+  - **Decision:** what was chosen.
+  - **Rationale:** why.
+  - **Alternatives considered:** what else was on the table and why it lost.
+  - **Affects:** the requirement IDs and files this decision shapes.
+```
+
+IDs are stable. A superseded decision is marked so in place and a new `D-n`
+is added rather than editing history.
+
+## Authority and storage
+
+- **[D-1] The bucket is the only authority; there is no database.**
+  - **Status:** Decided
+  - **Decision:** Every durable thing, including refs, lives in an object
+    store. Mutability is confined to refs and uses the store's conditional
+    writes. No transactional key-value store, no cache service, no event
+    store sits beside the bucket.
+  - **Rationale:** Immutable content-addressed objects need no coordination
+    at all, and the only mutable state is a few hundred bytes per ref. A
+    conditional write is enough for that. Removing the database removes the
+    open-pack lease machinery, refcount drift, root sets that live only in a
+    cache, and the operational surface of three or four stateful services.
+    A stateless gateway in front of a bucket scales by adding replicas.
+  - **Alternatives considered:** A regional transactional key-value store
+    for object metadata, chunk locations, and refcounts. It offers exact
+    counters and multi-key atomicity, but it also becomes a hard dependency
+    on every read path, and the whole-namespace Merkle root gives stronger
+    atomicity (one compare-and-swap covers any number of keys) than the
+    multi-key transaction it replaces. Rejected.
+  - **Affects:** [`13-bucket-layout.md`](13-bucket-layout.md),
+    [`09-refs-and-commits.md`](09-refs-and-commits.md),
+    [`17-garbage-collection.md`](17-garbage-collection.md), `INV`.
+
+- **[D-2] Writers own their packs; there are no shared open packs.**
+  - **Status:** Decided
+  - **Decision:** Each writer seals its own packs, however small, and a pack
+    is visible only once complete. Compaction merges small packs later.
+  - **Rationale:** Shared open packs require pending rows, leases, replica
+    liveness, and a reaper for the case where a replica dies mid-pack. None
+    of that is needed if a pack is the writer's private artifact until it is
+    sealed. Small packs are an efficiency cost that compaction pays back
+    asynchronously.
+  - **Alternatives considered:** Loose per-chunk objects for small commits
+    (millions of tiny objects, list cost); replica-owned open packs with
+    quorum mirroring (the machinery above). Rejected.
+  - **Affects:** [`12-pack-format.md`](12-pack-format.md),
+    [`17-garbage-collection.md`](17-garbage-collection.md), `PACK`.
+
+- **[D-3] An object's identity is the hash of its manifest.**
+  - **Status:** Decided
+  - **Decision:** An object is identified by the hash of its encoded
+    manifest (the ordered chunk list, sizes, and declared content hashes),
+    not by a hash over its plaintext. Plaintext hashes are attributes.
+  - **Rationale:** Hashing the plaintext forces every commit to re-read
+    every byte of every object, including objects whose chunks all already
+    existed, because chunk boundaries do not align with any tree-hash block
+    size. Hashing the manifest makes commit cost proportional to new data.
+    Plaintext BLAKE3 and SHA-256 remain available as attributes for
+    protocols that key on them.
+  - **Alternatives considered:** BLAKE3 over the plaintext as identity
+    (forces the re-read); a tree hash aligned to chunk boundaries (would tie
+    identity to chunking parameters). Rejected.
+  - **Affects:** [`04-content-model.md`](04-content-model.md) `OBJ`,
+    [`10-derived-data.md`](10-derived-data.md).
+
+- **[D-4] BLAKE3 is the primary digest; SHA-256 is carried as an attribute.**
+  - **Status:** Decided
+  - **Decision:** Every identity domain uses BLAKE3. Where a public protocol
+    keys content by SHA-256 or another digest, that digest is a derived
+    attribute and an index tree, computed once per object.
+  - **Rationale:** BLAKE3 is several times faster than SHA-256 in software,
+    parallelizes, and is what content-defined chunking wants at the rate of
+    gigabytes per second per core. Per-chunk SHA-256 would dominate the
+    write path. The attribute mechanism makes any second digest cheap and
+    complete without a second identity.
+  - **Alternatives considered:** SHA-256 as primary for protocol
+    compatibility (write-path cost); dual identity (two names for one thing,
+    ambiguous references). Rejected.
+  - **Affects:** `OBJ`, `DRV`, [`33-migrations.md`](33-migrations.md).
+
+## Trees
+
+- **[D-5] Trees are prolly trees keyed by path relative to their root, with
+  `tree` entries for grafting.**
+  - **Status:** Decided
+  - **Decision:** A tree is a history-independent, content-defined B-tree
+    over bytewise-sorted relative paths. Composition across roots uses an
+    entry that references another root, so grafting is O(1) and never
+    rewrites keys.
+  - **Rationale:** History independence means identical content always has
+    identical nodes, so diff and merge skip equal subtrees by hash and the
+    cost is proportional to the difference. Full-path keys make a directory
+    listing a contiguous range scan. Relative keys plus `tree` entries make
+    composition by reference cheap, which per-directory trees would give but
+    at the cost of unbounded node size in flat directories.
+  - **Alternatives considered:** git-style per-directory tree objects (a
+    flat directory with millions of entries is one object rewritten on every
+    touch); hash-keyed maps such as HAMTs (no ordered range scans, so no
+    cheap `readdir`); Merkle search trees (interior values make bulk
+    construction and range scans less cache-friendly for very large maps);
+    absolute-path keys without `tree` entries (grafting becomes O(n) key
+    rewriting). Rejected in favor of the hybrid.
+  - **Affects:** `TREE`, `ALG`, [`06-tree-format.md`](06-tree-format.md),
+    [`07-tree-algebra.md`](07-tree-algebra.md).
+
+- **[D-6] Merge never fails; conflicts are values.**
+  - **Status:** Decided
+  - **Decision:** A three-way merge produces a tree in which each entry is
+    either resolved or a conflict value holding the candidates. Policies
+    resolve conflict values; a tree with unresolved conflicts is a valid,
+    committable, flagged tree.
+  - **Rationale:** For a cache namespace, the right answer to two writers
+    binding one key is usually a policy ("prefer the trusted side", "prefer
+    newer provenance"), not a failed operation. Making conflicts values lets
+    folds proceed, lets resolution be a separate commit, and makes the merge
+    itself a pure function.
+  - **Alternatives considered:** Fail the merge on conflict (blocks folds,
+    forces retries at the wrong layer); last-writer-wins by default (silent
+    data loss). Rejected.
+  - **Affects:** `ALG`, [`07-tree-algebra.md`](07-tree-algebra.md),
+    [`20-consistency.md`](20-consistency.md).
+
+- **[D-7] The git ref model is adopted; the git object encoding is rejected.**
+  - **Status:** Decided
+  - **Decision:** Branches, tags, reflogs, commits with parents, merge
+    bases, remotes, and partial-clone semantics are adopted with git's
+    vocabulary and layout under `refs/`. Git's blob, tree, packfile, and
+    loose-object encodings are not used at rest. A git-readable projection
+    is a surface.
+  - **Rationale:** The ref model is a good model and a familiar one, and a
+    commit graph is needed anyway for merge bases. The object encoding, by
+    contrast, has no chunk-level dedup, no ranged reads, delta chains that
+    defeat random access, and a hash with a header that costs a full-file
+    pass. Everything a git reader needs can be derived from a tree by range
+    scans and memoized by content.
+  - **Alternatives considered:** Byte-compatible git repositories in the
+    bucket (all of the costs above); a bespoke ref model (no gain, less
+    familiarity). Rejected.
+  - **Affects:** `REF`, [`09-refs-and-commits.md`](09-refs-and-commits.md),
+    [`13-bucket-layout.md`](13-bucket-layout.md), `GIT`.
+
+- **[D-8] One writer per ref by default; multi-writer is opt-in.**
+  - **Status:** Decided
+  - **Decision:** A ref carries a writer epoch. The default mode fences a
+    single writer per ref; concurrent writers fork and fold. Multi-writer on
+    one ref requires an explicit merge policy.
+  - **Rationale:** Single-writer refs make `fsync`-as-commit a clean
+    contract (no conflict can surface from a durability call) and make
+    zombie writers impossible. The fork-and-fold path costs one ref and one
+    O(delta) merge, which is what a concurrent writer would have paid anyway.
+  - **Alternatives considered:** Multi-writer by default with automatic
+    rebase (surprising failures inside `fsync`); server-side locks (a
+    coordination service). Rejected.
+  - **Affects:** `REF`, `CONS`, [`20-consistency.md`](20-consistency.md).
+
+## Garbage collection and redundancy
+
+- **[D-9] Mark-and-sweep with a grace window; no reference counts.**
+  - **Status:** Decided
+  - **Decision:** Roots are refs and retained reflog entries. Mark walks
+    trees from roots, skipping subtrees already marked. Sweep deletes only
+    unmarked objects older than a grace window strictly longer than the
+    maximum permitted commit duration, and does so in two steps via
+    tombstones.
+  - **Rationale:** Reference counts need a transactional counter store
+    ([D-1]) and drift under failure. Every database-free system converges on
+    mark-and-sweep with a grace period because the write ordering (packs,
+    then indexes, then ref) plus "never delete anything young" is sufficient
+    for concurrent-upload safety. Prolly trees make marking proportional to
+    distinct content.
+  - **Alternatives considered:** Refcounts in the index (needs atomic
+    updates across writers); TTL-only eviction (no reachability guarantee).
+    Rejected.
+  - **Affects:** `GC`, [`17-garbage-collection.md`](17-garbage-collection.md),
+    [`09-refs-and-commits.md`](09-refs-and-commits.md).
+
+- **[D-10] Contiguous stripes with parity, not interleaved striping.**
+  - **Status:** Decided
+  - **Decision:** The `striped` combinator cuts a pack into k contiguous
+    byte ranges plus m parity shards. A ranged read normally touches one
+    child; parity is read only on failure.
+  - **Rationale:** Interleaved striping spreads every ranged read across all
+    children, which defeats presigned single-range reads and makes latency
+    the maximum over children. Contiguous stripes keep the single-range read
+    path intact and still give reconstruction and parallel whole-pack fetch.
+  - **Alternatives considered:** Interleaved RAID-style striping (the costs
+    above); replication only (write amplification without the option of
+    parity for cold tiers). Rejected.
+  - **Affects:** `RED`, [`15-redundancy.md`](15-redundancy.md).
+
+## Distribution
+
+- **[D-11] Tier lists are cost-routed, not fixed-order.**
+  - **Status:** Decided
+  - **Decision:** Every store carries a locality label and a learned cost
+    vector. The `routed` combinator orders candidates per request by expected
+    cost, with hysteresis. Configuration expresses membership, not order.
+  - **Rationale:** A fixed order is right on one host and wrong in every
+    other zone. Learning costs from real requests handles regions, zones,
+    peers, egress price, and degraded children with one mechanism and no
+    topology file to keep current.
+  - **Alternatives considered:** Static ordered lists (wrong somewhere);
+    explicit topology configuration (goes stale). Rejected in favor of
+    measured costs with decay.
+  - **Affects:** `TOPO`, [`19-tiering-and-topology.md`](19-tiering-and-topology.md),
+    `RISK-12`.
+
+- **[D-12] The commit is the consistency boundary; `fsync` binds to commit
+  only in `sync` mode.**
+  - **Status:** Decided
+  - **Decision:** Inside a writable exposure, semantics are those of the
+    local filesystem holding the upper. Nothing distributed happens until a
+    commit. Writer modes select when commits happen; `sync` mode makes
+    `fsync` and friends perform a commit and return after the root's
+    durability policy is met.
+  - **Rationale:** This keeps the hot path local and the semantics
+    interpretable: exactly one distributed event, with git's meaning.
+    `fsync` is the one POSIX verb that means "make durable", so it is the
+    only honest binding for a commit, and it is opt-in because most
+    workloads want cheap local durability and explicit commits.
+  - **Alternatives considered:** Per-write replication (a distributed POSIX
+    filesystem, a different project); commit on every `close` (surprising
+    latency, no POSIX meaning). Rejected.
+  - **Affects:** `CONS`, [`20-consistency.md`](20-consistency.md),
+    `reference/errno-mapping.md`.
+
+## Security
+
+- **[D-13] Capability tokens and one enforcement point; no authorization
+  database.**
+  - **Status:** Decided
+  - **Decision:** Principals hold signed, offline-attenuable capability
+    tokens carrying grants over ref and root patterns. The `guard` combinator
+    is the single place authorization runs. Access-control lists are
+    properties on roots, versioned with the tree. Group membership comes from
+    identity-provider claims.
+  - **Rationale:** Authority in Terrane is already per root, so grants on
+    roots are the natural unit and inherit like every other property.
+    Offline attenuation lets an orchestrator hand a job a token for exactly
+    its branch without a token service in the loop. Storing policy in the
+    tree makes every permission change a diffable commit. A relation-graph
+    service would be a hard dependency on every request.
+  - **Alternatives considered:** A relation-graph authorization service
+    (dependency, latency, second source of truth); per-file access-control
+    lists (roots are the unit; make a root when a boundary is needed).
+    Rejected.
+  - **Affects:** `AUTH`, [`22-authentication-and-authorization.md`](22-authentication-and-authorization.md),
+    `PROP`.
+
+## Exposure
+
+- **[D-14] Surfaces are the only exposure abstraction; there is no facade
+  layer.**
+  - **Status:** Decided
+  - **Decision:** FUSE, EROFS, block, virtiofs, the wire protocol, the Nix
+    cache, REAPI, OCI, git, and HTTP browse are all surfaces implementing
+    one interface over the repository. A running instance is a list of
+    `view × surface × endpoint` exposures. Plugins are either in-process
+    behind features or out-of-process SDK clients.
+  - **Rationale:** Every one of these is "show a tree through a protocol".
+    One interface with a declared schema removes a gateway abstraction, a
+    separate realizer abstraction, and any special case for mounts, and it
+    gives every protocol trust filtering and authorization for free by
+    construction. Out-of-process plugins need no plugin interface because
+    the SDK protocol is already the full API.
+  - **Alternatives considered:** Separate facade and realizer layers
+    (duplicated policy paths); dynamically loaded plugins (a privilege
+    surface, an ABI to maintain). Rejected.
+  - **Affects:** `SURF`, [`26-surfaces.md`](26-surfaces.md),
+    `reference/surface-registry.md`.
+
+- **[D-15] Rulesets are a closed vocabulary, never code.**
+  - **Status:** Decided
+  - **Decision:** Routing rulesets are ordered match-to-action rules over a
+    registered set of matchers and actions, encoded as canonical objects. A
+    new heuristic is a new registered matcher, added by revision of this
+    specification.
+  - **Rationale:** Rules are evaluated by a component that touches sealed
+    objects and mounts. Shipping code into it would be a privilege
+    escalation surface. The closed vocabulary is small, compiles to a prefix
+    trie, and covers the known needs (substitution, prefetch, binding,
+    tagging, guarding). Most families reduce to tree transforms at checkout.
+  - **Alternatives considered:** An embedded scripting language (privilege,
+    non-determinism); bytecode (same, with an ABI). Rejected.
+  - **Affects:** `RULE`, [`31-routing-rulesets.md`](31-routing-rulesets.md).
+
+## Engineering
+
+- **[D-16] One binary with roles; separate processes and identities per
+  role.**
+  - **Status:** Decided
+  - **Decision:** The `terrane` binary implements every role. Roles run as
+    separate processes with separate service identities, privileges, and
+    network access. A host, a gateway, a nested cache, and a developer
+    machine differ only by configuration.
+  - **Rationale:** The store trait composes, so the difference between
+    deployments is a store expression and an exposure list, not a program.
+    One binary keeps that honest. Separate processes per role keep the
+    privilege separation that a mounter, a networkless sealer, and a
+    network-facing gateway each need.
+  - **Alternatives considered:** Separate binaries per role (duplicated
+    configuration and drift); one process with all roles (a root-equivalent
+    daemon with network access). Rejected.
+  - **Affects:** `CRATE-15`, [`37-crate-structure.md`](37-crate-structure.md).
+
+- **[D-17] The identity code is `no_std`.**
+  - **Status:** Decided
+  - **Decision:** Every byte that contributes to an identity is produced by
+    `terrane-core`, which has no I/O, no clock, and no platform dependency.
+  - **Rationale:** Identities must agree between a native host, an edge
+    worker, and any future implementation. Placing the boundary exactly at
+    identity means the golden vectors test the one crate that matters, and
+    that crate can run anywhere.
+  - **Alternatives considered:** A single `std` library with a wasm target
+    (platform dependencies leak into identity code over time). Rejected.
+  - **Affects:** `CRATE-1` through `CRATE-5`, `EDGE-14`.
+
+- **[D-18] The block backend and the block surface are read-only in 1.0.**
+  - **Status:** Decided
+  - **Decision:** The raw block-device backend stores packs and refs and
+    serves reads; the block surface exposes a deterministic EROFS layout
+    lazily. Neither accepts guest writes into the shared tree in this
+    version; a guest's writes go to a separate copy-on-write device or to a
+    virtiofs upper.
+  - **Rationale:** Committing a guest's block-level writes means mounting
+    and diffing its filesystem on the host, which is more work and less lazy
+    than an upper directory, and no current workload needs it. Leaving it
+    out keeps 1.0's write model uniform: every write path ends in an upper
+    that is walked at commit.
+  - **Alternatives considered:** Block-level commit via a copy-on-write
+    device diff (deferred, not precluded). Open for a later version.
+  - **Affects:** `BLK`, `VBLK`, [`16-blockdev-backend.md`](16-blockdev-backend.md),
+    [`28-surface-erofs-and-block.md`](28-surface-erofs-and-block.md),
+    `RISK-4`.
+
+- **[D-19] The specification stands alone.**
+  - **Status:** Decided
+  - **Decision:** This document set names no host operating system, product,
+    or prior internal system in its normative files, defines its own
+    identity domains and encoding profile, and treats public protocols as
+    surfaces. Adoption by a system happens in documents outside this
+    directory that link inward.
+  - **Rationale:** Terrane is a storage system in the way a filesystem is:
+    it should be adoptable by more than one system and lifted into its own
+    repository without edits. Every host-specific assumption that leaks into
+    the specification is a future incompatibility.
+  - **Alternatives considered:** A specification written in terms of one
+    adopting system's services and formats (faster to write, not portable).
+    Rejected.
+  - **Affects:** `CONV-2`, `CONV-3`, every file.
+
+- **[D-20] Naming.**
+  - **Status:** Decided
+  - **Decision:** The system is **Terrane**. The crates are `terrane-core`,
+    `terrane`, `terrane-fs`, `terrane-edge`, and `terrane-cli`. The binary is
+    `terrane`. Roles are `serve`, `mount`, `fuse-worker`, `publish`, `gc`,
+    and `job`.
+  - **Rationale:** A terrane is a crustal fragment that accretes onto a
+    continent, which is the merge model: branches accrete onto a baseline
+    without copying. The plain crate and binary names follow from [D-19].
+    Adopting systems prefix their own glue crates; they do not rename these.
+  - **Alternatives considered:** Names describing the two original halves
+    separately (a store and a warehouse), abandoned once stores composed
+    into one program; a host-system-prefixed binary name, abandoned with
+    [D-19].
+  - **Affects:** `CRATE-15`, [`37-crate-structure.md`](37-crate-structure.md).
+
+- **[D-23] Single-responsibility interfaces and unambiguous vocabulary,
+  fixed before code exists.**
+  - **Status:** Decided
+  - **Decision:** The store interface is split into `ContentStore` and
+    `RefStore`, and "authority" is defined as the child that implements
+    `RefStore` rather than by a prose rule. `guard` performs authorization
+    only; upload validation is an invariant of every `put` (STORE-33) and
+    presigned reads belong to the `serve` role (PROTO-55). Everything
+    computed from a tree is a **derivation** with one memo table and one
+    verification rule; index trees and realization roots are its named
+    kinds, and a ruleset compiles to a recipe rather than running as an
+    engine. Overloaded words were split: "profile" is now identity profile,
+    chunk profile, profile pair, or trust preset; "epoch" fences writers
+    only, merged indexes have generations, and garbage collection has
+    cycles. The realizer process role is `realize`, the `mount` surface is
+    folded into `erofs`, and the routing combinator is `routed`.
+  - **Rationale:** Each of these was a place where the specification said
+    two things with one word or asked one component to do two jobs. Fixing
+    them costs nothing before implementation and grows expensive after,
+    because names become module boundaries and type names. A reader who
+    can tell a cache from an authority by its type, and a fencing epoch
+    from an index generation by its name, needs fewer rules to remember.
+  - **Alternatives considered:** Keeping one `Store` trait with an
+    "authority" flag (rejected: the flag is a rule, the split is a type);
+    keeping `guard` as the place that also validates and presigns
+    (rejected: the single enforcement point should enforce exactly one
+    thing, and the threat model gets simpler); three separate memo
+    mechanisms (rejected: identical semantics under three names).
+  - **Affects:** `STORE-10`, `STORE-16`, `STORE-22` to `STORE-24`,
+    `STORE-32`, `STORE-33`, `PROTO-55`, `AUTH-31`, `AUTH-33`, `DRV-21` to
+    `DRV-23`, `ALG-30`, `RULE-21`, `RULE-22`, `REF-9`, `OBJ-8`, `CDC-2`,
+    `CDC-3`, `PROV-12`, `PACK-17`, `BKT-4`, `GC-15`, `GC-22`, `GC-23`,
+    `EROFS-14`, `CRATE-15`, and the glossary.
+
+- **[D-24] Normalize prolly boundaries by stored bytes and split before overflow.**
+  - **Status:** Decided
+  - **Decision:** Scale the existing base threshold by the current item's
+    stored encoded length divided by eight, with exact integer arithmetic
+    and saturation at `2^32`. Split before an item that would exceed the
+    64 KiB item-byte cap, recompute prefix compression after a split, and
+    reject an item that cannot fit alone. Assess the mean target only at
+    fixture levels with at least 100 complete nodes, while reporting all
+    smaller samples and enforcing the hard cap everywhere. Keep every
+    requirement ID stable.
+  - **Rationale:** The original per-item comparison made the expected size
+    depend on entry width. A reference spike over ten million entries
+    measured complete leaf means of 27,674, 27,980, and 39,292 bytes for
+    sequential, shared-prefix, and hash-like keys, rather than the stated
+    8-16 KiB target. Closing after overflow also produced nodes above the
+    hard bound, including 65,693 item bytes in an internal node. Normalizing
+    by bytes restores the intended size hazard, and splitting before
+    overflow preserves the decoder limit. Both decisions depend only on
+    sorted content and preserve history independence. This correction occurs
+    before the identity format is frozen. Small internal levels can contain
+    one ordinary probabilistic cut; measured singleton means of 4,982 and
+    6,431 bytes do not estimate a distribution. Requiring 100 complete nodes
+    avoids treating those samples as a failed mean target while retaining
+    their measurements and size checks.
+  - **Alternatives considered:** Raising the decoder cap (rejected: leaves
+    entry-width-dependent variance and enlarges untrusted allocations);
+    weakening the target to fit the old measurements (rejected: hides the
+    failed assumption); floating-point exponential normalization (rejected:
+    introduces unnecessary cross-implementation rounding choices).
+  - **Affects:** TREE-21 to TREE-24, TREE-27, TREE-29, RISK-5, and
+    `reference/golden-vectors.md` §node-boundaries.
+
+- **[D-25] Give every gate an explicit owner ID, including risk experiments.**
+  - **Status:** Decided
+  - **Decision:** Replace prose-only registry ownership with existing
+    invariant, performance-methodology, or tracked-risk IDs. TEST-16 permits
+    a tracked-risk owner for experiments defined in the informative risk
+    register. Keep every gate name and requirement ID stable.
+  - **Rationale:** Twenty-three registry rows named only prose, despite
+    TEST-16 requiring a citing requirement ID in every row. The five risk
+    experiments cannot cite a normative requirement because the risk
+    register is deliberately informative. Recognizing its stable RISK IDs
+    preserves the distinction without pretending an experiment is an
+    implemented feature. Performance rows already fall under PERF-11 and
+    TEST-15; invariant rows already have their own stable owners.
+  - **Alternatives considered:** Accepting nonempty prose as ownership
+    (rejected: makes ownership validation meaningless); moving tracked
+    uncertainties into normative requirements (rejected: contradicts the
+    conventions for the informative risk register).
+  - **Affects:** TEST-16 and the gate registry in file 36.
+
+- **[D-26] Fix the default FastCDC scan and dictionary identity before the
+  T1 format freeze.**
+  - **Status:** Decided
+  - **Decision:** Derive two sparse Gear masks from the target size and
+    normalization level, with set positions evenly spanning bits 16 through
+    47. Start scanning at the minimum size with a fresh fingerprint for each
+    chunk, compare after consuming each candidate byte, and force a cut at
+    the maximum or EOF. For `cdc-1m`, use the exact masks and 16 MiB boundary
+    vector in `reference/golden-vectors.md`. The 48-byte parameter describes
+    the effective mask span, not a separate rolling buffer. Codec `0x02`
+    carries the `terrane-chunk-v1` identity of dictionary plaintext; the
+    `zstd-dictionary` attribute record carries that identity as its value
+    and retains its own canonical `terrane-attr-v1` identity. Keep CDC and
+    OBJ requirement IDs stable.
+  - **Rationale:** CDC-1 named FastCDC and a seeded Gear table but did not
+    specify the scan start, byte/cut offset convention, mask placement, or
+    fingerprint reset. Those omissions let two implementations cut different
+    chunks under the same profile. The [FastCDC paper](https://www.usenix.org/system/files/conference/atc16/atc16-paper-xia.pdf)
+    uses a shift-and-add Gear recurrence with a skipped minimum region and
+    two sparse masks; its 8 KiB mask constants do not define this profile's
+    1 MiB choices. The exact derived masks preserve its 48-byte effective
+    span and make the profile portable. CDC-9 previously hashed bare
+    dictionary bytes under the attribute-record domain, contradicting OBJ-4
+    and the canonical `AttrRecord` in the CDDL. Storing dictionary bytes as
+    a chunk and referring to its ID from the attribute record preserves
+    both domain meanings and ordinary content verification.
+  - **Alternatives considered:** Reuse the paper's fixed 8 KiB masks
+    (rejected: their cut odds do not describe `cdc-1m`); use contiguous low
+    mask bits (rejected: loses the stated 48-byte effective span); identify
+    bare bytes under `terrane-attr-v1` (rejected: conflicts with the
+    canonical attribute-record preimage).
+  - **Affects:** CDC-1, CDC-2, CDC-9, CDC-16, OBJ-4, and the gear,
+    boundary, dictionary, and chunk-body references.
+
+- **[D-27] Resolve the commit profile pair against its canonical CDDL.**
+  - **Status:** Decided
+  - **Decision:** Keep the CDDL `profile-pair` map unchanged: it records the
+    tree-format version and chunk profile, plus its existing optional
+    fields. The identity profile is fixed by the store's `store-profile`
+    under OBJ-8 and is not repeated in each commit. Correct REF-9, its
+    schematic commit description, and the glossary without renumbering any
+    requirement.
+  - **Rationale:** REF-9 said a commit records the identity profile, but
+    the normative `profile-pair` CDDL has no such field. A reader cannot
+    encode the prose claim without inventing a new key and changing commit
+    identities. The store already binds one identity profile to its
+    content, so the CDDL and OBJ-8 yield one unambiguous profile choice.
+  - **Alternatives considered:** Add an identity-profile key to every
+    commit (rejected: redundant with the store invariant and changes the
+    canonical commit preimage); leave the prose conflict in place
+    (rejected: implementations could assign incompatible commit identities).
+  - **Affects:** REF-9, OBJ-8, `reference/terrane-v1.cddl` §`profile-pair`,
+    and the glossary.
+
+- **[D-28] Classify invalid read ranges within the closed store outcomes.**
+  - **Status:** Decided
+  - **Decision:** The store outcome `invalid` covers malformed requests and
+    out-of-bounds ranges as well as rejected uploads. An invalid upload
+    carries its failing rule ID; an out-of-bounds range carries a `range`
+    diagnostic. The existing wire mapping of a range beyond pack end to
+    `OUT_OF_RANGE` remains unchanged. Do not add another store outcome.
+  - **Rationale:** STORE-4 requires exact ranged reads and STORE-30 closes
+    the outcome set, but the original `invalid` description applied only
+    to uploads. An out-of-bounds range cannot truthfully be `ok`, `absent`,
+    or `unsupported`, while the wire error table already specifies its
+    result. The broader `invalid` meaning completes the store taxonomy
+    before the T1 trait freeze.
+  - **Alternatives considered:** Add a store `out-of-range` outcome
+    (rejected: expands the closed taxonomy); return `absent` (rejected:
+    the content exists); return `unsupported` (rejected: ranged reads are
+    supported, but the requested range is invalid).
+  - **Affects:** STORE-4, STORE-30, and `reference/errno-mapping.md`'s
+    range-beyond-pack-end mapping.
+
+- **[D-29] Identify corrupt refs within the store error taxonomy.**
+  - **Status:** Decided
+  - **Decision:** Keep one `corrupt` outcome, with a typed subject that is
+    either an immutable identity or a ref name. Ref records and reflog
+    gaps that fail verification report the ref-name subject. Preserve the
+    existing quarantine or discard behavior for bad stored data.
+  - **Rationale:** REF-5 and REF-23 require malformed refs and sequence
+    gaps to fail, while STORE-30 forbids an outcome outside its table.
+    The original `corrupt(id)` description only named immutable content;
+    classifying a valid request for bad stored ref data as `invalid` would
+    blame the caller. A typed subject gives the same closed outcome a
+    truthful diagnostic before the T1 store-trait freeze.
+  - **Alternatives considered:** Add `corrupt-ref` (rejected: expands the
+    closed taxonomy); return `invalid` (rejected: the request is valid).
+  - **Affects:** REF-5, REF-23, STORE-30, and the store error table.
+
+- **[D-30] Separate index-tree byte keys from filesystem path keys.**
+  - **Status:** Decided
+  - **Decision:** TREE-1/2/4/6 path-component and ancestor rules apply to
+    ordinary trees. Index trees use opaque, nonempty byte keys formed as
+    DRV-12 specifies; NUL and slash are ordinary key bytes. They retain
+    unsigned-byte order and the 4 096-byte total key limit. A commit is
+    rejected if a configured indexed value would make a longer key.
+  - **Rationale:** DRV-12 concatenates canonical attribute-value bytes and
+    an object hash. Those bytes may contain NUL, slash, or components over
+    255 bytes; TREE-32 also forbids directory entries in an index tree.
+    Applying the path grammar and ancestor rule there would make common
+    valid index keys impossible. This correction keeps the same node CBOR
+    encoding and requirement IDs before the T1 tree-format freeze.
+  - **Alternatives considered:** Escape index bytes into path components
+    (rejected: changes the DRV-12 key identity and ordering); synthesize
+    directory entries (rejected: violates TREE-32).
+  - **Affects:** TREE-1, TREE-2, TREE-4, TREE-6, TREE-32, DRV-12, and
+    tree key validation.
+
+- **[D-31] Make the feature matrix target-compatible and milestone-scoped.**
+  - **Status:** Decided
+  - **Decision:** CRATE-29 tests no-default features, every individual
+    supported feature, and all mutually compatible features on each target
+    supported by the current implementation milestone. Target-restricted
+    features must be explicitly excluded or rejected on incompatible
+    targets. A newly supported target enters the matrix before its
+    milestone exits. An installed compiler target alone does not declare
+    product support.
+  - **Rationale:** The original wording required every feature alone and
+    all features together on every supported target, while CRATE-8 calls
+    `tokio` a native binding and `wasm` a WebAssembly-host binding. Their
+    all-features combination cannot be a valid I/O consumer, and native
+    filesystem surfaces cannot run in a WebAssembly host. The matrix must
+    prove each supported configuration without requiring an invalid one
+    to build or silently omitting an introduced target.
+  - **Alternatives considered:** Require all-features on every target
+    (rejected: contradicts native-only and WebAssembly-only features);
+    omit target-limited features from the gate entirely (rejected: leaves
+    feature declarations unchecked).
+  - **Affects:** CRATE-8, CRATE-29, `gate:feature-matrix`, and the
+    T1/B-edge target transition.
+
+- **[D-32] Align commit identity prose with the signed canonical record.**
+  - **Status:** Decided
+  - **Decision:** A commit identity hashes its complete canonical record,
+    including key 8 when a signature is present. The signature preimage
+    continues to omit key 8. Correct OBJ-21 without changing the CDDL,
+    golden vectors, identity domains, or requirement IDs.
+  - **Rationale:** OBJ-21 excluded signatures from identity, but the CDDL
+    explicitly includes key 8 in the identity preimage, and the normative
+    commit, ref, reflog, and attribute vectors use that signed-record hash.
+    Keeping the canonical format and vectors avoids incompatible commit
+    names and separates content addressing from signature calculation.
+  - **Alternatives considered:** Hash the unsigned signature preimage
+    (rejected: contradicts the CDDL identity rule and changes dependent
+    golden vectors); leave the contradictory prose (rejected: readers
+    could compute different identities for one stored commit).
+  - **Affects:** OBJ-21, PROV-3, and the commit identity/signature preimage
+    distinction in the CDDL and golden vectors.
+
+- **[D-33] Encode deletion conflicts within the existing entry schema.**
+  - **Status:** Decided
+  - **Decision:** Conflict candidates are the ordered sides, with the base
+    carried separately. A whiteout candidate represents an absent side.
+    Correct ALG-17 to agree with TREE-31 and the canonical CDDL.
+  - **Rationale:** The prose's three optional candidates contradicted the
+    CDDL's complete entries and separate nullable base. Whiteouts already
+    encode deletion without adding a new entry type or changing vectors.
+  - **Affects:** ALG-17 and TREE-31; requirement IDs and CDDL stay stable.
+
+- **[D-34] State probabilistic prolly complexity accurately.**
+  - **Status:** Decided
+  - **Decision:** Mutation and comparison costs are expected bounds;
+    boundary resynchronization can take O(n) on adversarial inputs. Require
+    localized rechunking and unchanged-subtree reuse explicitly.
+  - **Rationale:** TREE-22's threshold depends on accumulated node size.
+    A point edit can therefore shift later boundaries, contradicting the
+    strict path-only rewrite claim in ALG-1. Exact canonical boundaries and
+    history independence take precedence over an impossible worst-case
+    bound. This does not permit unconditional whole-tree rebuilding.
+  - **Affects:** ALG-1, ALG-12, ALG-15, ALG-27 and the complexity summary;
+    TREE-21 to TREE-24 and encoded identities remain unchanged.
+
+- **[D-35] Delegate schema interpretation at backend admission.**
+  - **Status:** Decided
+  - **Decision:** The first admitting store invokes a configured pure
+    format validator for meta schemas before publishing bytes. Format code
+    owns interpretation; backend code owns validation invocation, identity
+    verification, and visibility. Dedup shortcuts require equivalent
+    admission context, including final versus non-final chunk position.
+  - **Rationale:** STORE-33 requires schema validation at the backend while
+    ARCH-2 forbids the store from interpreting manifests, nodes, or commits.
+    A configured validator satisfies both; an unchecked caller assertion or
+    validation only in a combinator does not.
+  - **Affects:** ARCH-2, STORE-33 and CDC-12 to CDC-18; no encoded format or
+    requirement ID changes.
+
+- **[D-36] Reconcile property bindings and registry types.**
+  - **Status:** Decided
+  - **Decision:** Encode an explicit inheritance flag using the reserved
+    text-map wrapper `{"inherit": bool, "value": property-value}`; bare
+    values retain their bytes and mean true. Use named text keys for quota
+    fields, as required by the property-value CDDL. Follow DOM-5 reference
+    ordering at graft admission and DOM-2 for effective overrides. Clarify
+    class.magic and conditional ELF/shebang attribute requirements, and
+    exclude the primary manifest hash from secondary hash requirements.
+  - **Rationale:** The prose lacked an inheritance encoding; integer quota
+    keys contradicted the CDDL; PROP-27 allowed disclosure forbidden by
+    DOM-5; classifier names did not identify required attributes; and the
+    primary hash has no derived attribute. These fixes preserve the existing
+    CDDL, canonical bare-property bytes, and all golden vectors.
+  - **Affects:** PROP-1, PROP-18, PROP-19, PROP-27, PROP-28, DOM-2, DOM-5,
+    and the property registry. Requirement IDs remain unchanged.
+
+- **[D-37] Reconcile pack envelopes and dictionary identity fields.**
+  - **Status:** Decided
+  - **Decision:** Data pack bodies include their codec envelope; meta
+    bodies are canonical raw bytes. Raw data stored length includes the
+    codec byte; plaintext length excludes it. The v1 two-byte dictionary
+    field is reserved zero; codec 2's 32-byte chunk identity is authoritative.
+    Require intact embedded-index recovery; unsupported unframed scanning
+    fails explicitly and quarantines the damaged pack.
+  - **Rationale:** Raw-length prose contradicted the codec-first body
+    format, the small dictionary field had no registry or mapping to CDC-9,
+    and raw bodies cannot be safely scanned without framing. Preserve
+    fixed index widths and the authoritative registered dictionary domain.
+  - **Affects:** PACK-4, PACK-7 to PACK-9, CDC-7, CDC-9 and the binary CDDL
+    comments. No existing golden bytes or requirement IDs change.
+
+- **[D-38] Report root metadata separately in tree diffs.**
+  - **Status:** Decided
+  - **Decision:** Preserve ALG-13's three entry change kinds and add a
+    separate before/after root-property report.
+  - **Rationale:** TREE-33 makes properties part of root identity and diff,
+    but TREE-3 gives the implied root no entry. Inventing a root path entry
+    would contradict the namespace model.
+  - **Affects:** ALG-13, TREE-3 and TREE-33; no encoded format changes.
+
+- **[D-39] Preserve structural conflicts as conditional directories.**
+  - **Status:** Decided
+  - **Decision:** A conflict containing a directory candidate may be an
+    ancestor of retained descendants. They remain conditional on selecting
+    a directory side; selecting a nondirectory removes them. Ordinary
+    nondirectory ancestors remain invalid.
+  - **Rationale:** A directory-versus-file merge can conflict at the parent
+    while the directory side changes a child. Rejecting the resulting tree
+    contradicts ALG-17. Conditional descendants preserve existing entry
+    encodings and require explicit conflict-aware handling.
+  - **Affects:** TREE-4, TREE-31, ALG-16 to ALG-19; no CDDL or golden byte
+    changes, and conflict-free tree validation remains unchanged.
+
+- **[D-40] Separate unresolved root metadata from entry conflicts.**
+  - **Status:** Decided
+  - **Decision:** Merge root properties per key with three-way equality.
+    Explicit side preference may resolve concurrent changes; otherwise
+    return a typed conflict with all three property maps for caller resolution.
+    ALG-17's nonfailure rule and ALG-18's `error` restriction apply to entries.
+  - **Rationale:** The implied root has no entry, and property types have
+    no conflict-value encoding. Fabricating one violates PROP-1 and TREE-3;
+    silently choosing a side loses concurrent metadata changes.
+  - **Affects:** ALG-16 to ALG-18, TREE-3, TREE-33 and PROP-1; existing
+    canonical encodings and requirement IDs remain unchanged.
+
+- **[D-41] Rebuild locations without inventing deleted-pack state.**
+  - **Status:** Decided
+  - **Decision:** Reconstruct content locations from immutable per-pack
+    indexes, and reconcile state using durable GC trash records, deletion
+    confirmations, and the preceding generation's retained tombstones.
+    Use authoritative publication metadata for generations.
+  - **Rationale:** Per-pack indexes contain neither tombstones nor generation
+    fields. Recreating that state from their bytes alone is impossible and
+    would resurrect content forbidden by PACK-18. The registered GC and
+    generation records provide the missing durable facts without a database.
+  - **Affects:** PACK-17 to PACK-20, BKT-4, GC-15 and GC-20; no wire or
+    on-disk layout changes, and requirement IDs remain stable.
+
+- **[D-42] Reuse merge subtrees subject to canonical boundary compatibility.**
+  - **Status:** Decided
+  - **Decision:** Select a side's entire range when base equals the other
+    side, without comparing those entries. Reuse its immutable subtree when
+    canonical cuts fit the result; otherwise rechunk the affected edge
+    regions and resume sharing at compatible boundaries.
+  - **Rationale:** A TREE-22 split-before cut depends on the following item's
+    stored size. A neighboring merge change can invalidate that cut even
+    when the selected subtree is unchanged. Unconditional physical splicing
+    would violate canonical boundaries and history independence. This keeps
+    ALG-15's semantic shortcut and requires measurable compatible reuse.
+  - **Affects:** ALG-15 and TREE-21 to TREE-24; canonical encoding rules and
+    requirement IDs remain unchanged.
+
+- **[D-43] Preserve effective trust when removing a root boundary.**
+  - **Status:** Decided
+  - **Decision:** Flatten must preserve the effective trust conjunction or
+    refuse an incompatible property context, in addition to comparing
+    domain, store, and ACL boundaries.
+  - **Rationale:** A graft's target can require a narrower trust selector
+    than its parent. Discarding that context while inlining its entries
+    exposes previously invisible entries, violating PROV-14 and PROV-15
+    and ALG-6's observable namespace equivalence.
+  - **Affects:** ALG-6, ALG-7 and PROV-14 to PROV-15; no encoding changes
+    or new property types, and requirement IDs remain stable.
+
+- **[D-44] Match golden descriptor coverage to immutable identity.**
+  - **Status:** Decided
+  - **Decision:** TEST-2 requires descriptors for registered immutable
+    media types and encoding vectors for mutable and wire records. Formats
+    introduced later add their vectors with their conformance gates.
+  - **Rationale:** Mutable refs, capabilities, and store capability records
+    do not have immutable-content identity domains. Fabricating descriptors
+    for them contradicts OBJ-2 and the identity registry.
+  - **Affects:** TEST-2; existing golden bytes and requirement IDs remain
+    unchanged. Missing pack and canonical internal-node vectors are still
+    required, rather than excused by this correction.
+
+- **[D-45] Separate derived value determinism from producer provenance.**
+  - **Status:** Decided
+  - **Decision:** Equal plaintext and function versions produce equal
+    attribute values and function metadata. Records retain their distinct
+    producers, remain immutable, and coexist across function versions.
+  - **Rationale:** DRV-1 requires producer provenance in each record while
+    DRV-2 required different producers to produce identical record bytes.
+    Those requirements contradict each other; removing provenance would
+    break PROV-9 and attribute trust selectors.
+  - **Affects:** DRV-1, DRV-2, DRV-8 and PROV-9; no CDDL or existing golden
+    byte changes, and requirement IDs remain unchanged.
+
+- **[D-46] Resolve entry introductions without self-referential hashes.**
+  - **Status:** Decided
+  - **Decision:** Add optional profile-pair key 7 for signed, ordered
+    root/path receipts. `current` means the externally calculated containing
+    commit identity; sources name verified commit/root/path witnesses.
+    Attribute origins and explicit reintroduction sources remain separate.
+    Source commits are provenance GC roots independently of parent edges.
+    Selector memos include immutable view and verified evidence context.
+    Signing key identifiers name the terminal public key in lowercase hex.
+  - **Rationale:** Embedding a new commit's hash in an entry changes the
+    tree and consequently that same commit's hash, making PROV-7 and
+    TREE-16 impossible to construct. Parent history alone cannot preserve
+    a graft's introduction from an unrelated history. Memos keyed only by
+    introduction and selector conflate different acceptance histories.
+  - **Affects:** TREE-16, PROV-7 to PROV-10, PROV-11, PROV-16, PROV-18,
+    PROV-20, GC-5 and profile-pair CDDL. This draft format correction keeps
+    every existing encoding and golden vector unchanged when key 7 is
+    absent; decoders explicitly recognize the extension before the format
+    freeze. Requirement IDs remain stable.
+
+- **[D-47] Register pack kinds for every stored metadata domain.**
+  - **Status:** Decided
+  - **Decision:** Assign pack kinds 7, 8 and 9 to derived attribute
+    records, policy objects and recipe memos, respectively. Meta packs
+    accept kinds 1 through 9; all existing kind assignments stay fixed.
+  - **Rationale:** DRV-3 requires attribute records in meta packs, while
+    PACK-13 excluded their registered identity domain. Policy objects and
+    recipe memos had the same missing storage representation. Mapping them
+    to another kind would violate PACK-6's domain separation.
+  - **Affects:** PACK-6, PACK-13, DRV-1, DRV-3, DRV-21 and pack-kind CDDL.
+    This draft correction registers previously unrepresentable metadata
+    before the format freeze; existing encodings, identities and golden
+    vectors remain unchanged. Requirement IDs remain stable.
+
+- **[D-48] Make filesystem coordination and conflict mutability explicit.**
+  - **Status:** Decided
+  - **Decision:** Conflict refs use CAS as REF-3 and the key registry
+    require. Register filesystem-only stable lock inodes and unpublished
+    same-directory staging names separately from logical bucket keys.
+  - **Rationale:** The layout called conflict refs create-once, preventing
+    their required resolution. BKT-13 and BKT-14 require temporary writes
+    and exclusion while BKT-1 otherwise prohibited their filesystem names.
+  - **Affects:** REF-3, BKT-1 to BKT-3, BKT-13 and BKT-14. Logical bucket
+    keys and encoded records remain unchanged; requirement IDs stay stable.
+
+- **[D-49] Exclude the filesystem current-directory ref segment.**
+  - **Status:** Decided
+  - **Decision:** REF-1 rejects a segment equal to `.` as well as its
+    existing consecutive-dot restriction. Other dotted names stay valid.
+  - **Rationale:** A `.` segment aliases another key on a filesystem,
+    contradicting BKT-3's identical layout and REF-1's distinct names.
+  - **Affects:** REF-1 and BKT-3; no encoding or golden changes and no
+    requirement renumbering.
+
+- **[D-50] Publish index generations through an authoritative pointer.**
+  - **Status:** Decided
+  - **Decision:** Optional CAPABILITIES key 9 selects the current index
+    generation after its manifest is durably stored. Publication uses CAS,
+    never decreases the generation, and survives startup probes unchanged.
+    Manifest shard entries omit both filter fields when no filter exists.
+  - **Rationale:** STORE-11 forbids authoritative LIST, but the layout had
+    no way to discover a published generation after reopening. Requiring
+    filter fields also prevented publishing a shard without a filter.
+  - **Affects:** BKT-4, BKT-10, STORE-11, PACK-17 and their CDDL records.
+    This draft correction precedes the format freeze and preserves existing
+    encodings when key 9 is absent and filter fields are present.
+    Requirement IDs remain stable.
+
+- **[D-51] Include required hard-link rewrites in the graft delta.**
+  - **Status:** Decided
+  - **Decision:** Graft replacement accounts for removed inline entries
+    and surviving aliases whose canonical hard-link member was removed.
+    Unrelated entries remain excluded from the mutation scan.
+  - **Rationale:** TREE-11 stores the smallest member key in every alias.
+    Removing that member necessarily changes all remaining aliases, which
+    contradicts an unconditional O(log n) graft bound independent of them.
+  - **Affects:** ALG-1, ALG-2 and TREE-11. No encoding or identity changes;
+    requirement IDs remain stable.
+
+- **[D-52] Inventory published pack containers in generation manifests.**
+  - **Status:** Decided
+  - **Decision:** Optional manifest key 5 records ordered pack ids with
+    whole-pack and detached-index identities and sizes. Inventory entries
+    require both artifacts to be durable, verified and mutually consistent.
+    The content interface names all registered stored identity domains.
+  - **Rationale:** STORE-1 to STORE-3 require whole-pack content operations,
+    but packs use random-id keys and cannot be nested in pack bodies. Without
+    an authoritative mapping, lookup by pack hash would require LIST, which
+    STORE-11 prohibits. Attribute, policy and memo domains were also missing
+    from the interface's descriptive domain list despite OBJ-2 and DRV-3.
+  - **Affects:** STORE-1 to STORE-5, STORE-11, BKT-4, PACK-10, PACK-14 and
+    generation-manifest CDDL. This pre-freeze draft correction preserves
+    existing manifest bytes when key 5 is absent and every existing kind
+    assignment and bucket key. Requirement IDs remain stable.
+
+- **[D-53] Read collector metadata from meta packs.**
+  - **Status:** Decided
+  - **Decision:** GC-9 prohibits reading data-pack chunk bodies during mark;
+    verified meta objects may be read from meta packs, and a data pack's
+    membership comes from its detached index.
+  - **Rationale:** PACK-13 stores metadata in separate meta packs. An absolute
+    ban on reading any pack contradicts GC-5's required commit, tree, manifest,
+    and attribute traversal. Metadata reads preserve the intended avoidance
+    of reading file content during collection.
+  - **Affects:** GC-5, GC-9 and PACK-13. No identity, encoding, or bucket-key
+    change; requirement IDs remain stable.
+
+- **[D-54] Carry the collector epoch in tombstone records.**
+  - **Status:** Decided
+  - **Decision:** Tombstone key 5 carries the collector fencing epoch and is
+    mandatory for new collection tombstones.
+  - **Rationale:** GC-23 requires every checkpoint and tombstone to carry its
+    epoch, but the Tombstone CDDL omitted that field. Fencing cannot depend on
+    an unrecorded or inferred epoch.
+  - **Affects:** GC-15, GC-23 and Tombstone CDDL. This correction precedes the
+    T1 encoding freeze; keys 1 to 4 and requirement IDs remain stable.
+
+- **[D-55] Register the planned SDK checkout surface.**
+  - **Status:** Decided
+  - **Decision:** Register `sdk` with a `directory-path` endpoint, the
+    `surface-sdk` feature, and `gate:sdk-checkout`. It realizes an authorized
+    view through the repository into a new private directory. The snapshot
+    requires an explicitly pinned exposure; follow mode is rejected.
+  - **Rationale:** T1 requires an SDK checkout surface, but SURF-9's closed
+    registry omitted that name. A private bypass would contradict CRATE-24
+    and SURF-1 to SURF-3.
+  - **Affects:** CRATE-22 to CRATE-28, SURF-1 to SURF-3 and SURF-9. This
+    pre-freeze draft addition preserves existing surface names and IDs.
+
+- **[D-56] Register resumable collector checkpoints.**
+  - **Status:** Decided
+  - **Decision:** Define version-one root, mark and state records. Immutable
+    mark revisions are selected by a fenced CAS state with their hashes,
+    pending frontier, and least restrictive expanded commit contexts.
+  - **Rationale:** GC-7 requires incremental checkpoints, but a single
+    create-once shard key cannot publish successive durable checkpoints.
+    GC-24's resume safety also needs the unexpanded frontier and retention
+    contexts, not only hashes already marked.
+  - **Affects:** GC-4 to GC-7, GC-23, GC-24 and their CDDL/key registry. New
+    keys remain under `gc/<cycle>/`; existing keys and IDs remain stable.
+    This draft correction precedes T1's encoding and bucket-key freeze.
+
+- **[D-57] Distinguish a rejected CAS from an indeterminate storage result.**
+  - **Status:** Decided
+  - **Decision:** Prepublication failures and compare mismatches preserve the
+    ref against this writer. An unavailable result from the final atomic CAS
+    may have applied; stop the writer session, preserve the error, and require
+    an authoritative re-read before another advance. A failed re-read is not
+    absence and an uncertain durability result is not an acknowledgement.
+  - **Rationale:** REF-12 promised an unchanged ref on every failure, while
+    STORE-30 permits backend failures. An atomic rename may succeed before
+    its directory sync fails, and a remote CAS may apply before its response
+    is lost. Rollback or a poison marker can suffer the same storage failure;
+    neither can prove universal rollback. Atomicity still holds, but outcome
+    certainty cannot be inferred from an unavailable response.
+  - **Affects:** REF-12, STORE-7 and STORE-30. The closed error taxonomy,
+    record bytes, ordering, mismatch semantics and requirement IDs remain
+    unchanged. This correction precedes T1's store-interface freeze.
+
+- **[D-58] Bind historical authorization context into commits.**
+  - **Status:** Decided
+  - **Decision:** Profile-pair key 8 carries the original ref, registered
+    surface, locality and sorted affected root/domain pairs. New authored
+    commits require it; legacy draft records retain explicit trusted-context
+    verification. Historical verification uses the original context, while
+    current fork, tag, read and commit operations use their current grants.
+  - **Rationale:** Embedded capabilities can restrict ref, surface, locality,
+    root and domain, but the prior commit schema omitted these request fields.
+    Substituting a destination ref or current locality breaks legitimate
+    historical verification and can fabricate the scope of original authority.
+    Signatures bind the context; canonical tree witnesses and current ACL
+    checks still establish the facts claimed by it.
+  - **Affects:** PROV-2 to PROV-4, AUTH-19, AUTH-26, REF-31 and profile-pair
+    CDDL. Key 8 is optional for legacy decoding, preserving existing bytes.
+    This correction precedes T1's identity and encoding freeze.
+
+- **[D-59] Authenticate side-only attribute producers without hash cycles.**
+  - **Status:** Decided
+  - **Decision:** Optional AttrRecord key 6 binds the exact unsigned record
+    to the terminal key of its already sealed producer commit, using the
+    registered detached-signature preimage. Trust requires the verified
+    producer commit and a canonical witness for that same object's reachability.
+    Legacy unsigned records need matching verified inline origin evidence.
+  - **Rationale:** DRV-4 makes inline attributes optional, while PROV-9 and
+    attr-by require authenticated producer evidence. A producer hash alone
+    is forgeable and requiring the future record hash inside its producer
+    commit would create a cycle. The detached signature is evidence independent
+    of content introduction; recomputation verifies value, not authorship.
+  - **Affects:** DRV-1, DRV-2, DRV-4, DRV-10, PROV-9, PROV-11 and PROV-16.
+    Existing keys 1 through 5 remain byte-identical when key 6 is absent;
+    signed and unsigned variants remain distinct immutable records. This
+    correction precedes T1's encoding freeze.
+
+- **[D-60] Specify checkpoint integrity hashes.**
+  - **Status:** Decided
+  - **Decision:** GcState checkpoint pointers are raw BLAKE3-256 of the
+    selected canonical GcMark record bytes, verified on resume.
+  - **Rationale:** D-56 introduced digest pointers but omitted their preimage.
+    A GcMark is a collector record, not a binary Index immutable; using the
+    index identity domain would misidentify its format.
+  - **Affects:** GC-7, GC-24 and GcState CDDL semantics. No field, existing
+    identity domain or requirement ID changes; this precedes T1's freeze.
+
+- **[D-61] Preserve implicit private ownership across root edits.**
+  - **Status:** Decided
+  - **Decision:** An edit materializes the previous effective private label
+    as an ordinary explicit domain property before encoding its new root.
+    Unrelated roots still receive distinct implicit private defaults.
+  - **Rationale:** Hashing a changed root changes its implicit label; treating
+    that as a new incomparable owner makes ordinary private edits unusable.
+    Preserving the already effective property keeps the boundary unchanged
+    without a stable-ID field, a hash cycle or cross-domain deduplication.
+  - **Affects:** DOM-1 to DOM-4 and PROP inheritance. No new encoding or key;
+    this clarification precedes T1's freeze.
+
+- **[D-62] Retain provenance metadata without retaining unrelated old data.**
+  - **Status:** Decided
+  - **Decision:** Witness-only traversal keeps the metadata dependencies used
+    by verified entry/attribute history. Pending bit 3 and GcState key 9
+    distinguish witness-only and full expansion; ordinary commit cutoffs
+    remain in key 7. Retention-witness roots preserve excluded log policy
+    evidence for later collections.
+  - **Rationale:** Dropping old parent metadata can destroy live introduction
+    proofs. Treating every proof commit as an unbounded full root instead
+    retains unrelated old chunks. A marked digest alone also cannot prove
+    that its children were expanded in both modes after a crash.
+  - **Affects:** GC-3, GC-5 to GC-7, GC-24, GC-28, PROV-7, PROV-9 and
+    PROV-10. These collector record additions precede T1's encoding freeze;
+    existing identity domains and requirement IDs remain stable.
+
+- **[D-63] Separate immutable target selection from live read policy.**
+  - **Status:** Decided
+  - **Decision:** A commit-target view stays on its exact immutable commit.
+    Separate current-authority lookups still enforce live ACL, revocation
+    and deletion policy, using a trusted instance binding or the verified
+    original authoring ref as the default authority.
+  - **Rationale:** SURF-6's blanket ban on any ref lookup conflicted with
+    AUTH-30's immediate ACL revocation. Historical immutable ACLs are proof
+    of prior policy, not a substitute for current authority. Policy lookup
+    must not move a pinned target to a new head.
+  - **Affects:** SURF-6, AUTH-26, AUTH-30 and PROV-23. No target, record or
+    selector grammar changes; this precedes T2's surface freeze.
+
+- **[D-64] Identify annotated tag signers by their terminal public key.**
+  - **Status:** Decided
+  - **Decision:** A new SnapshotEnvelope names the lowercase hexadecimal
+    terminal Ed25519 public key and signs its canonical keys 1 through 4 map.
+    Verification binds that key to the tagging capability and expected name
+    and commit; no extra signature prefix is introduced.
+  - **Rationale:** The prior signer identifier was unspecified. An issuer
+    rotation key ID cannot identify an attenuated subject key. The terminal
+    identifier matches signed-by-key and the existing CDDL preimage.
+  - **Affects:** REF-20 and SnapshotEnvelope. Existing field numbers and
+    preimage layout remain unchanged; this precedes T1's encoding freeze.
+
+- **[D-65] Select immutable reflog proposals instead of reserving a sequence.**
+  - **Status:** Decided
+  - **Decision:** New branch records carry a secure-random 32-byte candidate
+    ID. A create-once sibling key `logs/<ref>/<seq>:<candidate-id>` stores the
+    whole proposal and complete predecessor. Whole head CAS selects committed
+    history, after exact candidate/expect/new checks. Reads follow selected
+    predecessors without LIST; restarted attempts receive fresh IDs. Wire
+    RefValue and RefLogEntry carry their complete canonical records.
+  - **Rationale:** A sequence-only create-once append abandoned before CAS
+    permanently occupies the next slot, contradicting REF-13 retry progress.
+    Completing or deleting it needs authority and fencing not present in the
+    old record. A commit-only selector still collides across policies,
+    predecessors and reasons. Random proposal IDs avoid self-hash cycles,
+    and the colon sibling filename coexists with old files without colliding
+    with descendant ref names. Full wire records preserve STORE-7/10.
+  - **Retention:** Only selected history supplies content roots. Required
+    selected-chain/snapshot metadata remains readable even when content
+    retention expires; never-selected proposals do not become content roots.
+    Fresh candidates prevent old proposal reuse from bypassing the original
+    commit deadline; they do not refresh the age of deduplicated content.
+  - **Affects:** REF-4, REF-12, REF-13, REF-21 to REF-23, REF-28, STORE-8, BKT-1 to
+    BKT-3, GC-4 and record/key/wire schemas. Optional legacy record fields
+    retain existing bytes; proposal IDs are not immutable content identities.
+    This draft correction precedes T1's record/key and T3's wire freezes.
+
+- **[D-66] Distinguish initial draft corrections from released revisions.**
+  - **Status:** Decided
+  - **Decision:** Before the initial format freeze and first conforming
+    release, an explicit D-n-backed correction may advance the draft number
+    without replacing the affected version-one media type. Unaffected legacy
+    bytes retain their interpretation and identities. Implementation freezes
+    remain binding regardless of draft status; released formats follow the
+    existing media-type and specification-version revision rules.
+  - **Rationale:** The initial implementation exposed missing fields and
+    contradictory draft requirements before any frozen or conforming release.
+    Requiring a separate released-format version for each such correction
+    would falsely imply multiple supported releases. Silent draft changes
+    would instead erase the compatibility obligation. Recording each change
+    and preserving unaffected bytes makes the distinction explicit.
+  - **Affects:** README versioning and the pre-freeze corrections recorded
+    in D-35 through D-65. No existing requirement ID or identity is changed.
+
+- **[D-67] Inventory authoritative ref names before publication.**
+  - **Status:** Decided
+  - **Decision:** Optional `CAPABILITIES` key 10 is a complete, sorted,
+    unique, monotone list of registered ref names. New buckets initialize
+    it empty under authoritative fresh creation. A name is durably registered
+    before its first ref write; probes and other capability CAS operations
+    preserve it. Legacy absence is unknown completeness and disables GC and
+    domain deletion until an authoritative exclusive migration establishes
+    a complete inventory.
+  - **Rationale:** GC and domain deletion must discover every authority root,
+    while STORE-11/BKT-8 forbid assuming complete bucket LIST results. A
+    caller-provided subset cannot prove absence. Monotone registration makes
+    a failed first write harmless and avoids deletion races from dropping
+    names. Comparing inventory and whole ref records under backend exclusion
+    prevents authorization of deletion from a stale subset.
+  - **Affects:** BKT-17, GC-1, GC-2, DOM-20 and Capabilities CDDL. Existing
+    absent-field bytes remain readable with explicitly unknown completeness.
+    This correction precedes T1's encoding and store-trait freeze.
+
+- **[D-68] Match fork authorization to the unchanged-tree fork commit.**
+  - **Status:** Decided
+  - **Decision:** The fork verb table describes ALG-32's fresh commit with
+    the source's unchanged tree and the source commit as its parent. The
+    principal needs `fork` on the source and `commit` on the destination,
+    as AUTH-23 already requires. No tree node is read or rewritten by fork.
+  - **Rationale:** The previous verb table said the first commit was the
+    source commit itself, contradicting ALG-32's parent requirement and
+    losing the new branch's authoring context. AUTH-23 already supplies the
+    necessary destination write authority, without granting source writes.
+  - **Affects:** ALG-32 and AUTH-22 to AUTH-24. Encodings, verb bit values
+    and requirement IDs remain unchanged.
+
+- **[D-69] Separate ordinary reflog selection from storage retention.**
+  - **Status:** Decided
+  - **Decision:** `retain` selects GC, lease, TTL or forever content retention.
+    GC uses `reflog_retain` duration or newest committed sequence count.
+    A counted record contributes its new commit, not an extra previous value.
+    Count contexts use `false` parent cutoffs: ordinary parents are metadata
+    witnesses, while independently selected snapshot roots expand fully.
+    Existing timestamp and null cutoffs retain their encodings and meaning.
+  - **Rationale:** REF-22 named a duration/count property but GC-3 treated
+    `retain=gc` as if it contained a duration. Ignoring either property loses
+    an explicit policy. Timestamps are advisory and cannot represent sequence
+    rank; unbounded parent traversal would silently turn count retention into
+    complete-history content retention. Separate full roots and witness edges
+    preserve exact counted content and the proofs needed to verify it.
+  - **Affects:** REF-22, GC-3, GC-5, GC-6, GC-28, GcRoot/Pending/State cutoff
+    unions and the registered reflog-count reason. Existing unaffected bytes
+    remain valid. This correction precedes T1's encoding freeze.
+
+- **[D-70] Bind tag publication to source authority without a commit session.**
+  - **Status:** Decided
+  - **Decision:** A guarded tag publication carries the exact authorized
+    source ref snapshot and its epoch. A fresh tag has sequence one and records
+    that observed source epoch, not an unspecified principal-wide counter.
+    Source `tag` authority permits both unannotated and annotated creation;
+    terminal-key signatures bind the exact new tag name and selected commit.
+    Current source authority and applicable target caveats are revalidated.
+    Existing-tag replacement/deletion still requires REF-2's admin authority.
+  - **Rationale:** REF-19 referred to a principal-wide epoch that no authority
+    or schema defines. Requiring a commit writer session would deny legitimate
+    tag-only grants, contradicting AUTH-22. Requiring admin for every new
+    annotation similarly adds a restriction absent from REF-20. An exact
+    guarded source snapshot supplies a defined authority fence while retaining
+    the token's actual grants and caveats.
+  - **Affects:** REF-19, REF-20, AUTH-22 and the tag verb table. Stored field
+    numbers, epoch width and SnapshotEnvelope signature bytes remain unchanged.
+
+- **[D-71] Distinguish GC placement retirement from identity quarantine.**
+  - **Status:** Decided
+  - **Decision:** Merged-record state zero remains live and state one remains
+    GC retirement of a placement. State two records an identity quarantine
+    that ordinary put, per-pack fallback and rebuild cannot clear. A verified
+    fresh upload may replace a state-one selected row with a fresh live pack,
+    while the old pack remains excluded through its durable GC evidence.
+    Quarantine survives deletion of its recorded pack until explicit verified
+    repair. All other state values remain reserved.
+  - **Rationale:** Treating GC retirement as identity corruption permanently
+    rejects valid content uploaded after collection. Treating quarantine as
+    ordinary retirement lets an upload or fallback silently readmit invalid
+    derived data. Distinct states preserve both fresh verified readmission and
+    sticky quarantine, without resurrecting an old physical placement or
+    making unrelated members unavailable.
+  - **Affects:** PACK-18, PACK-20, merged-record state registration, GC-15 and
+    DRV-2. Existing live and GC-tombstone bytes retain their meaning; the new
+    state is registered before T1's encoding freeze under D-66.
+
+- **[D-72] Bind algebra recipes to effective ownership and verified policy.**
+  - **Status:** Decided
+  - **Decision:** Register exact graft, overlay and merge argument schemas,
+    root-bound effective domain pairs, the verified-path and inert-any trust
+    profiles, versioned provenance-context tuples, and deterministic fold
+    preprocessing. Serialized ownership or trust evidence is never authority;
+    replay binds independently resolved ownership and freshly verified signed
+    histories before materialization.
+  - **Rationale:** ALG-28 identified a composite only by an operation and
+    root hashes, while inherited ownership and path-scoped trust can change
+    the result for identical roots. The generic argument map did not specify
+    these semantic inputs or distinguish recorded evidence from executable
+    authority. Explicit bindings make recipes reproducible without inventing
+    ownership from a new digest or accepting caller-manufactured receipts.
+  - **Affects:** ALG-28, ALG-36 to ALG-39, PROV-11 to PROV-14, DOM-2 and the
+    recipe CDDL. Existing no-domain overlay and ordinary merge bytes retain
+    their interpretation and identities. Context version one and four-field
+    fold preprocessing remain unchanged where no additional evidence is
+    needed. This correction precedes T1's initial encoding freeze.
+
+- **[D-73] Bind physical pack retirement to an active incarnation.**
+  - **Status:** Decided
+  - **Decision:** Register complete active `[pack-id, cycle, epoch]` bindings
+    in authoritative index manifest key 6. Publish the binding before trash;
+    restore clears it with the serving index change. Re-exclusion requires a
+    fresh cycle, tombstone and backend-derived deletion window. Final deletion
+    checks the current exact binding and durable trash evidence while fenced
+    against restore. All inventory and member paths honor the same exclusion.
+  - **Rationale:** A crash after restore can leave an old mature tombstone.
+    Reusing it during a later retirement deletes the pack before the new
+    recovery window expires. Tombstoning selected members alone also leaves
+    whole-pack/index inventory fallbacks able to serve the old physical pack.
+    An explicit current incarnation separates stale historical trash from
+    active exclusion without making GC retirement an identity quarantine.
+  - **Affects:** GC-15 to GC-17, GC-29, BKT-4, PACK-18 and index manifest CDDL.
+    Existing manifest fields and unaffected identities retain their meanings;
+    an absent legacy field means unknown exclusion completeness, never known
+    empty. This correction precedes T1's initial encoding freeze.
+
+- **[D-74] Preserve disclosures without retaining private source graphs.**
+  - **Status:** Decided
+  - **Decision:** Register embedded source-authority certificates for explicit
+    current reintroductions of file content, directory markers and symlink
+    bytes. Bind each certificate to the complete unsigned destination commit
+    with every typed certificate signature zeroed, then sign the real commit.
+    Verify all candidate origins before activating exact entry or parent audit
+    boundaries. Retain scoped historical authority keys independently of
+    source storage and persist proof-sensitive collector contexts.
+  - **Rationale:** Requiring full private source commits and trees to verify a
+    public reintroduction contradicts domain isolation, offline reopening and
+    private-domain erasure. Those records can expose unrelated sibling paths,
+    attributes, messages and tokens. A scoped authority attests the selected
+    source fact without claiming independently verified private signatures or
+    complete private ancestry. Whole-commit projection avoids signature cycles
+    and prevents certificate reuse on an altered destination record.
+  - **Affects:** PROV-7, PROV-10, PROV-13, PROV-18, PROV-20, PROV-22,
+    PROV-26 to PROV-30, DOM-7, DOM-24, GC-5, GC-7, GC-30, receipt and collector
+    CDDL, and the non-object purpose registry. Legacy receipt and context-free
+    collector bytes retain their meaning and identities. Special entry kinds
+    remain subject to their existing disclosure requirements. This correction
+    precedes T1's initial encoding freeze under D-66.
+
+- **[D-75] Authorize affected root units independently of Merkle propagation.**
+  - **Status:** Decided
+  - **Decision:** Define affected roots against the canonical first parent,
+    retaining root-unit grant and ACL semantics. Propagating a changed child
+    digest through otherwise unchanged graft descriptors does not require
+    writes to ancestor or sibling roots. Authenticate signed root claims and
+    every actual changed root/domain against original and current authority.
+    Removed roots retain prior policy witnesses; a fully certified audit-only
+    first parent requires complete fresh materialization and view-root scope.
+  - **Rationale:** PROV-4 named affected root paths without distinguishing an
+    actual permission unit from a structural ancestor digest change. Requiring
+    every candidate root denies a writer granted only a real nested root;
+    authorizing an ordinary entry spelling instead invents a permission
+    boundary that AUTH-29 forbids. Exact changes, witnessed root claims and
+    independently checked current authority avoid both failure modes. This
+    also preserves D-61's unchanged effective ownership and D-74's prohibition
+    on inferring absence or unchangedness from discarded private evidence.
+  - **Affects:** PROV-4, PROV-31, AUTH-19, AUTH-24, AUTH-26, AUTH-28 to AUTH-30,
+    DOM-1 and commit-context interpretation. Field numbers, byte shapes,
+    canonical ordering and unaffected identities remain unchanged; broader
+    valid historical root contexts remain verifiable. This clarification
+    precedes T1's initial freeze and preserves ALG-32's copied-tree fork cost.
+
+- **[D-76] Preserve original ACL administration and bootstrap authority.**
+  - **Status:** Decided
+  - **Decision:** Verify original and current administrative authority
+    independently for ACL changes and descendant delegation. Existing roots
+    use prior canonical policies and actual ancestors. Initial view roots use
+    the trusted original bootstrap ACL, retained for the physical authoring
+    authority, canonical ref and writer epoch. Matching or narrowing bootstrap
+    grants remains valid with `commit` alone. Descendant comparisons use their
+    governing ancestor, and ordinary store changes retain placement and commit
+    checks without an invented administrative requirement.
+  - **Rationale:** Current administrative credentials cannot repair a signed
+    ACL edit made without original authority. Conversely, requiring `admin`
+    for every initial ACL denies legitimate initialization already permitted
+    by its bootstrap policy. Mutable current configuration and candidate
+    self-grants cannot prove the original baseline, and token issuers may span
+    multiple physical authorities. An explicit trusted original-context seam
+    preserves both verification and destination-only disclosure reopening.
+  - **Affects:** AUTH-25, AUTH-26, AUTH-28, PROP-5, PROP-16, PROV-4 and
+    PROV-31. Requirement IDs, gate names, signed fields, canonical bytes and
+    identities remain unchanged. Historical token verification remains
+    separate from current ACL intersection under D-58. This clarification
+    precedes T1's initial freeze.
+
+- **[D-77] Preserve nested ref names in the portable layout.**
+  - **Status:** Decided
+  - **Decision:** Use layout version 2 with `:record` ref/sidecar leaves and
+    `:legacy` migrated numbered-log leaves in both object and filesystem stores.
+    Preserve public ref grammar, record encodings and unsuffixed ref inventories.
+    Keep version-1 compatibility read-only; require complete authoritative source
+    evidence and external quiescent write fencing before any migration. Ordinary
+    opens never silently upgrade. Implementations may refuse migration until
+    its complete evidence and provider fencing are available.
+  - **Rationale:** REF-1 permits both `a` and `a/b`, but an unsuffixed ref file
+    obstructs the directory needed by its descendant. A numbered legacy log
+    similarly obstructs a valid decimal ref segment. The actual filesystem
+    regression reproduces the collision. Colon suffixes cannot alias ref
+    segments, preserve BKT-3's identical logical keys and avoid narrowing the
+    namespace. A version CAS cannot fence an already-open object-store writer's
+    independent old ref ETag, and ref inventory alone cannot prove every legacy
+    log or sidecar relocated. Exclusive migration and durable exact-byte recovery
+    avoid competing authorities and incomplete cleanup.
+  - **Affects:** REF-1, REF-4, BKT-1 to BKT-3, BKT-5, BKT-6, BKT-10,
+    BKT-13, BKT-14 and BKT-17. Requirement IDs and gate names remain stable.
+    The layout-version field changes for new namespaces; immutable identities,
+    token patterns, candidate keys and ref/log record bytes are unchanged.
+    This correction precedes T1's initial freeze.
+
+- **[D-78] Retain physical incarnations and recoverable deletion intent.**
+  - **Status:** Decided
+  - **Decision:** Register protected creation journals with secure fresh
+    incarnation nonces and durable Pending-before-mutation ordering. Qualify
+    local trash age with a full same-instance monotonic wait after exact
+    committed observation. Retain immutable deletion intent, index witnesses
+    and exact journal ownership so partial unlink recovery can finish under
+    current lease and complete current-root authorization. Synchronize the
+    expected nofollow regular object through one descriptor; keep restore
+    cancellation ordered before serving-generation changes.
+  - **Rationale:** Equal bytes, reused inodes, filesystem timestamps and
+    Tombstone fields do not prove a recovery window for a current physical
+    incarnation. Invalidating age before unlink without durable operation
+    ownership strands extant files after a crash. Secure versions, a
+    conservative elapsed wait and exact recoverable intent prevent early
+    deletion while preserving eventual reclamation and single-operation
+    restore. Physical intent never substitutes for current marks or resolves
+    the concurrent publication/dedup race on its own.
+  - **Affects:** GC-10 to GC-16, GC-22 to GC-24, GC-29, BKT-13, BKT-14,
+    the control-key registry, collector CDDL and configured filesystem binding.
+    Requirement IDs, gates, immutable identities, existing Tombstone bytes and
+    D-73 exclusions remain unchanged. This correction precedes T1's initial
+    encoding and store-trait freeze. Native journal integration and complete
+    current-root/publication fencing remain required before physical gates
+    can qualify.
+
+- **[D-79] Select complete publication and current collection authority.**
+  - **Status:** Decided
+  - **Decision:** Select whole logical ref, catalog, lease and retained-history
+    transactions through contiguous immutable create-once publication slots.
+    Retain exact committed history across ref absence; use optional reflog
+    key 7 for an absent-name recreation's committed predecessor. Register
+    actual local/remote backend bindings, complete trusted Guard snapshots,
+    privately checked source lineage and exact current collection fences.
+    Select Guard changes and lease transitions through the same protocol.
+    Preserve cold unchanged-root forks by checking actually consumed evidence
+    and carrying unaffected lineage through qualified unrelated changes.
+    Keep publication control and physical deletion authority outside portable
+    local payload; copied selected history includes a nonauthoritative origin
+    stamp and requires genuine fresh destination registration. Stage a complete
+    portable snapshot and atomically select it before individual cache updates
+    or physical loss, preserving readable copies after interrupted projection.
+  - **Rationale:** A missing ref does not identify its last committed proposal,
+    and selecting by LIST or maximum sequence can promote abandoned writes.
+    Independent ref, catalog or lease updates can admit deduplicated content
+    while a collector still holds old marks. Mutable ETags and cache bytes
+    cannot close that cross-key race. A global snapshot hash also invalidates
+    unaffected cold-fork evidence after unrelated trusted-key additions;
+    omitting actual Guard inputs instead silently retains stale authority.
+    Immutable selection, exhaustive consumed dependencies and current effect
+    checks address these gaps without inventing a database or trusting public
+    records as private capabilities. External control preserves ordinary
+    payload copies without importing physical age or signing authority. A
+    portable snapshot also avoids treating a half-flushed ref/history cache
+    pair as a committed copied view; fresh-copy genesis clears source leases.
+  - **Affects:** REF-4 to REF-7, REF-12, REF-21 to REF-23, BKT-1 to BKT-5,
+    BKT-10, BKT-14, BKT-17, GC-1 to GC-7, GC-22 to GC-24, GC-29, ALG-29, ALG-32
+    and STORE-13. Requirement IDs, gates, immutable identity domains,
+    existing signed Commit bytes and local original records remain stable.
+    CAPABILITIES key 11 and RefLogRecord key 7 are optional additions;
+    new protected schemas and control placement are registered before T1's
+    initial freeze. Existing publication activation requires an external
+    quiescent fence. Implementation, golden vectors and genuine native
+    qualification remain required; these schemas alone prove no runtime gate.
+
+- **[D-80] Distinguish record byte witnesses from authority.**
+  - **Status:** Decided
+  - **Decision:** Retain every existing golden byte unchanged; document
+    the legacy commit's encoding and primitive-signature scope. Add
+    independently encoded layout-version-2, generation-exclusion,
+    CreationJournal and DeleteOperation witnesses with explicit positive
+    and negative outcomes. Bind deletion decoding to an independently fixed
+    canonical operation key and retain distinct physical and lease epochs.
+  - **Rationale:** TEST-2 requires vectors for newly implemented formats,
+    while the reference lacked D-77 and D-78 record witnesses. A structurally
+    valid Invalidated journal is not deletion authority, and a canonical
+    record with an invalid identity length or null required field must be
+    rejected. Legacy signed bytes without D-75/D-76 context cannot prove
+    authoring authority. Explicit claim scopes avoid conflating byte
+    reproduction with current-root, descriptor or elapsed-time checks.
+  - **Affects:** TEST-1 to TEST-3 and the golden-vector reference. Existing
+    encodings, identities, requirement IDs and gate names remain unchanged.
+    Physical deletion and current-authority qualification are still governed
+    by their original requirements.
+
+- **[D-81] Preserve the recorded seed of a named chunk profile.**
+  - **Status:** Decided
+  - **Decision:** Interpret `cdc-1m` as the registered fixed sizes, mask span
+    and normalization with the exact 32-byte seed stored in its profile
+    record. Correct the registry's zero-seed restatement and distinguish the
+    golden vectors' all-zero seed from a constraint on stored profiles.
+    Preserve every golden byte, gear-table value and boundary offset.
+  - **Rationale:** CDC-2 and the `store-profile` CDDL carry the actual seed,
+    and complete Guard snapshots retain that same seeded profile. Replacing
+    it with an implicit zero seed changes chunk boundaries and can invalidate
+    existing stored profiles. The registry's fixed-zero cell and vector
+    introduction contradicted the owning requirement; the zero-seed witnesses
+    establish one reproducible profile instance, not all permitted instances.
+  - **Affects:** CDC-1 to CDC-3, the chunk-profile registry and golden-vector
+    introduction. Requirement IDs, gate names, encodings, immutable identity
+    domains and all existing golden values remain unchanged. A recorded seed
+    remains immutable under CDC-3. This correction precedes T1's initial
+    identity and encoding freeze.
+
+- **[D-82] Permanently own remote physical keys and reconcile future residue.**
+  - **Status:** Decided
+  - **Decision:** Register complete monotone MANIFEST-key-7 pack burns,
+    permanent recoverable PublicationState-key-7 owner selectors, proof case 3,
+    immutable v2 sweep/copied-retirement authorization/operation and repeatable
+    reconciliation passes at existing keys. Each owner covers ALL present/future
+    versions and deletion markers, not a frozen handle list. No Done phase or
+    completed pass discharges ownership. Retain local D-78-v1 bytes/semantics.
+    First ownership requires complete current roots/history/serving/control,
+    live lease/exclusion and genuine FULL same-instance G/D: ordinary sweep
+    observes pack/index plus trash; copied retirement observes NEW barrier.
+    Initial nonburned tombstoning retains GC-14. Later marked members require
+    verified eligible fresh unburned placements with no live dependency through
+    the excluded keys. After ownership, fresh secure-ID placements are the
+    only restore/admission path. Every new request and selected progress uses
+    the actual current whole live lease. Already-owned residue is an explicit
+    GC-10/12/15/16 recovery exception, not fresh sweep or invented artifact age.
+    Fair recurring reconciliation retains the owner even after empty passes.
+    Copies retain visibility only. A distinct genuine destination preparation,
+    CURRENT placement fence and NEW trash barrier permit FULL G/D even when
+    old pack/index/witness are missing. They mint no foreign provenance or
+    lineage. The final new destination owner covers future same-key residue
+    and ALL canonical stale trash cycles. Local/remote copied-burn-v2 is
+    additive; ordinary local D-78-v1 bytes and effects stay unchanged.
+  - **Rationale:** A finite delayed pre-burn create may finish after deletion.
+    Immutable permanent ownership keeps its old keys forever unservable, so
+    that residue cannot threaten live fresh placements. Dynamic genuine
+    version observations and fair later passes permit eventual all-version
+    reclamation without an unprovable universal outstanding-create drain or
+    frozen all-version list. An absence observation cannot prove no future
+    residue and MUST NOT end ownership. Ordinary lease renewal/unrelated
+    publication must not restart valid artifact waits; final current fences
+    remain mandatory. Retiring metadata or reusing keys would break safety;
+    forgetting reconciliation after one pass would break eventual GC. Ordinary
+    quiescent copy can lose either/both old artifacts and deliberately does
+    not import private authorization. Requiring their witness/age would strand
+    residue forever; genuine new destination barrier/authority is the explicit
+    alternative, not absence or copied-marker permission.
+  - **Affects:** GC-4, GC-7, GC-10, GC-12, GC-14 to GC-16, GC-22 to GC-24,
+    GC-26, GC-29, BKT-2, BKT-4 to BKT-9, BKT-14, BKT-17, STORE-13,
+    PACK-2, PACK-15, PACK-18, PACK-20; MANIFEST/PublicationState optional key 7,
+    proof case 3 and disjoint sweep/copied-retirement-v2 alternatives. Existing
+    IDs, keys,
+    identity domains, Tombstone bytes and local-v1 bodies remain unchanged.
+    This additive registration precedes T1 encoding/key freeze; actual provider
+    eventual-observation/deletion/finite-effects qualification and implementation
+    remain pending, not established by a format or simulator gate.
+
+- **[D-83] Distinguish advisory sidecars from commit-bearing GC roots.**
+  - **Status:** Decided
+  - **Decision:** Apply GC-1's content-root requirement to commit-bearing
+    refs, including `refs/derived/`. Preserve the exact inventoried names
+    and whole selected bytes of opaque `refs/notes/` sidecars in current
+    publication and collection fences, without decoding them as `RefRecord`
+    or treating byte patterns as content edges. Present sidecars alone do
+    not make exhaustive collection unsupported; missing advisory targets
+    use the existing discard or rebuild behavior.
+  - **Rationale:** GC-1's unqualified "every ref" contradicted REF-3 and
+    the key registry's opaque advisory sidecar records. `GcRoots` carries
+    commit digests, while profiles and completeness records need not name
+    any commit. Interpreting arbitrary sidecar bytes as a commit would
+    invent reachability; refusing collection whenever one is present would
+    strand garbage during normal operation. DRV-19 and DRV-20 already make
+    memos collectible with their result and independent of correctness.
+    Keeping whole selected values in the fences preserves concurrent
+    publication checks without converting advisory data into authority.
+  - **Affects:** REF-3, GC-1 and the bucket-key registry. Requirement IDs,
+    gate names, keys, CDDL, encoded bytes and identity domains remain
+    unchanged. This correction precedes T1's initial format freeze. Native
+    inventory, marking and current-fence regressions remain required.
+
+- **[D-84] Publish independent D-79 format witnesses before conformance.**
+  - **Status:** Decided
+  - **Decision:** Add complete diagnostic inputs and independently encoded
+    canonical byte vectors for original registration/bootstrap/association,
+    local and remote imports, issuer/disclosure rows, seeded profiles,
+    trusted configuration/registries/Guard snapshots, root/view policy,
+    backend bindings/activation and empty retained history. Treat them as
+    format examples with no immutable descriptor or content identity. Extend
+    them with exact raw import/trust/pin digests, structural consumed lineage,
+    whole retained heads, state/pointers/proofs and next transactions. Label
+    missing-inventory genesis/checkpoint bodies as negative decoder witnesses
+    and construct their wire inputs without the rejecting record encoders.
+    Keep all existing reference bytes unchanged. Remaining D-79 formats
+    require their own witnesses before complete format conformance is claimed.
+  - **Rationale:** D-79 registered new control and publication encodings,
+    but the normative golden reference did not yet contain their inputs
+    and exact bytes. Hand-transcribed implementation tests alone leave
+    TEST-2's publication requirement unmet. An independent primitive CBOR
+    encoder and explicit models make these witnesses reproducible without
+    relying on the codecs they test. Represented record fields cannot
+    establish native authority or replace current preservation checks.
+  - **Affects:** TEST-1 to TEST-3 and the golden-vector reference. Requirement
+    IDs, gate names, schemas, encodings and identity domains remain unchanged.
+    This additive reference correction precedes T1's initial encoding freeze
+    and establishes no native publication, collection or cold-fork claim.
+
+- **[D-85] Publish independent two-entry pack reference witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add complete input fields and independently reproduced
+    bytes for a data pack containing two raw chunks and its header-prefixed
+    detached index. Publish their registered domain-separated identities,
+    the plaintext chunk identities, physical offsets and sorted records.
+    Add explicit negative pack wires for an incorrect index CRC and a
+    nonzero reserved index field whose CRC has been recomputed correctly.
+    Preserve all existing golden bytes and format definitions.
+  - **Rationale:** TEST-2 requires a pack with a two-entry index, but the
+    reference omitted that format's complete wire vector. Independent
+    little-endian field assembly and CRC32C avoid treating encoder output
+    as its own oracle. Negative witnesses isolate CRC and reserved-field
+    rejection. Container identities remain distinct from the fixture's
+    random-ID field and do not enter tree or commit identities under OBJ-23.
+  - **Affects:** TEST-1 to TEST-3, PACK-1, PACK-3 to PACK-7, PACK-15 and the
+    golden-vector reference. Requirement IDs, schemas, identity domains
+    and existing bytes remain unchanged. This additive reference correction
+    precedes T1's initial format freeze and claims no native writer entropy,
+    serving verification or complete golden-corpus qualification.
+
+- **[D-86] Clarify selected side-evidence carrying witnesses and paths.**
+  - **Status:** Decided
+  - **Decision:** Clarify that the selected evidence tuple's producer-location
+    is the checked tree/object witness. Signed side records name their actual
+    producer; unsigned legacy records may name a carrying commit whose
+    authenticated inline attribute origins resolve that producer. Both witness
+    and producer contexts remain independently verified under PROV-9. State
+    that these paths name complete nonempty entries, rather than the empty
+    suffix permitted by the generic key-bytes type, and that row and side names
+    agree and value bytes contain one complete canonical CBOR value.
+  - **Rationale:** The previous schema comment implied that every witness
+    location named the producer itself, conflicting with PROV-9's existing
+    unsigned inline-history route. Syntax checking cannot authenticate that
+    route or infer whether the separately addressed record is signed. The
+    generic key type also serves tree suffixes and did not express the complete
+    file-entry path semantics of selected side evidence. Explicit relationships
+    let borrowed schema validation reject malformed tuples while preserving
+    genuine checked legacy witnesses.
+  - **Affects:** PROV-9, TEST-3, CRATE-4 and the selected-side-evidence reference
+    comments. Requirement IDs, tuple fields, versions, identity domains and
+    existing encoded bytes remain unchanged. This clarification precedes T1's
+    initial encoding freeze and creates no verification or publication authority.
+
+- **[D-87] Publish independent collection-record format witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add 20 independently encoded golden witnesses for GcLease,
+    GcRoots, GcMark, GcState, Tombstone and IndexGenerationManifest. Include
+    every root reason and phase, absent and explicit-empty generation inputs,
+    proof-context fieldwise order and five explicit negative decoder inputs.
+    Reconstruct membership hints directly from GC-7's registered bit rule.
+  - **Rationale:** TEST-2 requires vectors when a format is implemented, but
+    these existing collection records lacked complete published byte/model
+    witnesses. Independent CBOR primitives avoid using record encoders as
+    their own oracle. Digest fields are ordinary wire models, not proof of
+    authenticated history, checkpoint integrity or current effect authority.
+  - **Affects:** TEST-1 to TEST-3, GC-7, GC-30 and the golden-vector reference.
+    Requirement IDs, schemas, identity domains and existing bytes remain
+    unchanged. These non-content-addressed records receive no immutable
+    descriptor. The additive correction precedes T1's initial format freeze;
+    qualification of this section does not qualify the complete golden corpus
+    or native collection, grace, recovery or physical effects.
+
+- **[D-88] Publish complete immutable descriptors and a canonical internal tree.**
+  - **Status:** Decided
+  - **Decision:** Add eleven descriptor witnesses with their complete immutable
+    payload bytes and four node witnesses, including a level-one internal root.
+    The first child closes at an independently computed TREE-21/TREE-22 cut;
+    the second is the final tail. Preserve the existing hello leaf separately.
+    Compare exact descriptor fields and identities, independently constructed
+    node fields and the actual canonical builder's root and subtree summaries.
+  - **Rationale:** TEST-2 requires every registered immutable descriptor and an
+    internal node, but the reference did not contain complete witnesses for
+    them. Two tiny single-entry children do not reproduce the canonical
+    boundary rule. A fixed extended attribute produces a genuine profile cut
+    while keeping all fields and payloads completely described. Independent
+    primitive writers and public models avoid using the codecs as their own
+    oracle. Deferred filter and memo payloads exercise descriptor fields only.
+  - **Affects:** TEST-1 to TEST-3, OBJ-3, OBJ-4, OBJ-6, TREE-17, TREE-20 to TREE-23,
+    the golden-vector reference. Requirement IDs, schemas, identity domains
+    and existing bytes remain unchanged. This additive correction precedes
+    T1's initial encoding freeze and does not qualify the complete golden
+    corpus, deferred features or native publication authority.
+
+- **[D-89] Publish canonical composition recipe wire witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add seventeen recipe witnesses: twelve positive graft,
+    overlay and merge field models, and five explicit structural rejections.
+    Preserve operand and policy order, complete graft-entry bytes, replacement
+    and optional empty domain records. Record recipe hashes separately from
+    immutable-content descriptors. Include the existing inert trust profile
+    as wire data without asserting executable trusted/newer authority.
+  - **Rationale:** TEST-2 requires examples for implemented wire formats, but
+    the reference lacked these composition encodings. Independent CBOR
+    primitives and raw domain-separated hashes reproduce every field; public
+    model tests compare encoded bytes, decoded fields and recipe hashes.
+    Structural negative inputs bypass the rejecting recipe encoder.
+  - **Affects:** TEST-1 to TEST-3, ALG-28, ALG-36 to ALG-38, the golden-vector
+    reference. Requirement IDs, registered schemas, identity domains and all
+    existing bytes remain unchanged. This additive correction precedes T1's
+    initial encoding freeze and does not qualify complete golden coverage,
+    ownership resolution, verified merge evaluation or materialization.
+
+- **[D-90] Publish complete namespace and derived-attribute field witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add 69 entry/root-property witnesses and 110 derived-attribute
+    witnesses. Include all seven entry kinds, optional metadata presence,
+    every registered root property, nested selectors, 19 attribute values,
+    42 complete records and 87 structural negative inputs. Publish only
+    whole positive node and attribute-record identities, with exact unsigned
+    attribute signature preimages. Preserve every existing reference byte.
+  - **Rationale:** TEST-2 requires vectors for implemented formats, but these
+    encodings lacked complete independently constructed field models.
+    Primitive CBOR assembly and raw registered-domain hashes reproduce the
+    bytes without invoking their owning codecs. Separately constructed
+    public models compare complete encoded and decoded fields; primitive
+    negative inputs bypass rejecting encoders. An assumed future property
+    is excluded from the reference under CONV-3. Unknown function versions
+    remain inert retained metadata under DRV-8. Opaque provenance, grants,
+    executable metadata and signatures establish no verified authority.
+  - **Affects:** TEST-1 to TEST-3, TREE-1 to TREE-8, TREE-14, PROP-4, DRV-1,
+    DRV-2, DRV-6, DRV-8 and the golden-vector reference. Requirement IDs,
+    registered schemas, identity domains and existing bytes remain unchanged.
+    This additive correction precedes T1's initial format freeze and does
+    not qualify the complete corpus, derived computation, tree operations,
+    policy enforcement or native publication.
+
+- **[D-91] Complete envelope and merged-shard field witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add eight complete chunk envelopes, 38 complete merged
+    index shards and 39 independently assembled structural rejection inputs.
+    Ordinary positive envelopes use the registered `cdc-1m` maximum; two
+    overhead controls explicitly use a local 100-byte structural size oracle.
+    Assign plaintext chunk identities to envelope inputs and index-domain
+    identities to positive shards. Preserve every previous reference byte.
+  - **Rationale:** TEST-2 requires vectors for implemented formats, but the
+    envelope and merged-shard codecs lacked complete independent field models.
+    Primitive little-endian assembly and RFC 8878 sized raw-block frames
+    reproduce the wire bytes without invoking their owning codecs or a
+    decompressor. Independently constructed public models compare all encoded
+    and decoded fields. Ordinary size contexts also accommodate the dictionary
+    plaintext. Embedded shard hashes, pack IDs and state bytes are opaque
+    fields; structural checks establish no placements, authority or state
+    effects. Envelope checks establish no native dictionary verification.
+  - **Affects:** TEST-1 to TEST-3, CDC-7, CDC-9, PACK-17 to PACK-20 format
+    fields and the golden-vector reference. Requirement IDs, wire schemas,
+    identity domains and existing bytes remain unchanged. This additive
+    correction precedes T1's initial format freeze and does not qualify the
+    complete corpus, codec runtime, index publication or native operations.
+
+- **[D-92] Publish complete retirement record field witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add 27 positive and seven negative witnesses for the existing
+    D-82 retirement record formats. Include disjoint authorization alternatives,
+    preparation and operation phases, pass observations and coverage, owner
+    selections, fences and their complete nested records. Preserve every prior
+    reference byte. These non-content-addressed records receive no immutable
+    descriptor or content identity.
+  - **Rationale:** TEST-2 requires published vectors for implemented mutable
+    and non-content-addressed formats. Independent CBOR primitives and raw
+    registered hashes reproduce these bytes and embedded record relationships;
+    independently constructed public models compare all decoded fields.
+    Malformed wire inputs bypass the rejecting encoders. Represented nonce,
+    placement, ownership and elapsed fields are untrusted data and establish
+    no current authority, completed wait or physical permission.
+  - **Affects:** TEST-1 to TEST-3 and the golden-vector reference. Requirement
+    IDs, registered schemas, identity domains and existing bytes remain
+    unchanged. This additive correction precedes T1's initial encoding freeze
+    and does not qualify complete golden coverage or native operations.
+
+- **[D-93] Publish selector and private-evidence field witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add 86 independent witnesses, including 32 structural
+    negatives, for selector ASTs, both trust-context versions, selected
+    side-evidence tuples, disclosure statement preimages and complete target
+    normalization. Preserve every previous reference byte. Encoder-only
+    projections have no owning typed decoder; raw target-binding digests
+    describe field relationships without immutable descriptors or identities.
+  - **Rationale:** TEST-2 requires published vectors for implemented formats.
+    Primitive CBOR construction reproduces every field and byte independently
+    of the owning encoding seams. Separately constructed AST arenas and
+    complete ordinary models compare decoded fields where a typed decoder
+    exists; other projections receive complete primitive-field inspection.
+    Exact bounded reference comparison rejects missing, duplicate, split,
+    tampered and whitespace-altered sections. Signature and token fields are
+    opaque data; syntax and hash relationships establish no trust, provenance
+    evaluation, verified history or disclosure authority.
+  - **Affects:** TEST-1 to TEST-3 and the golden-vector reference. Requirement
+    IDs, registered schemas, identity domains and existing bytes remain
+    unchanged. This additive correction precedes T1's initial encoding freeze
+    and does not qualify complete golden coverage or native publication.
+
+- **[D-94] Publish complete modern Commit and ref field witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add 33 complete Commit, eight RefRecord, ten RefLogRecord
+    and 96 independently constructed structural rejection witnesses. Include
+    optional fields, registered recipe alternatives, complete token/context
+    metadata, snapshot annotations, CAS expectations and retained predecessors.
+    Only complete positive Commit records receive immutable identities.
+    Publish exact unsigned Commit and annotation preimages without assigning
+    content identities to mutable records, preimages or malformed inputs.
+  - **Rationale:** TEST-2 requires vectors for implemented formats. Independent
+    primitive CBOR tables reproduce complete wires and preimages; separately
+    constructed public models compare every decoded field. The graft witness
+    contains the actual canonical Tree target and independently compares its
+    complete typed recipe. Exact bounded reference comparison rejects missing,
+    duplicate, split, tampered and whitespace-altered sections. Signature,
+    token, context and selector fields remain unverified data; structural
+    comparison establishes no signed authority, backend state or publication.
+  - **Affects:** TEST-1 to TEST-3, REF-9, REF-20, PROV-1, PROV-3 and the
+    golden-vector reference. Requirement IDs, schemas, identity domains and
+    every prior reference byte remain unchanged. This additive correction
+    precedes T1's initial encoding freeze and does not qualify the complete
+    corpus, policy verification or native ref operations.
+
+- **[D-95] Publish complete local reconciliation record witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add 12 complete positive local-v1 reconciliation records,
+    68 independently assembled structural negatives and 11 exact decoder-bound
+    or late-validation inputs. Preserve every previous reference byte. These
+    non-content-addressed records receive no immutable descriptor or identity.
+  - **Rationale:** TEST-2 requires published vectors for implemented formats.
+    Independent CBOR primitives reproduce the existing five-field map and
+    complete nested tuples; separately constructed public models compare all
+    decoded fields. Malformed inputs bypass the rejecting encoder. Full
+    borrowed validation precedes retention of the fence key. Current fence
+    cycles may differ from original exclusion cycles; the existing registered
+    grammar supplies the key constraint without a new size limit. Represented
+    digests, incarnations and index identities establish no verified evidence,
+    current authority or permission for physical effects.
+  - **Affects:** TEST-1 to TEST-3, the GC-29 record-format prerequisite and
+    the golden-vector reference. Requirement IDs, schemas, identity domains
+    and existing bytes remain unchanged. This additive correction precedes
+    T1's initial encoding freeze and does not qualify the complete corpus,
+    native reconciliation or deletion operations.
+
+- **[D-96] Publish complete publication and original-control alternatives.**
+  - **Status:** Decided
+  - **Decision:** Add 88 complete positive and 37 independently assembled
+    negative record-format witnesses. Cover local/S3/GCS bindings and activation
+    shapes, registered original-control versions, populated Guard configuration,
+    retained selection alternatives, full/delta portable inventories, genesis
+    transaction fields, pointers and all publication-proof cases. Preserve every
+    prior reference byte. These control records receive no immutable-content
+    descriptor or identity; raw hashes describe embedded byte relationships.
+  - **Rationale:** TEST-2 requires published vectors for implemented formats.
+    Primitive CBOR fields reproduce the wires independently; separately
+    constructed public models compare complete owning encodings and decoded
+    fields. Negative inputs bypass rejecting encoders. Full inventories preserve
+    absence versus present-empty bytes; opaque CAPABILITIES bytes demonstrate
+    presence without validating that payload. Local original registration retains
+    its existing nine-element version 1; physical registrations and imports use
+    only the registered version-2 alternatives. Represented keys, roles, nonces,
+    ownership, time intervals and proofs establish no original authority,
+    trusted Guard, checked publication, completed wait or physical permission.
+  - **Affects:** TEST-1 to TEST-3 and the golden-vector reference. Requirement
+    IDs, schemas, identity domains and existing bytes remain unchanged. This
+    additive correction precedes T1's initial encoding freeze and does not
+    qualify the complete corpus, payload validation or native operations.
+
+- **[D-97] Publish complete consumed-lineage record field witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add 36 complete positive models and 155 independently
+    assembled negative wire inputs. Cover all six control-pin kinds across
+    local/S3/GCS owner alternatives, ordered ancestor/graft policy layers,
+    absolute path bounds, repeated view occurrences, complete used-input
+    summaries and all ten checked-source slots. Preserve every prior reference
+    byte. These enclosing records receive no immutable-content descriptor or
+    identity; only embedded canonical Commit bytes use their registered digest.
+  - **Rationale:** TEST-2 requires published witnesses for implemented formats.
+    Independent CBOR primitives reproduce exact wires and malformed inputs;
+    separately constructed ordinary public models compare every decoded field.
+    Embedded whole source records, canonical Commit encodings/preimages and
+    control-set equality test represented relationships. Ordered or repeated
+    policy occurrences remain exact data. Fixed token and signature bytes are
+    opaque; no signer, verifier, policy evaluation, private holder, factory or
+    backend is involved. Neither represented evidence nor decoder acceptance
+    establishes checked lineage, current authority or permission for effects.
+  - **Affects:** TEST-1 to TEST-3, the ordinary format prerequisites of
+    PROV-4, PROV-28 and PROV-31, and the golden-vector reference. Requirement
+    IDs, schemas, identity domains and existing bytes remain unchanged. This
+    additive correction precedes T1's initial encoding freeze and does not
+    qualify the complete corpus or native operations.
+
+- **[D-98] Publish complete outer recipe domain and trust field witnesses.**
+  - **Status:** Decided
+  - **Decision:** Add 13 complete positive recipes and 62 independently
+    assembled negative wire inputs. Cover nonempty sorted domain pairs,
+    complete selectors, evaluator versions, canonical configuration, accepted
+    identities, timestamp boundaries and represented context/fold fields.
+    Preserve every prior reference byte. Only complete positive enclosing
+    recipes receive identities under the existing registered memo domain.
+  - **Rationale:** TEST-2 requires published witnesses for implemented formats.
+    Independent CBOR primitives reproduce exact wires and malformed inputs;
+    separately constructed private test models compare every decoded field.
+    Recipe trust key 3 remains canonical data under its existing CDDL `any`
+    schema. Retention of registered path configuration bytes does not qualify
+    executable profile validation or fold re-evaluation. Domain and trust
+    models remain unauthenticated, with no evaluators or runtime fold filter.
+    Neither accepted identities nor context bytes establish verified policy,
+    resolved ownership or permission for native effects.
+  - **Affects:** TEST-1 to TEST-3, the ordinary format prerequisites of
+    ALG-29, ALG-37 and ALG-38, and the golden-vector reference. Requirement
+    IDs, schemas, identity domains and existing bytes remain unchanged. This
+    additive correction precedes T1's initial encoding freeze and does not
+    qualify the complete corpus, materialization or native operations.
+
+- **[D-99] Use registered hash and attribute names in the SHA-256 lookup trigger.**
+  - **Status:** Decided
+  - **Decision:** DRV-18's trigger names `sha256` in the root's `hashes`
+    property and `hash.sha256` in its `index` property. The lookup argument
+    remains `hash.sha256`; its result, complexity, reader-authority and
+    root-trust requirements remain unchanged.
+  - **Rationale:** The property registry and PROP-18 distinguish digest
+    algorithm names from derived attribute names. `hashes` accepts `sha256`,
+    while `index` names the derived attribute `hash.sha256`. The previous
+    trigger put `hash.sha256` in both sets and therefore could not be met by
+    a root with valid registered property values. This corrects the trigger
+    to its existing intended meaning without admitting another property
+    value or changing any encoded object, identity, profile or media type.
+    It does not equate a plaintext SHA-256 with an adapter's framed digest.
+  - **Alternatives considered:** Admit attribute names in `hashes` (rejected:
+    changes the registered property contract); drop indexed lookup (rejected:
+    violates the existing lookup and MVP obligations).
+  - **Affects:** DRV-18, PROP-18 and PROP-20. Requirement IDs and gate names
+    remain stable. This correction precedes T1's initial freeze and does not
+    qualify index maintenance, descriptor bridging or native disclosure.
+
+- **[D-100] Account for candidates and current-policy work in indexed lookup.**
+  - **Status:** Decided
+  - **Decision:** Withdraw DRV-18 without reusing its ID. DRV-24 preserves
+    its registered SHA-256 trigger, exact authorized/trusted answer and
+    indexed equality-range lookup, while distinguishing candidate rows,
+    occurrences and current-policy/provenance work from returned objects.
+    Candidate discovery is O(log n + C); additional occurrence and checking
+    work is accounted for explicitly. This changes the former unconditional
+    filtered-output complexity requirement; it is not an editorial fix.
+  - **Rationale:** A file object can appear under M independently governed
+    graft occurrences, with the same secondary hash at every occurrence.
+    If all M current ACLs deny the reader, the candidate object set contains
+    one object and the filtered answer is empty. Under independently
+    evaluated policies, any unchecked occurrence could allow it, so correct
+    rejection can require examination of all M policies. Distinct manifests
+    for identical plaintext, with different permitted advisory media types,
+    also create distinct equal-value candidates without a hash collision.
+    Variable path and provenance work cannot be bounded by returned object
+    count. The specified candidate index supplies no separately maintained
+    policy-aware structure or restricted query class proving the old bound.
+    This is a limitation of that model, not an impossibility proof for every
+    conceivable authorization index. Fresh policy, attribute-producer and
+    trust checks remain mandatory; no stale cache or candidate exposure is
+    an alternative to them.
+  - **Alternatives considered:** Call raw candidates the result size
+    (rejected: conflates denied evidence with the returned answer); retain
+    the old bound by restricting policy/query classes (rejected: changes
+    supported view semantics and requires new preprocessing, invalidation
+    and cost proofs); substitute a root walk (rejected: loses the required
+    indexed lookup). Same-commit O(delta × log n) maintenance and independent
+    verification/rebuild remain required by DRV-14 and DRV-16/17.
+  - **Affects:** DRV-18, DRV-24 and the existing index-tree-maintenance gate.
+    No encoding, identity, profile, property or media type changes. This
+    correction precedes the initial format freeze. Registration does not
+    qualify an index implementation, native disclosure or the cost bound.
+
+- **[D-101] Bind indexes without cycles and make root-only recipes reproducible.**
+  - **Status:** Decided
+  - **Decision:** Register owner-local `index-roots` as an exact noninherited
+    property binding from attribute names to lowercase-hex Node identities.
+    Withdraw DRV-13 and replace it with DRV-25/26: construct the index before
+    the owner, then form the detached one-root `terrane-index/v1` recipe and
+    optional unchanged memo. Preserve generic retained index recipes.
+    DRV-27 requires applicable indexed values inline on added or modified
+    files and separates present indexed rows from independently established
+    completeness. Withdraw DRV-11 and replace it with DRV-28: reuse checked
+    side values without recomputation, but still materialize missing inline
+    index inputs during backfill. Keep conditional classifier applicability,
+    current policy, independent producers and PROP-25's immediate incomplete
+    requirement installation.
+  - **Rationale:** The registered `index` property contains attribute names,
+    not root pointers. Generic property values cannot carry byte-string
+    digests, so a registered text carrier is needed. Root properties are
+    hashed; embedding the owner or recipe inside its index creates a digest
+    cycle. Detached recipes remove that cycle. A root-only recipe also cannot
+    select a mutable side-table function/version/value implicitly: changing
+    the catalog could change the result without changing its recipe identity.
+    Existing selected-side evidence belongs to a consuming view/trust context,
+    includes a Commit identity and is not an immutable root-bound recipe input.
+    Inline indexed values give the recipe immutable data while side records
+    retain their computation-reuse and independently checked producer roles.
+    A missing value is not evidence that it differs from a query. A checked
+    nonmatching classifier can establish a conditional value's nonapplicability;
+    unknown or unavailable evidence remains a gap rather than a sentinel.
+  - **Alternatives considered:** Put digests into the existing `index` list
+    (rejected: changes its declared type); use inherited owner pointers or
+    optional derived refs (rejected: wrong owner or loss of correctness);
+    include the current owner/Commit in index bytes (rejected: hash cycle);
+    select mutable side data invisibly (rejected: nonreproducible memo key);
+    define an explicit extra immutable side-input recipe (possible later,
+    but requires a separate registered input format). No interpretation of
+    reachability, memo data or a decoded pointer grants current authority.
+  - **Compatibility:** Advance the unreleased specification to 1.0-draft-3
+    under README's pre-freeze correction exception. Register only the new
+    property and executable specialization; preserve every existing encoded
+    field, identity domain, generic recipe and golden byte. The published
+    generic two-operand/no-arguments `index` Commit witness remains valid.
+    Affected indexed admission/backfill semantics are changed explicitly;
+    the generic AttrRecord and its side-only uses remain unchanged. The format
+    freeze has not begun. No implementation is qualified by this decision.
+  - **Affects:** PROP-29, DRV-11/13 (withdrawn), DRV-24's explicit
+    incomplete-coverage response, DRV-25 to DRV-28,
+    PROP-22/25, the property registry and executable recipe specialization.
+    Same-commit O(delta × log n) maintenance, index verification/rebuild,
+    typed non-graft occurrence evidence and the positive native index case
+    remain required. This decision supplies no occurrence carrier or runtime
+    dispatch; those remain pre-freeze implementation prerequisites.
+
+- **[D-102] Immutable recorded property semantics revisions.**
+  - **Status:** Decided (2026-10-02)
+  - **Decision:** Register property revision 1's exact original 33 behavioral
+    names and revision 2's exact extension with `index-roots`. Match each
+    recorded vocabulary to its explicit revision, preserve historical bytes,
+    reject unknown revisions and mismatches, and keep represented later names
+    inert even when newer code recognizes them. Current complete configuration
+    records the explicitly registered revision matching its vocabulary.
+  - **Rationale:** D-101 adds a behavioral property. Comparing historical
+    revision-1 records with an evolving compiled name list reinterprets their
+    semantics and rejects previously valid published witnesses. Calling the
+    expanded list revision 1 also conflicts with the publication-authority
+    rule requiring an explicit revision when names acquire behavior. A fixed
+    name fence preserves historical records without admitting arbitrary sets
+    or granting behavior from later-name presence.
+    Nested records without a property revision retain their original intrinsic
+    behavioral checks and defer newer names to the enclosing explicit fence;
+    otherwise early nested decoding would reinterpret old inert properties.
+  - **Compatibility:** Advance the unreleased draft to 1.0-draft-4 under the
+    pre-freeze correction exception. Existing encoding schemas, identity
+    domains and all revision-1 golden bytes remain unchanged. Revision 2 uses
+    the existing explicit property-revision field and changes only newly
+    represented configuration data. It does not change the independent current
+    configuration, authority or original-policy verification obligations.
+  - **Affects:** PROP-30, configured registry inputs, the property registry,
+    and the recorded semantic fence in publication-authority evidence.
+    Runtime index verification and occurrence loading remain incomplete.
+
+- **[D-103] Account for canonical index maintenance and expanded changes.**
+  - **Status:** Decided (2026-10-02)
+  - **Decision:** Withdraw DRV-14 without rewriting its hard-bound wording;
+    replace it with DRV-29's same-commit incremental maintenance and explicit
+    source discovery, indexed-data, structural-route and canonical-boundary
+    accounting.
+    Descend affected grafts or compare equivalent immutable indexed summaries,
+    skip equal subtrees, reuse compatible boundaries and batch overlapping
+    affected ranges. Preserve divergent-index refusal and verification/rebuild,
+    current occurrence/producer checks and independently established coverage.
+  - **Rationale:** TREE-22's stored-size-dependent cuts and TREE-23's recursive
+    application can propagate a small change through a suffix. TREE-24 requires
+    the canonical result, while ALG-12/15 already admit linear boundary work.
+    For an internal-level stream with 128-byte child references whose hash
+    scores miss probabilistic cuts, old exact-cap cuts occur every 512 items.
+    Making its first reference 129 bytes forces a split before item 512 and
+    shifts subsequent cuts by one until the tail. This is a conditional
+    boundary-state trace, not a generated BLAKE3 witness or an implementation
+    qualification. A real executable witness must independently construct and
+    check canonical items and their cut scores.
+    Separately, ALG-13's one modified graft descriptor can represent many
+    changed indexed files. Their value-plus-object rows may interleave a
+    parent's existing rows and cannot generally be adopted as one subtree.
+    Expanded logical changes and additional canonical work must be explicit,
+    rather than inflating delta with every unchanged item visited.
+    Changed nonparticipating entries also require discovery: replacing many
+    symlink targets can leave all indexed files and routes unchanged, yet a
+    namespace diff must examine those changes even without boundary divergence.
+    The independent input delta accounts for that baseline work; it is neither
+    indexed-data delta nor additional canonical-boundary work.
+  - **Alternatives considered:** Keep noncanonical cuts to satisfy the hard
+    bound (rejected: violates TREE-24); count the scanned suffix as logical
+    delta (rejected: hides the work); allow unconditional full rebuilds
+    (rejected: abandons incremental maintenance); keep the old literal bound
+    while calling it expected (rejected: silently changes a MUST).
+  - **Compatibility:** Advance the unreleased draft to 1.0-draft-5 before T1's
+    freeze. No bytes, identities, media types, profiles, properties, attributes
+    or store interfaces change. This decision supersedes only D-100/D-101's
+    retained hard maintenance bound, leaving their other decisions unchanged.
+    It registers no occurrence carrier and qualifies no implementation.
+  - **Affects:** DRV-14 (withdrawn), DRV-29, DRV-25/27's maintenance references,
+    and the stable `index-tree-maintenance` gate. Initial construction,
+    independent verification/rebuild and runtime checks remain mandatory and
+    separately measured; index work stays in the trunk before the freeze.
+
+- **[D-104] Complete the pre-freeze hierarchical index result carrier.**
+  - **Status:** Decided (2026-10-02)
+  - **Decision:** Register `index.occurrences` as contextual structural Index
+    entry metadata and `index-gaps` as noninherited primary-index-root-only
+    metadata. Define canonical primary, missing-object and hierarchical
+    present/missing occurrence-route roles in the existing type-7 Entry and
+    Node encodings. Keep the actual file's Chunk/Manifest identity O in key
+    14; put route Node identity P only in key 9. Register exact property
+    revision 3 and attribute revision 2 while retaining physical tree,
+    selector and chunk semantic revision 1. Complete `terrane-index/v1`'s
+    unreleased result definition before the initial freeze.
+  - **Rationale:** A value-plus-object row cannot identify all independently
+    governed occurrences or establish missing-inline coverage. Flat composed
+    paths can exceed local key limits through grafts, and repeated grafts
+    require distinct current policy checks even when immutable child bytes
+    coincide. Recursive routes retain local grammar, shared canonical data
+    and separate occurrence contexts. A missing-object tree represents gaps
+    even with zero matching candidates; it does not certify applicability,
+    current permission, producer evidence or complete coverage by itself.
+    Putting the new pointer into the existing value-name predicate would
+    silently admit it as an index input and `attr-by` argument, expanding
+    unrelated selector semantics. Structural registration and contextual
+    classification avoid that reinterpretation. Explicit semantic fences
+    prevent a newer parser from following historical inert pointer bytes.
+  - **Alternatives considered:** Put route Node identities in `targets`
+    (rejected: changes O's meaning); flatten graft paths (rejected: key limits
+    and occurrence policy); add ordinary directory markers to routes
+    (rejected: violates Index TreeUse); infer role from a name or digest cache
+    (rejected: role ambiguity and identical empty Nodes); attach owner/recipe
+    back-references (rejected: digest cycle); use hidden catalog/revision
+    selection for one recipe (rejected: nonreproducible memo lookup key).
+  - **Compatibility:** Advance the unreleased draft to 1.0-draft-6 under
+    README/D-66's pre-freeze correction exception. Existing generic Entries,
+    Nodes, retained recipes, fields, domains, media types and golden bytes
+    keep their identities and validity. Attribute revision 1 and property
+    revisions 1/2 remain immutable; later names remain inert in those
+    contexts. New revisions reuse existing scalar revision fields. Physical
+    tree revision 1 describes unchanged bytes, boundaries and TreeUse, not
+    new namespace authority. This explicitly completes the unreleased
+    executable result semantics, not only a CDDL comment: experimental
+    pointerless results are not automatically valid completed results.
+    There is no published conforming executable profile or completed freeze
+    to preserve. Unsupported older active contexts refuse; the same Q(R,A)
+    does not choose different I by hidden revision. Accepting distinct active
+    algorithms after a freeze would require a new explicit profile.
+  - **Affects:** TREE-35, PROP-29/30/31, DRV-12/25/26/27/30, attribute/property
+    registrations, CDDL and typed publication-evidence contexts. Pure codecs
+    and independent containing-Node witnesses remain prerequisites; typed
+    loading, exhaustive owner/route/gap verification, incremental maintenance,
+    lookup, independent producers and the native index case remain mandatory.
+    This decision qualifies no runtime behavior or task completion.
+
+- **[D-105] Correct the registered attribute-revision witness.**
+  - **Status:** Decided (2026-10-02)
+  - **Decision:** Preserve the former revision-two negative control bytes as
+    the positive `control-registry-attribute-two` ordinary-data witness.
+    Replace `control-negative-registry-revision` with unregistered attribute
+    revision three, and require an exact owning-codec group that checks both
+    registered revisions independently of the recorded property revision.
+  - **Rationale:** D-104 registers attribute revision two. The old negative
+    witness still required its rejection, contradicting that registration
+    and failing the actual golden and current-trunk aggregates. Recorded
+    scalar revisions remain independent ordinary data; only the exact active
+    carrier tuple enables the completed executable profile. Changing a
+    decoder to reject the registered revision would hide the contradiction.
+  - **Alternatives considered:** Keep revision two as a negative (rejected:
+    contradicts D-104); remove the rejection test (rejected: loses unknown
+    revision coverage); silently change its wire without preserving the old
+    data case (rejected: obscures the compatibility boundary).
+  - **Compatibility:** No encoding, identity, profile, registry meaning or
+    interface changes. All prior positive witnesses retain their bytes.
+    The former negative bytes remain present as a positive data case; their
+    obsolete rejection interpretation is withdrawn. The negative witness
+    retains its name while using a currently unregistered scalar. Requirement
+    IDs and gate names remain stable. No active interpretation or authority
+    follows from decoding either registered revision.
+  - **Affects:** TEST-1 to TEST-3, TREE-35, PROP-31 and D-104's recorded
+    attribute-revision compatibility. Independent generator reproduction and
+    owning-codec checks remain mandatory; this correction completes no task.
+
+- **[D-106] Distinguish format rejection from contextual index refusal.**
+  - **Status:** Decided (2026-10-02)
+  - **Decision:** Clarify TEST-1's negative-vector contract by retaining
+    exact independent wire reproduction and owning-decoder rejection for
+    malformed formats, while requiring declared role, revision, placement
+    and source context for contextual controls. A generic-valid Node remains
+    valid data even when its selected current carrier role or source
+    relationship is invalid. Relationship tests recompute changed Node
+    identities and update auxiliary references before asserting refusal.
+    Complete immutable objects retain their registered descriptors; bare
+    fields and detached recipe lookup keys do not acquire content descriptors.
+    Publish the independently assembled owner-binding, key, recipe and
+    occurrence-carrier field witnesses with their explicit refusal scopes.
+  - **Rationale:** TEST-1 previously required a format decoder to reject
+    every explicit negative. DRV-30 and D-104 preserve historical generic
+    Nodes whose bytes cannot establish a completed carrier. A valid Node
+    containing the wrong route remains valid generic data; only its declared
+    source relationship is false. Requiring generic rejection would violate
+    that compatibility rule, while accepting it as a current carrier would
+    violate DRV-30. A stale digest failure proves neither relationship.
+    Independent field witnesses also fill TEST-2's missing index-format
+    coverage without claiming operational qualification.
+  - **Alternatives considered:** Reject historical generic Nodes (rejected:
+    changes retained meanings); require only an encoder failure (rejected:
+    cannot exercise independently supplied wire input); silently drop
+    contextual negatives (rejected: loses role and exhaustive source
+    coverage); rely on stale hashes (rejected: bypasses the relationship).
+  - **Compatibility:** No encoding, identity, media type, profile, registry,
+    interface or existing golden byte changes. All existing malformed
+    format-negative assertions remain required. The complete previous
+    reference is preserved before the additive section. Draft version,
+    requirement IDs and gate names remain unchanged. Generic validity and
+    typed contextual validity remain separate; neither grants authority.
+  - **Affects:** TEST-1 to TEST-3, TREE-25/35, PROP-29 to PROP-31 and
+    DRV-25 to DRV-30. Owning codecs and exhaustive pure source/route/gap
+    checks remain required. Current producer and policy validation, native
+    dispatch, indexed lookup, incremental maintenance and runtime complexity
+    remain unqualified; this decision completes no task or milestone.
+
+- **[D-107] Bind recorded property interpretation in trust memo contexts.**
+  - **Status:** Decided (2026-10-02)
+  - **Decision:** Register an additive version-three provenance trust context
+    carrying the selected immutable view's original namespace root, recorded
+    property revision, exact behavioral vocabulary and separately established
+    later preservation vocabulary. It is mandatory whenever evaluation uses
+    an explicitly associated recorded interpretation, including an explicit
+    current revision. Its optional selected evidence uses the existing schema,
+    with null for absence. Interpretations apply per immutable view; ours and
+    theirs may differ when independently justified, but conflicting prefix
+    interpretations within one view refuse. Fold preprocessing does not
+    replace the original view-root association. Canonical claim decoding
+    neither establishes that association nor supplies registration or authority.
+  - **Rationale:** PROP-30 preserves fixed historical property semantics,
+    whereas ALG-38 required only context versions one and two. Neither tuple
+    binds recorded revision, vocabulary or physical-root selection. Adding
+    a resolver parameter alone could serialize distinct inert/active property
+    interpretations as the same trust configuration and recipe lookup key,
+    contrary to PROV-16 and DRV-21/22. An explicit additive tuple resolves the
+    specification's missing representation before the encoding freeze.
+  - **Alternatives considered:** Infer revision from Node bytes, property
+    spelling or today's configuration (rejected: does not recover the
+    enclosing interpretation); hide fields in selector, baseline, domain or
+    selected evidence (rejected: changes their registered schemas); bind only
+    a revision number (rejected: omits preservation vocabulary and view/root
+    association); silently accept a third tuple (rejected: violates ALG-38).
+  - **Compatibility:** Existing version-one/two encodings, field meanings,
+    selected-evidence rules, identities and golden bytes remain unchanged.
+    They do not alias the new explicit recorded interpretation. Invalid or
+    missing version-three associations cannot fall back to older tuples or
+    current defaults. Identity domains, evaluator profile, media types,
+    requirement IDs, gate names and draft version remain unchanged. The
+    extension is registered before T1's encoding freeze.
+  - **Reviewed witnesses:** The additive recorded-property section in
+    `reference/golden-vectors.md` supplies 21 complete contexts (including
+    unchanged version-one/two sentinels), 22 enclosing recipe/preimage/lookup
+    key models and 70 independently assembled format-negative inputs. Every
+    preceding reference byte is preserved. These ordinary claims establish
+    no registration, historical association, executable evaluator or authority;
+    implementations must still execute their owning codec comparisons.
+  - **Affects:** ALG-38, PROP-4/30, PROV-14/16, DRV-21/22 and TEST-1 to
+    TEST-3. Pure codecs and independent complete field/recipe-key witnesses
+    remain required. Historical association, fresh evaluator binding and
+    native propagation remain separate obligations; no task or milestone
+    completes through this registration.
+
+- **[D-108] Retain an exact pending fresh-copy activation proposal.**
+  - **Status:** Decided (2026-10-05)
+  - **Decision:** Register the fixed create-once protected key
+    `publication/ACTIVATION` for the existing canonical `PublicationCommit`
+    encoding, restricted to a proposed revision-zero genesis with a null
+    predecessor. It is nonauthoritative staging data. A genuinely authorized
+    fresh-copy factory stages and verifies its destination checkpoint, exact
+    transaction and this record before durably recording Pending with the
+    existing genesis field bound to the record's raw canonical digest.
+    Recovery reads this exact key under the retained activation fence,
+    verifies that digest and complete transaction/snapshot/payload/log closure,
+    makes the destination pointer durable, then installs the identical record
+    at the actual genesis slot. All selected caches finish before Active.
+  - **Rationale:** D-79 requires durable Pending before the destination
+    portable-pointer rewrite, and that rewrite before committing genesis.
+    Until the rewrite, the copied pointer identifies the source snapshot;
+    the existing Pending genesis digest supplies no transaction nonce or
+    exact locator. Local backend bindings contain physical identities, not
+    an operation nonce. Thus the required interrupted activation cannot find
+    its exact staged destination proposal at that boundary. A fixed locator
+    bound by the existing digest closes the recovery gap without changing
+    selection or deriving fresh administrative authority from copied bytes.
+  - **Alternatives considered:** Commit slot zero early (rejected: violates
+    the pointer-before-genesis order); select an operation through LIST,
+    mutable caches or a proposed maximum (rejected: does not identify the
+    exact retained proposal); allocate another nonce during recovery
+    (rejected: changes the Pending operation); add registration fields
+    (rejected: the existing digest and commit encoding suffice).
+  - **Compatibility:** Existing encodings, identities, media types, profiles,
+    golden bytes, requirement IDs, gate names and draft version remain
+    unchanged. The key is additive before T1's bucket-key freeze. Existing
+    empty-genesis Pending/null and Active registrations retain their meaning.
+    Missing, unavailable or conflicting staging fails closed; orphan staging
+    cannot authorize registration, ordinary reads, writes or collection.
+    ACTIVATION never replaces verification of actual selected commit slots.
+  - **Affects:** STORE-13, BKT-2 to BKT-5, BKT-14/17, REF-4 to REF-7,
+    REF-12/21 to REF-23 and CONV-3. Complete native copy, recovery, cancellation
+    and pointer/cache crash witnesses remain required under the existing
+    D-79 gates; this correction completes no task or milestone.
+
+- **[D-109] Clarify the exact pre-ownership restore publication exception.**
+  - **Status:** Decided (2026-10-05)
+  - **Decision:** Clarify D-79's catalog-preservation rule with GC-29's exact
+    restore exception. A separately privately qualified pre-ownership restore
+    clears only its actual active pack/cycle/epoch binding in the same selected
+    generation that restores otherwise-unserved eligible index entries.
+    Existing serving placements, quarantine, other exclusions, permanent burns
+    and owners remain preserved. Complete current qualification, actual backend
+    exclusion and real durable publication are still required. This availability
+    gain uses existing proof case 0 with unchanged loss generation and only
+    already selected unaffected source lineage; it creates no new lineage.
+    Public raw mutation cannot certify restoration or clear an exclusion.
+  - **Rationale:** GC-15 and GC-29 require a single restore operation and exact
+    binding clear, while D-79's general monotone-admission wording requires
+    exclusions preserved before retaining unaffected evidence. Reading that
+    general rule as forbidding even a fully qualified restore would make the
+    required availability gain impossible or unnecessarily invalidate unrelated
+    evidence. Explicitly naming the one restore exception resolves the conflict
+    without weakening ordinary admission or granting permission from a tuple.
+  - **Alternatives considered:** Keep the ambiguity (rejected: leaves required
+    restore behavior inconsistent); relax general admission (rejected: permits
+    unrelated exclusion changes); use collection's loss witness for an
+    availability gain (rejected: supplies the wrong operation association);
+    add a wire proof case (rejected: existing case 0 represents this gain).
+  - **Compatibility:** Encodings, identities, keys, profiles, golden bytes,
+    requirement IDs, gate names and draft version remain unchanged. D-78's
+    durable cancellation before local owned restore and D-82's irreversible
+    permanent ownership remain mandatory. Owned old keys never return to
+    service. Missing or unknown age does not authorize deletion or forbid
+    otherwise qualified restore. The clarification grants no native receipt,
+    elapsed age, cancellation or physical deletion authority.
+  - **Affects:** GC-15/24/29, D-78, D-79 and D-82. Actual restore producer,
+    retained current/pair controls, durability, recovery and cancellation
+    witnesses remain required; this clarification completes no task or gate.
+
+- **[D-110] Retain the exact interpretation of every consumed view.**
+  - **Status:** Decided (2026-10-06)
+  - **Decision:** Add optional key 7 to `LineageUsedInputs`, containing an
+    ordinary canonical record for every actually consumed signed view. Each
+    record binds its view identity, original signed namespace root before
+    fold filtering, explicit Legacy or Recorded mode, and existing complete
+    `ConfiguredRegistryInputs` for that view's actual selected interpretation.
+    Records sort uniquely by view digest and cover exactly the used view set.
+    Actual selected property revision, behavioral and later-name sets, and
+    attribute/tree and other registered semantic inputs are independently
+    captured during complete verification and rechecked for reuse. Unrelated
+    association-table entries are neither used inputs nor dependencies.
+  - **Rationale:** Original registration, bootstrap and association records
+    bind original authority and signed bytes, but do not retain each view's
+    Legacy/Recorded selection. Existing view-policy triples and global registry
+    inputs can therefore encode identical bytes for distinct independently
+    selected interpretations. Operation-specific recipe context under D-107
+    does not cover every consumed view. Persisting the missing ordinary input
+    permits exact comparison without treating decoded data as authority.
+  - **Alternatives considered:** Infer Legacy from absence or current property
+    spellings (rejected: loses the prior selection); use a complete association
+    table hash (rejected: makes unrelated additions source dependencies); use a
+    semantic revision, check bit or optional recipe as certification (rejected:
+    supplies neither exhaustive context nor genuine verification).
+  - **Compatibility:** Existing keys, view-policy triples, absent-key bytes,
+    identities, media types, profiles, golden vectors, requirement IDs, gates
+    and draft version remain unchanged. This additive correction precedes T1's
+    format freeze. Old absent-key records remain valid data, but absence never
+    means Legacy or permits zero-Tree cold reuse or no-walk source carry.
+    Supported normal full admission may independently requalify such a source
+    and publish fresh context-bearing lineage; incomplete original/history or
+    required-index evidence still refuses. Neither presence of key 7 nor an
+    attribute revision grants authority, completeness or index grandfathering.
+  - **Affects:** ALG-32/38, PROP-30/31, PROV-4, PROV-7 to PROV-10,
+    PROV-16, D-79, GC-5/6/22/24/29/30, DRV-12, DRV-25 to DRV-27 and
+    DRV-29/30. ALG-32's zero-Tree
+    requirement through final publication and source-preserving collection
+    remains mandatory. Genuine producer, current-selection, authorization,
+    physical retention and durability qualification remain required; this
+    correction completes no task or gate.
+
+- **[D-111] Keep current selection independent of historical context bytes.**
+  - **Status:** Decided (2026-10-07)
+  - **Decision:** Clarify ALG-38 without changing its registered version-three
+    tuple. Explicit current property revision remains independently selected
+    and checked configuration input governing justification of trusted later
+    preserve-only registrations. Historical execution remains fixed by the
+    recorded revision and its exact behavioral vocabulary. The tuple retains
+    its existing four-field recorded context: original signed view root,
+    recorded revision, exact behavioral names and trusted later names. Decoded
+    claims supply neither current selection nor registration authority.
+    Native runtime per-view selection equality and memo contexts retain the
+    explicit current revision even when registered tuple bytes are identical.
+    Persisted D-110 lineage has no separate current field. On fresh reopen,
+    independently checked supported current selections with identical historical
+    execution and recorded inputs may therefore qualify identical ordinary
+    context bytes; no exact old-current comparison is claimed or required.
+  - **Rationale:** ALG-38's earlier prose could be read as adding a current
+    revision field that the normative CDDL does not contain. CONV gives the
+    registered CDDL precedence. Changing that tuple would alter recipe bytes
+    unnecessarily; dropping current selection would instead hide distinct
+    runtime configuration inputs. A typed memo context can keep the exact
+    independently selected interpretation alongside existing evidence keys
+    without inventing a serialized field or deriving authority from data. Cold
+    reuse compares the actual registered serialized mode and semantic profiles,
+    while fresh current selection is checked independently. Unknown current or
+    changed later names, recorded revision, mode, root or registered semantics
+    still refuse reuse until genuine requalification.
+  - **Alternatives considered:** Add an unregistered tuple field (rejected:
+    changes registered bytes); infer current revision from historical revision,
+    latest compiled code or lineage key 7 (rejected: lacks independent
+    configuration); share runtime contexts whenever tuple bytes match
+    (rejected: loses current-selection distinction under PROV-16).
+  - **Compatibility:** No identity, encoding, media type, registry revision,
+    existing requirement ID, store interface or golden byte changes. Existing
+    version-one and version-two selection rules remain unchanged. Explicit
+    current selection, exact registration checks and genuine view/root
+    associations remain required. This clarification completes no task or gate.
+  - **Affects:** ALG-38, PROP-30, PROV-16 and D-110.
+
+- **[D-112] Publish owning common-Memo decoder witnesses.**
+  - **Status:** Decided (2026-10-08)
+  - **Decision:** Add independently reproduced positive and negative witnesses
+    for the existing common Memo record to the golden reference. Three positive
+    field models compare complete canonical bytes, both retained fields and the
+    immutable record identity. Negative wires cover field presence, ordering,
+    types and digest widths, noncanonical encodings, hostile lengths, oversize
+    input, trailing bytes and every strict prefix of the three positive wires.
+    The owning Memo decoder must consume the published inputs directly. Retain
+    the existing foundation descriptor witness and additionally decode its
+    complete Memo payload through that same public codec.
+  - **Rationale:** The foundation vector already publishes a complete 71-byte
+    Memo payload and its immutable descriptor. Descriptor validation does not
+    independently establish the common record's decoded field contract or
+    rejection of malformed records. TEST-1/2 require the owning format consumer
+    before conformance; private codec tests and unpublished properties cannot
+    substitute for that published coverage.
+  - **Alternatives considered:** Treat a descriptor decoder as the Memo decoder
+    (rejected: it does not parse the payload); change the record schema (rejected:
+    the existing CDDL and codec agree); hash the retained recipe lookup field as
+    a new recipe (rejected: no recipe preimage is supplied by these field models).
+  - **Compatibility:** No existing identity, encoding, media type, schema,
+    requirement ID, gate name or golden byte changes. The detached recipe lookup
+    field remains distinct from the immutable record identity. Negative wires
+    receive no immutable identity; format decoding grants no replay, trust or
+    publication authority. Tiny hostile inputs demonstrate refusal, without
+    claiming allocator instrumentation. This addition completes no task or gate.
+  - **Affects:** TEST-1 to TEST-3, OBJ-2/6 and DRV-21. DRV-22's independent
+    replay and complete runtime qualification remain required.
+
+- **[D-113] Describe conservative copied DATA with existing traversal records.**
+  - **Status:** Decided (2026-10-09)
+  - **Decision:** Clarify the roots/state bodies referenced by D-82's distinct
+    `CopiedPlacementFence`. They retain the version-one `GcRoots`/`GcState`
+    schemas. A genuine destination factory may keep all present commit-bearing
+    values and selected history without expiry or foreign age filtering, using
+    `current` for present values and `forever` for deliberate conservative
+    historical DATA holds, with unbounded parent cutoffs. Physical expansion
+    claims contain no authenticated proof contexts or pruning decisions.
+    Completeness, canonical identities, eligible serving, checkpoint integrity,
+    destination registration, actual controls and current lease remain required.
+    The bodies alone cannot qualify ordinary collection or carried lineage.
+  - **Rationale:** D-82 requires complete copied DATA placement independently
+    of a foreign original signing baseline, but references records whose root
+    reasons were described only as authenticated ordinary retention outcomes.
+    Treating conservative history as a verified foreign policy would invent
+    authority; requiring that policy would prevent retirement of universally
+    inadmissible keys. The distinct fence provides the interpretation boundary.
+    Actual independent inputs remain mandatory for any consumed trust or policy
+    decision. No foreign timestamp, absent witness or decoded record supplies
+    deletion permission.
+  - **Alternatives considered:** Add another root/state encoding (rejected:
+    existing fields describe actual physical preservation); label all history
+    as authenticated ordinary retention or proof contexts (rejected: fabricates
+    verification); omit historical roots or dependencies (rejected: violates
+    complete copied placement); reuse the records for ordinary lineage evidence
+    (rejected: crosses the independent qualification boundary).
+  - **Compatibility:** No identity, encoding, key, requirement ID, gate name or
+    existing golden byte changes. Ordinary GC-3/GC-5/GC-30 behavior is unchanged.
+    This clarification precedes T1's freeze and completes no task or gate.
+  - **Affects:** GC-4/7/15/16/29, D-82 and copied-placement fence interpretation.
+
+- **[D-114] Separate permanent ownership from current checkpoint cycles.**
+  - **Status:** Decided (2026-10-09)
+  - **Decision:** A permanent reconciliation event keeps its original owner
+    and original-cycle event key, while its genuinely current copied-placement
+    fence uses the actual independently qualified destination collection's
+    checkpoint cycle under the live session. That cycle may differ from the
+    owner cycle. Fence/roots/traversal pointers agree on their checkpoint cycle; the fence
+    revision still equals the exact current predecessor revision. Every native
+    request retains whole live lease, current DATA, backend, selected owner and
+    consumed Original predicates. Decoded pointers grant no permission.
+  - **Rationale:** D-82 requires fresh current closure throughout permanent
+    recovery, while roots are CreateOnce at `gc/<cycle>/roots`. Equating the
+    current fence cycle to immutable ownership would prevent recovery after
+    current roots change, or encourage overwriting immutable roots. Owner and
+    event keys describe permanent identity; checkpoint keys describe the
+    independently qualified current collection. The implementation conflated
+    these associations despite the distinct current-fence requirement.
+  - **Alternatives considered:** Overwrite original roots or accept stale
+    closure (rejected: violates immutable records and current DATA checks);
+    add checkpoint suffixes or new schemas (rejected: existing fresh collection
+    cycles represent the required current evidence); replace the owner on each
+    pass (rejected: violates permanent ownership and takeover semantics).
+  - **Compatibility:** No identity, encoding, key grammar, requirement ID,
+    gate name or existing golden byte changes. Original authorization, event
+    key, fence digest/revision and own checkpoint-cycle checks remain required.
+    Unchanged roots require exact independent current revalidation; changed
+    roots require a genuine fresh collection cycle. This fix precedes T1's
+    freeze and completes no task or gate.
+  - **Affects:** GC-7/15/23/29, D-82 and copied-placement reconciliation.
+
+- **[D-115] Separate copied barriers from final checkpoint cycles.**
+  - **Status:** Decided (2026-10-09)
+  - **Decision:** Final copied-retirement authorization binds a genuinely
+    current placement checkpoint whose cycle may differ from the immutable
+    preparing exclusion/barrier cycle. Its roots, traversal and fence agree on
+    their own checkpoint cycle, and the fence revision equals the exact current
+    predecessor. Optional lineage checkpoints have the same current-revision
+    requirement and retain independent complete authenticated qualification.
+    The initial preparation, operation key, exclusion, tombstone, barrier,
+    holder/epoch and actual continuous G/D observations remain unchanged.
+  - **Rationale:** The implementation still equated final copied and lineage
+    fence cycles to the original barrier cycle. CreateOnce roots cannot be
+    replaced when actual current roots change. That association would force
+    valid immutable-barrier waits to restart after unrelated publication,
+    contradicting the required continuity rule, or encourage stale roots or
+    immutable overwrite. D-114 resolved recurring permanent passes; this fix
+    resolves the separate final first-ownership association.
+  - **Alternatives considered:** Restart G/D after every changed current root
+    (rejected: unrelated publication cannot alone reset valid barrier age);
+    retain stale closure or overwrite original roots (rejected: violates current
+    completeness and CreateOnce); change barrier/operation identity or add key
+    suffixes (rejected: existing independently qualified collection cycles
+    already represent current checkpoints without replacing the preparation).
+  - **Compatibility:** No identity, encoding, key grammar, requirement ID,
+    gate name or existing golden byte changes. Preparation-initial and ordinary
+    sweep cycle checks remain unchanged. Exact predecessor, checkpoint digest,
+    current whole lease, complete DATA, consumed Original predicates and actual
+    immutable barrier/clock continuity remain mandatory. The fix precedes T1's
+    freeze and completes no task or gate.
+  - **Affects:** GC-4/7/10/12/15/16/29 and copied first ownership under D-82.
+
+- **[D-116] Reject structurally unrepresentable composite namespaces.**
+  - **Status:** Decided (2026-10-09)
+  - **Decision:** Materialization is implemented for every registered
+    composite, including nested grafts and contextual whiteouts. A successful
+    result preserves observable lookup and listing. When key precedence yields
+    an ordinary namespace that violates TREE-4 or TREE-5, the operation returns
+    a typed structural error rather than changing the virtual namespace.
+  - **Rationale:** ALG-29 previously required materializing any composite,
+    while ALG-9 gives whiteouts key scope and TREE-4 requires directory
+    ancestors. With a whiteout or nondirectory at `g` in the upper layer and a
+    graft at `g` targeting a root containing `x` in the lower layer, virtual
+    lookup still finds `g/x`. The upper layer wins or suppresses `g`, leaving
+    no directory ancestor for that visible child. Those rules cannot all hold
+    in a materialized ordinary tree without structural refusal. Conversely,
+    overlapping grafts and whiteouts within their targets can yield valid
+    namespaces; a physical descriptor merge alone cannot materialize them.
+  - **Alternatives considered:** Hide every descendant of a whiteout or
+    nondirectory (rejected: changes ALG-9's key precedence); drop lower graft
+    children or refuse all graft inputs (rejected: loses representable virtual
+    namespaces); permit malformed ordinary roots (rejected: violates TREE-4/5
+    and makes consumers interpret a different namespace).
+  - **Compatibility:** No input identity, encoding schema, requirement ID,
+    gate name or existing golden byte changes. Correctly materializing graft
+    composites can produce different result roots from a physical descriptor
+    merge that lost visible children, retained contextual whiteouts, or changed
+    inherited authority or trust policy. Existing flat overlay identities and
+    whiteout key scope remain unchanged. Authority and trust compatibility
+    requirements remain mandatory. This correction precedes T1's freeze and
+    completes no task or gate.
+  - **Affects:** ALG-3/9/10/11/29 and TREE-4/5/30.
+
+- **[D-117] Verify host plaintext without redefining object identity.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** Host publication and reassembly verify canonical manifest
+    identity separately from the assembled plaintext's ordered chunk
+    commitments, length and whole-file hashes. Retain verified reconstruction
+    manifests as ordinary immutable metadata packs outside embedded state,
+    durably before dependent sealed publication and throughout its residence.
+    A post-insertion publication failure is unacknowledged and requires
+    cleanup or independently verified durable recovery before service.
+  - **Rationale:** OBJ-4 identifies an object by canonical manifest bytes;
+    hashing assembled plaintext in that domain would change frozen identity.
+    Plaintext alone cannot reconstruct an arbitrary original chunk sequence
+    after embedded-state loss. HOST-29 forbids storing manifests in that
+    state, while ordinary cached metadata already has a registered pack
+    representation. Finally, parent synchronization and state recording can
+    fail after canonical insertion, and cleanup can itself fail or crash.
+    An unconditional promise that no name remains cannot hold in that window.
+    Withholding service until verification and durable binding preserves the
+    actual publication invariant without claiming impossible rollback.
+  - **Alternatives considered:** Hash plaintext as a manifest (rejected:
+    changes identity); recover chunk order by rechunking plaintext (rejected:
+    invents rather than verifies the original manifest); put manifests in
+    embedded state (rejected: violates HOST-29); acknowledge an inserted but
+    unsynchronized link or trust its filename (rejected: loses durability and
+    adoption checks); delete an existing canonical inode on conflict
+    (rejected: violates no-replace publication).
+  - **Compatibility:** No identity domain, encoding, bucket key, Store trait,
+    golden byte, requirement ID or gate name changes. Existing manifest and
+    metadata-pack formats are used unchanged. These host rules are clarified
+    after T1's freeze and before the host implementation. Zero wiping of
+    permanently sealed inodes remains unresolved; this decision neither
+    relaxes HOST-3/HOST-25 nor completes any task or gate.
+  - **Affects:** HOST-7/9/13/29/31/32/33, OBJ-4 and HOST-4/5.
+
+- **[D-118] Use registered surface names in the feature table.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** Correct the feature table to use the exact surface-registry
+    names required by CRATE-28, including the missing `virtio-pmem` and `api`
+    rows. Unimplemented surfaces remain unavailable at configuration time.
+  - **Rationale:** The table's `nix`, `gha` and `web` abbreviations conflict
+    with the normative names `nix-cache`, `gha-cache` and `browse`. A closed
+    build vocabulary cannot require both spellings for the same feature.
+  - **Alternatives considered:** Preserve aliases as additional feature
+    names (rejected: adds ambiguity without an implemented compatibility
+    need); compile placeholder surfaces (rejected: registration is not an
+    implementation or a conformance claim).
+  - **Compatibility:** No implemented feature is renamed. The existing
+    `surface-sdk` feature and every content identity, encoding, key, Store
+    trait, requirement ID, gate name and golden byte remain unchanged.
+  - **Affects:** CRATE-28 and the surface feature-flag table.
+
+- **[D-119] Separate native host commands from portable filesystem I/O.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** Keep the existing portable filesystem interface unchanged.
+    Express CRATE-10's native host lifecycles through separate kernel binding
+    interfaces implemented in `terrane-fs`. Portable policy supplies fixed
+    typed commands rather than performing native I/O. Native command owners
+    retain physical resources through completion, stream bounded chunks and
+    return backing handles only after actual durability.
+  - **Rationale:** CRATE-7's unqualified filesystem-interface wording conflicts
+    with CRATE-10's assignment of descriptor sealing, filesystem inspection
+    and quotas to a separate Linux crate. The existing portable interface
+    cannot express those mechanisms or a bounded streaming reassembly writer.
+    Adding methods after its freeze would change the shared contract; using
+    direct host I/O in portable policy or buffering whole objects would hide
+    the problem. A separate fixed-command boundary preserves the layering and
+    lets the native owner survive cancellation without releasing its holds.
+  - **Alternatives considered:** Extend the frozen portable trait (rejected:
+    violates its implementation freeze); add an upward dependency from policy
+    to the Linux crate (rejected: violates dependency direction); perform raw
+    kernel operations in portable policy (rejected: bypasses CRATE-10);
+    accept callback success or a claimed capability boolean (rejected: does
+    not establish physical completion or kernel capability).
+  - **Compatibility:** No existing trait signature, content identity,
+    encoding, bucket key, requirement ID, gate name or golden byte changes.
+    The exception is limited to previously unimplemented native host commands;
+    HTTP, clocks and ordinary portable filesystem operations retain their
+    existing boundaries. It neither registers a process transport nor
+    resolves zero wiping, and completes no task or gate.
+  - **Affects:** CRATE-7/10/19, HOST-1/3/7/13/23 and native command lifetime.
+
+- **[D-120] Distinguish canonical times from native inode lifecycle times.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** TREE-10 canonicalizes presented access and modification
+    times. Native inode-change and birth times that a surface cannot set
+    remain local presentation-instance metadata and carry no content identity
+    or canonical-timestamp claim.
+  - **Rationale:** A native directory checkout can set access and modification
+    times, but ownership, mode and timestamp operations themselves update its
+    kernel-maintained change time. Ordinary filesystem interfaces do not let
+    it set that time or filesystem birth time to a canonical value. Treating
+    every native stat timestamp as a reproducibility promise would make the
+    registered SDK checkout impossible despite the tree carrying no such
+    fields. Kernel surfaces that synthesize metadata may still use canonical
+    values for all times they control.
+  - **Alternatives considered:** Report native change times as canonical
+    (rejected: false); alter filesystem internals or the host clock to forge
+    them (rejected: outside the surface's authority and meaning); introduce
+    timestamp fields into the content format (rejected: changes frozen bytes
+    and ties identity to extraction).
+  - **Compatibility:** No encoded field, property, identity, trait, key,
+    requirement ID, gate name or golden byte changes. The correction narrows
+    the presentation claim to the timestamps the native interface controls;
+    it does not qualify any implementation or gate.
+  - **Affects:** TREE-10, SURF-1/27 and the SDK checkout surface.
+
+- **[D-121] Register the host-local publisher descriptor transport.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** Register `publisher-local-v1` in the wire schema as a
+    narrowly scoped Unix sequenced-packet/protobuf transport with exact
+    descriptor counts, fixed commands and kernel role authentication. It
+    conveys publisher operations only, not an alternative store API.
+    Distribution retains its existing HTTP, encoding, TLS and token rules.
+    All publisher namespace operations retain actual native ownership through
+    completion and cache-incarnation drain barriers.
+  - **Rationale:** HOST-7 requires a passed content descriptor and ARCH-8
+    returns read-only descriptors across distinct role processes. HTTP,
+    protobuf JSON and Authorization headers cannot transfer kernel descriptor
+    custody. ARCH-5 required registration while the wire schema registered
+    none. A documented branch of the one protocol makes the boundary
+    implementable without inventing a private intertier API or pretending a
+    lost waiter cancels physical work. The publisher must own sealed-file
+    retirement and recovery effects as well as initial insertion.
+  - **Alternatives considered:** Undocumented ancillary frames (rejected:
+    violates ARCH-5); send caller paths (rejected: loses descriptor custody);
+    merge identities or grant other roles sealed-directory writes (rejected:
+    violates sole-writer separation); send descriptors through ordinary HTTP
+    or remote TLS (rejected: not a kernel descriptor transfer); accept caller
+    completion booleans (rejected: no physical completion evidence).
+  - **Compatibility:** Advance the specification to 1.1-draft-1 for the new
+    local transport version 1, in package `terrane.publisher.local.v1`;
+    retain all existing media-type versions. No existing wire
+    message field, content identity, encoding, bucket key, Store or LocalFs
+    signature, requirement ID or gate name changes. Registering this host
+    mechanism before the protocol freeze does not implement Distribution or
+    reopen T1's format freeze. No zero-wipe requirement is relaxed. Runtime
+    conformance and T2 acceptance still require real multi-process gates.
+  - **Affects:** ARCH-5/8, HOST-6/7/9/28/32, AUTH-4/5, PROTO-1 to
+    PROTO-5 and new PROTO-56 to PROTO-59.
+
+- **[D-122] Define schema path patterns and empty-collection constraints.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** SURF-13 uses component-wise byte patterns: `*` is one
+    component and `**` is zero or more. Literal required entries establish
+    existence; wildcard kind and attribute constraints apply to every
+    existing match and permit empty collections. Malformed patterns fail
+    regardless of tree contents. Root attributes remain authenticated
+    metadata, never invented encoded fields or content-derived substitutes.
+  - **Rationale:** The schema interface named path patterns without defining
+    syntax or quantification. Treating collection constraints as existence
+    requirements prevents an empty cache from starting; accepting a malformed
+    pattern only because the tree is empty creates content-dependent schema
+    semantics. Literal entry requirements express necessary directories while
+    universal collection constraints validate each object that is present.
+  - **Alternatives considered:** Host filesystem globbing (rejected:
+    platform-dependent and may perform I/O); require one match for every
+    collection (rejected: disallows empty caches); silently accept malformed
+    patterns (rejected: hides configuration errors); add root fields to tree
+    bytes (rejected: violates the format freeze and is not a schema fix).
+  - **Compatibility:** Clarifies the previously unspecified schema language
+    before T2's interface freeze. No existing content identity, encoding,
+    bucket key, Store or LocalFs trait, requirement ID, gate name or golden
+    byte changes. SDK's empty schema is unaffected. Protocol surfaces remain
+    unimplemented; representing their full-tree root attributes still requires
+    a separate normative resolution before those surfaces can be claimed.
+  - **Affects:** SURF-13/14/15 and the surface schema interface.
+
+- **[D-123] Separate allocated blocks, quota charges and admission holds.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** Measure synchronized per-inode allocation at serialized
+    native boundaries, distinguish it from kernel charged/reserved usage,
+    and retain separate future admission holds. Each physical inode has one
+    stable charge owner; shared pins and links do not duplicate its charge.
+    Native owners retain reservations and physical custody through actual
+    completion or confirmed cleanup, including after cancellation.
+
+    A privileged host provisions finite inheriting project quotas covering
+    every allocation class, with hard-limit sum within the tier's charge
+    budget. Unprivileged roles verify actual configuration and live usage
+    through a host-supplied read-only inspector over the registered
+    `host-quota-local-v1` transport. The helper owns its configured kernel
+    descriptors and accepts no caller paths, project IDs or mutable commands.
+    Stable root/domain/owner assignments survive restart in a host-owned
+    provisioning ledger outside the content layout.
+  - **Rationale:** Length omits holes, preallocation, temporary copies and
+    seal metadata. During delayed allocation, block reports can include
+    reservations; quota usage also includes kernel reservations. Neither is
+    continuous measurement of physical allocation. Linux checks the current
+    caller's privilege for project quota queries, even with a descriptor
+    opened by a privileged process. Project quotas are not hierarchical.
+    Explicit native custody, externally bounded project coverage and actual
+    host queries make enforcement implementable without giving capabilities
+    to Terrane roles or changing the frozen portable filesystem trait.
+  - **Alternatives considered:** Call estimates measured allocation
+    (rejected: conflates future holds with physical facts); query through a
+    privileged-opened descriptor (rejected: does not delegate the required
+    capability); use raw quota files (rejected: not live kernel state);
+    assume hierarchical project quotas (rejected: no such guarantee);
+    charge shared inodes to every pin owner (rejected: duplicates physical
+    charges); invent an unregistered helper protocol (rejected: ARCH-5).
+  - **Compatibility:** Adds one registered host-local query package in
+    specification 1.1-draft-1. Existing identity domains, content encodings,
+    bucket keys, Store/LocalFs signatures, message packages, requirement IDs
+    and gate names remain unchanged. The external provisioning ledger is
+    not a bucket key. Static partitioning can strand unused capacity; dynamic
+    pooling requires a separately coordinated host configuration change.
+    This correction does not implement a helper, pass a gate or resolve zero
+    wiping. Capability-free direct-query admission remains unsupported until
+    a genuine helper and native custody are qualified.
+  - **Affects:** HOST-19/20/22/23/27, DOM-12, CRATE-7/10, ARCH-5,
+    AUTH-4/5 and new PROTO-60.
+
+- **[D-124] Recover pending inode custody without granting backing access.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** Register local InspectPending operation 11, returning only
+    a freshly retained lifecycle token, without a descriptor, verity claim or
+    content-validity receipt. Recovery may restore or finish that pending
+    incarnation; sealed service still requires canonical adoption. Define
+    previously unspecified pack/index pending names using their existing
+    content digests within the unchanged `<hash>` grammar, while preserving
+    random pack IDs and canonical storage keys. Recover paired members across
+    canonical and pending namespaces using their existing common header.
+    Durably retain deletion deadlines as leases; state loss reconstructs a
+    conservative bounded deadline, never an assumed expiry.
+  - **Rationale:** Publisher restart invalidates tokens. Canonical adoption
+    cannot issue a new token for an inode that is still pending, and returning
+    a pending sealed file as a backing handle violates HOST-5. Chunk codec
+    variants and inline sealed files can share a digest; no-replace collision
+    handling must serialize them. Packs need their index pair preserved even
+    when a crash interrupts the two namespace moves. A random pack ID remains
+    its storage identifier; a pending content digest is only a recovery name.
+  - **Alternatives considered:** Return pending backing descriptors
+    (rejected: bypasses canonical publication); reuse pre-restart tokens
+    (rejected: loses incarnation custody); add type/codec suffixes or prefixes
+    (rejected: changes frozen key grammar); overwrite an occupied pending name
+    (rejected: destroys another incarnation); infer manifest identity from
+    plaintext or missing pack bytes from an index (rejected: false identity
+    and presence claims); assume lost leases expired (rejected: early removal).
+  - **Compatibility:** Preserves every existing identity calculation,
+    encoded content byte, bucket prefix, key grammar and canonical pack/index
+    name. The pack pending cases were unimplemented and unspecified. Adds a
+    previously unused local opcode before the initial protocol freeze; no
+    existing field or opcode changes meaning. Local vocabulary extensions
+    after that freeze or a conforming release require a new transport version.
+    No task, gate or zero-wipe path is completed by this correction.
+  - **Affects:** HOST-5/28/29/31/32, BKT-15, PACK-15/16 and PROTO-56/58/59.
+
+- **[D-125] Include host layout directory inodes in quota custody.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** Register logical quota-query labels `layout-root` and
+    optional `administrative-root`, alongside the seven existing allocation
+    classes. Charge the actual domain-layout inode and explicitly configured
+    administrative scaffolding to finite compatible projects. Never infer a
+    general host ancestor from a common path prefix.
+  - **Rationale:** Querying only seven child directories leaves their parent
+    inode's allocation outside verified coverage. A public data-root override
+    can also leave a separate administrative base to account for. Splitting
+    public state across unrelated layout roots hides the problem and changes
+    runtime layout assumptions. Explicit native directory observations cover
+    these allocations without adding a content key or silently relabeling
+    existing data.
+  - **Alternatives considered:** Ignore parent allocations (rejected: misses
+    physical custody); assume path ancestry grants quota authority (rejected:
+    could affect unrelated host data); move state outside its domain layout
+    (rejected: breaks reconstruction assumptions); invent a bucket marker
+    (rejected: unnecessary frozen-key change).
+  - **Compatibility:** Adds logical labels to the unimplemented host-local
+    query contract before its initial protocol freeze. Existing field numbers,
+    content encodings, identity domains, bucket keys, Store/LocalFs signatures,
+    requirement IDs and gate names remain unchanged. These labels create no
+    directories and prove no implementation or gate.
+  - **Affects:** HOST-1/20/23/27 and PROTO-60.
+
+- **[D-126] Enforce stable quota ownership against native inode setters.**
+  - **Status:** Decided (2026-10-16)
+  - **Decision:** HOST-23 requires kernel prevention of project reassignment
+    and inheritance changes by ordinary allocation-capable roles, including
+    direct syscalls, aliases and alternate ABIs. Process confinement covers
+    all threads and descendants before mutable cache work. Trusted host
+    administration isolates those writable identities and bypass channels;
+    privileged provisioning remains separate.
+  - **Rationale:** An inode owner on the reviewed native filesystem can
+    change its project without an administrative capability. A fresh quota
+    query observes enforcement of the selected project but cannot stop a
+    later reassignment to an unlimited project. Root-owned initial scaffolds,
+    advisory provisioning locks and periodic observations leave the same
+    gap for role-created inodes. Exact enforcement therefore needs a
+    non-bypassable writer boundary as well as finite projects and queries.
+  - **Alternatives considered:** Trust the intended syscall sequence or
+    recheck assignments periodically (rejected: leaves a mutable enforcement
+    race); protect only initial directories (rejected: new inodes belong to
+    their creator); require a privileged creator for every mutable inode
+    (valid alternative, with substantially different host composition).
+  - **Compatibility:** Clarifies existing HOST-23's stable charge owner and
+    exact enforcement requirements. No identity, content encoding, bucket
+    key, Store/LocalFs signature, protocol field, requirement ID or gate name
+    changes. Implementation and real native qualification remain required.
+  - **Affects:** HOST-19/20/23, PROTO-60 and THREAT-1.
+
+- **[D-127] Reconcile reference package names with workspace ownership.**
+  - **Status:** Decided (2026-10-19)
+  - **Decision:** Name the portable format crate `terrane-format`, the
+    portable repository and store crate `terrane-sdk`, and the Linux binding
+    crate `terrane-linux`. Retain `terrane-cli` and its `terrane` executable.
+    Historical crate spellings elsewhere in the specification are aliases
+    defined by section 37's package-name compatibility section.
+  - **Rationale:** The adopting workspace's reviewed crate migration assigns
+    explicit responsibility names and nested ownership directories to this
+    implementation. Keeping contradictory package names in CRATE-1 through
+    CRATE-21 would make the implementation and its normative structure disagree
+    despite preserving exactly the same dependency and portability boundaries.
+  - **Alternatives considered:** Keep obsolete package names behind compatibility
+    facades (rejected: duplicates ownership and obscures the required dependency
+    direction); change stable gate names (rejected: breaks conformance references).
+  - **Compatibility:** A source-level package rename only. No identity preimage,
+    content bytes, bucket key, Store/LocalFs signature, exposure contract, wire
+    protocol, token, requirement ID, or gate name changes. The no_std boundary
+    and exclusive Linux unsafe-code boundary are preserved. This decision does
+    not resolve the separate HOST-3/HOST-25/DOM-18 sealing contradiction or claim
+    any pending task complete.
+  - **Affects:** CRATE-1 through CRATE-21, ARCH-1/4 and their existing gates.
+
+- **[D-128] Reject zero-wipe on permanently sealed tiers.**
+  - **Status:** Decided (2026-10-20)
+  - **Decision:** Preserve HOST-3's kernel-enforced immutable sealed inodes.
+    Reject `wipe=zero` during sealed-tier configuration validation, before
+    opening a domain or admitting content. Backends that can actually overwrite
+    data may implement zero-wipe. Private domains retain their `zero` default;
+    unsupported policies never silently become `none`.
+  - **Rationale:** Permanent kernel sealing prevents overwriting the same inode,
+    including by its owner. Replacing or unlinking that inode cannot establish
+    that its original data was overwritten.
+  - **Alternatives considered:** Weaken sealing (rejected: breaks the immutable
+    backing guarantee); equate unlinking with wiping (rejected: does not honor
+    the requested strategy); require both operations on the same sealed inode
+    (rejected: impossible for the selected kernel mechanism).
+  - **Compatibility:** Clarifies capability refusal under PROP-15. No identity,
+    encoding, bucket key, Store/LocalFs trait, wire field, token, requirement ID
+    or gate name changes. This decision does not complete a host task.
+  - **Affects:** HOST-3, HOST-25, DOM-18 and PROP-15.
+
+- **[D-129] Inspect quarantined custody without issuing backing authority.**
+  - **Status:** Decided (2026-10-21)
+  - **Decision:** Register publisher-local operation 12, InspectQuarantine.
+    A typed sealed-body key selects an existing publisher-owned quarantine
+    inode. The response carries one read-only unverified descriptor and no
+    verity binding or lifecycle token. It performs no namespace mutation and
+    never substitutes for content verification, pinning or recovery completion.
+    Native recovery can independently inspect the original inode's project
+    and allocation without opening publisher-only files by pathname.
+  - **Rationale:** Quarantined sealed files retain publisher ownership and may
+    be unreadable to the cache identity. O_PATH observations cannot perform
+    the native project ioctl; file names and decoded state cannot establish
+    correct physical charge ownership.
+  - **Affects:** HOST-15, HOST-27, HOST-32 and publisher-local-v1.
+
+- **[D-130] Quarantine exact sealed incarnations without replacing earlier copies.**
+  - **Status:** Decided (2026-10-21)
+  - **Decision:** Register publisher-local operation 13, Quarantine. Only an
+    actual retained canonical sealed incarnation can authorize the move. Its
+    destination is `quarantine/<hash>.<incarnation>`, using a 64-digit lowercase
+    hexadecimal suffix, and is never replaced. Synchronize both directories
+    before success and remove the old lifecycle token. InspectQuarantine may
+    select that suffix as public naming information without acquiring lifecycle
+    authority. Recovery accepts both tagged and legacy digest-only entries as
+    independently checked opaque custody, never verified content.
+  - **Rationale:** Refetching a hash can produce a new physical inode while a
+    previous corrupt copy still awaits scrub. A single digest-only quarantine
+    name cannot preserve both copies. The suffix distinguishes the original
+    allocations without allowing a caller to mint mutation authority.
+  - **Affects:** HOST-15, HOST-27, HOST-32 and publisher-local-v1.
+
+- **[D-131] Preserve exact encoded units during quarantine.**
+  - **Status:** Decided (2026-10-21)
+  - **Decision:** Extend publisher-local Quarantine to the actually retained
+    encoded chunk and pack/index keys. Name each original member
+    `quarantine/encoded.<canonical-filename>.<incarnation>` without replacement.
+    Check the complete original unit and all destinations before moving any
+    member, synchronize each actual move, and retain partial progress on error.
+    A failed encoded exchange excludes further mutation through its old token
+    in that owner; reconciliation requires fresh physical custody. Quarantine
+    supplies no content validity, restore, deletion, pin or funding-release
+    authority. InspectQuarantine remains sealed-only. Cold encoded members use
+    direct original read-only handles under the configured shared-content owner,
+    project, retained root and actual drained publisher context. Each member of
+    a partial quarantine is accounted independently without establishing a
+    complete pack, valid content or mutation authority.
+  - **Rationale:** Later-read verification also covers encoded chunks,
+    dictionaries and metadata. Their original inode allocations must survive
+    corruption, and moving a pack cannot discard its separately charged index.
+    The canonical name and original token distinguish codec, member class and
+    incarnation without treating corrupt bytes as a content-validity receipt.
+  - **Affects:** HOST-15, HOST-27, HOST-32 and publisher-local-v1. Native read
+    reporting, refetch and recovery reconciliation remain separate obligations.
+
+- **[D-132] Separate sorted entries from direct-child runs.**
+  - **Status:** Decided (2026-10-21)
+  - **Decision:** Keep the structural index entry table in global full-path
+    byte order and add a contiguous array of u32 entry-table indices. Each
+    directory records its run in that array. Validate the complete partition,
+    parent relationships and byte ranges before exposing borrowed entries.
+  - **Rationale:** Nested descendants interleave direct children in a globally
+    sorted table. A separate child array preserves binary search and
+    allocation-free directory scans without duplicating entry records.
+  - **Compatibility:** Clarifies the not-yet-deployed structural index version
+    1 layout by adding `children_offset` to its header. No Terrane identity,
+    tree encoding, wire field, requirement ID or gate name changes. This does
+    not establish sealing, cache pinning or worker conformance.
+  - **Affects:** FUSE-7, FUSE-8 and FUSE-12.
+
+- **[D-133] Preserve retained backing custody when draining FUSE.**
+  - **Status:** Decided (2026-10-21)
+  - **Decision:** Exposure expiry starts drain. Stop new opens, bound in-flight
+    backing requests and abort the FUSE connection. Operations requiring the
+    disconnected worker fail with `ENOTCONN`; already disclosed descriptors,
+    cached pages and passthrough mappings may remain readable. Preserve physical
+    custody, protective pins and actual allocation charges until the retained
+    references close, including references surviving backing-id release,
+    worker exit or unmount. Expired exposures must not resume after a crash.
+  - **Rationale:** The actual AOS 7.2.3 kernel probe successfully reads and maps
+    a permanently sealed file and executes it through overlay. After closing
+    the backing id and aborting the connection, a new lookup and an existing
+    direct-I/O control fail with `ENOTCONN`, while the original passthrough
+    descriptor and mapping still return their bytes. Connection state cannot
+    establish physical reference closure or retract already disclosed data.
+  - **Compatibility:** Corrects the unreleased drain contract without changing
+    any identity, index format, wire field, requirement ID or gate name.
+    `terrane.integration.native-fuse-kernel` measures this kernel behavior;
+    it does not qualify a production broker, exposure lease or worker.
+  - **Affects:** FUSE-6, FUSE-47, FUSE-48, FUSE-50 and the exposure teardown
+    entry in the errno mapping.
+
+## Open decisions
+
+- **[D-21] Tenancy scope of chunk deduplication.**
+  - **Status:** Open
+  - **Decision:** Not yet made. Either global chunk dedup with per-domain
+    namespaces, or per-domain buckets with no cross-domain dedup.
+  - **Rationale:** Global dedup saves the most bytes and is what a public
+    baseline wants; per-domain buckets remove the existence oracle entirely
+    and match strict disclosure requirements. The disclosure-domain property
+    ([`24-disclosure-domains.md`](24-disclosure-domains.md)) can express
+    both; the open question is the default and the operational guidance.
+  - **Alternatives considered:** Both are live. See `RISK-6`.
+  - **Affects:** `DOM`, `THREAT`.
+
+- **[D-22] Realizer priority in the first implementation.**
+  - **Status:** Open
+  - **Decision:** Not yet made. Whether the FUSE surface or the EROFS surface
+    is built first.
+  - **Rationale:** FUSE with passthrough covers both lazy and resident
+    trees and is required for laziness; EROFS is the steady-state fast path
+    for resident trees. FUSE first is the recommended sequence because it
+    covers every case, with EROFS as an optimization.
+  - **Alternatives considered:** EROFS first (fast path sooner, no laziness
+    until FUSE lands).
+  - **Affects:** `FUSE`, `EROFS`.

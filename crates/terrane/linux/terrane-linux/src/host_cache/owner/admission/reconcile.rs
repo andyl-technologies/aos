@@ -1,0 +1,116 @@
+//! Measures synchronized native completion separately from project quota charge.
+
+use super::{super::retention::Custody, Input, backing::AdmissionJob, io as native, state};
+use crate::host_quota::synchronized_allocated_bytes;
+use rustix::fs::{Mode, OFlags, openat};
+use std::{collections::BTreeMap, fs::File, io, os::unix::fs::MetadataExt};
+
+/// Reconciles actual synchronized member allocation and fresh quota before acknowledgment.
+///
+/// # Errors
+/// Refuses unavailable, changed or invalid native inputs and failed completion.
+pub(super) fn finish(owner: &mut Custody, job: &mut AdmissionJob) -> io::Result<(u64, u64)> {
+    verify(owner, job)?;
+    let layout = owner.preparation.layout();
+    let root = File::from(openat(
+        &layout.root,
+        ".",
+        OFlags::RDONLY | OFlags::DIRECTORY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )?);
+    let metadata = root.metadata()?;
+    if (metadata.dev(), metadata.ino()) != layout.directory_binding("layout-root")? {
+        return Err(io::Error::other("admission synchronization root replaced"));
+    }
+    // This actual barrier covers the complete filesystem and may wait for
+    // unrelated writers. Private publisher allocations are still measured by Q.
+    rustix::fs::syncfs(&root)?;
+    let mut measured = BTreeMap::new();
+    for member in &job.files {
+        let file = member
+            .readonly
+            .as_ref()
+            .ok_or_else(|| io::Error::other("admission member absent"))?;
+        let metadata = file.metadata()?;
+        measured.insert(
+            (metadata.dev(), metadata.ino()),
+            synchronized_allocated_bytes(file)?,
+        );
+    }
+    let allocated = measured.values().try_fold(0u64, |sum, bytes| {
+        sum.checked_add(*bytes)
+            .ok_or_else(|| io::Error::other("admission allocation overflow"))
+    })?;
+    let mut directories = BTreeMap::new();
+    for member in &job.files {
+        for directory in member.parent.chain() {
+            let metadata = directory.metadata()?;
+            directories.insert(
+                (metadata.dev(), metadata.ino()),
+                synchronized_allocated_bytes(directory)?,
+            );
+        }
+    }
+    job.directory_bytes = directories.values().try_fold(0u64, |sum, bytes| {
+        sum.checked_add(*bytes)
+            .ok_or_else(|| io::Error::other("admission directory allocation overflow"))
+    })?;
+    owner.snapshot_allocated_bytes = owner
+        .snapshot
+        .as_ref()
+        .ok_or_else(|| io::Error::other("admission snapshot absent"))
+        .and_then(|(file, _)| synchronized_allocated_bytes(file))?;
+    owner.directory_allocated_bytes = synchronized_allocated_bytes(&owner.directory)?;
+    owner.preparation.recheck()?;
+    let future = owner.state.reservations.iter().try_fold(0u64, |sum, row| {
+        sum.checked_add(row.bytes)
+            .ok_or_else(|| io::Error::other("admission hold sum overflow"))
+    })?;
+    state::check_charge(owner, future)?;
+    verify(owner, job)?;
+    owner.check_current()?;
+    let charged = owner
+        .preparation
+        .quota()
+        .observation()
+        .charged_reserved_bytes;
+    job.complete = true;
+    owner.faulted = false;
+    Ok((allocated, charged))
+}
+
+/// Checks actual original member bytes and every retained dependency.
+///
+/// # Errors
+/// Refuses changed registration, incomplete pairs, dictionaries or native bytes.
+pub(super) fn verify(owner: &Custody, job: &AdmissionJob) -> io::Result<()> {
+    state::check_registration(owner, job)?;
+    for dependency in &job.dependencies {
+        let source = super::backing::lock(dependency)?;
+        if !source.complete || !source.dependencies.is_empty() {
+            return Err(io::Error::other(
+                "admission dictionary is not a completed one-hop source",
+            ));
+        }
+        state::check_registration(owner, &source)?;
+        let Input::Chunk { encoded, .. } = &source.input else {
+            return Err(io::Error::other(
+                "admission dictionary is not an encoded chunk",
+            ));
+        };
+        if source.files.len() != 1 {
+            return Err(io::Error::other("admission dictionary closure changed"));
+        }
+        native::check_current(owner, &source.files[0], encoded)?;
+    }
+    match &job.input {
+        Input::Chunk { encoded, .. } if job.files.len() == 1 => {
+            native::check_current(owner, &job.files[0], encoded)
+        }
+        Input::Metadata { pack, index, .. } if job.files.len() == 2 => {
+            native::check_current(owner, &job.files[0], index)?;
+            native::check_current(owner, &job.files[1], pack)
+        }
+        _ => Err(io::Error::other("admission pair closure is incomplete")),
+    }
+}

@@ -1,15 +1,31 @@
 ##! Authors physical prerequisite and successor markers around each controlled operation.
-{config, lib, ...}: let
+{
+  config,
+  lib,
+  ...
+}: let
   cfg = config.aos.nativeServiceQualification;
   markers = config.aos.abilities.nativeDependencyBarrier.operations.ensure.effects;
   operations = {
-    service = {ability = "serviceManagement"; name = "realize";};
-    group = {ability = "identity"; name = "group";};
-    principal = {ability = "identity"; name = "principal";};
-    membership = {ability = "identity"; name = "membership";};
+    service = {
+      ability = "serviceManagement";
+      name = "realize";
+    };
+    group = {
+      ability = "identity";
+      name = "group";
+    };
+    principal = {
+      ability = "identity";
+      name = "principal";
+    };
+    membership = {
+      ability = "identity";
+      name = "membership";
+    };
   };
   requestsFor = name: operation:
-    { "${name}-parent" = {name = "${name}-parent";}; }
+    {"${name}-parent" = {name = "${name}-parent";};}
     // lib.optionalAttrs cfg.enabled.${name} {
       "${name}-child" = {
         name = "${name}-child";
@@ -17,8 +33,10 @@
       };
     };
 in {
-  aos.nativeServiceQualification.dependencyParents = lib.mapAttrs
-    (name: _: markers."${name}-parent".outputs.resource) operations;
+  aos.nativeServiceQualification.dependencyParents =
+    lib.mapAttrs
+    (name: _: markers."${name}-parent".outputs.resource)
+    operations;
   aos.nativeDependencyBarrier.requests = lib.mkMerge (
     [{foreign-marker = {name = "foreign-marker";};}]
     ++ builtins.attrValues (lib.mapAttrs requestsFor operations)

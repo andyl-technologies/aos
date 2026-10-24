@@ -11,7 +11,10 @@ let
     {
       pname = name;
       version = "1";
-      outPath = builtins.toString (builtins.path {path=./fixtures;name="native-${name}-fixture";});
+      outPath = builtins.toString (builtins.path {
+        path = ./fixtures;
+        name = "native-${name}-fixture";
+      });
       meta.mainProgram = "handler";
     }
     // lib.optionalAttrs (module != null) {inherit module;};

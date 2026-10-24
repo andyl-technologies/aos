@@ -51,10 +51,11 @@ in {
     };
     dependencyParents = lib.mkOption {
       type = lib.types.submodule {
-        options = lib.genAttrs ["service" "group" "principal" "membership"] (_: lib.mkOption {
-          type = lib.types.nullOr lib.types.effectOutput;
-          default = null;
-        });
+        options = lib.genAttrs ["service" "group" "principal" "membership"] (_:
+          lib.mkOption {
+            type = lib.types.nullOr lib.types.effectOutput;
+            default = null;
+          });
       };
       default = {};
       description = "Authored native marker prerequisites for the selected fixture operations.";

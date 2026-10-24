@@ -1,0 +1,1061 @@
+//! Retains the sole physical executor and noninterleaving Resume command turn.
+//!
+//! Only the retained worker constructs an executor from its genuine custody.
+//! A Resume turn borrows it mutably for the complete synchronous RPC. Neither
+//! a caller-selected session nor a boolean can substitute for that borrow.
+//! Acknowledged contexts and failed handoffs remain outside embedded custody,
+//! preventing a reference cycle and retaining resources before cancellable replies.
+
+use super::super::consumer::{ConsumerJob, ReadBudget, ReadView};
+use super::Custody;
+mod cache_activity;
+mod corruption;
+pub(crate) use corruption::PublisherCorruptionTurn;
+mod cache_eviction;
+pub(crate) use cache_eviction::PublisherCacheRetirementTurn;
+mod cache_handoff;
+mod encoded_eviction;
+mod recovered_order;
+use crate::{
+    host_cache::CompletedRecovery,
+    publisher_local::client::{PublisherRunningContext, ResumeFailureStage},
+};
+use std::{
+    io,
+    sync::{Arc, Mutex},
+    thread::{self, ThreadId},
+};
+
+/// Owns one retained physical queue's native custody on its actual worker thread.
+pub(in crate::host_cache::owner) struct NativeOwnerExecutor {
+    custody: Arc<Mutex<Custody>>,
+    worker: ThreadId,
+    running: Option<Arc<PublisherRunningContext>>,
+    failed_resume: Option<(ResumeFailureStage, Box<CompletedRecovery>)>,
+    recovered_chunks: Vec<Arc<crate::host_cache::VerifiedStandaloneChunk>>,
+    recovered_metadata: Vec<Arc<crate::host_cache::DerivedIndexRepair>>,
+    admission_jobs: Vec<Arc<Mutex<super::super::admission::AdmissionJob>>>,
+    publications: Vec<Arc<Mutex<super::super::publication::PublicationJob>>>,
+    allocation_order: u64,
+    recovered_sealed_order: Vec<([u8; 32], u64)>,
+    corruption: Mutex<super::super::corruption::Registry>,
+    encoded_failures: Arc<std::sync::atomic::AtomicBool>,
+    producer_reads: super::super::publication::residence::ProducerReadRegistry,
+    pub(in crate::host_cache::owner) cache: super::super::publication::eviction::Runtime,
+    inline_sources: Vec<Arc<Mutex<super::super::publication::RecoveredInlineJob>>>,
+    consumers: Vec<Arc<Mutex<ConsumerJob>>>,
+    consumer_reads: Arc<ReadBudget>,
+    adopted_inline: Vec<super::super::recovery_inline::AdoptedInline>,
+    manifest_sources: Vec<Arc<crate::host_cache::NativeManifestSource>>,
+    manifest_bodies: Vec<
+        Arc<
+            crate::publisher_local::client::PeerPublishedObject<
+                terrane_sdk::host::cache::HostDomainLocation,
+            >,
+        >,
+    >,
+    manifest_backings: Vec<super::recovery_manifest::RecoveryManifestBodyRetention>,
+    verified_manifests: Vec<Arc<crate::host_cache::recovery_inspection::VerifiedRecoveryManifest>>,
+    manifest_failures: Vec<super::super::recovery_manifests::ManifestFailureResources>,
+}
+
+impl NativeOwnerExecutor {
+    /// Borrows the actual physical executor for one original source cleanup RPC.
+    ///
+    /// # Errors
+    /// Refuses another worker; the turn checks genuine funding before submission.
+    pub(in crate::host_cache::owner) fn cleanup_turn<'turn>(
+        &'turn mut self,
+        funding: &'turn super::super::publication::retirement::CleanupFunding,
+    ) -> io::Result<PublisherCleanupTurn<'turn>> {
+        self.check_physical_worker()?;
+        Ok(PublisherCleanupTurn {
+            executor: self,
+            funding,
+        })
+    }
+
+    /// Retains actual initialized custody on the physical worker, without cloning it.
+    pub(super) fn new(custody: Arc<Mutex<Custody>>, consumer_reads: Arc<ReadBudget>) -> Self {
+        Self {
+            custody,
+            worker: thread::current().id(),
+            running: None,
+            failed_resume: None,
+            recovered_chunks: Vec::new(),
+            recovered_metadata: Vec::new(),
+            admission_jobs: Vec::new(),
+            publications: Vec::new(),
+            allocation_order: 0,
+            recovered_sealed_order: Vec::new(),
+            corruption: Mutex::new(super::super::corruption::Registry::default()),
+            encoded_failures: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            producer_reads: super::super::publication::residence::ProducerReadRegistry::default(),
+            cache: super::super::publication::eviction::Runtime::default(),
+            inline_sources: Vec::new(),
+            consumers: Vec::new(),
+            consumer_reads,
+            adopted_inline: Vec::new(),
+            manifest_sources: Vec::new(),
+            manifest_bodies: Vec::new(),
+            manifest_backings: Vec::new(),
+            verified_manifests: Vec::new(),
+            manifest_failures: Vec::new(),
+        }
+    }
+
+    /// Borrows actual custody for one serialized physical command.
+    pub(in crate::host_cache::owner) fn custody(&self) -> &Arc<Mutex<Custody>> {
+        &self.custody
+    }
+
+    /// Checks the actual physical worker before a fixed native command.
+    ///
+    /// # Errors
+    /// Refuses a caller on any thread other than this retained executor.
+    pub(in crate::host_cache::owner) fn check_physical_worker(&self) -> io::Result<()> {
+        if self.worker != thread::current().id() {
+            return Err(io::Error::other(
+                "native command belongs to another physical worker",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Borrows the original worker identity established by this executor.
+    pub(in crate::host_cache::owner) fn worker_identity(&self) -> ThreadId {
+        self.worker
+    }
+
+    /// Checks the real acknowledged running owner without reusing cold recovery predicates.
+    ///
+    /// # Errors
+    /// Refuses another worker, missing Resume acknowledgment or faulted custody.
+    pub(in crate::host_cache::owner) fn admission_context(
+        &self,
+    ) -> io::Result<Arc<PublisherRunningContext>> {
+        self.check_physical_worker()?;
+        let owner = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("admission custody poisoned"))?;
+        self.admission_context_locked(&owner)
+    }
+
+    /// Retains genuine acknowledged custody while its physical worker holds policy.
+    ///
+    /// # Errors
+    /// Refuses another worker, absent or uncertain Resume, or foreign/faulted custody.
+    pub(in crate::host_cache::owner) fn admission_context_locked(
+        &self,
+        owner: &Custody,
+    ) -> io::Result<Arc<PublisherRunningContext>> {
+        self.check_physical_worker()?;
+        let context = self
+            .running
+            .as_ref()
+            .ok_or_else(|| io::Error::other("encoded admission requires acknowledged Resume"))?;
+        owner.check_current()?;
+        if owner.faulted
+            || owner.recovery_required
+            || self.failed_resume.is_some()
+            || !Arc::ptr_eq(
+                context.publisher_session(),
+                &owner.preparation.publisher_session(),
+            )
+        {
+            return Err(io::Error::other(
+                "encoded admission requires current running custody",
+            ));
+        }
+        Ok(Arc::clone(context))
+    }
+
+    /// Registers actual owned inputs and empty physical slots before write effects.
+    ///
+    /// # Errors
+    /// Refuses another worker, exhausted finite registry or allocation failure.
+    pub(in crate::host_cache::owner) fn register_admission(
+        &mut self,
+        input: super::super::admission::Input,
+    ) -> io::Result<Arc<Mutex<super::super::admission::AdmissionJob>>> {
+        self.check_physical_worker()?;
+        let owner = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("admission custody poisoned"))?;
+        let limit = owner.preparation.config.state.records;
+        if self
+            .admission_jobs
+            .len()
+            .saturating_add(self.publications.len())
+            .saturating_add(self.inline_sources.len())
+            .saturating_add(self.consumers.len())
+            >= limit
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                "native admission registry capacity exhausted",
+            ));
+        }
+        limit
+            .checked_mul(owner.preparation.config.reads.max_allocation_bytes)
+            .ok_or_else(|| io::Error::other("retained admission input memory overflow"))?;
+        self.admission_jobs
+            .try_reserve(1)
+            .map_err(io::Error::other)?;
+        drop(owner);
+        let order = self.next_allocation_order()?;
+        let job = Arc::new(Mutex::new(super::super::admission::AdmissionJob::new(
+            input,
+            Arc::clone(&self.custody),
+            order,
+        )?));
+        self.admission_jobs.push(Arc::clone(&job));
+        Ok(job)
+    }
+
+    /// Releases rejected input only after proving that no physical work began.
+    ///
+    /// # Errors
+    /// Refuses another worker or poisoned custody; uncertain resources remain.
+    pub(in crate::host_cache::owner) fn reclaim_rejected_admission(
+        &mut self,
+        job: &Arc<Mutex<super::super::admission::AdmissionJob>>,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        let effect_free = job
+            .lock()
+            .map_err(|_| io::Error::other("admission job poisoned"))?
+            .is_effect_free();
+        if effect_free {
+            self.admission_jobs.retain(|entry| !Arc::ptr_eq(entry, job));
+        }
+        Ok(())
+    }
+
+    /// Borrows source custody admitted by this exact physical owner only.
+    pub(in crate::host_cache::owner) fn admission_jobs(
+        &self,
+    ) -> &[Arc<Mutex<super::super::admission::AdmissionJob>>] {
+        &self.admission_jobs
+    }
+
+    /// Registers owned inline resources before any durable or native effect.
+    ///
+    /// # Errors
+    /// Refuses a foreign thread, exhausted joint registry or allocation failure.
+    pub(in crate::host_cache::owner) fn register_publication(
+        &mut self,
+        mut job: super::super::publication::PublicationJob,
+    ) -> io::Result<Arc<Mutex<super::super::publication::PublicationJob>>> {
+        self.check_physical_worker()?;
+        let limit = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("publication custody poisoned"))?
+            .preparation
+            .config
+            .state
+            .records;
+        if self
+            .admission_jobs
+            .len()
+            .saturating_add(self.publications.len())
+            .saturating_add(self.inline_sources.len())
+            .saturating_add(self.consumers.len())
+            >= limit
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                "native publication registry capacity exhausted",
+            ));
+        }
+        self.publications.try_reserve(1).map_err(io::Error::other)?;
+        job.order = self.next_allocation_order()?;
+        let job = Arc::new(Mutex::new(job));
+        self.publications.push(Arc::clone(&job));
+        Ok(job)
+    }
+
+    /// Orders original allocations across encoded, sealed and derived indexes.
+    ///
+    /// Rejected attempts can consume a number without reordering accepted jobs.
+    ///
+    /// # Errors
+    /// Refuses an exhausted finite admission counter.
+    pub(in crate::host_cache::owner) fn next_allocation_order(&mut self) -> io::Result<u64> {
+        self.allocation_order = self.allocation_order.checked_add(1).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::StorageFull,
+                "native admission order exhausted",
+            )
+        })?;
+        Ok(self.allocation_order)
+    }
+
+    /// Releases only conclusively effect-free inline input after rejection.
+    ///
+    /// # Errors
+    /// Refuses poisoned job custody; started resources remain retained.
+    pub(in crate::host_cache::owner) fn reclaim_publication(
+        &mut self,
+        job: &Arc<Mutex<super::super::publication::PublicationJob>>,
+    ) -> io::Result<()> {
+        if !job
+            .lock()
+            .map_err(|_| io::Error::other("publication job poisoned"))?
+            .started
+        {
+            self.publications.retain(|entry| !Arc::ptr_eq(entry, job));
+        }
+        Ok(())
+    }
+
+    /// Borrows only this physical worker's original publication resources.
+    pub(in crate::host_cache::owner) fn publication_jobs(
+        &self,
+    ) -> &[Arc<Mutex<super::super::publication::PublicationJob>>] {
+        &self.publications
+    }
+
+    /// Registers one genuinely prepared external producer source under a finite bound.
+    ///
+    /// # Errors
+    /// Refuses another worker, stale custody, a full registry or allocation failure.
+    pub(in crate::host_cache::owner) fn register_producer_read(
+        &mut self,
+        source: &super::super::NativeResidentChunkSource,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        let custody = Arc::clone(&self.custody);
+        let owner = custody
+            .lock()
+            .map_err(|_| io::Error::other("resident read custody poisoned"))?;
+        source.check_protected(&owner)?;
+        let limit = owner.preparation.config.state.records;
+        drop(owner);
+        self.producer_reads.register(source, limit)
+    }
+
+    /// Closes external views only after the physical command validates their original job.
+    pub(in crate::host_cache::owner) fn close_producer_reads(
+        &mut self,
+        job: &Arc<Mutex<super::super::publication::PublicationJob>>,
+    ) -> super::super::NativeProducerReadClosure {
+        self.producer_reads.close_publication(job)
+    }
+
+    /// Registers actual recovered source custody before its durable pin effects.
+    ///
+    /// # Errors
+    /// Refuses another worker, an exhausted joint registry or unavailable allocation.
+    pub(in crate::host_cache::owner) fn register_inline_source(
+        &mut self,
+        job: super::super::publication::RecoveredInlineJob,
+    ) -> io::Result<Arc<Mutex<super::super::publication::RecoveredInlineJob>>> {
+        self.check_physical_worker()?;
+        let limit = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("inline source custody poisoned"))?
+            .preparation
+            .config
+            .state
+            .records;
+        if self
+            .admission_jobs
+            .len()
+            .saturating_add(self.publications.len())
+            .saturating_add(self.inline_sources.len())
+            .saturating_add(self.consumers.len())
+            >= limit
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                "native source registry capacity exhausted",
+            ));
+        }
+        self.inline_sources
+            .try_reserve(1)
+            .map_err(io::Error::other)?;
+        let resource = Arc::new(Mutex::new(job));
+        self.inline_sources.push(Arc::clone(&resource));
+        Ok(resource)
+    }
+
+    /// Borrows only source jobs retained by this actual physical executor.
+    pub(in crate::host_cache::owner) fn inline_source_jobs(
+        &self,
+    ) -> &[Arc<Mutex<super::super::publication::RecoveredInlineJob>>] {
+        &self.inline_sources
+    }
+
+    /// Releases rejected source preparation only before any pin mutation attempt.
+    ///
+    /// # Errors
+    /// Refuses another worker or poisoned job; uncertain effects remain owned.
+    pub(in crate::host_cache::owner) fn reclaim_inline_source(
+        &mut self,
+        resource: &Arc<Mutex<super::super::publication::RecoveredInlineJob>>,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        let effect_free = resource
+            .lock()
+            .map_err(|_| io::Error::other("inline source job poisoned"))?
+            .is_effect_free();
+        if effect_free {
+            self.inline_sources
+                .retain(|entry| !Arc::ptr_eq(entry, resource));
+        }
+        Ok(())
+    }
+
+    /// Shares this actual owner's configured global read budget.
+    pub(in crate::host_cache::owner) fn consumer_read_budget(&self) -> Arc<ReadBudget> {
+        Arc::clone(&self.consumer_reads)
+    }
+
+    /// Registers original source and view resources before consumer pin effects.
+    ///
+    /// # Errors
+    /// Refuses another worker, an exhausted joint registry or unavailable memory.
+    pub(in crate::host_cache::owner) fn register_consumer_job(
+        &mut self,
+        job: ConsumerJob,
+    ) -> io::Result<Arc<Mutex<ConsumerJob>>> {
+        self.check_physical_worker()?;
+        let limit = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("consumer custody poisoned"))?
+            .preparation
+            .config
+            .state
+            .records;
+        if self
+            .admission_jobs
+            .len()
+            .saturating_add(self.publications.len())
+            .saturating_add(self.inline_sources.len())
+            .saturating_add(self.consumers.len())
+            >= limit
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::StorageFull,
+                "consumer registry capacity exhausted",
+            ));
+        }
+        self.consumers.try_reserve(1).map_err(io::Error::other)?;
+        let resource = Arc::new(Mutex::new(job));
+        self.consumers.push(Arc::clone(&resource));
+        Ok(resource)
+    }
+
+    /// Resolves an original read view only through this physical registry.
+    ///
+    /// # Errors
+    /// Refuses another worker, poisoned custody and foreign/unretained views.
+    pub(in crate::host_cache::owner) fn consumer_job_for_view(
+        &self,
+        view: &Arc<ReadView>,
+    ) -> io::Result<Arc<Mutex<ConsumerJob>>> {
+        self.check_physical_worker()?;
+        for resource in &self.consumers {
+            let job = resource
+                .lock()
+                .map_err(|_| io::Error::other("consumer job poisoned"))?;
+            if job.matches_view(view, &self.custody) {
+                return Ok(Arc::clone(resource));
+            }
+        }
+        Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "consumer lease belongs to another physical owner or has retired",
+        ))
+    }
+
+    /// Borrows only actual jobs retained by this physical consumer registry.
+    pub(in crate::host_cache::owner) fn consumer_jobs(&self) -> &[Arc<Mutex<ConsumerJob>>] {
+        &self.consumers
+    }
+
+    /// Reclaims an acquisition only before any attempted durable mutation.
+    ///
+    /// # Errors
+    /// Refuses another worker or poisoned resources; uncertain effects stay owned.
+    pub(in crate::host_cache::owner) fn reclaim_consumer_job(
+        &mut self,
+        resource: &Arc<Mutex<ConsumerJob>>,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        if resource
+            .lock()
+            .map_err(|_| io::Error::other("consumer job poisoned"))?
+            .is_effect_free()
+        {
+            self.consumers.retain(|job| !Arc::ptr_eq(job, resource));
+        }
+        Ok(())
+    }
+
+    /// Reclaims removed jobs only after every actual started read closes backing.
+    ///
+    /// # Errors
+    /// Refuses another worker or a poisoned job rather than losing its resources.
+    pub(in crate::host_cache::owner) fn reclaim_removed_consumer_jobs(&mut self) -> io::Result<()> {
+        self.check_physical_worker()?;
+        let mut index = 0;
+        while index < self.consumers.len() {
+            let reclaim = self.consumers[index]
+                .lock()
+                .map_err(|_| io::Error::other("consumer job poisoned"))?
+                .can_reclaim();
+            if reclaim {
+                self.consumers.remove(index);
+            } else {
+                index += 1;
+            }
+        }
+        Ok(())
+    }
+
+    /// Borrows this executor exclusively for one durably funded publication.
+    ///
+    /// # Errors
+    /// Refuses an unregistered job or missing actual synchronized funding.
+    pub(in crate::host_cache::owner) fn publication_turn(
+        &mut self,
+        funding: super::super::publication::Funding,
+    ) -> io::Result<PublisherRunningTurn<'_>> {
+        if !self
+            .publications
+            .iter()
+            .any(|job| Arc::ptr_eq(job, funding.job()))
+        {
+            return Err(io::Error::other(
+                "publication job belongs to another executor",
+            ));
+        }
+        let context = self
+            .running
+            .as_ref()
+            .ok_or_else(|| io::Error::other("publication requires acknowledged Resume"))?;
+        funding.check(&self.custody)?;
+        context.check_current().map_err(io::Error::other)?;
+        Ok(PublisherRunningTurn {
+            executor: self,
+            funding,
+        })
+    }
+
+    /// Retains metadata under the actual worker's current recovered or Running phase.
+    ///
+    /// # Errors
+    /// Refuses another physical thread, a failed Resume, stale/faulted Running
+    /// custody, invalid sources or failed durability and quota reconciliation.
+    pub(in crate::host_cache::owner) async fn retain_metadata(
+        &mut self,
+        identity: terrane_format::identity::Identity,
+    ) -> io::Result<super::RetainedManifest> {
+        self.check_physical_worker()?;
+        if self.running.is_some() {
+            super::super::admission::eviction::restore_identity(self, &identity)?;
+            super::manifest::retain_running(self, identity).await
+        } else {
+            self.check_recovery_phase()?;
+            super::manifest::retain(self, identity).await
+        }
+    }
+
+    /// Retains actual source handles outside embedded state before write effects.
+    ///
+    /// # Errors
+    /// Refuses another worker or unavailable finite registry allocation.
+    pub(super) fn retain_manifest_source(
+        &mut self,
+        source: Arc<crate::host_cache::NativeManifestSource>,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        self.manifest_sources
+            .try_reserve(1)
+            .map_err(io::Error::other)?;
+        self.manifest_sources.push(source);
+        Ok(())
+    }
+
+    /// Borrows actual adopted inline bodies retained by the physical owner.
+    pub(in crate::host_cache::owner) fn inline_registry(
+        &self,
+    ) -> &[super::super::recovery_inline::AdoptedInline] {
+        &self.adopted_inline
+    }
+
+    /// Borrows the physical inline registry for bounded command-owned insertion.
+    pub(in crate::host_cache::owner) fn inline_registry_mut(
+        &mut self,
+    ) -> &mut Vec<super::super::recovery_inline::AdoptedInline> {
+        &mut self.adopted_inline
+    }
+
+    /// Borrows the real verified metadata source closure retained by this worker.
+    pub(in crate::host_cache::owner) fn manifest_sources(
+        &self,
+    ) -> &[Arc<crate::host_cache::NativeManifestSource>] {
+        &self.manifest_sources
+    }
+
+    /// Borrows actual adopted manifest body descriptors for synchronized accounting.
+    pub(in crate::host_cache::owner) fn manifest_body_registry(
+        &self,
+    ) -> &[Arc<
+        crate::publisher_local::client::PeerPublishedObject<
+            terrane_sdk::host::cache::HostDomainLocation,
+        >,
+    >] {
+        &self.manifest_bodies
+    }
+
+    /// Borrows actual independently verified results retained by this worker.
+    pub(in crate::host_cache::owner) fn verified_manifests(
+        &self,
+    ) -> &[Arc<crate::host_cache::recovery_inspection::VerifiedRecoveryManifest>] {
+        &self.verified_manifests
+    }
+
+    /// Reserves actual result/failure slots before any source or adoption effect.
+    ///
+    /// # Errors
+    /// Refuses another worker, unavailable custody, configured record capacity
+    /// exhaustion or memory allocation failure. No native effects occur here.
+    pub(in crate::host_cache::owner) fn reserve_manifest_reconciliation(
+        &mut self,
+    ) -> io::Result<()> {
+        self.check_physical_worker()?;
+        let limit = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("metadata custody poisoned"))?
+            .preparation
+            .config
+            .state
+            .records;
+        if self.verified_manifests.len() >= limit || self.manifest_failures.len() >= limit {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "manifest reconciliation registry limit reached",
+            ));
+        }
+        self.verified_manifests
+            .try_reserve(1)
+            .map_err(io::Error::other)?;
+        self.manifest_failures
+            .try_reserve(1)
+            .map_err(io::Error::other)?;
+        Ok(())
+    }
+
+    /// Stores an actual Inspector result before subsequent fallible reconciliation.
+    pub(super) fn retain_verified_manifest(
+        &mut self,
+        verified: crate::host_cache::recovery_inspection::VerifiedRecoveryManifest,
+    ) {
+        self.verified_manifests.push(Arc::new(verified));
+    }
+
+    /// Stores actual failed response resources before returning its original cause.
+    pub(in crate::host_cache::owner) fn retain_manifest_failure(
+        &mut self,
+        failure: super::super::recovery_manifests::ManifestFailureResources,
+    ) {
+        self.manifest_failures.push(failure);
+    }
+
+    /// Reserves bounded registry slots before a downstream recovery effect.
+    ///
+    /// # Errors
+    /// Refuses another worker, poisoned custody, exhausted configured record
+    /// capacity or unavailable memory. No native publisher effect occurs here.
+    pub(super) fn reserve_manifest_body_slots(&mut self) -> io::Result<()> {
+        self.check_physical_worker()?;
+        let limit = self
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("metadata custody poisoned"))?
+            .preparation
+            .config
+            .state
+            .records;
+        if self.manifest_bodies.len() >= limit || self.manifest_backings.len() >= limit {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "manifest body registry limit reached",
+            ));
+        }
+        self.manifest_bodies
+            .try_reserve(1)
+            .map_err(io::Error::other)?;
+        self.manifest_backings
+            .try_reserve(1)
+            .map_err(io::Error::other)?;
+        Ok(())
+    }
+
+    /// Retains an owned response body before any subsequent fallible checks.
+    ///
+    /// The exclusive effect owns the slot reserved before its RPC. Only that
+    /// effect inserts here, once; no intervening command can consume capacity.
+    pub(super) fn retain_adopted_manifest_body(
+        &mut self,
+        body: Arc<
+            crate::publisher_local::client::PeerPublishedObject<
+                terrane_sdk::host::cache::HostDomainLocation,
+            >,
+        >,
+    ) {
+        self.manifest_bodies.push(body);
+    }
+
+    /// Retains the actual body/metadata pair before completing its response.
+    ///
+    /// The same exclusive effect owns the pre-reserved pairing slot. This
+    /// registry preserves unresolved pairs too and grants no serving authority.
+    pub(super) fn retain_manifest_backing(
+        &mut self,
+        retained: super::recovery_manifest::RecoveryManifestBodyRetention,
+    ) {
+        self.manifest_backings.push(retained);
+    }
+
+    /// Runs supported recovery while retaining adopted backing beyond any reply.
+    ///
+    /// # Errors
+    /// Refuses unsupported candidates, stale custody, failed synchronization,
+    /// quota reconciliation or a prior handoff; all adopted handles stay owned.
+    pub(super) async fn recover(
+        &mut self,
+        exposures: super::super::recovery::ExposureRecovery,
+    ) -> io::Result<CompletedRecovery> {
+        self.check_recovery_phase()?;
+        super::super::recovery::run(self, exposures).await
+    }
+
+    /// Retains the complete acknowledged or failed handoff before any reply.
+    ///
+    /// # Errors
+    /// Refuses repeated handoffs, stale completion, failed or uncertain RPCs,
+    /// and poisoned custody while retaining the accepted physical outcome.
+    pub(super) async fn resume(&mut self, completed: Box<CompletedRecovery>) -> io::Result<()> {
+        if self.running.is_some() || self.failed_resume.is_some() {
+            return Err(io::Error::other("owner already retained a Resume outcome"));
+        }
+        let session = completed.publisher_session();
+        let result = session.resume_completed(completed, &mut self.resume_turn());
+        match result {
+            Ok(mut context) => {
+                self.recovered_chunks = context.take_encoded_sources();
+                self.recovered_chunks.reverse();
+                self.recovered_metadata = context.take_metadata_sources();
+                self.recovered_metadata.reverse();
+                self.running = Some(Arc::new(context));
+                // Transfer all original sources before the first fallible import.
+                // A failed job and every unimported source remain physically owned.
+                let imported: io::Result<()> = async {
+                    // Genuine recovery has reconciled every cold source and
+                    // Running custody now owns the original bootstrap. Expire
+                    // only the original consumer ledger's elapsed promises before
+                    // adding imported cache protection to the bounded snapshot.
+                    self.register_recovered_sealed_order()?;
+                    super::super::consumer::sweep(self).await?;
+                    while let Some(source) = self.recovered_metadata.last().cloned() {
+                        super::super::admission::recovery::import_metadata(self, &source).await?;
+                        self.recovered_metadata.pop();
+                    }
+                    // Recovered reconstruction sources share the imported pair's
+                    // healthy publisher observation before Resume can return.
+                    // Its original metadata holds and pins remain independent.
+                    {
+                        let custody = self.custody.lock().map_err(|_| {
+                            io::Error::other("recovered metadata binding custody poisoned")
+                        })?;
+                        for source in &self.manifest_sources {
+                            super::super::admission::reads::metadata_activity_order(
+                                self, &custody, source,
+                            )?;
+                        }
+                    }
+                    while let Some(source) = self.recovered_chunks.last().cloned() {
+                        super::super::admission::recovery::import(self, &source).await?;
+                        self.recovered_chunks.pop();
+                    }
+                    Ok(())
+                }
+                .await;
+                if let Err(error) = imported {
+                    let mut custody = self
+                        .custody
+                        .lock()
+                        .map_err(|_| io::Error::other("metadata custody poisoned"))?;
+                    custody.faulted = true;
+                    custody.recovery_required = true;
+                    custody.recovery_id = None;
+                    return Err(error);
+                }
+                Ok(())
+            }
+            Err(failure) => {
+                // Keep even a pre-submission failure: neither cancellation nor
+                // an uncertain reply may discard the consumed durable proof.
+                let (error, stage, completed) = failure.into_parts();
+                self.failed_resume = Some((stage, completed));
+                let mut custody = self
+                    .custody
+                    .lock()
+                    .map_err(|_| io::Error::other("metadata custody poisoned"))?;
+                custody.faulted = true;
+                custody.recovery_required = true;
+                custody.recovery_id = None;
+                Err(io::Error::other(error))
+            }
+        }
+    }
+
+    /// Refuses recovery-only commands after a physical Resume outcome.
+    ///
+    /// # Errors
+    /// Returns an error after any retained acknowledged or failed Resume handoff.
+    pub(super) fn check_recovery_phase(&self) -> io::Result<()> {
+        if self.running.is_some() || self.failed_resume.is_some() {
+            return Err(io::Error::other(
+                "owner requires a running command turn or fresh recovery",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Borrows the live executor exclusively until the complete Resume RPC returns.
+    ///
+    /// Only the parent physical dispatch can mint this turn. No turn constructor
+    /// accepts an arbitrary session, epoch, generation or asserted validity.
+    pub(super) fn resume_turn(&mut self) -> PublisherResumeTurn<'_> {
+        PublisherResumeTurn { executor: self }
+    }
+}
+
+/// Retains exclusive physical dispatch through a genuine completion handoff.
+///
+/// Fields and construction remain private to the actual executor. The IPC
+/// consumer checks completion before its RPC lock and retains this mutable
+/// borrow until actual physical submission finishes or becomes uncertain.
+pub(crate) struct PublisherResumeTurn<'executor> {
+    executor: &'executor mut NativeOwnerExecutor,
+}
+
+impl PublisherResumeTurn<'_> {
+    /// Checks the actual worker and exact completion custody before an RPC lock.
+    ///
+    /// The borrow already prevents another dispatch on this executor. This
+    /// check retains no embedded-state guard; the client must then atomically
+    /// validate the original opaque drain context under its own RPC mutex.
+    ///
+    /// # Errors
+    /// Refuses another worker or owner, stale native state/generation, absent
+    /// durable completion records and changed source namespace custody.
+    pub(crate) fn check_completion(&mut self, completed: &CompletedRecovery) -> io::Result<()> {
+        if self.executor.worker != thread::current().id()
+            || !completed.matches_custody(&self.executor.custody)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "recovery completion belongs to another physical executor",
+            ));
+        }
+        completed.check_current()
+    }
+}
+
+/// Retains exclusive physical dispatch through one genuine running operation.
+///
+/// Only actual registered, durably funded publication dispatch constructs this turn.
+pub(crate) struct PublisherRunningTurn<'executor> {
+    executor: &'executor mut NativeOwnerExecutor,
+    funding: super::super::publication::Funding,
+}
+
+impl PublisherRunningTurn<'_> {
+    /// Checks the exact funded publication claim and original source inode.
+    ///
+    /// # Errors
+    /// Refuses stale context, another claim, source inode or synchronized hold.
+    pub(crate) fn check_publication(
+        &mut self,
+        context: &PublisherRunningContext,
+        claim: &terrane_sdk::host::publication::PublicationClaim,
+        source: &std::fs::File,
+    ) -> io::Result<()> {
+        self.check_claim(context, claim)?;
+        self.funding.check_source(source)
+    }
+
+    /// Checks the actual funded job's claim before a native adoption or publication.
+    ///
+    /// # Errors
+    /// Refuses another claim, stale context or unavailable synchronized funding.
+    pub(crate) fn check_claim(
+        &mut self,
+        context: &PublisherRunningContext,
+        claim: &terrane_sdk::host::publication::PublicationClaim,
+    ) -> io::Result<()> {
+        self.check_context(context)?;
+        self.funding.check_claim(claim)
+    }
+
+    /// Requires genuine sealed replacement custody under this exclusive command.
+    ///
+    /// # Errors
+    /// Refuses a stale funded turn or a changed/foreign native backing receipt.
+    pub(crate) fn check_replacement(
+        &mut self,
+        context: &PublisherRunningContext,
+        body: &crate::publisher_local::client::PeerPublishedObject<
+            terrane_sdk::host::cache::HostDomainLocation,
+        >,
+    ) -> io::Result<()> {
+        self.check_claim(context, body.claim())?;
+        self.funding.check_replacement(body)
+    }
+
+    /// Selects only the original admitted key under this actual funded turn.
+    ///
+    /// # Errors
+    /// Refuses stale context, another claim or changed standalone custody.
+    pub(crate) fn transfer_key(
+        &mut self,
+        context: &PublisherRunningContext,
+        claim: &terrane_sdk::host::publication::PublicationClaim,
+        index: usize,
+    ) -> io::Result<crate::publisher_local::wire::BodyKey> {
+        self.check_claim(context, claim)?;
+        self.funding.transfer_key(index)
+    }
+
+    /// Retains only the original registered job's actual metadata pin for RPC.
+    ///
+    /// # Errors
+    /// Refuses stale running/funding custody or changed native metadata sources.
+    pub(crate) fn retained_manifest(
+        &mut self,
+        context: &PublisherRunningContext,
+        claim: &terrane_sdk::host::publication::PublicationClaim,
+    ) -> io::Result<Option<Arc<super::RetainedManifest>>> {
+        self.check_claim(context, claim)?;
+        self.funding.retained_manifest()
+    }
+
+    /// Verifies the actual inspected descriptor before a separate retirement RPC.
+    ///
+    /// # Errors
+    /// Refuses another key, inode, bytes, owner or changed synchronized funding.
+    pub(crate) fn check_transfer_reply(
+        &mut self,
+        context: &PublisherRunningContext,
+        claim: &terrane_sdk::host::publication::PublicationClaim,
+        key: &crate::publisher_local::wire::BodyKey,
+        file: &std::fs::File,
+    ) -> io::Result<()> {
+        self.check_claim(context, claim)?;
+        self.funding.check_transfer_reply(key, file)
+    }
+
+    /// Checks the exact executor-owned acknowledged context before an RPC lock.
+    ///
+    /// This never revalidates the old empty recovery snapshot. The caller must
+    /// keep this exclusive turn borrowed through physical completion, and the
+    /// client must check its actual Running phase/epoch under its own mutex.
+    ///
+    /// # Errors
+    /// Refuses another physical thread/context, absent synchronized funding,
+    /// required recovery or a changed original publisher session.
+    pub(crate) fn check_context(&mut self, context: &PublisherRunningContext) -> io::Result<()> {
+        if self.executor.worker != thread::current().id()
+            || !self
+                .executor
+                .running
+                .as_ref()
+                .is_some_and(|actual| std::ptr::eq(actual.as_ref(), context))
+        {
+            return Err(io::Error::other(
+                "running context belongs to another physical executor",
+            ));
+        }
+        let custody = self
+            .executor
+            .custody
+            .lock()
+            .map_err(|_| io::Error::other("metadata custody poisoned"))?;
+        custody.check_current()?;
+        if custody.recovery_required
+            || !Arc::ptr_eq(
+                context.publisher_session(),
+                &custody.preparation.publisher_session(),
+            )
+        {
+            return Err(io::Error::other("running owner requires recovery"));
+        }
+        drop(custody);
+        self.funding.check(&self.executor.custody)?;
+        Ok(())
+    }
+}
+
+/// Retains exclusive physical dispatch across one original final-removal RPC.
+pub(crate) struct PublisherCleanupTurn<'executor> {
+    executor: &'executor mut NativeOwnerExecutor,
+    funding: &'executor super::super::publication::retirement::CleanupFunding,
+}
+
+impl PublisherCleanupTurn<'_> {
+    /// Checks the actual Running context and the original durably funded source.
+    ///
+    /// # Errors
+    /// Refuses a foreign worker/context, changed original funding or native body.
+    pub(crate) fn source_observation(
+        &mut self,
+        context: &PublisherRunningContext,
+    ) -> io::Result<
+        Arc<
+            crate::publisher_local::client::BodyIncarnationObservation<
+                terrane_sdk::host::cache::HostDomainLocation,
+            >,
+        >,
+    > {
+        self.executor.check_physical_worker()?;
+        if !self
+            .executor
+            .running
+            .as_ref()
+            .is_some_and(|actual| std::ptr::eq(actual.as_ref(), context))
+        {
+            return Err(io::Error::other(
+                "cleanup context belongs to another physical executor",
+            ));
+        }
+        self.funding.check(self.executor)?;
+        context.check_current().map_err(io::Error::other)?;
+        Ok(self.funding.observation())
+    }
+}
+
+impl Drop for NativeOwnerExecutor {
+    fn drop(&mut self) {
+        // Revocation needs no embedded or RPC lock and performs no durable IO.
+        // Pins remain on disk for a future genuine recovery and expiry sweep.
+        for resource in &self.consumers {
+            let job = match resource.lock() {
+                Ok(job) => job,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            job.revoke_view();
+        }
+    }
+}

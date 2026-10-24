@@ -1,0 +1,184 @@
+{
+  sourceGate,
+  nativeSdkGate,
+  forkPrerequisites,
+  ...
+}: let
+  runTest = name: ''
+    cargo test --frozen --offline -p terrane-format --lib ${name} -- --exact > "$TMPDIR/test.log"
+    python3 -c 'import pathlib, sys; output = pathlib.Path(sys.argv[1]).read_text(); print(output); sys.exit("test result: ok. 1 passed; 0 failed" not in output or "test " + sys.argv[2] + " ... ok" not in output)' "$TMPDIR/test.log" "${name}"
+  '';
+
+  runNativeTest = name:
+    import ../_native-cases.nix {
+      label = "algebra-" + builtins.hashString "sha256" name;
+      selectors = [name];
+      enterCrates = false;
+    };
+
+  overlayGraftSelectors = [
+    "overlay_overlapping_grafts_preserve_lower_children_and_recipe_inputs"
+    "overlay_graft_whiteout_suppresses_lower_child_and_emits_only_ordinary_roots"
+    "overlay_repeated_nested_grafts_resolve_each_occurrence"
+    "overlay_inline_and_grafted_directories_merge_in_both_orders"
+    "overlay_graft_policy_mismatch_refuses_materialization"
+    "overlay_flat_preparation_retains_existing_tree_and_recipe_identity"
+    "overlay_missing_graft_target_fails_without_emitting_a_root"
+    "overlay_changed_graft_descriptor_discards_prior_introduction_reference"
+    "overlay_mismatched_graft_resolution_rejects_another_identity"
+    "overlay_excessive_nested_grafts_rejects_the_complete_input_graph"
+    "overlay_virtual_listing_orders_graft_children_and_punctuation_siblings"
+    "overlay_virtual_range_crosses_nested_grafts_and_hides_whiteouts"
+    "overlay_virtual_range_does_not_resolve_disjoint_grafts"
+    "overlay_virtual_ranges_match_independent_slices_at_every_endpoint"
+    "overlay_nondirectory_or_whiteout_parent_does_not_invent_subtree_hiding"
+    "overlay_descriptor_only_range_does_not_require_its_target"
+    "overlay_grafted_hardlinks_share_namespace_identity_across_layers"
+    "overlay_inline_and_grafted_hardlinks_preserve_aliases_when_projected"
+    "overlay_bounded_range_resolves_one_of_many_sibling_grafts"
+    "overlay_one_unchanged_graft_retains_both_root_identities"
+    "overlay_lower_graft_preserves_inherited_trust_under_actual_output_parent"
+    "overlay_lower_graft_override_retains_target_identity_without_snapshot"
+    "overlay_relocated_graft_cannot_remove_actual_parent_administrator"
+    "overlay_policy_acl_comparison_uses_registered_verb_implications"
+  ];
+
+  forkSelectors = map (name: "selected_bridge::native_guard::cold_fork::tests::publication::${name}") [
+    "root_native_cold_fork_publishes_fresh_signed_namespace_without_nodes"
+    "root_native_cold_fork_reuses_after_unrelated_ref_admission"
+    "root_native_cold_fork_refuses_absent_context_before_node_io"
+    "root_native_cold_fork_after_separate_same_head_requalification"
+    "root_native_cold_fork_refuses_current_source_and_destination_rights"
+    "root_native_cold_fork_refuses_changed_original_and_selected_controls"
+    "root_native_cold_fork_refuses_source_record_incarnation_after_preparation"
+    "root_native_cold_fork_refuses_selected_log_incarnation_after_preparation"
+    "root_native_cold_fork_rejects_profile_and_occurrence_contradictions"
+    "root_native_cold_fork_stops_on_sync_failure_and_expiry"
+    "current_revision::root_native_cold_fork_revalidates_new_current_registration_without_nodes"
+    "current_revision::root_native_cold_fork_refuses_changed_historical_inputs_without_nodes"
+    "current_revision::root_native_cold_fork_preserves_inert_later_parent_after_current_revision_advance"
+  ];
+in {
+  algebra-fork = nativeSdkGate "algebra-fork" ''
+    for prerequisite in ${builtins.concatStringsSep " " (map toString forkPrerequisites)}; do
+      test -s "$prerequisite/result"
+    done
+    ${import ../_native-cases.nix {
+      label = "algebra-fork";
+      selectors = forkSelectors;
+    }}
+    printf 'PASS: native cold-fork publication (13 exact cases), selected source requalification and preservation\n' \
+      > "$out/result"
+  '';
+
+  algebra-graft = sourceGate "algebra-graft" ''
+    cd crates
+    ${runTest "algebra::tests::graft_reuses_target_and_nested_lookup_resolves"}
+    ${runTest "algebra::tests::graft_requires_explicit_inline_replacement"}
+    ${runTest "algebra::tests::split_inline_matches_direct_construction"}
+    ${runTest "algebra::tests::split_graft_shares_the_target_without_walking_its_nodes"}
+    ${runTest "algebra::tests::split_relabels_hardlinks_within_and_across_prefix"}
+    ${runTest "algebra::tests::flatten_checks_authority_and_preserves_lookup"}
+    ${runTest "algebra::tests::flatten_prefixes_hardlink_identity"}
+    ${runTest "algebra::tests::flatten_rejects_changed_effective_trust"}
+    ${runTest "algebra::tests::graft_relabels_surviving_hardlink_identity_atomically"}
+    ${runTest "algebra::tests::overlay_precedence_whiteouts_and_materialization_agree"}
+    ${runTest "algebra::tests::overlay_ranges_match_independent_point_updates_and_canonical_roots"}
+    ${runTest "algebra::tests::graft_recipe_retains_metadata_and_binds_materialized_commit"}
+    ${runTest "algebra::tests::graft_certificates_skip_large_unchanged_parent_nodes"}
+    ${runTest "algebra::tests::graft_certificates_replace_deep_targets_using_exact_height"}
+    ${runTest "algebra::tests::graft_and_split_seek_separator_range_past_punctuation_siblings"}
+    ${runTest "algebra::tests::graft_lookup_accepts_64_edges_and_rejects_65"}
+    ${runTest "algebra::domain::tests::graft_preserves_exact_previous_private_ownership"}
+    ${runTest "algebra::domain::tests::split_preserves_inherited_private_and_tenant_ownership"}
+    ${runTest "algebra::domain::tests::overlay_recipes_bind_effective_domain_and_require_verification"}
+    ${runTest "algebra::domain::tests::merge_preserves_effective_ownership_at_each_changed_graft_root"}
+    ${runTest "algebra::domain::tests::flatten_preserves_resolved_parent_private_owner"}
+    ${runTest "algebra::domain::tests::merge_fast_forward_preserves_unchanged_root_without_domain_reencoding"}
+    ${runTest "algebra::domain::tests::conflicting_effective_bindings_are_rejected"}
+    ${runTest "algebra::domain::tests::graft_retains_graft_override_owner_instead_of_raw_root_domain"}
+    ${runTest "algebra::domain::tests::fold_filters_preserve_the_source_owner_before_merging"}
+    cargo test --frozen --offline -p terrane-format --test algebra_overlay_grafts \
+      -- --list > "$TMPDIR/overlay-graft-tests.txt"
+    python3 ../tests/terrane/check_native_gate.py inventory \
+      "$TMPDIR/overlay-graft-tests.txt" '${builtins.toJSON overlayGraftSelectors}'
+    for test_name in ${builtins.concatStringsSep " " overlayGraftSelectors}; do
+      if ! cargo test --frozen --offline -p terrane-format --test algebra_overlay_grafts \
+        "$test_name" -- --exact > "$TMPDIR/overlay-graft-test.log" 2>&1; then
+        cat "$TMPDIR/overlay-graft-test.log"
+        exit 1
+      fi
+      python3 ../tests/terrane/check_native_gate.py execution \
+        "$TMPDIR/overlay-graft-test.log" "[\"$test_name\"]"
+    done
+    printf 'PASS: pure graft, split, flatten, overlay and resolved ownership\n' > "$out/result"
+  '';
+
+  algebra-diff = sourceGate "algebra-diff" ''
+    cd crates
+    ${runTest "algebra::tests::diff_is_ordered_and_skips_equal_root"}
+    ${runTest "algebra::tests::diff_local_change_skips_shared_nodes"}
+    ${runTest "algebra::tests::diff_descent_reports_nested_implied_root_properties"}
+    ${runTest "algebra::tests::diff_descent_accepts_64_edges_and_rejects_65"}
+    ${runTest "algebra::tests::diff_and_graft_lookup_reject_resolver_identity_mismatch"}
+    printf 'PASS: pure ordered Merkle comparison and subtree skipping\n' > "$out/result"
+  '';
+
+  algebra-merge = nativeSdkGate "algebra-merge" ''
+    cd crates
+    ${runTest "algebra::tests::merge_rules_and_fast_forward"}
+    ${runTest "algebra::tests::merge_conflicts_and_ordered_policies"}
+    ${runTest "algebra::tests::deletion_conflict_is_representable_without_nested_conflicts"}
+    ${runTest "algebra::tests::fork_and_fold_preserve_parents_and_report_exclusions"}
+    ${runTest "algebra::tests::merge_randomized_reference_model_and_symmetric_policy"}
+    ${runTest "algebra::tests::merge_changed_grafts_returns_materialized_targets"}
+    ${runTest "algebra::tests::merge_commit_binding_records_order_recipe_and_conflict_profile"}
+    ${runTest "algebra::tests::fork_and_fold_binding_inherits_origins_without_reintroduction"}
+    ${runTest "algebra::tests::trusted_recipe_binds_verifier_configuration_and_receipts"}
+    ${runTest "algebra::tests::root_properties_diff_and_three_way_merge_are_explicit"}
+    ${runTest "algebra::tests::directory_conflicts_retain_children_until_nondirectory_resolution"}
+    ${runTest "algebra::tests::surface_inputs_can_produce_an_ordinary_conflicted_tree"}
+    ${runTest "algebra::tests::trusted_context_rejects_bad_syntax_and_handles_deep_configuration"}
+    ${runTest "algebra::tests::trusted_context_decoding_checks_registered_attribute_names"}
+    ${runTest "algebra::tests::trusted_context_decoding_checks_encoded_byte_map_order"}
+    ${runTest "algebra::tests::trusted_context_decoding_cannot_authorize_merge"}
+    ${runTest "algebra::tests::trusted_merge_binds_signed_sides_and_reverifies_recipe"}
+    ${runTest "algebra::tests::trusted_fold_replays_exclusions_before_rebinding_signed_input"}
+    ${runTest "algebra::tests::merge_prefer_newer_binds_verified_timestamps_and_falls_back_on_ties"}
+    ${runTest "algebra::tests::merge_adopts_unchanged_base_ranges_from_incoming_subtrees"}
+    ${runTest "algebra::tests::merge_certificates_track_nested_conflicts_without_rescanning_fast_forward"}
+    ${runTest "algebra::tests::merge_updates_complete_hardlink_sets_atomically"}
+    ${runTest "algebra::tests::merge_recurses_through_64_graft_edges"}
+    ${runTest "algebra::merge::tests::trusted_nested_graft_pruning_retains_full_path_on_splice_fallback"}
+    ${runTest "algebra::recipe::tests::recipe_decode_roundtrips_and_rejects_noncanonical_inputs"}
+    ${runTest "algebra::recipe::tests::overlay_recipe_preserves_precedence"}
+    ${runTest "algebra::recipe::tests::merge_recipe_preserves_policy_order"}
+    ${runTest "refs::codec::recipe_tests::commit_recipe_codec_preserves_registered_and_other_encodings"}
+    ${runTest "refs::codec::recipe_tests::commit_recipe_codec_rejects_invalid_registered_arguments"}
+    ${runTest "provenance::trust::context::tests::recorded_execution::recorded_current_selection_has_distinct_memo_keys_with_identical_registered_bytes"}
+    ${runTest "provenance::trust::context::tests::recorded_execution::recorded_fold_recipe_binds_original_root_and_exact_contexts_on_verified_replay"}
+    ${runNativeTest "guard::merge::recorded_tests::recorded_merge_input_configuration_requires_all_original_view_root_pairs"}
+    ${runNativeTest "guard::merge::recorded_tests::recorded_merge_occurrences_preserve_per_view_fences_and_refuse_domain_ambiguity"}
+    ${runTest "provenance::trust::context::tests::recorded_execution::recorded_canonical_graft_domains_refuse_shared_root_ambiguity_in_both_orders"}
+    ${runNativeTest "guard::merge::recorded_tests::recorded_merge_contexts_bind_original_interpretations_through_fold_replay"}
+    ${runNativeTest "guard::merge::recorded_tests::ordinary_contracts::recorded_merge_input_configuration_requires_all_original_view_root_pairs"}
+    ${runNativeTest "guard::merge::recorded_tests::ordinary_contracts::recorded_merge_occurrences_preserve_per_view_fences_and_refuse_domain_ambiguity"}
+    ${runNativeTest "guard::merge::recorded_tests::ordinary_contracts::recorded_merge_contexts_bind_original_interpretations_through_fold_replay"}
+    ${runNativeTest "guard::merge::recorded_tests::native_fold_contracts::recorded_native_fold_selects_trusted_remaining_incoming_and_replays"}
+    ${runNativeTest "guard::merge::recorded_tests::native_fold_contracts::recorded_native_graft_fold_preserves_prefix_trust_and_original_associations"}
+    ${runNativeTest "guard::merge::recorded_tests::native_fold_contracts::recorded_native_fold_materializes_implicit_owner_and_replays_preserved_domain"}
+    printf 'PASS: merge, fold bindings, verified recipes and retained input interpretations\n' > "$out/result"
+  '';
+
+  tree-acyclic = sourceGate "tree-acyclic" ''
+    cd crates
+    ${runTest "algebra::tests::acyclic_validation_rejects_missing_targets"}
+    ${runTest "algebra::tests::acyclic_checked_graft_and_reader_reject_alias_cycles"}
+    ${runTest "algebra::tests::acyclic_boundary_accepts_64_edges_with_cached_frontiers"}
+    ${runTest "algebra::tests::graft_lookup_accepts_64_edges_and_rejects_65"}
+    ${runTest "algebra::tests::diff_descent_accepts_64_edges_and_rejects_65"}
+    ${runTest "algebra::tests::merge_recurses_through_64_graft_edges"}
+    ${runTest "tree_format::tests::graft_chain_rejects_cycles_and_excessive_depth"}
+    printf 'PASS: pure graft DAG checks and exact depth limits\n' > "$out/result"
+  '';
+}

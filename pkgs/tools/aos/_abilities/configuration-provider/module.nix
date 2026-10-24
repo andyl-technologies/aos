@@ -107,27 +107,37 @@ in {
     };
   };
   config.aos.imageRollout.retirementEffects = lib.listToAttrs (map (rollout: let
-    key = builtins.hashString "sha256" (builtins.toJSON rollout);
-  in {
-    name = key;
-    value = builtins.hashString "sha256" (builtins.toJSON config.aos.abilities.imageRetirement.operations.ensure.effects.${key}.outputs.rollout.identity);
-  }) cfg.retiredRequests);
+      key = builtins.hashString "sha256" (builtins.toJSON rollout);
+    in {
+      name = key;
+      value = builtins.hashString "sha256" (builtins.toJSON config.aos.abilities.imageRetirement.operations.ensure.effects.${key}.outputs.rollout.identity);
+    })
+    cfg.retiredRequests);
   config.aos.abilities.imageRetirement.operations.ensure = {
     input.options = {
       rollout = option (lib.types.submodule {options = rolloutOptions;}) "Exact committed lease being explicitly retired.";
       platformExecutable = option text "Exact retained boot platform transport.";
-      retirement = lib.mkOption {type = lib.types.enum [true]; default = true; description = "Performs expired lease retirement rather than selection.";};
+      retirement = lib.mkOption {
+        type = lib.types.enum [true];
+        default = true;
+        description = "Performs expired lease retirement rather than selection.";
+      };
     };
     result.options = resultOptions ["retired"];
     handler.program = program;
     effects = lib.listToAttrs (map (rollout: {
-      name = builtins.hashString "sha256" (builtins.toJSON rollout);
-      value = {
-        lifetime = "persistent";
-        after = cfg.activationAfter;
-        input = {inherit rollout; inherit (cfg) platformExecutable; retirement = true;};
-      };
-    }) cfg.retiredRequests);
+        name = builtins.hashString "sha256" (builtins.toJSON rollout);
+        value = {
+          lifetime = "persistent";
+          after = cfg.activationAfter;
+          input = {
+            inherit rollout;
+            inherit (cfg) platformExecutable;
+            retirement = true;
+          };
+        };
+      })
+      cfg.retiredRequests);
   };
   config.aos.imageRollout.selectedEffect =
     if request == null

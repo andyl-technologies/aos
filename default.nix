@@ -1654,6 +1654,10 @@ in rec {
   # Checks hierarchy — module checks come from systems, everything else
   # stays at the top level.
   checks = rec {
+    terrane = import ./tests/terrane {
+      inherit pkgs lib;
+      mkSystem = mkPackageFixtureSystem;
+    };
     vm-artifact-reuse = import ./tests/build/vm-artifact-headless.nix {inherit pkgs lib;};
     bootstrap.kotlin-java = import ./pkgs/toolchain/_kotlin-bootstrap-2011.nix {
       inherit (buildPackages) mkDerivation;

@@ -1,0 +1,329 @@
+//! Validates registered root properties and evaluates policy without I/O.
+//!
+//! Resolution follows the supplied graft path, including graft-local overrides.
+//! Commit checks consume already available derived records and domain metadata;
+//! callers remain responsible for fetching records and enforcing storage policy.
+
+mod registry;
+pub mod semantics;
+
+/// Owns explicitly selected Legacy, Active and exact Recorded execution.
+pub mod selected;
+mod validation;
+mod value;
+
+pub use registry::{Class, PropertyName, Value, validate_property};
+pub use validation::{
+    CommitContext, Completeness, DerivedAttribute, EntryChange, completeness, registered_attribute,
+    validate_commit, validate_commit_with_context,
+};
+
+use crate::auth::{Verb, Verbs};
+use crate::cbor;
+use crate::tree_format::Property;
+use alloc::vec::Vec;
+use core::fmt;
+
+/// A property validation or policy failure.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Error {
+    /// A value is malformed or noncanonical CBOR.
+    Cbor(cbor::Error),
+    /// A property name is not registered.
+    UnknownProperty,
+    /// A registered value has an invalid type or vocabulary.
+    InvalidValue,
+    /// An input exceeds its encoded or graft-depth bound.
+    Limit,
+    /// A required attribute is absent or invalid.
+    MissingAttribute,
+    /// Required reference-domain or graft-policy metadata is unavailable.
+    IncompleteContext,
+    /// An attribute name is not registered under strict policy.
+    UnknownAttribute,
+    /// A reference or domain transition would widen disclosure.
+    Domain,
+    /// A descendant widens grants without authority or removes ancestor Admin rights.
+    Authority,
+}
+
+impl From<cbor::Error> for Error {
+    fn from(value: cbor::Error) -> Self {
+        Self::Cbor(value)
+    }
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Cbor(_) => "invalid property CBOR",
+            Self::UnknownProperty => "unregistered property",
+            Self::InvalidValue => "invalid property value",
+            Self::Limit => "property input limit exceeded",
+            Self::MissingAttribute => "missing required attribute",
+            Self::IncompleteContext => "incomplete property validation context",
+            Self::UnknownAttribute => "unregistered attribute",
+            Self::Domain => "disclosure domain violation",
+            Self::Authority => "unauthorized ACL transition",
+        })
+    }
+}
+
+impl core::error::Error for Error {}
+
+/// A disclosure label with its registered sharing scope.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Domain<'a> {
+    /// Content may be disclosed globally.
+    Public,
+    /// Content belongs to one tenant.
+    Tenant(&'a str),
+    /// Content belongs to one group.
+    Group(&'a str),
+    /// Content belongs to one private root.
+    Private(&'a str),
+}
+
+impl<'a> Domain<'a> {
+    /// Parses a registered disclosure-domain label.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidValue`] for an unknown kind or empty identifier.
+    pub fn parse(label: &'a str) -> Result<Self, Error> {
+        if label == "public" {
+            return Ok(Self::Public);
+        }
+        let (kind, name) = label.split_once(':').ok_or(Error::InvalidValue)?;
+        if name.is_empty() {
+            return Err(Error::InvalidValue);
+        }
+        match kind {
+            "tenant" => Ok(Self::Tenant(name)),
+            "group" => Ok(Self::Group(name)),
+            "private" => Ok(Self::Private(name)),
+            _ => Err(Error::InvalidValue),
+        }
+    }
+
+    /// Reports whether this domain may reference content in `source`.
+    pub fn permits_reference(self, source: Self) -> bool {
+        self == source
+            || matches!(
+                (self, source),
+                (_, Self::Public)
+                    | (Self::Group(_) | Self::Private(_), Self::Tenant(_))
+                    | (Self::Private(_), Self::Group(_))
+            )
+    }
+}
+
+/// One root encountered in the current view's graft path.
+#[derive(Clone, Copy, Debug)]
+pub struct RootLayer<'a> {
+    /// The referenced root's own properties.
+    pub properties: &'a [Property<'a>],
+    /// Properties on the graft entry, which override this root locally.
+    pub overrides: &'a [Property<'a>],
+}
+
+/// Context-dependent registry defaults supplied by the repository.
+#[derive(Clone, Copy, Debug)]
+pub struct Defaults<'a> {
+    /// Instance authority store expression name.
+    pub store: &'a str,
+    /// Private label for the current root when no domain is specified.
+    pub private_domain: &'a str,
+    /// Authority region captured at the first write.
+    pub home: &'a str,
+}
+
+/// Effective policy resolved for one path through a view.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EffectiveProperties<'a> {
+    values: Vec<(PropertyName, Value<'a>)>,
+    active_index_roots: Option<crate::indexing::IndexRoots<'a>>,
+}
+
+impl<'a> EffectiveProperties<'a> {
+    /// Returns a resolved, typed registry value.
+    pub fn get(&self, property: PropertyName) -> Option<&Value<'a>> {
+        self.values
+            .iter()
+            .find(|(name, _)| *name == property)
+            .map(|(_, value)| value)
+    }
+
+    /// Returns the effective disclosure domain.
+    ///
+    /// # Errors
+    /// Returns [`Error::InvalidValue`] if the effective domain is absent or invalid.
+    pub fn domain(&self) -> Result<Domain<'a>, Error> {
+        match self.get(PropertyName::Domain) {
+            Some(Value::Text(label)) => Domain::parse(label),
+            _ => Err(Error::InvalidValue),
+        }
+    }
+
+    /// Reports equality of the domain, store, and ACL flatten boundaries.
+    pub fn same_boundaries(&self, other: &Self) -> bool {
+        [PropertyName::Domain, PropertyName::Store, PropertyName::Acl]
+            .iter()
+            .all(|name| self.get(*name) == other.get(*name))
+    }
+}
+
+/// Resolves registered values along a view-specific, ancestor-first graft path.
+///
+/// No cache is retained. Unknown names are rejected; callers preserving later
+/// registered names must keep their raw bytes outside behavioral policy. These
+/// entrypoints use current revision 3; recorded revisions use
+/// [`semantics::RecordedContext`].
+///
+/// # Errors
+/// Rejects malformed properties, invalid defaults, and more than 64 graft edges.
+pub fn resolve<'a>(
+    path: &[RootLayer<'a>],
+    defaults: Defaults<'a>,
+) -> Result<EffectiveProperties<'a>, Error> {
+    resolve_with_registry(path, defaults, &[])
+}
+
+/// Resolves known policy while preserving trusted later-version registrations.
+///
+/// Unknown registered properties remain in the supplied raw maps and do not
+/// change behavior. The registry extension must come from a trusted schema,
+/// never from names asserted by an untrusted property writer.
+///
+/// # Errors
+/// Rejects unregistered or malformed values, invalid defaults, excessive graft
+/// depth, and ambiguous extension vocabulary, with the same rules as [`resolve`].
+pub fn resolve_with_registry<'a>(
+    path: &[RootLayer<'a>],
+    defaults: Defaults<'a>,
+    later_registered: &[&str],
+) -> Result<EffectiveProperties<'a>, Error> {
+    semantics::RecordedContext::new(3, 3, later_registered)?.resolve(path, defaults)
+}
+
+/// Validates all property names and values in a root property map.
+///
+/// # Errors
+/// Rejects unknown names, duplicate names, oversized maps, or invalid values.
+pub fn validate_map(properties: &[Property<'_>]) -> Result<(), Error> {
+    semantics::RecordedContext::new(3, 3, &[])?.validate_map(properties)
+}
+
+/// Validates a graft-entry property map, excluding owner-only index bindings.
+///
+/// Trusted later-version names remain preserved according to
+/// [`validate_preserved_map`]. An `index-roots` binding belongs to the target
+/// root's own node and cannot be supplied by an occurrence's graft override.
+///
+/// # Errors
+/// Rejects owner-only bindings at any graft, unregistered names, malformed
+/// values, duplicates, or oversized maps.
+pub fn validate_graft_overrides(
+    properties: &[Property<'_>],
+    later_registered: &[&str],
+) -> Result<(), Error> {
+    semantics::RecordedContext::new(3, 3, later_registered)?.validate_graft_overrides(properties)
+}
+
+/// Checks that deduplication cannot exceed the effective domain's scope.
+///
+/// # Errors
+/// Rejects global deduplication outside public domains or invalid policy.
+pub fn validate_domain_policy(properties: &EffectiveProperties<'_>) -> Result<(), Error> {
+    if properties.domain()? != Domain::Public
+        && properties.get(PropertyName::Dedup) == Some(&Value::Text("global"))
+    {
+        return Err(Error::Domain);
+    }
+    Ok(())
+}
+
+/// Checks the domain and ACL transition between effective ancestor policies.
+///
+/// Repository callers pass the committing principal's verified `admin` grant
+/// on the actual governing ancestor. Administrator rights inherited from that
+/// ancestor are preserved regardless of the committing principal's authority.
+/// Read resolution does not perform authorization checks.
+///
+/// # Errors
+/// Rejects disclosure widening, removal of inherited administrator rights, or
+/// widening of commit/admin grants without ancestor administration.
+pub fn validate_boundary_transition(
+    parent: &EffectiveProperties<'_>,
+    child: &EffectiveProperties<'_>,
+    ancestor_admin: bool,
+) -> Result<(), Error> {
+    if !child.domain()?.permits_reference(parent.domain()?) {
+        return Err(Error::Domain);
+    }
+
+    let (Some(Value::Grants(parent_grants)), Some(Value::Grants(child_grants))) =
+        (parent.get(PropertyName::Acl), child.get(PropertyName::Acl))
+    else {
+        return Err(Error::InvalidValue);
+    };
+
+    // AUTH-22 makes Admin imply every verb. Retaining Admin therefore preserves
+    // all inherited administrator rights, even when the caller may widen grants.
+    for (principal, verbs) in parent_grants {
+        if Verbs::new(*verbs).is_ok_and(|verbs| verbs.contains(Verb::Admin))
+            && !acl_allows(child_grants, principal, Verb::Admin)
+        {
+            return Err(Error::Authority);
+        }
+    }
+
+    if ancestor_admin {
+        return Ok(());
+    }
+
+    for (principal, _) in child_grants {
+        for verb in [Verb::Commit, Verb::Admin] {
+            if acl_allows(child_grants, principal, verb)
+                && !acl_allows(parent_grants, principal, verb)
+            {
+                return Err(Error::Authority);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Evaluates the union of a principal's grants with AUTH-22 implications.
+fn acl_allows(grants: &[(&str, u8)], principal: &str, verb: Verb) -> bool {
+    grants
+        .iter()
+        .filter(|(name, _)| *name == principal)
+        // ACL values may contain a zero mask, which confers no authority.
+        .any(|(_, mask)| Verbs::new(*mask).is_ok_and(|verbs| verbs.contains(verb)))
+}
+
+/// Validates a later-version property map while preserving unsupported bytes.
+///
+/// `later_registered` is an explicit trusted registry extension. Unsupported
+/// registered properties do not participate in resolution or behavior.
+///
+/// # Errors
+/// Rejects unknown names not in either registry, invalid known properties,
+/// duplicate names, malformed preserved CBOR, an oversized map, or ambiguous
+/// extension vocabulary.
+pub fn validate_preserved_map(
+    properties: &[Property<'_>],
+    later_registered: &[&str],
+) -> Result<(), Error> {
+    semantics::RecordedContext::new(3, 3, later_registered)?
+        .validate(properties, semantics::Placement::Data)
+}
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod tests;
+
+#[cfg(test)]
+#[allow(clippy::expect_used)]
+mod depth_tests;

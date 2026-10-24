@@ -32,13 +32,31 @@ let
     imports = [../abilities/native-dependency-barrier/module/module.nix ../fleet/_native-service-dependency.nix];
   };
   dependencyNodes = builtins.attrValues dependency.config.aos.activation.graph.nodes;
-  dependencySelect = ability: operation: instance: builtins.head (builtins.filter
-    (node: lib.drop (builtins.length node.identity - 3) node.identity == [ability operation instance]) dependencyNodes);
+  dependencySelect = ability: operation: instance:
+    builtins.head (builtins.filter
+      (node: lib.drop (builtins.length node.identity - 3) node.identity == [ability operation instance])
+      dependencyNodes);
   dependencyPairs = [
-    {control = "service"; ability = "serviceManagement"; operation = "realize";}
-    {control = "group"; ability = "identity"; operation = "group";}
-    {control = "principal"; ability = "identity"; operation = "principal";}
-    {control = "membership"; ability = "identity"; operation = "membership";}
+    {
+      control = "service";
+      ability = "serviceManagement";
+      operation = "realize";
+    }
+    {
+      control = "group";
+      ability = "identity";
+      operation = "group";
+    }
+    {
+      control = "principal";
+      ability = "identity";
+      operation = "principal";
+    }
+    {
+      control = "membership";
+      ability = "identity";
+      operation = "membership";
+    }
   ];
   baseline = evaluate ../fleet/_native-service-baseline.nix;
   baselineNodes = builtins.attrValues baseline.config.aos.activation.graph.nodes;
@@ -55,12 +73,15 @@ in {
     selected = dependencySelect pair.ability pair.operation "native-service-qualification";
     parent = dependencySelect "nativeDependencyBarrier" "ensure" "${pair.control}-parent";
     child = dependencySelect "nativeDependencyBarrier" "ensure" "${pair.control}-child";
-  in builtins.elem (builtins.hashString "sha256" (builtins.toJSON parent.identity)) selected.dependencies
-    && builtins.elem (builtins.hashString "sha256" (builtins.toJSON selected.identity)) child.dependencies) dependencyPairs;
+  in
+    builtins.elem (builtins.hashString "sha256" (builtins.toJSON parent.identity)) selected.dependencies
+    && builtins.elem (builtins.hashString "sha256" (builtins.toJSON selected.identity)) child.dependencies)
+  dependencyPairs;
   foreignMarkerHasNoSelectedDependency =
     (dependencySelect "nativeDependencyBarrier" "ensure" "foreign-marker").dependencies == [];
   deadlineCommandsRemainBoundedByNativeInvocation =
-    deadline.input.lifecycle.execution_model == "oneshot"
+    deadline.input.lifecycle.execution_model
+    == "oneshot"
     && deadline.input.lifecycle.start_timeout_unbounded
     && deadlineRemove.input.lifecycle.stop_timeout_unbounded
     && deadline.timeout_ms > 0

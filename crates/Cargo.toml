@@ -93,6 +93,12 @@ members = [
     "release/aos-release-format",
     "release/aos-release-signer",
 
+    "terrane/sdk/terrane-format",
+    "terrane/sdk/terrane-sdk",
+    "terrane/linux/terrane-linux",
+    "terrane/cli/terrane-cli",
+    "terrane/integration/aos-terrane-integration",
+
     "transfer/aos-transfer",
 ]
 
@@ -254,6 +260,11 @@ tokio-rustls = "0.26"
 rcgen = "0.14"
 
 # Internal crates
+terrane-format = { path = "terrane/sdk/terrane-format" }
+terrane-sdk = { path = "terrane/sdk/terrane-sdk", default-features = false }
+terrane-linux = { path = "terrane/linux/terrane-linux" }
+terrane-cli = { path = "terrane/cli/terrane-cli" }
+aos-terrane-integration = { path = "terrane/integration/aos-terrane-integration" }
 aos-module-format = { path = "modules/aos-module-format" }
 aos-activation = { path = "activation/aos-activation" }
 aos-activation-crucible = { path = "activation/aos-activation-crucible" }

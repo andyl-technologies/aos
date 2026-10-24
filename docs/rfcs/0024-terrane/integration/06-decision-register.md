@@ -1,0 +1,292 @@
+# 06 — AOS decision register
+
+This file records the AOS-specific decisions behind adopting Terrane: the
+choices that are AOS's to make rather than the specification's. The
+specification's own decisions live in `spec/39-decision-register.md` with
+`D-n` IDs; entries here use `AD-n` and follow the same shape. An `AD-n` entry
+is recorded rationale, not a normative statement; the normative force lives in
+the requirement IDs each decision affects.
+
+```text
+- **[AD-n] <one-line title>**
+  - **Status:** Decided | Open
+  - **Decision:** what was chosen.
+  - **Rationale:** why, honestly.
+  - **Alternatives considered:** what else was on the table and why it lost.
+  - **Affects:** the requirement IDs / files this decision shapes.
+```
+
+## Decisions
+
+- **[AD-1] The binary is `terrane`; the crates are `terrane-*`**
+  - **Status:** Decided
+  - **Decision:** The program is named `terrane` and the crates
+    `terrane-core`, `terrane`, `terrane-fs`, `terrane-edge`, `terrane-cli`.
+    AOS-specific glue lives in one crate, `aos-terrane`. AOS commands that
+    need AOS context are subcommands of the `aos` CLI, not a second binary.
+  - **Rationale:** Terrane is a standalone system that AOS adopts, the way
+    FreeBSD adopts ZFS. A product prefix on the binary or the specification
+    crates would contradict that and would have to be removed before the
+    crates could be published or the specification lifted. The earlier
+    working name `aos-terrane` for the binary was dropped for this reason.
+  - **Alternatives considered:** `aos-terrane` as the binary (rejected:
+    not standalone); two binaries, one per plane (rejected: spec D-16 makes
+    one binary with roles the design); `chunk-store` and `chunk-warehouse`
+    (rejected: the system is a filesystem with branches, not two chunk
+    services).
+  - **Affects:** PKG-4, spec CRATE-15, spec D-20.
+
+- **[AD-2] The specification stays liftable**
+  - **Status:** Decided
+  - **Decision:** `spec/` is self-contained: it never links outside its
+    directory, never names AOS, and carries its own version and conformance
+    levels. It is expected to move to its own repository by `git subtree
+    split` with no edits. Everything AOS-specific is under `integration/`.
+  - **Rationale:** The same reason as AD-1. It also keeps the specification
+    honest: a requirement that only makes sense with AOS around is an
+    integration requirement, not a Terrane one.
+  - **Alternatives considered:** A single RFC document set with AOS
+    integration woven through each file (rejected: would make lifting a
+    rewrite and would let AOS assumptions leak into formats).
+  - **Affects:** spec CONV-2, spec README §Versioning, RFC-0024 README.
+
+- **[AD-3] The MVP serves sandboxes, build caches, and CI caches together**
+  - **Status:** Decided
+  - **Decision:** The MVP is the trunk of
+    [`05-implementation-plan.md`](05-implementation-plan.md) through T6,
+    in the order T0 foundations, T1 local repository, T2 host tier, T3 wire
+    protocol and buckets, T4 CI caches (`nix-cache`, `reapi`, `gha-cache`
+    for Nix, Bazel, and GitHub Actions on GCP spot runners), T5 the
+    RFC-0021 sandbox view service, T6 hardening and the MVP conformance
+    claim. T4 and T5 share no dependency and may be worked concurrently.
+    AOS Hub, the edge, and every other consumer are branches.
+  - **Rationale:** The idea came from one need shared by three consumers:
+    an untrusted job reads a trusted baseline, writes results only it can
+    see, and has them folded in on merge without copying. Building for one
+    consumer would leave the fork-and-fold core untested until later; the
+    three together exercise it from T1 (merge) through T4 (surfaces) on the
+    same warehouse. CI caches merge before sandboxes because they need no
+    kernel work and validate the wire protocol and buckets end to end with
+    stock clients; the sandbox path then adds FUSE and the RFC-0021 slots
+    on a proven substrate. The Hub stays a branch because replacing its R2
+    layer is a migration with a cutover, which is safer once the trunk has
+    run under the CI and sandbox workloads.
+  - **Alternatives considered:** Sandbox-only MVP (rejected: it never
+    exercises merge, fold, or a protocol surface, and the CI need is
+    immediate); Hub first (rejected: highest migration risk with the
+    least-proven code); every consumer in parallel with no trunk (rejected:
+    formats and interfaces would fork before they froze).
+  - **Affects:** [`05-implementation-plan.md`](05-implementation-plan.md)
+    trunk order, [`07-ci-caches.md`](07-ci-caches.md) CI-1 to CI-17,
+    SBX-1 to SBX-21, HUB-1 to HUB-14.
+
+- **[AD-4] ZFS keeps live workspaces in 1.0**
+  - **Status:** Decided
+  - **Decision:** RFC-0021's live read-only and live read-write views, and
+    the storage broker's ZFS datasets and clones for sandbox workspaces,
+    remain ZFS. Terrane takes immutable views, private CoW views, and
+    publishable staging.
+  - **Rationale:** Spec NG-1 and NG-3: Terrane 1.0 is not a live
+    shared-writable POSIX filesystem. A ZFS clone gives sub-commit
+    durability, locks, and record-granular writes that a Terrane overlay
+    upper delegates to the host filesystem anyway. The upper of a Terrane
+    exposure may itself sit on a ZFS dataset, so nothing is lost.
+  - **Alternatives considered:** Terrane overlay uppers for every writable
+    view (rejected for live views: needs a native mutable working tree, spec
+    `40` open question); dropping ZFS from the sandbox stack (rejected: no
+    replacement for live semantics in 1.0).
+  - **Affects:** SBX-6, spec NG-1, NG-3, CONS-38.
+
+- **[AD-5] Bridge RFC-0021 descriptors with a second profile, not a rewrite**
+  - **Status:** Decided
+  - **Decision:** Register `aos-sandbox-v1` (SHA-256 over
+    `aos-sandbox-object-v1`) as a second Terrane identity profile in
+    `aos-terrane`, require `hashes = [blake3, sha256]` and an SHA-256 index
+    on sandbox roots, and treat the RFC-0021 portable tree as an adapter.
+    Terrane's primary identity stays BLAKE3.
+  - **Rationale:** Spec OBJ-8 and OBJ-9 already say a second algorithm is a
+    coexisting profile. Computing SHA-256 once per object as a derived
+    attribute costs one hash pass at write time and nothing at read time,
+    while switching Terrane to SHA-256 would cost every chunk hash on every
+    read path. RFC-0021's CBOR profile and Terrane's are the same rules, so
+    the adapter re-keys rather than re-encodes.
+  - **Alternatives considered:** Change RFC-0021 to BLAKE3 (rejected: its
+    golden vectors, signatures, and publisher bindings are SHA-256 and
+    partly implemented); make Terrane SHA-256 primary (rejected: spec D-4).
+  - **Affects:** SBX-11 to SBX-14, HUB-6, spec OBJ-8, OBJ-9, DRV-6.
+
+- **[AD-6] Terrane is Apache-side of the Crucible/QEMU boundary**
+  - **Status:** Decided
+  - **Decision:** All Terrane crates and `aos-terrane` are Apache-2.0 and
+    reach QEMU only through `vhost-user-blk` sockets or the existing
+    `crucible-shmem` protocol serviced by a Crucible host process. The
+    `gate:license-boundary` scan covers them.
+  - **Rationale:** The repository's boundary rule allows no Apache crate to
+    link QEMU or include its headers. Both block paths are process
+    boundaries with versioned protocols, so nothing changes in the boundary
+    policy; the gate simply has more crates to scan.
+  - **Alternatives considered:** A QEMU block driver that reads Terrane
+    packs directly (rejected: it would be GPL-side code carrying Terrane
+    format knowledge, and it would put pack offsets into a QEMU process).
+  - **Affects:** CRU-10, CRU-11, RFC-0010 file 37.
+
+- **[AD-7] Gates become `checks.terrane.gates.<name>`**
+  - **Status:** Decided
+  - **Decision:** Every specification gate is an AOS check under
+    `checks.terrane.gates.` with the gate's name minus the `gate:` prefix;
+    integration requirements use `checks.terrane.integration.`. KVM-requiring
+    gates live under `tests/terrane/`.
+  - **Rationale:** Matches how Crucible's gates are exposed
+    (`checks.crucible.phase2.gates.*`) so `aos-dev list checks terrane`
+    enumerates them and the registry-completeness gate can verify that every
+    specification gate has a check.
+  - **Alternatives considered:** A per-phase namespace like Crucible's
+    (rejected: the specification's gate names are already unique and stable,
+    and phases are a plan concern, not a check concern).
+  - **Affects:** PKG-7, PKG-11, spec TEST-16.
+
+- **[AD-8] Erasure coding, the block backend, and block writes wait**
+  - **Status:** Decided
+  - **Decision:** AOS ships the MVP trunk (T0 through T6) before any of
+    `striped`, `blockdev`, or a writable block surface; those live on
+    B-redundancy and B-storage. AOS's first redundancy is the bucket's own
+    durability plus `replicated` across regions for the Hub.
+  - **Rationale:** Spec D-18 and NG-8. No AOS workload needs raw-device
+    pools in the first year, and the block surface's read-only mode already
+    serves Crucible scenario disks.
+  - **Alternatives considered:** Blockdev-first for on-prem warehouses
+    (rejected: no on-prem deployment is planned before the Hub migration).
+  - **Affects:** [`05-implementation-plan.md`](05-implementation-plan.md)
+    branches B-redundancy and B-storage, spec D-18.
+
+- **[AD-10] Trunk and branches, with freezes**
+  - **Status:** Decided
+  - **Decision:** The plan is a serial trunk of milestones, each leaving a
+    deployable and gate-green system, plus branch worklines that fork from
+    a named milestone and merge as one change. Identities, encodings,
+    bucket keys, and store traits freeze at T1; the surface interface and
+    exposure record at T2; the wire protocol and token format at T3.
+    Branches add registry entries only. Trunk gates are the floor for
+    every branch. Testing is local only: Nix checks, the AOS-built Garage
+    as the S3-compatible store, VM tests on the AOS kernel; cloud probes
+    are manual and recorded here.
+  - **Rationale:** A stable and deployable MVP needs a spine that never
+    waits on scale-out or multi-site work, and branches need frozen
+    formats so they never fork identity. Local-only testing keeps every
+    gate reproducible in a Nix check; the two things that cannot be
+    tested locally, real GCS and real S3 conditional writes, are exactly
+    the ones RISK-1 asks to probe by hand.
+  - **Alternatives considered:** Numbered phases with sub-stages (the
+    previous shape; rejected because it serialized branch work behind
+    unrelated milestones and hid which items were scale-out); gated cloud
+    integration tests (rejected: network-dependent gates are not
+    reproducible in the hermetic build).
+  - **Affects:** [`05-implementation-plan.md`](05-implementation-plan.md)
+    §How to use this plan, PLAN-3.
+
+- **[AD-11] Complete index machinery on the local-repository trunk**
+  - **Status:** Decided
+  - **Decision:** Move the existing T-DRV-2 task, without renumbering it,
+    from B-derive to T1. Add derivation-memo and index-tree-maintenance to
+    T1's exit gates. Preserve same-commit incremental maintenance,
+    verification/rebuild, independently checked producers and the mandatory
+    positive native safe-index disclosure case. Later algebra and ruleset
+    tasks extend the same memo mechanism. Record the separate general
+    lookup-cost correction in spec D-100/DRV-24.
+  - **Rationale:** T1's required native index materialization depends on
+    an operation formerly deferred until after T1. Deferring that case
+    alone also leaves CI-3's T4 SHA-256 CAS index and SBX-12's T5 indexed
+    descriptor resolution dependent on a branch that the MVP must not
+    need. T1 is still incomplete and its format freeze has not begun, so
+    the acyclic owner binding, executable profile and typed occurrence
+    prerequisites can be settled before freezing. A per-object side-table
+    lookup cannot satisfy the index requirement. NIX-9's explicit
+    hash-prefixed path-keyed lookup alternative remains valid and separate
+    from CAS indexing. This decision does not resolve AD-5's framed-descriptor
+    mismatch or claim that any index gate has passed.
+  - **Alternatives considered:** Start B-derive before T1 completes
+    (rejected: violates serial gating and freezes); postpone all positive
+    index cases (rejected: leaves mandatory MVP consumers unsupported);
+    weaken verification, maintenance or current policy checks (rejected:
+    changes required behavior rather than its implementation order).
+  - **Affects:** T-DRV-2, T1 exit gates, T-DOM-1, T-NIX-1, T-SBX-4,
+    CI-3, SBX-12; spec DRV-12 to DRV-17, DRV-19 to DRV-24 and D-100.
+
+- **[AD-12] Confine native Terrane quota writers before startup**
+  - **Status:** Decided
+  - **Decision:** The native `serve`, `publish` and `gc` entry points install
+    a fixed source-built seccomp policy before opening mutable cache resources
+    or starting worker runtimes. The policy denies project/inheritance setter
+    ioctls, including compat command values, and `file_setattr`; it compares
+    the kernel-interpreted low 32 bits of ioctl commands. Unsupported syscall
+    ABIs, including x32, fail closed. It also excludes io_uring entry points
+    and inherited rings. Installation sets no-new-privileges, synchronizes all
+    threads and requires actual kernel success; a positive TSYNC failure is
+    a startup failure. Required GET and fs-verity operations remain available.
+    Supported native ABIs are explicitly implemented and tested; other ABIs
+    cannot obtain a native confinement receipt. Dedicated service identities,
+    non-dumpable role processes and closed descriptor handoffs protect the
+    boundary from unconfined peers. Host provisioning uses its separate,
+    explicitly bounded privileged service and does not install this policy.
+  - **Rationale:** Inspection of the pinned Linux 7.2.3 source confirms that
+    initial-user-namespace inode owners can move project charges without
+    CAP_SYS_ADMIN. The new `file_setattr` syscall and compat ioctl translation
+    bypass an ioctl-only or full-width argument filter. The reviewed ext4
+    implementation has no io_uring setter handler; excluding rings keeps that
+    assumption explicit. A configuration assertion or authenticated quota
+    query is insufficient evidence of immutable charge ownership.
+  - **Alternatives considered:** Give roles more capabilities (rejected:
+    does not prevent owner setters); use advisory exclusion alone (rejected:
+    direct native calls bypass it); route every inode creation through a new
+    privileged service (larger ownership design, unnecessary for this fix).
+  - **Affects:** T-HOST-1, T-HOST-2, T-PKG-3, spec HOST-23 and D-126.
+
+- **[AD-13] Complete surface feature coverage with each real surface**
+  - **Status:** Decided
+  - **Decision:** T-SURF-1 owns the SDK feature and common compiled registry.
+    The implementation plan assigns the remaining CRATE-28 components to
+    their existing surface tasks. Each owner supplies its real feature,
+    registry entry and expanded feature-matrix checks. Global CRATE-28
+    conformance remains incomplete until every registered surface is covered.
+    T2 component acceptance does not make that full-specification claim.
+  - **Rationale:** The plan attributed the entire every-surface requirement
+    to T2 while scheduling those implementations in T4, T5 and existing
+    branch worklines. That ownership claim was inconsistent with its ordering.
+    The specification's requirement is correct and remains unchanged.
+  - **Alternatives considered:** Start later surface work during T2
+    (rejected: violates milestone order); add empty features or placeholder
+    surfaces (rejected: supplies no implementation or conformance evidence);
+    narrow the specification's requirement (rejected: full surface feature
+    coverage remains required).
+  - **Affects:** T-SURF-1 and the completing surface tasks listed in the
+    implementation plan; CRATE-28, CRATE-29 and D-118 remain unchanged.
+
+- **[AD-14] Apply the workspace ownership migration to Terrane.**
+  - **Status:** Decided (2026-10-19)
+  - **Decision:** Follow the PR #420 mapping in
+    `docs/architecture/unmerged-crates.md`: `terrane-format` and `terrane-sdk`
+    under `crates/terrane/sdk/`, `terrane-linux` under `crates/terrane/linux/`,
+    `terrane-cli` under `crates/terrane/cli/`, and `aos-terrane-integration`
+    under `crates/terrane/integration/`. This supersedes AD-1's crate spellings;
+    its executable naming and standalone dependency direction remain binding.
+    Use the shared AOS workspace vendor for the combined lockfile.
+  - **Rationale:** Integrating master must preserve its package ownership and
+    reusable build infrastructure instead of resurrecting the flat workspace.
+    Spec D-127 reconciles the normative crate names without weakening freezes.
+  - **Compatibility:** Existing content identities, formats, bucket keys, trait
+    contracts, requirement IDs and gate names are unchanged. Earlier qualification
+    records retain their original source paths and package names as evidence;
+    qualification on the integrated source is required separately.
+  - **Affects:** PKG-1/3/7, CRATE-1 through CRATE-21.
+
+## Open
+
+- **[AD-9] Whether `aos-cache` gains a `terrane://` backend or is replaced**
+  - **Status:** Open
+  - **Decision:** Pending T4 results. HUB-13 keeps `aos-cache`'s
+    existing backends working either way.
+  - **Rationale:** The SDK already gives every AOS crate chunk-level
+    negotiation; whether a Nix-compatible transfer client still needs a
+    separate crate depends on how much of `apr`'s pack path survives the
+    Hub migration.
+  - **Affects:** HUB-13, HUB-14.

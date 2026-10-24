@@ -1,0 +1,1024 @@
+//! Encodes canonical bucket probe, generation, and tombstone records.
+//!
+//! ```text
+//! CAPABILITIES = {1: 1, 2: true, 3: true, 4: true, 5: false,
+//!                 6: 1, 7: timestamp, 8: store-profile, 10: []}
+//! MANIFEST = {1: generation, 2: [shard-entry], 3: timestamp, 4: cycle,
+//!             5: [pack-inventory-entry], 6: [pack-exclusion], 7: [pack-id]}
+//! Tombstone = {1: pack-id, 2: cycle, 3: timestamp, 4: removed-entries, 5: epoch}
+//! ```
+
+use crate::cbor::{self, Decoder};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use core::fmt;
+
+/// Reports malformed, noncanonical, or unsupported durable records.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecordError {
+    /// The deterministic CBOR encoding failed validation.
+    Cbor(cbor::Error),
+    /// Fields violate the registered schema or supported layout version.
+    Schema,
+}
+
+impl From<cbor::Error> for RecordError {
+    fn from(value: cbor::Error) -> Self {
+        Self::Cbor(value)
+    }
+}
+
+impl fmt::Display for RecordError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cbor(error) => error.fmt(f),
+            Self::Schema => f.write_str("invalid bucket record"),
+        }
+    }
+}
+
+impl core::error::Error for RecordError {}
+
+/// Binds a store to its immutable identity and chunk profiles.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoreProfile {
+    /// The registered identity profile name.
+    pub identity: String,
+    /// The digest algorithm name.
+    pub algorithm: String,
+    /// The registered chunk profile name.
+    pub chunk: String,
+    /// The seed from which the chunk profile's gear table is derived.
+    pub seed: [u8; 32],
+}
+
+/// Records the capabilities established by an opening backend's probes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BucketCapabilities {
+    /// The durable layout version: one is legacy read-only, two is writable.
+    pub layout_version: u64,
+    /// Whether a colliding create-if-absent failed as required.
+    pub create_if_absent: bool,
+    /// Whether a stale complete-value condition failed as required.
+    pub compare_and_swap: bool,
+    /// Whether exact ranged reads were verified.
+    pub ranges: bool,
+    /// Whether presigned read URLs are available.
+    pub presign: bool,
+    /// Whether verified multiwriter safety is available.
+    pub multi_writer: bool,
+    /// The probe's Unix timestamp in seconds.
+    pub probed_at: u64,
+    /// The persistent identity and chunk profile binding.
+    pub profile: StoreProfile,
+    /// The authoritative published index generation, absent for an empty catalog.
+    pub generation: Option<u64>,
+    /// Complete sorted, unique registered ref names; absence means unknown completeness.
+    /// Names remain after losing publication attempts or ref deletion.
+    pub ref_names: Option<Vec<String>>,
+    /// The checked publication protocol marker; absence denotes legacy authority.
+    /// A decoded marker never establishes a trusted selected publication chain.
+    pub publication_protocol: Option<u64>,
+}
+
+impl BucketCapabilities {
+    /// Encodes the complete canonical probe record.
+    ///
+    /// # Errors
+    /// Returns [`RecordError::Schema`] for an unsupported layout version or an
+    /// unsorted, duplicate, or unregistered ref inventory.
+    pub fn encode(&self) -> Result<Vec<u8>, RecordError> {
+        if !matches!(self.layout_version, 1 | 2) {
+            return Err(RecordError::Schema);
+        }
+
+        if self
+            .publication_protocol
+            .is_some_and(|version| version != 1)
+        {
+            return Err(RecordError::Schema);
+        }
+
+        if let Some(names) = &self.ref_names {
+            validate_ref_names(names)?;
+        }
+        let mut bytes = Vec::new();
+        cbor::write_map(
+            &mut bytes,
+            8 + usize::from(self.generation.is_some())
+                + usize::from(self.ref_names.is_some())
+                + usize::from(self.publication_protocol.is_some()),
+        );
+        uint_field(&mut bytes, 1, self.layout_version);
+        for (key, value) in [
+            (2, self.create_if_absent),
+            (3, self.compare_and_swap),
+            (4, self.ranges),
+            (5, self.presign),
+        ] {
+            cbor::write_uint(&mut bytes, key);
+            bytes.push(if value { 0xf5 } else { 0xf4 });
+        }
+        uint_field(&mut bytes, 6, if self.multi_writer { 1 } else { 2 });
+        uint_field(&mut bytes, 7, self.probed_at);
+        cbor::write_uint(&mut bytes, 8);
+        cbor::write_map(&mut bytes, 4);
+        for (key, value) in [
+            (1, &self.profile.identity),
+            (2, &self.profile.algorithm),
+            (3, &self.profile.chunk),
+        ] {
+            cbor::write_uint(&mut bytes, key);
+            cbor::write_text(&mut bytes, value);
+        }
+        cbor::write_uint(&mut bytes, 4);
+        cbor::write_bytes(&mut bytes, &self.profile.seed);
+        if let Some(generation) = self.generation {
+            uint_field(&mut bytes, 9, generation);
+        }
+        if let Some(names) = &self.ref_names {
+            cbor::write_uint(&mut bytes, 10);
+            cbor::write_array(&mut bytes, names.len());
+            for name in names {
+                cbor::write_text(&mut bytes, name);
+            }
+        }
+        if let Some(version) = self.publication_protocol {
+            uint_field(&mut bytes, 11, version);
+        }
+        Ok(bytes)
+    }
+
+    /// Decodes and validates a supported probe record and profile binding.
+    ///
+    /// # Errors
+    /// Rejects unsupported versions, missing profile binding, invalid fields,
+    /// noncanonical encoding, or trailing bytes.
+    pub fn decode(bytes: &[u8]) -> Result<Self, RecordError> {
+        let mut decoder = Decoder::new(bytes);
+        let fields = decoder.map(11)?;
+        if !(8..=11).contains(&fields) {
+            return Err(RecordError::Schema);
+        }
+        key(&mut decoder, 1)?;
+        let layout_version = decoder.uint()?;
+        if !matches!(layout_version, 1 | 2) {
+            return Err(RecordError::Schema);
+        }
+        key(&mut decoder, 2)?;
+        let create_if_absent = boolean(&mut decoder)?;
+        key(&mut decoder, 3)?;
+        let compare_and_swap = boolean(&mut decoder)?;
+        key(&mut decoder, 4)?;
+        let ranges = boolean(&mut decoder)?;
+        key(&mut decoder, 5)?;
+        let presign = boolean(&mut decoder)?;
+        key(&mut decoder, 6)?;
+        let multi_writer = match decoder.uint()? {
+            1 => true,
+            2 => false,
+            _ => return Err(RecordError::Schema),
+        };
+        key(&mut decoder, 7)?;
+        let probed_at = decoder.uint()?;
+
+        key(&mut decoder, 8)?;
+        if decoder.map(4)? != 4 {
+            return Err(RecordError::Schema);
+        }
+        key(&mut decoder, 1)?;
+        let identity = decoder.text(decoder.remaining().len())?.to_string();
+        key(&mut decoder, 2)?;
+        let algorithm = decoder.text(decoder.remaining().len())?.to_string();
+        key(&mut decoder, 3)?;
+        let chunk = decoder.text(decoder.remaining().len())?.to_string();
+        key(&mut decoder, 4)?;
+        let seed = digest(&mut decoder)?;
+        let mut generation = None;
+        let mut ref_names = None;
+        let mut publication_protocol = None;
+        let mut previous_key = 8;
+        for _ in 8..fields {
+            let field = decoder.uint()?;
+            if field <= previous_key {
+                return Err(RecordError::Schema);
+            }
+            previous_key = field;
+            match field {
+                9 => generation = Some(decoder.uint()?),
+                10 => {
+                    let count = decoder.array(decoder.remaining().len())?;
+                    let mut names = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        names.push(decoder.text(decoder.remaining().len())?.to_string());
+                    }
+                    validate_ref_names(&names)?;
+                    ref_names = Some(names);
+                }
+                11 => {
+                    if decoder.uint()? != 1 {
+                        return Err(RecordError::Schema);
+                    }
+                    publication_protocol = Some(1);
+                }
+                _ => return Err(RecordError::Schema),
+            }
+        }
+        decoder.finish()?;
+
+        Ok(Self {
+            layout_version,
+            create_if_absent,
+            compare_and_swap,
+            ranges,
+            presign,
+            multi_writer,
+            probed_at,
+            generation,
+            ref_names,
+            publication_protocol,
+            profile: StoreProfile {
+                identity,
+                algorithm,
+                chunk,
+                seed,
+            },
+        })
+    }
+}
+
+fn validate_ref_names(names: &[String]) -> Result<(), RecordError> {
+    if names
+        .windows(2)
+        .any(|pair| pair[0].as_bytes() >= pair[1].as_bytes())
+    {
+        return Err(RecordError::Schema);
+    }
+    for name in names {
+        if crate::refs::RefName::parse(name).is_err()
+            || super::keys::BucketKey::parse(name).is_err()
+        {
+            return Err(RecordError::Schema);
+        }
+    }
+    Ok(())
+}
+
+/// Identifies one shard and the optional filter belonging to it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenerationShard {
+    /// The shard number within the generation.
+    pub shard: u64,
+    /// The domain-separated identity of its index bytes.
+    pub index_hash: [u8; 32],
+    /// The exact encoded index size.
+    pub index_size: u64,
+    /// The filter's identity and size, when this generation has a filter.
+    pub filter: Option<([u8; 32], u64)>,
+}
+
+/// Describes a published pack and its matching detached index container.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackInventoryEntry {
+    /// The opaque UUID identifying both registered container keys.
+    pub pack_id: [u8; 16],
+    /// The identity digest of the complete sealed pack bytes.
+    pub pack_hash: [u8; 32],
+    /// The exact encoded size of the sealed pack.
+    pub pack_size: u64,
+    /// The identity digest of the header-prefixed detached index bytes.
+    pub index_hash: [u8; 32],
+    /// The exact encoded size of the detached index.
+    pub index_size: u64,
+}
+
+/// Binds a physically retired pack to its active collection incarnation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PackExclusion {
+    /// The opaque UUID of the excluded pack and detached index.
+    pub pack_id: [u8; 16],
+    /// The fresh collection cycle that published this exclusion.
+    pub cycle: u64,
+    /// The collector fencing epoch authorizing this incarnation.
+    pub epoch: u64,
+}
+
+/// Describes the complete immutable content of one index generation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GenerationManifest {
+    /// The generation named by the enclosing key.
+    pub generation: u64,
+    /// All shards, in strictly increasing shard order.
+    pub shards: Vec<GenerationShard>,
+    /// The publication's Unix timestamp in seconds.
+    pub written_at: u64,
+    /// The collection cycle producing the generation.
+    pub cycle: u64,
+    /// The optional authoritative container inventory, ordered by unique pack ID.
+    pub inventory: Option<Vec<PackInventoryEntry>>,
+    /// Complete active physical exclusions, sorted by unique pack ID.
+    /// Absence preserves legacy unknown completeness; an empty array is explicit.
+    pub exclusions: Option<Vec<PackExclusion>>,
+    /// Complete permanent burns, sorted uniquely by unsigned pack-ID bytes.
+    /// Absence is legacy unknown; an empty array is explicitly known empty.
+    pub burns: Option<Vec<[u8; 16]>>,
+}
+
+impl GenerationManifest {
+    /// Encodes a complete generation manifest as canonical CBOR.
+    ///
+    /// # Errors
+    /// Returns [`RecordError::Schema`] for repeated or unordered shards or
+    /// container inventory entries.
+    pub fn encode(&self) -> Result<Vec<u8>, RecordError> {
+        if self
+            .shards
+            .windows(2)
+            .any(|pair| pair[0].shard >= pair[1].shard)
+        {
+            return Err(RecordError::Schema);
+        }
+
+        if self.inventory.as_ref().is_some_and(|entries| {
+            entries
+                .windows(2)
+                .any(|pair| pair[0].pack_id >= pair[1].pack_id)
+        }) {
+            return Err(RecordError::Schema);
+        }
+
+        if self.exclusions.as_ref().is_some_and(|entries| {
+            entries
+                .windows(2)
+                .any(|pair| pair[0].pack_id >= pair[1].pack_id)
+        }) {
+            return Err(RecordError::Schema);
+        }
+        if self
+            .burns
+            .as_ref()
+            .is_some_and(|entries| entries.windows(2).any(|pair| pair[0] >= pair[1]))
+        {
+            return Err(RecordError::Schema);
+        }
+
+        let mut bytes = Vec::new();
+        cbor::write_map(
+            &mut bytes,
+            4 + usize::from(self.inventory.is_some())
+                + usize::from(self.exclusions.is_some())
+                + usize::from(self.burns.is_some()),
+        );
+        uint_field(&mut bytes, 1, self.generation);
+        cbor::write_uint(&mut bytes, 2);
+        cbor::write_array(&mut bytes, self.shards.len());
+        for shard in &self.shards {
+            cbor::write_array(&mut bytes, if shard.filter.is_some() { 5 } else { 3 });
+            cbor::write_uint(&mut bytes, shard.shard);
+            cbor::write_bytes(&mut bytes, &shard.index_hash);
+            cbor::write_uint(&mut bytes, shard.index_size);
+            if let Some((hash, size)) = shard.filter {
+                cbor::write_bytes(&mut bytes, &hash);
+                cbor::write_uint(&mut bytes, size);
+            }
+        }
+        uint_field(&mut bytes, 3, self.written_at);
+        uint_field(&mut bytes, 4, self.cycle);
+        if let Some(entries) = &self.inventory {
+            cbor::write_uint(&mut bytes, 5);
+            cbor::write_array(&mut bytes, entries.len());
+            for entry in entries {
+                cbor::write_array(&mut bytes, 5);
+                cbor::write_bytes(&mut bytes, &entry.pack_id);
+                cbor::write_bytes(&mut bytes, &entry.pack_hash);
+                cbor::write_uint(&mut bytes, entry.pack_size);
+                cbor::write_bytes(&mut bytes, &entry.index_hash);
+                cbor::write_uint(&mut bytes, entry.index_size);
+            }
+        }
+        if let Some(entries) = &self.exclusions {
+            cbor::write_uint(&mut bytes, 6);
+            cbor::write_array(&mut bytes, entries.len());
+            for entry in entries {
+                cbor::write_array(&mut bytes, 3);
+                cbor::write_bytes(&mut bytes, &entry.pack_id);
+                cbor::write_uint(&mut bytes, entry.cycle);
+                cbor::write_uint(&mut bytes, entry.epoch);
+            }
+        }
+        if let Some(entries) = &self.burns {
+            cbor::write_uint(&mut bytes, 7);
+            cbor::write_array(&mut bytes, entries.len());
+            for pack in entries {
+                cbor::write_bytes(&mut bytes, pack);
+            }
+        }
+        Ok(bytes)
+    }
+
+    /// Decodes a canonical generation manifest.
+    ///
+    /// # Errors
+    /// Rejects malformed fields, duplicate or unordered shards, and trailing bytes.
+    pub fn decode(bytes: &[u8]) -> Result<Self, RecordError> {
+        let mut decoder = Decoder::new(bytes);
+        let fields = decoder.map(7)?;
+        if !(4..=7).contains(&fields) {
+            return Err(RecordError::Schema);
+        }
+        key(&mut decoder, 1)?;
+        let generation = decoder.uint()?;
+        key(&mut decoder, 2)?;
+        let count = decoder.array(decoder.remaining().len())?;
+        let mut shards = Vec::with_capacity(count);
+        for _ in 0..count {
+            let length = decoder.array(5)?;
+            if !matches!(length, 3 | 5) {
+                return Err(RecordError::Schema);
+            }
+            let shard = decoder.uint()?;
+            if shards
+                .last()
+                .is_some_and(|last: &GenerationShard| last.shard >= shard)
+            {
+                return Err(RecordError::Schema);
+            }
+            let index_hash = digest(&mut decoder)?;
+            let index_size = decoder.uint()?;
+            let filter = if length == 5 {
+                Some((digest(&mut decoder)?, decoder.uint()?))
+            } else {
+                None
+            };
+            shards.push(GenerationShard {
+                shard,
+                index_hash,
+                index_size,
+                filter,
+            });
+        }
+        key(&mut decoder, 3)?;
+        let written_at = decoder.uint()?;
+        key(&mut decoder, 4)?;
+        let cycle = decoder.uint()?;
+        let mut inventory = None;
+        let mut exclusions = None;
+        let mut burns = None;
+        let mut previous_key = 4;
+        for _ in 4..fields {
+            let field = decoder.uint()?;
+            if field <= previous_key {
+                return Err(RecordError::Schema);
+            }
+            previous_key = field;
+            match field {
+                5 => {
+                    let count = decoder.array(decoder.remaining().len())?;
+                    let mut entries = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        if decoder.array(5)? != 5 {
+                            return Err(RecordError::Schema);
+                        }
+                        let pack_id = decoder
+                            .bytes(16)?
+                            .try_into()
+                            .map_err(|_| RecordError::Schema)?;
+                        if entries
+                            .last()
+                            .is_some_and(|prior: &PackInventoryEntry| prior.pack_id >= pack_id)
+                        {
+                            return Err(RecordError::Schema);
+                        }
+                        let pack_hash = digest(&mut decoder)?;
+                        let pack_size = decoder.uint()?;
+                        let index_hash = digest(&mut decoder)?;
+                        let index_size = decoder.uint()?;
+                        entries.push(PackInventoryEntry {
+                            pack_id,
+                            pack_hash,
+                            pack_size,
+                            index_hash,
+                            index_size,
+                        });
+                    }
+                    inventory = Some(entries);
+                }
+                6 => {
+                    let count = decoder.array(decoder.remaining().len())?;
+                    let mut entries = Vec::with_capacity(count);
+                    for _ in 0..count {
+                        if decoder.array(3)? != 3 {
+                            return Err(RecordError::Schema);
+                        }
+                        let pack_id = decoder
+                            .bytes(16)?
+                            .try_into()
+                            .map_err(|_| RecordError::Schema)?;
+                        if entries
+                            .last()
+                            .is_some_and(|prior: &PackExclusion| prior.pack_id >= pack_id)
+                        {
+                            return Err(RecordError::Schema);
+                        }
+                        entries.push(PackExclusion {
+                            pack_id,
+                            cycle: decoder.uint()?,
+                            epoch: decoder.uint()?,
+                        });
+                    }
+                    exclusions = Some(entries);
+                }
+                7 => {
+                    let count = decoder.array(decoder.remaining().len())?;
+                    // A padded malformed array must not reserve typed storage
+                    // from its count before even one complete ID is checked.
+                    let mut entries = Vec::new();
+                    for _ in 0..count {
+                        let pack: [u8; 16] = decoder
+                            .bytes(16)?
+                            .try_into()
+                            .map_err(|_| RecordError::Schema)?;
+                        if entries.last().is_some_and(|previous| previous >= &pack) {
+                            return Err(RecordError::Schema);
+                        }
+                        entries.push(pack);
+                    }
+                    burns = Some(entries);
+                }
+                _ => return Err(RecordError::Schema),
+            }
+        }
+        decoder.finish()?;
+
+        Ok(Self {
+            generation,
+            shards,
+            written_at,
+            cycle,
+            inventory,
+            exclusions,
+            burns,
+        })
+    }
+
+    /// Checks monotone permanent burns in a represented selected successor.
+    ///
+    /// This checks data consistency only and cannot establish selection or admission.
+    /// Unknown completeness cannot erase a known complete burn set.
+    ///
+    /// # Errors
+    /// Rejects malformed records, known-to-unknown regression or removed burns.
+    pub fn check_burn_successor(&self, next: &Self) -> Result<(), RecordError> {
+        self.encode()?;
+        next.encode()?;
+        if let Some(previous) = &self.burns {
+            let current = next.burns.as_ref().ok_or(RecordError::Schema)?;
+            if previous
+                .iter()
+                .any(|pack| current.binary_search(pack).is_err())
+            {
+                return Err(RecordError::Schema);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Removes one pack from service without deleting its retained bytes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Tombstone {
+    /// The sealed pack's opaque UUID bytes.
+    pub pack_id: [u8; 16],
+    /// The collection cycle removing the pack.
+    pub cycle: u64,
+    /// The removal's Unix timestamp in seconds.
+    pub tombstoned_at: u64,
+    /// The number of removed index entries.
+    pub removed_entries: u64,
+    /// The collector fencing epoch authorizing removal.
+    pub epoch: u64,
+}
+
+impl Tombstone {
+    /// Encodes the canonical tombstone record.
+    #[must_use]
+    pub fn encode(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        cbor::write_map(&mut bytes, 5);
+        cbor::write_uint(&mut bytes, 1);
+        cbor::write_bytes(&mut bytes, &self.pack_id);
+        uint_field(&mut bytes, 2, self.cycle);
+        uint_field(&mut bytes, 3, self.tombstoned_at);
+        uint_field(&mut bytes, 4, self.removed_entries);
+        uint_field(&mut bytes, 5, self.epoch);
+        bytes
+    }
+
+    /// Decodes a canonical tombstone record.
+    ///
+    /// # Errors
+    /// Rejects invalid pack IDs, fields, CBOR, and trailing bytes.
+    pub fn decode(bytes: &[u8]) -> Result<Self, RecordError> {
+        let mut decoder = Decoder::new(bytes);
+        if decoder.map(5)? != 5 {
+            return Err(RecordError::Schema);
+        }
+        key(&mut decoder, 1)?;
+        let pack_id = decoder
+            .bytes(16)?
+            .try_into()
+            .map_err(|_| RecordError::Schema)?;
+        key(&mut decoder, 2)?;
+        let cycle = decoder.uint()?;
+        key(&mut decoder, 3)?;
+        let tombstoned_at = decoder.uint()?;
+        key(&mut decoder, 4)?;
+        let removed_entries = decoder.uint()?;
+        key(&mut decoder, 5)?;
+        let epoch = decoder.uint()?;
+        decoder.finish()?;
+
+        Ok(Self {
+            pack_id,
+            cycle,
+            tombstoned_at,
+            removed_entries,
+            epoch,
+        })
+    }
+}
+
+fn uint_field(bytes: &mut Vec<u8>, key: u64, value: u64) {
+    cbor::write_uint(bytes, key);
+    cbor::write_uint(bytes, value);
+}
+
+fn key(decoder: &mut Decoder<'_>, expected: u64) -> Result<(), RecordError> {
+    if decoder.uint()? == expected {
+        Ok(())
+    } else {
+        Err(RecordError::Schema)
+    }
+}
+
+fn digest(decoder: &mut Decoder<'_>) -> Result<[u8; 32], RecordError> {
+    decoder
+        .bytes(32)?
+        .try_into()
+        .map_err(|_| RecordError::Schema)
+}
+
+fn boolean(decoder: &mut Decoder<'_>) -> Result<bool, RecordError> {
+    match decoder.simple()? {
+        0xf4 => Ok(false),
+        0xf5 => Ok(true),
+        _ => Err(RecordError::Schema),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn durable_records_reject_noncanonical_unknown_and_trailing_fields() {
+        let record = BucketCapabilities {
+            layout_version: 1,
+            create_if_absent: true,
+            compare_and_swap: true,
+            ranges: true,
+            presign: false,
+            multi_writer: true,
+            probed_at: 7,
+            generation: Some(8),
+            ref_names: Some(alloc::vec!["refs/heads/_/main".into()]),
+            publication_protocol: None,
+            profile: StoreProfile {
+                identity: "terrane-v1".into(),
+                algorithm: "blake3".into(),
+                chunk: "cdc-1m".into(),
+                seed: [3; 32],
+            },
+        };
+        let encoded = record.encode().unwrap();
+        assert_eq!(BucketCapabilities::decode(&encoded).unwrap(), record);
+        let mut writable = record.clone();
+        writable.layout_version = 2;
+        assert_eq!(
+            BucketCapabilities::decode(&writable.encode().unwrap()).unwrap(),
+            writable
+        );
+        writable.layout_version = 3;
+        assert!(writable.encode().is_err());
+
+        let mut noncanonical = encoded.clone();
+        noncanonical.splice(2..3, [0x18, 1]);
+        assert!(BucketCapabilities::decode(&noncanonical).is_err());
+        let mut trailing = encoded.clone();
+        trailing.push(0);
+        assert!(BucketCapabilities::decode(&trailing).is_err());
+        let mut unknown = encoded;
+        unknown[1] = 0;
+        assert!(BucketCapabilities::decode(&unknown).is_err());
+    }
+
+    #[test]
+    fn capability_inventory_distinguishes_complete_empty_from_legacy_unknown() {
+        let mut record = BucketCapabilities {
+            layout_version: 1,
+            create_if_absent: true,
+            compare_and_swap: true,
+            ranges: true,
+            presign: false,
+            multi_writer: true,
+            probed_at: 1,
+            generation: None,
+            ref_names: Some(Vec::new()),
+            publication_protocol: None,
+            profile: StoreProfile {
+                identity: "terrane-v1".into(),
+                algorithm: "blake3".into(),
+                chunk: "cdc-1m".into(),
+                seed: [0; 32],
+            },
+        };
+        let complete = record.encode().unwrap();
+        assert_eq!(
+            BucketCapabilities::decode(&complete).unwrap().ref_names,
+            Some(Vec::new())
+        );
+        record.ref_names = None;
+        let unknown = record.encode().unwrap();
+        assert_ne!(complete, unknown);
+        assert_eq!(
+            BucketCapabilities::decode(&unknown).unwrap().ref_names,
+            None
+        );
+        for names in [
+            alloc::vec!["refs/heads/_/b".into(), "refs/heads/_/a".into()],
+            alloc::vec!["refs/heads/_/a".into(), "refs/heads/_/a".into()],
+            alloc::vec!["CAPABILITIES".into()],
+            alloc::vec!["refs/unknown/_/a".into()],
+            alloc::vec!["refs/heads/_/a:record".into()],
+        ] {
+            record.ref_names = Some(names);
+            assert!(record.encode().is_err());
+        }
+        let mut nullable = complete;
+        nullable.pop();
+        nullable.push(0xf6);
+        assert!(BucketCapabilities::decode(&nullable).is_err());
+    }
+
+    #[test]
+    fn capability_publication_marker_preserves_legacy_bytes_and_rejects_unknown_versions() {
+        // Independently spell the eight-field legacy record, including its
+        // complete profile. Its absence marker must survive byte-for-byte.
+        let mut legacy = [
+            b"\xa8\x01\x02\x02\xf5\x03\xf5\x04\xf5\x05\xf4\x06\x01\x07\x01\x08\xa4\x01\x6a"
+                .as_slice(),
+            b"terrane-v1",
+            b"\x02\x66blake3\x03\x66cdc-1m\x04\x58\x20",
+        ]
+        .concat();
+        legacy.extend_from_slice(&[0; 32]);
+
+        let decoded = BucketCapabilities::decode(&legacy).unwrap();
+        assert_eq!(decoded.publication_protocol, None);
+        assert_eq!(decoded.encode().unwrap(), legacy);
+
+        let mut registered = legacy;
+        registered[0] = 0xa9;
+        registered.extend_from_slice(&[11, 1]);
+        let mut decoded = BucketCapabilities::decode(&registered).unwrap();
+        assert_eq!(decoded.publication_protocol, Some(1));
+        assert_eq!(decoded.encode().unwrap(), registered);
+
+        for invalid in [0, 2, 0xf4, 0xf6] {
+            *registered.last_mut().unwrap() = invalid;
+            assert!(BucketCapabilities::decode(&registered).is_err());
+        }
+
+        decoded.publication_protocol = Some(2);
+        assert!(decoded.encode().is_err());
+    }
+
+    #[test]
+    fn generation_exclusions_preserve_unknown_and_require_unique_canonical_incarnations() {
+        let mut manifest = GenerationManifest {
+            generation: 1,
+            shards: Vec::new(),
+            written_at: 2,
+            cycle: 0,
+            inventory: None,
+            exclusions: None,
+            burns: None,
+        };
+        let unknown = manifest.encode().unwrap();
+        assert_eq!(
+            GenerationManifest::decode(&unknown).unwrap().exclusions,
+            None
+        );
+        manifest.exclusions = Some(Vec::new());
+        let empty = manifest.encode().unwrap();
+        assert_ne!(unknown, empty);
+        assert_eq!(GenerationManifest::decode(&empty).unwrap(), manifest);
+        manifest.exclusions = Some(alloc::vec![
+            PackExclusion {
+                pack_id: [1; 16],
+                cycle: 3,
+                epoch: 4
+            },
+            PackExclusion {
+                pack_id: [2; 16],
+                cycle: 5,
+                epoch: 6
+            }
+        ]);
+        let encoded = manifest.encode().unwrap();
+        assert_eq!(GenerationManifest::decode(&encoded).unwrap(), manifest);
+        for offset in [0, 1] {
+            let mut invalid = encoded.clone();
+            invalid[offset] = 0xff;
+            assert!(GenerationManifest::decode(&invalid).is_err());
+        }
+        let mut nullable = empty.clone();
+        *nullable.last_mut().unwrap() = 0xf6;
+        assert!(GenerationManifest::decode(&nullable).is_err());
+        let mut trailing = empty;
+        trailing.push(0);
+        assert!(GenerationManifest::decode(&trailing).is_err());
+        manifest.exclusions.as_mut().unwrap().reverse();
+        assert!(manifest.encode().is_err());
+        manifest.exclusions = Some(alloc::vec![
+            PackExclusion {
+                pack_id: [1; 16],
+                cycle: 3,
+                epoch: 4
+            },
+            PackExclusion {
+                pack_id: [1; 16],
+                cycle: 5,
+                epoch: 6
+            }
+        ]);
+        assert!(manifest.encode().is_err());
+    }
+
+    #[test]
+    fn generation_manifest_binds_all_shards_and_optional_filters() {
+        let mut manifest = GenerationManifest {
+            generation: 2,
+            inventory: None,
+            exclusions: None,
+            burns: None,
+            shards: alloc::vec![
+                GenerationShard {
+                    shard: 0,
+                    index_hash: [1; 32],
+                    index_size: 77,
+                    filter: None
+                },
+                GenerationShard {
+                    shard: 3,
+                    index_hash: [2; 32],
+                    index_size: 78,
+                    filter: Some(([4; 32], 40))
+                },
+            ],
+            written_at: 9,
+            cycle: 1,
+        };
+        assert_eq!(
+            GenerationManifest::decode(&manifest.encode().unwrap()).unwrap(),
+            manifest
+        );
+        manifest.shards.reverse();
+        assert!(manifest.encode().is_err());
+
+        let tombstone = Tombstone {
+            pack_id: [5; 16],
+            cycle: 1,
+            tombstoned_at: 10,
+            removed_entries: 7,
+            epoch: 3,
+        };
+        assert_eq!(Tombstone::decode(&tombstone.encode()).unwrap(), tombstone);
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod burn_tests {
+    //! Checks independently fixed MANIFEST key-7 bytes and permanent monotonicity.
+
+    use super::*;
+    use alloc::vec;
+
+    #[test]
+    fn generation_burns_preserve_legacy_bytes_and_known_empty_distinction() {
+        let legacy = vec![0xa4, 1, 0, 2, 0x80, 3, 0, 4, 0];
+        let manifest = GenerationManifest::decode(&legacy).unwrap();
+        assert_eq!(manifest.burns, None);
+        assert_eq!(manifest.encode().unwrap(), legacy);
+        let mut empty = legacy;
+        empty[0] = 0xa5;
+        empty.extend_from_slice(&[7, 0x80]);
+        let manifest = GenerationManifest::decode(&empty).unwrap();
+        assert_eq!(manifest.burns, Some(vec![]));
+        assert_eq!(manifest.encode().unwrap(), empty);
+        let mut burned = empty;
+        burned.pop();
+        burned.extend_from_slice(&[0x81, 0x50]);
+        burned.extend_from_slice(&[1; 16]);
+        let manifest = GenerationManifest::decode(&burned).unwrap();
+        assert_eq!(manifest.burns, Some(vec![[1; 16]]));
+        assert_eq!(manifest.encode().unwrap(), burned);
+        for invalid in [
+            vec![0xa5, 1, 0, 2, 0x80, 3, 0, 4, 0, 7, 0xf6],
+            vec![0xa5, 1, 0, 2, 0x80, 3, 0, 4, 0, 8, 0x80],
+        ] {
+            assert!(GenerationManifest::decode(&invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn generation_burns_are_unsigned_unique_and_never_removed_or_replaced() {
+        let mut manifest = GenerationManifest {
+            generation: 0,
+            shards: vec![],
+            written_at: 0,
+            cycle: 0,
+            inventory: Some(vec![]),
+            exclusions: Some(vec![]),
+            burns: Some(vec![[1; 16], [2; 16]]),
+        };
+        let mut next = manifest.clone();
+        next.generation = 1;
+        next.burns.as_mut().unwrap().push([3; 16]);
+        manifest.check_burn_successor(&next).unwrap();
+        next.burns = Some(vec![[2; 16], [3; 16]]);
+        assert!(manifest.check_burn_successor(&next).is_err());
+        next.burns = None;
+        assert!(manifest.check_burn_successor(&next).is_err());
+        for invalid in [vec![[2; 16], [1; 16]], vec![[1; 16], [1; 16]]] {
+            manifest.burns = Some(invalid);
+            assert!(manifest.encode().is_err());
+        }
+        manifest.burns = Some(vec![[0x7f; 16], [0x80; 16], [0xff; 16]]);
+        let bytes = manifest.encode().unwrap();
+        assert_eq!(GenerationManifest::decode(&bytes).unwrap(), manifest);
+        let state = crate::gc::publication::PublicationState {
+            revision: 0,
+            loss_generation: 0,
+            sources: vec![],
+            binding: crate::gc::publication::BackendBinding::Local {
+                root: b"/a".to_vec(),
+                root_device: 1,
+                root_inode: 2,
+                coordination_device: 3,
+                coordination_inode: 4,
+            },
+            branches: vec![],
+            guard: None,
+            burn_owners: Some(
+                manifest
+                    .burns
+                    .as_ref()
+                    .unwrap()
+                    .iter()
+                    .map(|pack| crate::gc::retirement::PermanentBurnOwner {
+                        pack: *pack,
+                        selection: crate::gc::retirement::PermanentOwnerSelection::CopiedVisibility,
+                    })
+                    .collect(),
+            ),
+        };
+        state.check_manifest_burns(&manifest).unwrap();
+        manifest.burns = None;
+        assert!(state.check_manifest_burns(&manifest).is_err());
+    }
+
+    #[test]
+    fn generation_burn_headers_validate_ids_before_growing_storage() {
+        let mut malformed = vec![0xa5, 1, 0, 2, 0x80, 3, 0, 4, 0, 7];
+        crate::cbor::write_array(&mut malformed, 16_000_000);
+        malformed.resize(16 * 1024 * 1024, 0);
+
+        // The count fits the remaining encoded bytes; the uint first ID is
+        // malformed. Reserving all declared IDs would exceed 244 MiB alone.
+        assert_eq!(
+            GenerationManifest::decode(&malformed),
+            Err(RecordError::Cbor(crate::cbor::Error::Malformed)),
+        );
+
+        let mut valid = vec![0xa5, 1, 0, 2, 0x80, 3, 0, 4, 0, 7, 0x82, 0x50];
+        valid.extend_from_slice(&[0x7f; 16]);
+        valid.push(0x50);
+        valid.extend_from_slice(&[0x80; 16]);
+        let decoded = GenerationManifest::decode(&valid).unwrap();
+        assert_eq!(decoded.burns, Some(vec![[0x7f; 16], [0x80; 16]]));
+        assert_eq!(decoded.encode().unwrap(), valid);
+    }
+}
