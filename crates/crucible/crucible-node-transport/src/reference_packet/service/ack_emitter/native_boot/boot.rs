@@ -9,6 +9,9 @@ use crucible_node_format::{Bytes, ContentRef, ContractError, Id, U64, canonical}
 use serde::Deserialize;
 use std::{cell::RefCell, mem::size_of, rc::Rc, thread::ThreadId};
 
+#[path = "boot_shape.rs"]
+mod shape;
+
 #[path = "owned11.rs"]
 mod owned11;
 
@@ -86,7 +89,7 @@ pub(super) struct OriginalNativeStartupBootAttempt {
 }
 
 // Pays the actual attempt/helper loans before the independent native-row claim.
-pub(in crate::reference_packet::service) const fn original_native_startup_attempt_counter_scratch_data()
+pub(in crate::reference_packet::service) fn original_native_startup_attempt_counter_scratch_data()
 -> usize {
     2 * size_of::<&serde_json::Value>()
         + 2 * size_of::<&PacketNative5SourceLaunch>()
@@ -100,6 +103,7 @@ pub(in crate::reference_packet::service) const fn original_native_startup_attemp
         + 2 * size_of::<Result<(), ProviderError>>()
         + 2 * size_of::<bool>()
         + 2 * size_of::<usize>()
+        + shape::counter_scratch_data()
 }
 
 // Counts the owned initializer and Option assignment separately from the
@@ -111,6 +115,7 @@ pub(in crate::reference_packet::service) const fn original_native_startup_attemp
         + size_of::<Result<BootData, ContractError>>()
         + size_of::<Option<BootData>>()
         + size_of::<Result<BootData, ProviderError>>()
+        + shape::construction_transient_data()
 }
 
 pub(crate) struct NativeAckBoot {
@@ -210,7 +215,11 @@ impl NativeAckBoot {
     ) -> Result<(), ProviderError> {
         startup.ensure_original()?;
         crate::connection::serialized_credit(value, startup.maximum_boot_bytes)?;
-        attempt.data = Some(BootData::deserialize(value).map_err(ContractError::from)?);
+        // Check every fallible DTO spelling while all inputs remain borrowed.
+        // The subsequent copies cannot reject a later field after dropping an
+        // earlier decoded child. This inspection grants no native row claim.
+        let shape = shape::inspect_data(value)?;
+        attempt.data = Some(shape.copy_data()?);
         let data = attempt.data.as_ref().ok_or(ProviderError::Correlation(
             "native startup decoded boot absent",
         ))?;

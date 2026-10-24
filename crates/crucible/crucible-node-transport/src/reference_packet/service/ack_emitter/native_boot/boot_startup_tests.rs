@@ -48,7 +48,14 @@ fn original_boot_refusals_retain_the_actual_attempt_and_spend_retry() -> TestRes
         &key,
     )?;
 
-    for case in ["credit", "decode", "claim"] {
+    for case in [
+        "credit",
+        "decode",
+        "nested_decode",
+        "identifier_decode",
+        "literal",
+        "claim",
+    ] {
         let (mut parent, inherited) = UnixStream::pair()?;
         let mut command = Command::new(std::env::current_exe()?);
         command
@@ -79,7 +86,7 @@ fn inherited_boot_refusal_child() -> TestResult {
     let case = std::env::var(CHILD_CASE)?;
     let mut selected = crate::reference_packet::service::complete_restore::import18::inert_bootstrap_fixtures::selected_launch(false);
     let launch: PacketNative5SourceLaunch = serde_json::from_value(selected["launch"].take())?;
-    let value = if case == "credit" {
+    let mut value = if case == "credit" {
         serde_json::Value::String("x".repeat(65_536))
     } else if case == "decode" {
         serde_json::json!({})
@@ -94,6 +101,15 @@ fn inherited_boot_refusal_child() -> TestResult {
             "host_executable": canonical::content_ref(b"inert", "application/test")?,
         })
     };
+    if case == "nested_decode" {
+        value["host_executable"]["length"] = serde_json::json!("18446744073709551616");
+    } else if case == "identifier_decode" {
+        value["private_launch"] = serde_json::json!("invalid identifier");
+    } else if case == "literal" {
+        value["source_birth"]["nested"] = serde_json::json!({
+            "$serde_json::private::RawValue": "not JSON"
+        });
+    }
     let launch_body = b"retained launch payload".to_vec();
     let launch_pointer = launch_body.as_ptr();
     let mut attempt = None;
@@ -113,7 +129,8 @@ fn inherited_boot_refusal_child() -> TestResult {
     );
 
     assert!(result.is_err());
-    if case == "claim" {
+    let decoded = matches!(case.as_str(), "claim" | "literal");
+    if decoded {
         assert!(matches!(
             result,
             Err(ProviderError::Correlation(
@@ -127,8 +144,8 @@ fn inherited_boot_refusal_child() -> TestResult {
     let retained = attempt.as_ref().ok_or("boot attempt absent")?;
     assert_eq!(retained.launch_body.as_ptr(), launch_pointer);
     assert_eq!(retained.launch_body, b"retained launch payload");
-    assert_eq!(startup.native_issued, case == "claim");
-    let source_pointer = if case == "claim" {
+    assert_eq!(startup.native_issued, decoded);
+    let source_pointer = if decoded {
         let data = retained.data.as_ref().ok_or("decoded boot absent")?;
         assert_eq!(data.private_key.as_slice(), &[29; 32]);
         assert_eq!(
@@ -136,6 +153,12 @@ fn inherited_boot_refusal_child() -> TestResult {
             "retained host payload"
         );
         assert_eq!(data.source_birth["incomplete"], "retained source payload");
+        if case == "literal" {
+            assert_eq!(
+                data.source_birth["nested"]["$serde_json::private::RawValue"],
+                "not JSON"
+            );
+        }
         Some(
             data.source_birth["incomplete"]
                 .as_str()
