@@ -76,7 +76,7 @@
         ln rootfs/payload rootfs/payload-hardlink
       '';
     };
-  disk = run: runtime:
+  disk = run: runtime: protected:
     import ../../pkgs/system/_systemd-abilities/testing/disk.nix {
       inherit lib closureInfoFor;
       buildPackages = pkgs.buildPackages;
@@ -86,7 +86,12 @@
         else null;
       packages = pkgs // {systemd = fixture;};
     } {
-      inherit system;
+      system = lib.recursiveUpdate system {
+        config.aos.security.selinux.protectedSandboxNetworkRoots = {
+          enable = protected;
+          _varRootContext = "system_u:object_r:var_t";
+        };
+      };
       guestArchitecture = pkgs.stdenv.hostPlatform.constraints.cpu;
       name = "repro-${run}";
       varSizeMiB = 16;
@@ -118,8 +123,11 @@ in
             --erofs ${root "erofs-first" "erofs" false "payload" false} \
             --erofs-again ${root "erofs-second" "erofs" false "payload" false} \
             --recipe ${root "runtime" "ext4" false "payload" true} \
-            --disk ${disk "first" false} --disk-again ${disk "second" false} \
-            --disk-recipe ${disk "runtime" true} \
+            --disk ${disk "first" false false} --disk-again ${disk "second" false false} \
+            --disk-recipe ${disk "runtime" true false} \
+            --protected-disk ${disk "protected-first" false true} \
+            --protected-disk-again ${disk "protected-second" false true} \
+            --protected-disk-recipe ${disk "protected-runtime" true true} \
             --input ${input} --input-again ${input.override {REPRO_RUN = "second";}} \
           --headless ${firecracker.mkFirecrackerRootfs {rootfsDeps = [];}} \
           --headless-recipe ${devFirecracker.mkFirecrackerRootfs {

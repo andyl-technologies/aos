@@ -119,6 +119,13 @@
     bakeVar = builtins.seq checkedProvisioningSource storageLayout.baked;
     protectedVar = system.config.aos.security.selinux.protectedSandboxNetworkRoots.enable;
     varRootContext = system.config.aos.security.selinux.protectedSandboxNetworkRoots._varRootContext;
+
+    # The root label changes filesystem metadata without changing staging bytes.
+    varIdentity =
+      if protectedVar
+      then "aos-fleet-var:selinux:${varRootContext}"
+      else "aos-fleet-var";
+
     dpsRootPartitionTypes = {
       x86_64 = "4F68BCE3-E8CD-4DB1-96E7-FBCAF984B709";
       aarch64 = "B921B045-1DF0-41C3-AF44-4C6F280D3FAE";
@@ -445,7 +452,7 @@
               ${varSeed}
 
               # fakeroot so the var partition's files land as uid/gid 0.
-              IMAGE_UUID=$(${imageMetadata.command} tree aos-fleet-var var)
+              IMAGE_UUID=$(${imageMetadata.command} tree ${lib.escapeShellArg varIdentity} var)
               fakeroot -- mkfs.ext4 ${imageMetadata.ext4Options}${lib.optionalString protectedVar ",root_selinux=${varRootContext}"} \
                 -d var -L aos-var -m 0 -q \
                 var.img "''${VAR_SIZE_MIB}M"

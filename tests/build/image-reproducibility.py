@@ -57,9 +57,49 @@ def cold_rebuild(source, expected, name):
     equal(copies[0], expected)
 
 
+def var_image(disk, destination):
+    """Extract the actual /var partition without mounting the image."""
+    table_json = subprocess.check_output(["sfdisk", "--json", str(disk)], text=True)
+    table = json.loads(table_json)["partitiontable"]
+    partition = next(item for item in table["partitions"] if item["name"] == "var")
+    sector_size = table["sectorsize"]
+    remaining = partition["size"] * sector_size
+
+    with disk.open("rb") as source, destination.open("wb") as output:
+        source.seek(partition["start"] * sector_size)
+        while remaining:
+            block = source.read(min(remaining, 1024 * 1024))
+            assert block, "truncated /var partition"
+            output.write(block)
+            remaining -= len(block)
+
+    return destination
+
+
 def main():
     parser = argparse.ArgumentParser()
-    for name in ("root", "root-again", "changed", "shrunk", "shrunk-again", "erofs", "erofs-again", "recipe", "disk", "disk-again", "disk-recipe", "input", "input-again", "headless", "headless-recipe", "metadata"):
+    required_paths = (
+        "root",
+        "root-again",
+        "changed",
+        "shrunk",
+        "shrunk-again",
+        "erofs",
+        "erofs-again",
+        "recipe",
+        "disk",
+        "disk-again",
+        "disk-recipe",
+        "protected-disk",
+        "protected-disk-again",
+        "protected-disk-recipe",
+        "input",
+        "input-again",
+        "headless",
+        "headless-recipe",
+        "metadata",
+    )
+    for name in required_paths:
         parser.add_argument("--" + name, required=True, type=Path)
     args = parser.parse_args()
 
@@ -81,6 +121,15 @@ def main():
     ids = [table["id"]] + [partition["uuid"] for partition in table["partitions"]]
     assert len(ids) == len(set(ids)) == 7
     assert [partition["name"] for partition in table["partitions"]] == ["boot", "root-a", "root-b", "swap", "aos-provenance-fallback-v1", "var"]
+
+    equal(args.protected_disk / "disk.img", args.protected_disk_again / "disk.img")
+    ordinary_var = var_image(args.disk / "disk.img", Path("ordinary-var.img"))
+    protected_var = var_image(args.protected_disk / "disk.img", Path("protected-var.img"))
+    assert uuid(ordinary_var) != uuid(protected_var)
+    label = subprocess.check_output(
+        ["debugfs", "-R", "ea_get / security.selinux", str(protected_var)], text=True,
+    ).strip()
+    assert label == 'security.selinux (23) = "system_u:object_r:var_t"', label
 
     # Never follow a staging symlink into the immutable store.
     spec = importlib.util.spec_from_file_location("image_metadata", args.metadata)
@@ -123,6 +172,7 @@ def main():
 
     cold_rebuild(args.recipe, args.root / "root.img", "runtime-root")
     cold_rebuild(args.disk_recipe, args.disk / "disk.img", "runtime-disk")
+    cold_rebuild(args.protected_disk_recipe, args.protected_disk / "disk.img", "runtime-protected-disk")
     cold_rebuild(args.headless_recipe, args.headless / "root.img", "runtime-headless")
     print("reproducibility, ownership, timestamps, identifiers, layout, and cold reconstruction: PASS")
 

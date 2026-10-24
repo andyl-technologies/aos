@@ -11095,3 +11095,19 @@ focused regressions pass. The pre-merge complete production-policy build
 the normal merged-policy scan, deliberately unsafe policy variants and ordered
 kernel class-map checks. Installed startup and merged-tree qualification remain
 pending. Diagnostic collection alone does not qualify Root readiness.
+
+### Merged image metadata and protected /var identity
+
+Merge `2e1867a794` retains the reorganized workspace and master image metadata
+contract together with the Sandbox native build-tool separation and exact
+SELinux label checks. All 415 changed Nix files parse and all 18 disk-provenance
+checks pass. Release evaluation, application test-target compilation and
+installed Root, Host and offline vTPM qualification remain in progress.
+
+The protected /var UUID also commits its exact non-MLS root context: that label
+changes filesystem metadata even when the staging tree has identical bytes.
+The image reproducibility check now compares independent protected disks,
+extracts their /var partition without mounting it, checks the actual root xattr
+and distinct UUID, and reconstructs the protected disk from cold image recipes.
+The expanded hermetic build remains pending; these source checks do not qualify
+the normal public lifecycle or physical-floor admission.
