@@ -10,6 +10,31 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Retained ordinary Capture attempt history
+
+Commit `3e56c7ccf6` validates the actual fifteen-field ordinary Capture writer
+when reading historical attempts. The active seventeen-field Capture reader
+is unchanged; its registration and confirmation requirements still apply.
+The historical path also retains the earlier seventeen-field grammar. Field
+framing completes before metadata consumption, and a matching fifteen-field
+record cannot fall back after a semantic or metadata failure. Owning Capture
+reconstruction remains refused. Both source counters include the new borrowed
+reader scratch without removing previous terms.
+
+Actual writer controls cover raw and failed attempts, partially decoded typed
+bodies, exact fields and metadata, and compatibility with the earlier grammar.
+Both complete Transport codec modes pass 2,121 tests with zero failures, twenty
+ignored and no filtering. Both Engine modes pass 2,064 tests and the existing
+process, custody, publication and installed standard-provider controls.
+All-feature Transport/Engine/Daemon targets, six architecture checks, scoped
+formatting, application test-target compilation and the funded-Source VM pass.
+Actual application metadata records 185 test artifacts across 58 packages,
+including 76 integration targets. All 608 frozen owned Rust/Cargo inputs match
+the commit, actual application source and all three VM component source captures.
+Strict Transport Clippy still fails with four owning-enum errors and 1,733
+warnings, without new allowances. Active Capture production, runtime funding
+handoff, Native18 adoption and full RFC completion remain unfinished.
+
 ## Reconstructible current action DATA
 
 Commit `e0b74bc7ed` expresses the historical reader's existing owning restriction
