@@ -4,6 +4,7 @@
   mkDerivation,
   fetchurl,
   gnumake,
+  commandShell ? null,
 }: let
   version = "1.13.2";
 in
@@ -99,7 +100,7 @@ in
     };
 
     buildDeps = [gnumake];
-    runtimeDeps = [];
+    runtimeDeps = lib.optional (commandShell != null) commandShell;
     propagatedDeps = [];
 
     phases = [
@@ -112,10 +113,16 @@ in
       }
       {
         name = "configure";
-        script = ''
-          # No configure step — ninja is bootstrapped directly from C++ sources
-          true
-        '';
+        script =
+          ''
+            # No configure step — ninja is bootstrapped directly from C++ sources
+            true
+          ''
+          + lib.optionalString (commandShell != null) ''
+            # Some source builders execute shell commands in a sandbox without
+            # host /bin/sh. Opt in without changing ordinary toolchain identities.
+            sed -i 's|/bin/sh|${commandShell}/bin/bash|g' src/subprocess-posix.cc
+          '';
       }
       {
         name = "build";
@@ -148,6 +155,14 @@ in
         '';
       }
     ];
+
+    # mkDerivation.override changes final attributes rather than package inputs.
+    # Keep this factory explicit so the source patch and runtime closure agree.
+    passthru.withCommandShell = shell:
+      import ./ninja.nix {
+        inherit lib mkDerivation fetchurl gnumake;
+        commandShell = shell;
+      };
 
     meta = {
       description = "Small build system with a focus on speed";

@@ -11,19 +11,19 @@
   apiDoc = builtins.readFile ../../docs/rfcs/0010-crucible/21-api.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
   apiCargo = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible/control/crucible-control-client/Cargo.toml)
-    (builtins.readFile ../../crates/crucible/control/crucible-control-server/Cargo.toml)
+    (builtins.readFile ../../crates/crucible/crucible-control-client/Cargo.toml)
+    (builtins.readFile ../../crates/crucible/crucible-control-server/Cargo.toml)
   ];
   controlClientTest = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/control/crucible-control-client/tests/gate_control_client.rs;
+    entry = ../../crates/crucible/crucible-control-client/tests/gate_control_client.rs;
   };
-  abiTest = builtins.readFile ../../crates/crucible/control/crucible-control-api/tests/gate_abi_conformance.rs;
+  abiTest = builtins.readFile ../../crates/crucible/crucible-control-api/tests/gate_abi_conformance.rs;
   qemuNode = builtins.concatStringsSep "\n" [
-    (builtins.readFile ../../crates/crucible/qemu/crucible-qemu-host/src/node.rs)
+    (builtins.readFile ../../crates/crucible/crucible-qemu-host/src/node.rs)
     (import ./_rust-module-source.nix {
       inherit lib;
-      entry = ../../crates/crucible/qemu/crucible-qemu-host/src/node_tests.rs;
+      entry = ../../crates/crucible/crucible-qemu-host/src/node_tests.rs;
     })
   ];
   defaultChecks = builtins.readFile ./default.nix;
@@ -45,13 +45,13 @@
         needle = "`T-API-13` is green through";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-api/Cargo.toml" apiCargo [
+    ++ failuresFor "crates/crucible/crucible-control-api/Cargo.toml" apiCargo [
       {
         label = "versioned process-protocol dependency";
-        needle = ''crucible-qemu-protocol = { path = "../../protocol/crucible-qemu-protocol" }'';
+        needle = ''crucible-qemu-protocol = { path = "../crucible-qemu-protocol" }'';
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-client/tests/gate_control_client*.rs" controlClientTest [
+    ++ failuresFor "crates/crucible/crucible-control-client/tests/gate_control_client*.rs" controlClientTest [
       {
         label = "reference client conformance test";
         needle = "reference_client_conformance_drives_full_lifecycle_across_transports_with_simdouble_backend";
@@ -193,7 +193,7 @@
         needle = "rpc-error";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-api/tests/gate_abi_conformance.rs" abiTest [
+    ++ failuresFor "crates/crucible/crucible-control-api/tests/gate_abi_conformance.rs" abiTest [
       {
         label = "contract snapshot covers HelloRequest";
         needle = "saw_hello_request";
@@ -235,7 +235,7 @@
         needle = "saw_event";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-host/src/node.rs" qemuNode [
+    ++ failuresFor "crates/crucible/crucible-qemu-host/src/node.rs" qemuNode [
       {
         label = "QemuNode SimulationBackend focused test";
         needle = "qemu_node_satisfies_simulation_backend_trait";

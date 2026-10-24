@@ -8,14 +8,14 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   crateRoot = import ./_crucible-tests-source.nix {inherit lib;};
-  decision = builtins.readFile ../../crates/crucible/engine/crucible-engine/src/decision.rs;
+  decision = builtins.readFile ../../crates/crucible/crucible-engine/src/decision.rs;
   model = import ./_crucible-model-source.nix {inherit lib;};
   defaultChecks = builtins.readFile ./default.nix;
 
   inherit (import ./_lib.nix {inherit lib;}) hasInfix failuresFor;
 
   failures =
-    failuresFor "crates/crucible/engine/crucible-engine/src/lib.rs" crateRoot [
+    failuresFor "crates/crucible/crucible-engine/src/lib.rs" crateRoot [
       {
         label = "resume+continue fingerprint test";
         needle = "resume_continue_matches_uninterrupted_run_by_fingerprint";
@@ -61,7 +61,7 @@
         needle = "pub(in crate::tests) fn configuration_execution_fingerprint(";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/decision.rs" decision [
+    ++ failuresFor "crates/crucible/crucible-engine/src/decision.rs" decision [
       {
         label = "schedule hydration for resume";
         needle = "hydrate_streams(&rng, configuration.schedule.decisions())";
@@ -75,7 +75,7 @@
         needle = "let _ = decision_stream.next_u64();";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "pure reducer";
         needle = "pub fn reduce(def: &ScenarioDef, schedule: &Schedule) -> Result<State, EngineError>";

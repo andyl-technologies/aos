@@ -57,12 +57,13 @@ async fn app_state(db: Arc<Database>) -> Arc<AppState> {
 
 fn bearer(principal: Principal, scope: &str, perms: &[Permission]) -> String {
     let keys = JwtKeys::from_secret(TEST_JWT_SECRET);
-    keys.mint(
+    keys.mint_browser_session(
         &TokenAuth {
             token_id: "test-token".into(),
             owner: principal,
             scope: Scope::parse(scope),
             permissions: perms.to_vec(),
+            expires_at: None,
         },
         900,
     )

@@ -9,28 +9,28 @@
 
   pluginLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs;
+    entry = ../../crates/crucible/crucible-qemu-plugin/src/lib.rs;
   };
   pluginWhiteboxDoorbell = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs;
+    entry = ../../crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs;
   };
   protocolLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs;
+    entry = ../../crates/crucible/crucible-qemu-protocol/src/lib.rs;
   };
   protocolDoorbellAbi = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs;
+    entry = ../../crates/crucible/crucible-qemu-protocol/src/doorbell_abi.rs;
   };
-  guestCargo = builtins.readFile ../../crates/crucible/guest/crucible-guest/Cargo.toml;
+  guestCargo = builtins.readFile ../../crates/crucible/crucible-guest/Cargo.toml;
   guestLib = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/guest/crucible-guest/src/lib.rs;
+    entry = ../../crates/crucible/crucible-guest/src/lib.rs;
   };
   gateAbiConformance = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/qemu/crucible-qemu-plugin/tests/gate_abi_conformance.rs;
+    entry = ../../crates/crucible/crucible-qemu-plugin/tests/gate_abi_conformance.rs;
   };
   guestHostDoc = builtins.readFile ../../docs/rfcs/0010-crucible/16-guest-host-channel.md;
   planDoc = builtins.readFile ../../docs/rfcs/0010-crucible/32-implementation-plan.md;
@@ -63,7 +63,7 @@
         needle = "0xd503299f";
       }
     ]
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/lib.rs" protocolLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/src/lib.rs" protocolLib [
       {
         label = "doorbell ABI module";
         needle = "mod doorbell_abi;";
@@ -73,7 +73,7 @@
         needle = "WhiteboxDoorbellTrapAbi";
       }
     ]
-    ++ failuresFor "crates/crucible/protocol/crucible-qemu-protocol/src/doorbell_abi.rs" protocolDoorbellAbi [
+    ++ failuresFor "crates/crucible/crucible-qemu-protocol/src/doorbell_abi.rs" protocolDoorbellAbi [
       {
         label = "instruction ABI version";
         needle = "pub const WHITEBOX_DOORBELL_INSTRUCTION_ABI_VERSION: u16 = 4;";
@@ -123,17 +123,17 @@
         needle = "doorbell_abi_aarch64_vector_freezes_inert_hint";
       }
     ]
-    ++ failuresFor "crates/crucible/guest/crucible-guest/Cargo.toml" guestCargo [
+    ++ failuresFor "crates/crucible/crucible-guest/Cargo.toml" guestCargo [
       {
         label = "guest depends on protocol ABI";
-        needle = "crucible-qemu-protocol = { path = \"../../protocol/crucible-qemu-protocol\" }";
+        needle = "crucible-qemu-protocol = { path = \"../crucible-qemu-protocol\" }";
       }
       {
         label = "guest depends on shared typed choice model";
-        needle = "crucible-campaign = { path = \"../../engine/crucible-campaign\" }";
+        needle = "crucible-campaign = { path = \"../crucible-campaign\" }";
       }
     ]
-    ++ failuresFor "crates/crucible/guest/crucible-guest/src/lib.rs" guestLib [
+    ++ failuresFor "crates/crucible/crucible-guest/src/lib.rs" guestLib [
       {
         label = "guest ABI re-export";
         needle = "WHITEBOX_DOORBELL_ABIS";
@@ -149,7 +149,7 @@
         needle = "Guest↔host channel + optional agent";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/lib.rs" pluginLib [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/lib.rs" pluginLib [
       {
         label = "ABI table export";
         needle = "WHITEBOX_DOORBELL_ABIS";
@@ -171,7 +171,7 @@
         needle = "whitebox_doorbell_abi_for_architecture";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
       {
         label = "plugin re-exports protocol ABI";
         needle = "pub use crucible_qemu_protocol";
@@ -205,7 +205,7 @@
         needle = "whitebox_doorbell_registration_uses_single_source_abi_trap";
       }
     ]
-    ++ forbiddenFor "crates/crucible/qemu/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
+    ++ forbiddenFor "crates/crucible/crucible-qemu-plugin/src/whitebox_doorbell.rs" pluginWhiteboxDoorbell [
       {
         label = "public arbitrary doorbell constructor";
         needle = "pub const fn new(\n        mode: PluginSwitch";
@@ -215,7 +215,7 @@
         needle = "Aarch64ReservedInstruction";
       }
     ]
-    ++ failuresFor "crates/crucible/qemu/crucible-qemu-plugin/tests/gate_abi_conformance.rs" gateAbiConformance [
+    ++ failuresFor "crates/crucible/crucible-qemu-plugin/tests/gate_abi_conformance.rs" gateAbiConformance [
       {
         label = "canonical ABI gate covers doorbell ABI";
         needle = "gate_abi_conformance_covers_whitebox_doorbell_instruction_abi";

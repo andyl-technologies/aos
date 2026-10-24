@@ -35,7 +35,7 @@
   # unit graph.
   installAtBootEtc = lib.optionalAttrs cfg.enable (
     {
-      "aos/packages.d/desired.toml" = {
+      "packages.d/desired.toml" = {
         text = desiredToml;
         mode = "0600";
       };

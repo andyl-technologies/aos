@@ -5,10 +5,10 @@
   lib,
   component,
 }: let
-  api = ../../crates/crucible/control/crucible-control-api;
-  client = ../../crates/crucible/control/crucible-control-client;
-  server = ../../crates/crucible/control/crucible-control-server;
-  daemon = ../../crates/crucible/control/crucible-daemon;
+  api = ../../crates/crucible/crucible-control-api;
+  client = ../../crates/crucible/crucible-control-client;
+  server = ../../crates/crucible/crucible-control-server;
+  daemon = ../../crates/crucible/crucible-daemon;
 
   entries = {
     exports = [

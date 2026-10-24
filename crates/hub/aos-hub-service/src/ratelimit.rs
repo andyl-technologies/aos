@@ -50,6 +50,8 @@ pub enum RateClass {
     CreateOrg,
     /// `/activate` device-approval page — keyed per **session user + source IP**.
     DeviceActivate,
+    /// OIDC login starts — keyed per **organization + source IP**.
+    OidcLogin,
 }
 
 /// The limiter's verdict for one [`RateLimiter::check`].
@@ -131,7 +133,8 @@ impl CoordinatorRateLimiter {
             | RateClass::PasswordEmail
             | RateClass::PasswordIp
             | RateClass::TokenExchange
-            | RateClass::DeviceActivate => 10,
+            | RateClass::DeviceActivate
+            | RateClass::OidcLogin => 10,
             RateClass::BrowseSearch => 120,
         }
     }
@@ -149,6 +152,7 @@ impl CoordinatorRateLimiter {
             RateClass::BrowseSearch => "browse_search",
             RateClass::CreateOrg => "create_org",
             RateClass::DeviceActivate => "device_activate",
+            RateClass::OidcLogin => "oidc_login",
         }
     }
 }

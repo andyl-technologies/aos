@@ -297,6 +297,10 @@ pub(super) struct MembershipPlanInput {
     pub(super) scope: String,
     pub(super) desired_role: Option<String>,
     pub(super) baseline_role: Option<String>,
+    #[serde(default)]
+    pub(super) baseline_membership_id: Option<i64>,
+    #[serde(default)]
+    pub(super) baseline_membership_incarnation: Option<String>,
 }
 
 /// Immutable preconditions for creating one invitation.

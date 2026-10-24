@@ -34,6 +34,7 @@ pub fn unavailable(message: &str) -> Response {
         [
             (header::CONTENT_TYPE, "text/html; charset=utf-8"),
             (header::CACHE_CONTROL, "private, no-store"),
+            (header::VARY, "Authorization, Cookie"),
             (
                 header::CONTENT_SECURITY_POLICY,
                 "default-src 'self'; frame-ancestors 'none'",
@@ -42,4 +43,20 @@ pub fn unavailable(message: &str) -> Response {
         page,
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unavailable_page_varies_by_browser_credentials() {
+        let response = unavailable("Try again later.");
+
+        assert_eq!(
+            response.headers()[header::CACHE_CONTROL],
+            "private, no-store"
+        );
+        assert_eq!(response.headers()[header::VARY], "Authorization, Cookie");
+    }
 }

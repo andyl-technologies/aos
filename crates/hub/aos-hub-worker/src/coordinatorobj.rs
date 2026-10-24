@@ -40,6 +40,7 @@ use worker::{
     State,
 };
 
+use crate::coordinator_protocol::{decode_reply, CmdReply, Command};
 use aos_hub_service::coordinator::Coordinator;
 
 /// The single DO instance every coordinator operation routes to.
@@ -48,45 +49,6 @@ use aos_hub_service::coordinator::Coordinator;
 /// operations. (Per-tenant sharding — a DO per registry — is RFC-0004 ch.14
 /// Phase E, where the tenant DO also owns the tenant's SQLite state.)
 const COORDINATOR_INSTANCE: &str = "global";
-
-/// A coordinator operation, sent as JSON from [`WorkerCoordinator`] to the DO.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
-enum Command {
-    /// Record one attempt in `window` for `(class, key)` against `budget`.
-    Admit {
-        class: String,
-        key: String,
-        window: i64,
-        budget: i64,
-    },
-    /// Acquire/refresh the lease at `key` for `holder` (deadline `now + ttl`).
-    AcquireLease {
-        key: String,
-        holder: String,
-        ttl: i64,
-        now: i64,
-    },
-    /// Release the lease at `key` iff `holder` holds it.
-    ReleaseLease { key: String, holder: String },
-    /// Store `value` at floor `key` iff it strictly exceeds the current floor.
-    AdvanceFloor { key: String, value: i64 },
-}
-
-/// The DO's reply: each field is set only for the operation it answers.
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct CmdReply {
-    /// `admit`: whether the attempt was admitted.
-    #[serde(default)]
-    admitted: Option<bool>,
-    /// `acquire_lease`: the conflicting holder, when a different holder's lease
-    /// is live; `None` on success.
-    #[serde(default)]
-    conflict: Option<String>,
-    /// `advance_floor`: whether the floor was advanced.
-    #[serde(default)]
-    accepted: Option<bool>,
-}
 
 /// A stored lease: holder and the unix-second deadline.
 #[derive(Debug, Serialize, Deserialize)]
@@ -117,15 +79,12 @@ impl DurableObject for CoordinatorObject {
                 budget,
             } => {
                 let skey = format!("c:{class}:{key}:{window}");
-                let current: i64 = storage.get(&skey).await.unwrap_or(None).unwrap_or(0);
+                let current: i64 = storage.get(&skey).await?.unwrap_or(0);
                 let admitted = current < budget;
                 if admitted {
                     storage.put(&skey, current + 1).await?;
                 }
-                CmdReply {
-                    admitted: Some(admitted),
-                    ..Default::default()
-                }
+                CmdReply::Admission { admitted }
             }
             Command::AcquireLease {
                 key,
@@ -134,45 +93,47 @@ impl DurableObject for CoordinatorObject {
                 now,
             } => {
                 let skey = format!("l:{key}");
-                let existing: Option<Lease> = storage.get(&skey).await.unwrap_or(None);
+                if ttl <= 0 {
+                    return Err(worker::Error::RustError(
+                        "coordinator lease TTL must be positive".into(),
+                    ));
+                }
+                let deadline = now.checked_add(ttl).ok_or_else(|| {
+                    worker::Error::RustError("coordinator lease deadline overflow".into())
+                })?;
+                let existing: Option<Lease> = storage.get(&skey).await?;
                 match existing {
-                    Some(lease) if lease.deadline > now && lease.holder != holder => CmdReply {
-                        conflict: Some(lease.holder),
-                        ..Default::default()
-                    },
+                    Some(lease) if lease.deadline > now && lease.holder != holder => {
+                        CmdReply::Lease {
+                            acquired: false,
+                            conflict: Some(lease.holder),
+                        }
+                    }
                     _ => {
-                        storage
-                            .put(
-                                &skey,
-                                Lease {
-                                    holder,
-                                    deadline: now + ttl,
-                                },
-                            )
-                            .await?;
-                        CmdReply::default()
+                        storage.put(&skey, Lease { holder, deadline }).await?;
+                        CmdReply::Lease {
+                            acquired: true,
+                            conflict: None,
+                        }
                     }
                 }
             }
             Command::ReleaseLease { key, holder } => {
                 let skey = format!("l:{key}");
-                let existing: Option<Lease> = storage.get(&skey).await.unwrap_or(None);
+                let existing: Option<Lease> = storage.get(&skey).await?;
                 if existing.is_some_and(|lease| lease.holder == holder) {
                     storage.delete(&skey).await?;
                 }
-                CmdReply::default()
+                CmdReply::Released
             }
             Command::AdvanceFloor { key, value } => {
                 let skey = format!("f:{key}");
-                let current: Option<i64> = storage.get(&skey).await.unwrap_or(None);
+                let current: Option<i64> = storage.get(&skey).await?;
                 let accepted = current.is_none_or(|c| value > c);
                 if accepted {
                     storage.put(&skey, value).await?;
                 }
-                CmdReply {
-                    accepted: Some(accepted),
-                    ..Default::default()
-                }
+                CmdReply::Floor { accepted }
             }
         };
         Response::from_json(&reply)
@@ -217,9 +178,16 @@ impl WorkerCoordinator {
             .fetch_with_request(req)
             .await
             .map_err(|err| anyhow::anyhow!("coordinator fetch: {err}"))?;
-        resp.json::<CmdReply>()
+        let status = resp.status_code();
+        let body = resp
+            .bytes()
             .await
-            .map_err(|err| anyhow::anyhow!("coordinator reply: {err}"))
+            .map_err(|err| anyhow::anyhow!("coordinator response body: {err}"))?;
+        anyhow::ensure!(
+            (200..300).contains(&status),
+            "coordinator returned HTTP {status}"
+        );
+        decode_reply(&body)
     }
 }
 
@@ -232,15 +200,14 @@ impl Coordinator for WorkerCoordinator {
         window: i64,
         budget: i64,
     ) -> anyhow::Result<bool> {
-        let reply = self
-            .call(&Command::Admit {
-                class: class.to_string(),
-                key: key.to_string(),
-                window,
-                budget,
-            })
-            .await?;
-        Ok(reply.admitted.unwrap_or(true))
+        self.call(&Command::Admit {
+            class: class.to_string(),
+            key: key.to_string(),
+            window,
+            budget,
+        })
+        .await?
+        .into_admission()
     }
 
     async fn acquire_lease(
@@ -250,15 +217,14 @@ impl Coordinator for WorkerCoordinator {
         ttl_secs: i64,
         now: i64,
     ) -> anyhow::Result<Option<String>> {
-        let reply = self
-            .call(&Command::AcquireLease {
-                key: key.to_string(),
-                holder: holder.to_string(),
-                ttl: ttl_secs,
-                now,
-            })
-            .await?;
-        Ok(reply.conflict)
+        self.call(&Command::AcquireLease {
+            key: key.to_string(),
+            holder: holder.to_string(),
+            ttl: ttl_secs,
+            now,
+        })
+        .await?
+        .into_lease()
     }
 
     async fn release_lease(&self, key: &str, holder: &str) -> anyhow::Result<()> {
@@ -266,17 +232,16 @@ impl Coordinator for WorkerCoordinator {
             key: key.to_string(),
             holder: holder.to_string(),
         })
-        .await
-        .map(|_| ())
+        .await?
+        .into_release()
     }
 
     async fn advance_floor(&self, key: &str, value: i64) -> anyhow::Result<bool> {
-        let reply = self
-            .call(&Command::AdvanceFloor {
-                key: key.to_string(),
-                value,
-            })
-            .await?;
-        Ok(reply.accepted.unwrap_or(false))
+        self.call(&Command::AdvanceFloor {
+            key: key.to_string(),
+            value,
+        })
+        .await?
+        .into_floor()
     }
 }

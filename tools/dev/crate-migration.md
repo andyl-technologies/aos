@@ -1,9 +1,10 @@
 # Cargo workspace migration tooling
 
 `crate-migration.json` records the reviewed initial mapping from the former flat
-workspace to scoped package names and nested source locations. Follow-up merges
-and extractions are implemented separately: an initial mapping entry does not
-promise that a temporary package remains in the final workspace.
+workspace to scoped package names. Target paths for surviving packages follow
+the current category layout. Follow-up merges and extractions are implemented
+separately: an initial mapping entry does not promise that a temporary package
+remains in the final workspace.
 
 Run the script with the AOS development shell's Python 3.11 or later.
 The script discovers the repository from its own location:

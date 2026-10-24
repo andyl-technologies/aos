@@ -14,6 +14,15 @@ use super::*;
 #[error("refusing to leave org scope '{0}' without an owner")]
 pub struct LastOwnerError(pub String);
 
+/// Marker error for a reviewed membership whose write-time preconditions changed.
+///
+/// The guarded transaction raises this error when either the target membership
+/// incarnation changed or the actor's effective authority no longer satisfies
+/// the reviewed mutation.
+#[derive(Debug, thiserror::Error)]
+#[error("membership or actor authority changed before apply")]
+pub struct MembershipMutationConflictError;
+
 /// The editable instance-wide settings bundle (RFC-0004 console).
 ///
 /// Every field is persisted in the `instance_config` key/value table and is

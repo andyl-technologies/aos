@@ -208,7 +208,7 @@ delivery, never unit-text variation.
 ## Implemented schema
 
 The registry schema is the Rust/TOML contract in
-`crates/aos/packages/aos-package-manager/src/types.rs`: `PackageMeta` carries `min-format`,
+`crates/packages/aos-package-manager/src/types.rs`: `PackageMeta` carries `min-format`,
 `requires-features`, `expose: Option<ExposeMeta>`,
 `expose_artifact: Option<ExposeArtifactMeta>`, and the signed
 `PermissionsMeta`. `ExposeMeta` contains the activation `target`, rendered

@@ -1,5 +1,7 @@
 //! Portable authentication grants and identity-provider configuration.
 
+use sha2::{Digest as _, Sha256};
+
 /// An org's OIDC identity-provider configuration (system-of-record row).
 ///
 /// Mirrors the `org_idp_configs` row one-to-one. The client secret is held
@@ -49,15 +51,38 @@ pub struct IdpConfigRecord {
     pub mutation_plan_id: Option<String>,
 }
 
+/// Returns the stable identity of the verifier that accepts an OIDC token.
+///
+/// The identity covers every configuration value used to decide whether a
+/// token is authentic: the expected issuer, audience, key source, and pinned
+/// signature algorithm. Configurations with the same verifier deliberately
+/// share linked identities, while changing any verifier input creates a new
+/// identity namespace.
+#[must_use]
+pub fn oidc_verifier_id(record: &IdpConfigRecord) -> String {
+    let mut digest = Sha256::new();
+
+    for value in [
+        "RS256",
+        record.issuer.as_str(),
+        record.client_id.as_str(),
+        record.jwks_uri.as_str(),
+    ] {
+        digest.update((value.len() as u64).to_be_bytes());
+        digest.update(value.as_bytes());
+    }
+
+    hex::encode(digest.finalize())
+}
+
 /// A validated provisioning token: who owns it and what it may do.
 ///
 /// Produced by the database token validator after a secret checks out
 /// (hash matches, not expired, not hard-revoked, and — if rotated — still
 /// inside the rotation grace window). The `scope`/`permissions` here are
 /// the token's *own* grants. The RPC plane additionally intersects them
-/// with the owner's current memberships at decision time
-/// (the database grant resolver); the machine plane authorizes from
-/// these grants alone, bounded by the JWT TTL (see `auth::extract`).
+/// with the owner's current memberships at decision time. Bearers derived
+/// from the token also recheck this lifecycle and grant snapshot before use.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TokenAuth {
     /// The token's id (UUID); the JWT `sub` and the revoke/rotate key.
@@ -68,6 +93,9 @@ pub struct TokenAuth {
     pub scope: crate::domain::Scope,
     /// The permission verbs the token grants.
     pub permissions: Vec<crate::domain::Permission>,
+    /// The token's absolute expiry, or `None` when it has no time limit.
+    #[serde(default)]
+    pub expires_at: Option<i64>,
 }
 
 use crate::domain::Role;

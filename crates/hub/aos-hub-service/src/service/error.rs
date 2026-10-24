@@ -126,6 +126,24 @@ impl RpcError {
             RpcError::internal(error)
         }
     }
+
+    /// Maps publish-lease contention and coordinator outages separately.
+    pub(in crate::service) fn publish_lease(error: crate::lease::LeaseAcquireError) -> Self {
+        match error {
+            crate::lease::LeaseAcquireError::Conflict(holder) => RpcError::FailedPrecondition(
+                format!("registry publication lease is held by {holder}"),
+            ),
+            crate::lease::LeaseAcquireError::Unavailable(error) => {
+                tracing::warn!(
+                    error = %format!("{error:#}"),
+                    "publish lease coordinator unavailable"
+                );
+                RpcError::Unavailable(
+                    "registry publication coordination is temporarily unavailable".into(),
+                )
+            }
+        }
+    }
 }
 
 impl std::fmt::Display for RpcError {

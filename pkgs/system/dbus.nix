@@ -28,6 +28,14 @@
     if stdenv.isCross
     then buildPackages.python3
     else python3;
+  buildShell = buildPackages.bash;
+  buildNinja =
+    (
+      if stdenv.isCross
+      then buildPackages.ninja
+      else ninja
+    ).passthru.withCommandShell
+    buildShell;
   linuxRuntimeLibraryPath = builtins.concatStringsSep ":" (map (dependency: "${dependency}/lib") [expat libselinux audit libcap-ng systemd]);
 in
   mkDerivation {
@@ -148,7 +156,7 @@ in
     };
 
     buildDeps =
-      [meson ninja pkg-config python3]
+      [meson buildNinja pkg-config python3]
       ++ lib.optionals isLinuxCross [patchelf];
     runtimeDeps =
       [expat]
@@ -198,6 +206,8 @@ in
             tools/build-timestamp.py; do
             sed -i "1s|^#!.*|#!${buildPython}/bin/python3|" "$script"
           done
+          # Meson executes its runtime-directory probe directly.
+          sed -i "1s|^#!.*|#!${buildShell}/bin/bash|" tools/check-runstatedir.sh
         '';
       }
       {

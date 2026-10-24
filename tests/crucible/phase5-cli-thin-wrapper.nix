@@ -14,12 +14,12 @@
   cliProduction = import ./_cli-production-source.nix {inherit lib;};
   cliControl = import ./_rust-module-source.nix {
     inherit lib;
-    entry = ../../crates/crucible/control/crucible-cli/src/cli/control.rs;
+    entry = ../../crates/crucible/crucible-cli/src/cli/control.rs;
   };
-  cliResume = builtins.readFile ../../crates/crucible/control/crucible-cli/src/cli/resume.rs;
-  nullOperationRecorder = builtins.readFile ../../crates/crucible/control/crucible-cli/src/null_operation_recorder.rs;
+  cliResume = builtins.readFile ../../crates/crucible/crucible-cli/src/cli/resume.rs;
+  nullOperationRecorder = builtins.readFile ../../crates/crucible/crucible-cli/src/null_operation_recorder.rs;
   session = import ./_crucible-session-source.nix {inherit lib;};
-  sessionValidation = builtins.readFile ../../crates/crucible/control/crucible-session/src/validation.rs;
+  sessionValidation = builtins.readFile ../../crates/crucible/crucible-session/src/validation.rs;
   apiClient = import ./_crucible-control-source.nix {
     inherit lib;
     component = "client";
@@ -43,7 +43,7 @@
         needle = "`T-CLI-2` is green through `checks.crucible.phase5.cliThinWrapper`";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-session/src/validation.rs" sessionValidation [
+    ++ failuresFor "crates/crucible/crucible-session/src/validation.rs" sessionValidation [
       {
         label = "session-owned checkpoint materialization";
         needle = "pub fn recorded_checkpoint_for_configuration(";
@@ -53,19 +53,19 @@
         needle = "pub fn validation_dag_with_baked_genesis(";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-cli/src/cli/control.rs" cliControl [
+    ++ failuresFor "crates/crucible/crucible-cli/src/cli/control.rs" cliControl [
       {
         label = "save delegates baked genesis DAG setup";
         needle = "validation_dag_with_baked_genesis(scenario)";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-cli/src/cli/resume.rs" cliResume [
+    ++ failuresFor "crates/crucible/crucible-cli/src/cli/resume.rs" cliResume [
       {
         label = "resume delegates checkpoint materialization";
         needle = "recorded_checkpoint_for_configuration(configuration, frontier)";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-cli/src/main.rs" cliMain [
+    ++ failuresFor "crates/crucible/crucible-cli/src/main.rs" cliMain [
       {
         label = "thin-wrapper plan type";
         needle = "struct CliThinWrapperPlan";
@@ -187,13 +187,13 @@
         needle = "struct RecordingOperationRecorder";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-cli/src/null_operation_recorder.rs" nullOperationRecorder [
+    ++ failuresFor "crates/crucible/crucible-cli/src/null_operation_recorder.rs" nullOperationRecorder [
       {
         label = "dispatch plan executor";
         needle = "fn execute_cli_dispatch_plan";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-session/src/lib.rs" session [
+    ++ failuresFor "crates/crucible/crucible-session/src/lib.rs" session [
       {
         label = "session command kind closed set";
         needle = "pub const ALL:";
@@ -207,7 +207,7 @@
         needle = "Self::DebugGoto";
       }
     ]
-    ++ failuresFor "crates/crucible/control/crucible-control-client/src/client.rs" apiClient [
+    ++ failuresFor "crates/crucible/crucible-control-client/src/client.rs" apiClient [
       {
         label = "ControlClient trait";
         needle = "pub trait ControlClient";
@@ -259,7 +259,7 @@
         needle = "cliThinWrapper = import ./phase5-cli-thin-wrapper.nix";
       }
     ]
-    ++ forbiddenFor "crates/crucible/control/crucible-cli/src/main.rs" cliProduction [
+    ++ forbiddenFor "crates/crucible/crucible-cli/src/main.rs" cliProduction [
       {
         label = "fake API operation outside ControlClient";
         needle = "ServeTransport";
@@ -305,13 +305,13 @@
         needle = "SystemTime::now";
       }
     ]
-    ++ forbiddenFor "crates/crucible/control/crucible-cli/src/cli/control.rs" cliControl [
+    ++ forbiddenFor "crates/crucible/crucible-cli/src/cli/control.rs" cliControl [
       {
         label = "CLI-owned checkpoint materialization";
         needle = "Checkpoint::from_recorded_configuration(";
       }
     ]
-    ++ forbiddenFor "crates/crucible/control/crucible-cli/src/cli/resume.rs" cliResume [
+    ++ forbiddenFor "crates/crucible/crucible-cli/src/cli/resume.rs" cliResume [
       {
         label = "CLI-owned checkpoint materialization";
         needle = "Checkpoint::from_recorded_configuration(";

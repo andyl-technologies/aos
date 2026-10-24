@@ -40,7 +40,7 @@ invented for this doc.
 ### 1.1 Registry metadata
 
 A package version is described by `PackageMeta`
-(`crates/aos/packages/aos-package-manager/src/types.rs`). The current fields:
+(`crates/packages/aos-package-manager/src/types.rs`). The current fields:
 
 ```rust
 pub struct PackageMeta {
@@ -92,7 +92,7 @@ Two fields matter a lot for this design and are worth calling out:
 
 ### 1.2 The real `apm install` path
 
-`crates/aos/packages/aos-package-manager/src/install.rs::run()` does this, in order:
+`crates/packages/aos-package-manager/src/install.rs::run()` does this, in order:
 
 1. **Resolve** the closure via `resolve_multiple()` walking `closures/<hash>`
    adjacency lists.
@@ -110,7 +110,7 @@ Two fields matter a lot for this design and are worth calling out:
    - `build_fhs_tree(new_gen, roots, …)` — synthesize the FHS merge
 6. **`profile.switch_to(new_gen)`** — atomically move the `current` symlink.
 
-Profile layout (`crates/aos/packages/aos-package-manager/src/profile/mod.rs`):
+Profile layout (`crates/packages/aos-package-manager/src/profile/mod.rs`):
 
 ```
 /var/lib/profiles/{scope}/
@@ -128,7 +128,7 @@ targets, or start services. The RFC-0001 expose phase is the added step that
 materializes generated units without disturbing steps 1–6.
 
 One favorable ground-truth update: the systemd client surface already exists —
-`crates/shared/aos-systemd-client` is a complete async zbus D-Bus client (start / stop /
+`crates/linux/aos-systemd-client` is a complete async zbus D-Bus client (start / stop /
 restart / reload / isolate, job tracking, `settle`), currently exercised only
 by the `apm _test-systemd-client` test shim. The expose/enable phase is
 wiring, not greenfield.
@@ -156,8 +156,8 @@ separate store path.
 
 ### 2.2 `PackageMeta` additions
 
-These fields are implemented in `crates/aos/packages/aos-package-manager/src/types.rs` and
-`crates/aos/registry/aos-registry-client/src/registry/parse.rs`. All are `#[serde(default)]` so
+These fields are implemented in `crates/packages/aos-package-manager/src/types.rs` and
+`crates/registry/aos-registry-client/src/registry/parse.rs`. All are `#[serde(default)]` so
 existing registries parse unchanged.
 
 > **Fail-closed capability gate.**
@@ -244,7 +244,7 @@ pub struct ExposeMeta {
 > [`open-questions.md`](open-questions.md), now resolved by this model.
 
 `requires` is **package-name resolver surface**: current resolution
-(`crates/aos/packages/aos-package-manager/src/resolve.rs`) finds the root package by name, walks the
+(`crates/packages/aos-package-manager/src/resolve.rs`) finds the root package by name, walks the
 store-path reference graph for closure edges, and also pulls in package names
 listed in `expose.requires`. Typed capability consumers in `expose.uses`
 resolve their provider packages through the same package index. The target-level
@@ -424,8 +424,8 @@ Service packages ride the **existing** generation model (§1.2) with the package
 root treated as one more gc-rooted closure member. (The `{scope}` parameter in
 the profile path distinguishes the runtime apm package profile/scope from the
 system profile that holds the toplevel + baked packages; verified in
-`crates/aos/packages/aos-package-manager/src/types.rs` and
-`crates/aos/packages/aos-package-manager/src/profile/mod.rs`: system-scope runtime package
+`crates/packages/aos-package-manager/src/types.rs` and
+`crates/packages/aos-package-manager/src/profile/mod.rs`: system-scope runtime package
 generations use `/var/lib/profiles/system-packages/`, separate from the sysroot
 `/var/lib/profiles/system/` — see [`boot-activation.md`](boot-activation.md)
 §4.3.)

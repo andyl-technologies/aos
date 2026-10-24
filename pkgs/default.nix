@@ -9,6 +9,7 @@
   firmwarePackages ? null,
   targetPackages ? null,
   releasePlatforms ? [stdenv.hostPlatform],
+  sharedImageCacheDir ? null,
   sharedGoCacheDir ? null,
   sharedBazelCacheDir ? null,
   sharedRustTargetDir ? null,
@@ -1383,7 +1384,7 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
     src = aosWorkspaceVendorSource;
     name = "aos-workspace-vendor";
     sourceRoot = "source";
-    hash = "sha256-m+l9+P1KuaBd6xRFsLpUvMAKqRt4p0x3tovDAV2O/0g=";
+    hash = "sha256-neOV6fURUJN0JAFqF5Wmg3rTHHOyX+xByG+2UlZ7KVA=";
   };
 
   # Auto-discover packages from subdirectories.
@@ -1829,6 +1830,8 @@ assert (sharedAccacheDir == null) == (sharedAccacheStateDir == null); let
 
   self =
     {
+      inherit sharedImageCacheDir;
+
       # --- Plumbing ---
       inherit mkDerivation fetchurl mkUpstream mkGithubUpstream mkManualUpstream lib packageNames allPackageNames;
       inherit maintenanceInventory;

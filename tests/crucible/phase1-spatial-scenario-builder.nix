@@ -8,7 +8,7 @@
   cargoDeps = import ./_cargo-deps.nix {inherit pkgs lib;};
 
   model = import ./_crucible-model-source.nix {inherit lib;};
-  workloadTest = builtins.readFile ../../crates/crucible/engine/crucible-engine/tests/workload_parameterization.rs;
+  workloadTest = builtins.readFile ../../crates/crucible/crucible-engine/tests/workload_parameterization.rs;
   defaultChecks = builtins.readFile ./default.nix;
   spatialGraph = builtins.readFile ../../docs/rfcs/0010-crucible/06-spatial-graph.md;
 
@@ -25,7 +25,7 @@
         needle = "`checks.crucible.phase1.spatialScenarioBuilder`";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
+    ++ failuresFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "node template type";
         needle = "pub struct NodeTemplate";
@@ -79,13 +79,13 @@
         needle = "ScenarioBuilderUnknownNodeTemplate";
       }
     ]
-    ++ forbiddenFor "crates/crucible/engine/crucible-engine/src/model.rs" model [
+    ++ forbiddenFor "crates/crucible/crucible-engine/src/model.rs" model [
       {
         label = "boot event authoring entry point";
         needle = "boot_event";
       }
     ]
-    ++ failuresFor "crates/crucible/engine/crucible-engine/tests/workload_parameterization.rs" workloadTest [
+    ++ failuresFor "crates/crucible/crucible-engine/tests/workload_parameterization.rs" workloadTest [
       {
         label = "builder produces validated concrete scenario values";
         needle = "fn scenario_def_with_template(";

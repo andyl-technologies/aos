@@ -133,6 +133,7 @@ impl Database {
                 .upsert_live_membership_role(principal_kind, principal_id, scope, role)
                 .await;
         }
+        let incarnation_id = uuid::Uuid::new_v4().simple().to_string();
         let result = self
             .backend
             .checked_batch(&[
@@ -168,8 +169,8 @@ impl Database {
                 .unchecked(),
                 Statement::new(
                     "INSERT INTO memberships
-                     (principal_kind, principal_id, scope_key, role, created_at)
-                     SELECT ?1, ?2, a.scope_key, ?4, ?5 FROM authorization_scopes a
+                     (principal_kind, principal_id, scope_key, role, created_at, incarnation_id)
+                     SELECT ?1, ?2, a.scope_key, ?4, ?5, ?6 FROM authorization_scopes a
                      LEFT JOIN orgs o ON o.id = a.org_id
                      WHERE a.scope_key = ?3 AND a.retired_at IS NULL
                        AND (a.org_id IS NULL OR o.deleted_at IS NULL)
@@ -180,7 +181,14 @@ impl Database {
                               SELECT 1 FROM service_accounts s
                               JOIN orgs owner_org ON owner_org.id = s.org_id
                                WHERE s.id = ?2 AND owner_org.deleted_at IS NULL)))",
-                    vals![principal_kind, principal_id, scope, role, unix_now()],
+                    vals![
+                        principal_kind,
+                        principal_id,
+                        scope,
+                        role,
+                        unix_now(),
+                        incarnation_id
+                    ],
                 )
                 .expecting(1),
             ])
@@ -193,6 +201,218 @@ impl Database {
                 return Err(anyhow::Error::new(LastOwnerError(scope.to_string())));
             }
             result?;
+        }
+        Ok(())
+    }
+
+    /// Replaces a direct membership if its reviewed state and actor authority remain current.
+    ///
+    /// The target membership identity, the actor's effective role, and the
+    /// surviving human-owner invariant are checked in the same transaction as
+    /// the write. Existing memberships retain their row identity across role
+    /// changes; a revoked and recreated membership therefore cannot satisfy an
+    /// older review.
+    ///
+    /// # Errors
+    ///
+    /// Returns a [`MembershipMutationConflictError`] when the membership or
+    /// actor authority changed, a [`LastOwnerError`] when the replacement would
+    /// remove the final live human owner, or an error on invalid input or
+    /// database failure.
+    pub async fn replace_membership_if_current(
+        &self,
+        target: aos_hub_model::domain::Principal,
+        scope: &str,
+        expected: Option<&MembershipSnapshot>,
+        desired_role: Option<&str>,
+        actor: aos_hub_model::domain::Principal,
+    ) -> Result<()> {
+        use aos_hub_model::domain::Role;
+
+        if !aos_hub_model::domain::Scope::is_canonical(scope) {
+            bail!("refusing to replace membership at non-canonical scope '{scope}'");
+        }
+        let expected_role = expected
+            .map(|snapshot| {
+                Role::parse(&snapshot.role).with_context(|| {
+                    format!("unknown expected membership role '{}'", snapshot.role)
+                })
+            })
+            .transpose()?;
+        let desired_role = desired_role
+            .map(|role| {
+                Role::parse(role).with_context(|| format!("unknown membership role '{role}'"))
+            })
+            .transpose()?;
+        let required_rank = expected_role
+            .into_iter()
+            .chain(desired_role)
+            .map(Role::rank)
+            .chain(std::iter::once(Role::Admin.rank()))
+            .max()
+            .unwrap_or(Role::Admin.rank()) as i64;
+        let expected_id = expected.map(|snapshot| snapshot.id);
+        let expected_role_name = expected.map(|snapshot| snapshot.role.as_str());
+        let target_kind = target.kind.as_str();
+        let actor_kind = actor.kind.as_str();
+
+        let guard = Statement::new(
+            "UPDATE authorization_scopes
+                SET owner_guard_version = owner_guard_version + 1
+              WHERE scope_key = ?3 AND retired_at IS NULL
+                AND ((?1 = 'user' AND EXISTS (
+                       SELECT 1 FROM users target_user
+                        WHERE target_user.id = ?2 AND target_user.deleted_at IS NULL))
+                  OR (?1 = 'service_account' AND EXISTS (
+                       SELECT 1 FROM service_accounts target_account
+                       JOIN orgs target_org ON target_org.id = target_account.org_id
+                        WHERE target_account.id = ?2 AND target_org.deleted_at IS NULL)))
+                AND ((?4 IS NULL AND NOT EXISTS (
+                       SELECT 1 FROM memberships target
+                        WHERE target.principal_kind = ?1
+                          AND target.principal_id = ?2
+                          AND target.scope_key = ?3))
+                  OR EXISTS (
+                       SELECT 1 FROM memberships target
+                        WHERE target.id = ?4
+                          AND target.principal_kind = ?1
+                          AND target.principal_id = ?2
+                          AND target.scope_key = ?3
+                          AND target.role = ?5
+                          AND ((?10 IS NULL AND target.incarnation_id IS NULL)
+                            OR target.incarnation_id = ?10)))
+                AND EXISTS (
+                     SELECT 1 FROM memberships actor_membership
+                     JOIN authorization_scope_ancestors ancestry
+                       ON ancestry.ancestor_scope_key = actor_membership.scope_key
+                    WHERE ancestry.descendant_scope_key = ?3
+                      AND actor_membership.principal_kind = ?6
+                      AND actor_membership.principal_id = ?7
+                      AND CASE actor_membership.role
+                            WHEN 'owner' THEN 4 WHEN 'admin' THEN 3
+                            WHEN 'maintainer' THEN 2 WHEN 'developer' THEN 1
+                            ELSE 0 END >= ?8
+                      AND ((?6 = 'user' AND EXISTS (
+                             SELECT 1 FROM users actor_user
+                              WHERE actor_user.id = ?7 AND actor_user.deleted_at IS NULL))
+                        OR (?6 = 'service_account' AND EXISTS (
+                             SELECT 1 FROM service_accounts actor_account
+                             JOIN orgs actor_org ON actor_org.id = actor_account.org_id
+                              WHERE actor_account.id = ?7 AND actor_org.deleted_at IS NULL))))
+                AND (NOT EXISTS (
+                       SELECT 1 FROM memberships target_owner
+                        WHERE target_owner.principal_kind = ?1
+                          AND target_owner.principal_id = ?2
+                          AND target_owner.scope_key = ?3
+                          AND target_owner.role = 'owner'
+                          AND target_owner.principal_kind = 'user'
+                          AND EXISTS (SELECT 1 FROM users target_owner_user
+                                       WHERE target_owner_user.id = target_owner.principal_id
+                                         AND target_owner_user.deleted_at IS NULL))
+                  OR ?9 = 'owner'
+                  OR (SELECT COUNT(*) FROM memberships owners
+                       WHERE owners.scope_key = ?3
+                         AND owners.principal_kind = 'user'
+                         AND owners.role = 'owner'
+                         AND EXISTS (SELECT 1 FROM users owner_user
+                                      WHERE owner_user.id = owners.principal_id
+                                        AND owner_user.deleted_at IS NULL)) > 1)",
+            vals![
+                target_kind,
+                target.id,
+                scope,
+                expected_id,
+                expected_role_name,
+                actor_kind,
+                actor.id,
+                required_rank,
+                desired_role.map(Role::as_str),
+                expected.and_then(|snapshot| snapshot.incarnation_id.as_deref()),
+            ],
+        )
+        .expecting(1);
+        let mut statements = vec![guard];
+
+        match (expected, desired_role) {
+            (Some(snapshot), Some(role)) => statements.push(
+                Statement::new(
+                    "UPDATE memberships SET role = ?6
+                      WHERE id = ?4 AND principal_kind = ?1 AND principal_id = ?2
+                        AND scope_key = ?3 AND role = ?5
+                        AND ((?7 IS NULL AND incarnation_id IS NULL)
+                          OR incarnation_id = ?7)",
+                    vals![
+                        target_kind,
+                        target.id,
+                        scope,
+                        snapshot.id,
+                        snapshot.role,
+                        role.as_str(),
+                        snapshot.incarnation_id.as_deref(),
+                    ],
+                )
+                .expecting(1),
+            ),
+            (Some(snapshot), None) => statements.push(
+                Statement::new(
+                    "DELETE FROM memberships
+                      WHERE id = ?4 AND principal_kind = ?1 AND principal_id = ?2
+                        AND scope_key = ?3 AND role = ?5
+                        AND ((?6 IS NULL AND incarnation_id IS NULL)
+                          OR incarnation_id = ?6)",
+                    vals![
+                        target_kind,
+                        target.id,
+                        scope,
+                        snapshot.id,
+                        snapshot.role,
+                        snapshot.incarnation_id.as_deref(),
+                    ],
+                )
+                .expecting(1),
+            ),
+            (None, Some(role)) => statements.push(
+                Statement::new(
+                    "INSERT INTO memberships
+                     (principal_kind, principal_id, scope_key, role, created_at, incarnation_id)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                    vals![
+                        target_kind,
+                        target.id,
+                        scope,
+                        role.as_str(),
+                        unix_now(),
+                        uuid::Uuid::new_v4().simple().to_string(),
+                    ],
+                )
+                .expecting(1),
+            ),
+            (None, None) => {}
+        }
+
+        let result = self.backend.checked_batch(&statements).await;
+        if let Err(error) = result {
+            let current = self
+                .membership_snapshot(target_kind, target.id, scope)
+                .await?;
+            if current.as_ref() != expected {
+                return Err(anyhow::Error::new(MembershipMutationConflictError));
+            }
+
+            let (owners, target_is_owner) = self
+                .owner_membership_state(target_kind, target.id, scope)
+                .await?;
+            if target_is_owner && desired_role != Some(Role::Owner) && owners <= 1 {
+                return Err(anyhow::Error::new(LastOwnerError(scope.to_string())));
+            }
+            if !self
+                .principal_has_membership_rank(actor, scope, required_rank)
+                .await?
+            {
+                return Err(anyhow::Error::new(MembershipMutationConflictError));
+            }
+
+            return Err(error);
         }
         Ok(())
     }
