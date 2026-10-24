@@ -11058,14 +11058,15 @@ then disables managed user namespaces when its retirement kprobe cannot create
 a perf event. An exact-image audit rerun identifies init_t self:perf_event open
 as the denied access. The selected kernel and libbpf paths additionally check
 per-CPU, kernel and tracepoint admission and write permission for the enabling
-ioctl. The policy now grants those five permissions only from init_t to init_t.
-This is a manager-domain grant, not executable-specific isolation. It does not
-grant sample reads or access to another domain's events.
+ioctl. The intermediate policy granted those five permissions only from init_t
+to init_t. That manager-domain grant did not provide executable-specific
+isolation, sample reads or access to another domain's events. The later fentry
+change below removes all five permissions.
 
-Effective-policy checks require the grant and reject perf events for confined
-Sandbox roles, cross-domain manager access, and manager sample reads. The
-focused missing-grant and forbidden-grant regressions pass. The full compiled
-policy builds successfully at
+The intermediate effective-policy checks required the grant and rejected perf
+events for confined Sandbox roles, cross-domain manager access, and manager
+sample reads. The focused missing-grant and forbidden-grant regressions passed.
+The intermediate full compiled policy built successfully at
 `/nix/store/yyqmjr6zxrx0igi97kwapslwh67wgzlg-aos-selinux-production-policy-1`,
 including all 155 checker tests, the normal merged-policy scan, deliberately
 unsafe policy variants and the selected kernel's ordered class-map checks.
@@ -11136,8 +11137,15 @@ BTF, and AOS bpftool generates its skeleton at
 `/nix/store/bsm4z04dswf9qdm8skgaqpxqc4hwsg1g-aos-rfc21-fentry-object-check`.
 The object retains all six LSM sections and replaces its kprobe section with
 fentry. All 158 effective-policy checker unit tests pass, including refusal of
-manager perf-event grants. The production package also checks the generated section kind. The Host
-VM now requires confidentiality lockdown and the actual ring-buffer death
-notification for the stopped target's namespace before restarting Host.
+manager perf-event grants. The production package also checks the generated
+section kind. It checks the selected kernel's trampoline configuration and
+follows the retirement function's actual BTF type references, requiring exactly
+one `void (struct user_namespace *)` function. Five checker tests reject missing
+trampoline support, absent or ambiguous functions and changed or incomplete
+signatures; both those tests and the selected kernel's full raw BTF check pass
+with AOS-built tools. These are build compatibility checks, not attachment
+receipts. The Host VM now requires confidentiality lockdown and the actual
+ring-buffer death notification for the stopped target's namespace before
+restarting Host.
 Complete policy, systemd package and installed Host qualification remain pending;
 object compilation does not establish installed readiness.

@@ -507,6 +507,14 @@ in
                     -mindepth 2 -maxdepth 2 -name build -type d)"
                   test -n "$kernel_build"
                   test -s "$kernel_build/vmlinux"
+                  # Compiling a skeleton does not prove that its retirement
+                  # target exists or that this kernel supports BPF trampolines.
+                  # Inspect target metadata with native tools in cross builds.
+                  cp ${./_systemd-abilities/userns_bpf_kernel.py} userns_bpf_kernel.py
+                  cp ${./_systemd-abilities/userns_bpf_kernel_test.py} userns_bpf_kernel_test.py
+                  python3 -B userns_bpf_kernel_test.py
+                  bpftool btf dump file "$kernel_build/vmlinux" format raw > userns-kernel.btf
+                  python3 -B userns_bpf_kernel.py "$clone_layout/kernel.config" userns-kernel.btf
                   bpftool btf dump file "$kernel_build/vmlinux" format c > vmlinux.h
                   test -s vmlinux.h
                   aos_vmlinux_header="$PWD/vmlinux.h"
