@@ -10,6 +10,48 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Original construction reservations retained through runtime handoff
+
+Commits `45a855c5ec` and `b6f06f71fd` retain each approved construction member's
+prospective reservation in its original opaque Core holder. The preconstruction
+peak includes the reservation, and every subsequent common holder census charges
+it before observing actual allocations, including failed or partial owners.
+Current usage does not refund the reservation. The concrete graph preparation
+binds the genuine admitted Controller's existing provider-receiver retained row;
+this covers the receiver's unchanged finite content and provider-journal ceilings.
+It grants no capacity, raises no quota and supplies no Native18 permission.
+Controller-origin journals and the remaining complete SDK transient/scratch and
+Source growth still require a separately proved handoff.
+
+An earlier attempt to retain both generic SDK journal bounds correctly refused:
+the three reservations alone totaled 7,273,785,048 bytes against the unchanged
+4 GiB profile. That failed native control and its numerical diagnostic remain
+recorded locally, and both reclaimed their children. The narrower actual receiver
+reservation passes the real native startup control, including construction,
+postconstruction growth rechecks, retained-reservation refusal before owner
+observation, full exact-limit and one-byte-short censuses, retirement and child
+reclamation. The native run completed in 722.12 seconds. No first-Arm or Capture
+qualification is claimed.
+
+All three new Core reservation controls pass in both codec modes. Both complete
+Engine modes pass 2,067 tests with zero failures and 34 ignored. The ordinary
+Daemon suite passes 1,828 tests with zero failures and 165 ignored. All-feature
+SourceBirth/Transport/Engine/Daemon targets, six architecture checks, scoped
+formatting and application test-target compilation pass. Actual application
+metadata records 185 test artifacts across 58 packages, including 76 integration
+targets. All 622 frozen owned Rust/Cargo inputs match the commit and actual
+application source. The same inputs match all three funded-Source VM component
+source captures; that VM run is still pending at this checkpoint.
+
+The first VM attempt exposed a strict `manual_bits` false positive in the new
+SourceBirth scratch expression. Expressing its unchanged eight-word storage as
+`size_of::<[usize; 8]>()` fixes that check without an allowance or byte reduction;
+the shared crate now passes `-D clippy::all`. Strict Engine Clippy still reports
+131 errors and 2,178 warnings; strict Transport reports four errors and 1,733
+warnings. No complete prior Engine diagnostic baseline is claimed. Full SDK
+funding, runtime quota handoff, active Capture, Native18 and the full RFC remain
+unfinished.
+
 ## Custody-facts journal projection and failed sends
 
 Commit `f01af860d5` exposes the same journal-backing calculation through the
