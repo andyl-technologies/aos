@@ -131,11 +131,12 @@ fn consumed_input_does_not_remove_another_recipient_or_sequence() {
     for other_recipient in [false, true] {
         let mut snapshot = original.clone();
         let mut independent = snapshot.input_batches[0].deliveries[0].clone();
+        // The original allocator reserves a distinct public identity for each
+        // fanout recipient, independently of its common publication lineage.
+        independent.source_sequence = 9.into();
         if other_recipient {
             independent.consumer = id("other-recipient");
             independent.consumer_endpoint.node_id = independent.consumer.clone();
-        } else {
-            independent.source_sequence = 9.into();
         }
         snapshot.pending_deliveries.push(independent);
         snapshot.pending_deliveries.sort_by_key(Delivery::key);

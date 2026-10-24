@@ -402,6 +402,19 @@ fn validation_storage(
     counter.tree::<Id, Position>(snapshot.positions.len(), true)?;
     counter.tree::<Id, Option<U64>>(snapshot.producers.len(), true)?;
     counter.tree::<(Id, U64), ()>(snapshot.pending_deliveries.len(), false)?;
+    // Global consumed identity validation owns a separate borrowed index. Its
+    // actual inserted rows coexist within that walk; no identifier is cloned.
+    let consumed_count = snapshot
+        .input_batches
+        .iter()
+        .try_fold(0usize, |total, batch| {
+            total
+                .checked_add(batch.consumed.len())
+                .ok_or(RuntimeError::ResourceLimit)
+        })?;
+    if consumed_count > 0 {
+        counter.tree::<(&Id, U64), ()>(consumed_count, false)?;
+    }
     for row in &snapshot.pending_deliveries {
         counter.owned(&row.producer)?;
         counter.owned(&row.payload)?; // Independent fresh content_ref comparison.
@@ -774,6 +787,13 @@ impl PreparedSchedulingRestore {
         let rows = [
             Self::original_retained_installation_duplicate_counter_scratch_data(),
             super::validation::input_custody::counter_scratch_data(),
+            // Independent consumed-row sizing cursor and checked accumulator.
+            2 * size_of::<usize>(),
+            size_of::<std::slice::Iter<'static, SavedInputBatch>>(),
+            size_of::<&SavedInputBatch>(),
+            size_of::<Option<usize>>(),
+            size_of::<Result<usize, RuntimeError>>(),
+            size_of::<bool>(),
             size_of::<&mut BTreeSet<Id>>(),
             size_of::<&Id>(),
             size_of::<bool>(),

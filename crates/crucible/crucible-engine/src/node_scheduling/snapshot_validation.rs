@@ -877,6 +877,7 @@ pub(crate) fn validate_structure(snapshot: &SchedulingSnapshot) -> Result<(), Sc
             }
         }
     }
+    input_custody::validate_consumed_source_identities(snapshot)?;
     for reservation in &snapshot.reservations {
         validate_permission(&reservation.permission, snapshot.maximum_microsteps)?;
     }

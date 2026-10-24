@@ -1,6 +1,7 @@
 //! Checks saved recipient queues against original staged and consumed inputs.
 
 use super::*;
+use crate::node_scheduling::InputIdentity;
 use std::mem::size_of;
 
 pub(super) fn validate_input_queue(
@@ -54,6 +55,35 @@ pub(super) fn validate_input_queue(
     Ok(())
 }
 
+/// Checks global public identity after each recipient's consumed prefix.
+///
+/// Fanout recipients have distinct public sequences. A consumed identity cannot
+/// also name another consumed input or a pending input at any recipient. The
+/// temporary index borrows identifiers from the original saved record.
+///
+/// # Errors
+/// Refuses repeated consumed identities or any identity shared by consumed and
+/// pending custody, without modifying the original histories.
+pub(super) fn validate_consumed_source_identities(
+    snapshot: &SchedulingSnapshot,
+) -> Result<(), SchedulingError> {
+    let mut consumed = BTreeSet::new();
+    for batch in &snapshot.input_batches {
+        for identity in &batch.consumed {
+            if !consumed.insert((&identity.producer, identity.source_sequence)) {
+                return Err(SchedulingError::InvalidSnapshot);
+            }
+        }
+    }
+
+    for delivery in &snapshot.pending_deliveries {
+        if consumed.contains(&(&delivery.producer, delivery.source_sequence)) {
+            return Err(SchedulingError::InvalidSnapshot);
+        }
+    }
+    Ok(())
+}
+
 /// Checks staged input identities against their original saved histories.
 ///
 /// A consumed entry has left pending_deliveries, but its producer and native
@@ -99,6 +129,26 @@ pub(in crate::node_scheduling) const fn counter_scratch_data() -> usize {
         + size_of::<Result<(), SchedulingError>>()
         + pending_queue_counter_scratch_data()
         + source_history_counter_scratch_data()
+        + consumed_identity_counter_scratch_data()
+}
+
+// Names the actual borrowed index header, insertion and membership loans,
+// original history cursors and tuple keys. Its tree backing is priced separately.
+const fn consumed_identity_counter_scratch_data() -> usize {
+    size_of::<&SchedulingSnapshot>()
+        + size_of::<BTreeSet<(&Id, U64)>>()
+        + size_of::<&mut BTreeSet<(&Id, U64)>>()
+        + size_of::<&BTreeSet<(&Id, U64)>>()
+        + size_of::<std::slice::Iter<'static, SavedInputBatch>>()
+        + size_of::<&SavedInputBatch>()
+        + size_of::<std::slice::Iter<'static, InputIdentity>>()
+        + size_of::<&InputIdentity>()
+        + size_of::<std::slice::Iter<'static, Delivery>>()
+        + size_of::<&Delivery>()
+        + 2 * size_of::<(&Id, U64)>()
+        + size_of::<&(&Id, U64)>()
+        + 2 * size_of::<bool>()
+        + size_of::<Result<(), SchedulingError>>()
 }
 
 // Prices the independent borrowed history lookup, iterator and its closure,
@@ -162,3 +212,7 @@ mod operation_identity_tests;
 #[cfg(test)]
 #[path = "input_custody/source_history_tests.rs"]
 mod source_history_tests;
+
+#[cfg(test)]
+#[path = "input_custody/global_source_identity_tests.rs"]
+mod global_source_identity_tests;
