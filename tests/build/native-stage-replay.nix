@@ -51,6 +51,16 @@ in {
     then "true"
     else "false"
   ); true;
+  initrdSelinuxConfiguration =
+    if config.system.build.immutableSelinuxPolicy == null
+    then assert !(replayedInitrd.aos.abilities.configuration.operations.file.effects ? selinux-initrd-config); true
+    else let
+      effect = replayedInitrd.aos.abilities.configuration.operations.file.effects.selinux-initrd-config;
+    in
+      assert effect.enable;
+      assert effect.input.path == "/etc/selinux/config";
+      assert effect.input.mode == "0444";
+      assert effect.input.content == "SELINUX=enforcing\nSELINUXTYPE=aos\n"; true;
   hostStoreSeedImageProjection = assert config.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input
   == replayedHost.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input; true;
   hostStoreSeedEnvironment = assert config.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input.environment

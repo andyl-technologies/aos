@@ -11358,3 +11358,30 @@ Core evaluation also passes at
 `/nix/store/p0dcd4r7i1xmwbd0byjs53q3kybpd8s2-aos-eval-core-checks-0`.
 The installed Host retry remains pending; this does not qualify backend
 readiness or public Create.
+
+### Initrd SELinux userspace detection
+
+The isolated Root startup retry (`gfig8mlxgbdqz05f3mh8ywwscyy85jnv`) fails
+the overlay-label assertion before native activation. Read-only observation of
+that same image records `/etc` as `tmpfs_t` and `/nix` as `unlabeled_t`, in both
+PID 1's and the agent's mount namespace. `/nix/store` remains `usr_t` and the
+actual library inode remains `lib_t`. Neither overlay retains `rootcontext`.
+The observation output at
+`/nix/store/4pfr6542y30ri569c6wifn4vgjnrql3s-aos-rfc21-root-overlay-observation`
+is diagnostic evidence, not a passing Root startup receipt.
+
+The frozen initrd units select labeling and the installed mount scripts carry
+the option, but their rendered configuration omits `/etc/selinux/config`.
+Libselinux 3.11 requires that file as well as mounted selinuxfs to report
+SELinux enabled; libmount then removes SELinux options when that report is
+false. The retained immutable initrd policy now supplies its enforcing `aos`
+configuration through the ordinary native configuration provider. This changes
+no policy grants or resource-bank limits.
+
+Native replay checks require the configuration effect for immutable profiles
+and its absence for profiles without the immutable policy. The current merged
+source passes both checks at
+`/nix/store/pljm8n8w99pdk04gclhh7bpddkg528yg-aos-native-profile-replay` and
+`/nix/store/hbxvz6skn47cgs70lfzvq30fnhz402b2-aos-native-stage-replay`.
+The rebuilt installed Root test remains pending; public lifecycle admission
+and the protected handoffs remain closed.
