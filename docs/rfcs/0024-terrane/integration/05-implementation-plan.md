@@ -16881,3 +16881,33 @@ actual native concurrency/readiness execution, the full 69-case structural gate
 and mandatory workspace target compilation are pending. This remains a synthetic
 namespace fixture with retained test handles, not the production worker launcher,
 handle accounting or repository authorization. Trunk acceptance remains 27/64.
+
+
+The corrected kernel READ checkpoint `ca5281b4c8` passes in 214.655 seconds.
+Complete independent review matches 8,179 immutable source files, 5,437 inputs
+and its actual Cargo ELF, including exact bytes/EOF, repeated hard-link opens,
+original shared cursor and all original metadata/timeout/cancellation controls.
+The earlier `58e98a9dfc` fsverity setup failure remains a failed result.
+
+At `6a121e5cc3`, all 69 structural selectors pass in 81.248 seconds with
+complete source/retained-ELF review. The actual kernel request passes in 226.075
+seconds: two concurrent hard-link opens join one original handoff, fresh directory
+metadata completes while that handoff is withheld, both open responses complete
+from the same sealed grant, and exact reads preserve its shared cursor. A
+cancelled idle readiness notification retains the original connection and serves
+subsequent metadata. Existing accepted receive timeout/cancellation still closes
+the device and produces ENOTCONN. Complete independent review binds 8,181
+immutable source files, 5,439 inputs, the actual Cargo ELF and every native
+witness. Production launch, handle accounting and exposure authority remain open.
+
+The `29e7a87284` base native scenario aggregate also passes. A terminal owning
+request reuses the successful cached aggregate in 2.501 seconds; this is not a
+measurement of guest execution time. Complete independent review verifies all
+three actual base guests, all 130 exact cases, 8,176 immutable files, 5,451
+inputs and four Cargo/installed ELF bindings. The whole feature matrix remains
+pending. The old eleven-gate T2 request at `46d4f0b3e3` fails in 6,073.425
+seconds: its monolithic cache prerequisite exits via Firecracker status 124 and
+four owning host gates fail that dependency. No partial aggregate is accepted.
+A fresh eleven-gate request at `6a121e5cc3` uses the bounded scenario split and
+is running. Current mandatory application target compilation also remains
+pending. Accepted trunk tasks remain 27/64.
