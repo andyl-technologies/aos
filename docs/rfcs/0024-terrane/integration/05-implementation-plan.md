@@ -16721,3 +16721,22 @@ IO evidence, not an actual kernel FUSE READ or repository authority claim.
 The structural closed inventory is 56 cases. Fresh worker-channel VM execution,
 mandatory application compilation and native feature qualification remain
 required. No trunk task is accepted (27/64).
+
+
+### Scoped prepared-file fallback read control
+
+The signed-root worker fixture now obtains the fallback logical size directly
+from its retained authenticated index and checks the original content selection
+before requesting a File grant. It consumes the actual scoped reply into the
+fallback reader, then retains that descriptor through the existing genuine drain
+transition. The read after draining must still match the signed file bytes and
+Terrane object digest while the next descriptor grant is refused. The network
+confined child uses the same path. Original inode reports, mapping checks,
+lease/custody assertions and actor/guest deadlines remain unchanged. Strict
+all-feature/all-target Clippy passes. This extends real scoped descriptor IO
+coverage; it does not claim kernel FUSE READ or production mounting.
+
+At `6e7364c413`, all 56 pure structural cases pass in 81.103 seconds; complete
+review and native transport execution are pending at this checkpoint. Mandatory
+workspace target compilation at `19081df704` also passes in 1,469.327 seconds;
+complete source/artifact review remains required. Accepted trunk tasks are 27/64.
