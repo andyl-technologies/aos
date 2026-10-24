@@ -1272,14 +1272,14 @@ def verify_image():
                 and helper_hash == identity["input_sha256"]["tests/terrane/" + helper_name]
                 and helper_installed.read_bytes() == helper_source.read_bytes(),
                 "installed supervisor helper differs from immutable source")
+    source_contract = unit_source_contract()
     expected = {"host_cache_fixture": ("terrane-linux", "example", ["native-test-fixtures", "tokio"]),
                 "terrane": ("terrane-cli", "bin", []), "aos-terrane-host": ("aos-terrane-integration", "bin", []),
-                "terrane-fs-unit": ("terrane-linux", "lib", ["native-test-fixtures", "tokio"])}
+                "terrane-fs-unit": ("terrane-linux", "lib", source_contract["UNIT_FEATURES"])}
     require(set(identity["artifacts"]) == set(expected), "incomplete native image executable set")
     packages = json.loads((IMAGE / "share/host-cache-packages.json").read_text())["packages"]
     profile = {"opt_level": "0", "debuginfo": 2, "debug_assertions": True,
                "overflow_checks": True, "test": False}
-    source_contract = unit_source_contract()
     for name, (package, kind, features) in expected.items():
         record = identity["artifacts"][name]
         artifact = record["cargo_artifact"]
@@ -1343,6 +1343,7 @@ def unit_source_contract():
                          ["native-test-fixtures", "surface-fuse", "tokio"])
             and identity["unit_tests"]["features"] == features,
             "unknown native unit feature profile")
+    values["UNIT_FEATURES"] = features
     if "surface-fuse" in features:
         values["UNIT_TESTS"] += values["FUSE_UNIT_TESTS"]
         values["UNIT_PREFIXES"] += values["FUSE_UNIT_PREFIXES"]

@@ -16391,3 +16391,28 @@ ELF SHA-256
 and checks every exact one-case runtime result. This is pure structural and
 directory policy qualification; it grants no native custody or FUSE connection
 authority and does not accept T-FUSE-1 or T-FUSE-2. Syntax and diff checks pass.
+
+
+#### Native feature image verifier profile correction
+
+The immutable `2b1e0f8832` complete-feature request fails in 752.138 seconds,
+before native cases execute. Its actual guest checks the installed image and
+rejects `terrane-fs-unit` because the common verifier still expects the base
+two-feature profile. The installer and inventory contract correctly retain
+`native-test-fixtures,surface-fuse,tokio`; the stale verifier is the failing
+check, not a successful runtime observation.
+
+The verifier now obtains the unit feature list from the same closed source
+contract used for inventory validation. It accepts exactly the base and full
+profiles, still requires agreement between the actual Cargo event and the
+serialized identity, and leaves the other three executable profiles unchanged.
+Contract validation against both actual retained images passes: 125 ordinary
+base selectors and 204 ordinary full-feature selectors, plus the same five
+creator selectors. The four actual full-image artifact targets and exact
+feature sets agree. Syntax and diff checks pass. This validation executes no
+native fixture; a fresh complete guest remains required.
+
+The same checkpoint's independent base guest fails its original thirty-second
+`scoped-file` bound after the `manifest-selection` stage. This is a separate
+failed prerequisite, with no established cause and no relaxed deadline. Its
+whole matrix cannot be accepted from either failed guest.
