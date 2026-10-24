@@ -3232,8 +3232,12 @@ initial broad validation rejected a whole-receiver caller scope because it
 retained temporary report charges beyond two existing lifecycle boundaries.
 That attempted scope is removed; the correction eliminates the report encoding
 itself. All 778 ordinary storage tests, 95 policy controls and strict
-storage/portable-RAM Clippy pass. Hermetic storage and mandatory application
-compilation checks remain pending for this final receiver change. It does not qualify native
+storage/portable-RAM Clippy pass. Hermetic storage output
+`9awg9vdvkrwykkl6mxxkcrc7qvj966fy` passes all 128 selected cases and
+149 independently checked successful nested summaries. Mandatory application
+compilation remains pending at the frozen source
+`29a7q1bqq2gn74pnw8vhyqz5mwiz0and`; all 5,423 committed Rust/TOML inputs
+and six fixtures match `8ad5c1b2fd`. These controls do not qualify native
 activation, physical lifecycle, lower residency or performance parity.
 
 The separate source-only exclusive-wait packet
