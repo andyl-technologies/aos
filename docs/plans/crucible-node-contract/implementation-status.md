@@ -10,6 +10,31 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## SDK journal storage bounds
+
+Commit `7835d7e34e` adds a physical JSON-forest quote under one aggregate byte
+ceiling. Independent documents retain their lexical rounding, root ownership
+and canonical work/output minima. The journal quote uses both actual lifetime
+request namespaces and their shared canonical-byte quota, with separate map
+IDs, request hashes and pinned tree layouts. It includes originals retained
+before a failed send. These are read-only DATA calculations; they increase no
+quota and issue no runtime reservation or Source permission. Receiver work,
+content, correlation copies and whole-owner observation growth remain separate.
+
+All four JSON-forest controls and the journal metadata control pass in both
+Transport codec modes. All 62 shared SourceBirth data tests pass, and the shared
+crate's Clippy run has no diagnostics. All-feature SourceBirth/Transport/Engine/
+Daemon targets, six architecture checks, scoped formatting and application
+test-target compilation pass. The first architecture run identified a stale
+review digest; removing the new child declaration reproduces the previous
+session module byte for byte, and the updated review passes all six checks.
+Actual application metadata records 185 test artifacts across 58 packages,
+including 76 integration targets. All 614 frozen owned Rust/Cargo inputs match
+the commit and actual application source. No new full Transport/Engine suite
+or VM qualification is claimed. Strict Transport Clippy remains failed with
+four owning-enum errors and 1,733 warnings, without new allowances. The complete
+runtime reservation, quota handoff, Native18 adoption and full RFC remain open.
+
 ## Typed Capture authentication prefixes
 
 Commit `5110fa2254` adds an actual-writer regression for complete Capture
