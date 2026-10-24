@@ -5,6 +5,7 @@
   jq,
   configurationProvider,
   nodes,
+  sourceInputs ? [],
 }: let
   # The lowered graph includes configuration children created by composed
   # handlers, such as the initial process configuration. Disabled parents and
@@ -21,13 +22,22 @@
   invocation = name: node: let
     input = node.input;
     components = lib.splitString "/" (lib.removePrefix "/etc/" input.path);
-    literal = input.content != null || builtins.all builtins.isString input.fragments;
+    immutableFragment = fragment:
+      builtins.isString fragment
+      || (builtins.isAttrs fragment
+        && fragment ? storePath
+        && (fragment.credentialPath or null) == null
+        && builtins.isString fragment.storePath
+        && lib.hasPrefix "/nix/store/" fragment.storePath
+        && builtins.all (part: !(builtins.elem part ["" "." ".."]))
+        (lib.splitString "/" (lib.removePrefix "/nix/store/" fragment.storePath)));
+    immutable = input.content != null || builtins.all immutableFragment input.fragments;
   in
     if lib.hasInfix "\n" input.path || lib.hasInfix "\r" input.path || !(builtins.all (component: !(builtins.elem component ["" "." ".."])) components)
     then throw "Initrd configuration '${name}' must own a canonical path beneath /etc."
     else if !(builtins.elem input.owner [null "root"]) || !(builtins.elem input.group [null "root"])
     then throw "Initrd configuration '${name}' requires an identity unavailable to the image file projection."
-    else if input.format == "text" && !literal
+    else if input.format == "text" && !immutable
     then throw "Initrd configuration '${name}' requires runtime credentials and cannot enter an immutable image."
     else {
       id = builtins.hashString "sha256" (builtins.toJSON node.identity);
@@ -45,6 +55,7 @@
 in
   runCommand "systemd-initrd-native-configuration" {
     inherit configurationJSON;
+    buildDeps = sourceInputs;
     passAsFile = ["configurationJSON"];
   } ''
     # The ordinary provider owns encoding, bounds, modes, and collision checks.

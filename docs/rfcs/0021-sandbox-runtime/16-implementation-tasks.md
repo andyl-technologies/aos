@@ -11416,3 +11416,31 @@ control remains disabled; it passes at
 `/nix/store/nq27sp7d5gabypknglj9bp6kh7gjry6x-sandbox-controller-service-source-contract-0`.
 The full installed Host retry remains pending. The observation is not backend
 readiness or a public lifecycle qualification receipt.
+
+### Complete initrd SELinux labeling inputs
+
+The Host retry (`cpm5lrn512qgfkzlkvckf22sxa0nmlia`) containing the enforcing
+configuration freezes before the test agent starts. PID 1 detects SELinux but
+cannot initialize its userspace labeling handle: the initrd lacks the selected
+policy's file contexts. Retaining `/etc/selinux/config` alone is insufficient.
+
+Production and the low-level stage-0 fixture now retain the exact selected
+`file_contexts` and `file_contexts.subs_dist` through their native configuration
+descriptor. The immutable policy producer is an explicit supplemental build
+input; evaluation does not read its output. The ordinary configuration provider
+copies bounded regular store files, rejecting mutable, ambiguous and
+noncanonical sources. This avoids embedding the roughly 400 KB context file in
+a provider invocation limited to 256 KB. Runtime credential fragments remain
+excluded from immutable initrd rendering.
+
+The provider's 11 unit tests and all targets pass in the cached AOS-built
+diagnostic shell. The actual provider/rendering regression passes at
+`/nix/store/3bh90gmpr817ywhwrkk7vhn2c6c95vsc-initrd-configuration-store-files-check`,
+including exact large and binary contents, requested modes and oversized-source
+rejection. These cached-toolchain results are diagnostic validation. Current
+merged-source native stage and profile replay pass at
+`/nix/store/jrhkhkh9qgdx60zbwrdxsvp6fvz4ypi8-aos-native-stage-replay` and
+`/nix/store/fcf6w431a40npxnnfpy3z59frx78xrh6-aos-native-profile-replay`.
+The installed Host, Root and offline vTPM checks remain pending. No lifecycle
+admission, protected handoff or method-46 qualification gate is enabled by this
+repair.

@@ -17,20 +17,26 @@
           (lib.types.submodule {
             _module.strict = true;
             options = {
+              storePath = lib.mkOption {
+                type = lib.types.nullOr lib.types.pathInStore;
+                default = null;
+                description = "Immutable regular file whose bounded bytes are inserted.";
+              };
               credentialPath = lib.mkOption {
-                type = lib.types.deferred lib.types.str;
-                description = "Protected credential file whose bounded contents are inserted.";
+                type = lib.types.nullOr (lib.types.deferred lib.types.str);
+                default = null;
+                description = "Protected credential source; exactly one source field must be selected.";
               };
               maximumBytes = lib.mkOption {
                 type = lib.types.ints.between 1 1048576;
                 default = 65536;
-                description = "Maximum credential bytes to read.";
+                description = "Maximum source bytes to read.";
               };
             };
           })
         ]);
         default = [];
-        description = "Ordered literal text and deferred strings to concatenate.";
+        description = "Ordered text, immutable files, and protected credential fragments to concatenate.";
       };
       format = lib.mkOption {
         type = lib.types.enum ["text" "json" "toml"];

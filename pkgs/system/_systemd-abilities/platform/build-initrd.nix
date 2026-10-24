@@ -62,6 +62,7 @@
     jq = artifacts.buildPackages.jq;
     configurationProvider = artifacts.buildPackages.aos-configuration-provider;
     nodes = stageConfig.aos.activation.graph.nodes;
+    sourceInputs = config.aos.activation.stages.initrd.supplementalInputs;
   };
   initrdUnits =
     buildContext.runCommand "systemd-initrd-native-bootstrap" {

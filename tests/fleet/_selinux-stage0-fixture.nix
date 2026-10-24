@@ -15,12 +15,10 @@
   aos.boot.initrd.stage0 = stage0;
   # Native initrd replay must label the writable /etc upper even when this
   # low-level fixture deliberately bypasses production stage-0 assertions.
-  aos.activation.stages.initrd.configuration = [
-    (builtins.path {
-      path = ../../modules/security/_selinux-initrd-policy.nix;
-      name = "aos-selinux-initrd-policy.nix";
-    })
-  ];
+  aos.activation.stages.initrd = import ../../modules/security/_selinux-initrd-configuration.nix {
+    inherit lib;
+    policy = pkgs.aos-selinux-production-policy;
+  };
   aos.security.selinux._qualificationAdmissionRelease = true;
   aos.kernel._extraConfigFragments = [
     (builtins.readFile ../../pkgs/kernel/config/selinux-immutable.config)

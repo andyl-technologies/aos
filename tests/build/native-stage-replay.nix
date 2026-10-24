@@ -61,6 +61,43 @@ in {
       assert effect.input.path == "/etc/selinux/config";
       assert effect.input.mode == "0444";
       assert effect.input.content == "SELINUX=enforcing\nSELINUXTYPE=aos\n"; true;
+  initrdSelinuxContexts = let
+    effects = replayedInitrd.aos.abilities.configuration.operations.file.effects;
+    files = [
+      {
+        name = "file-contexts";
+        path = "files/file_contexts";
+      }
+      {
+        name = "file-context-substitutions";
+        path = "files/file_contexts.subs_dist";
+      }
+    ];
+  in
+    assert (config.system.build.immutableSelinuxPolicy
+      == null
+      || builtins.elem (toString config.system.build.immutableSelinuxPolicy)
+      (map toString initrd.nativeEvaluationDescriptor.nativeEvaluationInputs.supplementalInputs))
+    || throw "Initrd labeling policy ${toString config.system.build.immutableSelinuxPolicy} is absent from retained inputs ${builtins.toJSON (map toString initrd.nativeEvaluationDescriptor.nativeEvaluationInputs.supplementalInputs)}";
+    assert builtins.all (file:
+      if config.system.build.immutableSelinuxPolicy == null
+      then !(effects ? ${"selinux-initrd-${file.name}"})
+      else let
+        effect = effects.${"selinux-initrd-${file.name}"};
+      in
+        effect.enable
+        && effect.input.path == "/etc/selinux/aos/contexts/${file.path}"
+        && effect.input.mode == "0444"
+        && effect.input.content == null
+        && effect.input.fragments
+        == [
+          {
+            storePath = "${config.system.build.immutableSelinuxPolicy}/etc/selinux/aos/contexts/${file.path}";
+            credentialPath = null;
+            maximumBytes = 1048576;
+          }
+        ])
+    files; true;
   hostStoreSeedImageProjection = assert config.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input
   == replayedHost.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input; true;
   hostStoreSeedEnvironment = assert config.aos.abilities.serviceManagement.operations.realize.effects."boot-preparations.aos-host-store-seed".input.environment

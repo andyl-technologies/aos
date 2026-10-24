@@ -2035,6 +2035,7 @@ in rec {
         mkSystem = mkFixtureSystem;
       };
       initrd-module-hardlinks = import ./tests/build/initrd-module-hardlinks.nix {inherit pkgs lib;};
+      initrd-configuration-store-files = import ./tests/build/initrd-configuration-store-files.nix {inherit pkgs lib;};
       initrd-udev-rules = import ./tests/build/initrd-udev-rules.nix {inherit pkgs;};
       esp-population = import ./tests/build/esp-population.nix {inherit pkgs;};
       initrd-stage-contract = import ./tests/build/initrd-stage-contract.nix {
@@ -2112,6 +2113,7 @@ in rec {
         inherit toolchain-boundaries native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache python-bytecode artifact-consumption native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix external-image-assembly gcc-config-shell esp-population hardening-probe host-native-inputs initrd-native-inputs initrd-module-hardlinks initrd-udev-rules initrd-stage-contract native-stage-replay native-profile-replay kernel-config rootfs-kernel-modules linux-cross-smoke linux-hosted-toolchain linux-hosted-llvm linux-hosted-rust linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity golden-image-budgets native-acquire-v3-protocol erofs-deduplication linux-cross-llvm linux-cross-runtime sandbox-guest-root-template sandbox-controller-service sandbox-selected-manager-stage0 sandbox-nix-method46-profile sandbox-nix-offline-hardware-profile sandbox-nix-offline-approval-delivery-profile sandbox-resource-unit-names sandbox-policy-cache-recovery-service sandbox-cache-signer-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-scrub vm-rootfs-adapter;
         inherit sandbox-standalone-resource-bank;
         inherit systemd-backend-policy-artifact;
+        inherit initrd-configuration-store-files;
         inherit image-reproducibility vm-artifacts;
         # These checks inspect realized closures, so keep them out of the pure evaluation layer.
         inherit config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness;
@@ -2137,6 +2139,7 @@ in rec {
             ++ lib.optional (sandbox-nix-offline-hardware-profile != null) sandbox-nix-offline-hardware-profile
             ++ lib.optional (sandbox-nix-offline-approval-delivery-profile != null) sandbox-nix-offline-approval-delivery-profile
             ++ lib.optional (systemd-backend-policy-artifact != null) systemd-backend-policy-artifact
+            ++ [initrd-configuration-store-files]
             ++ [toolchain-boundaries.all native-sandbox-boundary aos-dev-cli aos-cloud-vm aos-dev-cache-identity accache python-bytecode native-module-roots critical-pkgs cross-platform-foundation darwin-cross-smoke darwin-interpreters darwin-language-toolchains darwin-package-matrix.all external-image-assembly gcc-config-shell esp-population initrd-module-hardlinks initrd-udev-rules initrd-stage-contract native-stage-replay native-profile-replay kernel-config rootfs-kernel-modules linux-hosted-toolchain linux-workerd package-platform-declarations package-platform-support propagated-dependency-closure release-inventory-boundary runtime-python-outputs structured-attrs-export systemd-verity config-eval config-materialize boot-configuration native-projection-input image-metadata darling-harness config-manifest configProvenanceChecks.all renderedEvalSuites.rendered-system]
             ++ [native-acquire-v3-protocol sandbox-guest-root-template sandbox-controller-service sandbox-selected-manager-stage0 sandbox-resource-unit-names sandbox-policy-cache-recovery-service sandbox-cache-signer-service sandbox-kernel-report-ingress sandbox-source-provider-activation sandbox-linux-uapi selinux-erofs-labels selinux-root-handoff structured-attrs-scrub vm-rootfs-adapter]
             ++ [vm-artifacts]

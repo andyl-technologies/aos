@@ -153,6 +153,26 @@ fn structured_formats_and_credential_bounds_are_preserved() {
 }
 
 #[test]
+fn immutable_fragments_reject_mutable_and_ambiguous_sources() {
+    let root = TempDir::new().unwrap();
+    let source = root.path().join("source");
+    fs::write(&source, b"public data").unwrap();
+    let mut invocation = document(root.path(), "ignored");
+    invocation["input"]["content"] = Value::Null;
+
+    for fragment in [
+        json!({"storePath": source, "maximumBytes": 1024}),
+        json!({"storePath": "/nix/store/../foreign", "maximumBytes": 1024}),
+        json!({"storePath": source, "credentialPath": source, "maximumBytes": 1024}),
+    ] {
+        invocation["input"]["fragments"] = json!([fragment]);
+
+        assert!(run("apply", &invocation, &root.path().join("state")).is_err());
+        assert!(!root.path().join("example").exists());
+    }
+}
+
+#[test]
 fn invalid_actions_paths_and_inputs_fail_before_mutation() {
     let root = TempDir::new().unwrap();
     let state = root.path().join("state");

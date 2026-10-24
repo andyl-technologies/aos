@@ -63,12 +63,14 @@ fn text_format() -> String {
 }
 
 #[derive(Deserialize)]
-#[serde(untagged)]
+#[serde(untagged, deny_unknown_fields)]
 enum Fragment {
     Text(String),
-    Credential {
+    File {
+        #[serde(rename = "storePath")]
+        store_path: Option<String>,
         #[serde(rename = "credentialPath")]
-        credential_path: String,
+        credential_path: Option<String>,
         #[serde(rename = "maximumBytes")]
         maximum_bytes: u64,
     },
