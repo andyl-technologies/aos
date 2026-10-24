@@ -160,6 +160,15 @@ fn actual_schema_adapter_is_added_to_original_defining_counter() {
     assert_eq!(
         original_native_birth_startup_counter_scratch_data(),
         original_birth_counter_scratch_data()
+            // Both claim paths now retain the terminal origin-check views.
+            + size_of::<&mut bool>()
+            + size_of::<&std::thread::ThreadId>()
+            + size_of::<&crate::operational_time::OperationalDeadline>()
+            + 2 * size_of::<&str>()
+            + size_of::<std::thread::Thread>()
+            + size_of::<std::thread::ThreadId>()
+            + size_of::<u32>()
+            + 2 * size_of::<Result<(), ProviderError>>()
             + counter_scratch_data()
             + admit::adapter_counter_scratch_data()
             + super::super::super::private_backing::ADAPTER_COUNTER_SCRATCH_DATA
