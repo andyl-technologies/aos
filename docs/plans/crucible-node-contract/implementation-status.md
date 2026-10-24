@@ -10,6 +10,28 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Consumed input producer and native FIFO histories
+
+Commit `7cc4029c3b` checks every staged delivery against its original saved
+producer and native endpoint histories, including entries already consumed and
+removed from the pending queue. Missing FIFO history, a native identity beyond
+the last observed value, and a public identity at or beyond the next sequence
+are refused. Exhausted public sequence histories remain accepted. The checks
+borrow existing indexes without new child storage; their independent controls
+are included in the existing restoration counter without removing earlier terms.
+
+Both corrupted-history controls first reproduce acceptance by the previous full
+validator after their original fan-in snapshot passes validation. With the fix,
+both complete Engine suites pass 2,046 tests, with zero failures, 34 ignored
+and no filtering. Each mode passes 12 custody controls and five actual installed
+provider controls. All-feature Transport/Engine/Daemon target checks, formatting
+and all six architecture checks pass. These Rust checks use the cached AOS
+Cargo shell; mandatory merged-toolchain application, funded-VM and boundary
+qualification remains pending. Production Engine Clippy still reports 171
+errors and 444 warnings; Daemon is not reached. All 529 frozen owned Rust/Cargo
+inputs match the commit, actual application source and three funded-VM component
+captures. These checks do not complete native successor construction or the RFC.
+
 ## Complete pending custody for unconsumed staged inputs
 
 Commit `0496aeb354` requires every unconsumed staged input to retain its exact
