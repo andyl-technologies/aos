@@ -27,6 +27,14 @@ pub(super) fn report(inputs: &config::Inputs, exposure: &ExposureRecord) -> Resu
             backing.kind, backing.device, backing.inode, backing.size, backing.allocated,
         );
     }
+    let policy = fs::symlink_metadata(inputs.root.join("state/cache/records.toml"))?;
+    eprintln!(
+        "CLOSURE_DIAGNOSTIC policy device={} inode={} mode={:o} size={}",
+        policy.dev(),
+        policy.ino(),
+        policy.mode(),
+        policy.len(),
+    );
 
     // No backing is opened or retained. This fixture owns the root; never follow
     // symlinks, and stop at the same finite namespace bounds as the VM census.
@@ -50,6 +58,10 @@ fn visit(
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            eprintln!("CLOSURE_DIAGNOSTIC inaccessible path={path:?}");
+            return Ok(());
+        }
         Err(error) => return Err(error),
     };
     if excluded
@@ -66,7 +78,15 @@ fn visit(
         );
     }
     if metadata.is_dir() {
-        for entry in fs::read_dir(path)? {
+        let entries = match fs::read_dir(path) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                eprintln!("CLOSURE_DIAGNOSTIC inaccessible directory={path:?}");
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
+        for entry in entries {
             visit(&entry?.path(), excluded, depth + 1, remaining)?;
         }
     }

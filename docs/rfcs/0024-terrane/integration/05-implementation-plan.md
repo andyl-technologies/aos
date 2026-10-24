@@ -16339,3 +16339,24 @@ receive timeout and cancellation pass in 228.257 seconds. Complete review
 matches all 8,095 immutable source files, 5,366 bound inputs and the actual
 compiler/installed ELF and driver. This qualifies the framing/transport
 component, not production exposure or broker authority.
+
+
+#### Retained closure census discrepancy
+
+At immutable `31ad51a2f6`, the named-file guest again observes exactly one
+local backing reference and exact final-close physical charge release. Its
+fresh authenticated diagnostic census retains 13 named inodes against 15
+charged inodes; the owner's original unlinked probe accounts for one further
+charge. The original index is device 1792/inode 49 and the inline body is
+inode 51. A protected directory interrupts the subsequent diagnostic walk,
+so this result does not establish the remaining charge's identity or cause.
+The original five-second reconciliation still fails. Sibling controls run
+independently and cannot turn that failed dependency into an aggregate pass.
+
+The failure-only diagnostic now reports the accessible policy file's actual
+identity before traversal and continues its finite walk past permission-denied
+paths. Each denied path remains explicit; missing observation grants no proof.
+It still opens no backing, preserves all assertions and time bounds, and never
+changes production closure. Strict all-feature/all-target lint and actual
+native fixture compilation pass. A new immutable guest is required to resolve
+the observed discrepancy.
