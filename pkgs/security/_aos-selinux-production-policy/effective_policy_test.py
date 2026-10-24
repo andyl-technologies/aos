@@ -293,6 +293,19 @@ class EffectivePolicyTest(unittest.TestCase):
             effective_policy.Access("init_t", "init_t", "system", "start")
         )
 
+    def test_native_manager_audit_access_stays_with_startup(self) -> None:
+        for permission in ("start", "status"):
+            with self.subTest(permission=permission):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access("init_t", "auditd_unit_t", "service", permission)
+                )
+
+        for permission in ("stop", "reload"):
+            with self.subTest(permission=permission):
+                self.assert_forbidden_allow_rejected(
+                    effective_policy.Access("init_t", "auditd_unit_t", "service", permission)
+                )
+
     def test_view_preparer_nosuid_entry_stays_with_the_manager(self) -> None:
         for role in ("source", "cache"):
             preparer = f"aos_sandbox_{role}_view_preparer_t"

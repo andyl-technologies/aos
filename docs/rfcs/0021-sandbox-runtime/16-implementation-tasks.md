@@ -11252,3 +11252,18 @@ crate's targets compile. The ordinary native stage replay check passes at
 `/nix/store/vw33k53in1gf3rwn6x062spsj9vn1vs0-aos-native-stage-replay`.
 Profile replay, exact-head release compilation and installed retries remain
 pending; this fix does not change public admission or close the lifecycle gate.
+
+Native profile replay also passes at
+`/nix/store/8z0j243f4wh6mdchjwkfrc0kbzqh046p-aos-native-profile-replay`,
+including the immutable SELinux profile and retained host-policy reconstruction.
+
+### Native activation of the fixed audit service
+
+The installed Root audit records also show native activation denied `start`
+and `status` on `auditd_unit_t`. The policy now permits exactly those two
+service operations for `init_t`, matching the fixed image audit service that
+activation reconciles. Effective-policy checks require them and reject `stop`
+and `reload`; the manager-wide `system:start` prohibition remains. All 159
+policy unit tests and the normal compiled-policy scan pass. The complete unsafe
+variant matrix and installed retry are still running, so these checks do not
+establish successful native activation or Root startup.
