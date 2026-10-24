@@ -67,6 +67,7 @@ impl NativeAckBoot {
         }
         let retained = attempt.insert(OriginalNativeStartupBootAttempt {
             launch_body: original_launch_body,
+            scalars: None,
             data: None,
         });
         let result = Self::prepare_original_invocation_attempt_data(
@@ -95,22 +96,28 @@ impl NativeAckBoot {
         startup.ensure_original()?;
         crate::connection::serialized_credit(value.value, startup.maximum_boot_bytes)?;
         let shape = shape::inspect_data(value.value)?;
-        attempt.data = Some(shape.copy_data()?);
-        let data = attempt.data.as_ref().ok_or(ProviderError::Correlation(
-            "native invocation decoded boot absent",
+        attempt.scalars = Some(shape.copy_scalars_data()?);
+        let scalars = attempt.scalars.as_ref().ok_or(ProviderError::Correlation(
+            "native invocation decoded scalars absent",
         ))?;
-        if data.schema != PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA {
+        if scalars.schema != PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA {
             return Err(ProviderError::Correlation(
                 "native invocation private boot class",
             ));
         }
-        // The decoded children stay in the original attempt across any claim
-        // refusal. Its independent private funding cannot pay for a premature
-        // Rc-owned NativeAckBoot before the native row authenticates.
+        scalars.authenticate_native_grammar_data(
+            launch,
+            PACKET_NATIVE_INVOCATION_PRIVATE_BOOT_SCHEMA,
+        )?;
         let admitted = startup.claim_invocation_birth_data(
-            data.claim_inputs_data(launch, &attempt.launch_body, value.body),
+            shape.claim_inputs_data(launch, &attempt.launch_body, value.body, scalars),
             &purpose,
         )?;
+        let scalars = attempt.scalars.take().ok_or(ProviderError::Correlation(
+            "native invocation decoded scalars transferred",
+        ))?;
+        // Keep scalar refusal custody separate from native-funded child copies.
+        attempt.data = Some(shape.copy_children_data(scalars));
         let data = attempt.data.take().ok_or(ProviderError::Correlation(
             "native invocation decoded boot transferred",
         ))?;

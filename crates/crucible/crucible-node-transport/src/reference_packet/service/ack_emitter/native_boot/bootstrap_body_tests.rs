@@ -71,7 +71,7 @@ fn exercise_claim(invocation: bool) -> TestResult {
         "source_birth": source,
         "expected_host_registration": registration,
         "private_launch": "private-data",
-        "host_executable": canonical::content_ref(b"inert", "application/test")?,
+        "host_executable": launch.controller_executable.clone(),
     });
     let canonical_boot = canonical::canonical_json(&boot)?;
     let row = PacketNativeStartupAllocationRow {

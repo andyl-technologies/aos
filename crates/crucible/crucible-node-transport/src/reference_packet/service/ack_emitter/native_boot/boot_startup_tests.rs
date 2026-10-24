@@ -54,6 +54,10 @@ fn original_boot_refusals_retain_the_actual_attempt_and_spend_retry() -> TestRes
         "nested_decode",
         "identifier_decode",
         "literal",
+        "schema",
+        "host_executable",
+        "key_width",
+        "birth_width",
         "claim",
     ] {
         let (mut parent, inherited) = UnixStream::pair()?;
@@ -98,18 +102,37 @@ fn inherited_boot_refusal_child() -> TestResult {
             "source_birth": {"incomplete": "retained source payload"},
             "expected_host_registration": {"incomplete": "retained host payload"},
             "private_launch": "private-data",
-            "host_executable": canonical::content_ref(b"inert", "application/test")?,
+            "host_executable": launch.controller_executable.clone(),
         })
     };
     if case == "nested_decode" {
         value["host_executable"]["length"] = serde_json::json!("18446744073709551616");
     } else if case == "identifier_decode" {
         value["private_launch"] = serde_json::json!("invalid identifier");
+    } else if case == "schema" {
+        value["schema"] = serde_json::json!("unsupported-private-class");
+    } else if case == "host_executable" {
+        value["host_executable"] =
+            serde_json::to_value(canonical::content_ref(b"changed", "application/test")?)?;
+    } else if case == "key_width" {
+        value["private_key"] = serde_json::to_value(Bytes::new(vec![29; 31]))?;
+    } else if case == "birth_width" {
+        value["birth_id"] = serde_json::to_value(Bytes::new(vec![0; 31]))?;
     } else if case == "literal" {
         value["source_birth"]["nested"] = serde_json::json!({
             "$serde_json::private::RawValue": "not JSON"
         });
     }
+    let source_pointer = value
+        .get("source_birth")
+        .and_then(|source| source.get("incomplete"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::as_ptr);
+    let registration_pointer = value
+        .get("expected_host_registration")
+        .and_then(|registration| registration.get("incomplete"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::as_ptr);
     let raw_body = canonical::canonical_json(&value)?;
     let launch_body = b"retained launch payload".to_vec();
     let launch_pointer = launch_body.as_ptr();
@@ -133,44 +156,71 @@ fn inherited_boot_refusal_child() -> TestResult {
     );
 
     assert!(result.is_err());
-    let decoded = matches!(case.as_str(), "claim" | "literal");
-    if decoded {
+    assert!(
+        attempt
+            .as_ref()
+            .is_none_or(|attempt| attempt.data.is_none()),
+        "unadmitted native boot child copies"
+    );
+    let copied_scalars = matches!(
+        case.as_str(),
+        "claim" | "literal" | "schema" | "host_executable" | "key_width" | "birth_width"
+    );
+    let claimed = matches!(case.as_str(), "claim" | "literal");
+    if claimed {
         assert!(matches!(
             result,
             Err(ProviderError::Correlation(
                 "original native startup preamble data"
             ))
         ));
+    } else if matches!(
+        case.as_str(),
+        "schema" | "host_executable" | "key_width" | "birth_width"
+    ) {
+        assert!(matches!(
+            result,
+            Err(ProviderError::Correlation(
+                "native private ACK boot grammar"
+            ))
+        ));
     }
     assert!(startup.failed);
     assert!(startup.ensure_original().is_err());
     assert!(completed.is_none());
+    assert_eq!(startup.native_issued, claimed);
+
     let retained = attempt.as_ref().ok_or("boot attempt absent")?;
     assert_eq!(retained.launch_body.as_ptr(), launch_pointer);
     assert_eq!(retained.launch_body, b"retained launch payload");
-    assert_eq!(startup.native_issued, decoded);
-    let source_pointer = if decoded {
-        let data = retained.data.as_ref().ok_or("decoded boot absent")?;
-        assert_eq!(data.private_key.as_slice(), &[29; 32]);
+    assert!(retained.data.is_none());
+    let scalar_pointers = if copied_scalars {
+        let scalars = retained.scalars.as_ref().ok_or("decoded scalars absent")?;
+        let key_length = if case == "key_width" { 31 } else { 32 };
+        let birth_length = if case == "birth_width" { 31 } else { 32 };
+        assert_eq!(scalars.private_key.as_slice(), vec![29; key_length]);
+        assert_eq!(scalars.birth_id.as_slice(), vec![0; birth_length]);
+        assert_eq!(scalars.private_launch.as_str(), "private-data");
         assert_eq!(
-            data.expected_host_registration["incomplete"],
+            value["expected_host_registration"]["incomplete"],
             "retained host payload"
         );
-        assert_eq!(data.source_birth["incomplete"], "retained source payload");
+        assert_eq!(
+            value["source_birth"]["incomplete"],
+            "retained source payload"
+        );
         if case == "literal" {
             assert_eq!(
-                data.source_birth["nested"]["$serde_json::private::RawValue"],
+                value["source_birth"]["nested"]["$serde_json::private::RawValue"],
                 "not JSON"
             );
         }
-        Some(
-            data.source_birth["incomplete"]
-                .as_str()
-                .ok_or("source payload absent")?
-                .as_ptr(),
-        )
+        Some((
+            scalars.private_key.as_slice().as_ptr(),
+            scalars.private_launch.as_str().as_ptr(),
+        ))
     } else {
-        assert!(retained.data.is_none());
+        assert!(retained.scalars.is_none());
         None
     };
 
@@ -192,19 +242,33 @@ fn inherited_boot_refusal_child() -> TestResult {
     ));
     let retained = attempt.as_ref().ok_or("retry replaced attempt")?;
     assert_eq!(retained.launch_body.as_ptr(), launch_pointer);
-    if let Some(source_pointer) = source_pointer {
-        assert_eq!(
-            retained
-                .data
-                .as_ref()
-                .ok_or("retry lost decoded boot")?
-                .source_birth["incomplete"]
-                .as_str()
-                .ok_or("retry lost source payload")?
-                .as_ptr(),
-            source_pointer
-        );
+    assert!(retained.data.is_none());
+    if let Some((key_pointer, private_pointer)) = scalar_pointers {
+        let scalars = retained
+            .scalars
+            .as_ref()
+            .ok_or("retry lost decoded scalars")?;
+        assert_eq!(scalars.private_key.as_slice().as_ptr(), key_pointer);
+        assert_eq!(scalars.private_launch.as_str().as_ptr(), private_pointer);
+    } else {
+        assert!(retained.scalars.is_none());
     }
+    assert_eq!(
+        value
+            .get("source_birth")
+            .and_then(|source| source.get("incomplete"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::as_ptr),
+        source_pointer
+    );
+    assert_eq!(
+        value
+            .get("expected_host_registration")
+            .and_then(|registration| registration.get("incomplete"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::as_ptr),
+        registration_pointer
+    );
     assert!(startup.failed);
     assert!(completed.is_none());
     Ok(())

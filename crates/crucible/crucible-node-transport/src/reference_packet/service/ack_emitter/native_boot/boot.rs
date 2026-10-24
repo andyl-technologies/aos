@@ -119,30 +119,12 @@ pub(super) struct OriginalNativeBootValue<'a> {
     pub(super) body: &'a [u8],
 }
 
-impl BootData {
-    fn claim_inputs_data<'a>(
-        &'a self,
-        launch: &'a PacketNative5SourceLaunch,
-        launch_body: &'a [u8],
-        boot_body: &'a [u8],
-    ) -> OriginalNativeBootClaimInputs<'a> {
-        OriginalNativeBootClaimInputs {
-            launch,
-            launch_body,
-            boot_body,
-            source: &self.source_birth,
-            registration: &self.expected_host_registration,
-            private_launch: &self.private_launch,
-            key: self.private_key.as_slice(),
-            birth_id: self.birth_id.as_slice(),
-        }
-    }
-}
-
-// Retains the original decoded children before the independent native row
-// permits construction of the larger Rc-owned boot. Bootstrap owns this inline.
+// Retains scalar decoding before the native row authenticates child copying.
+// The completed DTO remains here until the shared native boot takes it whole.
+// Bootstrap owns this slot inline, including every failed scalar attempt.
 pub(super) struct OriginalNativeStartupBootAttempt {
     launch_body: Vec<u8>,
+    scalars: Option<shape::BootScalars>,
     data: Option<BootData>,
 }
 
@@ -276,6 +258,7 @@ impl NativeAckBoot {
         }
         let retained = attempt.insert(OriginalNativeStartupBootAttempt {
             launch_body: original_launch_body,
+            scalars: None,
             data: None,
         });
         let result = Self::prepare_original_startup_attempt_data(
@@ -306,15 +289,25 @@ impl NativeAckBoot {
         // The subsequent copies cannot reject a later field after dropping an
         // earlier decoded child. This inspection grants no native row claim.
         let shape = shape::inspect_data(value.value)?;
-        attempt.data = Some(shape.copy_data()?);
-        let data = attempt.data.as_ref().ok_or(ProviderError::Correlation(
-            "native startup decoded boot absent",
+        attempt.scalars = Some(shape.copy_scalars_data()?);
+        let scalars = attempt.scalars.as_ref().ok_or(ProviderError::Correlation(
+            "native startup decoded scalars absent",
         ))?;
-        let admitted = startup.claim_birth_data(data.claim_inputs_data(
+        scalars.authenticate_native_grammar_data(
+            launch,
+            crate::reference_packet::service::native_startup::PACKET_NATIVE_STARTUP_PRIVATE_BOOT_SCHEMA,
+        )?;
+        let admitted = startup.claim_birth_data(shape.claim_inputs_data(
             launch,
             &attempt.launch_body,
             value.body,
+            scalars,
         ))?;
+        let scalars = attempt.scalars.take().ok_or(ProviderError::Correlation(
+            "native startup decoded scalars transferred",
+        ))?;
+        // The full native row now funds the independent retained child trees.
+        attempt.data = Some(shape.copy_children_data(scalars));
         let data = attempt.data.take().ok_or(ProviderError::Correlation(
             "native startup decoded boot transferred",
         ))?;

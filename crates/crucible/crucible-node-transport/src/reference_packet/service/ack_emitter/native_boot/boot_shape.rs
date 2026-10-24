@@ -41,34 +41,110 @@ pub(super) struct BootShape<'a> {
     host_executable: &'a Value,
 }
 
-impl BootShape<'_> {
-    /// Copies validated fields while preserving the actual opaque JSON children.
+/// Retains scalar copies without cloning either original opaque JSON child.
+///
+/// These decoded fields carry no admission. The original claimant still checks
+/// its MAC, body identities and independently derived full allocation rows.
+pub(super) struct BootScalars {
+    pub(super) schema: String,
+    pub(super) private_key: Bytes,
+    pub(super) birth_id: Bytes,
+    pub(super) private_launch: Id,
+    pub(super) host_executable: ContentRef,
+}
+
+impl BootScalars {
+    /// Checks scalar identity and widths before the full native allocation claim.
     ///
     /// # Errors
-    /// Propagates a scalar/reference codec error if its representation differs
-    /// from the checks performed by the defining borrowed inspector.
-    pub(super) fn copy_data(self) -> Result<super::BootData, ProviderError> {
-        // These immutable scalar/reference inputs passed the exact codec
-        // spelling checks before the first owned copy. Keep the SDK's codecs
-        // for the actual typed values and leave semantic validation unchanged.
+    /// Refuses an unexpected schema, key or birth width, or controller reference.
+    pub(super) fn authenticate_native_grammar_data(
+        &self,
+        launch: &crate::reference_packet::service::PacketNative5SourceLaunch,
+        expected_schema: &str,
+    ) -> Result<(), ProviderError> {
+        if self.schema != expected_schema
+            || self.private_key.as_slice().len() != 32
+            || self.birth_id.as_slice().len() != 32
+            || self.host_executable != launch.controller_executable
+        {
+            return Err(ProviderError::Correlation(
+                "native private ACK boot grammar",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl BootShape<'_> {
+    /// Copies only the validated scalar fields into the original attempt.
+    ///
+    /// # Errors
+    /// Propagates a scalar/reference codec error if an inspected representation
+    /// differs from the defining SDK codec.
+    pub(super) fn copy_scalars_data(&self) -> Result<BootScalars, ProviderError> {
         let private_key = Bytes::deserialize(self.private_key).map_err(ContractError::from)?;
         let birth_id = Bytes::deserialize(self.birth_id).map_err(ContractError::from)?;
         let private_launch = Id::deserialize(self.private_launch).map_err(ContractError::from)?;
         let host_executable =
             ContentRef::deserialize(self.host_executable).map_err(ContractError::from)?;
 
-        // Value's generic deserializer can interpret reserved Serde keys as a
-        // second encoded JSON document. Clone the actual retained JSON children
-        // directly so their literal objects never enter that fallible parser.
-        Ok(super::BootData {
+        Ok(BootScalars {
             schema: self.schema.to_owned(),
+            private_key,
+            birth_id,
+            private_launch,
+            host_executable,
+        })
+    }
+
+    /// Borrows the original children and retained scalar copies for the full claim.
+    pub(super) fn claim_inputs_data<'a>(
+        &'a self,
+        launch: &'a crate::reference_packet::service::PacketNative5SourceLaunch,
+        launch_body: &'a [u8],
+        boot_body: &'a [u8],
+        scalars: &'a BootScalars,
+    ) -> super::OriginalNativeBootClaimInputs<'a> {
+        super::OriginalNativeBootClaimInputs {
+            launch,
+            launch_body,
+            boot_body,
+            source: self.source_birth,
+            registration: self.expected_host_registration,
+            private_launch: &scalars.private_launch,
+            key: scalars.private_key.as_slice(),
+            birth_id: scalars.birth_id.as_slice(),
+        }
+    }
+
+    /// Copies opaque children only after the caller authenticates native funding.
+    pub(super) fn copy_children_data(self, scalars: BootScalars) -> super::BootData {
+        let BootScalars {
+            schema,
+            private_key,
+            birth_id,
+            private_launch,
+            host_executable,
+        } = scalars;
+
+        // Clone the original Value trees directly. Generic deserialization can
+        // interpret reserved Serde keys as a second encoded JSON document.
+        super::BootData {
+            schema,
             private_key,
             birth_id,
             source_birth: self.source_birth.clone(),
             expected_host_registration: self.expected_host_registration.clone(),
             private_launch,
             host_executable,
-        })
+        }
+    }
+
+    #[cfg(test)]
+    fn copy_data(self) -> Result<super::BootData, ProviderError> {
+        let scalars = self.copy_scalars_data()?;
+        Ok(self.copy_children_data(scalars))
     }
 }
 
@@ -203,6 +279,18 @@ pub(super) fn counter_scratch_data() -> usize {
         + size_of::<Result<(), ProviderError>>() * 5
         + size_of::<usize>() * 4
         + size_of::<bool>() * 4
+        // Scalar return, slot initializer and child-copy receiver are separate
+        // fixed views; the attempt's resident slot is already in its layout.
+        + 3 * size_of::<BootScalars>()
+        + size_of::<Result<BootScalars, ProviderError>>()
+        + size_of::<Option<BootScalars>>()
+        + 3 * size_of::<&BootScalars>()
+        + size_of::<&mut Option<BootScalars>>()
+        + size_of::<&crate::reference_packet::service::PacketNative5SourceLaunch>()
+        + 2 * size_of::<&str>()
+        + 4 * size_of::<usize>()
+        + 4 * size_of::<bool>()
+        + 2 * size_of::<Result<(), ProviderError>>()
 }
 
 /// Names additional borrowed/result and owned initializer construction headers.
@@ -211,6 +299,8 @@ pub(super) const fn construction_transient_data() -> usize {
         + size_of::<Result<BootShape<'static>, ProviderError>>()
         + size_of::<super::BootData>()
         + size_of::<Result<super::BootData, ProviderError>>()
+        + size_of::<BootScalars>()
+        + size_of::<Result<BootScalars, ProviderError>>()
 }
 
 #[cfg(test)]
