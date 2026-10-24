@@ -10,6 +10,33 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Original startup representation and literal JSON custody
+
+Commit `48b372ab72` checks every original14 scalar/reference spelling through a
+borrowed view before owned DTO copying. Fixed three-byte base64 quanta use the
+same pinned decoder; identifier and canonical decimal checks preserve the SDK's
+accepted representation. The actual typed scalar/reference values still use
+their existing codecs. The complete decoded owner remains installed before the
+independent native row claim, and every refused attempt remains spent.
+
+The two opaque JSON children copy their actual retained trees directly. A generic
+`Value` deserializer can interpret reserved Serde keys as another encoded JSON
+document when raw-JSON support is enabled. The original constructor preserves
+those literal objects, including nested reserved keys, without entering that
+second fallible parser. Ordinary boot5 and other constructors keep their existing
+paths. The new borrowed/result/copy headers are added to the original transient
+and counter quotes without removing the older DTO/Serde terms.
+
+The complete raw-JSON and standard Transport suites each pass 2,089 tests with
+zero failures, 17 ignored tests and no filtering. Representation and literal-tree
+controls pass in both modes, including six actual inherited-socket refusal
+flights per mode. Current-source application/boundary checks remain pending.
+Development all-feature/all-target Transport/Engine/Daemon checking and all six
+architecture checks pass. Production Transport Clippy remains at 41 errors and 1,733 warnings,
+with no diagnostics in the new module. All 490 frozen owned Rust/Cargo inputs
+match the working tree and committed revision. This scopes the boot DTO boundary; later normalization,
+complete native failed-prefix custody and full RFC-0025 remain unfinished.
+
 ## Master integration and preserved qualification scope
 
 Merge `9209c1ce2d` incorporates `origin/master` at `b04bda7d9a` and adopts
