@@ -11149,3 +11149,25 @@ ring-buffer death notification for the stopped target's namespace before
 restarting Host.
 Complete policy, systemd package and installed Host qualification remain pending;
 object compilation does not establish installed readiness.
+
+### Post-merge dependency inheritance and policy validation
+
+The merged workspace accidentally placed the Sandbox dependency group under
+master's new `[patch.crates-io]` table. Cargo therefore could not inherit those
+dependencies, even though their local paths existed. The patch table now follows
+the complete workspace dependency group and retains the `libssh2-sys` override.
+All 1,662 inherited dependency references across 126 workspace members resolve,
+including target-specific tables, and every local dependency path exists.
+
+The current 713-package lockfile vendor build passes its expected staging hash
+and the complete frozen registry patch recipe using the cached AOS toolchain.
+An early check of the merged Rust targets is running in an AOS Nix development
+shell; this diagnostic does not replace release-toolchain qualification.
+
+The merged fentry production policy at
+`/nix/store/j7kjwjz3d07w95f243visdfhb6169hdl-aos-selinux-production-policy-1`
+passes all 158 unit tests, its normal effective-policy scan, all deliberately
+unsafe variants and the selected kernel class-map checks. Its matrix explicitly
+rejects all six manager perf-event permissions. This receipt precedes the later
+kernel-compatibility checker commit; that commit's complete policy rebuild and
+the installed Root, Host and offline TPM runs remain pending.

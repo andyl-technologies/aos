@@ -485,9 +485,6 @@ aos-hub-client = { path = "hub/aos-hub-client" }
 crucible-control-client = { path = "crucible/crucible-control-client" }
 crucible-control-server = { path = "crucible/crucible-control-server" }
 
-[patch.crates-io]
-libssh2-sys = { path = "bindings/libssh2-sys" }
-
 aos-sandbox-filesystem-fuse = { path = "sandbox/filesystem/aos-sandbox-filesystem-fuse" }
 aos-sandbox-filesystem-fuse-kernel-worker = { path = "sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/kernel-worker" }
 aos-sandbox-filesystem-fuse-link-consumer = { path = "sandbox/filesystem/aos-sandbox-filesystem-fuse/tests/fixtures/link-consumer" }
@@ -536,6 +533,9 @@ aos-sandbox-service-journal-probe = { path = "sandbox/controller/aos-sandbox-con
 aos-sandbox-api = { path = "sandbox/protocol/aos-sandbox-api" }
 
 aos-sandbox-cache = { path = "sandbox/storage/aos-sandbox-cache" }
+
+[patch.crates-io]
+libssh2-sys = { path = "bindings/libssh2-sys" }
 
 [workspace.lints.clippy]
 all = "deny"
