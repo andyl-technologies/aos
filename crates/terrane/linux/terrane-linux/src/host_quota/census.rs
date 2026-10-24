@@ -6,10 +6,10 @@
 //! project, even through a descriptor or mapping outside the scanned namespace.
 //! An incomplete scan can conservatively delay that proof; it cannot invent it.
 
-use super::{NativeProject, NativeQuota, filesystem_uuid};
+use super::{NativeProject, NativeQuota, ProjectInodeBinding, ProjectInodeBirth, filesystem_uuid};
 use rustix::fs::{Dir, FileType, Mode, OFlags, open, openat};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs::File,
     io,
     os::{fd::AsRawFd, unix::fs::MetadataExt},
@@ -48,6 +48,7 @@ pub struct NativeProjectClosure {
     filesystem_uuid: [u8; 16],
     project_id: u32,
     excluded: Vec<ProjectInode>,
+    incarnations: Vec<ProjectInodeBinding>,
     retained_inodes: u64,
     quota: NativeQuota,
 }
@@ -68,7 +69,12 @@ impl NativeProjectClosure {
         &self.excluded
     }
 
-    /// Returns the number of distinct original inodes held through the query.
+    /// Borrows the exact original incarnation bindings used by this observation.
+    pub fn incarnations(&self) -> &[ProjectInodeBinding] {
+        &self.incarnations
+    }
+
+    /// Returns the number of distinct non-excluded inodes held through the query.
     pub const fn retained_inodes(&self) -> u64 {
         self.retained_inodes
     }
@@ -96,7 +102,7 @@ struct Retained {
 
 struct Census {
     project: NativeProject,
-    excluded: BTreeSet<ProjectInode>,
+    excluded: BTreeMap<ProjectInode, BTreeSet<Option<ProjectInodeBirth>>>,
     seen: BTreeSet<ProjectInode>,
     retained: Vec<Retained>,
     limits: ProjectCensusLimits,
@@ -128,6 +134,34 @@ pub fn observe_project_closure(
     excluded: &[ProjectInode],
     limits: ProjectCensusLimits,
 ) -> io::Result<NativeProjectClosure> {
+    if excluded.is_empty() || excluded.len() > limits.directory_entries {
+        return Err(invalid());
+    }
+    let bindings: Vec<_> = excluded
+        .iter()
+        .map(|identity| ProjectInodeBinding {
+            identity: *identity,
+            birth: None,
+        })
+        .collect();
+    observe_project_incarnation_closure(roots, &bindings, limits)
+}
+
+/// Observes closure while distinguishing replacements of original inode numbers.
+///
+/// Creation times must come from original retained descriptors before disclosure,
+/// never from replacement paths. Missing timestamps retain legacy exclusions.
+/// The same bounded traversal, held inode count and kernel quota comparison as
+/// [`observe_project_closure`] apply; matching original incarnations stay omitted.
+///
+/// # Errors
+/// Refuses invalid identities or timestamps, unavailable native creation times
+/// for matching inode numbers, and every failure of [`observe_project_closure`].
+pub fn observe_project_incarnation_closure(
+    roots: &[&File],
+    excluded: &[ProjectInodeBinding],
+    limits: ProjectCensusLimits,
+) -> io::Result<NativeProjectClosure> {
     let root = roots.first().ok_or_else(invalid)?;
     if roots.len() > limits.retained_inodes
         || excluded.is_empty()
@@ -143,9 +177,16 @@ pub fn observe_project_closure(
         return Err(invalid());
     }
     let filesystem_uuid = filesystem_uuid(root)?;
-    let mut omitted = BTreeSet::new();
-    for identity in excluded {
-        if identity.device != project.device || identity.inode == 0 || !omitted.insert(*identity) {
+    let mut omitted: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
+    for binding in excluded {
+        let identity = binding.identity;
+        if identity.device != project.device
+            || identity.inode == 0
+            || binding
+                .birth
+                .is_some_and(|birth| birth.nanoseconds >= 1_000_000_000)
+            || !omitted.entry(identity).or_default().insert(binding.birth)
+        {
             return Err(invalid());
         }
     }
@@ -185,13 +226,28 @@ pub fn observe_project_closure(
     Ok(NativeProjectClosure {
         filesystem_uuid,
         project_id: census.project.project_id,
-        excluded: excluded.to_vec(),
+        excluded: excluded.iter().map(|binding| binding.identity).collect(),
+        incarnations: excluded.to_vec(),
         retained_inodes,
         quota,
     })
 }
 
 impl Census {
+    fn omits(&self, identity: ProjectInode, file: &File) -> io::Result<bool> {
+        let Some(originals) = self.excluded.get(&identity) else {
+            return Ok(false);
+        };
+        if originals.contains(&None) {
+            return Ok(true);
+        }
+        // Multiple draining exposures can record distinct incarnations of one
+        // inode number. Omit any matching original; count only a replacement
+        // whose native creation time differs from every retained obligation.
+        let birth = ProjectInodeBirth::observe(file)?;
+        Ok(originals.contains(&Some(birth)))
+    }
+
     fn retain(&mut self, file: File, depth: u32) -> io::Result<()> {
         let metadata = file.metadata()?;
         let identity = ProjectInode {
@@ -201,7 +257,7 @@ impl Census {
         if identity.device != self.project.device {
             return Err(invalid());
         }
-        if self.excluded.contains(&identity) || self.seen.contains(&identity) {
+        if self.omits(identity, &file)? || self.seen.contains(&identity) {
             return Ok(());
         }
         if self.retained.len() >= self.limits.retained_inodes || depth > self.limits.depth {
@@ -268,7 +324,7 @@ impl Census {
             if identity.device != self.project.device {
                 return Err(invalid());
             }
-            if self.excluded.contains(&identity) || self.seen.contains(&identity) {
+            if self.omits(identity, &inode)? || self.seen.contains(&identity) {
                 continue;
             }
             let kind = FileType::from_raw_mode(before.mode());

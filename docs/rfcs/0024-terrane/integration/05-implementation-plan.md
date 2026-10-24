@@ -16505,3 +16505,40 @@ full native prerequisites, and both retained compiler feature profiles match.
 The clean merged eleven-component T2 and feature-matrix requests remain in
 progress. Native protected-namespace diagnostics at `34d252e04f` remain in
 progress. Accepted trunk task count remains 27 of 64.
+
+### Original inode incarnations after merged-kernel qualification
+
+Frozen `34d252e04f` reproduces named retained-file reconciliation failure in
+1,421.239 seconds for the complete three-scenario request. Administrator
+inspection after the actor fails establishes the cause: original sealed index
+`(device=1792,inode=49,size=687)` has closed, and a protected publisher
+`state/publication/retirement-*.toml` record now occupies inode 49, with length
+438 and allocation 4,096. Raw device/inode exclusions omit that new metadata,
+leaving 13 held named inodes plus the owner's original unlinked probe against
+15 kernel-charged inodes. The already-unlinked-file control passes. The owner
+scenario completes its assertions but reaches the newly enforced 180-second
+headless VM bound before the result marker; it is a failure, not qualification.
+Actor timing diagnostics retain all original assertion and deadline contracts.
+
+New backing capture records kernel creation seconds and nanoseconds from the
+original retained descriptor using checked `statx(AT_EMPTY_PATH, STATX_BTIME)`.
+Snapshot version 4 carries the paired optional fields; versions 1 through 3
+remain readable and legacy observations never acquire timestamps from visible
+replacement paths. Missing timestamps retain conservative raw exclusions.
+Creation timestamps do not grant read authority or prove physical release.
+
+Explicit census protocol version 3 carries original creation timestamps and
+correlates the exact ordered echo and protocol version through the existing
+authenticated helper. Version 2 rejects these fields and preserves raw-number
+semantics. Both retain the 512-identity and 16 KiB packet bounds, configured
+roots and projects, peer UID authorization, protected epoch, bounded traversal,
+held original descriptors and fresh kernel charges. Distinct historical
+incarnations of one inode number are supported; matching any recorded original
+remains excluded. Identical creation timestamps conservatively delay closure.
+The original private unlinked probe remains separately held and checked.
+
+Four pure census protocol tests and six pure SDK exposure-state tests pass.
+Strict all-feature, all-target native Clippy passes after the actual helper and
+original-descriptor fixture strengthening. Mandatory application targets and
+actual disposable-VM qualification remain required. No trunk task is accepted
+from these implementation or diagnostic results; accepted tasks remain 27 of 64.

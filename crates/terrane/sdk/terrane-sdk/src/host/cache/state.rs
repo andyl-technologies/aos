@@ -93,7 +93,8 @@ pub struct CacheState {
     /// Durable exposure context whose pins survive expiry and disconnection.
     ///
     /// Nonempty context requires snapshot version 2; original native backing
-    /// observations require version 3. Older readers refuse these upgrades.
+    /// observations require version 3, and creation timestamps require version 4.
+    /// Older readers refuse these upgrades.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub exposures: Vec<ExposureRecord>,
     /// Consumer promises acknowledged after durable synchronization.
@@ -154,7 +155,7 @@ impl CacheState {
                     .and_then(|extra| count.checked_add(extra))
             })
             .ok_or_else(capacity)?;
-        if !matches!(self.version, 1..=3)
+        if !matches!(self.version, 1..=4)
             || (self.version == 1 && !self.exposures.is_empty())
             || count > limits.records
         {

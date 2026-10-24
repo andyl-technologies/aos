@@ -18,6 +18,7 @@ fn query() -> CensusQuery {
         excluded: vec![CensusInode {
             device: 7,
             inode: u64::MAX,
+            birth: None,
         }],
     }
 }
@@ -98,6 +99,7 @@ fn census_query_rejects_extensions_aliases_and_noncanonical_encoding() -> Result
                     .map(|index| CensusInode {
                         device: 7,
                         inode: index as u64 + 1,
+                        birth: None,
                     })
                     .collect()
             }
@@ -158,5 +160,86 @@ fn census_error_cannot_carry_quota_or_closure_evidence() -> Result {
     let mut explicit_evidence = response.encode_to_vec();
     explicit_evidence.extend_from_slice(&[80, 0]);
     assert!(CensusObservation::decode_strict(&explicit_evidence).is_err());
+    Ok(())
+}
+
+#[test]
+fn incarnation_census_requires_explicit_version_and_canonical_creation_times() -> Result {
+    use terrane_linux::host_quota::CensusBirth;
+
+    let mut request = query();
+    request.excluded[0].birth = Some(CensusBirth {
+        seconds: -1,
+        nanoseconds: 999_999_999,
+    });
+    assert!(CensusQuery::decode_strict(&request.encode_to_vec()).is_err());
+    request.version = 3;
+    assert_eq!(
+        CensusQuery::decode_strict(&request.encode_to_vec())?,
+        request
+    );
+    assert!(QuotaQuery::decode_strict(&request.encode_to_vec()).is_err());
+
+    let mut response = observation();
+    response.version = 3;
+    response.excluded = request.excluded.clone();
+    assert_eq!(
+        CensusObservation::decode_strict(&response.encode_to_vec())?,
+        response
+    );
+    response.version = 2;
+    assert!(CensusObservation::decode_strict(&response.encode_to_vec()).is_err());
+
+    // Mixed snapshots retain conservative exclusions for older original inodes.
+    let mut legacy = query().excluded.remove(0);
+    legacy.inode -= 1;
+    request.excluded.push(legacy);
+    CensusQuery::decode_strict(&request.encode_to_vec())?;
+    let bytes = request.encode_to_vec();
+    for length in 0..bytes.len() {
+        // A prefix can legitimately omit the second complete repeated entry.
+        if let Ok(prefix) = CensusQuery::decode_strict(&bytes[..length]) {
+            assert_eq!(prefix.excluded.len(), 1);
+            assert_eq!(prefix.excluded[0], request.excluded[0]);
+        }
+    }
+    request.excluded[0]
+        .birth
+        .as_mut()
+        .ok_or("missing birth")?
+        .nanoseconds = 1_000_000_000;
+    assert!(CensusQuery::decode_strict(&request.encode_to_vec()).is_err());
+    response.version = 3;
+    response.excluded = request.excluded;
+    assert!(CensusObservation::decode_strict(&response.encode_to_vec()).is_err());
+
+    // Distinct historical incarnations can share a number across exposures.
+    let mut history = query();
+    history.version = 3;
+    history.excluded[0].birth = Some(CensusBirth {
+        seconds: 1,
+        nanoseconds: 2,
+    });
+    let mut later = history.excluded[0].clone();
+    later.birth.as_mut().ok_or("missing later birth")?.seconds += 1;
+    history.excluded.push(later.clone());
+    CensusQuery::decode_strict(&history.encode_to_vec())?;
+    history.excluded.push(later);
+    assert!(CensusQuery::decode_strict(&history.encode_to_vec()).is_err());
+
+    let mut oversized = query();
+    oversized.version = 3;
+    oversized.excluded = (1..=MAX_CENSUS_EXCLUSIONS)
+        .map(|inode| CensusInode {
+            device: u64::MAX,
+            inode: u64::MAX - inode as u64,
+            birth: Some(CensusBirth {
+                seconds: i64::MIN,
+                nanoseconds: 999_999_999,
+            }),
+        })
+        .collect();
+    assert!(oversized.encode_to_vec().len() > 16384);
+    assert!(CensusQuery::decode_strict(&oversized.encode_to_vec()).is_err());
     Ok(())
 }

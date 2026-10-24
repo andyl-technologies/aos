@@ -2,7 +2,10 @@
 //!
 //! Version 3 snapshots add `[[exposures.backings]]` records. These observations
 //! must be rechecked against native custody before recovery, reuse or retirement;
-//! decoding a record grants neither a descriptor nor physical release.
+//! decoding a record grants neither a descriptor nor physical release. Version 4
+//! adds paired `birth_seconds` and `birth_nanoseconds` captured from the original
+//! kernel descriptor. Missing legacy timestamps remain conservative obligations;
+//! a replacement path cannot supply a timestamp for an older record.
 //!
 //! ```toml
 //! [[exposures.backings]]
@@ -58,6 +61,12 @@ pub struct ExposureBackingRecord {
     /// Nonzero original inode number, encoded as 16 lowercase hexadecimal digits.
     #[serde(with = "native_number")]
     pub inode: u64,
+    /// Original kernel creation seconds; absent in legacy version 3 records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub birth_seconds: Option<i64>,
+    /// Original fractional creation nanoseconds, paired with `birth_seconds`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub birth_nanoseconds: Option<u32>,
     /// Nonzero original project assignment bound to the physical owner.
     pub project_id: u32,
     /// Original inode owner, distinct from the receiving worker's identity.
@@ -97,6 +106,10 @@ pub(super) fn validate(exposure: &ExposureRecord, pins: &[PinRecord]) -> Result<
             || !hex(&binding.verity_digest, digest_length)
             || binding.device == 0
             || binding.inode == 0
+            || binding.birth_seconds.is_some() != binding.birth_nanoseconds.is_some()
+            || binding
+                .birth_nanoseconds
+                .is_some_and(|nanos| nanos >= 1_000_000_000)
             || binding.size > i64::MAX as u64
             || binding.allocated > i64::MAX as u64
             || binding.project_id == 0

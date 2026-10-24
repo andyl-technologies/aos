@@ -9,7 +9,7 @@ use crate::{
     host_cache::owner::{
         consumer::state, recovery::ExposureRecovery, recovery_cold::ColdPolicy, retention::Custody,
     },
-    host_quota::{MAX_CENSUS_EXCLUSIONS, ProjectInode},
+    host_quota::{MAX_CENSUS_EXCLUSIONS, ProjectInode, ProjectInodeBinding, ProjectInodeBirth},
 };
 use std::{collections::BTreeSet, io};
 
@@ -42,9 +42,17 @@ pub(in crate::host_cache::owner) fn capture(
                     "cold exposure belongs to another native partition",
                 ));
             }
-            excluded.insert(ProjectInode {
-                device: backing.device,
-                inode: backing.inode,
+            excluded.insert(ProjectInodeBinding {
+                identity: ProjectInode {
+                    device: backing.device,
+                    inode: backing.inode,
+                },
+                birth: backing.birth_seconds.zip(backing.birth_nanoseconds).map(
+                    |(seconds, nanoseconds)| ProjectInodeBirth {
+                        seconds,
+                        nanoseconds,
+                    },
+                ),
             });
             if excluded.len() > MAX_CENSUS_EXCLUSIONS {
                 return Err(unresolved(

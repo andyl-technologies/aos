@@ -172,6 +172,8 @@ def main():
 
         def actor(case, mode, timeout=30):
             """Preserves actor diagnostics under each explicit finite contract."""
+            started = time.monotonic()
+            print(f"SURFACE_ACTOR_START case={case} mode={mode} bound={timeout}", flush=True)
             try:
                 result = subprocess.run(support.role_command(840, [executable, mode]),
                     env=environment(case), text=True, capture_output=True, timeout=timeout)
@@ -185,6 +187,7 @@ def main():
                 raise
             print(result.stdout, end="", flush=True)
             print(result.stderr, end="", flush=True)
+            print(f"SURFACE_ACTOR_END case={case} mode={mode} elapsed={time.monotonic() - started:.6f} result={result.returncode}", flush=True)
             return result
 
         deadline = time.monotonic() + 15

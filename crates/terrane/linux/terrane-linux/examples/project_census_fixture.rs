@@ -14,7 +14,8 @@ use std::{
 use terrane_format::tree_format::ContentRef;
 use terrane_linux::{
     host_quota::{
-        NativeProjectClosure, ProjectCensusLimits, ProjectInode, observe_project_closure,
+        NativeProjectClosure, ProjectCensusLimits, ProjectInode, ProjectInodeBinding,
+        ProjectInodeBirth, observe_project_closure, observe_project_incarnation_closure,
         provision_project, require_host_root_namespace_boundary,
     },
     structural_index::{Kind, MappedIndex, Record, compile},
@@ -88,6 +89,10 @@ fn main() -> Result<(), Box<dyn Error>> {
         inode: metadata.ino(),
     };
     let excluded = [retired];
+    let incarnation = [ProjectInodeBinding {
+        identity: retired,
+        birth: Some(ProjectInodeBirth::observe(&file)?),
+    }];
     let mapping = MappedIndex::open(file.try_clone()?.into(), tree_root, &seal, bytes.len())?;
     fs::hard_link(&path, directory.join("alias"))?;
     fs::create_dir(directory.join("nested"))?;
@@ -103,6 +108,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     let linked = observe(&root, &excluded)?;
     assert!(!linked.all_excluded_closed());
+    assert!(
+        !observe_project_incarnation_closure(&[&root], &incarnation, limits())?
+            .all_excluded_closed()
+    );
     assert_eq!(linked.project_id(), 79);
     assert_eq!(linked.excluded(), &excluded);
     assert_eq!(linked.retained_inodes(), 3);
@@ -154,6 +163,10 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert!(!observe(&root, &excluded)?.all_excluded_closed());
     drop(file);
     assert!(!observe(&root, &excluded)?.all_excluded_closed());
+    assert!(
+        !observe_project_incarnation_closure(&[&root], &incarnation, limits())?
+            .all_excluded_closed()
+    );
     assert!(mapping.index().lookup(b"file").is_some());
     println!(
         "PASS project census refuses closure through retained hard links, descriptors and an actual sealed mapping"
@@ -164,6 +177,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     assert_eq!(closed.retained_inodes(), 3);
     assert_eq!(closed.quota().charged_inodes, 3);
     assert_eq!(closed.filesystem_uuid(), linked.filesystem_uuid());
+    assert!(
+        observe_project_incarnation_closure(&[&root], &incarnation, limits())?
+            .all_excluded_closed()
+    );
+    println!("PASS incarnation census retains original sealed backing custody through final unmap");
     let nested = File::open(directory.join("nested"))?;
     assert!(!observe(&nested, &excluded)?.all_excluded_closed());
     assert!(observe_project_closure(&[&root, &root], &excluded, limits())?.all_excluded_closed());
@@ -192,6 +210,44 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!(
         "PASS project census retains zero-byte unlinked inode custody until its final descriptor closes"
     );
+
+    let mut reused = None;
+    for attempt in 0..1024 {
+        let replacement_path = directory.join("replacement");
+        let mut replacement = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&replacement_path)?;
+        replacement.write_all(b"publisher retirement metadata")?;
+        replacement.sync_all()?;
+        if replacement.metadata()?.ino() == retired.inode {
+            reused = Some(replacement);
+            break;
+        }
+        drop(replacement);
+        fs::remove_file(replacement_path)?;
+        if attempt == 1023 {
+            return Err(
+                "ext4 did not reuse the retired inode within the original bounded fixture".into(),
+            );
+        }
+    }
+    let replacement = reused.ok_or("missing native inode replacement")?;
+    assert_ne!(
+        ProjectInodeBirth::observe(&replacement)?,
+        incarnation[0].birth.ok_or("missing original birth")?
+    );
+    assert!(!observe(&root, &[retired])?.all_excluded_closed());
+    let replacement_observation =
+        observe_project_incarnation_closure(&[&root], &incarnation, limits())?;
+    assert!(replacement_observation.all_excluded_closed());
+    assert_eq!(replacement_observation.retained_inodes(), 4);
+    assert_eq!(replacement_observation.quota().charged_inodes, 4);
+    println!(
+        "PASS incarnation census counts an actual inode-number replacement while legacy census remains conservative"
+    );
+    fs::remove_file(directory.join("replacement"))?;
+    drop(replacement);
 
     fs::remove_file(directory.join("bystander-alias"))?;
     fs::remove_file(directory.join("nested/bystander"))?;

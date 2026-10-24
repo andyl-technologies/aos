@@ -56,7 +56,7 @@ pub struct ExposureRecord {
     pub deadline: u64,
     /// Current disclosure and drain phase, independent of physical closure.
     pub phase: ExposurePhase,
-    /// Original sealed inode obligations, requiring snapshot version 3.
+    /// Original sealed inode obligations, requiring snapshot version 3 or 4.
     ///
     /// Empty legacy records retain their obligations and cannot establish native
     /// recovery or closure. Decoding these observations grants no native custody.
@@ -115,9 +115,18 @@ impl CacheState {
 
         let mut next = self.clone();
         let owner = exposure.pin_owner();
-        next.version = next
-            .version
-            .max(if exposure.backings.is_empty() { 2 } else { 3 });
+        let version = if exposure
+            .backings
+            .iter()
+            .any(|backing| backing.birth_seconds.is_some())
+        {
+            4
+        } else if exposure.backings.is_empty() {
+            2
+        } else {
+            3
+        };
+        next.version = next.version.max(version);
         next.leases.push(LeaseRecord {
             owner: owner.clone(),
             expires: RETAINED,
@@ -153,6 +162,13 @@ impl CacheState {
         let mut owners = BTreeSet::new();
         for exposure in &self.exposures {
             if self.version < 3 && !exposure.backings.is_empty() {
+                return Err(capacity());
+            }
+            if self.version < 4
+                && exposure.backings.iter().any(|backing| {
+                    backing.birth_seconds.is_some() || backing.birth_nanoseconds.is_some()
+                })
+            {
                 return Err(capacity());
             }
             backing::validate(exposure, &self.pins)?;

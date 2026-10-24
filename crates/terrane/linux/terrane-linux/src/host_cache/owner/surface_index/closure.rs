@@ -15,7 +15,7 @@ use crate::{
         retention::{Command, NativeOwnerExecutor},
         snapshot,
     },
-    host_quota::{MAX_CENSUS_EXCLUSIONS, ProjectInode},
+    host_quota::{MAX_CENSUS_EXCLUSIONS, ProjectInode, ProjectInodeBinding, ProjectInodeBirth},
 };
 use std::{io, sync::mpsc};
 use terrane_sdk::host::cache::ExposurePhase;
@@ -244,9 +244,17 @@ fn prepare(
     let excluded: Vec<_> = record
         .backings
         .iter()
-        .map(|backing| ProjectInode {
-            device: backing.device,
-            inode: backing.inode,
+        .map(|backing| ProjectInodeBinding {
+            identity: ProjectInode {
+                device: backing.device,
+                inode: backing.inode,
+            },
+            birth: backing.birth_seconds.zip(backing.birth_nanoseconds).map(
+                |(seconds, nanoseconds)| ProjectInodeBirth {
+                    seconds,
+                    nanoseconds,
+                },
+            ),
         })
         .collect();
     if !owner.preparation.exposure_inodes_closed(&excluded)? {

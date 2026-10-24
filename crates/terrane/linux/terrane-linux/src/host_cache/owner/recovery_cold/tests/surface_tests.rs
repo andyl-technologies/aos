@@ -96,6 +96,8 @@ fn obligation(kind: ExposureBackingKind, hash: String, inode: u64) -> ExposureBa
         filesystem_uuid: "01".repeat(16),
         device: 7,
         inode,
+        birth_seconds: None,
+        birth_nanoseconds: None,
         project_id: 79,
         uid: 840,
         gid: 845,

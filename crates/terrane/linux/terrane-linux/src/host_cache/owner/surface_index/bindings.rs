@@ -2,7 +2,7 @@
 
 use super::{invalid, same_inode};
 use crate::host_cache::owner::retention::Custody;
-use crate::host_quota::NativeProject;
+use crate::host_quota::{NativeProject, ProjectInodeBirth};
 use std::{fs::File, io, os::unix::fs::MetadataExt};
 use terrane_format::identity::Digest;
 use terrane_sdk::host::cache::{ExposureBackingKind, ExposureBackingRecord};
@@ -35,6 +35,7 @@ pub(in crate::host_cache::owner) fn capture(
     {
         return Err(invalid("exposure backing lost original native custody"));
     }
+    let birth = ProjectInodeBirth::observe(file)?;
     let binding = crate::verity::measure(file)?;
     let allocated = metadata
         .blocks()
@@ -51,6 +52,8 @@ pub(in crate::host_cache::owner) fn capture(
         filesystem_uuid: super::state::hex(&config.filesystem_uuid),
         device: metadata.dev(),
         inode: metadata.ino(),
+        birth_seconds: Some(birth.seconds),
+        birth_nanoseconds: Some(birth.nanoseconds),
         project_id: config.project_id,
         uid: metadata.uid(),
         gid: metadata.gid(),

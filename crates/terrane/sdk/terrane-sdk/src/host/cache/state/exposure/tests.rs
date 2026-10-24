@@ -123,6 +123,8 @@ fn index_binding() -> ExposureBackingRecord {
         filesystem_uuid: "12".repeat(16),
         device: 7,
         inode: 100,
+        birth_seconds: None,
+        birth_nanoseconds: None,
         project_id: 79,
         uid: 840,
         gid: 845,
@@ -175,7 +177,7 @@ fn exposure_original_backings_require_version_three_and_complete_native_context(
         let exposure = &mut broken.exposures[0];
         match damage {
             0 => broken.version = 2,
-            1 => broken.version = 4,
+            1 => broken.version = 5,
             2 => exposure.backings[0].hash = "78".repeat(32),
             3 => exposure.backings[0].device = 0,
             4 => exposure.backings[0].inode = 0,
@@ -241,5 +243,50 @@ fn exposure_original_backings_count_toward_atomic_snapshot_bounds()
     exposure.backings.push(object_without_pin);
     assert!(state.retain_exposure(exposure, &[], 99, limits()).is_err());
     assert_eq!(toml::to_string(&state)?, before);
+    Ok(())
+}
+
+#[test]
+fn exposure_creation_times_require_version_four_and_preserve_legacy_records()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut exposure = record();
+    let mut binding = index_binding();
+    binding.birth_seconds = Some(-1);
+    binding.birth_nanoseconds = Some(999_999_999);
+    exposure.backings.push(binding);
+    let mut state = CacheState::default();
+    state.retain_exposure(exposure, &[], 99, limits())?;
+
+    let encoded = toml::to_string(&state)?;
+    assert!(encoded.starts_with("version = 4"));
+    let recovered: CacheState = toml::from_str(&encoded)?;
+    recovered.validate(limits())?;
+    assert_eq!(recovered.exposures, state.exposures);
+
+    for version in 1..=3 {
+        let mut downgraded = recovered.clone();
+        downgraded.version = version;
+        assert!(downgraded.validate(limits()).is_err());
+    }
+    for damage in 0..3 {
+        let mut broken = recovered.clone();
+        let binding = &mut broken.exposures[0].backings[0];
+        match damage {
+            0 => binding.birth_seconds = None,
+            1 => binding.birth_nanoseconds = None,
+            _ => binding.birth_nanoseconds = Some(1_000_000_000),
+        }
+        assert!(broken.validate(limits()).is_err());
+    }
+
+    let mut legacy = recovered;
+    legacy.version = 3;
+    legacy.exposures[0].backings[0].birth_seconds = None;
+    legacy.exposures[0].backings[0].birth_nanoseconds = None;
+    legacy.validate(limits())?;
+    let encoded = toml::to_string(&legacy)?;
+    assert!(!encoded.contains("birth_"));
+    let decoded: CacheState = toml::from_str(&encoded)?;
+    assert_eq!(decoded.exposures, legacy.exposures);
     Ok(())
 }

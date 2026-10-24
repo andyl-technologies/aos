@@ -2,7 +2,7 @@
 
 use super::{Result, config, hex, snapshot};
 use std::{fs::File, os::unix::fs::MetadataExt};
-use terrane_linux::host_quota::NativeProject;
+use terrane_linux::host_quota::{NativeProject, ProjectInodeBirth};
 use terrane_sdk::host::cache::ExposureBackingKind;
 
 pub(super) async fn check(
@@ -26,6 +26,7 @@ pub(super) async fn check(
 
     let actual = file.metadata()?;
     let project = NativeProject::inspect(file)?.project_id;
+    let birth = ProjectInodeBirth::observe(file)?;
     let seal = terrane_linux::verity::measure(file)?;
     let owner = inputs.owner_config()?;
     let uid = match kind {
@@ -37,6 +38,8 @@ pub(super) async fn check(
     if row.filesystem_uuid != hex(&inputs.uuid)
         || row.device != actual.dev()
         || row.inode != actual.ino()
+        || row.birth_seconds != Some(birth.seconds)
+        || row.birth_nanoseconds != Some(birth.nanoseconds)
         || row.project_id != project
         || project != inputs.project
         || row.uid != actual.uid()

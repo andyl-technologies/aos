@@ -5,7 +5,7 @@ use super::{
 };
 use crate::host_quota::{
     CensusInode, CensusObservation, CensusQuery, ProjectCensusLimits, ProjectInode,
-    observe_project_closure,
+    ProjectInodeBinding, observe_project_incarnation_closure,
 };
 use prost::Message;
 use std::{io, path::Path, sync::Mutex};
@@ -57,7 +57,7 @@ impl HostQuotaBroker {
     ) -> CensusObservation {
         let mut quota = self.quota_observation(uid, sequence, &request.quota_query());
         let mut response = CensusObservation {
-            version: 2,
+            version: request.version,
             request_id: request.request_id,
             configuration_epoch: self.epoch.to_vec(),
             owner_id: request.owner_id.clone(),
@@ -85,13 +85,18 @@ impl HostQuotaBroker {
             return response;
         };
         let roots: Vec<_> = owner.roots.iter().map(|root| &root.directory).collect();
-        let excluded: Vec<_> = request.excluded.iter().map(ProjectInode::from).collect();
-        let Ok(observed) = observe_project_closure(&roots, &excluded, service.limits) else {
+        let excluded: Vec<_> = request
+            .excluded
+            .iter()
+            .map(ProjectInodeBinding::from)
+            .collect();
+        let Ok(observed) = observe_project_incarnation_closure(&roots, &excluded, service.limits)
+        else {
             return response;
         };
         if observed.filesystem_uuid() != &owner.filesystem_uuid
             || observed.project_id() != owner.project_id
-            || observed.excluded() != excluded
+            || observed.incarnations() != excluded
             || observed.quota().hard_limit_bytes != owner.hard_limit_bytes
         {
             return response;
@@ -157,6 +162,51 @@ impl HostQuotaClient {
         domain: &str,
         excluded: &[ProjectInode],
     ) -> io::Result<VerifiedProjectCensus> {
+        check_exclusion_count(excluded.len())?;
+        self.query_census(
+            owner_id,
+            domain,
+            2,
+            excluded.iter().copied().map(CensusInode::from).collect(),
+        )
+    }
+
+    /// Observes closure of durably captured original inode incarnations.
+    ///
+    /// Missing birth timestamps remain conservative raw exclusions. Requests
+    /// containing creation times use version 3; legacy-only requests retain the
+    /// version 2 protocol. No currently visible replacement can mint a binding.
+    ///
+    /// # Errors
+    /// Refuses malformed or oversized bindings and every authentication, native
+    /// inspection or correlation failure of [`Self::query_project_census`].
+    pub fn query_project_incarnation_census(
+        &mut self,
+        owner_id: &str,
+        domain: &str,
+        excluded: &[ProjectInodeBinding],
+    ) -> io::Result<VerifiedProjectCensus> {
+        check_exclusion_count(excluded.len())?;
+        let version = if excluded.iter().any(|binding| binding.birth.is_some()) {
+            3
+        } else {
+            2
+        };
+        self.query_census(
+            owner_id,
+            domain,
+            version,
+            excluded.iter().copied().map(CensusInode::from).collect(),
+        )
+    }
+
+    fn query_census(
+        &mut self,
+        owner_id: &str,
+        domain: &str,
+        version: u32,
+        excluded: Vec<CensusInode>,
+    ) -> io::Result<VerifiedProjectCensus> {
         if excluded.is_empty()
             || excluded.len() > crate::host_quota::MAX_CENSUS_EXCLUSIONS
             || owner_id.is_empty()
@@ -173,19 +223,20 @@ impl HostQuotaClient {
             .checked_add(1)
             .ok_or_else(|| io::Error::other("quota request IDs exhausted"))?;
         let request = CensusQuery {
-            version: 2,
+            version,
             request_id: self.request_id,
             configuration_epoch: self.epoch.to_vec(),
             owner_id: owner_id.to_owned(),
             domain: domain.to_owned(),
-            excluded: excluded.iter().copied().map(CensusInode::from).collect(),
+            excluded,
         };
         let encoded = request.encode_to_vec();
         CensusQuery::decode_strict(&encoded)?;
         let socket = authenticated_query_socket(&self.endpoint)?;
         socket.send(&encoded)?;
         let response = CensusObservation::decode_strict(&socket.receive()?)?;
-        if response.request_id != self.request_id
+        if response.version != request.version
+            || response.request_id != self.request_id
             || response.configuration_epoch != self.epoch
             || response.owner_id != owner_id
             || response.domain != domain
@@ -206,4 +257,14 @@ impl HostQuotaClient {
             quota,
         })
     }
+}
+
+fn check_exclusion_count(count: usize) -> io::Result<()> {
+    if count == 0 || count > crate::host_quota::MAX_CENSUS_EXCLUSIONS {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid census exclusion count",
+        ));
+    }
+    Ok(())
 }

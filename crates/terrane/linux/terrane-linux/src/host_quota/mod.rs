@@ -9,13 +9,19 @@ pub mod initial_enrollment;
 mod native;
 pub use native::{NativeProject, NativeQuota, provision_project, synchronized_allocated_bytes};
 
+mod incarnation;
+pub use incarnation::{ProjectInodeBinding, ProjectInodeBirth};
+
 mod census;
 pub use census::{
     NativeProjectClosure, ProjectCensusLimits, ProjectInode, observe_project_closure,
+    observe_project_incarnation_closure,
 };
 
 mod census_wire;
-pub use census_wire::{CensusInode, CensusObservation, CensusQuery, MAX_CENSUS_EXCLUSIONS};
+pub use census_wire::{
+    CensusBirth, CensusInode, CensusObservation, CensusQuery, MAX_CENSUS_EXCLUSIONS,
+};
 
 mod wire;
 pub use wire::{QuotaObservation, QuotaQuery, QuotaRoot};

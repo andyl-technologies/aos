@@ -2,7 +2,7 @@
 
 use super::NativeCacheOwnerConfig;
 #[cfg(feature = "surface-fuse")]
-use crate::host_quota::{NativeProject, ProjectInode};
+use crate::host_quota::{NativeProject, ProjectInode, ProjectInodeBinding};
 use crate::{
     host_cache::{NativeHostLayout, NativeSealCapability},
     host_quota::{HostQuotaClient, QuotaObservation, ROOT_LABELS, VerifiedQuotaObservation},
@@ -169,7 +169,10 @@ impl NativeCachePreparation {
     /// the subsequent namespace walk cannot count it. No bare count or caller
     /// descriptor substitutes for this privately minted original probe.
     #[cfg(feature = "surface-fuse")]
-    pub(super) fn exposure_inodes_closed(&mut self, excluded: &[ProjectInode]) -> io::Result<bool> {
+    pub(super) fn exposure_inodes_closed(
+        &mut self,
+        excluded: &[ProjectInodeBinding],
+    ) -> io::Result<bool> {
         self.confinement.check_current()?;
         self.seal.recheck()?;
         check_content_custody(&self.config, &self.layout)?;
@@ -184,13 +187,13 @@ impl NativeCachePreparation {
             || before.len() != 0
             || NativeProject::inspect(probe)?.project_id != self.config.project_id
             || identity.device != self.layout.directory_binding("objects")?.0
-            || excluded.contains(&identity)
+            || excluded.iter().any(|binding| binding.identity == identity)
         {
             return Err(invalid(
                 "closure lost its original non-excluded probe custody",
             ));
         }
-        let observed = self.quota_client.query_project_census(
+        let observed = self.quota_client.query_project_incarnation_census(
             &self.config.quota_owner,
             self.config.location.domain(),
             excluded,
