@@ -686,15 +686,25 @@ impl NodeSlot {
 
     /// Returns a stable snapshot of the slot's published fields.
     ///
-    /// This producer-side convenience waits for both publications. Host
-    /// supervision uses [`Self::try_snapshot`] so an interrupted writer cannot
-    /// prevent its independent deadline or child-exit check from running.
+    /// This producer-side convenience waits for both publications, spinning
+    /// briefly and then sleeping, so a peer stalled mid-publication parks the
+    /// caller instead of pegging its core. Host supervision and QEMU callbacks
+    /// use [`Self::try_snapshot`] so an interrupted writer cannot prevent their
+    /// own deadline, child-exit or retry handling from running.
     #[must_use]
     pub fn snapshot(&self) -> NodeSlotSnapshot {
+        self.snapshot_with(&mut super::contention_backoff::ContentionBackoff::new())
+    }
+
+    pub(super) fn snapshot_with(
+        &self,
+        backoff: &mut super::contention_backoff::ContentionBackoff,
+    ) -> NodeSlotSnapshot {
         loop {
             if let Some(snapshot) = self.try_snapshot() {
                 return snapshot;
             }
+            backoff.wait();
         }
     }
 
@@ -1240,12 +1250,25 @@ impl NodeSlot {
         drop(publication);
     }
 
+    /// Waits out a host scheduler publication in progress.
+    ///
+    /// The host owns the odd sequence; a host stalled mid-publication parks
+    /// this reader in the backoff's sleeps rather than a spin.
     pub(crate) fn load_scheduler_advance_raw(&self) -> (u64, u8, u64) {
+        self.load_scheduler_advance_raw_with(
+            &mut super::contention_backoff::ContentionBackoff::new(),
+        )
+    }
+
+    pub(super) fn load_scheduler_advance_raw_with(
+        &self,
+        backoff: &mut super::contention_backoff::ContentionBackoff,
+    ) -> (u64, u8, u64) {
         loop {
             if let Some(publication) = self.try_load_scheduler_advance_raw() {
                 return publication;
             }
-            core::hint::spin_loop();
+            backoff.wait();
         }
     }
 

@@ -33,6 +33,8 @@ impl PreparedControlBoundaryRequest {
     }
 }
 
+#[path = "frame_node/contention_backoff.rs"]
+mod contention_backoff;
 #[path = "frame_node/control_boundary_wait.rs"]
 mod control_boundary_wait;
 #[path = "frame_node/frame_entry.rs"]
