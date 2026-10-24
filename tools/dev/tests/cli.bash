@@ -162,7 +162,7 @@ test "$(grep -Fxc -- '<--help><argument with spaces><>' "$AOS_DEV_TEST_TOOL_ARGS
 test "$(grep -Fxc -- '--version' "$AOS_DEV_TEST_RELEASE_LOG")" = 3
 grep -Fq -- '-A pkgs.aos.apm --no-out-link' "$AOS_DEV_TEST_LOG"
 grep -Fq -- '-A pkgs.aos.apr --no-out-link' "$AOS_DEV_TEST_LOG"
-if grep -Eq 'shared(Go|Bazel|Rust|Accache)|extra-sandbox-paths' "$AOS_DEV_TEST_LOG"; then
+if grep -Eq 'shared(Go|Bazel|Rust|Accache|Image)|extra-sandbox-paths' "$AOS_DEV_TEST_LOG"; then
   echo 'tool execution changed production derivation identities' >&2
   exit 1
 fi
@@ -179,6 +179,7 @@ grep -Fxq 'fallback = true' "$AOS_DEV_TEST_NIX_CONFIG_LOG"
   aos_dev_bazel_cache=true
   aos_dev_rust_target_cache=true
   aos_dev_rust_incremental=true
+  aos_dev_image_cache=true
   source "$root/tools/dev/lib/common.bash"
   source "$root/tools/dev/lib/cache.bash"
   source "$root/tools/dev/lib/cache-report.bash"
@@ -187,6 +188,7 @@ grep -Fxq 'fallback = true' "$AOS_DEV_TEST_NIX_CONFIG_LOG"
   aos_dev_cache_prepare() { :; }
   aos_dev_nix_build -A pkgs.alpha --no-out-link >/dev/null
 )
+grep -Fq -- '--argstr sharedImageCacheDir /aos-build-cache/images' "$AOS_DEV_TEST_LOG"
 grep -Fq -- '--argstr sharedGoCacheDir /aos-build-cache/go' "$AOS_DEV_TEST_LOG"
 grep -Fq -- '--argstr sharedBazelCacheDir /aos-build-cache/bazel' "$AOS_DEV_TEST_LOG"
 grep -Fq -- '--argstr sharedRustTargetDir /aos-build-cache/rust' "$AOS_DEV_TEST_LOG"
@@ -195,8 +197,8 @@ grep -Fq -- '--option extra-sandbox-paths /aos-build-cache/go=' "$AOS_DEV_TEST_L
 
 : > "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-go-cache --no-bazel-cache --no-rust-target-cache \
-  --no-accache --rust-incremental build package alpha --no-out-link >/dev/null
-if grep -Eq -- 'shared(GoCacheDir|BazelCacheDir|RustTargetDir|AccacheDir|AccacheStateDir)' "$AOS_DEV_TEST_LOG"; then
+  --no-image-cache --no-accache --rust-incremental build package alpha --no-out-link >/dev/null
+if grep -Eq -- 'shared(GoCacheDir|BazelCacheDir|RustTargetDir|AccacheDir|AccacheStateDir|ImageCacheDir)' "$AOS_DEV_TEST_LOG"; then
   echo 'disabled directory cache received a Nix path' >&2
   exit 1
 fi
@@ -208,8 +210,8 @@ fi
 
 : > "$AOS_DEV_TEST_LOG"
 bash "$root/tools/dev/aos-dev" --no-go-cache --no-bazel-cache --no-rust-target-cache \
-  --no-accache --no-rust-incremental build package alpha --no-out-link >/dev/null
-if grep -Eq -- 'shared(GoCacheDir|BazelCacheDir|RustTargetDir|AccacheDir|AccacheStateDir)|sharedRustIncremental|extra-sandbox-paths' "$AOS_DEV_TEST_LOG"; then
+  --no-image-cache --no-accache --no-rust-incremental build package alpha --no-out-link >/dev/null
+if grep -Eq -- 'shared(GoCacheDir|BazelCacheDir|RustTargetDir|AccacheDir|AccacheStateDir|ImageCacheDir)|sharedRustIncremental|extra-sandbox-paths' "$AOS_DEV_TEST_LOG"; then
   echo 'all-disabled build changed ordinary Nix arguments' >&2
   exit 1
 fi
@@ -218,13 +220,13 @@ fi
 AOS_DEV_GO_CACHE_DIR=/custom/go-cache \
   AOS_DEV_CACHE_DIR="$scratch/custom-cache" \
   bash "$root/tools/dev/aos-dev" --no-bazel-cache --no-rust-target-cache \
-    --no-accache --no-rust-incremental build package alpha --no-out-link >/dev/null
+    --no-image-cache --no-accache --no-rust-incremental build package alpha --no-out-link >/dev/null
 grep -Fq -- '--argstr sharedGoCacheDir /custom/go-cache' "$AOS_DEV_TEST_LOG"
 grep -Fq -- "/custom/go-cache=$scratch/custom-cache/go" "$AOS_DEV_TEST_LOG"
 
 : > "$AOS_DEV_TEST_LOG"
-bash "$root/tools/dev/aos-dev" --release --go-cache build package alpha --no-out-link >/dev/null
-if grep -Fq -- 'sharedGoCacheDir' "$AOS_DEV_TEST_LOG"; then
+bash "$root/tools/dev/aos-dev" --release --go-cache --image-cache build package alpha --no-out-link >/dev/null
+if grep -Eq -- 'shared(Go|Image)CacheDir' "$AOS_DEV_TEST_LOG"; then
   echo 'release mode allowed an enabling cache flag' >&2
   exit 1
 fi
@@ -240,6 +242,15 @@ grep -Fq -- '--argstr sharedAccacheDir /custom/actions' "$AOS_DEV_TEST_LOG"
 grep -Fq -- '--argstr sharedAccacheStateDir /custom/action-state' "$AOS_DEV_TEST_LOG"
 grep -Fq -- "/custom/actions=$scratch/compiler-cache/accache" "$AOS_DEV_TEST_LOG"
 grep -Fq -- '--arg sharedRustIncremental true' "$AOS_DEV_TEST_LOG"
+
+# Image storage cannot alias any other enabled sandbox cache.
+for duplicate in /aos-build-cache/go /aos-build-cache/bazel /aos-build-cache/rust /aos-build-cache/accache /aos-build-cache/accache-state; do
+  if AOS_DEV_IMAGE_CACHE_DIR=$duplicate bash "$root/tools/dev/aos-dev" build package alpha --no-out-link >"$scratch/duplicate.log" 2>&1; then
+    echo 'duplicate image cache path was accepted' >&2
+    exit 1
+  fi
+  grep -Fq 'sandbox cache paths must be distinct' "$scratch/duplicate.log"
+done
 
 # The broad enable flag restores every backend after individual opt-outs.
 : > "$AOS_DEV_TEST_LOG"
