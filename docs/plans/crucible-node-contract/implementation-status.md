@@ -10,6 +10,36 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Global consumed identity and shared queue validation
+
+Commit `948c563ee4` refuses a consumed public input identity in any recipient's
+pending queue or another consumed prefix. The original allocator assigns a
+distinct public sequence to each fanout recipient. A separately priced temporary
+tree borrows original identifiers; its checked row count and fixed controls are
+added without removing earlier storage terms. Both regressions first pass full
+validation for their original admitted snapshots, then reproduce the old
+validator's acceptance of changed identities with recomputed inventory hashes.
+An earlier positive fixture now uses the allocator's distinct fanout sequence.
+
+Commit `1b22592d65` removes duplicate quadratic queue walks. Complete original
+remaining entries are checked once through borrowed EventKey binary search;
+the global index independently rejects every consumed identity replay. All
+original construction reservations remain conservative. Both Engine modes pass
+2,048 tests, with zero failures, 34 ignored and no filtering; each also passes
+14 custody controls and five actual installed-provider controls. All-feature
+Transport/Engine/Daemon target checks, formatting and six architecture checks
+pass. All 530 frozen owned Rust/Cargo inputs match the commit and actual
+application and three funded-VM Rust component captures.
+
+Commit `28f03eacba` removes 40 redundant capture-path references while retaining
+the same operands, guards, validation order and storage budgets. Its independent
+full Engine suites and checks pass. Production Engine Clippy drops from 171 to
+131 errors, with 444 warnings; the consolidated validator has the same result,
+and Daemon is not reached. These are cached AOS Cargo-shell results, not passing
+strict lint or merged-toolchain qualification. The current application, funded
+VM and boundary gates remain pending on the source toolchain; older clients are
+superseded. Native successor construction and full RFC qualification remain open.
+
 ## Consumed input producer and native FIFO histories
 
 Commit `7cc4029c3b` checks every staged delivery against its original saved
