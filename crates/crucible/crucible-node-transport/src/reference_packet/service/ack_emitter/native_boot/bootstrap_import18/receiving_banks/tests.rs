@@ -326,3 +326,124 @@ fn wrong_digest_or_reused_role_transfer_cannot_complete() {
     assert_eq!(owner.banks[0].bytes, bodies[0]);
     assert!(owner.bodies_data().is_err());
 }
+
+#[test]
+fn public_bank_projection_matches_native_reservation_and_exact_parent_credit() {
+    let bodies = bodies();
+    let refs = references(&bodies);
+    let maximums = bodies.each_ref().map(|body| body.len());
+    let row = native_import18_receiving_bank_backing_construction_data(
+        refs.each_ref(),
+        maximums,
+        usize::MAX,
+    )
+    .unwrap();
+    let peak = row.into_iter().sum();
+
+    assert_eq!(
+        row,
+        OriginalImport18ReceivingBanks::backing_construction_data(refs.each_ref(), maximums, peak)
+            .unwrap()
+    );
+    assert_eq!(
+        row,
+        native_import18_receiving_bank_backing_construction_data(refs.each_ref(), maximums, peak)
+            .unwrap()
+    );
+    assert_eq!(
+        row[2],
+        native_import18_receiving_bank_backing_counter_scratch_data()
+    );
+    assert!(
+        native_import18_receiving_bank_backing_construction_data(
+            refs.each_ref(),
+            maximums,
+            peak - 1
+        )
+        .is_err()
+    );
+
+    let mut native = OriginalImport18ReceivingBanks::empty();
+    native
+        .reserve_data(refs.each_ref(), maximums, peak)
+        .unwrap();
+
+    assert_eq!(native.retained_backing_data().unwrap(), row[0]);
+    for (bank, original) in native.banks.iter().zip(&refs) {
+        assert_eq!(bank.reference.as_ref(), Some(original));
+        assert_eq!(bank.bytes.capacity(), original.length.get() as usize);
+        assert!(bank.bytes.is_empty());
+        assert!(!bank.begun);
+        assert!(!bank.finished);
+    }
+}
+
+#[test]
+fn bank_projection_copies_lengths_without_copying_parent_spare_capacity() {
+    let bodies = bodies();
+    let mut refs = references(&bodies);
+    let maximums = bodies.each_ref().map(|body| body.len());
+    let before = native_import18_receiving_bank_backing_construction_data(
+        refs.each_ref(),
+        maximums,
+        usize::MAX,
+    )
+    .unwrap();
+    for reference in &mut refs {
+        reference.hash.digest.reserve_exact(16_384);
+        reference.media_type.reserve_exact(16_384);
+    }
+    let after = native_import18_receiving_bank_backing_construction_data(
+        refs.each_ref(),
+        maximums,
+        usize::MAX,
+    )
+    .unwrap();
+
+    assert_eq!(before, after);
+    let native = reserve(&refs);
+    assert_eq!(native.retained_backing_data().unwrap(), before[0]);
+    for (bank, original) in native.banks.iter().zip(&refs) {
+        let copied = bank.reference.as_ref().unwrap();
+        assert!(original.hash.digest.capacity() > copied.hash.digest.capacity());
+        assert_eq!(copied.hash.digest.capacity(), copied.hash.digest.len());
+        assert_eq!(copied.media_type.capacity(), copied.media_type.len());
+    }
+}
+
+#[test]
+fn public_bank_projection_refuses_invalid_and_one_short_role_operands() {
+    let bodies = bodies();
+    let originals = references(&bodies);
+    let maximums = bodies.each_ref().map(|body| body.len());
+    for ordinal in 0..7 {
+        let mut short = maximums;
+        short[ordinal] -= 1;
+        assert!(
+            native_import18_receiving_bank_backing_construction_data(
+                originals.each_ref(),
+                short,
+                usize::MAX
+            )
+            .is_err()
+        );
+    }
+    for case in 0..4 {
+        let mut refs = originals.clone();
+        match case {
+            0 => refs[2].hash.algorithm = "sha256".to_owned(),
+            1 => refs[2].hash.digest = "F".repeat(64),
+            2 => refs[2].media_type.push('\n'),
+            3 => refs[2].length = U64::new(0),
+            _ => unreachable!(),
+        }
+        assert!(
+            native_import18_receiving_bank_backing_construction_data(
+                refs.each_ref(),
+                maximums,
+                usize::MAX
+            )
+            .is_err()
+        );
+    }
+}

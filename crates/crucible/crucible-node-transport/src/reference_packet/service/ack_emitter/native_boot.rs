@@ -97,6 +97,10 @@ pub(in crate::reference_packet::service) use bootstrap_import18::{
     selection_construction_data as original_import18_selection_construction_data,
     selection_counter_scratch_data as original_import18_selection_counter_scratch_data,
 };
+pub use bootstrap_import18::{
+    native_import18_receiving_bank_backing_construction_data,
+    native_import18_receiving_bank_backing_counter_scratch_data,
+};
 
 pub(crate) use boot::{
     NativeAckBoot, NativeRestoredControlEvidence, OriginalCanonicalAckControlAdmit,

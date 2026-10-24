@@ -34,6 +34,10 @@ mod hello_verifier;
 
 #[path = "bootstrap_import18/receiving_banks.rs"]
 mod receiving_banks;
+pub use receiving_banks::{
+    native_import18_receiving_bank_backing_construction_data,
+    native_import18_receiving_bank_backing_counter_scratch_data,
+};
 
 #[path = "bootstrap_import18/decoding.rs"]
 mod decoding;

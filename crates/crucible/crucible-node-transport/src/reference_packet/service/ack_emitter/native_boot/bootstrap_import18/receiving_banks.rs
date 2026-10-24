@@ -12,6 +12,10 @@ use crucible_node_format::{ContentRef, HashRef};
 
 #[path = "receiving_banks/storage.rs"]
 mod storage;
+pub use storage::{
+    native_import18_receiving_bank_backing_construction_data,
+    native_import18_receiving_bank_backing_counter_scratch_data,
+};
 #[path = "receiving_banks/transfer.rs"]
 mod transfer;
 

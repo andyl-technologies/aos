@@ -198,6 +198,11 @@ pub(in crate::reference_packet) use prebirth_recipe::projection::{
     native_import18_recipe_projection_counter_scratch_data,
 };
 
+pub use crate::reference_packet::service::ack_emitter::native_boot::{
+    native_import18_receiving_bank_backing_construction_data,
+    native_import18_receiving_bank_backing_counter_scratch_data,
+};
+
 pub use initial_funding::{
     PacketNativeImport18InitialFundingData, PacketNativeImport18InitialFundingInputs,
     derive_native_import18_initial_funding_data,

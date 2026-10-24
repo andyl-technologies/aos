@@ -6,6 +6,70 @@
 
 use super::*;
 
+/// Quotes exact future seven-reference copies and input byte-bank reservations.
+///
+/// Inputs follow `PacketNativeImport18InputRole::ALL` in its exact receive order.
+/// The shared native constructor uses this same formula. Lengths derive actual
+/// allocations; supplied maxima only restrict them. Borrowed input spare
+/// capacity is independently retained and never copied into the new banks.
+///
+/// Admit the fixed counter before this nonallocating DATA walk. Existing empty
+/// headers, original owners, signed Prepare validation, token/escrow custody,
+/// frame decoding and whole-phase construction remain separately funded. This
+/// function creates no bank, Prepare token, opaque Recipe, Initial or grant.
+///
+/// # Errors
+/// Refuses malformed references, empty or over-bound bodies, checked overflow
+/// or a complete returned row above the independent supplied restriction.
+pub fn native_import18_receiving_bank_backing_construction_data(
+    references: [&ContentRef; 7],
+    maximums: [usize; 7],
+    maximum: usize,
+) -> Result<[usize; 3], ProviderError> {
+    let mut retained = 0usize;
+    for (reference, ceiling) in references.into_iter().zip(maximums) {
+        validate_reference(reference)?;
+        let length = usize::try_from(reference.length.get()).map_err(|_| exhausted())?;
+        if length == 0 || length > ceiling {
+            return Err(exhausted());
+        }
+        retained = retained.checked_add(length).ok_or_else(exhausted)?;
+        for string in reference_strings(reference) {
+            retained = retained.checked_add(string.len()).ok_or_else(exhausted)?;
+        }
+    }
+
+    let transient = size_of::<ContentRef>()
+        + size_of::<Option<ContentRef>>()
+        + size_of::<HashRef>()
+        + size_of::<[String; 4]>();
+    // Later reservation/upload work has its own controls. The initial
+    // bootstrap charges only empty headers and the actual retained census.
+    let scratch = native_import18_receiving_bank_backing_counter_scratch_data();
+    if retained
+        .checked_add(transient)
+        .and_then(|sum| sum.checked_add(scratch))
+        .is_none_or(|sum| sum > maximum)
+    {
+        return Err(exhausted());
+    }
+    Ok([retained, transient, scratch])
+}
+
+/// Names actual quote, reference-copy, bank-reservation and transfer controls.
+///
+/// The extra forwarding views remain charged on the native primitive path;
+/// public DATA callers receive the identical conservative construction row.
+pub fn native_import18_receiving_bank_backing_counter_scratch_data() -> usize {
+    OriginalImport18ReceivingBanks::counter_scratch_data()
+        + counter_scratch_data()
+        + transfer::counter_scratch_data()
+        + size_of::<[&ContentRef; 7]>()
+        + size_of::<[usize; 7]>()
+        + size_of::<Result<[usize; 3], ProviderError>>()
+        + size_of::<usize>()
+}
+
 impl OriginalImport18ReceivingBanks {
     /// Prices additional backing before any reference copy or bank reservation.
     ///
@@ -19,36 +83,7 @@ impl OriginalImport18ReceivingBanks {
         maximums: [usize; 7],
         maximum: usize,
     ) -> Result<[usize; 3], ProviderError> {
-        let mut retained = 0usize;
-        for (reference, ceiling) in references.into_iter().zip(maximums) {
-            validate_reference(reference)?;
-            let length = usize::try_from(reference.length.get()).map_err(|_| exhausted())?;
-            if length == 0 || length > ceiling {
-                return Err(exhausted());
-            }
-            retained = retained.checked_add(length).ok_or_else(exhausted)?;
-            for string in reference_strings(reference) {
-                retained = retained.checked_add(string.len()).ok_or_else(exhausted)?;
-            }
-        }
-
-        let transient = size_of::<ContentRef>()
-            + size_of::<Option<ContentRef>>()
-            + size_of::<HashRef>()
-            + size_of::<[String; 4]>();
-        // Later reservation/upload work has its own controls. The initial
-        // bootstrap charges only empty headers and the actual retained census.
-        let scratch = Self::counter_scratch_data()
-            + counter_scratch_data()
-            + transfer::counter_scratch_data();
-        if retained
-            .checked_add(transient)
-            .and_then(|sum| sum.checked_add(scratch))
-            .is_none_or(|sum| sum > maximum)
-        {
-            return Err(exhausted());
-        }
-        Ok([retained, transient, scratch])
+        native_import18_receiving_bank_backing_construction_data(references, maximums, maximum)
     }
 
     /// Reserves the already-admitted exact seven-reference DATA population.
