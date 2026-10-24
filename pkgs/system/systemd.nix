@@ -1044,6 +1044,8 @@ in
             --systemd-creds "$out/bin/systemd-creds" \\
             --login-shell "${identityShells.login}" \\
             --nologin-shell "${identityShells.nologin}" \\
+            --matchpathcon "${libselinux}/sbin/matchpathcon" \\
+            --setfilecon "${libselinux}/sbin/setfilecon" \\
             "\$@"
           EOF
           chmod +x "$handlers/bin/aos-systemd-native-resources"

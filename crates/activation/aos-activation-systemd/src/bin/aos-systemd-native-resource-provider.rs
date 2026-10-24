@@ -21,12 +21,16 @@ async fn run() -> Result<()> {
     let mut credentials = None;
     let mut login_shell = None;
     let mut nologin_shell = None;
+    let mut matchpathcon = None;
+    let mut setfilecon = None;
     let action = loop {
         let argument = arguments.next().context("missing action")?;
         let target = match argument.as_str() {
             "--systemd-creds" => &mut credentials,
             "--login-shell" => &mut login_shell,
             "--nologin-shell" => &mut nologin_shell,
+            "--matchpathcon" => &mut matchpathcon,
+            "--setfilecon" => &mut setfilecon,
             _ => break argument,
         };
         if target.is_some() {
@@ -88,8 +92,19 @@ async fn run() -> Result<()> {
         (None, None) => None,
         _ => bail!("both pinned shell executables are required"),
     };
-    let output =
-        resource_effects::execute(&invocation, &action, credentials.as_deref(), shells).await?;
+    let label_tools = match (matchpathcon.as_deref(), setfilecon.as_deref()) {
+        (Some(lookup), Some(label)) => Some((lookup, label)),
+        (None, None) => None,
+        _ => bail!("both pinned unit-label executables are required"),
+    };
+    let output = resource_effects::execute(
+        &invocation,
+        &action,
+        credentials.as_deref(),
+        shells,
+        label_tools,
+    )
+    .await?;
     serde_json::to_writer(std::io::stdout().lock(), &output)?;
     std::io::stdout().write_all(b"\n")?;
     Ok(())

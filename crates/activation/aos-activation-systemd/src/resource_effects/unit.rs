@@ -526,7 +526,12 @@ async fn retire(manager: &PinnedSystemdManager, definition: &Definition) -> Resu
 /// # Errors
 /// Returns an error for malformed inputs, foreign resource state, lost manager
 /// identity, or unsuccessful unit jobs.
-pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str) -> Result<Value> {
+pub(super) async fn execute(
+    invocation: &Invocation,
+    action: &str,
+    ability: &str,
+    label_tools: Option<(&str, &str)>,
+) -> Result<Value> {
     let desired = definition(invocation, ability)?;
     let path = state_path(invocation, "unit");
     let previous: Option<Receipt> = read_regular(&path, 1_048_576)?
@@ -720,17 +725,7 @@ pub(super) async fn execute(invocation: &Invocation, action: &str, ability: &str
         atomic_write(&path, &serde_json::to_vec(&receipt)?, 0o600)?;
     }
     if !owned_file(&desired)? {
-        let mut temporary = tempfile::NamedTempFile::new_in(unit_root())?;
-        use std::io::Write;
-        use std::os::unix::fs::PermissionsExt;
-        temporary
-            .as_file()
-            .set_permissions(fs::Permissions::from_mode(0o644))?;
-        temporary.write_all(desired.text.as_bytes())?;
-        temporary.as_file().sync_all()?;
-        temporary
-            .persist_noclobber(unit_path(&desired))
-            .map_err(|error| error.error)?;
+        super::unit_label::publish(unit_root(), &desired.unit, &desired.text, label_tools).await?;
     }
     let enabled = check_link(&desired)?;
     if desired.enabled && !enabled {

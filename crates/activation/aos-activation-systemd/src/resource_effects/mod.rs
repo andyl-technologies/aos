@@ -9,6 +9,7 @@ pub(crate) use identity::restore as restore_identities;
 mod listener;
 mod packaged_unit;
 mod unit;
+mod unit_label;
 pub(crate) use unit::render_resource_groups;
 mod watchdog;
 
@@ -67,6 +68,7 @@ pub(super) async fn execute(
     action: &str,
     creds: Option<&str>,
     shells: Option<(&str, &str)>,
+    label_tools: Option<(&str, &str)>,
 ) -> Result<Value> {
     ensure!(
         action == "observe" || (action == "apply") == (invocation.action == Action::Apply),
@@ -105,10 +107,10 @@ pub(super) async fn execute(
         ("packagedUnit", "ensure") => packaged_unit::execute(invocation, action).await,
         ("managerWatchdog", "ensure") => watchdog::execute(invocation, action).await,
         ("serviceManagement", "resourceGroup") => {
-            unit::execute(invocation, action, "resourceGroup").await
+            unit::execute(invocation, action, "resourceGroup", label_tools).await
         }
         ("swap" | "mount" | "scheduledActivation", "ensure") => {
-            unit::execute(invocation, action, ability).await
+            unit::execute(invocation, action, ability, label_tools).await
         }
         _ => bail!("unsupported ancillary operation"),
     };
