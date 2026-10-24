@@ -121,6 +121,13 @@ pub struct OriginalRuntimeConstructionStorage {
     /// Independent owning observers may repeat the same authenticated backing.
     /// This demand funds those reports without claiming another allocation.
     pub construction_retained_observation_growth_bytes: usize,
+    /// Reserves future retained backing that stays charged in the spent member.
+    ///
+    /// The holder reports this only before construction. After issue, every
+    /// holder census charges the original member's unchanged reservation beside
+    /// actual owners, including partial failures. This is memory accounting;
+    /// it grants no SDK quota or execution permission.
+    pub construction_retained_reservation_bytes: usize,
     /// Bounds additional constructor work while all retained owners coexist.
     pub construction_transient_requested_bytes: usize,
     /// Names this exact constructor's explicit fixed views and counters.
@@ -144,6 +151,7 @@ pub struct CompleteOriginalRuntimeConstructionMember {
     phase: OriginalRuntimeConstructionPhase,
     policy: OriginalRuntimeConstructionPolicy,
     requested_peak: usize,
+    retained_reservation: usize,
 }
 
 impl InstalledConformancePlan {
@@ -157,6 +165,14 @@ impl InstalledConformancePlan {
             size_of::<CompleteOriginalRuntimeConstructionMember>(),
             size_of::<OriginalRuntimeConstructionPolicy>(),
             2 * size_of::<OriginalRuntimeConstructionStorage>(),
+            // The pure peak boundary retains its explicit by-value DATA views
+            // beside the caller's rows; its added reservation term is separate.
+            size_of::<OriginalRuntimeConstructionStorage>(),
+            size_of::<OriginalRuntimeConstructionPolicy>(),
+            size_of::<[usize; 6]>(),
+            size_of::<Result<usize, RuntimeError>>(),
+            size_of::<bool>(),
+            size_of::<usize>(),
             2 * size_of::<[usize; 3]>(),
             size_of::<[&PacketCompleteOriginalHostSdk; 3]>(),
             size_of::<[Weak<PacketCompleteSemanticSource>; 3]>(),
@@ -232,6 +248,7 @@ impl InstalledConformancePlan {
             phase,
             policy,
             requested_peak,
+            retained_reservation: storage.construction_retained_reservation_bytes,
         };
         member.origin()?;
         Ok(member)
@@ -252,6 +269,15 @@ impl CompleteOriginalRuntimeConstructionMember {
     /// Returns the complete originally admitted peak without renewing it.
     pub fn requested_peak_data(&self) -> usize {
         self.requested_peak
+    }
+
+    /// Returns the unchanged retained reservation for subsequent holder censuses.
+    ///
+    /// This amount remains charged beside actual allocations until the original
+    /// holder drops the member. Reading DATA cannot renew or consume it, raise
+    /// a Controller quota, or authorize an allocation.
+    pub fn retained_reservation_bytes_data(&self) -> usize {
+        self.retained_reservation
     }
 
     /// Rechecks exact original identity before a constructor consumes its owners.
@@ -386,32 +412,7 @@ fn observe(
     after: bool,
 ) -> Result<(usize, usize), RuntimeError> {
     let max = policy.maximum_requested_bytes;
-    let mut peak = sum(
-        &[
-            storage.retained_holder_bytes,
-            storage.maximum_simultaneous_transient_bytes,
-            policy.declared_observer_scratch_bytes,
-        ],
-        max,
-    )?;
-    if !after {
-        peak = sum(
-            &[
-                peak,
-                storage.construction_retained_requested_bytes,
-                storage.construction_retained_observation_growth_bytes,
-                storage.construction_transient_requested_bytes,
-                storage.construction_counter_scratch_bytes,
-            ],
-            max,
-        )?;
-    } else if storage.construction_retained_requested_bytes != 0
-        || storage.construction_retained_observation_growth_bytes != 0
-        || storage.construction_transient_requested_bytes != 0
-        || storage.construction_counter_scratch_bytes != 0
-    {
-        return Err(RuntimeError::ForeignAuthority);
-    }
+    let mut peak = construction_requested_peak(policy, storage, after)?;
     let mut descriptors = sum(
         &[
             storage.retained_descriptors,
@@ -448,6 +449,45 @@ fn observe(
         )?;
     }
     Ok((peak, descriptors))
+}
+
+// The reservation is prospective only until Core stores the spent member.
+// Later observations charge that same amount through retained_holder_bytes.
+fn construction_requested_peak(
+    policy: OriginalRuntimeConstructionPolicy,
+    storage: OriginalRuntimeConstructionStorage,
+    after: bool,
+) -> Result<usize, RuntimeError> {
+    let max = policy.maximum_requested_bytes;
+    let mut peak = sum(
+        &[
+            storage.retained_holder_bytes,
+            storage.maximum_simultaneous_transient_bytes,
+            policy.declared_observer_scratch_bytes,
+        ],
+        max,
+    )?;
+    if !after {
+        peak = sum(
+            &[
+                peak,
+                storage.construction_retained_requested_bytes,
+                storage.construction_retained_observation_growth_bytes,
+                storage.construction_retained_reservation_bytes,
+                storage.construction_transient_requested_bytes,
+                storage.construction_counter_scratch_bytes,
+            ],
+            max,
+        )?;
+    } else if storage.construction_retained_requested_bytes != 0
+        || storage.construction_retained_observation_growth_bytes != 0
+        || storage.construction_retained_reservation_bytes != 0
+        || storage.construction_transient_requested_bytes != 0
+        || storage.construction_counter_scratch_bytes != 0
+    {
+        return Err(RuntimeError::ForeignAuthority);
+    }
+    Ok(peak)
 }
 
 fn sum(terms: &[usize], maximum: usize) -> Result<usize, RuntimeError> {
@@ -559,3 +599,6 @@ impl Drop for CompleteOriginalRuntimeConstructionDiagnostics {
         SELECTED_RUNTIME_DIAGNOSTICS.set(self.previous_runtime);
     }
 }
+
+#[cfg(test)]
+mod tests;

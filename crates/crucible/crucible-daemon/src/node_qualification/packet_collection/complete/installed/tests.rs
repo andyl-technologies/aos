@@ -243,12 +243,20 @@ fn source_built_packet_original_scene_reaches_inactive_runtime_and_reclaims() {
         )
         .unwrap();
 
+        let journal_reservation =
+            PacketCompleteReportStartupHolder::original_inactive_journal_reservation_for_test(
+                &installed.original,
+            )
+            .unwrap();
+        assert!(journal_reservation > 0);
+
         eprintln!("native control: test inactive actor checked; census maximum begin");
         let actual = PacketCompleteReportStartupHolder::original_inactive_holder_storage_for_test(
             &installed.original,
             usize::MAX,
         )
         .unwrap();
+        assert!(actual >= journal_reservation);
         eprintln!("native control: test census maximum end; exact begin");
         assert_eq!(
             PacketCompleteReportStartupHolder::original_inactive_holder_storage_for_test(

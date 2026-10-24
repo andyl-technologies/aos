@@ -61,10 +61,11 @@ impl PreparationOwners {
         &self,
         sources: &[Rc<PacketCompleteSemanticSource>; 3],
         maximum: usize,
-    ) -> Result<(usize, usize, usize), RuntimeError> {
+    ) -> Result<(usize, usize, usize, usize), RuntimeError> {
         let mut retained = 0usize;
         let mut transient = 0usize;
         let mut scratch = 0usize;
+        let mut reservation = 0usize;
         for (peer, source) in self.peers.iter().zip(sources) {
             if peer.registry.is_none() || peer.supervisor.is_none() || peer.operational.is_none() {
                 return Err(RuntimeError::OwnerUnavailable);
@@ -77,6 +78,9 @@ impl PreparationOwners {
             retained = retained
                 .checked_add(data.retained_requested_bytes())
                 .ok_or(RuntimeError::ResourceLimit)?;
+            reservation = reservation
+                .checked_add(data.retained_journal_reservation_bytes())
+                .ok_or(RuntimeError::ResourceLimit)?;
             transient = transient
                 .checked_add(data.maximum_simultaneous_transient_bytes())
                 .ok_or(RuntimeError::ResourceLimit)?;
@@ -84,7 +88,7 @@ impl PreparationOwners {
                 .checked_add(data.declared_counter_scratch_bytes())
                 .ok_or(RuntimeError::ResourceLimit)?;
         }
-        Ok((retained, transient, scratch))
+        Ok((retained, transient, scratch, reservation))
     }
 
     pub(in crate::node_qualification::packet_collection::complete::authority::report_startup) fn admit_original_runtime_node_into(

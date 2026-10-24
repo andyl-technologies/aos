@@ -27,7 +27,7 @@ pub(super) fn limits() -> AdmissionLimits {
 pub(super) fn quote(
     held: &PacketCompleteReportStartupHolder,
     max: usize,
-) -> Result<(usize, usize, usize), RuntimeError> {
+) -> Result<(usize, usize, usize, usize), RuntimeError> {
     let owners = held
         .runtime_owners
         .try_borrow()
@@ -221,7 +221,7 @@ pub(super) fn quote(
     ]
     .into_iter()
     .try_fold(0usize, |a, b| add(a, b, max))?;
-    Ok((retained, transient, scratch))
+    Ok((retained, transient, scratch, node.3))
 }
 
 fn clone_program(program: &PacketConnectedSourceProgram) -> PacketConnectedSourceProgram {

@@ -22,6 +22,11 @@ pub(super) fn counter_scratch_data() -> Result<usize, RuntimeError> {
         3*PacketCompleteSemanticSource::original_collecting_validation_counter_scratch_data(),
         crucible_engine::node_adapters::cnp::CnpSemanticLaunchGuard::original_initial_lifecycle_storage_counter_scratch_data(),
 
+        size_of::<std::slice::Iter<'static, std::cell::OnceCell<CompleteOriginalRuntimeConstructionMember>>>(),
+        size_of::<Option<&CompleteOriginalRuntimeConstructionMember>>(),
+        size_of::<Result<(),RuntimeError>>(),size_of::<usize>(),
+        size_of::<(usize,usize,usize,usize)>(),
+        size_of::<Result<(usize,usize,usize,usize),RuntimeError>>(),
         size_of::<Counter>(),size_of::<Counter>(),
         size_of::<std::cell::Ref<'_,OriginalRuntimeOwners>>(),
         size_of::<std::cell::RefMut<'_,OriginalRuntimeOwners>>(),
@@ -53,6 +58,15 @@ impl PacketCompleteReportStartupHolder {
         &self,
         c: &mut Counter,
     ) -> Result<(), RuntimeError> {
+        // Core stored each member before any constructor effect. Keep its full
+        // future backing charged even after construction ends or fails; actual
+        // SDK allocations are observed independently and cannot refund it.
+        for slot in &self.runtime_members {
+            if let Some(member) = slot.get() {
+                c.add(member.retained_reservation_bytes_data())
+                    .map_err(storage_error)?;
+            }
+        }
         self.receiver_reader.charge_shared_root(c)?;
         if let Some(scene) = self.original_scene.get() {
             scene

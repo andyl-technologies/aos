@@ -213,6 +213,41 @@ impl PacketCompleteReportStartupHolder {
         }
     }
 
+    /// Checks the real journal reservation before any actual owner is observed.
+    ///
+    /// # Errors
+    /// Refuses absent or misplaced members, zero reservation, or a holder walk
+    /// that reaches actual owners before charging its retained Core member.
+    pub(in crate::node_qualification::packet_collection::complete) fn original_inactive_journal_reservation_for_test(
+        original: &Rc<RefCell<Self>>,
+    ) -> Result<usize, RuntimeError> {
+        let held = original.try_borrow().map_err(|_| RuntimeError::OwnerBusy)?;
+        held.authenticate_native_origin_data()?;
+        let mut reservation = 0;
+        for (selected, slot) in held.runtime_members.iter().enumerate() {
+            let bytes = slot
+                .get()
+                .ok_or(RuntimeError::OwnerUnavailable)?
+                .retained_reservation_bytes_data();
+            if selected == index(OriginalRuntimeConstructionPhase::CollectingGraph) {
+                reservation = bytes;
+            } else if bytes != 0 {
+                return Err(RuntimeError::ForeignAuthority);
+            }
+        }
+        let below = reservation
+            .checked_sub(1)
+            .ok_or(RuntimeError::ResourceLimit)?;
+        let mut counter = Counter::new(below);
+        if held.charge_original_runtime_storage_data(&mut counter)
+            != Err(RuntimeError::ResourceLimit)
+            || counter.bytes() != 0
+        {
+            return Err(RuntimeError::ForeignAuthority);
+        }
+        Ok(reservation)
+    }
+
     /// Checks that the real initial constructor retained an attached inactive actor.
     pub(in crate::node_qualification::packet_collection::complete) fn authenticate_original_inactive_actor_for_test(
         original: &Rc<RefCell<Self>>,

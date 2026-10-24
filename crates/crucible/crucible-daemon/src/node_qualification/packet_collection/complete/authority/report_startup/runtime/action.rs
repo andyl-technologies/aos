@@ -373,6 +373,7 @@ impl InstalledPacketCompleteCollectionAuthority {
                 &original, &held, scope, maximum,
             )?;
         let mut construction_retained_observation_growth_bytes = 0;
+        let mut construction_retained_reservation_bytes = 0;
         let construction = if scope.is_post_construction() {
             (0, 0, 0)
         } else {
@@ -380,7 +381,11 @@ impl InstalledPacketCompleteCollectionAuthority {
                 OriginalRuntimeConstructionPhase::InputOwners => {
                     (inputs::quote(&held, maximum)?, 0, 0)
                 }
-                OriginalRuntimeConstructionPhase::CollectingGraph => graph::quote(&held, maximum)?,
+                OriginalRuntimeConstructionPhase::CollectingGraph => {
+                    let quoted = graph::quote(&held, maximum)?;
+                    construction_retained_reservation_bytes = quoted.3;
+                    (quoted.0, quoted.1, quoted.2)
+                }
                 OriginalRuntimeConstructionPhase::InactiveRuntime => match &held.purpose {
                     StartupHolderPurpose::OriginalScene => {
                         let quoted = inactive::quote(&held, maximum)?;
@@ -451,6 +456,7 @@ impl InstalledPacketCompleteCollectionAuthority {
             maximum_simultaneous_transient_bytes: transient,
             construction_retained_requested_bytes: construction.0,
             construction_retained_observation_growth_bytes,
+            construction_retained_reservation_bytes,
             construction_transient_requested_bytes: construction.1,
             construction_counter_scratch_bytes: construction.2,
             retained_descriptors: held.original_initial_retained_descriptors_data()?,
