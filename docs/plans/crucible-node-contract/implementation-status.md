@@ -10,6 +10,27 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Bank pricing from the actual typed Prepare inputs
+
+Commit `e3ef09d06f` binds the shared native bank quote to the actual retained
+Prepare request and binding. It selects each reference and its independent
+ceiling in native receive order, including the differing archived decoder order,
+normalization and semantic spend. The fixed adapter counter and complete returned
+row are independently bounded. No reference or body is copied, no quota changes
+and unverified DTOs remain unverified DATA.
+
+All 33 Native18 SDK controls and eight bank controls pass in both codec modes.
+The three new controls cover distinct exact role lengths, every one-byte-short
+role ceiling, whole-row exact/one-byte-short credit and retained parent spare
+capacity. All-feature/all-target Transport/Engine/Daemon compilation, scoped
+formatting, six architecture checks and application test-target compilation pass.
+Actual application metadata records 185 test artifacts across 58 packages,
+including 76 integration targets. All 632 frozen owned Rust/Cargo inputs match
+the commit and actual application source. Strict Transport Clippy still reports
+four owning-enum errors and 1,726 warnings, without new allowances. No new VM or
+native-runtime qualification is claimed. Complete Recipe/Prepare production,
+runtime SDK funding, live Native18 adoption and the full RFC remain unfinished.
+
 ## Shared seven-bank reservation pricing
 
 Commit `8ce7652cc9` exposes the native receiver's actual seven-reference and
