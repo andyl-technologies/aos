@@ -1,0 +1,42 @@
+{
+  "checks": {
+    "compiler_input_conformance": "/nix/store/sjr1kla2d8c75fwmsnzsgmk01bxa2pm3-aos-bazel-qemu-plugin-abi-conformance",
+    "mandatory_abi": "/nix/store/3pcygjz23k210q51lxicynf1wk4ra4m0-crucible-phase2-abi-conformance-0",
+    "mandatory_license_boundary": "/nix/store/42bdi7jd75v2b0f6vhmd3c8pip488mpd-crucible-phase1-license-boundary-0"
+  },
+  "conformance_cases": [
+    "matching headers: PASS",
+    "plugin version drift: rejected",
+    "shared-memory version drift: rejected"
+  ],
+  "identity": {
+    "atomic_patch_sha256": "3492f9060ed975d4a99531dbcb20db7d65d92b233752a14daa920cae0b8d8e30",
+    "plugin_declarations_sha256": "1d580aa38d95805c6818ffe1f4b68b337e14abbb5b3fdb686369afd61229a55e",
+    "qemu": "/nix/store/zdsnl7ib0j7am6f3mg2a7jk4fwsda4wr-qemu-crucible-11.1.1",
+    "qemu_build_id": "9e47e62d424d444db836abca6dd3fac0c893113a43fb6341a41b18e66788c377",
+    "qemu_plugin_api_version": 7,
+    "schema_version": 1,
+    "shmem_abi_version": 30,
+    "shmem_declarations_sha256": "5176b176ccb94105f99f513246c1dcd4e8ff4b9da0ef13c2a52a92b7a1e5eb10",
+    "shmem_header_sha256": "1dc465a755a9d9e8195a7e3cd22ecadcc1496fff89a2e19bcf7ffb7b9c9b8dcd"
+  },
+  "limits": [
+    "These are the existing mandatory Cargo-side boundary gates; they do not claim conversion of GPL unit or lifecycle tests to Bazel.",
+    "Live matching QEMU execution and suite corresponding-source release retention remain independent gates."
+  ],
+  "runtime_suite": {
+    "executed": 5566,
+    "passed": 5566,
+    "run_id": "48a149d0-959c-47cd-ad00-0488ab2dc845",
+    "scope": "The existing source-built Cargo Crucible runtime suite used by the mandatory qualification derivations.",
+    "skipped": 75
+  },
+  "schema_version": 1,
+  "source_sha256": {
+    "crates/crucible/protocol/crucible-qemu-shmem/src/lib.rs": "5176b176ccb94105f99f513246c1dcd4e8ff4b9da0ef13c2a52a92b7a1e5eb10",
+    "crates/crucible/qemu/crucible-qemu-plugin/src/abi.rs": "1d580aa38d95805c6818ffe1f4b68b337e14abbb5b3fdb686369afd61229a55e",
+    "pkgs/build-support/_bazel/qemu-plugin-abi.nix": "a6404e608bdc55912d1021ecf8b274c525a90aba5d9a8069d80b38bfa0d2afe0",
+    "pkgs/emulation/_crucible-qemu-plugin-abi.nix": "30745dfc02c78b4c46ae2bbdbdfa1ad9fc1ae073762e583c53e22dee4f249d17",
+    "tests/build/_bazel-qemu-plugin-abi.nix": "c38a80a8c975dfdbbebf11ac9bdeb970172707f4fae7e408b7e27f9043573559"
+  }
+}

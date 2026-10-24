@@ -13,6 +13,7 @@ nix-build -A checks.build.bazel.qemu-gpl.build --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.parity --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.developer-build --no-out-link
 nix-build -A checks.build.bazel.qemu-gpl.format --no-out-link
+nix-build -A checks.build.bazel.qemu-gpl.installed-inspection --no-out-link
 ```
 
 `parity` builds an independent offline Cargo release baseline and retains three
@@ -36,9 +37,20 @@ selection. This preserves the C toolchain's runtime support while avoiding an
 additional shared `libgcc_s` dependency in the GPL artifacts.
 
 The `compiler_artifact` packages retain the compiled files for inspection.
-They are not complete installed production packages. Plugin installation still
-needs its QEMU plugin symlink, license files, build metadata, and qualification
-against the suite's matching corresponding-source retention policy.
+The `installed.plugin` and `installed.gateway` derivations apply normal AOS
+stripping, RPATH cleanup, and reference scrubbing. The plugin preserves its
+relative QEMU plugin symlink, checked build identities, and GPL/MIT license
+scope. Its build metadata identifies Bazel and its locked source repositories.
+The gateway preserves its GPL/MIT license files and executable layout.
+
+`installed-inspection` checks both artifacts after fixup, compares their ELF
+properties and gateway rejection behavior with Cargo, and resolves their native
+libraries with the AOS loader. It verifies the symlink, license bytes, and build
+metadata, and requires the metadata installer to reject a different QEMU
+package, shared-memory version, or embedded build identity before publishing
+metadata. This qualifies the install layout and runtime resolution; complete
+closure equivalence and the suite's matching corresponding-source retention
+policy still require their separate release gates.
 
 Production consumers continue to use their existing builders. The gateway's
 four lifecycle cases must retain the real Apache client in a separate helper

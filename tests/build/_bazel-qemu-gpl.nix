@@ -81,6 +81,22 @@ in rec {
     targets = ["${plugin}format" "${gateway}format"];
   };
   cargo = import ./_bazel-qemu-gpl-cargo.nix {inherit pkgs;};
+  installed = import ./_bazel-qemu-gpl-installed.nix {inherit pkgs build;};
+  installed-inspection =
+    pkgs.runCommand "aos-bazel-qemu-gpl-installed-inspection" {
+      buildDeps = [pkgs.python3];
+    } ''
+      mkdir -p "$out"
+      ${pkgs.python3}/bin/python3 ${parityTools}/verify_qemu_installed.py \
+        --plugin ${installed.plugin} --gateway ${installed.gateway} --cargo ${cargo} \
+        --abi ${pkgs.aosBazelQemuPluginAbi} --qemu ${pkgs.qemu-crucible} \
+        --qemu-shmem-abi ${pkgs.lib.escapeShellArg pkgs.qemu-crucible.passthru.shmemAbi} \
+        --readelf ${pkgs.binutils}/bin/readelf \
+        --loader ${pkgs.glibc}/lib/${pkgs.stdenv.hostPlatform.dynamicLinker} \
+        --gpl ${../../LICENSES/GPL-2.0-only.txt} --mit ${../../LICENSES/MIT.txt} \
+        --metadata-installer ${../../tools/bazel/metadata/install_qemu_plugin_metadata.py} \
+        --output "$out/report.json"
+    '';
   parity =
     pkgs.runCommand "aos-bazel-qemu-gpl-production-parity" {
       buildDeps = [pkgs.python3];
@@ -120,7 +136,7 @@ in rec {
   };
   all =
     pkgs.runCommand "aos-bazel-qemu-gpl-production-checks" {
-      buildDeps = [parity developer-build format];
+      buildDeps = [parity developer-build format installed-inspection];
     } ''
       mkdir -p "$out"
       printf 'PASS: production compiler artifacts and developer tools\n' > "$out/result"
