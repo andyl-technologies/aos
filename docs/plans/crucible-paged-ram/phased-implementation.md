@@ -68,7 +68,7 @@ failed attempts appear in the dated entries below.
 | Prior native build | `b69de00f81` retains signed `3376c0ee90`; all twelve independently bounded custody components pass, including final failure-evidence replay at `wxxp873qw0khc3zykvlfhgi2f6x9ff63`. | Its five fixture regressions are corrected in `83ecde0031`. Its passing component evidence does not qualify actual installed Source authority. |
 | Policy and release | All 90 testing-standard controls pass, including the broad operational-wait gate and unchanged causal mutations. All five engineering-hygiene controls pass. | The retained license-boundary run stops at strict controller Clippy before its boundary assertions. The subsequent daemon dependency check reports 622 host-library errors, predominantly large error carriers. No current-source boundary-pass result is recorded. Earlier attempts remain recorded below. Lower residency, physical return, fork rearm and performance parity remain unqualified. |
 | Rust publisher receiver | `c37c5a1808` borrows exact Setup6 roles, requires plan nine and retains the canonical Native service field inside the prepaid pinned Runtime. Component return follows group and workspace return. All 1,150 plugin unit tests and six new view/retention controls pass. | Mandatory application compilation passes at `7g4cs18mj0a4yhwwmdw7na1j53flhxaw`, with all 5,277 committed Rust/TOML inputs matching the frozen source. The setup gate passes 45 tests; genuine launched transfer and physical cleanup remain unexecuted. |
-| Requirements | 649 bindings: 630 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
+| Requirements | 651 bindings: 632 component and nineteen native, across 243 requirements. | 142 requirements remain uncovered and none fully qualified. |
 
 #### Isolated patched-libc build support
 
@@ -3207,6 +3207,33 @@ passes at `hzdyh4b7245w1z2sgwjq78r5rxk9bvpj`, from the same immutable source
 `0g4vvgmlhri8xjbl6kgwwnq17aaxwja7`; all 5,423 committed Rust/TOML files and
 six fixtures match `e3f19d5272` before subsequent documentation edits.
 These controls establish finite storage error custody, without qualifying native
+activation, physical lifecycle, lower residency or performance parity.
+
+Receiver publication reports now use the existing checked canonical length
+instead of allocating an encoding solely to count its bytes. Its first
+per-object child-admission refusal also retains the explicit Original directly,
+without a new allocation or loan. The
+independently funded peer and the test's separate backend inspection each use
+their own original accounts. Against the corrected fixture, the
+predecessor passes three existing receiver controls but fails both new cases:
+the healthy transfer adds three loans to an unrelated ambient account, and the
+first child refusal releases all 8,773 prepaid caller bytes while its actual
+typed revocation error remains alive. With both corrections all five controls
+pass. The final healthy control additionally checks the reported copied-byte
+total against the actual peer object lengths. The refusal sends no object
+request, publishes no root and exchanges one
+cancellation; its existing caller custody survives receiver and caller close
+until error close. The foreign account acquires no loan and closes independently.
+
+Inventory `g8sg6g6k2m79v6n56pnigxy65qfqy3fv` validates 651 bindings across
+243 requirements: 607 model, 25 format and nineteen native bindings. There are
+still 142 uncovered requirements and zero fully qualified requirements. The
+initial broad validation rejected a whole-receiver caller scope because it
+retained temporary report charges beyond two existing lifecycle boundaries.
+That attempted scope is removed; the correction eliminates the report encoding
+itself. All 778 ordinary storage tests, 95 policy controls and strict
+storage/portable-RAM Clippy pass. Hermetic storage and mandatory application
+compilation checks remain pending for this final receiver change. It does not qualify native
 activation, physical lifecycle, lower residency or performance parity.
 
 The separate source-only exclusive-wait packet

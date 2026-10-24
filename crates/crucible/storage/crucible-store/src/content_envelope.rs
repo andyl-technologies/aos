@@ -344,7 +344,11 @@ impl ContentEnvelope {
         u64::try_from(bytes).map_err(|_| limit("decode-memory"))
     }
 
-    fn encoded_len(&self) -> Result<usize, ContentEnvelopeError> {
+    /// Computes the canonical byte length without allocating its encoding.
+    ///
+    /// # Errors
+    /// Returns a limit error if the complete encoded length overflows.
+    pub(crate) fn encoded_len(&self) -> Result<usize, ContentEnvelopeError> {
         let mut length = MAGIC
             .len()
             .checked_add(4)

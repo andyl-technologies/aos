@@ -308,7 +308,7 @@ impl<'a> RamTransferReceiver<'a> {
         let account = work
             .original()
             .child()
-            .map_err(super::codec_ownership::admission)?;
+            .map_err(|source| RamStoreError::from_admission(work.original(), source))?;
         let _scope = account.enter();
         let (maximum_bytes, maximum_children) = object_limits(id)?;
         self.retention.retain_object(id)?;
@@ -442,7 +442,7 @@ impl<'a> RamTransferReceiver<'a> {
             self.report.copied_bytes = self
                 .report
                 .copied_bytes
-                .checked_add(envelope.canonical_bytes().len() as u64)
+                .checked_add(envelope.encoded_len()? as u64)
                 .ok_or(RamStoreError::Limit("transfer report bytes"))?;
         }
         Ok(())
