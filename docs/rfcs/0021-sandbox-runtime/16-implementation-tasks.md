@@ -11591,3 +11591,12 @@ transport retry also selects the exact installed Root kernel, with an
 evaluation-time equality check. Its result remains pending. These failures
 precede TPM assertions and do not invalidate or replace the earlier successful
 transport receipt.
+
+The clean `e8ca5ef4aa` package checks pass: the complete effects suite at
+`/nix/store/9lrl387b66a0sdgafpxdrb41ipzd0i37-aos-effect-module-checks-0`,
+the final backend artifact comparison at
+`/nix/store/d9rrzk9cwb402h2nz23g2l72hiphrj1c-aos-systemd-backend-policy-artifact-check`,
+and the installed verity publication checks at
+`/nix/store/51hf50wrpgz4ap52pam6pj0biv4wx0xw-systemd-verity-check-0`.
+The effects suite includes all 109 service-handler and 36 network tests. The
+corrected transport VM remains pending; no installed admission gate changes.
