@@ -16652,3 +16652,39 @@ inventory is unchanged. The disposable fixture now checks actual kernel probes,
 raw values, hidden/absent names and ERANGE, and mounts its lower read-only to
 verify xattr writes fail with EROFS. Fresh kernel execution and mandatory
 application compilation remain required. Accepted trunk tasks remain 27/64.
+
+
+### Native cache qualification under the enforced headless guest deadline
+
+The `46d4f0b3e3` feature-matrix request has a failing all-feature native
+prerequisite: Firecracker exits 124 at the unchanged 870-second whole-guest
+bound, without TEST_RESULT. The final original witness is duplicate publication
+restoring its pending inode; this is incomplete qualification, not a runtime
+assertion pass. The parallel base request and T2 component checks remain
+independently pending. The failure is retained.
+
+Native cache qualification now uses a closed three-guest aggregation: library
+units; native recovery/publication; and admission/dictionary/encoded eviction.
+Every guest uses the same immutable image, actual ext4 project-quota/verity
+setup and original 870-second outer limit. The independent eviction controls
+use distinct domains and establish their own genuine recovery, Resume, consumer
+and physical-custody prerequisites. Their complete sequences move together;
+all actor bounds, producer and consumer grace windows, descriptor/charge checks
+and negative controls remain unchanged. Library selectors and their original
+identity/capability restrictions execute exactly once in the unit guest.
+The recovery sequence otherwise retains its order. Both role guests still
+prepare the real configured publisher and authenticate its private namespaces.
+
+The aggregate requires PASS from all three named guests and retains each
+complete result and serial log through a distinct output link. It never
+manufactures a combined result from partial logs. Python syntax, Nix formatting
+and diff checks pass; fresh native execution and complete source/artifact review
+remain required. No trunk checkbox is changed (27/64).
+
+
+The staged guest split passes the repository native evaluation check
+(`checks.eval`, output `5qc6vsw785vqv32d7mdqfjqzkx3p6r1q`). The initial
+attempt to select nonexistent `checks.eval.core` exits before building; the
+correct repository check completes successfully. The xattr checkpoint
+`a71768a0c8` separately passes all 53 pure structural selectors in 72.223
+seconds. The populated xattr kernel and application requests remain pending.

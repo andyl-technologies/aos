@@ -165,7 +165,7 @@ def main():
     transport, cache, source = map(pathlib.Path, sys.argv[1:])
     transport_identity = check_transport(transport, source)
     cache_identity = check_inputs(cache, source, [
-        "host-cache-proof.nix", "host_cache_image.py", "host_cache_vm.py",
+        "host-cache-proof.nix", "host-cache-scenarios.nix", "host_cache_image.py", "host_cache_vm.py",
         "host_cache_temporaries_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py",
         "manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py",
         "encoded_eviction_vm.py", "host_cache_encoded_recovery_vm.py",

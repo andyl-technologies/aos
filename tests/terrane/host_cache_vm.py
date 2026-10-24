@@ -1450,9 +1450,16 @@ def filesystem_unit_cases():
 def main():
     """Runs actual helper, actual CLI publisher and isolated native controls."""
     require(os.geteuid() == 0, "VM supervisor requires explicit root administration")
+    require(len(sys.argv) == 4 and sys.argv[3] in {"units", "recovery", "eviction"},
+            "native cache guest requires one explicit closed scenario")
+    scenario = sys.argv[3]
     verify_image()
-    filesystem_unit_cases()
-    runpy.run_path(str(IMAGE / "share/native_feature_units_vm.py"))["execute"](sys.modules[__name__])
+    if scenario == "units":
+        filesystem_unit_cases()
+        runpy.run_path(str(IMAGE / "share/native_feature_units_vm.py"))["execute"](sys.modules[__name__])
+        print("PASS independent native cache scenario: units", flush=True)
+        return
+
     publisher_confinement_cases()
     administrative_preflight("before")
     scaffold()
@@ -1521,6 +1528,16 @@ def main():
                         and value.st_uid == 841 and value.st_mode & 0o7777 == 0o700,
                         "actual publisher namespace ownership changed: " + str(path))
         print("PASS actual configured publisher retains exclusive private namespace ownership", flush=True)
+        if scenario == "eviction":
+            # These controls use distinct domains and establish their own real
+            # admission, recovery and Resume prerequisites. Their full original
+            # sequences and grace windows stay together in this separate guest.
+            runpy.run_path(str(IMAGE / "share/admission_cache_vm.py"))["run"](sys.modules[__name__], uuid)
+            runpy.run_path(str(IMAGE / "share/admission_cache_vm.py"))["run_dictionary_custody"](sys.modules[__name__], uuid)
+            runpy.run_path(str(IMAGE / "share/encoded_eviction_vm.py"))["run"](sys.modules[__name__], uuid)
+            print("PASS independent native cache scenario: eviction", flush=True)
+            return
+
         sealed_consumer = actor("sealed-consumer", "sealed-consumer", uuid)
         require("PASS actual whole inline inode, bounded backing ownership, held-policy access, renewal, release and independent cache handoff" in sealed_consumer
                 and "PASS actual whole manifest inode, metadata/range refusal, expiry and retained delegated descriptor lifetime" in sealed_consumer,
@@ -1657,9 +1674,6 @@ def main():
                 and candidates[0].stat().st_nlink == 1 and candidates[0].stat().st_mode & 0o7777 == 0o640,
                 "actual read-through lacks its exact original encoded cache inode")
         print("PASS independent observer verifies actual read-through cache inode, original bytes and role custody", flush=True)
-        runpy.run_path(str(IMAGE / "share/admission_cache_vm.py"))["run"](sys.modules[__name__], uuid)
-        runpy.run_path(str(IMAGE / "share/admission_cache_vm.py"))["run_dictionary_custody"](sys.modules[__name__], uuid)
-        runpy.run_path(str(IMAGE / "share/encoded_eviction_vm.py"))["run"](sys.modules[__name__], uuid)
         publication_cases(publisher, uuid)
         failed_read_case(uuid)
         failed_preparation_case(uuid)
@@ -1690,6 +1704,7 @@ def main():
             "run"](sys.modules[__name__], uuid, index_candidates)
         runpy.run_path(str(IMAGE / "share/source_cleanup_vm.py"))["run"](sys.modules[__name__], publisher, uuid)
         print("PASS bounded native cache recovery, encoded admission and inline publication; full Running publication/BKT15 remain unqualified", flush=True)
+        print("PASS independent native cache scenario: recovery", flush=True)
     finally:
         for child in reversed(children):
             if child.poll() is None:
