@@ -298,6 +298,8 @@ in
     #   0026 — Deliver Cache's distinct original through the same retained sender.
     #   0027 — Select canonical Parent04 and distinct Mount/Network F/M slices,
     #          preserving the enrolled Controller normal/recovery sender paths.
+    #   0039 — Keep namespace retirement notifications under Secure Boot
+    #          lockdown through typed fentry instead of a kprobe perf event.
     patches = [
       ./patches/0001-remove-usr-lib-unit-lookup-paths.patch
       ./patches/0002-add-prefix-to-conf-paths.patch
@@ -338,10 +340,12 @@ in
       ./patches/0036-select-sandbox-resource-unit-families.patch
       ./patches/0037-account-view-root-preparation.patch
       ./patches/0038-confine-offline-public-output.patch
+      ./patches/0039-nsresourced-retirement-fentry.patch
     ];
 
     buildDeps = [
       bpftool
+      buildPackages.binutils
       buildPackages.llvm
       binutils
       gnumake
@@ -682,6 +686,16 @@ in
         name = "build";
         script = ''
           ninja -j$NIX_BUILD_CORES
+
+          # Inspect the generated BPF object, including in cross builds. A
+          # successful C build alone does not establish its attachment kind.
+          ${buildPackages.binutils}/bin/readelf -SW src/bpf/userns-restrict.bpf.o \
+            > userns-restrict-sections.txt
+          grep -Fq ' fentry/retire_userns_sysctls ' userns-restrict-sections.txt
+          if grep -Eq '[[:space:]]k(ret)?probe/' userns-restrict-sections.txt; then
+            echo 'namespace retirement unexpectedly retains a kprobe section' >&2
+            exit 1
+          fi
         '';
       }
       {

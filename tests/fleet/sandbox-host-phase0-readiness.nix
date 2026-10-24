@@ -97,7 +97,13 @@
           C /run/credentials/@system/phase0-test-seed 0600 root root - ${testKeys}/seed
           C /run/credentials/@system/phase0-test-public 0600 root root - ${testKeys}/public
         '';
-        environment.systemPackages = [credentialFixture pkgs.attr pkgs.coreutils pkgs.diffutils pkgs.openssl pkgs.systemd];
+        # Observe the actual retirement notification after the target's final
+        # reference closes, independently of successful namespace creation.
+        environment.etc."systemd/system/systemd-nsresourced.service.d/qualification.conf".text = ''
+          [Service]
+          Environment=SYSTEMD_LOG_LEVEL=debug
+        '';
+        environment.systemPackages = [credentialFixture pkgs.attr pkgs.coreutils pkgs.diffutils pkgs.grep pkgs.openssl pkgs.systemd];
         aos.image.erofsCompressionLevel = 1;
         # The nested Guest template copies fixed store bytes under independent
         # names and inodes. Reuse only their compressed data, never their labels.
@@ -245,6 +251,7 @@ in {
       vm.wait_for_unit("multi-user.target", timeout=180)
       vm.succeed("test -f /sys/fs/selinux/enforce")
       assert vm.succeed("cat /sys/fs/selinux/enforce").strip() == "1"
+      assert "[confidentiality]" in vm.succeed("cat /sys/kernel/security/lockdown")
       assert int(vm.succeed("nproc --all").strip()) == 16
       memory_kib = int(vm.succeed("awk '/^MemTotal:/ {print $2}' /proc/meminfo").strip())
       assert memory_kib * 1024 >= ${toString fundedPolicy.capacity.memory-bytes}
@@ -305,6 +312,9 @@ in {
       assert target_pid > 1
       assert target_pid == int(vm.succeed(f"systemctl show {TARGET} -p MainPID --value"))
       assert vm.succeed(f"readlink /proc/{target_pid}/exe").strip() == "${inspector}"
+      target_userns = vm.succeed(f"readlink /proc/{target_pid}/ns/user").strip()
+      assert target_userns.startswith("user:[") and target_userns.endswith("]"), target_userns
+      target_userns_inode = int(target_userns[6:-1])
       uid_map = vm.succeed(f"cat /proc/{target_pid}/uid_map").split()
       gid_map = vm.succeed(f"cat /proc/{target_pid}/gid_map").split()
       assert uid_map[0] == gid_map[0] == "0", (uid_map, gid_map)
@@ -324,6 +334,14 @@ in {
       vm.succeed(f"systemctl stop {TARGET}")
       vm.wait_until_fails(f"systemctl is-active --quiet {INSPECTOR}", timeout=15)
       vm.wait_until_fails(f"systemctl is-active --quiet {HOST}", timeout=15)
+      retirement_message = (
+          f"Got BPF ring buffer notification that user namespace {target_userns_inode} is now dead."
+      )
+      vm.wait_until_succeeds(
+          "journalctl -b -u systemd-nsresourced.service --no-pager -o cat "
+          f"| grep -F '{retirement_message}'",
+          timeout=30,
+      )
       start_host(True)
       renewed_report = vm.succeed(f"base64 -w0 {REPORT}").strip()
       assert renewed_report != first_report

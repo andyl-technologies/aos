@@ -317,10 +317,10 @@ class EffectivePolicyTest(unittest.TestCase):
                     effective_policy.Access("aos_sandbox_controller_t", runtime, "dir", permission)
                 )
 
-    def test_namespace_retirement_events_stay_with_the_manager(self) -> None:
-        for permission in ("cpu", "kernel", "open", "tracepoint", "write"):
+    def test_namespace_retirement_requires_no_perf_events(self) -> None:
+        for permission in ("cpu", "kernel", "open", "read", "tracepoint", "write"):
             with self.subTest(permission=permission):
-                self.assert_missing_allow_rejected(
+                self.assert_forbidden_allow_rejected(
                     effective_policy.Access("init_t", "init_t", "perf_event", permission)
                 )
 

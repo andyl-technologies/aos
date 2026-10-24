@@ -11051,7 +11051,7 @@ The diagnostic also confirms successful installed view-root preparation at
 `/nix/store/4y10wrngmq77bjslgdhaw43bqnva8qa4-aos-rfc21-root-service-audit-0`;
 its diagnostic completion is not normal Root or offline provisioning readiness.
 
-### Manager-domain namespace retirement events (installed retry pending)
+### Manager-domain namespace retirement events (superseded by fentry below)
 
 The BPF-enabled Host guest attaches all six namespace restriction LSM hooks,
 then disables managed user namespaces when its retirement kprobe cannot create
@@ -11111,3 +11111,33 @@ extracts their /var partition without mounting it, checks the actual root xattr
 and distinct UUID, and reconstructs the protected disk from cold image recipes.
 The expanded hermetic build remains pending; these source checks do not qualify
 the normal public lifecycle or physical-floor admission.
+
+### Namespace retirement under confidentiality lockdown (installed retry pending)
+
+The Host retry passes Secure Boot enrollment, including reboot into enforcement,
+and reaches the installed Host target. All six namespace restriction LSM hooks
+attach. The subsequent cleanup attachment fails because kernel confidentiality
+lockdown rejects kprobes, so nsresourced correctly disables managed user
+namespaces. This is the failed test derivation
+`7j5b6z122rhi3r7sxrf8hs896yz877i7`, using manifest
+`nfzndjqsj7487vg6f2763qp6x1w2vjy7` and the pre-merge image. The prior perf-event
+grant resolves only the earlier SELinux gate, not the lockdown incompatibility.
+
+The systemd patch now attaches the same `retire_userns_sysctls` notification as
+a typed BTF fentry programme, preserving its maps, ring-buffer event and mandatory
+attachment. It adds no fallback and changes no lockdown mode or namespace
+restriction. The temporary manager perf-event grant is removed; effective-policy
+checks now reject all six perf permissions for the manager as well as confined
+roles. The selected kernel configuration already enables dynamic ftrace with
+direct calls and arguments, and its BTF contains the exact target function.
+
+The actual patched BPF source compiles with AOS LLVM and the selected AOS kernel
+BTF, and AOS bpftool generates its skeleton at
+`/nix/store/bsm4z04dswf9qdm8skgaqpxqc4hwsg1g-aos-rfc21-fentry-object-check`.
+The object retains all six LSM sections and replaces its kprobe section with
+fentry. All 158 effective-policy checker unit tests pass, including refusal of
+manager perf-event grants. The production package also checks the generated section kind. The Host
+VM now requires confidentiality lockdown and the actual ring-buffer death
+notification for the stopped target's namespace before restarting Host.
+Complete policy, systemd package and installed Host qualification remain pending;
+object compilation does not establish installed readiness.

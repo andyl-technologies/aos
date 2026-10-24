@@ -48,7 +48,6 @@ require {
     class lnk_file { create getattr read relabelfrom relabelto rename setattr unlink };
     class process { fork getcap getattr getpgid getsched noatsecure ptrace rlimitinh setexec setfscreate setpgid setrlimit setsched setsockcreate sigchld siginh sigkill signal sigstop transition };
     class process2 { nnp_transition nosuid_transition };
-    class perf_event { cpu kernel open tracepoint write };
     class security read_policy;
     class service { reload start status stop };
     class system { reload status };
@@ -61,12 +60,6 @@ require {
 # PID 1 creates the empty namespace before nsresourced assigns the managed
 # shifted range. Confined owners and guests do not inherit this permission.
 allow init_t self:user_namespace create;
-
-# The manager-domain namespace allocator attaches its fixed retirement kprobe
-# through a per-CPU kernel perf event and enables it with an ioctl. These
-# permissions belong to init_t, not the confined Sandbox owners or workloads.
-# Reading perf samples or accessing another domain's events is unnecessary.
-allow init_t self:perf_event { cpu kernel open tracepoint write };
 
 # Native host activation subscribes to PID 1 before reconciling its generated
 # units. Sandbox owners retain their separately checked status-only access.
