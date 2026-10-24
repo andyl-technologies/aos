@@ -446,6 +446,7 @@ pub(crate) fn current_boot17_counter_scratch_data() -> usize {
         + size_of::<Option<CurrentShared17<CurrentBoot17Data>>>()
         + size_of::<Result<Option<CurrentShared17<CurrentBoot17Data>>, ProviderError>>()
         + size_of::<Result<(), ProviderError>>()
+        + super::current_capture17_borrowed::historical_capture17_counter_scratch_data()
 }
 
 /// Names each concrete historical payload layout used by current Boot children.

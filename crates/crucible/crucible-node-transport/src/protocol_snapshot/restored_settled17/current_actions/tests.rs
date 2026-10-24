@@ -131,16 +131,12 @@ fn actual_capture_and_upload_prefixes_preserve_existing_reader_restrictions()
             let (input, rows) = recorded(&attempt)?;
             let records = ValidatedMetadataRecords::validate(&rows, 8192, 2 * 1024 * 1024)?;
             let mut borrowed = Ledger::new(records.rows(), limits());
-            let validated = borrowed.read::<HistoricalRestoredAction17>(&input, false);
-            if method == Method::Begin {
-                // The ordinary Capture writer has fifteen fields. It does not
-                // satisfy the separate current-Capture reader's seventeen-field
-                // grammar, even before reconstructing owners. Keep that refusal.
-                assert!(validated.is_err());
-            } else {
-                assert!(validated?.is_none());
-                assert!(borrowed.rows.next().is_none());
-            }
+            assert!(
+                borrowed
+                    .read::<HistoricalRestoredAction17>(&input, false)?
+                    .is_none()
+            );
+            assert!(borrowed.rows.next().is_none());
 
             let mut owning = Ledger::new(records.rows(), limits());
             assert!(
@@ -150,5 +146,193 @@ fn actual_capture_and_upload_prefixes_preserve_existing_reader_restrictions()
             );
         }
     }
+    Ok(())
+}
+
+fn selected_capture_data(input: &[u8]) -> Result<&[u8], ProviderError> {
+    let mut wrapper = Fields::object(input)?;
+    wrapper.named("ordinal")?;
+    wrapper.named("original")?;
+    let selected = wrapper.named("selected")?;
+    wrapper.named("decoded")?;
+    wrapper.named("failed")?;
+    wrapper.finish()?;
+
+    let mut selected = Fields::object(selected)?;
+    assert_eq!(plain_string(selected.named("family")?)?, "capture");
+    let data = selected.named("data")?;
+    selected.finish()?;
+    Ok(data)
+}
+
+#[test]
+fn actual_ordinary_capture_prefixes_validate_only_as_history()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut attempt = NativeRestoredSettledActionAttempt::new_data(11);
+    attempt.retain_original_data(original_capture(Method::Begin)?)?;
+
+    for failed in [false, true] {
+        if failed {
+            assert!(attempt.decode_body_data(65_536).is_err());
+        }
+        let (input, rows) = recorded(&attempt)?;
+        let records = ValidatedMetadataRecords::validate(&rows, 8192, 2 * 1024 * 1024)?;
+        let mut historical = Ledger::new(records.rows(), limits());
+        assert!(
+            historical
+                .read::<HistoricalRestoredAction17>(&input, false)?
+                .is_none()
+        );
+        assert!(historical.rows.next().is_none());
+
+        let mut owning = Ledger::new(records.rows(), limits());
+        assert!(
+            owning
+                .read::<HistoricalRestoredAction17>(&input, true)
+                .is_err()
+        );
+
+        // Ordinary historical custody supplies neither the registration nor the
+        // confirmation evidence required by the independently selected cut.
+        let mut current = Ledger::new(records.rows(), limits());
+        assert!(
+            super::super::current_capture17_borrowed::read_current_capture17_borrowed_data(
+                selected_capture_data(&input)?,
+                &mut current,
+            )
+            .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn previous_full_capture_grammar_remains_independently_validated()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut attempt = NativeRestoredSettledActionAttempt::new_data(11);
+    attempt.retain_original_data(original_capture(Method::Begin)?)?;
+    let (input, rows) = recorded(&attempt)?;
+    let data = selected_capture_data(&input)?;
+    let records = ValidatedMetadataRecords::validate(&rows, 8192, 2 * 1024 * 1024)?;
+
+    // These null fields are a syntax-only DATA mutation for compatibility. They
+    // contain no registration, confirmation receipt or live Capture permission.
+    let full = String::from_utf8(data.to_vec())?
+        .replacen(
+            ",\"checkpoint\":",
+            ",\"registration\":null,\"checkpoint\":",
+            1,
+        )
+        .replacen(
+            ",\"stage\":",
+            ",\"confirmation_receipt\":null,\"stage\":",
+            1,
+        );
+    assert_ne!(full.as_bytes(), data);
+    let mut historical = Ledger::new(records.rows(), limits());
+    assert!(
+        historical
+            .read::<CurrentCaptureAttempt17>(full.as_bytes(), false)?
+            .is_none()
+    );
+    assert!(historical.rows.next().is_none());
+
+    let mut current = Ledger::new(records.rows(), limits());
+    let borrowed = super::super::current_capture17_borrowed::read_current_capture17_borrowed_data(
+        full.as_bytes(),
+        &mut current,
+    )?;
+    assert!(borrowed.registration.is_none());
+    assert!(current.rows.next().is_none());
+    let mut owning = Ledger::new(records.rows(), limits());
+    assert!(
+        owning
+            .read::<CurrentCaptureAttempt17>(full.as_bytes(), true)
+            .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn ordinary_capture_history_requires_exact_fields_and_source_metadata()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut attempt = NativeRestoredSettledActionAttempt::new_data(11);
+    attempt.retain_original_data(original_capture(Method::Begin)?)?;
+    let (input, rows) = recorded(&attempt)?;
+    let data = selected_capture_data(&input)?;
+    let records = ValidatedMetadataRecords::validate(&rows, 8192, 2 * 1024 * 1024)?;
+    let empty = ValidatedMetadataRecords::validate(b"[]", 1, 2 * 1024 * 1024)?;
+    let mut missing_metadata = Ledger::new(empty.rows(), limits());
+    assert!(
+        missing_metadata
+            .read::<CurrentCaptureAttempt17>(data, false)
+            .is_err()
+    );
+
+    let mut unknown = data[..data.len() - 1].to_vec();
+    unknown.extend_from_slice(br#","unsupported":null}"#);
+    let text = String::from_utf8(data.to_vec())?;
+    let missing = text.replacen("\"ordinal\":11,", "", 1);
+    let stage = text.replacen("\"stage\":\"raw\"", "\"stage\":\"unsupported\"", 1);
+    assert_ne!(missing, text);
+    assert_ne!(stage, text);
+    for mutation in [&unknown[..], missing.as_bytes(), stage.as_bytes()] {
+        let mut ledger = Ledger::new(records.rows(), limits());
+        assert!(
+            ledger
+                .read::<CurrentCaptureAttempt17>(mutation, false)
+                .is_err()
+        );
+    }
+    Ok(())
+}
+
+#[test]
+fn partially_decoded_capture_retains_its_actual_typed_body_on_failure()
+-> Result<(), Box<dyn std::error::Error>> {
+    use crate::bodies::{BeginKind, BeginRequest};
+    use crucible_node_format::{U64, canonical};
+
+    let mut original = original_capture(Method::Begin)?;
+    let body = BeginRequest {
+        kind: BeginKind::Capture,
+        binding_hash: canonical::hash("cnp.owner-binding.v1", b"typed-capture-data")?,
+        owner_generation: U64::new(1),
+        activation_id: Nullable(Some(Id::new("typed-capture-activation")?)),
+        world_generation: U64::new(1),
+        arguments: Map::new(),
+        extensions: Default::default(),
+    };
+    original.body = serde_json::to_value(body)?
+        .as_object()
+        .ok_or_else(invalid)?
+        .clone();
+    let mut attempt = NativeRestoredSettledActionAttempt::new_data(13);
+    attempt.retain_original_data(original)?;
+
+    // The complete Begin DTO is installed before its null Source artifact is
+    // decoded. This genuine failed prefix therefore retains a typed child.
+    assert!(attempt.decode_body_data(65_536).is_err());
+    let (input, rows) = recorded(&attempt)?;
+    let data = selected_capture_data(&input)?;
+    let mut fields = Fields::object(data)?;
+    fields.named("ordinal")?;
+    fields.named("original")?;
+    assert_ne!(fields.named("body")?, b"null");
+
+    let records = ValidatedMetadataRecords::validate(&rows, 8192, 2 * 1024 * 1024)?;
+    let mut historical = Ledger::new(records.rows(), limits());
+    assert!(
+        historical
+            .read::<HistoricalRestoredAction17>(&input, false)?
+            .is_none()
+    );
+    assert!(historical.rows.next().is_none());
+    let mut owning = Ledger::new(records.rows(), limits());
+    assert!(
+        owning
+            .read::<HistoricalRestoredAction17>(&input, true)
+            .is_err()
+    );
     Ok(())
 }

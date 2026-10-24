@@ -292,3 +292,9 @@ pub(crate) fn read_current_capture17_borrowed_data<'body, 'rows>(
 
 mod output;
 mod receipt;
+
+#[path = "current_capture17_borrowed/history.rs"]
+mod history;
+pub(crate) use history::{
+    historical_capture17_counter_scratch_data, read_historical_capture17_borrowed_data,
+};

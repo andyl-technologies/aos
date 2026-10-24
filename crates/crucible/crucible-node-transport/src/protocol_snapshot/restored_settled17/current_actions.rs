@@ -52,13 +52,12 @@ impl HistoricalType for CurrentCaptureAttempt17 {
         ledger: &mut Ledger<'_, '_, '_>,
         build: bool,
     ) -> Result<Option<Self>, ProviderError> {
-        // Full current Capture is immutable evidence in the narrowed decoder.
-        // A historical host capsule is never reconstructed from these fields.
+        // Ordinary spent custody and complete current evidence stay immutable.
+        // Neither grammar reconstructs a historical host capsule.
         if build {
             return Err(invalid());
         }
-        let _ =
-            super::current_capture17_borrowed::read_current_capture17_borrowed_data(input, ledger)?;
+        super::current_capture17_borrowed::read_historical_capture17_borrowed_data(input, ledger)?;
         Ok(None)
     }
 }
