@@ -182,6 +182,9 @@ FUSE_UNIT_PREFIXES = (
     "structural_index::", "worker_channel::",
 )
 FUSE_UNIT_TESTS = (
+    'fuse_read::tests::native_read_binds_original_node_and_handle_without_changing_unsigned_ranges',
+    'fuse_read::tests::native_read_refuses_foreign_records_handles_padding_and_unnegotiated_flags',
+
     'fuse_dispatch::tests::raw_lookup_getattr_and_readlink_share_one_original_namespace',
     'fuse_dispatch::tests::malformed_supported_requests_never_assign_inodes_or_change_scratch',
     'fuse_dispatch::tests::operation_errnos_and_unhandled_records_preserve_permanent_state',

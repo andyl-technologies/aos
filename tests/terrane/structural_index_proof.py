@@ -59,6 +59,9 @@ DISPATCH_CASES = [
 ]
 READ_PREFIX = "fuse_read::tests::"
 READ_CASES = [
+    'native_read_binds_original_node_and_handle_without_changing_unsigned_ranges',
+    'native_read_refuses_foreign_records_handles_padding_and_unnegotiated_flags',
+
     'open_keeps_cache_without_passthrough_or_direct_io_and_preserves_unused_bytes',
     'positioned_ranges_clamp_only_at_prepared_eof_without_offset_overflow',
     'invalid_limits_sizes_and_short_output_are_refused_before_io',

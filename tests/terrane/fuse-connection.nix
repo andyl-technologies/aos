@@ -24,14 +24,20 @@
   native = testing.mkVMTest {
     name = "terrane-fuse-connection";
     memory = 512;
-    rootfsDeps = [image pkgs.coreutils pkgs.util-linux pkgs.python3];
+    rootfsDeps = [image pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.python3];
     testScript = ''
       set -euo pipefail
       umask 077
       unset LD_LIBRARY_PATH
       mount -o remount,rw /
       fixture_root=$(mktemp -d /var/terrane-fuse-connection.XXXXXXXX)
-      trap 'rm -rf -- "$fixture_root"' EXIT
+      backing_mounted=false
+      trap 'if "$backing_mounted"; then umount "$fixture_root/backing"; fi; rm -rf -- "$fixture_root"' EXIT
+      mkdir "$fixture_root/backing"
+      truncate -s 64M "$fixture_root/backing.img"
+      mkfs.ext4 -F -O verity "$fixture_root/backing.img"
+      mount -t ext4 -o loop "$fixture_root/backing.img" "$fixture_root/backing"
+      backing_mounted=true
       if [ ! -e /dev/fuse ]; then
         mknod /dev/fuse c 10 229
       fi

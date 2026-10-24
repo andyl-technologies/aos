@@ -1,12 +1,15 @@
 """Qualifies original Rust FUSE device exchanges in a disposable native VM."""
 
 import array
+from concurrent.futures import ThreadPoolExecutor
 import ctypes
 import errno
+import fcntl
 import os
 import pathlib
 import socket
 import stat
+import struct
 import subprocess
 import sys
 
@@ -35,23 +38,48 @@ def unmount(target):
     subprocess.run(["umount", str(target)], check=True, timeout=5)
 
 
+def grant_backing(channel, descriptor, worker_pid):
+    """Returns one original sealed fixture inode over the actual private channel."""
+    packet, ancillary, flags, _ = channel.recvmsg(4172, socket.CMSG_SPACE(12))
+    require(not flags and len(ancillary) == 1
+            and ancillary[0][:2] == (socket.SOL_SOCKET, socket.SCM_CREDENTIALS)
+            and struct.unpack("3i", ancillary[0][2]) == (worker_pid, 840, 840),
+            "backing request lost its original worker credentials")
+    require(len(packet) == 77 and packet[:8] == b"TBC1\x02\0\0\0"
+            and packet[8:24] == bytes.fromhex("0123456789abcdef0123456789abcdef")
+            and packet[24:40] == struct.pack("<QQ", 1, 1)
+            and packet[72:] == struct.pack("<I", 1) + b"a",
+            "kernel open requested a foreign fixture selection")
+    require(channel.sendmsg([packet], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
+                                        array.array("i", [descriptor]))]) == len(packet),
+            "actual sealed backing reply was truncated")
+    return os.fstat(descriptor)
+
+
 def scenario(executable, directory, mode):
     """Transfers one mount alias, then observes the worker's sole original fd."""
     target = directory / mode
     target.mkdir()
     supervisor, child_socket = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     supervisor.settimeout(5)
+    backing_server, backing_child = socket.socketpair(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    backing_server.settimeout(5)
+    backing_server.setsockopt(socket.SOL_SOCKET, socket.SO_PASSCRED, 1)
     child = None
     mounted = False
     descriptors = []
+    backing = None
+    executor = None
     try:
         child = subprocess.Popen([
             "setpriv", "--reuid=840", "--regid=840", "--clear-groups",
             "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all",
             "--no-new-privs", str(executable), mode,
-        ], stdin=subprocess.DEVNULL, stdout=child_socket, stderr=subprocess.PIPE,
+        ], stdin=backing_child if mode == "read" else subprocess.DEVNULL,
+            stdout=child_socket, stderr=subprocess.PIPE,
             close_fds=True)
         child_socket.close()
+        backing_child.close()
         message, ancillary, flags, _ = supervisor.recvmsg(
             64, socket.CMSG_SPACE(array.array("i").itemsize), socket.MSG_CMSG_CLOEXEC)
         for level, kind, data in ancillary:
@@ -71,11 +99,11 @@ def scenario(executable, directory, mode):
         require(supervisor.send(b"M") == 1, "mount-ready message was truncated")
         require(supervisor.recv(64) == b"READY", "actual kernel INIT did not complete")
 
-        if mode in {"serve", "metadata"}:
+        if mode in {"serve", "metadata", "read"}:
             metadata = target.stat()
             require(stat.S_ISDIR(metadata.st_mode) and metadata.st_mode & 0o7777 == 0o555
                     and metadata.st_ino == 16
-                    and metadata.st_nlink == (3 if mode == "metadata" else 2)
+                    and metadata.st_nlink == (2 if mode == "serve" else 3)
                     and (metadata.st_uid, metadata.st_gid) == (0, 0)
                     and metadata.st_atime_ns == 1_000_000_000
                     and metadata.st_mtime_ns == 1_000_000_000
@@ -137,6 +165,43 @@ def scenario(executable, directory, mode):
                 require(os.readlink(original + b"/link") == b"./directory/../a\xff"
                         and (target / "link").lstat().st_size == len(b"./directory/../a\xff"),
                         "actual READLINK normalized or decoded original symlink bytes")
+                if mode == "read":
+                    source = directory / "backing" / "original"
+                    with source.open("xb") as output:
+                        output.write(b"abc")
+                        output.flush()
+                        os.fsync(output.fileno())
+                    backing = os.open(source, os.O_RDONLY | os.O_CLOEXEC)
+                    # Native Linux fsverity_enable_arg: version and SHA-256,
+                    # followed by zero defaults and reserved fields (128 bytes).
+                    fcntl.ioctl(backing, 0x40806685, struct.pack("=II", 1, 1) + bytes(120))
+                    os.lseek(backing, 1, os.SEEK_SET)
+                    executor = ThreadPoolExecutor(max_workers=1)
+                    grant = executor.submit(grant_backing, backing_server, backing, child.pid)
+
+                    with (target / "a").open("rb", buffering=0) as first:
+                        with (target / "b").open("rb", buffering=0) as alias:
+                            require(first.read(1) == b"a" and first.read() == b"bc"
+                                    and alias.read() == b"abc"
+                                    and os.pread(first.fileno(), 8, 2) == b"c"
+                                    and os.pread(first.fileno(), 8, 3) == b"",
+                                    "actual FUSE fallback READ changed sealed bytes or EOF")
+                    with (target / "a").open("rb", buffering=0) as reopened:
+                        require(reopened.read() == b"abc",
+                                "repeated original open lost the retained backing")
+                    original_stat = grant.result(timeout=5)
+                    require((original_stat.st_dev, original_stat.st_ino)
+                            == (os.fstat(backing).st_dev, os.fstat(backing).st_ino)
+                            and os.lseek(backing, 0, os.SEEK_CUR) == 1,
+                            "FUSE fallback changed the original backing or shared cursor")
+                    backing_server.setblocking(False)
+                    try:
+                        unexpected = backing_server.recv(4172)
+                    except BlockingIOError:
+                        pass
+                    else:
+                        require(not unexpected, "hard-link opens fetched another backing")
+                    print("PASS actual kernel FUSE READ uses one original sealed grant for repeated hard-link opens with unchanged backing cursor", flush=True)
             try:
                 (target / "absent").stat()
             except OSError as error:
@@ -164,6 +229,12 @@ def scenario(executable, directory, mode):
             os.close(descriptor)
         child_socket.close()
         supervisor.close()
+        backing_child.close()
+        backing_server.close()
+        if executor is not None:
+            executor.shutdown(wait=True)
+        if backing is not None:
+            os.close(backing)
         if child is not None:
             if child.poll() is None:
                 child.kill()
@@ -180,5 +251,5 @@ def scenario(executable, directory, mode):
 
 if __name__ == "__main__":
     executable, directory = map(pathlib.Path, sys.argv[1:])
-    for selected in ["serve", "metadata", "timeout", "cancel"]:
+    for selected in ["serve", "metadata", "read", "timeout", "cancel"]:
         scenario(executable, directory, selected)

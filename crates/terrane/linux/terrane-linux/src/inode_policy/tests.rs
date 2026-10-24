@@ -85,10 +85,22 @@ fn directory_pages_and_refusals_do_not_allocate_even_on_first_inode_touch() {
         (record(22, link_node, b"\0\0\0\0\0\0\0\0user.raw\0"), 8),
         (record(23, link_node, &[0; 8]), 8),
     ];
+    let mut kernel_read = [0; 40];
+    kernel_read[..8].copy_from_slice(&1u64.to_ne_bytes());
+    kernel_read[8..16].copy_from_slice(&u64::MAX.to_ne_bytes());
+    kernel_read[16..20].copy_from_slice(&512u32.to_ne_bytes());
+    let kernel_read = record(15, link_node, &kernel_read);
+    let kernel_read = crate::fuse_protocol::Request::parse(&kernel_read, 4096).unwrap();
+    let original_node = std::num::NonZeroU64::new(link_node).unwrap();
+    let original_handle = std::num::NonZeroU64::new(1).unwrap();
     let mut output = [0; 512];
 
     let ((), allocations) = allocation::measure(|| {
         for _ in 0..3 {
+            let read =
+                crate::fuse_read::Read::parse(kernel_read, original_node, original_handle).unwrap();
+            assert_eq!(read.offset(), u64::MAX);
+            assert_eq!(read.length(), 512);
             assert!(
                 matches!(dispatch.dispatch(lookup, |_| crate::fuse_metadata::Presentation::default(), &mut output).unwrap(), crate::fuse_dispatch::Response::Payload(bytes) if bytes.len() == 128)
             );

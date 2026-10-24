@@ -15,6 +15,7 @@ use std::{
     time::Duration,
 };
 use terrane_format::{
+    identity::{IdentityKind, TERRANE_V1},
     tree_builder::Tree,
     tree_format::{
         Attribute, ContentRef, Entry as TreeEntry, EntryKind, ExtendedAttribute, LeafItem, TreeUse,
@@ -25,9 +26,11 @@ use terrane_linux::{
     fuse_dispatch::{Limits as MetadataLimits, Metadata, Response},
     fuse_metadata::{CachePolicy, Presentation},
     fuse_protocol::{self, Reply, Request},
+    fuse_read::{self, Backing as FallbackBacking},
     fuse_xattr::Policy as XattrPolicy,
     quota_confinement,
     structural_index::{self, Index, Kind},
+    worker_channel::{ExposureContext, RequestedBacking, WorkerClient},
 };
 
 type Result<T = ()> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -36,7 +39,10 @@ const DEADLINE: Duration = Duration::from_secs(5);
 
 fn main() -> Result {
     let mode = std::env::args().nth(1).ok_or("missing fixture mode")?;
-    if !matches!(mode.as_str(), "serve" | "metadata" | "timeout" | "cancel") {
+    if !matches!(
+        mode.as_str(),
+        "serve" | "metadata" | "read" | "timeout" | "cancel"
+    ) {
         return Err("invalid fixture mode".into());
     }
 
@@ -79,7 +85,7 @@ fn main() -> Result {
         let mut directory_page = vec![0; LIMIT - 16];
         // This empty metadata fixture is not an authenticated repository view.
         // It exercises the production encoder against actual kernel READDIR.
-        let directory_bytes = metadata_bytes(mode == "metadata")?;
+        let directory_bytes = metadata_bytes(matches!(mode.as_str(), "metadata" | "read"))?;
         let directory = Index::open(&directory_bytes)?;
         let mut metadata = Metadata::new(
             directory,
@@ -90,12 +96,25 @@ fn main() -> Result {
                 inode_bytes: 65536,
             },
             CachePolicy::Revalidate,
-            if mode == "metadata" {
+            if matches!(mode.as_str(), "metadata" | "read") {
                 XattrPolicy::Recorded
             } else {
                 XattrPolicy::Disabled
             },
         )?;
+
+        let mut backing_client = if mode == "read" {
+            Some(WorkerClient::bind(
+                io::stdin().as_fd().try_clone_to_owned()?,
+                ExposureContext::new("0123456789abcdef0123456789abcdef", 1, [7; 32])?,
+                0,
+            )?)
+        } else {
+            None
+        };
+        // This fixture retains the original fallback until connection teardown.
+        // It does not qualify production handle accounting or open scheduling.
+        let mut backing: Option<(u64, FallbackBacking)> = None;
 
         // Invalid arguments must fail before accepting or consuming real INIT.
         let error = connection
@@ -130,7 +149,7 @@ fn main() -> Result {
         .await?;
         notify(b"READY")?;
 
-        if !matches!(mode.as_str(), "serve" | "metadata") {
+        if !matches!(mode.as_str(), "serve" | "metadata" | "read") {
             if mode == "timeout" {
                 let error = connection
                     .receive(&mut input, Duration::from_millis(100))
@@ -197,6 +216,54 @@ fn main() -> Result {
                         opened[..8].copy_from_slice(&request.node().to_ne_bytes());
                         (Some(opened.as_slice()), 0)
                     }
+                    (14, Some(entry)) if mode == "read" => {
+                        if request.body().len() != 8 || request.body_u32(4)? != 0 {
+                            return Err("invalid actual fallback OPEN".into());
+                        }
+                        if request.body_u32(0)? & (libc::O_ACCMODE | libc::O_TRUNC) as u32 != 0 {
+                            (None, libc::EROFS)
+                        } else if let Kind::File { content, size } = entry.kind() {
+                            if backing.is_none() {
+                                let reply = backing_client
+                                    .as_mut()
+                                    .ok_or("missing backing client")?
+                                    .request_bounded(
+                                        RequestedBacking::File {
+                                            path: entry.path().to_vec(),
+                                            content,
+                                        },
+                                        DEADLINE,
+                                    )
+                                    .await?;
+                                backing = Some((
+                                    request.node(),
+                                    FallbackBacking::from_reply(reply, size, 131072)?,
+                                ));
+                            }
+                            if backing
+                                .as_ref()
+                                .is_some_and(|(node, _)| *node == request.node())
+                            {
+                                let handle =
+                                    NonZeroU64::new(request.node()).ok_or("zero file node")?;
+                                (Some(fuse_read::open(handle, &mut opened)?), 0)
+                            } else {
+                                (None, libc::EIO)
+                            }
+                        } else {
+                            (None, libc::EISDIR)
+                        }
+                    }
+                    (15, Some(_)) if mode == "read" => {
+                        let (node, file) =
+                            backing.as_ref().ok_or("READ without original backing")?;
+                        let handle = NonZeroU64::new(*node).ok_or("zero file handle")?;
+                        let read = fuse_read::Read::parse(request, handle, handle)?;
+                        let length =
+                            file.read(read.offset(), read.length(), &mut directory_page)?;
+                        (Some(&directory_page[..length]), 0)
+                    }
+                    (18 | 25, Some(_)) if mode == "read" => (Some([].as_slice()), 0),
                     (29 | 34, Some(_)) | (38, _) => (Some([].as_slice()), 0),
                     (_, None) => (None, libc::ESTALE),
                     _ => (None, libc::ENOSYS),
@@ -214,13 +281,17 @@ fn metadata_bytes(populated: bool) -> Result<Vec<u8>> {
     if !populated {
         return Ok(structural_index::compile([7; 32], &[], 1, 4096)?);
     }
+    let content: [u8; 32] = TERRANE_V1
+        .calculate(IdentityKind::Chunk, b"abc")?
+        .digest()
+        .try_into()?;
     let file = |path: &[u8], link_id| LeafItem {
         key: path.to_vec(),
         entry: TreeEntry {
             kind: EntryKind::File {
                 mode: 0o640,
                 size: 3,
-                content: ContentRef::Inline([2; 32]),
+                content: ContentRef::Inline(content),
                 link_id,
             },
             attrs: vec![

@@ -16783,3 +16783,37 @@ same fallback reader. At `6e7364c413`, the actual worker-channel guest passes in
 compilation at `a71768a0c8` passes in 1,465.042 seconds with complete review of
 8,175 immutable source files, 190 test executables and 59 packages. None of
 these results accepts a production worker or changes trunk acceptance (27/64).
+
+
+### Actual kernel fallback-read composition control
+
+A checked native READ range now binds the record to the caller's original node
+and live handle before positioned IO. It rejects another opcode, zero response
+ID, foreign node/handle, malformed 40-byte layout, reserved padding and unknown
+read flags. Unsigned offsets and requested sizes remain exact; the retained
+backing applies the configured byte bound and prepared EOF. Two new pure cases
+pass and the measured allocation-free first-touch path includes READ decoding.
+Strict all-feature/all-target Clippy passes.
+
+The dedicated kernel fixture adds a read scenario. Its administrative supervisor
+creates one original file on a private ext4 verity filesystem, fsyncs it, enables
+permanent fs-verity and returns its read-only descriptor over the actual private
+worker channel. The confined actor checks the reply credentials and original
+request echo, checks prepared size, returns FOPEN_KEEP_CACHE and serves actual
+READ requests through the retained fallback reader. The native driver requires
+exact bytes, tail and EOF, repeated hard-link opens using one original backing,
+and an unchanged deliberately nonzero shared descriptor cursor. This synthetic
+namespace fixture proves composition only after genuine VM execution; its grant
+is not repository authorization and its serial open path/retained fixture handle
+is not the production scheduler or handle lifecycle. All previous transport,
+metadata, timeout and cancellation controls remain required with the original
+actor and whole-driver bounds. Closed structural selection contains 63 cases.
+Fresh actual VM execution and workspace target compilation remain pending.
+
+At `a028b9d05b`, all 61 structural selectors pass in 83.362 seconds with complete
+independent review of 8,179 immutable source files, 5,437 bound inputs and the
+actual retained Cargo ELF. Its actual kernel metadata guest passes in 227.542
+seconds. Workspace target compilation passes at `6e7364c413` and `3f831728a0`
+in 1,524.254 and 1,190.703 seconds respectively. Complete reviews of those
+newly completed results are retained separately. No task acceptance changes;
+the trunk remains at 27/64.

@@ -25,6 +25,8 @@ use std::{
 /// Refuses invalid fallback bounds or reports actual sealed-file IO failure.
 #[derive(Debug)]
 pub enum Error {
+    /// The kernel read does not match its original node, handle or native layout.
+    Request(crate::fuse_protocol::Error),
     /// The configured or requested read exceeds the explicit byte bound.
     Limit,
     /// The complete reply cannot fit the supplied reusable buffer.
@@ -38,6 +40,7 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Request(_) => formatter.write_str("invalid original FUSE read request"),
             Self::Limit => formatter.write_str("FUSE fallback read exceeds its byte bound"),
             Self::BufferTooSmall => formatter.write_str("FUSE fallback output is too small"),
             Self::Size => {
@@ -51,9 +54,65 @@ impl fmt::Display for Error {
 impl std::error::Error for Error {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Request(error) => Some(error),
             Self::Io(error) => Some(error),
             _ => None,
         }
+    }
+}
+
+/// Retains a checked native read range bound to its caller's original open.
+///
+/// Checking a record does not prove that its handle remains open or that its
+/// backing belongs to this node. The dispatcher retains and verifies both.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Read {
+    offset: u64,
+    length: u32,
+}
+
+impl Read {
+    /// Checks one FUSE READ against an original node and live file handle.
+    ///
+    /// The native layout is the 40-byte `fuse_read_in` used by supported
+    /// protocols. File flags and lock-owner information confer no authority;
+    /// this read-only path performs no locking or permission changes.
+    ///
+    /// # Errors
+    /// Refuses other opcodes, zero response IDs, foreign nodes/handles,
+    /// truncated or extended bodies, nonzero padding and unknown read flags.
+    pub fn parse(
+        request: crate::fuse_protocol::Request<'_>,
+        node: NonZeroU64,
+        handle: NonZeroU64,
+    ) -> Result<Self, Error> {
+        use crate::fuse_protocol::Error as Protocol;
+
+        if request.opcode() != 15
+            || request.unique() == 0
+            || request.node() != node.get()
+            || request.body().len() != 40
+            || request.body_u64(0).map_err(Error::Request)? != handle.get()
+            || request.body_u32(20).map_err(Error::Request)? & !1 != 0
+            || request.body_u32(36).map_err(Error::Request)? != 0
+        {
+            return Err(Error::Request(Protocol::Encoding));
+        }
+
+        Ok(Self {
+            offset: request.body_u64(8).map_err(Error::Request)?,
+            length: request.body_u32(16).map_err(Error::Request)?,
+        })
+    }
+
+    /// Returns the original unsigned offset, including ranges beyond EOF.
+    pub const fn offset(self) -> u64 {
+        self.offset
+    }
+
+    /// Returns the requested byte count before the backing's configured limit.
+    pub const fn length(self) -> u32 {
+        self.length
     }
 }
 
@@ -218,5 +277,62 @@ mod tests {
             read_length(i64::MAX as u64 + 1, 0, 0, 64, 0),
             Err(Error::Size)
         ));
+    }
+
+    fn read_record() -> [u8; 80] {
+        let mut bytes = [0; 80];
+        bytes[..4].copy_from_slice(&80u32.to_ne_bytes());
+        bytes[4..8].copy_from_slice(&15u32.to_ne_bytes());
+        bytes[8..16].copy_from_slice(&7u64.to_ne_bytes());
+        bytes[16..24].copy_from_slice(&19u64.to_ne_bytes());
+        bytes[40..48].copy_from_slice(&23u64.to_ne_bytes());
+        bytes[48..56].copy_from_slice(&u64::MAX.to_ne_bytes());
+        bytes[56..60].copy_from_slice(&131072u32.to_ne_bytes());
+        bytes
+    }
+
+    #[test]
+    fn native_read_binds_original_node_and_handle_without_changing_unsigned_ranges() {
+        let mut bytes = read_record();
+        // The optional lock-owner field and original file flags cannot change
+        // the positioned read. No locks are acquired or permissions mutated.
+        bytes[60..64].copy_from_slice(&1u32.to_ne_bytes());
+        bytes[64..72].copy_from_slice(&99u64.to_ne_bytes());
+        bytes[72..76].copy_from_slice(&(libc::O_LARGEFILE as u32).to_ne_bytes());
+        let request = crate::fuse_protocol::Request::parse(&bytes, 4096).unwrap();
+        let read = Read::parse(
+            request,
+            NonZeroU64::new(19).unwrap(),
+            NonZeroU64::new(23).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(read.offset(), u64::MAX);
+        assert_eq!(read.length(), 131072);
+    }
+
+    #[test]
+    fn native_read_refuses_foreign_records_handles_padding_and_unnegotiated_flags() {
+        let node = NonZeroU64::new(19).unwrap();
+        let handle = NonZeroU64::new(23).unwrap();
+        for (offset, replacement) in [(4, 28), (8, 0), (16, 20), (40, 24), (60, 2), (76, 1)] {
+            let mut bytes = read_record();
+            bytes[offset] = replacement;
+            let request = crate::fuse_protocol::Request::parse(&bytes, 4096).unwrap();
+            assert!(matches!(
+                Read::parse(request, node, handle),
+                Err(Error::Request(_))
+            ));
+        }
+        let bytes = read_record();
+        for length in [40, 64, 79, 81] {
+            let mut changed = bytes.to_vec();
+            changed.resize(length, 0);
+            changed[..4].copy_from_slice(&(length as u32).to_ne_bytes());
+            let request = crate::fuse_protocol::Request::parse(&changed, 4096).unwrap();
+            assert!(matches!(
+                Read::parse(request, node, handle),
+                Err(Error::Request(_))
+            ));
+        }
     }
 }
