@@ -8,6 +8,7 @@
 
 mod backing;
 mod cold;
+mod diagnostic;
 mod driver;
 mod object;
 mod prepared;

@@ -396,6 +396,23 @@ All three supported strict Clippy profiles pass. Four inert scheduling tests
 are pending; native query execution and mandatory workspace compilation remain
 pending. No task acceptance changes.
 
+The mounted-manifest diagnosis at `79cc9b7f8e` fails in 1,154.486 seconds.
+The actual queue event reports `OpenFailed { expired: true }`, proving an open
+waiter deadline elapsed. The original runtime-owned service subsequently
+returns `Corrupt(RefName("publication"))` after 8,809 milliseconds. Manifest
+and both lower chunk reads succeed in 21, 111 and 105 milliseconds. The fixture
+has already begun drain when the retained service reports its result; this
+proves neither the exact failing native stage nor that the terminal error
+preceded drain. All original source bytes, counters, deadlines and failed
+receipts remain retained.
+
+Additional file-stage diagnostics await the same original warming, strict
+manifest admission, consumer sweep, object preparation, closing Read and cache
+handoff futures. They return each original result unchanged and emit named
+elapsed/result records only under `native-test-fixtures`. There is no new task,
+permission constructor, deadline or cancellation owner. Supported Linux lint
+and frozen native qualification remain pending.
+
 The complete `fuse-index-roundtrip` owning gate at `91abbf8445` passes in
 1,567.153 seconds. Independent review verifies all six retained prerequisite
 outputs, the 82-case structural codec inventory, eight actual native guests,

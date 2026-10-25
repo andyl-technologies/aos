@@ -105,21 +105,35 @@ impl<S: ContentStore + BucketBinding> NativeReadDriver<S> {
             NativeFilePreparation::Missing(selection) => *selection,
         };
 
-        let object = self.prepare_cold_file(&selection, mode, budget).await?;
+        let object = super::diagnostic::stage(
+            "backing-cold-file",
+            self.prepare_cold_file(&selection, mode, budget),
+        )
+        .await?;
         #[cfg(feature = "surface-fuse")]
         let grant = if let Some((exposure, served)) = exposure {
-            owner
-                .prepare_exposure_file_backing(exposure, served, selection, expires)
-                .await
+            super::diagnostic::stage(
+                "backing-closing-read",
+                owner.prepare_exposure_file_backing(exposure, served, selection, expires),
+            )
+            .await
         } else {
-            owner.prepare_file_backing(selection, expires).await
+            super::diagnostic::stage(
+                "backing-closing-read",
+                owner.prepare_file_backing(selection, expires),
+            )
+            .await
         };
         #[cfg(not(feature = "surface-fuse"))]
-        let grant = owner.prepare_file_backing(selection, expires).await;
+        let grant = super::diagnostic::stage(
+            "backing-closing-read",
+            owner.prepare_file_backing(selection, expires),
+        )
+        .await;
 
         // Authorized disclosure and cache maintenance are separate outcomes.
         // Even a refused close leaves verified cache data worth retaining.
-        let handoff = object.into_cache().await;
+        let handoff = super::diagnostic::stage("backing-cache-handoff", object.into_cache()).await;
         let grant = grant?;
         handoff?;
         Ok(grant)

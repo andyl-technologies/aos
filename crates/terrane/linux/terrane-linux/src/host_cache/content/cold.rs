@@ -5,6 +5,7 @@
 //! disclose an authorized file grant. Its caller finishes the same scoped Read
 //! through the ordinary native backing bridge before handing out a descriptor.
 
+use super::diagnostic::stage;
 use super::{NativePreparedObject, NativeReadDriver, NativeSealedObject, NativeSealedReadPolicy};
 use std::{io, time::Duration};
 use terrane_format::{
@@ -126,7 +127,7 @@ impl<S: ContentStore + BucketBinding> NativeReadDriver<S> {
         if kind == IdentityKind::Chunk && selection.size() > native.max_allocation_bytes as u64 {
             return Err(StoreFailure::new(StoreErrorKind::Capacity).into());
         }
-        let canonical = self.get(&identity, None).await?;
+        let canonical = stage("cold-reference-get", self.get(&identity, None)).await?;
         if kind == IdentityKind::Manifest {
             let manifest = Manifest::decode_verified(
                 &canonical,
@@ -159,13 +160,15 @@ impl<S: ContentStore + BucketBinding> NativeReadDriver<S> {
                 let chunk = TERRANE_V1
                     .from_digest(IdentityKind::Chunk, &chunk.digest)
                     .map_err(|_| StoreFailure::new(StoreErrorKind::Unsupported))?;
-                self.get(&chunk, None).await?;
+                stage("cold-chunk-get", self.get(&chunk, None)).await?;
             }
             // Read-through warming is best effort. Only this strict original
             // native admission proves that all manifest dependencies reside.
-            native
-                .put(ContentUpload::Meta(MetaUpload::new(kind, &canonical)?))
-                .await?;
+            stage(
+                "cold-manifest-admit",
+                native.put(ContentUpload::Meta(MetaUpload::new(kind, &canonical)?)),
+            )
+            .await?;
         }
 
         // Released input grants still protect original source inodes. Time
@@ -177,14 +180,19 @@ impl<S: ContentStore + BucketBinding> NativeReadDriver<S> {
             .filter(|delay| *delay <= Duration::from_secs(300))
             .ok_or_else(|| StoreFailure::new(StoreErrorKind::Capacity))?;
         sleep(grace).await;
-        native
-            .ready
-            .owner()
-            .sweep_consumer_leases()
-            .await
-            .map_err(|error| super::native_failure(error, &identity))?;
+        stage(
+            "cold-consumer-sweep",
+            native.ready.owner().sweep_consumer_leases(),
+        )
+        .await
+        .map_err(|error| super::native_failure(error, &identity))?;
 
-        match native.prepare_object(&identity, mode).await? {
+        match stage(
+            "cold-object-prepare",
+            native.prepare_object(&identity, mode),
+        )
+        .await?
+        {
             NativePreparedObject::Sealed(object)
                 if object.claim().plaintext_size() == selection.size() =>
             {

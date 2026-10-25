@@ -165,7 +165,14 @@ impl<S: ContentStore + BucketBinding> NativeReadDriver<S> {
                 position: ChunkPosition::Final,
                 profile: self.native.ready.layout().layout().chunk_profile(),
             };
-            let _ = timeout_at(deadline, self.native.put(ContentUpload::Chunk(upload))).await;
+            let _ = timeout_at(
+                deadline,
+                super::diagnostic::stage(
+                    "cache-dictionary-warm",
+                    self.native.put(ContentUpload::Chunk(upload)),
+                ),
+            )
+            .await;
         }
         if Instant::now() >= deadline {
             return Ok(fetched.encoded);
@@ -180,7 +187,11 @@ impl<S: ContentStore + BucketBinding> NativeReadDriver<S> {
             }),
             None => ContentUpload::Meta(MetaUpload::new(identity.kind(), &fetched.encoded)?),
         };
-        let _ = timeout_at(deadline, self.native.put(upload)).await;
+        let _ = timeout_at(
+            deadline,
+            super::diagnostic::stage("cache-content-warm", self.native.put(upload)),
+        )
+        .await;
         Ok(fetched.encoded)
     }
 
