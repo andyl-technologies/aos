@@ -17,6 +17,36 @@ async fn full_d_and_current_lease_unlink_exact_triple_and_finish_done() {
         .require();
     assert_eq!(owned.phase, terrane_format::gc::DeletePhase::Invalidated);
     assert!(owned.authorization.elapsed_ns >= windows().deletion() * 1_000_000_000);
+    let mut cursor = crate::gc::runner::maintenance::local_deletion::LocalDeletionCursor::default();
+    let lease_before = collection.lease().clone();
+    assert!(
+        collection
+            .local_deletion_hints(&mut cursor, 0)
+            .await
+            .is_err()
+    );
+    assert!(
+        collection
+            .local_deletion_hints(&mut cursor, crate::gc::runner::maintenance::MAX_HINTS + 1)
+            .await
+            .is_err()
+    );
+    assert_eq!(collection.lease(), &lease_before);
+    assert_eq!(cursor, Default::default());
+    let pending = collection
+        .local_deletion_hints(&mut cursor, 1)
+        .await
+        .require();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(
+        pending[0].operation_key,
+        owned.authorization.operation_key()
+    );
+    assert_eq!(pending[0].exclusion.pack_id, owned.authorization.pack_id);
+    assert_eq!(pending[0].exclusion.cycle, owned.authorization.cycle);
+    assert_eq!(pending[0].exclusion.epoch, owned.authorization.epoch);
+    assert_eq!(pending[0].phase, owned.phase);
+
     let done = collection
         .resume_local_delete(
             fixture.repository.coordinator(),
@@ -34,6 +64,15 @@ async fn full_d_and_current_lease_unlink_exact_triple_and_finish_done() {
         .await
         .require();
     assert_eq!(again, done);
+    let completed = collection
+        .local_deletion_hints(&mut cursor, 1)
+        .await
+        .require();
+    assert_eq!(completed.len(), 1);
+    assert_eq!(completed[0].operation_key, pending[0].operation_key);
+    assert_eq!(completed[0].exclusion, pending[0].exclusion);
+    assert_eq!(completed[0].phase, terrane_format::gc::DeletePhase::Done);
+
     drop(collection);
     fixture.cleanup();
 }

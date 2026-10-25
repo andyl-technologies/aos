@@ -94,6 +94,44 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 Trunk acceptance remains **27/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance.
 
+Ordinary local deletion now has separate bounded lookup discovery through the
+original `Collection` and `LocalCollection` session. Protected native
+control files supply canonical key-bound local-v1 intents, including `Done` and
+`Cancelled`; disjoint portable permanent-v2 controls remain separate. Native
+private-directory checks and current collection qualification precede discovery. Each hint retains only its key, original exclusion and selected phase,
+not a physical witness or effect authority. Every call renews and checks the
+same whole lease and revalidates the held observation before committing its
+cursor. Invalid bounds perform no effects. Returned results are bounded to 256;
+native directory enumeration is not bounded by that result limit. The binding
+owns each immediate-directory allocation; only the next bounded cyclic keys
+are retained across visits. A finite
+stable inventory is revisited in lexical order across wrap and key removal.
+
+Five pure codec/ordering tests pass for terminal progress, bounded wrap and removal,
+unsorted/duplicate directory names, recurring finite inventory visits, corruption
+and exact key binding. A focused native
+guest strengthens the original full-D local deletion case with discovery before
+recovery and after durable `Done`, preserving its original incarnation, physical
+absence, journal, selected-publication and idempotence assertions. Both supported
+strict Tokio all-target lint profiles and the portable std-only library profile
+pass, along with touched formatting, Python syntax and PLAN-2 ownership checks.
+Native execution and mandatory workspace compilation of this increment remain
+pending. No configured collector service or task acceptance is inferred.
+
+The eight-case maintenance guest at `9eb645ff25` passes in 327.853 seconds.
+Full review compares all 8,211 immutable source files, five retained Cargo test
+executables and all eight actual ext4 cases under UID/GID 840, empty capabilities
+and no-new-privileges. All four pure maintenance scheduling tests pass, as do
+the three supported strict SDK lint profiles. The separate original owner,
+empty-pass and late-residue guest and mandatory compilation remain running.
+
+Mandatory application-target compilation at `819ffc247d` passes in 1,567.817
+seconds. Full review checks all 8,209 immutable source files, 190 test executables
+and 59 packages; this establishes compilation only. Both supported strict Linux
+all-target lint profiles pass for the file-stage tracing at `5292dbe71f`.
+Its original mounted-manifest guest and mandatory compilation remain running;
+the existing mounted-manifest failures remain unqualified.
+
 The joined configured mounted-worker component at `8647df31e6` passes in
 1,228.127 seconds. Full review compares 8,198 immutable source files, all three
 images, nine retained Cargo/installed executables and the original read-only

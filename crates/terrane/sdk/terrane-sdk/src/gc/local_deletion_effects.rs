@@ -9,8 +9,142 @@ use crate::selected_bridge::{
 };
 use terrane_format::gc::{DeleteOperation, DeletePhase};
 
+// Local-v1 permits a 16 MiB index witness plus bounded keys, identities and leases.
+// The permanent-v2 whole-record cap would reject valid near-limit local intent.
+const MAX_INTENT_BYTES: u64 = 16 * 1024 * 1024 + 64 * 1024;
+
 /// Exposes only executor-produced owned incarnation observations to the selector.
 pub(crate) use super::super::artifact_seal::local_deletion::NativeLocalDeletion;
+
+/// Discovers ordinary local-v1 protected intent separately from portable v2 controls.
+///
+/// # Errors
+/// Rejects unsafe native directories, malformed intent, lost current authority
+/// and failed reads. Returned status never authorizes a physical effect.
+pub(crate) async fn discover<F: LocalFs + BucketBinding>(
+    fs: &F,
+    current: &CheckedCurrentCollection<'_, '_>,
+    after: Option<&str>,
+    maximum: usize,
+) -> Result<Vec<crate::gc::runner::maintenance::local_deletion::LocalDeletionHint>, StoreFailure> {
+    use crate::gc::runner::maintenance::local_deletion::{Candidates, decode_hint};
+
+    let (frame, control) = capture(fs, current).await?;
+    let owner = frame.owner;
+    drop(frame);
+    let mut candidates = Candidates::new(after, maximum);
+    for cycle in intent_children(fs, &control.join("gc"), owner).await? {
+        let Some(cycle_name) = cycle.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if cycle_name
+            .parse::<u64>()
+            .ok()
+            .is_none_or(|value| value.to_string() != cycle_name)
+        {
+            continue;
+        }
+        intent_directory(fs, &cycle, owner)
+            .await?
+            .ok_or_else(corrupt)?;
+        for pack in intent_children(fs, &cycle.join("delete"), owner).await? {
+            if !hex_leaf(&pack, 32) {
+                continue;
+            }
+            for path in intent_children(fs, &pack, owner).await? {
+                if !hex_leaf(&path, 64) {
+                    continue;
+                }
+                let key = path
+                    .strip_prefix(&control)
+                    .ok()
+                    .and_then(|path| path.to_str())
+                    .ok_or_else(corrupt)?;
+                terrane_format::bucket::BucketKey::parse(key).map_err(|_| corrupt())?;
+                candidates.insert(key.to_owned());
+            }
+        }
+    }
+
+    let mut hints = Vec::with_capacity(maximum);
+    for key in candidates.into_keys() {
+        let (mut frame, current_control) = capture(fs, current).await?;
+        if current_control != control {
+            return Err(corrupt());
+        }
+        let path = control.join(&key);
+        let metadata = fs.symlink_metadata(&path).await.map_err(io_failure)?;
+        if metadata.len() > MAX_INTENT_BYTES {
+            return Err(corrupt());
+        }
+        let bytes = frame
+            .actual_read(
+                fs,
+                &path,
+                FencePolicy::ProtectedRecord { owner: frame.owner },
+            )
+            .await?
+            .ok_or_else(corrupt)?;
+        hints.push(decode_hint(key, &bytes).map_err(|_| corrupt())?);
+    }
+    current.revalidate().await?;
+    Ok(hints)
+}
+
+fn hex_leaf(path: &std::path::Path, length: usize) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| {
+            name.len() == length
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        })
+}
+
+/// Lists neutral names only after checking the native private directory incarnation.
+async fn intent_children<F: LocalFs + BucketBinding>(
+    fs: &F,
+    directory: &std::path::Path,
+    owner: u32,
+) -> Result<Vec<std::path::PathBuf>, StoreFailure> {
+    use super::MetadataStamp;
+
+    let Some(before) = intent_directory(fs, directory, owner).await? else {
+        return Ok(Vec::new());
+    };
+    let children = fs.read_dir(directory).await.map_err(io_failure)?;
+    if children
+        .iter()
+        .any(|path| path.parent() != Some(directory) || path.file_name().is_none())
+    {
+        return Err(corrupt());
+    }
+    let after = fs.symlink_metadata(directory).await.map_err(io_failure)?;
+    if !MetadataStamp::checked(&after)
+        .map_err(io_failure)?
+        .same_incarnation(before)
+    {
+        return Err(corrupt());
+    }
+    Ok(children)
+}
+
+async fn intent_directory<F: LocalFs + BucketBinding>(
+    fs: &F,
+    path: &std::path::Path,
+    owner: u32,
+) -> Result<Option<super::MetadataStamp>, StoreFailure> {
+    let stamp = match fs.symlink_metadata(path).await {
+        Ok(metadata) => super::MetadataStamp::checked(&metadata).map_err(io_failure)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(io_failure(error)),
+    };
+    FencePolicy::PrivateControlDirectory { owner }
+        .validate(stamp)
+        .map_err(io_failure)?;
+    Ok(Some(stamp))
+}
 
 async fn capture<F: LocalFs + BucketBinding>(
     fs: &F,

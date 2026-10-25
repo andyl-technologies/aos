@@ -187,6 +187,27 @@ where
         self.collection.maintenance_hints(cursor, maximum).await
     }
 
+    /// Discovers retained ordinary deletion intents, including terminal progress.
+    ///
+    /// Renews this collection's original lease. The bounded lookup results retain
+    /// no witness or permission; recovery independently qualifies current inputs.
+    /// Permanent-v2 owners remain in their separate recurring inventory.
+    ///
+    /// # Errors
+    /// Rejects invalid bounds, unfinished marking, malformed protected records,
+    /// lost ownership and changed observations. Actual failure or cancellation stops
+    /// the session; the cursor changes only after successful observation revalidation.
+    pub async fn local_deletion_hints(
+        &mut self,
+        cursor: &mut crate::gc::runner::maintenance::local_deletion::LocalDeletionCursor,
+        maximum: usize,
+    ) -> Result<
+        Vec<crate::gc::runner::maintenance::local_deletion::LocalDeletionHint>,
+        CollectionError,
+    > {
+        self.collection.local_deletion_hints(cursor, maximum).await
+    }
+
     /// Retires at most one eligible pack through the original coordinator.
     ///
     /// # Errors

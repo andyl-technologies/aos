@@ -21,6 +21,11 @@ HINT_CASES = [
     PREFIX + "recovery::permanent_local_empty_pass_keeps_owner_and_reclaims_late_same_key_residue",
 ]
 
+LOCAL_DELETE_CASES = [
+    "gc::runner::tests::local_deletion::success::"
+    "full_d_and_current_lease_unlink_exact_triple_and_finish_done",
+]
+
 
 def verify_image(source, image):
     """Binds the actual retained Cargo test image to every immutable crate input."""
@@ -74,6 +79,8 @@ def main():
         cases = CASES
     elif suite == "maintenance-owner-hints":
         cases = HINT_CASES
+    elif suite == "local-deletion-hints":
+        cases = LOCAL_DELETE_CASES
     else:
         raise ValueError("unknown native collection qualification suite")
 
@@ -106,8 +113,11 @@ def main():
     if suite == "collection-reconciliation":
         print("PASS original collection session reconciles actual permanent residues and retains "
               "marking; recovery lease, hardlink and cancellation controls pass", flush=True)
-    else:
+    elif suite == "maintenance-owner-hints":
         print("PASS actual owner discovery survives completed empty passes and reclaims late residue",
+              flush=True)
+    else:
+        print("PASS actual local-v1 intent discovery survives exact full-D deletion and durable Done",
               flush=True)
 
 

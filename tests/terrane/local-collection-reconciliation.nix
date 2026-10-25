@@ -4,14 +4,16 @@
   image,
   suite ? "collection-reconciliation",
 }:
-assert builtins.elem suite ["collection-reconciliation" "maintenance-owner-hints"]; let
+assert builtins.elem suite ["collection-reconciliation" "maintenance-owner-hints" "local-deletion-hints"]; let
   testing = import ../../lib/testing {inherit pkgs lib;};
 in
   testing.mkVMTest {
     name =
       if suite == "collection-reconciliation"
       then "terrane-local-collection-reconciliation"
-      else "terrane-local-maintenance-hints";
+      else if suite == "maintenance-owner-hints"
+      then "terrane-local-maintenance-hints"
+      else "terrane-local-deletion-hints";
     memory = 1024;
     timeout =
       if suite == "collection-reconciliation"

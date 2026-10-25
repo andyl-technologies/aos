@@ -16,6 +16,10 @@ use crate::store::{Clock, ContentValidator, LocalFs};
 use terrane_format::bucket::PackExclusion;
 use terrane_format::gc::retirement::{PermanentBurnOwner, PermanentOwnerSelection};
 
+/// Discovers retained ordinary local-v1 intents independently of permanent owners.
+#[path = "maintenance/local_deletion.rs"]
+pub mod local_deletion;
+
 /// Limits the number of returned lookup hints, independently of native work bounds.
 pub const MAX_HINTS: usize = 256;
 
