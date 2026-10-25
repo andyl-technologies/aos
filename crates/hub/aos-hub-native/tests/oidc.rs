@@ -552,8 +552,8 @@ async fn expired_flow_is_rejected() {
         None,
         -1,
     )
-        .await
-        .unwrap();
+    .await
+    .unwrap();
     assert!(db
         .take_oidc_flow("st", &binding_hash)
         .await
