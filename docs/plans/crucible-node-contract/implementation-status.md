@@ -10,6 +10,49 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Runtime typed-vector construction bounds
+
+The original controller now supplies an allocation-free DATA bound for typed
+vectors in Input, Observe, Begin, Poll, Retire and all three Blob methods. The
+closed graph follows the actual field types of 35 records and all seven Begin
+argument/result pairs. Exhaustive field and variant witnesses require schema
+changes to participate in the projection. The query uses the actual negotiated
+frame ceiling and changes no request quota, byte debit or owner.
+
+Completed vectors and simultaneous construction receive separate bounds. The
+construction bound includes old/new banks during growth and the pinned Serde
+visitor's initial reservations at every active nested vector, including failure
+before the first element completes. For a 65,536-byte frame, the current field
+layouts yield 32 MiB completed backing and 51 MiB construction backing per typed
+population. Concurrent request and response populations need separate rows.
+Literal JSON, strings, decoded Bytes, validation sets, diagnostics, inline
+controls, legacy replies larger than the current frame and arbitrary Serialize
+callbacks remain independently priced. This component grants no Source action
+and does not complete SDK R/T/S or the funded runtime handoff.
+
+Independent instrumented probes against both actual codec configurations
+confirm that a 38,045-byte malformed Observe response requests 2,169,040 bytes
+across three nested vectors before rejecting its first Id. These are requested
+allocation measurements, not physical-memory or native-performance evidence.
+The five new controls and all compact-runtime owner controls pass in both
+configurations. Both complete Transport suites pass 2,258 tests with zero
+failures and twenty ignored. Format passes 44 with one ignored, SourceBirth passes 62 and Engine
+passes 2,074 with thirty-four ignored in each configuration. Scoped formatting,
+five-package all-feature/all-target checks and all six architecture checks pass.
+SourceBirth strict Clippy is clean; Transport retains exactly the prior four
+errors and 1,725 warnings, so this is not a strict Transport lint pass.
+
+Required application test-target compilation passes with 185 artifacts across
+58 packages and 76 integration targets. All 748 frozen Rust/Cargo inputs match
+the captured build source and candidate tree. The rebuilt native executable
+changed, so its actual source-built original-scene inactive lifecycle and
+reclamation test ran again and passed in 730.24 seconds. Size-optimized
+companions, normal provider stderr handling and sixty-second Initial deadlines
+remain unchanged. This qualifies the inactive lifecycle only; it does not
+establish Arm/Capture, full SDK funding, Source18 handoff or full RFC completion.
+User-owned changes remain outside this component; no clean whole-PR
+qualification is claimed.
+
 ## Literal JSON fields and borrowed array storage
 
 Baseline CNP envelope bodies, extensions, response results, error details,

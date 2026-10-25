@@ -481,3 +481,35 @@ fn promised_content_cannot_renew_the_exhausted_provider_namespace() -> TestResul
     assert!(runtime.content(&new_reference).is_err());
     Ok(())
 }
+
+#[test]
+fn typed_vector_query_uses_original_limits_without_mutating_or_reviving_ownership() -> TestResult {
+    let (_lease, mut controller, _peer, _reference) = fixture(8);
+    let controller = controller.as_mut().unwrap();
+    let before = prefix(controller);
+    let quotas = controller.custody.runtime_journal_bytes_data();
+    let expected = crate::bodies::typed_vector_storage_data(65_536, usize::MAX)?;
+
+    let row = controller.original_compact_runtime_typed_vector_storage_data(usize::MAX)?;
+
+    assert_eq!(row, expected);
+    assert_eq!(prefix(controller), before);
+    assert_eq!(controller.custody.runtime_journal_bytes_data(), quotas);
+    assert_eq!(
+        controller.original_compact_runtime_typed_vector_storage_data(row[1])?,
+        row
+    );
+    assert!(
+        controller
+            .original_compact_runtime_typed_vector_storage_data(row[1] - 1)
+            .is_err()
+    );
+    controller.fence();
+    assert_eq!(
+        controller.original_compact_runtime_typed_vector_storage_data(usize::MAX)?,
+        row
+    );
+    assert!(controller.fenced);
+    assert!(CnpController::original_compact_runtime_typed_vector_counter_scratch_data() > 0);
+    Ok(())
+}

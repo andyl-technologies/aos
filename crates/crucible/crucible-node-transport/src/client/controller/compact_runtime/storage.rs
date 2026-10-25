@@ -35,6 +35,47 @@ impl CnpController {
             .compact_runtime_journal_retained_storage_data(maximum)
     }
 
+    /// Bounds one typed-vector population for the closed packet runtime methods.
+    ///
+    /// Returns `[completed backing, simultaneous construction backing]` for
+    /// Input, Observe, Begin, Poll, Retire and BlobBegin/BlobChunk/BlobFinish,
+    /// including all Begin arguments. The actual negotiated frame ceiling
+    /// bounds canonical wire occurrences; the defining DTO graph supplies
+    /// concrete element sizes and nested failed-prefix reservations.
+    ///
+    /// This allocation-free DATA query does not authenticate a request family
+    /// or Source action. Other methods, legacy originals larger than the current
+    /// frame, arbitrary Serialize callbacks, literal JSON, strings, decoded
+    /// Bytes, validation sets, diagnostics and fixed controls are excluded.
+    /// The caller first admits the fixed counter returned by
+    /// [`Self::original_compact_runtime_typed_vector_counter_scratch_data`].
+    /// Every concurrent decode needs its own row. Complete SDK R/T/S and the
+    /// actual same-Source admission remain required before a handoff.
+    ///
+    /// # Errors
+    /// Refuses unavailable negotiated limits, arithmetic overflow or either
+    /// component above the supplied independent restriction.
+    pub fn original_compact_runtime_typed_vector_storage_data(
+        &self,
+        maximum: usize,
+    ) -> Result<[usize; 2], ProviderError> {
+        crate::bodies::typed_vector_storage_data(self.maximum_frame()?, maximum)
+    }
+
+    /// Names the fixed controls required before the typed-vector DATA query.
+    ///
+    /// The enclosing Source admits this window independently. It includes the
+    /// negotiated-limit conversion and checked projection slots, and establishes
+    /// no physical stack bound or permission to decode a body.
+    pub const fn original_compact_runtime_typed_vector_counter_scratch_data() -> usize {
+        crate::bodies::runtime_typed_vector_counter_scratch_data()
+            + size_of::<&Self>()
+            + 2 * size_of::<usize>()
+            + size_of::<Result<usize, std::num::TryFromIntError>>()
+            + size_of::<Result<usize, ProviderError>>()
+            + size_of::<Result<[usize; 2], ProviderError>>()
+    }
+
     /// Names the fixed original-custody, journal and tree quote controls.
     ///
     /// The enclosing Source admits these controls before invoking the DATA
