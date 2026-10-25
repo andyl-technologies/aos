@@ -111,6 +111,9 @@ impl LiveVcpuTimeCallbackState {
                 raw_icount,
             )
             .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
+            // The restored coordinate answers no advance this process has
+            // seen; a RUN that starts there must publish its own stop.
+            self.zero_length_idle_answer.set(None);
         }
         Ok(())
     }

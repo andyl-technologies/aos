@@ -494,9 +494,18 @@ impl LiveVcpuTimeCallbackState {
                 }
                 None
             };
-            if let Some(console) = &mut console {
+            // Below the ceiling, a zero-length idle this plugin published for
+            // an earlier advance is not a stop for this one; the writer drops
+            // it against the record and returns what the slot now holds.
+            let answered_advance = self.zero_length_idle_answer.get();
+            let zero_length_idle_advance = if let Some(console) = &mut console {
                 let published = console
-                    .publish_ordinary(self.slot.get(), current_icount, raw_icount)
+                    .publish_ordinary(
+                        self.slot.get(),
+                        current_icount,
+                        raw_icount,
+                        answered_advance,
+                    )
                     .map_err(|error| match error {
                         crucible_shmem::NodeBoundaryPublicationError::Slot(source) => {
                             LiveVcpuTimeCallbackError::PublishIcount { source }
@@ -505,17 +514,22 @@ impl LiveVcpuTimeCallbackState {
                             LiveVcpuTimeCallbackError::ConsoleControl { source }
                         }
                     })?;
-                if !published {
-                    return Ok(());
+                match published {
+                    super::console_effect::OrdinaryPublication::Pending => return Ok(()),
+                    super::console_effect::OrdinaryPublication::Published {
+                        zero_length_idle_advance,
+                    } => zero_length_idle_advance,
                 }
             } else {
-                PluginShmemOrdering::publish_control_boundary(
+                PluginShmemOrdering::publish_control_boundary_answering(
                     self.slot.get(),
                     current_icount,
                     raw_icount,
+                    answered_advance,
                 )
-                .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?;
-            }
+                .map_err(|source| LiveVcpuTimeCallbackError::PublishIcount { source })?
+            };
+            self.zero_length_idle_answer.set(zero_length_idle_advance);
             if let Some((captured, capture_request)) = private_capture {
                 self.submit_fingerprint_sample(captured, capture_request)?;
             }

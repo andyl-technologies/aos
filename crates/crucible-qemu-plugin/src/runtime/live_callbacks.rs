@@ -78,6 +78,7 @@ mod preemption;
 mod resume;
 mod settlement;
 pub(crate) mod time_ownership_witness;
+mod zero_length_idle;
 mod zero_length_trace;
 
 pub use devices::LiveDeviceCallbackError;
@@ -901,6 +902,8 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     /// One plus the sequence of the last zero-length advance this plugin
     /// answered with a boundary publication, or zero before any.
     answered_zero_length_advance: AtomicU64,
+    /// Advance sequence that this plugin's latest zero-length idle answered.
+    zero_length_idle_answer: zero_length_idle::ZeroLengthIdleAnswer,
     pending_idle_advance_target_icount: AtomicU64,
     idle_advance_generation: AtomicU64,
     pending_idle_advance: Mutex<Option<LivePendingIdleAdvance>>,
@@ -1138,6 +1141,7 @@ impl LiveVcpuTimeCallbackState {
             rr_vcpu_thread: AtomicU64::new(0),
             parked_block_waits: Mutex::new(device_wait::ParkedBlockWaits::default()),
             answered_zero_length_advance: AtomicU64::new(0),
+            zero_length_idle_answer: zero_length_idle::ZeroLengthIdleAnswer::new(),
             pending_idle_advance_target_icount: AtomicU64::new(0),
             idle_advance_generation: AtomicU64::new(0),
             pending_idle_advance: Mutex::new(None),
@@ -1483,12 +1487,18 @@ impl LiveVcpuTimeCallbackState {
                 raw_icount,
             );
         }
+        let due_now_advance = (plan.desired_wake_icount() <= current_icount)
+            .then(|| self.zero_length_idle_advance())
+            .transpose()?;
         let futex_wait = PluginShmemOrdering::publish_idle_wait(
             self.slot.get(),
             current_icount,
             plan.desired_wake_icount(),
         )
         .map_err(|source| LiveVcpuTimeCallbackError::PublishIdle { source })?;
+        if let Some(advance) = due_now_advance {
+            self.record_zero_length_idle(advance);
+        }
         let request = IdleParkRequest::from_published(plan, futex_wait);
         let observation = self.idle_plan_witness.begin(
             vcpu_index,
@@ -1602,12 +1612,14 @@ impl LiveVcpuTimeCallbackState {
                         return Ok(IdleSchedulerWaitDisposition::ReturnToQemu);
                     }
                     if !PluginShmemOrdering::device_io_active(self.slot.get()) {
+                        let advance = self.zero_length_idle_advance()?;
                         PluginShmemOrdering::publish_pause_quiesced(
                             self.slot.get(),
                             request.plan().current_icount(),
                             raw_icount,
                         )
                         .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
+                        self.record_zero_length_idle(advance);
                         self.request_checkpoint_vmstop("vcpu-idle-wait")?;
                         // Leave the callback without authorizing an idle advance.
                         // This hands QEMU's execution path back to its main loop so
@@ -1882,12 +1894,14 @@ impl LiveVcpuTimeCallbackState {
                     },
                 )?;
             }
+            let advance = self.zero_length_idle_advance()?;
             PluginShmemOrdering::publish_pause_quiesced(
                 self.slot.get(),
                 current_icount,
                 raw_icount,
             )
             .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
+            self.record_zero_length_idle(advance);
             self.last_raw_icount.store(raw_icount, Ordering::Release);
             self.last_icount.store(current_icount, Ordering::Release);
             self.request_checkpoint_vmstop(boundary)

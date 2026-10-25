@@ -192,8 +192,14 @@ impl<'a> ConsoleControlEffect<'a> {
 
     /// Publishes the ordinary writer's original same-read advance receipt.
     ///
-    /// Returns `false` on effect-free native contention before opening the
-    /// writer. The original even request remains pending without an ACK.
+    /// `answered_advance` is the advance the slot's zero-length idle answered,
+    /// as the plugin recorded it; below the ceiling an idle left by another
+    /// advance is dropped (see
+    /// [`NodeSlot::publish_control_boundary_answering_with_effect`]).
+    ///
+    /// Returns [`OrdinaryPublication::Pending`] on effect-free native
+    /// contention before opening the writer. The original even request
+    /// remains pending without an ACK.
     ///
     /// # Errors
     ///
@@ -207,14 +213,20 @@ impl<'a> ConsoleControlEffect<'a> {
         slot: &NodeSlot,
         logical: u64,
         raw: u64,
-    ) -> Result<bool, NodeBoundaryPublicationError<NativeConsoleError>> {
+        answered_advance: Option<u64>,
+    ) -> Result<OrdinaryPublication, NodeBoundaryPublicationError<NativeConsoleError>> {
         let Some(prepared) = self.prepare_publication(logical)? else {
-            return Ok(false);
+            return Ok(OrdinaryPublication::Pending);
         };
-        slot.publish_control_boundary_with_effect(logical, raw, |fields| {
-            prepared.effect.commit_ordinary(fields)
-        })?;
-        Ok(true)
+        let zero_length_idle_advance = slot.publish_control_boundary_answering_with_effect(
+            logical,
+            raw,
+            answered_advance,
+            |fields| prepared.effect.commit_ordinary(fields),
+        )?;
+        Ok(OrdinaryPublication::Published {
+            zero_length_idle_advance,
+        })
     }
 
     fn prepare_publication(
@@ -313,6 +325,18 @@ impl<'a> ConsoleControlEffect<'a> {
 /// Its inner NodeSlot writer closes before this outer scope releases custody.
 struct PreparedConsolePublication<'invocation, 'owner> {
     effect: &'invocation mut ConsoleControlEffect<'owner>,
+}
+
+/// Outcome of the ordinary console control-boundary writer.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OrdinaryPublication {
+    /// Native preparation was busy; nothing was written.
+    Pending,
+    /// The boundary was written.
+    Published {
+        /// Advance whose zero-length idle the slot now holds, if any.
+        zero_length_idle_advance: Option<u64>,
+    },
 }
 
 impl Drop for PreparedConsolePublication<'_, '_> {

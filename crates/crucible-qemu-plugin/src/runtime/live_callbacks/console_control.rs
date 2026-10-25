@@ -152,13 +152,16 @@ impl LiveVcpuTimeCallbackState {
                     if !published {
                         return Ok(true);
                     }
+                    self.record_zero_length_idle(advance.sequence());
                 } else {
+                    let advance = self.zero_length_idle_advance()?;
                     PluginShmemOrdering::publish_pause_quiesced(
                         self.slot.get(),
                         current_icount,
                         raw_icount,
                     )
                     .map_err(|source| LiveVcpuTimeCallbackError::PublishPause { source })?;
+                    self.record_zero_length_idle(advance);
                 }
                 if let Some((captured, capture_request)) = private_capture {
                     // The actual writer has closed and released native custody.

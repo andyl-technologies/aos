@@ -35,6 +35,10 @@ impl LiveVcpuTimeCallbackState {
             return 0;
         }
 
+        // A refused advance read refuses the stop before its writer opens.
+        let Ok(advance) = self.zero_length_idle_advance() else {
+            return 0;
+        };
         let status = Cell::new(0);
         let published =
             self.slot
@@ -50,6 +54,7 @@ impl LiveVcpuTimeCallbackState {
                 });
         match published {
             Ok(()) => {
+                self.record_zero_length_idle(advance);
                 self.logical_icount_offset.store(offset, Ordering::Release);
                 self.last_raw_icount.store(raw, Ordering::Release);
                 self.last_icount.store(logical, Ordering::Release);
@@ -243,5 +248,24 @@ mod tests {
         assert_eq!(calls.get(), 0);
         assert_eq!(node.snapshot(), before);
         Ok(())
+    }
+
+    #[test]
+    fn a_console_output_stop_at_the_clamp_marker_survives_a_control_boundary() {
+        use crate::runtime::live_callbacks::tests::zero_length_idle::{
+            MARKER_ICOUNT, MARKER_RAW, answer_control_request, assert_stopped_at_marker,
+            state_at_ceiling_marker,
+        };
+
+        let node = NodeSlot::new(KIND_VM);
+        let state = state_at_ceiling_marker(&node);
+
+        assert_eq!(
+            state.publish_console_stopped(MARKER_RAW, MARKER_ICOUNT, |_| 2),
+            2
+        );
+        answer_control_request(&state, &node);
+
+        assert_stopped_at_marker(&node);
     }
 }

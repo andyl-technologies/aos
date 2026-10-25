@@ -27,6 +27,7 @@ mod network_output;
 mod preemption;
 mod preflight_cases;
 mod settlement;
+pub(super) mod zero_length_idle;
 
 pub(super) extern "C" fn test_icount_raw() -> u64 {
     TEST_ICOUNT_RAW_READS.set(TEST_ICOUNT_RAW_READS.get() + 1);

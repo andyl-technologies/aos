@@ -130,6 +130,22 @@ impl PluginShmemOrdering {
         slot.publish_virtual_timer_witness(witness);
     }
 
+    /// Publishes a control boundary against the plugin's zero-length idle record.
+    ///
+    /// Returns the advance whose zero-length idle the slot holds afterwards.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError`] when the reached icount exceeds the ceiling.
+    pub fn publish_control_boundary_answering(
+        slot: &NodeSlot,
+        reached_icount: u64,
+        raw_icount: u64,
+        answered_advance: Option<u64>,
+    ) -> Result<Option<u64>, NodeSlotError> {
+        slot.publish_control_boundary_answering(reached_icount, raw_icount, answered_advance)
+    }
+
     /// Publishes the plugin's idle state and prepares a futex wait decision.
     ///
     /// The underlying slot method release-stores the idle state before returning

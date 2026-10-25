@@ -546,6 +546,91 @@ impl NodeSlot {
         raw_icount: u64,
         effect: impl FnOnce(NodeBoundaryPublication) -> Result<(), E>,
     ) -> Result<(), NodeBoundaryPublicationError<E>> {
+        self.publish_control_boundary_classified(
+            reached_icount,
+            raw_icount,
+            ZeroLengthIdleRecord::Unkept,
+            effect,
+        )
+        .map(|_answered| ())
+    }
+
+    /// Publishes a control boundary against the writer's zero-length idle record.
+    ///
+    /// This is [`Self::publish_control_boundary_answering_with_effect`]
+    /// without a paired effect.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeSlotError`] when `reached_icount` exceeds the scheduler
+    /// ceiling.
+    pub fn publish_control_boundary_answering(
+        &self,
+        reached_icount: u64,
+        raw_icount: u64,
+        answered_advance: Option<u64>,
+    ) -> Result<Option<u64>, NodeSlotError> {
+        self.publish_control_boundary_answering_with_effect(
+            reached_icount,
+            raw_icount,
+            answered_advance,
+            |_| Ok::<_, std::convert::Infallible>(()),
+        )
+        .map_err(NodeBoundaryPublicationError::into_slot)
+    }
+
+    /// Publishes a control boundary for a writer that records which advance
+    /// each of its zero-length idle publications answered.
+    ///
+    /// An idle wake at or before the node's coordinate is the protocol's
+    /// quiesced-boundary encoding. It is a claim about one advance: the
+    /// settle at a clamp ceiling, or a stop the node took while running
+    /// toward the ceiling. `answered_advance` names the advance publication
+    /// sequence that the slot's current zero-length idle answered, or `None`
+    /// when the writer recorded none. Below this advance's ceiling, a
+    /// zero-length idle that answered another advance is not a stop for this
+    /// one, so it is dropped and the node publishes running at the
+    /// coordinate; the next vCPU idle or retirement publishes where it
+    /// actually stops. One that answered this advance is preserved, as is
+    /// any future idle wake. At the ceiling or after settlement this behaves
+    /// exactly as [`Self::publish_control_boundary_with_effect`].
+    ///
+    /// Returns the advance sequence whose zero-length idle the slot holds
+    /// after this publication, or `None` when it holds none, so the writer
+    /// can keep its record current. The comparison uses the advance this
+    /// writer itself loads, so a concurrent advance publication cannot make
+    /// it preserve an idle against one advance and publish under another.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same validation errors and effect refusal as
+    /// [`Self::publish_control_boundary_with_effect`].
+    ///
+    /// # Panics
+    ///
+    /// Propagates an effect panic after closing the original publication.
+    pub fn publish_control_boundary_answering_with_effect<E>(
+        &self,
+        reached_icount: u64,
+        raw_icount: u64,
+        answered_advance: Option<u64>,
+        effect: impl FnOnce(NodeBoundaryPublication) -> Result<(), E>,
+    ) -> Result<Option<u64>, NodeBoundaryPublicationError<E>> {
+        self.publish_control_boundary_classified(
+            reached_icount,
+            raw_icount,
+            ZeroLengthIdleRecord::Kept(answered_advance),
+            effect,
+        )
+    }
+
+    fn publish_control_boundary_classified<E>(
+        &self,
+        reached_icount: u64,
+        raw_icount: u64,
+        record: ZeroLengthIdleRecord,
+        effect: impl FnOnce(NodeBoundaryPublication) -> Result<(), E>,
+    ) -> Result<Option<u64>, NodeBoundaryPublicationError<E>> {
         let advance = self
             .load_scheduler_advance_publication()
             .map_err(NodeBoundaryPublicationError::Slot)?;
@@ -581,14 +666,22 @@ impl NodeSlot {
                     .store(reached_icount, Ordering::Release);
             }
             self.status.store(STATUS_IDLE, Ordering::Release);
+        } else if was_idle
+            && self.idle_wake_icount.load(Ordering::Acquire) <= reached_icount
+            && record.is_stale_for(advance.sequence())
+        {
+            self.status.store(STATUS_RUNNING, Ordering::Release);
         }
+        let zero_length_idle = self.status.load(Ordering::Acquire) == STATUS_IDLE
+            && self.idle_wake_icount.load(Ordering::Acquire) <= reached_icount;
         effect(NodeBoundaryPublication {
             logical: reached_icount,
             raw: raw_icount,
             advance: Some(advance),
             closed_generation: writer.closed_generation(),
         })
-        .map_err(NodeBoundaryPublicationError::Effect)
+        .map_err(NodeBoundaryPublicationError::Effect)?;
+        Ok(zero_length_idle.then_some(advance.sequence()))
     }
 
     /// Arms one host-to-plugin logical-time restore transaction.
@@ -1352,5 +1445,24 @@ impl Drop for ControlBoundaryPublicationClaim<'_> {
         let _ = self
             .0
             .compare_exchange(1, 0, Ordering::Release, Ordering::Relaxed);
+    }
+}
+
+/// How a control-boundary writer accounts for a zero-length idle in the slot.
+#[derive(Clone, Copy)]
+enum ZeroLengthIdleRecord {
+    /// The writer keeps no record; below the ceiling the idle is preserved.
+    Unkept,
+    /// The advance sequence the idle answered, as its writer recorded it.
+    Kept(Option<u64>),
+}
+
+impl ZeroLengthIdleRecord {
+    const fn is_stale_for(self, sequence: u64) -> bool {
+        match self {
+            Self::Unkept => false,
+            Self::Kept(Some(answered)) => answered != sequence,
+            Self::Kept(None) => true,
+        }
     }
 }

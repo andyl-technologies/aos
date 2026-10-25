@@ -563,3 +563,38 @@ fn explicit_pause_shutdown_and_their_control_ack_keep_priority()
     assert_eq!(fixture.outbound_entries[0].delivery_icount, 1_000);
     Ok(())
 }
+
+#[test]
+fn an_output_stop_at_the_clamp_marker_survives_a_control_boundary()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = OutputFixture::new()?;
+    let state = fixture.state()?;
+    state.on_vcpu_init(0)?;
+    state.publish_current_icount(20)?;
+    // The clamp settles the node at 1_000 and leaves its zero-length idle.
+    let clamp = authorize_advance_ceiling(1_000, 1_000, None)?;
+    fixture
+        .slot
+        .publish_scheduler_advance(clamp, AdvanceStopCondition::Ceiling)?;
+    fixture.slot.request_control_boundary(0, None)?;
+    state.on_control_boundary(20)?;
+    assert_eq!(fixture.slot.snapshot().status, STATUS_IDLE);
+    let run = authorize_advance_ceiling(1_000, 2_000, None)?;
+    fixture
+        .slot
+        .publish_scheduler_advance(run, AdvanceStopCondition::Ceiling)?;
+
+    // The RUN transmits at the same coordinate without retiring anything.
+    state.on_network_tx(20, b"frame")?;
+    let request = fixture.slot.request_control_boundary(0, None)?;
+    state.on_control_boundary(20)?;
+
+    let stopped = fixture.slot.snapshot();
+    assert_eq!(stopped.status, STATUS_IDLE);
+    assert_eq!(stopped.current_icount, 1_000);
+    assert_eq!(stopped.idle_wake_icount, 1_000);
+    assert_eq!(stopped.max_advance_icount, 2_000);
+    assert_eq!(stopped.control_boundary_ack, request.wrapping_add(1));
+    assert_eq!(fixture.outbound.write_index(), 1);
+    Ok(())
+}
