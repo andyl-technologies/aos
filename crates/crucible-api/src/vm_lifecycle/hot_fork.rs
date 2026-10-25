@@ -616,6 +616,10 @@ pub struct ProductionVmHotForkWorldContinuation {
     // any child process exists.
     network_replay_identity: Option<ContentHash>,
     network_committed_frontier: VirtualTime,
+    // A source kept at a joined network fault park holds each VM's native
+    // marker stop. Children inherit those stops, and start replay crosses the
+    // recorded branch only while it can read every VM's park proof.
+    campaign_marker_parks: BTreeMap<NodeId, QemuParkedCampaignMarker>,
 }
 
 impl ProductionVmHotForkWorldContinuation {
@@ -652,6 +656,7 @@ impl ProductionVmHotForkWorldContinuation {
             io_nodes: self.io_nodes.clone(),
             network_replay_identity: self.network_replay_identity,
             network_committed_frontier: self.network_committed_frontier,
+            campaign_marker_parks: self.campaign_marker_parks.clone(),
         })
     }
 
@@ -820,6 +825,14 @@ impl ProductionVmHotForkWorldContinuation {
                 message: String::from("hot-fork node continuation is incomplete"),
             });
         }
+        // Only a running VM can hold a native marker stop for a child to inherit.
+        if self.campaign_marker_parks.keys().any(|node| {
+            self.node_service_states.get(node) != Some(&ProductionNodeServiceState::Running)
+        }) {
+            return Err(hot_fork_boundary_error(
+                "hot-fork campaign marker park names a node that is not running",
+            ));
+        }
         let active_nodes = self
             .node_service_states
             .iter()
@@ -969,6 +982,7 @@ impl ProductionVmHotForkWorldContinuation {
             block_bindings: self.block_bindings,
             ninep_bindings: self.ninep_bindings,
             active_host_io: self.active_host_io,
+            campaign_marker_parks: self.campaign_marker_parks,
         }
     }
 }
@@ -1599,6 +1613,13 @@ impl ProductionVmLifecycleLoop {
         let fault_trace_objects =
             capture_fault_trace_objects(&fault_checkpoint, self.fault_trace_segments.as_ref())?;
         let selectable_catalog_plans = self.inner.backend().selectable_catalog_plans();
+        let campaign_marker_parks =
+            self.inner
+                .backend_mut()
+                .campaign_marker_parks()
+                .map_err(|error| {
+                    hot_fork_boundary_error(format!("capture campaign marker parks: {error}"))
+                })?;
         let after = self.hot_fork_node_boundaries()?;
         if before != after || scheduler.frontier() != checkpoint_virtual_time {
             return Err(hot_fork_boundary_error(
@@ -1634,6 +1655,7 @@ impl ProductionVmLifecycleLoop {
             io_nodes,
             network_replay_identity,
             network_committed_frontier,
+            campaign_marker_parks,
         };
         continuation.validate_complete_internal_state()?;
         Ok(continuation)

@@ -876,6 +876,7 @@ fn hot_fork_restore_replaces_only_the_durable_run_root() {
         block_bindings: blocks,
         ninep_bindings: ninep,
         active_host_io,
+        campaign_marker_parks,
     } = continuation.into_restore_parts(generations.clone(), "child-run-state");
 
     assert_eq!(config.run_state_root(), Path::new("child-run-state"));
@@ -885,4 +886,66 @@ fn hot_fork_restore_replaces_only_the_durable_run_root() {
     assert!(blocks.is_empty());
     assert!(ninep.is_empty());
     assert!(active_host_io.is_empty());
+    assert!(campaign_marker_parks.is_empty());
+}
+
+fn transport_park(physical_icount: u64) -> QemuParkedCampaignMarker {
+    QemuParkedCampaignMarker {
+        marker: String::from("fault.transport.ready"),
+        marker_icount: crucible::Icount {
+            retired: physical_icount - 2,
+        },
+        marker_tick: crucible::Icount {
+            retired: physical_icount - 1_000,
+        },
+        physical_raw_icount: crucible::Icount {
+            retired: physical_icount - 1,
+        },
+        physical_icount: crucible::Icount {
+            retired: physical_icount,
+        },
+    }
+}
+
+#[test]
+fn every_child_of_a_parked_source_inherits_its_campaign_marker_parks() {
+    let (_source, mut continuation) = active_multi_node_continuation();
+    let parks = continuation
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(index, boundary)| (boundary.node.clone(), transport_park(10_000 + index as u64)))
+        .collect::<BTreeMap<_, _>>();
+    continuation.campaign_marker_parks = parks.clone();
+    continuation
+        .validate_complete_internal_state()
+        .unwrap_or_else(|error| panic!("a parked running source should validate: {error}"));
+
+    // Each fork clones the continuation; every child world must keep the parks
+    // through to the restore parts its lifecycle adopts them from.
+    for _child in 0..2 {
+        let branch = continuation
+            .try_clone_for_branch()
+            .unwrap_or_else(|error| panic!("parked continuation should clone: {error}"));
+        let generations = branch.node_generations.clone();
+        let restored = branch
+            .into_restore_parts(generations, "child-run-state")
+            .campaign_marker_parks;
+        assert_eq!(restored, parks);
+    }
+}
+
+#[test]
+fn a_campaign_marker_park_on_a_failed_node_refuses_the_continuation() {
+    let (_source, mut continuation) = permanently_failed_continuation();
+    let node = continuation.nodes[0].node.clone();
+    continuation
+        .campaign_marker_parks
+        .insert(node, transport_park(10_000));
+
+    let error = continuation
+        .validate_complete_internal_state()
+        .err()
+        .unwrap_or_else(|| panic!("a failed node cannot hold an inherited marker stop"));
+    assert!(error.to_string().contains("not running"));
 }

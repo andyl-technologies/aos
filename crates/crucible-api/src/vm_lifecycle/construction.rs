@@ -1123,6 +1123,19 @@ pub(super) fn build_production_vm_lifecycle_loop_with_restore(
                 )));
             }
         }
+        // A child forked at a joined campaign park inherits each VM's native
+        // marker stop. Without the park proof, start replay could not cross
+        // the recorded branch and would run the parked guests past it.
+        for (node, parked) in std::mem::take(&mut restore.campaign_marker_parks) {
+            backends
+                .adopt_campaign_marker_park(&node, parked)
+                .map_err(|error| {
+                    loop_factory_error(format!(
+                        "adopt hot-fork campaign marker park for `{}`: {error}",
+                        node.name
+                    ))
+                })?;
+        }
     }
     let repository_exact_ram_rebase = if repository_parent_targets.is_empty() {
         None

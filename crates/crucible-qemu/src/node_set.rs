@@ -538,6 +538,62 @@ impl QemuNodeSet {
         Ok(Some(parked))
     }
 
+    /// Returns every retained campaign-marker park, each revalidated.
+    ///
+    /// A hot-fork continuation carries these proofs, so a child world forked
+    /// at a joined park still stands at that park before any release.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when a parked node is absent or its live
+    /// physical count has changed since its VMStop proof was retained.
+    pub fn campaign_marker_parks(
+        &mut self,
+    ) -> Result<BTreeMap<NodeId, QemuParkedCampaignMarker>, BackendError> {
+        let nodes = self
+            .parked_campaign_markers
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut parks = BTreeMap::new();
+        for node in nodes {
+            if let Some(parked) = self.parked_campaign_marker(&node)? {
+                parks.insert(node, parked);
+            }
+        }
+        Ok(parks)
+    }
+
+    /// Adopts one park captured from the hot-fork template of `node`.
+    ///
+    /// The child inherited the template's native VMStop at the marker, so the
+    /// template's proof names the child's boundary too. The physical count is
+    /// not compared here: the child's console restore rebinds its logical
+    /// clock to the template cut, and every later query revalidates the count,
+    /// so a child that does not stand exactly at the park refuses before any
+    /// release.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BackendError`] when the node is absent or already parked.
+    pub fn adopt_campaign_marker_park(
+        &mut self,
+        node: &NodeId,
+        parked: QemuParkedCampaignMarker,
+    ) -> Result<(), BackendError> {
+        self.node_mut(node)?;
+        if self.parked_campaign_markers.contains_key(node) {
+            return Err(BackendError::Rejected {
+                message: format!(
+                    "QEMU node `{}` already holds a campaign marker park",
+                    node.name
+                ),
+            });
+        }
+        self.parked_campaign_markers.insert(node.clone(), parked);
+        Ok(())
+    }
+
     /// Releases one marker park after the campaign commits its atomic choice.
     ///
     /// # Errors

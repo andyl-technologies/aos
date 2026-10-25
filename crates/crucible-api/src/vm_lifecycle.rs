@@ -37,9 +37,9 @@ use crucible_qemu::{
     ProductionFaultRuntime, ProductionFaultRuntimeCheckpoint, ProductionNetworkStateCheckpoint,
     QemuExactCheckpointCaptureResult, QemuHostIoCheckpoint, QemuLaunchResourceRequirements,
     QemuNode, QemuNodeLifecycleDecision, QemuNodeLifecycleIntent as LifecycleMutationIntent,
-    QemuPreparedRunDirectory, QemuProcessIdentity, QemuReplayOracleMatch, QemuSharedBlockDevice,
-    QemuVmSnapshot as ExactSnapshotHandle, QmpCheckpointIdentity, QmpCheckpointRamKind,
-    linux_process_identity, quarantine_orphaned_qemu_process,
+    QemuParkedCampaignMarker, QemuPreparedRunDirectory, QemuProcessIdentity, QemuReplayOracleMatch,
+    QemuSharedBlockDevice, QemuVmSnapshot as ExactSnapshotHandle, QmpCheckpointIdentity,
+    QmpCheckpointRamKind, linux_process_identity, quarantine_orphaned_qemu_process,
 };
 #[cfg(target_os = "linux")]
 use crucible_qemu::{
@@ -813,6 +813,7 @@ struct ProductionVmHotForkRestore {
     block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
     ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
     active_host_io: BTreeMap<NodeId, QemuHostIoCheckpoint>,
+    campaign_marker_parks: BTreeMap<NodeId, QemuParkedCampaignMarker>,
 }
 
 struct ProductionVmHotForkRestoreParts {
@@ -823,6 +824,7 @@ struct ProductionVmHotForkRestoreParts {
     block_bindings: BTreeMap<NodeId, storage_faults::ProductionBlockBinding>,
     ninep_bindings: BTreeMap<NodeId, storage_faults::ProductionNinepBinding>,
     active_host_io: BTreeMap<NodeId, QemuHostIoCheckpoint>,
+    campaign_marker_parks: BTreeMap<NodeId, QemuParkedCampaignMarker>,
 }
 
 struct HotForkAdoptionInventory {
@@ -2577,6 +2579,7 @@ where
         block_bindings,
         ninep_bindings,
         active_host_io,
+        campaign_marker_parks,
     } = continuation.into_restore_parts(node_generations, run_state_root);
     build_production_vm_lifecycle_loop_with_restore(
         scenario,
@@ -2592,6 +2595,7 @@ where
             block_bindings,
             ninep_bindings,
             active_host_io,
+            campaign_marker_parks,
         }),
     )
 }

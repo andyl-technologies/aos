@@ -536,6 +536,78 @@ fn production_marker_release_settles_zero_peer_hold_and_retains_refused_park() -
     Ok(())
 }
 
+#[test]
+fn an_adopted_template_park_lets_a_fresh_node_set_release_the_marker() -> TestResult {
+    let mut lifecycle = stopped_lifecycle_with_kind(0, true)?;
+    let witness = lifecycle
+        .inner
+        .held_host_stop_witness()
+        .ok_or("marker hold absent")?;
+    let node = witness.node().clone();
+    let parks = lifecycle.inner.backend_mut().campaign_marker_parks()?;
+    let template_park = parks.get(&node).cloned().ok_or("template park absent")?;
+
+    // A hot-fork child world's node set starts without the template's park.
+    // Re-inserting the same node models that fresh set: the park is gone.
+    let backend = lifecycle
+        .inner
+        .backend_mut()
+        .take(&node)
+        .ok_or("parked node absent")?;
+    lifecycle.inner.backend_mut().insert(node.clone(), backend);
+    assert!(lifecycle.parked_campaign_marker(&node)?.is_none());
+
+    // Adoption restores the exact proof, revalidated against the live count,
+    // and a second adoption cannot replace it.
+    lifecycle
+        .inner
+        .backend_mut()
+        .adopt_campaign_marker_park(&node, template_park.clone())?;
+    assert_eq!(
+        lifecycle.parked_campaign_marker(&node)?,
+        Some(template_park.clone())
+    );
+    assert!(
+        lifecycle
+            .inner
+            .backend_mut()
+            .adopt_campaign_marker_park(&node, template_park)
+            .is_err()
+    );
+
+    // The adopted park then serves the recorded branch exactly as the
+    // template's own park would.
+    let parent = lifecycle.inner.loop_impl().configuration().clone();
+    let selectable = crucible::NetworkFaultSelectable::next(
+        &lifecycle.source,
+        &parent,
+        crucible::NetworkFaultPhase::First,
+        lifecycle.inner.loop_impl().frontier(),
+        &[],
+    )?
+    .ok_or("network selectable absent")?;
+    let value =
+        crucible::NetworkFaultSelectable::selected_value("link_down", "primary", 1_000, 0, 0)?;
+    let branch = selectable.resolve_branch(&selectable.branch_selection(value)?)?;
+    let selected = branch.selected().id();
+    let replay =
+        crucible::NetworkFaultCampaignReplayPlan::new(branch.selected().clone(), vec![branch])?;
+    lifecycle
+        .inner
+        .network_transaction_parts_mut()
+        .2
+        .install_campaign_replay(Some(replay), None)?;
+    lifecycle.release_parked_campaign_marker(&node, "fault.transport.ready", selected)?;
+
+    assert!(lifecycle.parked_campaign_marker(&node)?.is_none());
+    assert!(lifecycle.campaign_marker_release_committed(&node, "fault.transport.ready", selected));
+    lifecycle
+        .inner
+        .settle_pending_network_outputs_at_current_frontier()?;
+    lifecycle.shutdown()?;
+    Ok(())
+}
+
 fn boundary_outcome(lifecycle: &ProductionVmLifecycleLoop) -> QuantumOutcome {
     let scheduler = lifecycle.inner.loop_impl();
     QuantumOutcome {
