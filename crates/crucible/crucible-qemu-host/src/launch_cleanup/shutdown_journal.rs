@@ -11,6 +11,8 @@ use std::ops::{Deref, Index};
 use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, OnceLock};
 
+use crucible_host_resources::host_supervision::HostSupervisionError;
+
 use super::RetainedCleanupFinalizer;
 use crate::shutdown::{
     QemuShutdownAttempt, QemuShutdownFailure, QemuShutdownReport, QemuShutdownTargetError,
@@ -18,11 +20,13 @@ use crate::shutdown::{
 
 const ATTEMPTS: usize = 4;
 const FAILURES: usize = 6;
+const ORIGINAL_OBSERVATIONS: usize = 10;
 
 #[derive(Debug)]
 struct JournalAllocation {
     attempts: [OnceLock<QemuShutdownAttempt>; ATTEMPTS],
     failures: [OnceLock<QemuShutdownFailure>; FAILURES],
+    original_observations: [OnceLock<HostSupervisionError>; ORIGINAL_OBSERVATIONS],
     // Every retained output and its physical allocation closes before this loan.
     _finalizer: Option<RetainedCleanupFinalizer>,
 }
@@ -51,6 +55,7 @@ impl ShutdownJournal {
             shared: Some(Arc::new(JournalAllocation {
                 attempts: std::array::from_fn(|_| OnceLock::new()),
                 failures: std::array::from_fn(|_| OnceLock::new()),
+                original_observations: std::array::from_fn(|_| OnceLock::new()),
                 _finalizer: finalizer,
             })),
         }
@@ -69,6 +74,7 @@ impl ShutdownJournal {
             .checked_add(std::mem::size_of::<JournalAllocation>())?
             .checked_add(std::mem::size_of::<QemuShutdownFailure>())?
             .checked_add(std::mem::size_of::<QemuShutdownReport>())?
+            .checked_add(std::mem::size_of::<QemuShutdownObservations>())?
             .checked_add(std::mem::size_of::<Self>())?
             .try_into()
             .ok()
@@ -128,6 +134,35 @@ impl ShutdownJournal {
         })
     }
 
+    /// Freezes the visible pre/post refusals without copying their containing array.
+    pub(crate) fn original_observations(
+        &self,
+        observations: &[(Option<HostSupervisionError>, Option<HostSupervisionError>); 5],
+    ) -> QemuShutdownObservations {
+        let mut mask = 0;
+        for (index, error) in observations
+            .iter()
+            .flat_map(|(before, after)| [before, after])
+            .enumerate()
+        {
+            if let Some(error) = error {
+                let shared = self.shared.as_ref().unwrap_or_else(|| {
+                    unreachable!("shutdown observations require admitted storage")
+                });
+                let retained = shared.original_observations[index].get_or_init(|| *error);
+                assert_eq!(
+                    retained, error,
+                    "each shutdown bracket retains its first refusal"
+                );
+                mask |= 1 << index;
+            }
+        }
+        QemuShutdownObservations {
+            journal: self.clone(),
+            mask,
+        }
+    }
+
     pub(crate) fn report(&self, reaped: bool, leaked: bool) -> QemuShutdownReport {
         let attempts = self
             .attempts()
@@ -168,6 +203,66 @@ impl Drop for ShutdownJournal {
         }
     }
 }
+
+/// Retains the original precheck and postcheck refusals for five shutdown rungs.
+///
+/// Clones share the launch's prepaid journal without allocating. The selection
+/// is frozen at publication, so later shutdown progress cannot change an older
+/// receipt. Values are returned by copy; no supervision operation is renewed.
+#[derive(Clone)]
+pub struct QemuShutdownObservations {
+    journal: ShutdownJournal,
+    mask: u16,
+}
+
+impl QemuShutdownObservations {
+    /// Returns a rung's independently retained precheck and postcheck refusals.
+    ///
+    /// Returns `None` when `index` is outside the five-rung shutdown ladder.
+    #[must_use]
+    pub fn get(
+        &self,
+        index: usize,
+    ) -> Option<(Option<HostSupervisionError>, Option<HostSupervisionError>)> {
+        if index >= ORIGINAL_OBSERVATIONS / 2 {
+            return None;
+        }
+        let observation = |offset: usize| {
+            let cell = index * 2 + offset;
+            if self.mask & (1 << cell) == 0 {
+                return None;
+            }
+            self.journal
+                .shared
+                .as_ref()
+                .and_then(|shared| shared.original_observations[cell].get())
+                .copied()
+        };
+        Some((observation(0), observation(1)))
+    }
+
+    /// Iterates over all five rungs in escalation order, including empty pairs.
+    pub fn iter(
+        &self,
+    ) -> impl DoubleEndedIterator<Item = (Option<HostSupervisionError>, Option<HostSupervisionError>)>
+    {
+        (0..ORIGINAL_OBSERVATIONS / 2).filter_map(|index| self.get(index))
+    }
+}
+
+impl fmt::Debug for QemuShutdownObservations {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_list().entries(self.iter()).finish()
+    }
+}
+
+impl PartialEq for QemuShutdownObservations {
+    fn eq(&self, other: &Self) -> bool {
+        self.iter().eq(other.iter())
+    }
+}
+
+impl Eq for QemuShutdownObservations {}
 
 /// Borrows the actual attempted rungs visible when a report was published.
 ///

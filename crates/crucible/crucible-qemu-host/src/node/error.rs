@@ -592,7 +592,7 @@ pub enum QemuNodeError {
         /// One-time cleanup entry refusal, if entry did not succeed.
         begin: Option<HostSupervisionError>,
         /// First precheck and independent post for each ordered shutdown rung.
-        observations: [(Option<HostSupervisionError>, Option<HostSupervisionError>); 5],
+        observations: crate::QemuShutdownObservations,
         /// Whether the actual completion effect occurred before its post.
         completion_effect: bool,
         /// Same operation's independent completion/post result.
@@ -739,7 +739,7 @@ impl QemuNodeError {
                 completion,
                 ..
             } => begin
-                .or_else(|| observations.iter().find_map(|(pre, post)| pre.or(*post)))
+                .or_else(|| observations.iter().find_map(|(pre, post)| pre.or(post)))
                 .or(*completion),
             Self::ShutdownAndRam { first, .. } => first.shutdown_original_failure(),
             Self::RamStagePreparation { observations, .. } => {
@@ -905,7 +905,7 @@ impl From<QemuNodeError> for BackendError {
                     .or_else(|| {
                         observations
                             .iter()
-                            .find_map(|(before, after)| before.or(*after))
+                            .find_map(|(before, after)| before.or(after))
                     })
                     .or(*completion);
                 if let Some(source) = source {

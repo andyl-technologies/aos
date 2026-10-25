@@ -38,7 +38,9 @@ pub use retirement_history::{RamControlRetirementHistory, RamControlRetirementRe
 
 mod shutdown_journal;
 pub(crate) use shutdown_journal::ShutdownJournal;
-pub use shutdown_journal::{QemuShutdownAttempts, QemuShutdownFailures, QemuShutdownRefusal};
+pub use shutdown_journal::{
+    QemuShutdownAttempts, QemuShutdownFailures, QemuShutdownObservations, QemuShutdownRefusal,
+};
 
 #[cfg(target_os = "linux")]
 mod unreaped_child;

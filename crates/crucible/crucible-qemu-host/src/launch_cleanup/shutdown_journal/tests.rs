@@ -130,6 +130,7 @@ fn journal_peak_covers_allocation_extraction_output_and_receipts() {
         + std::mem::size_of::<JournalAllocation>()
         + std::mem::size_of::<QemuShutdownFailure>()
         + std::mem::size_of::<QemuShutdownReport>()
+        + std::mem::size_of::<QemuShutdownObservations>()
         + std::mem::size_of::<ShutdownJournal>();
 
     assert_eq!(ShutdownJournal::peak_bytes().unwrap(), minimum as u64);
@@ -254,4 +255,77 @@ fn unavailable_prepaid_storage_cannot_enter_a_target_effect() {
     assert_eq!(counts.reallocations, 0);
     assert!(!counts.overflow);
     assert_eq!((target.commands, target.waits, target.reaps), (0, 0, 0));
+}
+
+#[test]
+fn original_observations_freeze_posts_and_retain_original_credit_without_allocating() {
+    use crucible_host_resources::host_supervision::{
+        HostOperationBudgets, HostOperationClass, HostOperationSupervisor,
+    };
+
+    let supervisor = HostOperationSupervisor::new(
+        HostOperationBudgets::default(),
+        Some(Duration::from_secs(2)),
+    )
+    .unwrap();
+    let original = supervisor.begin(HostOperationClass::Cleanup).unwrap();
+    original.complete().unwrap();
+    let refusal = original.wait_slice().unwrap_err();
+    let Fixture {
+        cleanup,
+        accounts,
+        bytes,
+        allocation,
+    } = fixture_observing(ShutdownJournal::allocation_layout().unwrap());
+    let journal = cleanup.claim_shutdown_journal().unwrap();
+    let mut observations = [(None, None); 5];
+    observations[2].0 = Some(refusal);
+
+    let ((early, complete, alias), counts) = TestAllocationObserver::count(|| {
+        let early = journal.original_observations(&observations);
+        observations[2].1 = Some(refusal);
+        observations[4] = (Some(refusal), Some(refusal));
+        let complete = journal.original_observations(&observations);
+        let alias = complete.clone();
+        (early, complete, alias)
+    });
+
+    assert_eq!(counts.allocations, 0);
+    assert_eq!(counts.reallocations, 0);
+    assert!(!counts.overflow);
+    assert_eq!(early.get(2), Some((Some(refusal), None)));
+    assert_eq!(early.get(4), Some((None, None)));
+    assert_eq!(complete.get(2), Some((Some(refusal), Some(refusal))));
+    assert_eq!(complete.get(4), Some((Some(refusal), Some(refusal))));
+    assert_eq!(complete.iter().collect::<Vec<_>>(), observations);
+    assert_eq!(complete, alias);
+    assert_ne!(early, complete);
+    assert_eq!(
+        complete.iter().next_back(),
+        Some((Some(refusal), Some(refusal)))
+    );
+    assert!(complete.get(5).is_none());
+    assert!(complete.get(usize::MAX).is_none());
+    assert_eq!(std::mem::size_of::<QemuShutdownObservations>(), 16);
+
+    drop(journal);
+    drop(cleanup);
+    drop(early);
+    drop(complete);
+    for account in &accounts {
+        assert!(account.reserve_resources(0, 0, 1).is_err());
+    }
+    let (_, observations) = TestAllocationObserver::observe_controls(
+        [&accounts[0], &accounts[1]],
+        None,
+        [Some(allocation), None, None],
+        || drop(alias),
+    );
+
+    let observed = observations[0].unwrap();
+    assert_eq!(observed.before.original_bytes, [Some(bytes); 2]);
+    assert_eq!(observed.after.original_bytes, [Some(bytes); 2]);
+    for account in &accounts {
+        drop(account.reserve_resources(0, 0, bytes).unwrap());
+    }
 }

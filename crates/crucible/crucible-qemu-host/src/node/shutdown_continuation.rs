@@ -230,7 +230,7 @@ impl ChildShutdown {
         {
             return Err(QemuNodeError::ShutdownOriginal {
                 begin: self.begin_failure,
-                observations: self.observations,
+                observations: self.progress.original_observations(&self.observations),
                 completion_effect: self.completion_effect,
                 completion: self.completion_failure,
                 report: self.progress.report(),

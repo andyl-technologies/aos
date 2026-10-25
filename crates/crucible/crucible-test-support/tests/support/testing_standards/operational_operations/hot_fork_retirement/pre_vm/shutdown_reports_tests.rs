@@ -45,6 +45,30 @@ fn shutdown_report_contracts_require_the_same_prepaid_immutable_cells()
             "publication copies the original owned diagnostic",
         ),
         (
+            "shutdown_journal.rs",
+            ".checked_add(std::mem::size_of::<QemuShutdownObservations>())?",
+            "",
+            "frozen supervision receipt is outside the original admitted peak",
+        ),
+        (
+            "shutdown_journal.rs",
+            "let retained = shared.original_observations[index].get_or_init(|| *error);",
+            "let retained = foreign.original_observations[index].get_or_init(|| *error);",
+            "supervision observations borrow a foreign launch",
+        ),
+        (
+            "shutdown_journal.rs",
+            "if self.mask & (1 << cell) == 0 {",
+            "if false {",
+            "old supervision receipts expose later independent posts",
+        ),
+        (
+            "shutdown_journal.rs",
+            "journal: self.clone(),\n            mask,",
+            "journal: ShutdownJournal::component(),\n            mask,",
+            "report publication allocates replacement component storage",
+        ),
+        (
             "src/node.rs",
             "shutdown_continuation::ChildShutdown::for_launch(launch_cleanup.as_ref())",
             "shutdown_continuation::ChildShutdown::for_launch(foreign_cleanup.as_ref())",

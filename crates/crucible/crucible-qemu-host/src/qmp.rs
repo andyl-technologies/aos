@@ -1231,14 +1231,12 @@ where
         } else {
             deadline.complete(kind.wire_name())
         };
-        if let Err(error) = post {
-            #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
-            if kind == QmpCommandKind::SelectableReset {
-                self.poisoned = true;
-                self.stream.get_mut().poison_qmp_stream();
-            }
-            return Err(error);
+        #[cfg(any(test, feature = "test-support", feature = "private-measurement-domain"))]
+        if post.is_err() && kind == QmpCommandKind::SelectableReset {
+            self.poisoned = true;
+            self.stream.get_mut().poison_qmp_stream();
         }
+        post?;
         Ok(response)
     }
 

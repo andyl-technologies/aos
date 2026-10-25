@@ -377,13 +377,13 @@ fn entered_refusal_and_independent_posts_survive_same_original_until_factual_clo
             .iter()
             .any(|failure| failure.source.operation == "modeled SIGTERM")
     );
-    assert!(observations[2].1.is_some());
+    assert!(observations.get(2).unwrap().1.is_some());
     // Later rung entry refuses before its signal, but each same-Original
     // bracket still records its independently executed postcheck.
-    assert!(observations[3].0.is_some());
-    assert!(observations[3].1.is_some());
-    assert!(observations[4].0.is_some());
-    assert!(observations[4].1.is_some());
+    assert!(observations.get(3).unwrap().0.is_some());
+    assert!(observations.get(3).unwrap().1.is_some());
+    assert!(observations.get(4).unwrap().0.is_some());
+    assert!(observations.get(4).unwrap().1.is_some());
     assert!(completion.is_none());
     let status = supervisor.operation_statuses()?;
     let identity = status[0].operation_id;
@@ -548,7 +548,7 @@ fn actual_wait_exit_survives_post_refusal_and_stops_every_later_effect()
         panic!("the actual wait post must survive whole-body completion");
     };
     assert!(process_report.reaped);
-    assert!(process_observations[0].1.is_some());
+    assert!(process_observations.get(0).unwrap().1.is_some());
     assert!(process_completion.is_none());
     let QemuNodeError::ShutdownOriginal {
         observations,
@@ -563,11 +563,12 @@ fn actual_wait_exit_survives_post_refusal_and_stops_every_later_effect()
     assert_eq!(report.attempts.len(), 1);
     assert_eq!(report.attempts[0].rung, QemuShutdownRung::ControlQuit);
     assert_eq!(report.attempts[0].child, QemuChildWait::Exited);
-    assert!(observations[0].1.is_some());
+    assert!(observations.get(0).unwrap().1.is_some());
     assert!(completion.is_some());
     assert!(
-        observations[1..]
+        observations
             .iter()
+            .skip(1)
             .all(|(before, after)| before.is_none() && after.is_none())
     );
     assert!(signals.lock().unwrap().is_empty());

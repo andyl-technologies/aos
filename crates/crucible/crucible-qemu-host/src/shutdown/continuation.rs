@@ -4,6 +4,7 @@
 //! that marker, so a later physical observation cannot silently resend it.
 
 use super::*;
+use crucible_host_resources::host_supervision::HostSupervisionError;
 
 #[derive(Clone, Copy, Debug)]
 enum Failure {
@@ -104,6 +105,14 @@ impl QemuShutdownProgress {
     pub(crate) fn report(&self) -> QemuShutdownReport {
         self.journal
             .report(self.reaped, matches!(self.failure, Some(Failure::Leaked)))
+    }
+
+    /// Retains the same cleanup Original's pre/post observations in prepaid cells.
+    pub(crate) fn original_observations(
+        &self,
+        observations: &[(Option<HostSupervisionError>, Option<HostSupervisionError>); 5],
+    ) -> QemuShutdownObservations {
+        self.journal.original_observations(observations)
     }
 
     /// Advances the same ladder and returns its ordinary public output.

@@ -21,7 +21,9 @@ mod target_error;
 pub use target_error::QemuShutdownTargetError;
 
 use crate::launch_cleanup::ShutdownJournal;
-pub use crate::launch_cleanup::{QemuShutdownAttempts, QemuShutdownFailures, QemuShutdownRefusal};
+pub use crate::launch_cleanup::{
+    QemuShutdownAttempts, QemuShutdownFailures, QemuShutdownObservations, QemuShutdownRefusal,
+};
 
 /// Ordered shutdown rungs for one QEMU child.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

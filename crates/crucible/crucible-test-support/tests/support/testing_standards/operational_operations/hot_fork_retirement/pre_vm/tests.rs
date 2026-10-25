@@ -337,8 +337,8 @@ fn pre_vm_owning_contracts_require_actual_source_and_registry_dispositions()
         ),
         (
             "shutdown_continuation.rs",
-            "observations: self.observations,",
-            "observations: [(None, None); 5],",
+            "observations: self.progress.original_observations(&self.observations),",
+            "observations: self.progress.original_observations(&[(None, None); 5]),",
             "actual Original post projection erased",
         ),
         (
