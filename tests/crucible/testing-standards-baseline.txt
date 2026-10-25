@@ -45,6 +45,11 @@
 # The released project-quota drain sleeps a fixed number of short intervals
 # between reads of the kernel's own usage counters, waiting for deferred file
 # release after process reap; held usage at the bound fails release closed.
+# The shared-memory contention backoff sleeps by design so a QEMU callback
+# never spins on host-held slot state; its tests hold that state for a fixed
+# interval and assert the reader parked once and then observed the release.
+# The Envoy attempt-progress probe samples QEMU thread CPU ticks one second
+# apart to name busy threads in a stall report; it asserts nothing on timing.
 crucible-api	src/vm_lifecycle/checkpoint_store/tests	retry	1
 crucible-api	src/vm_lifecycle/checkpoint_store/storage/tests	std::thread::sleep	1
 crucible-api	src/vm_lifecycle/checkpoint_store/storage/tests	thread::sleep	1
@@ -218,3 +223,7 @@ crucible-qemu-plugin	src/ninep_io	retry	1
 crucible-qemu-plugin	src/block_io_tests/inbound_head	retry	1
 crucible-qemu-plugin	src/block_io_tests/request_stamp	retry	1
 crucible-qemu-plugin	src/idle_loop/tests/inbound_cases	retry	1
+crucible-shmem	src/shmem/frame_node/contention_backoff	std::thread::sleep	1
+crucible-shmem	src/shmem/frame_node/contention_backoff	thread::sleep	1
+crucible-cli	tests/support/campaign_packaged_process/attempt_progress	std::thread::sleep	1
+crucible-cli	tests/support/campaign_packaged_process/attempt_progress	thread::sleep	1
