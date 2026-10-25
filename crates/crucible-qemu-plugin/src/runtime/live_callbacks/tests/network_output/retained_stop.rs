@@ -499,6 +499,45 @@ fn child_reset_entry_points_continue_a_restored_template_tx_sequence()
 }
 
 #[test]
+fn a_cold_template_child_adopts_its_first_logical_restore_as_a_continuation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let mut fixture = OutputFixture::new()?;
+    let mut state = fixture.state()?;
+    state.on_vcpu_init(0)?;
+
+    // A cold-launched template never applies a logical restore. It emits two
+    // frames that the host consumes before the fork.
+    state.try_halted_vcpus()?.mark_halted(0)?;
+    state.on_network_tx(20, b"first")?;
+    state.on_network_tx(20, b"second")?;
+    let next_ceiling = authorize_advance_ceiling(1_000, 2_500, None)?;
+    fixture
+        .slot
+        .publish_scheduler_advance(next_ceiling, AdvanceStopCondition::Ceiling)?;
+    for _ in 0..2 {
+        let consumed = fixture.outbound.dequeue(&fixture.outbound_entries)?;
+        assert!(consumed.is_some());
+        state.on_vcpu_resume(0, 20)?;
+    }
+
+    // The child's console restore binds the inherited cut into its private
+    // slot. That is the forked continuation, not a VMState load, so it must
+    // not replace live state with the launch plan's restore continuation.
+    state.reinitialize_hot_fork_child_workers(LiveWorkerQuiescence::new(WORKER_REQUIRED))?;
+    state.adopt_hot_fork_logical_continuation();
+    let cut = fixture.slot.snapshot().current_icount;
+    let generation = fixture.slot.arm_logical_time_restore(cut)?;
+    state.restore_logical_time_if_requested(20, true)?;
+    assert_eq!(fixture.slot.snapshot().logical_time_restore_ack, generation);
+    state.on_network_tx(21, b"child")?;
+
+    assert_eq!(fixture.outbound.write_index(), 3);
+    assert_eq!(fixture.outbound_entries[2].seq, 2);
+    assert_eq!(fixture.outbound_entries[2].payload()?, b"child");
+    Ok(())
+}
+
+#[test]
 fn explicit_pause_shutdown_and_their_control_ack_keep_priority()
 -> Result<(), Box<dyn std::error::Error>> {
     let mut fixture = OutputFixture::new()?;

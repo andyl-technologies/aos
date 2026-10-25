@@ -230,3 +230,38 @@ fn console_hot_fork_image_refuses_one_open_endpoint_before_destination_effects()
 
     Ok(())
 }
+
+#[test]
+fn hot_fork_image_never_carries_the_template_logical_restore_generation() -> TestResult<()> {
+    let allocation = RegionAllocation::new_model(RegionConfig::new(2, 4))?;
+    let fresh = allocation.setup_region_bytes()?;
+    let (_source_file, source) = mapping(&fresh)?;
+    let (_destination_file, mut destination) = mapping(&fresh)?;
+
+    // The template applied one restore and has a second still outstanding.
+    let template = source.node_slot(0)?;
+    let applied = template.arm_logical_time_restore(100)?;
+    let request = template
+        .pending_logical_time_restore()
+        .ok_or("the armed template restore is pending")?;
+    template.acknowledge_logical_time_restore(request, 100, 2)?;
+    let outstanding = template.arm_logical_time_restore(200)?;
+    assert_ne!(outstanding, applied);
+
+    source.hold_hot_fork_ring_io()?;
+    destination.hold_hot_fork_ring_io()?;
+    let image = source.capture_hot_fork_ring_image(usize::MAX)?;
+    destination.restore_hot_fork_ring_image(&image)?;
+
+    // The child's slot starts from fresh non-ring state, so its console
+    // restore mints the first generation whatever the template applied. The
+    // plugin therefore treats that restore as a fork continuation.
+    let child = destination.node_slot(0)?;
+    let snapshot = child.snapshot();
+    assert_eq!(snapshot.logical_time_restore_request, 0);
+    assert_eq!(snapshot.logical_time_restore_ack, 0);
+    assert!(child.pending_logical_time_restore().is_none());
+    assert_eq!(child.arm_logical_time_restore(200)?, applied);
+
+    Ok(())
+}

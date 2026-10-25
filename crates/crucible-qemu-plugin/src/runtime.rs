@@ -568,6 +568,9 @@ impl OwnedCallbackRuntimeState {
                 .get_mut()
                 .reinitialize_hot_fork_child_workers(Arc::clone(&self.workers))
                 .map_err(|source| HotForkChildRuntimeError::FingerprintWorker { source })?;
+            live.as_ref()
+                .get_ref()
+                .adopt_hot_fork_logical_continuation();
         }
 
         let teardown_handle = self

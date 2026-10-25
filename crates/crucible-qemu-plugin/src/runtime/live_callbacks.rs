@@ -882,6 +882,10 @@ pub(crate) struct LiveVcpuTimeCallbackState {
     idle_advance_completion_active: AtomicBool,
     last_icount: AtomicU64,
     logical_restore_continuation_generation: AtomicU32,
+    // Set in a fork child until its first logical-time restore. That restore
+    // rebinds the inherited cut to the private slot; the forked memory already
+    // is the continuation, so the VMState first-restore reset must not run.
+    hot_fork_logical_continuation_pending: AtomicBool,
     // Read-only callbacks use this release-published coordinate without
     // borrowing the mutex-owned QEMU token or buffered network payloads.
     pending_idle_advance_active: AtomicBool,
@@ -1127,6 +1131,7 @@ impl LiveVcpuTimeCallbackState {
             idle_advance_completion_active: AtomicBool::new(false),
             last_icount: AtomicU64::new(snapshot.current_icount),
             logical_restore_continuation_generation: AtomicU32::new(0),
+            hot_fork_logical_continuation_pending: AtomicBool::new(false),
             pending_idle_advance_active: AtomicBool::new(false),
             pending_idle_advance_raw_icount: AtomicU64::new(0),
             rr_vcpu_thread: AtomicU64::new(0),
