@@ -108,6 +108,8 @@ allow aos_nix_offline_prepare_t fs_t:filesystem getattr;
 
 # Sole existing unique-PID1 status observer; no manager mutation grant.
 allow aos_nix_offline_prepare_t self:unix_stream_socket { connect create getattr getopt read setopt shutdown write };
+# Traverse the fixed bus directory before connecting to its existing socket.
+allow aos_nix_offline_prepare_t system_dbusd_var_run_t:dir search;
 allow aos_nix_offline_prepare_t system_dbusd_var_run_t:sock_file { getattr open read write };
 allow aos_nix_offline_prepare_t system_dbusd_t:unix_stream_socket connectto;
 allow aos_nix_offline_prepare_t { init_t system_dbusd_t }:dbus send_msg;

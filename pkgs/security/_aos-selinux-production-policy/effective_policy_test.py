@@ -1077,6 +1077,21 @@ class EffectivePolicyTest(unittest.TestCase):
                         effective_policy.Access(domain, "security_t", "security", permission)
                     )
 
+    def test_offline_bus_traversal_withholds_runtime_mutation(self) -> None:
+        owner = effective_policy.owner_policy.OFFLINE_PREPARE
+        target = "system_dbusd_var_run_t"
+        self.assert_missing_allow_rejected(effective_policy.Access(owner, target, "dir", "search"))
+
+        for object_class, permissions in (
+            ("dir", ("add_name", "create", "remove_name", "rename", "rmdir", "setattr", "write", "mounton", "relabelfrom", "relabelto")),
+            ("sock_file", ("create", "setattr", "unlink")),
+        ):
+            for permission in permissions:
+                with self.subTest(object_class=object_class, permission=permission):
+                    self.assert_forbidden_allow_rejected(
+                        effective_policy.Access(owner, target, object_class, permission)
+                    )
+
     def test_offline_cgroup_metadata_withholds_control_mutation(self) -> None:
         preparer = effective_policy.owner_policy.OFFLINE_PREPARE
         self.assert_missing_allow_rejected(

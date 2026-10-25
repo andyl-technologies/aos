@@ -477,7 +477,15 @@ def matrix(Access, Transition, accesses, ordinary_domains):
         Access(OFFLINE_PREPARE, "fs_t", "filesystem", "getattr"),
         Access(OFFLINE_PREPARE, "cgroup_t", "filesystem", "getattr"),
         Access(OFFLINE_PREPARE, "security_t", "security", "read_policy"),
+        Access(OFFLINE_PREPARE, "system_dbusd_var_run_t", "dir", "search"),
         Access(OFFLINE_PREPARE_CREDENTIAL, "tmpfs_t", "filesystem", "associate"),
+    ))
+    negative.extend(accesses(
+        OFFLINE_PREPARE, "system_dbusd_var_run_t", "dir",
+        (*dir_mutate, "mounton", "relabelfrom", "relabelto"),
+    ))
+    negative.extend(accesses(
+        OFFLINE_PREPARE, "system_dbusd_var_run_t", "sock_file", ("create", "setattr", "unlink"),
     ))
     positive.extend(accesses(
         OFFLINE_PREPARE, OFFLINE_PREPARE_EXECUTABLE, "file",
