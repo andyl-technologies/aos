@@ -33,6 +33,7 @@ in {
     tpm = true;
   };
   testScript = ''
+    import hashlib
     import signal
     import time
 
@@ -146,5 +147,42 @@ in {
         vm.succeed(f"${command} provision {role} {state}.new")
         vm.succeed(f"${command} read {role} {state}.new")
         vm.fail(f"${command} read {role} {state}")
+
+    # Lose both owners after their first encrypted Extend and authenticated
+    # readback, before either checkpoint reaches disk. The external provisioner
+    # creates the indices; no ordinary retry may overwrite or adopt their NV.
+    vm.succeed("${pkgs.tpm2-tools}/bin/tpm2_clear -T device:/dev/tpmrm0")
+    uncheckpointed = []
+    seed_bytes = b"0123456789abcdef0123456789abcdef"
+    expected_nv = hashlib.sha256(bytes(32) + seed_bytes).hexdigest()
+    for role in (0, 1):
+        state = f"/var/lib/method46-transport/uncheckpointed-{role}"
+        seed = f"{state}.initial-cut"
+        vm.succeed(f"${command} prepare {role} {state}")
+        vm.succeed(f"printf 0123456789abcdef0123456789abcdef > {seed}")
+        retained_hash = vm.succeed(f"sha256sum {state} {seed}")
+        vm.succeed(
+            f"${command} initialize-paused {role} {state} {seed} "
+            f"> {state}.paused-log 2>&1 & echo $! > {state}.paused-pid"
+        )
+        pid = int(vm.succeed(f"cat {state}.paused-pid").strip())
+        vm.wait_until_succeeds(f"test $(cut -d ' ' -f 3 /proc/{pid}/stat) = T")
+        assert vm.succeed(f"${command} observe {role} {state}").strip() == expected_nv
+        assert vm.succeed(f"sha256sum {state} {seed}") == retained_hash
+        uncheckpointed.append((role, state, seed, retained_hash))
+
+    # Persist only the prepared inputs. The stopped callers still hold the
+    # successful initialization results solely in their volatile originals.
+    vm.succeed("sync")
+    vm.power_cycle(timeout=240)
+    vm.wait_for_unit("multi-user.target", timeout=180)
+    for role, state, seed, retained_hash in uncheckpointed:
+        assert vm.succeed(f"sha256sum {state} {seed}") == retained_hash
+        assert vm.succeed(f"${command} observe {role} {state}").strip() == expected_nv
+        vm.fail(f"${command} initialize {role} {state} {seed}")
+        vm.fail(f"${command} read {role} {state}")
+        vm.fail(f"${command} recover {role} {state}")
+        assert vm.succeed(f"${command} observe {role} {state}").strip() == expected_nv
+        assert vm.succeed(f"sha256sum {state} {seed}") == retained_hash
   '';
 }

@@ -150,7 +150,9 @@ static int authenticate(struct floor_context *context, unsigned role,
 
 int main(int argc, char **argv)
 {
-    require(argc == 4 || (argc == 5 && strcmp(argv[1], "initialize") == 0),
+    int initializing = argc > 1 && (strcmp(argv[1], "initialize") == 0
+        || strcmp(argv[1], "initialize-paused") == 0);
+    require(argc == 4 || (argc == 5 && initializing),
         "usage: probe operation endpoint state-file [initial-cut-input]");
     require(strcmp(argv[2], "0") == 0 || strcmp(argv[2], "1") == 0,
         "fixed endpoint selection");
@@ -170,7 +172,7 @@ int main(int argc, char **argv)
     }
 
     load_fixture(argv[3], &fixture);
-    if (strcmp(argv[1], "initialize") == 0) {
+    if (initializing) {
         require(argc == 5, "initial cut input is required");
         require(!nonzero(fixture.checkpoint, sizeof(fixture.checkpoint))
             && !nonzero(fixture.pending, sizeof(fixture.pending)),
@@ -217,6 +219,10 @@ int main(int argc, char **argv)
             && memcmp(observation + 96, fixture.checkpoint, 32) == 0,
             "authenticate changed written Name and exact initial value");
         Esys_Free(unwritten_name);
+        /* Cut power after authenticated physical success, before publishing
+         * any checkpoint. A cold caller must refuse the now-written index. */
+        if (strcmp(argv[1], "initialize-paused") == 0)
+            require(raise(SIGSTOP) == 0, "pause uncheckpointed initial extend");
         save_fixture(argv[3], &fixture);
         close_context(&context);
         erase(&fixture, sizeof(fixture));
@@ -272,6 +278,12 @@ int main(int argc, char **argv)
                 memcpy(fixture.checkpoint, expected, 32);
                 memset(fixture.pending, 0, sizeof(fixture.pending));
                 save_fixture(argv[3], &fixture);
+            } else if (strcmp(argv[1], "observe") == 0) {
+                /* Public comparison DATA only: neither replace the retained
+                 * checkpoint nor make this observation a recovery receipt. */
+                for (size_t byte = 96; byte < 128; ++byte)
+                    printf("%02x", observation[byte]);
+                putchar('\n');
             } else {
                 require(strcmp(argv[1], "read") == 0, "known operation");
                 require(memcmp(observation + 96, fixture.checkpoint, 32) == 0,
