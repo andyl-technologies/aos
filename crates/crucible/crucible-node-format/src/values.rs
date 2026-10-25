@@ -502,24 +502,32 @@ pub struct HashRef {
     pub digest: String,
 }
 
-impl Validate for HashRef {
-    fn validate(&self) -> Result<(), ContractError> {
+impl HashRef {
+    fn validation_failure(&self) -> Option<(&'static str, &'static str)> {
         if self.algorithm != "blake3-256" {
-            return Err(invalid("algorithm", "unsupported hash algorithm"));
+            return Some(("algorithm", "unsupported hash algorithm"));
         }
-        validate_domain(&self.domain)?;
+        if let Some(reason) = domain_validation_failure(&self.domain) {
+            return Some(("domain", reason));
+        }
         if self.digest.len() != 64
             || !self
                 .digest
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
-            return Err(invalid(
-                "digest",
-                "expected 64 lowercase hexadecimal characters",
-            ));
+            return Some(("digest", "expected 64 lowercase hexadecimal characters"));
         }
-        Ok(())
+        None
+    }
+}
+
+impl Validate for HashRef {
+    fn validate(&self) -> Result<(), ContractError> {
+        match self.validation_failure() {
+            Some((field, reason)) => Err(invalid(field, reason)),
+            None => Ok(()),
+        }
     }
 }
 
@@ -536,6 +544,33 @@ pub struct ContentRef {
 }
 
 impl ContentRef {
+    /// Checks reference syntax without allocating a diagnostic message.
+    ///
+    /// This uses the same rules as [`Validate::validate`]. It neither reads the
+    /// named bytes nor authenticates their schema, availability or custody.
+    pub fn has_valid_shape(&self) -> bool {
+        self.validation_failure().is_none()
+    }
+
+    /// Names fixed borrowed controls for allocation-free shape validation.
+    ///
+    /// This DATA describes logical headers, not a process-stack bound or an
+    /// allocation permit. Reference owners remain independently retained.
+    pub const fn shape_validation_counter_scratch_bytes_data() -> usize {
+        use std::mem::size_of;
+
+        size_of::<&Self>()
+            + size_of::<&HashRef>()
+            + size_of::<&str>() * 4
+            + size_of::<Option<(&'static str, &'static str)>>() * 2
+            + size_of::<Option<&'static str>>()
+            + size_of::<std::str::Bytes<'static>>() * 2
+            + size_of::<std::ops::RangeInclusive<u8>>() * 2
+            + size_of::<u8>() * 2
+            + size_of::<usize>() * 4
+            + size_of::<bool>() * 12
+    }
+
     /// Verifies exact byte length and opaque content identity.
     ///
     /// # Errors
@@ -554,13 +589,13 @@ impl ContentRef {
         }
         Ok(())
     }
-}
 
-impl Validate for ContentRef {
-    fn validate(&self) -> Result<(), ContractError> {
-        self.hash.validate()?;
+    fn validation_failure(&self) -> Option<(&'static str, &'static str)> {
+        if let Some(failure) = self.hash.validation_failure() {
+            return Some(failure);
+        }
         if self.hash.domain != "cnp.blob.v1" {
-            return Err(invalid("hash.domain", "content must use cnp.blob.v1"));
+            return Some(("hash.domain", "content must use cnp.blob.v1"));
         }
         if self.media_type.is_empty()
             || self.media_type.len() > 128
@@ -569,20 +604,33 @@ impl Validate for ContentRef {
                 .bytes()
                 .all(|byte| (0x20..=0x7e).contains(&byte))
         {
-            return Err(invalid(
-                "media_type",
-                "expected 1–128 printable ASCII bytes",
-            ));
+            return Some(("media_type", "expected 1–128 printable ASCII bytes"));
         }
-        Ok(())
+        None
+    }
+}
+
+impl Validate for ContentRef {
+    fn validate(&self) -> Result<(), ContractError> {
+        match self.validation_failure() {
+            Some((field, reason)) => Err(invalid(field, reason)),
+            None => Ok(()),
+        }
     }
 }
 
 pub(crate) fn validate_domain(domain: &str) -> Result<(), ContractError> {
-    if domain.is_empty() || domain.len() > 128 || !domain.is_ascii() {
-        return Err(invalid("domain", "expected 1–128 ASCII bytes"));
+    match domain_validation_failure(domain) {
+        Some(reason) => Err(invalid("domain", reason)),
+        None => Ok(()),
     }
-    Ok(())
+}
+
+fn domain_validation_failure(domain: &str) -> Option<&'static str> {
+    if domain.is_empty() || domain.len() > 128 || !domain.is_ascii() {
+        return Some("expected 1–128 ASCII bytes");
+    }
+    None
 }
 
 // Keys may borrow the original roster; validation need not clone owned text.
@@ -683,3 +731,7 @@ pub use codec_counter::scalar_deserialization_counter_scratch_bytes_data;
 #[cfg(test)]
 #[path = "values/owned_id_error_tests.rs"]
 mod owned_id_error_tests;
+
+#[cfg(test)]
+#[path = "values/content_reference_shape_tests.rs"]
+mod content_reference_shape_tests;

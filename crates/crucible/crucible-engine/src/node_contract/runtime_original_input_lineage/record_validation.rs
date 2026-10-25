@@ -13,8 +13,9 @@ impl OriginalLineageRuntimeRecord {
     ///
     /// # Errors
     /// Refuses other editions, missing lineage, unordered or reused logical
-    /// identities, malformed scope/rows, combined unsupported external input or
-    /// exceeded encoded/role/byte/edge credits.
+    /// identities, impossible staging commits, changed successful ACK tuples,
+    /// malformed scope/rows, combined unsupported external input or exceeded
+    /// encoded/role/byte/edge credits.
     pub fn validate_metadata(
         &self,
         limits: OriginalInputLineageLimits,
@@ -27,6 +28,7 @@ impl OriginalLineageRuntimeRecord {
         self.validate_logical_identities_data()?;
         let mut available = limits;
         for input in &self.inputs {
+            validate_input_custody_data(input)?;
             if input
                 .deliveries
                 .iter()
@@ -113,6 +115,49 @@ impl OriginalLineageRuntimeRecord {
             + size_of::<bool>() * 4
             + size_of::<Result<(), RuntimeError>>()
     }
+
+    /// Names fixed borrowed controls for original staging custody validation.
+    ///
+    /// Successful ACK syntax uses an allocation-free predicate. This adds no
+    /// body read, ACK replacement, native permission or diagnostic allocation.
+    pub const fn input_custody_counter_scratch_data() -> usize {
+        use std::mem::size_of;
+
+        size_of::<&OriginalLineageInputRecord>()
+            + size_of::<&crate::node_scheduling::NativeInputAcknowledgement>()
+            + size_of::<bool>() * 12
+            + size_of::<Result<(), RuntimeError>>()
+            + ContentRef::shape_validation_counter_scratch_bytes_data()
+    }
+}
+
+fn validate_input_custody_data(input: &OriginalLineageInputRecord) -> Result<(), RuntimeError> {
+    if input.committed && !input.coordinator_committed
+        || input.coordinator_committed
+            && (input.acknowledgement.is_none() || input.failure.is_some())
+    {
+        return Err(RuntimeError::InvalidReceipt);
+    }
+
+    // A failed Stage can retain a malformed native ACK as original evidence.
+    // It never acquired a coordinator commit. Keep that evidence unchanged;
+    // only a successful ACK must authenticate this exact saved input tuple.
+    if input.failure.is_some() {
+        return Ok(());
+    }
+    if let Some(ack) = &input.acknowledgement
+        && (ack.node != input.node
+            || ack.stage_operation != input.stage_operation
+            || ack.batch != input.batch
+            || ack.owners != input.owners
+            || ack.cutoff != input.cutoff
+            || ack.inventory != input.inventory
+            || ack.proof_ref.length.get() == 0
+            || !ack.proof_ref.has_valid_shape())
+    {
+        return Err(RuntimeError::InvalidReceipt);
+    }
+    Ok(())
 }
 
 fn validate_lineage(

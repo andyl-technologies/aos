@@ -10,6 +10,44 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Runtime7 staging and acknowledgement custody
+
+Runtime7 metadata now refuses completed input transfer without its original
+coordinator commit, coordinator commits without a successful ACK, and changed
+successful ACK tuples or malformed/empty proof references. Failed Stage rows
+retain their original ACK and unknown-effect evidence unchanged and cannot
+claim either commit. Both funded archive readers add the new borrowed controls
+without dropping earlier terms or constructing replacement ledgers.
+
+The new allocation-free ContentRef shape predicate shares the exact schema and
+diagnostic precedence with ordinary validation. It avoids creating diagnostic
+Strings during the funded predicate; the existing diagnostic API and reference
+rules remain intact. Boundary controls cover both APIs.
+
+The baseline restoration model accepted a completed transfer with no ACK. The
+new control checks thirteen refusals before native verification, six legitimate
+pending/committed/failed metadata prefixes, and actual snapshot export of a
+rejected ACK with unknown failure effects. These are Core integrity controls;
+they do not qualify a native preservation class or complete SemanticSpend18.
+
+Both complete Transport codec modes pass 2,151 tests with zero failures and
+twenty ignored, using frozen actual compiler artifacts. Both Format suites pass
+34 with one ignored; both SourceBirth suites pass 62. The raw-value Engine
+suite passes 2,072 with 34 ignored. The first standard Engine run failed one
+existing process-reclamation assertion after 2,071 passes; the unchanged
+isolated test and complete suite reruns pass, the latter with 2,072 and 34
+ignored. No timeout, stack, polling or production process-custody change was
+used for these reruns.
+
+All-feature/all-target checking, scoped formatting, six architecture checks
+and application test-target compilation pass. Strict Format and SourceBirth
+Clippy pass without allowances. Strict Engine diagnostics retain exactly the
+same 126 errors and 2,171 warnings, including codes and messages. Actual
+application metadata records 185 test artifacts across 58 packages, including
+76 integration targets; its source matches all 642 frozen owned Rust/Cargo
+inputs. No new native or VM qualification is claimed. Full SDK funding,
+runtime capacity handoff, live Native18 and the full RFC remain unfinished.
+
 ## Runtime7 logical identity integrity
 
 Runtime7 metadata now rejects unordered or duplicate Begin/Stage rosters,

@@ -7,6 +7,9 @@ use super::*;
 use crate::node_scheduling::{SavedOwner, SchedulingSnapshot};
 use crate::node_state::{VerifiedStateContent, synthetic_typed_content};
 
+#[path = "restoration_input_models.rs"]
+mod input_models;
+
 struct Model {
     runtime: NodeRuntime,
     states: Vec<Rc<RefCell<NativeState>>>,
