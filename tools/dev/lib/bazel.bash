@@ -138,6 +138,7 @@ aos_dev_bazel() (
     project_options=(--rust-project-output "$aos_dev_root/rust-project.json")
     if [[ $launcher_attribute == pkgs.aosBazelGuestLauncher ]]; then
       project_options+=(--rust-project-package crates/crucible/crucible-guest)
+      launcher_attribute=pkgs.aosBazelGuestEditorLauncher
     elif [[ $launcher_attribute == pkgs.aosBazelQuotaLauncher ]]; then
       project_options+=(--rust-project-package crates/linux/aos-linux-project-quota)
       launcher_attribute=pkgs.aosBazelQuotaEditorLauncher

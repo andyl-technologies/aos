@@ -95,10 +95,14 @@
     cargo = family.editor-cargo-oracle;
     proceduralMacros = ["curve25519_dalek_derive" "serde_derive" "thiserror_impl"];
   };
+  development = import ./_bazel-guest-development.nix {
+    inherit pkgs editor-builtin-cfg;
+    inherit (family) editor tests cargo;
+  };
 in
   family
   // rec {
-    inherit execution-profiles editor-builtin-cfg editor-execution-profiles;
+    inherit execution-profiles editor-builtin-cfg editor-execution-profiles development;
     inventory = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-guest-inventory";
       workspace = family.workspace;
@@ -170,7 +174,7 @@ in
       '';
     all =
       pkgs.runCommand "aos-bazel-guest-qualified-checks" {
-        buildDeps = [family.all family.editor-parity runtime execution-profiles editor-builtin-cfg editor-execution-profiles];
+        buildDeps = [family.all family.editor-parity runtime execution-profiles editor-builtin-cfg editor-execution-profiles development];
       } ''
         mkdir -p "$out"
         cp -r ${family.all}/evidence "$out/evidence"
@@ -179,6 +183,7 @@ in
         cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
         cp ${editor-builtin-cfg}/evidence.json "$out/editor-builtin-cfg.json"
         cp ${editor-execution-profiles}/evidence.json "$out/editor-execution-profiles.json"
+        cp ${development}/evidence.json "$out/development.json"
         cp -r ${runtime} "$out/runtime"
       '';
   }

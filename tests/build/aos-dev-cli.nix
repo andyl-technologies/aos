@@ -4,6 +4,7 @@
   bazelLaunchers = [
     "aosBazelLauncher"
     "aosBazelGuestLauncher"
+    "aosBazelGuestEditorLauncher"
     "aosBazelEngineLauncher"
     "aosBazelQuotaLauncher"
     "aosBazelQuotaEditorLauncher"

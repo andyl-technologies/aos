@@ -434,14 +434,16 @@
     sourceDirectories = ["crates" "native" "tools/bazel" "third_party/rust"];
     repositories = aosBazelRepositories // aosBazelRustRepositories.core // aosBazelRustRepositories.device // aosBazelRustRepositories.store // {aos_native = aosBazelStoreLibraries;};
   };
-  aosBazelGuestWorkspace = mkAosBazelWorkspace {
-    root = ../../..;
-    sourceDirectories = ["BUILD.bazel" "crates" "native" "tools/bazel" "third_party/rust" "tests/build" "tests/crucible" "docs/rfcs/0010-crucible" "docs/rfcs/0020-crucible-campaigns"];
-    repositories = aosBazelRepositories // aosBazelRustRepositories.guest // {aos_native = aosBazelGuestLibraries;};
-    dependencyProfile = "guest";
-    rustcFlags = ["-Copt-level=3" "-Cdebuginfo=0" "-Ctarget-feature=+crt-static" "-Crelocation-model=static"];
-    analysisTargets = ["//crates/crucible/crucible-guest:unit"];
-  };
+  aosBazelGuestWorkspace =
+    (import ../../../tests/build/_bazel-guest.nix {
+      inherit pkgs;
+      sourceInventory = null;
+    }).workspace;
+  aosBazelGuestEditorWorkspace =
+    (import ../../../tests/build/_bazel-guest.nix {
+      inherit pkgs;
+      sourceInventory = null;
+    }).editorWorkspace;
   aosBazelQuotaWorkspace =
     (import ../../../tests/build/_bazel-quota.nix {
       inherit pkgs;
@@ -1040,6 +1042,11 @@
     (import ./development.nix {
       inherit pkgs lib;
       workspace = aosBazelGuestWorkspace;
+    }).launcher;
+  aosBazelGuestEditorLauncher =
+    (import ./development.nix {
+      inherit pkgs lib;
+      workspace = aosBazelGuestEditorWorkspace;
     }).launcher;
   aosBazelQuotaLauncher =
     (import ./development.nix {

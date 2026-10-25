@@ -628,6 +628,16 @@ stripping, matching the captured native development builds. The target keeps
 its independent static profile. All 33 cases pass with the existing ignored
 case retained; the installed runtime and six CLI comparisons pass again.
 
+The [development launcher qualification](tests/evidence/guest-development-native-profiles.json)
+enrolls ordinary `guest` builds and `rust-project` exports in those independent
+profiles. Its required check executes both packaged launchers in private batch
+output bases. All four libtest targets and the doctest match Cargo's per-case
+and feature inventories, preserving the existing ignored case. The editor
+exports all four roots, matches the native cfg query and authenticates all
+three macro artifacts against the qualified editor build. This checks immutable
+development snapshots; persistent editor lifecycle and shared-cache behavior
+remain separate qualification work.
+
 `checks.build.bazel.guest.all` builds the guest library and executable, both
 libtest artifacts, both integration tests, doctests, Clippy, formatting,
 documentation, and editor parity. Its separate `guest` dependency profile
@@ -653,8 +663,9 @@ nix-build tools/bazel/tests/guest.nix -A conservative.inventory --no-out-link
 ```
 
 The family option selects the guest's static target flags and Nix library
-repository. Execution tools retain their ordinary dynamic configuration.
-The ordinary development launcher continues to serve the host families.
+repository. Ordinary builds use the qualified release host-macro profile;
+`rust-project` selects the independent development profile. Execution tools
+retain dynamic linkage in both configurations.
 The guest editor configuration keeps the guest's selected roots as workspace
 members and retains protocol/store/campaign as library dependencies. Cargo
 metadata verifies the same membership in its temporary oracle. The exporter
