@@ -20,6 +20,10 @@ def startup_diagnostics(machine, *units):
             "LC_ALL=C grep -E '^type=(AVC|SELINUX_ERR) ' /var/log/audit/audit.log "
             "| grep -E 'aos_|system_dbusd_t' | tail -n 80 | head -c 32768",
             "tail -c 65536 /var/log/audit/audit.log",
+            # Activation may fail before auditd creates its persistent log.
+            "journalctl --boot=0 --grep='avc:.*(aos_|system_dbusd_t)' "
+            "--lines=80 --no-pager",
+            "auditctl -s",
             f"journalctl --boot=0 {selected_units} --lines={journal_lines} --no-pager",
             "systemctl --failed --no-pager",
             # A pending oneshot can hold boot without entering failed state.
