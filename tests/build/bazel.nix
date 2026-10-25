@@ -459,6 +459,7 @@ in
     compiler-wrapper = import ../../tools/bazel/tests/compiler-wrapper.nix {inherit pkgs;};
     compiler-option-semantics = import ./_bazel-compiler-option-semantics.nix {inherit pkgs;};
     execution-profile = import ./_bazel-execution-profile.nix {inherit pkgs;};
+    cli-execution-profiles = import ./_bazel-aos-cli-execution-profiles.nix {inherit pkgs;};
     qemu-plugin-abi = import ./_bazel-qemu-plugin-abi.nix {inherit pkgs;};
     policy =
       pkgs.runCommand "aos-bazel-policy-checks" {
@@ -500,6 +501,7 @@ in
             compiler-wrapper
             compiler-option-semantics
             execution-profile
+            cli-execution-profiles
             qemu-plugin-abi
             qemu-gpl.all
             source-selection

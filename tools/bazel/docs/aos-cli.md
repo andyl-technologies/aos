@@ -95,6 +95,27 @@ preserves arguments, working directory, process output, and exit status.
 Compiler-option equivalence remains a separate gate; capturing invocations
 alone does not establish it.
 
+CLI test and production workspaces now choose execution Rust flags separately
+from target flags. Their generators and procedural macros use optimization 0
+and debug information 0; test execution tools enable assertions and overflow
+checks, while release execution tools disable both. Target settings stay in
+their respective existing profiles. The focused generator check runs with:
+
+```sh
+nix-build tools/bazel/tests/aos-cli.nix -A execution-profiles --no-out-link
+```
+
+The [enrollment report](../tests/evidence/cli-execution-profile-enrollment.json)
+authenticates the actual Build API, Hub API and Hub Service compiler arguments
+in both configurations. All six compiler actions and six observed generator
+executions use the Linux sandbox without cache hits. Retained Cargo artifact
+profiles and the independent minimal Cargo probe establish the baseline scope.
+The editor remains on its previous configuration pending separate enrollment:
+its Cargo oracle supplies explicit size-optimization and assertion/overflow
+flags to execution tools too. Fleet execution, full CLI tests, generated-source
+and editor parity, and production installation still need qualification after
+this execution-profile change.
+
 The production package exports nine CLI programs, five package-manager helpers,
 and the image metadata helper. Installation verifies its manifest and bytes,
 then uses ordinary AOS fixup with explicit shared-library runtime dependencies.

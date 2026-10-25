@@ -96,6 +96,9 @@
       aos_registry_runtime = tools;
       aos_cli_test_sources = import ../../pkgs/build-support/_bazel/cli-test-sources.nix {inherit pkgs;};
     };
+  # Cargo's test build tools use the unoptimized build-override profile even
+  # when first-party target tests use the workspace's size optimization.
+  execRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
   workspace = pkgs.mkAosBazelWorkspace {
     inherit root;
     # Integration contracts inspect declared repository inputs. Architecture
@@ -104,7 +107,7 @@
       ["tools/bazel" "third_party/rust" "api/proto"]
       ++ builtins.attrValues packages ++ builtins.attrValues dependencyPackages;
     dependencyProfile = profile;
-    inherit repositories;
+    inherit repositories execRustcFlags;
     rustcFlags = ["-Copt-level=s" "-Cdebuginfo=0" "-Cdebug-assertions=yes" "-Coverflow-checks=yes"];
     analysisTargets = ["${prefix}lib"];
   };

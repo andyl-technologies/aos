@@ -20,6 +20,9 @@
         aos_cli_runtime = pkgs.aosBazelCrucibleCliRuntime;
       };
     rustcFlags = ["-Copt-level=3" "-Cdebuginfo=0" "-Cdebug-assertions=no" "-Coverflow-checks=no"];
+    # The retained release Cargo artifacts use unoptimized execution tools with
+    # assertions and overflow checks disabled, independently of target code.
+    execRustcFlags = ["-Copt-level=0" "-Cdebuginfo=0" "-Cdebug-assertions=no" "-Coverflow-checks=no"];
     analysisTargets = targets;
   };
 in rec {
