@@ -412,7 +412,7 @@ where
             };
 
             // A frame leaving adapter custody publishes as its own cut at
-            // its release time, ahead of any RUN that settles there.
+            // its release time, ahead of any RUN that settles later.
             let custody_release = next_custody_release(
                 &staged_scheduler,
                 &staged_frozen_network_output_times,

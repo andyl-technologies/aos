@@ -3,10 +3,16 @@
 //! A network adapter may hold a frame in custody until a release coordinate
 //! later than its emission. While a host-concurrent RUN set publishes, such a
 //! frame takes its log position at that release time, as its own cut ahead of
-//! any RUN that settles there. Releasing it with the first RUN published after
+//! any RUN that settles later. Releasing it with the first RUN published after
 //! that time would put it behind the RUN's deliveries, so whether it preceded
 //! a delivery would depend on how the host happened to split RUNs, and replay
 //! from another split would diverge (RFC-0010 SCHED-32 and EXEC-7).
+//!
+//! A RUN that settles exactly at the release time publishes first, and the
+//! frame is admitted with that RUN's own outputs. Every other release path,
+//! the pre-quantum settlement and a control-only quantum, admits a frame only
+//! after the RUNs at its time commit, so this tie order is the one all paths
+//! share.
 //!
 //! A release advances no node. Its decisions and entries ride ahead of the
 //! next published RUN outcome, so every outcome still names the RUN it
@@ -28,7 +34,7 @@ pub(super) struct HeldCustodyRelease<'a, B, I> {
     pub(super) frontier: VirtualTime,
 }
 
-/// Returns the next custody release due no later than `run_time`.
+/// Returns the next custody release due strictly before `run_time`.
 ///
 /// The result names the release time and the frame's source. A cut is taken
 /// once: a frame the interceptor returns to custody at an already released
@@ -47,7 +53,7 @@ pub(super) fn next_custody_release(
         pending_network_outputs,
     )?
     .map(|(at, output)| (at, output.source.clone()))
-    .filter(|(at, _)| *at <= run_time && released_through.is_none_or(|through| *at > through));
+    .filter(|(at, _)| *at < run_time && released_through.is_none_or(|through| *at > through));
 
     Ok(release)
 }

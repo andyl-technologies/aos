@@ -2,8 +2,6 @@
 
 use super::*;
 
-const DELAYED_RELEASE_TICKS: u64 = 30;
-
 #[derive(Clone)]
 struct DelayedReleaseInterceptor(Rc<RefCell<Vec<Vec<u64>>>>);
 
@@ -42,9 +40,10 @@ fn delivery_order_times(configuration: &Configuration) -> Vec<u64> {
 }
 
 /// Drives a consumer with deliveries at 20 and 40 beside a source holding a
-/// frame in adapter custody until 30. `source_timer` adds a source-local
-/// boundary, which changes only how the host splits the source's RUNs.
-fn delayed_release_log(source_timer: Option<u64>) -> (Vec<Vec<u64>>, Vec<u64>) {
+/// frame in adapter custody until `release`. `source_timer` adds a
+/// source-local boundary, which changes only how the host splits the
+/// source's RUNs.
+fn delayed_release_log(release: u64, source_timer: Option<u64>) -> (Vec<Vec<u64>>, Vec<u64>) {
     let consumer = scheduler_node("c-consumer", SchedulingNodeKind::Vm);
     let network = scheduler_node("link", SchedulingNodeKind::Network);
     let scheduler = SingleScheduler::new(SchedulerLivenessScenario::from_canonical_material(
@@ -105,7 +104,7 @@ fn delayed_release_log(source_timer: Option<u64>) -> (Vec<Vec<u64>>, Vec<u64>) {
     };
     held.fault_continuation
         .cursor_mut()
-        .defer_until(DELAYED_RELEASE_TICKS, opportunity);
+        .defer_until(release, opportunity);
     adapter.network_transaction_parts_mut().3.push(held);
 
     for _ in 0..16 {
@@ -132,8 +131,8 @@ fn delayed_release_log(source_timer: Option<u64>) -> (Vec<Vec<u64>>, Vec<u64>) {
 
 #[test]
 fn a_custody_release_takes_one_log_position_however_the_source_runs_split() {
-    let (unsplit_releases, unsplit_orders) = delayed_release_log(None);
-    let (split_releases, split_orders) = delayed_release_log(Some(35));
+    let (unsplit_releases, unsplit_orders) = delayed_release_log(30, None);
+    let (split_releases, split_orders) = delayed_release_log(30, Some(35));
 
     assert_eq!(unsplit_orders, [20, 40]);
     assert_eq!(split_orders, [20, 40]);
@@ -144,4 +143,18 @@ fn a_custody_release_takes_one_log_position_however_the_source_runs_split() {
     // The frame resumes at 30, so it follows the delivery at 20 and precedes
     // the one at 40.
     assert_eq!(unsplit_releases, [vec![20]]);
+}
+
+#[test]
+fn a_custody_release_at_a_delivery_time_follows_that_delivery() {
+    // A RUN settling at the release time publishes first. Every other release
+    // path admits a frame only after the RUN commits at that time, so this
+    // tie order is the one all of them share.
+    let (unsplit_releases, unsplit_orders) = delayed_release_log(40, None);
+    let (split_releases, split_orders) = delayed_release_log(40, Some(35));
+
+    assert_eq!(unsplit_orders, [20, 40]);
+    assert_eq!(split_orders, [20, 40]);
+    assert_eq!(unsplit_releases, [vec![20, 40]]);
+    assert_eq!(split_releases, [vec![20, 40]]);
 }
