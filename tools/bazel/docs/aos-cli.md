@@ -6,7 +6,8 @@ builder while qualification continues.
 
 `tools/bazel/tests/aos-cli.nix` exposes `default`, `fleet`, and `production`.
 The test configurations provide `compile`, `tests`, `cargo`, `developer-build`,
-`format`, `oracle`, and `inventory`; production provides `build`, `installed`, `runtime-smoke`,
+`format`, `test-parity`, `execution-profiles`, `oracle`, and `inventory`;
+production provides `build`, `installed`, `runtime-smoke`,
 `developer-build`, and `inventory`. These are explicit conversion checkpoints,
 not yet production selectors or ordinary `aos-dev` family routes.
 
@@ -56,6 +57,30 @@ test output's `evidence/tests` directory, its `inventory.json`, and the Cargo
 output directory. The verifier requires exact feature units, test targets,
 executed case names, and empty doctest inventories. Failed or ignored Cargo
 cases and Bazel case output containing skip diagnostics fail the comparison.
+
+Each test configuration's `oracle` also requires its `execution-profiles` gate.
+The gate pairs every first-party source and libtest role with captured native
+compiler requests, including generator roles from Cargo's artifact records.
+It compares every configured and executed procedural macro with the native
+package, version, crate name, edition, and explicit cfg unit. Distinct versions
+of one macro package remain separate units. Every Rust compiler action must
+execute successfully in a Linux sandbox without an action-cache hit.
+
+Target units require size optimization, zero debug information, and enabled
+assertions and overflow checks. Generators and procedural macros require zero
+optimization with the same debug and checking settings. The evidence preserves
+absent native options and checks their profile defaults rather than inventing
+explicit flags. Remaining compiler-option differences stay visible; full
+compiler defaults, native C/C++ and linker settings, ABI/runtime behavior,
+editor/release/foreign profiles, cache behavior, and performance require their
+own qualification. `test-parity` exposes the case comparison separately;
+`oracle` retains both `parity.json` and `execution-profiles.json`.
+
+Qualification scripts and retained reports are excluded from both the test
+workspace's compiler snapshot and the architecture fixture's query snapshot.
+Repository-aware tests still receive their separately declared inputs. A
+verifier edit changes the required qualification gate without invalidating
+compiler or test derivations.
 
 The architecture-consumer checkpoint passes all 543 ordinary and 551 fleet
 cases under both Cargo and Bazel, including all six architecture guards.

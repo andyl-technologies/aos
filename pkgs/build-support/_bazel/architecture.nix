@@ -3,7 +3,17 @@
   root = ../../..;
   workspace = pkgs.mkAosBazelWorkspace {
     inherit root;
-    sourceDirectories = ["BUILD.bazel" "crates" "native" "tools/bazel" "third_party/rust"];
+    # Qualification scripts and retained reports do not define the Rust graph.
+    sourceDirectories = [
+      "BUILD.bazel"
+      "crates"
+      "native"
+      "tools/bazel/toolchains"
+      "tools/bazel/rules"
+      "tools/bazel/metadata"
+      "tools/bazel/testing"
+      "third_party/rust"
+    ];
     repositories = pkgs.aosBazelRepositories;
     # Query needs the pinned rule implementations, but no crate archives,
     # application binaries, or profile-specific native libraries.

@@ -16,17 +16,28 @@
       if fleet
       then "fleet"
       else "default";
+    parity = pkgs.runCommand "aos-bazel-aos-cli-${profile}-cargo-parity" {buildDeps = [pkgs.python3];} ''
+      mkdir -p "$out"
+      ${pkgs.python3}/bin/python3 ${verifier}/verify_cli.py \
+        --tests ${candidate.tests}/evidence/tests \
+        --inventory ${candidate.tests}/inventory.json \
+        --cargo ${cargo} --output "$out/parity.json"
+    '';
+    execution-profiles = import ../qualification/rust-profiles.nix {
+      inherit pkgs cargo parity;
+      pname = "aos-bazel-aos-cli-${profile}-test-profiles";
+      build = candidate.tests;
+    };
   in
     candidate
     // editor
     // {
-      inherit cargo;
-      oracle = pkgs.runCommand "aos-bazel-aos-cli-${profile}-cargo-parity" {buildDeps = [pkgs.python3];} ''
+      inherit cargo execution-profiles;
+      test-parity = parity;
+      oracle = pkgs.runCommand "aos-bazel-aos-cli-${profile}-qualified-test-profiles" {buildDeps = [parity execution-profiles];} ''
         mkdir -p "$out"
-        ${pkgs.python3}/bin/python3 ${verifier}/verify_cli.py \
-          --tests ${candidate.tests}/evidence/tests \
-          --inventory ${candidate.tests}/inventory.json \
-          --cargo ${cargo} --output "$out/parity.json"
+        cp ${parity}/parity.json "$out/parity.json"
+        cp ${execution-profiles}/evidence.json "$out/execution-profiles.json"
       '';
     };
 in {

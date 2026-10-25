@@ -103,8 +103,10 @@
     inherit root;
     # Integration contracts inspect declared repository inputs. Architecture
     # checks consume the generated all-profile Bazel production graph.
+    # Keep qualification scripts and evidence outside compiler inputs. The
+    # integration contracts receive their own declared repository snapshot.
     sourceDirectories =
-      ["tools/bazel" "third_party/rust" "api/proto"]
+      ["tools/bazel/toolchains" "tools/bazel/rules" "tools/bazel/metadata" "tools/bazel/testing" "third_party/rust" "api/proto"]
       ++ builtins.attrValues packages ++ builtins.attrValues dependencyPackages;
     dependencyProfile = profile;
     inherit repositories execRustcFlags;
