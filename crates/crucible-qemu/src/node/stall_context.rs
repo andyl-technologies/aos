@@ -6,11 +6,11 @@
 //! idle wait. The slot does not record which writer published it, so a stall
 //! error alone cannot name the owner. The host already retains the native
 //! stops it released, the last accepted boundary snapshot, staged outputs,
-//! and any campaign marker it drained without proving a stop, and the stall
-//! error carries them as one row:
+//! the newest campaign markers it drained, and any it drained without proving
+//! a stop, and the stall error carries them as one row:
 //!
 //! ```text
-//! CRUCIBLE-STALL-CONTEXT-V1 resume_pending=none pending_outputs=0 unproven_marker=fault.transport.ready@1886393308637/stop=1886393309637 boundary=status:1,device_io:0,control_request:7,control_ack:8,logical:1886393309637,raw:941,idle_wake:1886393309637,advance_sequence:88,settled_ceiling:0,settled_sequence:0
+//! CRUCIBLE-STALL-CONTEXT-V1 resume_pending=none pending_outputs=0 last_marker=fault.transport.ready@1886393308637 unproven_marker=fault.transport.ready@1886393308637/stop=1886393309637 boundary=status:1,device_io:0,control_request:7,control_ack:8,logical:1886393309637,raw:941,idle_wake:1886393309637,advance_sequence:88,settled_ceiling:0,settled_sequence:0
 //! ```
 //!
 //! The row is read from host memory only. It changes no scheduling decision
@@ -50,6 +50,7 @@ pub(crate) struct StallBoundary {
 pub(crate) struct QemuNodeStallContext {
     resume_pending: Vec<&'static str>,
     pending_outputs: usize,
+    last_marker: Option<String>,
     unproven_marker: Option<UnprovenCampaignMarker>,
     boundary: Option<StallBoundary>,
 }
@@ -59,6 +60,7 @@ impl QemuNodeStallContext {
     pub(crate) fn new(
         resume_pending: impl IntoIterator<Item = (&'static str, bool)>,
         pending_outputs: usize,
+        last_marker: Option<String>,
         unproven_marker: Option<UnprovenCampaignMarker>,
         boundary: Option<StallBoundary>,
     ) -> Self {
@@ -68,6 +70,7 @@ impl QemuNodeStallContext {
                 .filter_map(|(name, pending)| pending.then_some(name))
                 .collect(),
             pending_outputs,
+            last_marker,
             unproven_marker,
             boundary,
         }
@@ -86,6 +89,11 @@ impl fmt::Display for QemuNodeStallContext {
             "CRUCIBLE-STALL-CONTEXT-V1 resume_pending={resume_pending} pending_outputs={}",
             self.pending_outputs,
         )?;
+
+        match &self.last_marker {
+            Some(markers) => write!(formatter, " last_marker={markers}")?,
+            None => formatter.write_str(" last_marker=none")?,
+        }
 
         match &self.unproven_marker {
             Some(marker) => write!(
@@ -127,11 +135,12 @@ mod tests {
             0,
             None,
             None,
+            None,
         );
 
         assert_eq!(
             context.to_string(),
-            "CRUCIBLE-STALL-CONTEXT-V1 resume_pending=none pending_outputs=0 unproven_marker=none boundary=none"
+            "CRUCIBLE-STALL-CONTEXT-V1 resume_pending=none pending_outputs=0 last_marker=none unproven_marker=none boundary=none"
         );
     }
 
@@ -144,6 +153,7 @@ mod tests {
                 ("campaign-marker", true),
             ],
             2,
+            Some(String::from("fault.transport.ready@100")),
             Some(UnprovenCampaignMarker {
                 markers: String::from("fault.transport.ready@100"),
                 stop_tick: 1_100,
@@ -164,7 +174,7 @@ mod tests {
 
         assert_eq!(
             context.to_string(),
-            "CRUCIBLE-STALL-CONTEXT-V1 resume_pending=network-output,campaign-marker pending_outputs=2 unproven_marker=fault.transport.ready@100/stop=1100 boundary=status:1,device_io:0,control_request:7,control_ack:8,logical:1100,raw:11,idle_wake:1100,advance_sequence:88,settled_ceiling:0,settled_sequence:0"
+            "CRUCIBLE-STALL-CONTEXT-V1 resume_pending=network-output,campaign-marker pending_outputs=2 last_marker=fault.transport.ready@100 unproven_marker=fault.transport.ready@100/stop=1100 boundary=status:1,device_io:0,control_request:7,control_ack:8,logical:1100,raw:11,idle_wake:1100,advance_sequence:88,settled_ceiling:0,settled_sequence:0"
         );
     }
 }

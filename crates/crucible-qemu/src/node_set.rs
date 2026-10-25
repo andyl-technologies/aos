@@ -1171,6 +1171,8 @@ impl QemuNodeSet {
     ) -> Result<bool, BackendError> {
         let backend = self.node_mut(node)?;
         let events = backend.drain_observable_events()?;
+        backend
+            .note_campaign_markers_drained(campaign_marker::campaign_marker_names(node, &events));
         // Horizon steps reach this check every quantum; only a step that
         // retired a campaign marker needs the stopped-slot calibration.
         let matched = if events
@@ -1986,8 +1988,12 @@ impl SimulationBackend for QemuNodeSet {
 
     fn drain_observable_events(&mut self) -> Result<Vec<ObservableEvent>, BackendError> {
         let mut events = std::mem::take(&mut self.retained_observable_events);
-        for node in self.nodes.values_mut() {
-            events.extend(node.drain_observable_events()?);
+        for (id, node) in &mut self.nodes {
+            let drained = node.drain_observable_events()?;
+            node.note_campaign_markers_drained(campaign_marker::campaign_marker_names(
+                id, &drained,
+            ));
+            events.extend(drained);
         }
         Ok(events)
     }

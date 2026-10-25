@@ -555,7 +555,9 @@ pub struct QemuNode {
     hot_fork_resume_pending: bool,
     // A released campaign marker park keeps its native VMStop until the next ceiling.
     campaign_marker_resume_pending: bool,
-    // A marker drained beside a stop it did not prove; stall reports only.
+    // Stall reports only: the newest drained campaign markers, and those a
+    // step drained beside a stop it did not prove.
+    last_campaign_markers: Option<String>,
     unproven_campaign_marker: Option<UnprovenCampaignMarker>,
     pending_network_outputs: Vec<QemuNodeEmittedFrame>,
     pending_priming_observations: Vec<ObservableEvent>,
@@ -826,6 +828,7 @@ impl QemuNode {
             console_output_resume_pending: false,
             hot_fork_resume_pending: false,
             campaign_marker_resume_pending: false,
+            last_campaign_markers: None,
             unproven_campaign_marker: None,
             pending_network_outputs: Vec::new(),
             pending_priming_observations: Vec::new(),
@@ -2065,10 +2068,21 @@ impl QemuNode {
                 ("campaign-marker", self.campaign_marker_resume_pending),
             ],
             self.pending_network_outputs.len(),
+            self.last_campaign_markers.clone(),
             self.unproven_campaign_marker.clone(),
             self.last_step_completed_boundary
                 .map(crate::QemuCompletedQuantumBoundary::stall_boundary),
         )
+    }
+
+    /// Records the newest campaign markers drained from this node, if any.
+    ///
+    /// A drain with no campaign marker keeps the previous record, so a stall
+    /// names the last marker even after later quanta drained nothing.
+    pub(crate) fn note_campaign_markers_drained(&mut self, markers: String) {
+        if !markers.is_empty() {
+            self.last_campaign_markers = Some(markers);
+        }
     }
 
     /// Records the campaign marker a step drained without proving its stop.
