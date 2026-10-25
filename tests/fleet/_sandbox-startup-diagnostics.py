@@ -15,6 +15,10 @@ def startup_diagnostics(machine, *units):
         # Preserve the audit tail before status queries add their own denials.
         # Serial audit backlogs can overflow before the startup assertion fails.
         commands = (
+            # Repeated diagnostic execs can crowd early owner denials out of
+            # the raw tail. Select AOS records from the retained audit file.
+            "LC_ALL=C grep -E '^type=(AVC|SELINUX_ERR) ' /var/log/audit/audit.log "
+            "| grep aos_ | tail -n 80 | head -c 32768",
             "tail -c 65536 /var/log/audit/audit.log",
             f"journalctl --boot=0 {selected_units} --lines={journal_lines} --no-pager",
             "systemctl --failed --no-pager",
