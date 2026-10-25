@@ -7,6 +7,8 @@
     accache = "crates/accache/accache";
     accache-frontend = "crates/accache/accache-frontend";
   };
+  cargoPackage = pkgs.accache.passthru.withBuildDriver "cargo";
+  productionPackage = pkgs.accache.passthru.withBuildDriver "bazel";
   # The ordinary Cargo linker resolves the bootstrap GCC unwinder statically.
   # Import that archive explicitly instead of acquiring the shared GCC runtime.
   unwinder = assert !pkgs.stdenv.isCross;
@@ -52,7 +54,7 @@
       };
     };
     cargoManifest = "crates/accache/Cargo.toml";
-    cargoVendor = pkgs.accache.passthru.cargoDeps;
+    cargoVendor = cargoPackage.passthru.cargoDeps;
     cargoVendorConfig = vendorConfig;
     cargoFlags = ["--release"];
     captureCompilerArguments = true;
@@ -62,16 +64,43 @@
     editorRustcFlags = rustcFlags;
   };
   productionTargets = map (name: prefix + name) ["accache" "package" "production_license_closure"];
+  parityTools = builtins.path {
+    path = ../../tools/bazel/tests;
+    name = "aos-accache-production-parity-tools";
+    filter = path: type:
+      type == "regular" && builtins.elem (builtins.baseNameOf path) ["verify_protocol.py" "verify_pilot.py"];
+  };
 in
   family
   // rec {
     inherit packages;
-    production = pkgs.mkAosBazelBuild {
-      pname = "aos-bazel-accache-production";
-      workspace = family.workspace;
-      targets = productionTargets;
-      retainActionGraph = true;
-    };
+    production = productionPackage.passthru.bazelBuild;
+    production-parity = pkgs.runCommand "aos-bazel-accache-production-parity" {buildDeps = [pkgs.python3];} ''
+      mkdir -p "$out"
+      ${pkgs.python3}/bin/python3 ${parityTools}/verify_protocol.py \
+        --tests ${production}/evidence/tests --inventory ${production}/inventory.json \
+        --messages ${family.cargo}/cargo-messages.jsonl --cargo-log ${family.cargo}/cargo-tests.log \
+        --package-path accache=crates/accache/accache \
+        --package-path accache-frontend=crates/accache/accache-frontend \
+        --output "$out/parity.json"
+    '';
+    driver-selection = assert cargoPackage.passthru.buildDriver == "cargo";
+    assert productionPackage.passthru.buildDriver == "bazel";
+    assert productionPackage.passthru.cargoFallback.drvPath == cargoPackage.drvPath;
+    assert (productionPackage.passthru.withBuildDriver "cargo").drvPath == cargoPackage.drvPath;
+    assert productionPackage.platformSupport == cargoPackage.platformSupport;
+    assert productionPackage.platformSupport.role == "build-input";
+    assert !(builtins.tryEval ((cargoPackage.passthru.withBuildDriver "unknown").drvPath)).success;
+      pkgs.runCommand "aos-bazel-accache-driver-selection" {} ''
+        mkdir -p "$out"
+        printf '%s\n' ${pkgs.lib.escapeShellArg (builtins.toJSON {
+          status = "PASS";
+          default_driver = pkgs.accache.passthru.buildDriver;
+          bazel = toString productionPackage;
+          cargo = toString cargoPackage;
+          platform_support = productionPackage.platformSupport;
+        })} > "$out/selection.json"
+      '';
     execution-profiles = import ./_bazel-accache-execution-profiles.nix {
       inherit pkgs production;
       inherit (family) editorWorkspace cargo;
@@ -90,17 +119,7 @@ in
       executionProfiles = execution-profiles;
       editorBuiltinCfg = editor-builtin-cfg;
     };
-    package = pkgs.mkAosBazelPackage {
-      pname = "accache";
-      version = "0.1.0";
-      build = production;
-      packageLabel = "${prefix}package";
-      meta = {
-        description = "Daemonless compiler action cache for Nix build contracts";
-        license = "Apache-2.0";
-        mainProgram = "accache";
-      };
-    };
+    package = productionPackage;
     installation = let
       closureInfo = pkgs.lib.build.closureInfo {inherit pkgs;};
       bazelClosure = closureInfo {
@@ -109,7 +128,7 @@ in
       };
       cargoClosure = closureInfo {
         pname = "aos-cargo-accache-runtime-closure";
-        rootPaths = [pkgs.accache];
+        rootPaths = [cargoPackage];
       };
     in
       pkgs.runCommand "aos-bazel-accache-installation" {buildDeps = [pkgs.python3];} ''
@@ -154,7 +173,7 @@ in
             }
 
         bazel = inspect("${package}", "${bazelClosure}/store-paths")
-        cargo = inspect("${pkgs.accache}", "${cargoClosure}/store-paths")
+        cargo = inspect("${cargoPackage}", "${cargoClosure}/store-paths")
         compared = ["needed", "interpreter", "libraries", "runtime_dependencies", "help"]
         for field in compared:
             if bazel[field] != cargo[field]:
@@ -184,7 +203,7 @@ in
     };
     all =
       pkgs.runCommand "aos-bazel-accache-checks" {
-        buildDeps = [family.all family.editor-parity package installation integration execution-profiles editor-builtin-cfg development-editor];
+        buildDeps = [family.all family.editor-parity package installation integration driver-selection production-parity execution-profiles editor-builtin-cfg development-editor];
       } ''
         mkdir -p "$out"
         ln -s ${family.all} "$out/tests"
@@ -192,6 +211,8 @@ in
         ln -s ${package} "$out/package"
         ln -s ${installation} "$out/installation"
         ln -s ${integration} "$out/integration"
+        ln -s ${driver-selection} "$out/driver-selection"
+        ln -s ${production-parity} "$out/production-parity"
         ln -s ${execution-profiles} "$out/execution-profiles"
         ln -s ${editor-builtin-cfg} "$out/editor-builtin-cfg"
         ln -s ${development-editor} "$out/development-editor"

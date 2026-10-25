@@ -86,5 +86,20 @@ dependencies and help with the independent Cargo package. A second prototype
 runs the tests and emits the package in one Bazel invocation; its installed
 binary matches the separately built prototype byte for byte. All recorded
 actions execute uncached in Linux sandboxes. These are retained pre-cutover
-prototypes: the production selector, platform and editor qualification, and
-numeric performance remain separate work.
+prototypes; they did not exercise a production selector. Platform and editor
+qualification and numeric performance remain separate work.
+
+The production recipe now exposes
+`pkgs.accache.passthru.withBuildDriver "bazel"` and the independent `"cargo"`
+rollback. Use this selector rather than `.override`, which changes builder
+attributes in this repository. The Bazel recipe owns its workspace and build
+under `pkgs/tools/accache/`; it runs the unit tests before installing the package,
+sets the release root profile explicitly, and disables shared compiler caches.
+Qualification uses this production builder and selects its Cargo baseline
+explicitly, so a later default change cannot compare Bazel against itself.
+`driver-selection` checks the rollback identity and preserved platform metadata.
+Cargo remains the default during the remaining cutover qualification.
+The [production-builder receipt](../tests/evidence/accache-production-builder.json)
+retains the executed package, 114-case Cargo comparison, runtime and compiler
+profile checks, all 924 integration fixtures, and the unchanged rollback
+identity. Its derivation dependency graph excludes the Cargo accache package.

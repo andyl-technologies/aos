@@ -8,14 +8,16 @@
   build,
   packageLabel,
   runtimeDeps ? [],
+  platformSupport ? null,
+  passthru ? {},
   meta ? {},
 }:
 pkgs.mkDerivation {
-  inherit pname version runtimeDeps meta;
+  inherit pname version runtimeDeps meta platformSupport;
   src = null;
   sharedBuildCache = false;
   buildDeps = [pkgs.python3];
-  passthru.bazelBuild = build;
+  passthru = passthru // {bazelBuild = build;};
   phases = [
     {
       name = "install";
