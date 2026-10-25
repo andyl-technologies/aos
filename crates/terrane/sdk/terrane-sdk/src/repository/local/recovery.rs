@@ -72,7 +72,7 @@ where
         let profile = ChunkProfile::cdc_1m(registered.seed);
         let (pending, namespace) = open_local_parts(
             location,
-            &authority,
+            authority.issuer_key(),
             policy,
             profile,
             fs,

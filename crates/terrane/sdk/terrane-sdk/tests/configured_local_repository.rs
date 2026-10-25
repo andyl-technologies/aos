@@ -18,6 +18,136 @@ use terrane_sdk::{
     surface::{ExposureState, PreparedExposures, TokenResolver},
 };
 
+#[tokio::test]
+async fn local_maintenance_reopens_without_secrets_and_resumes_collection() -> TestResult {
+    use terrane_format::gc::{Phase, RootReason, Windows};
+    use terrane_sdk::repository::{LocalMaintenanceIdentity, Repository};
+
+    let fixture = Fixture::new().await?;
+    let commit = fixture.commit_bytes(OLD).await?;
+    let identity = LocalMaintenanceIdentity {
+        issuer: fixture.authority.issuer_key().clone(),
+        owner_uid: fixture.owner,
+    };
+    let registration_path = fixture.location.authority.join("registration.cbor");
+    let registration = std::fs::read(&registration_path)?;
+    for name in ["issuer.seed", "terminal.seed", "token.cbor"] {
+        std::fs::remove_file(fixture.location.authority.join(name))?;
+    }
+
+    let repository = Repository::open_local_maintenance(
+        &fixture.location,
+        &identity,
+        fixture::policy()?,
+        TokioLocalFs,
+        TokioClock,
+    )
+    .await?;
+    assert_eq!(
+        repository.chunk_profile(),
+        fixture.repository.chunk_profile()
+    );
+    let windows = Windows::new(30, 60, 60, 90)?;
+    let mut collection = repository
+        .start_local_collection("maintenance".into(), 1_000, 1, windows)
+        .await?;
+    assert!(
+        collection
+            .roots()
+            .roots
+            .iter()
+            .any(|root| { root.commit == commit && root.reason == RootReason::Current })
+    );
+    collection.mark_batch(1).await?;
+    let checkpoint = collection.state().clone();
+    let lease = collection.lease().clone();
+    drop(collection);
+
+    let mut resumed = repository
+        .resume_local_collection(lease, 1_000, 1, windows)
+        .await?;
+    assert_eq!(resumed.state(), &checkpoint);
+    assert!(
+        repository
+            .start_local_collection("competitor".into(), 1_000, 2, windows)
+            .await
+            .is_err()
+    );
+    for _ in 0..32 {
+        if resumed.state().pending.is_empty() {
+            break;
+        }
+        resumed.mark_batch(16).await?;
+    }
+    assert!(resumed.state().pending.is_empty());
+    resumed.finish_mark().await?;
+    assert_eq!(resumed.state().phase, Phase::Sweep);
+    assert!(resumed.retire_one().await?.is_none());
+
+    assert_eq!(std::fs::read(registration_path)?, registration);
+    for name in ["issuer.seed", "terminal.seed", "token.cbor"] {
+        assert!(!fixture.location.authority.join(name).exists());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn local_maintenance_refuses_foreign_trust_and_corrupt_registration() -> TestResult {
+    use terrane_format::gc::Windows;
+    use terrane_sdk::repository::{LocalMaintenanceIdentity, Repository};
+
+    let fixture = Fixture::new().await?;
+    fixture.commit_bytes(OLD).await?;
+    let mut identity = LocalMaintenanceIdentity {
+        issuer: fixture.authority.issuer_key().clone(),
+        owner_uid: fixture.owner,
+    };
+    identity.issuer.public_key = terrane_format::auth::public_key_from_secret(&[91; 32]);
+
+    // Reopen can reject a retained historical binding before collection starts.
+    // Otherwise the actual root-snapshot producer must reject the foreign key.
+    if let Ok(repository) = Repository::open_local_maintenance(
+        &fixture.location,
+        &identity,
+        fixture::policy()?,
+        TokioLocalFs,
+        TokioClock,
+    )
+    .await
+    {
+        assert!(
+            repository
+                .start_local_collection(
+                    "foreign-verifier".into(),
+                    1_000,
+                    1,
+                    Windows::new(30, 60, 60, 90)?,
+                )
+                .await
+                .is_err()
+        );
+    }
+
+    identity.issuer = fixture.authority.issuer_key().clone();
+    let path = fixture.location.authority.join("registration.cbor");
+    let mut corrupt = std::fs::read(&path)?;
+    corrupt.push(0);
+    std::fs::write(&path, &corrupt)?;
+    assert!(
+        Repository::open_local_maintenance(
+            &fixture.location,
+            &identity,
+            fixture::policy()?,
+            TokioLocalFs,
+            TokioClock,
+        )
+        .await
+        .is_err()
+    );
+    assert_eq!(std::fs::read(path)?, corrupt);
+    Ok(())
+}
+
 struct ExplicitFileToken;
 
 #[async_trait::async_trait]

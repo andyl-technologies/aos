@@ -513,6 +513,7 @@ in {
 
   integration.local-permanent-reconciliation = import ./local-permanent-reconciliation.nix {sourceGate = nativeSdkGate;};
   integration.native-local-deletion = import ./native-local-deletion.nix {sourceGate = nativeSdkGate;};
+  integration.native-local-maintenance = import ./local-maintenance.nix {inherit pkgs lib sourceGateWithInputs;};
   integration.native-local-gc-conformance = localGcConformance;
   integration.native-collector-clock = import ./native-collector-clock.nix {sourceGate = nativeSdkGate;};
   integration.native-cold-fork-source = nativeForkPrerequisites.coldSource;

@@ -151,6 +151,33 @@ required. Both strict all-target Clippy profiles and touched Python syntax pass.
 The cause of the native abort and qualification of these diagnostics remain
 pending; T-FUSE-1 and T-FUSE-2 remain open.
 
+A separate GC prerequisite now reopens the actual local repository using an
+explicit trusted public issuer key and expected Unix owner. It never calls the
+signing-authority opener or loads issuer/terminal seeds or a capability token.
+The existing sibling/ancestor/owner checks, immutable registered CDC genesis,
+physical Original binding and complete retained-history reopening remain
+required. Serve initialization, ordinary reopen and paired recovery pass the
+same original issuer key into their unchanged local binding constructor.
+
+`LocalCollection` retains that repository's original coordinator and checked
+retention authority. Start/resume, bounded marking, retirement, restoration and
+local deletion delegate to the existing singleton-lease collector; decoded
+records and operation keys do not become authority. The new independent
+`terrane.integration.native-local-maintenance` guest runs as UID/GID 840 with
+empty capabilities on actual ext4. It requires ordinary configured Serve
+startup, reopening after removal of all three signing/token files, genuine
+root authentication and checkpoint resume, competitor refusal, and rejection
+of foreign public trust and corrupt original registration. Native execution
+and mandatory workspace compilation are pending. No configured GC runtime or
+role confinement is claimed: configuration dispatch, bounded fair service
+steps, permanent reconciliation and shutdown still require implementation.
+Strict all-target Clippy passes with the valid Tokio/surface and Tokio-only
+feature sets; portable std-only library Clippy also passes. The initial SDK
+`--all-features` invocation correctly fails its pre-existing mutually exclusive
+Tokio/Wasm compile guards and is not a valid qualification profile. New-case
+syntax, touched Nix formatting and PLAN-2 coverage checks pass; runtime success
+is not inferred from these compilation and metadata checks.
+
 The complete `fuse-index-roundtrip` owning gate at `91abbf8445` passes in
 1,567.153 seconds. Independent review verifies all six retained prerequisite
 outputs, the 82-case structural codec inventory, eight actual native guests,

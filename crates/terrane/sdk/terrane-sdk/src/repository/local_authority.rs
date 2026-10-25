@@ -212,6 +212,22 @@ fn validate_siblings(bucket: &Path, authority: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+/// Checks protected maintenance paths without opening signing or token files.
+///
+/// # Errors
+/// Rejects nonsibling paths, symlink ancestry and unsafe authority ownership.
+pub(super) async fn validate_maintenance_location<F: LocalFs + Sync>(
+    fs: &F,
+    bucket: &Path,
+    directory: &Path,
+    owner_uid: u32,
+) -> Result<(), Error> {
+    validate_siblings(bucket, directory)?;
+    validate_ancestors(fs, directory).await?;
+    validate_bucket(fs, bucket).await?;
+    validate_private_directory(fs, directory, owner_uid).await
+}
+
 async fn validate_ancestors<F: LocalFs + Sync>(fs: &F, path: &Path) -> Result<(), Error> {
     let parent = path.parent().ok_or(Error::PathEscape)?;
     let mut current = PathBuf::new();

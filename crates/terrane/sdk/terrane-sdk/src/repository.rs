@@ -11,6 +11,8 @@ mod audit_codec;
 mod blame;
 #[cfg(all(feature = "surface-sdk", unix))]
 mod checkout;
+#[cfg(all(feature = "std", unix))]
+mod collection;
 mod diff;
 #[cfg(unix)]
 mod disclosure_rotation;
@@ -42,6 +44,8 @@ pub use crate::guard::ListedRef;
 #[cfg(unix)]
 pub use audit::RegisteredDomainAudit;
 pub use blame::{EntryBlame, EntryProvenance};
+#[cfg(all(feature = "std", unix))]
+pub use collection::LocalCollection;
 pub use diff::Difference;
 pub use error::Error;
 pub use file_read::PreparedFileRead;
@@ -49,7 +53,9 @@ pub use history::RefHistory;
 #[cfg(all(feature = "std", unix))]
 pub use import::import_directory;
 #[cfg(all(feature = "std", unix))]
-pub use local::{CommitMetadata, LocalRepositoryLocation, LocalRepositoryPolicy};
+pub use local::{
+    CommitMetadata, LocalMaintenanceIdentity, LocalRepositoryLocation, LocalRepositoryPolicy,
+};
 #[cfg(all(feature = "std", unix))]
 pub use local_authority::{LocalAuthority, LocalAuthorityIdentity, LocalAuthorityParameters};
 pub use object::ObjectPresentation;

@@ -1,6 +1,9 @@
 //! Opens and initializes actual local bucket repositories with sibling authority.
 
+mod maintenance;
 mod recovery;
+
+pub use maintenance::LocalMaintenanceIdentity;
 
 use std::{os::unix::fs::MetadataExt, path::PathBuf, time::SystemTime};
 
@@ -418,8 +421,16 @@ where
         RetentionSetup::Initialize(owner_uid) => (owner_uid, true),
         RetentionSetup::Reopen(owner_uid) => (owner_uid, false),
     };
-    let (coordinator, namespace) =
-        open_local_parts(location, authority, policy, profile, fs, clock, owner_uid).await?;
+    let (coordinator, namespace) = open_local_parts(
+        location,
+        authority.issuer_key(),
+        policy,
+        profile,
+        fs,
+        clock,
+        owner_uid,
+    )
+    .await?;
     if initialize {
         Repository::initialize_native_retention(
             coordinator,
@@ -437,7 +448,7 @@ where
 /// Constructs the exact local bindings without choosing a repository factory.
 async fn open_local_parts<F, C>(
     location: &LocalRepositoryLocation,
-    authority: &LocalAuthority,
+    issuer: &terrane_format::auth::IssuerKey,
     policy: LocalRepositoryPolicy,
     profile: ChunkProfile,
     fs: F,
@@ -478,7 +489,7 @@ where
     let guard = Guard::new(
         bucket,
         clock,
-        vec![authority.issuer_key().clone()],
+        vec![issuer.clone()],
         GuardConfig {
             store_name: policy.store_name,
             private_domain: policy.default_private_domain,
