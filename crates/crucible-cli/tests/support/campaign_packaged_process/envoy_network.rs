@@ -256,7 +256,7 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     assert_eq!(discovery["attempt"]["configuration"], genesis);
     require_bounded_primary_reached(&discovery, "next-choice")?;
     let materialization = guest_choice::capture_materialization_events(&service)?;
-    assert_hot_fork_tier(&service, &materialization, discovery_attempt_id)?;
+    assert_hot_fork_tier(&fixture, &service, &materialization, discovery_attempt_id)?;
     resource_audit.verify_source_dirty_growth()?;
     println!("envoy_five_node_hot_fork_resource_audit={resource_audit:?}");
     println!("envoy_five_node_hot_fork_resource_isolation_authenticated=true");
@@ -282,7 +282,7 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     )?;
     let disruption_id = json_string(&disruption["attempt"], "id")?;
     let materialization = guest_choice::capture_materialization_events(&service)?;
-    assert_hot_fork_tier(&service, &materialization, &disruption_id)?;
+    assert_hot_fork_tier(&fixture, &service, &materialization, &disruption_id)?;
     require_hot_fork_root_row(
         &service,
         ANCHOR_DIAGNOSTIC_PREFIX,
@@ -356,7 +356,7 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     )?;
     let followup_disruption_id = json_string(&followup_disruption["attempt"], "id")?;
     let materialization = guest_choice::capture_materialization_events(&service)?;
-    assert_hot_fork_tier(&service, &materialization, &followup_disruption_id)?;
+    assert_hot_fork_tier(&fixture, &service, &materialization, &followup_disruption_id)?;
     require_hot_fork_root_row(
         &service,
         ANCHOR_DIAGNOSTIC_PREFIX,
@@ -386,7 +386,7 @@ fn public_five_node_envoy_network_reaches_measured_failover() -> Result<(), Box<
     require_semantic_marker(&completion, "campaign.complete", "traffic-west")?;
     let completion_id = json_string(&completion["attempt"], "id")?;
     let materialization = guest_choice::capture_materialization_events(&service)?;
-    assert_hot_fork_tier(&service, &materialization, &completion_id)?;
+    assert_hot_fork_tier(&fixture, &service, &materialization, &completion_id)?;
     require_hot_fork_root_row(
         &service,
         ANCESTOR_DIAGNOSTIC_PREFIX,

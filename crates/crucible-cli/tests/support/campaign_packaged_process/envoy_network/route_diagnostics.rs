@@ -13,6 +13,7 @@ use super::*;
 /// Every hot-fork child also checks its measured private dirty bytes against
 /// the budget its lease reserved; any child over budget fails the flight.
 pub(super) fn assert_hot_fork_tier(
+    fixture: &FlightFixture,
     service: &CampaignServiceChild,
     materialization: &[String],
     attempt: impl std::fmt::Display,
@@ -60,7 +61,10 @@ pub(super) fn assert_hot_fork_tier(
     // the host error; the plugin's idle-plan and stall rows say which wake
     // held it at its own coordinate.
     let stall_rows = service_failure_rows(service);
-    Err(format!("{error}; route_rows={rows:?}; stall_rows=\n{stall_rows}").into())
+    // A declined anchor whose replay diverged names only the decisions; the
+    // traced logs show the frames and publications around them.
+    let traced = attempt_log_trace_window(fixture, &rows.join("\n"));
+    Err(format!("{error}; route_rows={rows:?}; stall_rows=\n{stall_rows}\n{traced}").into())
 }
 
 /// Names the directory where the service traces each retained attempt log.
