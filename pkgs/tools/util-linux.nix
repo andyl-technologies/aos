@@ -6,6 +6,7 @@
   fetchurl,
   gnumake,
   pkg-config,
+  patch,
   zlib,
   ncurses,
   libselinux,
@@ -155,6 +156,7 @@ in
     buildDeps = [
       gnumake
       pkg-config
+      patch
       gettext
       python3
       cython
@@ -201,6 +203,10 @@ in
           # this new caller. Upstream now includes fileutils.h here as well.
           test "$(grep -c '^#include "all-io.h"' libmount/src/hook_idmap.c)" -eq 1
           sed -i '/^#include "all-io.h"/a #include "fileutils.h"' libmount/src/hook_idmap.c
+
+          # Failed mapping must release the waiting namespace child even when
+          # a confined caller cannot kill it. Never wait with its socket open.
+          patch -p1 < ${./patches/util-linux-idmap-close-before-reap.patch}
         '';
       }
       {
@@ -311,7 +317,7 @@ in
     # This recipe carries the hook_idmap source correction applied at unpack.
     passthru = {
       sourceRecipes = [sourceRecipe];
-      evidenceSources = [src sourceRecipe];
+      evidenceSources = [src sourceRecipe ./patches/util-linux-idmap-close-before-reap.patch];
     };
 
     meta = {

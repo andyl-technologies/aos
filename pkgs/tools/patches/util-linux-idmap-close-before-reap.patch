@@ -1,0 +1,21 @@
+--- a/libmount/src/hook_idmap.c
++++ b/libmount/src/hook_idmap.c
+@@ -249,12 +249,17 @@
+ 	(void)write_all(sock_fds[1], &c, 1);
+ 
+ err_wait:
++	/* The child may still be waiting if mapping or notification failed and
++	 * policy denied SIGKILL. Release its read before waiting for its exit. */
++	close(sock_fds[1]);
++	sock_fds[1] = -1;
+ 	rc = wait_for_pid(pid);
+ 
+ err_close_sock:
+ 	if (sock_fds[0] > 0)
+ 		close(sock_fds[0]);
+-	close(sock_fds[1]);
++	if (sock_fds[1] >= 0)
++		close(sock_fds[1]);
+ 
+ 	if (rc < 0 && fd_userns >= 0) {
+ 		close(fd_userns);
