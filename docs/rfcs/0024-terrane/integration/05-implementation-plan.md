@@ -207,6 +207,19 @@ synthetic deadline tests. Strict all-feature/all-target Clippy, touched Python
 syntax and targeted Nix formatting pass; native execution and mandatory
 application-target compilation remain pending. Trunk acceptance stays 27/64.
 
+The complete owning index gate at `4229f1d067` fails in 1,337.821 seconds.
+Every owner actor passes, including the separated foreign/zero-wipe controls
+(12.013 seconds), original signed positive mapping (23.141 seconds), real sealed
+file closure (69.205 seconds), retained cold controls, exposure and index
+reconciliation. The VM then reaches its unchanged 180-second limit during final
+source/ELF verification and cleanup, without a final result marker. This remains
+a failed aggregate. The four original file-closure/cold-recovery actors now run
+as one separate guest, preserving their original sequence, exact assertions,
+actual grace periods, 120/30-second actor bounds and 180-second guest bound.
+The owning gate still requires every original scenario, final verification and
+cleanup; its physical-owner aggregate now has four guests. Fresh qualification
+is required and no task is accepted from the earlier actor witnesses.
+
 Complete feature matrices now pass with independent immutable-source, retained
 executable and actual guest review at these checkpoints:
 

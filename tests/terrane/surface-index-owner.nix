@@ -6,7 +6,7 @@
 }: let
   testing = import ../../lib/testing {inherit pkgs lib;};
   # Independent real grace windows retain the original actor and guest bounds.
-  scenarios = ["owner" "cold-retained-file" "cold-retired-file"];
+  scenarios = ["owner" "file-closure" "cold-retained-file" "cold-retired-file"];
   scenarioCheck = scenario:
     testing.mkVMTest {
       name = "terrane-native-surface-index-${scenario}-ext4";

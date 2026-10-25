@@ -107,7 +107,7 @@ def main():
     """Runs real provision/query/publisher processes and bounded confined actors."""
     image, source = map(Path, sys.argv[1:3])
     scenario = sys.argv[3]
-    require(scenario in {"owner", "cold-retained-file", "cold-retired-file"},
+    require(scenario in {"owner", "file-closure", "cold-retained-file", "cold-retired-file"},
             "unknown native surface scenario")
     require(os.geteuid() == 0, "surface supervisor requires explicit administration")
     spec = importlib.util.spec_from_file_location("native_owner_support", image / "share/host_cache_vm.py")
@@ -202,6 +202,46 @@ def main():
             require(publisher.poll() is None and time.monotonic() < deadline,
                     "actual surface publisher failed preparation: " + result.stderr)
             time.sleep(0.02)
+        if scenario == "file-closure":
+            # Complete the original closure chain in its own guest. Each real
+            # grace and actor bound is unchanged; final verification and cleanup
+            # must also fit the same 180-second native guest contract.
+            # This additional actor observes both actual 30-second release and
+            # publisher retirement grace. Existing actors retain their 30s bound.
+            result = actor("pin", "file-closure", timeout=120)
+            require(result.returncode == 0 and result.stdout.splitlines() == [
+                "PASS surface admission requires actual recovery and acknowledged Resume",
+                "PASS active exposure blocks sealed body retirement after ordinary grace; draining retires the exact publisher inode while preserving exposure pins through final mapping and descriptor closure"],
+                "actual sealed exposure retirement actor failed")
+            # The independently privileged observer checks actual private metadata.
+            # Final retirement preserves its historical lease but must not leave
+            # a canonical binding with no body for the next cold inventory.
+            publication = support.root("pin") / "state/publication"
+            records = list(publication.iterdir())
+            require(len(records) == 1 and records[0].name.startswith("retirement-")
+                    and records[0].is_file()
+                    and not list((support.root("pin") / "sealed").glob("*/*"))
+                    and not list((support.root("pin") / "pending-delete").iterdir()),
+                    "final sealed retirement retained orphan binding or lost historical lease")
+            result = actor("pin", "cold-closure")
+            require(result.returncode == 0 and result.stdout.splitlines() == [
+                "PASS surface admission requires actual recovery and acknowledged Resume",
+                "PASS cold draining exposure preserves policy while the actual retired mapping survives; final unmap permits authenticated closure in funded recovery before Resume"],
+                "actual cold exposure closure actor failed")
+            result = actor("pin", "cold-active-closure")
+            require(result.returncode == 0 and result.stdout.splitlines() == [
+                "PASS surface admission requires actual recovery and acknowledged Resume",
+                "PASS cold active exposure preserves policy through actual namespace loss and retained mapping; final unmap alone permits authenticated closure in funded recovery before Resume"],
+                "actual cold active exposure closure actor failed")
+            result = actor("pin", "cold-retained")
+            require(result.returncode == 0 and result.stdout.splitlines() == [
+                "PASS surface admission requires actual recovery and acknowledged Resume",
+                "PASS funded cold recovery retains actual old mapping and draining exposure through new Resume; unchanged native obligations discharge only after final unmap and authenticated closure"],
+                "actual retained cold exposure recovery actor failed")
+            verify_surface(image, source)
+            print("PASS independent native surface scenario: file-closure", flush=True)
+            return
+
         if scenario != "owner":
             witnesses = {
                 "cold-retained-file": "PASS funded cold recovery re-verifies original sealed file and retains descriptor through new Resume and publisher retirement; exact inode charges release only on final closure before exposure reconciliation",
@@ -271,38 +311,6 @@ def main():
                 and not list((support.root("policy-refusal") / "sealed").iterdir())
                 and not list((support.root("policy-refusal") / "objects").iterdir()),
                 "signed policy refusal created physical cache content")
-        # This additional actor observes both actual 30-second release and
-        # publisher retirement grace. Existing actors retain their 30s bound.
-        result = actor("pin", "file-closure", timeout=120)
-        require(result.returncode == 0 and result.stdout.splitlines() == [
-            "PASS surface admission requires actual recovery and acknowledged Resume",
-            "PASS active exposure blocks sealed body retirement after ordinary grace; draining retires the exact publisher inode while preserving exposure pins through final mapping and descriptor closure"],
-            "actual sealed exposure retirement actor failed")
-        # The independently privileged observer checks actual private metadata.
-        # Final retirement preserves its historical lease but must not leave
-        # a canonical binding with no body for the next cold inventory.
-        publication = support.root("pin") / "state/publication"
-        records = list(publication.iterdir())
-        require(len(records) == 1 and records[0].name.startswith("retirement-")
-                and records[0].is_file()
-                and not list((support.root("pin") / "sealed").glob("*/*"))
-                and not list((support.root("pin") / "pending-delete").iterdir()),
-                "final sealed retirement retained orphan binding or lost historical lease")
-        result = actor("pin", "cold-closure")
-        require(result.returncode == 0 and result.stdout.splitlines() == [
-            "PASS surface admission requires actual recovery and acknowledged Resume",
-            "PASS cold draining exposure preserves policy while the actual retired mapping survives; final unmap permits authenticated closure in funded recovery before Resume"],
-            "actual cold exposure closure actor failed")
-        result = actor("pin", "cold-active-closure")
-        require(result.returncode == 0 and result.stdout.splitlines() == [
-            "PASS surface admission requires actual recovery and acknowledged Resume",
-            "PASS cold active exposure preserves policy through actual namespace loss and retained mapping; final unmap alone permits authenticated closure in funded recovery before Resume"],
-            "actual cold active exposure closure actor failed")
-        result = actor("pin", "cold-retained")
-        require(result.returncode == 0 and result.stdout.splitlines() == [
-            "PASS surface admission requires actual recovery and acknowledged Resume",
-            "PASS funded cold recovery retains actual old mapping and draining exposure through new Resume; unchanged native obligations discharge only after final unmap and authenticated closure"],
-            "actual retained cold exposure recovery actor failed")
         objects = support.root("empty") / "objects"
         originals = list(objects.glob(".terrane-surface:2:*"))
         require(len(originals) == 1, "cold refusal has no unique real admitted index")
