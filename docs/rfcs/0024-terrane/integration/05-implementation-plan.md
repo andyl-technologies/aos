@@ -185,6 +185,20 @@ Syntax, selector preservation, formatting, PLAN-2 and derivation evaluation
 are checked before committed-source qualification. Runtime qualification is
 pending; no task acceptance changes.
 
+The surface-gate audit finds the same build-process execution issue. All
+twenty-seven original selectors move, in their original order, into four
+independent unprivileged ext4 guests: interface (18), read-only commit-path
+(1), metadata schema (6), and status (2). The schema guest retains the
+original metadata-only library observer; the status gate still requires the
+separate inode/xattr presentation guest. Each guest verifies complete immutable
+crate inputs and actual Cargo artifact hashes before and after execution,
+requires UID/GID 840 with empty groups and capabilities and no-new-privileges,
+and checks exact one-case nonignored results in fresh private storage.
+Gate phases consume completed guest outputs and retain their proof paths.
+Selector preservation, Python syntax, formatting, PLAN-2 and four-gate
+evaluation/dry-run pass. Committed-source runtime qualification remains
+required; these changes grant no surface or task acceptance.
+
 Configured host-maintenance assembly now binds one protected listener per
 funded native domain before the original Serve process reports readiness. The
 GC CLI selects this explicit host-only configuration, installs confinement

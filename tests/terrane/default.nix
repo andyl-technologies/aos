@@ -379,7 +379,8 @@
             inherit pkgs lib sourceGate structureGate;
             forkPrerequisites = builtins.attrValues nativeForkPrerequisites;
           }
-          // lib.optionalAttrs (builtins.elem file ["algebra.nix" "properties.nix" "cdc.nix" "gc.nix" "index.nix" "surfaces.nix" "host-cache.nix" "host-publish.nix"]) {inherit nativeSdkGate;}
+          // lib.optionalAttrs (builtins.elem file ["algebra.nix" "properties.nix" "cdc.nix" "gc.nix" "index.nix" "host-cache.nix" "host-publish.nix"]) {inherit nativeSdkGate;}
+          // lib.optionalAttrs (file == "surfaces.nix") {inherit nativeSdkTestImage;}
           // lib.optionalAttrs (file == "fuse-index.nix") {inherit initialEnrollmentProof;}
           // lib.optionalAttrs (file == "gc.nix") {inherit localTwoPhaseGc;}
           // lib.optionalAttrs (builtins.elem file ["host-publish.nix" "surfaces.nix" "fuse-index.nix"]) {inherit sourceGateWithInputs;}
