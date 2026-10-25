@@ -15,7 +15,11 @@ fn verify(values: &[Value]) -> TestResult {
     let canonical_bytes = values.iter().try_fold(0usize, |sum, value| {
         canonical::canonical_json(value).map(|bytes| sum + bytes.len())
     })?;
-    let quote = original_json_value_clone_storage_forest_data(canonical_bytes, values.len())?;
+    verify_encoded_forest(values, canonical_bytes)
+}
+
+fn verify_encoded_forest(values: &[Value], encoded_bytes: usize) -> TestResult {
+    let quote = original_json_value_clone_storage_forest_data(encoded_bytes, values.len())?;
     let mut backing = values.len() * size_of::<Value>();
 
     for original in values {
@@ -45,9 +49,45 @@ fn verify(values: &[Value]) -> TestResult {
     }
 
     assert!(backing <= quote, "backing={backing}, quote={quote}");
-    let construction = original_json_value_storage_forest_data(canonical_bytes, values.len())?;
+    let construction = original_json_value_storage_forest_data(encoded_bytes, values.len())?;
     assert!(quote < construction.value_dom_requested_bytes);
     Ok(())
+}
+
+#[test]
+fn raw_encoded_forests_cover_clones_when_canonical_numbers_expand() -> TestResult {
+    let array = format!("[{}]", vec!["1e20"; 512].join(","));
+    let object = format!(
+        "{{{}}}",
+        (0..256)
+            .map(|index| format!("\"key-{index}\":1e20"))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let mut encoded = vec![
+        b"1e20".to_vec(),
+        array.into_bytes(),
+        object.into_bytes(),
+        br#" {"\u006b":"\uD834\uDD1E\u0000","values":[1e20,-0,1e-6,{},[]]} "#.to_vec(),
+    ];
+    encoded.extend((0..128).map(|_| b"1e20".to_vec()));
+    let values = encoded
+        .iter()
+        .map(|bytes| canonical::parse_json_with_depth(bytes, bytes.len(), 64))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut raw_bytes = 0;
+    let mut canonical_bytes = 0;
+    for (bytes, value) in encoded.iter().zip(&values) {
+        let (array_elements, object_members, string_bytes) = lexical_storage_units(value);
+        assert!(bytes.len() >= 1 + 2 * array_elements + 5 * object_members + string_bytes);
+        verify_encoded_forest(std::slice::from_ref(value), bytes.len())?;
+        raw_bytes += bytes.len();
+        canonical_bytes += canonical::canonical_json(value)?.len();
+    }
+
+    assert!(canonical_bytes > raw_bytes);
+    verify_encoded_forest(&values, raw_bytes)
 }
 
 #[test]

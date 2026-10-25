@@ -10,6 +10,36 @@ This summary accompanies the [phased implementation plan](phased-implementation.
 traces and experiment history remain local. Test counts below identify their
 specific stage; they are not cumulative coverage of the latest source.
 
+## Raw-frame clone storage geometry
+
+The shared fresh-clone forest quote now accepts a complete raw JSON byte ceiling
+as well as a canonical one. Its existing joint structural lower bound applies
+to either representation: delimiters and scalar minima pay for array slots and
+object entries, while decoded strings cannot exceed their encoded bytes.
+Whitespace, escapes and wider numeric spellings add slack. Canonicalizing a
+short exponent such as `1e20` may expand output without adding clone backing.
+The arithmetic, pinned-layout refusals and fixed counter remain unchanged.
+
+A control parses actual raw documents with the strict wire parser, checks their
+structural bound and compares real cloned String/Vec/tree backing with the quote.
+It covers dense numeric arrays and objects, escapes, whitespace and many separate
+roots, and confirms that aggregate canonical output exceeds the raw input.
+Parser growth, original spare capacity, canonical work, typed owners and each
+independent failure-state clone remain separately funded. This extends a DATA
+projection used by the forthcoming SDK row; it issues no Source18 action or
+native permission and does not complete future SDK R/T/S or its handoff.
+
+All six clone controls and all 62 SourceBirth tests pass in both codec builds.
+Both complete Transport suites pass 2,242 tests with zero failures and twenty
+ignored. SourceBirth strict Clippy passes without warnings; Transport retains
+its exact previous four errors and 1,725 warnings, so it is not a strict lint
+pass. Scoped formatting, five-package all-feature/all-target checks and all six
+architecture checks pass. Required application test-target compilation passes
+with 185 artifacts across 58 packages and 76 integration targets; all 720 frozen
+Rust/Cargo inputs match its captured source and the candidate tree. User-owned
+changes remain outside this component and no clean whole-PR qualification is
+claimed.
+
 ## Compact runtime in original process custody
 
 The original process capsule now retains a compact runtime alternative beside
