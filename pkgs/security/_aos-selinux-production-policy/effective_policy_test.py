@@ -321,6 +321,39 @@ class EffectivePolicyTest(unittest.TestCase):
                         effective_policy.Access(source, "system_dbusd_t", object_class, permission)
                     )
 
+    def test_switch_root_permission_does_not_grant_manager_reboot(self) -> None:
+        self.assert_missing_allow_rejected(
+            effective_policy.Access("init_t", "init_t", "system", "aos_switch_root")
+        )
+
+        for domain in effective_policy.ENFORCING_DOMAINS:
+            if domain == "init_t":
+                continue
+
+            for source, target in ((domain, "init_t"), ("init_t", domain)):
+                with self.subTest(source=source, target=target):
+                    self.assert_forbidden_allow_rejected(
+                        effective_policy.Access(source, target, "system", "aos_switch_root")
+                    )
+
+        for permission in ("reboot", "start"):
+            with self.subTest(permission=permission):
+                self.assert_forbidden_allow_rejected(
+                    effective_policy.Access("init_t", "init_t", "system", permission)
+                )
+
+        for axis in ("source", "target"):
+            for active in (False, True):
+                policy = FakePolicy()
+                access = effective_policy.Access("init_t", "init_t", "system", "aos_switch_root")
+                rule = FakeRule("broad SwitchRoot grant", active=active)
+                rule = replace(rule, **{axis: FakeAttribute("foreign_attribute", ("init_t", "foreign_t"))})
+                policy.allows[access] = [rule]
+
+                with self.subTest(axis=axis, active=active):
+                    with self.assertRaisesRegex(ValueError, "forbidden allow exists for SwitchRoot"):
+                        effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def test_native_bus_inherits_streams_without_manager_connections(self) -> None:
         for object_class, permissions in (
             ("fd", ("use",)),
@@ -854,7 +887,8 @@ class EffectivePolicyTest(unittest.TestCase):
             + len(effective_policy.NEGATIVE_ACCESS)
             + 4  # Two closed delivery sets and two source attribute cuts.
             + 2  # Public output is neither a domain nor a broad file type.
-            + 8,  # Three namespace, four pidfs and one state ioctl cells.
+            + 8  # Three namespace, four pidfs and one state ioctl cells.
+            + 1,  # The dedicated SwitchRoot grant is globally exclusive.
         )
 
     def test_explicit_loader_membership_is_exact_and_preserves_domains(self) -> None:
@@ -2556,7 +2590,8 @@ class EffectivePolicyTest(unittest.TestCase):
         ]
         self.assertEqual(
             len(wildcard_queries),
-            sum(access.target == "*" for access in effective_policy.NEGATIVE_ACCESS),
+            sum(access.target == "*" for access in effective_policy.NEGATIVE_ACCESS)
+            + 1,  # The SwitchRoot query leaves both axes unbound.
         )
 
     def test_inactive_positive_conditional_does_not_count(self) -> None:

@@ -315,8 +315,10 @@ Recent committed startup fixes close narrower prerequisites:
   observed digest with the original profile's canonical-policy pin. The post
   remains owed after initial or other startup refusal; original native files,
   results and partial failures remain resident. All 22 focused regressions pass.
-  Complete Rust targets for these exact sources are building. This is mechanical
-  live-policy comparison, without an installed caller, protected writer,
+  Complete Rust targets compile for this exact live-policy source
+  (`/nix/store/ym19wh6sa0rdaqxb7iid1l5cwxfg9kkh-aos-test-targets-0.1.0`),
+  without running the tests; this result excludes the later unit and Runtime
+  additions. This is mechanical live-policy comparison, without an installed caller, protected writer,
   independent key provenance or initial-floor publication authority.
 
 - Initial unit observation now owns its separately Source-paid current-thread
@@ -327,7 +329,9 @@ Recent committed startup fixes close narrower prerequisites:
   one profile OpenFile line with `@AOS_METHOD46_INITIAL_STARTUP_PROFILE@`.
   Actual bytes, native results and failures stay resident. Manager and file posts
   are independently attempted before Source after. All 25 focused regressions
-  pass; exact-source complete Rust target compilation is running. Installed
+  pass; complete Rust targets compile for the original unit source
+  (`/nix/store/yvr3kk04wn3m9d21basghkvm2x31ajzg-aos-test-targets-0.1.0`),
+  without running them and before the later canonical-name/Runtime fixes. Installed
   positive capture, full unit hardening, independent key provenance, protected
   writer custody and actual initial-floor publication remain unqualified.
 
@@ -336,8 +340,11 @@ Recent committed startup fixes close narrower prerequisites:
   opening, measures only the immutable store target, and independently resolves
   the original reported name again during its owed post. A stable store inode
   cannot hide a changed reported link. Foreign mutable unit directories still
-  refuse. All 26 focused regressions pass; complete Rust targets for this exact
-  correction are running. This is not positive installed initial-job evidence.
+  refuse. All 26 focused regressions pass; complete Rust targets compile for
+  this exact correction
+  (`/nix/store/4q07syzax9mpkskf9ccdwz9zv5g8qird-aos-test-targets-0.1.0`),
+  without running them and before the later Runtime bound. This is not positive
+  installed initial-job evidence.
   The earlier runtime/maps sources separately pass complete Rust compilation
   (`/nix/store/y35pqkkvlw0s7zndf80haxaziwfbnkz9-aos-test-targets-0.1.0`);
   that frozen result predates the manager, live-policy and unit additions and
@@ -346,12 +353,33 @@ Recent committed startup fixes close narrower prerequisites:
 - The initial unit reader explicitly bounds its owned Runtime to one blocking
   worker with a 2 MiB stack. The same Source prepays that PID and stack even if
   the worker is never used. All 26 focused tests still pass; complete Rust
-  target compilation is running for the exact bounded-Runtime source. The
-  earlier manager-image change separately passes complete Rust compilation
+  targets compile for the exact bounded-Runtime source
+  (`/nix/store/7il0c7vznwf2giahda3ci7gh4yff0iz2-aos-test-targets-0.1.0`),
+  without running the targets. The earlier manager-image change separately passes complete Rust compilation
   (`/nix/store/i0gklis9f431b9rdhr5vvd91zi2miy32-aos-test-targets-0.1.0`),
   compiling targets without running them. That frozen result excludes the later
   live-policy, unit and Runtime additions. Installed producers and the public
   lifecycle remain unqualified.
+
+- The isolated manager candidate gives initrd SwitchRoot its own appended
+  `system:aos_switch_root` permission. Production grants only `init_t` to itself;
+  whole-policy checks reject foreign grants, including disabled and attribute
+  rules. Reboot, soft-reboot and kexec retain their independent reboot checks.
+  The manager explicitly requires deny/reject unknown-permission behavior:
+  libselinux otherwise allows a missing permission under an allow-unknown
+  policy. The compiled actual access-check regression covers that refusal,
+  lookup errors, ordinary permission behavior and unchanged destructive routes
+  (`/nix/store/2a0l0vhjxlqa1972vqzbqrbb0qmplpmj-systemd-switch-root-access-check-261.2`).
+  The complete manager with Parent06 builds successfully
+  (`/nix/store/av2p27bidcqrkyc5sn46nihfy5z02cpq-systemd-261.2`).
+  The first isolated linked production policy passes 178 unit tests, the real
+  query-index differential and its negative fixtures
+  (`/nix/store/df0qi7vkcn4mwl6j9hvy1sqs6rjxsy3v-aos-selinux-production-policy-1`).
+  A direct native query of that binary confirms the new grant has only `init_t`
+  sources and targets. The final build adding the global exclusivity check and
+  its corrected evidence/query-count expectations is running, alongside the
+  isolated installed cold-boot/power-cycle test. This candidate excludes the
+  separate networkd and Host custody changes and establishes no initial-floor or public lifecycle result.
 
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending

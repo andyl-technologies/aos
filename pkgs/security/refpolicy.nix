@@ -137,7 +137,11 @@ in
       {
         name = "configure";
         script =
-          (
+          ''
+            # Append the userspace-only SwitchRoot permission, preserving old bits.
+            patch --fuzz=0 -p1 < ${./_aos-selinux-production-policy/refpolicy-switch-root-permission.patch}
+          ''
+          + (
             if production
             then ''
               # Match the production kernel's ordered security-class map. The

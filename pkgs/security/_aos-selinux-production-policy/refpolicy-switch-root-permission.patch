@@ -1,0 +1,12 @@
+--- a/policy/flask/access_vectors
++++ b/policy/flask/access_vectors
+@@ -421,6 +421,9 @@
+ 	enable
+ 	disable
+ 	reload
++
++	# AOS initrd handoff has no reboot, soft-reboot or kexec authority.
++	aos_switch_root
+ }
+ 
+ #

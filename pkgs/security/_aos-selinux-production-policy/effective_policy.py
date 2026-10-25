@@ -267,6 +267,7 @@ POSITIVE_ACCESS = (
     # Native host activation requires the manager and generated-unit API;
     # owner_policy separately forbids manager mutation by Sandbox services.
     *accesses("init_t", "init_t", "system", ("status", "reload")),
+    Access("init_t", "init_t", "system", "aos_switch_root"),
     *accesses("init_t", "dbusd_unit_t", "service", ("start", "status")),
     *accesses("init_t", "auditd_unit_t", "service", ("start", "status")),
     *accesses("init_t", "chronyd_unit_t", "service", ("start", "status")),
@@ -1226,6 +1227,12 @@ NEGATIVE_ACCESS = (
     ),
     *negative_access(), *OWNER_NEGATIVE,
     Access("init_t", "init_t", "system", "start"),
+    Access("init_t", "init_t", "system", "reboot"),
+    *(Access(domain, "init_t", "system", "aos_switch_root")
+      for domain in ENFORCING_DOMAINS if domain != "init_t"),
+    *(Access("init_t", domain, "system", "aos_switch_root")
+      for domain in ENFORCING_DOMAINS if domain != "init_t"),
+    *(Access("init_t", domain, "system", "reboot") for domain in owner_policy.OWNER_DOMAINS),
     *accesses("init_t", "auditd_unit_t", "service", ("stop", "reload")),
     *accesses("init_t", "chronyd_unit_t", "service", ("stop", "reload")),
     *accesses("init_t", "sshd_unit_t", "service", ("stop", "reload")),
@@ -1795,6 +1802,15 @@ def check_policy(setools: Any, policy: Any, *, git_read_delegation: bool = False
         if object_type in file_types:
             raise ValueError(f"protected object inherited broad file_type: {object_type}")
         evidence.append(f"deny-attribute\t{object_type}\tfile_type")
+
+    # Inspect the whole linked policy, including disabled and attribute grants.
+    # A new class permission must not leak through an unrelated broad rule.
+    for rule in allow_rules(setools, policy, Access("*", "*", "system", "aos_switch_root")):
+        sources = {str(member) for member in rule.source.expand()}
+        targets = {str(member) for member in rule.target.expand()}
+        if sources != {"init_t"} or targets != {"init_t"}:
+            raise ValueError(f"forbidden allow exists for SwitchRoot: {rule}")
+    evidence.append("exclusive-switch-root\tinit_t\tinit_t")
 
     for access in POSITIVE_ACCESS:
         rules = [rule for rule in allow_rules(setools, policy, access) if rule.enabled()]

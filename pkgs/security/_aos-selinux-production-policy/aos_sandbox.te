@@ -56,7 +56,7 @@ require {
     class process2 { nnp_transition nosuid_transition };
     class security read_policy;
     class service { reload start status stop };
-    class system { reload status };
+    class system { aos_switch_root reload status };
     class memfd_file { create getattr ioctl map open read write };
     class sock_file { create getattr open read rename setattr unlink write };
     class unix_dgram_socket sendto;
@@ -71,6 +71,9 @@ allow init_t self:user_namespace create;
 # Native host activation subscribes to PID 1 before reconciling its generated
 # units. Sandbox owners retain their separately checked status-only access.
 allow init_t self:system { reload status };
+# The patched manager checks this only for initrd SwitchRoot. Reboot,
+# soft-reboot and kexec retain their independent, denied reboot permission.
+allow init_t self:system aos_switch_root;
 allow init_t systemd_unit_t:service { reload start status stop };
 # Native activation adopts the image's already labeled D-Bus socket/service.
 allow init_t dbusd_unit_t:service { start status };

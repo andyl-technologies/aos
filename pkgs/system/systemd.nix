@@ -341,6 +341,7 @@ in
       ./patches/0037-account-view-root-preparation.patch
       ./patches/0038-confine-offline-public-output.patch
       ./patches/0039-nsresourced-retirement-fentry.patch
+      ./patches/0040-separate-switch-root-selinux-permission.patch
       ./patches/0041-method46-initial-parent06.patch
     ];
 
