@@ -301,6 +301,15 @@ Recent committed startup fixes close narrower prerequisites:
   unit/live-policy/key admission, protected writer custody, approved intent,
   TPM initialization and public lifecycle qualification remain incomplete.
 
+- Initial image admission now compares the actual `/proc/1/exe` inode with
+  the same inherited, measured PID1 file. The genuine Source prepays both the
+  initial probe and its independent post; every reached original stays resident.
+  A refused file post cannot suppress the manager probe or Source after. Five
+  profile/receiver and fourteen startup regressions pass, including the two new
+  negative dispatch cases. The full Rust target check is running against the
+  exact changed source. This adds no installed qualification, unit/live-policy
+  admission, protected writer custody or provisioning authority.
+
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending
 SwitchRoot or networkd policy changes must identify those dependencies; they

@@ -8,6 +8,7 @@
 use std::fs::Metadata;
 use std::path::Path;
 
+use aos_sandbox_broker::immutable_image::ImmutableExecutedFileOriginalV1;
 use aos_sandbox_broker::profile_data::schema::ImagePinV1;
 
 use super::*;
@@ -20,7 +21,25 @@ pub(super) use runtime::InitialRuntimeOriginalV1;
 pub(super) struct InitialImagesOriginalV1 {
     pid1: ImageOriginalV1,
     executable: ImageOriginalV1,
+    manager_execution: [RefCell<ManagerExecutionOriginalV1>; 2],
+    manager_execution_paid: bool,
     entered: bool,
+}
+
+struct ManagerExecutionOriginalV1 {
+    original: ImmutableExecutedFileOriginalV1,
+    result: Option<Result<(), ImmutableImageErrorV1>>,
+    entered: bool,
+}
+
+impl ManagerExecutionOriginalV1 {
+    fn new() -> Self {
+        Self {
+            original: ImmutableExecutedFileOriginalV1::new(),
+            result: None,
+            entered: false,
+        }
+    }
 }
 
 struct ImageOriginalV1 {
@@ -100,6 +119,10 @@ impl InitialImagesOriginalV1 {
         Self {
             pid1: ImageOriginalV1::new(),
             executable: ImageOriginalV1::new(),
+            manager_execution: std::array::from_fn(|_| {
+                RefCell::new(ManagerExecutionOriginalV1::new())
+            }),
+            manager_execution_paid: false,
             entered: false,
         }
     }
@@ -120,9 +143,53 @@ impl InitialImagesOriginalV1 {
     pub(super) fn finish_posts(&self) -> Result<(), Method46InitialStartupClosedV1> {
         let pid1 = self.pid1.finish_post();
         let executable = self.executable.finish_post();
+        let manager = if self.manager_execution_paid {
+            self.observe_manager_execution(1)
+        } else {
+            Ok(())
+        };
         // Each reached file owes its own post, including after the other fails.
-        pid1.and(executable)
+        pid1.and(executable).and(manager)
     }
+
+    fn observe_manager_execution(
+        &self,
+        index: usize,
+    ) -> Result<(), Method46InitialStartupClosedV1> {
+        let mut original = self
+            .manager_execution
+            .get(index)
+            .ok_or(Method46InitialStartupClosedV1)?
+            .try_borrow_mut()
+            .map_err(|_| Method46InitialStartupClosedV1)?;
+        if original.entered {
+            return Err(Method46InitialStartupClosedV1);
+        }
+        original.entered = true;
+        // Payment follows positive acquisition. This owner never takes or
+        // reenters that acquisition; file posts leave its measurement resident.
+        let measured = self
+            .pid1
+            .acquisition
+            .completed_measurement()
+            .ok_or(Method46InitialStartupClosedV1)?;
+        original.result = Some(measured.require_executed_retaining_v1(1, &mut original.original));
+        if matches!(original.result, Some(Ok(()))) {
+            Ok(())
+        } else {
+            Err(Method46InitialStartupClosedV1)
+        }
+    }
+}
+
+fn manager_execution_demand() -> Option<ResourceVector> {
+    // The two native/result headers are already in the prepaid boxed body.
+    // Each fixed PID1 probe keeps its own File and bounded "/proc/1/exe" String.
+    let one = ResourceVector::ZERO
+        .with(D::MemoryBytes, 512)
+        .with(D::OpenFiles, 1)
+        .with(D::MetadataEntries, 4);
+    one.checked_add(one).ok()
 }
 
 fn acquisition_demand(pin: &ImagePinV1, maximum: u64) -> Option<ResourceVector> {
@@ -160,7 +227,9 @@ impl Method46InitialStartupOriginalV1 {
     ///
     /// Only the retained original descriptors enter measurement. Fixed native
     /// capture is paid first; retained metadata bounds separately paid digest
-    /// work and the owed post. The decoded image pins are comparison DATA, not
+    /// work and the owed post. The actual manager's executed inode is compared
+    /// with that same inherited file; its independent post is prepaid too.
+    /// The decoded image pins are comparison DATA, not
     /// constructors for another descriptor, source or invocation.
     ///
     /// # Errors
@@ -180,11 +249,23 @@ impl Method46InitialStartupOriginalV1 {
         body.images.entered = true;
         let result = self
             .measure_image(true)
-            .and_then(|()| self.measure_image(false));
+            .and_then(|()| self.measure_image(false))
+            .and_then(|()| self.measure_manager_execution());
         if result.is_err() {
             self.fail(First::Image);
         }
         result
+    }
+
+    fn measure_manager_execution(&mut self) -> Result<(), Method46InitialStartupClosedV1> {
+        self.source
+            .get_mut()
+            .require_current_v1()
+            .map_err(|_| self.closed)?;
+        self.fund_additional(manager_execution_demand())?;
+        let images = &mut self.body.as_mut().ok_or(self.closed)?.images;
+        images.manager_execution_paid = true;
+        images.observe_manager_execution(0)
     }
 
     fn measure_image(&mut self, manager: bool) -> Result<(), Method46InitialStartupClosedV1> {
@@ -318,6 +399,52 @@ mod tests {
         assert!(images.executable.post.borrow().entered);
         assert!(startup.after_attempted.get());
         assert!(matches!(startup.after_result.get(), Some(Err(_))));
+        drop(held);
+    }
+
+    #[test]
+    fn missing_source_cannot_pay_or_enter_manager_execution_probes() {
+        for role in [
+            Method46InitialServiceRoleV1::ControllerStorageClient,
+            Method46InitialServiceRoleV1::StorageBroker,
+        ] {
+            let mut startup = ManuallyDrop::new(Method46InitialStartupOriginalV1::new(role));
+            startup.body = Some(Box::new(StartupRolesOriginalV1::new()));
+
+            assert!(startup.measure_manager_execution().is_err());
+
+            let images = &startup.body.as_ref().unwrap().images;
+            assert!(!images.manager_execution_paid);
+            assert!(
+                images
+                    .manager_execution
+                    .iter()
+                    .all(|probe| !probe.borrow().entered)
+            );
+            assert!(!startup.capture_attempted);
+            assert_eq!(startup.receiving.get(), ResourceVector::ZERO);
+        }
+    }
+
+    #[test]
+    fn busy_image_post_still_attempts_manager_post_and_source_after() {
+        let mut startup = ManuallyDrop::new(Method46InitialStartupOriginalV1::new(
+            Method46InitialServiceRoleV1::ControllerStorageClient,
+        ));
+        let mut body = StartupRolesOriginalV1::new();
+        // Inert negative sinks check dispatch only; no measured PID1, funding
+        // or actual manager-image proof is manufactured by these private flags.
+        body.images.pid1.preflight_entered = true;
+        body.images.manager_execution_paid = true;
+        startup.body = Some(Box::new(body));
+        let images = &startup.body.as_ref().unwrap().images;
+        let held = images.pid1.post.borrow_mut();
+
+        assert!(startup.finish_source_after_owed_once_v1(Ok(())).is_err());
+
+        assert!(images.manager_execution[1].borrow().entered);
+        assert!(startup.after_attempted.get());
+        assert!(matches!(startup.first.get(), Some(First::Image)));
         drop(held);
     }
 }
