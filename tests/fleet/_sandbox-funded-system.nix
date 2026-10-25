@@ -24,6 +24,21 @@ systems.server-secureboot-lockdown.extendModules {
           + parent.audit.maxLogFileMiB * (parent.audit.numLogs + 1) * mib;
         tmpfs-bytes = parent.journal.runtimeMaxUse + parent.journal.runtimeMaxFileSize;
       };
+      # The four fixed receivers pay credential backing (1 MiB) and the
+      # largest selected private-device recipe (4 MiB) before those mounts.
+      # Mount has no private devices, so this remains conservative there.
+      # Metadata also covers the device recipe's 65,536 entries, credentials
+      # and the actual mount roster/path traversal. These are original debts;
+      # the fixture grants no restart refund or replacement receiver.
+      fixedReceivingBacking = {
+        tmpfs-bytes = 5 * mib;
+        metadata-entries = 128 * 1024;
+      };
+      fixedProvision =
+        loggingProvision
+        // {
+          tmpfs-bytes = loggingProvision.tmpfs-bytes + 4 * fixedReceivingBacking.tmpfs-bytes;
+        };
       vector = values: lib.genAttrs config.aos.sandbox.resourceBank._dimensionOrder (name: values.${name} or 0);
       envelope = memory: cpu: pids: files:
         vector {
@@ -37,6 +52,8 @@ systems.server-secureboot-lockdown.extendModules {
           log-bytes = memory / 8;
           mounts = pids * 16;
         };
+      fixedReceiving = memory: cpu: pids: files:
+        (envelope memory cpu pids files) // fixedReceivingBacking;
       sharedCredential = name: "qualification-${name}";
       lifecycleIntake =
         (envelope (256 * mib) 10000 1 4096)
@@ -219,7 +236,7 @@ systems.server-secureboot-lockdown.extendModules {
                   publication-staging-bytes = 128 * mib;
                   output-bytes = 128 * mib;
                 };
-              components = (envelope (16 * gib) 1000000 512 1048576) // loggingProvision;
+              components = (envelope (16 * gib) 1000000 512 1048576) // fixedProvision;
               hostService = envelope (512 * mib) 100000 32 8192;
               hostControl = envelope (128 * mib) 10000 8 512;
               firstGlobalPrefix = envelope (256 * mib) 10000 1 4096;
@@ -254,15 +271,15 @@ systems.server-secureboot-lockdown.extendModules {
             };
           parentEnclosure = {
             manager = envelope (4 * gib) 100000 64 65536;
-            fixedServices = (envelope (4 * gib) 300000 128 131072) // loggingProvision;
+            fixedServices = (envelope (4 * gib) 300000 128 131072) // fixedProvision;
             sourceSignerSender = envelope (128 * mib) 1000 1 128;
-            sourceSignerReceiving = envelope (512 * mib) 50000 8 256;
+            sourceSignerReceiving = fixedReceiving (512 * mib) 50000 8 256;
             ownershipSender = envelope (128 * mib) 1000 1 128;
-            ownershipReceiving = envelope (256 * mib) 25000 8 256;
+            ownershipReceiving = fixedReceiving (256 * mib) 25000 8 256;
             mountSender = envelope (128 * mib) 1000 1 128;
-            mountReceiving = envelope (256 * mib) 25000 8 256;
+            mountReceiving = fixedReceiving (256 * mib) 25000 8 256;
             networkSender = envelope (128 * mib) 1000 1 128;
-            networkReceiving = envelope (256 * mib) 25000 8 256;
+            networkReceiving = fixedReceiving (256 * mib) 25000 8 256;
             managerOpenFilesPerProcess = 1024;
             # Each receiver has 256 descriptors total, including the actual
             # inherited pre-exec peak as well as this new process table.
