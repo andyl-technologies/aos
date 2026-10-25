@@ -19,8 +19,13 @@
   compileOnly ? false,
   dependencyProfile ? null,
   rustcFlags ? [],
+  # Generators and procedural macros use the native execution configuration.
+  execRustcFlags ? [],
 }: let
   rootString = toString root;
+  validRustcFlags = flags:
+    builtins.isList flags
+    && builtins.all (flag: builtins.isString flag && flag != "" && !lib.hasInfix "," flag) flags;
   inventory =
     if sourceInventory == null
     then null
@@ -139,35 +144,38 @@
   configurationFor = batch:
     pkgs.writeTextFile {
       name = "aos-bazel-configuration.json";
-      text = builtins.toJSON {
-        bazel = "${pkgs.bazel}/bin/bazel";
-        bazel_version = pkgs.bazel.version;
-        jdk = toString pkgs.openjdk;
-        bash = "${pkgs.bash}/bin/bash";
-        registry = toString (pkgs.runCommand "aos-bazel-offline-registry" {} ''
-          mkdir -p "$out"
-          printf '{}\n' > "$out/bazel_registry.json"
-        '');
-        rust_project_exporter = "${../../../tools/bazel/metadata/export_rust_project.py}";
-        inherit jobs batch;
-        compile_only = compileOnly;
-        target_platform = targetPlatform;
-        dependency_profile = dependencyProfile;
-        rustc_flags = rustcFlags;
-        # Bazel's test setup and XML writer use these tools too. Never fall back
-        # to the daemon's or developer's PATH when a test starts.
-        path = lib.concatStringsSep ":" (map (tool: "${tool}/bin") [
-          pkgs.bash
-          pkgs.coreutils
-          pkgs.binutils
-          pkgs.findutils
-          pkgs.grep
-          pkgs.sed
-          pkgs.procps-ng
-        ]);
-        modules = builtins.mapAttrs (_: toString) modules;
-        repositories = builtins.mapAttrs (_: toString) (repositories // {aos_tools = toolchains;});
-      };
+      text = builtins.toJSON ({
+          bazel = "${pkgs.bazel}/bin/bazel";
+          bazel_version = pkgs.bazel.version;
+          jdk = toString pkgs.openjdk;
+          bash = "${pkgs.bash}/bin/bash";
+          registry = toString (pkgs.runCommand "aos-bazel-offline-registry" {} ''
+            mkdir -p "$out"
+            printf '{}\n' > "$out/bazel_registry.json"
+          '');
+          rust_project_exporter = "${../../../tools/bazel/metadata/export_rust_project.py}";
+          inherit jobs batch;
+          compile_only = compileOnly;
+          target_platform = targetPlatform;
+          dependency_profile = dependencyProfile;
+          rustc_flags = rustcFlags;
+          # Bazel's test setup and XML writer use these tools too. Never fall back
+          # to the daemon's or developer's PATH when a test starts.
+          path = lib.concatStringsSep ":" (map (tool: "${tool}/bin") [
+            pkgs.bash
+            pkgs.coreutils
+            pkgs.binutils
+            pkgs.findutils
+            pkgs.grep
+            pkgs.sed
+            pkgs.procps-ng
+          ]);
+          modules = builtins.mapAttrs (_: toString) modules;
+          repositories = builtins.mapAttrs (_: toString) (repositories // {aos_tools = toolchains;});
+        }
+        // lib.optionalAttrs (execRustcFlags != []) {
+          exec_rustc_flags = execRustcFlags;
+        });
     };
   configuration = configurationFor batch;
   preparedLock = pkgs.mkDerivation {
@@ -208,8 +216,10 @@
   };
 in
   assert validInventory;
-  assert (builtins.isList rustcFlags && builtins.all (flag: builtins.isString flag && flag != "" && !lib.hasInfix "," flag) rustcFlags)
+  assert validRustcFlags rustcFlags
   || throw "mkAosBazelWorkspace: rustcFlags must be individual nonempty flags without commas";
+  assert validRustcFlags execRustcFlags
+  || throw "mkAosBazelWorkspace: execRustcFlags must be individual nonempty flags without commas";
   assert !compileOnly || targetPlatform != null; {
     inherit source toolchains configuration preparedLock batch;
     # The initial fixtures deliberately use conservative directory selections.

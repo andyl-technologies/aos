@@ -158,6 +158,20 @@ class LauncherTests(unittest.TestCase):
                 arguments = json.loads(self.capture.read_text())["args"]
                 self.assertIn("--@rules_rust//rust/settings:extra_rustc_flags=-Copt-level=s,-Cdebuginfo=0", arguments)
 
+    def test_execution_flags_are_independent_of_target_flags(self):
+        configuration = json.loads(self.config.read_text())
+        configuration["rustc_flags"] = ["-Copt-level=s", "-Cpanic=abort"]
+        configuration["exec_rustc_flags"] = ["-Copt-level=0", "-Cdebug-assertions=yes"]
+        self.config.write_text(json.dumps(configuration))
+
+        for command in ["build", "test", "run", "cquery", "aquery"]:
+            with self.subTest(command=command):
+                result = self.invoke([command, "//:example"])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                arguments = json.loads(self.capture.read_text())["args"]
+                self.assertIn("--@rules_rust//rust/settings:extra_rustc_flags=-Copt-level=s,-Cpanic=abort", arguments)
+                self.assertIn("--@rules_rust//rust/settings:extra_exec_rustc_flags=-Copt-level=0,-Cdebug-assertions=yes", arguments)
+
     def test_private_server_is_opt_in_and_has_bounded_idle_and_heap(self):
         configuration = json.loads(self.config.read_text())
         configuration["batch"] = False

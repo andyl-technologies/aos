@@ -72,6 +72,29 @@ The [retained conformance report](../tests/evidence/compiler-option-semantics.js
 includes the actual commands, LLVM IR hashes, cfg results, and inspected
 source hashes from the pinned Rust archive.
 
+Execution tools have their own compiler configuration. `mkAosBazelWorkspace`
+accepts `execRustcFlags` independently of target `rustcFlags`; the launcher
+passes them to the pinned rules' `extra_exec_rustc_flags` setting. Omitting
+execution flags preserves the existing configuration bytes. Families must
+choose their generator and procedural-macro profile explicitly from their
+retained Cargo baseline before enrolling in this setting.
+
+```text
+nix-build -A checks.build.bazel.execution-profile --no-out-link
+```
+
+This check compiles a generator, a procedural macro, and a target libtest in
+two configurations. Opposite assertion/overflow settings between execution
+and target roles expose accidental forwarding. Six cases check their compiled
+behavior; digest-checked wrapper inputs verify all six first-party compiler
+actions, and execution events require Linux sandbox execution without cache
+hits. Configuration controls reject malformed flags and preserve empty defaults.
+The [retained report](../tests/evidence/execution-rust-profiles.json) also records
+an actual cfg difference from the historical CLI generator audit: Bazel's
+optimized execution default disabled assertions while Cargo's test build
+scripts enabled them. This plumbing checkpoint does not enroll existing
+families or establish full compiler, native ABI, or linker equivalence.
+
 The conformance check builds the pinned process wrapper from source with AOS
 Rust, then compares its actual child arguments and selected environment values
 with the reconstruction model. Run it with:

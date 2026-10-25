@@ -1,0 +1,406 @@
+{
+  "command": "nix-build default.nix -A checks.build.bazel.execution-profile --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+  "configuration_checks": {
+    "empty_execution_flags_preserve_default": true,
+    "execution_flags_change_configuration": true,
+    "invalid_execution_flags_rejected": true
+  },
+  "configuration_identity_control": {
+    "configured": "/nix/store/7yqfzwhbss3lz0cb9z1y92bf45m0c6kb-aos-bazel-configuration.json.drv",
+    "default": "/nix/store/ykpqngh7m5h058pjf1k1jw7m5bshzdbz-aos-bazel-configuration.json.drv",
+    "empty": "/nix/store/ykpqngh7m5h058pjf1k1jw7m5bshzdbz-aos-bazel-configuration.json.drv",
+    "invalid_rejected": [
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "historical_cli_generator_cfg_gap": {
+    "profiles": {
+      "crates/aos/packages/aos-build-api/build.rs": {
+        "bazel": {
+          "cfg": [
+            "panic=\"unwind\"",
+            "target_abi=\"\"",
+            "target_arch=\"x86_64\"",
+            "target_endian=\"little\"",
+            "target_env=\"gnu\"",
+            "target_family=\"unix\"",
+            "target_feature=\"fxsr\"",
+            "target_feature=\"sse\"",
+            "target_feature=\"sse2\"",
+            "target_has_atomic=\"16\"",
+            "target_has_atomic=\"32\"",
+            "target_has_atomic=\"64\"",
+            "target_has_atomic=\"8\"",
+            "target_has_atomic=\"ptr\"",
+            "target_has_atomic_primitive_alignment=\"16\"",
+            "target_has_atomic_primitive_alignment=\"32\"",
+            "target_has_atomic_primitive_alignment=\"64\"",
+            "target_has_atomic_primitive_alignment=\"8\"",
+            "target_has_atomic_primitive_alignment=\"ptr\"",
+            "target_os=\"linux\"",
+            "target_pointer_width=\"64\"",
+            "target_vendor=\"unknown\"",
+            "unix"
+          ],
+          "command": [
+            "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc.unwrapped",
+            "--print",
+            "cfg",
+            "-Copt-level=3",
+            "-Cdebuginfo=0",
+            "-Cstrip=debuginfo",
+            "-Cembed-bitcode=no",
+            "-Clinker=/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "-Clink-arg=-L/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+            "-Clink-arg=-Wl,-rpath,/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+            "-Clink-arg=-lstdc++",
+            "-Clink-arg=-lm",
+            "--edition",
+            "2021",
+            "--target",
+            "x86_64-unknown-linux-gnu"
+          ]
+        },
+        "bazel_only_cfg": [],
+        "cargo": {
+          "cfg": [
+            "debug_assertions",
+            "panic=\"unwind\"",
+            "target_abi=\"\"",
+            "target_arch=\"x86_64\"",
+            "target_endian=\"little\"",
+            "target_env=\"gnu\"",
+            "target_family=\"unix\"",
+            "target_feature=\"fxsr\"",
+            "target_feature=\"sse\"",
+            "target_feature=\"sse2\"",
+            "target_has_atomic=\"16\"",
+            "target_has_atomic=\"32\"",
+            "target_has_atomic=\"64\"",
+            "target_has_atomic=\"8\"",
+            "target_has_atomic=\"ptr\"",
+            "target_has_atomic_primitive_alignment=\"16\"",
+            "target_has_atomic_primitive_alignment=\"32\"",
+            "target_has_atomic_primitive_alignment=\"64\"",
+            "target_has_atomic_primitive_alignment=\"8\"",
+            "target_has_atomic_primitive_alignment=\"ptr\"",
+            "target_os=\"linux\"",
+            "target_pointer_width=\"64\"",
+            "target_vendor=\"unknown\"",
+            "unix"
+          ],
+          "command": [
+            "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc.unwrapped",
+            "--print",
+            "cfg",
+            "-Cembed-bitcode=no",
+            "-Cmetadata=fc3a6df54a49927f",
+            "-Cextra-filename=-92a724dd730f51bc",
+            "-Cstrip=debuginfo",
+            "--edition",
+            "2021"
+          ]
+        },
+        "cargo_only_cfg": [
+          "debug_assertions"
+        ]
+      },
+      "crates/hub/aos-hub-api/build.rs": {
+        "bazel": {
+          "cfg": [
+            "panic=\"unwind\"",
+            "target_abi=\"\"",
+            "target_arch=\"x86_64\"",
+            "target_endian=\"little\"",
+            "target_env=\"gnu\"",
+            "target_family=\"unix\"",
+            "target_feature=\"fxsr\"",
+            "target_feature=\"sse\"",
+            "target_feature=\"sse2\"",
+            "target_has_atomic=\"16\"",
+            "target_has_atomic=\"32\"",
+            "target_has_atomic=\"64\"",
+            "target_has_atomic=\"8\"",
+            "target_has_atomic=\"ptr\"",
+            "target_has_atomic_primitive_alignment=\"16\"",
+            "target_has_atomic_primitive_alignment=\"32\"",
+            "target_has_atomic_primitive_alignment=\"64\"",
+            "target_has_atomic_primitive_alignment=\"8\"",
+            "target_has_atomic_primitive_alignment=\"ptr\"",
+            "target_os=\"linux\"",
+            "target_pointer_width=\"64\"",
+            "target_vendor=\"unknown\"",
+            "unix"
+          ],
+          "command": [
+            "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc.unwrapped",
+            "--print",
+            "cfg",
+            "-Copt-level=3",
+            "-Cdebuginfo=0",
+            "-Cstrip=debuginfo",
+            "-Cembed-bitcode=no",
+            "-Clinker=/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "-Clink-arg=-L/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+            "-Clink-arg=-Wl,-rpath,/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+            "-Clink-arg=-lstdc++",
+            "-Clink-arg=-lm",
+            "--edition",
+            "2021",
+            "--target",
+            "x86_64-unknown-linux-gnu"
+          ]
+        },
+        "bazel_only_cfg": [],
+        "cargo": {
+          "cfg": [
+            "debug_assertions",
+            "panic=\"unwind\"",
+            "target_abi=\"\"",
+            "target_arch=\"x86_64\"",
+            "target_endian=\"little\"",
+            "target_env=\"gnu\"",
+            "target_family=\"unix\"",
+            "target_feature=\"fxsr\"",
+            "target_feature=\"sse\"",
+            "target_feature=\"sse2\"",
+            "target_has_atomic=\"16\"",
+            "target_has_atomic=\"32\"",
+            "target_has_atomic=\"64\"",
+            "target_has_atomic=\"8\"",
+            "target_has_atomic=\"ptr\"",
+            "target_has_atomic_primitive_alignment=\"16\"",
+            "target_has_atomic_primitive_alignment=\"32\"",
+            "target_has_atomic_primitive_alignment=\"64\"",
+            "target_has_atomic_primitive_alignment=\"8\"",
+            "target_has_atomic_primitive_alignment=\"ptr\"",
+            "target_os=\"linux\"",
+            "target_pointer_width=\"64\"",
+            "target_vendor=\"unknown\"",
+            "unix"
+          ],
+          "command": [
+            "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc.unwrapped",
+            "--print",
+            "cfg",
+            "-Cembed-bitcode=no",
+            "-Cmetadata=ef25e1ed583d38ff",
+            "-Cextra-filename=-840aa06b9ca871e7",
+            "-Cstrip=debuginfo",
+            "--edition",
+            "2021"
+          ]
+        },
+        "cargo_only_cfg": [
+          "debug_assertions"
+        ]
+      },
+      "crates/hub/aos-hub-service/build.rs": {
+        "bazel": {
+          "cfg": [
+            "panic=\"unwind\"",
+            "target_abi=\"\"",
+            "target_arch=\"x86_64\"",
+            "target_endian=\"little\"",
+            "target_env=\"gnu\"",
+            "target_family=\"unix\"",
+            "target_feature=\"fxsr\"",
+            "target_feature=\"sse\"",
+            "target_feature=\"sse2\"",
+            "target_has_atomic=\"16\"",
+            "target_has_atomic=\"32\"",
+            "target_has_atomic=\"64\"",
+            "target_has_atomic=\"8\"",
+            "target_has_atomic=\"ptr\"",
+            "target_has_atomic_primitive_alignment=\"16\"",
+            "target_has_atomic_primitive_alignment=\"32\"",
+            "target_has_atomic_primitive_alignment=\"64\"",
+            "target_has_atomic_primitive_alignment=\"8\"",
+            "target_has_atomic_primitive_alignment=\"ptr\"",
+            "target_os=\"linux\"",
+            "target_pointer_width=\"64\"",
+            "target_vendor=\"unknown\"",
+            "unix"
+          ],
+          "command": [
+            "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc.unwrapped",
+            "--print",
+            "cfg",
+            "-Copt-level=3",
+            "-Cdebuginfo=0",
+            "-Cstrip=debuginfo",
+            "-Cembed-bitcode=no",
+            "-Clinker=/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+            "-Clink-arg=-L/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+            "-Clink-arg=-Wl,-rpath,/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib",
+            "-Clink-arg=-lstdc++",
+            "-Clink-arg=-lm",
+            "--edition",
+            "2021",
+            "--target",
+            "x86_64-unknown-linux-gnu"
+          ]
+        },
+        "bazel_only_cfg": [],
+        "cargo": {
+          "cfg": [
+            "debug_assertions",
+            "panic=\"unwind\"",
+            "target_abi=\"\"",
+            "target_arch=\"x86_64\"",
+            "target_endian=\"little\"",
+            "target_env=\"gnu\"",
+            "target_family=\"unix\"",
+            "target_feature=\"fxsr\"",
+            "target_feature=\"sse\"",
+            "target_feature=\"sse2\"",
+            "target_has_atomic=\"16\"",
+            "target_has_atomic=\"32\"",
+            "target_has_atomic=\"64\"",
+            "target_has_atomic=\"8\"",
+            "target_has_atomic=\"ptr\"",
+            "target_has_atomic_primitive_alignment=\"16\"",
+            "target_has_atomic_primitive_alignment=\"32\"",
+            "target_has_atomic_primitive_alignment=\"64\"",
+            "target_has_atomic_primitive_alignment=\"8\"",
+            "target_has_atomic_primitive_alignment=\"ptr\"",
+            "target_os=\"linux\"",
+            "target_pointer_width=\"64\"",
+            "target_vendor=\"unknown\"",
+            "unix"
+          ],
+          "command": [
+            "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc.unwrapped",
+            "--print",
+            "cfg",
+            "-Cembed-bitcode=no",
+            "-Cmetadata=8e2cd39dfb91539c",
+            "-Cextra-filename=-324f5d17e1993ac3",
+            "-Cstrip=debuginfo",
+            "--edition",
+            "2021"
+          ]
+        },
+        "cargo_only_cfg": [
+          "debug_assertions"
+        ]
+      }
+    },
+    "retained_pair_report_sha256": "cef6eff71b7cd6e485988e8b0953d53afc2a5befb37ab845639c8a11ecc4b0aa",
+    "rustc": "/nix/store/84qxzmj4vqlwkgddhcmcdi1blzli59nw-rust-1.98.1/bin/rustc.unwrapped",
+    "rustc_sha256": "8fbfdfc47bb905e34ec4bfb5139ac1408f83afeded0537f8c71a6ec45b8c48de",
+    "scope": "Native compiler cfg probes using codegen, target and edition arguments from retained first-party generator pairs. Incremental directory selection is omitted because it is not a cfg input. Historical snapshots; this is not current-tree whole-profile or artifact equivalence.",
+    "status": "MISMATCH: execution-profile debug assertions"
+  },
+  "limits": [
+    "Independent execution flag plumbing only; family profile equivalence requires separate qualification.",
+    "The CLI gap is from the retained historical compiler evidence, whose paths precede the crate directory reorganization; it is not a fresh whole-tree CLI build.",
+    "No existing family is enrolled in execution flags at this checkpoint. Cargo removal, compiler-default parity, and native ABI/linker parity remain separate gates."
+  ],
+  "output": "/nix/store/00ilc1l9b1czl2g6fbz8nk3iiv7rkix1-aos-bazel-execution-profile",
+  "policy_tests": {
+    "passed": 312,
+    "source": "tools/bazel/tests/test_*.py"
+  },
+  "profiles": {
+    "development": {
+      "cases": [
+        "generator_uses_execution_profile",
+        "procedural_macro_uses_execution_profile",
+        "target_uses_independent_profile"
+      ],
+      "compiler_inputs_sha256": "4893019de970d8e69bdb54406c756defcee07db4333eefa4ce23ae0210af4d67",
+      "compiler_options": {
+        "tools/bazel/tests/exec-profile/generator.rs": {
+          "debug-assertions": "yes",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "yes",
+          "strip": "debuginfo"
+        },
+        "tools/bazel/tests/exec-profile/macro.rs": {
+          "debug-assertions": "yes",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-27680253",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "yes",
+          "strip": "debuginfo"
+        },
+        "tools/bazel/tests/exec-profile/test.rs": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-138634906",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "3",
+          "overflow-checks": "no",
+          "strip": "none"
+        }
+      },
+      "execution_checks": true,
+      "execution_sha256": "047b7de36df3069c98a1278b8996c7492da8084354b822270601673472d0bbf8",
+      "path": "/nix/store/vwkbv2k3ncvddcxq9gbw60f7kz93d96n-aos-bazel-execution-profile-development-1"
+    },
+    "release": {
+      "cases": [
+        "generator_uses_execution_profile",
+        "procedural_macro_uses_execution_profile",
+        "target_uses_independent_profile"
+      ],
+      "compiler_inputs_sha256": "0ad45b4e1d504738e1f43ca26ab4f424fb418561885e7327d43acca2ef0ac44a",
+      "compiler_options": {
+        "tools/bazel/tests/exec-profile/generator.rs": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "no",
+          "strip": "debuginfo"
+        },
+        "tools/bazel/tests/exec-profile/macro.rs": {
+          "debug-assertions": "no",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-27680253",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "no",
+          "strip": "debuginfo"
+        },
+        "tools/bazel/tests/exec-profile/test.rs": {
+          "debug-assertions": "yes",
+          "debuginfo": "0",
+          "embed-bitcode": "no",
+          "extra-filename": "-2636192794",
+          "linker": "/nix/store/xw14qabw9zg76y2qlayj8aqd22cf1n0b-aos-cc-wrapper/bin/cc",
+          "opt-level": "0",
+          "overflow-checks": "yes",
+          "strip": "none"
+        }
+      },
+      "execution_checks": false,
+      "execution_sha256": "276a0252584a107f4e37247e19646f5f70de9c3ed4accd66b3c4a5be58d47cf1",
+      "path": "/nix/store/9p70mlhxvn2nhhaibnzhbqkgk066wx7j-aos-bazel-execution-profile-release-1"
+    }
+  },
+  "schema_version": 1,
+  "source_sha256": {
+    "pkgs/build-support/_bazel/workspace.nix": "72466dab738d41ae5e151efd7523a9c7f3667c8ab22e73d135f6aa96c01bb620",
+    "tests/build/_bazel-execution-profile.nix": "8699351571725b0e0f3094d4937937fef3b5e397e7aafd543de5786ffc04f895",
+    "tools/bazel/launcher.py": "e8cb99ea8d159925a34c176c5c9314a6d6a8f06638f3a4b1de3bc0cf4d889880",
+    "tools/bazel/tests/exec-profile/BUILD.bazel": "0d6361f89a36cd334521183eb9e6352cb36e687a6acc56fed3413bef6723aab8",
+    "tools/bazel/tests/exec-profile/generator.rs": "33a4d465170da7f063ca2e6026cc1b241d413bc500e310e4691864ebe837e741",
+    "tools/bazel/tests/exec-profile/macro.rs": "4edf4f70781d81f36d860d11a7e9f5f34b0ec7ec8aa4375850eb7c4c01db9cc0",
+    "tools/bazel/tests/exec-profile/test.rs": "ef2527c953375357128585f3a80fc2d48e0ea3b73ed49302c8d8ac10bba7141f",
+    "tools/bazel/tests/test_launcher.py": "b9fe4939ff37eb574f4b7d9df3ce310817403e20fa3fe7f68131bcc22cfe95bc"
+  },
+  "status": "PASS"
+}

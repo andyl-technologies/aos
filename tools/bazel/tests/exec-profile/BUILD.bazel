@@ -1,0 +1,41 @@
+load("//tools/bazel/rules:build_script.bzl", "aos_rust_build_script")
+load("//tools/bazel/rules:compile.bzl", "rust_proc_macro")
+load("//tools/bazel/rules:rust_package.bzl", "aos_rust_package")
+load("//tools/bazel/rules:test.bzl", "aos_rust_test")
+
+PACKAGE = aos_rust_package(
+    name = "aos-execution-profile-fixture",
+    version = "1.0.0",
+    license_expression = "Apache-2.0",
+)
+
+aos_rust_build_script(
+    name = "generator",
+    package = PACKAGE,
+    src = "generator.rs",
+)
+
+rust_proc_macro(
+    name = "profile_macro",
+    package = PACKAGE,
+    srcs = ["macro.rs"],
+)
+
+# Opposite target settings make accidental forwarding between roles observable.
+[
+    aos_rust_test(
+        name = name,
+        package = PACKAGE,
+        srcs = ["test.rs"],
+        deps = [":generator"],
+        proc_macro_deps = [":profile_macro"],
+        rustc_env = {
+            "EXPECTED_EXEC_CHECKS": execution_checks,
+            "EXPECTED_TARGET_CHECKS": target_checks,
+        },
+    )
+    for name, execution_checks, target_checks in [
+        ("development", "true", "false"),
+        ("release", "false", "true"),
+    ]
+]

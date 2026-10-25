@@ -190,6 +190,8 @@ def main():
             policy.append(f"--extra_execution_platforms={config['target_platform']}")
         if config.get("rustc_flags"):
             policy.append("--@rules_rust//rust/settings:extra_rustc_flags=" + ",".join(config["rustc_flags"]))
+        if config.get("exec_rustc_flags"):
+            policy.append("--@rules_rust//rust/settings:extra_exec_rustc_flags=" + ",".join(config["exec_rustc_flags"]))
         if config.get("dependency_profile"):
             policy.append(f"--//tools/bazel/rules:dependency_profile={config['dependency_profile']}")
         policy.extend([
