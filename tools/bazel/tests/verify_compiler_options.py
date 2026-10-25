@@ -17,10 +17,11 @@ from reconstruct_compiler_inputs import reconstruct
 from retain_compiler_inputs import action_candidates, command_digest, executed_command
 
 
+# Rust accumulates metadata values; they remain in the ordered option evidence.
 SCALAR_CODEGEN = {
     "opt-level", "debuginfo", "debug-assertions", "overflow-checks", "panic",
     "lto", "embed-bitcode", "codegen-units", "strip", "target-cpu",
-    "relocation-model", "incremental", "metadata", "extra-filename", "linker",
+    "relocation-model", "incremental", "extra-filename", "linker",
 }
 
 

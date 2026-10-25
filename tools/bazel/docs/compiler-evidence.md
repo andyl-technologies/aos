@@ -54,6 +54,24 @@ This observes execution, without establishing compiler-default equivalence or
 expanding native linker response files. The GPL component documentation links
 the retained run and its exact limitations.
 
+The compiler-option conformance gate checks selected interpretation rules
+against the declared source-built Rust compiler. Three compilations of a fixed
+`no_std` fixture establish that repeated metadata values accumulate: their LLVM
+IR matches a combined metadata list and differs from the last value alone.
+Metadata therefore remains ordered evidence rather than a scalar override.
+Four native `--print cfg` probes check scalar override order and the default
+relationship between optimization and debug assertions:
+
+```text
+nix-build -A checks.build.bazel.compiler-option-semantics --no-out-link
+```
+
+These probes check those specific rules. Complete compiler-default and native
+linker equivalence still require their own comparisons.
+The [retained conformance report](../tests/evidence/compiler-option-semantics.json)
+includes the actual commands, LLVM IR hashes, cfg results, and inspected
+source hashes from the pinned Rust archive.
+
 The conformance check builds the pinned process wrapper from source with AOS
 Rust, then compares its actual child arguments and selected environment values
 with the reconstruction model. Run it with:
