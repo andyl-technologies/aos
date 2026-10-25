@@ -11663,3 +11663,31 @@ The same run passes all existing reboot, unclean reset, both power-cut cases,
 stale-state refusal and TPM-clear cases. Provisioning remains test-only; these
 results do not supply the missing funded initial-floor producer or qualify
 either installed journal hook.
+
+### Unit publication before SELinux policy load
+
+The isolated installed startup retry reaches its enrollment agent, then fails
+normal activation because the native unit publisher attempts a file-context
+lookup before any SELinux policy is loaded. A mounted selinuxfs and its
+`enforce` file do not establish loaded policy. This failure prevents the
+dependent Host, Root, offline provisioning and lifecycle-enclosure test bodies
+from running.
+
+Commit `0cea2acf84` checks the bounded initial kernel context before requiring
+canonical unit labels. The kernel's literal initial `kernel` SID identifies
+unloaded policy; loaded permissive policies still require labeling. Missing,
+unreadable, oversized or malformed context evidence fails closed. Enrollment
+startup failures now retain bounded activation and audit diagnostics.
+All 69 native provider/credential tests and 40 network/unit-label tests pass.
+
+The clean release batch for that commit compiles every application unit and
+integration-test target at
+`/nix/store/m0nns9awcqs9wivbhrj026lvg56q35mc-aos-test-targets-0.1.0`.
+Effect-module checks pass at
+`/nix/store/l2k677q8d3jzz9n3xbj88dav8vn04x8h-aos-effect-module-checks-0`,
+the backend artifact check at
+`/nix/store/9al90zq4nxxwixk81fj21am1rq07wccy-aos-systemd-backend-policy-artifact-check`,
+and the verity check at
+`/nix/store/5axgdkhdn578idh98q8kp4lif1svkqnx-systemd-verity-check-0`.
+These are compilation and package receipts. The isolated installed retries
+remain pending; no startup, floor or public lifecycle qualification is claimed.
