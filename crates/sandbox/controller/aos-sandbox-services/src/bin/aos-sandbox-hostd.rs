@@ -637,6 +637,16 @@ impl ComponentAssembly {
     }
 }
 
+impl ComponentAssembly {
+    /// Keeps selected originals resident until process termination on refusal.
+    fn exit_refused(&self) -> ! {
+        // Returning would drop the armed assembly and abort before its retained
+        // native results can remain available for the process's full lifetime.
+        eprintln!("aos-sandbox-hostd: {}", component_refusal());
+        std::process::exit(1)
+    }
+}
+
 impl Drop for ComponentAssembly {
     fn drop(&mut self) {
         if self.armed {
@@ -666,7 +676,7 @@ fn run_component_control() -> Result<()> {
         || !original.mutex_posts[0].as_ref().is_some_and(|result| result.is_ok())
         || !original.boot_compare[0].as_ref().is_some_and(|result| result.is_ok())
     {
-        return Err(component_refusal());
+        original.exit_refused();
     }
     if let (Some(Ok(runtime)), Some(Ok(service)), Some(broker), Some(Ok(publisher))) = (
         &original.runtime, &mut original.service, &mut original.broker, &original.publisher,
@@ -674,17 +684,49 @@ fn run_component_control() -> Result<()> {
         let mut host = DormantHostBrokerCompositionV1::new(broker);
         original.serving = Some(serve_host(runtime, service, &mut host, publisher));
     } else {
-        return Err(component_refusal());
+        original.exit_refused();
     }
     if original.serving.as_ref().is_some_and(|result| result.is_err()) {
         original.first.get_or_insert(ComponentAssemblySite::Serving);
     }
     original.posts(1);
-    Err(component_refusal())
+    original.exit_refused()
 }
 
 fn component_refusal() -> HostError {
     HostError::Fence("original Host component/control startup is unavailable")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ComponentAssembly;
+
+    #[test]
+    fn refusal_keeps_armed_assembly_until_process_exit() {
+        const CHILD: &str = "AOS_HOST_TEST_ARMED_REFUSAL_CHILD";
+
+        if std::env::var_os(CHILD).is_some() {
+            let mut original = ComponentAssembly::new();
+            original.armed = true;
+            original.exit_refused();
+        }
+
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "tests::refusal_keeps_armed_assembly_until_process_exit",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+
+        // An armed Drop aborts instead. Ordinary refusal must preserve the
+        // process-lifetime owner and terminate with the selected exit status.
+        assert_eq!(output.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&output.stderr)
+            .contains("original Host component/control startup is unavailable"));
+    }
 }
 
 #[inline(never)]
