@@ -31,3 +31,8 @@ dependency native.
 This gate qualifies these declared global profiles and generated inputs.
 Complete external compiler, native C, linker, runtime, and other-family parity
 remain separate acceptance checks.
+
+The [retained report](../tests/evidence/build-script-profiles.json) also records
+a successful `checks.rust.aos-test-targets` build with its immutable source and
+derivation identities. That separate check compiles application unit and
+integration-test targets; it does not execute them.

@@ -1,4 +1,14 @@
 {
+  "application_test_target_compile": {
+    "command": "/nix/store/ipbhyg77i2myf03bh1mrnyjkdmn9112b-nix-2.24.12/bin/nix-build -A checks.rust.aos-test-targets --no-out-link --keep-going --max-jobs 1 --cores 4 --option substitute false",
+    "derivation": "/nix/store/a629flf2rdpa7a28a888sd15hpcba4ay-aos-test-targets-0.1.0.drv",
+    "derivation_sha256": "d44a3af7d34f22bc1d31d06bed94638e8e9a7a8dd9990a29d9064e4535e78092",
+    "output": "/nix/store/8bvj5l89n7if5zi7dlff3v4hy8bn7xpg-aos-test-targets-0.1.0",
+    "scope": "Application workspace unit and integration-test targets compile; this check does not execute the tests.",
+    "source": "/nix/store/0nawjfp2xrdymma05n4sl9x4rmdy1ylj-aos-workspace-src",
+    "source_nar_hash": "sha256:01rlqcjbanp6052fh6p0hdz6z60bpkpbhs39n8w52y4avmalklhg",
+    "status": "PASS"
+  },
   "configurations": {
     "default": {
       "build": "/nix/store/kfb1g1325y93h93b3rg8ac713cj79nmw-aos-bazel-build-script-profile-default-1",
