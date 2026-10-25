@@ -116,6 +116,7 @@ in
     rust-format = import ./_bazel-rust-format.nix {inherit pkgs;};
     boot-production = import ./_bazel-boot-production.nix {inherit pkgs;};
     test-support = import ./_bazel-test-support.nix {inherit pkgs;};
+    feature-powerset = import ./_bazel-feature-powerset.nix {inherit pkgs;};
     sysroot-metadata = import ./_bazel-sysroot-metadata.nix {inherit pkgs;};
     manifest-extractor = import ./_bazel-manifest-extractor.nix {inherit pkgs;};
     static-runtime = import ./_bazel-static-runtime.nix {inherit pkgs;};
@@ -519,6 +520,7 @@ in
             rust-format
             boot-production.all
             test-support.all
+            feature-powerset.all
             sysroot-metadata
             manifest-extractor
             native-libraries

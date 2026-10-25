@@ -34,6 +34,11 @@ VARIANTS = {
     "_test_support": ["default", "test-support"],
 }
 
+NO_DEFAULT_VARIANTS = {
+    "_no_default": [],
+    "_test_support_no_default": ["test-support"],
+}
+
 SOURCES = glob(["src/**/*.rs"])
 INTEGRATIONS = glob(["tests/*.rs"], allow_empty = True)
 EXAMPLES = glob(["examples/*.rs"], allow_empty = True)
@@ -47,9 +52,9 @@ EXAMPLES = glob(["examples/*.rs"], allow_empty = True)
         crate_root = "src/lib.rs",
         srcs = SOURCES,
         crate_features = features,
-        deps = COMMON_DEPENDENCIES + [ENGINE + (":lib_test_double" if suffix else ":lib")],
+        deps = COMMON_DEPENDENCIES + [ENGINE + (":lib_test_double" if "test-support" in features else ":lib")],
     )
-    for suffix, features in VARIANTS.items()
+    for suffix, features in VARIANTS.items() + NO_DEFAULT_VARIANTS.items()
 ]
 
 # Cargo's development dependency enables the engine test double independently

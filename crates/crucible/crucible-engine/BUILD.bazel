@@ -42,6 +42,15 @@ VARIANTS = {
     "_all_features": ["default", "test-double", "test-support"],
 }
 
+# Feature-policy checks compile these libraries without enabling the default
+# feature. Their test suites retain the separately qualified variants above.
+NO_DEFAULT_VARIANTS = {
+    "_no_default": [],
+    "_test_support_no_default": ["test-support"],
+    "_test_double_no_default": ["test-double"],
+    "_all_features_no_default": ["test-double", "test-support"],
+}
+
 TEST_DOUBLE_TARGETS = [
     "gate_replay_oracle",
     "gate_abi_conformance",
@@ -75,7 +84,7 @@ EXAMPLES = glob(["examples/*.rs"], allow_empty = True)
         crate_features = features,
         deps = DEPENDENCIES + ([SHARED_MEMORY] if "test-double" in features else []),
     )
-    for suffix, features in VARIANTS.items()
+    for suffix, features in VARIANTS.items() + NO_DEFAULT_VARIANTS.items()
 ]
 
 [

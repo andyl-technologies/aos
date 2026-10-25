@@ -23,16 +23,19 @@ DEPENDENCIES = [
     "//third_party/rust:core_thiserror",
 ]
 
-rust_library(
-    name = "lib",
-    package = RUST_PACKAGE,
-    lint_config = "//tools/bazel/rules:workspace_lints",
-    crate_name = "crucible_device",
-    crate_root = "src/lib.rs",
-    srcs = glob(["src/**/*.rs"]),
-    crate_features = ["default"],
-    deps = DEPENDENCIES,
-)
+[
+    rust_library(
+        name = "lib" + suffix,
+        package = RUST_PACKAGE,
+        lint_config = "//tools/bazel/rules:workspace_lints",
+        crate_name = "crucible_device",
+        crate_root = "src/lib.rs",
+        srcs = glob(["src/**/*.rs"]),
+        crate_features = features,
+        deps = DEPENDENCIES,
+    )
+    for suffix, features in {"": ["default"], "_no_default": []}.items()
+]
 
 aos_rust_test(
     name = "unit",

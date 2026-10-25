@@ -386,8 +386,24 @@ selects 42 configured targets and a workspace without Cargo manifests or locks.
 The [fixture receipt](tests/evidence/test-support-native-fixtures.json) retains
 compiler-input and execution evidence for both source selections.
 
-Repository audits and the feature-powerset driver still require migration of
-their source and tool inputs. These executable harness fixtures do not replace
+`checks.build.bazel.feature-powerset.all` independently compiles the nine
+engine, QEMU host, and device configurations from the existing feature-powerset
+driver. Explicit library targets suppress each root's default feature without
+suppressing dependency defaults. The check inspects actual rustc feature cfgs,
+the selected dependency artifacts, and uncached Linux sandbox execution.
+Its checked source inventory excludes Cargo manifests and locks. The temporary
+`tools/bazel/tests/feature-powerset.nix -A parity` oracle compares all nine root
+feature selections with separate offline Cargo checks. It does not establish
+compiler-default, artifact, runtime, or performance parity.
+The [feature-case receipt](tests/evidence/crucible-no-default-feature-cases.json)
+retains both builds' execution evidence. All 16 first-party compiled artifacts
+match between source selections. A rustix compiler-probe metadata file has a
+different digest in the inputs of 11 compilations; complete input
+reproducibility remains unresolved.
+
+Repository audits, the original Rust feature-powerset driver, and its canonical
+Nix gate still require migration of their source and tool inputs. These
+executable harness fixtures and feature compilations do not replace
 the named production determinism, ABI, license, or performance gate chains.
 
 ## Isolated Rust tests
