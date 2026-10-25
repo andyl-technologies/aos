@@ -51,9 +51,13 @@ def run(support, executable, environment, source):
                         credentials.append(struct.unpack("3i", data))
                     else:
                         raise RuntimeError("unexpected mounted owner ancillary field")
-                support.require(packet and not flags and credentials == [(owner.pid, uid, uid)],
+                # Linux reports the requested CLOEXEC flag on a complete receive.
+                support.require(packet and not flags & ~int(socket.MSG_CMSG_CLOEXEC)
+                    and credentials == [(owner.pid, uid, uid)],
                     "mounted fixture lost its actual original owner role")
                 if packet == expected:
+                    support.require(all(not os.get_inheritable(fd) for fd in descriptors),
+                        "mounted handoff retained an inheritable alias")
                     support.require(len(descriptors) == (1 if expected == b"DEVICE" else 0),
                         "mounted control transferred an unexpected descriptor")
                     return descriptors.pop() if descriptors else None

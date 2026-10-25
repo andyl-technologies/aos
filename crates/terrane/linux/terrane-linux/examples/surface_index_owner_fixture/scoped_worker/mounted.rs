@@ -46,7 +46,9 @@ pub(crate) fn handoff(launched: &Launched) -> Result<()> {
     )?;
     let mut descriptors = Vec::new();
     let mut credentials = None;
-    let mut invalid = !received.flags.is_empty();
+    // Linux echoes the requested CLOEXEC receive flag. Other returned flags,
+    // including either form of truncation, still refuse the handoff.
+    let mut invalid = received.flags.bits() & !net::RecvFlags::CMSG_CLOEXEC.bits() != 0;
     for message in ancillary.drain() {
         match message {
             RecvAncillaryMessage::ScmRights(rights) => descriptors.extend(rights),

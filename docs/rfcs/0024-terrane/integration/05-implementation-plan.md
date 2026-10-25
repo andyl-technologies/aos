@@ -153,9 +153,13 @@ when the original device closes. The kernel returns `ECONNABORTED`. This is
 retained as a failed qualification. The corrected scenario checks that exact
 in-flight abort result and separately retains the exact `ENOTCONN` assertion
 for metadata submitted after disconnection; FUSE-48's disconnected-worker
-contract and all deadlines remain unchanged. Mandatory workspace compilation
-from `73d1ee57a7` is running. The unused intermediate qualification checkout
-was removed before running any build.
+contract and all deadlines remain unchanged. The corrected twelve-scenario
+guest at `0d9081f2d5` passes in 393.400 seconds; full review binds all 8,191
+immutable files, 5,447 crate inputs, the actual retained Cargo executable and
+23 exact witnesses. Mandatory workspace compilation from `73d1ee57a7` passes
+in 1,495.096 seconds, with complete review of 8,189 source files, 190 test
+executables and 59 packages. This is compilation only. The unused intermediate
+qualification checkout was removed before running any build.
 
 A new mounted-worker component joins the actual signed owner, authenticated
 index startup and production `serve` loop in one disposable guest. The original
@@ -163,8 +167,27 @@ capability-free child owns the FUSE device; only the guest supervisor mounts
 its temporary alias. Actual kernel opens coalesce while metadata remains
 responsive, and durable drain must retain every original backing binding and
 pin after worker closure. This fixture is not production launch or broker
-integration. Its strict all-feature/all-target Clippy check passes; native
-qualification is pending.
+integration. Its strict all-feature/all-target Clippy check passes. Native
+qualification at `0d9081f2d5` fails in 639.648 seconds during the original
+device handoff: the fixture treats Linux's echoed `MSG_CMSG_CLOEXEC` receive
+flag as a refusal. A bounded Unix-socket probe confirms that exact returned
+flag and actual close-on-exec descriptor. The correction permits only that
+flag, preserving original credentials, exact descriptor count, device identity
+and truncation refusal. The failed source and guest remain retained; corrected
+native qualification is pending.
+
+The native preparation boundary now independently checks the selected signed
+storage policy before index admission or file pin effects, and before granting
+an existing index. It no longer relies on a caller having installed a general
+read-driver policy. The SDK preparations expose a deny-only validator over
+that same signed interpretation; complete-root validation checks every expanded
+path. Neither validation changes root properties nor replaces the original
+fresh closing Read. Two added genuine repository regressions check private
+`wipe=zero` refusal, every selected root path and zero content-body reads. The
+actual native owner fixture also signs a same-domain `wipe=zero` root and file,
+requires both preparations to refuse, and compares durable policy before and
+after. Source setup remains concurrent and actor deadlines are unchanged. The
+closed inventories and native-boundary qualification remain pending.
 
 The structural-index requirements audit distinguishes the qualified component
 from the remaining open-path composition:
