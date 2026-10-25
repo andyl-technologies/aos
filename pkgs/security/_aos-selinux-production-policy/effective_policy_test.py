@@ -343,6 +343,28 @@ class EffectivePolicyTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "protected domain is permissive: system_dbusd_t"):
             effective_policy.check_policy(FAKE_SETOOLS, policy)
 
+    def test_native_bus_readiness_only_sends_to_the_manager(self) -> None:
+        for target, object_class, permission in (
+            ("init_t", "unix_dgram_socket", "sendto"),
+            ("systemd_runtime_notify_t", "sock_file", "write"),
+        ):
+            with self.subTest(target=target, permission=permission):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access("system_dbusd_t", target, object_class, permission)
+                )
+
+        for target, object_class, permissions in (
+            ("init_t", "unix_dgram_socket",
+             ("accept", "bind", "connect", "create", "listen", "read", "recvfrom", "write")),
+            ("systemd_runtime_notify_t", "sock_file",
+             ("create", "read", "rename", "setattr", "unlink")),
+        ):
+            for permission in permissions:
+                with self.subTest(target=target, permission=permission):
+                    self.assert_forbidden_allow_rejected(
+                        effective_policy.Access("system_dbusd_t", target, object_class, permission)
+                    )
+
     def test_native_manager_requires_labeled_dbus_start(self) -> None:
         for access in (
             effective_policy.Access("init_t", "dbusd_unit_t", "service", "start"),

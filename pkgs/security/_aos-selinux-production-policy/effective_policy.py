@@ -258,6 +258,8 @@ POSITIVE_ACCESS = (
     Access("init_t", "system_dbusd_t", "process", "transition"),
     Access("init_t", "system_dbusd_t", "process2", "nosuid_transition"),
     Access("system_dbusd_t", "init_t", "fd", "use"),
+    Access("system_dbusd_t", "systemd_runtime_notify_t", "sock_file", "write"),
+    Access("system_dbusd_t", "init_t", "unix_dgram_socket", "sendto"),
     *accesses("system_dbusd_t", "init_t", "unix_stream_socket", ("read", "write")),
     Access("init_t", "init_t", "user_namespace", "create"),
     # Native host activation requires the manager and generated-unit API;
@@ -1200,6 +1202,14 @@ NEGATIVE_ACCESS = (
     *accesses(
         "system_dbusd_t", "init_t", "unix_stream_socket",
         ("accept", "bind", "connect", "connectto", "create", "listen"),
+    ),
+    *accesses(
+        "system_dbusd_t", "init_t", "unix_dgram_socket",
+        ("accept", "bind", "connect", "create", "listen", "read", "recvfrom", "write"),
+    ),
+    *accesses(
+        "system_dbusd_t", "systemd_runtime_notify_t", "sock_file",
+        ("create", "read", "rename", "setattr", "unlink"),
     ),
     *negative_access(), *OWNER_NEGATIVE,
     Access("init_t", "init_t", "system", "start"),

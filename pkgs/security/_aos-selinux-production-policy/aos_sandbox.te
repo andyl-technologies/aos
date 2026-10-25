@@ -13,6 +13,7 @@ require {
     type dbusd_unit_t;
     type dbusd_exec_t;
     type system_dbusd_t;
+    type systemd_runtime_notify_t;
     type auditd_unit_t;
     type chronyd_unit_t;
     type sshd_unit_t;
@@ -58,6 +59,7 @@ require {
     class system { reload status };
     class memfd_file { create getattr ioctl map open read write };
     class sock_file { create getattr open read rename setattr unlink write };
+    class unix_dgram_socket sendto;
     class unix_stream_socket { accept bind connect connectto create getattr getopt ioctl listen read setopt shutdown write };
     class user_namespace create;
 }
@@ -78,8 +80,12 @@ allow init_t system_dbusd_t:process transition;
 allow init_t system_dbusd_t:process2 nosuid_transition;
 type_transition init_t dbusd_exec_t:process system_dbusd_t;
 # The transitioned daemon retains PID 1's already connected log streams.
-# It receives no permission to initiate connections to manager sockets.
+# These streams do not grant manager control connections.
 allow system_dbusd_t init_t:unix_stream_socket { read write };
+# The selected Type=notify daemon sends readiness to PID 1's fixed notify
+# socket. This does not enable refpolicy's broader systemd service controls.
+allow system_dbusd_t systemd_runtime_notify_t:sock_file write;
+allow system_dbusd_t init_t:unix_dgram_socket sendto;
 # The same native activation reconciles the fixed image audit service.
 allow init_t auditd_unit_t:service { start status };
 # Native activation starts and observes the fixed image time-sync service.
