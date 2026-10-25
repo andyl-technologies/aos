@@ -2798,8 +2798,15 @@ retains separate featureless generator libraries for `getrandom` 0.4.2 and
 preserves all 922 selected source files. The production feature comparator
 matches the retained Cargo oracle across 383 external packages; the old graph
 still fails for both missing units. This checkpoint qualifies that repair,
-while full qualification of the current merged tree remains separate from the
-earlier uncached Native checkpoint above.
+and the [merged Native qualification](tests/evidence/merged-hub-native-qualified.json)
+passes all 335 current libtest cases and one compile doctest, test and production
+feature comparisons, 29 Clippy actions, formatting, and three generated assets.
+All checked compiler, lint and test actions execute in the Linux sandbox without
+cache hits. The 29 selected editor diagnostics match Cargo; 1,869 unselected
+Cargo rows and incomplete inference remain visible. This frozen run predates
+the later publication-preview edit and independent execution-flag plumbing.
+Its source snapshot and exact report digests are retained; it does not qualify
+those later changes or waive the remaining Native gates above.
 
 ## Worker Cargo baselines
 
