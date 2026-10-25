@@ -31,6 +31,7 @@ const PATH_BYTES: usize = 1024;
 const PROFILE_SUFFIX: &str = "-aos-method46-initial-startup-profile-1/profile.json";
 
 mod images;
+mod policy;
 
 #[derive(Clone, Copy)]
 enum First {
@@ -40,6 +41,7 @@ enum First {
     Profile,
     Image,
     Runtime,
+    Policy,
     Order,
 }
 
@@ -76,6 +78,7 @@ struct StartupRolesOriginalV1 {
     listener: Option<RecordSubjectListenerAdmissionAttemptV1>,
     images: images::InitialImagesOriginalV1,
     runtime: images::InitialRuntimeOriginalV1,
+    policy: policy::InitialPolicyOriginalV1,
     profile_original: Option<File>,
     profile: ImmutableFileAcquisitionOriginalV1,
     profile_flags: Option<Result<rustix::fs::OFlags, rustix::io::Errno>>,
@@ -99,6 +102,7 @@ impl StartupRolesOriginalV1 {
             listener: None,
             images: images::InitialImagesOriginalV1::new(),
             runtime: images::InitialRuntimeOriginalV1::new(),
+            policy: policy::InitialPolicyOriginalV1::new(),
             profile_original: None,
             profile: ImmutableFileAcquisitionOriginalV1::new(),
             profile_flags: None,
@@ -447,6 +451,9 @@ impl Method46InitialStartupOriginalV1 {
             let profile = body.profile_decoded.as_ref().and_then(|value| value.as_ref().ok());
             if body.runtime.finish_posts(profile).is_err() {
                 self.fail(First::Runtime);
+            }
+            if body.policy.finish_post(profile).is_err() {
+                self.fail(First::Policy);
             }
         }
         let result = self

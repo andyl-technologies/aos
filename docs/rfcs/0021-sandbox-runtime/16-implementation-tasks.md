@@ -310,6 +310,15 @@ Recent committed startup fixes close narrower prerequisites:
   exact changed source. This adds no installed qualification, unit/live-policy
   admission, protected writer custody or provisioning authority.
 
+- Initial startup now pays for two independent enforcing-policy readbacks on
+  its captured Source. Both use the existing native verifier and compare the
+  observed digest with the original profile's canonical-policy pin. The post
+  remains owed after initial or other startup refusal; original native files,
+  results and partial failures remain resident. All 22 focused regressions pass.
+  Complete Rust targets for these exact sources are building. This is mechanical
+  live-policy comparison, without an installed caller, protected writer,
+  independent key provenance or initial-floor publication authority.
+
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending
 SwitchRoot or networkd policy changes must identify those dependencies; they
