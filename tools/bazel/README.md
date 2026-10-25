@@ -1254,6 +1254,17 @@ package builders remain on Cargo during this qualification.
 
 ## Session and control API family
 
+The [profile qualification](tests/evidence/session-profile-qualification.json)
+passes all 132 cases in the default, test-support, test-double and all-features
+configurations with unoptimized test macros. Eight retained compiler actions
+verify both unit binaries and all six macros against actual Cargo profiles.
+Clippy, documentation, formatting and nine-root editor comparison pass. The
+selected editor diagnostic matches Cargo; raw multiplicity is not comparable
+between the models, and inference remains incomplete. Editor macros retain the
+oracle's global size-optimized flags independently of ordinary test macros.
+All 1,869 retained actions execute in Linux sandboxes without cache hits.
+Ordinary `aos-dev` enrollment, production cutover and performance remain separate.
+
 The `session` family selects `crucible-session` and `crucible-control-api`
 together. Its dependency profile adds the reviewed Tokio feature set to the
 engine dependency closure. The temporary Cargo oracle compares each external
