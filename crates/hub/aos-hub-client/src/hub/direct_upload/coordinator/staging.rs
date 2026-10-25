@@ -21,14 +21,27 @@ pub(super) const MAX_PARALLEL_BATCHES: usize = 8;
 pub(super) async fn run<T, F, Fut>(
     batches: Vec<T>,
     maximum: usize,
-    mut dispatch: F,
+    dispatch: F,
 ) -> Result<(), DirectClientError>
 where
     F: FnMut(T) -> Fut,
     Fut: Future<Output = Result<(), DirectClientError>>,
 {
+    run_fallible(batches, maximum, dispatch).await
+}
+
+pub(super) async fn run_fallible<T, F, Fut, E>(
+    batches: Vec<T>,
+    maximum: usize,
+    mut dispatch: F,
+) -> Result<(), E>
+where
+    F: FnMut(T) -> Fut,
+    Fut: Future<Output = Result<(), E>>,
+    E: From<DirectClientError>,
+{
     if !(1..=MAX_PARALLEL_BATCHES).contains(&maximum) {
-        return Err(DirectClientError::Invalid);
+        return Err(DirectClientError::Invalid.into());
     }
 
     let mut batches = batches.into_iter().enumerate();

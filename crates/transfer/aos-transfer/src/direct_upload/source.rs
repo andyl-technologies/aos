@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use base64::Engine as _;
 use bytes::Bytes;
-use futures_util::{stream, Stream};
+use futures_util::{Stream, stream};
 use md5::Digest as _;
 use sha2::Digest as _;
 
@@ -568,6 +568,9 @@ pub struct SourceWaveBudget {
 }
 
 impl SourceWaveBudget {
+    /// Maximum number of original file descriptors admitted by one wave.
+    pub const MAX_FILES: usize = 64;
+
     /// Reserves one declaration without reading or allocating its catalogue.
     ///
     /// A false result leaves this budget unchanged so the caller can dispatch
@@ -591,7 +594,7 @@ impl SourceWaveBudget {
             .catalogue_bytes
             .checked_add(bytes)
             .ok_or(SourceError::InvalidDeclaration)?;
-        if self.files == 64 || total > 32 * 1024 * 1024 {
+        if self.files == Self::MAX_FILES || total > 32 * 1024 * 1024 {
             return Ok(false);
         }
         self.files += 1;

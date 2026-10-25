@@ -6,7 +6,7 @@ use std::os::unix::fs::PermissionsExt as _;
 use std::time::Duration;
 
 use aos_hub_client::hub_types::direct_upload::*;
-use aos_hub_client::{checkpoint_namespace, DirectUploadCoordinator};
+use aos_hub_client::{DirectUploadCoordinator, checkpoint_namespace};
 use aos_transfer::direct_upload::{
     DirectCheckpointStore as _, ProviderOptions, SqliteDirectCheckpoints,
 };
@@ -341,6 +341,11 @@ async fn exercise_retained_completions(invocation: Invocation) {
         .clone();
     let expected_original = content_original.clone();
     let original_capabilities = capabilities.clone();
+    let pointer_count = publication
+        .objects
+        .iter()
+        .filter(|object| object.kind == "mutable_pointer")
+        .count();
     let worker = std::thread::spawn(move || {
         if matches!(invocation, Invocation::ClosedOptions) {
             let (mut stream, route, _) = request(&listener);
@@ -365,21 +370,25 @@ async fn exercise_retained_completions(invocation: Invocation) {
             },
         );
         if matches!(invocation, Invocation::OrdinaryPublication) {
-            let (mut stream, route, bytes) = request(&listener);
-            assert!(route.starts_with("POST /aos.hub.v1.DirectUploadService/BeginBatch "));
-            let begin: DirectBeginBatch = decode_direct_control(&bytes).unwrap();
-            assert_eq!(begin.items.len(), 1);
-            assert!(begin
-                .items
-                .iter()
-                .all(|item| { item.dependency_phase == DirectDependencyPhase::Visibility }));
-            // Stop before provider effects with a non-authentication refusal;
-            // credential renewal is exercised by separate client tests.
-            stream
-                .write_all(
-                    b"HTTP/1.1 409 Conflict\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                )
-                .unwrap();
+            let mut pointer_ids = std::collections::BTreeSet::new();
+            for _ in 0..pointer_count {
+                let (mut stream, route, bytes) = request(&listener);
+                assert!(route.starts_with("POST /aos.hub.v1.DirectUploadService/BeginBatch "));
+                let begin: DirectBeginBatch = decode_direct_control(&bytes).unwrap();
+                assert_eq!(begin.items.len(), 1);
+                let intent = &begin.items[0];
+                assert_eq!(intent.dependency_phase, DirectDependencyPhase::Visibility);
+                assert!(pointer_ids.insert(intent.client_operation_id.clone()));
+
+                // Every admitted neighbor drains after the first refusal.
+                // Stop before provider effects with a non-authentication error.
+                stream
+                    .write_all(
+                        b"HTTP/1.1 409 Conflict\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+            }
+            assert_eq!(pointer_ids.len(), pointer_count);
         }
         (listener, Some(batch))
     });
@@ -445,12 +454,14 @@ async fn exercise_retained_completions(invocation: Invocation) {
             )
             .await
             .unwrap_err();
-            assert!(error
-                .downcast_ref::<aos_transfer::direct_upload::DirectClientError>()
-                .is_some_and(|error| matches!(
-                    error,
-                    aos_transfer::direct_upload::DirectClientError::Checkpoint
-                )));
+            assert!(
+                error
+                    .downcast_ref::<aos_transfer::direct_upload::DirectClientError>()
+                    .is_some_and(|error| matches!(
+                        error,
+                        aos_transfer::direct_upload::DirectClientError::Checkpoint
+                    ))
+            );
             let (listener, batch) = worker.join().unwrap();
             assert!(batch.is_none());
             assert_eq!(
@@ -463,10 +474,12 @@ async fn exercise_retained_completions(invocation: Invocation) {
         prepared.publication.objects.len(),
         pinned.request.objects.len()
     );
-    assert!(prepared
-        .publication
-        .objects
-        .iter()
-        .filter(|object| object.kind == "mutable_pointer")
-        .all(|object| !object.verified));
+    assert!(
+        prepared
+            .publication
+            .objects
+            .iter()
+            .filter(|object| object.kind == "mutable_pointer")
+            .all(|object| !object.verified)
+    );
 }

@@ -12,14 +12,14 @@ use aos_hub_client::hub_types::direct_upload::{
     DirectDependencyPhase, DirectUploadTarget, WireInteger,
 };
 use aos_hub_client::{
-    hub_types, DirectStageFile, DirectUploadCoordinator, DirectUploadOptions, HubClient,
+    DirectStageFile, DirectUploadCoordinator, DirectUploadOptions, HubClient, hub_types,
 };
 use aos_transfer::direct_upload::{
     AdmittedSource, DirectTransferMetrics, DirectTransferSummary, SourceWaveBudget,
 };
 
-use super::inventory::open_publication_object;
 use super::PublicationAccess;
+use super::inventory::open_publication_object;
 
 pub(super) async fn upload_if_required(
     options: &DirectUploadOptions,
@@ -92,13 +92,35 @@ async fn upload_with_coordinator(
             continue;
         }
 
-        let mut pending = objects
+        let selected: Vec<_> = objects
             .iter()
             .copied()
             .filter(|object| {
                 !object.verified && (object.kind == "mutable_pointer") == mutable_pointers
             })
-            .peekable();
+            .collect();
+        if mutable_pointers
+            && !selected.is_empty()
+            && selected.iter().all(|object| {
+                u64::try_from(object.byte_size).is_ok_and(|size| size <= coordinator.part_size())
+            })
+        {
+            coordinator
+                .stage_metadata_batches(selected, |object| {
+                    admit_file(
+                        root,
+                        publication_id,
+                        &declared,
+                        object,
+                        coordinator.part_size(),
+                    )
+                })
+                .await?;
+            staged = true;
+            continue;
+        }
+
+        let mut pending = selected.into_iter().peekable();
         let mut staged_class = false;
 
         while pending.peek().is_some() {
@@ -112,43 +134,16 @@ async fn upload_with_coordinator(
                 if !budget.reserve(byte_size, coordinator.part_size())? {
                     break;
                 }
-                let input = declared
-                    .get(object.path.as_str())
-                    .copied()
-                    .context("publication response introduced an undeclared direct object")?;
-                anyhow::ensure!(
-                    input.sha256 == object.sha256
-                        && input.byte_size == object.byte_size
-                        && input.kind == object.kind
-                        && input.media_type == object.media_type,
-                    "publication response changed a declared direct object"
+                files.push(
+                    admit_file(
+                        root,
+                        publication_id,
+                        &declared,
+                        object,
+                        coordinator.part_size(),
+                    )
+                    .await?,
                 );
-                let path = input.path.clone();
-                let source_root = root.try_clone()?;
-                let file = tokio::task::spawn_blocking(move || {
-                    open_publication_object(&source_root, &path)
-                })
-                .await
-                .context("publication source worker failed")??;
-                let source =
-                    AdmittedSource::admit(file, byte_size, &object.sha256, coordinator.part_size())
-                        .await?;
-                files.push(DirectStageFile {
-                    target: DirectUploadTarget::PublicationObject {
-                        publication_id: publication_id.to_owned(),
-                        surface_object_id: WireInteger::new(
-                            u64::try_from(object.object_id)
-                                .context("publication direct object ID is invalid")?,
-                        ),
-                        path: object.path.clone(),
-                    },
-                    source,
-                    phase: if object.kind == "immutable" {
-                        DirectDependencyPhase::Content
-                    } else {
-                        DirectDependencyPhase::Visibility
-                    },
-                });
                 pending.next();
             }
             coordinator.stage(files).await?;
@@ -169,6 +164,52 @@ async fn upload_with_coordinator(
         coordinator.finish(Duration::from_secs(3600)).await?;
     }
     Ok(true)
+}
+
+/// Admits one exact declared source without changing its publication identity.
+async fn admit_file(
+    root: &OwnedFd,
+    publication_id: &str,
+    declared: &std::collections::BTreeMap<&str, &hub_types::RegistryPublicationObjectInput>,
+    object: &hub_types::RegistryPublicationObject,
+    part_size: u64,
+) -> Result<DirectStageFile> {
+    let input = declared
+        .get(object.path.as_str())
+        .copied()
+        .context("publication response introduced an undeclared direct object")?;
+    anyhow::ensure!(
+        input.sha256 == object.sha256
+            && input.byte_size == object.byte_size
+            && input.kind == object.kind
+            && input.media_type == object.media_type,
+        "publication response changed a declared direct object"
+    );
+    let byte_size =
+        u64::try_from(object.byte_size).context("publication direct object size is invalid")?;
+    let path = input.path.clone();
+    let source_root = root.try_clone()?;
+    let file = tokio::task::spawn_blocking(move || open_publication_object(&source_root, &path))
+        .await
+        .context("publication source worker failed")??;
+    let source = AdmittedSource::admit(file, byte_size, &object.sha256, part_size).await?;
+
+    Ok(DirectStageFile {
+        target: DirectUploadTarget::PublicationObject {
+            publication_id: publication_id.to_owned(),
+            surface_object_id: WireInteger::new(
+                u64::try_from(object.object_id)
+                    .context("publication direct object ID is invalid")?,
+            ),
+            path: object.path.clone(),
+        },
+        source,
+        phase: if object.kind == "immutable" {
+            DirectDependencyPhase::Content
+        } else {
+            DirectDependencyPhase::Visibility
+        },
+    })
 }
 
 /// Reports the invocation's shared counters after its terminal result or failure.

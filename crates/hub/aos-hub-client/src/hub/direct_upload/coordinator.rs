@@ -6,6 +6,7 @@
 //! visibility step; Freezing, CompletingStaging and StagedVerified remain pending.
 
 mod barrier;
+mod metadata;
 mod staging;
 
 use std::fmt;
@@ -177,6 +178,16 @@ impl DirectUploadCoordinator {
     /// Refuses changed source/owner/geometry, stale discovery, persistence,
     /// provider control fences, malformed replies or exhausted bounded retries.
     pub async fn stage(&self, files: Vec<DirectStageFile>) -> Result<(), DirectClientError> {
+        self.stage_with_parallelism(files, staging::MAX_PARALLEL_BATCHES)
+            .await
+    }
+
+    /// Keeps control-byte splits inside a lazily admitted batch serial.
+    async fn stage_with_parallelism(
+        &self,
+        files: Vec<DirectStageFile>,
+        metadata_parallelism: usize,
+    ) -> Result<(), DirectClientError> {
         let _phase_clock = PhaseClock {
             started: std::time::Instant::now(),
             total: &self.stage_millis,
@@ -286,7 +297,7 @@ impl DirectUploadCoordinator {
         }
 
         let parallel = if metadata_only {
-            staging::MAX_PARALLEL_BATCHES
+            metadata_parallelism
         } else {
             1
         };
