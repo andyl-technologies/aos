@@ -119,6 +119,11 @@ reuse without another lower read. Strict all-feature/all-target and Tokio-only
 all-target Clippy pass. Native execution and mandatory hermetic compilation of
 this source remain pending. This component supplies no launch, mount-broker,
 passthrough or kernel-reference closure authority and accepts no further task.
+The `native-configured-worker` component check runs the same retained-service
+scenario independently, with the same source-bound images, real enrollment,
+publisher, private namespace and actor/guest deadlines. The full configured
+surface check still requires that scenario after all existing controls; a
+separate component result cannot replace the aggregate's recovery obligations.
 
 Complete feature matrices now pass with independent immutable-source, retained
 executable and actual guest review at these checkpoints:

@@ -386,7 +386,7 @@ def verify_funding(driver, directory, before, after):
                        "native SDK dropped consumer funding before its original grace expired")
 
 
-def run_surface(driver, image, surface_image):
+def run_surface(driver, image, surface_image, service_only=False):
     """Requires configured bounds to reach the original enrolled physical owners."""
     subprocess.run([sys.executable, str(image / "share/configured_sdk_proof.py"),
                     "verify", str(image), str(driver.SOURCE)], check=True, timeout=30)
@@ -404,7 +404,8 @@ def run_surface(driver, image, surface_image):
     store = tomllib.loads(config.read_text())["store"]
     original = 'role = "serve"\nstore = ' + json.dumps(store) + "\n"
 
-    for mode in ["disabled", "bound", "admit", "recover-draining", "service"]:
+    modes = ["service"] if service_only else ["disabled", "bound", "admit", "recover-draining", "service"]
+    for mode in modes:
         text = original + host_configuration(driver,
             mode="always" if mode in {"admit", "service"} else "never")
         if mode != "disabled":
@@ -440,7 +441,10 @@ future_hold_bytes = 327680
 
     runpy.run_path(str(surface_image / "share/surface_index_owner_vm.py"))["verify_surface"](
         surface_image, driver.SOURCE)
-    print("PASS native configured surface-index policy component; deployed FUSE and task acceptance remain unqualified", flush=True)
+    if service_only:
+        print("PASS native configured retained worker service component; deployed FUSE and task acceptance remain unqualified", flush=True)
+    else:
+        print("PASS native configured surface-index policy component; deployed FUSE and task acceptance remain unqualified", flush=True)
 
 
 def run(driver, image, wipe_only=False, refusals=False):
