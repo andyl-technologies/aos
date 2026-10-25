@@ -309,6 +309,16 @@ KVM checks, two compile-only images and fourteen metadata/image assembly
 derivations. After these complete, native matrix execution belongs in the
 isolated builder; prerequisite construction alone is not a matrix result.
 
+Both publisher owning gates at `16435671a0` pass in 2,898.536 seconds.
+Independent review matches all 8,258 immutable source files, eleven retained
+Cargo executables, four images and eight original guests. It verifies all
+twelve ordered socket cases in the unprivileged ext4 guest, all twelve pure
+protocol cases, twelve portable publication controls and ten kernel publication
+selectors. Complete cache recovery, eviction, enrollment and reassembly
+prerequisites remain present. T-HOST-2 acceptance still requires reconciliation
+with PROTO-58's explicitly named crash-recovery gate; this result does not
+establish full host readiness or manager restart recovery.
+
 The manager prerequisites at `4914e8a0dc` pass in 939.212 seconds. Review
 verifies all 49 missing derivations dispatch to the isolated builder, the
 twelve original runtime checks remain in the imported image closure, and
