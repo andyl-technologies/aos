@@ -48,6 +48,7 @@ fn main() -> std::process::ExitCode {
     if mode == "--list" {
         for selector in [
             "prepare",
+            "prepare-readonly-refuse",
             "empty",
             "refuse",
             "late-refuse",

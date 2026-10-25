@@ -597,7 +597,7 @@ def main():
                            "installed_path": "share/host_cache_vm.py", "sha256": digest(supervisor)}
     checksums.append(f"{digest(supervisor)}  share/host_cache_vm.py\n")
     supervisor_helpers = {}
-    for helper_name in ["manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "host_cache_temporaries_vm.py", "host_cache_encoded_recovery_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py", "encoded_eviction_vm.py", "shared_reextract_vm.py", "sealed_consumer_cold_vm.py", "native_feature_units_vm.py"]:
+    for helper_name in ["manifest_publication_vm.py", "source_cleanup_vm.py", "admission_cache_vm.py", "host_cache_temporaries_vm.py", "host_cache_encoded_recovery_vm.py", "host_cache_index_recovery_vm.py", "host_cache_pending_recovery_vm.py", "host_cache_pending_packs_vm.py", "encoded_eviction_vm.py", "shared_reextract_vm.py", "sealed_consumer_cold_vm.py", "native_feature_units_vm.py", "host_cache_mount_views_vm.py"]:
         helper_source = source / "tests/terrane" / helper_name
         helper_installed = output / "share" / helper_name
         shutil.copy2(helper_source, helper_installed)
@@ -611,7 +611,7 @@ def main():
                             env=dict(os.environ, LD_LIBRARY_PATH=library_path), check=True,
                             text=True, capture_output=True).stdout.splitlines()
     expected = ["host-cache:" + name for name in [
-        "prepare", "empty", "refuse", "late-refuse", "cancel", "edquot", "hold", "start-refuse",
+        "prepare", "prepare-readonly-refuse", "empty", "refuse", "late-refuse", "cancel", "edquot", "hold", "start-refuse",
         "admit-chunk", "admit-metadata", "admit-cancel", "cache-admission-handoff", "dictionary-custody", "read-through-chunk", "encoded-read-failure", "encoded-dictionary-read-failure", "metadata-pack-read-failure", "metadata-index-read-failure",
         "seed-manifest", "seed-bad-manifest", "seed-unsealed-manifest",
         "seed-unsealed-writable-manifest", "seed-truncated-manifest", "seed-writable-manifest",

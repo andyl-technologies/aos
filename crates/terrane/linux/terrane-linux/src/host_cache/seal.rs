@@ -7,7 +7,7 @@
 
 use super::{NativeHostLayout, open_directory_chain};
 use crate::publisher_local::client::PeerSealProbe;
-use rustix::fs::{FileType, OFlags, fcntl_getfl, fstat, fstatfs};
+use rustix::fs::{FileType, Mode, OFlags, fcntl_getfl, fstat, fstatfs, openat};
 use std::{io, sync::Arc};
 use terrane_sdk::host::cache::{
     DomainHostLayout, HostInspection, HostReadLocation, SealInspection,
@@ -35,6 +35,8 @@ impl<L: HostReadLocation> NativeSealCapability<L> {
     /// The source must be the private receipt returned by the concrete native
     /// publisher client. Its descriptor remains empty, unlinked and read-only;
     /// canonical content can never be substituted for this capability probe.
+    /// The namespace root may be mounted read-only, while the actual ordinary
+    /// allocation directories must retain writable, unchanged mount views.
     ///
     /// # Errors
     /// Refuses stale roots, another device, nonregular/writable/named/nonempty
@@ -62,12 +64,13 @@ impl<L: HostReadLocation> NativeSealCapability<L> {
     ///
     /// # Errors
     /// Returns native inspection errors or rejects a changed device, root inode,
-    /// filesystem type or independently measured kernel seal.
+    /// filesystem type, allocation mount flags or independently measured kernel seal.
     pub fn recheck(&self) -> io::Result<()> {
         let current = inspect(&self.probe)?;
         if current.device != self.inspection.device
             || current.root_inode != self.inspection.root_inode
             || current.filesystem_type != self.inspection.filesystem_type
+            || current.mount_flags != self.inspection.mount_flags
             || current.seal.algorithm != self.inspection.seal.algorithm
             || current.seal.digest != self.inspection.seal.digest
         {
@@ -116,7 +119,7 @@ fn inspect<L: HostReadLocation>(probe: &PeerSealProbe<L>) -> io::Result<HostInsp
         device: root.st_dev,
         root_inode: root.st_ino,
         filesystem_type: filesystem.f_type as u64,
-        mount_flags: filesystem.f_flags as u64,
+        mount_flags: allocation_mount_flags(layout, &filesystem)?,
         seal: SealInspection {
             device: after.st_dev,
             algorithm: binding.algorithm,
@@ -127,6 +130,47 @@ fn inspect<L: HostReadLocation>(probe: &PeerSealProbe<L>) -> io::Result<HostInsp
     layout.recheck()?;
     check_canonical_mount(layout, &filesystem)?;
     Ok(inspection)
+}
+
+fn allocation_mount_flags<L: HostReadLocation>(
+    layout: &NativeHostLayout<L>,
+    root_filesystem: &rustix::fs::StatFs,
+) -> io::Result<u64> {
+    // ProtectSystem=strict keeps the root namespace read-only and exposes only
+    // role-owned allocation directories as writable binds. Inspect those real
+    // mount views without granting write access to the namespace root.
+    let mut flags = 0;
+    for label in ["chunks", "objects", "quarantine"] {
+        let retained = layout
+            .directories
+            .get(label)
+            .ok_or_else(|| invalid("native layout omits an allocation directory"))?;
+        let current = openat(
+            &layout.root,
+            label,
+            OFlags::PATH | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let expected = fstat(retained)?;
+        let actual = fstat(&current)?;
+        let filesystem = fstatfs(retained)?;
+        let current_filesystem = fstatfs(&current)?;
+
+        if expected.st_dev != actual.st_dev
+            || expected.st_ino != actual.st_ino
+            || filesystem.f_type != root_filesystem.f_type
+            || current_filesystem.f_type != filesystem.f_type
+            || current_filesystem.f_flags != filesystem.f_flags
+        {
+            return Err(invalid(
+                "canonical allocation mount differs from retained inspection",
+            ));
+        }
+
+        flags |= filesystem.f_flags as u64;
+    }
+
+    Ok(flags)
 }
 
 fn check_canonical_mount<L: HostReadLocation>(

@@ -27,6 +27,7 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
     if !matches!(
         mode,
         "prepare"
+            | "prepare-readonly-refuse"
             | "consumer-leases"
             | "sealed-consumer"
             | "sealed-consumer-cold"
@@ -99,8 +100,22 @@ pub(super) fn run(mode: &str) -> io::Result<()> {
     require_empty_capabilities()?;
     let confinement = Arc::new(quota_confinement::install()?);
     let inputs = Inputs::load()?;
-    let preparation = NativeCachePreparation::inspect(inputs.owner_config()?, confinement.clone())?;
+    let preparation = NativeCachePreparation::inspect(inputs.owner_config()?, confinement.clone());
     confinement.check_current()?;
+    if mode == "prepare-readonly-refuse" {
+        let error = preparation
+            .err()
+            .ok_or_else(|| io::Error::other("read-only allocation mount was accepted"))?;
+        if error.kind() != io::ErrorKind::Unsupported {
+            return Err(io::Error::other(
+                "read-only allocation refusal kind differs",
+            ));
+        }
+        emit("PASS actual read-only allocation mount refused before mutable owner startup")?;
+        return require_empty_capabilities();
+    }
+
+    let preparation = preparation?;
     if mode == "prepare" {
         emit("PASS actual native preparation; no recovery or Resume")?;
         return Ok(());

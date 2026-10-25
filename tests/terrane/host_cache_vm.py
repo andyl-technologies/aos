@@ -1259,6 +1259,7 @@ def verify_image():
         "shared_reextract_vm.py",
         "sealed_consumer_cold_vm.py",
         "native_feature_units_vm.py",
+        "host_cache_mount_views_vm.py",
     ]
     require(set(identity["supervisor_helpers"]) == set(helper_names),
             "native supervisor helper inventory changed")
@@ -1537,6 +1538,8 @@ def main():
             runpy.run_path(str(IMAGE / "share/encoded_eviction_vm.py"))["run"](sys.modules[__name__], uuid)
             print("PASS independent native cache scenario: eviction", flush=True)
             return
+
+        runpy.run_path(str(IMAGE / "share/host_cache_mount_views_vm.py"))["run"](sys.modules[__name__], uuid)
 
         sealed_consumer = actor("sealed-consumer", "sealed-consumer", uuid)
         require("PASS actual whole inline inode, bounded backing ownership, held-policy access, renewal, release and independent cache handoff" in sealed_consumer

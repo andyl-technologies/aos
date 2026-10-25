@@ -125,6 +125,27 @@ The original capability-free identities and hardening remain in force.
 Diagnostic tracing remains separate from qualification. Owning-gate and
 feature-matrix qualification are still running; manager acceptance remains open.
 
+A separate diagnostic confirms the native recovery refusal after successful
+fs-verity probe measurement: both domain namespace roots have mount flags
+4099 (read-only), while ordinary allocations and cache state have flags 4098
+(writable). These are the actual UID/GID 840 service namespace views, not
+configuration booleans. The candidate native correction checks the retained
+and canonical `chunks`, `objects` and `quarantine` mount views for writability,
+while preserving the read-only namespace root and all existing inode, device,
+filesystem, independent seal, quota and confinement checks. Rechecks also
+refuse changed allocation mount flags; no service privilege is expanded.
+
+The native recovery guest adds five real factory controls in private guest
+mount namespaces: writable preparation, separate read-only refusal for each
+of those three allocation directories, then fresh writable preparation. Each
+uses the original authenticated helper/publisher and capability-free UID 840;
+original directory inodes and cache-state bytes must survive every case.
+The manager actor additionally verifies the actual read-only namespace and
+publication roots and writable allocation/state binds. Syntax, focused Rust
+formatting and strict compile-only Clippy are checked before renewed native
+and mandatory application-target qualification. Runtime qualification remains
+required; these corrections grant no task acceptance.
+
 The `obs-blame` gate now builds a retained image for its original two SDK
 selectors and one CLI selector and executes them in a dedicated UID/GID 840
 ext4 guest with empty groups/capabilities and no-new-privileges. The image

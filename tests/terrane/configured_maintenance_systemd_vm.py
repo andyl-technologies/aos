@@ -29,6 +29,23 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
+def verify_serve_mounts():
+    """Checks the real role's read-only namespace and writable allocation binds."""
+    configuration = tomllib.loads(CONFIG.read_text())
+    observations = []
+    for domain, settings in configuration["host_tier"]["domains"].items():
+        root = pathlib.Path(settings["path"])
+        for label in [".", "chunks", "objects", "quarantine", "state/cache",
+                      "sealed", "staging", "pending-delete", "state/publication"]:
+            readonly = bool(os.statvfs(root / label).f_flag & os.ST_RDONLY)
+            expected = label not in {"chunks", "objects", "quarantine", "state/cache"}
+            require(readonly == expected, "managed Serve allocation mount policy differs")
+            observations.append({"domain": domain, "directory": label, "readonly": readonly})
+
+    print("TERRANE_MANAGED_MOUNT_POLICY " + json.dumps(observations, sort_keys=True),
+          file=sys.stderr, flush=True)
+
+
 def actor(image, arguments):
     """Executes the original CLI after observing actual manager-applied custody."""
     require(len(arguments) == 4 and arguments[:3] == ["--config", str(CONFIG), "--role"]
@@ -48,6 +65,8 @@ def actor(image, arguments):
         "managed actor retains capabilities or lacks NNP")
     require(pathlib.Path("/proc/self/uid_map").read_text().split() == ["0", "0", "4294967295"],
             "managed actor has a private user namespace")
+    if role == "serve":
+        verify_serve_mounts()
     if role == "gc":
         for domain in ["public", "private"]:
             try:
