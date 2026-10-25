@@ -365,7 +365,7 @@ def launch(image, kind, arguments, native_cache=False, maintenance=False):
                     and arguments[0] == "--config" and arguments[2:] == ["--role", "gc"],
                     "maintenance proof requires the explicit GC CLI or foreign-identity control")
         require(os.getuid() == os.geteuid() == uid and os.getgid() == os.getegid() == uid
-                and os.getgroups() == ([844] if maintenance else [844, 845] if native_cache else [])
+                and os.getgroups() == ([846] if maintenance else [844, 845] if native_cache else [])
                 and status["NoNewPrivs"].strip() == "1"
                 and all(int(status[name].strip(), 16) == 0
                         for name in ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"]),

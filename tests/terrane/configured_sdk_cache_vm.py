@@ -314,6 +314,8 @@ def maintenance_gc_actor(executable, config, private_paths):
                   if ":" in line)
     if status["Uid"].split() != ["843"] * 4 or status["Gid"].split() != ["843"] * 4:
         raise RuntimeError("maintenance GC credentials differ")
+    if status["Groups"].split() != ["846"]:
+        raise RuntimeError("maintenance GC retains a non-transport group")
     if status["NoNewPrivs"].strip() != "1" or any(
             int(status[field], 16) for field in ["CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"]):
         raise RuntimeError("maintenance GC retains capabilities or lacks NNP")
@@ -331,7 +333,7 @@ def maintenance_gc_actor(executable, config, private_paths):
 def maintenance_exchange(driver, image, config, label, success=True, foreign=False):
     """Executes a fresh actual CLI; replies can originate only from retained Serve owners."""
     command = ["setpriv", "--reuid", "842" if foreign else "843",
-               "--regid", "842" if foreign else "843", "--groups", "844",
+               "--regid", "842" if foreign else "843", "--groups", "846",
                "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--no-new-privs"]
     executable = str(image / "bin/configured-sdk-maintenance-cli")
     if foreign:
@@ -381,7 +383,7 @@ def run_maintenance(driver, image):
                     "verify", str(image), str(driver.SOURCE)], check=True, timeout=30)
     parent = pathlib.Path("/run/terrane-configured-maintenance")
     parent.mkdir(mode=0o750)
-    os.chown(parent, 840, 844)
+    os.chown(parent, 840, 846)
     parent.chmod(0o2750)
     repository_parent = driver.ROOT / "configured-maintenance"
     repository_parent.mkdir(mode=0o700)
@@ -403,7 +405,7 @@ def run_maintenance(driver, image):
             for path in sockets:
                 metadata = path.lstat()
                 driver.require(stat.S_ISSOCK(metadata.st_mode) and metadata.st_uid == 840
-                               and metadata.st_gid == 844 and stat.S_IMODE(metadata.st_mode) == 0o660,
+                               and metadata.st_gid == 846 and stat.S_IMODE(metadata.st_mode) == 0o660,
                                "configured maintenance listener protection differs")
             maintenance_exchange(driver, image, config, "maintenance-gc-foreign", success=False, foreign=True)
             maintenance_exchange(driver, image, config, "maintenance-gc-first")
