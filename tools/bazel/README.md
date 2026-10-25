@@ -1097,7 +1097,7 @@ pinned bundled zstd C source, while Bazel imports the prepared AOS threaded
 zstd archive. These are compile-loop measurements, not end-to-end acceptance.
 
 The `configuration` attribute exposes the immutable workload inputs without
-running measurements. `bench/check.nix` runs 24 measurement regression tests
+running measurements. `bench/check.nix` runs 28 measurement regression tests
 with AOS Python in the Nix sandbox. Feature/target-change timing and family
 regression budgets remain separate qualification work.
 
@@ -1279,8 +1279,8 @@ trial passed the unchanged verifier.
 
 ## Installed boot package measurements
 
-`bench/measure_end_to_end.py` compares the production boot-identity recipe with
-a benchmark-only Bazel candidate. Invoke it with the AOS-built Python and Nix:
+`bench/measure_end_to_end.py` compares the production boot-identity constructors
+for the `rustc` and `bazel` drivers. Invoke it with the AOS-built Python and Nix:
 
 ```sh
 "$AOS_BENCH_PYTHON" tools/bazel/bench/measure_end_to_end.py \
@@ -1297,8 +1297,19 @@ repetitions rotate the candidate order. Each
 records evaluation and realisation separately, verifies valid and invalid CLI
 behavior, and checks the installed runtime closure. The production recipe uses
 `rustc` directly; the Cargo compile-loop baseline above is a separate workload.
-The candidate preserves the production install and fixup phases and checks the
-same library-unit-test scope. Neither candidate changes production selection.
+The Bazel constructor preserves its qualified compiler, packaging, runtime,
+install, and fixup settings. Measurement wraps its existing action builder;
+compilation, 15 library cases, six CLI cases, and doctests share one invocation
+and one resource record. The `rustc` constructor runs 15 library cases, so the
+report explicitly records the different test workloads. Neither measurement
+changes the default production driver.
+
+`tests/evidence/boot-production-benchmark-harness.json` qualifies this binding:
+instrumentation preserves every installed byte, file mode, compiler argument,
+compiler environment, declared compiler input, and runtime closure. A fresh
+derivation restores all 13 actions from the local disk cache after an initially
+uncached sandboxed build. These checks qualify the harness, without establishing
+performance acceptance. The measurement regression suite passes all 28 cases.
 
 `native-linux-boot-end-to-end-baseline.json` retains all 36 raw samples, exact
 commands, builder/JVM resources, runtime closures, and harness hashes. Median
@@ -1309,9 +1320,10 @@ evaluation-plus-realisation times in seconds are:
 | Production | 2.163 | 0.832 | 2.035 | 2.221 | 1.022 | 1.702 |
 | Bazel candidate | 25.846 | 12.587 | 20.903 | 21.267 | 11.908 | 20.367 |
 
-That retained baseline used the earlier per-mode snapshots with an unchanged
-checkout. The current driver freezes one source tree for all repetitions and
-also records the CPU model, affinity, and available-memory snapshots. The
+That retained baseline used the earlier benchmark-only Bazel prototype and
+per-mode snapshots with an unchanged checkout. It does not measure the current
+production constructor. The current driver freezes one source tree for all
+repetitions and also records the CPU model, affinity, and available-memory snapshots. The
 recorded harness hashes identify the version used for each experiment.
 
 Warm and second-worktree samples reuse the Nix output in both modes. The Bazel

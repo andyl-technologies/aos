@@ -66,6 +66,17 @@ def measure(command, directory, name):
     return (directory / (name + ".stdout")).read_text().splitlines(), result
 
 
+def builder_resources(output, mode, reused):
+    """Reads each fresh builder once, excluding counters from reused outputs."""
+    if reused:
+        return {}
+
+    names = ["benchmark-resources.json"]
+    if mode == "bazel":
+        names.extend(["bazel-action-resources.json", "bazel-action-metrics.json"])
+    return {name: json.loads((output / "nix-support" / name).read_text()) for name in names}
+
+
 def measure_series(options, helper, mode, repetition):
     identity = f"{repetition}-{mode}"
     root = options.scratch / identity
@@ -118,18 +129,12 @@ def measure_series(options, helper, mode, repetition):
         closure = subprocess.check_output([
             str(options.nix_tools / "nix-store"), "--query", "--requisites", str(output),
         ], text=True).splitlines()
-        builders = {}
-        if not reused:
-            for path in sorted((output / "nix-support").glob("*resources.json")):
-                builders[path.name] = json.loads(path.read_text())
-            for path in sorted((output / "nix-support").glob("bazel-*-metrics.json")):
-                builders[path.name] = json.loads(path.read_text())
         samples.append({
             "mode": mode, "repetition": repetition, "scenario": scenario,
             "derivation": derivations[0], "output": str(output),
             "evaluation": evaluation, "realisation": realisation,
             "wall_seconds": evaluation["wall_seconds"] + realisation["wall_seconds"],
-            "nix_output_reused": reused, "fresh_builder_resources": builders,
+            "nix_output_reused": reused, "fresh_builder_resources": builder_resources(output, mode, reused),
             "runtime_closure": closure,
         })
         print(f"{identity} {scenario}: {samples[-1]['wall_seconds']:.3f}s; output reused={reused}", flush=True)
@@ -166,8 +171,12 @@ def main():
     for sample in samples:
         distributions[sample["mode"] + ":" + sample["scenario"]].append(sample["wall_seconds"])
     report = {
-        "schema_version": 1,
-        "scope": "Nix evaluation plus realisation of installed boot identity and library unit tests",
+        "schema_version": 2,
+        "scope": "Nix evaluation plus realisation of the installed boot identity production constructors",
+        "workloads": {
+            "production": {"driver": "rustc", "tests": ["library unit"]},
+            "bazel": {"driver": "bazel", "tests": ["library unit", "CLI integration", "doctests"]},
+        },
         "trial": options.trial, "platform": list(os.uname()), "cpu_count": os.cpu_count(),
         "available_cpu_affinity": sorted(os.sched_getaffinity(0)),
         "cpu_model": cpu_model,
@@ -181,7 +190,9 @@ def main():
         "limitations": [
             "Compiler and dependency preparation are warm; each cold source and action cache namespace is fresh.",
             "The production baseline invokes rustc directly, not Cargo.",
+            "The Bazel production constructor additionally runs CLI integration tests and doctests; test workloads differ.",
             "Recording wrapper and command-file preparation add benchmark overhead to both candidates.",
+            "Package export and prerequisite builders are included in realisation wall time without separate resource records.",
             "JVM counters overlap the builder's adopted-child resources; cached timings are not fresh samples.",
             "Source copy and post-build runtime/closure validation are outside the measured intervals.",
             "Shared-host scheduling and filesystem page caches are uncontrolled.",

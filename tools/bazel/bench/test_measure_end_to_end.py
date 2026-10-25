@@ -11,6 +11,35 @@ import measure_end_to_end
 
 
 class EndToEndSnapshotTests(unittest.TestCase):
+    def test_combined_action_resources_are_counted_once(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            support = output / "nix-support"
+            support.mkdir()
+            records = {
+                "benchmark-resources.json": {"wall_seconds": 2},
+                "bazel-action-resources.json": {"wall_seconds": 7},
+                "bazel-action-metrics.json": {"metrics": {"wall_seconds": 5}},
+            }
+            for name, record in records.items():
+                (support / name).write_text(json.dumps(record))
+
+            self.assertEqual(measure_end_to_end.builder_resources(output, "bazel", False), records)
+            self.assertEqual(measure_end_to_end.builder_resources(output, "production", False), {
+                "benchmark-resources.json": {"wall_seconds": 2},
+            })
+            self.assertEqual(measure_end_to_end.builder_resources(output, "bazel", True), {})
+
+    def test_missing_fresh_action_resources_fail_instead_of_reporting_partial_samples(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary)
+            support = output / "nix-support"
+            support.mkdir()
+            (support / "benchmark-resources.json").write_text("{}")
+
+            with self.assertRaises(FileNotFoundError):
+                measure_end_to_end.builder_resources(output, "bazel", False)
+
     def test_source_edits_during_measurement_cannot_change_later_repetitions(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -35,6 +64,8 @@ class EndToEndSnapshotTests(unittest.TestCase):
             report = json.loads((root / "output/report.json").read_text())
             self.assertEqual(len(report["samples"]), 6)
             self.assertIn("MemAvailable:", report["memory_before"])
+            self.assertEqual(report["schema_version"], 2)
+            self.assertEqual(report["workloads"]["bazel"]["tests"], ["library unit", "CLI integration", "doctests"])
 
     def test_bazel_recipes_survive_output_filtering(self):
         with tempfile.TemporaryDirectory() as temporary:
