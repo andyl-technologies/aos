@@ -233,8 +233,8 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
   // the later small-body calibration or verification-timeout selection.
   let queuePause = null;
 
-  // Two independent main qualification cohorts (preflight and final) share
-  // this owner. Their consumed nonces remain recorded; no pause is rearmed.
+  // Preflight and final each hold two distinct bulk originals. Consumed
+  // nonces remain recorded; no response pause is ever rearmed.
   const mixedCohorts = new Map();
 
   function mixedCutoff(selection) {
@@ -786,7 +786,7 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
         'expectedSourceSha256', 'expectedSourceBytes', 'expectedPrefixSha256',
         'selectionContextSha256', 'selectionDeadlineUnixMillis', 'pauseMillis', 'streamMillis'])
         && value.version === 1 && HEX.test(value.cohortNonce) && !mixedCohorts.has(value.cohortNonce)
-        && mixedCohorts.size < 2
+        && mixedCohorts.size < 4
         && closed(value.bindings, ['runId', 'objectId', 'originalSha256', 'closedSha256', 'jobProjectionSha256'])
         && Object.values(value.bindings).every(item => typeof item === 'string' && HEX.test(item))
         && closed(value.selection, ['target', 'host', 'etag'])
@@ -804,9 +804,15 @@ export async function createResponseHold(root, ports = { listen: 3902, upstream:
         && Number.isSafeInteger(value.streamMillis) && value.streamMillis >= value.pauseMillis
         && value.streamMillis <= 900000,
       'mixed arm differs from one-use bounded selection');
-      requireFact(![...mixedCohorts.values()].some(item =>
-        ['armed', 'selected', 'receiving_prefix', 'held', 'resuming'].includes(item.state)),
-      'another mixed cohort still owns a response');
+      const active = [...mixedCohorts.values()].filter(item =>
+        ['armed', 'selected', 'receiving_prefix', 'held', 'resuming'].includes(item.state));
+      requireFact(active.length < 2 && active.every(item =>
+        item.arm.bindings.runId === value.bindings.runId
+        && item.arm.bindings.originalSha256 === value.bindings.originalSha256
+        && item.arm.bindings.objectId !== value.bindings.objectId
+        && (item.arm.selection.host !== value.selection.host
+          || item.arm.selection.target !== value.selection.target)),
+      'mixed concurrent selections must be distinct originals in one run');
       mixedCohorts.set(value.cohortNonce, { arm: structuredClone(value), state: 'armed',
         receipt: null, receiptFile: null, terminalFile: null, terminalCause: null,
         endedAtUnixMillis: null, beginNonce: null, metadataReceiptSha256: null,

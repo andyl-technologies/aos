@@ -347,14 +347,14 @@ async function inspectOriginalObjects(objectIds, { deadline = Infinity, maximumP
   return receipts;
 }
 
-async function waitForMixedRelease(ready, stage = "admission") {
+async function waitForMixedRelease(ready, stage = "admission", prefix = "mixed") {
   const selectedFile = resolve(required("--mixed-admission-file"));
-  const file = stage === "arm" ? resolve(output, "..", "mixed-arm-release.json") : selectedFile;
+  const file = resolve(output, "..", `${prefix}-${stage}-release.json`);
   if (selectedFile !== resolve(output, "..", "mixed-admission-release.json")) {
     throw new Error("Mixed release must use the exact owned invocation path.");
   }
   const deadline = Date.now() + 35000;
-  await save(stage === "arm" ? "mixed-arm-ready.json" : "mixed-admission-ready.json", ready);
+  await save(`${prefix}-${stage}-ready.json`, ready);
   while (Date.now() < deadline) {
     if (cancelled) throw new Error("Cancelled before mixed metadata admission.");
     let bytes;
@@ -373,39 +373,36 @@ async function waitForMixedRelease(ready, stage = "admission") {
         || !/^[a-f0-9]{64}$/.test(release.heldReceiptSha256)) {
       throw new Error("Mixed owner release differs from this exact original Begin.");
     }
-    await save(stage === "arm" ? "mixed-arm-release-observed.json" : "mixed-admission-release-observed.json", release);
+    await save(`${prefix}-${stage}-release-observed.json`, release);
     return;
   }
   throw new Error("Mixed admission owner deadline elapsed; effects remain unknown.");
 }
 
-async function enqueueMixedWithAdmission(bulkObjects, metadataObjects) {
-  if (!bulkObjects.length || !metadataObjects.length) throw new Error("Mixed admission requires both classes.");
-  const first = bulkObjects[0];
-  const concurrentBulk = bulkObjects[1];
-  const closedCapture = await control({ kind: "inspect", objectId: first.objectId, afterAttempt: 0 });
+async function armMixedRead(object, prefix) {
+  const closedCapture = await control({ kind: "inspect", objectId: object.objectId, afterAttempt: 0 });
   const closedPage = closedCapture.result;
-  if (closedPage.objectId !== first.objectId || canonicalHash(closedPage.original) !== canonicalHash(original)
+  if (closedPage.objectId !== object.objectId || canonicalHash(closedPage.original) !== canonicalHash(original)
       || !closedPage.closed?.job || closedPage.attempts.length !== 0 || closedPage.nextAttempt !== null) {
     throw new Error("Mixed source requires a fresh closed job before any verification Enqueue.");
   }
   const cohort = { version: 1, cohortNonce: randomBytes(32).toString("hex"), runId,
     sourceDigest: identity.sourceDigest, scriptVersion: identity.scriptVersion,
-    originalSha256: canonicalHash(original), objectId: first.objectId,
-    expectedSourceSha256: first.expectedSha256, expectedSourceBytes: first.byteSize,
+    originalSha256: canonicalHash(original), objectId: object.objectId,
+    expectedSourceSha256: object.expectedSha256, expectedSourceBytes: object.byteSize,
     closedSha256: canonicalHash(closedPage.closed), jobProjectionSha256: canonicalHash(closedPage.closed.job),
     inspectionSha256: closedCapture.responseSha256, inspectionFile: closedCapture.captureFile };
-  await waitForMixedRelease(cohort, "arm");
-  // A queue may serialize invocations. Fill both bulk slots in one batch so
-  // the held first stream does not prevent delivery of the second original.
-  await control({ kind: "enqueue", objectIds: [first, concurrentBulk].filter(Boolean).map(item => item.objectId) });
-  const deadline = Date.now() + 35000;
+  await waitForMixedRelease(cohort, "arm", prefix);
+  return cohort;
+}
+
+async function bindMixedRead(object, cohort, deadline, prefix) {
   let pending;
   while (Date.now() < deadline) {
     if (cancelled) throw new Error("Cancelled before observed bulk Begin.");
-    const capture = await control({ kind: "inspect", objectId: first.objectId, afterAttempt: 0 });
+    const capture = await control({ kind: "inspect", objectId: object.objectId, afterAttempt: 0 });
     const page = capture.result;
-    if (page.objectId !== first.objectId || canonicalHash(page.original) !== canonicalHash(original)
+    if (page.objectId !== object.objectId || canonicalHash(page.original) !== canonicalHash(original)
         || page.closed === null || !Array.isArray(page.attempts) || page.attempts.length > 1
         || page.nextAttempt !== null && page.nextAttempt !== 1) {
       throw new Error("Mixed bulk inspection differs from its original.");
@@ -421,8 +418,8 @@ async function enqueueMixedWithAdmission(bulkObjects, metadataObjects) {
       // after bulk capacity admission; Begin alone grants no release.
       pending = { version: 1, cohortNonce: cohort.cohortNonce, runId, sourceDigest: identity.sourceDigest,
         scriptVersion: identity.scriptVersion, originalSha256: canonicalHash(original),
-        objectId: first.objectId, expectedSourceSha256: first.expectedSha256,
-        expectedSourceBytes: first.byteSize, closedSha256: canonicalHash(page.closed),
+        objectId: object.objectId, expectedSourceSha256: object.expectedSha256,
+        expectedSourceBytes: object.byteSize, closedSha256: canonicalHash(page.closed),
         jobProjectionSha256: canonicalHash(page.closed.job),
         attemptNonce: record.attempt.nonce, attemptSha256: canonicalHash(record.attempt),
         inspectionSha256: capture.responseSha256, inspectionFile: capture.captureFile };
@@ -434,29 +431,21 @@ async function enqueueMixedWithAdmission(bulkObjects, metadataObjects) {
   if (pending.closedSha256 !== cohort.closedSha256 || pending.jobProjectionSha256 !== cohort.jobProjectionSha256) {
     throw new Error("Mixed Begin closed job changed after arming.");
   }
-  await waitForMixedRelease(pending);
-  if (concurrentBulk) {
-    // Fill the second bulk slot before measuring the reserved metadata slot.
-    // The metadata completion receipt must independently confirm both are active.
-    let started = false;
-    while (Date.now() < deadline) {
-      if (cancelled) throw new Error("Cancelled before concurrent bulk Begin.");
-      const capture = await control({ kind: "inspect", objectId: concurrentBulk.objectId, afterAttempt: 0 });
-      const page = capture.result;
-      if (page.objectId !== concurrentBulk.objectId || canonicalHash(page.original) !== canonicalHash(original)
-          || !page.closed?.job || page.attempts.length > 1 || page.nextAttempt !== null) {
-        throw new Error("Concurrent bulk inspection differs from its original.");
-      }
-      const record = page.attempts[0];
-      if (record?.receipt) throw new Error("Concurrent bulk finished before metadata admission.");
-      if (record) {
-        started = true;
-        break;
-      }
-      await new Promise(done => setTimeout(done, 25));
-    }
-    if (!started) throw new Error("Concurrent bulk Begin was not observed before the mixed cutoff.");
-  }
+  await waitForMixedRelease(pending, "admission", prefix);
+  return pending;
+}
+
+async function enqueueMixedWithAdmission(bulkObjects, metadataObjects) {
+  if (!bulkObjects.length || !metadataObjects.length) throw new Error("Mixed admission requires both classes.");
+  const first = bulkObjects[0], concurrentBulk = bulkObjects[1];
+  // Arm both original GETs before one queue batch can dispatch either stream.
+  // Holding just the first lets the second finish during the owner rendezvous.
+  const cohorts = [await armMixedRead(first, "mixed")];
+  if (concurrentBulk) cohorts.push(await armMixedRead(concurrentBulk, "mixed-second"));
+  await control({ kind: "enqueue", objectIds: [first, concurrentBulk].filter(Boolean).map(item => item.objectId) });
+  const deadline = Date.now() + 35000;
+  const pending = await bindMixedRead(first, cohorts[0], deadline, "mixed");
+  if (concurrentBulk) await bindMixedRead(concurrentBulk, cohorts[1], deadline, "mixed-second");
   const metadata = metadataObjects[0];
   // Remaining originals still run once after the real metadata proof.
   await control({ kind: "enqueue", objectIds: [metadata.objectId] });
@@ -466,16 +455,19 @@ async function enqueueMixedWithAdmission(bulkObjects, metadataObjects) {
     && Number(item.receipt.objects.bulkActive) === (concurrentBulk ? 2 : 1)
     && item.receipt.providerAfter.metadataAdmissionsDuringBulk > item.receipt.attempt.providerBefore.metadataAdmissionsDuringBulk);
   if (positive.length !== 1) throw new Error("Metadata lacks actual fresh admission under bulk.");
-  if (bulkObjects.length > 2) {
-    await control({ kind: "enqueue", objectIds: bulkObjects.slice(2).map(item => item.objectId) });
-  }
   await save("mixed-admission-metadata-finish.json", { version: 1, runId,
     readySha256: canonicalHash(pending), record: positive[0] });
-  await waitForObjects(bulkObjects.map(item => item.objectId));
+  const bulkDeadline = Date.now() + wait * 1000;
+  await waitForObjects([first, concurrentBulk].filter(Boolean).map(item => item.objectId), bulkDeadline);
+  if (bulkObjects.length > 2) {
+    const remaining = bulkObjects.slice(2).map(item => item.objectId);
+    await control({ kind: "enqueue", objectIds: remaining });
+    await waitForObjects(remaining, bulkDeadline);
+  }
 }
 
-async function waitForObjects(objectIds) {
-  const selected = new Set(objectIds), deadline = Date.now() + wait * 1000;
+async function waitForObjects(objectIds, deadline = Date.now() + wait * 1000) {
+  const selected = new Set(objectIds);
   if (!selected.size || selected.size !== objectIds.length) {
     throw new Error("Queue waiting requires unique selected original objects.");
   }

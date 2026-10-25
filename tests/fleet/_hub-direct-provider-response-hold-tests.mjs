@@ -785,16 +785,71 @@ test('mixed cutoff stays destructive and cannot be padded by late resume', async
   });
 });
 
-test('mixed fresh cohort bound is two and never resets consumed nonce history', async () => {
+test('mixed fresh cohort bound is four and never resets consumed nonce history', async () => {
   const body = Buffer.alloc(131072, 0x45);
   await fixture(normal(body), async facts => {
-    for (const nonce of ['1'.repeat(64), 'a'.repeat(64)]) {
+    for (const nonce of ['1'.repeat(64), 'a'.repeat(64), 'c'.repeat(64), 'd'.repeat(64)]) {
       const arm = mixedArm(body, nonce);
       assert.equal((await control(facts.root, arm)).status, 'armed');
       assert.equal((await control(facts.root, mixedCommand(arm, 'cancel_mixed_read'))).state, 'cancelled');
       assert.equal((await control(facts.root, arm)).status, 'refused');
     }
     assert.equal((await control(facts.root, mixedArm(body, 'b'.repeat(64)))).status, 'refused');
+  });
+});
+
+test('two distinct bulk originals stay held independently through one metadata proof', async () => {
+  const bodies = [Buffer.alloc(16 * 1024 * 1024 + 17, 0x42), Buffer.alloc(131072, 0x43)];
+  await fixture((incoming, outgoing) => {
+    const body = bodies[incoming.url === FIRST_TARGET ? 0 : 1];
+    outgoing.writeHead(200, { etag: '"actual-etag"', 'content-length': String(body.length) });
+    outgoing.end(body);
+  }, async facts => {
+    const first = mixedArm(bodies[0]);
+    const second = mixedArm(bodies[1], 'a'.repeat(64), {
+      bindings: { ...first.bindings, objectId: 'b'.repeat(64) },
+      selection: { ...first.selection, target: '/second-original' } });
+    const arms = [first, second];
+    for (const arm of arms) assert.equal((await control(facts.root, arm)).status, 'armed');
+
+    const readings = arms.map(arm => read(facts.port, { target: arm.selection.target }));
+    const held = await Promise.all(arms.map(arm => awaitMixed(facts.root, arm, value => value.state === 'held')));
+    assert.ok(held.every(value => value.receipt.downstreamOfferedBytes === '0'));
+    for (const [index, arm] of arms.entries()) {
+      const beginNonce = String(index + 8).repeat(64);
+      await control(facts.root, mixedCommand(arm, 'bind_mixed_begin', { beginNonce }));
+      assert.equal((await control(facts.root, mixedCommand(arm, 'resume_mixed_read', {
+        beginNonce, heldReceiptSha256: held[index].receiptFile.sha256,
+        metadataReceiptSha256: 'c'.repeat(64) }))).status, 'resume_dispatched');
+      const result = await readings[index];
+      assert.deepEqual(result.body, bodies[index]);
+      if (index === 0) assert.equal((await control(facts.root, mixedCommand(second, 'mixed_state'))).state, 'held');
+    }
+    assert.equal(facts.received.length, 2);
+    for (const arm of arms) assert.equal((await awaitMixed(facts.root, arm, value => value.terminalFile !== null)).state, 'eof');
+  });
+});
+
+test('concurrent mixed selections require one run and distinct originals and targets', async () => {
+  const body = Buffer.alloc(131072, 0x45);
+  await fixture(normal(body), async facts => {
+    const first = mixedArm(body);
+    assert.equal((await control(facts.root, first)).status, 'armed');
+    const second = mixedArm(body, 'a'.repeat(64), {
+      bindings: { ...first.bindings, objectId: 'b'.repeat(64) },
+      selection: { ...first.selection, target: '/second-original' } });
+    for (const invalid of [
+      { ...second, bindings: { ...second.bindings, runId: 'c'.repeat(64) } },
+      { ...second, bindings: { ...second.bindings, originalSha256: 'c'.repeat(64) } },
+      { ...second, bindings: first.bindings },
+      { ...second, selection: first.selection },
+    ]) assert.equal((await control(facts.root, invalid)).status, 'refused');
+    assert.equal((await control(facts.root, second)).status, 'armed');
+    const third = mixedArm(body, 'd'.repeat(64), {
+      bindings: { ...first.bindings, objectId: 'e'.repeat(64) },
+      selection: { ...first.selection, target: '/third-original' } });
+    assert.equal((await control(facts.root, third)).status, 'refused');
+    for (const arm of [first, second]) await control(facts.root, mixedCommand(arm, 'cancel_mixed_read'));
   });
 });
 

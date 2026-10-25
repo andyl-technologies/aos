@@ -78,6 +78,24 @@ class MixedAdmission(unittest.TestCase):
         self.assertIs(self.validate(), self.capture["result"])
         self.assertNotIn("objects", self.attempt)
 
+    def test_second_bulk_is_bound_to_its_own_original_slot(self):
+        source = {"sha256": "9" * 64, "byte_size": 2147483648}
+        original = copy.deepcopy(self.original)
+        original["objects"].append({**original["objects"][0],
+            "objectId": "8" * 64, "expectedSha256": source["sha256"]})
+        capture = copy.deepcopy(self.capture)
+        capture["result"].update(original=original, objectId="8" * 64)
+        ready = {**self.ready, "objectId": "8" * 64,
+            "originalSha256": mixed.mixed_document_digest(original),
+            "expectedSourceSha256": source["sha256"]}
+
+        self.assertIs(mixed.validate_mixed_ready(ready, capture, self.auth,
+            original["runId"], source, self.identity, object_index=1), capture["result"])
+        for index in (0, 2, True):
+            with self.subTest(index=index), self.assertRaises(ValueError):
+                mixed.validate_mixed_ready(ready, capture, self.auth,
+                    original["runId"], source, self.identity, object_index=index)
+
     def test_arm_requires_no_previous_begin_and_exact_closed_job(self):
         arm_ready = {name: value for name, value in self.ready.items() if name in mixed.MIXED_ARM_FIELDS}
         capture = copy.deepcopy(self.capture)
@@ -129,6 +147,13 @@ class MixedAdmission(unittest.TestCase):
 
     def test_metadata_positive_requires_real_fresh_bulk_admission_and_consumption(self):
         self.assertIs(mixed.validate_mixed_metadata_finish(self.finish, self.ready, self.metadata), self.finish["record"])
+        with self.assertRaises(ValueError):
+            mixed.validate_mixed_metadata_finish(self.finish, self.ready, self.metadata, expected_bulk=2)
+        saturated = copy.deepcopy(self.finish)
+        saturated["record"]["receipt"]["objects"]["bulkActive"] = 2
+        self.assertIs(mixed.validate_mixed_metadata_finish(saturated, self.ready,
+            self.metadata, expected_bulk=2), saturated["record"])
+
         for change in ("replay", "bulk", "counter", "source", "isolate"):
             finish = copy.deepcopy(self.finish); receipt = finish["record"]["receipt"]
             if change == "replay": receipt["verificationReplayed"] = True

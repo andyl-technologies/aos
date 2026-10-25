@@ -19,6 +19,7 @@ const collector = resolve(process.argv[5] ?? "tests/fleet/_hub-direct-qualificat
 if (!python?.startsWith("/nix/store/")) throw new Error("Supply the source-built AOS Python path.");
 const root = await mkdtemp("/tmp/aos-direct-qualification-driver-tests-");
 await chmod(root, 0o700);
+process.stdout.write(`Driver fixture artifacts: ${root}\n`);
 const cert = join(root, "test.crt"), privateKey = join(root, "test.key");
 const generated = spawnSync(openssl, ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-days", "1",
   "-subj", "/CN=localhost", "-addext", "subjectAltName=IP:127.0.0.1", "-keyout", privateKey, "-out", cert],
@@ -64,11 +65,15 @@ await writeFile(payloadFile, payload, { mode: 0o600 });
 const secondPayload = Buffer.alloc(payload.length, 0x37), secondPayloadFile = join(root, "second-payload");
 await writeFile(secondPayloadFile, secondPayload, { mode: 0o600 });
 const secondPayloadDigest = createHash("sha256").update(secondPayload).digest("hex");
+const thirdPayload = Buffer.alloc(65537, 0x38), thirdPayloadFile = join(root, "third-payload");
+await writeFile(thirdPayloadFile, thirdPayload, { mode: 0o600 });
+const thirdPayloadDigest = createHash("sha256").update(thirdPayload).digest("hex");
 // These are protocol bytes, not a claim of narinfo semantic verification.
 const metadataPayload = Buffer.alloc(256 * 1024, 0x6d), metadataFile = join(root, "metadata-payload");
 await writeFile(metadataFile, metadataPayload, { mode: 0o600 });
 const sourceBytes = object => object.metadata ? metadataPayload
-  : object.expectedSha256 === secondPayloadDigest ? secondPayload : payload;
+  : object.expectedSha256 === secondPayloadDigest ? secondPayload
+  : object.expectedSha256 === thirdPayloadDigest ? thirdPayload : payload;
 const uploadedByObject = new Map(), uploadRoutes = new Set();
 const digest = bytes => createHash("sha256").update(bytes).digest("hex");
 // Production Grant replies pass through serde_json::Value's sorted maps.
@@ -101,8 +106,9 @@ async function verifyMixedObject(object) {
   mixedPeakActive = Math.max(mixedPeakActive, observedObjects.aggregateActive);
   const observed = await new Promise((done, reject) => {
     const outgoing = httpRequest({ host: "127.0.0.1", port: mixedFixture.listenerPort,
-      path: object.metadata ? "/metadata-payload" : scenario === "mixed-saturation"
-        && object.objectId !== original.objects[0].objectId ? "/bulk-second-payload" : "/bulk-payload", agent: false,
+      path: object.metadata ? "/metadata-payload" : object.expectedSha256 === secondPayloadDigest
+        ? "/bulk-second-payload" : object.expectedSha256 === thirdPayloadDigest
+        ? "/bulk-third-payload" : "/bulk-payload", agent: false,
       headers: { host: "s3.fleet.test", "if-match": '"actual-etag"',
         authorization: "AWS4-HMAC-SHA256 Credential=test/20261002/garage/s3/aws4_request, "
           + "SignedHeaders=host;if-match;x-amz-content-sha256;x-amz-date, Signature=" + "a".repeat(64),
@@ -128,16 +134,29 @@ async function verifyMixedObject(object) {
 }
 
 async function mixedPeer(action) {
+  const start = object => {
+    const task = verifyMixedObject(object);
+    // Observe rejection immediately; Promise.all below still fails the test.
+    // A failed driver may close its sockets before that later join runs.
+    task.catch(() => {});
+    mixedFixture.tasks.push(task);
+  };
   if (action.kind === "enqueue") {
     const objects = original.objects.filter(object => action.objectIds.includes(object.objectId));
     if (scenario === "mixed-saturation" && objects.some(object => !object.metadata)) {
-      assert.equal(objects.length, 2, "Both bulk originals must share one queue delivery batch");
+      if (objects.some(object => object.objectId === original.objects[0].objectId)) {
+        assert.equal(objects.length, 2, "Both held bulk originals must share one queue delivery batch");
+      } else {
+        assert.equal(objects.length, 1);
+        assert.ok(original.objects.slice(0, 2).every(object => mixedEntries.get(object.objectId).receipt),
+          "The third bulk original must follow both actual held-stream completions");
+      }
     }
     if (scenario === "mixed-baseline" && objects.length === 2) {
       // Actual old producer batch reaches a controlled metadata-first scheduler.
       await verifyMixedObject(objects.find(object => object.metadata));
-      mixedFixture.tasks.push(verifyMixedObject(objects.find(object => !object.metadata)));
-    } else for (const object of objects) mixedFixture.tasks.push(verifyMixedObject(object));
+      start(objects.find(object => !object.metadata));
+    } else for (const object of objects) start(object);
     return {};
   }
   if (action.kind === "status") return { original, objects: original.objects.map(object => ({
@@ -149,59 +168,77 @@ async function mixedPeer(action) {
 }
 
 async function pumpMixed(output) {
-  let arm, ready, resumed = false;
+  const cohorts = (scenario === "mixed-saturation" ? ["mixed", "mixed-second"] : ["mixed"])
+    .map((prefix, index) => ({ prefix, index, arm: null, ready: null }));
+  let resumed = false;
   const timeout = Date.now() + 15000;
   const json = async name => {
     try { return JSON.parse(await readFile(join(output, name))); }
     catch (error) { if (error.code !== "ENOENT") throw error; return null; }
   };
   const save = (name, value) => writeFile(resolve(output, "..", name), JSON.stringify(sorted(value)), { mode: 0o600, flag: "wx" });
+  const command = cohort => ({ version: 1, kind: "mixed_state",
+    cohortNonce: cohort.arm.cohortNonce, bindings: cohort.arm.bindings });
   while (Date.now() < timeout) {
-    const arming = await json("mixed-arm-ready.json");
-    if (arming && !arm) {
-      arm = { version: 1, kind: "arm_mixed_read", cohortNonce: arming.cohortNonce,
-        bindings: Object.fromEntries(["runId", "objectId", "originalSha256", "closedSha256", "jobProjectionSha256"].map(key => [key, arming[key]])),
-        selection: { target: "/bulk-payload", host: "s3.fleet.test", etag: '"actual-etag"' },
-        expectedSourceSha256: digest(payload), expectedSourceBytes: String(payload.length),
-        expectedPrefixSha256: digest(payload.subarray(0, 65536)), selectionContextSha256: digest(Buffer.from(JSON.stringify(sorted(arming)))),
-        selectionDeadlineUnixMillis: Date.now() + 15000, pauseMillis: 15000, streamMillis: 15000 };
-      assert.equal((await mixedFixture.listener.command(arm)).status, "armed");
-      await save("mixed-arm-release.json", { version: 1, runId: arming.runId,
-        readySha256: digest(Buffer.from(JSON.stringify(sorted(arming)))), heldReceiptSha256: digest(Buffer.from(JSON.stringify(arm))) });
-    }
-    const candidate = await json("mixed-admission-ready.json");
-    const command = arm && { version: 1, kind: "mixed_state", cohortNonce: arm.cohortNonce, bindings: arm.bindings };
-    if (candidate && !ready) {
-      const state = await mixedFixture.listener.command(command);
-      if (state.state === "held") {
-        assert.equal(mixedEntries.get(candidate.objectId).attempt.nonce, candidate.attemptNonce);
-        assert.equal(mixedBulkActive, scenario === "mixed-saturation" ? 2 : 1);
-        assert.equal(state.receipt.downstreamOfferedBytes, "0");
-        await mixedFixture.listener.command({ ...command, kind: "bind_mixed_begin", beginNonce: candidate.attemptNonce });
-        await save("mixed-admission-release.json", { version: 1, runId: candidate.runId,
-          readySha256: digest(Buffer.from(JSON.stringify(sorted(candidate)))), heldReceiptSha256: state.receiptFile.sha256 });
-        ready = candidate;
+    for (const cohort of cohorts) {
+      const { prefix, index } = cohort;
+      const arming = await json(`${prefix}-arm-ready.json`);
+      if (arming && !cohort.arm) {
+        const bytes = sourceBytes(original.objects[index]);
+        cohort.arm = { version: 1, kind: "arm_mixed_read", cohortNonce: arming.cohortNonce,
+          bindings: Object.fromEntries(["runId", "objectId", "originalSha256", "closedSha256", "jobProjectionSha256"].map(key => [key, arming[key]])),
+          selection: { target: index === 0 ? "/bulk-payload" : "/bulk-second-payload", host: "s3.fleet.test", etag: '\"actual-etag\"' },
+          expectedSourceSha256: digest(bytes), expectedSourceBytes: String(bytes.length),
+          expectedPrefixSha256: digest(bytes.subarray(0, 65536)), selectionContextSha256: digest(Buffer.from(JSON.stringify(sorted(arming)))),
+          selectionDeadlineUnixMillis: Date.now() + 15000, pauseMillis: 15000, streamMillis: 15000 };
+        assert.equal((await mixedFixture.listener.command(cohort.arm)).status, "armed");
+        await save(`${prefix}-arm-release.json`, { version: 1, runId: arming.runId,
+          readySha256: digest(Buffer.from(JSON.stringify(sorted(arming)))), heldReceiptSha256: digest(Buffer.from(JSON.stringify(cohort.arm))) });
+      }
+      const candidate = await json(`${prefix}-admission-ready.json`);
+      if (candidate && !cohort.ready) {
+        const state = await mixedFixture.listener.command(command(cohort));
+        if (state.state === "held") {
+          assert.equal(mixedEntries.get(candidate.objectId).attempt.nonce, candidate.attemptNonce);
+          assert.ok(mixedBulkActive >= 1);
+          assert.equal(state.receipt.downstreamOfferedBytes, "0");
+          // Let an unheld second real stream finish before releasing the first.
+          // The fixed producer arms both streams, so neither can finish here.
+          if (scenario === "mixed-saturation" && index === 0) await new Promise(done => setTimeout(done, 250));
+          await mixedFixture.listener.command({ ...command(cohort), kind: "bind_mixed_begin", beginNonce: candidate.attemptNonce });
+          await save(`${prefix}-admission-release.json`, { version: 1, runId: candidate.runId,
+            readySha256: digest(Buffer.from(JSON.stringify(sorted(candidate)))), heldReceiptSha256: state.receiptFile.sha256 });
+          cohort.ready = candidate;
+        }
       }
     }
     const finish = await json("mixed-admission-metadata-finish.json");
     if (finish && !resumed) {
-      const state = await mixedFixture.listener.command(command);
-      assert.equal(state.state, "held");
-      assert.equal(finish.record.receipt.objects.bulkActive, scenario === "mixed-saturation" ? 2 : 1);
+      assert.equal(finish.record.receipt.objects.bulkActive, cohorts.length);
       assert.equal(finish.record.object.metadata, true);
       assert.equal(finish.record.receipt.proof.sha256, digest(metadataPayload));
       assert.equal(finish.record.receipt.proof.byte_size, String(metadataPayload.length));
-      assert.equal((await mixedFixture.listener.command({ ...command, kind: "resume_mixed_read",
-        beginNonce: ready.attemptNonce, heldReceiptSha256: state.receiptFile.sha256,
-        metadataReceiptSha256: digest(Buffer.from(JSON.stringify(sorted(finish.record.receipt)))) })).status, "resume_dispatched");
+      for (const cohort of cohorts) {
+        assert.ok(cohort.ready);
+        const state = await mixedFixture.listener.command(command(cohort));
+        assert.equal(state.state, "held");
+        assert.equal((await mixedFixture.listener.command({ ...command(cohort), kind: "resume_mixed_read",
+          beginNonce: cohort.ready.attemptNonce, heldReceiptSha256: state.receiptFile.sha256,
+          metadataReceiptSha256: digest(Buffer.from(JSON.stringify(sorted(finish.record.receipt)))) })).status, "resume_dispatched");
+      }
+      mixedFixture.heldBulkReads = cohorts.length;
       resumed = true;
     }
-    if (resumed && (await mixedFixture.listener.command(command)).state === "eof") return;
+    if (resumed) {
+      const states = await Promise.all(cohorts.map(cohort => mixedFixture.listener.command(command(cohort))));
+      if (states.every(state => state.state === "eof")) return;
+    }
     if (child.exitCode !== null) throw new Error("actual producer exited before mixed stream EOF");
     await new Promise(done => setTimeout(done, 5));
   }
   throw new Error("controlled mixed pump deadline");
 }
+
 const calls = [], partOrder = [];
 const server = createServer({ cert: await readFile(cert), key: await readFile(privateKey) }, async (request, response) => {
   try {
@@ -346,7 +383,8 @@ async function run(name, mode, phase = "run") {
     mixedDispatches = 0; mixedBulkActive = 0; mixedMetadataAdmissions = 0; mixedPeakActive = 0;
     await writeFile(manifestFile, JSON.stringify({ provider: { kind: "managed" }, objects: [
       { file: payloadFile, metadata: false },
-      ...(mode === "mixed-saturation" ? [{ file: secondPayloadFile, metadata: false }] : []),
+      ...(mode === "mixed-saturation" ? [{ file: secondPayloadFile, metadata: false },
+        { file: thirdPayloadFile, metadata: false }] : []),
       { file: metadataFile, metadata: true }] }), { mode: 0o600 });
   }
   const hook = pathToFileURL(connectionHook);
@@ -368,8 +406,8 @@ async function run(name, mode, phase = "run") {
   let logs = ""; child.stdout.on("data", bytes => { logs += bytes; }); child.stderr.on("data", bytes => { logs += bytes; });
   const exit = await new Promise((done, reject) => { child.once("error", reject); child.once("exit", done); });
   await pumping;
-  if (pumpError) throw pumpError;
   await writeFile(join(root, `${name}.log`), logs, { mode: 0o600 });
+  if (pumpError) throw pumpError;
   return { output, exit, logs };
 }
 try {
@@ -581,23 +619,15 @@ print('PASS actual driver evidence accepted; old underscore filename refused by 
   // retagged qualification artifact. No rows are manually constructed.
   assert.ok(baselineDriver?.startsWith("/nix/store/"));
   const backend = createHttpServer((request, response) => {
-    assert.ok(["/bulk-payload", "/bulk-second-payload", "/metadata-payload"].includes(request.url));
+    assert.ok(["/bulk-payload", "/bulk-second-payload", "/bulk-third-payload", "/metadata-payload"].includes(request.url));
     assert.equal(request.method, "GET");
     assert.equal(request.headers["if-match"], '"actual-etag"');
     mixedFixture.gets.set(request.url, (mixedFixture.gets.get(request.url) ?? 0) + 1);
     const bytes = request.url === "/metadata-payload" ? metadataPayload
-      : request.url === "/bulk-second-payload" ? secondPayload : payload;
+      : request.url === "/bulk-second-payload" ? secondPayload
+      : request.url === "/bulk-third-payload" ? thirdPayload : payload;
     response.writeHead(200, { etag: '"actual-etag"', "content-length": String(bytes.length) });
-    if (request.url === "/bulk-second-payload") {
-      // Keep the second real stream active until metadata uses its reserved slot.
-      mixedFixture.secondBulkResponse = response;
-      return;
-    }
     response.end(bytes);
-    if (request.url === "/metadata-payload" && mixedFixture.secondBulkResponse) {
-      mixedFixture.secondBulkResponse.end(secondPayload);
-      mixedFixture.secondBulkResponse = null;
-    }
   });
   await new Promise(done => backend.listen(0, "127.0.0.1", done));
   const holdRoot = join(root, "mixed-holder"); await mkdir(holdRoot, { mode: 0o700 });
@@ -623,10 +653,11 @@ print('PASS actual driver evidence accepted; old underscore filename refused by 
     assert.equal(saturated.exit, 0, saturated.logs);
     await Promise.all(mixedFixture.tasks);
     assert.deepEqual(Object.fromEntries(mixedFixture.gets), {
-      "/bulk-payload": 1, "/bulk-second-payload": 1, "/metadata-payload": 1 });
+      "/bulk-payload": 1, "/bulk-second-payload": 1, "/bulk-third-payload": 1, "/metadata-payload": 1 });
     const saturation = JSON.parse(await readFile(join(saturated.output, "mixed-load-raw.json")));
     assert.equal(saturation.observations.samples.length, 1);
     assert.equal(saturation.observations.samples[0].bulkActive, "2");
+    assert.equal(mixedFixture.heldBulkReads, 2);
   } finally {
     await listener.close(); backend.closeAllConnections(); await new Promise(done => backend.close(done));
   }

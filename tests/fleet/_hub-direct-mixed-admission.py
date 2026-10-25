@@ -1,4 +1,4 @@
-"""Join an owned held provider read to an authenticated unfinished bulk Begin.
+"""Join owned held provider reads to authenticated unfinished bulk Begins.
 
 The fixture barrier grants no runtime or provider authority. Final mixed rows
 still come from the existing authenticated completion receipts and predicates.
@@ -26,8 +26,8 @@ def mixed_document_digest(value):
     return hashlib.sha256(encoded).hexdigest()
 
 
-def validate_mixed_ready(ready, capture, authentication, run_id, source, identity, *, arming=False):
-    """Join a source-authenticated capture, exact first original and unfinished Begin."""
+def validate_mixed_ready(ready, capture, authentication, run_id, source, identity, *, arming=False, object_index=0):
+    """Join an authenticated capture, selected original and unfinished Begin."""
     if (not isinstance(ready, dict) or set(ready) != (MIXED_ARM_FIELDS if arming else MIXED_READY_FIELDS)
             or type(ready["version"]) is not int or ready["version"] != 1
             or ready["runId"] != run_id
@@ -54,7 +54,10 @@ def validate_mixed_ready(ready, capture, authentication, run_id, source, identit
             or original["publicOrigin"] != identity["publicOrigin"]
             or mixed_document_digest(original) != ready["originalSha256"]):
         raise ValueError("mixed readiness original differs")
-    first = original["objects"][0]
+    if (type(object_index) is not int or object_index not in (0, 1)
+            or object_index >= len(original["objects"])):
+        raise ValueError("mixed object index differs")
+    first = original["objects"][object_index]
     if (first["metadata"] is not False or first["objectId"] != ready["objectId"]
             or result["objectId"] != first["objectId"]
             or first["byteSize"] != str(source["byte_size"])
@@ -125,7 +128,7 @@ def mixed_release_document(ready, held_receipt_sha256):
             "heldReceiptSha256": held_receipt_sha256}
 
 
-def validate_mixed_metadata_finish(value, ready, metadata_source):
+def validate_mixed_metadata_finish(value, ready, metadata_source, *, expected_bulk=1):
     """Require actual fresh metadata completion and its admitted-under-bulk counters."""
     if (set(value) != {"version", "runId", "readySha256", "record"}
             or type(value["version"]) is not int or value["version"] != 1
@@ -142,7 +145,7 @@ def validate_mixed_metadata_finish(value, ready, metadata_source):
     if (record["object"]["metadata"] is not True or receipt["verificationReplayed"] is not False
             or receipt["proof"]["sha256"] != metadata_source["sha256"]
             or receipt["proof"]["byte_size"] != str(metadata_source["byte_size"])
-            or receipt["objects"]["bulkActive"] <= 0
+            or receipt["objects"]["bulkActive"] != expected_bulk
             or before["isolateId"] != after["isolateId"]
             or after["dispatches"] <= before["dispatches"]
             or after["metadataAdmissionsDuringBulk"] <= before["metadataAdmissionsDuringBulk"]):
@@ -153,9 +156,9 @@ def validate_mixed_metadata_finish(value, ready, metadata_source):
 MIXED_ARM_FIELDS = MIXED_READY_FIELDS - {"attemptNonce", "attemptSha256"}
 
 
-def validate_mixed_arm(ready, capture, authentication, run_id, source, identity):
-    """Arm only an authenticated, closed, never-enqueued first bulk object."""
-    return validate_mixed_ready(ready, capture, authentication, run_id, source, identity, arming=True)
+def validate_mixed_arm(ready, capture, authentication, run_id, source, identity, *, object_index=0):
+    """Arm only the authenticated, closed, never-enqueued selected bulk object."""
+    return validate_mixed_ready(ready, capture, authentication, run_id, source, identity, arming=True, object_index=object_index)
 
 
 def mixed_bindings(ready):
@@ -373,7 +376,9 @@ def mixed_guest_snapshot(worker, tools, root, process, *, cutoff):
             evidence_fd = os.open('evidence', os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=root_fd)
             try:
                 result = {'outcome': outcome, 'child': child}
-                for name in ('mixed-arm-ready.json', 'mixed-admission-ready.json', 'mixed-admission-metadata-finish.json'):
+                for name in ('mixed-arm-ready.json', 'mixed-admission-ready.json',
+                             'mixed-second-arm-ready.json', 'mixed-second-admission-ready.json',
+                             'mixed-admission-metadata-finish.json'):
                     item = read_at(evidence_fd, name, 262144)
                     if item is not None and name != 'mixed-admission-metadata-finish.json':
                         filename = item['value']['inspectionFile']
@@ -395,7 +400,8 @@ def mixed_guest_snapshot(worker, tools, root, process, *, cutoff):
 
 def publish_mixed_barrier(worker, tools, root, filename, value, *, cutoff):
     """Create exactly one private canonical barrier; never rewrite a release."""
-    if filename not in {"mixed-arm-release.json", "mixed-admission-release.json"}:
+    if filename not in {"mixed-arm-release.json", "mixed-admission-release.json",
+                        "mixed-second-arm-release.json", "mixed-second-admission-release.json"}:
         raise ValueError("mixed barrier filename differs")
     direct_guest_python(worker, tools["python"], r"""
         import ctypes, os, stat, tempfile
@@ -480,7 +486,7 @@ def assert_mixed_supervisor_completion(receipt):
 
 def run_mixed_prequalification(worker, s3, tools, root, run_id, arguments, encoded_manifest,
                               sources, identity, worker_process, wait_seconds):
-    """Own one serialized pump; actual holder and authenticated receipts release it."""
+    """Own one serialized pump; both actual held reads join the metadata proof."""
     if (worker_process is None or tools.get("providerHoldInstallation") is None
             or root != "/var/lib/hybrid-worker/operator/prequalification-" + run_id):
         raise ValueError("mixed qualification caller is not explicitly wired")
@@ -509,32 +515,29 @@ def run_mixed_prequalification(worker, s3, tools, root, run_id, arguments, encod
         [tools["python"], "-B", root + "/mixed-supervisor.py", root,
          json.dumps(arguments, separators=(",", ":")), str(wait_seconds + 1500)],
         {"NODE_EXTRA_CA_CERTS": "/etc/ssl/certs/ca-certificates.crt"})
-    arm = None
-    ready = None
-    resumed = False
-    terminal = None
+    cohorts = [{"prefix": prefix, "index": index, "arm": None, "ready": None,
+                "resumed": False, "terminal": None}
+               for index, prefix in enumerate(("mixed", "mixed-second"))]
     owner_events = {"version": 1, "runId": run_id, "supervisor": process, "events": []}
     primary = None
     receipt = None
-    try:
-        while time.monotonic() < work_cutoff:
-            snapshot = mixed_guest_snapshot(worker, tools, root, process, cutoff=work_cutoff)
-            child = snapshot["child"]
-            if child is not None and (child["value"]["arguments"] != arguments
-                    or child["value"]["processGroup"] != process["pid"]
-                    or child["value"]["ownerUid"] != process["ownerUid"]):
-                raise ValueError("mixed child is outside its exact supervisor ownership")
-            arming = snapshot["mixed-arm-ready.json"]
+
+    def advance_cohort(snapshot, cohort):
+        prefix, index = cohort["prefix"], cohort["index"]
+        arm, ready = cohort["arm"], cohort["ready"]
+        resumed, terminal = cohort["resumed"], cohort["terminal"]
+        try:
+            arming = snapshot.get(prefix + "-arm-ready.json")
             if arming is not None and arm is None:
                 value = arming["value"]
                 capture, auth = arming["capture"], arming["authentication"]["value"]
                 if capture["sha256"] != auth["responseSha256"]:
                     raise ValueError("mixed actual authenticated capture bytes differ")
-                result = validate_mixed_arm(value, capture["value"], auth, run_id, sources[0], identity)
+                result = validate_mixed_arm(value, capture["value"], auth, run_id, sources[index], identity, object_index=index)
                 selection = direct_restart_read_selection(result)
                 if selection is None or selection["port"] != 443:
                     raise ValueError("mixed closed job lacks its actual selected TLS placement")
-                prefix = json.loads(direct_guest_python(worker, tools["python"], r"""
+                source_prefix = json.loads(direct_guest_python(worker, tools["python"], r"""
                     import hashlib, os, stat
                     fd = os.open(selected['file'], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
                     try:
@@ -547,21 +550,21 @@ def run_mixed_prequalification(worker, s3, tools, root, run_id, arguments, encod
                         if len(body) != 65536 or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns, before.st_ctime_ns) != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns): raise ValueError('mixed source prefix changed')
                         print(json.dumps({'sha256': hashlib.sha256(body).hexdigest()}))
                     finally: os.close(fd)
-                """, sources[0], timeout=mixed_remaining(work_cutoff)))
+                """, sources[index], timeout=mixed_remaining(work_cutoff)))
                 server_deadline = int(direct_guest_python(s3, tools["python"],
                     "import time; print(time.time_ns() // 1000000 + 1200000)", {}, timeout=mixed_remaining(work_cutoff)))
                 arm = {"version": 1, "kind": "arm_mixed_read", "cohortNonce": value["cohortNonce"],
                     "bindings": mixed_bindings(value), "selection": {name: selection[name] for name in ("target", "host", "etag")},
-                    "expectedSourceSha256": sources[0]["sha256"], "expectedSourceBytes": str(sources[0]["byte_size"]),
-                    "expectedPrefixSha256": prefix["sha256"], "selectionContextSha256": mixed_document_digest(value),
+                    "expectedSourceSha256": sources[index]["sha256"], "expectedSourceBytes": str(sources[index]["byte_size"]),
+                    "expectedPrefixSha256": source_prefix["sha256"], "selectionContextSha256": mixed_document_digest(value),
                     "selectionDeadlineUnixMillis": server_deadline, "pauseMillis": 35000,
                     "streamMillis": 900000}
                 reply = mixed_owner_command(s3, tools, arm, cutoff=work_cutoff)
                 if reply != {"version": 1, "status": "armed", "cohortNonce": arm["cohortNonce"]}:
                     raise ValueError("mixed source owner did not arm exact cohort")
                 owner_events["events"].append({"phase": "armed", "request": arm, "reply": reply})
-                publish_mixed_barrier(worker, tools, root, "mixed-arm-release.json", mixed_release_document(value, mixed_document_digest(arm)), cutoff=work_cutoff)
-            admission = snapshot["mixed-admission-ready.json"]
+                publish_mixed_barrier(worker, tools, root, prefix + "-arm-release.json", mixed_release_document(value, mixed_document_digest(arm)), cutoff=work_cutoff)
+            admission = snapshot.get(prefix + "-admission-ready.json")
             command = None if arm is None else {"version": 1, "kind": "mixed_state",
                 "cohortNonce": arm["cohortNonce"], "bindings": arm["bindings"]}
             if admission is not None and ready is None:
@@ -570,7 +573,7 @@ def run_mixed_prequalification(worker, s3, tools, root, run_id, arguments, encod
                     raise ValueError("mixed Begin differs from armed closed job")
                 capture, auth = admission["capture"], admission["authentication"]["value"]
                 if capture["sha256"] != auth["responseSha256"]: raise ValueError("mixed Begin capture bytes differ")
-                result = validate_mixed_ready(value, capture["value"], auth, run_id, sources[0], identity)
+                result = validate_mixed_ready(value, capture["value"], auth, run_id, sources[index], identity, object_index=index)
                 held = mixed_owner_command(s3, tools, command, cutoff=work_cutoff)
                 if held["state"] in {"cutoff", "disconnected", "refused", "cancelled", "eof"}:
                     raise ValueError("mixed owner ended before metadata admission")
@@ -581,7 +584,7 @@ def run_mixed_prequalification(worker, s3, tools, root, run_id, arguments, encod
                     if reply != {"version": 1, "status": "bound", "cohortNonce": arm["cohortNonce"]}:
                         raise ValueError("mixed Begin owner binding was not acknowledged")
                     owner_events["events"].append({"phase": "held_and_bound", "held": held, "ready": value, "reply": reply})
-                    publish_mixed_barrier(worker, tools, root, "mixed-admission-release.json", mixed_release_document(value, digest), cutoff=work_cutoff)
+                    publish_mixed_barrier(worker, tools, root, prefix + "-admission-release.json", mixed_release_document(value, digest), cutoff=work_cutoff)
                     ready = value
             if ready is not None and not resumed:
                 current = mixed_owner_command(s3, tools, command, cutoff=work_cutoff)
@@ -590,7 +593,7 @@ def run_mixed_prequalification(worker, s3, tools, root, run_id, arguments, encod
             finish = snapshot["mixed-admission-metadata-finish.json"]
             if finish is not None and not resumed:
                 if ready is None: raise ValueError("metadata finished without this actual held Begin")
-                validate_mixed_metadata_finish(finish["value"], ready, sources[3])
+                validate_mixed_metadata_finish(finish["value"], cohorts[0]["ready"], sources[3], expected_bulk=len(cohorts))
                 held = mixed_owner_command(s3, tools, command, cutoff=work_cutoff)
                 validate_mixed_held(held, arm["selection"] | {"sourceSha256": arm["expectedSourceSha256"],
                     "sourceBytes": arm["expectedSourceBytes"]}, arm, tools["providerHoldInstallation"]["ready"])
@@ -608,10 +611,24 @@ def run_mixed_prequalification(worker, s3, tools, root, run_id, arguments, encod
                     owner_events["events"].append({"phase": "terminal", "state": state})
                     terminal = state
                     if state["state"] != "eof": raise ValueError("mixed provider stream did not reach exact EOF")
+        finally:
+            cohort.update(arm=arm, ready=ready, resumed=resumed, terminal=terminal)
+
+    try:
+        while time.monotonic() < work_cutoff:
+            snapshot = mixed_guest_snapshot(worker, tools, root, process, cutoff=work_cutoff)
+            child = snapshot["child"]
+            if child is not None and (child["value"]["arguments"] != arguments
+                    or child["value"]["processGroup"] != process["pid"]
+                    or child["value"]["ownerUid"] != process["ownerUid"]):
+                raise ValueError("mixed child is outside its exact supervisor ownership")
+            for cohort in cohorts:
+                advance_cohort(snapshot, cohort)
             if snapshot["outcome"] is not None:
                 receipt = snapshot["outcome"]["value"]
                 assert_mixed_supervisor_completion(receipt)
-                if receipt["exitCode"] == 0 and (not resumed or terminal is None):
+                if receipt["exitCode"] == 0 and any(
+                        not cohort["resumed"] or cohort["terminal"] is None for cohort in cohorts):
                     raise ValueError("positive driver lacks same-stream terminal custody")
                 break
             time.sleep(min(0.025, max(0, work_cutoff - time.monotonic())))
@@ -622,12 +639,14 @@ def run_mixed_prequalification(worker, s3, tools, root, run_id, arguments, encod
         owner_events["ownerFailure"] = type(error).__name__
     finally:
         errors = []
-        if arm is not None and terminal is None:
-            try:
-                ended = mixed_owner_command(s3, tools, {"version": 1, "kind": "cancel_mixed_read",
-                    "cohortNonce": arm["cohortNonce"], "bindings": arm["bindings"]}, cutoff=original_cutoff)
-                owner_events["events"].append({"phase": "cleanup", "state": ended})
-            except BaseException as error: errors.append(error)
+        for cohort in cohorts:
+            arm = cohort["arm"]
+            if arm is not None and cohort["terminal"] is None:
+                try:
+                    ended = mixed_owner_command(s3, tools, {"version": 1, "kind": "cancel_mixed_read",
+                        "cohortNonce": arm["cohortNonce"], "bindings": arm["bindings"]}, cutoff=original_cutoff)
+                    owner_events["events"].append({"phase": "cleanup", "state": ended})
+                except BaseException as error: errors.append(error)
         try: owner_events["cleanup"] = stop_mixed_supervisor(worker, tools, process, cutoff=original_cutoff)
         except BaseException as error: errors.append(error)
         try:
