@@ -136,6 +136,9 @@ The source-built toolchain and fixed-output source dependencies must already be
 available for offline use. This entry point imports the exported repository,
 uses a separate build derivation, and disables shared action caching. It does
 not replace the named normative ABI and license gates or foreign-host tests.
+An optional `--argstr trial NAME` creates a separate Nix derivation for a fresh
+qualification execution. Reusing an existing trial or omitting it may reuse an
+already realized output when the precise compilation inputs are unchanged.
 
 The [merged bounded-XZ offline rebuild](../tests/evidence/master-bounded-xz-gpl-offline-source-rebuild.json)
 executes 107 actions in `linux-sandbox`, with zero action-cache hits and no
