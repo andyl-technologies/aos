@@ -12,6 +12,8 @@ use sha2::{Digest as _, Sha256};
 
 use super::*;
 
+mod service;
+
 const UNIT_BYTES: usize = 64 * 1024;
 const PROPERTIES: &[&str] = &["FragmentPath", "DropInPaths", "Transient"];
 const PROFILE_FD: &str = "aos-method46-initial-startup-profile";
@@ -122,7 +124,7 @@ impl InitialUnitOriginalV1 {
                 manager,
                 &profile.unit,
                 std::process::id(),
-                &[],
+                service::PROPERTIES,
                 PROPERTIES,
             )),
         );
@@ -132,6 +134,16 @@ impl InitialUnitOriginalV1 {
         {
             return Err(Method46InitialStartupClosedV1);
         }
+        service::require_service(
+            observation
+                .original
+                .service_values_v2()
+                .ok_or(Method46InitialStartupClosedV1)?,
+            &profile.unit,
+            &profile.owner_context,
+            &profile.executable.path,
+            std::process::id(),
+        )?;
         let path = fragment_path(&observation.original)?;
         require_fragment_name(path, &profile.unit)?;
         if index == 1 {
@@ -324,15 +336,17 @@ fn normalize_fragment(
 }
 
 fn manager_schedule() -> Option<ReadonlyPropertyReceiveScheduleV2> {
-    // Two fixed 17-call PID1 samples, Hello and bounded signal/header carryover.
+    // Two fixed 29-call PID1 samples, Hello and bounded signal/header carryover.
     // These are native-enforced ceilings, never an account or semantic claim.
     ReadonlyPropertyReceiveScheduleV2::new(64, 80, 64 * 1024, 4096, 80 * 64 * 1024).ok()
 }
 
 fn unit_demand(schedule: ReadonlyPropertyReceiveScheduleV2) -> Option<ResourceVector> {
     let manager = ReadonlyPropertyManagerOriginalV2::receiving_memory_bytes_v2(schedule)?;
-    let properties =
-        ServicePropertiesReadOriginalV2::receiving_memory_bytes_v2(0, PROPERTIES.len())?;
+    let properties = ServicePropertiesReadOriginalV2::receiving_memory_bytes_v2(
+        service::PROPERTIES.len(),
+        PROPERTIES.len(),
+    )?;
     let memory = manager
         .checked_add(properties.checked_mul(2)?)?
         // Include the one permitted blocking worker even if it is never used.

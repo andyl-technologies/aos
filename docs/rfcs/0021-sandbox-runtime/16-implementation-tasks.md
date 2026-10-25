@@ -361,6 +361,20 @@ Recent committed startup fixes close narrower prerequisites:
   live-policy, unit and Runtime additions. Installed producers and the public
   lifecycle remain unqualified.
 
+- Both retained initial-job PID1 samples now request twelve core service
+  properties. Borrowed comparisons require the fixed F cgroup, selected explicit
+  SELinux context, only chown/DAC-override bounding capabilities, no ambient
+  capabilities, NoNewPrivileges and locked no-setuid-fixup settings. The sole
+  command must name the measured executable and this process with no alternate
+  argv mode or pre/post commands; cgroup exit/kill behavior and infinite stop
+  timeout are fixed. The same Source prepays both larger property tables; the
+  two 29-call samples fit the existing finite manager schedule. All 29 focused
+  tests pass, including changed controls, substituted purposes/PIDs, malformed
+  types and altered commands. Complete Rust target compilation is running.
+  These are native property comparisons with DATA regressions; remaining
+  hardening, actual credential admission, installed producers, journal writer
+  custody and floor publication remain unqualified.
+
 - The isolated manager candidate gives initrd SwitchRoot its own appended
   `system:aos_switch_root` permission. Production grants only `init_t` to itself;
   whole-policy checks reject foreign grants, including disabled and attribute
@@ -376,8 +390,10 @@ Recent committed startup fixes close narrower prerequisites:
   query-index differential and its negative fixtures
   (`/nix/store/df0qi7vkcn4mwl6j9hvy1sqs6rjxsy3v-aos-selinux-production-policy-1`).
   A direct native query of that binary confirms the new grant has only `init_t`
-  sources and targets. The final build adding the global exclusivity check and
-  its corrected evidence/query-count expectations is running, alongside the
+  sources and targets. The complete current effective-policy checker also
+  passes against that actual binary, including its global exclusivity check.
+  The final Nix build with corrected evidence/query-count expectations is
+  running, alongside the
   isolated installed cold-boot/power-cycle test. This candidate excludes the
   separate networkd and Host custody changes and establishes no initial-floor or public lifecycle result.
 
