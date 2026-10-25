@@ -320,6 +320,10 @@ allow aos_sandbox_runtime_roots_handoff_t init_t:fd use;
 allow aos_sandbox_runtime_roots_handoff_t aos_sandbox_runtime_roots_handoff_exec_t:file { entrypoint execute map read };
 type_transition init_t aos_sandbox_runtime_roots_handoff_exec_t:process aos_sandbox_runtime_roots_handoff_t;
 
+# Native initrd admission archives this public executable's NAR. Reading its
+# bytes does not let PID 1 execute it outside the authenticated handoff.
+allow init_t aos_sandbox_runtime_roots_exec_t:file { getattr open read };
+
 # The handoff may read only the immutable root and kernel admission inputs,
 # then execute the physically verified provisioner. No mutable root authority
 # is present until the second transition succeeds.

@@ -313,6 +313,7 @@ POSITIVE_ACCESS = (
         "file",
         ("execute", "getattr", "map", "open", "read"),
     ),
+    *accesses("init_t", PROVISIONER_EXECUTABLE, "file", ("getattr", "open", "read")),
     *accesses(
         HANDOFF_DOMAIN,
         PROVISIONER_DOMAIN,
@@ -839,6 +840,7 @@ def negative_access() -> tuple[Access, ...]:
     # init_t selects the dedicated handoff but cannot enter the provisioner
     # directly or retain that executable without its domain transition.
     checks.append(Access("init_t", PROVISIONER_EXECUTABLE, "file", "execute"))
+    checks.append(Access("init_t", PROVISIONER_EXECUTABLE, "file", "map"))
     checks.append(Access("init_t", PROVISIONER_DOMAIN, "process", "transition"))
     checks.append(Access(PROVISIONER_DOMAIN, HANDOFF_EXECUTABLE, "file", "entrypoint"))
     checks.append(Access("init_t", HANDOFF_EXECUTABLE, "file", "execute_no_trans"))

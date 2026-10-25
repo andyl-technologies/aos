@@ -281,6 +281,19 @@ FAKE_SETOOLS = SimpleNamespace(
 
 
 class EffectivePolicyTest(unittest.TestCase):
+    def test_manager_archives_public_provisioner_without_executing_it(self) -> None:
+        for permission in ("getattr", "open", "read"):
+            with self.subTest(permission=permission):
+                self.assert_missing_allow_rejected(
+                    effective_policy.Access("init_t", effective_policy.PROVISIONER_EXECUTABLE, "file", permission)
+                )
+
+        for permission in ("execute", "execute_no_trans", "map"):
+            with self.subTest(permission=permission):
+                self.assert_forbidden_allow_rejected(
+                    effective_policy.Access("init_t", effective_policy.PROVISIONER_EXECUTABLE, "file", permission)
+                )
+
     def test_native_bus_transition_stays_with_pid_one(self) -> None:
         transition = effective_policy.Transition(
             "init_t", "dbusd_exec_t", "process", "system_dbusd_t"
