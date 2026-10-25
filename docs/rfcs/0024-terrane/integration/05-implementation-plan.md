@@ -18530,3 +18530,16 @@ plan ownership checks pass. The new native scenario, complete strengthened
 gate and mandatory workspace target compilation remain pending. The detailed
 T-FUSE-1 acceptance audit records the evidence boundary. Acceptance stays
 27/64; production worker/broker and four-role deployment remain outstanding.
+
+
+The configured-maintenance guest at `19ec1e5c92` fails in 519.947 seconds.
+The real Serve CLI completes both signed snapshots and remains maintained,
+but the first authorized fresh GC CLI exits unsuccessfully after the foreign
+identity control. The original supervisor rejects that result. Its per-call
+logs were on the guest scratch disk removed by normal cleanup, so the retained
+serial log does not establish the cause. The bounded exchange diagnostics now
+also enter the immutable serial log before the unchanged exit-status assertion.
+No timeout, identity, transport or success assertion is relaxed. The original
+failed derivation and frozen source remain preserved; a fresh diagnostic guest
+must establish the cause before changing production behavior. This does not
+change the separate manifest-open qualification or task acceptance.

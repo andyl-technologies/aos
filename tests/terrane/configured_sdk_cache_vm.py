@@ -354,6 +354,14 @@ def maintenance_exchange(driver, image, config, label, success=True, foreign=Fal
     }, sort_keys=True) + "\n")
     driver.require(len(result.stdout) + len(result.stderr) <= driver.MAX_OUTPUT,
                    "configured maintenance output bound")
+    if result.returncode != (0 if success else 1):
+        # Guest cleanup removes its private scratch disk. Retain bounded actual
+        # transport diagnostics in the immutable serial log before refusing.
+        print("CONFIGURED_MAINTENANCE_EXCHANGE_FAILURE " + json.dumps({
+            "label": label, "exit_status": result.returncode,
+            "stdout": result.stdout.decode("utf-8", errors="replace"),
+            "stderr": result.stderr.decode("utf-8", errors="replace"),
+        }, sort_keys=True), flush=True)
     driver.require(result.returncode == (0 if success else 1), "configured GC CLI exit status differs")
     if success:
         expected = [f"domain {domain}: checked 0, completed 0, blocked 0 draining exposures"
