@@ -368,6 +368,18 @@ class EffectivePolicyTest(unittest.TestCase):
                         effective_policy.Access(domain, "init_t", "unix_stream_socket", permission)
                     )
 
+    def test_view_preparer_same_role_streams_are_not_foreign(self) -> None:
+        for domain in (
+            "aos_sandbox_source_view_preparer_t",
+            "aos_sandbox_cache_view_preparer_t",
+        ):
+            for permission in ("read", "write"):
+                with self.subTest(domain=domain, permission=permission):
+                    policy = FakePolicy()
+                    access = effective_policy.Access(domain, domain, "unix_stream_socket", permission)
+                    policy.allows[access] = [FakeRule("ordinary same-role context translation")]
+                    effective_policy.check_policy(FAKE_SETOOLS, policy)
+
     def test_view_preparer_nosuid_entry_stays_with_the_manager(self) -> None:
         for role in ("source", "cache"):
             preparer = f"aos_sandbox_{role}_view_preparer_t"

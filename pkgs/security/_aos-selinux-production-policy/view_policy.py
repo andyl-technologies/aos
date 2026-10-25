@@ -80,7 +80,7 @@ def matrix(Access, Transition, accesses, roles):
         positive.extend(accesses(preparer, "init_t", "unix_stream_socket", ("read", "write")))
         negative.extend(accesses(preparer, "init_t", "unix_stream_socket", ("connect", "connectto")))
         for actor in actors:
-            if actor != "init_t":
+            if actor not in ("init_t", preparer):
                 negative.extend(accesses(preparer, actor, "unix_stream_socket", ("read", "write")))
         positive.append(Access(preparer, mount, "dir", "mounton"))
         positive.extend(accesses(preparer, "fs_t", "filesystem", ("getattr", "remount", "unmount")))
