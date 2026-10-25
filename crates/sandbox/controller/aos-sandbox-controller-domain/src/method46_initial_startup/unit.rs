@@ -27,6 +27,8 @@ pub(super) struct InitialUnitOriginalV1 {
     acquisition: ImmutableFileAcquisitionOriginalV1,
     measurement: Option<Result<(), ImmutableFileAcquisitionRefusalV1>>,
     read: Option<Result<(), ImmutableImageErrorV1>>,
+    canonical_before: Option<std::io::Result<PathBuf>>,
+    canonical_post: RefCell<CanonicalUnitPostOriginalV1>,
     normalized: Option<Result<Vec<u8>, Method46InitialStartupClosedV1>>,
     file_post: RefCell<ProfilePostOriginalV1>,
     paid: bool,
@@ -36,6 +38,11 @@ pub(super) struct InitialUnitOriginalV1 {
 struct UnitPropertiesOriginalV1 {
     original: ServicePropertiesReadOriginalV2,
     result: Option<Result<(), ServicePropertiesReadClosedV2>>,
+    entered: bool,
+}
+
+struct CanonicalUnitPostOriginalV1 {
+    result: Option<std::io::Result<PathBuf>>,
     entered: bool,
 }
 
@@ -61,6 +68,11 @@ impl InitialUnitOriginalV1 {
             acquisition: ImmutableFileAcquisitionOriginalV1::new(),
             measurement: None,
             read: None,
+            canonical_before: None,
+            canonical_post: RefCell::new(CanonicalUnitPostOriginalV1 {
+                result: None,
+                entered: false,
+            }),
             normalized: None,
             file_post: RefCell::new(ProfilePostOriginalV1 {
                 original: ImmutableFileRevalidationOriginalV1::new(),
@@ -120,13 +132,14 @@ impl InitialUnitOriginalV1 {
             return Err(Method46InitialStartupClosedV1);
         }
         let path = fragment_path(&observation.original)?;
-        if index == 1
-            && self
-                .acquisition
-                .completed_measurement()
-                .is_some_and(|original| original.path() != std::path::Path::new(path))
-        {
-            return Err(Method46InitialStartupClosedV1);
+        require_fragment_name(path, &profile.unit)?;
+        if index == 1 {
+            let initial = self.properties[0]
+                .try_borrow()
+                .map_err(|_| Method46InitialStartupClosedV1)?;
+            if fragment_path(&initial.original)? != path {
+                return Err(Method46InitialStartupClosedV1);
+            }
         }
         Ok(())
     }
@@ -141,6 +154,20 @@ impl InitialUnitOriginalV1 {
             .try_borrow()
             .map_err(|_| Method46InitialStartupClosedV1)?;
         let path = fragment_path(&observation.original)?;
+        require_fragment_name(path, &profile.unit)?;
+        self.canonical_before = Some(std::fs::canonicalize(path));
+        let canonical = self
+            .canonical_before
+            .as_ref()
+            .and_then(|value| value.as_ref().ok())
+            .ok_or(Method46InitialStartupClosedV1)?;
+        crate::normal_root::profile::require_store_path(
+            canonical.to_str().ok_or(Method46InitialStartupClosedV1)?,
+        )
+        .map_err(|_| Method46InitialStartupClosedV1)?;
+        if canonical.as_os_str().len() > PATH_BYTES {
+            return Err(Method46InitialStartupClosedV1);
+        }
         self.open = Some(match File::open(path) {
             Ok(file) => {
                 self.file = Some(file);
@@ -150,7 +177,7 @@ impl InitialUnitOriginalV1 {
         });
         let file = self.file.take().ok_or(Method46InitialStartupClosedV1)?;
         self.measurement = Some(self.acquisition.measure_original_once(
-            PathBuf::from(path),
+            canonical.clone(),
             file,
             Some(origin.unit_fragment_digest),
             UNIT_BYTES as u64,
@@ -180,6 +207,38 @@ impl InitialUnitOriginalV1 {
         Ok(())
     }
 
+    fn finish_canonical_post(&self) -> Result<(), Method46InitialStartupClosedV1> {
+        // Re-resolve the original reported name independently of the manager
+        // post. A changed /etc link must not hide behind a stable store inode.
+        let mut post = self
+            .canonical_post
+            .try_borrow_mut()
+            .map_err(|_| Method46InitialStartupClosedV1)?;
+        if post.entered {
+            return Err(Method46InitialStartupClosedV1);
+        }
+        post.entered = true;
+        let initial = self.properties[0]
+            .try_borrow()
+            .map_err(|_| Method46InitialStartupClosedV1)?;
+        let path = fragment_path(&initial.original)?;
+        post.result = Some(std::fs::canonicalize(path));
+        let observed = post
+            .result
+            .as_ref()
+            .and_then(|value| value.as_ref().ok())
+            .ok_or(Method46InitialStartupClosedV1)?;
+        let expected = self
+            .canonical_before
+            .as_ref()
+            .and_then(|value| value.as_ref().ok())
+            .ok_or(Method46InitialStartupClosedV1)?;
+        if observed != expected {
+            return Err(Method46InitialStartupClosedV1);
+        }
+        Ok(())
+    }
+
     pub(super) fn finish_post(
         &self,
         origin: Option<&Method46InitialOriginComparisonDataV1>,
@@ -189,6 +248,7 @@ impl InitialUnitOriginalV1 {
             return Ok(());
         }
         let properties = self.observe_properties(1, origin, profile);
+        let canonical = self.finish_canonical_post();
         let file = match self.file_post.try_borrow_mut() {
             Ok(mut post) => {
                 post.result = self
@@ -202,7 +262,7 @@ impl InitialUnitOriginalV1 {
             }
             Err(_) => Err(Method46InitialStartupClosedV1),
         };
-        properties.and(file)
+        properties.and(canonical).and(file)
     }
 }
 
@@ -220,9 +280,15 @@ fn fragment_path(
     if !dropins.inner().is_empty() || path.len() > PATH_BYTES {
         return Err(Method46InitialStartupClosedV1);
     }
-    crate::normal_root::profile::require_store_path(path.as_str())
-        .map_err(|_| Method46InitialStartupClosedV1)?;
     Ok(path.as_str())
+}
+
+fn require_fragment_name(path: &str, unit: &str) -> Result<(), Method46InitialStartupClosedV1> {
+    if path.strip_prefix("/etc/systemd/system/") == Some(unit) {
+        return Ok(());
+    }
+    crate::normal_root::profile::require_store_path(path)
+        .map_err(|_| Method46InitialStartupClosedV1)
 }
 
 fn normalize_fragment(
@@ -387,6 +453,16 @@ mod tests {
     }
 
     #[test]
+    fn reported_fragment_names_reject_foreign_mutable_unit_directories() {
+        let unit = "aos-sandbox-storage-floor-initialize.service";
+
+        assert!(require_fragment_name(&format!("/etc/systemd/system/{unit}"), unit).is_ok());
+        assert!(require_fragment_name(&format!("/run/systemd/system/{unit}"), unit).is_err());
+        assert!(require_fragment_name("/etc/systemd/system/other.service", unit).is_err());
+        assert!(require_fragment_name("/etc/systemd/system/../other.service", unit).is_err());
+    }
+
+    #[test]
     fn missing_source_cannot_construct_a_runtime_or_manager() {
         let mut startup = ManuallyDrop::new(Method46InitialStartupOriginalV1::new(
             Method46InitialServiceRoleV1::StorageBroker,
@@ -417,6 +493,7 @@ mod tests {
 
         assert!(startup.after_attempted.get());
         assert!(matches!(startup.first.get(), Some(First::Unit)));
+        assert!(unit.canonical_post.borrow().entered);
         drop(held);
     }
 }

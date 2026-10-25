@@ -331,6 +331,18 @@ Recent committed startup fixes close narrower prerequisites:
   positive capture, full unit hardening, independent key provenance, protected
   writer custody and actual initial-floor publication remain unqualified.
 
+- Installed systemd reports the fixed unit's `/etc/systemd/system` name.
+  The new initial-job reader now retains its actual canonical resolution before
+  opening, measures only the immutable store target, and independently resolves
+  the original reported name again during its owed post. A stable store inode
+  cannot hide a changed reported link. Foreign mutable unit directories still
+  refuse. All 26 focused regressions pass; complete Rust targets for this exact
+  correction are running. This is not positive installed initial-job evidence.
+  The earlier runtime/maps sources separately pass complete Rust compilation
+  (`/nix/store/y35pqkkvlw0s7zndf80haxaziwfbnkz9-aos-test-targets-0.1.0`);
+  that frozen result predates the manager, live-policy and unit additions and
+  compiles targets without running them.
+
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending
 SwitchRoot or networkd policy changes must identify those dependencies; they
