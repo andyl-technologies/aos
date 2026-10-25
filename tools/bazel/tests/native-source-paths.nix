@@ -20,6 +20,21 @@ in rec {
     targets = ["//crates/cli/aos-cli:production_binaries" "//crates/cli/aos-cli:production_suite_license_closure"];
     retainActionGraph = true;
   };
+  cli-repeat-installed = pkgs.mkAosBazelPackage {
+    pname = "aos-cli";
+    version = "0.1.0";
+    build = cli-repeat;
+    packageLabel = "//crates/cli/aos-cli:production_binaries";
+    runtimeDeps = [pkgs.gcc-libs pkgs.openssl pkgs.sqlite pkgs.libssh2 pkgs.zlib];
+  };
+  cli-repeatability = import ../../../tests/build/_bazel-native-cli-repeatability.nix {
+    inherit pkgs;
+    first = cli.build;
+    second = cli-repeat;
+    installed = cli.installed;
+    repeated = cli-repeat-installed;
+    runtime = cli.runtime-smoke;
+  };
   check =
     pkgs.runCommand "aos-bazel-native-source-paths-check" {
       buildDeps = [pkgs.python3];

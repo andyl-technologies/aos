@@ -1,0 +1,344 @@
+{
+  "all_selected_source_bytes_match_checkout": true,
+  "build_evidence_sha256": {
+    "/nix/store/67n6z9c3y36jjl7z7kzmy6c91w857xiy-aos-bazel-aos-cli-production-1": {
+      "actions.json": "469bd73f8600a227f3c051ee7cc36cee1a20d0ce4ab43a9c8b2e0229723dcd74",
+      "compiler-inputs.json": "fb314c279e6f20c95ce8b3312ca59f1c61bf23178bff520c20018fc7b0290db5",
+      "compiler-invocations.json": "fd39c1ae4f363f09580ac6f77199c2200d1d1199ffbe219a1377b29448a3be32",
+      "execution.json": "23b559feddb02eb0f4746588a0e98a1681d661befb7c8a1d201cc57d036e28af"
+    },
+    "/nix/store/zzwccf4bcjlvzysx9jly5vyqvlgsg1js-aos-bazel-aos-cli-native-source-paths-repeat-1": {
+      "actions.json": "469bd73f8600a227f3c051ee7cc36cee1a20d0ce4ab43a9c8b2e0229723dcd74",
+      "compiler-inputs.json": "fb314c279e6f20c95ce8b3312ca59f1c61bf23178bff520c20018fc7b0290db5",
+      "compiler-invocations.json": "1980eb49c607db5fee8e11ec4b5f73a5ecfe38f1088a3967adc4a61ebfe71d7d",
+      "execution.json": "0a0d2d09d76759df909f7b398a907d7c79146440f977fa3ba2ba9ca87e250855"
+    }
+  },
+  "checkout_parent": "c602789689c421245074f51b3ffd5eca252809bf",
+  "command_scope": "The two full builds, installations, repeatability check and policy suite are complete. The separately requested Clippy check was still running when this report was retained.",
+  "commands": [
+    "nix-build tools/bazel/tests/native-source-paths.nix -A cli.runtime-smoke -A cli-repeat --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+    "nix-build tools/bazel/tests/native-source-paths.nix -A cli-repeatability -A cli.developer-build --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+    "nix-build default.nix -A checks.build.bazel.policy --no-out-link --max-jobs 2 --cores 4 --option substitute false"
+  ],
+  "configuration": "/nix/store/sjiaqgb2j3f7r2935yhzg344338rh12i-aos-bazel-configuration.json",
+  "configuration_sha256": "927e6e6ea4835a4d204ea3a8b789f776169b08cdc115bdfb6649e9ce4e0ccf9a",
+  "configured_inventory_identical_to_unmapped_strict_build": true,
+  "declarations_sha256": {
+    "pkgs/build-support/_bazel/native-source-paths.nix": "64b2f1137b068dde6a17019cef36c2601b9b66c1fe745120ed5793877f799189",
+    "tests/build/_bazel-aos-cli-production.nix": "dade1c23ea965178c29fb77fca37d23281e78da81b8e7ab34e044fa8af5e5e67",
+    "tests/build/_bazel-native-cli-repeatability.nix": "8e66ad37af6bd807915f15546cfa809cec3f2d3029dbd392ed548fd430e8f16e",
+    "tools/bazel/tests/native-source-paths.nix": "836f3a82fd0edb484b6cb6700c5aa223cc90afcb6a1f2758601d5c3529c0e2ef",
+    "tools/bazel/tests/test_native_cli_repeatability.py": "f12553447762fc5ef2487ceb1e16954e8c4563bbe1624cf53465977b7728a232",
+    "tools/bazel/tests/verify_native_cli_repeatability.py": "16aaaf593ea14e18c8233aafb5273b2b30a0dc3e7441108be69aca2a9e5a8dae",
+    "tools/bazel/toolchains/native_cc.py": "0a59bda447623e0a070b31095c95e9c47e0e1ca8056508c586f1607ee6e07631"
+  },
+  "declared_artifacts": 15,
+  "evidence_sha256": "4638ff73814d5a79f8dacbd83f7f368934fc54788e72468105ffdeff0c87fc1b",
+  "installed_bytes_equal_without_normalization": true,
+  "inventory_sha256": "dc534ed53113f7ab60da277877f3162841e68010fad97f042b53dd687d5f05b9",
+  "limits": [
+    "The adapter is opt-in; the default AOS Bazel toolchain and ordinary production package selectors remain unchanged.",
+    "Both builds use distinct fresh Nix derivations and private execution bases, with no shared action cache or binary substitution. Toolchain and source dependencies were already realized.",
+    "The comparison covers the declared fifteen programs before and after ordinary fixup, not every intermediate CMake/build-script file.",
+    "Runtime closure equality here compares mapped and unmapped Bazel installations, not the independent Cargo production suite.",
+    "No artifact normalization was used. Native ABI/default equivalence, privileged helpers and live services, cache restoration, foreign platforms, performance acceptance, and production cutover remain separate.",
+    "The 547 matching requests are reconstructed Rustc wrapper requests. This gate does not trace every nested native compiler command."
+  ],
+  "loader_and_help_results_identical_to_unmapped_strict_build": true,
+  "policy": {
+    "output": "/nix/store/8q8jn8anzll2iz297k8rhm0s3s9kmz0n-aos-bazel-policy-checks",
+    "repeatability_verifier_cases": 8,
+    "scope": "Small synthetic records exercise verifier rejection controls; they are not compiler qualification.",
+    "tests": 320
+  },
+  "private_native_sandbox_paths_in_programs": 0,
+  "proof": {
+    "artifacts": {
+      "bin/aos": {
+        "installed_sha256": "b8bee8925ed29df897fb72a758d8bc134d843ed794578e421c5994ff4f2c29b3",
+        "raw_sha256": "af44a359f572a98bdde7cdb22101b097f57c722b999f5a1b5a3cd4b715ebef53"
+      },
+      "bin/aos-ability-authority-audit": {
+        "installed_sha256": "de0416fad0c2004fb72bade1bf280eb1de9cd72f32194c4de2f9053745905526",
+        "raw_sha256": "3205c321a2ec65c6a2420b0a8ba13f0fcd8c7b2ef693b08ca686b3af16982221"
+      },
+      "bin/aos-ability-interruption-audit": {
+        "installed_sha256": "01832568fac15943af5a2b34e6f58432df418506675664b4c781ed94f630e16c",
+        "raw_sha256": "9dc6fa4cc05f7bfc5a16725d2c7636cecc3406b1267886182edd575abd2905c7"
+      },
+      "bin/aos-boot-configuration": {
+        "installed_sha256": "e8854ebb4b586d21400990a2c9fe9c3dc3bd4bcbb44cf05775cda8b5c29bbfe4",
+        "raw_sha256": "8022b1df2bca00b72ea8dd4c87ede0168f12daffdd4d687b5359f370672edafa"
+      },
+      "bin/aos-deployment-check": {
+        "installed_sha256": "912c36128b3399353bf6e14e3f65b955ef03c445d947ffffbcfd60486ecb6990",
+        "raw_sha256": "41d36044e5a979602270a973291b28f502e42985ffdf1e6dfb05ad126f27df6e"
+      },
+      "bin/aos-image-metadata": {
+        "installed_sha256": "f82afeb952418ab6908f0c9cf7a07f4629adcca06011f5d88937f2c2b93bffb8",
+        "raw_sha256": "a63a7ad225a9a98cf85c7f180b330d37a24fb763841cff9a8f298b8c9e2d6a2a"
+      },
+      "bin/aos-image-rollout-boot": {
+        "installed_sha256": "f8c39d74daa9f79847eeacc90d0aef1ba4b7f74841567c548e43b47e60925457",
+        "raw_sha256": "b2b2af199571ddb88bcb302940491764b5d1ebdf48125bfe9d3fe1f760431b46"
+      },
+      "bin/aos-image-rollout-observer": {
+        "installed_sha256": "ba4bd965461c2cfe155f8fccfd7e53dac86d748e76da8286c8c724095d815dea",
+        "raw_sha256": "e5ec0abb29b9ebe61b04cf0d46510b3fad6adb9ca8649b0e5db37db6ff495f2c"
+      },
+      "bin/aos-image-rollout-provider": {
+        "installed_sha256": "53b17102c49405045590f44382ae8c5ad386044f998c824b72cd3484fcc514f2",
+        "raw_sha256": "9fb6aa11bd1422e2b771045623e3f44631dc2a06eac32e8ac98f6278633a8727"
+      },
+      "bin/aos-package-attestation-provider": {
+        "installed_sha256": "25dec2720d9e98266bac66c0056d2f5ecd56795f7e6986d89fe64082c2baf407",
+        "raw_sha256": "f3d4ce99f17a48f6df332ed516e653c9577d0619d4d87bbca992f1dd4825d036"
+      },
+      "bin/aos-package-runtime": {
+        "installed_sha256": "d81b4b1d3a734ba99e549d08c18af1393cde08a494c6dd39d5a0ba902d30d7a6",
+        "raw_sha256": "523c037a0552a53eae4415fa1cb715c5e0bd258a6d34aba1d042295bad2a7bee"
+      },
+      "bin/aos-provisioning-configuration-evaluator": {
+        "installed_sha256": "e27acda58f835aef0565bd345dd3e5ccdffd0b120ee1b81d765c679668e85cf2",
+        "raw_sha256": "021430741c47dfba93675bcc73ad3e96e9be4c11175a1102510772463fbbee09"
+      },
+      "bin/aos-release-fleet-fixture": {
+        "installed_sha256": "a7d4c1d03df054bffa700e2b007f36c3c1afcc8fe437f8e70f2d0f51ee02b437",
+        "raw_sha256": "672cd4218881d58c663d743e962f3bb9a90b1ee67735814706918bca5476c763"
+      },
+      "bin/apm": {
+        "installed_sha256": "6a93dd7f60003fd0a902ea667061f9f1fd7ed23594ef18268709c8593e31a56c",
+        "raw_sha256": "25e4893499df63a357373fe00733cceb46d38b98aed7277e2f92403033b6b93d"
+      },
+      "bin/apr": {
+        "installed_sha256": "0eef1ce71572aaa6a2ba3da754cb1923e88f718389c8c161bef4158bdd371f8e",
+        "raw_sha256": "bb389ad8cf771942c00bc516cb926e535eb51d95113b17b4aaaa7617a3484529"
+      }
+    },
+    "compiler_requests": 547,
+    "first_installed": "/nix/store/8mlzsa06xfs5x4g4ri37a5g27dq57m17-aos-cli-0.1.0",
+    "limits": [
+      "Checks the declared CLI programs and their normal installed bytes, not all intermediate build-script files, native ABI, runtime services, cache restoration, or performance."
+    ],
+    "runs": {
+      "/nix/store/67n6z9c3y36jjl7z7kzmy6c91w857xiy-aos-bazel-aos-cli-production-1": {
+        "action_cache_hits": 0,
+        "action_mnemonics": {
+          "CargoBuildScriptRun": 56,
+          "ExtractCargoTomlEnvVars": 472,
+          "Rustc": 547
+        },
+        "executed_actions": 1075,
+        "execution_sha256": "23b559feddb02eb0f4746588a0e98a1681d661befb7c8a1d201cc57d036e28af"
+      },
+      "/nix/store/zzwccf4bcjlvzysx9jly5vyqvlgsg1js-aos-bazel-aos-cli-native-source-paths-repeat-1": {
+        "action_cache_hits": 0,
+        "action_mnemonics": {
+          "CargoBuildScriptRun": 56,
+          "ExtractCargoTomlEnvVars": 472,
+          "Rustc": 547
+        },
+        "executed_actions": 1075,
+        "execution_sha256": "0a0d2d09d76759df909f7b398a907d7c79146440f977fa3ba2ba9ca87e250855"
+      }
+    },
+    "runtime_smoke": {
+      "commands": {
+        "aos": {
+          "help_exit_code": 0,
+          "libraries": [
+            "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib/libsqlite3.so",
+            "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+            "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+          ],
+          "loader_exit_code": 0
+        },
+        "aos-ability-authority-audit": {
+          "libraries": [
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+          ],
+          "loader_exit_code": 0
+        },
+        "aos-ability-interruption-audit": {
+          "libraries": [
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+          ],
+          "loader_exit_code": 0
+        },
+        "aos-boot-configuration": {
+          "libraries": [
+            "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib/libsqlite3.so",
+            "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+            "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+          ],
+          "loader_exit_code": 0
+        },
+        "aos-deployment-check": {
+          "libraries": [
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+          ],
+          "loader_exit_code": 0
+        },
+        "aos-image-metadata": {
+          "libraries": [
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6"
+          ],
+          "loader_exit_code": 0
+        },
+        "aos-image-rollout-boot": {
+          "libraries": [
+            "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+            "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+          ],
+          "loader_exit_code": 0
+        },
+        "aos-image-rollout-observer": {
+          "libraries": [
+            "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+            "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+          ],
+          "loader_exit_code": 0
+        },
+        "aos-image-rollout-provider": {
+          "libraries": [
+            "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+            "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+          ],
+          "loader_exit_code": 0
+        },
+        "aos-package-attestation-provider": {
+          "libraries": [
+            "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+            "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+          ],
+          "loader_exit_code": 0
+        },
+        "aos-package-runtime": {
+          "libraries": [
+            "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib/libsqlite3.so",
+            "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+            "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+          ],
+          "loader_exit_code": 0
+        },
+        "aos-provisioning-configuration-evaluator": {
+          "libraries": [
+            "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+            "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+          ],
+          "loader_exit_code": 0
+        },
+        "aos-release-fleet-fixture": {
+          "libraries": [
+            "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+            "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+          ],
+          "loader_exit_code": 0
+        },
+        "apm": {
+          "help_exit_code": 0,
+          "libraries": [
+            "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib/libsqlite3.so",
+            "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+            "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+          ],
+          "loader_exit_code": 0
+        },
+        "apr": {
+          "help_exit_code": 0,
+          "libraries": [
+            "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4/lib/libsqlite3.so",
+            "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1/lib/libssh2.so.1",
+            "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2/lib/libz.so.1",
+            "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0/lib/libgcc_s.so.1",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libm.so.6",
+            "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39/lib/libc.so.6",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libssl.so.4",
+            "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3/lib/libcrypto.so.4"
+          ],
+          "loader_exit_code": 0
+        }
+      },
+      "installed": "/nix/store/8mlzsa06xfs5x4g4ri37a5g27dq57m17-aos-cli-0.1.0",
+      "schema_version": 1
+    },
+    "schema_version": 1,
+    "second_installed": "/nix/store/n6k9cg6mpkpadxg1gj0fmz9yw6piyk2r-aos-cli-0.1.0",
+    "status": "PASS"
+  },
+  "qualification": "/nix/store/cylrdkxr4bwgwn3pivb4m3n50nn1np8n-aos-bazel-cli-native-source-path-repeatability",
+  "raw_bytes_equal_without_normalization": true,
+  "runtime_closure": {
+    "comparison": "The two mapped installations and the earlier strict unmapped Bazel installation, removing only each package root.",
+    "identical": true,
+    "paths": [
+      "/nix/store/7xzbpnlajpi7qsyqbnlsk4vp30z2kzgl-glibc-2.39",
+      "/nix/store/8bdpd6cipkrzsyy5sn6ii621vqpzwn27-libssh2-1.11.1",
+      "/nix/store/bnvv6ba6l207k0n7m8vi2k66cpiik5nm-zlib-1.3.2",
+      "/nix/store/qz9j0s9hc7y53q9wsxffb25hdqiciri8-sqlite-3.53.4",
+      "/nix/store/rdwkslc262gyavx87jdm78v6jz374mg6-gcc-libs-16.2.0",
+      "/nix/store/s0vyflgy4k3i8llwkfiyvlrlvnrbz02k-openssl-4.0.3"
+    ]
+  },
+  "rust_compiler_requests": 547,
+  "schema_version": 1,
+  "selected_source_files": 761,
+  "source": "/nix/store/192ifqp8d8v1xa9krdpkg4pbsic7f2q0-aos-bazel-workspace",
+  "status": "PASS for raw and installed CLI repeatability with the opt-in mapped native toolchain.",
+  "toolchains": "/nix/store/yb65p5byasym540y8pqffm7jk4kaxaym-aos-bazel-toolchains-1"
+}

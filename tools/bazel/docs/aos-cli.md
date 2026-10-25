@@ -151,9 +151,27 @@ Four installed binaries match byte for byte. Eleven differ only in `.rodata`
 strings containing the numeric Bazel sandbox directory used by native library
 builds; their executable code sections match. Replacing those paths was used
 only to diagnose the difference. The installed artifacts remain unchanged,
-and raw-byte repeatability remains unqualified. The ordinary production helper
-still uses conservative source selection while that repair and the remaining
-production gates are pending.
+and that configuration's raw-byte repeatability remains unqualified.
+
+The opt-in native source-path adapter resolves those embedded directory names.
+The [full CLI repeatability check](../tests/evidence/cli-native-source-repeatability.json)
+passes for all fifteen raw programs and their normally installed bytes across
+two fresh Nix builds. All 2,150 retained actions run in Linux sandboxes without
+cache hits; all 547 Rust compiler requests match between executions. No artifact
+normalization is used. Both installations retain exactly the earlier strict
+Bazel package's six runtime dependency paths, loader results, and CLI help
+results. The verifier's eight synthetic control cases pass within the 320-test
+policy suite; they test rejection behavior rather than compiler parity.
+
+Run the reusable comparison with:
+
+```sh
+nix-build tools/bazel/tests/native-source-paths.nix -A cli-repeatability --no-out-link
+```
+
+The ordinary production helper keeps its original toolchain and conservative
+source selection. Native ABI, complete package behavior, performance acceptance,
+and production enrollment remain separate gates.
 
 `../tests/evidence/aos-cli-source-graph.json` records the 57 frozen SDK exports
 and 41 configured source inventory families. The previous 54 SDKs preserve all

@@ -131,8 +131,21 @@ execution roots produce byte-identical mapped debug binaries; unmapped controls
 differ. Ordinary-directory passthrough, caller overrides, and compiler failure
 status also pass. The adapter and its source are included in the realized
 toolchain closure. Default toolchain and strict CLI derivation identities are
-preserved. Actual Bazel native build scripts and full CLI repeatability remain
-separate qualification work; the default toolchain is unchanged.
+preserved. The default toolchain is unchanged.
+
+The [full CLI qualification](../tests/evidence/cli-native-source-repeatability.json)
+then builds the complete fifteen-program suite twice with this adapter, using
+distinct Nix derivations and private output bases. All raw and normally installed
+program bytes match without normalization. Both builds retain 1,075 uncached
+Linux-sandbox actions and identical requests for all 547 Rust compiler actions.
+Loader and CLI help checks pass, and their six runtime dependency paths match
+the earlier unmapped Bazel installation. This does not compare every
+intermediate native build file or qualify native ABI, runtime services,
+shared-cache restoration, or performance.
+
+```text
+nix-build tools/bazel/tests/native-source-paths.nix -A cli-repeatability --no-out-link
+```
 
 The conformance check builds the pinned process wrapper from source with AOS
 Rust, then compares its actual child arguments and selected environment values
