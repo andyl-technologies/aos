@@ -700,6 +700,7 @@ in {
 
     aos.users.users.aos-view-publisher = lib.mkIf cfg.publisherIngress.enable {
       uid = cfg.publisherIngress.uid;
+      bootstrap = true;
       group = "aos-view-publisher";
       home = "/";
       shell = "/sbin/nologin";

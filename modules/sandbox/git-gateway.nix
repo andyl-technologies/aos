@@ -191,6 +191,7 @@ in {
     };
     aos.users.users.${name} = {
       uid = cfg.uid;
+      bootstrap = true;
       group = name;
       extraGroups = [];
       home = "/";

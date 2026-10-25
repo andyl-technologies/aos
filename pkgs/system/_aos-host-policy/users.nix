@@ -2,7 +2,7 @@
 ##!
 ##! Declares system users and groups without replacing account databases.
 ##! Native identity handlers retain per-account ownership and numeric identities;
-##! the image adapter seeds only builtin principals before activation.
+##! the image adapter seeds builtin and explicitly selected early principals.
 ##!
 ##! Home directories are owned by modules/base/homes.nix: interactive
 ##! accounts default to a home under `aos.homes.directory` when persistent
@@ -101,6 +101,11 @@ in {
             uid = lib.mkOption {
               type = lib.types.int;
               description = "User ID (UID). System users should use UIDs below 1000.";
+            };
+            bootstrap = lib.mkOption {
+              type = lib.types.bool;
+              default = false;
+              description = "Seed this declared principal in the host image for services that start before native activation. Native replay validates the existing row without adopting ownership.";
             };
             ## Primary group name for this user.
             group = lib.mkOption {

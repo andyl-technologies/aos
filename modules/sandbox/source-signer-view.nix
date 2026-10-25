@@ -129,6 +129,7 @@ in {
 
     aos.users.users.aos-source-signer = {
       uid = cfg.uid;
+      bootstrap = true;
       group = "aos-source-signer";
       home = "/";
       shell = "/sbin/nologin";

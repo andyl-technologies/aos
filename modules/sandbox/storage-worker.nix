@@ -150,6 +150,7 @@ in {
     # whole-cgroup quiescence before another transaction may be dispatched.
     aos.users.users.aos-sandbox-zfs-worker = {
       uid = cfg.workerUid;
+      bootstrap = true;
       group = "aos-sandbox-zfs-worker";
       home = "/";
       shell = "/sbin/nologin";

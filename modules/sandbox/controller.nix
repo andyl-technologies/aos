@@ -46,6 +46,7 @@ in {
 
       aos.users.users.aos-sandboxd = {
         uid = cfg.uid;
+        bootstrap = true;
         group = "aos-sandboxd";
         home = "/var/lib/aos/sandboxd";
         shell = "/sbin/nologin";

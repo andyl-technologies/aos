@@ -213,6 +213,7 @@ in {
 
     aos.users.users.aos-cache-signer = {
       uid = cfg.uid;
+      bootstrap = true;
       group = "aos-cache-signer";
       home = "/";
       shell = "/sbin/nologin";

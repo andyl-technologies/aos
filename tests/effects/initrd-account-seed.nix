@@ -77,6 +77,23 @@
   hostDbusRuntimeOnlyConfig = host {aos.services.dbus.bootstrap = false;};
   hostDbusDisabled = hostSeed hostDbusDisabledConfig;
   hostDbusRuntimeOnly = hostSeed hostDbusRuntimeOnlyConfig;
+  hostAccountPolicy = bootstrap: {
+    aos.users.users.early-fixture = {
+      uid = 811;
+      group = "early-fixture";
+      inherit bootstrap;
+      description = "early account";
+    };
+    aos.users.groups.early-fixture.gid = 811;
+  };
+  hostBootstrapAccount = host (hostAccountPolicy true);
+  hostBootstrapRows = hostSeed hostBootstrapAccount;
+  hostLateAccount = hostSeed (host (hostAccountPolicy false));
+  hostDisabledBootstrapAccount = host {
+    imports = [(hostAccountPolicy true)];
+    aos.abilities.identity.operations.principal.effects.host-user-early-fixture.enable = false;
+  };
+  hostBuiltinBootstrap = hostSeed (host {aos.users.users.root.bootstrap = true;});
   hostCases = {
     baseline = hostBaseline;
     disabled = hostDisabledConfig;
@@ -193,6 +210,12 @@ in {
     ];
   };
   checks = {
+    earlyDeclaredPrincipalHasExactIdentity = row "early-fixture" hostBootstrapRows.passwd.text == ["early-fixture:x:811:811:early account:/:${shells.nologin}"];
+    earlyDeclaredPrincipalKeepsLoginLocked = row "early-fixture" hostBootstrapRows.shadow.text == ["early-fixture:!:0:0:99999:7:::"];
+    lateDeclaredPrincipalIsNotSeeded = row "early-fixture" hostLateAccount.passwd.text == [];
+    disabledEarlyDeclaredPrincipalIsRefused = !(builtins.tryEval (hostSeed hostDisabledBootstrapAccount).passwd.text).success;
+    hostOnlyEarlyPrincipalIsNotAddedToInitrd = row "early-fixture" (seed hostBootstrapAccount).passwd == [];
+    builtinEarlyPrincipalIsNotDuplicated = builtins.length (row "root" hostBuiltinBootstrap.passwd.text) == 1;
     completeNetworkRow = row "systemd-network" baselineSeed.passwd == [(expected "systemd-network")];
     completeResolverRow = row "systemd-resolve" baselineSeed.passwd == [(expected "systemd-resolve")];
     masterAccountDescriptionsPreserved = baseline.aos.abilities.identity.operations.principal.effects.systemd-network.input.description == "systemd Network Management" && baseline.aos.abilities.identity.operations.principal.effects.systemd-resolve.input.description == "systemd Resolver";
