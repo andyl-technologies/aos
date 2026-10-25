@@ -15,7 +15,7 @@ import time
 BODY = b"actual scoped worker backing through serialized owner Send"
 
 
-def run(support, executable, environment, source, owner_command=None, configured=False):
+def run(support, executable, environment, source, owner_command=None, configured=False, late=False):
     """Mounts only the original worker device and drives authenticated serving."""
     support.require(os.geteuid() == 0, "mounted supervisor requires administration")
     specification = importlib.util.spec_from_file_location(
@@ -67,7 +67,7 @@ def run(support, executable, environment, source, owner_command=None, configured
                         "mounted control transferred an unexpected descriptor")
                     return descriptors.pop() if descriptors else None
                 support.require(not descriptors and uid == 840
-                    and packet not in [b"DEVICE", b"PREPARED", b"READY", b"FETCH", b"DRAINED"],
+                    and packet not in [b"DEVICE", b"PREPARED", b"READY", b"FETCH", b"EXPIRED", b"DRAINED"],
                     "mounted owner control lost its original ordering")
                 output.append(packet)
                 support.require(sum(map(len, output)) <= 4096,
@@ -107,6 +107,18 @@ def run(support, executable, environment, source, owner_command=None, configured
             support.require((target / "file").stat().st_size == len(BODY)
                 and stat.S_ISDIR(target.stat().st_mode),
                 "actual scoped fetch blocked production kernel metadata")
+            if late:
+                for opening in [first, second]:
+                    try:
+                        opening.result(timeout=6)
+                    except OSError as error:
+                        support.require(error.errno == errno.EIO,
+                            "expired configured cold open returned another errno")
+                    else:
+                        raise RuntimeError("withheld configured cold open escaped its deadline")
+                receive(b"EXPIRED")
+                first = executor.submit(transport.read_file, target / "file")
+                second = first
             support.require(supervisor.send(b"G") == 1, "grant acknowledgement truncated")
             expected = (BODY[:1], BODY[1:], BODY[2:10], BODY[3:11])
             support.require(first.result(timeout=5) == second.result(timeout=5) == expected,
@@ -144,6 +156,8 @@ def run(support, executable, environment, source, owner_command=None, configured
                 "PASS durable drain stops the mounted production worker while retaining original physical bindings and pins"]
             if configured:
                 expected_witnesses.append("PASS configured production worker opens fetch and seal original signed cold backing through retained service before kernel reads")
+            if late:
+                expected_witnesses.append("PASS actual kernel open deadlines return EIO while original configured cold work survives and a later open joins the same fetch before sealed handoff")
             support.require(b"".join(output).decode().splitlines() == expected_witnesses,
                 "mounted owner omitted its original authority or custody checks")
             print("PASS mounted production worker joins signed index startup, coalesced verified reads, responsive metadata and durable drain", flush=True)

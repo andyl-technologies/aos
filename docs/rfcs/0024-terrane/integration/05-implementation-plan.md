@@ -195,6 +195,18 @@ targeted Nix formatting pass; actual joined guest execution and this source's
 mandatory application-target compilation remain pending. This is no production
 broker, passthrough or physical-release qualification and accepts no task.
 
+The independent `native-configured-mounted-late` variant retains the original
+five-second kernel-open and ten-second cold-fetch budgets. It withholds one
+actual configured chunk read until both coalesced opens receive exact `EIO`
+responses, requires the retained service to remain alive with one lower read,
+and requires a later real kernel open to join that same pending fetch before
+releasing it. Cold sealing, producer handoff, ordinary kernel reads, drain and
+original backing/pin custody checks then remain required. This scenario is
+separate from the ordinary joined guest; no passing result is inferred from
+synthetic deadline tests. Strict all-feature/all-target Clippy, touched Python
+syntax and targeted Nix formatting pass; native execution and mandatory
+application-target compilation remain pending. Trunk acceptance stays 27/64.
+
 Complete feature matrices now pass with independent immutable-source, retained
 executable and actual guest review at these checkpoints:
 

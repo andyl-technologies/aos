@@ -46,13 +46,17 @@ const BODY: &[u8] = b"actual scoped worker backing through serialized owner Send
 /// # Errors
 /// Refuses invalid configuration, child identity, confinement, native recovery,
 /// original request lifetime, cache handoff or final disclosure behavior.
-pub(crate) fn run() -> Result<()> {
+pub(crate) fn run(late: bool) -> Result<()> {
     let mut arguments = std::env::args().skip(2);
     let path = PathBuf::from(arguments.next().ok_or("missing worker configuration")?);
     if arguments.next().is_some() {
         return Err("unexpected configured worker argument".into());
     }
-    let launched = scoped_worker::mounted::launch()?;
+    let launched = if late {
+        scoped_worker::mounted::launch_late()?
+    } else {
+        scoped_worker::mounted::launch()?
+    };
     require_empty_capabilities()?;
     let config = Config::parse(&fs::read_to_string(&path)?)?;
     let host = config
@@ -69,6 +73,7 @@ pub(crate) fn run() -> Result<()> {
             .run_until(Box::pin(verify(
                 &local,
                 launched,
+                late,
                 plan,
                 confinement,
                 host,
@@ -85,6 +90,7 @@ pub(crate) fn run() -> Result<()> {
 async fn verify(
     local: &LocalSet,
     mut launched: scoped_worker::Launched,
+    late: bool,
     plan: NativeCachePlan,
     confinement: Arc<quota_confinement::Installed>,
     host: &terrane_sdk::config::host::HostTier,
@@ -186,6 +192,17 @@ async fn verify(
     .await??;
     phase(&mut service, launched.receive_control(b"COALESCED")).await??;
     send(b"FETCH")?;
+    if late {
+        phase(&mut service, launched.receive_control(b"EXPIRED")).await??;
+        phase(&mut service, launched.receive_control(b"EXPIRED")).await??;
+        if service.is_finished() || reads.load(Ordering::Relaxed) != 1 {
+            return Err("expired kernel opens cancelled their original retained cold work".into());
+        }
+        send(b"EXPIRED")?;
+        // The next actual kernel open must join the still accepted original
+        // request before its lower read is released; it cannot start a retry.
+        phase(&mut service, launched.receive_control(b"COALESCED")).await??;
+    }
     phase(&mut service, receive(b"G")).await??;
     resume.notify_one();
     phase(&mut service, receive(b"D")).await??;
@@ -246,6 +263,11 @@ async fn verify(
     println!(
         "PASS configured production worker opens fetch and seal original signed cold backing through retained service before kernel reads"
     );
+    if late {
+        println!(
+            "PASS actual kernel open deadlines return EIO while original configured cold work survives and a later open joins the same fetch before sealed handoff"
+        );
+    }
     send(b"DRAINED")?;
     Ok(())
 }

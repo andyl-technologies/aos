@@ -60,7 +60,10 @@ type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 fn main() -> Result<()> {
     let mode = std::env::args().nth(1).unwrap_or_default();
     if mode == "configured-mounted" {
-        return configured::mounted::run();
+        return configured::mounted::run(false);
+    }
+    if mode == "configured-mounted-late" {
+        return configured::mounted::run(true);
     }
     if mode == "configured-worker" {
         return configured::worker::run();
@@ -78,7 +81,10 @@ fn main() -> Result<()> {
         return scoped_worker::child_network();
     }
     if mode == "worker-mounted-child" {
-        return scoped_worker::mounted::child();
+        return scoped_worker::mounted::child(false);
+    }
+    if mode == "worker-mounted-late-child" {
+        return scoped_worker::mounted::child(true);
     }
     if mode == "worker-crash-child" {
         return worker_crash::child();

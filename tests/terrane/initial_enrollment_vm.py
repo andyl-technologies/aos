@@ -215,7 +215,7 @@ def sealed_snapshot():
 
 def configured_publication():
     """Requires the real two-domain publisher and actual content-role preparation."""
-    publisher_selector = "publisher-reassembly" if SCENARIO in ["reassembly", "private-release", "cold-private-release", "cold-manifest-release", "cold-public-pressure", "cold-manifest-pressure", "sdk", "sdk-refusals", "sdk-wipe", "surface", "worker", "worker-mounted"] else "publisher-positive"
+    publisher_selector = "publisher-reassembly" if SCENARIO in ["reassembly", "private-release", "cold-private-release", "cold-manifest-release", "cold-public-pressure", "cold-manifest-pressure", "sdk", "sdk-refusals", "sdk-wipe", "surface", "worker", "worker-mounted", "worker-mounted-late"] else "publisher-positive"
     publisher = subprocess.Popen(role_command(publisher_selector, 841, [845]),
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                  start_new_session=True)
@@ -226,11 +226,12 @@ def configured_publication():
             require(publisher.poll() is None and time.monotonic() < deadline,
                     "configured publisher failed before binding actual listener")
             time.sleep(0.02)
-        if SCENARIO in ["surface", "worker", "worker-mounted"]:
+        if SCENARIO in ["surface", "worker", "worker-mounted", "worker-mounted-late"]:
             runpy.run_path(str(IMAGE / "share/configured_sdk_cache_vm.py"))["run_surface"](
                 sys.modules[__name__], pathlib.Path(os.environ["TERRANE_CONFIGURED_SDK_IMAGE"]),
                 pathlib.Path(os.environ["TERRANE_CONFIGURED_SURFACE_IMAGE"]),
-                service_only=SCENARIO == "worker", mounted_only=SCENARIO == "worker-mounted")
+                service_only=SCENARIO == "worker", mounted_only=SCENARIO == "worker-mounted",
+                late_only=SCENARIO == "worker-mounted-late")
         elif SCENARIO in ["sdk", "sdk-refusals", "sdk-wipe"]:
             runpy.run_path(str(IMAGE / "share/configured_sdk_cache_vm.py"))["run"](
                 sys.modules[__name__], pathlib.Path(os.environ["TERRANE_CONFIGURED_SDK_IMAGE"]),
@@ -345,7 +346,7 @@ def configured_publication():
 
 def main():
     """Runs real same-process enrollment, authenticated queries and credential refusals."""
-    require(len(sys.argv) in [3, 4] and SCENARIO in ["enrollment", "reassembly", "private-release", "cold-private-release", "cold-manifest-release", "cold-public-pressure", "cold-manifest-pressure", "sdk", "sdk-refusals", "sdk-wipe", "surface", "worker", "worker-mounted"],
+    require(len(sys.argv) in [3, 4] and SCENARIO in ["enrollment", "reassembly", "private-release", "cold-private-release", "cold-manifest-release", "cold-public-pressure", "cold-manifest-pressure", "sdk", "sdk-refusals", "sdk-wipe", "surface", "worker", "worker-mounted", "worker-mounted-late"],
             "requires a registered native proof scenario")
     verify_inputs()
     # Fixture TOML publication intentionally respects the caller's umask. Fix
@@ -356,7 +357,7 @@ def main():
     for selector in ADMIN_CASES:
         run_case(selector, admin_command(selector))
 
-    if SCENARIO in ["surface", "worker", "worker-mounted"]:
+    if SCENARIO in ["surface", "worker", "worker-mounted", "worker-mounted-late"]:
         # Host administration explicitly funds the bounded original-inode
         # census before starting the real authenticated quota helper.
         host_config = ROOT / "positive/host.toml"

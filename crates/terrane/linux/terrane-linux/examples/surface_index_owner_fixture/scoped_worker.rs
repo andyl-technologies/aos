@@ -158,7 +158,7 @@ fn launch_mode(mode: &str) -> Result<Launched> {
         network,
     };
 
-    if mode == "worker-mounted-child" {
+    if matches!(mode, "worker-mounted-child" | "worker-mounted-late-child") {
         mounted::handoff(&launched)?;
     }
     drop_to_serve()?;

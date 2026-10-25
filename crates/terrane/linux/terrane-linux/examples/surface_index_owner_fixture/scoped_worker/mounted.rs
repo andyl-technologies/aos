@@ -29,6 +29,14 @@ pub(crate) fn launch() -> Result<Launched> {
     launch_mode("worker-mounted-child")
 }
 
+/// Launches the same original mounted worker with explicit expired-open observation.
+///
+/// # Errors
+/// Preserves original-child binding and device custody failures.
+pub(crate) fn launch_late() -> Result<Launched> {
+    launch_mode("worker-mounted-late-child")
+}
+
 /// Transfers only the original child's temporary alias before dropping privilege.
 ///
 /// # Errors
@@ -305,7 +313,7 @@ pub(crate) fn run(
 ///
 /// # Errors
 /// Refuses failed confinement, authenticated startup, kernel exchanges or drain.
-pub(crate) fn child() -> Result<()> {
+pub(crate) fn child(late: bool) -> Result<()> {
     use std::os::unix::fs::OpenOptionsExt;
     let device = fs::OpenOptions::new()
         .read(true)
@@ -341,6 +349,9 @@ pub(crate) fn child() -> Result<()> {
                     send(control.get_ref().as_fd(), b"COALESCED")
                 }
                 fuse_worker::Event::OpenQueued { .. } => Ok(()),
+                fuse_worker::Event::OpenFailed { .. } if late => {
+                    send(control.get_ref().as_fd(), b"EXPIRED")
+                }
                 _ => Err(io::Error::other("unexpected mounted worker event")),
             },
             async {

@@ -59,6 +59,8 @@
         then "terrane-native-private-release-ext4"
         else if scenario == "surface"
         then "terrane-native-configured-surface-index-ext4"
+        else if scenario == "worker-mounted-late"
+        then "terrane-native-configured-mounted-late-ext4"
         else if scenario == "worker-mounted"
         then "terrane-native-configured-mounted-worker-ext4"
         else if scenario == "worker"
@@ -71,8 +73,8 @@
       memory = 1024;
       rootfsDeps =
         [image verified pkgs.coreutils pkgs.util-linux pkgs.e2fsprogs pkgs.python3 pkgs.binutils]
-        ++ lib.optional (builtins.elem scenario ["sdk" "sdk-refusals" "sdk-wipe" "surface" "worker" "worker-mounted"]) configuredSdkProof.image
-        ++ lib.optional (builtins.elem scenario ["surface" "worker" "worker-mounted"]) surfaceImage;
+        ++ lib.optional (builtins.elem scenario ["sdk" "sdk-refusals" "sdk-wipe" "surface" "worker" "worker-mounted" "worker-mounted-late"]) configuredSdkProof.image
+        ++ lib.optional (builtins.elem scenario ["surface" "worker" "worker-mounted" "worker-mounted-late"]) surfaceImage;
       testScript = ''
         set -eu
         test "$(cat ${verified}/verified-image)" = ${lib.escapeShellArg (toString image)}
@@ -118,10 +120,10 @@
         chmod 700 "$TERRANE_INITIAL_FIXTURE_ROOT/scratch"
         export TMPDIR="$TERRANE_INITIAL_FIXTURE_ROOT/scratch"
         export TERRANE_INITIAL_VM_IMAGE="$proof_disk"
-        ${lib.optionalString (builtins.elem scenario ["sdk" "sdk-refusals" "sdk-wipe" "surface" "worker" "worker-mounted"]) ''
+        ${lib.optionalString (builtins.elem scenario ["sdk" "sdk-refusals" "sdk-wipe" "surface" "worker" "worker-mounted" "worker-mounted-late"]) ''
           export TERRANE_CONFIGURED_SDK_IMAGE=${configuredSdkProof.image}
         ''}
-        ${lib.optionalString (builtins.elem scenario ["surface" "worker" "worker-mounted"]) ''
+        ${lib.optionalString (builtins.elem scenario ["surface" "worker" "worker-mounted" "worker-mounted-late"]) ''
           export TERRANE_CONFIGURED_SURFACE_IMAGE=${surfaceImage}
         ''}
         export LD_LIBRARY_PATH="$(cat ${image}/share/runtime-library-path)"
@@ -178,4 +180,5 @@ in {
   surface = nativeFor "surface";
   worker = nativeFor "worker";
   mountedWorker = nativeFor "worker-mounted";
+  mountedLate = nativeFor "worker-mounted-late";
 }
