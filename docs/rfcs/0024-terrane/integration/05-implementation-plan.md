@@ -134,8 +134,22 @@ opens, cache handoff and unchanged exposure custody through durable drain and
 autonomous worker disconnect.
 The lower fixture pauses only its first original chunk; subsequent original
 chunks are real routed reads. Inline and expired-open assertions retain their
-original one-read requirements and deadlines. Native execution and mandatory
-workspace compilation remain pending; no task acceptance is inferred.
+original one-read requirements and deadlines. Mandatory workspace compilation
+passes in 657.523 seconds; independent review compares all 8,198 immutable
+source files, 190 test executables and 59 packages. This establishes compilation
+only. The original mounted-manifest guest fails in 1,103.168 seconds: its first
+actual coalesced kernel opens observe connection abort before returning data.
+The guest reaches authenticated index startup and its original readonly
+namespace; no signed manifest-read or task-acceptance witness passes.
+
+Failure reporting now allows the original owner its existing five-second join
+bound after supervisor closure before forced termination, reports verification
+failure before runtime drain, and records actual provisioning/open phases and
+unexpected worker events. The same 2,097,153-byte signed input, exact chunk and
+manifest counters, open/fetch budgets, custody assertions and guest bounds remain
+required. Both strict all-target Clippy profiles and touched Python syntax pass.
+The cause of the native abort and qualification of these diagnostics remain
+pending; T-FUSE-1 and T-FUSE-2 remain open.
 
 The complete `fuse-index-roundtrip` owning gate at `91abbf8445` passes in
 1,567.153 seconds. Independent review verifies all six retained prerequisite

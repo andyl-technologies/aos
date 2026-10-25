@@ -352,7 +352,9 @@ pub(crate) fn child(late: bool) -> Result<()> {
                 fuse_worker::Event::OpenFailed { .. } if late => {
                     send(control.get_ref().as_fd(), b"EXPIRED")
                 }
-                _ => Err(io::Error::other("unexpected mounted worker event")),
+                event => Err(io::Error::other(format!(
+                    "unexpected mounted worker event: {event:?}"
+                ))),
             },
             async {
                 loop {

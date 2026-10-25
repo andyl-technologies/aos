@@ -173,8 +173,13 @@ def run(support, executable, environment, source, owner_command=None,
         supervisor.close()
         owner_socket.close()
         if owner is not None and owner.poll() is None:
-            owner.kill()
-            owner.wait(timeout=5)
+            # Closing the original supervisor endpoint lets the owner report
+            # its preparation failure and request durable service drain.
+            try:
+                owner.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                owner.kill()
+                owner.wait(timeout=5)
         if mounted:
             transport.unmount(target)
         executor.shutdown(wait=True)

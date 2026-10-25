@@ -95,6 +95,9 @@ pub(crate) fn run(scenario: Scenario) -> Result<()> {
                 path.parent().ok_or("worker configuration has no parent")?,
             )))
             .await;
+        if let Err(error) = &result {
+            eprintln!("configured mounted owner failed before runtime drain: {error}");
+        }
         // Even a failed assertion must drive an accepted service through drain
         // and its bounded publication before the fixture tears down its runtime.
         local.await;
@@ -111,6 +114,13 @@ async fn verify(
     host: &terrane_sdk::config::host::HostTier,
     source_parent: &std::path::Path,
 ) -> Result<()> {
+    let started_at = tokio::time::Instant::now();
+    let stage = |phase| {
+        eprintln!(
+            "CONFIGURED_MOUNTED_STAGE phase={phase} elapsed_ms={}",
+            started_at.elapsed().as_millis()
+        );
+    };
     let mut caches = plan.open(confinement).await?;
     let cache = caches
         .remove("public")
@@ -205,6 +215,7 @@ async fn verify(
     let expires = now()? + if scenario == Scenario::Expiry { 20 } else { 90 };
     let lease = owner.retain_surface_exposure(&served, expires).await?;
     owner.check_running().await?;
+    stage("index-and-exposure-ready");
     println!(
         "PASS configured native owner completes actual recovery and acknowledged Resume before mounted worker startup"
     );
@@ -231,6 +242,7 @@ async fn verify(
     )?;
 
     phase(&mut service, launched.receive_control(b"READY")).await??;
+    stage("kernel-ready");
     send(b"READY")?;
     phase(
         &mut service,
@@ -238,6 +250,7 @@ async fn verify(
     )
     .await??;
     phase(&mut service, launched.receive_control(b"COALESCED")).await??;
+    stage("first-lower-read-paused-and-opens-coalesced");
     send(b"FETCH")?;
     if scenario == Scenario::Late {
         phase(&mut service, launched.receive_control(b"EXPIRED")).await??;
@@ -251,8 +264,10 @@ async fn verify(
         phase(&mut service, launched.receive_control(b"COALESCED")).await??;
     }
     phase(&mut service, receive(b"G")).await??;
+    stage("original-lower-read-resumed");
     resume.notify_one();
     phase(&mut service, receive(b"D")).await??;
+    stage("kernel-reads-complete");
 
     let before = snapshot().await?;
     let original = before
