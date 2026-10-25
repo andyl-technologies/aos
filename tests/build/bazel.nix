@@ -243,6 +243,16 @@ in
       inherit workspace;
       targets = ["//tools/bazel/tests/fixture:rust_test"];
     };
+    runner-owner-guards = pkgs.mkAosBazelCheck {
+      pname = "aos-bazel-runner-owner-guards";
+      inherit workspace;
+      targets = ["//tools/bazel/tests/fixture:rust_test"];
+      testArguments = [
+        "--expected-count=4"
+        "--require-case=tests::returns_expected_answer"
+        "--jobs=1"
+      ];
+    };
     developer-build = pkgs.mkAosBazelBuild {
       pname = "aos-bazel-developer-tools";
       inherit workspace;
@@ -483,6 +493,7 @@ in
             policy
             shell-bootstrap
             rustdoc-runner
+            runner-owner-guards
             build-script-metadata
             compiler-wrapper
             compiler-option-semantics

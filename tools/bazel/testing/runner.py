@@ -77,8 +77,12 @@ def matches(condition, package, name):
 
 
 def select_cases(binary, package, policy, filters=(), exact=False, ignored="skip", shard=(0, 1), allow_empty=False,
-                 allow_ignored_only=False):
-    """Applies filtering, ignored-case selection, policy, and stable sharding."""
+                 allow_ignored_only=False, expected_count=None, required_cases=()):
+    """Checks the selected inventory before applying stable sharding."""
+    if expected_count is not None and (type(expected_count) is not int or expected_count < 1):
+        raise ValueError("expected test count must be a positive integer")
+    if any(not name for name in required_cases) or len(set(required_cases)) != len(required_cases):
+        raise ValueError("required test names must be nonempty and unique")
     if policy["schema_version"] != 1:
         raise ValueError("unsupported test policy schema")
     names = list_cases(binary)
@@ -120,6 +124,15 @@ def select_cases(binary, package, policy, filters=(), exact=False, ignored="skip
     declared_skip = (allow_empty and not names) or (allow_ignored_only and names and set(names) == ignored_names)
     if not selected and not (declared_skip and not filters and ignored == "skip"):
         raise ValueError("test selection matched zero cases")
+
+    # Canonical gates authenticate the whole selected owner inventory. Checking
+    # before sharding keeps the invariant identical for every shard.
+    if expected_count is not None and len(selected) != expected_count:
+        raise ValueError(f"selected {len(selected)} tests; expected {expected_count}")
+    missing = sorted(set(required_cases) - {case.name for case in selected})
+    if missing:
+        raise ValueError("canonical tests were not selected: " + ", ".join(missing))
+
     index, count = shard
     if count < 1 or not 0 <= index < count:
         raise ValueError("invalid Bazel test shard")
@@ -283,12 +296,14 @@ def main():
     parser.add_argument("--allow-empty", action="store_true")
     parser.add_argument("--allow-ignored-only", action="store_true")
     parser.add_argument("--ignored", choices=["skip", "include", "only"], default="skip")
+    parser.add_argument("--expected-count", type=int)
+    parser.add_argument("--require-case", action="append", default=[])
     options = parser.parse_args()
     policy = json.loads(options.policy.read_text())
     filters = options.filter or ([os.environ["TESTBRIDGE_TEST_ONLY"]] if os.environ.get("TESTBRIDGE_TEST_ONLY") else [])
     shard = (int(os.environ.get("TEST_SHARD_INDEX", 0)), int(os.environ.get("TEST_TOTAL_SHARDS", 1)))
     cases = select_cases(options.binary, options.package, policy, filters, options.exact, options.ignored, shard,
-                         options.allow_empty, options.allow_ignored_only)
+                         options.allow_empty, options.allow_ignored_only, options.expected_count, options.require_case)
     if os.environ.get("TEST_SHARD_STATUS_FILE"):
         Path(os.environ["TEST_SHARD_STATUS_FILE"]).touch()
 

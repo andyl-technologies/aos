@@ -358,6 +358,15 @@ share a process, plus an ignored failure that must remain unselected by default.
 Doctests, platform/resource checks, and family-specific integration inventories
 remain separate migration obligations.
 
+Canonical gate owners can require an exact selected case count and named
+canonical cases before any case executes. `--expected-count` and repeatable
+`--require-case` checks run after filtering and ignored-case selection, before
+sharding. Explicit empty-suite allowances cannot bypass these requirements.
+Nix checks pass runner arguments through `mkAosBazelCheck.testArguments`; the
+build helper translates each value into a shell-quoted Bazel `--test_arg`.
+`checks.build.bazel.runner-owner-guards` exercises that interface against the
+real four-case fixture, including its canonical owner and serial execution.
+
 ## Boot Rust pilot and license analysis
 
 `checks.build.bazel.pilot.all` builds `aos-boot-identity` and `aos-recovery`

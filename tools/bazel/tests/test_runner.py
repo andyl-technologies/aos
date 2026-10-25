@@ -102,6 +102,69 @@ raise SystemExit(case.get('status', 0))
         with self.assertRaisesRegex(ValueError, "zero cases"):
             self.select(allow_empty=True)
 
+    def test_owner_count_and_canonical_name_authenticate_selected_cases(self):
+        self.configure({"owner::canonical": {}, "owner::second": {}, "other": {}})
+
+        selected = self.select(filters=["owner::"], expected_count=2, required_cases=["owner::canonical"])
+
+        self.assertEqual([case.name for case in selected], ["owner::canonical", "owner::second"])
+        with self.assertRaisesRegex(ValueError, "selected 2 tests; expected 3"):
+            self.select(filters=["owner::"], expected_count=3)
+        with self.assertRaisesRegex(ValueError, "canonical tests were not selected: other"):
+            self.select(filters=["owner::"], expected_count=2, required_cases=["other"])
+        with self.assertRaisesRegex(ValueError, "canonical tests were not selected: owner::renamed"):
+            self.select(filters=["owner::"], expected_count=2, required_cases=["owner::renamed"])
+
+    def test_owner_guards_apply_before_sharding(self):
+        self.configure({"a": {}, "b": {}, "c": {}})
+
+        shards = [
+            self.select(shard=(index, 2), expected_count=3, required_cases=["b"])
+            for index in range(2)
+        ]
+
+        self.assertEqual(sorted(case.name for shard in shards for case in shard), ["a", "b", "c"])
+        with self.assertRaisesRegex(ValueError, "selected 3 tests; expected 2"):
+            self.select(shard=(0, 2), expected_count=2)
+
+    def test_ignored_and_empty_allowances_cannot_bypass_owner_guards(self):
+        self.configure({"active": {}, "canonical": {"ignored": True}})
+
+        with self.assertRaisesRegex(ValueError, "selected 1 tests; expected 2"):
+            self.select(expected_count=2)
+        with self.assertRaisesRegex(ValueError, "canonical tests were not selected"):
+            self.select(expected_count=1, required_cases=["canonical"])
+        self.assertEqual(len(self.select(ignored="include", expected_count=2, required_cases=["canonical"])), 2)
+
+        self.configure({})
+        with self.assertRaisesRegex(ValueError, "selected 0 tests; expected 1"):
+            self.select(allow_empty=True, expected_count=1)
+        for count in [0, -1, True]:
+            with self.subTest(count=count), self.assertRaisesRegex(ValueError, "positive integer"):
+                self.select(allow_empty=True, expected_count=count)
+        for names in [[""], ["canonical", "canonical"]]:
+            with self.subTest(names=names), self.assertRaisesRegex(ValueError, "nonempty and unique"):
+                self.select(required_cases=names)
+
+    def test_cli_rejects_invalid_owner_inventory_before_starting_any_case(self):
+        self.configure({"canonical": {}, "second": {}})
+        policy = self.root / "policy.json"
+        policy.write_text(json.dumps(self.policy))
+
+        for arguments, message in [
+            (["--expected-count=3", "--require-case=canonical"], "selected 2 tests; expected 3"),
+            (["--expected-count=2", "--require-case=renamed"], "canonical tests were not selected: renamed"),
+        ]:
+            with self.subTest(arguments=arguments):
+                result = subprocess.run([
+                    sys.executable, str(ROOT / "testing/runner.py"), "--binary", str(self.binary),
+                    "--package", "fixture", "--policy", str(policy), *arguments,
+                ], capture_output=True, text=True, timeout=5)
+
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(self.log.exists(), "an owner test started before inventory validation")
+
     def test_declared_ignored_suite_preserves_inventory_and_filter_failures(self):
         self.configure({"live_service": {"ignored": True}})
 

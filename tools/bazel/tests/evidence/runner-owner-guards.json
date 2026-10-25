@@ -1,0 +1,45 @@
+{
+  "cases": [
+    "tests::first_case_owns_a_fresh_process",
+    "tests::package_metadata_matches_the_declared_identity",
+    "tests::returns_expected_answer",
+    "tests::second_case_owns_a_fresh_process"
+  ],
+  "check": "checks.build.bazel.runner-owner-guards",
+  "evidence_sha256": {
+    "evidence/execution.json": "6cb8635df65d5b210319661b19b5bb91d25dbe1e52085174fa81925435dff1be",
+    "evidence/tests/63b162e562b8cf4628d61eead2b5b57b218c69e9487ba2843c1a87f7ae5490e0/test.xml": "18c57058dd03dc202b4d61c3160da385476e67f4cce6624edc88b96707a9baa5",
+    "evidence/tests/index.json": "93dde8a29039dfc8b2d1268accff0b9419a3c9be54f6db7385252172df12bb13"
+  },
+  "focused_runner_tests": 14,
+  "guards": [
+    "Exact counts and canonical owner names are checked before any case starts.",
+    "Validation applies to the filtered, ignored-case-selected inventory before sharding.",
+    "Ignored and empty-suite allowances cannot satisfy a required owner inventory.",
+    "Negative CLI cases assert that no case process starts after an invalid count or missing canonical owner."
+  ],
+  "limits": [
+    "This qualifies the runner and Nix test-argument interface. It does not migrate or qualify the canonical ABI/license gate drivers."
+  ],
+  "output": "/nix/store/ssnk06kxy3rl7g9jj5hq6ixw1hmcqwq0-aos-bazel-runner-owner-guards-1",
+  "policy_output": "/nix/store/8w462cyia7g790wqmcgncr6psizsbcmq-aos-bazel-policy-checks",
+  "policy_tests": 305,
+  "runner_execution_input_sha256": "46b5c3a8baa65f9c2634bd5061a34e7db3ece3be16dc3ec966db06cfa02cf066",
+  "schema_version": 1,
+  "source_sha256": {
+    "pkgs/build-support/_bazel/build.nix": "a047cae48b2a331db3357576e9045cce63c8958e6bf73f5f58f3da38c23f7e9b",
+    "tests/build/bazel.nix": "db75935de6c0a1f3347e1f9e2477341f8c7c7bac2c7cef23314e1a57b76aa9b8",
+    "tools/bazel/testing/runner.py": "46b5c3a8baa65f9c2634bd5061a34e7db3ece3be16dc3ec966db06cfa02cf066",
+    "tools/bazel/tests/test_runner.py": "93593de9095734f007c534a35971fbf48b055452a74e0cedca0b2d6f7f77f179"
+  },
+  "status": "PASS",
+  "test_action_cache_hit": false,
+  "test_command": [
+    "external/bazel_tools/tools/test/test-setup.sh",
+    "tools/bazel/tests/fixture/rust_test",
+    "--expected-count=4",
+    "--require-case=tests::returns_expected_answer",
+    "--jobs=1"
+  ],
+  "test_runner": "linux-sandbox"
+}

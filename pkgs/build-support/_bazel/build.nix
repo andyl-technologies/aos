@@ -9,6 +9,7 @@
   workspace,
   targets,
   command ? "build",
+  testArguments ? [],
   inventoryOnly ? false,
   retainActionGraph ? false,
   sharedBuildCache ? true,
@@ -34,11 +35,12 @@
   };
 in
   assert builtins.elem command ["build" "test"];
+  assert command == "test" || testArguments == [];
   assert !inventoryOnly || command == "build";
   assert cacheNamespace == null || builtins.match "[a-zA-Z0-9][a-zA-Z0-9_-]*" cacheNamespace != null;
     pkgs.mkDerivation {
       inherit pname version requiredSystemFeatures;
-      passthru.bazelSelection = {inherit workspace targets;};
+      passthru.bazelSelection = {inherit workspace targets testArguments;};
       src = workspace.source;
       sharedBuildCache = false;
       buildDeps = [pkgs.bazel pkgs.openjdk pkgs.python3];
@@ -76,7 +78,7 @@ in
                 ${lib.optionalString retainActionGraph "--materialize-action-outputs"} \
                 --metrics "$TMPDIR/metrics.json" \
                 ${lib.optionalString (cache != null) "--cache ${lib.escapeShellArg cache}"} \
-                -- ${command} ${lib.escapeShellArgs targets} \
+                -- ${command} ${lib.escapeShellArgs targets}${lib.optionalString (testArguments != []) (" " + lib.escapeShellArgs (map (argument: "--test_arg=${argument}") testArguments))} \
                 --aspects=//tools/bazel/metadata:inventory.bzl%aos_inventory_aspect \
                 --output_groups=${
                 if inventoryOnly
