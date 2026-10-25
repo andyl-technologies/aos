@@ -2,13 +2,14 @@
 {
   pkgs,
   sourceInventory ? null,
+  toolchains ? pkgs.aosBazelToolchains,
 }: let
   declarations = import ./_bazel-aos-cli.nix {inherit pkgs;};
   prefix = "//crates/cli/aos-cli:";
   targets = map (name: prefix + name) ["production_binaries" "production_suite_license_closure"];
   workspace = pkgs.mkAosBazelWorkspace {
     root = ../..;
-    inherit sourceInventory;
+    inherit sourceInventory toolchains;
     dependencyProfile = "aos-cli-production";
     sourceDirectories = pkgs.lib.optionals (sourceInventory == null) (
       ["tools/bazel" "third_party/rust" "api/proto"]

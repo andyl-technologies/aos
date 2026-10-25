@@ -114,6 +114,26 @@ both tools. First-party target code is analyzed rather than compiled by this
 probe. These observations establish the editor-tool distinction without
 claiming full application or whole-model inference equivalence.
 
+The opt-in native source-path adapter maps private execution-root prefixes to
+`.` for C compiler source-location strings and debug information. Build scripts
+can pass generated files through absolute arguments or response files while
+compiling from a separate source repository; the adapter also checks their
+`OUT_DIR` context. Explicit caller mappings retain precedence, and the adapter
+replaces its process with the declared AOS compiler.
+
+```text
+nix-build tools/bazel/tests/native-source-paths.nix -A check -A toolchains --no-out-link
+```
+
+The [minimal qualification](../tests/evidence/native-source-path-mapping.json)
+passes six cases using real native compilation in a Nix sandbox. Different
+execution roots produce byte-identical mapped debug binaries; unmapped controls
+differ. Ordinary-directory passthrough, caller overrides, and compiler failure
+status also pass. The adapter and its source are included in the realized
+toolchain closure. Default toolchain and strict CLI derivation identities are
+preserved. Actual Bazel native build scripts and full CLI repeatability remain
+separate qualification work; the default toolchain is unchanged.
+
 The conformance check builds the pinned process wrapper from source with AOS
 Rust, then compares its actual child arguments and selected environment values
 with the reconstruction model. Run it with:

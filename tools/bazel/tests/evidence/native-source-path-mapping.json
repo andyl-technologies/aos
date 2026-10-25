@@ -1,0 +1,163 @@
+{
+  "cases": {
+    "absolute-arguments": [
+      {
+        "mapped": {
+          "locations": [
+            "./generated/native.c",
+            "./generated/native.c",
+            "./generated/location.h"
+          ],
+          "sha256": "bdcdb0a3411a4803b5d1165b53effcfc0255e574d148f333f1935d5feabf2bb7"
+        },
+        "ordinary": {
+          "locations": [
+            "/build/absolute-arguments/sandbox/linux-sandbox/17/execroot/_main/generated/native.c",
+            "/build/absolute-arguments/sandbox/linux-sandbox/17/execroot/_main/generated/native.c",
+            "/build/absolute-arguments/sandbox/linux-sandbox/17/execroot/_main/generated/location.h"
+          ],
+          "sha256": "382a7643af424dd18a7699e64a74f27735ab36ea3f04ebd813d34e9080a994b8"
+        }
+      },
+      {
+        "mapped": {
+          "locations": [
+            "./generated/native.c",
+            "./generated/native.c",
+            "./generated/location.h"
+          ],
+          "sha256": "bdcdb0a3411a4803b5d1165b53effcfc0255e574d148f333f1935d5feabf2bb7"
+        },
+        "ordinary": {
+          "locations": [
+            "/build/absolute-arguments/sandbox/linux-sandbox/963/execroot/_main/generated/native.c",
+            "/build/absolute-arguments/sandbox/linux-sandbox/963/execroot/_main/generated/native.c",
+            "/build/absolute-arguments/sandbox/linux-sandbox/963/execroot/_main/generated/location.h"
+          ],
+          "sha256": "ec0a08f03e1bdcde6055b4fdbec381b309f2080f3b9e10e91b70b7a9fd449493"
+        }
+      }
+    ],
+    "caller-mapping-precedence": {
+      "locations": [
+        "caller-selected/generated/native.c",
+        "caller-selected/generated/native.c",
+        "caller-selected/generated/location.h"
+      ],
+      "sha256": "4d63c1461966aaf6910ed8541316e89e7226b59143ab2115ab786697a66181a8"
+    },
+    "compiler-failure-exit-status": 1,
+    "ordinary-directory-passthrough": {
+      "locations": [
+        "/build/source-repository/native.c",
+        "/build/source-repository/native.c",
+        "/build/source-repository/location.h"
+      ],
+      "sha256": "4828add20e93b492093ae13134d67eb1914a4985fa10f0b111d45a72b31f3abb"
+    },
+    "output-directory": [
+      {
+        "mapped": {
+          "locations": [
+            "./generated/native.c",
+            "./generated/native.c",
+            "./generated/location.h"
+          ],
+          "sha256": "bdcdb0a3411a4803b5d1165b53effcfc0255e574d148f333f1935d5feabf2bb7"
+        },
+        "ordinary": {
+          "locations": [
+            "/build/output-directory/sandbox/linux-sandbox/17/execroot/_main/generated/native.c",
+            "/build/output-directory/sandbox/linux-sandbox/17/execroot/_main/generated/native.c",
+            "/build/output-directory/sandbox/linux-sandbox/17/execroot/_main/generated/location.h"
+          ],
+          "sha256": "d7af882edf137c97145f2e9eeb899edf6158a5a1432c3fe9f3f343b0331baa28"
+        }
+      },
+      {
+        "mapped": {
+          "locations": [
+            "./generated/native.c",
+            "./generated/native.c",
+            "./generated/location.h"
+          ],
+          "sha256": "bdcdb0a3411a4803b5d1165b53effcfc0255e574d148f333f1935d5feabf2bb7"
+        },
+        "ordinary": {
+          "locations": [
+            "/build/output-directory/sandbox/linux-sandbox/963/execroot/_main/generated/native.c",
+            "/build/output-directory/sandbox/linux-sandbox/963/execroot/_main/generated/native.c",
+            "/build/output-directory/sandbox/linux-sandbox/963/execroot/_main/generated/location.h"
+          ],
+          "sha256": "406c34723d96fca37570fb5b4e57f70e1711c43f8c570d77b742d756dd3480db"
+        }
+      }
+    ],
+    "working-directory": [
+      {
+        "mapped": {
+          "locations": [
+            "generated/native.c",
+            "generated/native.c",
+            "generated/location.h"
+          ],
+          "sha256": "01c3960fbd07d18b3cf2a53d4bebf1f9e76262cee9c53c620f46276362753181"
+        },
+        "ordinary": {
+          "locations": [
+            "generated/native.c",
+            "generated/native.c",
+            "generated/location.h"
+          ],
+          "sha256": "0bac9df653fe9eb7dba65f6d723d7847b1ed1efd2f8bc6e5a54baaf1edcd1961"
+        }
+      },
+      {
+        "mapped": {
+          "locations": [
+            "generated/native.c",
+            "generated/native.c",
+            "generated/location.h"
+          ],
+          "sha256": "01c3960fbd07d18b3cf2a53d4bebf1f9e76262cee9c53c620f46276362753181"
+        },
+        "ordinary": {
+          "locations": [
+            "generated/native.c",
+            "generated/native.c",
+            "generated/location.h"
+          ],
+          "sha256": "2d354905016ac1efba07e7851998f3ae8e17078591ee59668a0757a1c0c05ee6"
+        }
+      }
+    ]
+  },
+  "checkout_parent": "8935275a22b621a57fb8dad93e0937321ee77574",
+  "command": "nix-build tools/bazel/tests/native-source-paths.nix -A check -A toolchains --no-out-link --max-jobs 2 --cores 4 --option substitute false",
+  "compiler_adapter": "/nix/store/rzfk1v4kxdlkmvh6z0q87a7vl9wrdnly-aos-bazel-native-source-paths",
+  "core_evaluation_check": "/nix/store/8zackq55f7fmrpqyvbikc6qnik6vyyia-aos-native-evaluation-checks-0",
+  "declarations_sha256": {
+    "pkgs/build-support/_bazel/native-source-paths.nix": "64b2f1137b068dde6a17019cef36c2601b9b66c1fe745120ed5793877f799189",
+    "tests/build/_bazel-aos-cli-production.nix": "dade1c23ea965178c29fb77fca37d23281e78da81b8e7ab34e044fa8af5e5e67",
+    "tools/bazel/tests/native-source-paths.nix": "3c8c8f8d06265783ed61aae1db80e872339b121d8b980869cc9e141ea12aa376",
+    "tools/bazel/toolchains/native_cc.py": "0a59bda447623e0a070b31095c95e9c47e0e1ca8056508c586f1607ee6e07631"
+  },
+  "default_identity_preservation_before_control_lint_repair": {
+    "build": "/nix/store/rs5q1kzrcz41y7zh6y4i1xyf4qsppi0n-aos-bazel-aos-cli-production-1",
+    "installed": "/nix/store/grccrip24k6h4wpl9vbsc8yk7y1lf9fi-aos-cli-0.1.0",
+    "toolchains": "/nix/store/i6rnwxfhg5w34z1hg8axsr7ylk4751x0-aos-bazel-toolchains-1"
+  },
+  "evidence_sha256": "59d499f0273073f08809769762b9f29c72998359ec61edfdfefe258b24d081fa",
+  "fixture": "/nix/store/v4b6p10nwx8mn25c80xkcfzajj4jazrp-aos-bazel-native-source-paths-check",
+  "limits": [
+    "This opt-in adapter leaves the default toolchain unchanged.",
+    "Uses the actual source-built AOS compiler inside Nix; paths model Bazel execution roots but this fixture does not itself run Bazel.",
+    "Byte comparisons include native debug information and runtime source-location strings; native ABI, linker equivalence, application behavior, cache reuse, performance and production enrollment remain separate.",
+    "The original fixture had two script quoting/indentation failures before the retained passing run; no compiler failures or output differences were ignored."
+  ],
+  "schema_version": 1,
+  "status": "PASS for the minimal native compiler fixture; full Bazel build-script and CLI repeatability qualification pending.",
+  "toolchain_closure_paths": 28,
+  "toolchain_closure_sha256": "ad80af3d6558705bccc8f138098de2b738d3d1cc7a5c786cc12e8ca837e5fa4c",
+  "toolchains": "/nix/store/yb65p5byasym540y8pqffm7jk4kaxaym-aos-bazel-toolchains-1"
+}
