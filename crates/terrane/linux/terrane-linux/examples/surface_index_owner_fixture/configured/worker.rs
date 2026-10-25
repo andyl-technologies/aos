@@ -123,6 +123,7 @@ async fn verify(
             PausedLower {
                 original: original.clone(),
                 reads: Arc::clone(&reads),
+                manifests: Arc::new(AtomicUsize::new(0)),
                 started: Arc::clone(&started),
                 resume: Arc::clone(&resume),
             },

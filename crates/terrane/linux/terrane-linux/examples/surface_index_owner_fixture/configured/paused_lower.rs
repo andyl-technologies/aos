@@ -17,6 +17,8 @@ pub(super) struct PausedLower<S> {
     pub(super) original: S,
     /// Number of actual chunk reads submitted to the lower store.
     pub(super) reads: Arc<AtomicUsize>,
+    /// Number of actual manifest-body reads, separate from metadata selection.
+    pub(super) manifests: Arc<AtomicUsize>,
     /// Signals acceptance of an original cold content read.
     pub(super) started: Arc<Notify>,
     /// Releases that same accepted read after the guest observes its waiters.
@@ -40,11 +42,20 @@ impl<S: ContentStore + Send + Sync> ContentStore for PausedLower<S> {
         identity: &Identity,
         range: Option<ByteRange>,
     ) -> std::result::Result<Vec<u8>, StoreFailure> {
-        if identity.kind() == IdentityKind::Chunk {
-            self.reads.fetch_add(1, Ordering::Relaxed);
-            self.started.notify_one();
-            self.resume.notified().await;
+        match identity.kind() {
+            IdentityKind::Manifest => {
+                self.manifests.fetch_add(1, Ordering::Relaxed);
+            }
+            IdentityKind::Chunk => {
+                let previous_reads = self.reads.fetch_add(1, Ordering::Relaxed);
+                if previous_reads == 0 {
+                    self.started.notify_one();
+                    self.resume.notified().await;
+                }
+            }
+            _ => {}
         }
+
         self.original.get(identity, range).await
     }
 

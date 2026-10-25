@@ -7,8 +7,11 @@
 //! The separate private fixture control socket carries exactly 104 public bytes:
 //!
 //! ```text
-//! exposure:32ascii | generation:u64le | root:32 | inline_content:32
+//! exposure:32ascii | generation:u64le | root:32 | content_identity:32
 //! ```
+//!
+//! Inline controls interpret the last digest as an inline chunk. Mounted workers
+//! ignore it and obtain the typed content reference from their authenticated index.
 
 #[path = "scoped_worker/mounted.rs"]
 pub(super) mod mounted;

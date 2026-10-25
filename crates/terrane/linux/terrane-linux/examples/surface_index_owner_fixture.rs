@@ -62,6 +62,9 @@ fn main() -> Result<()> {
     if mode == "configured-mounted" {
         return configured::mounted::run(configured::mounted::Scenario::Ordinary);
     }
+    if mode == "configured-mounted-manifest" {
+        return configured::mounted::run(configured::mounted::Scenario::Manifest);
+    }
     if mode == "configured-mounted-expiry" {
         return configured::mounted::run(configured::mounted::Scenario::Expiry);
     }

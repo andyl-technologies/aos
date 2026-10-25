@@ -94,6 +94,62 @@ T4 CI caches · T5 sandboxes · T6 hardened MVP
 Trunk acceptance remains **27/64**. Completed component checks do not establish
 production worker, mount-broker or full RFC conformance.
 
+The joined configured mounted-worker component at `8647df31e6` passes in
+1,228.127 seconds. Full review compares 8,198 immutable source files, all three
+images, nine retained Cargo/installed executables and the original read-only
+namespace. Actual coalesced kernel opens drive one original cold lower fetch
+through configured native sealing, cache handoff and authenticated descriptor
+disclosure; kernel metadata remains responsive and drain retains original
+physical bindings and pins. Its mandatory application compilation passes in
+1,598.922 seconds, with 190 test executables across 59 packages independently
+matched to the same source. This checkpoint uses explicit supervisor stop.
+
+The expired-open component at `011aa1586a` passes in 1,218.818 seconds. Its
+full source/image/ELF review checks the same 8,198 files and nine executables.
+Two actual kernel opens return exact EIO at their original deadlines while
+accepted cold work remains alive. A later actual open joins that same fetch
+before sealed handoff, with the lower counter remaining one. Mandatory workspace
+compilation passes in 1,357.835 seconds; full review confirms the same 190
+executables and 59 packages. Compilation does not establish test execution.
+
+The fourteen-scenario FUSE component at `7fd476648e` passes in 418.059 seconds.
+Independent review checks all 8,198 immutable files, 5,454 bound inputs and the
+actual installed Cargo executable. Every preceding transport, coalescing,
+metadata, cancellation and handle-lifetime scenario remains required. The two
+new controls serve actual kernel metadata before original backing-owner EOF or
+an unsolicited reply, then require autonomous worker exit and exact ENOTCONN
+from the disconnected kernel mount. The original misspelled-selector invocation
+failed before any build and remains retained separately. Configured autonomous
+shutdown and the later live-expiry implementation still require their own
+native qualification. Accepted trunk tasks remain 27/64.
+
+
+The configured mounted-manifest scenario now commits an actual deterministic
+2,097,153-byte file spanning multiple original CDC chunks. Its sealed index
+must retain the signed manifest identity and logical size, with zero lower
+chunk or manifest-body reads during metadata compilation. Coalesced actual
+kernel opens then release the first accepted lower read and require the exact
+original chunk count, one manifest-body fetch, complete bytes/ranges, repeated
+opens, cache handoff and unchanged exposure custody through durable drain and
+autonomous worker disconnect.
+The lower fixture pauses only its first original chunk; subsequent original
+chunks are real routed reads. Inline and expired-open assertions retain their
+original one-read requirements and deadlines. Native execution and mandatory
+workspace compilation remain pending; no task acceptance is inferred.
+
+The complete `fuse-index-roundtrip` owning gate at `91abbf8445` passes in
+1,567.153 seconds. Independent review verifies all six retained prerequisite
+outputs, the 82-case structural codec inventory, eight actual native guests,
+original source/Cargo executables, scoped disclosure, sealed mapping, pressure
+and the complete four-actor closure chain. The separate file-closure guest
+preserves the original 180-second guest bound and every actor assertion.
+Acceptance still requires the remaining configured open-path audit; no task is
+accepted solely because the aggregate result is PASS.
+
+The idle-owner checkpoint `7fd476648e` also passes mandatory application-target
+compilation in 711.842 seconds. Full review compares all 8,198 source files and
+confirms 190 test executables across 59 packages; this is compilation only.
+
 The configured surface aggregate at `ac4f28b701` passes in 1,265.705 seconds.
 Independent review compares 8,196 immutable source files, all three images and
 nine retained Cargo/installed executables. The five original read-only namespace
@@ -487,7 +543,7 @@ from the remaining open-path composition:
 | FUSE-8 | `Index::lookup` binary-searches sorted entries; `Entry::children` scans the contiguous child-index run. Codec and first-touch directory tests check ordering and allocation-free access. | No missing index operation identified; configured worker composition remains separate. |
 | FUSE-9 | The native owner permanently seals its original inode; `MappedIndex::open` measures it before creating a read-only mapping. Actual mapping and scoped-disclosure guests qualify descriptor refusal and retained-inode behavior. | Production launch must bind the original worker and exposure context; the mounted fixture alone supplies no launcher. |
 | FUSE-10 | Native index custody has a separate cap, eviction and durable exposure protection. Pressure guests check retained mappings, release grace and actual charge before capacity credit. | Configured exposure supervision must preserve those obligations across worker failure and shutdown. |
-| FUSE-11 | The index records typed inline/manifest references and logical sizes. Scoped native file preparation verifies genuine whole-file backing against the signed selection. | `prepare_file_backing` explicitly requires existing backing. The mounted fixture prepublishes one inline file; it does not prove cold-open fetching, manifest reassembly on open or their cancellation/accounting composition. |
+| FUSE-11 | The index records typed inline/manifest references and logical sizes. Scoped native file preparation verifies genuine whole-file backing against the signed selection. | `NativeReadDriver::prepare_file_backing` now resolves cold inline and manifest selections; the original native-owner method remains the warm grant. The reviewed configured aggregate qualifies genuine signed multi-chunk preparation and exact warm inode reuse. Reviewed mounted components qualify inline cold opens and retained work across actual open deadlines. The new mounted-manifest join remains in qualification. |
 | FUSE-12 | Canonical compilation expands nested/repeated grafts, retains governing roots and refuses malformed identities, depth and geometry. The owning codec inventory executes those cases. | No missing index operation identified; configured exposure startup must use the checked projection. |
 
 The reviewed `35f86562ff` owning gate and its seven actual guests remain valid

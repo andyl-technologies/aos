@@ -33,7 +33,7 @@ def namespace_actor(driver, image, arguments, policy, stack, launcher=False):
     executable = [str(image / "bin" / arguments[0]), *map(str, arguments[1:])]
     if launcher:
         driver.require(policy == "readonly" and arguments[0] == "surface-index-owner-fixture"
-            and arguments[1] in {"configured-worker", "configured-mounted", "configured-mounted-late", "configured-mounted-expiry"},
+            and arguments[1] in {"configured-worker", "configured-mounted", "configured-mounted-late", "configured-mounted-expiry", "configured-mounted-manifest"},
             "invalid configured worker fixture launcher")
     if policy is None:
         return credentials + executable
@@ -106,7 +106,7 @@ def configured_worker_launcher(policy, bindings, command):
     """Starts the actual child before Rust irrevocably enters UID 840 custody."""
     if (os.geteuid() != 0 or policy != "readonly" or len(command) != 3
             or pathlib.Path(command[0]).name != "surface-index-owner-fixture"
-            or command[1] not in {"configured-worker", "configured-mounted", "configured-mounted-late", "configured-mounted-expiry"}):
+            or command[1] not in {"configured-worker", "configured-mounted", "configured-mounted-late", "configured-mounted-expiry", "configured-mounted-manifest"}):
         raise RuntimeError("invalid configured worker fixture launcher")
     # Observe the very same namespace as the actual unprivileged actor. The
     # short verifier opens no readable publisher-private aliases for its parent.
@@ -115,7 +115,7 @@ def configured_worker_launcher(policy, bindings, command):
                     "--no-new-privs", sys.executable, __file__, "--verify-namespace",
                     policy, json.dumps(bindings), sys.executable, "-c", "pass"],
                    check=True, timeout=5,
-                   stdout=sys.stderr if command[1] in {"configured-mounted", "configured-mounted-late", "configured-mounted-expiry"} else None)
+                   stdout=sys.stderr if command[1] in {"configured-mounted", "configured-mounted-late", "configured-mounted-expiry", "configured-mounted-manifest"} else None)
     setpriv = shutil.which("setpriv")
     if setpriv is None:
         raise RuntimeError("missing AOS-built fixture launcher")
@@ -389,7 +389,9 @@ def verify_funding(driver, directory, before, after):
                        "native SDK dropped consumer funding before its original grace expired")
 
 
-def run_surface(driver, image, surface_image, service_only=False, mounted_only=False, late_only=False, expiry_only=False):
+def run_surface(driver, image, surface_image, service_only=False,
+                mounted_only=False, late_only=False, expiry_only=False,
+                manifest_only=False):
     """Requires configured bounds to reach the original enrolled physical owners."""
     subprocess.run([sys.executable, str(image / "share/configured_sdk_proof.py"),
                     "verify", str(image), str(driver.SOURCE)], check=True, timeout=30)
@@ -410,10 +412,21 @@ def run_surface(driver, image, surface_image, service_only=False, mounted_only=F
     # Index recovery measures unchanged original exposure pins and leases. Run
     # it before cold manifest publication: later recovery legitimately funds
     # independently verified reconstruction metadata with additional pins.
-    modes = ["mounted-expiry"] if expiry_only else ["mounted-late"] if late_only else ["mounted"] if mounted_only else ["service"] if service_only else ["disabled", "bound", "recover-draining", "admit", "service"]
+    if manifest_only:
+        modes = ["mounted-manifest"]
+    elif expiry_only:
+        modes = ["mounted-expiry"]
+    elif late_only:
+        modes = ["mounted-late"]
+    elif mounted_only:
+        modes = ["mounted"]
+    elif service_only:
+        modes = ["service"]
+    else:
+        modes = ["disabled", "bound", "recover-draining", "admit", "service"]
     for mode in modes:
         text = original + host_configuration(driver,
-            mode="always" if mode in {"admit", "service", "mounted", "mounted-late", "mounted-expiry"} else "never")
+            mode="always" if mode in {"admit", "service", "mounted", "mounted-late", "mounted-expiry", "mounted-manifest"} else "never")
         if mode != "disabled":
             node_bytes = 32 if mode == "bound" else 65536
             text += f"""
@@ -425,8 +438,10 @@ capacity_bytes = 25165824
 future_hold_bytes = 327680
 """
         config.write_text(text)
-        if mode in {"mounted", "mounted-late", "mounted-expiry"}:
-            run_configured_mount(driver, surface_image, config, late=mode == "mounted-late", expiry=mode == "mounted-expiry")
+        if mode in {"mounted", "mounted-late", "mounted-expiry", "mounted-manifest"}:
+            run_configured_mount(driver, surface_image, config,
+                late=mode == "mounted-late", expiry=mode == "mounted-expiry",
+                manifest=mode == "mounted-manifest")
             continue
         arguments = (["surface-index-owner-fixture", "configured-worker", config]
                      if mode == "service" else
@@ -450,7 +465,9 @@ future_hold_bytes = 327680
 
     runpy.run_path(str(surface_image / "share/surface_index_owner_vm.py"))["verify_surface"](
         surface_image, driver.SOURCE)
-    if expiry_only:
+    if manifest_only:
+        print("PASS native configured mounted manifest component; production broker and task acceptance remain unqualified", flush=True)
+    elif expiry_only:
         print("PASS native configured exposure-expiry component; production broker and task acceptance remain unqualified", flush=True)
     elif late_only:
         print("PASS native configured expired-open retained cold component; production broker and task acceptance remain unqualified", flush=True)
@@ -463,7 +480,7 @@ future_hold_bytes = 327680
 
 
 
-def run_configured_mount(driver, image, config, late=False, expiry=False):
+def run_configured_mount(driver, image, config, late=False, expiry=False, manifest=False):
     """Uses the genuine guest device and original configured owner in one mount."""
     fuse = pathlib.Path("/dev/fuse")
     if not fuse.exists():
@@ -477,13 +494,21 @@ def run_configured_mount(driver, image, config, late=False, expiry=False):
     runtime.mkdir(mode=0o700)
     try:
         with contextlib.ExitStack() as stack:
+            if manifest:
+                mode = "configured-mounted-manifest"
+            elif expiry:
+                mode = "configured-mounted-expiry"
+            elif late:
+                mode = "configured-mounted-late"
+            else:
+                mode = "configured-mounted"
             command = namespace_actor(driver, image,
-                ["surface-index-owner-fixture", "configured-mounted-expiry" if expiry else "configured-mounted-late" if late else "configured-mounted", config],
+                ["surface-index-owner-fixture", mode, config],
                 "readonly", stack, launcher=True)
             support = types.SimpleNamespace(RUNTIME=runtime, require=driver.require)
             runpy.run_path(str(image / "share/mounted_worker_vm.py"))["run"](
                 support, str(image / "bin/surface-index-owner-fixture"), dict(os.environ),
-                driver.SOURCE, owner_command=command, configured=True, late=late, expiry=expiry)
+                driver.SOURCE, owner_command=command, configured=True, late=late, expiry=expiry, manifest=manifest)
         observations = [json.loads(line[len(NAMESPACE_OBSERVATION):])
                         for line in (runtime / "mounted-owner.log").read_bytes().splitlines()
                         if line.startswith(NAMESPACE_OBSERVATION)]

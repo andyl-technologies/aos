@@ -15,8 +15,10 @@ import time
 BODY = b"actual scoped worker backing through serialized owner Send"
 
 
-def run(support, executable, environment, source, owner_command=None, configured=False, late=False, expiry=False):
+def run(support, executable, environment, source, owner_command=None,
+        configured=False, late=False, expiry=False, manifest=False):
     """Mounts only the original worker device and drives authenticated serving."""
+    body = manifest_body() if manifest else BODY
     support.require(os.geteuid() == 0, "mounted supervisor requires administration")
     specification = importlib.util.spec_from_file_location(
         "mounted_fuse_transport", source / "tests/terrane/fuse_connection_vm.py")
@@ -104,7 +106,7 @@ def run(support, executable, environment, source, owner_command=None, configured
             first = executor.submit(transport.read_file, target / "file")
             second = executor.submit(transport.read_file, target / "file")
             receive(b"FETCH")
-            support.require((target / "file").stat().st_size == len(BODY)
+            support.require((target / "file").stat().st_size == len(body)
                 and stat.S_ISDIR(target.stat().st_mode),
                 "actual scoped fetch blocked production kernel metadata")
             if late:
@@ -120,11 +122,11 @@ def run(support, executable, environment, source, owner_command=None, configured
                 first = executor.submit(transport.read_file, target / "file")
                 second = first
             support.require(supervisor.send(b"G") == 1, "grant acknowledgement truncated")
-            expected = (BODY[:1], BODY[1:], BODY[2:10], BODY[3:11])
+            expected = (body[:1], body[1:], body[2:10], body[3:11])
             support.require(first.result(timeout=5) == second.result(timeout=5) == expected,
                 "signed-root production reads changed the actual verified backing")
             retained = (target / "file").open("rb", buffering=0)
-            support.require(retained.read() == BODY,
+            support.require(retained.read() == body,
                 "repeated production open lost the original verified backing")
             os.fsync(retained.fileno())
 
@@ -160,6 +162,8 @@ def run(support, executable, environment, source, owner_command=None, configured
                 expected_witnesses.append("PASS actual kernel open deadlines return EIO while original configured cold work survives and a later open joins the same fetch before sealed handoff")
             if expiry:
                 expected_witnesses.append("PASS actual durable exposure expiry autonomously drains retained service and disconnects idle mounted worker while preserving original kernel backing custody")
+            if manifest:
+                expected_witnesses.append("PASS actual kernel opens resolve original signed multi-chunk manifest only after metadata index compilation and retain one sealed backing through coalesced reads and drain")
             support.require(b"".join(output).decode().splitlines() == expected_witnesses,
                 "mounted owner omitted its original authority or custody checks")
             print("PASS mounted production worker joins signed index startup, coalesced verified reads, responsive metadata and durable drain", flush=True)
@@ -177,3 +181,15 @@ def run(support, executable, environment, source, owner_command=None, configured
         target.rmdir()
         if log_path.exists():
             print(log_path.read_text(), end="", flush=True)
+
+
+def manifest_body():
+    """Matches the original signed guest fixture's deterministic CDC input."""
+    state = 7
+    body = bytearray(2_097_153)
+    for position in range(len(body)):
+        state ^= (state << 13) & 0xffffffff
+        state ^= state >> 17
+        state ^= (state << 5) & 0xffffffff
+        body[position] = state & 0xff
+    return bytes(body)

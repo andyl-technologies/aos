@@ -27,9 +27,11 @@ use std::{
 use terrane_format::{
     identity::{IdentityKind, TERRANE_V1},
     surface::ViewTarget,
+    tree_format::ContentRef,
 };
 use terrane_linux::{
     host_cache::NativeReadPolicy,
+    structural_index::Kind,
     worker_channel::service::{Context, Options, Service},
 };
 use terrane_sdk::{
@@ -48,6 +50,8 @@ pub(crate) enum Scenario {
     Late,
     /// Waits for the actual durable exposure lease to expire without stop.
     Expiry,
+    /// Resolves a genuine signed multi-chunk manifest only when the kernel opens it.
+    Manifest,
 }
 
 const BODY: &[u8] = b"actual scoped worker backing through serialized owner Send";
@@ -125,12 +129,28 @@ async fn verify(
         profile.seed(),
     ))
     .await?;
-    let commit = Box::pin(fixture.commit(BODY)).await?;
-    let content: [u8; 32] = TERRANE_V1
-        .calculate(IdentityKind::Chunk, BODY)?
-        .digest()
-        .try_into()?;
+    let body = if scenario == Scenario::Manifest {
+        manifest_body()
+    } else {
+        BODY.to_vec()
+    };
+    let boundaries = profile.boundaries(&body);
+    if scenario == Scenario::Manifest && boundaries.len() < 2 {
+        return Err("mounted manifest fixture requires actual multi-chunk input".into());
+    }
+    let mut chunk_hashes = Vec::new();
+    for range in &boundaries {
+        let identity = TERRANE_V1.calculate(IdentityKind::Chunk, &body[range.clone()])?;
+        let hash: String = identity
+            .digest()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        chunk_hashes.push(hash);
+    }
+    let commit = Box::pin(fixture.commit(&body)).await?;
     let reads = Arc::new(AtomicUsize::new(0));
+    let manifests = Arc::new(AtomicUsize::new(0));
     let started = Arc::new(Notify::new());
     let resume = Arc::new(Notify::new());
     let mut driver = None;
@@ -140,6 +160,7 @@ async fn verify(
             PausedLower {
                 original: original.clone(),
                 reads: Arc::clone(&reads),
+                manifests: Arc::clone(&manifests),
                 started: Arc::clone(&started),
                 resume: Arc::clone(&resume),
             },
@@ -166,6 +187,21 @@ async fn verify(
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
         .await?;
     let served = Rc::new(owner.prepare_surface_mapping(selected).await?);
+    let content = match served.index().lookup(b"file").map(|entry| entry.kind()) {
+        Some(Kind::File { content, size }) if size == body.len() as u64 => content,
+        _ => return Err("mounted index lost its original signed file metadata".into()),
+    };
+    if matches!(content, ContentRef::Manifest(_)) != (scenario == Scenario::Manifest)
+        || reads.load(Ordering::Relaxed) != 0
+        || manifests.load(Ordering::Relaxed) != 0
+    {
+        return Err(
+            "structural index compilation fetched content or changed its signed kind".into(),
+        );
+    }
+    let content = match content {
+        ContentRef::Inline(hash) | ContentRef::Manifest(hash) => hash,
+    };
     let expires = now()? + if scenario == Scenario::Expiry { 20 } else { 90 };
     let lease = owner.retain_surface_exposure(&served, expires).await?;
     owner.check_running().await?;
@@ -224,15 +260,18 @@ async fn verify(
         .iter()
         .find(|row| row.id == lease.id())
         .ok_or("mounted configured worker lost its original exposure")?;
-    let hash: String = content.iter().map(|byte| format!("{byte:02x}")).collect();
+    let identity_hash: String = content.iter().map(|byte| format!("{byte:02x}")).collect();
     if original.phase != ExposurePhase::Active
         || original.backings.len() != 2
-        || reads.load(Ordering::Relaxed) != 1
-        || !before.residences.iter().any(|row| row.chunk == hash)
-        || before
-            .pins
+        || reads.load(Ordering::Relaxed) != boundaries.len()
+        || manifests.load(Ordering::Relaxed) != usize::from(scenario == Scenario::Manifest)
+        || chunk_hashes
             .iter()
-            .any(|row| row.hash == hash && row.owner.starts_with("publication:"))
+            .any(|hash| !before.residences.iter().any(|row| row.chunk == *hash))
+        || before.pins.iter().any(|row| {
+            (chunk_hashes.contains(&row.hash) || row.hash == identity_hash)
+                && row.owner.starts_with("publication:")
+        })
     {
         return Err(
             "mounted configured reads omitted original cache handoff or backing custody".into(),
@@ -305,6 +344,11 @@ async fn verify(
             "PASS actual durable exposure expiry autonomously drains retained service and disconnects idle mounted worker while preserving original kernel backing custody"
         );
     }
+    if scenario == Scenario::Manifest {
+        println!(
+            "PASS actual kernel opens resolve original signed multi-chunk manifest only after metadata index compilation and retain one sealed backing through coalesced reads and drain"
+        );
+    }
     send(b"DRAINED")?;
     Ok(())
 }
@@ -339,4 +383,17 @@ fn send(bytes: &[u8]) -> Result<()> {
 
 async fn receive(expected: &[u8]) -> Result<()> {
     scoped_worker::mounted::receive_async(io::stdout().as_fd(), expected).await
+}
+
+/// Produces deterministic nonrepeating data spanning several original CDC chunks.
+fn manifest_body() -> Vec<u8> {
+    let mut state = 7_u32;
+    (0..2_097_153)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        })
+        .collect()
 }
