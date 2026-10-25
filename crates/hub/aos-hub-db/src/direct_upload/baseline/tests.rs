@@ -356,6 +356,36 @@ fn fresh_permission_binds_witness_nonce_and_exclusive_deadline() {
 }
 
 #[test]
+fn native_permission_may_expire_before_its_witness() {
+    let (_, _, baseline, context) = fixture();
+    let witness = witness(&baseline);
+    let mut permission = DirectDestinationBaselinePermission {
+        binding: baseline.binding.clone(),
+        baseline_digest: baseline.fingerprint().unwrap(),
+        witness_digest: witness.fingerprint().unwrap(),
+        request_nonce: context.request_nonce.clone(),
+        expires_at: WireInteger::new(210),
+    };
+
+    // Native may shorten authority to the reviewed runtime acceptance cutoff.
+    permission
+        .validate_for(&baseline, &witness, &context, 202)
+        .unwrap();
+
+    assert!(permission
+        .validate_for(&baseline, &witness, &context, 210)
+        .is_err());
+    assert!(permission
+        .validate_for(&baseline, &witness, &context, 211)
+        .is_err());
+
+    permission.expires_at = WireInteger::new(witness.expires_at.get() + 1);
+    assert!(permission
+        .validate_for(&baseline, &witness, &context, 202)
+        .is_err());
+}
+
+#[test]
 fn private_phase_requires_staging_and_correlates_current_baseline() {
     let (admission, complete, baseline, context) = fixture();
     let stage = DirectVerifiedStageEvidence {

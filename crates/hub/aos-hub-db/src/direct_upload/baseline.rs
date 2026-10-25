@@ -428,6 +428,9 @@ impl DirectDestinationBaselinePermission {
 
     /// Correlates the permission with the first baseline and exact fresh witness/context.
     ///
+    /// Native may shorten the permission to its runtime acceptance deadline;
+    /// that exclusive deadline remains independent of the witness's expiry.
+    ///
     /// # Errors
     /// Returns an error for changed reservation, proof, request nonce or exclusive expiry.
     pub fn validate_for(
@@ -444,7 +447,8 @@ impl DirectDestinationBaselinePermission {
                 && self.baseline_digest == baseline.fingerprint()?
                 && self.witness_digest == witness.fingerprint()?
                 && self.request_nonce == context.request_nonce
-                && self.expires_at == witness.expires_at,
+                && self.expires_at.get() <= witness.expires_at.get()
+                && latest_now < self.expires_at.get(),
             "direct baseline permission correlation mismatch"
         );
         Ok(())
