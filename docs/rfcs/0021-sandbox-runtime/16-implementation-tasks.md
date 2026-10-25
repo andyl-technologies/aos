@@ -172,6 +172,19 @@ Recent committed startup fixes close narrower prerequisites:
   preparation and the later recovery cases remain pending; this grant supplies
   no TPM initialization or method-46 admission authority.
 
+- The TPM transport fixture now durably publishes a distinct initial intent
+  before its first encrypted Extend. Both fixed endpoints recover exactly once
+  after hard QEMU/swtpm power loss before or after that write. Wrong-role,
+  conflicting-preimage and repeated-initialization attempts preserve the
+  retained state and observed NV value. Atomic fixture publication fsyncs both
+  file and parent, and external seed DATA is flushed before each cut. The full
+  current-kernel transport VM passes, including the existing recovery cases
+  (`/nix/store/y58kwmkysw4dv7s9c9lyjz0whki9q65l-aos-fleet-test-sandbox-method46-tpm-transport-0`).
+  This non-enforcing external fixture supplies no production funding,
+  independent approval, canonical protected journal cut or installed-hook
+  qualification. The genuine initial-floor producer remains missing, and
+  public admission stays closed.
+
 Candidate Host credential-custody preparation and its selected initrd wiring
 are not qualified by these commits. Installed results that include pending
 SwitchRoot or networkd policy changes must identify those dependencies; they

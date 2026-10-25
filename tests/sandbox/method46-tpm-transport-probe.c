@@ -33,11 +33,35 @@ static void load_fixture(const char *path, struct fixture *fixture)
 
 static void save_fixture(const char *path, const struct fixture *fixture)
 {
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    char *next = NULL;
+    char *parent = strdup(path);
+    require(parent != NULL && asprintf(&next, "%s.next", path) >= 0,
+        "allocate fixture publication paths");
+    char *separator = strrchr(parent, '/');
+    if (separator == parent)
+        separator[1] = '\0';
+    else if (separator != NULL)
+        *separator = '\0';
+    else {
+        free(parent);
+        parent = strdup(".");
+        require(parent != NULL, "allocate fixture parent");
+    }
+
+    int directory = open(parent, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+    require(directory >= 0, "open fixture publication directory");
+    /* A power cut must leave the complete predecessor or successor, including
+     * its index credential. A leftover partial publication fences this fixture. */
+    int fd = open(next, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0600);
     require(fd >= 0, "open fixture output");
     require(write(fd, fixture, sizeof(*fixture)) == (ssize_t)sizeof(*fixture),
         "write fixture output");
     require(fsync(fd) == 0 && close(fd) == 0, "persist fixture output");
+    require(rename(next, path) == 0 && fsync(directory) == 0,
+        "publish durable fixture output");
+    require(close(directory) == 0, "close fixture publication directory");
+    free(parent);
+    free(next);
 }
 
 static void initialize_index(struct floor_context *context,
@@ -148,10 +172,58 @@ static int authenticate(struct floor_context *context, unsigned role,
     return status == TSS2_RC_SUCCESS ? 0 : -1;
 }
 
+/* Test-only initial intent recovery. Its durable preimage is not an approved
+ * journal cut or funding source; the production provisioner must supply both. */
+static void recover_initial(struct floor_context *context, unsigned role,
+    const char *path, struct fixture *fixture)
+{
+    require(!nonzero(fixture->checkpoint, sizeof(fixture->checkpoint))
+        && nonzero(fixture->pending, sizeof(fixture->pending)),
+        "one retained initial intent without a checkpoint");
+    require(authenticate(context, role, fixture) == 0,
+        "authenticate initial recovery salt and index");
+
+    TPM2B_NV_PUBLIC *public = NULL;
+    TPM2B_NAME *name = NULL;
+    require(session_attributes(context, TPMA_SESSION_ENCRYPT) == TSS2_RC_SUCCESS
+        && Esys_NV_ReadPublic(context->esys, context->index, context->session,
+            ESYS_TR_NONE, ESYS_TR_NONE, &public, &name) == TSS2_RC_SUCCESS
+        && public != NULL && name != NULL && name->size == 34
+        && public->nvPublic.nvIndex == context->index_handle
+        && public->nvPublic.nameAlg == TPM2_ALG_SHA256
+        && (public->nvPublic.attributes == UINT32_C(0x00040044)
+            || public->nvPublic.attributes == WRITTEN_ATTRIBUTES)
+        && public->nvPublic.authPolicy.size == 0 && public->nvPublic.dataSize == 32,
+        "authenticate exact unwritten or written initial index");
+    int written = public->nvPublic.attributes == WRITTEN_ATTRIBUTES;
+    Esys_Free(public);
+    Esys_Free(name);
+
+    uint8_t input[64] = {0};
+    uint8_t expected[32];
+    memcpy(input + 32, fixture->pending, sizeof(fixture->pending));
+    require(EVP_Digest(input, sizeof(input), expected, NULL,
+        EVP_sha256(), NULL) == 1, "calculate retained initial target");
+    if (!written)
+        require(extend_index(context, fixture->pending) == 0,
+            "production encrypted recovered initial extend");
+
+    uint8_t observation[RESPONSE_BYTES] = {0};
+    require(read_observation(context, observation) == 0
+        && memcmp(observation + 96, expected, sizeof(expected)) == 0,
+        "authenticate exact initial recovery target");
+    memcpy(fixture->checkpoint, expected, sizeof(expected));
+    memset(fixture->pending, 0, sizeof(fixture->pending));
+    save_fixture(path, fixture);
+}
+
 int main(int argc, char **argv)
 {
+    int resumable = argc > 1 && (strcmp(argv[1], "initialize-resumable") == 0
+        || strcmp(argv[1], "initialize-resumable-before") == 0
+        || strcmp(argv[1], "initialize-resumable-after") == 0);
     int initializing = argc > 1 && (strcmp(argv[1], "initialize") == 0
-        || strcmp(argv[1], "initialize-paused") == 0);
+        || strcmp(argv[1], "initialize-paused") == 0 || resumable);
     require(argc == 4 || (argc == 5 && initializing),
         "usage: probe operation endpoint state-file [initial-cut-input]");
     require(strcmp(argv[2], "0") == 0 || strcmp(argv[2], "1") == 0,
@@ -172,6 +244,13 @@ int main(int argc, char **argv)
     }
 
     load_fixture(argv[3], &fixture);
+    if (strcmp(argv[1], "recover-initial") == 0) {
+        recover_initial(&context, role, argv[3], &fixture);
+        close_context(&context);
+        erase(&fixture, sizeof(fixture));
+        return EXIT_SUCCESS;
+    }
+
     if (initializing) {
         require(argc == 5, "initial cut input is required");
         require(!nonzero(fixture.checkpoint, sizeof(fixture.checkpoint))
@@ -202,6 +281,12 @@ int main(int argc, char **argv)
             && fgetc(input) == EOF && !ferror(input), "exact initial cut input");
         require(fclose(input) == 0 && nonzero(seed, sizeof(seed)),
             "nonzero initial cut input");
+        if (resumable) {
+            memcpy(fixture.pending, seed, sizeof(seed));
+            save_fixture(argv[3], &fixture);
+            if (strcmp(argv[1], "initialize-resumable-before") == 0)
+                require(raise(SIGSTOP) == 0, "pause durable initial intent");
+        }
         /* Use the production salted HMAC/encrypted Extend, not the external
          * provisioner's password-authorized command. The first write changes
          * the NV Name, so authenticate its WRITTEN public area and value before
@@ -220,9 +305,12 @@ int main(int argc, char **argv)
             "authenticate changed written Name and exact initial value");
         Esys_Free(unwritten_name);
         /* Cut power after authenticated physical success, before publishing
-         * any checkpoint. A cold caller must refuse the now-written index. */
-        if (strcmp(argv[1], "initialize-paused") == 0)
+         * a checkpoint. Cold recovery needs the separately retained intent;
+         * a fresh initializer must refuse the now-written index. */
+        if (strcmp(argv[1], "initialize-paused") == 0
+            || strcmp(argv[1], "initialize-resumable-after") == 0)
             require(raise(SIGSTOP) == 0, "pause uncheckpointed initial extend");
+        memset(fixture.pending, 0, sizeof(fixture.pending));
         save_fixture(argv[3], &fixture);
         close_context(&context);
         erase(&fixture, sizeof(fixture));
@@ -265,8 +353,9 @@ int main(int argc, char **argv)
                  * than close_context, retires this process's device session. */
                 _exit(77);
             } else if (strcmp(argv[1], "recover") == 0) {
-                require(nonzero(fixture.pending, sizeof(fixture.pending)),
-                    "retain exact pending input");
+                require(nonzero(fixture.checkpoint, sizeof(fixture.checkpoint))
+                    && nonzero(fixture.pending, sizeof(fixture.pending)),
+                    "retain exact successor checkpoint and pending input");
                 uint8_t input[64];
                 uint8_t expected[32];
                 memcpy(input, fixture.checkpoint, 32);

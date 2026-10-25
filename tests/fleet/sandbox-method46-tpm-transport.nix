@@ -26,7 +26,7 @@
     else throw "method46 transport must use the installed Root kernel";
 in {
   name = "sandbox-method46-tpm-transport";
-  timeout = 900;
+  timeout = 1200;
   bootTimeout = 240;
   machines.vm = {
     inherit system;
@@ -53,6 +53,7 @@ in {
         vm.succeed(f"printf short > {seed}")
         vm.fail(f"${command} initialize {role} {state} {seed}")
         vm.succeed(f"printf 0123456789abcdef0123456789abcdef > {seed}")
+        vm.succeed(f"sync -f {seed}")
         vm.succeed(f"${command} initialize {role} {state} {seed}")
         vm.fail(f"${command} initialize {role} {state} {seed}")
         vm.fail(f"${command} initialize {role} {state}.unwritten {seed}")
@@ -160,6 +161,7 @@ in {
         seed = f"{state}.initial-cut"
         vm.succeed(f"${command} prepare {role} {state}")
         vm.succeed(f"printf 0123456789abcdef0123456789abcdef > {seed}")
+        vm.succeed(f"sync -f {seed}")
         retained_hash = vm.succeed(f"sha256sum {state} {seed}")
         vm.succeed(
             f"${command} initialize-paused {role} {state} {seed} "
@@ -184,5 +186,70 @@ in {
         vm.fail(f"${command} recover {role} {state}")
         assert vm.succeed(f"${command} observe {role} {state}").strip() == expected_nv
         assert vm.succeed(f"sha256sum {state} {seed}") == retained_hash
+
+    # A separately retained initial intent permits exact cold reconciliation.
+    # This exercises transport mechanics only: these test preimages carry no
+    # production funding, approval or protected journal-cut authority.
+    for cut in ("before", "after"):
+        vm.succeed("${pkgs.tpm2-tools}/bin/tpm2_clear -T device:/dev/tpmrm0")
+        retained = []
+        for role in (0, 1):
+            state = f"/var/lib/method46-transport/initial-intent-{cut}-{role}"
+            seed = f"{state}.initial-cut"
+            vm.succeed(f"${command} prepare {role} {state}")
+            vm.succeed(f"printf 0123456789abcdef0123456789abcdef > {seed}")
+            vm.succeed(f"sync -f {seed}")
+            vm.succeed(
+                f"${command} initialize-resumable-{cut} {role} {state} {seed} "
+                f"> {state}.paused-log 2>&1 & echo $! > {state}.paused-pid"
+            )
+            pid = int(vm.succeed(f"cat {state}.paused-pid").strip())
+            vm.wait_until_succeeds(f"test $(cut -d ' ' -f 3 /proc/{pid}/stat) = T")
+            checkpoint = vm.succeed(f"od -v -An -tx1 -j66 -N32 {state}")
+            pending = vm.succeed(f"od -v -An -tx1 -j98 -N32 {state}")
+            assert "".join(checkpoint.split()) == "00" * 32, checkpoint
+            assert "".join(pending.split()) == seed_bytes.hex(), pending
+            if cut == "before":
+                vm.fail(f"${command} observe {role} {state}")
+            else:
+                assert vm.succeed(f"${command} observe {role} {state}").strip() == expected_nv
+            retained.append((role, state, seed, vm.succeed(f"sha256sum {state} {seed}")))
+
+        vm.power_cycle(timeout=240)
+        vm.wait_for_unit("multi-user.target", timeout=180)
+        for role, state, seed, retained_hash in retained:
+            assert vm.succeed(f"sha256sum {state} {seed}") == retained_hash
+            vm.fail(f"${command} initialize {role} {state} {seed}")
+            vm.fail(f"${command} initialize-resumable {role} {state} {seed}")
+            vm.fail(f"${command} recover {role} {state}")
+            vm.fail(f"${command} recover-initial {1 - role} {state}")
+            assert vm.succeed(f"sha256sum {state} {seed}") == retained_hash
+
+            if cut == "after":
+                # A conflicting preimage cannot adopt an already-written NV.
+                # Restore only this external test's DATA after the refusal.
+                vm.succeed(f"cp {state} {state}.saved")
+                vm.succeed(
+                    "printf RRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR | "
+                    f"dd of={state} bs=1 seek=98 conv=notrunc status=none"
+                )
+                conflict_hash = vm.succeed(f"sha256sum {state}")
+                vm.fail(f"${command} recover-initial {role} {state}")
+                assert vm.succeed(f"sha256sum {state}") == conflict_hash
+                assert vm.succeed(f"${command} observe {role} {state}").strip() == expected_nv
+                vm.succeed(f"cp {state}.saved {state}")
+
+            vm.succeed(f"${command} recover-initial {role} {state}")
+            vm.succeed(f"${command} read {role} {state}")
+            assert vm.succeed(f"${command} observe {role} {state}").strip() == expected_nv
+            checkpoint = vm.succeed(f"od -v -An -tx1 -j66 -N32 {state}")
+            pending = vm.succeed(f"od -v -An -tx1 -j98 -N32 {state}")
+            assert "".join(checkpoint.split()) == expected_nv, checkpoint
+            assert "".join(pending.split()) == "00" * 32, pending
+            completed_hash = vm.succeed(f"sha256sum {state}")
+            vm.fail(f"${command} recover-initial {role} {state}")
+            vm.fail(f"${command} initialize-resumable {role} {state} {seed}")
+            assert vm.succeed(f"sha256sum {state}") == completed_hash
+            assert vm.succeed(f"${command} observe {role} {state}").strip() == expected_nv
   '';
 }
