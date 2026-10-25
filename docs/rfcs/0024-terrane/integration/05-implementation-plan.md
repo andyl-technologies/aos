@@ -183,6 +183,20 @@ credentials. This startup remains unqualified. Mandatory workspace compilation
 at `0d9081f2d5` passes in 1,526.842 seconds; complete review binds 8,191 immutable
 files, 190 test executables and 59 packages, with no test-execution claim.
 
+The diagnostic mounted checkpoint `d273b1c1de` fails in 700.514 seconds.
+Its retained owner stages reach repository-ready at 974 milliseconds and
+commit-ready at 4,085 milliseconds, then the supervisor's READY wait expires
+before index-ready. That supervisor wait incorrectly includes signed source
+initialization, commit creation and native index/exposure/publication admission,
+all preceding the production worker's authenticated startup. The fixture now
+sends an explicit PREPARED control only after those operations complete. The
+supervisor bounds that provisioning phase by the child's existing thirty-second
+public-context limit, then gives READY its original five-second exchange bound.
+Every receive now has one total phase deadline, including intervening output,
+rather than resetting its timeout per packet. Worker startup, exchange, fetch
+and open deadlines are unchanged. The original failed receipt remains failed;
+corrected-source native qualification is still required.
+
 The native preparation boundary now independently checks the selected signed
 storage policy before index admission or file pin effects, and before granting
 an existing index. It no longer relies on a caller having installed a general
@@ -250,6 +264,16 @@ fails in 1,084.273 seconds when the original native owner actor exceeds its
 thirty-second bound during scoped index retirement. That failure remains
 retained; native signed zero-wipe qualification and the owning gate remain open.
 Neither actor nor guest deadlines are increased.
+
+The configured guest at `d273b1c1de` fails its aggregate in 759.578 seconds.
+Its original thirty-second admit actor completes in 28.549 seconds and emits
+both exact cold inline/manifest and bounded-refusal witnesses, but the subsequent
+recover-draining actor exits with EAGAIN after 10.693 seconds. These successful
+individual witnesses do not make the aggregate pass. Bounded fixture stage
+timings now distinguish initial configured open, index/exposure preparation,
+original-owner drop, unfunded refusal and funded reopen; scoped index stage
+logs also record elapsed time to locate its separate actor timeout. No retry,
+recovery fallback, actor deadline increase or task acceptance is introduced.
 
 The structural-index requirements audit distinguishes the qualified component
 from the remaining open-path composition:

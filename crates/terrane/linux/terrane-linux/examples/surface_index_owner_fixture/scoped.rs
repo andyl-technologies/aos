@@ -25,7 +25,14 @@ fn limits() -> RootNodeLimits {
 }
 
 pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs) -> Result<()> {
-    eprintln!("SURFACE_SCOPED_STAGE source-initialize");
+    let started = tokio::time::Instant::now();
+    let stage = |phase| {
+        eprintln!(
+            "SURFACE_SCOPED_STAGE phase={phase} elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+    };
+    stage("source-initialize");
     // The repositories have independent signing custody and filesystem paths.
     // Overlap their real setup instead of spending the actor's finite bound on
     // unrelated source initialization after all native disclosure checks.
@@ -42,13 +49,13 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
             [0; 32],
         )),
     )?;
-    eprintln!("SURFACE_SCOPED_STAGE source-commit");
+    stage("source-commit");
     tokio::try_join!(
         Box::pin(fixture.commit(b"signed surface source")),
         Box::pin(foreign.commit(b"signed surface source")),
         Box::pin(zero_wipe.commit(b"signed zero-wipe source")),
     )?;
-    eprintln!("SURFACE_SCOPED_STAGE root-read");
+    stage("root-read");
     let target = ViewTarget::Ref(MAIN.parse()?);
     let selection = fixture
         .repository
@@ -57,7 +64,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     let root = selection.metadata().root();
     let commit = selection.metadata().commit();
 
-    eprintln!("SURFACE_SCOPED_STAGE index-admission");
+    stage("index-admission");
     let admitted = owner.prepare_surface_index(selection).await?;
     admitted.check_native_backing()?;
     if admitted.key().root() != root {
@@ -68,7 +75,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         .repository
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
         .await?;
-    eprintln!("SURFACE_SCOPED_STAGE index-mapping");
+    stage("index-mapping");
     let mapped = owner.prepare_surface_mapping(selection).await?;
     mapped.check_native_backing()?;
     if mapped.commit() != commit
@@ -91,7 +98,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
         .await?;
     let view = View::parse(MAIN)?;
-    eprintln!("SURFACE_SCOPED_STAGE file-admission");
+    stage("file-admission");
     let backing = files::admit(owner, &mapped, &fixture, &view, None).await?;
     let file_selection = fixture
         .repository
@@ -101,7 +108,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         .repository
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
         .await?;
-    eprintln!("SURFACE_SCOPED_STAGE policy-change");
+    stage("policy-change");
     fixture.commit(b"actual later policy head").await?;
     if !matches!(owner.prepare_surface_index(selection).await,
         Err(Error::Store(error)) if matches!(error.kind(), StoreErrorKind::Denied { .. }))
@@ -134,7 +141,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         return Err("another served commit reached physical surface pin effects".into());
     }
     files::check(&backing)?;
-    eprintln!("SURFACE_SCOPED_STAGE file-release");
+    stage("file-release");
     owner.release_sealed_object_lease(backing.lease()).await?;
     files::check(&backing)?;
     drop(backing);
@@ -149,7 +156,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     {
         return Err("live mapped root failed to retain original cache receipt".into());
     }
-    eprintln!("SURFACE_SCOPED_STAGE index-retirement");
+    stage("index-retirement");
     drop(mapped);
     if !owner.evict_surface_index(first_key).await? {
         return Err("signed original index absent from actual cache".into());
@@ -160,7 +167,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         .repository
         .prepare_root_read(&target, fixture.authority.token(), "sdk", limits())
         .await?;
-    eprintln!("SURFACE_SCOPED_STAGE latest-mapping");
+    stage("latest-mapping");
     let latest = owner.prepare_surface_mapping(selection).await?;
     let latest_key = latest.key();
     drop(latest);
@@ -168,7 +175,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
         return Err("signed latest index absent from actual cache".into());
     }
 
-    eprintln!("SURFACE_SCOPED_STAGE foreign-source");
+    stage("foreign-source");
     let selection = foreign
         .repository
         .prepare_root_read(&target, foreign.authority.token(), "sdk", limits())
@@ -177,7 +184,7 @@ pub(super) async fn verify(owner: &NativeMetadataOwner, inputs: &config::Inputs)
     if owner.prepare_surface_mapping(selection).await.is_ok() || fs::read(&policy)? != before {
         return Err("foreign signed root changed original physical cache policy".into());
     }
-    eprintln!("SURFACE_SCOPED_STAGE zero-wipe-refusal");
+    stage("zero-wipe-refusal");
     let before = fs::read(&policy)?;
     let selection = zero_wipe
         .repository

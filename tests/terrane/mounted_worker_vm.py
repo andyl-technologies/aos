@@ -9,6 +9,7 @@ import socket
 import stat
 import struct
 import subprocess
+import time
 
 
 BODY = b"actual scoped worker backing through serialized owner Send"
@@ -33,9 +34,13 @@ def run(support, executable, environment, source):
     executor = ThreadPoolExecutor(max_workers=2)
     output = []
 
-    def receive(expected, uid=840):
-        """Checks actual sender credentials and consumes every ancillary fd."""
+    def receive(expected, uid=840, timeout=5):
+        """Checks the original sender and descriptors within one total phase bound."""
+        deadline = time.monotonic() + timeout
         for _ in range(16):
+            remaining = deadline - time.monotonic()
+            support.require(remaining > 0, "mounted owner control phase elapsed")
+            supervisor.settimeout(remaining)
             packet, ancillary, flags, _ = supervisor.recvmsg(
                 4096, socket.CMSG_SPACE(253 * 4) + socket.CMSG_SPACE(12),
                 socket.MSG_CMSG_CLOEXEC)
@@ -62,7 +67,7 @@ def run(support, executable, environment, source):
                         "mounted control transferred an unexpected descriptor")
                     return descriptors.pop() if descriptors else None
                 support.require(not descriptors and uid == 840
-                    and packet not in [b"DEVICE", b"READY", b"FETCH", b"DRAINED"],
+                    and packet not in [b"DEVICE", b"PREPARED", b"READY", b"FETCH", b"DRAINED"],
                     "mounted owner control lost its original ordering")
                 output.append(packet)
                 support.require(sum(map(len, output)) <= 4096,
@@ -89,6 +94,11 @@ def run(support, executable, environment, source):
             finally:
                 os.close(device)
             support.require(supervisor.send(b"M") == 1, "mount acknowledgement truncated")
+            # The child already bounds public-context provisioning at thirty
+            # seconds. Repository initialization, signed commits and native
+            # admission precede worker startup; READY retains its five-second
+            # exchange bound once that real provisioning is complete.
+            receive(b"PREPARED", timeout=30)
             receive(b"READY")
 
             first = executor.submit(transport.read_file, target / "file")

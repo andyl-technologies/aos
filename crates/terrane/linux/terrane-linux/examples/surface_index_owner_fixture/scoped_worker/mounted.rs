@@ -174,6 +174,10 @@ pub(crate) fn run(
             .publish_inline(descriptor, [vec![0], BODY.to_vec()].concat())
             .await?;
         stage("publication-ready");
+        // Source creation and native admission belong to fixture provisioning.
+        // Start the supervisor's worker READY exchange only after they finish,
+        // within the child's existing thirty-second public-context bound.
+        send(io::stdout().as_fd(), b"PREPARED")?;
         let mut channel = launched.bind(&lease)?;
         launched.send_context(&lease, identity.digest().try_into()?)?;
         stage("context-sent");

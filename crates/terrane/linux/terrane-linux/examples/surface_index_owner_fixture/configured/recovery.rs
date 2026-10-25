@@ -20,6 +20,14 @@ pub(super) async fn verify(
     confinement: Arc<quota_confinement::Installed>,
     source_parent: &Path,
 ) -> Result<()> {
+    let started = tokio::time::Instant::now();
+    let stage = |phase| {
+        eprintln!(
+            "CONFIGURED_RECOVERY_STAGE phase={phase} elapsed_ms={}",
+            started.elapsed().as_millis()
+        );
+    };
+    stage("cache-open");
     let domain = &host.domains["public"];
     let root = Path::new(&domain.path);
     let resources = domain.cache.as_ref().ok_or("missing cache resources")?;
@@ -29,6 +37,7 @@ pub(super) async fn verify(
     };
     let records = root.join("state/cache/records.toml");
     let caches = plan.open(Arc::clone(&confinement)).await?;
+    stage("cache-ready");
     let cache = caches.get("public").ok_or("missing configured cache")?;
     let owner = cache.content().ready().owner();
     // The supervisor's TMPDIR is private to root. Keep signed source beside
@@ -44,6 +53,7 @@ pub(super) async fn verify(
             limits(),
         )
         .await?;
+    stage("index-admission");
     let admitted = owner.prepare_surface_mapping(selection).await?;
     let key = admitted.key();
     let lease = owner
@@ -60,6 +70,7 @@ pub(super) async fn verify(
             limits(),
         )
         .await?;
+    stage("root-grant");
     let grant = owner
         .prepare_exposure_root_backing(&lease, &admitted, selection)
         .await?;
@@ -91,6 +102,7 @@ pub(super) async fn verify(
     drop(admitted);
     drop(lease);
     drop(caches);
+    stage("original-owner-dropped");
 
     let mut unfunded = host.clone();
     unfunded
@@ -100,6 +112,7 @@ pub(super) async fn verify(
         .ok_or("missing original public cache configuration")?
         .surface_index = None;
     let durable = fs::read(&records)?;
+    stage("unfunded-open");
     let error = NativeCachePlan::from_host(&unfunded, Default::default())?
         .open(Arc::clone(&confinement))
         .await
@@ -111,6 +124,7 @@ pub(super) async fn verify(
 
     // Re-enter the public configured factory, without calling lower-level
     // recovery or manufacturing a completed recovery/Resume receipt.
+    stage("funded-reopen");
     let reopened = NativeCachePlan::from_host(host, Default::default())?
         .open(confinement)
         .await?;
@@ -119,6 +133,7 @@ pub(super) async fn verify(
         .ok_or("configured reopen omitted original cache")?
         .content()
         .ready();
+    stage("reopened-ready");
     ready.validate_portable().await?;
     let owner = ready.owner();
     let recovered = snapshot(root, state_limits).await?;
