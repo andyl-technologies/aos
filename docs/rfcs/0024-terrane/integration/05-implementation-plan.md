@@ -133,14 +133,22 @@ discovered loader closures. Guest setup restores only the CLI's original
 Cargo-compiled absolute pathname; Rust test sources and assertions remain
 unchanged. Source, artifact, complete-image and exact nonignored execution
 checks remain required. Python syntax, Nix evaluation, focused formatting,
-PLAN-2 and the seven-derivation dry run pass; native qualification is pending.
-This preparation does not accept OBS-13 or T-OBS-1.
+PLAN-2 and the seven-derivation dry run pass before native qualification.
 The first image build refuses its SDK artifact before native test execution:
 Cargo retains the explicitly enabled `default` feature on the original SDK
-command, while the CLI dependency disables defaults. The verifier now checks
+command, while the CLI dependency disables defaults. The verifier checks
 these two exact, distinct compiler feature sets; build commands and Rust tests
-remain unchanged. The failed receipt is retained, and renewed qualification
-is required.
+remain unchanged. The failed receipt is retained.
+
+Renewed `obs-blame` qualification at `47a835fa7e` passes in 482.494 seconds.
+Complete review binds all 8,262 immutable source files, three retained Cargo
+executables, their distinct compiler features and loader closures, and the
+actual original three-case guest transcript. Both SDK authorization and
+metadata-only controls and the actual CLI merge audit run successfully with
+no ignored cases. The guest verifies UID/GID 840, empty groups/capabilities,
+no-new-privileges, ext4 backing, unchanged image bytes and clean termination.
+This qualifies the original blame component; T-OBS-1 remains open for its
+other status, logging and metrics obligations. Task acceptance stays at 28/64.
 
 Existing-lock qualification at `9d89554155` passes its four-case ext4 guest
 in 1,361.242 seconds. Complete review matches all 8,242 immutable source
