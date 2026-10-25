@@ -24,11 +24,20 @@ def startup_diagnostics(machine, *units):
             "systemctl --failed --no-pager",
             # A pending oneshot can hold boot without entering failed state.
             "systemctl list-jobs --no-pager",
+            "stat -c '%a %u:%g %d:%i %C %F %n' -- "
+            "/run /run/aos /run/aos/sandbox-policy-cache-recovery "
+            "/var /var/lib /var/lib/aos /var/lib/aos/sandbox "
+            "/var/lib/aos/sandbox/policy-compiler",
+            # Stop producers at the process bound. Piping an unbounded loop
+            # into head leaves every later subprocess reporting broken pipes.
             # Use the image's existing shell/Coreutils; Procps is optional.
-            "for process in /proc/[0-9]*; do "
+            "count=0; for process in /proc/[0-9]*; do "
+            "[ \"$count\" -lt 64 ] || break; "
+            "[ -r \"$process/status\" ] || continue; "
+            "count=$((count + 1)); "
             "printf '\\n%s\\n' \"$process\"; "
             "head -n 8 \"$process/status\"; "
-            "cat \"$process/wchan\"; done | head -c 16384",
+            "cat \"$process/wchan\"; done",
         )
 
         for command in commands:
