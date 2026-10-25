@@ -61,7 +61,7 @@ in {
               row = vm.succeed(f"getent passwd {principal}").strip().split(":")
               assert len(row) == 7 and row[0] == principal, row
               assert row[2:4] == [str(identity)] * 2, row
-              assert row[6] == "/sbin/nologin", row
+              assert row[6] == "${pkgs.util-linux}/sbin/nologin", row
 
           for socket in (
               "aos-sandbox-hostd.socket",
